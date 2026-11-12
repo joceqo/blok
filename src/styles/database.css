@@ -2586,6 +2586,11 @@
   inline-size: 16px;
   block-size: 16px;
 }
+[data-blok-database-drawer-cover-controls] > button + button { border-inline-start: 1px solid var(--blok-border-subtle); }
+[data-blok-database-drawer-cover-controls] > button:hover { background: var(--blok-item-hover-bg); }
+[data-blok-database-drawer-cover-controls] > button:disabled { opacity: .5; cursor: wait; }
+[data-blok-database-drawer-cover]:hover [data-blok-database-drawer-cover-controls],
+[data-blok-database-drawer-cover-controls]:focus-within { opacity: 1; }
 
 /* Page icon above the title (icon size unmeasured: Blok's page title icon scale). */
 [data-blok-database-drawer-page-head] {
