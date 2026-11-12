@@ -116,7 +116,11 @@ export const createCoverControl = (header: HTMLElement, host: CoverControlHost):
     }
   };
 
+  let unregisterReposition: (() => void) | null = null;
+
   const stopRepositioning = (): void => {
+    unregisterReposition?.();
+    unregisterReposition = null;
     state.draft = null;
     strip.removeAttribute(DATA_ATTR.pageCoverRepositioning);
   };
@@ -403,6 +407,11 @@ export const createCoverControl = (header: HTMLElement, host: CoverControlHost):
     state.draft = positionOf(cover);
     strip.setAttribute(DATA_ATTR.pageCoverRepositioning, '');
     redraw();
+    unregisterReposition?.();
+    unregisterReposition = registerLayer({
+      element: strip,
+      onDismiss: (reason) => { if (reason === 'outside') savePosition(); else cancelRepositioning(); },
+    });
   };
 
   const savePosition = (): void => {
