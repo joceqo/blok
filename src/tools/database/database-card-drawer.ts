@@ -1,3 +1,4 @@
+import { createCoverDownloadButton } from '../../components/utils/cover-download';
 import type { I18n, OutputData } from '../../../types';
 import type { Events } from '../../../types/api/events';
 import type { ToolsConfig } from '../../../types/api/tools';
@@ -1370,6 +1371,8 @@ export class DatabaseCardDrawer {
       img.alt = '';
       img.src = src;
       cover.appendChild(img);
+      const coverControls = document.createElement('div');
+      coverControls.setAttribute('data-blok-database-drawer-cover-controls', '');
       if (!this.readOnly && this.onCoverChange !== undefined) {
         const change = document.createElement('button');
 
@@ -1377,8 +1380,12 @@ export class DatabaseCardDrawer {
         change.setAttribute('data-blok-database-drawer-change-cover', '');
         change.textContent = this.label('tools.database.changeCover');
         change.addEventListener('click', () => this.openCover(row.id, change));
-        cover.appendChild(change);
+        coverControls.appendChild(change);
       }
+      coverControls.append(createCoverDownloadButton(() => ({url: src}),
+        this.i18n?.t('tools.image.download') ?? 'Download',
+        this.i18n?.t('tools.image.downloadFailed') ?? 'Unable to download this image.'));
+      cover.append(coverControls);
       head.appendChild(cover);
     }
     if (backlinks !== null) {
