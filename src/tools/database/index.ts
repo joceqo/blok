@@ -10655,6 +10655,7 @@ export class DatabaseTool implements BlockTool {
         events: this.api.events,
         toolsConfig: this.api.tools.getToolsConfig(),
         rowPages: this.config.rowPages,
+        customEmojis: this.config.customEmojis,
         titlePropertyId: titlePropId,
         descriptionPropertyId: descriptionPropId,
         schema: localizeDatabaseSchema(this.model.getSchema(), this.api.i18n),
