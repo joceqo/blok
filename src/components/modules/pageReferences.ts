@@ -2,6 +2,14 @@ import type { PageConfig, PageIcon, PageInfo } from '../../tools/page/types';
 import { pageIconNode } from '../../tools/page/icon-node';
 import { PAGE_REFERENCE_ATTR } from '../../shared/page-reference';
 import {
+  DATE_MENTION_ATTR, DATE_MENTION_FORMAT_ATTR, DATE_MENTION_TIME_FORMAT_ATTR,
+  DATE_MENTION_TIME_ZONE_ATTR, DATE_MENTION_VALUE_ATTR, dateMentionText,
+  readDateMentionDisplay, readDateMentionValue,
+} from '../../shared/date-mention';
+import type { PropertyDefinition } from '../../tools/database/types';
+import type { CellEditorHandle } from '../../tools/database/cells/types';
+import { loadSheet } from '../utils/lazy-styles';
+import {
   PAGE_REFERENCE_ARROW_CLASSES,
   PAGE_REFERENCE_CLASSES,
   PAGE_REFERENCE_ICON_CLASSES,
@@ -91,6 +99,8 @@ export class PageReferences extends Module {
   private readonly entries = new Map<string, PageEntry>();
   private observer: MutationObserver | null = null;
   private page: PageConfig | null = null;
+  private dateTimer: number | null = null;
+  private dateEditor: CellEditorHandle | null = null;
 
   public prepare(): void {
     const wrapper = this.Blok.UI.nodes.wrapper;
@@ -106,6 +116,7 @@ export class PageReferences extends Module {
     this.listeners.on(wrapper, 'click', this.onClick, true);
     this.listeners.on(wrapper, 'keydown', this.onKeydown, true);
     this.sync();
+    this.scheduleDateRefresh();
   }
 
   public ownsTarget(target: EventTarget | null): boolean {
@@ -137,6 +148,10 @@ export class PageReferences extends Module {
   public destroy(): void {
     this.observer?.disconnect();
     this.observer = null;
+    if (this.dateTimer !== null) window.clearTimeout(this.dateTimer);
+    this.dateTimer = null;
+    this.dateEditor?.close();
+    this.dateEditor = null;
     for (const entry of this.entries.values()) {
       ++entry.request;
       entry.unsubscribe?.();
@@ -151,6 +166,8 @@ export class PageReferences extends Module {
 
     const grouped = new Map<string, Set<HTMLAnchorElement>>();
     const wrapper = this.Blok.UI.nodes.wrapper;
+
+    this.syncDates(wrapper);
 
     for (const anchor of wrapper.querySelectorAll<HTMLAnchorElement>(`a[${PAGE_REFERENCE_ATTR}]`)) {
       if (anchor.closest(`[${DATA_ATTR.editor}]`) !== wrapper) {
@@ -181,6 +198,33 @@ export class PageReferences extends Module {
     for (const [pageId, group] of grouped) {
       this.syncEntry(pageId, group);
     }
+  }
+
+  /** Relative labels are presentation; the datetime attribute is the saved value. */
+  private syncDates(wrapper: HTMLElement): void {
+    const now = new Date();
+
+    for (const time of wrapper.querySelectorAll<HTMLTimeElement>(`time[${DATE_MENTION_ATTR}]`)) {
+      if (time.closest(`[${DATA_ATTR.editor}]`) !== wrapper) continue;
+      const label = dateMentionText(time, now, this.page?.todayMention?.locale);
+
+      if (label === null) continue;
+      time.setAttribute('contenteditable', 'false');
+      time.setAttribute(DATA_ATTR.mutationFree, 'true');
+      time.tabIndex = 0;
+      if (time.textContent !== label) time.textContent = label;
+    }
+  }
+
+  private scheduleDateRefresh(): void {
+    const now = new Date();
+    const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+
+    this.dateTimer = window.setTimeout(() => {
+      this.dateTimer = null;
+      this.sync();
+      if (!this.isDestroyed) this.scheduleDateRefresh();
+    }, next.getTime() - now.getTime() + 100);
   }
 
   private syncEntry(pageId: string, group: Set<HTMLAnchorElement>): void {
@@ -361,9 +405,19 @@ export class PageReferences extends Module {
   }
 
   private readonly onClick = (event: Event): void => {
-    if (!(event instanceof MouseEvent) || !this.ownsTarget(event.target)) {
+    if (!(event instanceof MouseEvent)) {
       return;
     }
+
+    const date = this.dateOf(event.target);
+
+    if (date !== null && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void this.openDatePicker(date);
+      return;
+    }
+    if (!this.ownsTarget(event.target)) return;
 
     const modified = event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
 
@@ -380,14 +434,83 @@ export class PageReferences extends Module {
   };
 
   private readonly onKeydown = (event: Event): void => {
-    if (!(event instanceof KeyboardEvent) || event.key !== 'Enter' || !this.ownsTarget(event.target)) {
+    if (!(event instanceof KeyboardEvent) || (event.key !== 'Enter' && event.key !== ' ')) {
       return;
     }
+
+    const date = this.dateOf(event.target);
+
+    if (date !== null) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void this.openDatePicker(date);
+      return;
+    }
+    if (event.key !== 'Enter' || !this.ownsTarget(event.target)) return;
 
     event.preventDefault();
     event.stopImmediatePropagation();
     void this.activate(event);
   };
+
+  private dateOf(target: EventTarget | null): HTMLTimeElement | null {
+    const time = target instanceof Element ? target.closest(`time[${DATE_MENTION_ATTR}]`) : null;
+
+    return time instanceof HTMLTimeElement && time.closest(`[${DATA_ATTR.editor}]`) === this.Blok.UI.nodes.wrapper
+      ? time : null;
+  }
+
+  private async openDatePicker(time: HTMLTimeElement): Promise<void> {
+    if (this.Blok.ReadOnly.isEnabled) return;
+    this.dateEditor?.close();
+    const [module] = await Promise.all([
+      import('../../tools/database/cells/date-editor'),
+      loadSheet('database'),
+    ]);
+
+    if (this.isDestroyed || !time.isConnected) return;
+    const display = readDateMentionDisplay(time);
+    const property: PropertyDefinition = { id: 'inline-date', name: this.page?.todayMention?.heading ?? 'Date', type: 'date', position: '0', date: display };
+    const commit = (value: string | null): void => {
+      const block = this.Blok.BlockManager.getBlock(time);
+
+      if (block === undefined) return;
+      this.Blok.YjsManager.startSubStep();
+      if (value === null) {
+        time.replaceWith(document.createTextNode(''));
+      } else {
+        time.setAttribute('datetime', value.slice(0, 10));
+        if (value.length > 10) time.setAttribute(DATE_MENTION_VALUE_ATTR, value);
+        else time.removeAttribute(DATE_MENTION_VALUE_ATTR);
+        time.textContent = dateMentionText(time, new Date(), this.page?.todayMention?.locale);
+      }
+      block.dispatchChange();
+      this.Blok.YjsManager.stopCapturing();
+    };
+    this.dateEditor = module.openDateEditor(property, readDateMentionValue(time), time, {
+      i18n: this.Blok.I18n,
+      locale: this.page?.todayMention?.locale,
+      readOnly: false,
+      onCommit: (value) => commit(typeof value === 'string' ? value : null),
+      onDateDisplayChange: (change) => {
+        const block = this.Blok.BlockManager.getBlock(time);
+
+        if (block === undefined) return;
+        const attr = 'dateFormat' in change ? DATE_MENTION_FORMAT_ATTR
+          : 'timeFormat' in change ? DATE_MENTION_TIME_FORMAT_ATTR : DATE_MENTION_TIME_ZONE_ATTR;
+        const value = 'dateFormat' in change ? change.dateFormat
+          : 'timeFormat' in change ? change.timeFormat : change.timeZone;
+
+        this.Blok.YjsManager.startSubStep();
+        if (value === null) time.removeAttribute(attr);
+        else time.setAttribute(attr, value);
+        time.textContent = dateMentionText(time, new Date(), this.page?.todayMention?.locale);
+        block.dispatchChange();
+        this.Blok.YjsManager.stopCapturing();
+      },
+      onClose: () => { this.dateEditor = null; },
+    });
+  }
 
   private async activate(event: MouseEvent | KeyboardEvent): Promise<void> {
     const anchor = this.anchorOf(event.target);

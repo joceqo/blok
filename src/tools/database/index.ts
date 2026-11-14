@@ -10376,6 +10376,7 @@ export class DatabaseTool implements BlockTool {
         events: this.api.events,
         toolsConfig: this.api.tools.getToolsConfig(),
         rowPages: this.config.rowPages,
+        customEmojis: this.config.customEmojis,
         titlePropertyId: titlePropId,
         descriptionPropertyId: descriptionPropId,
         schema: localizeDatabaseSchema(this.model.getSchema(), this.api.i18n),
@@ -10448,7 +10449,10 @@ export class DatabaseTool implements BlockTool {
             this.sync.syncUpdateRow({ rowId, properties: { [property.id]: description } });
           }
         },
-        onShown: () => this.view?.rowPageOpened?.(),
+        onShown: () => {
+          this.api.toolbar?.close();
+          this.view?.rowPageOpened?.();
+        },
         onClose: () => {
           // Notion hides the page's block handle as the peek starts to close (Round 14): the page moves under a still pointer.
           // Mocked APIs in tests may have no toolbar.
@@ -10537,7 +10541,8 @@ export class DatabaseTool implements BlockTool {
           this.cardDrawer?.syncOpenRow(this.rowOrTemplate(rowId));
           this.rerenderView({ keepDrawer: true });
         },
-        uploadCover: this.coverUploader(),
+        uploadCover: this.config.uploadCover ?? this.coverUploader(),
+        coverGallery: this.config.coverGallery,
         onIconChange: (rowId, icon) => {
           if (!writable()) return;
           const row = this.api.blocks.getChildren(this.dataId).find((child) => child.id === rowId);

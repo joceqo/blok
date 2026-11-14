@@ -11,6 +11,11 @@
 import type { SanitizerConfig } from '../../types';
 import { ANNOTATION_ATTR, ANNOTATION_SUBTITLE_ATTR } from './annotation-mark';
 import { EQUATION_SOURCE_ATTR } from './equation-mark';
+import {
+  DATE_MENTION_ATTR, DATE_MENTION_FORMAT_ATTR, DATE_MENTION_TIME_FORMAT_ATTR,
+  DATE_MENTION_TIME_ZONE_ATTR, DATE_MENTION_VALUE_ATTR, readDateMention,
+  readDateMentionDisplay, readDateMentionValue,
+} from './date-mention';
 import { preservePageReferenceAnchor } from './page-reference';
 
 /**
@@ -80,6 +85,26 @@ export const preserveEquationSpan = (node: Element): { [attr: string]: boolean |
   return { [EQUATION_SOURCE_ATTR]: true };
 };
 
+/** Keeps only valid, fixed calendar dates created by the @today action. */
+export const preserveDateMention = (node: Element): { [attr: string]: boolean } | false => {
+  const value = readDateMentionValue(node);
+
+  if (!node.hasAttribute(DATE_MENTION_ATTR) || value === null ||
+    readDateMention(node.getAttribute('datetime')) === null ||
+    node.getAttribute('datetime') !== value.slice(0, 10)) return false;
+
+  const display = readDateMentionDisplay(node);
+
+  return {
+    datetime: true,
+    [DATE_MENTION_ATTR]: true,
+    ...(node.hasAttribute(DATE_MENTION_VALUE_ATTR) ? { [DATE_MENTION_VALUE_ATTR]: true } : {}),
+    ...(node.getAttribute(DATE_MENTION_FORMAT_ATTR) === display.dateFormat ? { [DATE_MENTION_FORMAT_ATTR]: true } : {}),
+    ...(node.getAttribute(DATE_MENTION_TIME_FORMAT_ATTR) === display.timeFormat ? { [DATE_MENTION_TIME_FORMAT_ATTR]: true } : {}),
+    ...(node.getAttribute(DATE_MENTION_TIME_ZONE_ATTR) === display.timeZone ? { [DATE_MENTION_TIME_ZONE_ATTR]: true } : {}),
+  };
+};
+
 /**
  * The one `span` rule for text fields: an annotation span keeps its two
  * attributes, an equation span follows {@link preserveEquationSpan}, and any
@@ -146,4 +171,5 @@ export const INLINE_TEXT_SANITIZE = {
   sub: {},
   mark: preserveColorStyles,
   span: preserveInlineSpan,
+  time: preserveDateMention,
 } as unknown as SanitizerConfig;

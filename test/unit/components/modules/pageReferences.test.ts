@@ -27,7 +27,7 @@ interface Runtime {
   destroy: () => void;
   save: () => Promise<OutputData>;
   blocks: { delete: (index: number, setCaret?: boolean) => Promise<void> };
-  history: { clear: () => void; canUndo: () => boolean };
+  history: { clear: () => void; canUndo: () => boolean; undo: () => void };
   module: {
     blockManager: { getBlockById: (id: string) => Block | undefined };
     blockSelection: { enableNavigationMode: () => void; navigationModeEnabled: boolean };
@@ -85,6 +85,69 @@ describe('live inline page references', () => {
     peer = undefined;
     holder = undefined;
     vi.restoreAllMocks();
+  });
+
+  it('repaints a saved date mention from its calendar value', async () => {
+    const day = new Date();
+    const iso = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+    const instance = createEditor({ todayMention: { label: 'Aujourd’hui', heading: 'Date', locale: 'fr' } },
+      `<time datetime="${iso}" data-blok-date-mention="">old label</time>`);
+
+    await instance.isReady;
+    await settleFrame();
+
+    const mention = holder?.querySelector('time[data-blok-date-mention]');
+
+    expect(mention?.textContent).toBe('Aujourd’hui');
+    expect(mention?.getAttribute('datetime')).toBe(iso);
+    expect(htmlOf((await instance.save()).blocks[0]?.data.text)).toContain(`datetime="${iso}"`);
+  });
+
+  it('changes a date mention through its calendar and saves the chosen day', async () => {
+    const instance = createEditor({ todayMention: { label: 'Aujourd’hui', heading: 'Date', locale: 'fr' } },
+      '<time datetime="2026-11-08" data-blok-date-mention="">old label</time>');
+
+    await instance.isReady;
+    await settleFrame();
+    const mention = holder?.querySelector<HTMLTimeElement>('time[data-blok-date-mention]');
+
+    mention?.click();
+    await vi.waitFor(() => expect(document.querySelector('[data-blok-database-date-editor]')).not.toBeNull());
+    const day = document.querySelector<HTMLButtonElement>('[data-blok-database-date-day="2026-11-12"]');
+
+    expect(day).not.toBeNull();
+    day?.click();
+    await settleFrame();
+
+    expect(mention?.getAttribute('datetime')).toBe('2026-11-12');
+    expect(htmlOf((await instance.save()).blocks[0]?.data.text)).toContain('datetime="2026-11-12"');
+
+    instance.history.undo();
+    await settleFrame();
+    expect(htmlOf((await instance.save()).blocks[0]?.data.text)).toContain('datetime="2026-11-08"');
+  });
+
+  it('stores the existing date editor’s range and format on the mention', async () => {
+    const instance = createEditor({ todayMention: { label: 'Aujourd’hui', heading: 'Date', locale: 'fr' } },
+      '<time datetime="2026-11-08" data-blok-date-mention="">Date</time>');
+
+    await instance.isReady;
+    await settleFrame();
+    const mention = holder?.querySelector<HTMLTimeElement>('time[data-blok-date-mention]');
+
+    mention?.click();
+    await vi.waitFor(() => expect(document.querySelector('[data-blok-database-date-editor]')).not.toBeNull());
+    document.querySelector<HTMLButtonElement>('[data-blok-database-date-setting="dateFormat"]')?.click();
+    document.querySelector<HTMLButtonElement>('[data-blok-database-date-setting-option="year_month_day"]')?.click();
+    document.querySelector<HTMLButtonElement>('[data-blok-database-date-end-toggle]')?.click();
+    await settleFrame();
+
+    const html = htmlOf((await instance.save()).blocks[0]?.data.text);
+
+    expect(mention?.getAttribute('data-blok-date-format')).toBe('year_month_day');
+    expect(mention?.getAttribute('data-blok-date-value')).toBe('2026-11-08/2026-11-08');
+    expect(html).toContain('data-blok-date-format="year_month_day"');
+    expect(html).toContain('data-blok-date-value="2026-11-08/2026-11-08"');
   });
 
   it('uses the editor locale while an inline page is unresolved', async () => {

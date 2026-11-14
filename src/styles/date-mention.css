@@ -1,0 +1,15 @@
+[data-blok-interface="blok"] time[data-blok-date-mention] {
+  color: var(--blok-text-secondary, #9b9a97);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+[data-blok-interface="blok"] time[data-blok-date-mention]::before {
+  content: '@';
+  opacity: .6;
+}
+
+[data-blok-interface="blok"] time[data-blok-date-mention]:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
