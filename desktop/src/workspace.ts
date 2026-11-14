@@ -3,7 +3,7 @@ import { Database, DatabaseComment, DatabaseRow, Table } from '@bloklabs/core/to
 import { createPageFrame, type PageFrame, type ShellPage, type SidebarAction } from '@blok/sidebar';
 import { loadIndex, readFile, writeFile, type DesktopPage, type WorkspaceIndex } from './storage';
 import { createDesktopFooter, readAppearance } from './settings';
-import { createPageCover, isCoverId, type CoverId } from './cover';
+import { createAddCoverButton, createPageCover, isCoverId, type CoverId } from './cover';
 
 const desktopTools = {
   ...defaultTools,
@@ -25,6 +25,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   let index: WorkspaceIndex | null = null;
   let editor: Blok | null = null;
   let frame: PageFrame;
+  let coverRowObserver: MutationObserver | null = null;
   let currentId = '';
   let generation = 0;
   let saveOrder = Promise.resolve();
@@ -64,6 +65,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (!index) return;
     const page = index.pages.find((item) => item.id === id);
     if (!page) return;
+    const selectedPage = page;
     index.activeId = id;
     saveManifest();
     frame.setPages(index.pages, id);
@@ -71,6 +73,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (currentId === id) return;
     currentId = id;
     const turn = ++generation;
+    coverRowObserver?.disconnect();
+    coverRowObserver = null;
     editor?.destroy();
     editor = null;
     status.textContent = 'Ouverture de la page…';
@@ -79,12 +83,48 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     article.setAttribute('data-desktop-document', '');
     const holder = document.createElement('div');
     article.append(holder);
-    const changeCover = (cover: CoverId | undefined): void => {
-      page.cover = cover;
-      frame.canvas.querySelector('[data-desktop-cover]')?.replaceWith(createPageCover(cover, changeCover));
+    let coverNode: HTMLElement | null = null;
+    let coverButton: HTMLButtonElement | null = null;
+    function changeCover(cover: CoverId | undefined): void {
+      selectedPage.cover = cover;
+      if (cover === undefined) selectedPage.coverPosition = undefined;
+      renderCover();
       saveManifest();
+    }
+    const attachCoverAction = (): void => {
+      if (isCoverId(page.cover)) return;
+      const row = holder.querySelector<HTMLElement>('[data-blok-page-icon-row]');
+      if (!row) return;
+      coverButton ??= createAddCoverButton(changeCover);
+      if (coverButton.parentElement !== row) row.append(coverButton);
+      if (coverRowObserver === null) {
+        coverRowObserver = new MutationObserver(() => {
+          if (generation === turn) attachCoverAction();
+        });
+        coverRowObserver.observe(row, { childList: true });
+      }
     };
-    frame.canvas.replaceChildren(createPageCover(isCoverId(page.cover) ? page.cover : undefined, changeCover), article);
+    const renderCover = (): void => {
+      article.toggleAttribute('data-has-cover', isCoverId(page.cover));
+      if (isCoverId(page.cover)) {
+        coverButton?.remove();
+        const position = typeof page.coverPosition === 'number' && Number.isFinite(page.coverPosition)
+          ? Math.max(0, Math.min(100, page.coverPosition)) : 50;
+        const next = createPageCover(page.cover, position, changeCover, (value) => {
+          page.coverPosition = value;
+          saveManifest();
+        });
+        if (coverNode) coverNode.replaceWith(next);
+        else frame.canvas.insertBefore(next, article);
+        coverNode = next;
+      } else {
+        coverNode?.remove();
+        coverNode = null;
+        attachCoverAction();
+      }
+    };
+    frame.canvas.replaceChildren(article);
+    renderCover();
     const instance = new Blok({
       holder,
       tools: desktopTools,
@@ -119,6 +159,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     editor = instance;
     void instance.isReady.then(() => {
       if (generation !== turn) return;
+      attachCoverAction();
       if (!instance.title.get()) instance.title.set(page.title, { record: false });
       syncPageIcon(page, instance.title.icon.get());
       document.title = page.title;
