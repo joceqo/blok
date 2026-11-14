@@ -10,7 +10,12 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "types": ["node"]
+    "types": ["node", "vite/client"],
+    "paths": {
+      "@bloklabs/core/full": ["../types/full.d.ts"],
+      "@bloklabs/core/tools": ["../types/tools-entry.d.ts"],
+      "@blok/sidebar": ["./src/sidebar-contract.d.ts"]
+    }
   },
   "include": ["src"]
 }
