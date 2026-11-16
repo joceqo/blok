@@ -14,6 +14,10 @@
     file_server
   }
   header {
+    # Laisse ?profile=1 échantillonner le démarrage. Posé ici et non sur @html :
+    # ce matcher ne voit que / et /index.html, jamais une route SPA /p/…,
+    # qui est précisément celle dont le démarrage gèle.
+    Document-Policy "js-profiling"
     X-Content-Type-Options nosniff
     Referrer-Policy same-origin
     X-Frame-Options DENY

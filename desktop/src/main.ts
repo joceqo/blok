@@ -1,3 +1,4 @@
+import { startBootProfile, stopBootProfile } from './boot-profile';
 import { cacheAccountProfile } from './account-profile';
 import './editor.css';
 import '../../src/shell/sidebar.css';
@@ -12,6 +13,8 @@ import { brandedTitle } from './tab-identity';
 import {loadReactGrab, reactGrabAvailable} from './react-grab';
 
 if (reactGrabAvailable) void loadReactGrab().catch(() => { /* Settings lets the user retry loading. */ });
+
+startBootProfile();
 
 const root = document.querySelector('#app');
 const native = '__TAURI_INTERNALS__' in window;
@@ -169,4 +172,17 @@ function showError(error: unknown): void {
   const message = startupErrorNode(root);
   message.textContent = error instanceof Error ? error.message : 'Impossible d’ouvrir cet espace. Rechargez pour réessayer.';
 }
-if (root instanceof HTMLElement) void boot(root).catch(showError);
+/**
+ * Stops the boot profile once the main thread is free again. A freeze holds
+ * the thread, so the first idle callback can only land after it has ended.
+ */
+function stopProfileWhenIdle(): void {
+  const stop = (): void => { void stopBootProfile(); };
+  if ('requestIdleCallback' in window) {
+    requestIdleCallback(stop, {timeout: 120_000});
+    return;
+  }
+  setTimeout(stop, 5_000);
+}
+
+if (root instanceof HTMLElement) void boot(root).catch(showError).finally(stopProfileWhenIdle);
