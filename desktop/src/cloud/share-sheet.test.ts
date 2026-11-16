@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PAGE_LEVELS, PAGE_RIGHTS_CUMULATIVE } from '../access-vocabulary';
+import { must } from '../test-helpers';
 import { mountShareSheet, type PageAccessSheet } from './share-sheet';
 import { CloudClient } from './client';
 
@@ -37,7 +38,7 @@ describe('share sheet', () => {
   it('only requests member suggestions for people who may manage access', async () => {
     const instance = client({ get: sheet({ myLevel: 'view' }) });
     const { host } = await mount(instance);
-    expect(host.querySelector<HTMLElement>('[data-cloud-share-invitation]')!.hidden).toBe(true);
+    expect(must(host.querySelector<HTMLElement>('[data-cloud-share-invitation]')).hidden).toBe(true);
     expect(instance.request).not.toHaveBeenCalledWith(expect.stringContaining('/members'));
   });
 
