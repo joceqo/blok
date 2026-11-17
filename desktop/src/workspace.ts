@@ -589,6 +589,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     toolbar.element.insertBefore(status, toolbar.element.querySelector('[data-desktop-page-actions]'));
     applyFullWidth();
     const holder = document.createElement('div');
+    holder.setAttribute('data-desktop-editor', '');
     article.append(holder);
     const cover = { node: null as HTMLElement | null, rendered: undefined as PageCover | undefined, position: undefined as number | undefined, button: null as HTMLButtonElement | null };
     function changeCover(cover: PageCover | undefined): void {

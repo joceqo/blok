@@ -611,21 +611,9 @@ export class UI extends Module<UINodes> {
       return;
     }
 
-    // Never rejects: collaboration and a pre-ready destroy() call this without awaiting it.
-    const targets = ((): HTMLElement[] => {
-      try {
-        // Bar i must land on block i's visible content box. Direct child only, so a nested block's box is never picked.
-        return this.Blok.BlockManager.blocks.map(({ holder }) =>
-          holder.querySelector<HTMLElement>(`:scope > [${DATA_ATTR.elementContent}]`) ?? holder
-        );
-      } catch (error) {
-        logLabeled('The loading skeleton could not read the blocks', 'warn', error);
-
-        return [];
-      }
-    })();
-
-    await this.loading.hide(targets);
+    // Each loading region fades in place. Do not traverse (or measure) the
+    // document just to dismiss its loader: later chunks can change that tree.
+    await this.loading.hide([]);
   }
 
   /**

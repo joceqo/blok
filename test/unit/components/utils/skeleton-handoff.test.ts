@@ -49,20 +49,6 @@ describe('runSkeletonHandoff', () => {
     expect(headerAnimation?.options).toEqual(bodyAnimation?.options);
   });
 
-  it('moves bar i onto block i, staggered top to bottom', async () => {
-    const bars = make(2, [0, 30]);
-    const targets = make(2, [100, 160]);
-    const content = document.createElement('div');
-
-    await runSkeletonHandoff({ bars, targets, content });
-
-    const barCalls = calls.filter(call => bars.includes(call.el as HTMLElement));
-
-    expect(barCalls).toHaveLength(2);
-    expect(String(last(barCalls[0].keyframes).transform)).toContain('translate(0px, 100px)');
-    expect(String(last(barCalls[1].keyframes).transform)).toContain('translate(0px, 130px)');
-    expect(barCalls[1].options.delay).toBeGreaterThan(Number(barCalls[0].options.delay ?? 0));
-  });
 
   it('fades extra bars in place and fades the content in', async () => {
     const bars = make(3, [0, 30, 60]);
@@ -93,42 +79,9 @@ describe('runSkeletonHandoff', () => {
     expect(last(barCall?.keyframes ?? []).opacity).toBe(0);
   });
 
-  it('in RTL anchors the bar at its right edge and moves it by the right-edge delta', async () => {
-    const overlay = document.createElement('div');
-    const bar = document.createElement('div');
-    const target = document.createElement('div');
 
-    overlay.setAttribute('dir', 'rtl');
-    overlay.appendChild(bar);
-    document.body.appendChild(overlay);
-    vi.spyOn(bar, 'getBoundingClientRect').mockReturnValue(rect(0, 20, 200, 100));
-    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue(rect(50, 20, 400, 0));
 
-    await runSkeletonHandoff({ bars: [bar], targets: [target], content: document.createElement('div') });
-
-    const barCall = calls.find(call => call.el === bar);
-
-    expect(String(last(barCall?.keyframes ?? []).transform)).toContain('translate(100px, 50px)');
-    expect(bar.style.transformOrigin).toBe('100% 0');
-    overlay.remove();
-  });
-
-  it('in LTR anchors the bar at its left edge and moves it by the left-edge delta', async () => {
-    const bar = document.createElement('div');
-    const target = document.createElement('div');
-
-    vi.spyOn(bar, 'getBoundingClientRect').mockReturnValue(rect(0, 20, 200, 100));
-    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue(rect(50, 20, 400, 0));
-
-    await runSkeletonHandoff({ bars: [bar], targets: [target], content: document.createElement('div') });
-
-    const barCall = calls.find(call => call.el === bar);
-
-    expect(String(last(barCall?.keyframes ?? []).transform)).toContain('translate(-100px, 50px)');
-    expect(bar.style.transformOrigin).toBe('0 0');
-  });
-
-  it('a bar starts from its breathing opacity and holds it through its stagger delay', async () => {
+  it('a bar fades from its current breathing opacity without flashing', async () => {
     const bars = make(2, [0, 30]);
     const targets = make(1, [100]);
 
@@ -136,7 +89,7 @@ describe('runSkeletonHandoff', () => {
 
     await runSkeletonHandoff({ bars, targets, content: document.createElement('div') });
 
-    // Bar 0 glides onto a block, bar 1 has none and fades in place: both wait out a delay.
+    // Both bars fade from their current opacity, including bars without a target.
     bars.forEach(bar => {
       const call = calls.find(c => c.el === bar);
 
@@ -145,19 +98,6 @@ describe('runSkeletonHandoff', () => {
     });
   });
 
-  it('a gliding bar stays solid for the first part of its move, then dissolves', async () => {
-    const bars = make(1, [0]);
-    const targets = make(1, [100]);
-
-    await runSkeletonHandoff({ bars, targets, content: document.createElement('div') });
-
-    const { keyframes } = calls.find(c => c.el === bars[0]) ?? { keyframes: [] };
-    const held = keyframes.find(frame => typeof frame.offset === 'number' && frame.offset >= 0.3);
-
-    expect(held?.opacity).toBe(keyframes[0].opacity);
-    expect(held?.transform).toBeUndefined();
-    expect(last(keyframes).opacity).toBe(0);
-  });
 
   it('under reduced motion only crossfades: no transforms, no blur', async () => {
     vi.spyOn(motion, 'prefersReducedMotion').mockReturnValue(true);
@@ -197,4 +137,22 @@ describe('runSkeletonHandoff', () => {
 
     await expect(runSkeletonHandoff({ bars: make(1, [0]), targets: make(1, [0]), content: document.createElement('div') })).resolves.toBeUndefined();
   });
+});
+
+it('keeps every loading region stationary even when arriving chunk targets move or are distant', async () => {
+  const bars = [document.createElement('div'), document.createElement('div')];
+  const target = document.createElement('div');
+  const content = document.createElement('div');
+  const animate = vi.fn(() => ({finished: Promise.resolve(), cancel: vi.fn()} as unknown as Animation));
+  const rects = [target, ...bars].map(el => vi.spyOn(el, 'getBoundingClientRect'));
+  [content, ...bars].forEach(el => { el.animate = animate; });
+  try {
+    await runSkeletonHandoff({bars, targets: [target], content});
+    for (const spy of rects) expect(spy).not.toHaveBeenCalled();
+    for (const [frames, options] of animate.mock.calls as unknown as [Keyframe[], KeyframeAnimationOptions][]) {
+      expect(frames.every(frame => frame.transform === undefined && frame.filter === undefined)).toBe(true);
+      expect(options.delay ?? 0).toBe(0);
+      expect(Number(options.duration)).toBeLessThanOrEqual(180);
+    }
+  } finally { vi.restoreAllMocks(); }
 });

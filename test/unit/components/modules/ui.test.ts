@@ -1099,9 +1099,10 @@ describe("UI module", () => {
     // Collaboration and pre-ready destroy call hideLoading() fire-and-forget, so a rejection would go unhandled.
     it("hideLoading() never rejects and still ends the busy state when the blocks cannot be read", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const readBlocks = vi.fn((): never => { throw new Error("BlockManager not ready"); });
       const blockManager = {
         get blocks(): never {
-          throw new Error("BlockManager not ready");
+          return readBlocks();
         },
       };
       const { ui, wrapper } = createUI({
@@ -1116,7 +1117,8 @@ describe("UI module", () => {
 
       await expect(ui.hideLoading()).resolves.toBeUndefined();
       expect(wrapper.hasAttribute("aria-busy")).toBe(false);
-      expect(warn).toHaveBeenCalledTimes(1);
+      expect(readBlocks).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
     });
   });
 

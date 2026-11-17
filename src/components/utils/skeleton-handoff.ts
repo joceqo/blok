@@ -1,85 +1,31 @@
-import { prefersReducedMotion } from './reduced-motion';
+export const HANDOFF_STAGGER = 0;
+export const HANDOFF_DURATION = 150;
+export const REDUCED_FADE = HANDOFF_DURATION;
 
-export const HANDOFF_STAGGER = 40;
-export const HANDOFF_DURATION = 320;
-export const REDUCED_FADE = 150;
-
-const EASE = 'cubic-bezier(0.22, 1, 0.36, 1)';
-
-/** Share of a bar's flight it stays solid, so the glide reads before the dissolve. */
-const HOLD = 0.4;
-
-// A cancelled animation rejects `finished` with AbortError; the caller's cleanup must still run.
+// A cancelled animation rejects `finished`; cleanup must still run.
 const settle = (animation: Animation): Promise<unknown> => animation.finished.catch(() => undefined);
 
-// A display:none block (a collapsed toggle's child) measures all zeros; flying there lands in the viewport corner.
-const visibleRect = (target: HTMLElement | undefined): DOMRect | undefined => {
-  const rect = target?.getBoundingClientRect();
-
-  return rect === undefined || (rect.width === 0 && rect.height === 0) ? undefined : rect;
-};
-
-/**
- * Moves each skeleton bar onto its block and fades the content in.
- * `targets[i]` is the visible content box of block i, the element the bar should land on,
- * not the full-width holder. Always resolves, even when an animation is cancelled.
- */
-
-export const runSkeletonHandoff = async ({ bars, targets, content, companions = [] }: {
+/** Fade each loading region in place. Chunk arrivals do not provide stable bar-to-block geometry. */
+export const runSkeletonHandoff = async ({ bars, content, companions = [] }: {
   bars: HTMLElement[];
   targets: HTMLElement[];
   content: HTMLElement;
   companions?: HTMLElement[];
 }): Promise<void> => {
-  if (typeof content.animate !== 'function') {
-    return;
-  }
+  if (typeof content.animate !== 'function') return;
 
-  if (prefersReducedMotion()) {
-    await Promise.all([
-      ...bars.map(bar => settle(bar.animate([{ opacity: 1 }, { opacity: 0 }], { duration: REDUCED_FADE, fill: 'forwards' }))),
-      ...[content, ...companions].map(element => settle(element.animate([{ opacity: 0 }, { opacity: 1 }], { duration: REDUCED_FADE, fill: 'forwards' }))),
-    ]);
+  // Capture the breathing opacity before replacing the CSS animation, without
+  // reading any content geometry or shifting bars toward unrelated blocks.
+  const opacities = bars.map(bar => Number.parseFloat(getComputedStyle(bar).opacity));
+  const options: KeyframeAnimationOptions = {duration: HANDOFF_DURATION, easing: 'ease-out', fill: 'both'};
 
-    return;
-  }
-
-  // Read every rect before any animation starts, so one layout pass serves all bars.
-  const pairs = bars.map((bar, i) => ({
-    bar,
-    from: bar.getBoundingClientRect(),
-    to: visibleRect(targets[i]),
-    rtl: getComputedStyle(bar).direction === 'rtl',
-    // The CSS breathe animation is mid-cycle; starting from 1 would pop the bar when its delay ends.
-    opacity: Number.parseFloat(getComputedStyle(bar).opacity) || 1,
-  }));
-  const delayOf = (i: number): number => i * HANDOFF_STAGGER;
-
-  // 'both' holds the first keyframe through the stagger delay, so the bar stops breathing instead of popping.
-  const barAnimations = pairs.map(({ bar, from, to, rtl, opacity }, i) => {
-    if (to === undefined) {
-      return settle(bar.animate([{ opacity }, { opacity: 0 }], { duration: HANDOFF_DURATION, delay: delayOf(i), easing: EASE, fill: 'both' }));
-    }
-
-    // An RTL bar starts at the right edge, so it must scale from there and land on the target's right edge.
-    const dx = rtl ? to.right - from.right : to.left - from.left;
-    const dy = to.top - from.top;
-    const sx = from.width === 0 ? 1 : Math.min(to.width / from.width, 1.15);
-
-    bar.style.setProperty('transform-origin', rtl ? '100% 0' : '0 0');
-
-    return settle(bar.animate([
-      { transform: 'translate(0px, 0px) scaleX(1)', opacity, filter: 'blur(0px)' },
-      { opacity, filter: 'blur(0px)', offset: HOLD },
-      { transform: `translate(${dx}px, ${dy}px) scaleX(${sx})`, opacity: 0, filter: 'blur(4px)' },
-    ], { duration: HANDOFF_DURATION, delay: delayOf(i), easing: EASE, fill: 'both' }));
-  });
-
-  // The content arrives as one sheet; the per-bar stagger carries the top-to-bottom feel.
-  const contentAnimations = [content, ...companions].map(element => settle(element.animate([
-    { opacity: 0, filter: 'blur(6px)' },
-    { opacity: 1, filter: 'blur(0px)' },
-  ], { duration: HANDOFF_DURATION + delayOf(Math.max(bars.length - 1, 0)), easing: EASE, fill: 'forwards' })));
-
-  await Promise.all([...barAnimations, ...contentAnimations]);
+  await Promise.all([
+    ...bars.map((bar, index) => settle(bar.animate([
+      {opacity: Number.isFinite(opacities[index]) ? opacities[index] : 1},
+      {opacity: 0},
+    ], options))),
+    ...[content, ...companions].map(element => settle(element.animate([
+      {opacity: 0}, {opacity: 1},
+    ], options))),
+  ]);
 };
