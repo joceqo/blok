@@ -108,3 +108,72 @@ it('preserves a caret inside an overlapping bold subtree and revisits it after t
   expect(subtree.querySelector('b')).toBeNull();
   expect(subtree.querySelectorAll('strong')).toHaveLength(2);
 });
+
+describe('BoldNormalizationPass — coût du parcours', () => {
+  const OPTIONS = { mergeAdjacent: false, removeEmpty: false, normalizeWhitespace: false };
+  let host: HTMLElement;
+
+  beforeEach(() => {
+    host = document.createElement('div');
+    document.body.append(host);
+  });
+
+  afterEach(() => {
+    host.remove();
+    vi.restoreAllMocks();
+  });
+
+  // Mounting a document replays this pass over every inserted subtree: 9.7 s of
+  // a 19.5 s load, now half of what is left. With whitespace normalisation off,
+  // and merging and empty-removal off, the walk has nothing to do unless the
+  // subtree holds a <b> — which most blocks do not.
+  it('ne parcourt pas un sous-arbre sans gras', () => {
+    host.innerHTML = '<p>du texte <em>penché</em> et <a href="#">un lien</a></p>';
+    const walker = vi.spyOn(document, 'createTreeWalker');
+
+    new BoldNormalizationPass(OPTIONS).run(host);
+
+    expect(walker).not.toHaveBeenCalled();
+  });
+
+  it('convertit un <b> imbriqué en <strong>', () => {
+    host.innerHTML = '<p>avant <b>gras</b> après</p>';
+
+    new BoldNormalizationPass(OPTIONS).run(host);
+
+    expect(host.querySelector('b')).toBeNull();
+    expect(host.querySelector('strong')?.textContent).toBe('gras');
+  });
+
+  it('convertit un scope qui est lui-même un <b>', () => {
+    host.innerHTML = '<b>gras</b>';
+
+    new BoldNormalizationPass(OPTIONS).run(host.firstElementChild as HTMLElement);
+
+    expect(host.querySelector('strong')?.textContent).toBe('gras');
+  });
+
+  it('parcourt encore quand les espaces doivent être normalisés', () => {
+    host.innerHTML = '<p>un espace</p>';
+
+    new BoldNormalizationPass({ ...OPTIONS, normalizeWhitespace: true }).run(host);
+
+    expect(host.textContent).toBe('un espace');
+  });
+
+  it('parcourt encore quand les <strong> adjacents doivent fusionner', () => {
+    host.innerHTML = '<p><strong>a</strong><strong>b</strong></p>';
+
+    new BoldNormalizationPass({ ...OPTIONS, mergeAdjacent: true }).run(host);
+
+    expect(host.querySelectorAll('strong')).toHaveLength(1);
+  });
+
+  it('parcourt encore quand les <strong> vides doivent disparaître', () => {
+    host.innerHTML = '<p><strong></strong>reste</p>';
+
+    new BoldNormalizationPass({ ...OPTIONS, removeEmpty: true }).run(host);
+
+    expect(host.querySelector('strong')).toBeNull();
+  });
+});

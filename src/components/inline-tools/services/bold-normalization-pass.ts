@@ -69,6 +69,10 @@ export class BoldNormalizationPass {
       return;
     }
 
+    if (this.hasNothingToDo(scope)) {
+      return;
+    }
+
     // Phase 1: Single TreeWalker pass to process text nodes and collect elements
     const { bElements, strongElements } = this.traverseAndNormalize(scope);
 
@@ -101,6 +105,31 @@ export class BoldNormalizationPass {
    * @param scope - Root element to traverse
    * @returns Collections of <b> and <strong> elements found
    */
+  /**
+   * Whether walking `scope` could not possibly change anything.
+   *
+   * The walk is a TreeWalker over every node of the subtree, in JS. Mounting a
+   * document replays it over each inserted subtree — 9.7 s of a 19.5 s load.
+   * With whitespace normalisation off, text nodes are visited for nothing, and
+   * `<strong>` elements are only collected to be merged or dropped; when both
+   * of those are off too, the only work left is converting `<b>`, and
+   * `getElementsByTagName` answers that natively without building anything.
+   * @param scope - the subtree about to be walked
+   */
+  private hasNothingToDo(scope: Element): boolean {
+    const { normalizeWhitespace, mergeAdjacent, removeEmpty, convertLegacyTags } = this.options;
+
+    if (normalizeWhitespace || mergeAdjacent || removeEmpty) {
+      return false;
+    }
+
+    if (!convertLegacyTags) {
+      return true;
+    }
+
+    return scope.tagName !== 'B' && scope.getElementsByTagName('b').length === 0;
+  }
+
   private traverseAndNormalize(scope: Element): {
     bElements: HTMLElement[];
     strongElements: HTMLElement[];
