@@ -13517,6 +13517,18 @@ export class DatabaseTool implements BlockTool {
 
 
   private rerenderView(options: { keepDrawer?: boolean } = {}): void {
+    // Temporary boot diagnostic: a full view rebuild costs 2.75 s of a 10.5 s
+    // load, and the profile cannot say whether that is one rebuild or many.
+    // Installed by the boot profiler (`?profile=1`), absent otherwise.
+    const probe = (globalThis as { __blokDatabaseProbe?: { count: number; stacks: Record<string, number> } }).__blokDatabaseProbe;
+
+    if (probe !== undefined) {
+      probe.count++;
+      const key = (new Error().stack ?? '').split('\n').slice(2, 7).map(line => line.trim()).join(' <- ').slice(0, 400);
+
+      probe.stacks[key] = (probe.stacks[key] ?? 0) + 1;
+    }
+
     if (this.binding !== null) {
       this.binding.redraw();
 

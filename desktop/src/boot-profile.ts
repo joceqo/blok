@@ -296,6 +296,7 @@ export function startBootProfile(): void {
       read: 0,
     };
     (globalThis as { __blokSelectionCallers?: Record<string, number> }).__blokSelectionCallers = {};
+    (globalThis as { __blokDatabaseProbe?: { count: number; stacks: Record<string, number> } }).__blokDatabaseProbe = { count: 0, stacks: {} };
     console.info('[blok] profil du démarrage en cours…');
     watchUntilQuiet();
   } catch (error) {
@@ -330,6 +331,11 @@ export async function stopBootProfile(label = 'démarrage'): Promise<ProfileSumm
   console.table(summary.top);
   if (summary.selectionExits !== undefined) {
     console.info('Sorties de selectionInside :', summary.selectionExits);
+  }
+  const database = (globalThis as { __blokDatabaseProbe?: { count: number; stacks: Record<string, number> } }).__blokDatabaseProbe;
+
+  if (database !== undefined) {
+    console.info('Reconstructions de vue database :', database.count, Object.entries(database.stacks).sort((a, b) => b[1] - a[1]).slice(0, 5));
   }
   if (callers !== undefined) {
     console.info('Appelants de la lecture :', Object.entries(callers).sort((a, b) => b[1] - a[1]).slice(0, 8));
