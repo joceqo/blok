@@ -154,16 +154,82 @@ interface ProfilerConstructor {
 /** The profiler started for this load, if any. */
 let running: RunningProfiler | null = null;
 
+/** Cleans up the watcher that decides when sampling has seen enough. */
+let stopWatching: (() => void) | null = null;
+
+/** How long the thread must stay quiet before the profile is considered done. */
+const QUIET_MS = 3_000;
+
+/** Upper bound on a profile, so a page that never settles still reports. */
+const MAX_MS = 120_000;
+
+/**
+ * Whether sampling has seen the whole freeze and can stop.
+ *
+ * Stopping at the first idle does NOT work: the boot yields once before the
+ * freeze begins, and a profile taken there is 300 ms of nothing. So wait for
+ * the thread to have worked, then to have fallen quiet.
+ * @param state - when sampling began, when the thread was last busy, and now
+ * @param options - the quiet window and the safety net
+ */
+export function shouldStopProfile(
+  state: { startedAt: number; lastBusyAt: number | null; now: number },
+  options: { quietMs?: number; maxMs?: number } = {}
+): boolean {
+  const { quietMs = QUIET_MS, maxMs = MAX_MS } = options;
+
+  if (state.now - state.startedAt >= maxMs) {
+    return true;
+  }
+
+  if (state.lastBusyAt === null) {
+    return false;
+  }
+
+  return state.now - state.lastBusyAt >= quietMs;
+}
+
 /**
  * Whether this load asked to be profiled, through `?profile=1`.
  */
 const profileRequested = (): boolean => new URLSearchParams(location.search).get('profile') === '1';
 
 /**
+ * Watches the main thread and stops the profile once the freeze is over.
+ *
+ * Long tasks are the signal: during a 40 s freeze nothing else runs, and the
+ * observer delivers the entry as soon as the thread is handed back.
+ */
+const watchUntilQuiet = (): void => {
+  const startedAt = performance.now();
+  let lastBusyAt: number | null = null;
+
+  const observer = new PerformanceObserver(list => {
+    for (const entry of list.getEntries()) {
+      lastBusyAt = Math.max(lastBusyAt ?? 0, entry.startTime + entry.duration);
+    }
+  });
+  observer.observe({ type: 'longtask', buffered: true });
+
+  const timer = setInterval(() => {
+    if (!shouldStopProfile({ startedAt, lastBusyAt, now: performance.now() })) {
+      return;
+    }
+    void stopBootProfile();
+  }, 500);
+
+  stopWatching = () => {
+    clearInterval(timer);
+    observer.disconnect();
+  };
+};
+
+/**
  * Starts sampling, if this load asked for it and the browser allows it.
  *
  * Call it as early as the entry module runs: the freeze being chased starts
- * before anything is painted.
+ * before anything is painted. Sampling stops on its own, once the thread has
+ * worked and then fallen quiet.
  */
 export function startBootProfile(): void {
   if (running !== null || !profileRequested()) {
@@ -181,6 +247,7 @@ export function startBootProfile(): void {
     // 10 ms is Chrome's floor in practice; a 45 s freeze needs the big buffer.
     running = new Ctor({ sampleInterval: 10, maxBufferSize: 1_000_000 });
     console.info('[blok] profil du démarrage en cours…');
+    watchUntilQuiet();
   } catch (error) {
     // The one failure worth naming: the header is missing, not the API.
     console.warn('[blok] profil refusé — ajoutez « Document-Policy: js-profiling ».', error);
@@ -200,6 +267,8 @@ export async function stopBootProfile(label = 'démarrage'): Promise<ProfileSumm
     return null;
   }
   running = null;
+  stopWatching?.();
+  stopWatching = null;
 
   const trace = await profiler.stop();
   const summary = summarizeProfile(trace);

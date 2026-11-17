@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { summarizeProfile, type ProfilerTrace } from './boot-profile';
+import { shouldStopProfile, summarizeProfile, type ProfilerTrace } from './boot-profile';
 
 /**
  * Builds a trace whose samples sit one millisecond apart.
@@ -83,5 +83,30 @@ describe('summarizeProfile', () => {
     const trace = traceOf([['a'], ['b'], ['c']], [0, 0, 0, 1, 1, 2]);
 
     expect(summarizeProfile(trace, { limit: 2 }).top.map(row => row.name)).toEqual(['a', 'b']);
+  });
+});
+
+describe('shouldStopProfile', () => {
+  const options = { quietMs: 3_000, maxMs: 120_000 };
+
+  it('waits while the thread has not started working yet', () => {
+    // The freeze begins at ~900 ms: stopping at the idle before it profiles nothing.
+    expect(shouldStopProfile({ startedAt: 0, lastBusyAt: null, now: 300 }, options)).toBe(false);
+  });
+
+  it('waits while long tasks are still landing', () => {
+    expect(shouldStopProfile({ startedAt: 0, lastBusyAt: 29_000, now: 30_000 }, options)).toBe(false);
+  });
+
+  it('stops once the thread has been quiet long enough after working', () => {
+    expect(shouldStopProfile({ startedAt: 0, lastBusyAt: 42_000, now: 45_000 }, options)).toBe(true);
+  });
+
+  it('stops at the safety net even if nothing was ever observed', () => {
+    expect(shouldStopProfile({ startedAt: 0, lastBusyAt: null, now: 120_000 }, options)).toBe(true);
+  });
+
+  it('keeps sampling through a gap shorter than the quiet window', () => {
+    expect(shouldStopProfile({ startedAt: 0, lastBusyAt: 40_000, now: 42_999 }, options)).toBe(false);
   });
 });
