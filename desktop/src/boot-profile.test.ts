@@ -86,6 +86,49 @@ describe('summarizeProfile', () => {
   });
 });
 
+describe('summarizeProfile — noms minifiés', () => {
+  it('ne confond pas deux fonctions homonymes venues de fichiers différents', () => {
+    // Rolldown mangle les fonctions top-level en « Ce », « yt »… par chunk.
+    // Agréger sur le seul nom additionne des fonctions sans rapport.
+    const trace: ProfilerTrace = {
+      resources: ['/assets/shell.js', '/assets/database.js'],
+      frames: [
+        { name: 'Ce', resourceId: 0, line: 12, column: 3 },
+        { name: 'Ce', resourceId: 1, line: 44, column: 9 },
+      ],
+      stacks: [{ frameId: 0 }, { frameId: 1 }],
+      samples: [{ timestamp: 0, stackId: 0 }, { timestamp: 1, stackId: 1 }],
+    };
+
+    const { top } = summarizeProfile(trace);
+
+    expect(top).toHaveLength(2);
+    expect(top.map(row => row.location)).toEqual(['/assets/shell.js:12:3', '/assets/database.js:44:9']);
+  });
+
+  it('garde ensemble les appels d\'une même fonction', () => {
+    const trace: ProfilerTrace = {
+      resources: ['/assets/shell.js'],
+      frames: [{ name: 'Ce', resourceId: 0, line: 12, column: 3 }],
+      stacks: [{ frameId: 0 }],
+      samples: [{ timestamp: 0, stackId: 0 }, { timestamp: 1, stackId: 0 }],
+    };
+
+    expect(summarizeProfile(trace).top).toHaveLength(1);
+  });
+
+  it('nomme une frame sans emplacement plutôt que de la jeter', () => {
+    const trace: ProfilerTrace = {
+      resources: [],
+      frames: [{ name: 'eval' }],
+      stacks: [{ frameId: 0 }],
+      samples: [{ timestamp: 0, stackId: 0 }],
+    };
+
+    expect(summarizeProfile(trace).top[0]).toMatchObject({ name: 'eval', location: '(sans source)' });
+  });
+});
+
 describe('shouldStopProfile', () => {
   const options = { quietMs: 3_000, maxMs: 120_000 };
 

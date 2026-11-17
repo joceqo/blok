@@ -10,6 +10,9 @@
 /** One function in a sampled stack. */
 interface ProfilerFrame {
   name: string;
+  resourceId?: number;
+  line?: number;
+  column?: number;
 }
 
 /** A stack, as a frame plus the stack it was called from. */
@@ -35,6 +38,8 @@ export interface ProfilerTrace {
 /** One function's share of the profile. */
 export interface ProfileRow {
   name: string;
+  /** Where the function is defined, which tells homonyms apart. */
+  location: string;
   /** Milliseconds sampled with this function at the top of the stack. */
   selfMs: number;
   /** Milliseconds sampled anywhere beneath it, counted once per sample. */
@@ -51,6 +56,29 @@ export interface ProfileSummary {
 }
 
 const ANONYMOUS = '(anonyme)';
+const NO_SOURCE = '(sans source)';
+
+/**
+ * Where a frame is defined, as `file:line:column`.
+ *
+ * Rolldown mangles every top-level function to one or two letters, per chunk:
+ * a dozen unrelated functions are all called `Ce`. Keyed on the name alone,
+ * their times are summed and the profile points at a function that does not
+ * exist. The definition site is what makes a row mean one function.
+ * @param trace - the trace the frame belongs to
+ * @param frame - the frame to place
+ */
+const locationOf = (trace: ProfilerTrace, frame: ProfilerFrame): string => {
+  const resource = frame.resourceId === undefined ? undefined : trace.resources[frame.resourceId];
+
+  if (resource === undefined) {
+    return NO_SOURCE;
+  }
+
+  const file = resource.replace(/^https?:\/\/[^/]+/, '');
+
+  return `${file}:${frame.line ?? 0}:${frame.column ?? 0}`;
+};
 
 /**
  * How long a sample stands for: the gap since the previous one. The first
@@ -70,8 +98,8 @@ const weighSamples = (samples: readonly ProfilerSample[]): number[] => {
  * @param trace - the profiler trace the stack belongs to
  * @param stackId - the stack to walk
  */
-const framesOf = (trace: ProfilerTrace, stackId: number): string[] => {
-  const names: string[] = [];
+const framesOf = (trace: ProfilerTrace, stackId: number): { name: string; location: string }[] => {
+  const frames: { name: string; location: string }[] = [];
   let cursor: number | undefined = stackId;
 
   while (cursor !== undefined) {
@@ -79,11 +107,15 @@ const framesOf = (trace: ProfilerTrace, stackId: number): string[] => {
     if (stack === undefined) {
       break;
     }
-    names.push(trace.frames[stack.frameId]?.name || ANONYMOUS);
+    const frame = trace.frames[stack.frameId];
+    frames.push({
+      name: frame?.name || ANONYMOUS,
+      location: frame === undefined ? NO_SOURCE : locationOf(trace, frame),
+    });
     cursor = stack.parentId;
   }
 
-  return names;
+  return frames;
 };
 
 /**
@@ -96,14 +128,15 @@ const framesOf = (trace: ProfilerTrace, stackId: number): string[] => {
  */
 export function summarizeProfile(trace: ProfilerTrace, options: { limit?: number } = {}): ProfileSummary {
   const weights = weighSamples(trace.samples);
-  const rows = new Map<string, { selfMs: number; totalMs: number }>();
-  const rowFor = (name: string): { selfMs: number; totalMs: number } => {
-    const existing = rows.get(name);
+  const rows = new Map<string, { name: string; location: string; selfMs: number; totalMs: number }>();
+  const rowFor = (frame: { name: string; location: string }): { selfMs: number; totalMs: number } => {
+    const key = `${frame.name}@${frame.location}`;
+    const existing = rows.get(key);
     if (existing !== undefined) {
       return existing;
     }
-    const created = { selfMs: 0, totalMs: 0 };
-    rows.set(name, created);
+    const created = { name: frame.name, location: frame.location, selfMs: 0, totalMs: 0 };
+    rows.set(key, created);
 
     return created;
   };
@@ -118,21 +151,28 @@ export function summarizeProfile(trace: ProfilerTrace, options: { limit?: number
       return;
     }
 
-    const names = framesOf(trace, sample.stackId);
-    if (names.length === 0) {
+    const frames = framesOf(trace, sample.stackId);
+    if (frames.length === 0) {
       return;
     }
 
-    rowFor(names[0]).selfMs += weight;
+    rowFor(frames[0]).selfMs += weight;
     // A recursive frame appears at several levels of one stack; it waited once.
-    new Set(names).forEach(name => {
-      rowFor(name).totalMs += weight;
+    const seen = new Set<string>();
+    frames.forEach(frame => {
+      const key = `${frame.name}@${frame.location}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      rowFor(frame).totalMs += weight;
     });
   });
 
-  const top = [...rows.entries()]
-    .map(([name, totals]) => ({
-      name,
+  const top = [...rows.values()]
+    .map(totals => ({
+      name: totals.name,
+      location: totals.location,
       selfMs: Math.round(totals.selfMs),
       totalMs: Math.round(totals.totalMs),
       selfPct: durationMs > 0 ? Math.round((totals.selfMs / durationMs) * 100) : 0,
