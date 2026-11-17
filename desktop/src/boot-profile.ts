@@ -360,6 +360,12 @@ export async function stopBootProfile(label = 'démarrage'): Promise<ProfileSumm
   if (database !== undefined) {
     console.info('Reconstructions de vue database :', database.count, Object.entries(database.stacks).sort((a, b) => b[1] - a[1]).slice(0, 5));
   }
+
+  const viewport = (globalThis as { __blokViewportProbe?: Record<string, number> }).__blokViewportProbe;
+
+  if (viewport !== undefined) {
+    console.info('Rendu au viewport :', viewport);
+  }
   if (callers !== undefined) {
     console.info('Appelants de la lecture :', Object.entries(callers).sort((a, b) => b[1] - a[1]).slice(0, 8));
   }

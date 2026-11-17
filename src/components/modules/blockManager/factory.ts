@@ -18,7 +18,7 @@ import type { API } from '../api';
 
 import type { BlockOrigin } from '../../../../types';
 import type { ComposeBlockOptions } from './types';
-import { claimEagerRoot, isAsleep, OFFSCREEN_ATTRIBUTE, sleepBlock } from '../../utils/viewport-render';
+import { claimEagerRoot, countViewport, isAsleep, OFFSCREEN_ATTRIBUTE, sleepBlock } from '../../utils/viewport-render';
 
 /**
  * Dependencies needed by BlockFactory
@@ -125,9 +125,13 @@ export class BlockFactory {
 
     // Asked for EVERY block, and `claimEagerRoot` spends the budget, so it is
     // asked once per root and never for a child.
-    return parentId === undefined || parentId === null
-      ? !claimEagerRoot()
-      : this.hasSleepingAncestor(parentId);
+    if (parentId !== undefined && parentId !== null) {
+      countViewport('withParent');
+
+      return this.hasSleepingAncestor(parentId);
+    }
+
+    return !claimEagerRoot();
   }
 
   /**

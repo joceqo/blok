@@ -25,6 +25,26 @@ export const OFFSCREEN_ATTRIBUTE = 'data-blok-offscreen';
 /** How many roots are still owed an eager mount in this pass; null outside one. */
 let eagerLeft: number | null = null;
 
+/**
+ * Temporary boot diagnostic: three deployments in a row left every block
+ * awake, and the counters say which link breaks — the pass never opening, the
+ * budget never being asked, or every caller arriving with a parent.
+ */
+const probe = (): Record<string, number> => {
+  const host = globalThis as { __blokViewportProbe?: Record<string, number> };
+
+  host.__blokViewportProbe ??= { passes: 0, asked: 0, eager: 0, slept: 0, withParent: 0, outsidePass: 0 };
+
+  return host.__blokViewportProbe;
+};
+
+/** Counts one diagnostic event. */
+export const countViewport = (key: string): void => {
+  const counters = probe();
+
+  counters[key] = (counters[key] ?? 0) + 1;
+};
+
 /** Who is asleep, in the order they fell asleep — which is document order. */
 const asleep = new Set<string>();
 
@@ -34,6 +54,7 @@ const asleep = new Set<string>();
  * @param eager - how many root blocks to draw immediately
  */
 export const beginViewportPass = (eager: number): void => {
+  countViewport('passes');
   eagerLeft = eager;
 };
 
@@ -50,19 +71,24 @@ export const endViewportPass = (): void => {
  * @returns whether this root must render now
  */
 export const claimEagerRoot = (): boolean => {
+  countViewport('asked');
   if (eagerLeft === null) {
+    countViewport('outsidePass');
+
     return true;
   }
   if (eagerLeft <= 0) {
     return false;
   }
   eagerLeft -= 1;
+  countViewport('eager');
 
   return true;
 };
 
 /** Remembers that this block's tool has no DOM yet. */
 export const sleepBlock = (id: string): void => {
+  countViewport('slept');
   asleep.add(id);
 };
 
