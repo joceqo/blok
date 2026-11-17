@@ -886,13 +886,22 @@ export class Collaboration extends Module {
     });
     this.presence.start();
 
+    // Before the cache read, not after: adopting a cache RENDERS it, and on a
+    // large page that render is the wait — measured at several seconds. Showing
+    // the skeleton afterwards shows it once there is nothing left to wait for.
+    // It costs nothing on a small page: the controller only paints once the
+    // wait outlasts `loader.delay`.
+    this.Blok.UI.showLoading();
+
     // Awaited, unlike the network: this is a local-disk read, and the blocks
     // it restores have to be on screen before the first frame can race them.
     const adopted = await this.adoptCache(settings);
 
-    // An adopted cache is already on screen. Armed before connect(), so no status can reach a hide first.
-    if (!this.cacheAdopted) {
-      this.Blok.UI.showLoading();
+    // An adopted cache is on screen once its render returns, so hand the
+    // skeleton over to it. Armed before connect(), so no status can reach a
+    // hide first.
+    if (this.cacheAdopted) {
+      void this.Blok.UI.hideLoading();
     }
 
     this.provider = createCollabProvider({
