@@ -2331,19 +2331,35 @@ export class BlockYjsSync {
     // holder and then asked the live selection whether the caret was inside it,
     // which forces a full layout right after a DOM write.
     withBatchedMoves(() => {
-      for (const { block, targetIndex, parentId, placement } of slice) {
-        this.blocksStore.activateBlock(block, targetIndex);
-        this.handlers.onBlockAdded(block, targetIndex, replaySourceOf(origin));
-
-        // Set parent relationship if needed — this moves the block into the toggle's
-        // DOM child container, updates parent's contentIds, and applies indentation.
-        if (parentId !== undefined) {
-          this.placeOrReparent(block, placement, parentId);
-          affectedParents.add(parentId);
-          this.warnIfChildToolDenied(block, parentId);
-        }
+      for (const entry of slice) {
+        this.activateEntry(entry, origin, affectedParents);
       }
     });
+  }
+
+  /**
+   * Activates one created block: DOM insert, RENDERED, parent placement.
+   * @param entry - the block and where it goes
+   * @param origin - what produced the change
+   * @param affectedParents - collects the parents whose child order to settle
+   */
+  private activateEntry(
+    entry: { block: Block; targetIndex: number; parentId: string | undefined; placement: TreePlacement | undefined },
+    origin: BlockChangeEvent['origin'] | undefined,
+    affectedParents: Set<string>
+  ): void {
+    const { block, targetIndex, parentId, placement } = entry;
+
+    this.blocksStore.activateBlock(block, targetIndex);
+    this.handlers.onBlockAdded(block, targetIndex, replaySourceOf(origin));
+
+    // Set parent relationship if needed — this moves the block into the toggle's
+    // DOM child container, updates parent's contentIds, and applies indentation.
+    if (parentId !== undefined) {
+      this.placeOrReparent(block, placement, parentId);
+      affectedParents.add(parentId);
+      this.warnIfChildToolDenied(block, parentId);
+    }
   }
 
   /**
@@ -2364,23 +2380,26 @@ export class BlockYjsSync {
     origin: BlockChangeEvent['origin'] | undefined
   ): Promise<void> {
     const affectedParents = new Set<string>();
-    let start = 0;
+    let next = 0;
 
-    // A time budget, not a fixed count: 25 blocks measured ~130 ms because a
-    // block's cost swings wildly — a paragraph is nothing, a database row is
-    // not. The renderer slices on the same 8 ms rule.
-    while (start < created.length) {
+    // A time budget, not a fixed count: a block's cost swings wildly — a
+    // paragraph is nothing, a database row is not — so 25 of them measured
+    // ~130 ms. The renderer slices on the same 8 ms rule.
+    //
+    // The clock is read BETWEEN activations, not before them: a first attempt
+    // counted the run's length in a loop that did no work, so the clock never
+    // moved and the "slice" swallowed the whole list.
+    while (next < created.length) {
       const began = performance.now();
-      let end = start;
 
-      while (end < created.length && (end === start || performance.now() - began < ACTIVATION_BUDGET_MS)) {
-        end += 1;
-      }
+      withBatchedMoves(() => {
+        do {
+          this.activateEntry(created[next], origin, affectedParents);
+          next += 1;
+        } while (next < created.length && performance.now() - began < ACTIVATION_BUDGET_MS);
+      });
 
-      this.activateSlice(created.slice(start, end), origin, affectedParents);
-      start = end;
-
-      if (start < created.length) {
+      if (next < created.length) {
         await yieldToBrowser();
       }
     }
