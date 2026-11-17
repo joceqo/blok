@@ -116,12 +116,41 @@ describe('DatabaseCardDrawer', () => {
       expect(mount).not.toHaveBeenCalled();
       expect(options.wrapper.querySelector('[data-blok-database-drawer-title]')).not.toBeNull();
       expect(options.wrapper.querySelector('[data-blok-database-body-loading]')).not.toBeNull();
+      expect(options.wrapper.querySelectorAll('[data-blok-database-body-loading] [data-blok-skeleton-bar]')).toHaveLength(3);
       await vi.waitFor(() => expect(mount).toHaveBeenCalledTimes(1));
       expect(options.wrapper.querySelector('[data-blok-database-body-loading]')).toBeNull();
       expect(options.wrapper.querySelector('[data-blok-database-drawer-editor]')?.textContent).toBe('Prepared body');
     } finally {
       drawer.destroy();
       options.wrapper.remove();
+    }
+  });
+
+  it('conceals and disables the previous row properties while the next row details are deferred', async () => {
+    vi.useFakeTimers();
+    const options = createOptions({
+      schema: [{ id: 'amount', name: 'Amount', type: 'number', position: 'a0' }],
+      rowBody: { attach: () => true, detach: () => {}, start: () => {} },
+    });
+    document.body.append(options.wrapper);
+    const drawer = new DatabaseCardDrawer(options);
+    try {
+      drawer.open(makeRow({ properties: { 'prop-title': 'First', amount: 85 } }));
+      await vi.advanceTimersByTimeAsync(40);
+      const value = options.wrapper.querySelector('[data-blok-database-drawer-prop-value]');
+      expect(value?.textContent).toBe('85');
+      drawer.open(makeRow({ id: 'next', properties: { 'prop-title': 'Next', amount: 90 } }));
+      const pendingRegion = value?.closest('[data-blok-database-drawer-region]');
+      expect(pendingRegion?.hasAttribute('data-blok-database-details-loading')).toBe(true);
+      expect(pendingRegion?.hasAttribute('inert')).toBe(true);
+      expect(pendingRegion?.getAttribute('aria-hidden')).toBe('true');
+      await vi.advanceTimersByTimeAsync(40);
+      expect(options.wrapper.querySelector('[data-blok-database-drawer-prop-value]')?.textContent).toBe('90');
+      expect(options.wrapper.querySelector('[data-blok-database-details-loading]')).toBeNull();
+    } finally {
+      drawer.destroy();
+      options.wrapper.remove();
+      vi.useRealTimers();
     }
   });
 

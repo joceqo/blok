@@ -696,7 +696,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       },
       onError: error => showError(error, 'document'),
       editorConfig: bodyId => ({
-        loader: { delay: 0, minVisible: 0, skeleton: ['paragraph', 'paragraph'] },
+        loader: { delay: 0, minVisible: 0, skeleton: ['paragraph', 'paragraph', 'paragraph'] },
         tools: pageTools,
         theme: readAppearance(),
         documentId: `${workspaceKey(ref)}:${bodyId}`,

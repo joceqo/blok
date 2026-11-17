@@ -21014,10 +21014,50 @@ button[data-blok-database-feed-reaction]:hover,
   background-color: var(--_blok-database-rule-bg);
 }
 
-/* The row shell paints before its deferred block body is composed. */
-[data-blok-database-body-loading] {
-  height: 48px;
+/* The shell and the nested editor use the same lines. The first placeholder
+   stays in flow and compensates for the holder's toolbar gutter; its successor
+   is the editor's ordinary overlay. Neither needs a minimum display time. */
+[data-blok-database-body-loading][data-blok-loading-skeleton] {
+  position: relative;
+  inset: auto;
+  max-width: none;
+  margin: 0;
+  margin-inline-start: var(--blok-editor-gutter-start, 56px);
+  margin-inline-end: var(--blok-editor-gutter-end, 0px);
+}
+
+[data-blok-database-drawer-editor] [data-blok-loading-skeleton] {
+  animation: none;
+}
+
+[data-blok-database-drawer-editor] [data-blok-skeleton-bar] {
+  height: 12px;
   margin-block: 12px;
   border-radius: 4px;
-  background: var(--blok-item-hover-bg);
+  background-image: none;
+  animation: blok-skeleton-breathe 2.4s ease-in-out infinite;
+}
+
+[data-blok-database-drawer-editor] [data-blok-skeleton-bar]:nth-child(1) { width: 72%; }
+[data-blok-database-drawer-editor] [data-blok-skeleton-bar]:nth-child(2) { width: 54%; }
+[data-blok-database-drawer-editor] [data-blok-skeleton-bar]:nth-child(3) { width: 38%; }
+
+/* Preserve the previous row's geometry without displaying stale values. */
+[data-blok-database-details-loading] { visibility: hidden; }
+[data-blok-database-details-loading] [data-blok-database-drawer-prop-head] { visibility: visible; }
+[data-blok-database-details-loading] [data-blok-database-drawer-prop-value] { position: relative; }
+[data-blok-database-details-loading] [data-blok-database-drawer-prop-value]::after {
+  content: '';
+  visibility: visible;
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-start: calc(50% - 6px);
+  width: min(120px, 60%);
+  height: 12px;
+  border-radius: 4px;
+  background: var(--blok-skeleton-bar);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-blok-database-drawer-editor] [data-blok-skeleton-bar] { animation: none; }
 }

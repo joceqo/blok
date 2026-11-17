@@ -1,5 +1,6 @@
 import { createCoverDownloadButton } from '../../components/utils/cover-download';
 import { bindPeekProfile, measurePeek, startPeekProfile, type PeekProfile } from '../../components/utils/peek-profile';
+import { buildLoadingSkeleton } from '../../components/utils/loading-skeleton';
 import type { I18n, OutputData } from '../../../types';
 import type { Events } from '../../../types/api/events';
 import type { ToolsConfig } from '../../../types/api/tools';
@@ -4512,10 +4513,18 @@ export class DatabaseCardDrawer {
 
       return;
     }
-    const placeholder = document.createElement('div');
+    // Keep the previous layout's space, but never show another row's values
+    // beneath the new title or leave its controls interactive while we yield.
+    if (renderDetails) {
+      this.drawer?.querySelectorAll<HTMLElement>('[data-blok-database-drawer-content] > [data-blok-database-drawer-region]').forEach(region => {
+        region.setAttribute('data-blok-database-details-loading', '');
+        region.setAttribute('aria-hidden', 'true');
+        region.setAttribute('inert', '');
+      });
+    }
+    const { root: placeholder } = buildLoadingSkeleton(['paragraph', 'paragraph', 'paragraph']);
 
     placeholder.setAttribute('data-blok-database-body-loading', '');
-    placeholder.setAttribute('aria-hidden', 'true');
     // A row whose copy is still pending stays suspended from the first frame,
     // not only once the deferred body mounts.
     holder.toggleAttribute('inert', this.pendingBodyRows.has(row.id));
