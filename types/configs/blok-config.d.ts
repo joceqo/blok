@@ -940,6 +940,8 @@ export interface BlokMountOptions {
     skeleton?: Array<'heading' | 'paragraph' | 'list'>;
     /** Ms to wait before showing, so fast loads never flash. Default 150. */
     delay?: number;
+    /** Minimum visible time in ms before revealing loaded content. Default 400. */
+    minVisible?: number;
   };
 
   /**

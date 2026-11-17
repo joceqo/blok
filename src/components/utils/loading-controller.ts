@@ -100,7 +100,7 @@ export class LoadingController {
     const skeleton = this.skeleton;
 
     if (skeleton !== null && this.isVisible) {
-      const remaining = MIN_VISIBLE - (this.elapsed() - this.args.config.delay);
+      const remaining = (this.args.config.minVisible ?? MIN_VISIBLE) - (this.elapsed() - this.args.config.delay);
 
       if (remaining > 0) {
         await this.sleep(remaining);

@@ -19,6 +19,12 @@ describe('resolveLoaderConfig', () => {
     expect(resolveLoaderConfig(false).enabled).toBe(false);
   });
 
+  it('accepts a zero minimum wait and rejects invalid durations', () => {
+    expect(resolveLoaderConfig({ minVisible: 0 }).minVisible).toBe(0);
+    expect(resolveLoaderConfig({ minVisible: -1 }).minVisible).toBeUndefined();
+    expect(resolveLoaderConfig({ minVisible: Number.NaN }).minVisible).toBeUndefined();
+  });
+
   it('takes a custom skeleton and delay', () => {
     expect(resolveLoaderConfig({ skeleton: ['paragraph'], delay: 0 })).toEqual({ enabled: true, skeleton: ['paragraph'], delay: 0 });
   });

@@ -108,6 +108,16 @@ it('uses the editor started on hover even when the row opens before it is ready'
   h.pages.destroy();
 });
 
+it('visible-row preparation does not evict a body already in the cache', () => {
+  const h = harness(1);
+
+  h.pages.prepare?.('body-a');
+  h.pages.prepare?.('body-b', { ifRoom: true });
+  expect(h.createEditor).toHaveBeenCalledTimes(1);
+  expect(h.editor.destroy).not.toHaveBeenCalled();
+  h.pages.destroy();
+});
+
 it('evicts the oldest idle editor when the retention limit is reached', async () => {
   const editors: RowPageEditor[] = [];
   const pages = createDesktopRowPages({

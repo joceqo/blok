@@ -8200,7 +8200,9 @@ export class DatabaseTool implements BlockTool {
       ...(context === undefined ? { peek: this.sidePeek() } : {}),
       ...(readOnly ? {
         openRow: (rowId: string) => (context === undefined ? this.handleRowClick(rowId) : context.openRow(rowId)),
-        prepareRow: (rowId: string) => this.prepareRowPage(rowId),
+        ...(this.config.rowPages?.prepare === undefined ? {} : {
+          prepareRow: (rowId: string, visibleOnly?: boolean) => this.prepareRowPage(rowId, visibleOnly),
+        }),
       } : {
         handlers: this.tableHandlers(context, () => renderer),
       }),
@@ -8403,10 +8405,10 @@ export class DatabaseTool implements BlockTool {
   }
 
   /** What the table view asks of the tool. Each write goes through the row block or the view, then the backend. */
-  private prepareRowPage(rowId: string): void {
+  private prepareRowPage(rowId: string, visibleOnly = false): void {
     const pageId = this.model.getRow(rowId)?.pageId;
 
-    if (pageId !== undefined) this.config.rowPages?.prepare?.(pageId);
+    if (pageId !== undefined) this.config.rowPages?.prepare?.(pageId, { ifRoom: visibleOnly });
   }
 
   private tableHandlers(context?: NativeWidgetContext, table?: () => DatabaseTableView): TableHandlers {
@@ -8432,7 +8434,9 @@ export class DatabaseTool implements BlockTool {
       },
       duplicateRow: (rowId) => { if (writable()) this.duplicateTableRow(rowId); },
       openRow: (rowId, mode) => context === undefined ? this.handleRowClick(rowId, mode) : context.openRow(rowId, mode),
-      prepareRow: (rowId) => this.prepareRowPage(rowId),
+      ...(this.config.rowPages?.prepare === undefined ? {} : {
+        prepareRow: (rowId: string, visibleOnly?: boolean) => this.prepareRowPage(rowId, visibleOnly),
+      }),
       rowsEscaped: () => { if (context === undefined) this.closeRowPage(); },
       copyRowLink: (rowId) => this.copyRowLink(rowId),
       moveTargets: () => this.moveTargets(),

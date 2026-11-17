@@ -1604,7 +1604,7 @@ export interface DatabaseRowPages {
   }): Promise<DatabaseRowPageReceipt>;
   mount(pageId: string, holder: HTMLElement): { destroy(): void };
   /** Start a row page while its visible row is hovered; keep only a bounded host cache. */
-  prepare?(pageId: string): void;
+  prepare?(pageId: string, options?: { ifRoom?: boolean }): void;
   /** True when a prepared page can be mounted without a loading frame. */
   isReady?(pageId: string): boolean;
   /**

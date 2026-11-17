@@ -1669,6 +1669,36 @@ describe('DatabaseTableView', () => {
       }
     });
 
+    it('prepares at most two visible rows and cancels a row scrolled away', () => {
+      vi.useFakeTimers();
+      let changed!: IntersectionObserverCallback;
+      const observer = { observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() };
+
+      vi.stubGlobal('IntersectionObserver', vi.fn(function (callback: IntersectionObserverCallback) {
+        changed = callback;
+        return observer;
+      }));
+      try {
+        const handlers = { ...makeHandlers(), prepareRow: vi.fn() };
+        const { root, view } = mount({ handlers });
+        const entry = (id: string, visible = true): IntersectionObserverEntry => ({
+          target: root.querySelector(`[data-blok-database-table-row][data-row-id="${id}"]`)!,
+          isIntersecting: visible, intersectionRatio: visible ? 1 : 0,
+        } as IntersectionObserverEntry);
+
+        changed([entry('r1'), entry('r2'), entry('r3')], observer as unknown as IntersectionObserver);
+        vi.advanceTimersByTime(300);
+        changed([entry('r1', false)], observer as unknown as IntersectionObserver);
+        vi.advanceTimersByTime(1000);
+        expect(handlers.prepareRow.mock.calls).toEqual([['r2', true], ['r3', true]]);
+        expect(observer.disconnect).toHaveBeenCalled();
+        view.destroy();
+      } finally {
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
+    });
+
     // notion-motion.md Round 28 §1 (r28-narrowpill-threshold.raw): the title column shows the icon pill at 100 and OPEN
     // from 102, whatever the label's width (Notion's 102 OPEN overlaps the title). 101 is unread; Blok counts it as narrow.
     describe('narrow title column', () => {

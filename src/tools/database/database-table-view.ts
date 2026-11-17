@@ -184,7 +184,7 @@ export interface TableHandlers {
   /** Opens a row page, in `mode` when the row menu's "Open in" names one. */
   openRow: (rowId: string, mode?: OpenPagesIn) => void;
   /** Warm a row page after the pointer rests on its table row. */
-  prepareRow?: (rowId: string) => void;
+  prepareRow?: (rowId: string, visibleOnly?: boolean) => void;
   copyRowLink: (rowId: string) => void;
   /** Other databases of this document a row can move to. */
   moveTargets?: () => Array<{ id: string; title: string }>;
@@ -243,7 +243,7 @@ export interface TableNesting {
 export interface DatabaseTableViewOptions {
   /** Opens a row page without any write handler: what a read-only viewer gets. */
   openRow?: (rowId: string) => void;
-  prepareRow?: (rowId: string) => void;
+  prepareRow?: (rowId: string, visibleOnly?: boolean) => void;
   /** The row shown in the side peek, if any, and how to close it: its OPEN reads CLOSE (notion-spec-2 §25.3). */
   peek?: RowPeek;
   readOnly: boolean;
@@ -687,6 +687,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     this.markDropped(gridEl);
     this.grid.paint();
     this.afterDrop = false;
+    this.prepareVisibleRows(gridEl);
 
     return root;
   }
@@ -772,6 +773,41 @@ export class DatabaseTableView implements DatabaseViewRenderer {
   /** The row the pointer is over: moving between its cells fires pointerover again. */
   private overRow: Element | null = null;
   private prepareTimer: number | undefined;
+  private visiblePreparation: IntersectionObserver | undefined;
+  private visibleTimers = new Map<Element, number>();
+
+  /** Fill spare cache slots after two rows remain on screen; scrolling cancels the wait. */
+  private prepareVisibleRows(grid: HTMLElement): void {
+    const prepare = this.handlers?.prepareRow ?? this.options.prepareRow;
+
+    if (prepare === undefined || typeof IntersectionObserver === 'undefined') return;
+    let prepared = 0;
+
+    this.visiblePreparation = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        window.clearTimeout(this.visibleTimers.get(entry.target));
+        this.visibleTimers.delete(entry.target);
+        if (!entry.isIntersecting || entry.intersectionRatio < 0.5 || prepared >= 2) continue;
+        this.visibleTimers.set(entry.target, window.setTimeout(() => {
+          this.visibleTimers.delete(entry.target);
+          if (prepared >= 2 || !entry.target.isConnected) return;
+          const rowId = entry.target.getAttribute('data-row-id');
+
+          if (rowId !== null) {
+            prepared++;
+            prepare(rowId, true);
+          }
+          this.visiblePreparation?.unobserve(entry.target);
+          if (prepared >= 2) {
+            this.visiblePreparation?.disconnect();
+            this.visibleTimers.forEach(timer => window.clearTimeout(timer));
+            this.visibleTimers.clear();
+          }
+        }, 600 + this.visibleTimers.size * 200));
+      }
+    }, { threshold: 0.5 });
+    grid.querySelectorAll('[data-blok-database-table-row]').forEach(row => this.visiblePreparation?.observe(row));
+  }
 
   /** The selected title cell's OPEN, last fitted. */
   private anchorOpen: HTMLElement | null = null;
@@ -802,6 +838,9 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
   destroy(): void {
     window.clearTimeout(this.prepareTimer);
+    this.visiblePreparation?.disconnect();
+    this.visibleTimers.forEach(timer => window.clearTimeout(timer));
+    this.visibleTimers.clear();
     const bulkEditor = this.bulkEditor;
 
     // Its close must not ask for a redraw: this view is going.

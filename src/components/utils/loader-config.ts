@@ -6,6 +6,7 @@ export interface ResolvedLoaderConfig {
   enabled: boolean;
   skeleton: SkeletonRow[];
   delay: number;
+  minVisible?: number;
 }
 
 export const DEFAULT_SKELETON: SkeletonRow[] = ['heading', 'paragraph', 'paragraph', 'paragraph', 'list', 'list'];
@@ -27,5 +28,7 @@ export const resolveLoaderConfig = (input: BlokConfig['loader']): ResolvedLoader
     enabled: true,
     skeleton: rows.length > 0 ? rows : [...DEFAULT_SKELETON],
     delay: typeof delay === 'number' && Number.isFinite(delay) && delay >= 0 ? delay : DEFAULT_LOADER_DELAY,
+    ...(typeof options.minVisible === 'number' && Number.isFinite(options.minVisible) && options.minVisible >= 0
+      ? { minVisible: options.minVisible } : {}),
   };
 };

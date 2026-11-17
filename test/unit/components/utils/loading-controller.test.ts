@@ -26,7 +26,7 @@ vi.mock('../../../../src/components/utils/skeleton-handoff', async () => {
   };
 });
 
-const setup = (delay = 150): { wrapper: HTMLElement; content: HTMLElement; controller: LoadingController } => {
+const setup = (delay = 150, minVisible?: number): { wrapper: HTMLElement; content: HTMLElement; controller: LoadingController } => {
   const wrapper = document.createElement('div');
   const content = document.createElement('div');
 
@@ -36,7 +36,7 @@ const setup = (delay = 150): { wrapper: HTMLElement; content: HTMLElement; contr
   const controller = new LoadingController({
     wrapper,
     content,
-    config: { enabled: true, skeleton: ['heading', 'paragraph'], delay },
+    config: { enabled: true, skeleton: ['heading', 'paragraph'], delay, minVisible },
     label: 'Loading content…',
   });
 
@@ -242,6 +242,17 @@ describe('LoadingController', () => {
 
     await vi.advanceTimersByTimeAsync(20);
     await done;
+    expect(skeleton(wrapper)).toBeNull();
+    expect(wrapper.hasAttribute('aria-busy')).toBe(false);
+  });
+
+  it('reveals a row body as soon as it arrives when its minimum wait is zero', async () => {
+    const { wrapper, controller } = setup(0, 0);
+
+    controller.show();
+    expect(skeleton(wrapper)).not.toBeNull();
+    await controller.hide([]);
+    expect(mockRunSkeletonHandoff).toHaveBeenCalledTimes(1);
     expect(skeleton(wrapper)).toBeNull();
     expect(wrapper.hasAttribute('aria-busy')).toBe(false);
   });

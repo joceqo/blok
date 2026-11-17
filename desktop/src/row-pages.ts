@@ -144,8 +144,9 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
     lookup: input => options.lookup(input),
     copyFromLegacy: input => options.copyFromLegacy(input),
     reconcileLegacy: input => options.reconcileLegacy(input),
-    prepare(pageId) {
+    prepare(pageId, preparation) {
       if (destroyed || retain === 0 || idle.has(pageId) || [...mounts].some(entry => entry.pageId === pageId)) return;
+      if (preparation?.ifRoom && idle.size >= retain) return;
       try {
         createEntry(pageId, parked, false);
         while (idle.size > retain) dispose(idle.values().next().value as Entry);
