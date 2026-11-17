@@ -8,7 +8,7 @@ import {profileDisplayName} from './profile-identity';
 import { readAccountIdentity } from './account-profile';
 import { watchLocalProfile } from './local-profile';
 import { readSidebarLayout, saveSidebarLayout, subscribeSidebarLayout, initializeSidebarPresets } from './sidebar-preferences';
-import { libraryUrl, libraryCategoryForHref, type LibraryCategory, pageDestination, pageIdForHref, publicPageUrl, legacyPageUrl, rememberPageLinks } from './page-urls';
+import { pageNavigationUrl, libraryUrl, libraryCategoryForHref, type LibraryCategory, pageDestination, pageIdForHref, publicPageUrl, legacyPageUrl, rememberPageLinks } from './page-urls';
 import { createWorkspaceSaveStatus } from './workspace-save-status';
 import './workspace-save-status.css';
 import { navigationFavorites, navigationRecents } from './navigation-preferences';
@@ -277,7 +277,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
 
   const pageFromUrl = (): string | null => pageIdForHref(location.href);
   const navigate = (id: string, replace = false): void => {
-    const url=ref.kind==='remote' && !('__TAURI_INTERNALS__' in window) ? new URL(pageUrl(id)) : new URL(location.href);
+    const url=pageNavigationUrl(ref.kind==='remote' && !('__TAURI_INTERNALS__' in window) ? pageUrl(id) : location.href);
     if(ref.kind==='local' || '__TAURI_INTERNALS__' in window){url.pathname='/';url.searchParams.set('page',id);}
     url.searchParams.delete('library');
     if (replace) history.replaceState(null, '', url);
@@ -1351,7 +1351,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     }
     void select(target).catch((error) => {
       if (ws.currentId && pageFromUrl() !== ws.currentId) {
-        const url = new URL(ref.kind==='remote' && !('__TAURI_INTERNALS__' in window) ? pageUrl(ws.currentId) : location.href); if(ref.kind==='local' || '__TAURI_INTERNALS__' in window)url.searchParams.set('page', ws.currentId);
+        const url = pageNavigationUrl(ref.kind==='remote' && !('__TAURI_INTERNALS__' in window) ? pageUrl(ws.currentId) : location.href); if(ref.kind==='local' || '__TAURI_INTERNALS__' in window)url.searchParams.set('page', ws.currentId);
         history.replaceState(null, '', url);
       }
       showError(error);

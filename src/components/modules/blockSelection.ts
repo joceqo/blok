@@ -483,13 +483,19 @@ export class BlockSelection extends Module {
   /**
    * Toggle read-only state
    *
-   *  - Remove all ranges
+   *  - Remove native ranges belonging to this editor
    *  - Unselect all Blocks
    */
   public toggleReadOnly(): void {
     const selection = SelectionUtils.get();
+    const redactor = this.Blok.UI.nodes.redactor;
 
-    selection?.removeAllRanges();
+    // Preparing a hidden row editor must not clear the foreground editor's
+    // selection or trigger its selectionchange/layout work.
+    if (selection && ((selection.anchorNode && redactor.contains(selection.anchorNode))
+      || (selection.focusNode && redactor.contains(selection.focusNode)))) {
+      selection.removeAllRanges();
+    }
 
     this.allBlocksSelected = false;
   }

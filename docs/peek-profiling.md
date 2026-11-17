@@ -8,12 +8,15 @@ copy(JSON.stringify(window.__blokPeekProfiles, null, 2))
 
 `copy()` is a Chrome DevTools command. Records contain timings and mode, without page titles, row ids or document content. Nothing is sent to a server. Remove `profile=1` and reload to disable recording. The existing boot sampler also runs with this flag.
 
+Canonical page routing and in-app navigation preserve `profile=1`; the member profile UI treats this literal value as diagnostics, not a member id.
+
 Compare a first opening, an immediate reopening of the same row, and a different row. Wait five seconds each time. Repeat three times in a foreground tab with the same collaboration sessions open. Keep `visibility: hidden` runs separate.
 
 | Field | Meaning |
 | --- | --- |
 | `openSync` | Synchronous `drawer.open()` duration; does not include click handlers before this call. |
-| `backdrop`, `promoteDrawer`, `focusTitle`, `isolateBackground` | Work done while opening the shell. |
+| `backdrop`, `promoteDrawer`, `isolateBackground` | Work done while opening the shell. |
+| `focusTitle` | Automatic title focus, now deferred to a task after the shell frame. Omitted if another control gained focus or the peek closed first. |
 | `renderRegions`, `mountBody`, `hostEditorCreate` | Properties, body mounting, and host editor construction. `legacyEditorCreate` covers legacy inline editors. |
 | `measureTitle`, `measureDock`, `narrowHost` | Geometry work, including any synchronous layout it causes. |
 | `shellPaintOpportunity` | Time from opening to a task following an animation frame. This is an approximation, **not a measured paint**. |

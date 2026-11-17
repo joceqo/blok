@@ -560,11 +560,12 @@ export class DatabaseCardDrawer {
   private parentPage: DatabaseCardDrawer | null = null;
   private childPeek: DatabaseCardDrawer | null = null;
   private parentScroll: Array<{ element: HTMLElement; top: number; left: number }> = [];
-  private pendingBodyMount: { frame: number | null; timer: number | null; holder: HTMLElement; placeholder: HTMLElement } | null = null;
+  private pendingBodyMount: { frame: number | null; timer: number | null; holder: HTMLElement; placeholder: HTMLElement; pageId?: string } | null = null;
 
   /** Pending frame for the measures applyMode defers; see scheduleModeMeasures. */
   private modeMeasureFrame: number | null = null;
   private modeMeasureTimer: number | null = null;
+  private titleFocusAfterPaint: { title: HTMLTextAreaElement; previous: Element | null } | null = null;
   private peekProfile: PeekProfile | undefined;
   private readonly onEditViewDefault: CardDrawerOptions['onEditViewDefault'];
   private readonly rowLink: CardDrawerOptions['rowLink'];
@@ -1005,7 +1006,7 @@ export class DatabaseCardDrawer {
         profile?.mark('shellTransitionEnd');
         this.autoResizeTitle(titleInput);
 
-        if (!title) {
+        if (!title && !drawer.contains(document.activeElement)) {
           titleInput.focus();
         }
       });
@@ -1107,7 +1108,7 @@ export class DatabaseCardDrawer {
     };
     document.addEventListener('mousedown', this.outsideClickHandler);
 
-    measurePeek(this.peekProfile, 'focusTitle', () => titleInput.focus({ preventScroll: true }));
+    this.titleFocusAfterPaint = { title: titleInput, previous: document.activeElement };
   }
 
   /**
@@ -2562,6 +2563,15 @@ export class DatabaseCardDrawer {
 
         if (titleInput !== null) measurePeek(this.peekProfile, 'measureTitle', () => this.autoResizeTitle(titleInput));
         measurePeek(this.peekProfile, 'measureDock', () => this.syncDetailsDock());
+        const focus = this.titleFocusAfterPaint;
+
+        this.titleFocusAfterPaint = null;
+        // Native focus can force layout across the host document. Do it only
+        // after the shell can paint, and never steal a newer click/Tab focus.
+        if (focus?.title.isConnected && !this.childPeek?.isOpen
+          && (document.activeElement === focus.previous || document.activeElement === document.body)) {
+          measurePeek(this.peekProfile, 'focusTitle', () => focus.title.focus({ preventScroll: true }));
+        }
       }, 0);
     });
   }
@@ -2571,6 +2581,7 @@ export class DatabaseCardDrawer {
     if (this.modeMeasureTimer !== null) window.clearTimeout(this.modeMeasureTimer);
     this.modeMeasureFrame = null;
     this.modeMeasureTimer = null;
+    this.titleFocusAfterPaint = null;
   }
 
   /** A full page takes over its editor and the URL (row-page-takeover.ts); a peek gives both back. */
@@ -2649,12 +2660,17 @@ export class DatabaseCardDrawer {
     const editorHolder = this.drawer?.querySelector<HTMLElement>('[data-blok-database-drawer-editor]');
 
     if (editorHolder === null || editorHolder === undefined) return;
+    // A resolved lookup is often a microtask of the opening click. The queued
+    // mount reads currentRow/lookupRows; do not bypass its first-frame yield.
+    const pending = this.pendingBodyMount;
+
+    if (pending !== null && (pending.frame !== null || pending.timer !== null || state === 'pending')) return;
     // Discard, not save: the legacy body may be stale.
     this.blokInstance?.destroy();
     this.blokInstance = null;
     this.isBodyChanged = null;
     editorHolder.replaceChildren();
-    this.initNestedEditor(editorHolder, this.currentRow);
+    this.mountRowBodyAfterPaint(editorHolder, this.currentRow, true);
   }
 
   /**
@@ -2740,9 +2756,18 @@ export class DatabaseCardDrawer {
       this.autoResizeTitle(titleInput);
     }
 
-    this.refreshSchema(this.schema);
+    if (this.pendingBodyMount === null) this.refreshSchema(this.schema);
     this.drawer.querySelector('[data-blok-database-drawer-page-head]')?.replaceWith(this.buildPageHead(row));
     this.syncCrumbs();
+    if (this.pendingBodyMount !== null) {
+      const pending = this.pendingBodyMount;
+
+      pending.pageId = row.pageId ?? pending.pageId;
+      if (pending.frame === null && pending.timer === null && pending.pageId !== undefined) {
+        this.mountRowBodyAfterPaint(pending.holder, { ...row, pageId: pending.pageId }, true);
+      }
+      return;
+    }
 
     if (this.attachedBodyRowId === row.id && (this.rowPages === undefined || row.pageId === undefined)) {
       return;
@@ -2764,7 +2789,7 @@ export class DatabaseCardDrawer {
       this.pageMount = null;
       this.mountedPageId = undefined;
       editorHolder.replaceChildren();
-      this.initNestedEditor(editorHolder, row);
+      this.mountRowBodyAfterPaint(editorHolder, row, true);
       return;
     }
 
@@ -2775,7 +2800,7 @@ export class DatabaseCardDrawer {
       this.blokInstance = null;
       this.isBodyChanged = null;
       editorHolder.innerHTML = '';
-      this.initNestedEditor(editorHolder, row);
+      this.mountRowBodyAfterPaint(editorHolder, row, true);
     }
   }
 
@@ -4530,7 +4555,7 @@ export class DatabaseCardDrawer {
     holder.toggleAttribute('inert', this.pendingBodyRows.has(row.id));
     holder.setAttribute('aria-busy', 'true');
     holder.append(placeholder);
-    const pending: NonNullable<DatabaseCardDrawer['pendingBodyMount']> = { frame: null, timer: null, holder, placeholder };
+    const pending: NonNullable<DatabaseCardDrawer['pendingBodyMount']> = { frame: null, timer: null, holder, placeholder, pageId: row.pageId };
 
     this.pendingBodyMount = pending;
     pending.frame = requestAnimationFrame(() => {
@@ -4541,10 +4566,16 @@ export class DatabaseCardDrawer {
       pending.timer = window.setTimeout(() => {
         pending.timer = null;
         if (this.pendingBodyMount !== pending) return;
+        const latest = this.currentRow ?? row;
+        // An older client's save can drop the pointer before the first mount,
+        // just as it can after a page is already mounted. Never reopen stale inline data.
+        const bodyRow = latest.pageId === undefined && pending.pageId !== undefined ? { ...latest, pageId: pending.pageId } : latest;
+
+        if (this.lookupRows.has(row.id) && bodyRow.pageId === undefined) return;
         this.cancelPendingBodyMount();
         if (this.currentRowId !== row.id || !holder.isConnected || !this.drawer?.contains(holder)) return;
-        if (renderDetails) measurePeek(this.peekProfile, 'renderRegions', () => this.renderRegions(this.currentRow ?? row));
-        measurePeek(this.peekProfile, 'mountBody', () => this.initNestedEditor(holder, this.currentRow ?? row));
+        if (renderDetails) measurePeek(this.peekProfile, 'renderRegions', () => this.renderRegions(latest));
+        measurePeek(this.peekProfile, 'mountBody', () => this.initNestedEditor(holder, bodyRow));
       }, 0);
     });
   }

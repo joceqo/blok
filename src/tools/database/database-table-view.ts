@@ -745,6 +745,10 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
   /** The tool calls it when a row page opens in a peek. */
   rowPageOpened(): void {
+    window.clearTimeout(this.prepareTimer);
+    this.visiblePreparation?.disconnect();
+    this.visibleTimers.forEach(timer => window.clearTimeout(timer));
+    this.visibleTimers.clear();
     this.grid?.finishEditing();
     this.bulkEditor?.close();
     this.menu?.hide();
@@ -754,6 +758,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
   /** The tool calls it when the row's peek closes. */
   rowPageClosed(): void {
     this.repaintOpen();
+    if (this.gridEl !== null) this.prepareVisibleRows(this.gridEl);
   }
 
   private repaintOpen(): void {

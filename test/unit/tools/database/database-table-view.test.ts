@@ -1669,7 +1669,22 @@ describe('DatabaseTableView', () => {
       }
     });
 
-    it('prepares at most two visible rows and cancels a row scrolled away', () => {
+    it('cancels queued hover preparation when a row opens', () => {
+      vi.useFakeTimers();
+      try {
+        const handlers = { ...makeHandlers(), prepareRow: vi.fn() };
+        const { root, view } = mount({ handlers });
+        cell(root, 'r1', 'p-title').dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+        view.rowPageOpened();
+        vi.advanceTimersByTime(1000);
+        expect(handlers.prepareRow).not.toHaveBeenCalled();
+        view.destroy();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([false, true])('prepares at most two visible rows unless a peek opens: %s', (opening) => {
       vi.useFakeTimers();
       let changed!: IntersectionObserverCallback;
       const observer = { observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() };
@@ -1689,8 +1704,9 @@ describe('DatabaseTableView', () => {
         changed([entry('r1'), entry('r2'), entry('r3')], observer as unknown as IntersectionObserver);
         vi.advanceTimersByTime(300);
         changed([entry('r1', false)], observer as unknown as IntersectionObserver);
+        if (opening) view.rowPageOpened();
         vi.advanceTimersByTime(1000);
-        expect(handlers.prepareRow.mock.calls).toEqual([['r2', true], ['r3', true]]);
+        expect(handlers.prepareRow.mock.calls).toEqual(opening ? [] : [['r2', true], ['r3', true]]);
         expect(observer.disconnect).toHaveBeenCalled();
         view.destroy();
       } finally {

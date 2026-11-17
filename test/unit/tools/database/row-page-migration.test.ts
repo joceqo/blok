@@ -1178,7 +1178,7 @@ describe('database row page migration with older clients', () => {
       expect(legacyEditorsIn(harness.editorHolder)).toHaveLength(0);
       expect(host.rowPages.copyFromLegacy).not.toHaveBeenCalled();
       expect(host.rowPages.reconcileLegacy).not.toHaveBeenCalled();
-      expect(host.rowPages.mount).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(host.rowPages.mount).toHaveBeenCalledTimes(1));
       expect(host.pages.get('row-page')).toEqual(pageEdit);
       expect(harness.rowBlock.dispatchChange).toHaveBeenLastCalledWith({ derived: true });
     } finally {

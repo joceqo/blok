@@ -5,6 +5,19 @@ const controllers: ReturnType<typeof createMemberProfiles>[]=[];
 beforeEach(()=>{vi.clearAllMocks();history.replaceState(null,'','/?page=sprints');});
 afterEach(()=>{controllers.splice(0).forEach(controller=>controller.destroy());document.body.replaceChildren();history.replaceState(null,'','/');vi.restoreAllMocks();});
 const people=[{id:'camille',name:'Camille',email:'camille@example.test',role:'member' as const,avatarUrl:''}];
+it('reserves profile=1 for diagnostics without opening a member dialog or clearing the flag', async () => {
+ history.replaceState(null,'','/?page=sprints&profile=1');
+ const source=vi.fn().mockResolvedValue({members:people});
+ const controller=createMemberProfiles({workspaceName:'Equipe',members:source});controllers.push(controller);
+ await Promise.resolve();
+ expect(document.querySelector('[data-member-profile]')).toBeNull();
+ expect(source).not.toHaveBeenCalled();
+ controller.close();
+ expect(new URL(location.href).searchParams.get('profile')).toBe('1');
+ const pushed=vi.spyOn(history,'pushState');
+ await controller.open('camille');
+ expect(pushed).toHaveBeenCalledTimes(1);
+});
 it('opens a real member profile without replacing the underlying page and shares directory requests',async()=>{
  const source=vi.fn().mockResolvedValue({members:people});
  const controller=createMemberProfiles({workspaceName:'Equipe',members:source});controllers.push(controller);

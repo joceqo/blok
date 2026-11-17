@@ -157,6 +157,43 @@ it('visible-row preparation does not evict a body already in the cache', () => {
   h.pages.destroy();
 });
 
+it('retains an opening body across a quick close and reopen', async () => {
+  const h = harness(2);
+  h.pages.mount('body', document.createElement('div')).destroy();
+  const mounted = h.pages.mount('body', document.createElement('div'));
+  expect(h.createEditor).toHaveBeenCalledTimes(1);
+  expect(h.editor.destroy).not.toHaveBeenCalled();
+  h.ready.resolve();
+  await h.ready.promise;
+  mounted.destroy();
+  h.pages.destroy();
+});
+
+it('never evicts a visited body to speculate on another hover', async () => {
+  const h = harness(1);
+  const mounted = h.pages.mount('visited', document.createElement('div'));
+  h.ready.resolve();
+  await h.ready.promise;
+  mounted.destroy();
+  h.pages.prepare?.('unvisited');
+  expect(h.createEditor).toHaveBeenCalledTimes(1);
+  h.pages.destroy();
+});
+
+it('does no speculative construction while an inline peek is open', () => {
+  const h = harness(2);
+  const peek = document.createElement('div');
+  peek.setAttribute('data-blok-database-drawer', '');
+  document.body.append(peek);
+  try {
+    h.pages.prepare?.('other');
+    expect(h.createEditor).not.toHaveBeenCalled();
+  } finally {
+    peek.remove();
+    h.pages.destroy();
+  }
+});
+
 it('evicts the oldest idle editor when the retention limit is reached', async () => {
   const editors: RowPageEditor[] = [];
   const pages = createDesktopRowPages({

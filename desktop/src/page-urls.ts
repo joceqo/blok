@@ -17,6 +17,13 @@ export function publicPageUrl(server:string,title:string,publicId:string):string
   return new URL(`/p/${slug}-${publicId.toLowerCase()}`,server).href;
 }
 export function legacyPageUrl(base:string,id:string):string {const url=new URL('/',base);url.searchParams.set('page',id);return url.href;}
+
+/** Navigation keeps opt-in diagnostics; copied/shared canonical links stay clean. */
+export function pageNavigationUrl(destination: string, currentHref = location.href): URL {
+  const url = new URL(destination, currentHref);
+  if (new URL(currentHref).searchParams.get('profile') === '1') url.searchParams.set('profile', '1');
+  return url;
+}
 export interface ResolvedPage {pageId:string;publicId:string;title:string;workspace:CloudWorkspace;teamspaceId:string|null}
 export async function resolvePageDestination(client:Pick<CloudClient,'request'>,href:string,session:CloudSession):Promise<ResolvedPage> {
   const destination=pageDestination(href);

@@ -37,7 +37,7 @@ export function createMemberProfiles(options:{workspaceName:string;members(signa
   const close=():void=>{
     dismiss();
     const url=new URL(location.href);
-    if(!url.searchParams.has('profile'))return;
+    if(!url.searchParams.has('profile') || url.searchParams.get('profile')==='1')return;
     if(state.pushed){state.pushed=false;history.back();}
     else {url.searchParams.delete('profile');history.replaceState(history.state,'',url);}
   };
@@ -97,17 +97,17 @@ export function createMemberProfiles(options:{workspaceName:string;members(signa
   };
   const open=(id:string):Promise<void>=>{
     if(state.disposed)return Promise.resolve();
-    const url=new URL(location.href),hadProfile=url.searchParams.has('profile');url.searchParams.set('profile',id);
+    const url=new URL(location.href),hadProfile=url.searchParams.has('profile') && url.searchParams.get('profile')!=='1';url.searchParams.set('profile',id);
     if(hadProfile)history.replaceState(history.state,'',url);
     else {history.pushState(history.state,'',url);state.pushed=true;}
     return show(id);
   };
   const onRoute=():void=>{
     const id=new URL(location.href).searchParams.get('profile');
-    if(id)void show(id);else {state.pushed=false;dismiss();}
+    if(id && id!=='1')void show(id);else {state.pushed=false;dismiss();}
   };
   window.addEventListener('popstate',onRoute,{signal:lifetime.signal});
   const initialProfile=new URL(location.href).searchParams.get('profile');
-  if(initialProfile)queueMicrotask(()=>{if(!state.disposed && state.dialog===null)void show(initialProfile);});
+  if(initialProfile && initialProfile!=='1')queueMicrotask(()=>{if(!state.disposed && state.dialog===null)void show(initialProfile);});
   return {list,open,close,destroy(){state.disposed=true;lifetime.abort();state.request=null;dismiss();}};
 }

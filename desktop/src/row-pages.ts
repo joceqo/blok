@@ -38,6 +38,7 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
     surface: HTMLElement;
     ready: boolean;
     active: boolean;
+    visited: boolean;
     disposed: boolean;
     unwatch?: () => void;
     refreshPermissions(): void;
@@ -71,7 +72,7 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
     if (!entry.active || entry.disposed) return;
     entry.active = false;
     mounts.delete(entry);
-    if (destroyed || !entry.ready || retain === 0) {
+    if (destroyed || retain === 0) {
       dispose(entry);
 
       return;
@@ -105,7 +106,7 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
     // older transition cannot finish after the latest permission is applied.
     let permissions = Promise.resolve();
     const entry: Entry = {
-      pageId, editor, surface, ready: false, active, disposed: false,
+      pageId, editor, surface, ready: false, active, visited: active, disposed: false,
       refreshPermissions() {
         if (!entry.ready || entry.disposed) return;
         permissions = permissions.then(async () => {
@@ -148,7 +149,16 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
     reconcileLegacy: input => options.reconcileLegacy(input),
     prepare(pageId, preparation) {
       if (destroyed || retain === 0 || idle.has(pageId) || [...mounts].some(entry => entry.pageId === pageId)) return;
-      if (preparation?.ifRoom && idle.size >= retain) return;
+      // An inline peek has no entry in this host's mounts. It still owns the
+      // foreground: speculative editors must not compete with its first paint.
+      if (mounts.size > 0 || document.querySelector('[data-blok-database-drawer]') !== null) return;
+      if (idle.size >= retain) {
+        if (preparation?.ifRoom) return;
+        const speculative = [...idle.values()].find(entry => !entry.visited);
+
+        if (speculative === undefined) return;
+        dispose(speculative);
+      }
       try {
         createEntry(pageId, parked, false);
         while (idle.size > retain) dispose(idle.values().next().value as Entry);
@@ -169,6 +179,7 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
         cached.surface.hidden = false;
         holder.append(cached.surface);
         cached.active = true;
+        cached.visited = true;
         mounts.add(cached);
         cached.refreshPermissions();
 

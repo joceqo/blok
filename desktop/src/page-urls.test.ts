@@ -1,7 +1,13 @@
 import {afterEach,describe,expect,it,vi} from 'vitest';
-import {libraryUrl,libraryCategoryForHref,pageDestination,publicPageUrl,resolvePageDestination,workspaceSwitchUrl,rememberPageLinks,pageIdForHref,copiedPageLink} from './page-urls';
+import {pageNavigationUrl,libraryUrl,libraryCategoryForHref,pageDestination,publicPageUrl,resolvePageDestination,workspaceSwitchUrl,rememberPageLinks,pageIdForHref,copiedPageLink} from './page-urls';
 import type {CloudSession} from './cloud/client';
 const uuid='2a7aee31-f541-41e8-9190-6eae552291b8';
+it('preserves diagnostic opt-in during navigation without copying stale destinations or login parameters', () => {
+  const destination = `https://example.org/p/sprints-${uuid}`;
+  expect(pageNavigationUrl(destination, 'https://example.org/?page=old&profile=1&token=secret#old').href).toBe(`${destination}?profile=1`);
+  expect(pageNavigationUrl(destination, 'https://example.org/?profile=0').href).toBe(destination);
+  expect(publicPageUrl('https://example.org', 'sprints', uuid)).toBe(destination);
+});
 const workspace={id:'ws',slug:'new-workspace',name:'New name',role:'member' as const};
 const session:CloudSession={user:{id:'user',email:'user@example.org'},workspaces:[workspace]};
 afterEach(()=>rememberPageLinks(location.origin,location.origin,[]));

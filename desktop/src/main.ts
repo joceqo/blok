@@ -7,7 +7,7 @@ import { activeWorkspace, activateWorkspace, initialWorkspace, rememberWorkspace
 import { nativeSessionAdapter } from './native-session';
 import { applyAppearance, readAppearance } from './settings';
 import { CloudClient, mountCloudGateway } from './cloud';
-import { pageDestination, resolvePageDestination, publicPageUrl, legacyPageUrl, rememberPageLinks } from './page-urls';
+import { pageNavigationUrl, pageDestination, resolvePageDestination, publicPageUrl, legacyPageUrl, rememberPageLinks } from './page-urls';
 import { brandedTitle } from './tab-identity';
 
 import {loadReactGrab, reactGrabAvailable} from './react-grab';
@@ -105,7 +105,7 @@ async function boot(root: HTMLElement): Promise<void> {
       activateWorkspace(ref);
       rememberPageLinks(location.origin,origin,[{id:resolved.pageId,title:resolved.title,publicId:resolved.publicId}]);
       const url=native ? legacyPageUrl(location.href,resolved.pageId) : publicPageUrl(origin,resolved.title,resolved.publicId);
-      history.replaceState(null,'',url);
+      history.replaceState(null,'',pageNavigationUrl(url));
     }catch{showUnavailable(root);return;}
   }else{
     if (explicitGateway || (!native && selected.kind === 'local' && params.get('local') !== '1')) {await showGateway();return;}

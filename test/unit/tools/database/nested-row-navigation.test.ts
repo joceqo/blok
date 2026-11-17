@@ -3,6 +3,62 @@ import { DatabaseCardDrawer, type CardDrawerOptions } from '../../../../src/tool
 import type { PeekProfileRecord } from '../../../../src/components/utils/peek-profile';
 
 const drawers: DatabaseCardDrawer[] = [];
+
+it.each(['none', 'button', 'closed'] as const)('defers automatic title focus and respects intervening action: %s', async action => {
+  vi.useFakeTimers();
+  const wrapper = document.createElement('div');
+  document.body.append(wrapper);
+  const drawer = make(wrapper);
+  drawer.open({ id: 'row', position: 'a0', properties: { title: 'Row' } }, 'side');
+  const title = wrapper.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]');
+  expect(document.activeElement).not.toBe(title);
+  vi.advanceTimersToNextFrame();
+  expect(document.activeElement).not.toBe(title);
+  const button = wrapper.querySelector<HTMLButtonElement>('[data-blok-database-drawer-close]');
+  if (action === 'button') button?.focus();
+  if (action === 'closed') drawer.close();
+  await vi.advanceTimersByTimeAsync(40);
+  if (action === 'none') expect(document.activeElement).toBe(title);
+  if (action === 'button') expect(document.activeElement).toBe(button);
+  if (action === 'closed') expect(document.activeElement).not.toBe(title);
+});
+
+it.each([['inline', 0], ['page', 0], ['inline', 100], ['page', 100]] as const)('keeps a %s lookup behind the shell frame (lookup delay: %s)', async (body, delay) => {
+  vi.useFakeTimers();
+  const wrapper = document.createElement('div');
+  document.body.append(wrapper);
+  const attach = vi.fn(() => true), mount = vi.fn(() => ({ destroy: vi.fn() }));
+  const drawer = new DatabaseCardDrawer({ wrapper, readOnly: false, titlePropertyId: 'title',
+    schema: [{ id: 'n', name: 'Number', type: 'number', position: 'a0' }],
+    onTitleChange: vi.fn(), onDescriptionChange: vi.fn(), onClose: vi.fn(),
+    rowBody: { attach, detach: vi.fn() },
+    rowPages: { lookup: async () => null, copyFromLegacy: async () => { throw new Error('unused'); }, reconcileLegacy: async () => { throw new Error('unused'); }, mount },
+  });
+  drawers.push(drawer);
+  const row = { id: 'first', position: 'a0', bodyBlocks: true, properties: { title: 'First', n: 42 } };
+  drawer.setRowPageLookup(row.id, 'pending');
+  drawer.open(row, 'side');
+  await Promise.resolve(); // lookup() resolves in the click's microtask checkpoint
+  if (delay > 0) {
+    await vi.advanceTimersByTimeAsync(delay);
+    expect(wrapper.querySelector('[data-blok-database-body-loading]')).not.toBeNull();
+  }
+  if (body === 'page') {
+    drawer.syncOpenRow({ ...row, pageId: 'page-1' });
+    drawer.syncOpenRow(row); // older client drops the pointer before the deferred mount
+  }
+  drawer.setRowPageLookup(row.id, 'done');
+  expect(attach).not.toHaveBeenCalled();
+  expect(mount).not.toHaveBeenCalled();
+  expect(wrapper.querySelector('[data-blok-database-body-loading]')).not.toBeNull();
+  vi.advanceTimersToNextFrame();
+  expect(attach).not.toHaveBeenCalled();
+  expect(mount).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(40);
+  expect(body === 'inline' ? attach : mount).toHaveBeenCalledTimes(1);
+  if (body === 'page') expect(attach).not.toHaveBeenCalled();
+  expect(wrapper.querySelector('[data-blok-database-drawer-prop-value]')?.textContent).toBe('42');
+});
 const make = (wrapper: HTMLElement): DatabaseCardDrawer => {
   const options: CardDrawerOptions = { wrapper, readOnly: false, titlePropertyId: 'title', schema: [], onTitleChange: vi.fn(), onDescriptionChange: vi.fn(), onClose: vi.fn() };
   const drawer = new DatabaseCardDrawer(options);
@@ -196,8 +252,10 @@ it('profiles a real drawer opening only on opted-in loads', async () => {
   drawer.open({ id: 'private-row-id', position: 'a0', properties: { title: 'Private title' } }, 'side');
   const records = (globalThis as { __blokPeekProfiles?: PeekProfileRecord[] }).__blokPeekProfiles;
   const record = records?.at(-1);
-  expect(record?.spans.map(span => span.name)).toEqual(expect.arrayContaining(['openSync', 'focusTitle', 'backdrop', 'promoteDrawer']));
+  expect(record?.spans.map(span => span.name)).toEqual(expect.arrayContaining(['openSync', 'backdrop', 'promoteDrawer']));
+  expect(record?.spans.map(span => span.name)).not.toContain('focusTitle');
   await vi.advanceTimersByTimeAsync(40);
+  expect(record?.spans.map(span => span.name)).toContain('focusTitle');
   expect(record?.milestones.shellPaintOpportunity).toBeDefined();
   expect(JSON.stringify(record)).not.toContain('Private title');
   expect(JSON.stringify(record)).not.toContain('private-row-id');

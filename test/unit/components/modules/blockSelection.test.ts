@@ -1163,9 +1163,21 @@ describe('BlockSelection', () => {
   });
 
   describe('toggleReadOnly', () => {
+    it('does not clear the foreground selection when another editor initializes', () => {
+      const { blockSelection } = createBlockSelection();
+      const outside = document.createTextNode('Foreground text');
+      const selectionMock = { anchorNode: outside, focusNode: outside, removeAllRanges: vi.fn() };
+      vi.spyOn(SelectionUtils, 'get').mockReturnValue(selectionMock as unknown as Selection);
+      blockSelection.toggleReadOnly();
+      expect(selectionMock.removeAllRanges).not.toHaveBeenCalled();
+    });
+
     it('removes native selection and unselects blocks', () => {
-      const { blockSelection, blocks } = createBlockSelection();
+      const { blockSelection, blocks, redactor } = createBlockSelection();
+      redactor.append(blocks[0].holder);
       const selectionMock = {
+        anchorNode: blocks[0].holder,
+        focusNode: blocks[0].holder,
         removeAllRanges: vi.fn(),
       };
 
