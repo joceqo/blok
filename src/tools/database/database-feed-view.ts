@@ -10,7 +10,7 @@ import { htmlToPlainText } from '../../components/utils/plain-text';
 import { safeImageSrc } from '../../components/utils/sanitize-url';
 import { onHover } from '../../components/utils/tooltip';
 import { onPropertyHover } from './property-hint';
-import { IconDotsHorizontal, IconEmojiSmile, IconPlus } from '../../components/icons';
+import { IconDotsHorizontal, IconEmojiSmile, IconMoveDown, IconPlus } from '../../components/icons';
 
 /** A host's footer for one card: comments, reactions (Tier 3, D6). Returns its cleanup. */
 export type FeedFooter = (context: { rowId: string; holder: HTMLElement }) => (() => void) | void;
@@ -63,6 +63,8 @@ export interface FeedViewOptions {
   locale: string;
   bodyOf: (rowId: string) => BodyBlock[];
   personName?: (id: string) => string | undefined;
+  /** The author's picture URL; without one the byline draws the name's initial. */
+  personAvatar?: (id: string) => string | undefined;
   handlers: {
     openRow: (rowId: string) => void;
     loadMore: () => void;
@@ -75,7 +77,7 @@ export interface FeedViewOptions {
   /** Built-in comments: a card's comment box, or null for none. Not drawn when the host owns the footer. */
   comments?: (rowId: string) => HTMLElement | null;
   /** The card's "More actions" menu. */
-  actions?: (rowId: string, anchor: HTMLElement, card: HTMLElement) => void;
+  actions?: (rowId: string, anchor: HTMLElement, card: HTMLElement, event: MouseEvent) => void;
 }
 
 const field = (data: unknown, key: string): unknown =>
@@ -118,6 +120,22 @@ const HOUR_MS = 60 * MINUTE_MS;
 /** research/36 §10: Notion re-reads every byline age on a 30 s tick. */
 const AGE_TICK_MS = 30_000;
 
+/** research/36 §10: one tick for every feed on the page, so their bylines change on the same second. */
+const ageTick: { listeners: Set<() => void>; timer: ReturnType<typeof setInterval> | null } = { listeners: new Set(), timer: null };
+
+const onAgeTick = (listener: () => void): void => {
+  ageTick.listeners.add(listener);
+  ageTick.timer ??= setInterval(() => ageTick.listeners.forEach((run) => run()), AGE_TICK_MS);
+};
+
+/** The last feed to leave stops the timer. */
+const offAgeTick = (listener: () => void): void => {
+  ageTick.listeners.delete(listener);
+  if (ageTick.listeners.size > 0 || ageTick.timer === null) return;
+  clearInterval(ageTick.timer);
+  ageTick.timer = null;
+};
+
 /**
  * research/36 §10: "Just now" under a minute, then "1m" … "59m", then "1h",
  * floored; research/33 "5h". Older posts keep "Yesterday" / "3 days ago"
@@ -138,7 +156,9 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
   private readonly cleanups: Array<() => void> = [];
   /** Every shown byline age, re-read by one shared timer. */
   private readonly ages = new Map<HTMLElement, number>();
-  private ageTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly tickAges = (): void => this.refreshAges();
+  /** One per card with a body: shows "See more" while the preview runs past its cap. */
+  private readonly bodyObservers = new Map<HTMLElement, ResizeObserver>();
 
   constructor(options: FeedViewOptions) {
     this.options = options;
@@ -188,19 +208,39 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
     const card = wrapper.querySelector(`[data-blok-database-feed-card][data-row-id="${CSS.escape(rowId)}"]`);
 
     [...this.ages.keys()].filter((el) => card?.contains(el) === true).forEach((el) => this.ages.delete(el));
+    if (card instanceof HTMLElement) {
+      this.bodyObservers.get(card)?.disconnect();
+      this.bodyObservers.delete(card);
+    }
     card?.remove();
   }
 
+  /** notion-motion.md Round 33 §5: a title edit counts as an edit, so the post gains "(edited)". */
   updateRowTitle(wrapper: HTMLElement, rowId: string, title: string): void {
-    const el = wrapper.querySelector(`[data-blok-database-feed-card][data-row-id="${CSS.escape(rowId)}"] [data-blok-database-feed-title]`);
+    const card = wrapper.querySelector(`[data-blok-database-feed-card][data-row-id="${CSS.escape(rowId)}"]`);
+    const el = card?.querySelector('[data-blok-database-feed-title]');
+    const time = card?.querySelector('[data-blok-database-feed-time]');
 
-    if (el !== null) el.textContent = title;
+    if (el !== null && el !== undefined) el.textContent = title;
+    if (time !== null && time !== undefined && card?.querySelector('[data-blok-database-feed-edited]') === null) {
+      time.after(this.createEdited());
+    }
+  }
+
+  private createEdited(): HTMLElement {
+    const edited = document.createElement('span');
+
+    edited.setAttribute('data-blok-database-feed-edited', '');
+    edited.textContent = this.options.i18n.t('tools.database.feedEdited');
+
+    return edited;
   }
 
   destroy(): void {
     this.cleanups.splice(0).forEach((cleanup) => cleanup());
-    if (this.ageTimer !== null) clearInterval(this.ageTimer);
-    this.ageTimer = null;
+    this.bodyObservers.forEach((observer) => observer.disconnect());
+    this.bodyObservers.clear();
+    offAgeTick(this.tickAges);
     this.ages.clear();
   }
 
@@ -217,7 +257,7 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
 
     if (toolbar !== null) card.appendChild(toolbar);
 
-    const byline = this.createByline(row);
+    const byline = this.options.view.showAuthorByline === false ? null : this.createByline(row);
 
     if (byline !== null) card.appendChild(byline);
 
@@ -247,7 +287,10 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
 
     const body = this.createBody(row.id);
 
-    if (body.childElementCount > 0) card.appendChild(body);
+    if (body.childElementCount > 0) {
+      card.appendChild(body);
+      this.watchOverflow(card, body);
+    }
     const reactions = this.createReactions(row);
 
     if (reactions !== null) card.appendChild(reactions);
@@ -272,7 +315,7 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
     return this.options.footer === undefined ? this.options.reactions : undefined;
   }
 
-  private iconButton(attribute: string, label: string, icon: string, onClick: (button: HTMLButtonElement) => void): HTMLButtonElement {
+  private iconButton(attribute: string, label: string, icon: string, onClick: (button: HTMLButtonElement, event: MouseEvent) => void): HTMLButtonElement {
     const button = document.createElement('button');
 
     button.type = 'button';
@@ -281,7 +324,7 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
     button.innerHTML = icon;
     button.addEventListener('click', (event) => {
       event.stopPropagation();
-      onClick(button);
+      onClick(button, event);
     });
     onHover(button, label);
 
@@ -303,7 +346,7 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
       toolbar.appendChild(this.iconButton('data-blok-database-feed-react', t('tools.database.feedReact'), IconEmojiSmile, (button) => pick(rowId, button)));
     }
     if (actions !== undefined) {
-      toolbar.appendChild(this.iconButton('data-blok-database-feed-more-actions', t('tools.database.tableMoreActions'), IconDotsHorizontal, (button) => actions(rowId, button, card)));
+      toolbar.appendChild(this.iconButton('data-blok-database-feed-more-actions', t('tools.database.tableMoreActions'), IconDotsHorizontal, (button, event) => actions(rowId, button, card, event)));
     }
 
     return toolbar;
@@ -370,7 +413,7 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
     name.textContent = author === undefined
       ? this.options.i18n.t('tools.database.personAnonymous')
       : this.options.personName?.(author) ?? author;
-    byline.appendChild(name);
+    byline.append(this.createAvatar(author, name.textContent), name);
     const at = row.meta?.createdAt;
 
     if (at !== undefined) {
@@ -379,12 +422,37 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
       time.setAttribute('data-blok-database-feed-time', '');
       time.textContent = this.age(at);
       this.ages.set(time, at);
-      this.ageTimer ??= setInterval(() => this.refreshAges(), AGE_TICK_MS);
+      onAgeTick(this.tickAges);
       onHover(time, this.createdHint(at));
       byline.appendChild(time);
+      // notion-motion.md Round 33 §5: its own element after the time, which the age tick rewrites.
+      if ((row.meta?.lastEditedAt ?? at) > at) byline.appendChild(this.createEdited());
     }
 
     return byline;
+  }
+
+  /** notion-motion.md Round 32 §3 Feed: a round avatar before the name; an anonymous author's is blank. */
+  private createAvatar(author: string | undefined, name: string): HTMLElement {
+    const raw = author === undefined ? undefined : this.options.personAvatar?.(author);
+    const url = raw === undefined ? null : safeImageSrc(raw);
+
+    if (url !== null) {
+      const img = document.createElement('img');
+
+      img.src = url;
+      img.alt = '';
+      img.setAttribute('data-blok-database-person-avatar', '');
+
+      return img;
+    }
+    const initial = document.createElement('span');
+
+    // Drawn by CSS from the attribute, so the byline's text stays the name.
+    initial.setAttribute('data-blok-database-person-initial', author === undefined ? '' : [...name][0]?.toUpperCase() ?? '');
+    initial.setAttribute('aria-hidden', 'true');
+
+    return initial;
   }
 
   private refreshAges(): void {
@@ -441,6 +509,42 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
     img.loading = 'lazy';
     img.src = src;
     body.appendChild(img);
+  }
+
+  /**
+   * notion-motion.md Round 48 §C: the preview stops at 500 and a "See more" chip shows over a fade while it
+   * runs over. Images load late, so this follows the body's size. Round 49 §A1: the click lifts the cap in
+   * place. That state lives in the DOM only, so a new view (a tab switch) is capped again, as in Notion.
+   */
+  private watchOverflow(card: HTMLElement, body: HTMLElement): void {
+    if (typeof ResizeObserver === 'undefined') return;
+    const fade = document.createElement('div');
+    const chip = document.createElement('button');
+    const icon = document.createElement('span');
+
+    fade.setAttribute('data-blok-database-feed-fade', '');
+    chip.type = 'button';
+    chip.setAttribute('data-blok-database-feed-see-more', '');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = IconMoveDown;
+    chip.append(icon, this.options.i18n.t('tools.database.feedSeeMore'));
+    fade.appendChild(chip);
+    chip.addEventListener('click', () => {
+      this.bodyObservers.get(card)?.disconnect();
+      this.bodyObservers.delete(card);
+      body.setAttribute('data-expanded', '');
+      fade.remove();
+    });
+    const observer = new ResizeObserver(() => {
+      if (body.scrollHeight > body.clientHeight) {
+        if (!fade.isConnected) body.appendChild(fade);
+      } else {
+        fade.remove();
+      }
+    });
+
+    observer.observe(body);
+    this.bodyObservers.set(card, observer);
   }
 
   /** The page content as read-only text and images. Other block kinds show their text only. */

@@ -1,8 +1,10 @@
 package collabhttp
 
 import (
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/JackUait/blok/packages/server/go/v2/internal/auth"
@@ -34,12 +36,24 @@ type admitted struct {
 }
 
 // admitHistory sends no-store first: versions are document content behind
-// an access check, whatever the answer.
-func (h *Handlers) admitHistory(w http.ResponseWriter, r *http.Request, write bool) (*admitted, bool) {
+// an access check, whatever the answer. readsHistory asks the host's history
+// read hook too, after the document gates said yes.
+func (h *Handlers) admitHistory(w http.ResponseWriter, r *http.Request, write, readsHistory bool) (*admitted, bool) {
 	w.Header().Set("Cache-Control", "no-store")
 	doc, user, hasUser, ok := h.admit(w, r, write)
 	if !ok {
 		return nil, false
+	}
+	if reader, asks := h.config.Authorization.(auth.HistoryReadAuthorizer); readsHistory && asks {
+		allowed, err := reader.CanReadHistory(r.Context(), user, doc)
+		if err != nil {
+			internalError(w)
+			return nil, false
+		}
+		if !allowed {
+			synchttp.Refuse(w, http.StatusForbidden, "forbidden\n")
+			return nil, false
+		}
 	}
 	manager, ok := h.manager(w)
 	if !ok {
@@ -52,22 +66,76 @@ func (h *Handlers) admitHistory(w http.ResponseWriter, r *http.Request, write bo
 	return a, true
 }
 
+// historyWindow is the host's window as each lineage's floor.
+type historyWindow struct {
+	cut    time.Time
+	floors map[string]*uint64
+}
+
+func (v *historyWindow) hides(lineage string, sequence uint64) bool {
+	return v != nil && room.HidesPoint(v.floors, lineage, sequence)
+}
+
+// window asks the host's window hook. Nil when the host sets none; false
+// once it has refused.
+func (h *Handlers) window(w http.ResponseWriter, r *http.Request, a *admitted) (*historyWindow, bool) {
+	windower, ok := h.config.Authorization.(auth.HistoryWindower)
+	if !ok {
+		return nil, true
+	}
+	span, err := windower.HistoryWindow(r.Context(), a.user, a.doc)
+	if err != nil {
+		internalError(w)
+		return nil, false
+	}
+	if span == nil {
+		return nil, true
+	}
+	// A .NET tick is 100ns.
+	cut := room.HistoryCut(a.rooms.Now(), int64(*span/100))
+	floors, status, err := a.rooms.HistoryFloorsAt(r.Context(), a.doc, cut)
+	if err != nil {
+		failed(w, r.Context())
+		return nil, false
+	}
+	if status != room.HistoryReady {
+		h.refuseHistory(w, a, status)
+		return nil, false
+	}
+	return &historyWindow{cut: cut, floors: floors}, true
+}
+
+// refuseRetention is a point the window hides: 404 as JSON, so a client can
+// tell it from a missing one.
+func refuseRetention(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	route.StartStream(w, http.StatusNotFound)
+	_, _ = w.Write([]byte(`{"reason":"retention"}`))
+}
+
 // HistoryList is GET /sync/{doc}/history.
 func (h *Handlers) HistoryList(w http.ResponseWriter, r *http.Request) {
-	a, ok := h.admitHistory(w, r, false)
+	a, ok := h.admitHistory(w, r, false, true)
 	if !ok {
 		return
 	}
-	minutes, ok := queryNumber(r, "group")
-	if !ok || (minutes != nil && *minutes != 1 && *minutes != 15 && *minutes != 60) {
+	group, ok := queryGroup(r)
+	if !ok {
 		synchttp.Refuse(w, http.StatusBadRequest, "group must be 1, 15 or 60\n")
 		return
 	}
-	var group time.Duration
-	if minutes != nil {
-		group = time.Duration(*minutes) * time.Minute
+	window, ok := h.window(w, r, a)
+	if !ok {
+		return
 	}
-	result, err := a.rooms.History(r.Context(), a.doc, group)
+	// Shipped route: any other by is ignored, as unknown keys always were.
+	by := dotnet.QueryAll(r.URL.RawQuery, "by")
+	byActor := len(by) == 1 && by[0] == "actor"
+	var cut *time.Time
+	if window != nil {
+		cut = &window.cut
+	}
+	result, err := a.rooms.HistoryWindowed(r.Context(), a.doc, group, byActor, cut)
 	if err != nil {
 		failed(w, r.Context())
 		return
@@ -94,10 +162,15 @@ func (h *Handlers) HistoryList(w http.ResponseWriter, r *http.Request) {
 		body = append(body, '}')
 	}
 	body = append(body, `],"versions":[`...)
-	for i, version := range result.Versions {
-		if i > 0 {
+	listed := 0
+	for _, version := range result.Versions {
+		if window.hides(version.Lineage, version.Sequence) {
+			continue
+		}
+		if listed > 0 {
 			body = append(body, ',')
 		}
+		listed++
 		body = append(body, `{"lineage":`...)
 		body = jsjson.AppendQuoted(body, jsjson.FromString(version.Lineage))
 		body = append(body, `,"sequence":`...)
@@ -113,7 +186,18 @@ func (h *Handlers) HistoryList(w http.ResponseWriter, r *http.Request) {
 			}
 			body = jsjson.AppendQuoted(body, jsjson.FromString(actor))
 		}
-		body = append(body, "]}"...)
+		body = append(body, ']')
+		if version.Noted {
+			body = append(body, `,"actorKinds":[`...)
+			for j, kind := range version.ActorKinds {
+				if j > 0 {
+					body = append(body, ',')
+				}
+				body = appendActorKind(body, kind.ID, kind.Note)
+			}
+			body = append(body, ']')
+		}
+		body = append(body, '}')
 	}
 	body = append(body, "]}"...)
 	writeJSON(w, body)
@@ -134,12 +218,20 @@ func writeJSON(w http.ResponseWriter, body []byte) {
 
 // HistoryRead is GET /sync/{doc}/history/{lineage}/{sequence}.
 func (h *Handlers) HistoryRead(w http.ResponseWriter, r *http.Request) {
-	a, ok := h.admitHistory(w, r, false)
+	a, ok := h.admitHistory(w, r, false, true)
 	if !ok {
 		return
 	}
 	lineage, sequence, ok := historyPoint(w, r)
 	if !ok {
+		return
+	}
+	window, ok := h.window(w, r, a)
+	if !ok {
+		return
+	}
+	if window.hides(lineage, sequence) {
+		refuseRetention(w)
 		return
 	}
 	result, err := a.rooms.ReadVersion(r.Context(), a.doc, lineage, sequence)
@@ -158,7 +250,7 @@ func (h *Handlers) HistoryRead(w http.ResponseWriter, r *http.Request) {
 // HistoryChanges is GET .../changes: the edits of each record in
 // (since, sequence]. The client names the previous version's sequence.
 func (h *Handlers) HistoryChanges(w http.ResponseWriter, r *http.Request) {
-	a, ok := h.admitHistory(w, r, false)
+	a, ok := h.admitHistory(w, r, false, true)
 	if !ok {
 		return
 	}
@@ -171,9 +263,27 @@ func (h *Handlers) HistoryChanges(w http.ResponseWriter, r *http.Request) {
 		synchttp.Refuse(w, http.StatusBadRequest, "since must be a whole number no greater than the sequence\n")
 		return
 	}
+	// v2.1.0 ignored unknown keys here, so a bad detail or block is ignored, not refused.
+	detail, ok := queryDetail(r)
+	detail = detail && ok
+	block, ok := queryBlock(r)
+	if !ok {
+		block = nil
+	}
 	var from uint64
 	if since != nil {
 		from = *since
+	}
+	window, ok := h.window(w, r, a)
+	if !ok {
+		return
+	}
+	if window.hides(lineage, sequence) {
+		refuseRetention(w)
+		return
+	}
+	if window != nil {
+		from = room.WindowSince(window.floors[lineage], from)
 	}
 	result, err := a.rooms.Changes(r.Context(), a.doc, lineage, sequence, from, room.MaxChangeRecords, room.MaxChangeBytes)
 	if err != nil {
@@ -184,23 +294,40 @@ func (h *Handlers) HistoryChanges(w http.ResponseWriter, r *http.Request) {
 		h.refuseHistory(w, a, result.Status)
 		return
 	}
+	notes, noted := a.rooms.ReadNotes(r.Context(), a.doc, lineage)
 	// Rows are measured newest first; the newest always goes out.
 	var rows [][]byte
-	size := int64(changesEnvelopeBytes)
-	truncated := result.Truncated
+	var sizes []int64
+	var shown []room.RecordChanges
 	for index := len(result.Changes) - 1; index >= 0; index-- {
-		row, err := changeRow(result.Changes[index])
+		record, ok := narrowed(result.Changes[index], block)
+		if !ok {
+			continue
+		}
+		row, err := changeRow(record, detail, notes, noted)
 		if err != nil {
 			failed(w, r.Context())
 			return
 		}
-		if len(rows) > 0 && size+int64(len(row))+1 > room.MaxChangeBytes {
-			truncated = true
-			break
-		}
 		rows = append(rows, row)
-		size += int64(len(row)) + 1
+		sizes = append(sizes, int64(len(row)))
+		shown = append(shown, record)
 	}
+	// Cut by the room with every row kept, the answer ends at the oldest
+	// record read, so a narrowed answer still moves its cursor.
+	// Counted before the cut below: after it, every index would look like the last row.
+	rowCount := len(rows)
+	olderEndOf := func(oldest int) room.RecordChanges {
+		if oldest == rowCount-1 && len(result.Changes) > 0 {
+			return result.Changes[0]
+		}
+		return shown[oldest]
+	}
+	kept, truncated := fitAnswer(sizes, result.Truncated, func(oldest int) int64 {
+		record := olderEndOf(oldest)
+		return int64(len(appendOlderEnd(nil, lineage, record.Sequence, record.CommittedAt)))
+	})
+	rows = rows[:kept]
 	writeHistoryHead(w, lineage, sequence)
 	body := []byte(`{"changes":[`)
 	for index := len(rows) - 1; index >= 0; index-- {
@@ -209,19 +336,22 @@ func (h *Handlers) HistoryChanges(w http.ResponseWriter, r *http.Request) {
 		}
 		body = append(body, rows[index]...)
 	}
+	body = append(body, ']')
 	if truncated {
-		body = append(body, `],"truncated":true}`...)
-	} else {
-		body = append(body, "]}"...)
+		oldest := olderEndOf(kept - 1)
+		body = appendOlderEnd(body, lineage, oldest.Sequence, oldest.CommittedAt)
 	}
-	writeJSON(w, body)
+	writeJSON(w, append(body, '}'))
 }
 
 var changeKinds = map[room.BlockChangeKind]string{
 	room.BlockAdded: "added", room.BlockRemoved: "removed", room.BlockChanged: "changed", room.BlockMoved: "moved",
 }
 
-func changeRow(record room.RecordChanges) ([]byte, error) {
+// changeRow writes one row. With detail, a changed database or row also
+// carries what changed inside its data. With a notes store (noted), the row
+// carries actors: its actor's kind, or nothing when the record has no note.
+func changeRow(record room.RecordChanges, detail bool, notes map[uint64]room.RecordNote, noted bool) ([]byte, error) {
 	row := []byte(`{"sequence":`)
 	row = strconv.AppendUint(row, record.Sequence, 10)
 	row = append(row, `,"committedAt":`...)
@@ -231,6 +361,13 @@ func changeRow(record room.RecordChanges) ([]byte, error) {
 		row = append(row, "null"...)
 	} else {
 		row = jsjson.AppendQuoted(row, jsjson.FromString(*record.ActorID))
+	}
+	if noted {
+		row = append(row, `,"actors":[`...)
+		if note, ok := notes[record.Sequence]; ok && record.ActorID != nil {
+			row = appendActorKind(row, *record.ActorID, note)
+		}
+		row = append(row, ']')
 	}
 	row = append(row, `,"blocks":[`...)
 	for i, change := range record.Blocks {
@@ -262,6 +399,16 @@ func changeRow(record room.RecordChanges) ([]byte, error) {
 			row = append(row, `,"`+side.name+`":`...)
 			row = append(row, encoded...)
 		}
+		if detail && change.Kind == room.BlockChanged {
+			fields := room.DescribeDatabaseChange(change.Type, change.Before, change.After)
+			if fields.Len() > 0 {
+				encoded, err := docendpoint.Serialize(fields)
+				if err != nil {
+					return nil, err
+				}
+				row = append(append(row, ','), encoded[1:len(encoded)-1]...)
+			}
+		}
 		row = append(row, '}')
 	}
 	row = append(row, ']')
@@ -278,9 +425,50 @@ func changeRow(record room.RecordChanges) ([]byte, error) {
 	return append(row, '}'), nil
 }
 
+// appendActorKind writes {id, kind, onBehalfOf?}.
+func appendActorKind(body []byte, id string, note room.RecordNote) []byte {
+	body = jsjson.AppendQuoted(append(body, `{"id":`...), jsjson.FromString(id))
+	body = jsjson.AppendQuoted(append(body, `,"kind":`...), jsjson.FromString(note.Kind))
+	if note.OnBehalfOf != "" {
+		body = jsjson.AppendQuoted(append(body, `,"onBehalfOf":`...), jsjson.FromString(note.OnBehalfOf))
+	}
+	return append(body, '}')
+}
+
+// narrowed is the record narrowed to one block: only its changes, no page
+// keys. False when the record did not touch it. A nil block keeps it whole.
+func narrowed(record room.RecordChanges, block *string) (room.RecordChanges, bool) {
+	if block == nil {
+		return record, true
+	}
+	var blocks []room.BlockChange
+	for _, change := range record.Blocks {
+		if change.ID.String() == *block {
+			blocks = append(blocks, change)
+		}
+	}
+	if len(blocks) == 0 {
+		return record, false
+	}
+	record.Blocks, record.Page = blocks, nil
+	return record, true
+}
+
+// queryBlock: absent is nil; anything but one non-empty value is false.
+func queryBlock(r *http.Request) (*string, bool) {
+	values := dotnet.QueryAll(r.URL.RawQuery, "block")
+	if len(values) == 0 {
+		return nil, true
+	}
+	if len(values) != 1 || values[0] == "" {
+		return nil, false
+	}
+	return &values[0], true
+}
+
 // HistoryDelete is DELETE /sync/{doc}/history/{lineage}.
 func (h *Handlers) HistoryDelete(w http.ResponseWriter, r *http.Request) {
-	a, ok := h.admitHistory(w, r, true)
+	a, ok := h.admitHistory(w, r, true, false)
 	if !ok {
 		return
 	}
@@ -288,7 +476,21 @@ func (h *Handlers) HistoryDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	status, outcome, err := a.rooms.DeleteLineage(r.Context(), a.doc, lineage)
+	if holder, asks := h.config.Authorization.(auth.HistoryHolder); asks {
+		held, err := holder.IsHistoryHeld(r.Context(), a.doc, lineage)
+		if err != nil {
+			internalError(w)
+			return
+		}
+		if held {
+			w.Header().Set("Content-Type", "application/json")
+			route.StartStream(w, http.StatusConflict)
+			_, _ = w.Write([]byte(`{"reason":"held"}`))
+			return
+		}
+	}
+	status, outcome, err := a.rooms.DeleteLineageBy(r.Context(), a.doc, lineage,
+		synchttp.DeriveActor(a.ticketUser, a.user, a.hasUser))
 	if err != nil {
 		failed(w, r.Context())
 		return
@@ -312,7 +514,8 @@ func (h *Handlers) HistoryDelete(w http.ResponseWriter, r *http.Request) {
 // HistoryRestore is POST .../restore: the key is required, If-Match is
 // optional, and it answers like an edit.
 func (h *Handlers) HistoryRestore(w http.ResponseWriter, r *http.Request) {
-	a, ok := h.admitHistory(w, r, true)
+	// A restore reads the version it writes, so the history read hook guards it too.
+	a, ok := h.admitHistory(w, r, true, true)
 	if !ok {
 		return
 	}
@@ -338,8 +541,72 @@ func (h *Handlers) HistoryRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	keep := restoreKeepsDatabases(r)
+	window, ok := h.window(w, r, a)
+	if !ok {
+		return
+	}
+	var confirmed map[string]bool
+	if h.config.EnforceRestoreGuards {
+		confirmed = restoreConfirms(r, h.config.MaxMessageBytes)
+	}
 	actor := synchttp.DeriveActor(a.ticketUser, a.user, a.hasUser)
-	status, edit, err := a.rooms.Restore(r.Context(), a.doc, lineage, sequence, operationID, actor, expect)
+	outcome, err := a.rooms.RestoreWith(r.Context(), a.doc, lineage, sequence, operationID, actor, expect, confirmed,
+		room.RestoreOptions{Hidden: window.hides(lineage, sequence), KeepDatabases: keep})
+	if err != nil {
+		failed(w, r.Context())
+		return
+	}
+	if outcome.Hidden {
+		refuseRetention(w)
+		return
+	}
+	if outcome.Status != room.HistoryReady {
+		h.refuseHistory(w, a, outcome.Status)
+		return
+	}
+	if outcome.Edit == nil {
+		refuseRestore(w, outcome.RefusedAs, outcome.Refused)
+		return
+	}
+	WriteEditResult(w, *outcome.Edit, a.rooms.RetryAfter())
+}
+
+// HistoryRestorePreview is POST .../restore/preview: the restore planned
+// and measured, nothing written, no key needed. It needs write access, as
+// the restore does. If-Match is checked as the restore would.
+func (h *Handlers) HistoryRestorePreview(w http.ResponseWriter, r *http.Request) {
+	a, ok := h.admitHistory(w, r, true, true)
+	if !ok {
+		return
+	}
+	lineage, sequence, ok := historyPoint(w, r)
+	if !ok {
+		return
+	}
+	var expect *room.Precondition
+	if values, present := r.Header["If-Match"]; present {
+		var ok bool
+		if expect, ok = parseEntityTag(values); !ok {
+			synchttp.Refuse(w, http.StatusBadRequest, "If-Match must be one quoted \"<lineage>:<sequence>\" tag\n")
+			return
+		}
+	}
+	keep, ok := queryDatabases(r)
+	if !ok {
+		synchttp.Refuse(w, http.StatusBadRequest, badDatabases)
+		return
+	}
+	window, ok := h.window(w, r, a)
+	if !ok {
+		return
+	}
+	if window.hides(lineage, sequence) {
+		refuseRetention(w)
+		return
+	}
+	status, preview, edit, err := a.rooms.PreviewRestoreWith(r.Context(), a.doc, lineage, sequence, expect,
+		synchttp.DeriveActor(a.ticketUser, a.user, a.hasUser), room.RestoreOptions{KeepDatabases: keep})
 	if err != nil {
 		failed(w, r.Context())
 		return
@@ -348,7 +615,122 @@ func (h *Handlers) HistoryRestore(w http.ResponseWriter, r *http.Request) {
 		h.refuseHistory(w, a, status)
 		return
 	}
-	WriteEditResult(w, *edit, a.rooms.RetryAfter())
+	if preview == nil {
+		WriteEditResult(w, *edit, a.rooms.RetryAfter())
+		return
+	}
+	text, err := RestorePreviewJSON(preview)
+	if err != nil {
+		internalError(w)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(text))
+}
+
+// RestorePreviewJSON is the preview route's body. The agent's
+// history.previewRestore answers the same body.
+func RestorePreviewJSON(preview *room.RestorePreview) (string, error) {
+	blocks := make([]any, 0, len(preview.Blocks))
+	for _, change := range preview.Blocks {
+		row := &jsjson.Object{}
+		row.Set(jsjson.FromString("id"), change.ID)
+		if change.Type == nil {
+			row.Set(jsjson.FromString("type"), nil)
+		} else {
+			row.Set(jsjson.FromString("type"), *change.Type)
+		}
+		row.Set(jsjson.FromString("kind"), jsjson.FromString(changeKinds[change.Kind]))
+		blocks = append(blocks, row)
+	}
+	page := make([]any, 0, len(preview.Page))
+	for _, key := range preview.Page {
+		page = append(page, jsjson.FromString(key))
+	}
+	guards := make([]any, 0, len(preview.Guards))
+	for _, guard := range preview.Guards {
+		guards = append(guards, guard.JSON())
+	}
+	undo := &jsjson.Object{}
+	undo.Set(jsjson.FromString("blocks"), blocks)
+	undo.Set(jsjson.FromString("page"), page)
+	body := &jsjson.Object{}
+	body.Set(jsjson.FromString("wouldUndo"), undo)
+	body.Set(jsjson.FromString("guards"), guards)
+	body.Set(jsjson.FromString("fits"), preview.FrameBytes <= preview.LimitBytes)
+	body.Set(jsjson.FromString("frameBytes"), float64(preview.FrameBytes))
+	body.Set(jsjson.FromString("limitBytes"), float64(preview.LimitBytes))
+	body.Set(jsjson.FromString("expectRevision"),
+		jsjson.FromString(preview.Head.Tag.Lineage+":"+strconv.FormatUint(preview.Head.ServerSequence, 10)))
+	return jsjson.Stringify(body)
+}
+
+// RestoreConfirmHeader lists the guard kinds a restore confirms; the body's
+// {confirm:[...]} adds to it.
+const RestoreConfirmHeader = "X-Blok-Restore-Confirm"
+
+// RestoreRefusalHeader marks a guard's 409, which the key-reuse 409 lacks.
+const RestoreRefusalHeader = "X-Blok-Restore-Refusal"
+
+// restoreConfirms: the kinds from every header line and comma item, then a
+// body {confirm:[...]}. Unknown kinds and a body that does not parse are
+// ignored: they confirm nothing.
+func restoreConfirms(r *http.Request, maxBytes int) map[string]bool {
+	confirmed := map[string]bool{}
+	add := func(kind string) {
+		for _, known := range room.ConfirmableGuards {
+			if kind == known {
+				confirmed[kind] = true
+			}
+		}
+	}
+	for _, line := range r.Header.Values(RestoreConfirmHeader) {
+		for _, item := range strings.Split(line, ",") {
+			add(strings.Trim(item, " \t"))
+		}
+	}
+	if r.Body == nil {
+		return confirmed
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBytes)+1))
+	if err != nil || len(body) == 0 || len(body) > maxBytes {
+		return confirmed
+	}
+	parsed, err := jsjson.Parse(body)
+	object, ok := parsed.(*jsjson.Object)
+	if err != nil || !ok {
+		return confirmed
+	}
+	list, _ := object.Get(jsjson.FromString("confirm"))
+	items, _ := list.([]any)
+	for _, item := range items {
+		if kind, ok := item.(jsjson.Str); ok {
+			add(kind.String())
+		}
+	}
+	return confirmed
+}
+
+// refuseRestore is the guard's 409: JSON {error, guards} and the refusal
+// header, so a client never mistakes it for a reused key.
+func refuseRestore(w http.ResponseWriter, reason string, guards []room.RestoreGuard) {
+	list := make([]any, 0, len(guards))
+	for _, guard := range guards {
+		list = append(list, guard.JSON())
+	}
+	body := &jsjson.Object{}
+	body.Set(jsjson.FromString("error"), jsjson.FromString(reason))
+	body.Set(jsjson.FromString("guards"), list)
+	text, err := jsjson.Stringify(body)
+	if err != nil {
+		internalError(w)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(RestoreRefusalHeader, reason)
+	w.WriteHeader(http.StatusConflict)
+	_, _ = w.Write([]byte(text))
 }
 
 // historyPoint is the route's lineage and sequence; a sequence that is not
@@ -380,6 +762,26 @@ func historyLineage(w http.ResponseWriter, r *http.Request) (string, bool) {
 // parseUnsigned is ulong.TryParse with NumberStyles.None: digits only, but
 // .NET also skips any NULs after the last digit ("1\x00" is 1).
 func parseUnsigned(digits string) (uint64, bool) { return dotnet.ParseUInt64None(digits) }
+
+// queryGroup: absent is 0; anything but 1, 15 or 60 minutes is false.
+func queryGroup(r *http.Request) (time.Duration, bool) {
+	minutes, ok := queryNumber(r, "group")
+	if !ok {
+		return 0, false
+	}
+	if minutes == nil {
+		return 0, true
+	}
+	switch *minutes {
+	case 1:
+		return time.Minute, true
+	case 15:
+		return 15 * time.Minute, true
+	case 60:
+		return time.Hour, true
+	}
+	return 0, false
+}
 
 // queryNumber: absent is nil; a repeated, empty or signed value is false.
 // The query is read the ASP.NET way, not with net/url.

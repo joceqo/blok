@@ -165,6 +165,8 @@ internal sealed class LiveSession : IHandleSession
     JsonObject result;
     bool writing;
     JsonObject? pageRun = null;
+    // Pages made for this batch: if it stops, the answer names those the room does not link.
+    var created = new JsonArray();
 
     // Single lane: the doc must stay as exported until the write is queued.
     room.HoldDocFrames();
@@ -191,7 +193,7 @@ internal sealed class LiveSession : IHandleSession
       {
         input["approval"] = ApprovalInput(approval);
       }
-      if (gate is null && await history.LoadAsync(batch, cancellationToken) is { } versions)
+      if (gate is null && await history.LoadAsync(batch, cancellationToken, write) is { } versions)
       {
         input["versionHistory"] = versions;
       }
@@ -207,7 +209,12 @@ internal sealed class LiveSession : IHandleSession
       {
         if (gate is null && !readOnly && Pages?.Create is not null && envelope)
         {
-          await Pages.AddCreatedPagesAsync(bundle, input, caller, cancellationToken);
+          await Pages.AddCreatedPagesAsync(bundle, input, caller, DocumentId, created, cancellationToken);
+          // The batch fails on it and writes nothing; a cancel must not stop its answer.
+          if (input.ContainsKey("createPageFailure"))
+          {
+            cancellationToken = CancellationToken.None;
+          }
         }
         ran = Uploads is null ? await bundle.CallAsync("agentExecute", input, cancellationToken) : await Uploads.ExecuteAsync(bundle, input, cancellationToken);
       }
@@ -220,6 +227,12 @@ internal sealed class LiveSession : IHandleSession
       writing = McpJson.Bool(ran["writes"]) == true;
       if (McpJson.Bool(result["ok"]) != true)
       {
+        // A failed batch wrote nothing: pages the room already links are no orphans.
+        if (OrphanedPages.CancelledAfterPages(input))
+        {
+          OrphanedPages.WrapCancelled(result, created);
+        }
+        OrphanedPages.Filter(result, input["document"]);
         if (gate?.Refusal is { } refusal && McpJson.String(result["error"]?["code"]) == McpJson.String(refusal["when"]))
         {
           result["error"] = refusal["error"]!.DeepClone();
@@ -292,6 +305,17 @@ internal sealed class LiveSession : IHandleSession
       {
         steps.MarkOther();
       }
+    }
+    catch (Exception error) when (created.Count > 0)
+    {
+      var unlinked = await UnlinkedAsync(created);
+
+      if (unlinked.Count == 0)
+      {
+        throw;
+      }
+
+      return new McpExecuteOutcome(await Pages!.StrandedAnswerAsync(bundle, error, unlinked), null);
     }
     finally
     {
@@ -431,6 +455,27 @@ internal sealed class LiveSession : IHandleSession
     }
 
     return new McpHostError((JsonObject)(await bundle.CallAsync("mcpRoomError", input, cancellationToken))["error"]!);
+  }
+
+  /*
+   * The made pages the room does not link, read again after a failure: part of the batch may
+   * have reached the room. A room that cannot be read reports none, so the host never deletes
+   * a page the room may use.
+   */
+  private async Task<JsonArray> UnlinkedAsync(JsonArray created)
+  {
+    try
+    {
+      var linked = OrphanedPages.Linked(await Converter.ExportAsync(room.Doc, CancellationToken.None));
+
+      return [.. created.Where(pageId => !linked.Contains(McpJson.String(pageId) ?? string.Empty)).Select(pageId => pageId?.DeepClone())];
+    }
+    catch (Exception error)
+    {
+      await Pages!.LogAsync("blok-mcp: the room could not be read after a batch failed, so no page is reported", error);
+
+      return [];
+    }
   }
 
   private async Task<JsonObject> SessionInputAsync(CancellationToken cancellationToken)

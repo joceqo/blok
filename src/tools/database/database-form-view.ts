@@ -1,5 +1,13 @@
-import { IconChevronUpDown, IconDotsHorizontal, IconLock } from '../../components/icons';
+import { createCoverControl } from '../../components/modules/pageTitle/cover-control';
+import { createIconControl } from '../../components/modules/pageTitle/icon-control';
+import { EmojiPicker } from '../callout/emoji-picker';
+import { chooseLanding, playLanding } from '../callout/emoji-landing';
+import { isPageCover } from '../../shared/page-cover';
+import { readIcon } from '../page/page-values';
+import { IconChevronUpDown, IconDotsHorizontal, IconLock, IconPlus } from '../../components/icons';
 import { formatBytes } from '../../components/utils/format-bytes';
+import { prefersReducedMotion } from '../../components/utils/reduced-motion';
+import { onHover } from '../../components/utils/tooltip';
 import type { I18n } from '../../../types';
 import { safeImageSrc } from '../../components/utils/sanitize-url';
 import { DEFAULT_MAX_SIZE } from '../file/constants';
@@ -7,9 +15,11 @@ import { openCellEditor, renderCellValue } from './cells';
 import type { CellContext, CellEditorHandle } from './cells';
 import { accessLine, openFormShare } from './database-form-share';
 import type { FormShareHost } from './database-form-share';
+import { DatabaseFormQuestionDrag } from './database-form-question-drag';
 import { nameTakenError } from './database-name-taken-error';
 import { DatabasePanel, panelInput, panelLabel, panelRow, panelSwitch } from './database-panel';
 import { propertyTypeMeta } from './database-property-types';
+import { openFlyout } from './database-sort-flyouts';
 import type { DatabaseViewRenderer } from './database-view-renderer';
 import { isReadOnlyType } from './property-values';
 import { FORM_ASKABLE, formAnswerProblem, formQuestions } from '../../shared/database/form-questions';
@@ -18,16 +28,18 @@ import { resolveViewProperties, withPropertySetting } from './view-settings';
 import type { ViewPropertyPatch } from './view-settings';
 
 export interface DatabaseFormViewOptions {
-  i18n: Pick<I18n, 't'>;
+  i18n: Pick<I18n, 't'> & Partial<Pick<I18n, 'getLocale'>>;
+  /** Uploads a picked cover file and gives its URL. Without it, a cover comes from the gallery or a link. */
+  uploadCover?: (file: File) => Promise<string>;
   view: DatabaseViewConfig;
   schema: PropertyDefinition[];
   readOnly: boolean;
   source?: DatabaseSourceRef;
-  onSubmit: (values: Record<string, PropertyValue>) => void;
-  setRequired?: (propertyId: string, required: boolean) => void;
+  /** False: the answer was refused (say, the form closed meanwhile), so no thank-you screen. */
+  onSubmit: (values: Record<string, PropertyValue>) => boolean | void;
   setQuestionSetting?: (propertyId: string, changes: ViewPropertyPatch) => void;
   /** A new property of this type, asked as the last question. */
-  addQuestion?: (type: PropertyType) => PropertyDefinition | null;
+  addQuestion?: (type: PropertyType, beforeId?: string) => PropertyDefinition | null;
   /** Makes an existing property the last question. */
   showQuestion?: (propertyId: string) => void;
   renameProperty?: (propertyId: string, name: string) => void;
@@ -36,6 +48,12 @@ export interface DatabaseFormViewOptions {
   changePropertyType?: (propertyId: string, type: PropertyType) => void;
   duplicateProperty?: (propertyId: string) => PropertyDefinition | null;
   deleteProperty?: (propertyId: string) => void;
+  /** "View linked property": the property's own menu, at the question's ⋯. */
+  openLinkedProperty?: (propertyId: string, anchor: HTMLElement) => void;
+  /** Puts the question before `beforeId`; null makes it last. */
+  moveQuestion?: (propertyId: string, beforeId: string | null) => void;
+  /** The schema now, for a form that stays open across schema changes without redrawing. */
+  liveSchema?: () => PropertyDefinition[];
   cellContext?: Partial<CellContext>;
   hasPeople?: boolean;
   onInteractionEnd?: () => void;
@@ -75,9 +93,16 @@ const INPUT_TYPES: Partial<Record<PropertyType, string>> = {
 /** Notion's "Max selection" presets (research/12 §4); any other count goes in the custom field. */
 const MAX_SELECTION_PRESETS = [1, 2, 3, 4, 5, 10] as const;
 
-/** Multi-select defaults to a list (measured). Select keeps a dropdown: Notion's choice there is unmeasured. */
+/** notion-motion.md Round 32 §1 (r32-a-movequestion-*): the Move question flyout is 280 wide. */
+const MOVE_FLYOUT_WIDTH = 280;
+const QUESTION_PANEL_GAP = 24;
+
+/**
+ * Multi-select and select default to a list (measured; select: notion-motion.md Round 32 §4).
+ * Status keeps a dropdown: Notion's choice there is unmeasured.
+ */
 const showOptionsAs = (property: PropertyDefinition, setting: ViewPropertySetting): 'list' | 'dropdown' =>
-  setting.showOptionsAs ?? (property.type === 'multiSelect' ? 'list' : 'dropdown');
+  setting.showOptionsAs ?? (property.type === 'multiSelect' || property.type === 'select' ? 'list' : 'dropdown');
 
 type Field = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLFieldSetElement | HTMLButtonElement;
 
@@ -100,14 +125,30 @@ export class DatabaseFormView implements DatabaseViewRenderer {
   private panel: DatabasePanel | null = null;
   private editor: CellEditorHandle | null = null;
   private building = false;
+  /** A press inside the form: a redraw before its click would take the clicked control away. */
+  private pressing = false;
   private destroying = false;
+  /** The header's icon and cover controls: their pickers live in <body> and close with them. */
+  private headerControls: Array<{ destroy(): void }> = [];
+  private drag: DatabaseFormQuestionDrag | null = null;
 
   constructor(private readonly options: DatabaseFormViewOptions) {
     this.submitted = options.submitted === true;
   }
 
+  private dropHeaderControls(): void {
+    this.headerControls.forEach((control) => control.destroy());
+    this.headerControls = [];
+  }
+
   get interacting(): boolean {
-    return this.building || this.panel !== null || this.editor?.isOpen === true;
+    const active = document.activeElement;
+
+    return this.building || this.pressing || this.panel !== null || this.editor?.isOpen === true
+      // The icon and cover pickers mark their button while open.
+      || this.root?.querySelector('[data-blok-database-form-header] [aria-expanded="true"]') != null
+      || (active?.matches('[data-blok-database-form-question-name], input[data-blok-database-form-header-title], input[data-blok-database-form-header-description]') === true
+        && this.root?.contains(active) === true);
   }
 
   captureDraft(): FormDraft | undefined {
@@ -167,10 +208,12 @@ export class DatabaseFormView implements DatabaseViewRenderer {
 
   destroy(): void {
     this.destroying = true;
+    this.dropHeaderControls();
     this.panel?.close();
     this.panel = null;
     this.editor?.cancel();
     this.editor = null;
+    this.drag?.cleanup();
   }
 
   createView(): HTMLDivElement {
@@ -178,10 +221,43 @@ export class DatabaseFormView implements DatabaseViewRenderer {
 
     root.setAttribute('data-blok-database-form', '');
     root.setAttribute('data-blok-keyboard-owner', '');
+    root.addEventListener('pointerdown', () => {
+      this.pressing = true;
+      document.addEventListener('pointerup', () => setTimeout(() => {
+        this.pressing = false;
+      }), { once: true, capture: true });
+    }, true);
     this.root = root;
+    this.listenForDrag(root);
     this.fill(root);
 
     return root;
+  }
+
+  /** notion-motion.md Round 52 §3: a builder card drags from its blank area; its controls keep the press. */
+  private listenForDrag(root: HTMLElement): void {
+    const moveQuestion = this.options.moveQuestion;
+
+    if (this.options.readOnly || this.options.setQuestionSetting === undefined || moveQuestion === undefined) return;
+    const drag = new DatabaseFormQuestionDrag(root, (id, beforeId) => {
+      // The drop lands in this pointerup: the press is over, so the move may redraw at once.
+      this.pressing = false;
+      moveQuestion(id, beforeId);
+    });
+
+    this.drag = drag;
+    root.addEventListener('pointerdown', (event) => {
+      const target = event.target;
+
+      if (event.button !== 0 || !(target instanceof Element)) return;
+      if (target.closest('input, textarea, select, button, label, a, [data-blok-database-form-gap]') !== null) return;
+      const card = target.closest<HTMLElement>('[data-blok-database-form-question]');
+
+      if (card === null || !root.contains(card) || card.querySelector(':scope > [data-blok-database-form-question-header]') === null) return;
+      // No text selection while the card drags.
+      event.preventDefault();
+      drag.begin(card, event);
+    });
   }
 
   private fill(root: HTMLDivElement): void {
@@ -189,11 +265,15 @@ export class DatabaseFormView implements DatabaseViewRenderer {
 
     this.editor?.cancel();
     this.editor = null;
+    this.dropHeaderControls();
     root.replaceChildren();
     this.fields.clear();
     this.answers.clear();
     const builder = this.options.share !== undefined && !this.options.readOnly;
 
+    const header = this.header(builder);
+
+    if (header !== null) root.appendChild(header);
     if (builder) root.appendChild(this.accessBar());
     if (view.form?.closed === true) {
       // Detached fields keep draft transfer's schema checks while closed.
@@ -224,26 +304,179 @@ export class DatabaseFormView implements DatabaseViewRenderer {
     form.noValidate = true;
     form.addEventListener('submit', (event) => {
       event.preventDefault();
-      this.submit();
+      // Enter in a lone answer submits a form even with no Submit button.
+      if (!builder) this.submit();
     });
-    this.questions().forEach((question) => form.appendChild(question));
-    if (!this.options.readOnly && this.options.addQuestion !== undefined) {
-      const add = panelRow({
-        label: i18n.t('tools.database.formAddQuestion'),
-        testId: 'database-form-add-question',
-        onClick: () => this.openSelectType(add),
-      });
+    this.questions().forEach((question, index) => {
+      if (index > 0 && !this.options.readOnly && this.options.addQuestion !== undefined) question.appendChild(this.gapControl(question));
+      form.appendChild(question);
+    });
+    if (!this.options.readOnly && this.options.addQuestion !== undefined) form.appendChild(this.addButton());
 
-      form.appendChild(add);
+    // notion-motion.md Round 31 §1: only the preview has Submit.
+    if (!builder) {
+      const submit = document.createElement('button');
+
+      submit.type = 'submit';
+      submit.setAttribute('data-blok-database-form-submit', '');
+      submit.textContent = view.form?.submitLabel ?? i18n.t('tools.database.formSubmit');
+      form.appendChild(submit);
     }
-
-    const submit = document.createElement('button');
-
-    submit.type = 'submit';
-    submit.setAttribute('data-blok-database-form-submit', '');
-    submit.textContent = view.form?.submitLabel ?? i18n.t('tools.database.formSubmit');
-    form.appendChild(submit);
     root.appendChild(form);
+  }
+
+  /**
+   * A write from a box in the form. Chrome fires "change" after the box lost
+   * focus, so the redraw must wait for the next control to settle.
+   */
+  private write(save: () => void): void {
+    this.building = true;
+    try {
+      save();
+    } finally {
+      this.building = false;
+    }
+  }
+
+  /** Ends a header or name edit, unless focus moves on inside the form: a redraw then would drop that control. */
+  private endEdit(event: FocusEvent): void {
+    if (this.destroying) return;
+    if (event.relatedTarget instanceof Node && this.root?.contains(event.relatedTarget) === true) return;
+    this.options.onInteractionEnd?.();
+  }
+
+  /**
+   * The form's icon, cover, title and description (notion-motion.md Round 31 §1), kept in
+   * the view's form settings beside its other texts. The builder edits them;
+   * a respondent reads them, and sees nothing when all are unset.
+   */
+  private header(builder: boolean): HTMLElement | null {
+    const { i18n } = this.options;
+    const form = this.options.view.form;
+    const share = this.options.share;
+    const header = document.createElement('div');
+
+    header.setAttribute('data-blok-database-form-header', '');
+    if (!builder || share === undefined) {
+      if (form?.title === undefined && form?.description === undefined && form?.icon === undefined && form?.cover === undefined) return null;
+      // The controls load the emoji picker: a respondent gets them only for something saved.
+      if (form?.icon !== undefined || form?.cover !== undefined) this.headerArt(header, null);
+      if (form?.title !== undefined) {
+        const title = document.createElement('h1');
+
+        title.setAttribute('data-blok-database-form-header-title', '');
+        title.textContent = form.title;
+        header.appendChild(title);
+      }
+      if (form?.description !== undefined) {
+        const description = document.createElement('p');
+
+        description.setAttribute('data-blok-database-form-header-description', '');
+        description.textContent = form.description;
+        header.appendChild(description);
+      }
+
+      return header;
+    }
+    const box = (part: 'title' | 'description', placeholder: string): HTMLInputElement => {
+      const input = document.createElement('input');
+      const state = { saved: form?.[part] ?? '' };
+
+      input.type = 'text';
+      input.defaultValue = state.saved;
+      input.placeholder = placeholder;
+      input.setAttribute('aria-label', placeholder);
+      input.setAttribute(`data-blok-database-form-header-${part}`, '');
+      input.addEventListener('change', () => {
+        const value = input.value.trim();
+
+        if (value === state.saved) return;
+        state.saved = value;
+        this.write(() => share.update({ [part]: value === '' ? undefined : value }));
+      });
+      input.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' || event.isComposing) return;
+        event.preventDefault();
+        input.blur();
+      });
+      input.addEventListener('focusout', (event) => this.endEdit(event));
+
+      return input;
+    };
+
+    this.headerArt(header, share);
+    header.append(
+      box('title', i18n.t('tools.database.formTitlePlaceholder')),
+      box('description', i18n.t('tools.database.formDescriptionPlaceholder')),
+    );
+
+    return header;
+  }
+
+  /**
+   * The icon row and the cover, through the page title's own controls. With `share` the
+   * row offers "Form icon" and "Form cover" (Round 31 §1); without it, it only shows what is saved.
+   */
+  private headerArt(header: HTMLElement, share: DatabaseFormViewOptions['share'] | null): void {
+    const { i18n } = this.options;
+    const saved = (): FormSettings => share?.settings() ?? this.options.view.form ?? {};
+    const readOnly = (): boolean => share === null;
+    const row = document.createElement('div');
+    const t = (key: string): string => i18n.t(key);
+    const cover = createCoverControl(header, {
+      // Saved data may be malformed: draw only a well-formed cover or icon.
+      getCover: () => {
+        const cover = saved().cover;
+
+        return isPageCover(cover) ? cover : null;
+      },
+      setCover: (next) => {
+        this.write(() => share?.update({ cover: next ?? undefined }));
+        cover.redraw();
+      },
+      isReadOnly: readOnly,
+      upload: () => (share === null ? null : this.options.uploadCover ?? null),
+      labels: () => ({
+        add: t('tools.database.formCover'),
+        change: t('title.changeCover'),
+        changeAria: t('title.changeCoverAria'),
+        reposition: t('title.repositionCover'),
+        repositionAria: t('title.repositionCoverAria'),
+        savePosition: t('title.saveCoverPosition'),
+        cancel: t('title.cancelCoverPosition'),
+        dragHint: t('title.coverDragHint'),
+        gallery: t('title.coverGallery'),
+        upload: t('title.coverUpload'),
+        link: t('title.coverLink'),
+        remove: t('title.coverRemove'),
+        uploadFile: t('title.coverUploadFile'),
+        noUpload: t('title.coverNoUpload'),
+        linkPlaceholder: t('title.coverLinkPlaceholder'),
+        submit: t('title.coverSubmit'),
+        linkNote: t('title.coverLinkNote'),
+        invalid: t('title.coverInvalid'),
+        uploadFailed: t('title.coverUploadFailed'),
+        pickerAria: t('title.coverPickerAria'),
+        galleryName: (id) => t(`tools.colorPicker.color.${id}`),
+      }),
+    });
+    const icon = createIconControl(row, {
+      getIcon: () => readIcon(saved().icon) ?? null,
+      setIcon: (next) => {
+        this.write(() => share?.update({ icon: next ?? undefined }));
+        icon.redraw();
+      },
+      isReadOnly: readOnly,
+      labels: () => ({ add: t('tools.database.formIcon'), change: t('title.changeIcon') }),
+      picker: () => ({ i18n, locale: this.options.i18n.getLocale?.() ?? 'en' }),
+      // Static on purpose: the database already ships the picker, and core's lazy loader would leak it into ./tools bundles.
+      loadPicker: () => Promise.resolve({ Picker: EmojiPicker, landings: { chooseLanding, playLanding } }),
+    }, () => [cover.addButton]);
+
+    row.setAttribute('data-blok-database-form-header-row', '');
+    this.headerControls.push(icon, cover);
+    // A respondent with no icon gets no empty row.
+    if (share !== null || readIcon(saved().icon) !== undefined) header.appendChild(row);
   }
 
   /** "🔒 Only members at <workspace> can fill out this form." + "Change" (research/19 §3d). */
@@ -406,16 +639,21 @@ export class DatabaseFormView implements DatabaseViewRenderer {
     if (!this.options.readOnly && this.options.setQuestionSetting !== undefined) {
       const header = document.createElement('div');
       const menu = document.createElement('button');
+      const name = this.nameField(property, setting);
 
+      // The name is a textbox now: the answer needs its own name.
+      field.setAttribute('aria-label', setting.questionName ?? property.name);
       header.setAttribute('data-blok-database-form-question-header', '');
       menu.type = 'button';
       menu.setAttribute('data-blok-database-form-question-menu', '');
       menu.setAttribute('data-blok-testid', 'database-form-question-menu');
       menu.setAttribute('aria-label', i18n.t('tools.database.formEditQuestion'));
+      // The CSS keeps the hover-only chip shown while its menu is open.
+      menu.setAttribute('aria-expanded', 'false');
       menu.innerHTML = IconDotsHorizontal;
       menu.addEventListener('click', () => this.openQuestionMenu(property, menu));
-      header.append(label, menu);
-      wrapper.appendChild(header);
+      header.append(name.input, menu);
+      wrapper.append(header, name.error);
     } else {
       wrapper.appendChild(label);
     }
@@ -457,20 +695,6 @@ export class DatabaseFormView implements DatabaseViewRenderer {
       field.required = required;
     }
     wrapper.appendChild(field);
-
-    if (!this.options.readOnly && this.options.setRequired !== undefined) {
-      const toggle = document.createElement('label');
-      const box = document.createElement('input');
-      const setRequired = this.options.setRequired;
-
-      toggle.setAttribute('data-blok-database-form-required-toggle', '');
-      box.type = 'checkbox';
-      box.checked = required;
-      box.setAttribute('data-blok-database-form-required', property.id);
-      box.addEventListener('change', () => setRequired(property.id, box.checked));
-      toggle.append(box, document.createTextNode(i18n.t('tools.database.formRequiredToggle')));
-      wrapper.appendChild(toggle);
-    }
 
     const maxSelections = PICKS_MANY.includes(property.type) ? setting.maxSelections : undefined;
 
@@ -517,6 +741,10 @@ export class DatabaseFormView implements DatabaseViewRenderer {
 
     if (field instanceof HTMLInputElement) field.type = INPUT_TYPES[property.type] ?? 'text';
     field.id = id;
+    // notion-motion.md Round 31 §1: the builder's answer box reads "Respondent's answer".
+    if (this.options.share !== undefined && !this.options.readOnly && field.type !== 'checkbox' && field.type !== 'date') {
+      field.placeholder = this.options.i18n.t('tools.database.formAnswerPlaceholder');
+    }
 
     return field;
   }
@@ -638,19 +866,135 @@ export class DatabaseFormView implements DatabaseViewRenderer {
     };
   }
 
+  /**
+   * The question name, edited in the card (notion-motion.md Round 31 §1). With
+   * sync on it renames the property; a taken name is refused (research/14 §3).
+   * Writes land on change or Enter, never per key.
+   */
+  private nameField(initial: PropertyDefinition, setting: ViewPropertySetting): { input: HTMLInputElement; error: HTMLElement } {
+    const { i18n } = this.options;
+    const input = document.createElement('input');
+    const synced = setting.questionName === undefined;
+    const state = { property: initial, saved: setting.questionName ?? initial.name };
+    const taken = nameTakenError(input, 'data-blok-database-form-question-name-error', i18n);
+    const isTaken = (name: string): boolean => synced && name !== state.property.name && this.options.isNameTaken?.(state.property.id, name) === true;
+    const commit = (): void => {
+      const name = input.value.trim();
+
+      if (name === '') {
+        input.value = state.saved;
+        taken.show(null);
+
+        return;
+      }
+      if (name === state.saved || isTaken(name)) return;
+      state.saved = name;
+      if (!synced) {
+        this.write(() => this.options.setQuestionSetting?.(state.property.id, { questionName: name }));
+
+        return;
+      }
+      this.write(() => this.options.renameProperty?.(state.property.id, name));
+      state.property = { ...state.property, name };
+    };
+
+    input.type = 'text';
+    input.defaultValue = state.saved;
+    input.placeholder = i18n.t('tools.database.formQuestionNamePlaceholder');
+    input.setAttribute('aria-label', i18n.t('tools.database.formQuestionName'));
+    input.setAttribute('data-blok-database-form-question-name', '');
+    input.setAttribute('data-blok-testid', 'database-form-question-name');
+    input.addEventListener('input', () => {
+      const name = input.value.trim();
+
+      taken.show(isTaken(name) ? name : null);
+    });
+    input.addEventListener('change', commit);
+    input.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.isComposing) return;
+      event.preventDefault();
+      if (!taken.element.hidden) return;
+      commit();
+      input.blur();
+    });
+    input.addEventListener('focusout', (event) => this.endEdit(event));
+
+    return { input, error: taken.element };
+  }
+
+  /**
+   * The "+" in the gap above a card (notion-motion.md Round 31 §1). A click
+   * opens a slot there and Select type; Escape removes the slot.
+   */
+  private gapControl(card: HTMLElement): HTMLElement {
+    const gap = document.createElement('div');
+    const add = document.createElement('button');
+    const beforeId = card.getAttribute('data-blok-database-form-question') ?? undefined;
+
+    gap.setAttribute('data-blok-database-form-gap', '');
+    add.type = 'button';
+    add.setAttribute('data-blok-database-form-insert', '');
+    add.setAttribute('data-blok-testid', 'database-form-insert-question');
+    add.setAttribute('aria-label', this.options.i18n.t('tools.database.formAddQuestion'));
+    const box = document.createElement('span');
+
+    box.setAttribute('data-blok-database-form-insert-box', '');
+    box.innerHTML = IconPlus;
+    add.appendChild(box);
+    add.addEventListener('click', () => {
+      const slot = document.createElement('div');
+
+      slot.setAttribute('data-blok-database-form-slot', '');
+      card.before(slot);
+      this.openSelectType(slot, card, beforeId);
+    });
+    gap.appendChild(add);
+
+    return gap;
+  }
+
+  /**
+   * The round "+" under the cards (notion-motion.md Round 52 §3). Select type opens beside
+   * a slot it adds above, which is column wide like the slot above a card.
+   */
+  private addButton(): HTMLButtonElement {
+    const label = this.options.i18n.t('tools.database.formAddQuestion');
+    const add = document.createElement('button');
+
+    add.type = 'button';
+    add.setAttribute('data-blok-database-form-add', '');
+    add.setAttribute('data-blok-testid', 'database-form-add-question');
+    add.setAttribute('aria-label', label);
+    add.innerHTML = IconPlus;
+    onHover(add, label);
+    add.addEventListener('click', () => {
+      const slot = document.createElement('div');
+
+      slot.setAttribute('data-blok-database-form-slot', '');
+      add.before(slot);
+      this.openSelectType(slot, add);
+    });
+
+    return add;
+  }
+
   /** Notion's "Select type" (research/19 §3b): existing properties that are not questions yet, then new question types. */
-  private openSelectType(anchor: HTMLElement): void {
+  private openSelectType(anchor: HTMLElement, before: HTMLElement = anchor, beforeId?: string): void {
     if (this.destroying) return;
     this.building = true;
     this.panel?.close();
     const { i18n, view, schema } = this.options;
     const asked = new Set(resolveViewProperties(view, schema).filter((entry) => entry.visible).map((entry) => entry.id));
+    // notion-motion.md Round 31 §1 / Round 44 §1: beside the column like Question options.
     const panel = new DatabasePanel({
       anchor,
+      beside: QUESTION_PANEL_GAP,
+      besideFlip: true,
       testId: 'database-form-select-type',
       width: 290,
       backLabel: i18n.t('tools.database.peekBack'),
       onClose: () => {
+        if (anchor.hasAttribute('data-blok-database-form-slot')) anchor.remove();
         if (this.panel === panel) this.panel = null;
         if (!this.destroying) this.options.onInteractionEnd?.();
       },
@@ -677,15 +1021,22 @@ export class DatabaseFormView implements DatabaseViewRenderer {
           return [
             ...rows,
             panelLabel(i18n.t('tools.database.formNewQuestion')),
-            ...NEW_QUESTION_TYPES.filter((type) => type !== 'person' || this.options.hasPeople === true).map((type) => panelRow({
-              label: this.typeLabel(type),
-              icon: propertyTypeMeta(type).icon,
-              testId: `database-form-new-${type}`,
-              onClick: () => {
-                panel.close();
-                this.addQuestion(anchor, type);
-              },
-            })),
+            ...NEW_QUESTION_TYPES.filter((type) => type !== 'person' || this.options.hasPeople === true).map((type) => {
+              const row = panelRow({
+                label: this.typeLabel(type),
+                icon: propertyTypeMeta(type).icon,
+                testId: `database-form-new-${type}`,
+                onClick: () => {
+                  panel.close();
+                  this.addQuestion(before, type, beforeId);
+                },
+              });
+
+              // Round 31 §1: 44 tall, the glyph in a framed 32px box.
+              row.setAttribute('data-blok-database-form-type-row', '');
+
+              return row;
+            }),
           ];
         },
       },
@@ -696,10 +1047,10 @@ export class DatabaseFormView implements DatabaseViewRenderer {
     this.building = false;
   }
 
-  private addQuestion(anchor: HTMLElement, type: PropertyType): void {
+  private addQuestion(anchor: HTMLElement, type: PropertyType, beforeId?: string): void {
     if (this.destroying) return;
     this.building = true;
-    const property = this.options.addQuestion?.(type);
+    const property = this.options.addQuestion?.(type, beforeId);
 
     if (property === undefined || property === null) {
       this.building = false;
@@ -714,6 +1065,12 @@ export class DatabaseFormView implements DatabaseViewRenderer {
     const menu = wrapper.querySelector<HTMLButtonElement>('[data-blok-testid="database-form-question-menu"]');
 
     if (menu !== null) this.openQuestionMenu(property, menu);
+    // notion-motion.md Round 52 §3: after the panel's own first focus, so the name keeps it.
+    const name = wrapper.querySelector<HTMLInputElement>('[data-blok-database-form-question-name]');
+
+    name?.focus();
+    name?.select();
+    wrapper.scrollIntoView?.({ block: 'nearest', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
     this.building = false;
   }
 
@@ -721,7 +1078,7 @@ export class DatabaseFormView implements DatabaseViewRenderer {
     if (this.destroying) return;
     this.building = true;
     this.panel?.close();
-    const state: { property: PropertyDefinition; setting: ViewPropertySetting; typedName?: string } = {
+    const state: { property: PropertyDefinition; setting: ViewPropertySetting } = {
       property: initial,
       setting: withPropertySetting(this.options.view, this.options.schema, initial.id, {})
         .find((entry) => entry.id === initial.id) ?? { id: initial.id, visible: true },
@@ -731,57 +1088,24 @@ export class DatabaseFormView implements DatabaseViewRenderer {
       state.setting = { ...state.setting, ...patch };
       this.options.setQuestionSetting?.(state.property.id, patch);
     };
-    // Like the property menu: the rename lands on change, Enter or close, never per key,
-    // so a refused last key cannot leave a half-typed name (research/14 §3).
-    const commitName = (): void => {
-      const name = state.typedName?.trim();
-
-      state.typedName = undefined;
-      if (name === undefined || name === '' || name === state.property.name || state.setting.questionName !== undefined) return;
-      if (this.options.isNameTaken?.(state.property.id, name) === true) return;
-      this.options.renameProperty?.(state.property.id, name);
-      state.property = { ...state.property, name };
-    };
+    const card = anchor.closest<HTMLElement>('[data-blok-database-form-question]');
+    // notion-motion.md Round 31 §1 / Round 33 §1: 24 right of the card, top level with it; 24 left of it when only the left has room.
+    // The card is the trigger: focus in its name (a new question's, Round 52 §3) must not dismiss the panel.
     const panel = new DatabasePanel({
-      anchor,
+      anchor: card ?? anchor,
+      ...(card !== null ? { beside: QUESTION_PANEL_GAP, besideOf: card, besideFlip: true } : {}),
       testId: 'database-form-question-settings',
       width: 290,
       backLabel: i18n.t('tools.database.peekBack'),
       onClose: () => {
         this.panel = null;
+        anchor.setAttribute('aria-expanded', 'false');
         if (this.destroying) return;
-        commitName();
         this.options.onInteractionEnd?.();
       },
       root: {
+        title: i18n.t('tools.database.formQuestionOptions'),
         build: () => {
-          const name = panelInput({
-            value: state.setting.questionName ?? state.property.name,
-            placeholder: '',
-            label: i18n.t('tools.database.formQuestionName'),
-            testId: 'database-form-question-name',
-            onInput: (value) => {
-              if (state.setting.questionName !== undefined) {
-                if (value.trim() !== '') change({ questionName: value });
-
-                return;
-              }
-              const typed = value.trim();
-
-              state.typedName = value;
-              takenError.show(typed !== state.property.name && this.options.isNameTaken?.(state.property.id, typed) === true ? typed : null);
-            },
-          });
-          const takenError = nameTakenError(name, 'data-blok-database-form-question-name-error', i18n);
-
-          name.addEventListener('change', commitName);
-          name.addEventListener('keydown', (event) => {
-            if (event.key !== 'Enter' || event.isComposing) return;
-            event.preventDefault();
-            if (!takenError.element.hidden) return;
-            commitName();
-            panel.close();
-          });
           const description = panelInput({
             value: state.setting.description ?? '',
             placeholder: i18n.t('tools.database.propertyDescriptionPlaceholder'),
@@ -789,56 +1113,50 @@ export class DatabaseFormView implements DatabaseViewRenderer {
             testId: 'database-form-question-description',
             onInput: (value) => change({ description: value }),
           });
-          const rows: HTMLElement[] = [
-            name,
-            takenError.element,
-            panelSwitch({
-              label: i18n.t('tools.database.formSyncPropertyName'),
-              testId: 'database-form-question-sync-name',
-              checked: state.setting.questionName === undefined,
-              onToggle: (checked) => {
-                commitName();
-                change({ questionName: checked ? undefined : state.property.name });
-                panel.refresh();
-              },
-            }),
-            description,
-            panelSwitch({
-              label: i18n.t('tools.database.formRequiredToggle'),
-              testId: 'database-form-question-required',
-              checked: state.setting.required === true,
-              onToggle: (required) => change({ required }),
-            }),
-            panelRow({
-              label: i18n.t('tools.database.changeType'),
-              value: this.typeLabel(state.property.type),
-              testId: 'database-form-question-type',
-              disabled: state.property.type === 'title',
-              opensPage: true,
-              onClick: () => {
-                commitName();
-                panel.push({
-                  title: i18n.t('tools.database.changeType'),
-                  build: () => NEW_QUESTION_TYPES
-                    .filter((type) => type !== 'person' || this.options.hasPeople === true)
-                    .map((type) => panelRow({
-                      label: this.typeLabel(type),
-                      testId: `database-form-question-type-${type}`,
-                      icon: propertyTypeMeta(type).icon,
-                      checked: this.typeLabel(type) === this.typeLabel(state.property.type),
-                      onClick: () => {
-                        // A Select already reads "Multiple choice": the checked row must not convert it.
-                        if (this.typeLabel(type) !== this.typeLabel(state.property.type)) {
-                          this.options.changePropertyType?.(state.property.id, type);
-                          state.property = { ...state.property, type };
-                        }
-                        panel.back();
-                      },
-                    })),
-                });
-              },
-            }),
-          ];
+          const required = panelSwitch({
+            label: i18n.t('tools.database.formRequiredToggle'),
+            testId: 'database-form-question-required',
+            checked: state.setting.required === true,
+            onToggle: (on) => change({ required: on }),
+          });
+          const sync = panelSwitch({
+            label: i18n.t('tools.database.formSyncPropertyName'),
+            testId: 'database-form-question-sync-name',
+            checked: state.setting.questionName === undefined,
+            onToggle: (checked) => {
+              change({ questionName: checked ? undefined : state.property.name });
+              panel.refresh();
+            },
+          });
+          const questionType = panelRow({
+            label: i18n.t('tools.database.formQuestionType'),
+            value: this.typeLabel(state.property.type),
+            testId: 'database-form-question-type',
+            disabled: state.property.type === 'title',
+            opensPage: true,
+            onClick: () => {
+              panel.push({
+                title: i18n.t('tools.database.formQuestionType'),
+                build: () => NEW_QUESTION_TYPES
+                  .filter((type) => type !== 'person' || this.options.hasPeople === true)
+                  .map((type) => panelRow({
+                    label: this.typeLabel(type),
+                    testId: `database-form-question-type-${type}`,
+                    icon: propertyTypeMeta(type).icon,
+                    checked: this.typeLabel(type) === this.typeLabel(state.property.type),
+                    onClick: () => {
+                      // A Select already reads "Multiple choice": the checked row must not convert it.
+                      if (this.typeLabel(type) !== this.typeLabel(state.property.type)) {
+                        this.options.changePropertyType?.(state.property.id, type);
+                        state.property = { ...state.property, type };
+                      }
+                      panel.back();
+                    },
+                  })),
+              });
+            },
+          });
+          const rows: HTMLElement[] = [required, description];
 
           if (state.property.type === 'text' || state.property.type === 'richText') {
             rows.push(panelSwitch({
@@ -916,10 +1234,26 @@ export class DatabaseFormView implements DatabaseViewRenderer {
               }),
             }));
           }
+          rows.push(questionType);
+          if (this.options.openLinkedProperty !== undefined) {
+            const openLinked = this.options.openLinkedProperty;
+
+            rows.push(panelRow({
+              label: i18n.t('tools.database.formViewLinkedProperty'),
+              testId: 'database-form-question-linked-property',
+              opensPage: true,
+              onClick: () => {
+                panel.close();
+                openLinked(state.property.id, anchor);
+              },
+            }));
+          }
+          rows.push(sync);
+          if (this.options.moveQuestion !== undefined) rows.push(this.moveRow(state.property.id, panel));
           // Notion offers no "Duplicate question" on a relation (research/19 §3b).
           if (state.property.type !== 'relation') {
             rows.push(panelRow({
-              label: i18n.t('blockSettings.duplicate'),
+              label: i18n.t('tools.database.formDuplicateQuestion'),
               testId: 'database-form-duplicate-question',
               disabled: state.property.type === 'title',
               onClick: () => {
@@ -936,7 +1270,7 @@ export class DatabaseFormView implements DatabaseViewRenderer {
           }
           rows.push(
             panelRow({
-              label: i18n.t('blockSettings.delete'),
+              label: i18n.t('tools.database.formDeleteQuestion'),
               testId: 'database-form-delete-question',
               danger: true,
               disabled: state.property.type === 'title',
@@ -954,7 +1288,42 @@ export class DatabaseFormView implements DatabaseViewRenderer {
 
     this.panel = panel;
     panel.open();
+    anchor.setAttribute('aria-expanded', 'true');
     this.building = false;
+  }
+
+  /**
+   * "Move question ›": a 280-wide flyout on the panel's left, centred on the row, listing only
+   * the moves the question can make (notion-motion.md Round 32 §1). With no room there it opens
+   * on the panel's right (Round 33 §1). A form has one group: the whole form.
+   */
+  private moveRow(propertyId: string, panel: DatabasePanel): HTMLElement {
+    const { i18n } = this.options;
+    const ids = formQuestions(this.options.view, this.options.schema).map(({ property }) => property.id);
+    const index = ids.indexOf(propertyId);
+    const moves: Array<{ key: string; testId: string; shown: boolean; beforeId: () => string | null }> = [
+      { key: 'tools.database.layoutMoveUp', testId: 'up', shown: index > 0, beforeId: () => ids[index - 1] },
+      { key: 'tools.database.layoutMoveDown', testId: 'down', shown: index >= 0 && index < ids.length - 1, beforeId: () => ids[index + 2] ?? null },
+      { key: 'tools.database.formMoveToTop', testId: 'top', shown: index > 0, beforeId: () => ids[0] },
+      { key: 'tools.database.formMoveToBottom', testId: 'bottom', shown: index >= 0 && index < ids.length - 1, beforeId: () => null },
+    ];
+    const row: HTMLButtonElement = panelRow({
+      label: i18n.t('tools.database.formMoveQuestion'),
+      testId: 'database-form-question-move',
+      opensPage: true,
+      onClick: () => openFlyout(row, panel, 'database-form-question-move-menu', MOVE_FLYOUT_WIDTH, (pick) => moves
+        .filter((move) => move.shown)
+        .map((move) => panelRow({
+          label: i18n.t(move.key),
+          testId: `database-form-question-move-${move.testId}`,
+          onClick: () => pick(() => {
+            panel.close();
+            this.options.moveQuestion?.(propertyId, move.beforeId());
+          }),
+        })), { aside: { side: 'left', gap: 0, flip: true } }),
+    });
+
+    return row;
   }
 
   private answer(property: PropertyDefinition, field: Field): PropertyValue | undefined {
@@ -981,8 +1350,14 @@ export class DatabaseFormView implements DatabaseViewRenderer {
 
   private submit(): void {
     if (this.destroying || this.options.view.form?.closed === true) return;
-    const answers = [...this.fields].map(([propertyId, { property, field, required, maxSelections }]) => {
-      const value = this.answer(property, field);
+    const answers = [...this.fields].map(([propertyId, { property: asked, field, required, maxSelections }]) => {
+      // A form that does not redraw (Preview) checks against the schema as it is now.
+      const property = this.options.liveSchema?.().find((entry) => entry.id === propertyId) ?? asked;
+      const retargeted = property.type === 'relation'
+        && (property.relation?.targetDatabaseId !== asked.relation?.targetDatabaseId
+          || property.relation?.targetDocumentId !== asked.relation?.targetDocumentId);
+      // Pages picked from the old target are not pages of the new one.
+      const value = retargeted ? [] : this.answer(asked, field);
       // The same checks an agent's database.submitForm runs, plus the browser's own email check.
       const invalid = formAnswerProblem({ property, setting: { id: propertyId, required, maxSelections } }, value) !== undefined
         || (property.type === 'email' && value !== undefined && field instanceof HTMLInputElement && field.validity.typeMismatch);
@@ -999,7 +1374,8 @@ export class DatabaseFormView implements DatabaseViewRenderer {
 
       return;
     }
-    this.options.onSubmit(Object.fromEntries(answers.flatMap(({ propertyId, value }) => (value === undefined ? [] : [[propertyId, value]]))));
-    this.setSubmitted(true);
+    const accepted = this.options.onSubmit(Object.fromEntries(answers.flatMap(({ propertyId, value }) => (value === undefined ? [] : [[propertyId, value]]))));
+
+    if (accepted !== false) this.setSubmitted(true);
   }
 }

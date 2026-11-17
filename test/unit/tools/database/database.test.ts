@@ -7,6 +7,7 @@ import { DatabaseTool } from '../../../../src/tools/database';
 import { DatabaseRowTool } from '../../../../src/tools/database-row';
 import { DatabaseCardDrawer } from '../../../../src/tools/database/database-card-drawer';
 import { DatabaseChartView } from '../../../../src/tools/database/database-chart-view';
+import { DatabaseTableView } from '../../../../src/tools/database/database-table-view';
 import { DataPersistenceManager } from '../../../../src/components/block/data-persistence-manager';
 import { NO_VALUE_GROUP_KEY, type DatabaseModel } from '../../../../src/tools/database/database-model';
 import type { CardDragResult, DatabaseCardDrag } from '../../../../src/tools/database/database-card-drag';
@@ -57,12 +58,25 @@ const queryByData = (container: HTMLElement, attr: string, value: string | RegEx
   return all.length > 0 ? all[0] : null;
 };
 
+/** "+ New group", then a name and Enter in its popover. */
+const addGroup = (element: HTMLElement, name = 'New'): void => {
+  queryByData(element, 'data-blok-database-add-column')?.click();
+  const input = document.querySelector<HTMLInputElement>('[data-blok-database-new-group] input');
+
+  if (input === null) throw new Error('no New group field');
+  input.value = name;
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+};
+
 // ---------------------------------------------------------------------------
 // Mock PopoverDesktop so JSDOM does not blow up. When show() is called the
 // mock appends a container with clickable action items so tests can trigger
 // onActivate callbacks.
 // ---------------------------------------------------------------------------
-vi.mock('../../../../src/components/utils/popover', () => {
+vi.mock('../../../../src/components/utils/popover', async (importOriginal) => {
+  const real = await importOriginal<{ PopoverDesktop: abstract new (...args: never[]) => unknown }>();
+  const { stubMissingMethods } = await import('../../helpers/stub-missing-methods');
+
   const PopoverItemType = { Default: 'default', Separator: 'separator', Html: 'html' };
 
   class MockPopoverDesktop {
@@ -71,16 +85,25 @@ vi.mock('../../../../src/components/utils/popover', () => {
     private readonly eventHandlers: Map<string, Array<() => void>> = new Map();
 
     private readonly className: unknown;
+    private readonly minWidth: unknown;
+    private readonly offset: unknown;
+
+    escapeClosesSubmenuFirst = false;
 
     constructor(params: { items?: Array<{ title?: string; onActivate?: () => void; type?: string; element?: HTMLElement }>; [key: string]: unknown }) {
       this.items = params.items ?? [];
       this.className = params.class;
+      this.minWidth = params.minWidth;
+      this.offset = params.offset;
     }
 
     show(): void {
       this.container = document.createElement('div');
       this.container.setAttribute('data-mock-popover', '');
       if (typeof this.className === 'string') this.container.setAttribute('data-mock-popover-class', this.className);
+      if (typeof this.minWidth === 'string') this.container.setAttribute('data-mock-popover-min-width', this.minWidth);
+      if (typeof this.offset === 'number') this.container.setAttribute('data-mock-popover-offset', String(this.offset));
+      if (this.escapeClosesSubmenuFirst) this.container.setAttribute('data-mock-popover-escape-submenu-first', '');
 
       for (const item of this.items) {
         if (item.type === PopoverItemType.Html && item.element !== undefined) {
@@ -120,7 +143,20 @@ vi.mock('../../../../src/components/utils/popover', () => {
     getElement(): HTMLElement {
       return this.container ?? document.createElement('div');
     }
+
+    focusItemByName(name: string): boolean {
+      this.container?.setAttribute('data-mock-popover-focused', name);
+
+      return this.container !== null;
+    }
+
+    /** A surface opened over this one (the option ⋯ menu) holds it open until the release. */
+    holdOpen(): () => void {
+      return () => undefined;
+    }
   }
+
+  stubMissingMethods(MockPopoverDesktop, real.PopoverDesktop);
 
   return { PopoverDesktop: MockPopoverDesktop, PopoverMobile: MockPopoverDesktop, PopoverItemType };
 });
@@ -451,6 +487,30 @@ describe('DatabaseTool', () => {
       tool.destroy();
     });
 
+    // notion-motion.md Round 14: the page's block handle goes at the start of the peek's close; the next pointer move brings it back.
+    it('closing a row page hides the editor\'s block handle at once', () => {
+      const row = createMockRowBlock({ id: 'row-1', properties: { 'prop-title': 'Task' }, position: 'a0' });
+      const options = createDatabaseOptions({}, {}, { childBlocks: [row] });
+      const close = vi.fn();
+
+      Object.assign(options.api, { toolbar: { close } });
+      const tool = new DatabaseTool(options);
+      const element = tool.render();
+
+      document.body.appendChild(element);
+      tool.rendered();
+      tool.openRow({ rowId: 'row-1', mode: 'side', explicit: true });
+      expect(close).not.toHaveBeenCalled();
+
+      element.querySelector<HTMLElement>('[data-blok-database-drawer-close]')?.click();
+
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledWith();
+
+      tool.destroy();
+      element.remove();
+    });
+
     it('a value edited in the drawer goes through the row block and its change', () => {
       const row = createMockRowBlock({ id: 'row-1', properties: { 'prop-title': 'Task', 'prop-done': false }, position: 'a0' });
       const options = createDatabaseOptions({
@@ -617,6 +677,31 @@ describe('DatabaseTool', () => {
         expect(propertyWrites(third)).toContainEqual({ 'prop-status': null });
         expect(propertyWrites(first)).not.toContainEqual({ 'prop-status': null });
         expect(api.blocks.delete).not.toHaveBeenCalled();
+        tool.destroy();
+      });
+
+      it('deleting an option also empties it on a row a filter hides', () => {
+        const shown = createMockRowBlock({ id: 'row-1', properties: { 'prop-title': 'Shown', 'prop-status': 'opt-a' }, position: 'a0' });
+        const hidden = createMockRowBlock({ id: 'row-2', properties: { 'prop-title': 'Hidden', 'prop-status': 'opt-a' }, position: 'a1' });
+        const options = createDatabaseOptions({
+          schema: SCHEMA,
+          views: [{ id: 'view-1', name: 'Board', type: 'board', position: 'a0', groupBy: 'prop-status', sorts: [], visibleProperties: [],
+            filters: [{ propertyId: 'prop-title', operator: 'equals', value: 'shown' }] }],
+        }, {}, { childBlocks: [shown, hidden] });
+        const tool = new DatabaseTool(options);
+        const element = tool.render();
+
+        document.body.appendChild(element);
+        tool.rendered();
+        expect(queryAllByData(element, 'data-blok-database-card')).toHaveLength(1);
+        queryByData(element, 'data-blok-database-card')?.click();
+        openValue(element, 'prop-status');
+        document.querySelector<HTMLElement>('[data-blok-database-select-option="opt-a"] [data-blok-database-select-option-menu]')?.click();
+        document.querySelector<HTMLElement>('[data-blok-database-option-delete]')?.click();
+        document.querySelector<HTMLElement>('[data-blok-database-option-delete-confirm]')?.click();
+
+        expect(propertyWrites(hidden)).toContainEqual({ 'prop-status': null });
+        expect(options.api.blocks.delete).not.toHaveBeenCalled();
         tool.destroy();
       });
 
@@ -979,11 +1064,9 @@ describe('DatabaseTool', () => {
 
       expect(initialColumns).toHaveLength(4);
 
-      const addColBtn = queryByData(element, 'data-blok-database-add-column')!;
+      expect(queryByData(element, 'data-blok-database-add-column')).not.toBeNull();
 
-      expect(addColBtn).not.toBeNull();
-
-      addColBtn.click();
+      addGroup(element);
 
       const columns = queryAllByData(element, 'data-blok-database-column');
 
@@ -1024,7 +1107,7 @@ describe('DatabaseTool', () => {
       deleteAction.click();
 
       expect(options.api.blocks.getBlockIndex).toHaveBeenCalledWith('row-1');
-      expect(options.api.blocks.delete).toHaveBeenCalledWith(1);
+      expect(options.api.blocks.delete).toHaveBeenCalledWith(1, false);
 
       // Cleanup mock popover
       queryByData(document.body, 'data-mock-popover')?.remove();
@@ -1099,7 +1182,7 @@ describe('DatabaseTool', () => {
   });
 
   describe('add column uses correct i18n key', () => {
-    it('clicking add-column button uses columnTitlePlaceholder i18n key', () => {
+    it('names the New group field and its Done button from the i18n keys, and the column from the typed name', () => {
       const mockI18n = vi.fn((key: string) => key);
       const mockApi = {
         styles: {
@@ -1144,11 +1227,14 @@ describe('DatabaseTool', () => {
 
       mockI18n.mockClear();
 
-      const addColBtn = queryByData(element, 'data-blok-database-add-column')!;
+      queryByData(element, 'data-blok-database-add-column')?.click();
 
-      addColBtn.click();
+      expect(document.querySelector<HTMLInputElement>('[data-blok-database-new-group] input')?.placeholder).toBe('tools.database.newGroup');
+      // The rest of Done is its aria-hidden "↵" mark.
+      expect(document.querySelector('[data-blok-database-new-group-done]')?.textContent?.trim()).toBe('tools.database.layoutSectionDone');
 
-      expect(mockI18n).toHaveBeenCalledWith('tools.database.columnTitlePlaceholder');
+      addGroup(element, 'Review');
+      expect(tool.save(document.createElement('div')).schema.find((p) => p.type === 'select')?.config?.options.map((o) => o.label)).toContain('Review');
     });
   });
 
@@ -1208,6 +1294,46 @@ describe('DatabaseTool', () => {
       expect(drawerDestroySpy).toHaveBeenCalled();
       // After rerender, the old drawer element should be gone from the DOM
       expect(queryByData(element, 'data-blok-database-drawer')).toBeNull();
+
+      tool.destroy();
+    });
+  });
+
+  // notion-motion.md Round 40 §2: the dropped card is selected, and its halo fades in.
+  describe('a dropped board card', () => {
+    const dropOnBoard = (): { tool: DatabaseTool; element: HTMLElement } => {
+      const childBlocks = [
+        createMockRowBlock({ id: 'row-1', properties: { 'prop-title': 'Task 1', 'prop-status': 'opt-todo' }, position: 'a0' }),
+        createMockRowBlock({ id: 'row-2', properties: { 'prop-title': 'Task 2', 'prop-status': 'opt-todo' }, position: 'a1' }),
+      ];
+      const options = createDatabaseOptions({}, {}, { childBlocks });
+      const tool = new DatabaseTool(options);
+      const element = tool.render();
+
+      tool.rendered();
+      (tool as unknown as { cardDrag: { onDrop: (r: CardDragResult) => void } }).cardDrag
+        .onDrop({ rowId: 'row-1', toOptionId: 'opt-doing', beforeRowId: null, afterRowId: null });
+
+      return { tool, element };
+    };
+
+    it('is the only selected card, marked as just landed', () => {
+      const { tool, element } = dropOnBoard();
+      const picked = Array.from(element.querySelectorAll('[data-blok-database-row-selected]'));
+
+      expect(picked.map((el) => el.getAttribute('data-row-id'))).toEqual(['row-1']);
+      expect(picked[0].hasAttribute('data-blok-database-row-landed')).toBe(true);
+
+      tool.destroy();
+    });
+
+    it('loses the landed mark at the next paint, so its fade never replays', () => {
+      const { tool, element } = dropOnBoard();
+
+      (tool as unknown as { paintRowSelection: () => void }).paintRowSelection();
+
+      expect(element.querySelector('[data-blok-database-row-landed]')).toBeNull();
+      expect(element.querySelector('[data-blok-database-row-selected]')?.getAttribute('data-row-id')).toBe('row-1');
 
       tool.destroy();
     });
@@ -3655,7 +3781,7 @@ describe('DatabaseTool', () => {
 
       const before = readOptions(tool);
 
-      queryByData(element, 'data-blok-database-add-column')!.click();
+      addGroup(element);
 
       const after = readOptions(tool);
       const added = after.filter((o) => !before.some((b) => b.id === o.id));
@@ -3682,7 +3808,7 @@ describe('DatabaseTool', () => {
       document.body.appendChild(container);
 
       dropColumn(tool, { optionId: 'opt-done', beforeOptionId: 'opt-todo', afterOptionId: null });
-      queryByData(element, 'data-blok-database-add-column')!.click();
+      addGroup(element);
 
       // DOM order is now: done, todo, doing, <new>. Dragging `done` between the
       // last two DOM neighbours must not produce after > before.
@@ -3828,9 +3954,7 @@ describe('DatabaseTool', () => {
 
     it('places a group added from "New group" after the no-value column, and keeps it there', () => {
       const { tool, element } = renderBoard([]);
-      const addColumn = queryByData(element, 'data-blok-database-add-column');
-
-      addColumn?.click();
+      addGroup(element);
 
       const ids = columnIds(element);
 
@@ -4091,97 +4215,19 @@ describe('DatabaseTool', () => {
     });
   });
 
-  // GATED ON USER DECISION D9: rows keep existing when their column is deleted.
-  describe('deleting a board column', () => {
-    const liveRowBlock = (id: string, properties: Record<string, PropertyValue>, position: string): BlockAPI => {
-      const block = createMockRowBlock({ id, properties, position });
-      const data = block.preservedData as DatabaseRowData;
-
-      vi.mocked(block.call).mockImplementation((method: string, params?: unknown) => {
-        if (method === 'updateProperties') Object.assign(data.properties, params);
-      });
-
-      return block;
-    };
-
-    const clickDelete = async (element: HTMLElement, optionId: string): Promise<void> => {
-      queryAllByData(element, 'data-blok-database-delete-column')
-        .find((el) => el.getAttribute('data-option-id') === optionId)
-        ?.click();
-      document.querySelector<HTMLButtonElement>('[data-blok-database-confirm-action="confirm"]')?.click();
-      await Promise.resolve();
-    };
-
-    it('asks "Are you sure you want to delete this option?" and deletes nothing on Cancel', async () => {
-      const childBlocks = [liveRowBlock('row-1', { 'prop-title': 'Task 1', 'prop-status': 'opt-todo' }, 'a0')];
-      const options = createDatabaseOptions({}, {}, { childBlocks });
-      const tool = new DatabaseTool(options);
+  // r8: Notion's column header has no delete control. An option is deleted from its own option menu.
+  describe('a board column header', () => {
+    it('holds no delete button, only the count, ⋯ and +', () => {
+      const tool = new DatabaseTool(createDatabaseOptions({}, {}, { childBlocks: [] }));
       const element = tool.render();
 
       tool.rendered();
-      queryAllByData(element, 'data-blok-database-delete-column')
-        .find((el) => el.getAttribute('data-option-id') === 'opt-todo')
-        ?.click();
+      const header = queryAllByData(element, 'data-blok-database-column-header')
+        .find((el) => el.closest('[data-option-id="opt-todo"]') !== null);
 
-      expect(document.querySelector('[data-blok-database-confirm-title]')?.textContent).toBe('tools.database.optionDeleteConfirm');
-      expect(childBlocks[0].call).not.toHaveBeenCalledWith('updateProperties', { 'prop-status': null });
-
-      document.querySelector<HTMLButtonElement>('[data-blok-database-confirm-action="cancel"]')?.click();
-      await Promise.resolve();
-
-      expect(childBlocks[0].call).not.toHaveBeenCalledWith('updateProperties', { 'prop-status': null });
-      expect(queryAllByData(element, 'data-blok-database-column').some((el) => el.getAttribute('data-option-id') === 'opt-todo')).toBe(true);
-
-      tool.destroy();
-    });
-
-    it('keeps the rows and moves them to the no-value group', async () => {
-      const childBlocks = [
-        liveRowBlock('row-1', { 'prop-title': 'Task 1', 'prop-status': 'opt-todo' }, 'a0'),
-        liveRowBlock('row-2', { 'prop-title': 'Task 2', 'prop-status': 'opt-todo' }, 'a1'),
-      ];
-      const options = createDatabaseOptions({}, {}, { childBlocks });
-      const tool = new DatabaseTool(options);
-      const element = tool.render();
-
-      tool.rendered();
-      await clickDelete(element, 'opt-todo');
-
-      expect(options.api.blocks.delete).not.toHaveBeenCalled();
-      expect(childBlocks[0].call).toHaveBeenCalledWith('updateProperties', { 'prop-status': null });
-      expect(childBlocks[1].call).toHaveBeenCalledWith('updateProperties', { 'prop-status': null });
-
-      const noValue = queryByData(element, 'data-blok-database-no-value-group');
-      const cardIds = queryAllByData(noValue ?? element, 'data-blok-database-card').map((c) => c.getAttribute('data-row-id'));
-
-      expect(cardIds).toEqual(['row-1', 'row-2']);
-      expect(queryAllByData(element, 'data-option-id', 'opt-todo')).toHaveLength(0);
-
-      tool.destroy();
-    });
-
-    it('removes only the deleted option from a multiSelect row', async () => {
-      const row = liveRowBlock('row-1', { 'prop-title': 'Task', 'prop-tags': ['opt-a', 'opt-b'] }, 'a0');
-      const options = createDatabaseOptions({
-        schema: [
-          { id: 'prop-title', name: 'Title', type: 'title', position: 'a0' },
-          { id: 'prop-tags', name: 'Tags', type: 'multiSelect', position: 'a1', config: {
-            options: [
-              { id: 'opt-a', label: 'A', position: 'a0' },
-              { id: 'opt-b', label: 'B', position: 'a1' },
-            ],
-          }},
-        ],
-        views: [{ id: 'view-1', name: 'Board', type: 'board', position: 'a0', groupBy: 'prop-tags', sorts: [], filters: [], visibleProperties: [] }],
-      }, {}, { childBlocks: [row] });
-      const tool = new DatabaseTool(options);
-      const element = tool.render();
-
-      tool.rendered();
-      await clickDelete(element, 'opt-a');
-
-      expect(options.api.blocks.delete).not.toHaveBeenCalled();
-      expect(row.call).toHaveBeenCalledWith('updateProperties', { 'prop-tags': ['opt-b'] });
+      expect(queryAllByData(element, 'data-blok-database-delete-column')).toHaveLength(0);
+      expect(Array.from(header?.querySelectorAll('button') ?? []).map((b) => b.getAttribute('aria-label') ?? 'count'))
+        .toEqual(['count', 'tools.database.groupMenuLabel', 'tools.database.newPage']);
 
       tool.destroy();
     });
@@ -4246,13 +4292,25 @@ describe('DatabaseTool', () => {
 
       openMenu(element, 'opt-todo');
 
-      expect(queryByData(document.body, 'data-mock-popover-class', 'blok-database-menu')).not.toBeNull();
+      // The group menu adds the header menu's 28px rows and its own offsets on top.
+      expect(queryByData(document.body, 'data-mock-popover-class', 'blok-database-menu blok-database-header-menu blok-database-group-menu')).not.toBeNull();
 
       queryAllByData(document.body, 'data-mock-popover').forEach((el) => el.remove());
       queryByData(element, 'data-blok-database-card-menu')?.click();
 
-      // The row menu adds its own class on top (feel findings B15).
-      expect(queryByData(document.body, 'data-mock-popover-class', 'blok-database-menu blok-database-row-menu blok-database-card-menu')).not.toBeNull();
+      // The row menu adds its own class on top (feel findings B15); the card ⋯ one fades with no scale (Round 36 §4).
+      expect(queryByData(document.body, 'data-mock-popover-class', 'blok-database-menu blok-database-row-menu blok-database-card-menu blok-database-fade-menu')).not.toBeNull();
+
+      tool.destroy();
+    });
+
+    // notion-motion.md Round 35 (r35-groupmenu.raw): the board group ⋯ menu opens with "Edit groups" filled.
+    it('opens the board group menu with its first row highlighted', () => {
+      const { tool, element } = board();
+
+      openMenu(element, 'opt-todo');
+
+      expect(queryByData(document.body, 'data-mock-popover-focused', 'edit-groups')).not.toBeNull();
 
       tool.destroy();
     });
@@ -4284,16 +4342,14 @@ describe('DatabaseTool', () => {
       tool.destroy();
     });
 
-    it('shows a hidden group again from the hidden-groups button', () => {
+    // notion-motion.md Round 24 §1 (r24-pin-and-hidden.png): Settings › Group shows it again; the board keeps no button.
+    it('leaves no hidden-groups button on the board', () => {
       const { tool, element } = board();
 
       openMenu(element, 'opt-todo');
       pick('tools.database.groupHide');
-      queryByData(element, 'data-blok-database-hidden-groups')?.click();
-      pick('Todo');
 
-      expect(columnIds(element)).toContain('opt-todo');
-      expect(tool.save(element).views[0].hiddenGroups).toEqual([]);
+      expect(element.querySelector('[data-blok-database-hidden-groups]')).toBeNull();
 
       tool.destroy();
     });
@@ -4314,6 +4370,465 @@ describe('DatabaseTool', () => {
       views: [{ id: 'view-1', name: 'Board', type: 'board', position: 'a0', groupBy: 'prop-status', sorts: [], filters: [], visibleProperties: [], ...overrides }],
     });
 
+    // notion-motion.md Round 24 §1: the strip lists pins in group order (r24-pinsec-two.raw), keeps a hidden one
+    // (r24-pinsec-pinhidden.raw) and moves no column (r24-pin-pz.raw).
+    describe('pinned groups', () => {
+      const pinnedLines = (element: HTMLElement): Array<[string | null, string | undefined]> =>
+        queryAllByData(element, 'data-blok-database-pinned-group')
+          .map((line) => [line.getAttribute('data-option-id'), line.querySelector('[data-blok-database-pinned-group-count]')?.textContent ?? undefined]);
+
+      it('lists pins in group order with their counts, a hidden one included, and moves no column', () => {
+        const { tool, element } = board(false, boardView({ pinnedGroups: [{ id: 'opt-done' }, { id: 'opt-todo' }], hiddenGroups: [{ id: 'opt-done' }] }));
+
+        expect(pinnedLines(element)).toEqual([['opt-todo', '2'], ['opt-done', '1']]);
+        expect(columnIds(element)).toEqual(['opt-todo', 'opt-doing', NO_VALUE_GROUP_KEY]);
+
+        tool.destroy();
+      });
+
+      it('keeps a pinned group listed when Hide empty groups drops its column', () => {
+        const { tool, element } = board(false, boardView({ pinnedGroups: [{ id: 'opt-doing' }], groupSettings: { hideEmptyGroups: true } }));
+
+        expect(columnIds(element)).not.toContain('opt-doing');
+        expect(pinnedLines(element)).toEqual([['opt-doing', '0']]);
+
+        tool.destroy();
+      });
+
+      it('unpins a group from its strip row', () => {
+        const { tool, element } = board(false, boardView({ pinnedGroups: [{ id: 'opt-todo' }] }));
+
+        queryByData(element, 'data-blok-database-pinned-group-unpin')?.click();
+
+        expect(tool.save(element).views[0].pinnedGroups).toEqual([]);
+        expect(queryByData(element, 'data-blok-database-pinned-groups')).toBeNull();
+
+        tool.destroy();
+      });
+
+      // Round 26 §1 (r26-lock-unpin-after2.raw): on a locked database a click on Unpin does nothing.
+      it('keeps the pin when Unpin is clicked on a locked database', () => {
+        const schema = makeDefaultData().schema;
+        const { tool, element } = board(false, {
+          schema: [{ ...schema[0], databaseLocked: true }, ...schema.slice(1)],
+          ...boardView({ pinnedGroups: [{ id: 'opt-todo' }] }),
+        });
+
+        queryByData(element, 'data-blok-database-pinned-group-unpin')?.click();
+
+        expect(tool.save(element).views[0].pinnedGroups).toEqual([{ id: 'opt-todo' }]);
+        expect(queryByData(element, 'data-blok-database-pinned-group-unpin')?.getAttribute('aria-disabled')).toBe('true');
+
+        tool.destroy();
+      });
+
+      // notion-motion.md Round 25 §1 (r25-pinmodal.raw, r25-modal-inherit.raw, r25-modal-celledit.raw): a row opens a
+      // modal with the group pill as its title and a read-only table of that group's rows. The view's sorts carry over,
+      // the grouped property is the second column, and there is no "+ New" and no calculation row.
+      it('opens a pinned group as a read-only table of its rows', () => {
+        const schema = makeDefaultData().schema;
+        const { tool, element } = board(false, {
+          schema: [schema[0], { id: 'prop-notes', name: 'Notes', type: 'richText', position: 'a0V' }, schema[1]],
+          ...boardView({
+            pinnedGroups: [{ id: 'opt-todo' }],
+            sorts: [{ id: 's', propertyId: 'prop-title', direction: 'desc' }],
+            calculations: [{ id: 'prop-title', fn: 'count' }],
+          }),
+        });
+        const open = queryByData(element, 'data-blok-database-pinned-group-open');
+
+        // A keyboard user: the row has focus, and Enter clicks it.
+        open?.focus();
+        open?.click();
+        const dialog = document.querySelector<HTMLElement>('[data-blok-database-group-modal-panel]');
+        const grid = dialog?.querySelector('[role="grid"]');
+        const rowIds = [...new Set([...(grid?.querySelectorAll('[role="row"][data-row-id]') ?? [])].map((row) => row.getAttribute('data-row-id')))];
+
+        expect(dialog?.getAttribute('role')).toBe('dialog');
+        expect(dialog?.contains(document.activeElement)).toBe(true);
+        expect(dialog?.querySelector('[data-blok-database-group-modal-title]')?.textContent).toBe('Todo');
+        expect(grid?.getAttribute('aria-readonly')).toBe('true');
+        expect([...(grid?.querySelectorAll('[role="columnheader"]') ?? [])].map((cell) => cell.getAttribute('data-property-id')))
+          .toEqual(['prop-title', 'prop-status', 'prop-notes']);
+        expect(rowIds).toEqual(['row-2', 'row-1']);
+        expect(grid?.querySelector('[data-blok-database-table-add-row]')).toBeNull();
+        expect(grid?.querySelector('[data-blok-database-table-footer]')).toBeNull();
+        expect(dialog?.querySelector('[data-blok-database-group-modal-count]')).toBeNull();
+        // Round 26 §1 (r26-pm-modal.raw): the chip row sits between the header and the table.
+        expect(dialog?.querySelector('[data-blok-database-group-modal-header]')?.nextElementSibling?.hasAttribute('data-blok-database-group-modal-chips')).toBe(true);
+        expect([...(dialog?.querySelectorAll('[data-blok-database-group-modal-chips] > *') ?? [])].map((chip) => chip.getAttribute('data-blok-testid')))
+          .toEqual(['database-group-modal-sort-chip', null, 'database-group-modal-rules-chip']);
+
+        // Round 25 §1 (motion-r25-pinmodal-esc.json): Escape closes it at once, and focus goes back to the strip row.
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+        expect(document.querySelector('[data-blok-database-group-modal-panel]')).toBeNull();
+        expect(queryByData(element, 'data-blok-database-pinned-group-open')).toHaveFocus();
+
+        tool.destroy();
+      });
+
+      // notion-motion.md Round 38 §1 (r38-pm-chips.raw): a sort edit in the modal re-sorts only its rows. The board and
+      // the saved view keep their sort, and closing the modal drops the edit.
+      it('keeps a sort edit in the pinned group modal out of the view, and drops it on close', () => {
+        const { tool, element, transact } = board(false, boardView({
+          pinnedGroups: [{ id: 'opt-todo' }],
+          sorts: [{ id: 's', propertyId: 'prop-title', direction: 'desc' }],
+        }));
+        const saved = structuredClone(tool.save(element));
+        const modalRows = (): Array<string | null> => [...new Set([...document.querySelectorAll('[data-blok-database-group-modal-panel] [role="row"][data-row-id]')]
+          .map((row) => row.getAttribute('data-row-id')))];
+        const sortChip = (): HTMLElement | null => document.querySelector('[data-blok-database-group-modal-panel] [data-blok-testid="database-group-modal-sort-chip"]');
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        expect(modalRows()).toEqual(['row-2', 'row-1']);
+
+        sortChip()?.click();
+        // r27-pm-sortpop.raw: the modal's sort editor has no × on a rule, only "Delete sort".
+        document.querySelector<HTMLElement>('[data-blok-testid="database-sort-delete-all"]')?.click();
+
+        expect(modalRows()).toEqual(['row-1', 'row-2']);
+        expect(sortChip()).toBeNull();
+        expect(tool.save(element)).toEqual(saved);
+        expect(element.querySelector('[data-blok-testid="database-sort-pill"]')).not.toBeNull();
+        expect(transact).not.toHaveBeenCalled();
+
+        document.querySelector<HTMLElement>('[data-blok-database-group-modal-close]')?.click();
+        expect(tool.save(element)).toEqual(saved);
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        expect(sortChip()?.getAttribute('data-direction')).toBe('desc');
+        expect(modalRows()).toEqual(['row-2', 'row-1']);
+
+        tool.destroy();
+      });
+
+      // Round 26 §1 (r26-pm-more-leaf.raw): the board's cards show no property, yet every property is a modal column.
+      it('shows the properties the board hides as modal columns', () => {
+        const schema = makeDefaultData().schema;
+        const { tool, element } = board(false, {
+          schema: [schema[0], { id: 'prop-notes', name: 'Notes', type: 'richText', position: 'a0V' }, schema[1]],
+          ...boardView({
+            pinnedGroups: [{ id: 'opt-todo' }],
+            properties: [{ id: 'prop-title', visible: true }, { id: 'prop-notes', visible: false }, { id: 'prop-status', visible: false }],
+          }),
+        });
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        const headers = document.querySelectorAll('[data-blok-database-group-modal-panel] [role="columnheader"]');
+
+        expect([...headers].map((cell) => cell.getAttribute('data-property-id'))).toEqual(['prop-title', 'prop-status', 'prop-notes']);
+
+        tool.destroy();
+      });
+
+      // notion-motion.md Round 27 §2 "Column widths": the modal table uses the Table view's resized widths. Which table
+      // view Notion reads with several is unread; Blok takes the first table tab. A column it has no width for keeps the default.
+      it('draws the modal columns at the first table view\'s widths', () => {
+        const schema = makeDefaultData().schema;
+        const { tool } = board(false, {
+          schema: [schema[0], { id: 'prop-notes', name: 'Notes', type: 'richText', position: 'a0V' }, schema[1]],
+          views: [
+            { id: 'view-1', name: 'Board', type: 'board', position: 'a0', groupBy: 'prop-status', sorts: [], filters: [], visibleProperties: [], pinnedGroups: [{ id: 'opt-todo' }] },
+            { id: 'view-2', name: 'Table', type: 'table', position: 'a1', sorts: [], filters: [], visibleProperties: [], properties: [{ id: 'prop-title', visible: true, width: 140 }, { id: 'prop-status', visible: false, width: 120 }] },
+            { id: 'view-3', name: 'Table 2', type: 'table', position: 'a2', sorts: [], filters: [], visibleProperties: [], properties: [{ id: 'prop-title', visible: true, width: 300 }] },
+          ],
+        });
+
+        document.querySelector<HTMLElement>('[data-blok-database-pinned-group-open]')?.click();
+        const width = (id: string): string | undefined =>
+          document.querySelector<HTMLElement>(`[data-blok-database-group-modal-panel] [role="columnheader"][data-property-id="${id}"]`)?.style.width;
+
+        expect([width('prop-title'), width('prop-status'), width('prop-notes')]).toEqual(['140px', '120px', '200px']);
+
+        tool.destroy();
+      });
+
+      // Round 26 §1 (r26-pm-more-menu.raw): ⋯ between Search and Dismiss; "Open <database>" opens the database.
+      // "Save as view in…" has no Blok action and is not offered.
+      it('opens the database from the pinned group modal\'s ⋯ menu', () => {
+        const openFullPage = vi.fn();
+        const rows = [groupRow('row-1', { 'prop-title': 'One', 'prop-status': 'opt-todo' }, 'a0')];
+        const tool = new DatabaseTool(createDatabaseOptions(boardView({ pinnedGroups: [{ id: 'opt-todo' }] }), { openFullPage }, { childBlocks: rows }));
+        const element = tool.render();
+
+        document.body.appendChild(element);
+        tool.rendered();
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        const header = document.querySelector('[data-blok-database-group-modal-header]');
+        const more = header?.querySelector<HTMLElement>('[data-blok-database-group-modal-more]');
+
+        expect([...(header?.querySelectorAll('button') ?? [])].map((button) => button.getAttribute('aria-label')))
+          .toEqual(['tools.database.searchLabel', 'tools.database.tableMoreActions', 'tools.database.close']);
+        more?.click();
+        expect([...document.body.querySelectorAll('[data-mock-popover-action]')].map((item) => item.getAttribute('data-mock-popover-action')))
+          .toEqual(['tools.database.tableopen']);
+        queryByData(document.body, 'data-mock-popover-action', 'tools.database.tableopen')?.click();
+
+        expect(openFullPage).toHaveBeenCalledWith(expect.objectContaining({ viewId: 'view-1' }));
+        expect(document.querySelector('[data-blok-database-group-modal-panel]')).toBeNull();
+
+        tool.destroy();
+      });
+
+      // notion-motion.md Round 27 §2 (r27-pm-rulepop.raw): the "1 rule" chip opens the rule editor on the group's own
+      // rule. Round 38 §1: the edit changes only the modal's rows and never the saved view.
+      it('edits the group\'s rule from the pinned group modal\'s rules chip, in the modal only', () => {
+        const { tool, element, transact } = board(false, boardView({ pinnedGroups: [{ id: 'opt-todo' }] }));
+        const saved = structuredClone(tool.save(element));
+        const modalRows = (): Array<string | null> => [...new Set([...document.querySelectorAll('[data-blok-database-group-modal-panel] [role="row"][data-row-id]')]
+          .map((row) => row.getAttribute('data-row-id')))];
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        const chip = document.querySelector<HTMLElement>('[data-blok-testid="database-group-modal-rules-chip"]');
+
+        expect(modalRows()).toEqual(['row-1', 'row-2']);
+        expect(chip?.hasAttribute('aria-disabled')).toBe(false);
+        chip?.click();
+        expect(document.querySelector('[data-blok-testid="database-advanced-filter"]')).not.toBeNull();
+        document.querySelector<HTMLElement>('[data-blok-testid="database-filter-delete-advanced"]')?.click();
+
+        expect(modalRows()).toEqual(['row-1', 'row-2', 'row-3']);
+        expect(tool.save(element)).toEqual(saved);
+        expect(transact).not.toHaveBeenCalled();
+
+        document.querySelector<HTMLElement>('[data-blok-database-group-modal-close]')?.click();
+        tool.destroy();
+      });
+
+      // Round 26 §1 (r26-pm-centerpeek.raw, motion-r26-pm-centerpeek-esc.json): OPEN opens a Center peek over the modal,
+      // whatever the board's Open pages in; Escape closes the peek and the modal is back.
+      it('opens a row in a center peek over the pinned group modal', () => {
+        const { tool, element } = board(false, boardView({ pinnedGroups: [{ id: 'opt-todo' }] }));
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        document.querySelector<HTMLElement>('[data-blok-database-group-modal-panel] [data-blok-database-table-open]')?.click();
+        const peek = document.querySelector<HTMLElement>('[data-blok-database-drawer]');
+
+        expect(peek?.getAttribute('data-peek-mode')).toBe('center');
+        expect(document.querySelector('[data-blok-database-group-modal-panel]')).not.toBeNull();
+        expect(element.closest('[inert]')).toBeNull();
+
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+        expect(document.querySelector('[data-blok-database-drawer]')).toBeNull();
+        expect(document.querySelector('[data-blok-database-group-modal-panel]')).not.toBeNull();
+
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+        expect(document.querySelector('[data-blok-database-group-modal-panel]')).toBeNull();
+
+        tool.destroy();
+      });
+
+      // A full page or side peek cannot sit under the modal's overlay, so leaving center mode closes the modal.
+      it('closes the pinned group modal when its peek opens as a full page', async () => {
+        const { tool, element } = board(false, boardView({ pinnedGroups: [{ id: 'opt-todo' }] }));
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        document.querySelector<HTMLElement>('[data-blok-database-group-modal-panel] [data-blok-database-table-open]')?.click();
+        document.querySelector<HTMLElement>('[data-blok-database-peek-expand]')?.click();
+        await Promise.resolve();
+
+        expect(document.querySelector('[data-blok-database-drawer]')?.getAttribute('data-peek-mode')).toBe('full');
+        expect(document.querySelector('[data-blok-database-group-modal-panel]')).toBeNull();
+
+        tool.destroy();
+      });
+
+      // The modal is under the peek while the row is edited; the peek's close shows the edit there.
+      it('shows an edit made in the peek once the peek over the modal closes', () => {
+        const row = groupRow('row-1', { 'prop-title': 'One', 'prop-status': 'opt-todo' }, 'a0');
+        const data = row.preservedData as DatabaseRowData;
+
+        vi.mocked(row.call).mockImplementation((method: string, params?: unknown) => {
+          const update = params as { title?: string; titlePropertyId?: string } | undefined;
+
+          if (method === 'updateTitle' && update?.titlePropertyId !== undefined) data.properties[update.titlePropertyId] = update.title ?? '';
+        });
+        const tool = new DatabaseTool(createDatabaseOptions(boardView({ pinnedGroups: [{ id: 'opt-todo' }] }), {}, { childBlocks: [row] }));
+        const element = tool.render();
+
+        document.body.appendChild(element);
+        tool.rendered();
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        document.querySelector<HTMLElement>('[data-blok-database-group-modal-panel] [data-blok-database-table-open]')?.click();
+        const title = document.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]');
+
+        if (title === null) throw new Error('no peek title');
+        const rowId = document.querySelector('[data-blok-database-group-modal-panel] [role="row"][data-row-id]')?.getAttribute('data-row-id');
+
+        title.value = 'Renamed';
+        title.dispatchEvent(new Event('input', { bubbles: true }));
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+        expect(document.querySelector(`[data-blok-database-group-modal-panel] [role="row"][data-row-id="${rowId ?? ''}"]`)?.textContent).toContain('Renamed');
+
+        tool.destroy();
+      });
+
+      // Round 25 §1 (r25-modal-celledit.raw, r25-modal-nameclick.raw): a click on a cell does nothing.
+      it('selects no cell on a click inside the pinned group modal', () => {
+        const { tool, element } = board(false, boardView({ pinnedGroups: [{ id: 'opt-todo' }] }));
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        const cell = document.querySelector<HTMLElement>('[data-blok-database-group-modal-panel] [role="gridcell"]');
+
+        cell?.click();
+
+        expect(document.querySelector('[data-blok-database-group-modal-panel] [role="gridcell"][aria-selected="true"]')).toBeNull();
+        expect(cell).not.toBeNull();
+
+        tool.destroy();
+      });
+
+      // Round 26 §1 (r26-pm-key-*.raw, r26-pm-focusring.raw): no cell takes focus, so arrows move nothing and Tab skips the table.
+      it('lets no cell or grid of the pinned group modal take focus', async () => {
+        const { tool, element } = board(false, boardView({ pinnedGroups: [{ id: 'opt-todo' }] }));
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        // The grid paints its tab stops once it is in the page.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        document.querySelector<HTMLElement>('[data-blok-database-group-modal-panel] [role="gridcell"]')
+          ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        const panel = document.querySelector<HTMLElement>('[data-blok-database-group-modal-panel]');
+        const focusable = [...(panel?.querySelectorAll('[role="grid"], [role="gridcell"], [role="columnheader"]') ?? [])]
+          .filter((el) => el.hasAttribute('tabindex'));
+
+        expect(focusable).toEqual([]);
+        expect(panel?.querySelectorAll('[role="gridcell"]').length).toBeGreaterThan(0);
+
+        tool.destroy();
+      });
+
+      // A group past the view's load limit keeps Blok's "Load more", and it loads more inside the modal.
+      it('loads more rows of a long pinned group', () => {
+        const rows = Array.from({ length: 11 }, (_, i) => groupRow(`row-${i}`, { 'prop-title': `Row ${i}`, 'prop-status': 'opt-todo' }, `a${i.toString(36)}`));
+        const tool = new DatabaseTool(createDatabaseOptions(boardView({ pinnedGroups: [{ id: 'opt-todo' }], loadLimit: 10 }), {}, { childBlocks: rows }));
+        const element = tool.render();
+
+        document.body.appendChild(element);
+        tool.rendered();
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        const shown = (): number => document.querySelectorAll('[data-blok-database-group-modal-panel] [role="row"][data-row-id]').length;
+
+        expect(shown()).toBe(10);
+        document.querySelector<HTMLElement>('[data-blok-database-group-modal-panel] [data-blok-database-table-load-more]')?.click();
+        expect(shown()).toBe(11);
+
+        tool.destroy();
+      });
+
+      // notion-motion.md Round 29 §1: the Load more row's ⋯ sets the view's load limit.
+      // Round 30 §3: a locked database keeps the ⋯ and its menu, every row enabled.
+      it('sets the table\'s load limit from the Load more row\'s ⋯, locked or not', () => {
+        const rows = Array.from({ length: 11 }, (_, i) => groupRow(`row-${i}`, { 'prop-title': `Row ${i}` }, `a${i.toString(36)}`));
+        const table = (locked: boolean): DatabaseTool => {
+          const schema = makeDefaultData().schema;
+
+          return new DatabaseTool(createDatabaseOptions({
+            ...(locked ? { schema: [{ ...schema[0], databaseLocked: true }, ...schema.slice(1)] } : {}),
+            views: [{ id: 'view-1', name: 'Table', type: 'table', position: 'a0', sorts: [], filters: [], visibleProperties: [], loadLimit: 10 }],
+          }, {}, { childBlocks: rows }));
+        };
+        const tool = table(false);
+        const element = tool.render();
+
+        document.body.appendChild(element);
+        tool.rendered();
+        queryByData(element, 'data-blok-database-table-load-limit-menu')?.click();
+        // The mock popover keys rows by title, and every row shares one key here: 10, 25, 50, 100.
+        document.querySelectorAll<HTMLElement>('[data-mock-popover-action="tools.database.settingsloadlimitpages"]')[1]?.click();
+
+        expect(tool.save(element).views[0].loadLimit).toBe(25);
+        expect(element.querySelectorAll('[data-blok-database-table-row]')).toHaveLength(11);
+        tool.destroy();
+
+        const locked = table(true);
+        const lockedElement = locked.render();
+
+        document.body.appendChild(lockedElement);
+        locked.rendered();
+        expect(queryByData(lockedElement, 'data-blok-database-table-load-more')).not.toBeNull();
+        expect(queryByData(lockedElement, 'data-blok-database-table-load-limit-menu')).not.toBeNull();
+        queryByData(lockedElement, 'data-blok-database-table-load-limit-menu')?.click();
+        // The first table's mock menu is still in the body: this menu's rows are the last four.
+        [...document.querySelectorAll<HTMLElement>('[data-mock-popover-action="tools.database.settingsloadlimitpages"]')].slice(-4)[2]?.click();
+        expect(locked.save(lockedElement).views[0].loadLimit).toBe(50);
+        locked.destroy();
+      });
+
+      // The empty state's Edit filters needs the view's filter handlers, which a read-only modal has not.
+      it('shows no dead Edit filters button for an empty filtered group', () => {
+        const { tool, element } = board(false, boardView({
+          pinnedGroups: [{ id: 'opt-doing' }],
+          filters: [{ id: 'f', propertyId: 'prop-title', operator: 'is_not_empty', value: null }],
+        }));
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+
+        expect(document.querySelector('[data-blok-database-group-modal-panel] [data-blok-database-table-edit-filters]')).toBeNull();
+        expect(document.querySelector('[data-blok-database-group-modal-panel] [role="grid"]')).not.toBeNull();
+
+        tool.destroy();
+      });
+
+      // Each table the modal draws is torn down: on every search redraw and when it closes.
+      it('destroys the modal\'s tables when it redraws and closes', () => {
+        const destroy = vi.spyOn(DatabaseTableView.prototype, 'destroy');
+        const { tool, element } = board(false, boardView({ pinnedGroups: [{ id: 'opt-todo' }] }));
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        const before = destroy.mock.calls.length;
+        const input = document.querySelector<HTMLInputElement>('[data-blok-database-group-modal-search-input]');
+
+        if (input !== null) {
+          input.value = 'T';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        document.querySelector<HTMLElement>('[data-blok-database-group-modal-close]')?.click();
+
+        expect(destroy.mock.calls.length - before).toBe(2);
+
+        tool.destroy();
+      });
+
+      // Round 25 §1 (r25-modal-searchopen.raw): Search opens a field beside its button; typing narrows the rows.
+      it('searches the pinned group\'s rows', () => {
+        const { tool, element } = board(false, boardView({ pinnedGroups: [{ id: 'opt-todo' }] }));
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        const dialog = document.querySelector<HTMLElement>('[data-blok-database-group-modal-panel]');
+
+        dialog?.querySelector<HTMLElement>('[data-blok-database-group-modal-search]')?.click();
+        const input = dialog?.querySelector<HTMLInputElement>('[data-blok-database-group-modal-search-input]');
+
+        expect(input).toHaveFocus();
+        if (input !== null && input !== undefined) {
+          input.value = 'Two';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+
+        expect([...new Set([...(dialog?.querySelectorAll('[role="row"][data-row-id]') ?? [])].map((row) => row.getAttribute('data-row-id')))]).toEqual(['row-2']);
+
+        tool.destroy();
+
+        expect(document.querySelector('[data-blok-database-group-modal-panel]')).toBeNull();
+      });
+
+      // Round 24 §1 (r24-pinhdr-click.raw): the header opens View settings › Group.
+      it('opens the group settings from the strip header', () => {
+        const { tool, element } = board(false, boardView({ pinnedGroups: [{ id: 'opt-todo' }] }));
+
+        queryByData(element, 'data-blok-database-pinned-groups-header')?.click();
+
+        expect(document.querySelector('[data-blok-testid="database-group-pin-opt-todo"]')).not.toBeNull();
+
+        tool.destroy();
+      });
+    });
+
     const countOf = (element: HTMLElement, optionId: string): HTMLElement | undefined =>
       queryAllByData(element, 'data-blok-database-column')
         .find((col) => col.getAttribute('data-option-id') === optionId)
@@ -4326,6 +4841,31 @@ describe('DatabaseTool', () => {
 
       expect([...document.body.querySelectorAll('[data-mock-popover-action]')].map((el) => el.getAttribute('data-mock-popover-action')))
         .toEqual(['tools.database.calccount', 'tools.database.calcpercent']);
+
+      tool.destroy();
+    });
+
+    // Matches the one-layer Escape measured on Notion's other menus (research/23:33, 26:78, 27:299, 35:418).
+    it('closes the count menu one layer per Escape', () => {
+      const { tool, element } = board();
+
+      countOf(element, 'opt-todo')?.click();
+
+      expect(document.querySelector('[data-mock-popover]')?.hasAttribute('data-mock-popover-escape-submenu-first')).toBe(true);
+
+      tool.destroy();
+    });
+
+    // notion-motion.md Round 11: the count's menu is the footer's, 200 wide, its top on the count's bottom.
+    it('opens the count menu as the 200-wide calculation menu, flush under the count', () => {
+      const { tool, element } = board();
+
+      countOf(element, 'opt-todo')?.click();
+      const menu = document.querySelector('[data-mock-popover]');
+
+      expect(menu?.getAttribute('data-mock-popover-class')?.split(' ')).toContain('blok-database-calc-menu');
+      expect(menu?.getAttribute('data-mock-popover-min-width')).toBe('200px');
+      expect(menu?.getAttribute('data-mock-popover-offset')).toBe('0');
 
       tool.destroy();
     });
@@ -4468,30 +5008,6 @@ describe('DatabaseTool', () => {
       tool.rendered();
 
       expect(titlesIn(element, 'data-blok-database-list-row-title')).toEqual(['Apple', 'Banana', 'Cherry']);
-    });
-
-    it('still clears the group of a row a filter hides when its column is deleted', async () => {
-      const childBlocks = [
-        createMockRowBlock({ id: 'row-shown', properties: { 'prop-title': 'Shown', 'prop-status': 'opt-todo' }, position: 'a0' }),
-        createMockRowBlock({ id: 'row-hidden', properties: { 'prop-title': 'Hidden', 'prop-status': 'opt-todo' }, position: 'a1' }),
-      ];
-      const data = makeDefaultData({
-        views: [{ id: 'view-1', name: 'Board', type: 'board', position: 'a0', groupBy: 'prop-status', sorts: [], visibleProperties: [],
-          filters: [{ propertyId: 'prop-title', operator: 'equals', value: 'shown' }] }],
-      });
-      const options = createDatabaseOptions(data, {}, { childBlocks });
-      const tool = new DatabaseTool(options);
-      const element = tool.render();
-
-      tool.rendered();
-      queryAllByData(element, 'data-blok-database-delete-column')
-        .find((el) => el.getAttribute('data-option-id') === 'opt-todo')!
-        .click();
-      document.querySelector<HTMLButtonElement>('[data-blok-database-confirm-action="confirm"]')?.click();
-      await Promise.resolve();
-
-      expect(childBlocks[1].call).toHaveBeenCalledWith('updateProperties', { 'prop-status': null });
-      expect(options.api.blocks.delete).not.toHaveBeenCalled();
     });
   });
 
@@ -4766,11 +5282,11 @@ describe('DatabaseTool', () => {
       document.body.innerHTML = '';
     });
 
-    it('asks "Would you like to remove sorting?" on a reorder inside a column, and writes nothing yet', () => {
-      const { tool, childBlocks } = sortedTool('board');
+    it('asks "Would you like to remove sorting?" on a reorder in a sorted list, and writes nothing yet', () => {
+      const { tool, childBlocks } = sortedTool('list');
 
       // Neighbours arrive in sort order: X dropped between A and B.
-      dropCard(tool, { rowId: 'row-x', toOptionId: 'opt-todo', beforeRowId: 'row-b', afterRowId: 'row-a' });
+      dropListRow(tool, { rowId: 'row-x', beforeRowId: 'row-b', afterRowId: 'row-a' });
 
       expect(confirmTitle()).toBe('tools.database.removeSortingTitle');
       expect(childBlocks.flatMap((block) => callsNamed(block, 'updatePosition'))).toHaveLength(0);
@@ -4779,9 +5295,9 @@ describe('DatabaseTool', () => {
     });
 
     it('"Don\'t remove" discards the drop: order and sort stay', () => {
-      const { tool, element, childBlocks } = sortedTool('board');
+      const { tool, element, childBlocks } = sortedTool('list');
 
-      dropCard(tool, { rowId: 'row-x', toOptionId: 'opt-todo', beforeRowId: 'row-b', afterRowId: 'row-a' });
+      dropListRow(tool, { rowId: 'row-x', beforeRowId: 'row-b', afterRowId: 'row-a' });
       answer('cancel');
 
       expect(childBlocks.flatMap((block) => callsNamed(block, 'updatePosition'))).toHaveLength(0);
@@ -4792,9 +5308,9 @@ describe('DatabaseTool', () => {
     });
 
     it('"Remove" deletes the sort, keeps the sorted order as the manual order, and lands the row where it was dropped', async () => {
-      const { tool, element, childBlocks, transact } = sortedTool('board');
+      const { tool, element, childBlocks, transact } = sortedTool('list');
 
-      dropCard(tool, { rowId: 'row-x', toOptionId: 'opt-todo', beforeRowId: 'row-b', afterRowId: 'row-a' });
+      dropListRow(tool, { rowId: 'row-x', beforeRowId: 'row-b', afterRowId: 'row-a' });
       answer('confirm');
       await Promise.resolve();
 
@@ -4828,9 +5344,9 @@ describe('DatabaseTool', () => {
       const other: DatabaseViewConfig = {
         id: 'view-2', name: 'Other', type: 'list', position: 'a1', filters: [], visibleProperties: [], sorts: [{ propertyId: 'prop-status', direction: 'desc' }],
       };
-      const { tool, element, childBlocks } = sortedTool('board', [other, { ...gallery, id: 'view-3', position: 'a2' }]);
+      const { tool, element, childBlocks } = sortedTool('list', [other, { ...gallery, id: 'view-3', position: 'a2' }]);
 
-      dropCard(tool, { rowId: 'row-x', toOptionId: 'opt-todo', beforeRowId: 'row-b', afterRowId: 'row-a' });
+      dropListRow(tool, { rowId: 'row-x', beforeRowId: 'row-b', afterRowId: 'row-a' });
       answer('confirm');
       await Promise.resolve();
 
@@ -5049,7 +5565,7 @@ describe('DatabaseTool', () => {
     });
 
     it('writes every position inside one transaction, so one undo restores the sort and the order', async () => {
-      const { tool, childBlocks, transact } = sortedTool('board');
+      const { tool, childBlocks, transact } = sortedTool('list');
       const inside: string[] = [];
 
       transact.mockImplementation((fn: () => void) => {
@@ -5066,7 +5582,7 @@ describe('DatabaseTool', () => {
         });
       });
 
-      dropCard(tool, { rowId: 'row-x', toOptionId: 'opt-todo', beforeRowId: 'row-b', afterRowId: 'row-a' });
+      dropListRow(tool, { rowId: 'row-x', beforeRowId: 'row-b', afterRowId: 'row-a' });
       answer('confirm');
       await Promise.resolve();
 
@@ -5093,28 +5609,49 @@ describe('DatabaseTool', () => {
       tool.destroy();
     });
 
-    it('moves a card to another column by its group value only, without asking', () => {
-      const { tool, childBlocks } = sortedTool('board');
+    const pickedIds = (element: HTMLElement): Array<string | null> =>
+      Array.from(element.querySelectorAll('[data-blok-database-row-selected]')).map((el) => el.getAttribute('data-row-id'));
+
+    // notion-motion.md Round 13: the card changes group, lands at its sorted place, and is left picked.
+    it('moves a card to another column by its group value only, without asking, and leaves it picked', () => {
+      const { tool, element, childBlocks } = sortedTool('board');
       const rowX = childBlocks[3];
 
       dropCard(tool, { rowId: 'row-x', toOptionId: 'opt-doing', beforeRowId: null, afterRowId: null });
 
       expect(confirmTitle()).toBeUndefined();
       expect(callsNamed(rowX, 'updateProperties')).toEqual([['updateProperties', { 'prop-status': 'opt-doing' }]]);
-      expect(callsNamed(rowX, 'updatePosition')).toHaveLength(0);
+      expect(childBlocks.flatMap((block) => callsNamed(block, 'updatePosition'))).toHaveLength(0);
+      expect(tool.save(element).views[0].rowOrder).toBeUndefined();
+      expect(pickedIds(element)).toEqual(['row-x']);
+
+      tool.destroy();
+    });
+
+    // notion-motion.md Round 13: a drop against the sort inside the same column snaps back, with no message.
+    it('snaps a card dropped against the sort inside its column back: no question, no write, the card left picked', () => {
+      const { tool, element, childBlocks } = sortedTool('board');
+
+      dropCard(tool, { rowId: 'row-x', toOptionId: 'opt-todo', beforeRowId: 'row-b', afterRowId: 'row-a' });
+
+      expect(confirmTitle()).toBeUndefined();
+      expect(childBlocks.flatMap((block) => [...callsNamed(block, 'updatePosition'), ...callsNamed(block, 'updateProperties')])).toHaveLength(0);
+      expect(tool.save(element).views[0].rowOrder).toBeUndefined();
+      expect(tool.save(element).views[0].sorts).toEqual([{ propertyId: 'prop-title', direction: 'asc' }]);
+      expect(pickedIds(element)).toEqual(['row-x']);
 
       tool.destroy();
     });
 
     it('closes only the dialog on Escape, leaving an open card page open', async () => {
-      const { tool, element } = sortedTool('board');
+      const { tool, element } = sortedTool('list');
       const drawer = (tool as unknown as { cardDrawer: DatabaseCardDrawer }).cardDrawer;
       const model = (tool as unknown as { model: DatabaseModel }).model;
       const row = model.getRow('row-a');
 
       if (row === undefined) throw new Error('row-a is missing');
       drawer.open(row);
-      dropCard(tool, { rowId: 'row-x', toOptionId: 'opt-todo', beforeRowId: 'row-b', afterRowId: 'row-a' });
+      dropListRow(tool, { rowId: 'row-x', beforeRowId: 'row-b', afterRowId: 'row-a' });
 
       document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       await Promise.resolve();
@@ -5127,10 +5664,10 @@ describe('DatabaseTool', () => {
     });
 
     it('drops the answer when the sort is already gone by the time the user confirms', async () => {
-      const { tool, element, childBlocks } = sortedTool('board');
+      const { tool, element, childBlocks } = sortedTool('list');
       const model = (tool as unknown as { model: DatabaseModel }).model;
 
-      dropCard(tool, { rowId: 'row-x', toOptionId: 'opt-todo', beforeRowId: 'row-b', afterRowId: 'row-a' });
+      dropListRow(tool, { rowId: 'row-x', beforeRowId: 'row-b', afterRowId: 'row-a' });
       model.updateView('view-1', { sorts: [] });
       answer('confirm');
       await Promise.resolve();
@@ -5204,11 +5741,11 @@ describe('DatabaseTool', () => {
     });
 
     it('"Remove" in a locked database drops the sort for this person only and keeps the saved sort', async () => {
-      const { tool, element, childBlocks } = sortedTool('board');
+      const { tool, element, childBlocks } = sortedTool('list');
       const model = (tool as unknown as { model: DatabaseModel }).model;
 
       model.setDatabaseLocked(true);
-      dropCard(tool, { rowId: 'row-x', toOptionId: 'opt-todo', beforeRowId: 'row-b', afterRowId: 'row-a' });
+      dropListRow(tool, { rowId: 'row-x', beforeRowId: 'row-b', afterRowId: 'row-a' });
       answer('confirm');
       await Promise.resolve();
 
@@ -5466,6 +6003,48 @@ describe('DatabaseTool', () => {
       tool.destroy();
     });
 
+    // notion-motion.md Round 32 §3: a new table starts with Wrap all content on; a copy keeps its source's look.
+    it('starts a new table view with wrap on', () => {
+      const tool = new DatabaseTool(createDatabaseOptions());
+      const element = tool.render();
+
+      tool.addView('table');
+
+      expect(tool.save(element).views[1].wrapCells).toBe(true);
+
+      tool.destroy();
+    });
+
+    it('copies a saved table with no wrap as an unwrapped table', () => {
+      const { wrapCells: _wrap, ...unwrapped } = tableView;
+      const tool = new DatabaseTool(createDatabaseOptions({ views: [unwrapped], activeViewId: tableView.id }));
+      const element = tool.render();
+
+      tool.duplicateView(tableView.id);
+
+      expect(tool.save(element).views.map((view) => view.wrapCells)).toEqual([undefined, false]);
+
+      tool.destroy();
+    });
+
+    // notion-motion.md Round 28 §2 (r28-dupnames.raw): a copy of "Table (1)" is "Table (2)", and a second
+    // copy of "Table" is "Table (1)" again, so the source's own number goes up by one.
+    it.each([
+      ['Table (1)', 'Table (2)'],
+      ['Table (9)', 'Table (10)'],
+      ['Table', 'Table (1)'],
+      ['Q3 (draft)', 'Q3 (draft) (1)'],
+    ])('names a copy of "%s" "%s"', (sourceName, copyName) => {
+      const tool = new DatabaseTool(createDatabaseOptions({ views: [{ ...tableView, name: sourceName }], activeViewId: tableView.id }));
+      const element = tool.render();
+
+      tool.duplicateView(tableView.id);
+
+      expect(tool.save(element).views.map((view) => view.name)).toEqual([sourceName, copyName]);
+
+      tool.destroy();
+    });
+
     it('carries every view setting into a duplicate and to the backend', () => {
       const adapter = {
         loadDatabase: vi.fn().mockResolvedValue(undefined),
@@ -5491,7 +6070,9 @@ describe('DatabaseTool', () => {
 
       tool.duplicateView('view-table');
 
-      const { id: _sourceId, position: _sourcePosition, ...settings } = source;
+      // notion-motion.md Round 27 §3: the copy is named "<name> (1)".
+      const { id: _sourceId, position: _sourcePosition, ...rest } = source;
+      const settings = { ...rest, name: 'Table (1)' };
       const copy = tool.save(element).views[1];
 
       expect(copy).toMatchObject(settings);
@@ -6035,6 +6616,18 @@ describe('DatabaseTool', () => {
         tool.destroy();
       });
 
+      // research/36 §6, research/37 §4.3: one line with no close button, gone 5.05s after it shows.
+      it('shows the toast compact, for Notion\'s 5.05s', () => {
+        const { tool, element, show } = trashTool();
+
+        select(element, ['row-1']);
+        pressDelete('Delete');
+
+        expect(trashToast(show)).toEqual(expect.objectContaining({ compact: true, time: 5050 }));
+
+        tool.destroy();
+      });
+
       it('Restore never falls back to a plain undo when the delete left no step of its own', () => {
         const { tool, element, show, history } = trashTool();
 
@@ -6194,6 +6787,21 @@ describe('DatabaseTool', () => {
         again.tool.destroy();
       });
 
+      it('starts the days the last month also drew at their old ink when the month changes', () => {
+        const { tool, element } = calendarTool();
+        const ink = (iso: string): string | null | undefined =>
+          queryAllByData(element, 'data-blok-database-calendar-day').find((el) => el.getAttribute('data-day') === iso)?.getAttribute('data-ink-from');
+
+        expect(element.querySelectorAll('[data-ink-from]')).toHaveLength(0);
+        queryByData(element, 'data-blok-database-calendar-prev')?.click();
+
+        expect(ink('2026-09-28')).toBe('outside');
+        expect(ink('2026-10-02')).toBe('inside');
+        expect(ink('2026-09-10')).toBeNull();
+
+        tool.destroy();
+      });
+
       it('shows today when local storage throws', () => {
         vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
           throw new Error('blocked');
@@ -6345,6 +6953,19 @@ describe('DatabaseTool', () => {
         tool.destroy();
       });
 
+      it('swaps the table chevron only on the draw right after a table toggle', () => {
+        const { tool, element } = timelineTool();
+        const swapped = (): boolean => queryByData(element, 'data-blok-database-timeline-table-toggle')?.hasAttribute('data-swapped') === true;
+
+        expect(swapped()).toBe(false);
+        queryByData(element, 'data-blok-database-timeline-table-toggle')?.click();
+        expect(swapped()).toBe(true);
+        queryByData(element, 'data-blok-database-timeline-today')?.click();
+        expect(swapped()).toBe(false);
+
+        tool.destroy();
+      });
+
       it('picks a table panel calculation from its footer cell and stores it on the view', () => {
         const { tool, element } = timelineTool({ showTimelineTable: true, calculations: [{ id: 'prop-title', fn: 'count' }] });
 
@@ -6358,6 +6979,23 @@ describe('DatabaseTool', () => {
 
         tool.destroy();
         queryByData(document.body, 'data-mock-popover')?.remove();
+      });
+
+      // notion-motion.md Round 12 "Timeline calculation menu": the table's 200-wide menu, flush under its button,
+      // one layer per Escape.
+      it('opens the table panel\'s calculation menu as the table footer\'s', () => {
+        const { tool, element } = timelineTool({ showTimelineTable: true });
+
+        queryByData(element, 'data-blok-database-timeline-table-footer')?.querySelector<HTMLElement>('[data-property-id="prop-title"]')?.click();
+        const menu = queryByData(document.body, 'data-mock-popover');
+
+        expect(menu?.getAttribute('data-mock-popover-class')?.split(' ')).toContain('blok-database-calc-menu');
+        expect(menu?.getAttribute('data-mock-popover-min-width')).toBe('200px');
+        expect(menu?.getAttribute('data-mock-popover-offset')).toBe('0');
+        expect(menu?.hasAttribute('data-mock-popover-escape-submenu-first')).toBe(true);
+
+        tool.destroy();
+        menu?.remove();
       });
 
       it('lists every zoom level in the zoom menu and stores a pick', () => {
@@ -6543,7 +7181,7 @@ describe('DatabaseTool — board card parity', () => {
     const { tool } = mount();
     const titles = tool.layoutItems().map((item) => (item as { title?: string }).title);
 
-    expect(titles).toEqual(['tools.database.galleryCardSize', 'tools.database.galleryCardPreview', 'tools.database.galleryFitImage']);
+    expect(titles).toEqual(['tools.database.galleryCardPreview', 'tools.database.galleryCardSize']);
 
     tool.destroy();
   });
@@ -6627,10 +7265,6 @@ describe('DatabaseTool — board sub-group lanes', () => {
   };
   const updates = (block: BlockAPI): unknown[] =>
     vi.mocked(block.call).mock.calls.filter(([method]) => method === 'updateProperties').map(([, params]) => params);
-  const answer = (name: 'confirm' | 'cancel'): void => {
-    document.querySelector<HTMLButtonElement>(`[data-blok-database-confirm-action="${name}"]`)?.click();
-  };
-
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -6817,31 +7451,186 @@ describe('DatabaseTool — board sub-group lanes', () => {
     tool.destroy();
   });
 
-  it('a sorted drop into another lane of the same column asks, and "Remove" keeps the sub-group change', async () => {
-    const children = rows();
-    const { tool, element } = mount(sorted, children);
+  // notion-motion.md Round 29 §6: the band's ⋯ and +. What Notion's ⋯ lists is unread; it is the group menu, acting on the sub-group.
+  describe('a band\'s ⋯ and +', () => {
+    const openLaneMenu = (element: HTMLElement, key: string): void => {
+      lane(element, key)?.querySelector<HTMLButtonElement>('[data-blok-database-board-lane-menu]')?.click();
+    };
+    const pick = (title: string): void => {
+      queryByData(document.body, 'data-mock-popover-action', title.toLowerCase())?.click();
+    };
 
-    drop(tool, { rowId: 'row-1', toOptionId: 'opt-todo', toSubGroup: 'team-b', beforeRowId: null, afterRowId: 'row-2' });
-    expect(document.querySelector('[data-blok-database-confirm-title]')?.textContent).toBe('tools.database.removeSortingTitle');
-    expect(updates(children[0])).toEqual([]);
+    // notion-motion.md Round 30 §2: the band's ⋯ lists Show aggregation; Round 29 §6: the band shows no count until then.
+    it('opens the group menu, whose Show aggregation shows the band\'s count until Hide aggregation', () => {
+      const { tool, element } = mount();
+      const count = (): string | null | undefined =>
+        lane(element, 'team-a')?.querySelector('[data-blok-database-board-lane-count]')?.textContent;
 
-    answer('confirm');
-    await Promise.resolve();
+      expect(count()).toBeUndefined();
+      openLaneMenu(element, 'team-a');
 
-    expect(updates(children[0])).toContainEqual({ 'prop-team': 'team-b' });
-    expect(tool.save(element).views[0].sorts).toEqual([]);
+      expect(queryByData(document.body, 'data-mock-popover-class', 'blok-database-menu blok-database-header-menu blok-database-group-menu')).not.toBeNull();
+      expect(queryByData(document.body, 'data-mock-popover-action', 'tools.database.grouphideaggregation')).toBeNull();
+      expect(lane(element, 'team-a')?.querySelector('[data-blok-database-board-lane-header]')?.hasAttribute('data-popover-open')).toBe(true);
+      pick('tools.database.groupShowAggregation');
 
-    tool.destroy();
+      expect(count()).toBe('1');
+      expect(tool.save(element).views[0].subGroupSettings?.showAggregation).toBe(true);
+
+      openLaneMenu(element, 'team-a');
+      pick('tools.database.groupHideAggregation');
+      expect(count()).toBeUndefined();
+
+      tool.destroy();
+    });
+
+    // notion-motion.md Round 39 §4 (r39-subgroup-menu.raw): the band's ⋯ menu opens with Edit groups filled, like a column's.
+    it('opens the group menu with its first row highlighted', () => {
+      const { tool, element } = mount();
+
+      openLaneMenu(element, 'team-a');
+
+      expect(queryByData(document.body, 'data-mock-popover-focused', 'edit-groups')).not.toBeNull();
+
+      tool.destroy();
+    });
+
+    // notion-motion.md Round 31 §3: the band count is a button that opens the calculation menu (Count, Percent, More options, Date).
+    describe('the band count', () => {
+      const bandCount = (element: HTMLElement, key: string): HTMLElement | null =>
+        lane(element, key)?.querySelector<HTMLElement>('[data-blok-database-board-lane-count]') ?? null;
+      const columnCounts = (element: HTMLElement): string[] =>
+        queryAllByData(element, 'data-blok-database-column-count').map((el) => el.textContent ?? '');
+
+      it('is a button that opens the 200-wide calculation menu flush under it', () => {
+        const { tool, element } = mount({ subGroupSettings: { showAggregation: true } });
+        const count = bandCount(element, 'team-a');
+
+        expect(count?.tagName).toBe('BUTTON');
+        expect(count?.getAttribute('aria-haspopup')).toBe('menu');
+        count?.click();
+
+        const menu = document.querySelector('[data-mock-popover]');
+
+        expect(menu?.getAttribute('data-mock-popover-class')?.split(' ')).toContain('blok-database-calc-menu');
+        expect(menu?.getAttribute('data-mock-popover-min-width')).toBe('200px');
+        expect(menu?.getAttribute('data-mock-popover-offset')).toBe('0');
+        expect([...document.body.querySelectorAll('[data-mock-popover-action]')].map((el) => el.getAttribute('data-mock-popover-action')))
+          .toEqual(['tools.database.calccount', 'tools.database.calcpercent']);
+
+        tool.destroy();
+      });
+
+      it('shows the band calculation saved on the view, and leaves the column counts alone', () => {
+        const plain = mount({ subGroupSettings: { showAggregation: true } });
+        const baseline = columnCounts(plain.element);
+
+        plain.tool.destroy();
+        document.body.innerHTML = '';
+        const { tool, element } = mount({
+          subGroupSettings: { showAggregation: true },
+          subGroupCalculation: { id: 'prop-title', fn: 'empty', capCounts: false },
+        });
+
+        expect(bandCount(element, 'team-a')?.textContent).toBe('0');
+        expect(bandCount(element, 'team-b')?.textContent).toBe('0');
+        expect(columnCounts(element)).toEqual(baseline);
+        expect(baseline).toContain('2');
+
+        tool.destroy();
+      });
+
+      it('is plain text when read-only', () => {
+        const options = createDatabaseOptions({ schema, views: [{ ...board, subGroupSettings: { showAggregation: true } }], activeViewId: 'view-board' }, {}, { childBlocks: rows(), readOnly: true });
+        const tool = new DatabaseTool(options);
+        const element = tool.render();
+
+        document.body.appendChild(element);
+        tool.rendered();
+
+        expect(bandCount(element, 'team-a')?.tagName).toBe('SPAN');
+        expect(bandCount(element, 'team-a')?.textContent).toBe('1');
+
+        tool.destroy();
+      });
+
+      it('comes back as Count all when Show aggregation is picked again', () => {
+        const { tool, element } = mount({ subGroupCalculation: { id: 'prop-title', fn: 'empty', capCounts: false } });
+
+        openLaneMenu(element, 'team-a');
+        pick('tools.database.groupShowAggregation');
+
+        expect(tool.save(element).views[0].subGroupCalculation).toBeUndefined();
+        expect(bandCount(element, 'team-a')?.textContent).toBe('1');
+
+        tool.destroy();
+      });
+    });
+
+    it('Hide group hides the band under its sub: key, not the column with the same id', () => {
+      const { tool, element } = mount();
+
+      openLaneMenu(element, 'team-a');
+      pick('tools.database.groupHide');
+
+      expect(lane(element, 'team-a')).toBeUndefined();
+      expect(tool.save(element).views[0].hiddenGroups).toEqual([{ id: 'sub:team-a' }]);
+
+      tool.destroy();
+    });
+
+    it('Move to Trash deletes only the band\'s pages', async () => {
+      const { tool, element, options } = mount();
+
+      vi.mocked(options.api.blocks.getBlockIndex).mockImplementation((id: string) => ['row-1', 'row-2'].indexOf(id) + 1);
+      openLaneMenu(element, 'team-a');
+      pick('tools.database.groupMoveToTrash');
+      document.querySelector<HTMLButtonElement>('[data-blok-database-confirm-action="confirm"]')?.click();
+      await Promise.resolve();
+
+      expect(vi.mocked(options.api.blocks.getBlockIndex).mock.calls.map(([id]) => id)).toEqual(['row-1']);
+      expect(options.api.blocks.delete).toHaveBeenCalledTimes(1);
+
+      tool.destroy();
+    });
+
+    it('a colour recolours the sub-group\'s option', () => {
+      const { tool, element } = mount();
+
+      openLaneMenu(element, 'team-b');
+      pick('tools.colorPicker.color.pink');
+
+      const saved = tool.save(element).schema;
+
+      expect(saved.find((p) => p.id === 'prop-team')?.config?.options.find((o) => o.id === 'team-b')?.color).toBe('pink');
+      expect(saved.find((p) => p.id === 'prop-status')?.config?.options.some((o) => o.color === 'pink')).toBe(false);
+
+      tool.destroy();
+    });
+
+    // Which column Notion's + fills is unread: Blok uses the first column shown.
+    it('+ adds a page in the band, in the first column', () => {
+      const { tool, element, options } = mount();
+
+      lane(element, 'team-b')?.querySelector<HTMLButtonElement>('[data-blok-database-board-lane-add]')?.click();
+
+      const data = vi.mocked(options.api.blocks.insertAt).mock.calls[0]?.[1] as DatabaseRowData | undefined;
+
+      expect(data?.properties['prop-team']).toBe('team-b');
+      expect(data?.properties['prop-status']).toBe('opt-todo');
+
+      tool.destroy();
+    });
   });
 
-  it('a sorted drop into another lane keeps the sub-group change on "Don\'t remove", and the sort stays', async () => {
+  // Unmeasured in Notion: the sub-group value is a change of value, not of place, so it is kept.
+  it('a sorted drop into another lane of the same column writes the sub-group value only, without asking', () => {
     const children = rows();
     const { tool, element } = mount(sorted, children);
 
     drop(tool, { rowId: 'row-1', toOptionId: 'opt-todo', toSubGroup: 'team-b', beforeRowId: null, afterRowId: 'row-2' });
-    answer('cancel');
-    await Promise.resolve();
 
+    expect(document.querySelector('[data-blok-database-confirm-title]')).toBeNull();
     expect(updates(children[0])).toEqual([{ 'prop-team': 'team-b' }]);
     expect(children.flatMap((block) => vi.mocked(block.call).mock.calls.filter(([method]) => method === 'updatePosition'))).toEqual([]);
     expect(tool.save(element).views[0].sorts).toEqual(sorted.sorts);
@@ -7124,6 +7913,122 @@ describe('DatabaseTool — property operations', () => {
     tool.deleteProperty('prop-title');
 
     expect(schemaOf(tool).map((p) => p.id)).toContain('prop-title');
+  });
+
+  describe('deleted properties (H50)', () => {
+    const people: DatabaseConfig['people'] = { list: () => Promise.resolve([]), me: () => 'u1' };
+    const savedOf = (tool: DatabaseTool): DatabaseData => tool.save(document.createElement('div'));
+
+    it('keeps a deleted property in deletedProperties, stamped with when and by whom', () => {
+      const one = realRow('r1', { 'prop-title': 'A', 'prop-n': 5 });
+      const { tool, options } = build([one], { people });
+
+      vi.mocked(options.block.dispatchChange).mockClear();
+      tool.deleteProperty('prop-n');
+
+      const deleted = Object.values(savedOf(tool).deletedProperties ?? {});
+
+      expect(deleted.map((p) => p.id)).toEqual(['prop-n']);
+      expect(deleted[0]).toMatchObject({ name: 'Amount', type: 'number', position: 'a2', deletedBy: 'u1' });
+      expect(typeof deleted[0]?.deletedAt).toBe('number');
+      expect(savedOf(tool).schema.map((p) => p.id)).toEqual(['prop-title', 'prop-note']);
+      expect(one.tool.getProperties()['prop-n']).toBe(5);
+      expect(options.block.dispatchChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('restores a deleted property, and its row values show again', () => {
+      const one = realRow('r1', { 'prop-title': 'A', 'prop-n': 5 });
+      const { tool } = build([one]);
+
+      tool.deleteProperty('prop-n');
+      const restored = tool.restoreProperty('prop-n');
+
+      expect(restored).toMatchObject({ id: 'prop-n', name: 'Amount', type: 'number' });
+      expect(restored).not.toHaveProperty('deletedAt');
+      expect(savedOf(tool).schema.map((p) => p.id)).toEqual(['prop-title', 'prop-note', 'prop-n']);
+      expect(savedOf(tool).deletedProperties).toEqual({});
+      expect((tool as unknown as { model: DatabaseModel }).model.getRow('r1')?.properties['prop-n']).toBe(5);
+    });
+
+    it('deletes permanently: the entry goes and every row loses the value, reminder and kept original', () => {
+      const one = realRow('r1', { 'prop-title': 'A', 'prop-n': 5, 'prop-note': 'x' });
+      const two = realRow('r2', { 'prop-title': 'B' });
+      const { tool } = build([one, two]);
+
+      one.tool.updateReminders({ 'prop-n': { remind: 'on_day_of_event' } });
+      one.tool.updateConvertedValues({ 'prop-n': { type: 'text', value: 'five' } });
+      tool.deleteProperty('prop-n');
+
+      expect(tool.deletePropertyPermanently('prop-n')).toBe(true);
+      expect(savedOf(tool).deletedProperties).toEqual({});
+      expect(one.tool.getProperties()).toEqual({ 'prop-title': 'A', 'prop-note': 'x' });
+      expect(one.tool.save(document.createElement('div'))).not.toHaveProperty('reminders');
+      expect(one.tool.save(document.createElement('div'))).not.toHaveProperty('convertedValues');
+      expect(two.tool.getProperties()).toEqual({ 'prop-title': 'B' });
+      expect(tool.restoreProperty('prop-n')).toBeNull();
+    });
+
+    it('never deletes a live property permanently', () => {
+      const one = realRow('r1', { 'prop-title': 'A', 'prop-n': 5 });
+      const { tool } = build([one]);
+
+      expect(tool.deletePropertyPermanently('prop-n')).toBe(false);
+      expect(schemaOf(tool).map((p) => p.id)).toContain('prop-n');
+      expect(one.tool.getProperties()['prop-n']).toBe(5);
+    });
+
+    it('does nothing read-only', () => {
+      const { tool } = build([]);
+
+      tool.deleteProperty('prop-n');
+      tool.setReadOnly(true);
+
+      expect(tool.restoreProperty('prop-n')).toBeNull();
+      expect(tool.deletePropertyPermanently('prop-n')).toBe(false);
+      expect(Object.keys(savedOf(tool).deletedProperties ?? {})).toEqual(['prop-n']);
+    });
+
+    it('neither restores nor deletes permanently while the database is locked', () => {
+      const one = realRow('r1', { 'prop-title': 'A', 'prop-n': 5 });
+      const { tool } = build([one]);
+
+      tool.deleteProperty('prop-n');
+      (tool as unknown as { setDatabaseLocked: (locked: boolean) => void }).setDatabaseLocked(true);
+
+      expect(tool.restoreProperty('prop-n')).toBeNull();
+      expect(tool.deletePropertyPermanently('prop-n')).toBe(false);
+      expect(one.tool.getProperties()['prop-n']).toBe(5);
+      expect(Object.keys(savedOf(tool).deletedProperties ?? {})).toEqual(['prop-n']);
+    });
+
+    it('drops a discarded "Add new relation" mirror without a deleted entry', () => {
+      const { tool } = build([]);
+
+      tool.deleteMirrorProperty({ propertyId: 'prop-n' });
+
+      expect(schemaOf(tool).map((p) => p.id)).not.toContain('prop-n');
+      expect(savedOf(tool)).not.toHaveProperty('deletedProperties');
+    });
+
+    it('tells the adapter on restore: the property again, then the row values it holds', async () => {
+      const adapter = {
+        loadDatabase: vi.fn(() => new Promise<never>(() => undefined)),
+        createRow: vi.fn(), updateRow: vi.fn().mockResolvedValue(undefined), moveRow: vi.fn(), deleteRow: vi.fn(),
+        createProperty: vi.fn().mockResolvedValue(undefined), updateProperty: vi.fn(), deleteProperty: vi.fn().mockResolvedValue(undefined),
+        createView: vi.fn(), updateView: vi.fn(), deleteView: vi.fn(),
+      };
+      const one = realRow('r1', { 'prop-title': 'A', 'prop-n': 5 });
+      const { tool } = build([one], { adapter });
+
+      tool.deleteProperty('prop-n');
+      tool.restoreProperty('prop-n');
+      (tool as unknown as { sync: { flushPendingUpdates: () => void } }).sync.flushPendingUpdates();
+      await Promise.resolve();
+
+      expect(adapter.deleteProperty).toHaveBeenCalledWith({ propertyId: 'prop-n' });
+      expect(adapter.createProperty).toHaveBeenCalledWith({ id: 'prop-n', name: 'Amount', type: 'number', position: 'a2' });
+      expect(adapter.updateRow).toHaveBeenCalledWith({ rowId: 'r1', properties: { 'prop-n': 5 } });
+    });
   });
 
   it('saves property settings and renames', () => {

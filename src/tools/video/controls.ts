@@ -1,8 +1,12 @@
 import {
+  IconChevronLeft,
+  IconChevronRight,
   IconExpandFullscreen,
+  IconMinus,
   IconPlayerBackward,
   IconPlayerForward,
   IconCollapseFullscreen,
+  IconDotsHorizontal,
   IconPlayerLoop,
   IconPlayerPause,
   IconPlayerPip,
@@ -11,13 +15,17 @@ import {
   IconPlayerSpeed,
   IconPlayerTheater,
   IconPlayerVolume,
-  IconPlayerVolumeMute,
+  IconPlus,
 } from '../../components/icons';
 import { promoteToTopLayer, removeFromTopLayer, supportsPopoverAPI } from '../../components/utils/top-layer';
 import { isKeyboardModality } from '../../components/utils/input-modality';
+import { createVolumeIcon } from '../../components/utils/volume-icon';
 import { getElementDirection } from '../../components/utils/direction';
 import { DATA_ATTR } from '../../components/constants/data-attributes';
 import { tr } from './i18n';
+import { SPEED_MAX, SPEED_MIN, SPEED_PEGS, SPEED_SLIDER_STEP, clampRate, rateToFraction, snapRate } from './speed-scale';
+import { createSpeedEntry } from './speed-entry';
+import { createSpeedWire } from './speed-wire';
 import type { I18nInstance } from '../../components/utils/tools';
 import type { VideoGlow } from '../../../types/tools/video';
 
@@ -96,6 +104,23 @@ export function ratioFromPointer(clientX: number, rect: { left: number; width: n
   if (!rect.width) return 0;
   return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
 }
+
+export type PlayerTier = 'full' | 'compact' | 'small' | 'tiny';
+
+// The full bar needs about 370px. Each tier below shows fewer controls; none of them scale.
+const TIER_COMPACT_BELOW = 400;
+const TIER_SMALL_BELOW = 260;
+const TIER_TINY_BELOW = 180;
+
+/** Size tier for a player's rendered width. An unmeasured player (0) counts as full. */
+export function playerTier(width: number): PlayerTier {
+  if (width <= 0 || width >= TIER_COMPACT_BELOW) return 'full';
+  if (width >= TIER_SMALL_BELOW) return 'compact';
+  if (width >= TIER_TINY_BELOW) return 'small';
+  return 'tiny';
+}
+
+const playedSources = new Set<string>();
 
 function button(action: string, label: string, icon: string, extraClass = ''): HTMLButtonElement {
   const btn = document.createElement('button');
@@ -224,7 +249,14 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
   time.setAttribute('data-role', 'time');
   // Named by the time it shows: an aria-label would hide it (WCAG 2.5.3).
   time.setAttribute('aria-description', i18nLabel('toggleTimeDisplay', 'Switch between elapsed and remaining time'));
-  time.textContent = '0:00 / 0:00';
+  // Two parts, so a narrow player can hide the total.
+  const timeCurrent = document.createElement('span');
+  timeCurrent.setAttribute('data-role', 'time-current');
+  timeCurrent.textContent = '0:00';
+  const timeTotal = document.createElement('span');
+  timeTotal.setAttribute('data-role', 'time-total');
+  timeTotal.textContent = ' / 0:00';
+  time.append(timeCurrent, timeTotal);
 
   const muteToggle = button('mute-toggle', i18nLabel('mute', 'Mute'), IconPlayerVolume);
   muteToggle.setAttribute('aria-pressed', 'false');
@@ -287,8 +319,19 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
     const icon = next ? IconPlayerPause : IconPlayerPlay;
     playToggle.innerHTML = icon;
     playToggle.setAttribute('aria-label', next ? i18nLabel('pause', 'Pause') : i18nLabel('play', 'Play'));
+    // Shown whenever paused, at any position: a paused video with no play button
+    // looks like a picture.
+    centerPlay.hidden = next;
   };
   setPlaying(false);
+
+  // Until the user first plays a video, hover shows only the centre play
+  // button. The set keeps that across re-renders for the rest of the page load.
+  const markPlayed = (): void => {
+    figure.setAttribute('data-played', 'true');
+    if (video.src) playedSources.add(video.src);
+  };
+  figure.setAttribute('data-played', String(video.src !== '' && playedSources.has(video.src)));
 
   // Announce the scrubber as a human-readable "M:SS of M:SS" (it otherwise reads
   // raw seconds). Reads the slider's own value/max so arrow-key seeks announce
@@ -308,9 +351,11 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
     setSeekValueText();
     if (state.timeMode === 'remaining') {
       const dur = Number.isFinite(video.duration) ? video.duration : 0;
-      time.textContent = `-${formatTime(Math.max(0, dur - video.currentTime))}`;
+      timeCurrent.textContent = `-${formatTime(Math.max(0, dur - video.currentTime))}`;
+      timeTotal.textContent = '';
     } else {
-      time.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
+      timeCurrent.textContent = formatTime(video.currentTime);
+      timeTotal.textContent = ` / ${formatTime(video.duration)}`;
     }
   };
   // Click / Enter / Space on the time label flips elapsed ↔ remaining.
@@ -321,7 +366,7 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
 
   // Centre play visibility + buffering spinner.
   const updateCenter = (): void => {
-    centerPlay.hidden = state.playing || video.currentTime > 0;
+    centerPlay.hidden = state.playing;
   };
   const onWaiting = (): void => spinner.setAttribute('data-active', 'true');
   const onPlayingMedia = (): void => { spinner.setAttribute('data-active', 'false'); updateCenter(); };
@@ -458,10 +503,13 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
     seekTooltip.setAttribute('aria-hidden', 'true');
     preview.pendingTime = -1;
   };
-  const onPlay = (): void => setPlaying(true);
+  const onPlay = (): void => { setPlaying(true); markPlayed(); };
   const onPause = (): void => setPlaying(false);
   // Pop the mute glyph when the user flips audible↔muted (à la native players).
   const isMuted = (): boolean => video.muted || video.volume === 0;
+  const volumeIcon = createVolumeIcon(muteToggle);
+  // The first paint never glides. Paint now so the first mute does.
+  volumeIcon.paint(video.volume, isMuted());
   const bumpMute = (): void => {
     muteToggle.classList.remove('is-bumped');
     muteToggle.offsetWidth;
@@ -470,7 +518,7 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
   const onVolumeChange = (): void => {
     const muted = isMuted();
     muteToggle.setAttribute('aria-pressed', String(muted));
-    muteToggle.innerHTML = muted ? IconPlayerVolumeMute : IconPlayerVolume;
+    volumeIcon.paint(video.volume, muted);
     muteToggle.setAttribute('aria-label', muted ? i18nLabel('unmute', 'Unmute') : i18nLabel('mute', 'Mute'));
     // muting parks the slider at the very beginning; unmuted tracks the real volume
     volume.value = muted ? '0' : String(video.volume);
@@ -586,8 +634,6 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
   const VOL_STEP = 0.05;
   const FRAME = 1 / 30; // assumes ~30fps — the media API exposes no true frame duration
   const SPEED_STEP = 0.25;
-  const SPEED_MIN = 0.25;
-  const SPEED_MAX = 2;
   // Flash the seek pill in from the side matching the jump: rewind sits left
   // (icon then label), skip sits right (label then icon). Re-arm per press. The
   // label magnitude is parameterised so ±5s arrows and ±10s j/l read truthfully.
@@ -679,19 +725,32 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
   };
 
   // ----- gear settings card (speed / loop) -----
-  // Viewer-accessible in-player popover (the block ☰ menu is editor-only). One pane,
-  // no submenu: a live speed readout over a ruler tape, quick presets, then a Loop
-  // switch. Built here so it shares the player's closure state.
+  // Viewer-accessible in-player popover (the block ☰ menu is editor-only). One card,
+  // two panes: a main list (Playback speed, Loop) and the speed submenu it opens.
+  // Built here so it shares the player's closure state.
   const SPEED_LABEL = (rate: number): string => `${rate}×`;
-  // Honoured by the preset-jump glide and the ambient sampler — both opt out of motion.
+  // Honoured by the speed wire and the ambient sampler — both opt out of motion.
   const reducedMotion = !!window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
 
-  const menuIcon = (svg: string): HTMLSpanElement => {
+  const menuIcon = (svg: string, extraClass = ''): HTMLSpanElement => {
     const icon = document.createElement('span');
-    icon.className = 'blok-video-controls__menu-icon';
+    icon.className = `blok-video-controls__menu-icon ${extraClass}`.trim();
     icon.setAttribute('aria-hidden', 'true');
     icon.innerHTML = svg;
     return icon;
+  };
+  const menuText = (className: string, text = ''): HTMLSpanElement => {
+    const span = document.createElement('span');
+    span.className = className;
+    span.textContent = text;
+    return span;
+  };
+  const menuRow = (action: string): HTMLButtonElement => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'blok-video-controls__menu-row';
+    row.setAttribute('data-action', action);
+    return row;
   };
 
   const gear = button('gear', i18nLabel('settings', 'Settings'), IconPlayerSettings);
@@ -701,6 +760,7 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
   const menu = document.createElement('div');
   menu.className = 'blok-video-controls__menu';
   menu.setAttribute('data-role', 'playback-menu');
+  menu.setAttribute('data-pane', 'main');
   menu.setAttribute('role', 'dialog');
   menu.setAttribute('aria-label', i18nLabel('settings', 'Settings'));
   menu.hidden = true;
@@ -709,252 +769,229 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
   menuWrap.className = 'blok-video-controls__menu-wrap';
   menuWrap.append(gear);
 
-  // --- speed section: header, big readout, ruler tape, presets ---
-  // SPEED_MIN / SPEED_MAX are shared with the Shift+./Shift+, keyboard shortcut above.
-  const SPEED_SLIDER_STEP = 0.05;
-  const SPEED_PRESETS = [0.5, 1, 1.5, 2];
-  // Tape pixels per 0.05× step. CSS spaces the ticks with the same number
-  // (--blok-speed-step-px), so drag math and the drawn tape stay in register.
-  const SPEED_STEP_PX = 9;
-  const SPEED_STEPS = Math.round((SPEED_MAX - SPEED_MIN) / SPEED_SLIDER_STEP);
-  // 0.05 steps accumulate binary-float error (1 + 0.05×3 = 1.1500000000000001);
-  // snap every rate to 2dp so the readout text and the preset === checks stay exact.
-  const clampRate = (rate: number): number =>
-    Math.min(SPEED_MAX, Math.max(SPEED_MIN, Math.round(rate * 100) / 100));
-  const snapRate = (rate: number): number =>
-    clampRate(Math.round(rate / SPEED_SLIDER_STEP) * SPEED_SLIDER_STEP);
+  // --- main pane: Playback speed (opens the submenu), Loop ---
+  const mainPane = document.createElement('div');
+  mainPane.className = 'blok-video-controls__menu-pane';
+  mainPane.setAttribute('data-role', 'menu-main');
 
-  const speedSection = document.createElement('div');
-  speedSection.className = 'blok-video-controls__speed-section';
-  speedSection.setAttribute('data-role', 'speed-section');
-  speedSection.setAttribute('role', 'group');
-  speedSection.setAttribute('aria-label', i18nLabel('playbackSpeed', 'Playback speed'));
+  const speedRow = menuRow('open-speed');
+  speedRow.setAttribute('aria-expanded', 'false');
+  const speedRowValue = menuText('blok-video-controls__menu-value');
+  speedRowValue.setAttribute('data-role', 'speed-value');
+  speedRow.append(
+    menuIcon(IconPlayerSpeed),
+    menuText('blok-video-controls__menu-label', i18nLabel('playbackSpeed', 'Playback speed')),
+    speedRowValue,
+    menuIcon(IconChevronRight, 'blok-video-controls__menu-chevron')
+  );
 
-  // The group already carries this name, so the visible header stays out of the AT tree.
-  const speedHead = document.createElement('div');
-  speedHead.className = 'blok-video-controls__speed-head';
-  speedHead.setAttribute('aria-hidden', 'true');
-  const speedHeadLabel = document.createElement('span');
-  speedHeadLabel.textContent = i18nLabel('playbackSpeed', 'Playback speed');
-  speedHead.append(menuIcon(IconPlayerSpeed), speedHeadLabel);
-
-  // The range announces itself, so the big number is visual only.
-  const speedReadout = document.createElement('div');
-  speedReadout.className = 'blok-video-controls__speed-readout';
-  speedReadout.setAttribute('data-role', 'speed-readout');
-  speedReadout.setAttribute('aria-hidden', 'true');
-  const readoutValue = document.createElement('span');
-  const readoutUnit = document.createElement('span');
-  readoutUnit.className = 'blok-video-controls__speed-readout-unit';
-  readoutUnit.textContent = '×';
-  speedReadout.append(readoutValue, readoutUnit);
-
-  // The ruler: a tape of ticks that slides under a fixed needle. The native range
-  // sits inside it, invisible, as the keyboard + screen-reader control; pointer
-  // input is the ruler's own, because dragging a tape runs opposite to a range.
-  const speedRuler = document.createElement('div');
-  speedRuler.className = 'blok-video-controls__speed-ruler';
-  speedRuler.setAttribute('data-role', 'speed-ruler');
-  speedRuler.dir = 'ltr';
-  speedRuler.style.setProperty('--blok-speed-step-px', `${SPEED_STEP_PX}px`);
-
-  const speedTape = document.createElement('div');
-  speedTape.className = 'blok-video-controls__speed-tape';
-  speedTape.setAttribute('aria-hidden', 'true');
-  Array.from({ length: SPEED_STEPS + 1 }, (_, i) => i).forEach((i) => {
-    const rate = clampRate(SPEED_MIN + i * SPEED_SLIDER_STEP);
-    const tick = document.createElement('span');
-    tick.className = 'blok-video-controls__speed-tick';
-    tick.style.setProperty('--blok-speed-tick', String(i));
-    // Quarter rates get a tall tick; the preset rates also get a label.
-    if (Number.isInteger(rate * 4)) tick.classList.add('is-major');
-    if (SPEED_PRESETS.includes(rate)) {
-      const label = document.createElement('span');
-      label.className = 'blok-video-controls__speed-tick-label';
-      label.textContent = SPEED_LABEL(rate);
-      tick.append(label);
-    }
-    speedTape.append(tick);
-  });
-
-  const speedNeedle = document.createElement('span');
-  speedNeedle.className = 'blok-video-controls__speed-needle';
-  speedNeedle.setAttribute('data-role', 'speed-needle');
-  speedNeedle.setAttribute('aria-hidden', 'true');
-
-  const speedSlider = document.createElement('input');
-  speedSlider.type = 'range';
-  speedSlider.dir = 'ltr';
-  speedSlider.className = 'blok-video-controls__speed-slider';
-  speedSlider.setAttribute('data-role', 'speed-slider');
-  speedSlider.min = String(SPEED_MIN);
-  speedSlider.max = String(SPEED_MAX);
-  speedSlider.step = String(SPEED_SLIDER_STEP);
-  speedSlider.setAttribute('aria-label', i18nLabel('playbackSpeed', 'Playback speed'));
-  speedSlider.addEventListener('input', () => setRate(Number(speedSlider.value)));
-  speedSlider.addEventListener('keydown', () => speedRuler.removeAttribute('data-pointer-focus'));
-  speedSlider.addEventListener('blur', () => speedRuler.removeAttribute('data-pointer-focus'));
-
-  // The needle follows the range so `:focus-visible ~` can ring it.
-  speedRuler.append(speedTape, speedSlider, speedNeedle);
-
-  // Presets: a segmented bar. The one matching the rate is pressed (gray, never blue).
-  const speedChips = SPEED_PRESETS.map((rate) => {
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'blok-video-controls__speed-chip';
-    chip.setAttribute('data-action', `speed-${rate}`);
-    chip.textContent = SPEED_LABEL(rate);
-    chip.addEventListener('click', () => {
-      const from = state.selectedRate;
-      setRate(rate);
-      glideSpeedTape(from, rate);
-    });
-    return chip;
-  });
-  const speedChipRow = document.createElement('div');
-  speedChipRow.className = 'blok-video-controls__speed-chips';
-  speedChipRow.setAttribute('data-role', 'speed-presets');
-  speedChipRow.setAttribute('role', 'group');
-  speedChipRow.setAttribute('aria-label', i18nLabel('speedPresets', 'Speed presets'));
-  // One puck rides the rate across the presets: an outline between them, filled on one.
-  const speedPuck = document.createElement('span');
-  speedPuck.className = 'blok-video-controls__speed-puck';
-  speedPuck.setAttribute('data-role', 'speed-puck');
-  speedPuck.setAttribute('aria-hidden', 'true');
-  speedChipRow.append(speedPuck, ...speedChips);
-
-  speedSection.append(speedHead, speedReadout, speedRuler, speedChipRow);
-
-  // Paints the slider + tape only. setRate owns the rate; the glide repaints in between.
-  // Preset index of a rate, interpolated between neighbours (1.8× → 2.6); the puck's slot.
-  const presetIndex = (rate: number): number => {
-    const next = SPEED_PRESETS.findIndex((preset) => preset >= rate);
-    if (next <= 0) return Math.max(0, next);
-    const low = SPEED_PRESETS[next - 1];
-    return next - 1 + (rate - low) / (SPEED_PRESETS[next] - low);
-  };
-  const paintSpeedTape = (rate: number): void => {
-    speedSlider.value = String(rate);
-    speedRuler.style.setProperty('--blok-speed-pos', String(Math.round(((rate - SPEED_MIN) / SPEED_SLIDER_STEP) * 100) / 100));
-    speedChipRow.style.setProperty('--blok-speed-puck', String(Math.round(presetIndex(rate) * 100) / 100));
-  };
-
-  // A preset-jump glide in flight (rAF id; 0 = idle). Any direct rate change — drag,
-  // wheel, or another preset — cancels it so the tape never has two owners.
-  const speedGlide = { raf: 0 };
-  const syncSpeedUi = (rate: number): void => {
-    readoutValue.textContent = String(rate);
-    speedSlider.setAttribute('aria-valuetext', SPEED_LABEL(rate));
-    paintSpeedTape(rate);
-    SPEED_PRESETS.forEach((preset, i) => speedChips[i].setAttribute('aria-pressed', String(preset === rate)));
-    speedChipRow.toggleAttribute('data-snapped', SPEED_PRESETS.includes(rate));
-  };
-  const setRate = (rate: number): void => {
-    cancelAnimationFrame(speedGlide.raf);
-    const next = clampRate(rate);
-    state.selectedRate = next;
-    media.playbackRate = next;
-    syncSpeedUi(next);
-    // RATE_KEY/safeSet live in the persistence section below; setRate only runs
-    // on interaction or the restore call there, both after those consts exist.
-    safeSet(RATE_KEY, String(next));
-  };
-  // A preset applies the rate at once (setRate, above) but glides the tape from the
-  // old position rather than teleporting (easeOutCubic). Reduced motion keeps the jump.
-  const glideSpeedTape = (from: number, to: number): void => {
-    cancelAnimationFrame(speedGlide.raf);
-    if (reducedMotion || from === to) return;
-    const startedAt = performance.now();
-    paintSpeedTape(from);
-    const tween = (now: number): void => {
-      const t = Math.min(1, (now - startedAt) / 240);
-      const eased = 1 - (1 - t) ** 3;
-      paintSpeedTape(from + (to - from) * eased);
-      if (t < 1) { speedGlide.raf = requestAnimationFrame(tween); return; }
-      speedGlide.raf = 0;
-      paintSpeedTape(to);
-    };
-    speedGlide.raf = requestAnimationFrame(tween);
-  };
-
-  // Tape drag: moving the tape left brings faster rates under the needle. A press
-  // that never moves is a tap, which jumps to the rate under the pointer.
-  const TAP_SLOP_PX = 3;
-  const tapeDrag = { active: false, startX: 0, startRate: 1, moved: false };
-  const onRulerDown = (event: MouseEvent): void => {
-    if (event.button > 0) return;
-    event.preventDefault();
-    // Focus the range so arrow keys carry on. Chrome counts this scripted focus as
-    // :focus-visible, so data-pointer-focus hides the ring until a key is pressed.
-    speedRuler.setAttribute('data-pointer-focus', '');
-    speedSlider.focus({ preventScroll: true });
-    if ('pointerId' in event) speedRuler.setPointerCapture?.((event as PointerEvent).pointerId);
-    Object.assign(tapeDrag, { active: true, startX: event.clientX, startRate: state.selectedRate, moved: false });
-    speedRuler.setAttribute('data-dragging', 'true');
-  };
-  const onRulerMove = (event: MouseEvent): void => {
-    if (!tapeDrag.active) return;
-    const dx = event.clientX - tapeDrag.startX;
-    if (!tapeDrag.moved && Math.abs(dx) < TAP_SLOP_PX) return;
-    tapeDrag.moved = true;
-    const next = snapRate(tapeDrag.startRate - (dx / SPEED_STEP_PX) * SPEED_SLIDER_STEP);
-    if (next !== state.selectedRate) setRate(next);
-  };
-  const onRulerUp = (event: MouseEvent): void => {
-    if (!tapeDrag.active) return;
-    tapeDrag.active = false;
-    speedRuler.removeAttribute('data-dragging');
-    if (tapeDrag.moved) return;
-    const box = speedRuler.getBoundingClientRect();
-    if (!box.width) return;
-    const offset = event.clientX - (box.left + box.width / 2);
-    const target = snapRate(state.selectedRate + (offset / SPEED_STEP_PX) * SPEED_SLIDER_STEP);
-    const from = state.selectedRate;
-    setRate(target);
-    glideSpeedTape(from, target);
-  };
-  // Wheel and trackpad: the larger axis wins, one step per SPEED_STEP_PX of travel.
-  const wheelCarry = { px: 0 };
-  const onRulerWheel = (event: WheelEvent): void => {
-    event.preventDefault();
-    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-    wheelCarry.px += delta;
-    const steps = Math.trunc(wheelCarry.px / SPEED_STEP_PX);
-    if (!steps) return;
-    wheelCarry.px -= steps * SPEED_STEP_PX;
-    setRate(snapRate(state.selectedRate + steps * SPEED_SLIDER_STEP));
-  };
-  speedRuler.addEventListener('pointerdown', onRulerDown);
-  speedRuler.addEventListener('pointermove', onRulerMove);
-  speedRuler.addEventListener('pointerup', onRulerUp);
-  speedRuler.addEventListener('pointercancel', onRulerUp);
-  speedRuler.addEventListener('wheel', onRulerWheel, { passive: false });
-
-  // --- loop: a switch row ---
-  const loopRow = document.createElement('button');
-  loopRow.type = 'button';
-  loopRow.className = 'blok-video-controls__menu-row';
-  loopRow.setAttribute('data-action', 'loop');
+  const loopRow = menuRow('loop');
   loopRow.setAttribute('role', 'switch');
   loopRow.setAttribute('aria-checked', String(loop));
-  const loopLabel = document.createElement('span');
-  loopLabel.className = 'blok-video-controls__menu-label';
-  loopLabel.textContent = i18nLabel('loop', 'Loop');
   const loopSwitch = document.createElement('span');
   loopSwitch.className = 'blok-video-controls__switch';
   loopSwitch.setAttribute('aria-hidden', 'true');
-  loopRow.append(menuIcon(IconPlayerLoop), loopLabel, loopSwitch);
+  loopRow.append(menuIcon(IconPlayerLoop), menuText('blok-video-controls__menu-label', i18nLabel('loop', 'Loop')), loopSwitch);
   // setLoop lives in the persistence section below (it also stores the shared
   // preference); the listener only fires after attach, so the late const is safe.
   loopRow.addEventListener('click', () => { setLoop(!media.loop); onLoopChange?.(); });
+
+  mainPane.append(speedRow, loopRow);
+
+  // --- speed pane: back row, step line, the wire, presets ---
+  const speedPane = document.createElement('div');
+  speedPane.className = 'blok-video-controls__menu-pane';
+  speedPane.setAttribute('data-role', 'menu-speed');
+  speedPane.setAttribute('role', 'group');
+  speedPane.setAttribute('aria-label', i18nLabel('playbackSpeed', 'Playback speed'));
+
+  const backRow = menuRow('menu-back');
+  backRow.classList.add('blok-video-controls__menu-back');
+  backRow.setAttribute('aria-label', i18nLabel('back', 'Back'));
+  const backRowValue = menuText('blok-video-controls__menu-value');
+  backRowValue.setAttribute('data-role', 'speed-value');
+  backRow.append(
+    menuIcon(IconChevronLeft, 'blok-video-controls__menu-chevron'),
+    menuText('blok-video-controls__menu-label', i18nLabel('playbackSpeed', 'Playback speed')),
+    backRowValue
+  );
 
   const menuDivider = document.createElement('div');
   menuDivider.className = 'blok-video-controls__menu-divider';
   menuDivider.setAttribute('aria-hidden', 'true');
 
-  menu.append(speedSection, menuDivider, loopRow);
-  syncSpeedUi(state.selectedRate);
+  const stepButton = (action: string, label: string, icon: string): HTMLButtonElement => {
+    const step = document.createElement('button');
+    step.type = 'button';
+    step.className = 'blok-video-controls__speed-step';
+    step.setAttribute('data-action', action);
+    step.setAttribute('aria-label', label);
+    step.innerHTML = icon;
+    return step;
+  };
+  const speedDecrease = stepButton('speed-decrease', i18nLabel('speedDecrease', 'Decrease playback speed'), IconMinus);
+  const speedIncrease = stepButton('speed-increase', i18nLabel('speedIncrease', 'Increase playback speed'), IconPlus);
+
+  // The live value. Clicking it opens a field to type any speed from 0.1× to 3×.
+  const speedReadout = document.createElement('div');
+  speedReadout.className = 'blok-video-controls__speed-readout';
+  speedReadout.setAttribute('data-role', 'speed-readout');
+  const readoutDigits = menuText('blok-video-controls__speed-readout-digits');
+  speedReadout.append(readoutDigits, menuText('blok-video-controls__speed-readout-unit', '×'));
+  const speedEntry = createSpeedEntry({
+    readout: speedReadout,
+    host: speedPane,
+    classPrefix: 'blok-video-controls',
+    t: i18nLabel,
+    rate: () => state.selectedRate,
+    onRate: (rate) => setRate(rate),
+  });
+
+  const speedStepper = document.createElement('div');
+  speedStepper.className = 'blok-video-controls__speed-stepper';
+  speedStepper.setAttribute('data-role', 'speed-stepper');
+  speedStepper.append(speedDecrease, speedReadout, speedIncrease);
+
+  // setRate is declared just below; the wire only calls back on interaction.
+  const speedWire = createSpeedWire({
+    label: i18nLabel('playbackSpeed', 'Playback speed'),
+    reducedMotion,
+    onRate: (rate) => setRate(rate),
+  });
+
+  // Presets only set a value. They never show a selected state: the bead on the
+  // peg above already says which one is current.
+  const speedPresets = document.createElement('div');
+  speedPresets.className = 'blok-video-controls__speed-presets';
+  speedPresets.setAttribute('data-role', 'speed-presets');
+  speedPresets.setAttribute('role', 'group');
+  speedPresets.setAttribute('aria-label', i18nLabel('speedPresets', 'Speed presets'));
+  speedPresets.dir = 'ltr';
+  SPEED_PEGS.forEach((rate) => {
+    const preset = document.createElement('button');
+    preset.type = 'button';
+    preset.className = 'blok-video-controls__speed-preset';
+    preset.setAttribute('data-action', `speed-${rate}`);
+    // Where its peg sits along the wire; video.css centres the button under it.
+    preset.style.setProperty('--blok-speed-at', String(rateToFraction(rate)));
+    preset.textContent = SPEED_LABEL(rate);
+    preset.addEventListener('click', () => setRate(rate));
+    speedPresets.append(preset);
+  });
+  // While the field is open the presets give way to this line (see the stylesheet).
+  speedPresets.append(speedEntry.helpLine);
+
+  speedPane.append(backRow, menuDivider, speedStepper, speedWire.element, speedPresets);
+  // A press anywhere else in the card sets a typed speed first, so a step or a drag
+  // starts from it. Capture: the stepper acts on its own pointerdown.
+  speedPane.addEventListener('pointerdown', (event) => {
+    if (!(event.target instanceof Element && event.target.closest('.blok-video-controls__speed-entry'))) speedEntry.commit();
+  }, true);
+  menu.append(mainPane, speedPane);
+
+  // Only the characters that changed roll in: up for a faster speed, down for a slower one.
+  const readout = { text: '' };
+  const paintReadout = (rate: number, rising: boolean): void => {
+    const text = String(rate);
+    if (text === readout.text) return;
+    const digits = [...text].map((char, i) => {
+      const digit = menuText('blok-video-controls__speed-digit', char);
+      if (readout.text !== '' && readout.text[i] !== char) digit.setAttribute('data-roll', rising ? 'up' : 'down');
+      return digit;
+    });
+    readoutDigits.replaceChildren(...digits);
+    readout.text = text;
+  };
+
+  const syncSpeedUi = (rate: number, previous: number): void => {
+    speedRowValue.textContent = rate === 1 ? i18nLabel('speedNormal', 'Normal') : SPEED_LABEL(rate);
+    backRowValue.textContent = SPEED_LABEL(rate);
+    paintReadout(rate, rate > previous);
+    speedDecrease.disabled = rate <= SPEED_MIN;
+    speedIncrease.disabled = rate >= SPEED_MAX;
+    speedWire.sync(rate);
+  };
+  const setRate = (rate: number): void => {
+    const previous = state.selectedRate;
+    const next = clampRate(rate);
+    state.selectedRate = next;
+    media.playbackRate = next;
+    syncSpeedUi(next, previous);
+    // RATE_KEY/safeSet live in the persistence section below; setRate only runs
+    // on interaction or the restore call there, both after those consts exist.
+    safeSet(RATE_KEY, String(next));
+  };
+
+  // Minus and plus: one step per press, and a held button keeps stepping.
+  const STEP_HOLD_DELAY = 350;
+  const STEP_HOLD_EVERY = 70;
+  const stepHold = { delay: 0, repeat: 0 };
+  const stopStepHold = (): void => {
+    window.clearTimeout(stepHold.delay);
+    window.clearInterval(stepHold.repeat);
+    stepHold.delay = 0;
+    stepHold.repeat = 0;
+  };
+  const stepRate = (delta: number): void => {
+    setRate(snapRate(state.selectedRate + delta));
+    // A disabled button gets no pointerup, so the end of the range ends the hold.
+    if (state.selectedRate <= SPEED_MIN || state.selectedRate >= SPEED_MAX) stopStepHold();
+  };
+  const wireStep = (step: HTMLButtonElement, delta: number): void => {
+    step.addEventListener('pointerdown', (event) => {
+      if (event.button > 0) return;
+      stopStepHold();
+      stepRate(delta);
+      stepHold.delay = window.setTimeout(() => {
+        stepHold.repeat = window.setInterval(() => stepRate(delta), STEP_HOLD_EVERY);
+      }, STEP_HOLD_DELAY);
+    });
+    ['pointerup', 'pointerleave', 'pointercancel', 'blur'].forEach((type) => step.addEventListener(type, stopStepHold));
+    // The pointer already stepped on press. detail 0 is a keyboard or scripted click.
+    step.addEventListener('click', (event) => { if (event.detail === 0) stepRate(delta); });
+  };
+  wireStep(speedDecrease, -SPEED_SLIDER_STEP);
+  wireStep(speedIncrease, SPEED_SLIDER_STEP);
+
+  // The pane on show is in flow, so the card is as tall as it. The other is taken
+  // out of flow and slid aside (video.css). `inert` keeps it out of the tab order.
+  const menuResize = { timer: 0 };
+  const endMenuResize = (): void => {
+    window.clearTimeout(menuResize.timer);
+    menuResize.timer = 0;
+    menu.style.height = '';
+    menu.style.width = '';
+  };
+  const showPane = (pane: 'main' | 'speed', { animate = true, focus = false } = {}): void => {
+    const from = { height: menu.offsetHeight, width: menu.offsetWidth };
+    const entering = pane === 'speed' && menu.getAttribute('data-pane') !== 'speed';
+    endMenuResize();
+    speedEntry.commit();
+    menu.setAttribute('data-pane', pane);
+    speedRow.setAttribute('aria-expanded', String(pane === 'speed'));
+    mainPane.inert = pane !== 'main';
+    speedPane.inert = pane !== 'speed';
+    stopStepHold();
+    if (entering) speedWire.enter();
+    if (pane === 'main') speedWire.rest();
+    if (focus) (pane === 'speed' ? backRow : speedRow).focus({ preventScroll: true });
+    // A size cannot animate to or from `auto`: pin the old size, then the new one.
+    const to = { height: menu.offsetHeight, width: menu.offsetWidth };
+    if (!animate || reducedMotion || !from.height || !to.height || (from.height === to.height && from.width === to.width)) return;
+    menu.style.height = `${from.height}px`;
+    menu.style.width = `${from.width}px`;
+    // Reading the box commits the pinned size before the next one is set.
+    menu.getBoundingClientRect();
+    menu.style.height = `${to.height}px`;
+    menu.style.width = `${to.width}px`;
+    // Longer than the CSS transition, so a missed transitionend cannot leave it pinned.
+    menuResize.timer = window.setTimeout(endMenuResize, 400);
+  };
+  speedRow.addEventListener('click', () => showPane('speed', { focus: true }));
+  backRow.addEventListener('click', () => showPane('main', { focus: true }));
+
+  syncSpeedUi(state.selectedRate, state.selectedRate);
+  showPane('main', { animate: false });
   bar.insertBefore(menuWrap, fullscreen);
   // The menu lives on the figure, NOT inside the overflow:hidden media box, so the
   // card spills outside a short player instead of being clipped to its frame.
@@ -965,16 +1002,30 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
   const positionMenu = (): void => {
     const g = gear.getBoundingClientRect();
     const f = figure.getBoundingClientRect();
-    // The card's inline-end edge tracks the gear's; bottom sits MENU_GAP above the gear,
-    // so the card grows upward — out of the player when there isn't room below the bar.
+    const b = bar.getBoundingClientRect();
+    const width = menu.offsetWidth;
+    const gearMiddle = g.left + g.width / 2;
+    // The card opens toward the inline end, from the gear's inline-start edge. With no
+    // room there it ends at the bar's inline-end edge instead (the player's, with no bar).
+    // It is pinned by whichever edge stays put, so a width change moves the other one.
+    const place = (edge: 'left' | 'right', offset: number, cardLeft: number): void => {
+      menu.style.left = edge === 'left' ? `${offset}px` : '';
+      menu.style.right = edge === 'right' ? `${offset}px` : '';
+      // The card grows out of the gear, wherever the gear sits under it.
+      menu.style.transformOrigin = `${gearMiddle - cardLeft}px 100%`;
+    };
     if (getElementDirection(figure) === 'rtl') {
-      menu.style.right = '';
-      menu.style.left = `${g.left - f.left}px`;
+      const limit = b.width ? b.left : f.left;
+      if (g.right - width >= limit) place('right', f.right - g.right, g.right - width);
+      else place('left', limit - f.left, limit);
     } else {
-      menu.style.left = '';
-      menu.style.right = `${f.right - g.right}px`;
+      const limit = b.width ? b.right : f.right;
+      if (g.left + width <= limit) place('left', g.left - f.left, g.left);
+      else place('right', f.right - limit, limit - width);
     }
-    menu.style.bottom = `${f.bottom - g.top + MENU_GAP}px`;
+    // Clear the bar, not just the gear: the bar's padding puts its edge above the gear's.
+    const top = b.height ? Math.min(g.top, b.top) : g.top;
+    menu.style.bottom = `${f.bottom - top + MENU_GAP}px`;
   };
 
   const onMenuOutside = (event: MouseEvent): void => {
@@ -987,6 +1038,8 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
   };
   const openMenu = (): void => {
     if (!menu.hidden) return;
+    // Every open starts on the main list, whatever was showing when it closed.
+    showPane('main', { animate: false });
     menu.hidden = false;
     positionMenu();
     gear.setAttribute('aria-expanded', 'true');
@@ -995,7 +1048,11 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
   };
   const closeMenu = (): void => {
     if (menu.hidden) return;
+    speedEntry.commit();
     menu.hidden = true;
+    stopStepHold();
+    endMenuResize();
+    speedWire.rest();
     gear.setAttribute('aria-expanded', 'false');
     document.removeEventListener('mousedown', onMenuOutside);
     window.removeEventListener('resize', positionMenu);
@@ -1004,6 +1061,18 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
     event.stopPropagation();
     if (menu.hidden) openMenu();
     else closeMenu();
+  });
+  // Escape steps back out: submenu to main list, main list to closed.
+  menu.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (menu.getAttribute('data-pane') === 'speed') {
+      showPane('main', { focus: true });
+      return;
+    }
+    closeMenu();
+    gear.focus({ preventScroll: true });
   });
 
   // ----- view modes: ambient glow / theater / picture-in-picture -----
@@ -1094,8 +1163,11 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
   // to that main-thread jank, which is what made the opening read laggy/stepped.
   const canAnimate = typeof figure.animate === 'function';
   const flip = { anim: null as Animation | null };
+  // The bar is laid out at the card's final size and scaled with it, so mid-morph
+  // the island reads as a squashed strip. CSS hides it while this mark is up.
   const cancelFlip = (): void => {
     if (flip.anim) { flip.anim.cancel(); flip.anim = null; }
+    figure.removeAttribute('data-theater-morphing');
   };
   const collapsed = (from: DOMRect, to: DOMRect): string =>
     `translate(${to.left - from.left}px, ${to.top - from.top}px) scale(${to.width / from.width}, ${to.height / from.height})`;
@@ -1113,8 +1185,12 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
       { duration: opts.duration, easing: opts.easing, fill: opts.fill ?? 'none' },
     );
     flip.anim = anim;
+    figure.setAttribute('data-theater-morphing', 'true');
     anim.onfinish = (): void => {
-      if (flip.anim === anim) flip.anim = null;
+      if (flip.anim === anim) {
+        flip.anim = null;
+        figure.removeAttribute('data-theater-morphing');
+      }
       // Run teardown FIRST (it swaps the figure back to its inline flow position),
       // THEN cancel so the fill:'forwards' transform is dropped in the same frame —
       // no flash to centre, and no collapsed transform left stuck on the figure
@@ -1216,6 +1292,13 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
   theaterBtn.addEventListener('click', () => setTheater(!theater.on));
   bar.insertBefore(theaterBtn, fullscreen);
 
+  // A narrow player has no room for the view-mode buttons, so the settings card
+  // carries them too. CSS shows these rows only there.
+  const theaterRow = menuRow('menu-theater');
+  theaterRow.append(menuIcon(IconPlayerTheater), menuText('blok-video-controls__menu-label', i18nLabel('theater', 'Theater mode')));
+  theaterRow.addEventListener('click', () => { closeMenu(); setTheater(true); });
+  mainPane.append(theaterRow);
+
   // Picture-in-picture — only mounted when the browser supports it.
   const pipSupported = Boolean(document.pictureInPictureEnabled);
   const pipBtn = pipSupported ? button('picture-in-picture', i18nLabel('pip', 'Picture-in-Picture'), IconPlayerPip) : null;
@@ -1228,8 +1311,29 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
       else void video.requestPictureInPicture?.();
     });
     bar.insertBefore(pipBtn, fullscreen);
+    const pipRow = menuRow('menu-pip');
+    pipRow.append(menuIcon(IconPlayerPip), menuText('blok-video-controls__menu-label', i18nLabel('pip', 'Picture-in-Picture')));
+    pipRow.addEventListener('click', () => { closeMenu(); pipBtn.click(); });
+    mainPane.append(pipRow);
     video.addEventListener('enterpictureinpicture', onEnterPip);
     video.addEventListener('leavepictureinpicture', onLeavePip);
+  }
+
+  // ----- size tier -----
+  const tierState: { current: PlayerTier | null; observer: ResizeObserver | null } = { current: null, observer: null };
+  const syncTier = (): void => {
+    const tier = playerTier(figure.clientWidth);
+    if (tier === tierState.current) return;
+    tierState.current = tier;
+    closeMenu();
+    figure.setAttribute('data-tier', tier);
+    figure.toggleAttribute('data-capsule', tier !== 'full');
+    gear.innerHTML = tier === 'full' ? IconPlayerSettings : IconDotsHorizontal;
+  };
+  syncTier();
+  if (typeof ResizeObserver !== 'undefined') {
+    tierState.observer = new ResizeObserver(syncTier);
+    tierState.observer.observe(figure);
   }
 
   // ----- idle auto-hide -----
@@ -1472,13 +1576,16 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
   updateCenter();
 
   const destroy = (): void => {
+    tierState.observer?.disconnect();
     if (hold.timer) clearTimeout(hold.timer);
     if (state.idleTimer) clearTimeout(state.idleTimer);
     document.removeEventListener('mousedown', onMenuOutside);
     detachReadOnlyContextMenu?.();
     window.removeEventListener('keydown', onTheaterKey, true);
     window.removeEventListener('storage', onStorage);
-    cancelAnimationFrame(speedGlide.raf);
+    stopStepHold();
+    endMenuResize();
+    speedWire.destroy();
     stopSeekLoop();
     video.removeEventListener('play', startSeekLoop);
     video.removeEventListener('pause', stopSeekLoop);
@@ -1528,6 +1635,7 @@ export function attachControls({ video, figure, storage, glow = 'minimal', loop 
     video.removeEventListener('play', onPlay);
     video.removeEventListener('pause', onPause);
     video.removeEventListener('volumechange', onVolumeChange);
+    volumeIcon.destroy();
     muteToggle.removeEventListener('animationend', onMuteBumpEnd);
     document.removeEventListener('fullscreenchange', onFullscreenChange);
     document.removeEventListener('pointerdown', onTheaterOutside);

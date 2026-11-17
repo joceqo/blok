@@ -28,11 +28,13 @@ const UNCORPUSED_COMMANDS: Record<string, string> = {
   'database.submitForm': 'Editor only, and its host hook needs a forms config no corpus runner has. test/unit/tools/database/agent-automations.integration.test.ts runs it against the person\'s Submit.',
   'page.rename': 'Headless form writes another document; one document per case cannot hold it (05 §3.2.1). 01 and 04 test it.',
   'page.setIcon': 'Headless form writes another document; one document per case cannot hold it (05 §3.2.1). 01 and 04 test it.',
+  'doc.setCover': 'No corpus case yet: its golden needs the user\'s review. test/unit/shared/agent/plan-doc.test.ts plans it, document-session.test.ts runs it on the stored session, page-cover.test.ts in the editor, and each server\'s agentops test applies its setPageField.',
   // A case needs a versionHistory fixture in every runner (json, store, editor, Jint, room), and a golden only the user reviews.
   'history.versions': 'No corpus runner has a versionHistory fixture yet. The version-history tests cover node, editor, MCP live and C#.',
   'history.read': 'No corpus runner has a versionHistory fixture yet. The version-history tests cover node, editor, MCP live and C#.',
   'history.changes': 'No corpus runner has a versionHistory fixture yet. The version-history tests cover node, editor, MCP live and C#.',
   'history.restore': 'No corpus runner has a versionHistory fixture yet. The version-history tests cover node, editor, MCP live and C#.',
+  'history.previewRestore': 'No corpus runner has a versionHistory fixture yet. The version-history tests and the agent-server scenarios cover node, editor, MCP live, Jint and the three room executors.',
   // A golden counts only once the user reviews it; until then these sessions test them on every runtime.
   'database.updateView': 'Corpus case proposed, awaiting user review. test/unit/shared/agent/database-view-settings.test.ts runs it on the json and store sessions.',
   'database.setLayout': 'Corpus case proposed, awaiting user review. test/unit/shared/agent/database-view-settings.test.ts runs it on the json and store sessions.',

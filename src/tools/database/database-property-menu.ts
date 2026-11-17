@@ -17,11 +17,13 @@ import { buttonEditItems } from './database-button-menu';
 import { createOptionsEditor } from './cells/options-editor';
 import { offersAutofill } from './database-autofill-setup';
 import { DATABASE_HEADER_MENU_CLASS, SHOW_PAGE_ICON_ITEM } from './database-table-menus';
+import { DATABASE_SUBMENU_OPEN_DELAY_MS } from './database-group-menu';
 import { reminderLabel, remindersFor } from './reminders';
 import { DATE_FORMATS, HOUR_CYCLES, TIME_FORMATS, resolveHourCycle, resolveLocale, timeZones } from './cells/date-format';
 import { promoteToTopLayer, removeFromTopLayer } from '../../components/utils/top-layer';
 import { hide as hideHint, onHover, type HintOptions } from '../../components/utils/tooltip';
 import { getElementDirection } from '../../components/utils/direction';
+import { openDatabaseConfirm } from './database-confirm-dialog';
 import type {
   DateDisplay,
   DateReminderOffset,
@@ -64,11 +66,14 @@ const capHeaderMenu = (popover: PopoverDesktop): void => {
     ?.style.setProperty('--max-height', `${Math.round(window.innerHeight * HEADER_MENU_HEIGHT_SHARE * 10) / 10}px`);
 };
 
+/** notion-live/header.png: the Name cell starts at x 539, its menu at 533. Measured on the first column only. */
+const HEADER_MENU_INSET = -6;
+
 /** On the header's bottom edge, with no gap; cover slides it up when it would pass the window's bottom margin. */
 const headerMenuPosition = (anchor: HTMLElement): PlaceOver => {
   const { left, bottom, width } = anchor.getBoundingClientRect();
 
-  return { cover: true, viewportMargin: HEADER_MENU_BOTTOM_MARGIN, position: DOMRect.fromRect({ x: left, y: bottom, width, height: 0 }), positionContext: anchor };
+  return { cover: true, viewportMargin: HEADER_MENU_BOTTOM_MARGIN, position: DOMRect.fromRect({ x: left + HEADER_MENU_INSET, y: bottom, width, height: 0 }), positionContext: anchor };
 };
 
 const ruleAfterSort = (items: PopoverItemParams[]): PopoverItemParams[] =>
@@ -176,6 +181,8 @@ export interface PropertyMenuOptions extends PropertyMenuCallbacks {
   isNameTaken?: (propertyId: string, name: string) => boolean;
   /** The column header the menu stands on now: a write redraws the board and replaces the one it opened from. */
   liveAnchor?: () => HTMLElement | null;
+  /** The database's shown title, named in Delete property's question (notion-motion.md Round 14). */
+  databaseName?: () => string;
 }
 
 const SHOW_AS: readonly NumberShowAs[] = ['number', 'bar', 'ring'];
@@ -209,6 +216,8 @@ interface RowPageExtras { onComment?: () => void; edit?: boolean }
 const VALUE_LIST = { clickOnly: true, placement: 'under', width: '250px', class: PANEL_LIST_CLASS } as const;
 /** notion-spec-2 §17: a ✓ on the current choice. isActive keeps aria-checked; the panel list class drops its fill. */
 const checkedIf = (current: boolean): { isActive: boolean; trailingIcon?: string } => ({ isActive: current, ...(current ? { trailingIcon: IconCheck } : {}) });
+/** The column menu's Change type list; database.css gives its glyphs Notion's ink. */
+const CHANGE_TYPE_LIST_CLASS = 'blok-database-change-type';
 /** notion-spec-2 §17.2: a rollup's Relation and Target property lists are 280 wide and check nothing. */
 const TARGET_LIST = { clickOnly: true, placement: 'under', width: '280px', class: PANEL_LIST_CLASS } as const;
 /** notion-spec-2 §17.2: Target property's own search field size, in database.css. */
@@ -263,6 +272,8 @@ export class DatabasePropertyMenu {
   private popover: PopoverDesktop | null = null;
   /** The open property with localized option and group names, for display only. Patches come from the saved one. */
   private shown: PropertyDefinition | null = null;
+  /** Menus opened over this one, such as a status option's; they close with it. */
+  private readonly overClosers = new Set<() => void>();
   private emojiPicker: EmojiPicker | null = null;
   /** Holds the picker in the top layer. Outside the menu popover, so a pick still lands after the menu closes. */
   private pickerLayer: HTMLElement | null = null;
@@ -305,6 +316,22 @@ export class DatabasePropertyMenu {
 
   private t(key: string): string {
     return this.options.i18n.t(key);
+  }
+
+  /** Notion asks in a modal (notion-motion.md Round 14), not in the menu. */
+  private confirmDelete(id: string): void {
+    void openDatabaseConfirm({
+      title: this.options.databaseName === undefined
+        ? this.t('tools.database.deletePropertyConfirm')
+        : this.options.i18n.t('tools.database.deletePropertyFromConfirm', { name: this.options.databaseName() }),
+      confirmLabel: this.t('blockSettings.delete'),
+      cancelLabel: this.t('tools.database.layoutCancel'),
+      destructive: true,
+      focusConfirm: true,
+      roomy: true,
+    }).then((confirmed) => {
+      if (confirmed) this.options.onDelete(id);
+    });
   }
 
   /**
@@ -379,6 +406,7 @@ export class DatabasePropertyMenu {
   private swap(): void {
     const previous = this.popover;
 
+    this.closeOver();
     this.popover = null;
     this.flushDescription();
     previous?.destroy();
@@ -584,15 +612,18 @@ export class DatabasePropertyMenu {
     };
   }
 
+  /** notion-motion.md Round 44 §3: the current type stays, with a check; picking it changes nothing. */
   private typeChoices(property: PropertyDefinition): PopoverItemParams[] {
     return addablePropertyTypes(this.options.hasPeople)
-      .filter((type) => type !== property.type)
       .map((type) => ({
         name: `type-${type}`,
         title: this.t(propertyTypeMeta(type).labelKey),
         icon: propertyTypeMeta(type).icon,
         closeOnActivate: true,
-        onActivate: () => this.options.onChangeType(property.id, type),
+        ...(type === property.type ? { trailingIcon: IconCheck } : {}),
+        onActivate: (): void => {
+          if (type !== property.type) this.options.onChangeType(property.id, type);
+        },
       }));
   }
 
@@ -618,6 +649,8 @@ export class DatabasePropertyMenu {
 
     // research/27 §7: Escape closes the Edit property submenu only; a second Escape closes the menu.
     popover.escapeClosesSubmenuFirst = true;
+    // notion-motion.md Round 10: Notion mounts the Edit property flyout about 130ms after the row lights.
+    popover.nestedOpenDelay = DATABASE_SUBMENU_OPEN_DELAY_MS;
     this.popover = popover;
     popover.on(PopoverEvent.Closed, () => {
       if (this.popover === popover) {
@@ -682,12 +715,20 @@ export class DatabasePropertyMenu {
   close(): void {
     const popover = this.popover;
 
+    this.closeOver();
     this.popover = null;
     if (popover !== null) this.flushDescription();
     this.saveMirrorName?.();
     this.saveMirrorName = null;
     popover?.destroy();
     if (popover !== null) this.options.onClose?.();
+  }
+
+  private closeOver(): void {
+    const closers = [...this.overClosers];
+
+    this.overClosers.clear();
+    closers.forEach((close) => close());
   }
 
   private flushDescription(): void {
@@ -851,7 +892,7 @@ export class DatabasePropertyMenu {
     // The top layer paints in show order: shown again, it lands above the menu and any peek under it.
     removeFromTopLayer(layer);
     promoteToTopLayer(layer);
-    void this.emojiPicker.open(anchor, undefined, handlers);
+    void this.emojiPicker.open(anchor, undefined, { ...handlers, current: property.icon ?? '' });
   }
 
   private entry(
@@ -876,7 +917,8 @@ export class DatabasePropertyMenu {
           // research/27 §7: 300 wide. The all-views note wraps rather than widening it.
           // The submenu's rows mount right after onOpen.
           // notion-spec-2 §25.6: the submenu's top is the row's top; a divider follows Sort.
-          children: { items: ruleAfterSort(this.editItems(property, update)), align: 'start', minWidth: '300px', onOpen: () => queueMicrotask(() => this.bindRowHints()) },
+          // database.css: the class fades it with no scale (notion-motion.md Round 10).
+          children: { items: ruleAfterSort(this.editItems(property, update)), align: 'start', minWidth: '300px', class: 'blok-database-edit-property', onOpen: () => queueMicrotask(() => this.bindRowHints()) },
         };
       case 'showFullUrl': {
         // notion-spec-2 §19.21: a click on the row toggles it. The row's icon was not measured: Blok draws URL's type icon.
@@ -910,7 +952,8 @@ export class DatabasePropertyMenu {
           name: entry,
           title: this.t('tools.database.changeType'),
           icon: IconChangeType,
-          children: { items: this.typeChoices(property) },
+          // notion-motion.md Round 44 §3 (r44-tp-change.raw): a plain 200-wide list.
+          children: { items: this.typeChoices(property), width: '200px', class: CHANGE_TYPE_LIST_CLASS },
         };
       case 'duplicate':
         return { name: entry, title: this.t('tools.database.duplicateProperty'), icon: IconCopy, closeOnActivate: true, onActivate: () => this.options.onDuplicate(id) };
@@ -920,14 +963,8 @@ export class DatabasePropertyMenu {
           title: this.t('tools.database.deleteProperty'),
           icon: IconTrash,
           isDestructive: true,
-          confirmation: {
-            name: entry,
-            title: this.t('tools.database.deletePropertyConfirm'),
-            icon: IconTrash,
-            isDestructive: true,
-            closeOnActivate: true,
-            onActivate: () => this.options.onDelete(id),
-          },
+          closeOnActivate: true,
+          onActivate: () => this.confirmDelete(id),
         };
     }
   }
@@ -1387,6 +1424,8 @@ export class DatabasePropertyMenu {
       ...(property.type === 'status'
         ? { onSetDefault: (defaultOptionId: string) => update({ status: { groups: status?.groups ?? [], ...status, defaultOptionId } }) }
         : {}),
+      hold: () => this.popover?.holdOpen() ?? ((): void => undefined),
+      onHostClose: (close) => this.overClosers.add(close),
     });
 
     return { type: PopoverItemType.Html, element, name: 'options' };

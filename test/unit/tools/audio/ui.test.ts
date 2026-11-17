@@ -29,6 +29,14 @@ describe('renderNowPlaying', () => {
     expect(rw.title.getAttribute('contenteditable')).toBe('true');
   });
 
+  // Title and author save as plain text, so formatting would be dropped.
+  it('marks title and author as plain-text fields', () => {
+    const { title, artist } = renderNowPlaying({ url: 'u', title: 't' }, { editable: true });
+
+    expect(title.hasAttribute('data-blok-plain-text')).toBe(true);
+    expect(artist.hasAttribute('data-blok-plain-text')).toBe(true);
+  });
+
   it('shows the cover image when coverUrl is set', () => {
     const { cover } = renderNowPlaying({ url: 'u', coverUrl: 'https://x/c.jpg' }, { editable: true });
     const img = cover.querySelector('img');
@@ -135,13 +143,16 @@ describe('renderErrorState', () => {
   });
 
   const base = {
-    message: 'Audio from Google Drive can’t be played directly.',
+    title: 'Google Drive audio can’t play here',
+    detail: 'Download the file and upload it here instead.',
     replaceLabel: 'Replace',
     onReplace: (): void => {},
   };
 
+  const SCENES = ['shattered', 'ink-burst', 'sand', 'pulled-plug'];
+
   it('keeps the hooks hosts and tests target', () => {
-    const el = renderErrorState(base);
+    const el = renderErrorState(base).element;
     expect(el.getAttribute('data-role')).toBe('audio-error');
     expect(el.classList.contains('blok-audio-error-state')).toBe(true);
     const replace = el.querySelector('button[data-action="replace"]');
@@ -150,59 +161,78 @@ describe('renderErrorState', () => {
   });
 
   it('leaves the message as the only text a screen reader hears besides the buttons', () => {
-    const el = renderErrorState({ ...base, service: 'google-drive', badge: 'Needle skipped' });
-    const message = el.querySelector('[data-role="audio-error-message"]');
-    expect(message?.textContent).toBe(base.message);
-    const decorative = el.querySelectorAll('[aria-hidden="true"]');
-    const art = el.querySelector('[data-role="audio-error-art"]');
-    const wave = el.querySelector('[data-role="audio-error-wave"]');
-    const source = el.querySelector('[data-role="audio-error-source"]');
-    expect([...decorative]).toEqual(expect.arrayContaining([art, wave, source]));
+    const el = renderErrorState({ ...base, service: 'google-drive' }).element;
+    const scene = el.querySelector('[data-role="audio-error-scene"]');
+
+    expect(scene?.getAttribute('aria-hidden')).toBe('true');
+    expect(scene?.tagName).toBe('CANVAS');
+    expect(el.querySelector('[data-role="audio-error-title"]')?.textContent).toBe(base.title);
+    expect(el.querySelector('[data-role="audio-error-message"]')?.textContent).toBe(base.detail);
+    expect(el.textContent).toBe(`${base.title}${base.detail}Replace`);
   });
 
-  it('shows the given badge instead of the service name when the link came from one', () => {
-    const drive = renderErrorState({ ...base, service: 'google-drive', badge: 'Needle skipped' });
-    expect(drive.querySelector('[data-role="audio-error-source"]')?.textContent).toBe('Needle skipped');
+  it('puts the title above the detail, as two separate lines', () => {
+    const el = renderErrorState(base).element;
+    const title = el.querySelector('[data-role="audio-error-title"]');
+    const detail = el.querySelector('[data-role="audio-error-message"]');
+
+    expect(title?.nextElementSibling).toBe(detail);
+    expect(title?.tagName).toBe('P');
+    expect(detail?.tagName).toBe('P');
+  });
+
+  it('marks the service a failed link came from', () => {
+    const drive = renderErrorState({ ...base, service: 'google-drive' }).element;
     expect(drive.getAttribute('data-reason')).toBe('google-drive');
   });
 
-  it('shows no badge when none is given', () => {
-    const drive = renderErrorState({ ...base, service: 'google-drive' });
-    expect(drive.querySelector('[data-role="audio-error-source"]')).toBeNull();
-  });
-
-  it('shows no service name for an ordinary failure', () => {
-    const el = renderErrorState(base);
+  it('marks no service for an ordinary failure', () => {
+    const el = renderErrorState(base).element;
     expect(el.hasAttribute('data-reason')).toBe(false);
-    expect(el.querySelector('[data-role="audio-error-source"]')).toBeNull();
   });
 
-  it('draws the broken record with the player\'s own disc', () => {
-    const el = renderErrorState(base);
-    expect(el.querySelector('[data-role="audio-error-art"] .blok-audio-cover__disc')).not.toBeNull();
+  it('shows one of the four broken objects for an ordinary failure', () => {
+    const el = renderErrorState(base).element;
+    expect(SCENES).toContain(el.getAttribute('data-scene'));
   });
 
-  it('cracks the disc itself, so the crack jumps with every skip', () => {
-    const el = renderErrorState(base);
-    expect(el.querySelector('.blok-audio-cover__disc > .blok-audio-error-state__crack')).not.toBeNull();
+  it('never shows the same object on two errors in a row', () => {
+    const shown = Array.from({ length: 40 }, () => renderErrorState(base).element.getAttribute('data-scene'));
+    const repeats = shown.filter((name, i) => i > 0 && name === shown[i - 1]);
+
+    expect(repeats).toEqual([]);
+    expect(shown).not.toContain('wont-fit');
+  });
+
+  it('shows the record that will not fit when the file is too large, every time', () => {
+    const shown = Array.from({ length: 12 }, () =>
+      renderErrorState({ ...base, tooLarge: { size: '84 MB', limit: 'max 50 MB' } }).element.getAttribute('data-scene'));
+
+    expect(new Set(shown)).toEqual(new Set(['wont-fit']));
+  });
+
+  it('hands back a way to stop the object', () => {
+    const state = renderErrorState(base);
+
+    expect(() => state.destroy()).not.toThrow();
   });
 
   it('runs onReplace when Replace is clicked', () => {
     const onReplace = vi.fn();
-    const el = renderErrorState({ ...base, onReplace });
+    const el = renderErrorState({ ...base, onReplace }).element;
     el.querySelector<HTMLButtonElement>('[data-action="replace"]')?.click();
     expect(onReplace).toHaveBeenCalledTimes(1);
   });
 
   it('has no upload button unless uploading is offered', () => {
-    const el = renderErrorState(base);
+    const el = renderErrorState(base).element;
     expect(el.querySelector('[data-action="upload"]')).toBeNull();
     expect(el.querySelector('input[type="file"]')).toBeNull();
   });
 
   it('opens a file picker limited to the accepted types and hands the picked file over', () => {
     const onFile = vi.fn();
-    const el = renderErrorState({ ...base, upload: { label: 'Choose audio', accept: 'audio/mpeg,audio/wav', onFile } });
+    const el = renderErrorState({ ...base, upload: { label: 'Choose audio', accept: 'audio/mpeg,audio/wav', onFile } }).element;
     const button = el.querySelector<HTMLButtonElement>('button[data-action="upload"]');
     const input = el.querySelector<HTMLInputElement>('input[type="file"]');
     if (!button || !input) throw new Error('upload controls not rendered');

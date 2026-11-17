@@ -255,6 +255,57 @@ describe('clipboard data loss: Blok cells copied and pasted back', { timeout: 60
     ]);
   });
 
+  it('a single copied list cell pasted at the caret of a filled cell lands after the caret block and keeps the cell', async () => {
+    const editor = await boot([
+      { id: 'src', type: 'table', data: { withHeadings: false, content: [[{ blocks: ['l1'] }, { blocks: ['c2'] }]] } },
+      { id: 'l1', type: 'list', data: { text: 'item', style: 'checklist', checked: true }, parent: 'src' },
+      { id: 'c2', type: 'paragraph', data: { text: 'x' }, parent: 'src' },
+      { id: 'dst', type: 'table', data: { withHeadings: false, content: [[{ blocks: ['d1'] }, { blocks: ['keep', 'tail'] }]] } },
+      { id: 'd1', type: 'paragraph', data: { text: '' }, parent: 'dst' },
+      { id: 'keep', type: 'paragraph', data: { text: 'keep' }, parent: 'dst' },
+      { id: 'tail', type: 'paragraph', data: { text: 'tail' }, parent: 'dst' },
+    ]);
+
+    await paste(cellEditable('dst', 0, 1), copyRange('src', { minRow: 0, maxRow: 0, minCol: 0, maxCol: 0 }));
+    const saved = savedAsHtml(await editor.save());
+    const dst = saved.blocks.find(block => block.id === 'dst');
+
+    if (dst === undefined) {
+      throw new Error('no dst');
+    }
+
+    expect(blocksIn(saved, cellOf(dst, 0, 1)).map(block => [block.type, block.data])).toStrictEqual([
+      ['paragraph', expect.objectContaining({ text: 'keep' })],
+      ['list', expect.objectContaining({ text: 'item', style: 'checklist', checked: true })],
+      ['paragraph', expect.objectContaining({ text: 'tail' })],
+    ]);
+  });
+
+  it('a single copied colored cell pasted into a filled cell keeps both the target text and the color', async () => {
+    const editor = await boot([
+      { id: 'src', type: 'table', data: { withHeadings: false, content: [[{ blocks: ['c1'] }, { blocks: ['c2'] }]] } },
+      { id: 'c1', type: 'paragraph', data: { text: 'red', textColor: 'red' }, parent: 'src' },
+      { id: 'c2', type: 'paragraph', data: { text: 'x' }, parent: 'src' },
+      { id: 'dst', type: 'table', data: { withHeadings: false, content: [[{ blocks: ['d1'] }, { blocks: ['keep'] }]] } },
+      { id: 'd1', type: 'paragraph', data: { text: '' }, parent: 'dst' },
+      { id: 'keep', type: 'paragraph', data: { text: 'keep' }, parent: 'dst' },
+    ]);
+
+    await paste(cellEditable('dst', 0, 1), copyRange('src', { minRow: 0, maxRow: 0, minCol: 0, maxCol: 0 }));
+    const saved = savedAsHtml(await editor.save());
+    const dst = saved.blocks.find(block => block.id === 'dst');
+
+    if (dst === undefined) {
+      throw new Error('no dst');
+    }
+
+    expect(blocksIn(saved, cellOf(dst, 0, 1)).map(block => block.data)).toStrictEqual([
+      expect.objectContaining({ text: 'keep' }),
+      expect.objectContaining({ text: 'red', textColor: 'red' }),
+    ]);
+    expect(saved.blocks.filter(block => block.type === 'table')).toHaveLength(2);
+  });
+
   it('control: a single copied plain cell is inserted inline into the target paragraph', async () => {
     const editor = await boot([
       { id: 'src', type: 'table', data: { withHeadings: false, content: [[{ blocks: ['c1'] }, { blocks: ['c2'] }]] } },
@@ -276,6 +327,92 @@ describe('clipboard data loss: Blok cells copied and pasted back', { timeout: 60
     expect(cellOf(dst, 0, 1).blocks).toStrictEqual(['d2']);
     expect(saved.blocks.find(block => block.id === 'd2')?.data.text).toBe('plainkept ');
   });
+
+  /** A paragraph `HelloWorld` alone in a cell of `dst`, with the caret after `Hello`. */
+  const caretAtFiveIn = (id: string): HTMLElement => {
+    const el = cellEditable('dst', 0, 0);
+
+    if (el.closest(`[data-blok-id="${id}"]`) === null || el.firstChild === null) {
+      throw new Error(`no text in ${id}`);
+    }
+    // Focus first: a focus moves the caret, and paste() focuses again.
+    el.setAttribute('contenteditable', 'true');
+    el.focus();
+    window.getSelection()?.collapse(el.firstChild, 5);
+
+    return el;
+  };
+
+  /** One copied cell, as any page could write it. */
+  const cellClipboard = (blocks: Array<{ tool: string; data: Record<string, unknown> }>): Record<string, string> => {
+    const json = JSON.stringify({ rows: 1, cols: 1, cells: [[{ blocks }]] }).replace(/'/g, '&#39;');
+
+    return { 'text/html': `<table data-blok-table-cells='${json}'><tr><td>x</td></tr></table>`, 'text/plain': 'x' };
+  };
+
+  it('a copied cell that starts and ends with text splits the caret paragraph of a filled cell', async () => {
+    const editor = await boot([
+      { id: 'dst', type: 'table', data: { withHeadings: false, content: [[{ blocks: ['c'] }]] } },
+      { id: 'c', type: 'paragraph', data: { text: 'HelloWorld' }, parent: 'dst' },
+    ]);
+
+    await paste(caretAtFiveIn('c'), cellClipboard([
+      { tool: 'paragraph', data: { text: 'First' } },
+      { tool: 'list', data: { text: 'mid', style: 'unordered' } },
+      { tool: 'paragraph', data: { text: 'Second' } },
+    ]));
+    const saved = savedAsHtml(await editor.save());
+    const dst = saved.blocks.find(block => block.id === 'dst');
+
+    if (dst === undefined) {
+      throw new Error('no dst');
+    }
+
+    expect(blocksIn(saved, cellOf(dst, 0, 0)).map(block => [block.id === 'c', block.type, block.data.text])).toStrictEqual([
+      [true, 'paragraph', 'HelloFirst'],
+      [false, 'list', 'mid'],
+      [false, 'paragraph', 'SecondWorld'],
+    ]);
+  });
+
+  // No image: a cell paragraph's image is saved as its own block.
+  const FORGED = 'A<b onmouseover="alert(1)">b</b><a href="javascript:alert(1)">B</a><script>alert(2)</script><iframe src="https://e.com/"></iframe>';
+  const forgedSources: Record<string, Record<string, string>> = {
+    'a forged Blok cell copy': cellClipboard([
+      { tool: 'paragraph', data: { text: FORGED } },
+      { tool: 'list', data: { text: 'mid', style: 'unordered' } },
+      { tool: 'paragraph', data: { text: 'Z' } },
+    ]),
+    'a forged one-cell HTML table': {
+      'text/html': `<table><tr><td><p>${FORGED}</p><ul><li>mid</li></ul><p>Z</p></td></tr></table>`,
+      'text/plain': 'A\nmid\nZ',
+    },
+  };
+
+  for (const [name, clipboard] of Object.entries(forgedSources)) {
+    it(`${name} splits the caret paragraph with no script or unsafe link in it`, async () => {
+      const editor = await boot([
+        { id: 'dst', type: 'table', data: { withHeadings: false, content: [[{ blocks: ['c'] }]] } },
+        { id: 'c', type: 'paragraph', data: { text: 'HelloWorld' }, parent: 'dst' },
+      ]);
+
+      await paste(caretAtFiveIn('c'), clipboard);
+      const saved = savedAsHtml(await editor.save());
+      const dst = saved.blocks.find(block => block.id === 'dst');
+
+      if (dst === undefined) {
+        throw new Error('no dst');
+      }
+      const cell = blocksIn(saved, cellOf(dst, 0, 0));
+      const text = String(cell[0]?.data.text);
+
+      expect(cell.map(block => [block.id === 'c', block.type])).toStrictEqual([[true, 'paragraph'], [false, 'list'], [false, 'paragraph']]);
+      expect(text.startsWith('HelloA')).toBe(true);
+      expect(cell[2]?.data.text).toBe('ZWorld');
+      expect(text).not.toMatch(/onmouseover|javascript:|<script|<iframe/i);
+      expect(holder.querySelector('[data-blok-id="c"] :is(script, iframe, [onmouseover], [href^="javascript"])')).toBeNull();
+    });
+  }
 
   it('an ordered list starting at 5 keeps its start number when cells are pasted outside a table', async () => {
     const editor = await boot([

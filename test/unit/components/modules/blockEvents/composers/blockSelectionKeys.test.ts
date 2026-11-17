@@ -3,6 +3,9 @@ import { BlockSelectionKeys } from '../../../../../../src/components/modules/blo
 import type { BlokModules } from '../../../../../../src/types-internal/blok-modules';
 import type { Block } from '../../../../../../src/components/block';
 import * as SelectionUtilsModule from '../../../../../../src/components/selection';
+import { announce } from '../../../../../../src/components/utils/announcer';
+
+vi.mock('../../../../../../src/components/utils/announcer', () => ({ announce: vi.fn() }));
 
 const createKeyboardEvent = (options: Partial<KeyboardEvent> = {}): KeyboardEvent => {
   return {
@@ -73,6 +76,7 @@ const createBlokModules = (overrides: Partial<BlokModules> = {}): BlokModules =>
       anyBlockSelected: false,
       selectedBlocks: [],
       clearSelection: vi.fn(),
+      disableNavigationMode: vi.fn(),
       clearCache: vi.fn(),
       copySelectedBlocks: vi.fn(() => Promise.resolve()),
     } as unknown as BlokModules['BlockSelection'],
@@ -97,6 +101,9 @@ const createBlokModules = (overrides: Partial<BlokModules> = {}): BlokModules =>
       positions: { START: 'start', END: 'end', DEFAULT: 'default' },
       setToBlock: vi.fn(),
     } as unknown as BlokModules['Caret'],
+    ReadOnly: {
+      isEnabled: false,
+    } as unknown as BlokModules['ReadOnly'],
   };
 
   const mergedState: Partial<BlokModules> = { ...defaults };
@@ -223,6 +230,105 @@ describe('BlockSelectionKeys', () => {
       expect(event.stopImmediatePropagation).toHaveBeenCalledTimes(1);
       expect(event.stopPropagation).toHaveBeenCalledTimes(1);
     });
+
+    it('says how many selected blocks it deleted, not counting their children', () => {
+      const toggle = createBlock({ id: 'tg', selected: true, parentId: null });
+      const child = createBlock({ id: 'kid', selected: true, parentId: 'tg' });
+      const other = createBlock({ id: 'b', selected: true, parentId: null });
+      const kept = createBlock({ id: 'c', parentId: null });
+      const state = { blocks: [toggle, child, other, kept] };
+      const blok = createBlokModules({
+        BlockSelection: {
+          anyBlockSelected: true,
+        } as unknown as BlokModules['BlockSelection'],
+        BlockManager: {
+          get blocks() {
+            return state.blocks;
+          },
+          getBlockById: vi.fn((id: string) => state.blocks.find((block) => block.id === id)),
+          deleteSelectedBlocksAndInsertReplacement: vi.fn(() => {
+            state.blocks = state.blocks.filter((block) => !block.selected);
+
+            return undefined;
+          }),
+        } as unknown as BlokModules['BlockManager'],
+        I18n: {
+          t: (key: string, vars?: { count?: number }) => `${key}:${vars?.count ?? ''}`,
+        } as unknown as BlokModules['I18n'],
+      });
+
+      new BlockSelectionKeys(blok).handleDeletion(createKeyboardEvent({ key: 'Backspace' }));
+
+      expect(vi.mocked(announce)).toHaveBeenCalledWith('a11y.blocksDeleted:2');
+      expect(vi.mocked(announce)).toHaveBeenCalledTimes(1);
+    });
+
+    // USER DECISION 2026-11-12 (A4-3): only the count is said, as in Notion.
+    it('leaves navigation mode without saying so before it clears the selection', () => {
+      const disableNavigationMode = vi.fn();
+      const clearSelection = vi.fn();
+      const blok = createBlokModules({
+        BlockSelection: {
+          anyBlockSelected: true,
+          disableNavigationMode,
+          clearSelection,
+        } as unknown as BlokModules['BlockSelection'],
+        BlockManager: {
+          deleteSelectedBlocksAndInsertReplacement: vi.fn(() => createBlock()),
+        } as unknown as BlokModules['BlockManager'],
+      });
+
+      new BlockSelectionKeys(blok).handleDeletion(createKeyboardEvent({ key: 'Delete' }));
+
+      // Caret.setToBlock clears the selection too, which would say the exit.
+      const setToBlock = vi.mocked(blok.Caret.setToBlock);
+
+      expect(disableNavigationMode).toHaveBeenCalledWith(false, false);
+      expect(disableNavigationMode.mock.invocationCallOrder[0]).toBeLessThan(setToBlock.mock.invocationCallOrder[0]);
+      expect(disableNavigationMode.mock.invocationCallOrder[0]).toBeLessThan(clearSelection.mock.invocationCallOrder[0]);
+    });
+  });
+
+  describe('a deleted sub-page block (Notion U108)', () => {
+    const run = (trash: boolean): { show: ReturnType<typeof vi.fn> } => {
+      const page = createBlock({ id: 'pg', selected: true, parentId: null, tool: { blockMenu: { titled: true, trash, lead: [] } } as unknown as Block['tool'] });
+      const state = { blocks: [page], steps: [undefined, {}] as Array<Record<string, unknown> | undefined> };
+      const show = vi.fn();
+      const blok = createBlokModules({
+        BlockSelection: { anyBlockSelected: true } as unknown as BlokModules['BlockSelection'],
+        BlockManager: {
+          get blocks() {
+            return state.blocks;
+          },
+          getBlockById: vi.fn((id: string) => state.blocks.find((block) => block.id === id)),
+          deleteSelectedBlocksAndInsertReplacement: vi.fn(() => {
+            state.blocks = [];
+
+            return undefined;
+          }),
+        } as unknown as BlokModules['BlockManager'],
+        HistoryAPI: { latestStep: vi.fn(() => state.steps.shift()), undoStep: vi.fn() } as unknown as BlokModules['HistoryAPI'],
+        NotifierAPI: { show, dismiss: vi.fn(), isClosed: vi.fn(() => false) } as unknown as BlokModules['NotifierAPI'],
+        YjsManager: { onBeforeUserStep: vi.fn(() => () => undefined) } as unknown as BlokModules['YjsManager'],
+        I18n: { t: (key: string) => key } as unknown as BlokModules['I18n'],
+      });
+
+      new BlockSelectionKeys(blok).handleDeletion(createKeyboardEvent({ key: 'Backspace' }));
+
+      return { show };
+    };
+
+    it('shows the "Moved to Trash" toast', () => {
+      const { show } = run(true);
+
+      expect(show).toHaveBeenCalledWith(expect.objectContaining({ message: 'tools.database.movedToTrash' }));
+    });
+
+    it('shows no toast for a block that is not trashed', () => {
+      const { show } = run(false);
+
+      expect(show).not.toHaveBeenCalled();
+    });
   });
 
   describe('handleCopy', () => {
@@ -256,6 +362,73 @@ describe('BlockSelectionKeys', () => {
       blockSelectionKeys.handleCopy(event);
 
       expect(copySelectedBlocks).toHaveBeenCalledWith(event);
+    });
+
+    describe('a read-only text selection across blocks', () => {
+      const first = createBlock({ id: 'first' });
+      const second = createBlock({ id: 'second' });
+      const foreign = document.createElement('p');
+      const page = document.createElement('div');
+
+      foreign.textContent = 'another editor';
+      // A range across nodes of different trees collapses.
+      page.append(first.holder, second.holder, foreign);
+      first.firstInput?.append('one');
+      second.firstInput?.append('two');
+
+      const selectFrom = (start: Node, end: Node): void => {
+        const range = document.createRange();
+
+        range.setStart(start, 0);
+        range.setEnd(end, 1);
+        vi.spyOn(SelectionUtilsModule.SelectionUtils, 'get').mockReturnValue({
+          rangeCount: 1,
+          getRangeAt: () => range,
+        } as unknown as Selection);
+      };
+
+      const setup = (isEnabled: boolean): { blockSelectionKeys: BlockSelectionKeys; copySelectedBlocks: ReturnType<typeof vi.fn> } => {
+        const copySelectedBlocks = vi.fn(() => Promise.resolve());
+        const owner = new Map<Node, Block>([[first.firstInput as Node, first], [second.firstInput as Node, second]]);
+        const blok = createBlokModules({
+          BlockSelection: { anyBlockSelected: false, copySelectedBlocks } as unknown as BlokModules['BlockSelection'],
+          BlockManager: {
+            getBlockByChildNode: vi.fn((node: Node) => owner.get(node.parentNode as Node)),
+            getSelectionSiblingRange: vi.fn(() => [first, second]),
+          } as unknown as BlokModules['BlockManager'],
+          ReadOnly: { isEnabled } as unknown as BlokModules['ReadOnly'],
+        });
+
+        return { blockSelectionKeys: new BlockSelectionKeys(blok), copySelectedBlocks };
+      };
+
+      it('copies the blocks the selection spans, cut to the selection', () => {
+        const { blockSelectionKeys, copySelectedBlocks } = setup(true);
+        const event = createClipboardEvent();
+
+        selectFrom(first.firstInput?.firstChild as Node, second.firstInput?.firstChild as Node);
+        blockSelectionKeys.handleCopy(event);
+
+        expect(copySelectedBlocks).toHaveBeenCalledWith(event, { blocks: [first, second], range: SelectionUtilsModule.SelectionUtils.get()?.getRangeAt(0) });
+      });
+
+      it('leaves a selection that ends in another editor alone', () => {
+        const { blockSelectionKeys, copySelectedBlocks } = setup(true);
+
+        selectFrom(first.firstInput?.firstChild as Node, foreign.firstChild as Node);
+        blockSelectionKeys.handleCopy(createClipboardEvent());
+
+        expect(copySelectedBlocks).not.toHaveBeenCalled();
+      });
+
+      it('leaves an editable editor to the cross-block text copy', () => {
+        const { blockSelectionKeys, copySelectedBlocks } = setup(false);
+
+        selectFrom(first.firstInput?.firstChild as Node, second.firstInput?.firstChild as Node);
+        blockSelectionKeys.handleCopy(createClipboardEvent());
+
+        expect(copySelectedBlocks).not.toHaveBeenCalled();
+      });
     });
   });
 

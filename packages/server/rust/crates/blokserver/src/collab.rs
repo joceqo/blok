@@ -289,12 +289,14 @@ impl Inner {
         };
 
         let clock = Arc::clone(&self.clock);
-        let mut room = RoomOptions {
-            announced_max_message_bytes: o.collab_max_message_bytes,
-            now: Some(Arc::new(move || clock())),
-            timers: o.timers.clone(),
-            ..RoomOptions::default()
-        };
+        // RoomOptions is non_exhaustive: set fields on its default.
+        let mut room = RoomOptions::default();
+        room.announced_max_message_bytes = o.collab_max_message_bytes;
+        room.restore_trashes_pages = o.collab_restore_trashes_pages;
+        room.change_signal_window = u64::try_from(o.collab_change_signal_window_nanos)
+            .map_or(std::time::Duration::ZERO, std::time::Duration::from_nanos);
+        room.now = Some(Arc::new(move || clock()));
+        room.timers = o.timers.clone();
         let operations: Option<Arc<dyn OperationStore>> =
             if let Some(store) = &o.collab_operation_store {
                 // Only the built-in journal states its append limit.
@@ -315,15 +317,13 @@ impl Inner {
             } else {
                 None
             };
-        Ok(Manager::new(ManagerOptions {
-            store,
-            endpoint: Arc::new(client),
-            converter: Arc::new(converter),
-            room,
-            log,
-            operations,
-            activity: o.collab_activity_observer.clone(),
-        }))
+        let mut options = ManagerOptions::new(store, Arc::new(client), Arc::new(converter));
+        options.room = room;
+        options.log = log;
+        options.operations = operations;
+        options.activity = o.collab_activity_observer.clone();
+        options.notes = o.collab_record_notes.clone();
+        Ok(Manager::new(options))
     }
 
     /// The open-routes warning, under the host category: the standalone
@@ -337,7 +337,10 @@ impl Inner {
             format!("GET {prefix}/sync/{{doc}}/history/{{lineage}}/{{sequence}}"),
             format!("DELETE {prefix}/sync/{{doc}}/history/{{lineage}}"),
             format!("POST {prefix}/sync/{{doc}}/history/{{lineage}}/{{sequence}}/restore"),
+            format!("POST {prefix}/sync/{{doc}}/history/{{lineage}}/{{sequence}}/restore/preview"),
             format!("GET {prefix}/sync/{{doc}}/history/{{lineage}}/{{sequence}}/changes"),
+            format!("GET {prefix}/sync/{{doc}}/history/at"),
+            format!("GET {prefix}/sync/{{doc}}/history/changes"),
         ];
         let (sync, reset, edit, state) = (
             format!("GET {prefix}/sync/{{doc}}"),
@@ -427,7 +430,12 @@ impl Server {
             .agent
             .get_or_init(|| {
                 let rooms = match &inner.collab {
-                    Some(collab) => Some(blok_blokagent::Rooms::new(collab.get(inner)?)),
+                    Some(collab) => Some(match agent_history_policy(&inner.options) {
+                        Some(policy) => {
+                            blok_blokagent::Rooms::with_history(collab.get(inner)?, policy)
+                        }
+                        None => blok_blokagent::Rooms::new(collab.get(inner)?),
+                    }),
                     None => None,
                 };
                 Ok(Arc::new(blok_blokagent::Executor::new_on_runtime(
@@ -461,4 +469,27 @@ pub(crate) fn runtime_options(o: &Options) -> blok_jsruntime::Options {
         timeout: o.documents.timeout,
         memory_budget: o.documents.memory_budget,
     }
+}
+
+/// The host's history hooks for an agent call. The agent has no request, so
+/// the hooks get a user named by the person it acts for, else the agent, and
+/// empty extensions. None when the host sets no authorization hook.
+fn agent_history_policy(options: &Options) -> Option<blok_blokagent::HistoryPolicy> {
+    let hook = options.authorization.clone()?;
+    Some(Arc::new(move |user_id: String, doc_id: String| {
+        let hook = Arc::clone(&hook);
+        Box::pin(async move {
+            let user = blok_auth::User {
+                id: user_id.clone(),
+                name: user_id,
+                authenticated: true,
+                ..blok_auth::User::default()
+            };
+            let request = blok_auth::Extensions::default();
+            Ok(blok_blokagent::HistoryAccess {
+                can_read: hook.can_read_history(&user, &doc_id, &request).await?,
+                window: hook.history_window(&user, &doc_id, &request).await?,
+            })
+        })
+    }))
 }

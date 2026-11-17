@@ -16,7 +16,7 @@
       "sup": {},
       "sub": {},
       "mark": "[fn preserveColorStyles]",
-      "span": "[fn preserveEquationSpan]",
+      "span": "[fn preserveInlineSpan]",
       "img": {
         "src": true,
         "alt": true,
@@ -43,7 +43,7 @@
       "sup": {},
       "sub": {},
       "mark": "[fn preserveColorStyles]",
-      "span": "[fn preserveEquationSpan]"
+      "span": "[fn preserveInlineSpan]"
     },
     "isToggleable": false,
     "anchor": false,
@@ -65,7 +65,7 @@
       "sup": {},
       "sub": {},
       "mark": "[fn preserveColorStyles]",
-      "span": "[fn preserveEquationSpan]"
+      "span": "[fn preserveInlineSpan]"
     }
   },
   "toggle": {
@@ -85,7 +85,7 @@
       "sup": {},
       "sub": {},
       "mark": "[fn preserveColorStyles]",
-      "span": "[fn preserveEquationSpan]"
+      "span": "[fn preserveInlineSpan]"
     }
   },
   "callout": {
@@ -108,7 +108,7 @@
       "sup": {},
       "sub": {},
       "mark": "[fn preserveColorStyles]",
-      "span": "[fn preserveEquationSpan]"
+      "span": "[fn preserveInlineSpan]"
     }
   },
   "code": {
@@ -173,7 +173,24 @@
   },
   "database": {
     "title": "plaintext",
+    "description": {
+      "br": true,
+      "strong": {},
+      "b": {},
+      "em": {},
+      "i": {},
+      "u": {},
+      "s": {},
+      "del": {},
+      "a": "[fn preservePageReferenceAnchor]",
+      "code": {},
+      "sup": {},
+      "sub": {},
+      "mark": "[fn preserveColorStyles]",
+      "span": "[fn preserveInlineSpan]"
+    },
     "schema": "plaintext",
+    "deletedProperties": "plaintext",
     "views": "plaintext",
     "activeViewId": "plaintext",
     "automations": "plaintext"
@@ -213,7 +230,7 @@
       "sup": {},
       "sub": {},
       "mark": "[fn mark]",
-      "span": "[fn preserveEquationSpan]",
+      "span": "[fn preserveInlineSpan]",
       "ul": true,
       "ol": true,
       "li": {

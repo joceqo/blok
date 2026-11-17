@@ -377,6 +377,7 @@ export class DragController extends Module {
   }
 
   private startActualDrag(blockCount: number): void {
+    this.stopDropFocusWatch();
     // A previous drop's motion may still be in flight; finish it instantly so
     // this drag measures settled rects, not mid-animation ones.
     finishColumnDropAnimations();
@@ -905,6 +906,9 @@ export class DragController extends Module {
     // targetParentId is the enclosing column when the target already lives in a
     // column_list (→ add a sibling column), or null for a top-level target
     // (→ wrap target + sources into a brand new column_list).
+    // Undo gives the dragged blocks back selected (Notion U117), as the vertical drop does.
+    this.Blok.YjsManager?.markBlocksBefore?.(sourceIds);
+
     const createdId = targetParentId !== null
       ? addColumnToList(api, targetParentId, sourceIds, edge)
       : wrapInNewColumnList(api, targetBlock.id, sourceIds, edge);
@@ -912,9 +916,53 @@ export class DragController extends Module {
     this.reseedEmptiedColumns(sourceParentIds);
 
     if (createdId !== null) {
+      this.selectDropped(sourceIds);
       this.settleDroppedPreview(sourceIds[0]);
     }
   }
+
+  /**
+   * Leave the dropped blocks block-selected with no caret, as Notion does
+   * after a column drop (U117).
+   * @param ids - the top-level dropped blocks
+   */
+  private selectDropped(ids: string[]): void {
+    const { BlockManager, BlockSelection } = this.Blok;
+
+    BlockSelection.clearSelection();
+    ids.forEach((id) => {
+      const block = BlockManager.getBlockById(id);
+
+      if (block !== undefined) {
+        BlockSelection.selectBlock(block);
+      }
+    });
+
+    const active = document.activeElement;
+
+    if (active instanceof HTMLElement && this.Blok.UI.nodes.wrapper.contains(active)) {
+      active.blur();
+    }
+
+    // Focus landing anywhere means the user moved on. clearSelection, not
+    // unselectBlock: selectBlock primed Cmd+A to select every block.
+    this.stopDropFocusWatch();
+    const letGo = (): void => {
+      this.stopDropFocusWatch();
+      if (ids.some((id) => BlockManager.getBlockById(id)?.selected === true)) {
+        BlockSelection.clearSelection();
+      }
+    };
+
+    document.addEventListener('focusin', letGo, true);
+    this.stopDropFocusWatch = (): void => {
+      document.removeEventListener('focusin', letGo, true);
+      this.stopDropFocusWatch = (): void => undefined;
+    };
+  }
+
+  /** Disarms the focus watch a column drop left; a new drag or destroy() ends it. */
+  private stopDropFocusWatch: () => void = () => undefined;
 
   /**
    * Fly the drag preview to the first dropped block's landed position instead
@@ -989,6 +1037,10 @@ export class DragController extends Module {
     // while that flag is true, so the parent change attaches to the move
     // entry instead of landing on Y.UndoManager as a separate stack item.
     const yjsManager = this.Blok.YjsManager;
+
+    // Undo gives the moved blocks back selected (Notion U111), not the caret from before the drag.
+    yjsManager?.markBlocksBefore?.(sourceBlocks.map(block => block.id));
+
     const inCell = (block: Block): boolean =>
       (block.holder.parentElement?.closest('[data-blok-table-cell-blocks]') ?? null) !== null;
     const sourceIds = new Set(sourceBlocks.map(block => block.id));
@@ -1186,7 +1238,21 @@ export class DragController extends Module {
       this.a11y.announceDropComplete(movedBlock, sourceBlocks, isMultiBlockDrag);
     }
 
+    this.dropCaret();
     this.Blok.Toolbar.moveAndOpen(sourceBlock);
+  }
+
+  /**
+   * A drop leaves the moved blocks selected with no caret and focus out of the editor, as in Notion (U112).
+   */
+  private dropCaret(): void {
+    const active = document.activeElement;
+
+    window.getSelection()?.removeAllRanges();
+
+    if (active instanceof HTMLElement && this.Blok.UI.nodes.wrapper.contains(active)) {
+      active.blur();
+    }
   }
 
   /**
@@ -1889,6 +1955,7 @@ export class DragController extends Module {
     // A settling ghost / row interpolation is detached from the preview's
     // lifecycle; finish it now so nothing outlives the editor instance.
     finishColumnDropAnimations();
+    this.stopDropFocusWatch();
     this.cleanup();
   }
 }

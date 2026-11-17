@@ -181,6 +181,12 @@ export interface OpenModalDialogOptions {
   outside?: boolean;
 
   /**
+   * Focus outside the surface that the dialog still owns, such as a list opened from a popover the dialog opened.
+   * That popover holds itself open and leaves the popover registry, so the trigger check cannot see it.
+   */
+  ownsFocus?: (target: Node) => boolean;
+
+  /**
    * Element whose CSS animation is awaited by {@link ModalDialogHandle.closeAnimated}.
    * Defaults to {@link surface}.
    */
@@ -208,6 +214,15 @@ export interface ModalDialogHandle {
 
   /** Play the exit animation on the animation target, then tear down. */
   closeAnimated: () => void;
+
+  /**
+   * Hands the page to a surface the dialog opens on top of itself, such as a
+   * peek. Until the returned resume runs, that surface's body-level subtree is
+   * not inert, focus may leave the dialog, and Escape and outside presses do
+   * not dismiss it. Resume gives focus back to the dialog when it is elsewhere;
+   * after a close it does nothing.
+   */
+  handOff: (other: HTMLElement) => () => void;
 }
 
 /**
@@ -334,6 +349,8 @@ export const openModalDialog = (options: OpenModalDialogOptions): ModalDialogHan
   }
 
   const state = { closed: false };
+  // Set as the close starts, while the fade still plays.
+  const released = { done: false };
 
   // Only elements we set `inert` on get it cleared, so pre-existing inert
   // subtrees survive teardown untouched.
@@ -405,7 +422,7 @@ export const openModalDialog = (options: OpenModalDialogOptions): ModalDialogHan
     }
 
     // A menu the dialog opened lives on body. Pulling focus back closes it on mousedown, before its item's click.
-    if (target instanceof Node && ownsMenu(PopoverRegistry.instance.triggerOf(target))) {
+    if (target instanceof Node && (ownsMenu(PopoverRegistry.instance.triggerOf(target)) || options.ownsFocus?.(target) === true)) {
       return;
     }
 
@@ -418,7 +435,7 @@ export const openModalDialog = (options: OpenModalDialogOptions): ModalDialogHan
   surface.addEventListener('keydown', onKeyDownTrap);
   document.addEventListener('focusin', onFocusIn, true);
 
-  const unregister = registerLayer({
+  const register = (): (() => void) => registerLayer({
     element: surface,
     anchor: options.anchor,
     escape: options.escape ?? true,
@@ -433,6 +450,7 @@ export const openModalDialog = (options: OpenModalDialogOptions): ModalDialogHan
       options.onDismiss(reason ?? 'outside');
     },
   });
+  const layer = { unregister: register() };
 
   const focusInitial = (): boolean => {
     const target = options.initialFocus?.() ?? getTabbables(surface)[0] ?? null;
@@ -459,7 +477,7 @@ export const openModalDialog = (options: OpenModalDialogOptions): ModalDialogHan
   // element later (the notifier) fall back to a microtask retry.
   if (!focusInitial()) {
     queueMicrotask(() => {
-      if (state.closed) {
+      if (state.closed || released.done) {
         return;
       }
       applyInert();
@@ -467,28 +485,40 @@ export const openModalDialog = (options: OpenModalDialogOptions): ModalDialogHan
     });
   }
 
-  const finalize = (): void => {
-    if (state.closed) {
+  // Gives the page back: the trap, the layer, inert and focus. A closing dialog only fades.
+  const release = (): void => {
+    if (released.done) {
       return;
     }
-    state.closed = true;
+    released.done = true;
 
     surface.removeEventListener('keydown', onKeyDownTrap);
     document.removeEventListener('focusin', onFocusIn, true);
-    unregister();
+    layer.unregister();
     removeInert();
-
-    if (topLayer) {
-      removeFromTopLayer(content);
-    }
-
-    content.remove();
+    // blockSettings reads aria-modal to ask whether a modal is open.
+    surface.removeAttribute('aria-modal');
 
     const restoreTarget = isRestorableFocusTarget(previouslyFocused) ? previouslyFocused : pointerOpener;
 
     if (isRestorableFocusTarget(restoreTarget)) {
       restoreTarget.focus();
     }
+  };
+
+  const finalize = (): void => {
+    if (state.closed) {
+      return;
+    }
+    state.closed = true;
+
+    if (topLayer) {
+      removeFromTopLayer(content);
+    }
+
+    content.remove();
+    // After the remove: focus left inside a removed node would fall to body.
+    release();
 
     options.onClose?.();
   };
@@ -513,6 +543,10 @@ export const openModalDialog = (options: OpenModalDialogOptions): ModalDialogHan
 
       return;
     }
+
+    content.setAttribute('inert', '');
+    content.setAttribute('aria-hidden', 'true');
+    release();
 
     const settle = { done: false, fallback: 0 };
 
@@ -539,10 +573,37 @@ export const openModalDialog = (options: OpenModalDialogOptions): ModalDialogHan
     settle.fallback = window.setTimeout(finishClose, CLOSE_ANIMATION_FALLBACK_MS);
   };
 
+  const handOff = (other: HTMLElement): (() => void) => {
+    if (state.closed || released.done) {
+      return () => undefined;
+    }
+    const top = bodyLevelAncestor(other);
+    const freed = top !== null && inertedElements.includes(top) ? top : null;
+    const resumed = { done: false };
+
+    freed?.removeAttribute('inert');
+    layer.unregister();
+    document.removeEventListener('focusin', onFocusIn, true);
+
+    return () => {
+      if (resumed.done || state.closed || released.done) {
+        return;
+      }
+      resumed.done = true;
+      freed?.setAttribute('inert', '');
+      layer.unregister = register();
+      document.addEventListener('focusin', onFocusIn, true);
+      if (!surface.contains(document.activeElement)) {
+        focusInitial();
+      }
+    };
+  };
+
   return {
     content,
     surface,
     close: finalize,
     closeAnimated,
+    handOff,
   };
 };

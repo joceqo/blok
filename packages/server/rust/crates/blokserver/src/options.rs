@@ -50,6 +50,16 @@ pub struct Options {
     /// keeps them closed, like C#'s UnfurlDisabled = true.
     pub unfurl_enabled: bool,
 
+    /// Opens GET /file-bytes, behind the same guard as /unfurl: the PDF
+    /// preview reads a file's bytes through it. Off by default, apart from
+    /// unfurl_enabled, since it relays whole files.
+    pub file_bytes_enabled: bool,
+    /// The largest file /file-bytes serves.
+    pub file_bytes_max_bytes: i64,
+    /// Sends CORS headers on stored local files for an allowed origin, so a
+    /// page on another origin can read them. Off by default.
+    pub files_cors: bool,
+
     pub s3_endpoint: String,
     pub s3_region: String,
     pub s3_bucket: String,
@@ -94,6 +104,35 @@ pub struct Options {
     /// UseCollabActivityObserver<T>. None makes no calls.
     pub collab_activity_observer: Option<Arc<dyn blok_collab_room::ActivityObserver>>,
 
+    /// CollabEnforceRestoreGuards: a history restore that would change who
+    /// can see or fill out a view, or unlock or reshape a locked database,
+    /// is refused 409 until the request confirms each kind
+    /// (X-Blok-Restore-Confirm or a body {"confirm":[...]}). False, the
+    /// default, restores without asking.
+    pub collab_enforce_restore_guards: bool,
+
+    /// CollabRestoreTrashesPages: a history restore sets data.trashed on a
+    /// page block added after the point instead of removing it. False, the
+    /// default, removes it. A host that turns it on must show such a block
+    /// as in Trash: the editor does not hide it.
+    pub collab_restore_trashes_pages: bool,
+
+    /// CollabChangeSignalWindow: how long one change window runs from a
+    /// document's first journalled write before a ChangeObserver is told
+    /// what changed. 60 s by default; zero or less uses 60 s too. More than
+    /// one day is refused.
+    pub collab_change_signal_window_nanos: i64,
+
+    /// UseCollabRecordNotes<T>: a note of who wrote each journal record,
+    /// kept beside the journal. The history routes then carry actor kinds.
+    /// None keeps none.
+    pub collab_record_notes: Option<Arc<dyn blok_collab_room::RecordNotesStore>>,
+
+    /// CollabStampAuthority: POST /edit inserts get the server's
+    /// createdAt/By/With and lastEditedAt/By/With, and an update stamps its
+    /// block's lastEdited*. False, the default, keeps the caller's.
+    pub collab_stamp_authority: bool,
+
     /// The TimeProvider override: tickets, the rate limit window, S3 signing
     /// and the rooms' timestamps (activity, cooldowns, export deadlines) read
     /// it. None is the system clock.
@@ -123,6 +162,9 @@ impl Default for Options {
             max_upload_bytes: 32 << 20,
             rate_limit_per_minute: 0,
             unfurl_enabled: false,
+            file_bytes_enabled: false,
+            file_bytes_max_bytes: 100 << 20,
+            files_cors: false,
             s3_endpoint: String::new(),
             s3_region: String::new(),
             s3_bucket: String::new(),
@@ -149,6 +191,11 @@ impl Default for Options {
             authorization: None,
             collab_operation_store: None,
             collab_activity_observer: None,
+            collab_enforce_restore_guards: false,
+            collab_restore_trashes_pages: false,
+            collab_change_signal_window_nanos: 60_000_000_000,
+            collab_record_notes: None,
+            collab_stamp_authority: false,
             clock: None,
             timers: None,
             logger: None,
@@ -172,6 +219,9 @@ impl fmt::Debug for Options {
             .field("max_upload_bytes", &self.max_upload_bytes)
             .field("rate_limit_per_minute", &self.rate_limit_per_minute)
             .field("unfurl_enabled", &self.unfurl_enabled)
+            .field("file_bytes_enabled", &self.file_bytes_enabled)
+            .field("file_bytes_max_bytes", &self.file_bytes_max_bytes)
+            .field("files_cors", &self.files_cors)
             .field("s3_endpoint", &self.s3_endpoint)
             .field("s3_region", &self.s3_region)
             .field("s3_bucket", &self.s3_bucket)
@@ -227,6 +277,20 @@ impl fmt::Debug for Options {
                 "collab_activity_observer",
                 &self.collab_activity_observer.is_some(),
             )
+            .field(
+                "collab_enforce_restore_guards",
+                &self.collab_enforce_restore_guards,
+            )
+            .field(
+                "collab_restore_trashes_pages",
+                &self.collab_restore_trashes_pages,
+            )
+            .field(
+                "collab_change_signal_window_nanos",
+                &self.collab_change_signal_window_nanos,
+            )
+            .field("collab_record_notes", &self.collab_record_notes.is_some())
+            .field("collab_stamp_authority", &self.collab_stamp_authority)
             .field("clock", &self.clock.is_some())
             .field("logger", &self.logger.is_some())
             .finish()
@@ -318,6 +382,12 @@ impl Options {
             return fail(format!(
                 "--rate-limit must be zero or greater (got {})",
                 self.rate_limit_per_minute
+            ));
+        }
+        if self.file_bytes_enabled && self.file_bytes_max_bytes <= 0 {
+            return fail(format!(
+                "FileBytesMaxBytes must be a positive number of bytes (got {})",
+                self.file_bytes_max_bytes
             ));
         }
         // C# AddBlokDocuments refuses these in the call, not at the first
@@ -414,6 +484,12 @@ impl Options {
             return fail(format!(
                 "CollabMaxMessageBytes must be a positive number of bytes (got {}): a zero cap closes every sync connection on its first frame",
                 self.collab_max_message_bytes
+            ));
+        }
+        if self.collab_change_signal_window_nanos > 86_400_000_000_000 {
+            return fail(format!(
+                "CollabChangeSignalWindow must be at most one day (got {})",
+                format_time_span(self.collab_change_signal_window_nanos)
             ));
         }
         if self.collab_keep_alive_interval_nanos < 0 {

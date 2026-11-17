@@ -102,8 +102,8 @@ const saveBlok = async (page: Page): Promise<OutputData> => {
 };
 
 test.describe('yjs undo/redo', () => {
-  // Wait for Yjs captureTimeout (500ms) plus small buffer
-  const YJS_CAPTURE_TIMEOUT = 600;
+  // Wait for Yjs captureTimeout (~709 ms) plus small buffer
+  const YJS_CAPTURE_TIMEOUT = 800;
 
   test.beforeAll(() => {
     ensureBlokBundleBuilt();
@@ -187,7 +187,7 @@ test.describe('yjs undo/redo', () => {
     await expect(paragraphInput).toContainText('Original text added');
   });
 
-  test('redoes text input with Ctrl+Y alias', async ({ page }) => {
+  test('redoes text input with the redo alias (Cmd+Y on macOS, Ctrl+Y elsewhere)', async ({ page }) => {
     await createBlokWithBlocks(page, [
       {
         type: 'paragraph',
@@ -212,8 +212,8 @@ test.describe('yjs undo/redo', () => {
     await expect(paragraphInput).toContainText('Original text');
     await expect(paragraphInput).not.toContainText('added');
 
-    // Redo via the Ctrl+Y alias (Windows/Linux redo shortcut; also accepted on Mac)
-    await page.keyboard.press('Control+y');
+    // Redo via the alias: Cmd+Y on macOS, Ctrl+Y on Windows and Linux
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+y' : 'Control+y');
     await waitForDelay(page, 200);
 
     await expect(paragraphInput).toContainText('Original text added');
@@ -1871,15 +1871,17 @@ test.describe('yjs undo/redo', () => {
 
       await waitForDelay(page, YJS_CAPTURE_TIMEOUT);
 
-      // Verify both pasted blocks were created
-      await expect(page.locator(BLOCK_WRAPPER_SELECTOR)).toHaveCount(3);
+      // The first pasted block joins the text before the caret, the second follows.
+      await expect(page.locator(BLOCK_WRAPPER_SELECTOR)).toHaveCount(2);
+      await expect(getParagraphByIndex(page, 0).locator('[contenteditable="true"]')).toHaveText('OriginalPasted block 1');
+      await expect(getParagraphByIndex(page, 1).locator('[contenteditable="true"]')).toHaveText('Pasted block 2');
 
       // Application/x-blok paste is grouped into ONE Yjs undo entry via
       // BlockManager.transactForTool — one Cmd+Z removes every pasted block.
       await page.keyboard.press(UNDO_SHORTCUT);
       await waitForDelay(page, 200);
 
-      // Verify all pasted blocks removed in a single undo step
+      // One undo removes the pasted block and the text joined into the first
       await expect(page.locator(BLOCK_WRAPPER_SELECTOR)).toHaveCount(1);
       await expect(getParagraphByIndex(page, 0).locator('[contenteditable="true"]')).toHaveText('Original');
     });
@@ -4272,9 +4274,10 @@ test.describe('yjs undo/redo', () => {
       }
       await expect(page.locator(BLOCK_WRAPPER_SELECTOR)).toHaveCount(3);
 
-      // Redo each split: caret must land at the start (offset 0) of the new
-      // lower block (index 3, then 4, then 5) — never the document-top block.
+      // Redo each split: the caret lands where it was at the matching undo
+      // press (index 3, then 4, then 5) — never the document-top block.
       const expectedNewBlock = [3, 4, 5];
+      const expectedOffset = [3, 3, 0];
 
       for (let i = 0; i < 3; i++) {
         await page.keyboard.press(REDO_SHORTCUT);
@@ -4286,25 +4289,19 @@ test.describe('yjs undo/redo', () => {
 
         const offset = await getCaretOffset(getParagraphByIndex(page, expectedNewBlock[i]).locator('[contenteditable="true"]'));
 
-        expect(offset).toBe(0);
+        expect(offset).toBe(expectedOffset[i]);
       }
     });
 
     test('undo of consecutive heading splits reverts one split per press with caret at the junction', async ({ page }) => {
-      // Regression: splitting a header (a tool whose data has keys beyond `text`,
-      // e.g. `level`) used to create the new block in Yjs with only `{ text }`.
-      // The missing `level` key was then written by a deferred
-      // didMutated→syncBlockDataToYjs in a SEPARATE Yjs transaction, producing a
-      // spurious no-op undo entry. That polluted the undo stack (the first undo
-      // appeared to do nothing) and desynced caret restoration, so undoing a
-      // heading split landed the caret at the block START instead of the split
-      // junction. A paragraph has only `text`, so its split was never affected —
-      // hence "unify the heading behaviour with the regular text block".
+      // Each split must be one undo entry with the caret back at the junction.
+      // A heading split leaves its second half as a paragraph (Notion U093),
+      // so the later splits run in those paragraphs.
       await createBlokWithBlocks(page, [
         { type: 'header', data: { text: 'Heading level 1', level: 1 } },
       ]);
 
-      const editSel = `${HEADER_SELECTOR} [contenteditable="true"]`;
+      const editSel = '[data-blok-element] [contenteditable="true"]';
       const nthInput = (i: number): Locator => page.locator(`:nth-match(${editSel}, ${i + 1})`);
 
       const setCaret = async (index: number, charOffset: number): Promise<void> => {
@@ -4334,38 +4331,34 @@ test.describe('yjs undo/redo', () => {
       await page.keyboard.press('Enter');
       await waitForDelay(page, YJS_CAPTURE_TIMEOUT);
 
-      // All four pieces stay headers and the new pieces inherit level 1 (the
-      // partial-data write previously reset them to the default level).
-      await expect(page.locator(HEADER_SELECTOR)).toHaveCount(4);
       const savedAfterSplits = await saveBlok(page);
-      const headerLevels = savedAfterSplits.blocks
-        .filter(b => b.type === 'header')
-        .map(b => (b.data as { level: number }).level);
 
-      expect(headerLevels).toEqual([1, 1, 1, 1]);
+      expect(savedAfterSplits.blocks.map(b => b.type)).toEqual(['header', 'paragraph', 'paragraph', 'paragraph']);
+      expect((savedAfterSplits.blocks[0].data as { level: number }).level).toBe(1);
 
       // First undo must revert exactly ONE split (4 -> 3), not be swallowed by a
       // spurious no-op entry.
       await page.keyboard.press(UNDO_SHORTCUT);
       await waitForDelay(page, 250);
-      await expect(page.locator(HEADER_SELECTOR)).toHaveCount(3);
+      await expect(page.locator(editSel)).toHaveCount(3);
 
-      // Caret lands at the split junction (" lev" + "el 1" -> " level 1", offset 4),
-      // not at the start of the merged block.
+      // Caret lands at the split junction (" lev" + "el 1" -> " level 1", offset 4).
       const merged = nthInput(2);
 
       expect(await isFocused(merged)).toBe(true);
       expect(await getCaretOffset(merged)).toBe(4);
 
-      // Remaining undos also revert one split each, back to the single heading.
       await page.keyboard.press(UNDO_SHORTCUT);
       await waitForDelay(page, 250);
-      await expect(page.locator(HEADER_SELECTOR)).toHaveCount(2);
+      await expect(page.locator(editSel)).toHaveCount(2);
 
+      // The heading's own split: one press, caret at its junction.
       await page.keyboard.press(UNDO_SHORTCUT);
       await waitForDelay(page, 250);
+      await expect(page.locator(editSel)).toHaveCount(1);
       await expect(page.locator(HEADER_SELECTOR)).toHaveCount(1);
       await expect(nthInput(0)).toHaveText('Heading level 1');
+      expect(await getCaretOffset(nthInput(0))).toBe(5);
     });
 
     test('redo after undoing list item deletion restores deleted items', async ({ page }) => {
@@ -4978,11 +4971,12 @@ test.describe('yjs undo/redo', () => {
   });
 
   test.describe('smart grouping', () => {
-    // Boundary timeout: 100ms in implementation + buffer for test reliability
-    const BOUNDARY_TIMEOUT = 150;
+    // A short pause after a space or punctuation. Notion keeps it in the
+    // typing step (replica-undo U008, U029); only the ~708 ms window cuts.
+    const SHORT_PAUSE_MS = 150;
     const SELECT_ALL_SHORTCUT = process.platform === 'darwin' ? 'Meta+a' : 'Control+a';
 
-    test('word boundary + pause creates checkpoint', async ({ page }) => {
+    test('a pause after a space does not cut the typing step', async ({ page }) => {
       await createBlokWithBlocks(page, [
         {
           type: 'paragraph',
@@ -4997,7 +4991,7 @@ test.describe('yjs undo/redo', () => {
 
       // Type "Hello " then pause long enough for boundary timeout
       await page.keyboard.type('Hello ');
-      await waitForDelay(page, BOUNDARY_TIMEOUT);
+      await waitForDelay(page, SHORT_PAUSE_MS);
 
       // Type "world" and wait for Yjs to capture
       await page.keyboard.type('world');
@@ -5006,14 +5000,14 @@ test.describe('yjs undo/redo', () => {
       // Verify full text
       await expect(paragraphInput).toHaveText('Hello world');
 
-      // Undo should remove only "world" (boundary + pause created checkpoint after "Hello ")
+      // One undo removes all of it: the pause stays inside the window.
       await page.keyboard.press(UNDO_SHORTCUT);
       await waitForDelay(page, 100);
 
-      await expect(paragraphInput).toHaveText('Hello ');
+      await expect(paragraphInput).toHaveText('');
     });
 
-    test('punctuation + pause creates checkpoint', async ({ page }) => {
+    test('a pause after a comma does not cut the typing step', async ({ page }) => {
       await createBlokWithBlocks(page, [
         {
           type: 'paragraph',
@@ -5028,7 +5022,7 @@ test.describe('yjs undo/redo', () => {
 
       // Type "Hello," then pause long enough for boundary timeout
       await page.keyboard.type('Hello,');
-      await waitForDelay(page, BOUNDARY_TIMEOUT);
+      await waitForDelay(page, SHORT_PAUSE_MS);
 
       // Type " world" and wait for Yjs to capture
       await page.keyboard.type(' world');
@@ -5037,14 +5031,14 @@ test.describe('yjs undo/redo', () => {
       // Verify full text
       await expect(paragraphInput).toHaveText('Hello, world');
 
-      // Undo should remove only " world" (boundary + pause created checkpoint after "Hello,")
+      // One undo removes all of it: the pause stays inside the window.
       await page.keyboard.press(UNDO_SHORTCUT);
       await waitForDelay(page, 100);
 
-      await expect(paragraphInput).toHaveText('Hello,');
+      await expect(paragraphInput).toHaveText('');
     });
 
-    test('sentence boundary creates checkpoint', async ({ page }) => {
+    test('a pause after a period does not cut the typing step', async ({ page }) => {
       await createBlokWithBlocks(page, [
         {
           type: 'paragraph',
@@ -5059,7 +5053,7 @@ test.describe('yjs undo/redo', () => {
 
       // Type "Hello." then pause long enough for boundary timeout
       await page.keyboard.type('Hello.');
-      await waitForDelay(page, BOUNDARY_TIMEOUT);
+      await waitForDelay(page, SHORT_PAUSE_MS);
 
       // Type " World" and wait for Yjs to capture
       await page.keyboard.type(' World');
@@ -5068,14 +5062,14 @@ test.describe('yjs undo/redo', () => {
       // Verify full text
       await expect(paragraphInput).toHaveText('Hello. World');
 
-      // Undo should remove only " World" (boundary + pause created checkpoint after "Hello.")
+      // One undo removes all of it: the pause stays inside the window.
       await page.keyboard.press(UNDO_SHORTCUT);
       await waitForDelay(page, 100);
 
-      await expect(paragraphInput).toHaveText('Hello.');
+      await expect(paragraphInput).toHaveText('');
     });
 
-    test('question mark creates checkpoint', async ({ page }) => {
+    test('a pause after a question mark does not cut the typing step', async ({ page }) => {
       await createBlokWithBlocks(page, [
         {
           type: 'paragraph',
@@ -5090,7 +5084,7 @@ test.describe('yjs undo/redo', () => {
 
       // Type "What?" then pause long enough for boundary timeout
       await page.keyboard.type('What?');
-      await waitForDelay(page, BOUNDARY_TIMEOUT);
+      await waitForDelay(page, SHORT_PAUSE_MS);
 
       // Type " Yes" and wait for Yjs to capture
       await page.keyboard.type(' Yes');
@@ -5099,11 +5093,11 @@ test.describe('yjs undo/redo', () => {
       // Verify full text
       await expect(paragraphInput).toHaveText('What? Yes');
 
-      // Undo should remove only " Yes" (boundary + pause created checkpoint after "What?")
+      // One undo removes all of it: the pause stays inside the window.
       await page.keyboard.press(UNDO_SHORTCUT);
       await waitForDelay(page, 100);
 
-      await expect(paragraphInput).toHaveText('What?');
+      await expect(paragraphInput).toHaveText('');
     });
 
     test('fast typing batches into single undo group', async ({ page }) => {
@@ -5174,18 +5168,7 @@ test.describe('yjs undo/redo', () => {
 
       await paragraphInput.click();
 
-      // Type a boundary character (space) and immediately resume typing. The
-      // boundary arms a BOUNDARY_TIMEOUT_MS (100ms) checkpoint timer; resuming
-      // before it elapses must clear the pending boundary (the clearBoundary
-      // path in handleSmartGrouping) so both words stay in ONE undo group.
-      //
-      // NOTE: the resume is driven continuously (no artificial mid-typing
-      // waitForDelay). A real wall-clock pause here races the 100ms product timer
-      // against Playwright's variable CDP keystroke delivery (observed 11-139ms),
-      // which makes the test flaky under load. The exact timed-pause boundary
-      // semantics are covered deterministically by the unit tests in
-      // undo-history.test.ts (markBoundary / checkAndHandleBoundary with fake
-      // timers); this E2E asserts the end-to-end grouping outcome.
+      // A space with typing right after it keeps both words in ONE undo group.
       await page.keyboard.type('Hello world');
 
       await waitForDelay(page, YJS_CAPTURE_TIMEOUT);

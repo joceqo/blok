@@ -26,7 +26,7 @@ const view = (overrides: Partial<DatabaseViewConfig> = {}): DatabaseViewConfig =
 
 const row = (id: string, properties: DatabaseRow['properties']): DatabaseRow => ({ id, position: 'a0', properties });
 
-type Item = PopoverItemParams & { title?: string; isActive?: boolean | (() => boolean); onActivate?: () => void; children?: { items?: PopoverItemParams[] } };
+type Item = PopoverItemParams & { title?: string; isActive?: boolean | (() => boolean); onActivate?: () => void; children?: { items?: PopoverItemParams[]; width?: string } };
 
 const titled = (items: PopoverItemParams[] | undefined, title: string): Item => {
   const found = (items as Item[] | undefined)?.find((item) => item.title === title);
@@ -102,11 +102,18 @@ describe('board column calculation', () => {
       ]);
     });
 
-    it('starts Count with the 99+ switch, then Count all and the per-property counts', () => {
+    // notion-motion.md Round 11, r11-group-agg-menu.raw: the Count list is 250 wide.
+    it('opens the Count list 250 wide', () => {
+      const count = titled(groupCalculationItems(menu()), 'tools.database.calcCount');
+
+      expect(count.children?.width).toBe('250px');
+    });
+
+    it('starts Count with the 99+ switch and its divider, then Count all and the per-property counts', () => {
       const count = titled(groupCalculationItems(menu()), 'tools.database.calcCount');
 
       expect(titles(count.children?.items)).toEqual([
-        'tools.database.calcShowLargeCounts', 'tools.database.calcCountAll', 'tools.database.calcCountValues',
+        'tools.database.calcShowLargeCounts', undefined, 'tools.database.calcCountAll', 'tools.database.calcCountValues',
         'tools.database.calcCountUnique', 'tools.database.calcCountEmpty', 'tools.database.calcCountNotEmpty',
       ]);
     });
@@ -138,6 +145,36 @@ describe('board column calculation', () => {
 
       expect(titleEl?.querySelector('[data-blok-database-calc-hint]')?.textContent).toBe('tools.database.calcShowLargeCountsHint');
       expect(titleEl?.firstChild?.textContent).toBe('tools.database.calcShowLargeCounts');
+    });
+
+    // notion-motion.md Round 16 §9: the 99+ row draws a 30x18 switch after its title, not a check or a fill.
+    it('draws the 99+ state as the database switch after the title', () => {
+      const count = titled(groupCalculationItems(menu()), 'tools.database.calcCount');
+      const cap = titled(count.children?.items, 'tools.database.calcShowLargeCounts');
+      const titleEl = 'titleEl' in cap ? cap.titleEl : undefined;
+      const track = titleEl?.querySelector('[data-blok-database-switch-track]');
+
+      expect([...(titleEl?.children ?? [])].map((child) => [...child.attributes].map((a) => a.name)[0])).toEqual([
+        'data-blok-database-calc-cap-title', 'data-blok-database-switch-track', 'data-blok-database-calc-hint',
+      ]);
+      expect(track?.getAttribute('aria-hidden')).toBe('true');
+      expect(track?.children).toHaveLength(1);
+    });
+
+    // notion-motion.md Round 12: every list is 250 wide, and a divider sits under the 99+ row (r11-calc-count-sub.png).
+    it('opens every list 250 wide, with a divider under the 99+ row', () => {
+      const items = groupCalculationItems(menu()) as Item[];
+      const count = titled(items, 'tools.database.calcCount');
+
+      expect(items.map((item) => item.children?.width)).toEqual(['250px', '250px', '250px', '250px']);
+      expect(count.children?.items?.[1]?.type).toBe('separator');
+    });
+
+    // notion-motion.md Round 12 (r12-board-count-menu.raw): a board with only a title and a status shows Count and Percent.
+    it('offers only Count and Percent on a board with a title and a status', () => {
+      const items = groupCalculationItems(menu({ schema: [SCHEMA[0], SCHEMA[4]] }));
+
+      expect(titles(items)).toEqual(['tools.database.calcCount', 'tools.database.calcPercent']);
     });
 
     it('lists only number properties under Sum', () => {
@@ -208,6 +245,21 @@ describe('board column calculation', () => {
       expect(groupCalculationText({ fn: 'earliest_date', propertyId: 'p-when', capCounts: false }, due, SCHEMA, 'en-US')).toBe('October 20, 2026');
       expect(groupCalculationText({ fn: 'date_range', propertyId: 'p-when', capCounts: false }, due, SCHEMA, 'en-US')).toBe('8 days');
       expect(groupCalculationText({ fn: 'date_range', propertyId: 'p-when', capCounts: false }, due.slice(0, 1), SCHEMA, 'en-US')).toBe('0 minutes');
+    });
+
+    // notion-motion.md Round 13: "66.667%", "100%", and no percent on an empty group.
+    it('shows a percent with up to 3 decimals and no trailing zeros', () => {
+      const names = [row('a', { 'p-name': 'A' }), row('b', { 'p-name': 'B' }), row('c', {})];
+
+      expect(groupCalculationText({ fn: 'percent_not_empty', propertyId: 'p-name', capCounts: false }, names, SCHEMA, 'en-US')).toBe('66.667%');
+      expect(groupCalculationText({ fn: 'percent_not_empty', propertyId: 'p-name', capCounts: false }, names.slice(1), SCHEMA, 'en-US')).toBe('50%');
+      expect(groupCalculationText({ fn: 'percent_not_empty', propertyId: 'p-name', capCounts: false }, names.slice(0, 1), SCHEMA, 'en-US')).toBe('100%');
+    });
+
+    it('shows no percent for an empty group, while Count shows 0', () => {
+      expect(groupCalculationText({ fn: 'percent_not_empty', propertyId: 'p-name', capCounts: false }, [], SCHEMA, 'en-US')).toBe('');
+      expect(groupCalculationText({ fn: 'percent_empty', propertyId: 'p-name', capCounts: false }, [], SCHEMA, 'en-US')).toBe('');
+      expect(groupCalculationText({ fn: 'count', capCounts: true }, [], SCHEMA, 'en-US')).toBe('0');
     });
   });
 

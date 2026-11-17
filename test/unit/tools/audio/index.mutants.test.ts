@@ -3,11 +3,13 @@ import type { API, BlockAPI, PasteEvent } from '../../../../types';
 import type { MenuConfig } from '../../../../types/tools/menu-config';
 import type { AudioAlignment, AudioConfig, AudioData } from '../../../../types/tools/audio';
 import type * as CoverPickerModule from '../../../../src/tools/audio/cover-picker';
+import type * as WontFitModule from '../../../../src/tools/audio/error-scenes/wont-fit';
 import {
   IconAlignCenter,
   IconAlignLeft,
   IconAlignRight,
   IconCaption,
+  IconCollapseFullscreen,
   IconCopy,
   IconDownload,
   IconImage,
@@ -19,7 +21,9 @@ import {
 import { AudioTool } from '../../../../src/tools/audio';
 import { openCoverPicker } from '../../../../src/tools/audio/cover-picker';
 import { readTrackMetadata, resolveCover } from '../../../../src/tools/audio/metadata';
+import { createWontFit } from '../../../../src/tools/audio/error-scenes/wont-fit';
 import { AudioUploadError } from '../../../../src/tools/audio/uploader';
+import { formatBytes } from '../../../../src/components/utils/format-bytes';
 import { attachWaveform, decodePeaks } from '../../../../src/tools/audio/waveform';
 
 type Mock = ReturnType<typeof vi.fn>;
@@ -67,6 +71,12 @@ const captured = vi.hoisted(() => ({
   pickers: [] as PickerCall[],
 }));
 
+vi.mock('../../../../src/tools/audio/error-scenes/wont-fit', async (importOriginal) => {
+  const actual = await importOriginal<typeof WontFitModule>();
+
+  return { ...actual, createWontFit: vi.fn(actual.createWontFit) };
+});
+
 vi.mock('../../../../src/tools/audio/metadata', () => ({
   readTrackMetadata: vi.fn(),
   resolveCover: vi.fn(),
@@ -96,7 +106,7 @@ vi.mock('../../../../src/tools/audio/cover-picker', async (importOriginal) => {
   return {
     ...actual,
     openCoverPicker: vi.fn((options: Omit<PickerCall, 'handle'>) => {
-      const handle = { close: vi.fn(), setError: vi.fn() };
+      const handle = { close: vi.fn(), setError: vi.fn(), settle: vi.fn(() => Promise.resolve()) };
 
       captured.pickers.push({ ...options, handle });
 
@@ -357,7 +367,7 @@ describe('AudioTool — static tool declarations', () => {
     expect(AudioTool.toolbox).toStrictEqual({
       icon: IconMusic,
       titleKey: 'audio',
-      searchTerms: ['audio', 'music', 'sound', 'song', 'mp3', 'track', 'media'],
+      searchTerms: ['audio', 'music', 'sound', 'song', 'mp3', 'track', 'media', 'podcast', 'voice', 'recording'],
       section: 'media',
       preview: { render: expect.any(Function), descriptionKey: 'toolbox.preview.audio' },
     });
@@ -404,6 +414,7 @@ describe('AudioTool — settings menu', () => {
     'tools.audio.alignmentCenter': 'Mitte',
     'tools.audio.alignmentRight': 'Rechts',
     'tools.audio.caption': 'Beschriftung',
+    'tools.audio.compact': 'Kompakt',
     'tools.audio.loop': 'Schleife',
     'tools.audio.replace': 'Audio ersetzen',
     'tools.audio.coverSet': 'Cover setzen',
@@ -419,6 +430,7 @@ describe('AudioTool — settings menu', () => {
     expect(items.map((entry) => entry.name)).toStrictEqual([
       'audio-alignment',
       'audio-caption',
+      'audio-compact',
       'audio-loop',
       'audio-replace',
       'audio-cover-set',
@@ -428,6 +440,7 @@ describe('AudioTool — settings menu', () => {
     expect(items.map((entry) => entry.title)).toStrictEqual([
       'Alignment',
       'Caption',
+      'Compact',
       'Loop',
       'Replace audio',
       'Set cover image',
@@ -437,6 +450,7 @@ describe('AudioTool — settings menu', () => {
     expect(items.map((entry) => entry.icon)).toStrictEqual([
       IconAlignCenter,
       IconCaption,
+      IconCollapseFullscreen,
       IconPlayerLoop,
       IconReplace,
       IconImage,
@@ -445,6 +459,7 @@ describe('AudioTool — settings menu', () => {
     ]);
     expect(items.map((entry) => entry.closeOnActivate)).toStrictEqual([
       undefined,
+      true,
       true,
       true,
       true,
@@ -461,6 +476,7 @@ describe('AudioTool — settings menu', () => {
     expect(items.map((entry) => entry.title)).toStrictEqual([
       'Ausrichtung',
       'Beschriftung',
+      'Kompakt',
       'Schleife',
       'Audio ersetzen',
       'Cover setzen',
@@ -535,6 +551,7 @@ describe('AudioTool — settings menu', () => {
     expect(menuItems(withCover.tool.renderSettings()).map((entry) => entry.name)).toStrictEqual([
       'audio-alignment',
       'audio-caption',
+      'audio-compact',
       'audio-loop',
       'audio-replace',
       'audio-cover-set',
@@ -845,25 +862,27 @@ describe('AudioTool — upload failures', () => {
 
   it('translates the Google Drive hint', async () => {
     const { root } = await failWith(new AudioUploadError('GOOGLE_DRIVE_NEEDS_UPLOADER'), {
-      'tools.audio.errorGoogleDrive': 'Drive-Links lassen sich nicht abspielen',
+      'tools.audio.errorGoogleDriveTitle': 'Drive-Links lassen sich nicht abspielen',
+      'tools.audio.errorShareLinkDetail': 'Datei herunterladen und hier hochladen.',
     });
 
-    expect(requireEl(root, '[data-role="audio-error"]').textContent)
-      .toContain('Drive-Links lassen sich nicht abspielen');
+    expect(requireEl(root, '[data-role="audio-error-title"]').textContent).toBe('Drive-Links lassen sich nicht abspielen');
+    expect(requireEl(root, '[data-role="audio-error-message"]').textContent).toBe('Datei herunterladen und hier hochladen.');
   });
 
   it('translates the OneDrive hint', async () => {
     const { root } = await failWith(new AudioUploadError('ONEDRIVE_NEEDS_UPLOADER'), {
-      'tools.audio.errorOneDrive': 'OneDrive-Links lassen sich nicht abspielen',
+      'tools.audio.errorOneDriveTitle': 'OneDrive-Links lassen sich nicht abspielen',
+      'tools.audio.errorShareLinkDetail': 'Datei herunterladen und hier hochladen.',
     });
 
-    expect(requireEl(root, '[data-role="audio-error"]').textContent)
-      .toContain('OneDrive-Links lassen sich nicht abspielen');
+    expect(requireEl(root, '[data-role="audio-error-title"]').textContent).toBe('OneDrive-Links lassen sich nicht abspielen');
+    expect(requireEl(root, '[data-role="audio-error-message"]').textContent).toBe('Datei herunterladen und hier hochladen.');
   });
 
   it('does not blame OneDrive for an unrelated upload error', async () => {
     const { root } = await failWith(new AudioUploadError('UPLOAD_FAILED'), {
-      'tools.audio.errorOneDrive': 'OneDrive-Hinweis',
+      'tools.audio.errorOneDriveTitle': 'OneDrive-Hinweis',
       'tools.audio.errorUploadFailed': 'Hochladen fehlgeschlagen',
     });
     const text = requireEl(root, '[data-role="audio-error"]').textContent;
@@ -874,14 +893,57 @@ describe('AudioTool — upload failures', () => {
 
   it('spells out both sizes when the file is too large', async () => {
     const { root } = await failWith(new AudioUploadError('FILE_TOO_LARGE', '2000 > 1000'), {
-      'tools.audio.errorFileTooLarge': '{size} sprengt das Limit von {max}',
+      'tools.audio.errorFileTooLargeTitle': 'Audiodatei ist zu groß',
+      'tools.audio.errorFileTooLargeDetail': '{size} sprengt das Limit von {max}',
       'tools.audio.errorUploadFailed': 'Hochladen fehlgeschlagen',
     });
     const text = requireEl(root, '[data-role="audio-error"]').textContent;
 
     expect(root.getAttribute('data-state')).toBe('error');
-    expect(text).toContain('sprengt das Limit von');
+    expect(requireEl(root, '[data-role="audio-error-title"]').textContent).toBe('Audiodatei ist zu groß');
+    expect(requireEl(root, '[data-role="audio-error-message"]').textContent).toBe(`${formatBytes(2000)} sprengt das Limit von ${formatBytes(1000)}`);
     expect(text).not.toContain('Hochladen fehlgeschlagen');
+  });
+
+  it('prints the file size and the limit on the record when the file is too large', async () => {
+    const { root } = await failWith(new AudioUploadError('FILE_TOO_LARGE', '88080384 > 52428800'));
+
+    expect(vi.mocked(createWontFit)).toHaveBeenCalledWith({ size: formatBytes(88080384), limit: `max ${formatBytes(52428800)}` });
+    expect(requireEl(root, '[data-role="audio-error"]').getAttribute('data-scene')).toBe('wont-fit');
+  });
+
+  it('words the limit on the record in the reader\'s language', async () => {
+    await failWith(new AudioUploadError('FILE_TOO_LARGE', '88080384 > 52428800'), {
+      'tools.audio.emptyMaxSize': 'höchstens {size}',
+    });
+
+    expect(vi.mocked(createWontFit)).toHaveBeenCalledWith(expect.objectContaining({ limit: `höchstens ${formatBytes(52428800)}` }));
+  });
+
+  it('keeps the too-large record for size errors only', async () => {
+    const { root } = await failWith(new AudioUploadError('UPLOAD_FAILED'));
+
+    expect(requireEl(root, '[data-role="audio-error"]').getAttribute('data-scene')).not.toBe('wont-fit');
+    expect(vi.mocked(createWontFit)).not.toHaveBeenCalled();
+  });
+
+  it('falls back to one of the four objects when a size error carries no sizes', async () => {
+    const { root } = await failWith(new AudioUploadError('FILE_TOO_LARGE', 'nonsense'));
+
+    expect(requireEl(root, '[data-role="audio-error"]').getAttribute('data-scene')).not.toBe('wont-fit');
+  });
+
+  it('stops the broken object when the card goes away', async () => {
+    const disconnect = vi.fn();
+
+    vi.stubGlobal('IntersectionObserver', class { public observe = vi.fn(); public disconnect = disconnect; });
+    vi.stubGlobal('ResizeObserver', class { public observe = vi.fn(); public disconnect = vi.fn(); });
+    const { root } = await failWith(new AudioUploadError('UPLOAD_FAILED'));
+
+    requireEl(root, '[data-action="replace"]').click();
+
+    expect(disconnect).toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });
 
@@ -1136,8 +1198,8 @@ describe('AudioTool — player card', () => {
   it('labels the editable lines and the cover button', () => {
     const { root } = mount({ url: 'https://cdn/a.mp3' });
 
-    expect(requireEl(root, '[data-role="audio-title"]').getAttribute('data-placeholder')).toBe('Track title');
-    expect(requireEl(root, '[data-role="audio-artist"]').getAttribute('data-placeholder')).toBe('Artist');
+    expect(requireEl(root, '[data-role="audio-title"]').getAttribute('data-placeholder')).toBe('Title');
+    expect(requireEl(root, '[data-role="audio-artist"]').getAttribute('data-placeholder')).toBe('Author');
     expect(requireEl(root, '[data-role="audio-cover-change"]').getAttribute('aria-label')).toBe('Change cover');
   });
 

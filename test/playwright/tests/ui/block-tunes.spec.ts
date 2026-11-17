@@ -412,7 +412,7 @@ test.describe('ui.block-tunes', () => {
 
       const convertToOption = page
         .getByTestId('popover-item')
-        .filter({ hasText: 'Convert to' });
+        .filter({ hasText: 'Turn into' });
 
       await expect(convertToOption).toBeVisible();
 
@@ -659,7 +659,7 @@ test.describe('ui.block-tunes', () => {
 
       const convertToOption = page
         .getByTestId('popover-item')
-        .filter({ hasText: 'Convert to' });
+        .filter({ hasText: 'Turn into' });
 
       await convertToOption.dispatchEvent('mouseover');
 
@@ -744,7 +744,7 @@ test.describe('ui.block-tunes', () => {
 
       const convertToOption = page
         .getByTestId('popover-item')
-        .filter({ hasText: 'Convert to' });
+        .filter({ hasText: 'Turn into' });
 
       // dispatchEvent instead of hover() because the nested popover that opens
       // overlaps the trigger item and fails Playwright's actionability check
@@ -763,7 +763,7 @@ test.describe('ui.block-tunes', () => {
       ).toBeVisible();
     });
 
-    test('converts block and keeps caret inside the new block', async ({ page }) => {
+    test('converts block and leaves the new block selected, with no caret', async ({ page }) => {
       await createBlok(page, {
         tools: {
           header: {
@@ -786,7 +786,7 @@ test.describe('ui.block-tunes', () => {
 
       const convertToOption = page
         .getByTestId('popover-item')
-        .filter({ hasText: 'Convert to' });
+        .filter({ hasText: 'Turn into' });
 
       // dispatchEvent instead of hover() because the nested popover that opens
       // overlaps the trigger item and fails Playwright's actionability check
@@ -800,12 +800,14 @@ test.describe('ui.block-tunes', () => {
       const headerBlock = page.locator(`${BLOK_INTERFACE_SELECTOR} [data-blok-component="header"]`);
 
       await expect(headerBlock).toHaveText('Some text');
+      // Notion leaves the result block-selected after Turn into.
+      await expect(page.locator(`${BLOK_INTERFACE_SELECTOR} [data-blok-component="header"][data-blok-selected="true"]`)).toHaveCount(1);
       expect(
         await isSelectionInsideBlock(
           page,
           `${BLOK_INTERFACE_SELECTOR} [data-blok-component="header"]`
         )
-      ).toBe(true);
+      ).toBe(false);
     });
   });
 

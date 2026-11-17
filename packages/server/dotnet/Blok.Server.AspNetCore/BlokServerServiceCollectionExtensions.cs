@@ -89,6 +89,7 @@ public static class BlokServerServiceCollectionExtensions
             provider.GetRequiredService<IGuardedOutboundPolicy>()));
     services.TryAddSingleton<FixedWindowRateLimiter>();
     services.TryAddSingleton<BlokServerRequestGuard>();
+    services.TryAddSingleton<PdfCheckCache>();
 
     services.TryAddSingleton<IBlobStore>(provider =>
     {
@@ -169,11 +170,14 @@ public static class BlokServerServiceCollectionExtensions
           {
             AnnouncedMaxMessageBytes = effectiveOptions.CollabMaxMessageBytes,
             MaxUpdateBytes = source.MaxUpdateBytes,
+            RestoreTrashesPages = effectiveOptions.CollabRestoreTrashesPages,
+            ChangeSignalWindow = effectiveOptions.CollabChangeSignalWindow,
           },
           timeProvider,
           CollabLog(provider),
           source.Store,
-          provider.GetService<ICollabActivityObserver>());
+          provider.GetService<ICollabActivityObserver>(),
+          provider.GetService<ICollabRecordNotes>());
     });
 
     // The endpoints need the concrete manager; the interface is the host's

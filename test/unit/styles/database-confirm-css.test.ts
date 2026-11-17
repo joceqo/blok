@@ -41,9 +41,26 @@ describe('database confirm dialog css', () => {
       .toBe('rgba(25, 25, 25, 0.24) 0 24px 48px, rgba(25, 25, 25, 0.14) 0 4px 12px, rgba(42, 28, 0, 0.07) 0 0 0 1px');
   });
 
-  it('enters with scale .97 to 1 and opacity over 200ms ease', () => {
+  // notion-motion.md Round 14: the wrapper alone fades, so the panel only scales; its own fade would square the backdrop's.
+  it('enters with scale .97 to 1 over 200ms ease, under the backdrop\'s fade', () => {
+    expect(ruleBody(database, '[data-blok-database-confirm]')).toContain('animation: blok-database-confirm-fade 200ms ease both');
     expect(ruleBody(database, '[data-blok-database-confirm-dialog]')).toContain('animation: blok-database-confirm-in 200ms ease both');
-    expect(keyframes).toMatch(/@keyframes blok-database-confirm-in \{ from \{ opacity: 0; transform: scale\(0\.97\); \} to \{ opacity: 1; transform: none; \} \}/);
+    expect(keyframes).toMatch(/@keyframes blok-database-confirm-in \{ from \{ transform: scale\(0\.97\); \} to \{ transform: none; \} \}/);
+  });
+
+  it('closes as the exact reverse, and lets clicks through while it goes', () => {
+    const backdrop = ruleBody(database, '[data-blok-database-confirm][data-blok-closing]');
+
+    expect(backdrop).toContain('animation: blok-database-confirm-fade-out 200ms ease both');
+    expect(backdrop).toContain('pointer-events: none');
+    expect(ruleBody(database, '[data-blok-database-confirm][data-blok-closing] > [data-blok-database-confirm-dialog]'))
+      .toContain('animation: blok-database-confirm-out 200ms ease both');
+    expect(keyframes).toMatch(/@keyframes blok-database-confirm-fade-out \{ from \{ opacity: 1; \} to \{ opacity: 0; \} \}/);
+    expect(keyframes).toMatch(/@keyframes blok-database-confirm-out \{ from \{ transform: none; \} to \{ transform: scale\(0\.97\); \} \}/);
+  });
+
+  it('draws a 406px panel on a dialog marked roomy, as Notion\'s Delete property (Round 14)', () => {
+    expect(ruleBody(database, '[data-blok-database-confirm-dialog][data-roomy]')).toContain('width: 406px');
   });
 
   // research/33 §3.10 and 26 §5a read weight 500 (the older 08 and 10 read 600).
@@ -85,6 +102,18 @@ describe('database confirm dialog css', () => {
     expect(body).toContain('color: var(--blok-database-ink-secondary)');
   });
 
+  // notion-motion.md Round 58 §2, "Change default to …?": title 16/24 600, body 16/24 400 with a 600 phrase.
+  // The Delete property dialog shares data-roomy but has no body; its title weight is unmeasured, so it stays.
+  it('draws a roomy dialog with a body at 16/24 and a 600 title over it', () => {
+    const ROOMY = '[data-blok-database-confirm-dialog][data-roomy]';
+    const body = ruleBody(database, `${ROOMY} [data-blok-database-confirm-description]`);
+
+    expect(body).toContain('font-size: 16px');
+    expect(body).toContain('line-height: 24px');
+    expect(ruleBody(database, `${ROOMY} [data-blok-database-confirm-title]:has(+ [data-blok-database-confirm-description])`)).toContain('font-weight: 600');
+    expect(ruleBody(database, `${ROOMY} [data-blok-database-confirm-description] strong`)).toContain('font-weight: 600');
+  });
+
   it('stacks full-width 32px buttons with the control radius', () => {
     const body = ruleBody(database, '[data-blok-database-confirm-action]');
 
@@ -94,6 +123,14 @@ describe('database confirm dialog css', () => {
     expect(body).toContain('border-radius: var(--blok-radius-control)');
     expect(body).toContain('font-size: 14px');
     expect(body).toContain('font-weight: 500');
+  });
+
+  // notion-motion.md Round 14 "Confirm dialog": Cancel's fill goes 0.051 → 0.076 on press and back, each over 20ms ease-in.
+  it('presses a plain button to the 0.076 fill over 20ms ease-in', () => {
+    expect(ruleBody(database, '[data-blok-database-confirm-action]')).toContain('transition: background-color 0.02s ease-in');
+    expect(ruleBody(database, '[data-blok-database-confirm-action]:active:not([data-destructive], [data-primary])'))
+      .toContain('background-color: var(--blok-database-button-pressed-bg)');
+    expect(tokenValues('--blok-database-button-pressed-bg')[0]).toBe('rgba(33, 27, 23, 0.076)');
   });
 
   it('paints the destructive button with red text and a red hairline', () => {

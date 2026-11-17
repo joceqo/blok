@@ -9,8 +9,8 @@ const UNDO_SHORTCUT = process.platform === 'darwin' ? 'Meta+z' : 'Control+z';
 const REDO_SHORTCUT = process.platform === 'darwin' ? 'Meta+Shift+z' : 'Control+Shift+z';
 const SETTINGS_BUTTON = `${BLOK_INTERFACE_SELECTOR} [data-blok-testid="settings-toggler"]`;
 const TUNES_POPOVER = '[data-blok-testid="block-tunes-popover"] [data-blok-testid="popover-container"]';
-// Yjs captureTimeout is 500ms; wait past it so gestures are separate undo steps.
-const CAPTURE_WINDOW = 700;
+// Yjs captureTimeout is ~709 ms; wait past it so gestures are separate undo steps.
+const CAPTURE_WINDOW = 800;
 const VIDEO_URL = 'https://example.com/clip.mp4';
 
 declare global {
@@ -191,7 +191,7 @@ test.describe('undo audit: setData apply sweep', () => {
   test('APL-9: undo of "heading -> toggle heading" leaves the toggle arrow on screen', async ({ page }) => {
     await createBlok(page, [anchor, { id: 'h', type: 'header', data: { text: 'Head', level: 2 } }]);
     await openTunesOn(page, 'h');
-    await page.getByRole('menuitem', { name: 'Convert to', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Turn into', exact: true }).click();
     await page.locator('[data-blok-nested="true"]').getByRole('menuitem', { name: 'Toggle heading 2', exact: true }).click();
     await settle(page);
     await press(page, UNDO_SHORTCUT);
@@ -205,7 +205,7 @@ test.describe('undo audit: setData apply sweep', () => {
     await createBlok(page, [anchor, { id: 'h', type: 'header', data: { text: 'Head', level: 2, isToggleable: true, isOpen: true } }]);
     await expect(page.locator('[data-blok-id="h"] [data-blok-toggle-arrow]')).toHaveCount(1);
     await openTunesOn(page, 'h');
-    await page.getByRole('menuitem', { name: 'Convert to', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Turn into', exact: true }).click();
     await page.locator('[data-blok-nested="true"]').getByRole('menuitem', { name: 'Heading 2', exact: true }).click();
     await settle(page);
     await press(page, UNDO_SHORTCUT);

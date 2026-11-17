@@ -304,6 +304,20 @@ export class PageRegistry {
     this.edit(pageId, ({ trashed: _old, ...page }) => page);
   }
 
+  /** Moves a page under another one, as moving its block to another document does. */
+  public move(pageId: string, parentId: string | null): void {
+    if (!this.has(pageId) || this.get(pageId)?.parentId === parentId) {
+      return;
+    }
+    this.edit(pageId, (page) => ({ ...page, parentId }));
+  }
+
+  /** A page other than `except` whose stored blocks hold a block for `pageId`. */
+  public holderOf(pageId: string, except: string | null): string | null {
+    return Object.keys(this.pages).find((id) => id !== except && this.pages[id].trashed !== true
+      && hasPointer(this.pages[id].blocks, pageId)) ?? null;
+  }
+
   /** The trashed page that puts `pageId` in Trash: itself or an ancestor. */
   public trashedIn(pageId: string): (PageRecord & { id: string }) | null {
     return this.trail(pageId).find((page) => page.trashed === true) ?? null;
@@ -477,8 +491,13 @@ export class PageRegistry {
 
 /* ----------------------------------------------------------------- trash */
 
-const pointedPages = (blocks: OutputBlockData[]): string[] =>
-  blocks.flatMap((block) => (block.type === 'page' && typeof block.data?.pageId === 'string' ? [block.data.pageId] : []));
+/** A page block a server restore marked trashed: the page is in Trash, though the block stays. */
+const isTrashedPointer = (block: OutputBlockData): boolean =>
+  typeof block.data?.trashed === 'object' && block.data.trashed !== null;
+
+const pointedPages = (blocks: OutputBlockData[], trashed = false): string[] =>
+  blocks.flatMap((block) => (block.type === 'page' && typeof block.data?.pageId === 'string'
+    && isTrashedPointer(block) === trashed ? [block.data.pageId] : []));
 
 /**
  * Notion's Trash, derived from page blocks: a page whose block this editor saw
@@ -489,20 +508,43 @@ const pointedPages = (blocks: OutputBlockData[]): string[] =>
 export class PointerWatch {
   private readonly seen = new Set<string>();
 
-  constructor(private readonly pages: PageRegistry) {}
+  /**
+   * @param ownPageId - the page this editor shows (`null`: the root). With it,
+   *   a page whose block moved to another document (a database turned into a
+   *   page or back) follows the block there instead of going to Trash.
+   */
+  constructor(private readonly pages: PageRegistry, private readonly ownPageId?: string | null) {}
 
   public observe(blocks: OutputBlockData[]): void {
     const present = new Set(pointedPages(blocks));
+    const own = this.ownPageId;
 
-    this.seen.forEach((id) => {
-      if (!present.has(id)) {
-        this.seen.delete(id);
-        this.pages.trash(id);
-      }
-    });
+    // Blocks that came back first: undo can bring back the page that holds a lost block.
     present.forEach((id) => {
       this.seen.add(id);
       this.pages.untrash(id);
+      if (own !== undefined) {
+        this.pages.move(id, own);
+      }
+    });
+    this.seen.forEach((id) => {
+      if (present.has(id)) {
+        return;
+      }
+      this.seen.delete(id);
+      const holder = own === undefined ? null : this.pages.holderOf(id, own);
+
+      if (holder === null) {
+        this.pages.trash(id);
+      } else {
+        this.pages.move(id, holder);
+      }
+    });
+    // A trashed block is no pointer, even on first sight: unlike a late render, it says so itself.
+    pointedPages(blocks, true).forEach((id) => {
+      if (!present.has(id) && (own === undefined || this.pages.holderOf(id, own) === null)) {
+        this.pages.trash(id);
+      }
     });
   }
 }

@@ -75,6 +75,12 @@ describe('database board card and calendar "No date" styles', () => {
       .toMatch(/--max-height:\s*calc\(100dvh - 24px\)/);
   });
 
+  // notion-motion.md Round 50 row 57: Notion caps the card ⋯ menu at 70vh (501.9 in a 717 window).
+  it('caps the card ⋯ menu at 70vh', () => {
+    expect(ruleBody("[data-blok-popover-custom-class~='blok-database-fade-menu'] [data-blok-popover-container]"))
+      .toMatch(/--max-height:\s*70vh/);
+  });
+
   // research/07:95 (feel findings B17): a select pill on a board card is 18px, 0 6px, 12px/18px.
   // notion-spec-2 §21.7 and board-status.png: the status pill too has 12/18 text and spans the same 18 rows as the select.
   it('draws every pill on a card, status included, at 18px and 12px', () => {
@@ -165,6 +171,11 @@ describe('database board card and calendar "No date" styles', () => {
     expect(body).toContain('margin-block-end: var(--blok-space-0-5)');
   });
 
+  // notion-motion.md Round 45 §1 Board: the property list starts 36.5 below the card top, 6 under the title block.
+  it('starts the property list 6px under the title block', () => {
+    expect(ruleBody('[data-blok-database-card-properties]')).toContain('margin-block-start: var(--blok-space-1-5)');
+  });
+
   it('bleeds the preview to the card edges and crops unless Fit image is on', () => {
     expect(ruleBody('[data-blok-database-card-preview]')).toContain('margin: calc(-1 * var(--blok-space-2)) calc(-1 * var(--blok-space-2-5)) var(--blok-space-2)');
     expect(ruleBody('[data-blok-database-card-image]')).toMatch(/object-fit:\s*cover/);
@@ -206,6 +217,47 @@ describe('database board card and calendar "No date" styles', () => {
 
   it('hides a collapsed band\'s row of cards', () => {
     expect(ruleBody('[data-blok-database-board-lane][data-collapsed] [data-blok-database-board-lane-columns]')).toMatch(/display:\s*none/);
+  });
+
+  // notion-motion.md Round 29 §6 (r29-subgroup-band-*.raw): the band is the table group header's look.
+  describe('sub-group band (Round 29 §6)', () => {
+    it('is a 36px row whose body starts at its bottom', () => {
+      const header = ruleBody('[data-blok-database-board-lane-header]');
+
+      expect(header).toMatch(/height:\s*36px/);
+      expect(header).toMatch(/gap:\s*0(;|$)/);
+      expect(ruleBody('[data-blok-database-board-lane]')).toMatch(/gap:\s*0(;|$)/);
+    });
+
+    it('collapsed, takes only its 36px header: no bottom padding, and the board\'s 12px gap taken back', () => {
+      expect(ruleBody('[data-blok-database-board-lane][data-collapsed]')).toMatch(/padding-block-end:\s*0/);
+      expect(ruleBody('[data-blok-database-board-lane][data-collapsed]:not(:last-child)')).toMatch(/margin-block-end:\s*calc\(-1 \* var\(--blok-space-3\)\)/);
+    });
+
+    it('draws the filled 20px caret, its 20ms hover fill and the pill 3px into its slot, as the table group', () => {
+      expect(ruleBody('[data-blok-database-board-lane-toggle] svg')).toMatch(/rotate:\s*90deg/);
+      expect(ruleBody('[data-blok-database-board-lane-toggle]')).toMatch(/transition:\s*background-color 20ms ease-in/);
+      expect(ruleBody('[data-blok-database-board-lane-label]')).toBe(ruleBody('[data-blok-database-table-group-label]'));
+    });
+
+    it('fades ⋯ and + in on hover over 100ms ease-in-out, as the table group', () => {
+      expect(ruleBody('[data-blok-database-board-lane-actions]')).toBe(ruleBody('[data-blok-database-table-group-actions]'));
+      expect(ruleBody('[data-blok-database-board-lane-actions]')).toMatch(/transition:\s*opacity 100ms ease-in-out/);
+      expect(ruleBody('[data-blok-database-board-lane-header]:hover > [data-blok-database-board-lane-actions]')).toMatch(/opacity:\s*1/);
+      expect(ruleBody('[data-blok-database-board-lane-header][data-popover-open] > [data-blok-database-board-lane-actions]')).toMatch(/opacity:\s*1/);
+      expect(ruleBody('[data-blok-database-board-lane-actions] button')).toBe(ruleBody('[data-blok-database-table-group-actions] button'));
+      expect(ruleBody('[data-blok-database-board-lane-actions] svg')).toMatch(/width:\s*16px/);
+    });
+  });
+
+  // notion-live/carddrag-mid.png: the ghost is the card at 260x40 with the 0.06 drag fill (250 over white,
+  // 4 darker over the column, so no white) and its ring, faded to 0.4, with the ✎⋯ pill riding along.
+  it('draws the card ghost in the drag fill at the card\'s own height, with its buttons', () => {
+    const clone = ruleBody('[data-blok-database-ghost] > [data-blok-database-card]');
+
+    expect(clone).toMatch(/margin:\s*0/);
+    expect(clone).toContain('background-color: var(--blok-database-card-drag-source-bg, var(--_blok-group-card-hover, var(--blok-database-card-bg-hover)))');
+    expect(ruleBody('[data-blok-database-ghost] > [data-blok-database-card] [data-blok-database-card-actions]')).toMatch(/opacity:\s*1/);
   });
 
   it('draws the measured "No date" button', () => {

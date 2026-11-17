@@ -32,6 +32,11 @@ import {
  *   hosts       a route table for the fake host (fake-host.ts) at ${host}, plus
  *               "$upgradeStatus" for the sync upgrade it refuses. Every request it
  *               gets is recorded in order, or by "hostRequestOrder": "sorted" | "distinct".
+ *               "maskHostKeys" masks those key names in the records after ordering, for
+ *               values a server makes up per run (timestamps). "mintedHostKeys" is for ids a
+ *               server mints (a page creator's suggestedPageId): each value must be a Blok id
+ *               (10 characters of [A-Za-z0-9_-]) and differ from every other one in the case;
+ *               it is recorded as "<minted>". Any other value stays as sent, so it fails.
  *   room        {"journal"?: false}: a real sync host (live-room.ts) at ${roomWs}; without
  *               a journal the host speaks blok-sync.v1 only. stdio only.
  *   session     {"protocolVersion", "capabilities"?, "clientName"?, "headers"?}: the
@@ -45,7 +50,7 @@ import {
  *   steps       see Step.
  *   watchFiles  names under ${dir} whose exact bytes are recorded as expectFiles.
  *   watchModes  names under ${dir} whose permission bits are recorded as expectModes.
- *   stderrPattern  a regular expression the failed process's stderr must match,
+ *   stderrPattern  a regular expression stderr must match (a failed process's, or a clean one's),
  *               recorded instead of the exact text.
  *   fsVariants  true when the answer depends on whether the temp disk ignores letter
  *               case. Expectations then live in "variants": {"caseInsensitiveFs": …,
@@ -94,6 +99,23 @@ import {
  *               escaping counts (a raw emoji or U+2028 against a \uXXXX escape).
  *   sseOrder    "byId": http only; sort a batch's SSE answers by id, for requests that
  *               may end in either order.
+ *   instance    "b": http only; send this step to a second process started with the same argv
+ *               (and env) once the first is up, at ${mcpUrlB} / ${mcpPortB}. It gets the same
+ *               opening exchange. The two share ${dir}, so a --source or --handle-store there is
+ *               shared too. Steps without it go to the first process.
+ *   instanceB   (case) {"argv"?, "session"?}: what instance b runs with instead of the case's argv
+ *               and session, e.g. another contract flag (VERSION_SKEW) or another client name.
+ *   together    http only: a list of send steps sent at once, each recorded under its own
+ *               "expect"; the step ends when all are answered. Each may name its instance.
+ *
+ * compare      "blok-owned" (the embed suite): the server is a host's, so its SDK owns the wire.
+ *               Only what Blok owns is compared (see blokOwned): each answer's result or
+ *               error, tools and prompts keyed by name (order is the SDK's; a host_* entry
+ *               counts by name only; a name listed twice is "<duplicate>"), serverInfo name,
+ *               instructions, which of the tools and prompts capabilities exist, the host's own
+ *               logging capability as is (initialize only), and a server request's method, message and schema.
+ *               No expectHttp is recorded. --example-* flags are the example's own, so they
+ *               are left out when working out ${contractRevision}.
  *
  * Answers are compared as parsed JSON (key order ignored, array order kept).
  * A text content item that holds JSON must equal structuredContent once parsed; it
@@ -134,6 +156,8 @@ export interface Step {
   closeInputAfter?: boolean;
   rawText?: boolean;
   sseOrder?: 'byId';
+  instance?: 'b';
+  together?: Step[];
   afterHost?: string;
   expect?: unknown;
   expectHttp?: unknown;
@@ -158,6 +182,7 @@ export interface FixtureCase {
   hosts?: RouteTable & { $upgradeStatus?: number };
   room?: RoomSpec;
   session?: Session;
+  instanceB?: { argv?: string[]; session?: Session };
   steps?: Step[];
   watchFiles?: string[];
   watchModes?: string[];
@@ -165,6 +190,9 @@ export interface FixtureCase {
   stderrPattern?: string;
   hostRequestOrder?: 'sorted' | 'distinct';
   maskKeys?: string[];
+  maskHostKeys?: string[];
+  mintedHostKeys?: string[];
+  compare?: 'blok-owned';
   variants?: Record<string, Partial<FixtureCase>>;
   expectExit?: unknown;
   expectFiles?: Record<string, FileSpec | null>;
@@ -317,7 +345,15 @@ const normalize = (value: unknown, label: string, rawText = false): unknown => {
   return { ...out, content };
 };
 
-/** Masks every non-null value under these key names, anywhere in the answer. */
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** In a raw body text: each "key":<string or number> becomes "key":"<masked>", the rest stays byte for byte. */
+const maskTextKeys = (text: string, keys: ReadonlySet<string>): string => (keys.size === 0 ? text : text.replace(
+  new RegExp(`"(${[...keys].map(escapeRegExp).join('|')})":(?:"(?:[^"\\\\]|\\\\.)*"|-?\\d[\\d.eE+-]*)`, 'g'),
+  '"$1":"<masked>"',
+));
+
+/** Masks every non-null value under these key names, anywhere in the answer, and in a recorded bodyText. */
 const maskKeys = (value: unknown, keys: ReadonlySet<string>): unknown => {
   if (Array.isArray(value)) {
     return value.map((item) => maskKeys(item, keys));
@@ -326,7 +362,42 @@ const maskKeys = (value: unknown, keys: ReadonlySet<string>): unknown => {
     return value;
   }
 
-  return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, keys.has(key) && inner !== null ? '<masked>' : maskKeys(inner, keys)]));
+  return Object.fromEntries(Object.entries(value).map(([key, inner]) => {
+    if (key === 'bodyText' && typeof inner === 'string') {
+      return [key, maskTextKeys(inner, keys)];
+    }
+
+    return [key, keys.has(key) && inner !== null ? '<masked>' : maskKeys(inner, keys)];
+  }));
+};
+
+const MINTED_ID = /^[A-Za-z0-9_-]{10}$/;
+
+/** Replaces each minted id under these key names with "<minted>", after checking its shape and that no two are equal. */
+const mintedKeys = (value: unknown, keys: ReadonlySet<string>, label: string): unknown => {
+  const seen = new Set<string>();
+  const walk = (inner: unknown): unknown => {
+    if (Array.isArray(inner)) {
+      return inner.map(walk);
+    }
+    if (!isRecord(inner)) {
+      return inner;
+    }
+
+    return Object.fromEntries(Object.entries(inner).map(([key, item]) => {
+      if (!keys.has(key) || typeof item !== 'string' || !MINTED_ID.test(item)) {
+        return [key, walk(item)];
+      }
+      if (seen.has(item)) {
+        throw new Error(`${label}: the minted ${key} ${item} was sent twice`);
+      }
+      seen.add(item);
+
+      return [key, '<minted>'];
+    }));
+  };
+
+  return walk(value);
 };
 
 const captured = (answer: unknown, source: CaptureSource): unknown => {
@@ -340,6 +411,91 @@ const captured = (answer: unknown, source: CaptureSource): unknown => {
 
   return Object.keys(isRecord(container) ? container : {})[0];
 };
+
+const SERVER_INFO_META = 'io.modelcontextprotocol/serverInfo';
+// The embed example's own tools and prompts; their schemas are each host SDK's rendering.
+const HOST_ENTRY = /^host_/;
+
+// A name listed twice stays visible: clients would see two entries.
+const byName = (list: unknown): unknown => (Array.isArray(list)
+  ? list.filter(isRecord).reduce<Record<string, unknown>>((named, entry) => {
+    const name = String(entry.name);
+    const shown = HOST_ENTRY.test(name) ? '<host>' : entry;
+
+    return { ...named, [name]: name in named ? '<duplicate>' : shown };
+  }, {})
+  : list);
+
+const nameOnly = (value: unknown): unknown => (isRecord(value) ? { name: value.name } : value);
+
+/** The result keys Blok owns. Everything else (protocolVersion, cache hints, ...) is the host SDK's. */
+const blokOwnedResult = (result: Record<string, unknown>, method: string | undefined): Record<string, unknown> => {
+  const kept = Object.fromEntries(Object.entries({
+    serverInfo: nameOnly(result.serverInfo),
+    instructions: result.instructions,
+    capabilities: isRecord(result.capabilities)
+      ? {
+        tools: 'tools' in result.capabilities,
+        prompts: 'prompts' in result.capabilities,
+        // The example host declares logging itself; Blok must leave it as it is. Only initialize
+        // counts: logging is deprecated in 2026, and some SDKs (C# 2.3.1) leave it out of discovery.
+        ...(method === 'initialize' && { logging: result.capabilities.logging }),
+      }
+      : undefined,
+    tools: byName(result.tools),
+    prompts: byName(result.prompts),
+    description: result.description,
+    messages: result.messages,
+    content: result.content,
+    structuredContent: result.structuredContent,
+    resultType: result.resultType,
+    inputRequests: result.inputRequests,
+    _meta: isRecord(result._meta) && isRecord(result._meta[SERVER_INFO_META])
+      ? { [SERVER_INFO_META]: nameOnly(result._meta[SERVER_INFO_META]) }
+      : undefined,
+  }).filter(([, value]) => value !== undefined));
+
+  // A host SDK may leave isError: false out.
+  return Array.isArray(result.content) ? { ...kept, isError: result.isError === true } : kept;
+};
+
+/** What the embed suite compares of one message; see "compare" above. */
+const blokOwned = (message: unknown, method?: string): unknown => {
+  if (!isRecord(message)) {
+    return message;
+  }
+  if (typeof message.method === 'string') {
+    const params = isRecord(message.params) ? message.params : {};
+
+    return {
+      method: message.method,
+      ...(message.method === 'elicitation/create' && { params: { message: params.message, requestedSchema: params.requestedSchema, mode: params.mode } }),
+    };
+  }
+  if (isRecord(message.error)) {
+    const { code, message: text, data } = message.error;
+
+    return { error: { code, message: text, ...(data !== undefined && { data }) } };
+  }
+
+  return isRecord(message.result) ? { result: blokOwnedResult(message.result, method) } : message;
+};
+
+/**
+ * The argv without the embed example's own --example-* flags, each with its value.
+ * --example-source stays as --source: a host's source counts as one in the contract flags.
+ */
+const blokArgv = (argv: string[]): string[] =>
+  argv.flatMap((arg, index) => {
+    if (arg === '--example-source') {
+      return ['--source'];
+    }
+    if (argv[index - 1] === '--example-source') {
+      return [arg];
+    }
+
+    return arg.startsWith('--example-') || (argv[index - 1] ?? '').startsWith('--example-') ? [] : [arg];
+  });
 
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -486,10 +642,15 @@ const requestBody = (spec: NonNullable<Step['http']>): Buffer | undefined => {
 
 /**
  * stderr is part of the contract only when the process failed. `pattern` stands in
- * for text a port cannot match byte for byte (a JSON parser's own message).
+ * for text a port cannot match byte for byte (a JSON parser's own message); after a
+ * clean exit it is still checked (a host error that must be logged), never recorded.
  */
 const exitRecord = (code: number | null, signal: string | null, stderr: string, pattern?: string): Record<string, unknown> => {
   if (code === 0) {
+    if (pattern !== undefined) {
+      expect(stderr, 'stderr').toMatch(new RegExp(pattern));
+    }
+
     return { code };
   }
   if (pattern === undefined) {
@@ -564,8 +725,21 @@ class CaseRun {
     this.check(this.recorded as unknown as Holder, key, actual, label);
   }
 
+  /** method: the request this message answers, when it is an answer. */
+  private owned(message: unknown, method?: string): unknown {
+    return this.c.compare === 'blok-owned' ? blokOwned(message, method) : message;
+  }
+
+  /** expectHttp: the status line and headers are the host SDK's in the embed suite. */
+  private checkHttp(holder: Holder, answer: HttpAnswer | null, label: string): void {
+    if (this.c.compare !== 'blok-owned') {
+      this.check(holder, 'expectHttp', answer === null ? null : httpSummary(answer), `${label} http`);
+    }
+  }
+
   private finishStep(step: Step, holder: Holder, answer: unknown, label: string): void {
-    const masked = maskKeys(answer, new Set(this.c.maskKeys ?? []));
+    const method = step.send?.method;
+    const masked = maskKeys(this.owned(answer, typeof method === 'string' ? method : undefined), new Set(this.c.maskKeys ?? []));
 
     (step.mask ?? []).forEach((pointer) => maskAt(masked, pointer));
     for (const [name, source] of Object.entries(step.capture ?? {})) {
@@ -593,7 +767,7 @@ class CaseRun {
     }
     const copy: ServerRequestSpec = { ...spec };
 
-    this.check(copy as unknown as Holder, 'expect', normalize({ ...incoming, id: '<server>' }, label), `${label} server request`);
+    this.check(copy as unknown as Holder, 'expect', this.owned(normalize({ ...incoming, id: '<server>' }, label)), `${label} server request`);
     server.send({ jsonrpc: '2.0', id: incoming.id, ...materialize(spec.reply, this.vars) as JsonMessage });
 
     return copy;
@@ -712,7 +886,7 @@ class CaseRun {
       if (typeof incoming.method === 'string' && incoming.id !== undefined) {
         seen.push(this.replyToServer(server, incoming, wanted[seen.length], label));
       } else {
-        notifications.push(normalize(incoming, label));
+        notifications.push(this.owned(normalize(incoming, label)));
       }
       incoming = await read();
     }
@@ -733,7 +907,7 @@ class CaseRun {
     }
   }
 
-  public async httpStep(server: HttpServer, step: Step, holder: Holder, label: string): Promise<void> {
+  public async httpStep(server: HttpServer, step: Step, holder: Holder, label: string, session: Session | undefined = this.c.session): Promise<void> {
     if (await this.bareStep(server, step, holder, label)) {
       return;
     }
@@ -741,7 +915,7 @@ class CaseRun {
       const spec = materialize(step.http, this.vars) as NonNullable<Step['http']>;
       const answer = await sendHttp(server.url, { method: spec.method, path: spec.path, headers: mergeHeaders({}, spec.headers, this.vars), body: requestBody(spec) });
 
-      this.check(holder, 'expectHttp', httpSummary(answer), `${label} http`);
+      this.checkHttp(holder, answer, label);
       this.finishStep(step, holder, normalize(httpBody(answer, step.sseOrder), label, step.rawText), label);
 
       return;
@@ -750,8 +924,8 @@ class CaseRun {
     const isNotify = step.notify !== undefined;
     const base = materialize(isNotify ? step.notify : step.send, this.vars) as JsonMessage;
     const id = isNotify ? undefined : base.id ?? this.nextId++;
-    const message = withMeta({ jsonrpc: '2.0', ...base, ...(id !== undefined && { id }) }, this.c.session, raw);
-    const headers = mergeHeaders(mergeHeaders(sessionHeaders(this.c.session, message, raw), this.c.session?.headers, this.vars), step.headers, this.vars);
+    const message = withMeta({ jsonrpc: '2.0', ...base, ...(id !== undefined && { id }) }, session, raw);
+    const headers = mergeHeaders(mergeHeaders(sessionHeaders(session, message, raw), session?.headers, this.vars), step.headers, this.vars);
     const sentAt = Date.now();
     const sending = sendHttp(server.url, {
       method: 'POST', path: new URL(server.url).pathname, headers, body: Buffer.from(JSON.stringify(message)), timeoutMs: step.readTimeoutMs,
@@ -763,12 +937,12 @@ class CaseRun {
     expect(Date.now() - sentAt, `${label}: answered sooner than minElapsedMs`).toBeGreaterThanOrEqual(step.minElapsedMs ?? 0);
 
     if (answer === null) {
-      this.check(holder, 'expectHttp', null, `${label} http`);
+      this.checkHttp(holder, null, label);
       this.finishStep(step, holder, null, label);
 
       return;
     }
-    this.check(holder, 'expectHttp', httpSummary(answer), `${label} http`);
+    this.checkHttp(holder, answer, label);
     if (isNotify) {
       return;
     }
@@ -779,9 +953,7 @@ class CaseRun {
   }
 
   /** The SDK client's opening exchange for a 2025 session; 2026 has none. */
-  public async handshake(send: (message: JsonMessage) => Promise<JsonMessage | undefined>): Promise<void> {
-    const session = this.c.session;
-
+  public async handshake(send: (message: JsonMessage) => Promise<JsonMessage | undefined>, session: Session | undefined = this.c.session): Promise<void> {
     if (session === undefined || session.protocolVersion === MODERN) {
       return;
     }
@@ -843,7 +1015,7 @@ const withHost = async (c: FixtureCase, run: CaseRun, body: () => Promise<void>)
     await body();
     const requests = orderedRequests(host.requests, c.hostRequestOrder);
 
-    run.checkCase('expectHostRequests', requests, `${c.name} host requests`);
+    run.checkCase('expectHostRequests', mintedKeys(maskKeys(requests, new Set(c.maskHostKeys ?? [])), new Set(c.mintedHostKeys ?? []), c.name), `${c.name} host requests`);
   } finally {
     await host.close();
   }
@@ -873,28 +1045,60 @@ const runStdio = async (run: CaseRun, c: FixtureCase, launch: Launch, room?: Liv
   }
 };
 
+const usesInstanceB = (steps: Step[]): boolean =>
+  steps.some((step) => step.instance === 'b' || usesInstanceB(step.together ?? []));
+
 const runHttp = async (run: CaseRun, c: FixtureCase, launch: Launch): Promise<void> => {
   const server = await startHttp(launch.command, launch.argv, launch.env, launch.cwd);
-
-  run.vars.set('mcpUrl', server.url);
-  run.vars.set('mcpPort', server.port);
-  try {
+  const servers: { a: HttpServer; b?: HttpServer } = { a: server };
+  const sessionB = c.instanceB?.session ?? c.session;
+  const opened = async (target: HttpServer, session: Session | undefined): Promise<void> => {
     await run.handshake(async (message) => {
-      const headers = message.id === undefined ? sessionHeaders(c.session, message, false) : { ...BASE_HEADERS };
-      const answer = await sendHttp(server.url, {
+      const headers = message.id === undefined ? sessionHeaders(session, message, false) : { ...BASE_HEADERS };
+      const answer = await sendHttp(target.url, {
         method: 'POST',
-        path: new URL(server.url).pathname,
-        headers: mergeHeaders(headers, c.session?.headers, run.vars),
+        path: new URL(target.url).pathname,
+        headers: mergeHeaders(headers, session?.headers, run.vars),
         body: Buffer.from(JSON.stringify(message)),
       });
 
       return parseHttpMessages(answer)[0];
-    });
+    }, session);
+  };
+
+  run.vars.set('mcpUrl', server.url);
+  run.vars.set('mcpPort', server.port);
+  try {
+    await opened(server, c.session);
+    if (usesInstanceB(c.steps ?? [])) {
+      const argvB = c.instanceB?.argv?.map((arg) => substituteString(arg, run.vars)) ?? launch.argv;
+
+      servers.b = await startHttp(launch.command, argvB, launch.env, launch.cwd);
+      run.vars.set('mcpUrlB', servers.b.url);
+      run.vars.set('mcpPortB', servers.b.port);
+      await opened(servers.b, sessionB);
+    }
+    const onB = (step: Step): boolean => step.instance === 'b' && servers.b !== undefined;
+    const target = (step: Step): HttpServer => (onB(step) && servers.b !== undefined ? servers.b : server);
+    const sessionOf = (step: Step): Session | undefined => (onB(step) ? sessionB : c.session);
+    const together = async (steps: Step[], holder: Holder, label: string): Promise<void> => {
+      const held = holder.together;
+
+      if (!Array.isArray(held)) {
+        throw new Error(`${label}: "together" must be a list of steps`);
+      }
+      await Promise.all(steps.map((inner, at) => run.httpStep(target(inner), inner, held[at] as Holder, `${label}.${at}`, sessionOf(inner))));
+    };
+
     for (const [index, step] of (c.steps ?? []).entries()) {
-      await run.httpStep(server, step, run.stepHolder(index), `${c.name} step ${index}`);
+      const label = `${c.name} step ${index}`;
+
+      await (step.together === undefined
+        ? run.httpStep(target(step), step, run.stepHolder(index), label, sessionOf(step))
+        : together(step.together, run.stepHolder(index), label));
     }
   } finally {
-    await server.stop();
+    await Promise.all([server.stop(), servers.b?.stop()]);
   }
 };
 
@@ -925,7 +1129,7 @@ export const runCase = async (command: string[], c: FixtureCase, record: boolean
         env: caseEnv(Object.fromEntries(Object.entries(c.env ?? {}).map(([key, value]) => [key, substituteString(value, run.vars)]))),
         cwd: root,
       };
-      const revisions = await nodeContractRevisions({ argv: launch.argv, env: launch.env, cwd: root, version: packageVersion() });
+      const revisions = await nodeContractRevisions({ argv: blokArgv(launch.argv), env: launch.env, cwd: root, version: packageVersion() });
 
       if (revisions !== undefined) {
         run.vars.set('contractRevision', revisions.stored);

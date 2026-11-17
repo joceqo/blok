@@ -187,21 +187,27 @@ pub(crate) fn new_test_room_on(
     wrap: Option<Wrap>,
     wrap_converter: Option<WrapConverter>,
 ) -> TestRoom {
+    new_test_room_on_with(operations, dir, wrap, wrap_converter, Default::default())
+}
+
+/// new_test_room_on with the rooms' own options.
+pub(crate) fn new_test_room_on_with(
+    operations: Option<Arc<dyn OperationStore>>,
+    dir: Option<TempDir>,
+    wrap: Option<Wrap>,
+    wrap_converter: Option<WrapConverter>,
+    room: blok_collab_room::Options,
+) -> TestRoom {
     let sets = Arc::new(MemorySets::default());
     let docs = Arc::new(HeldDocs::default());
     let converter: Arc<dyn Converter> = match wrap_converter {
         Some(wrap) => wrap(real_converter()),
         None => Arc::new(real_converter()),
     };
-    let manager = Manager::new(ManagerOptions {
-        store: sets.clone(),
-        endpoint: docs.clone(),
-        converter,
-        room: Default::default(),
-        log: None,
-        operations,
-        activity: None,
-    });
+    let mut o = ManagerOptions::new(sets.clone(), docs.clone(), converter);
+    o.room = room;
+    o.operations = operations;
+    let manager = Manager::new(o);
     let runtime: Arc<dyn Invoker> = Arc::new(SharedPool);
     let runtime = match wrap {
         Some(wrap) => wrap(runtime),
@@ -218,6 +224,15 @@ pub(crate) fn new_test_room_on(
 }
 
 impl TestRoom {
+    /// The same rooms, with the host's history hooks.
+    pub(crate) fn with_policy(mut self, policy: crate::HistoryPolicy) -> TestRoom {
+        self.executor = Arc::new(Executor::new_on_runtime(
+            Arc::new(SharedPool),
+            Some(Rooms::with_history(self.manager.clone(), policy)),
+        ));
+        self
+    }
+
     pub(crate) async fn export(&self, doc: &str) -> Node {
         let state = self.manager.state(doc).await.expect("state");
         assert_eq!(state.status, StateStatus::Ready, "state {:?}", state.err);

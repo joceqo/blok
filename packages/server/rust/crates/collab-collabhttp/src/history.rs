@@ -1,22 +1,28 @@
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use blok_auth::User;
 use blok_collab_journal::LineageDeleteOutcome;
 use blok_collab_room::{
-    BlockChangeKind, Error, HistoryStatus, MAX_CHANGE_BYTES, MAX_CHANGE_RECORDS, Manager,
-    RecordChanges,
+    BlockChangeKind, CONFIRMABLE_GUARDS, Error, HistoryStatus, MAX_CHANGE_BYTES,
+    MAX_CHANGE_RECORDS, Manager, RecordChanges, RecordNote, RestoreGuard, RestoreOptions,
+    describe_database_change, hides_point, history_cut, window_since,
 };
 use blok_collab_synchttp::{derive_actor, refuse};
 use blok_collab_workingset::is_lineage;
 use blok_dotnet::{parse_uint64_none, query_all};
 use blok_http::{Request, ResponseWriter};
-use blok_jsjson::{Value, append_quoted};
+use blok_jsjson::{Object, Str, Value, append_quoted, parse, stringify, to_string_lossy};
 
 use crate::edit::{
-    BAD_IF_MATCH, KEY_REQUIRED, operation_id, precondition, while_connected, write_edit_result,
+    BAD_IF_MATCH, KEY_REQUIRED, operation_id, precondition, read_body, while_connected,
+    write_edit_result,
 };
-use crate::{Handlers, expose, failed, refuse_retry_later};
+use crate::{Handlers, expose, failed, internal_error, refuse_retry_later};
+
+#[path = "history_time.rs"]
+mod time;
 
 const HISTORY_LINEAGE_HEADER: &str = "Blok-History-Lineage";
 const HISTORY_SEQUENCE_HEADER: &str = "Blok-History-Sequence";
@@ -75,6 +81,83 @@ fn append_millis(body: &mut Vec<u8>, at: Option<SystemTime>) {
     }
 }
 
+/// Lists the guard kinds a restore confirms; a body {"confirm":[...]} adds to it.
+pub const RESTORE_CONFIRM_HEADER: &str = "X-Blok-Restore-Confirm";
+
+/// Marks a guard's 409, which the key-reuse 409 lacks.
+pub const RESTORE_REFUSAL_HEADER: &str = "X-Blok-Restore-Refusal";
+
+/// The kinds from every header line and comma item, then a body
+/// {"confirm":[...]}. Unknown kinds and a body that does not parse or is
+/// over the cap confirm nothing.
+async fn restore_confirms(request: &mut Request, max_bytes: usize) -> HashSet<String> {
+    let mut confirmed = HashSet::new();
+    let mut add = |kind: &str| {
+        if CONFIRMABLE_GUARDS.contains(&kind) {
+            confirmed.insert(kind.to_owned());
+        }
+    };
+    for line in request.headers().get_all(RESTORE_CONFIRM_HEADER) {
+        for item in line.split(',') {
+            add(item.trim_matches([' ', '\t']));
+        }
+    }
+    let Ok(body) = read_body(request, max_bytes).await else {
+        return confirmed;
+    };
+    if let Ok(Value::Object(object)) = parse(&body)
+        && let Some(Value::Array(items)) = object.get(&Str::from_utf8(b"confirm"))
+    {
+        for item in items {
+            if let Value::String(kind) = item {
+                add(&to_string_lossy(kind.units()));
+            }
+        }
+    }
+    confirmed
+}
+
+/// The guard's 409: JSON {error, guards} and the refusal header, so a client
+/// never mistakes it for a reused key.
+async fn refuse_restore(response: &mut ResponseWriter, reason: &str, guards: &[RestoreGuard]) {
+    let mut body = Object::new();
+    body.set(
+        Str::from_utf8(b"error"),
+        Value::String(Str::from_utf8(reason.as_bytes())),
+    );
+    body.set(
+        Str::from_utf8(b"guards"),
+        Value::Array(guards.iter().map(RestoreGuard::json).collect()),
+    );
+    let text = stringify(&Value::Object(body)).unwrap_or_default();
+    let headers = response.headers_mut();
+    headers.set("Content-Type", "application/json");
+    headers.set(RESTORE_REFUSAL_HEADER, reason);
+    blok_route::start_stream(response, 409).await;
+    let _ = response.write(text.as_bytes()).await;
+}
+
+/// The host's window as each lineage's floor.
+struct HistoryWindow {
+    cut: SystemTime,
+    floors: HashMap<String, Option<u64>>,
+}
+
+/// The window hides the point; no window hides nothing.
+fn hidden(window: Option<&HistoryWindow>, lineage: &str, sequence: u64) -> bool {
+    window.is_some_and(|window| hides_point(&window.floors, lineage, sequence))
+}
+
+/// A point the window hides: 404 as JSON, so a client can tell it from a
+/// missing one.
+async fn refuse_retention(response: &mut ResponseWriter) {
+    response
+        .headers_mut()
+        .set("Content-Type", "application/json");
+    blok_route::start_stream(response, 404).await;
+    let _ = response.write(br#"{"reason":"retention"}"#).await;
+}
+
 async fn write_json(response: &mut ResponseWriter, body: &[u8]) {
     response
         .headers_mut()
@@ -86,14 +169,33 @@ async fn write_json(response: &mut ResponseWriter, body: &[u8]) {
 impl Handlers {
     /// Sends no-store first: versions are document content behind an access
     /// check, whatever the answer.
+    /// `reads_history` asks the host's history read hook too, after the
+    /// document gates said yes.
     async fn admit_history(
         &self,
         request: &Request,
         response: &mut ResponseWriter,
         write: bool,
+        reads_history: bool,
     ) -> Option<Admitted> {
         response.headers_mut().set("Cache-Control", "no-store");
         let admitted = self.admit(request, response, write).await?;
+        if let Some(hook) = self.config.authorization.as_ref().filter(|_| reads_history) {
+            match hook
+                .can_read_history(&admitted.user, &admitted.doc, &request.extensions)
+                .await
+            {
+                Err(_) => {
+                    internal_error(response).await;
+                    return None;
+                }
+                Ok(false) => {
+                    refuse(response, 403, "forbidden\n").await;
+                    return None;
+                }
+                Ok(true) => {}
+            }
+        }
         let rooms = self.manager(response).await?;
         Some(Admitted {
             ticket_user: self.ticket_user(&admitted.user),
@@ -104,9 +206,53 @@ impl Handlers {
         })
     }
 
+    /// The host's window hook. Ok(None) when the host sets none; Err once it
+    /// has refused.
+    async fn window(
+        &self,
+        request: &Request,
+        response: &mut ResponseWriter,
+        a: &Admitted,
+    ) -> Result<Option<HistoryWindow>, ()> {
+        let Some(hook) = &self.config.authorization else {
+            return Ok(None);
+        };
+        let span = match hook
+            .history_window(&a.user, &a.doc, &request.extensions)
+            .await
+        {
+            Ok(None) => return Ok(None),
+            Ok(Some(span)) => span,
+            Err(_) => {
+                internal_error(response).await;
+                return Err(());
+            }
+        };
+        // A .NET tick is 100ns.
+        let window_ticks = i64::try_from(span.as_nanos() / 100).unwrap_or(i64::MAX);
+        let cut = history_cut(a.rooms.now(), window_ticks);
+        let (rooms, doc) = (a.rooms.clone(), a.doc.clone());
+        let floors = async move { rooms.history_floors_at(&doc, cut).await };
+        let (status, floors) = match blocking(request, floors).await {
+            Some(Ok(result)) => result,
+            _ => {
+                failed(request, response).await;
+                return Err(());
+            }
+        };
+        if status != HistoryStatus::Ready {
+            self.refuse_history(response, a, status).await;
+            return Err(());
+        }
+        Ok(Some(HistoryWindow { cut, floors }))
+    }
+
     /// GET /sync/{doc}/history.
     pub async fn history_list(&self, request: Request, mut response: ResponseWriter) {
-        let Some(a) = self.admit_history(&request, &mut response, false).await else {
+        let Some(a) = self
+            .admit_history(&request, &mut response, false, true)
+            .await
+        else {
             return;
         };
         let minutes = match query_number(&request, "group") {
@@ -117,10 +263,20 @@ impl Handlers {
                 return;
             }
         };
+        let Ok(window) = self.window(&request, &mut response, &a).await else {
+            return;
+        };
         let group = Duration::from_secs(minutes.unwrap_or(0) * 60);
+        // Shipped route: any other by is ignored, as unknown keys always were.
+        let raw = request.query();
+        let by_actor = matches!(
+            query_all(raw.strip_prefix('?').unwrap_or(raw), "by").as_slice(),
+            [by] if by == "actor"
+        );
+        let cut = window.as_ref().map(|window| window.cut);
         let (rooms, doc) = (a.rooms.clone(), a.doc.clone());
-        let result = match blocking(&request, async move { rooms.history(&doc, group).await }).await
-        {
+        let history = async move { rooms.history_windowed(&doc, group, by_actor, cut).await };
+        let result = match blocking(&request, history).await {
             Some(Ok(result)) => result,
             _ => {
                 failed(&request, &mut response).await;
@@ -149,7 +305,11 @@ impl Handlers {
             body.extend_from_slice(format!(r#","current":{}}}"#, lineage.current).as_bytes());
         }
         body.extend_from_slice(br#"],"versions":["#);
-        for (i, version) in result.versions.iter().enumerate() {
+        let listed = result
+            .versions
+            .iter()
+            .filter(|version| !hidden(window.as_ref(), &version.lineage, version.sequence));
+        for (i, version) in listed.enumerate() {
             if i > 0 {
                 body.push(b',');
             }
@@ -167,7 +327,18 @@ impl Handlers {
                 }
                 quoted(&mut body, actor);
             }
-            body.extend_from_slice(b"]}");
+            body.push(b']');
+            if let Some(kinds) = &version.actor_kinds {
+                body.extend_from_slice(br#","actorKinds":["#);
+                for (j, kind) in kinds.iter().enumerate() {
+                    if j > 0 {
+                        body.push(b',');
+                    }
+                    append_actor_kind(&mut body, &kind.id, &kind.note);
+                }
+                body.push(b']');
+            }
+            body.push(b'}');
         }
         body.extend_from_slice(b"]}");
         write_json(&mut response, &body).await;
@@ -175,12 +346,22 @@ impl Handlers {
 
     /// GET /sync/{doc}/history/{lineage}/{sequence}.
     pub async fn history_read(&self, request: Request, mut response: ResponseWriter) {
-        let Some(a) = self.admit_history(&request, &mut response, false).await else {
+        let Some(a) = self
+            .admit_history(&request, &mut response, false, true)
+            .await
+        else {
             return;
         };
         let Some((lineage, sequence)) = history_point(&request, &mut response).await else {
             return;
         };
+        let Ok(window) = self.window(&request, &mut response, &a).await else {
+            return;
+        };
+        if hidden(window.as_ref(), &lineage, sequence) {
+            refuse_retention(&mut response).await;
+            return;
+        }
         let (rooms, doc, at) = (a.rooms.clone(), a.doc.clone(), lineage.clone());
         let read = async move { rooms.read_version(&doc, &at, sequence).await };
         let result = match blocking(&request, read).await {
@@ -201,7 +382,10 @@ impl Handlers {
     /// GET .../changes: the edits of each record in (since, sequence]. The
     /// client names the previous version's sequence.
     pub async fn history_changes(&self, request: Request, mut response: ResponseWriter) {
-        let Some(a) = self.admit_history(&request, &mut response, false).await else {
+        let Some(a) = self
+            .admit_history(&request, &mut response, false, true)
+            .await
+        else {
             return;
         };
         let Some((lineage, sequence)) = history_point(&request, &mut response).await else {
@@ -219,6 +403,20 @@ impl Handlers {
                 return;
             }
         };
+        // v2.1.0 ignored unknown keys here, so a bad detail or block is
+        // ignored, not refused.
+        let detail = query_detail(&request) == Ok(true);
+        let block = query_block(&request).unwrap_or(None);
+        let Ok(window) = self.window(&request, &mut response, &a).await else {
+            return;
+        };
+        if hidden(window.as_ref(), &lineage, sequence) {
+            refuse_retention(&mut response).await;
+            return;
+        }
+        let since = window.as_ref().map_or(since, |window| {
+            window_since(window.floors.get(&lineage).copied().flatten(), since)
+        });
         let (rooms, doc, at) = (a.rooms.clone(), a.doc.clone(), lineage.clone());
         let changes = async move {
             rooms
@@ -243,22 +441,42 @@ impl Handlers {
             self.refuse_history(&mut response, &a, result.status).await;
             return;
         }
+        let notes = a.rooms.read_notes(&a.doc, &lineage).await;
         // Rows are measured newest first; the newest always goes out.
         let mut rows: Vec<Vec<u8>> = Vec::new();
-        let mut size = CHANGES_ENVELOPE_BYTES;
-        let mut truncated = result.truncated;
+        let mut shown: Vec<RecordChanges> = Vec::new();
         for record in result.changes.iter().rev() {
-            let Ok(row) = change_row(record) else {
+            let Some(record) = narrowed(record, block.as_deref()) else {
+                continue;
+            };
+            let Ok(row) = change_row(&record, detail, notes.as_ref()) else {
                 failed(&request, &mut response).await;
                 return;
             };
-            if !rows.is_empty() && size + row.len() as i64 + 1 > MAX_CHANGE_BYTES {
-                truncated = true;
-                break;
-            }
-            size += row.len() as i64 + 1;
             rows.push(row);
+            shown.push(record);
         }
+        // Cut by the room with every row kept, the answer ends at the oldest
+        // record read, so a narrowed answer still moves its cursor.
+        let row_count = rows.len();
+        let older_end_of = |oldest: usize| -> &RecordChanges {
+            match result.changes.first() {
+                Some(first) if oldest + 1 == row_count => first,
+                _ => &shown[oldest],
+            }
+        };
+        let (kept, truncated) = time::fit_answer(&rows, result.truncated, |oldest| {
+            let record = older_end_of(oldest);
+            let mut older_end = Vec::new();
+            time::append_older_end(
+                &mut older_end,
+                &lineage,
+                record.sequence,
+                record.committed_at,
+            );
+            older_end.len() as i64
+        });
+        rows.truncate(kept);
         write_history_head(&mut response, &lineage, sequence);
         let mut body = br#"{"changes":["#.to_vec();
         for (i, row) in rows.iter().rev().enumerate() {
@@ -267,24 +485,49 @@ impl Handlers {
             }
             body.extend_from_slice(row);
         }
+        body.push(b']');
         if truncated {
-            body.extend_from_slice(br#"],"truncated":true}"#);
-        } else {
-            body.extend_from_slice(b"]}");
+            let oldest = older_end_of(kept - 1);
+            time::append_older_end(&mut body, &lineage, oldest.sequence, oldest.committed_at);
         }
+        body.push(b'}');
         write_json(&mut response, &body).await;
     }
 
     /// DELETE /sync/{doc}/history/{lineage}.
     pub async fn history_delete(&self, request: Request, mut response: ResponseWriter) {
-        let Some(a) = self.admit_history(&request, &mut response, true).await else {
+        let Some(a) = self
+            .admit_history(&request, &mut response, true, false)
+            .await
+        else {
             return;
         };
         let Some(lineage) = history_lineage(&request, &mut response).await else {
             return;
         };
+        if let Some(hook) = &self.config.authorization {
+            match hook
+                .is_history_held(&a.doc, &lineage, &request.extensions)
+                .await
+            {
+                Err(_) => {
+                    internal_error(&mut response).await;
+                    return;
+                }
+                Ok(true) => {
+                    response
+                        .headers_mut()
+                        .set("Content-Type", "application/json");
+                    blok_route::start_stream(&mut response, 409).await;
+                    let _ = response.write(br#"{"reason":"held"}"#).await;
+                    return;
+                }
+                Ok(false) => {}
+            }
+        }
         let (rooms, doc) = (a.rooms.clone(), a.doc.clone());
-        let delete = async move { rooms.delete_lineage(&doc, &lineage).await };
+        let actor = derive_actor(&a.ticket_user, &a.user, a.has_user);
+        let delete = async move { rooms.delete_lineage_by(&doc, &lineage, &actor).await };
         let (status, outcome) = match blocking(&request, delete).await {
             Some(Ok(result)) => result,
             _ => {
@@ -319,8 +562,13 @@ impl Handlers {
 
     /// POST .../restore: the key is required, If-Match is optional, and it
     /// answers like an edit.
-    pub async fn history_restore(&self, request: Request, mut response: ResponseWriter) {
-        let Some(a) = self.admit_history(&request, &mut response, true).await else {
+    pub async fn history_restore(&self, mut request: Request, mut response: ResponseWriter) {
+        // A restore reads the version it writes, so the history read hook
+        // guards it too.
+        let Some(a) = self
+            .admit_history(&request, &mut response, true, true)
+            .await
+        else {
             return;
         };
         let Some((lineage, sequence)) = history_point(&request, &mut response).await else {
@@ -334,25 +582,123 @@ impl Handlers {
             refuse(&mut response, 400, BAD_IF_MATCH).await;
             return;
         };
+        // The shipped route ignored unknown values: only one exact keep
+        // keeps databases.
+        let raw = request.query();
+        let keep_databases = matches!(
+            query_all(raw.strip_prefix('?').unwrap_or(raw), "databases").as_slice(),
+            [value] if value == "keep"
+        );
+        let Ok(window) = self.window(&request, &mut response, &a).await else {
+            return;
+        };
+        let options = RestoreOptions {
+            hidden: hidden(window.as_ref(), &lineage, sequence),
+            keep_databases,
+        };
+        let confirmed = if self.config.enforce_restore_guards {
+            Some(restore_confirms(&mut request, self.config.max_message_bytes).await)
+        } else {
+            None
+        };
         let actor = derive_actor(&a.ticket_user, &a.user, a.has_user);
         let (rooms, doc) = (a.rooms.clone(), a.doc.clone());
         let restore = async move {
             rooms
-                .restore(&doc, &lineage, sequence, &operation_id, &actor, expect)
+                .restore_with(
+                    &doc,
+                    &lineage,
+                    sequence,
+                    &operation_id,
+                    &actor,
+                    expect,
+                    confirmed,
+                    options,
+                )
                 .await
         };
-        let (status, edit) = match blocking(&request, restore).await {
+        let outcome = match blocking(&request, restore).await {
             Some(Ok(result)) => result,
             _ => {
                 failed(&request, &mut response).await;
                 return;
             }
         };
-        match edit {
-            Some(edit) if status == HistoryStatus::Ready => {
+        if outcome.hidden {
+            refuse_retention(&mut response).await;
+            return;
+        }
+        match outcome.edit {
+            Some(edit) if outcome.status == HistoryStatus::Ready => {
                 write_edit_result(&mut response, &edit, a.rooms.retry_after()).await;
             }
-            _ => self.refuse_history(&mut response, &a, status).await,
+            None if outcome.status == HistoryStatus::Ready => {
+                refuse_restore(&mut response, outcome.refused_as, &outcome.refused).await;
+            }
+            _ => self.refuse_history(&mut response, &a, outcome.status).await,
+        }
+    }
+
+    /// POST .../restore/preview: the restore planned and measured, nothing
+    /// written, no key needed. It needs write access, as the restore does.
+    /// If-Match is checked as the restore would.
+    pub async fn history_restore_preview(&self, request: Request, mut response: ResponseWriter) {
+        let Some(a) = self
+            .admit_history(&request, &mut response, true, true)
+            .await
+        else {
+            return;
+        };
+        let Some((lineage, sequence)) = history_point(&request, &mut response).await else {
+            return;
+        };
+        let (request, response, a) = (&request, &mut response, &a);
+        let Ok(expect) = precondition(request) else {
+            refuse(response, 400, BAD_IF_MATCH).await;
+            return;
+        };
+        let Ok(keep_databases) = query_databases(request) else {
+            refuse(response, 400, BAD_DATABASES).await;
+            return;
+        };
+        let Ok(window) = self.window(request, response, a).await else {
+            return;
+        };
+        if hidden(window.as_ref(), &lineage, sequence) {
+            refuse_retention(response).await;
+            return;
+        }
+        let (rooms, doc, lineage) = (a.rooms.clone(), a.doc.clone(), lineage.to_owned());
+        let actor = derive_actor(&a.ticket_user, &a.user, a.has_user);
+        let options = RestoreOptions {
+            keep_databases,
+            ..RestoreOptions::default()
+        };
+        let preview = async move {
+            rooms
+                .preview_restore_with(&doc, &lineage, sequence, expect, &actor, options)
+                .await
+        };
+        let (status, preview, edit) = match blocking(request, preview).await {
+            Some(Ok(result)) => result,
+            _ => {
+                failed(request, response).await;
+                return;
+            }
+        };
+        if status != HistoryStatus::Ready {
+            self.refuse_history(response, a, status).await;
+            return;
+        }
+        let Some(preview) = preview else {
+            if let Some(edit) = edit {
+                write_edit_result(response, &edit, a.rooms.retry_after()).await;
+            }
+            return;
+        };
+        match stringify(&preview.json()) {
+            Ok(json) => write_json(response, json.as_bytes()).await,
+            Err(_) => failed(request, response).await,
         }
     }
 
@@ -398,7 +744,14 @@ fn change_kind(kind: BlockChangeKind) -> &'static str {
     }
 }
 
-fn change_row(record: &RecordChanges) -> Result<Vec<u8>, blok_collab_docendpoint::Error> {
+/// One changes row. With `detail`, a changed database or row also carries
+/// what changed inside its data. With a notes store (`notes` given), the row
+/// carries actors: its actor's kind, or nothing when the record has no note.
+fn change_row(
+    record: &RecordChanges,
+    detail: bool,
+    notes: Option<&std::collections::HashMap<u64, RecordNote>>,
+) -> Result<Vec<u8>, blok_collab_docendpoint::Error> {
     let mut row = format!(
         r#"{{"sequence":{},"committedAt":{},"actor":"#,
         record.sequence,
@@ -408,6 +761,13 @@ fn change_row(record: &RecordChanges) -> Result<Vec<u8>, blok_collab_docendpoint
     match &record.actor_id {
         None => row.extend_from_slice(b"null"),
         Some(actor) => quoted(&mut row, actor),
+    }
+    if let Some(notes) = notes {
+        row.extend_from_slice(br#","actors":["#);
+        if let (Some(actor), Some(note)) = (&record.actor_id, notes.get(&record.sequence)) {
+            append_actor_kind(&mut row, actor, note);
+        }
+        row.push(b']');
     }
     row.extend_from_slice(br#","blocks":["#);
     for (i, change) in record.blocks.iter().enumerate() {
@@ -431,6 +791,18 @@ fn change_row(record: &RecordChanges) -> Result<Vec<u8>, blok_collab_docendpoint
             let encoded = blok_collab_docendpoint::serialize(&Value::Object(block.clone()))?;
             row.extend_from_slice(format!(r#","{name}":"#).as_bytes());
             row.extend_from_slice(&encoded);
+        }
+        if detail && change.kind == BlockChangeKind::Changed {
+            let fields = describe_database_change(
+                change.kind_type.as_ref(),
+                change.before.as_ref(),
+                change.after.as_ref(),
+            );
+            if !fields.is_empty() {
+                let encoded = blok_collab_docendpoint::serialize(&Value::Object(fields))?;
+                row.push(b',');
+                row.extend_from_slice(&encoded[1..encoded.len() - 1]);
+            }
         }
         row.push(b'}');
     }
@@ -480,6 +852,75 @@ fn query_number(request: &Request, name: &str) -> Result<Option<u64>, ()> {
     match values.as_slice() {
         [] => Ok(None),
         [value] => parse_uint64_none(value).map(Some).ok_or(()),
+        _ => Err(()),
+    }
+}
+
+/// {id, kind, onBehalfOf?}.
+fn append_actor_kind(body: &mut Vec<u8>, id: &str, note: &RecordNote) {
+    body.extend_from_slice(br#"{"id":"#);
+    quoted(body, id);
+    body.extend_from_slice(br#","kind":"#);
+    quoted(body, &note.kind);
+    if let Some(person) = &note.on_behalf_of {
+        body.extend_from_slice(br#","onBehalfOf":"#);
+        quoted(body, person);
+    }
+    body.push(b'}');
+}
+
+/// The record narrowed to one block: only its changes, no page keys. None
+/// when the record did not touch it. No block keeps it whole.
+fn narrowed(record: &RecordChanges, block: Option<&str>) -> Option<RecordChanges> {
+    let Some(block) = block else {
+        return Some(record.clone());
+    };
+    let blocks: Vec<_> = record
+        .blocks
+        .iter()
+        .filter(|change| to_string_lossy(change.id.units()) == block)
+        .cloned()
+        .collect();
+    if blocks.is_empty() {
+        return None;
+    }
+    Some(RecordChanges {
+        blocks,
+        page: Vec::new(),
+        ..record.clone()
+    })
+}
+
+/// Absent is Ok(None); anything but one non-empty value is Err.
+fn query_block(request: &Request) -> Result<Option<String>, ()> {
+    let raw = request.query();
+    match query_all(raw.strip_prefix('?').unwrap_or(raw), "block").as_slice() {
+        [] => Ok(None),
+        [value] if !value.is_empty() => Ok(Some(value.clone())),
+        _ => Err(()),
+    }
+}
+
+const BAD_DATABASES: &str = "databases must be keep or restore\n";
+
+/// The preview's databases=keep|restore: Ok(true) for keep, absent is
+/// restore. A repeated or other value is Err.
+fn query_databases(request: &Request) -> Result<bool, ()> {
+    let raw = request.query();
+    match query_all(raw.strip_prefix('?').unwrap_or(raw), "databases").as_slice() {
+        [] => Ok(false),
+        [value] if value == "keep" => Ok(true),
+        [value] if value == "restore" => Ok(false),
+        _ => Err(()),
+    }
+}
+
+/// Absent is Ok(false); only one detail=properties is Ok(true).
+fn query_detail(request: &Request) -> Result<bool, ()> {
+    let raw = request.query();
+    match query_all(raw.strip_prefix('?').unwrap_or(raw), "detail").as_slice() {
+        [] => Ok(false),
+        [value] if value == "properties" => Ok(true),
         _ => Err(()),
     }
 }

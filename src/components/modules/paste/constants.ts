@@ -51,12 +51,18 @@ export const COLUMNS_CANDIDATE_ATTR = 'data-blok-columns-candidate';
  * (list-style-type). Stripping these silently flattens pasted lists wherever
  * a tool's own pasteConfig doesn't re-whitelist `li` (e.g. lists inside
  * table cells), so the structural sanitize config must keep them.
+ * `data-list-start` carries an `<ol start>` on the list's first item.
  */
 export const STRUCTURAL_TAG_ATTRIBUTES: Record<string, Record<string, boolean>> = {
   li: {
     style: true,
     'aria-level': true,
     'data-list-style': true,
+    'data-list-start': true,
+  },
+  // The html paste pre-pass reads `start` after the whole-document pass.
+  ol: {
+    start: true,
   },
 };
 
@@ -82,6 +88,12 @@ export const collectTagNames = (tagOrSanitizeConfig: string | SanitizerConfig): 
  * survives sanitization, and read back in that tool's `onPaste`.
  */
 export const CODE_LANGUAGE_ATTR = 'data-blok-code-language';
+
+/**
+ * Filename of a code block, written by Blok's own HTML copy. Whitelisted on
+ * `pre` by the Code tool's pasteConfig and read back in its `onPaste`.
+ */
+export const CODE_FILENAME_ATTR = 'data-blok-code-filename';
 
 /** Blok's own clipboard flavour: the copied blocks as JSON. */
 export const BLOK_MIME_TYPE = 'application/x-blok';

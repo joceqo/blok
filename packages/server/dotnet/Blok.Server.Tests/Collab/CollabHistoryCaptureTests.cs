@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Blok.Server.Collab;
 using Blok.Server.Yjs;
 using Xunit;
@@ -19,7 +20,7 @@ namespace Blok.Server.Tests.Collab;
 /// one-tick cases survive a double. Set BLOK_WRITE_COLLAB_HISTORY=1 to rewrite
 /// the files after an intended change.
 /// </summary>
-public sealed class CollabHistoryCaptureTests
+public sealed partial class CollabHistoryCaptureTests
 {
   private static readonly DateTimeOffset T0 = new(2026, 10, 7, 12, 0, 0, TimeSpan.Zero);
   private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
@@ -42,10 +43,22 @@ public sealed class CollabHistoryCaptureTests
     Check("collab-history/restore-plans.json", await RestorePlans());
   }
 
-  private static void Check(string relative, JsonObject built)
+  [Fact]
+  public void TheRestoreGuardsMatchTheRules()
+  {
+    // The writer turns a lone surrogate into U+FFFD, so the ids go out as placeholders and are escaped here.
+    Check("collab-history/restore-guards.json", RestoreGuards(), text => LonePlaceholder().Replace(text, "\"\\u$1\""));
+  }
+
+  [GeneratedRegex("\"lone-([0-9A-F]{4})\"")]
+  private static partial Regex LonePlaceholder();
+
+  private static void Check(string relative, JsonObject built, Func<string, string>? finish = null)
   {
     var path = RichTextFixtures.PathOf(relative);
     var text = built.ToJsonString(Indented) + "\n";
+
+    text = finish?.Invoke(text) ?? text;
 
     if (Environment.GetEnvironmentVariable("BLOK_WRITE_COLLAB_HISTORY") == "1")
     {
@@ -66,7 +79,9 @@ public sealed class CollabHistoryCaptureTests
   private sealed record TimelineCase(
       string Name,
       TimeSpan? Window,
-      (string Lineage, DateTimeOffset? CreatedAt, (ulong Sequence, DateTimeOffset At, string? Actor)[] Headers)[] Lineages);
+      (string Lineage, DateTimeOffset? CreatedAt, (ulong Sequence, DateTimeOffset At, string? Actor)[] Headers)[] Lineages,
+      bool ByActor = false,
+      Dictionary<(string Lineage, ulong Sequence), CollabRecordNote>? Notes = null);
 
   private static JsonObject Timeline()
   {
@@ -114,6 +129,32 @@ public sealed class CollabHistoryCaptureTests
       new("big sequences and the far ends of time", null,
           [("L1", DateTimeOffset.MinValue, [
               (ulong.MaxValue - 1, DateTimeOffset.MinValue, null), (ulong.MaxValue, DateTimeOffset.MaxValue, null)])]),
+      new("by actor, a new actor starts a group", null,
+          [("L1", T0, [(1, T0, "bob"), (2, T0, "bob"), (3, T0, "alice"), (4, T0, "bob")])], ByActor: true),
+      new("by actor, records without an actor group together", null,
+          [("L1", T0, [(1, T0, null), (2, T0, null), (3, T0, "bob"), (4, T0, null)])], ByActor: true),
+      new("by actor, an empty actor is not a missing one", null,
+          [("L1", T0, [(1, T0, ""), (2, T0, null), (3, T0, "")])], ByActor: true),
+      new("by actor, the time limits still apply", minute,
+          [("L1", T0, [(1, T0, "bob"), (2, T0 + TimeSpan.FromSeconds(30), "bob"), (3, T0 + 2 * minute, "bob"), (4, T0 + 2 * minute, "alice")])],
+          ByActor: true),
+      new("by actor, each lineage groups on its own", null,
+          [("old", T0, [(1, T0, "bob")]), ("new", T0, [(1, T0 + minute, "bob"), (2, T0 + minute, "carol")])], ByActor: true),
+      new("actor kinds are each actor's first note, actors without one left out", null,
+          [("L1", T0, [(1, T0, "bob"), (2, T0, "agent:bob:cursor"), (3, T0, "carol"), (4, T0, "bob"), (5, T0, null)])],
+          Notes: new()
+          {
+            [("L1", 2)] = new CollabRecordNote("agent", "bob"),
+            [("L1", 4)] = new CollabRecordNote("person"),
+          }),
+      new("actor kinds follow the actor groups", null,
+          [("L1", T0, [(1, T0, "bob"), (2, T0, "agent:bob:cursor")]), ("L2", T0, [])],
+          ByActor: true,
+          Notes: new()
+          {
+            [("L1", 1)] = new CollabRecordNote("person"),
+            [("L1", 2)] = new CollabRecordNote("agent", "bob"),
+          }),
     ];
 
     var written = new JsonArray();
@@ -126,39 +167,82 @@ public sealed class CollabHistoryCaptureTests
               Headers: (IReadOnlyList<CollabRecordHeader>)entry.Headers
                   .Select(header => new CollabRecordHeader(header.Sequence, header.At, header.Actor)).ToList()))
           .ToList();
-      var versions = testCase.Window is { } window
-          ? CollabVersionTimeline.Group(lineages, window, window)
-          : CollabVersionTimeline.Group(lineages);
+      var notes = testCase.Notes;
+      Func<string, ulong, CollabRecordNote?>? noteOf = notes is null
+          ? null
+          : (lineage, sequence) => notes.GetValueOrDefault((lineage, sequence));
+      var window = testCase.Window ?? CollabVersionTimeline.IdleGap;
+      var versions = testCase.Window is null && !testCase.ByActor && noteOf is null
+          ? CollabVersionTimeline.Group(lineages)
+          : CollabVersionTimeline.Group(
+              lineages,
+              window,
+              testCase.Window ?? CollabVersionTimeline.MaxSpan,
+              testCase.ByActor,
+              noteOf);
 
-      written.Add(new JsonObject
+      var item = new JsonObject
       {
         ["name"] = testCase.Name,
         ["windowMinutes"] = testCase.Window is { } w ? (int)w.TotalMinutes : null,
-        ["lineages"] = new JsonArray([.. lineages.Select(entry => (JsonNode)new JsonObject
+      };
+
+      if (testCase.ByActor)
+      {
+        item["byActor"] = true;
+      }
+
+      item["lineages"] = new JsonArray([.. lineages.Select(lineage => (JsonNode)new JsonObject
+      {
+        ["lineage"] = lineage.Lineage.Lineage,
+        ["createdAt"] = Ticks(lineage.Lineage.CreatedAt),
+        ["headers"] = new JsonArray([.. lineage.Headers.Select(header =>
         {
-          ["lineage"] = entry.Lineage.Lineage,
-          ["createdAt"] = Ticks(entry.Lineage.CreatedAt),
-          ["headers"] = new JsonArray([.. entry.Headers.Select(header => (JsonNode)new JsonObject
+          var row = new JsonObject
           {
             ["sequence"] = header.ServerSequence.ToString(CultureInfo.InvariantCulture),
             ["committedAt"] = Ticks(header.CommittedAt),
             ["actor"] = header.ActorId,
-          })]),
+          };
+
+          if (notes?.GetValueOrDefault((lineage.Lineage.Lineage, header.ServerSequence)) is { } note)
+          {
+            row["note"] = CollabAttributionCaptureTests.NoteJson(note);
+          }
+
+          return (JsonNode)row;
         })]),
-        ["versions"] = new JsonArray([.. versions.Select(version => (JsonNode)new JsonObject
+      })]);
+      item["versions"] = new JsonArray([.. versions.Select(version =>
+      {
+        var row = new JsonObject
         {
           ["lineage"] = version.Lineage,
           ["sequence"] = version.Sequence.ToString(CultureInfo.InvariantCulture),
           ["startedAt"] = Ticks(version.StartedAt),
           ["savedAt"] = Ticks(version.SavedAt),
           ["actors"] = new JsonArray([.. version.Actors.Select(actor => (JsonNode)actor)]),
-        })]),
-      });
+        };
+
+        if (version.ActorKinds is { } kinds)
+        {
+          row["actorKinds"] = new JsonArray([.. kinds.Select(kind =>
+          {
+            var json = CollabAttributionCaptureTests.NoteJson(kind.Note);
+            json.Insert(0, "id", kind.Id);
+
+            return (JsonNode)json;
+          })]);
+        }
+
+        return (JsonNode)row;
+      })]);
+      written.Add(item);
     }
 
     return new JsonObject
     {
-      ["$comment"] = "CollabVersionTimeline.Group as C# answers it. Captured by CollabHistoryCaptureTests; do not edit by hand. Times are .NET UTC ticks; windowMinutes null is the default 2 min gap and 10 min span.",
+      ["$comment"] = "CollabVersionTimeline.Group as C# answers it. Captured by CollabHistoryCaptureTests; do not edit by hand. Times are .NET UTC ticks; windowMinutes null is the default 2 min gap and 10 min span. byActor also starts a group when the actor changes. A header note is its record notes entry; actorKinds is written only when a case has notes.",
       ["cases"] = written,
     };
   }
@@ -501,10 +585,47 @@ public sealed class CollabHistoryCaptureTests
       cases.Add(("strays the structure does not reach", current, Doc(P("a"), P("r"), P("o"), P("n"))));
     }
 
+    // Comments are blocks under a row (a reply under its thread), so a
+    // restore treats them like any other block.
+    cases.Add(("removes comments added after the point",
+        Doc(Parent("db", "database", ["r"]), Parent("r", "database-row", ["c1", "c2"], "db"),
+            Comment("c1", "r", "old", 1700000000000, content: ["c3"]), Comment("c2", "r", "new", 1700000100000),
+            Comment("c3", "c1", "reply", 1700000200000)),
+        Doc(Parent("db", "database", ["r"]), Parent("r", "database-row", ["c1"], "db"),
+            Comment("c1", "r", "old", 1700000000000))));
+    cases.Add(("reverts later edits and resolves on older comments",
+        Doc(Parent("db", "database", ["r"]), Parent("r", "database-row", ["c1"], "db"),
+            Comment("c1", "r", "edited", 1700000000000, editedAt: 1700000300000, resolved: true)),
+        Doc(Parent("db", "database", ["r"]), Parent("r", "database-row", ["c1"], "db"),
+            Comment("c1", "r", "old", 1700000000000))));
+
+    // A history restore passes who restores and when; a page pointer the
+    // target lacks is then trashed in place, not removed.
+    var trash = new CollabRestoreTrash("u9", 1700000999000);
+    var trashedPage = """{ "id": "pg", "type": "page", "data": { "pageId": "sub", "trashed": { "at": 5, "by": "old", "formerParentId": null, "formerIndex": 0 } } }""";
+    var trashCases = new List<(string Name, YDoc Current, YDoc Target, CollabRestoreTrash? Trash)>
+    {
+      ("a later page pointer is removed without trash", Doc(P("a"), Page("pg", "sub"), P("b")), Doc(P("a"), P("b")), null),
+      ("trashes a later page pointer in place", Doc(P("a"), Page("pg", "sub"), P("b")), Doc(P("a"), P("b")), trash),
+      ("a later page pointer keeps its place under a kept parent",
+          Doc(Parent("t", "toggle", ["k1", "pg", "k2"]), P("k1", "t"), Page("pg", "sub", "t"), P("k2", "t")),
+          Doc(Parent("t", "toggle", ["k1", "k2"]), P("k1", "t"), P("k2", "t", "changed")),
+          trash),
+      ("a later page pointer whose parent is also later goes to the root",
+          Doc(P("a"), Parent("t", "toggle", ["pg"]), Page("pg", "sub", "t")), Doc(P("a")), trash),
+      ("an already trashed later page pointer keeps its stamps", Doc(P("a"), trashedPage), Doc(P("a")), trash),
+      ("a trashed page pointer the target holds comes back", Doc(P("a"), trashedPage), Doc(P("a"), Page("pg", "sub")), trash),
+      ("no actor writes a null by", Doc(Page("pg", "sub")), Doc(P("a")), new CollabRestoreTrash(null, 7)),
+      ("a malformed trashed is stamped as the page tool reads it",
+          Doc(P("a"), """{ "id": "pg", "type": "page", "data": { "pageId": "sub", "trashed": { "at": 5, "by": "old", "formerParentId": null, "formerIndex": 0.5 } } }"""),
+          Doc(P("a")),
+          trash),
+    };
+
     var written = new JsonArray();
     var converter = new CollabDocConverter(TimeProvider.System, RichTextRuntime.Reader);
 
-    foreach (var (name, current, target) in cases)
+    foreach (var (name, current, target, caseTrash) in cases.Select(c => (c.Name, c.Current, c.Target, (CollabRestoreTrash?)null)).Concat(trashCases))
     {
       var currentUpdate = current.EncodeStateAsUpdate();
       var targetUpdate = target.EncodeStateAsUpdate();
@@ -513,23 +634,219 @@ public sealed class CollabHistoryCaptureTests
           YDocConverter.DescribeStructure(current),
           await Export(converter, target),
           YDocConverter.ReadPageMaps(current),
-          YDocConverter.ReadPageMaps(target));
+          YDocConverter.ReadPageMaps(target),
+          caseTrash);
 
-      written.Add(new JsonObject
+      var entry = new JsonObject
       {
         ["name"] = name,
         ["current"] = Convert.ToBase64String(currentUpdate),
         ["target"] = Convert.ToBase64String(targetUpdate),
-        ["ops"] = new JsonArray([.. ops.Select(OpJson)]),
+      };
+
+      if (caseTrash is not null)
+      {
+        entry["trash"] = new JsonObject { ["by"] = caseTrash.By, ["at"] = caseTrash.At };
+      }
+
+      entry["ops"] = new JsonArray([.. ops.Select(OpJson)]);
+      written.Add(entry);
+    }
+
+    return new JsonObject
+    {
+      ["$comment"] = "CollabRestorePlanner.Plan over the export, structure and page maps of current and target, as C# answers it. A case with trash passes it as the restorer and the time in ms. Captured by CollabHistoryCaptureTests; do not edit by hand. Updates are base64 Yjs v1 updates.",
+      ["cases"] = written,
+    };
+  }
+
+  // ---- restore guards ----
+
+  private const string Locked = """[{ "id": "t", "type": "title", "databaseLocked": true }]""";
+  private const string Unlocked = """[{ "id": "t", "type": "title" }]""";
+
+  private static string Db(string id, string schema = Unlocked, string views = "[]", string? parent = null, string extra = "") =>
+      $$"""{ "id": "{{id}}", "type": "database", {{(parent is null ? "" : $"\"parent\": \"{parent}\", ")}}"data": { "schema": {{schema}}, "views": {{views}}{{extra}} } }""";
+
+  private static string View(string share = "", string id = "v1") =>
+      $$"""{ {{(id == "" ? "" : $"\"id\": \"{id}\", ")}}"type": "table"{{(share == "" ? "" : ", " + share)}} }""";
+
+  private static JsonObject RestoreGuards()
+  {
+    (string Name, string[] Current, string[] Target, string[] Expect)[] cases =
+    [
+      ("a public form comes back",
+          [Db("d", views: $"[{View()}]")], [Db("d", views: $"""[{View("\"form\": { \"public\": true }")}]""")], ["share d v1"]),
+      ("calendarSync comes back",
+          [Db("d", views: $"[{View()}]")],
+          [Db("d", views: $"""[{View("\"calendarSync\": { \"enabled\": true, \"calendarId\": \"team\" }")}]""")], ["share d v1"]),
+      ("anonymous answers and submission access come back",
+          [Db("d", views: $"[{View()}]")],
+          [Db("d", views: $"""[{View("\"form\": { \"anonymous\": true, \"submissionAccess\": \"edit\" }")}]""")], ["share d v1"]),
+      ("a closed form wins over public, so closing a public form still asks",
+          [Db("d", views: $"""[{View("\"form\": { \"public\": true }")}]""")],
+          [Db("d", views: $"""[{View("\"form\": { \"public\": true, \"closed\": true }")}]""")], ["share d v1"]),
+      ("closing a workspace form asks",
+          [Db("d", views: $"[{View()}]")], [Db("d", views: $"""[{View("\"form\": { \"closed\": true }")}]""")], ["share d v1"]),
+      ("lock guards come in the current order, then share guards in the target order",
+          [Db("a", Locked), Db("b", Locked, $"[{View()}]")],
+          [Db("b", views: $"""[{View("\"form\": { \"public\": true }")}]"""), Db("a", Locked, extra: """, "automations": []""")],
+          ["lockedReshape a", "unlock b", "share b v1"]),
+      ("share guards follow the target's databases, then each one's views",
+          [Db("x", views: $"[{View(id: "v1")}, {View(id: "v2")}]"), Db("y", views: $"[{View()}]")],
+          [Db("y", views: $"""[{View("\"form\": { \"public\": true }")}]"""),
+           Db("x", views: $"""[{View("\"form\": { \"public\": true }", "v2")}, {View("\"form\": { \"anonymous\": true }", "v1")}]""")],
+          ["share y v1", "share x v2", "share x v1"]),
+      ("a locked database is unlocked", [Db("d", Locked)], [Db("d")], ["unlock d"]),
+      ("a locked database becomes another type", [Db("d", Locked)], ["""{ "id": "d", "type": "paragraph", "data": { "text": "d" } }"""], ["unlock d"]),
+      ("a locked database's schema is reshaped",
+          [Db("d", """[{ "id": "t", "type": "title", "databaseLocked": true }, { "id": "p", "type": "text" }]""")], [Db("d", Locked)], ["lockedReshape d"]),
+      ("a locked database's views change", [Db("d", Locked, $"[{View()}]")], [Db("d", Locked)], ["lockedReshape d"]),
+      ("a locked database's automations change", [Db("d", Locked, extra: """, "automations": []""")], [Db("d", Locked)], ["lockedReshape d"]),
+      ("a locked database's deleted properties change",
+          [Db("d", Locked)], [Db("d", Locked, extra: """, "deletedProperties": { "p": { "id": "p", "name": "P", "type": "text", "position": "a1", "deletedAt": 1 } }""")],
+          ["lockedReshape d"]),
+      ("a locked database without automations matches the empty slot: no guard",
+          [Db("d", Locked)], [Db("d", Locked, extra: """, "automations": { "version": 1, "definitions": [] }""")], []),
+      ("a locked database without deleted properties matches the empty slot: no guard",
+          [Db("d", Locked, extra: """, "deletedProperties": {}""")], [Db("d", Locked)], []),
+      ("a locked database's field set to null differs from missing", [Db("d", Locked)], [Db("d", Locked, extra: """, "source": null""")], ["lockedReshape d"]),
+      ("a locked database is removed", [Db("d", Locked), P("a")], [P("a")], ["lockedReshape d"]),
+      ("a database held by a locked database is reshaped",
+          [Db("h", Locked), Db("c", parent: "h")], [Db("h", Locked), Db("c", Locked, parent: "h")], ["lockedReshape c"]),
+      ("a locked database's own fields outside the lock change: no guard",
+          [Db("d", Locked, extra: """, "title": "Old" """)], [Db("d", Locked, extra: """, "title": "New" """)], []),
+      ("rows of a locked database change: no guard",
+          [Db("d", Locked), """{ "id": "r", "type": "database-row", "parent": "d", "data": { "properties": { "t": "a" } } }"""],
+          [Db("d", Locked), """{ "id": "r", "type": "database-row", "parent": "d", "data": { "properties": { "t": "b" } } }"""], []),
+      ("an unlocked database is reshaped: no guard", [Db("d")], [Db("d", """[{ "id": "t", "type": "title" }, { "id": "p", "type": "text" }]""")], []),
+      ("a database locked in both is unchanged: no guard", [Db("d", Locked)], [Db("d", Locked)], []),
+      ("a view goes away: no guard",
+          [Db("d", views: $"""[{View("\"form\": { \"public\": true }")}]""")], [Db("d")], []),
+      ("a new view with default settings: no guard", [Db("d")], [Db("d", views: $"[{View(id: "v2")}]")], []),
+      ("a new public view asks against the defaults",
+          [Db("d")], [Db("d", views: $"""[{View("\"form\": { \"public\": true }", "v2")}]""")], ["share d v2"]),
+      ("a public view with no id asks with an empty view id",
+          [Db("d")], [Db("d", views: $"""[{View("\"form\": { \"public\": true }", "")}]""")], ["share d "]),
+      ("a new database comes back with a public form",
+          [P("a")], [P("a"), Db("d", views: $"""[{View("\"form\": { \"public\": true }")}]""")], ["share d v1"]),
+      ("public false against missing reads the same: no guard",
+          [Db("d", views: $"[{View()}]")], [Db("d", views: $"""[{View("\"form\": { \"public\": false, \"closed\": false }")}]""")], []),
+      ("a calendar sync that gains an unread key reads the same: no guard",
+          [Db("d", views: $"""[{View("\"calendarSync\": { \"enabled\": true, \"calendarId\": \"cal\" }")}]""")],
+          [Db("d", views: $"""[{View("\"calendarSync\": { \"enabled\": true, \"calendarId\": \"cal\", \"extra\": 1 }")}]""")], []),
+      ("an unreadable value that changes fails closed",
+          [Db("d", views: $"[{View()}]")], [Db("d", views: $"""[{View("\"form\": { \"public\": \"yes\" }")}]""")], ["share d v1"]),
+      ("an unreadable value that stays the same: no guard",
+          [Db("d", views: $"""[{View("\"form\": { \"public\": \"yes\" }")}]""")],
+          [Db("d", views: $"""[{View("\"form\": { \"public\": \"yes\" }")}]""")], []),
+      ("a null form where there was none fails closed",
+          [Db("d", views: $"[{View()}]")], [Db("d", views: $"""[{View("\"form\": null")}]""")], ["share d v1"]),
+      ("a null form value fails closed",
+          [Db("d", views: $"[{View()}]")], [Db("d", views: $"""[{View("\"form\": { \"closed\": null }")}]""")], ["share d v1"]),
+      ("an unknown submission access fails closed",
+          [Db("d", views: $"[{View()}]")], [Db("d", views: $"""[{View("\"form\": { \"submissionAccess\": \"owner\" }")}]""")], ["share d v1"]),
+      ("a calendar sync that is not an object fails closed",
+          [Db("d", views: $"[{View()}]")], [Db("d", views: $"""[{View("\"calendarSync\": true")}]""")], ["share d v1"]),
+      // The planner writes the first copy of a repeated id, so the guards check that copy.
+      ("a repeated id: the first copy shares a form, the second does not",
+          [Db("d", views: $"[{View()}]")],
+          [Db("d", views: $"""[{View("\"form\": { \"public\": true }")}]"""), Db("d", views: $"[{View()}]")], ["share d v1"]),
+      ("a repeated id: the second copy shares a form, the first does not: no guard",
+          [Db("d", views: $"[{View()}]")],
+          [Db("d", views: $"[{View()}]"), Db("d", views: $"""[{View("\"form\": { \"public\": true }")}]""")], []),
+      ("a repeated id: the first copy unlocks a locked database, the second keeps it",
+          [Db("d", Locked)], [Db("d"), Db("d", Locked)], ["unlock d"]),
+      ("a repeated id: the second copy unlocks a locked database, the first keeps it: no guard",
+          [Db("d", Locked)], [Db("d", Locked), Db("d")], []),
+      ("a repeated current id: the first copy is the locked one",
+          [Db("d", Locked), Db("d")], [Db("d")], ["unlock d"]),
+      ("a repeated current id: the second copy is the locked one: no guard",
+          [Db("d"), Db("d", Locked)], [Db("d")], []),
+      // Two different lone surrogates are two ids to the planner; read as one, the second copy would ask.
+      ("ids with different lone surrogates are two blocks: no guard",
+          [Db("lone-D800", views: $"""[{View("\"form\": { \"public\": true }")}]""")],
+          [Db("lone-D800", views: $"""[{View("\"form\": { \"public\": true }")}]"""), Db("lone-DC00", views: $"[{View()}]")], []),
+      ("an empty id is a block the restore writes, so it asks too",
+          [P("a")], [P("a"), Db("", views: $"""[{View("\"form\": { \"public\": true }")}]""")], ["share  v1"]),
+    ];
+
+    var written = new JsonArray();
+
+    foreach (var (name, current, target, expect) in cases)
+    {
+      var guards = CollabRestoreGuards.Of(
+          new JsonArray([.. current.Select(ParseBlock)]), new JsonArray([.. target.Select(ParseBlock)]));
+
+      Assert.Equal(expect, guards.Select(guard => $"{guard.Kind} {guard.BlockId}{(guard.ViewId is { } view ? " " + view : "")}"));
+      written.Add(new JsonObject
+      {
+        ["name"] = name,
+        ["current"] = new JsonArray([.. current.Select(json => JsonNode.Parse(json))]),
+        ["target"] = new JsonArray([.. target.Select(json => JsonNode.Parse(json))]),
+        ["guards"] = new JsonArray([.. guards.Select(guard => (JsonNode)guard.ToJson())]),
+      });
+    }
+
+    foreach (var (name, id, readable) in CalendarIds())
+    {
+      // Another value changes, so only whether the calendar id reads decides.
+      var sync = $$"""{ "enabled": true, "calendarId": {{JsonValue.Create(id)!.ToJsonString()}} }""";
+      var currentBlocks = new JsonArray(JsonNode.Parse(Db("d", views: $"""[{View($"\"calendarSync\": {sync}")}]""")));
+      var targetBlocks = new JsonArray(JsonNode.Parse(Db("d", views: $"""[{View($"\"calendarSync\": {sync}, \"form\": {{ \"closed\": false }}")}]""")));
+      var guards = CollabRestoreGuards.Of(currentBlocks, targetBlocks);
+
+      Assert.Equal(readable ? [] : ["share d v1"], guards.Select(guard => $"{guard.Kind} {guard.BlockId} {guard.ViewId}"));
+      written.Add(new JsonObject
+      {
+        ["name"] = name,
+        ["current"] = currentBlocks,
+        ["target"] = targetBlocks,
+        ["guards"] = new JsonArray([.. guards.Select(guard => (JsonNode)guard.ToJson())]),
       });
     }
 
     return new JsonObject
     {
-      ["$comment"] = "CollabRestorePlanner.Plan over the export, structure and page maps of current and target, as C# answers it. Captured by CollabHistoryCaptureTests; do not edit by hand. Updates are base64 Yjs v1 updates.",
-      ["cases"] = written,
+      ["$comment"] = "CollabRestoreGuards.Of over the exported blocks of current and target, as C# answers it. Captured by CollabHistoryCaptureTests; do not edit by hand. Mirrors restoreTouchesLocked, unlockedBetween and restoreShares in src/shared/agent/approval.ts. A case with databases keep is a databases=keep restore: the guards of the kept target, then an orphanedDatabase guard per kept database whose parent the restore removes; a case without it is databases=restore.",
+      ["cases"] = AddKeepGuardCases(written),
     };
   }
+
+  /// <summary>System.Text.Json cannot read an escaped lone surrogate, so an id "lone-D800" becomes that one UTF-16 unit.</summary>
+  private static JsonNode? ParseBlock(string json)
+  {
+    var block = JsonNode.Parse(json);
+
+    if (block?["id"]?.GetValue<string>() is { } id && id.StartsWith("lone-", StringComparison.Ordinal))
+    {
+      block["id"] = ((char)int.Parse(id[5..], NumberStyles.HexNumber, CultureInfo.InvariantCulture)).ToString();
+    }
+
+    return block;
+  }
+
+  private static (string Name, string Id, bool Readable)[] CalendarIds() =>
+  [
+    ("a plain calendar id reads", "team calendar", true),
+    ("a calendar id of 64 code points reads", new string('a', 62) + "😀😀", true),
+    ("a calendar id of 65 code points fails closed", new string('a', 65), false),
+    ("an empty calendar id fails closed", "", false),
+    ("a calendar id with a leading space fails closed", " team", false),
+    ("a calendar id with a trailing space fails closed", "team ", false),
+    ("a calendar id with a doubled space fails closed", "team  cal", false),
+    ("a calendar id with a line break fails closed", "team\ncal", false),
+    ("a calendar id with a tab fails closed", "team\tcal", false),
+    ("a calendar id with a no-break space fails closed", "team\u00A0cal", false),
+    ("a calendar id with an ideographic space fails closed", "team\u3000cal", false),
+    ("a calendar id with a bidi override fails closed", "team\u202Ecal", false),
+    ("a calendar id with a zero-width space fails closed", "team\u200Bcal", false),
+    ("a calendar id with a byte order mark fails closed", "\uFEFFteam", false),
+    ("a calendar id with a line separator fails closed", "team\u2028cal", false),
+    ("a calendar id with a next line fails closed", "team\u0085cal", false),
+    ("a calendar id with a soft hyphen fails closed", "team\u00ADcal", false),
+    ("a calendar id with accents and emoji reads", "équipe 😀 日本", true),
+  ];
 
   private static JsonNode OpJson(CollabEditOp op) => op switch
   {
@@ -615,6 +932,43 @@ public sealed class CollabHistoryCaptureTests
     if (parent is not null)
     {
       block["parent"] = parent;
+    }
+
+    return block.ToJsonString();
+  }
+
+  private static string Page(string id, string pageId, string? parent = null)
+  {
+    var block = new JsonObject { ["id"] = id, ["type"] = "page", ["data"] = new JsonObject { ["pageId"] = pageId } };
+
+    if (parent is not null)
+    {
+      block["parent"] = parent;
+    }
+
+    return block.ToJsonString();
+  }
+
+  private static string Comment(
+      string id, string parent, string text, long createdAt, long? editedAt = null, bool resolved = false, string[]? content = null)
+  {
+    var data = new JsonObject { ["text"] = text, ["createdAt"] = createdAt, ["authorId"] = "u1" };
+
+    if (editedAt is { } edited)
+    {
+      data["editedAt"] = edited;
+    }
+
+    if (resolved)
+    {
+      data["resolved"] = true;
+    }
+
+    var block = new JsonObject { ["id"] = id, ["type"] = "database-comment", ["data"] = data, ["parent"] = parent };
+
+    if (content is not null)
+    {
+      block["content"] = new JsonArray([.. content.Select(child => (JsonNode?)child)]);
     }
 
     return block.ToJsonString();

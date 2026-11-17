@@ -32,6 +32,7 @@ const createMockContext = (overrides: Partial<ToggleKeyboardContext> = {}): Togg
       caret: {
         setToBlock: vi.fn(),
       },
+      tools: { getBlockTools: () => [] },
     } as unknown as API,
     blockId: 'test-block-id',
     data: { text: '' },
@@ -163,7 +164,7 @@ describe('Toggle Keyboard Handlers', () => {
       contentElement.remove();
     });
 
-    it('inserts child after last descendant when toggle already has children', async () => {
+    it('U134: inserts the new block as the FIRST child when the toggle already has children', async () => {
       const { handleToggleEnter } = await import('../../../../src/tools/toggle/toggle-keyboard');
 
       const mockSetToBlock = vi.fn();
@@ -217,14 +218,14 @@ describe('Toggle Keyboard Handlers', () => {
 
       await handleToggleEnter(context);
 
-      // Should insert AFTER the last child (index 8), not after toggle (index 5)
-      expect(mockInsertInsideParent).toHaveBeenCalledWith('test-block-id', 9);
+      // Right after the toggle (index 5), above its first child.
+      expect(mockInsertInsideParent).toHaveBeenCalledWith('test-block-id', 6);
       expect(mockSetToBlock).toHaveBeenCalledWith('new-block-id', 'start');
 
       contentElement.remove();
     });
 
-    it('inserts child after deepest last descendant when last child has nested children', async () => {
+    it('U134: inserts the new block as the FIRST child when the last child has nested children', async () => {
       const { handleToggleEnter } = await import('../../../../src/tools/toggle/toggle-keyboard');
 
       const mockSetToBlock = vi.fn();
@@ -282,8 +283,7 @@ describe('Toggle Keyboard Handlers', () => {
 
       await handleToggleEnter(context);
 
-      // Should insert AFTER the deepest last descendant (grandchild-2 at index 9)
-      expect(mockInsertInsideParent).toHaveBeenCalledWith('test-block-id', 10);
+      expect(mockInsertInsideParent).toHaveBeenCalledWith('test-block-id', 6);
       expect(mockSetToBlock).toHaveBeenCalledWith('new-block-id', 'start');
 
       contentElement.remove();
@@ -388,6 +388,65 @@ describe('Toggle Keyboard Handlers', () => {
         'paragraph',
         { text: '' }
       );
+    });
+
+    it('U137: converts a titled toggle to paragraph in place when the caret is at start', async () => {
+      const { handleToggleBackspace } = await import('../../../../src/tools/toggle/toggle-keyboard');
+      const contentElement = document.createElement('div');
+
+      contentElement.innerHTML = 'Tog <b>x</b>';
+
+      const context = createMockContext({
+        data: { text: 'Tog <b>x</b>' },
+        getContentElement: () => contentElement,
+      });
+
+      vi.mocked(context.api.blocks.convert).mockResolvedValue({ id: 'converted-id', holder: document.createElement('div') } as unknown as Awaited<ReturnType<API['blocks']['convert']>>);
+
+      mockIsCaretAtStartOfInput.mockReturnValue(true);
+
+      const event = new KeyboardEvent('keydown', { key: 'Backspace' });
+      const preventDefaultSpy = vi.spyOn(event, 'preventDefault');
+
+      await handleToggleBackspace(context, event);
+
+      expect(context.api.blocks.convert).toHaveBeenCalledWith('test-block-id', 'paragraph', { text: 'Tog <b>x</b>' });
+      expect(preventDefaultSpy).toHaveBeenCalledOnce();
+      // The caret stays at the start of the converted block.
+      expect(context.api.caret.setToBlock).toHaveBeenCalledWith('converted-id', 'start');
+    });
+
+    it('U137: leaves a selection that ends at the start to the browser, so the selected text is deleted', async () => {
+      const { handleToggleBackspace } = await import('../../../../src/tools/toggle/toggle-keyboard');
+      const contentElement = document.createElement('div');
+
+      contentElement.textContent = 'Tog';
+      document.body.appendChild(contentElement);
+
+      const text = contentElement.firstChild;
+
+      if (text === null) {
+        throw new Error('no text node');
+      }
+      // Shift+ArrowLeft twice from offset 2: anchor 2, focus 0.
+      window.getSelection()?.setBaseAndExtent(text, 2, text, 0);
+
+      const context = createMockContext({
+        data: { text: 'Tog' },
+        getContentElement: () => contentElement,
+      });
+
+      mockIsCaretAtStartOfInput.mockReturnValue(true);
+
+      const event = new KeyboardEvent('keydown', { key: 'Backspace' });
+      const preventDefaultSpy = vi.spyOn(event, 'preventDefault');
+
+      await handleToggleBackspace(context, event);
+
+      expect(context.api.blocks.convert).not.toHaveBeenCalled();
+      expect(preventDefaultSpy).not.toHaveBeenCalled();
+
+      contentElement.remove();
     });
 
     it('does NOT convert when caret is not at start (text exists)', async () => {

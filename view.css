@@ -378,6 +378,9 @@
   .whitespace-pre-wrap {
     white-space: pre-wrap;
   }
+  .\[tab-size\:2\] {
+    tab-size: 2;
+  }
   .text-text-primary\! {
     color: var(--blok-text-primary) !important;
   }
@@ -606,6 +609,7 @@
   --blok-selection-inactive: rgba(55, 53, 47, 0.16);
   --blok-selection-highlight: rgba(46, 170, 220, 0.2);
   --blok-bg-light: #eff2f5;
+  --blok-stub-hatch: rgba(55, 53, 47, 0.07);
   --blok-gray-text: #646a79;
   --blok-menu-section-label: #73726e;
   --blok-dark: #1d202b;
@@ -618,6 +622,7 @@
   --blok-icon-active-text: var(--blok-text-primary);
   --blok-text-primary: black;
   --blok-text-secondary: #646a79;
+  --blok-block-control: #8e8b86;
   --blok-popover-border: rgba(55, 53, 47, 0.09);
   --blok-popover-shadow: rgba(13, 20, 33, 0.1);
   --blok-popover-bg: #ffffff;
@@ -787,15 +792,21 @@
   --blok-radius-10: 0.625rem;
   --blok-radius-12: 0.75rem;
   --blok-radius-16: 1rem;
+  --blok-radius-20: 1.25rem;
   --blok-radius-full: 9999px;
   --blok-radius-dialog: var(--blok-radius-12);
   --blok-radius-surface: var(--blok-radius-10);
   --blok-radius-block: var(--blok-radius-10);
+  --blok-radius-player: var(--blok-radius-20);
+  --blok-radius-glass: 0.875rem;
+  --blok-radius-glass-row: 0.5625rem;
   --blok-radius-field: var(--blok-radius-8);
   --blok-radius-control-lg: var(--blok-radius-8);
   --blok-radius-control: var(--blok-radius-6);
   --blok-radius-control-sm: var(--blok-radius-4);
   --blok-radius-mark: var(--blok-radius-2);
+  --blok-radius-checkbox: 0.1875rem;
+  --blok-radius-selection-bar: 0.3125rem;
   --blok-radius-floor: var(--blok-radius-4);
   --blok-radius-notch: 0.09375rem;
   --blok-radius-table: var(--blok-radius-2);
@@ -887,48 +898,7 @@
   --blok-crop-handle-edge-drop-hover: 0 2px 6px rgba(0, 0, 0, 0.3);
   --blok-crop-pill-fg: #fff;
   --blok-crop-modal-btn-shadow: rgba(0, 0, 0, 0.3);
-  --blok-video-stage: #000000;
-  --blok-video-accent: #ffffff;
-  --blok-video-control-fg: #ffffff;
-  --blok-video-control-bg-hover: rgba(255, 255, 255, 0.1);
-  --blok-video-control-bg-active: rgba(255, 255, 255, 0.2);
-  --blok-video-time-fg: rgba(255, 255, 255, 0.8);
-  --blok-video-track: rgba(255, 255, 255, 0.2);
-  --blok-video-buffered: rgba(255, 255, 255, 0.35);
-  --blok-video-volume-track: rgba(0, 0, 0, 0.3);
-  --blok-video-thumb: #ffffff;
-  --blok-video-thumb-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-  --blok-video-burst-bg: rgba(0, 0, 0, 0.5);
-  --blok-video-burst-fg: #ffffff;
-  --blok-video-error-scanline: rgba(0, 0, 0, 0.22);
-  --blok-video-error-roll: rgba(255, 255, 255, 0.07);
-  --blok-video-error-vignette: rgba(0, 0, 0, 0.7);
-  --blok-video-error-split-red: rgba(255, 0, 64, 0.55);
-  --blok-video-error-split-cyan: rgba(0, 224, 255, 0.55);
-  --blok-video-error-card-shadow: 0 18px 48px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.25);
-  --blok-video-error-bar-1: #c0c0c0;
-  --blok-video-error-bar-2: #c0c000;
-  --blok-video-error-bar-3: #00c0c0;
-  --blok-video-error-bar-4: #00c000;
-  --blok-video-error-bar-5: #c000c0;
-  --blok-video-error-bar-6: #c00000;
-  --blok-video-error-bar-7: #0000c0;
-  --blok-video-burst-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.4);
-  --blok-video-burst-ring: rgba(255, 255, 255, 0.4);
-  --blok-video-menu-bg: rgba(22, 22, 22, 0.94);
-  --blok-video-menu-value-fg: rgba(255, 255, 255, 0.62);
-  --blok-video-menu-border: rgba(255, 255, 255, 0.08);
-  --blok-video-menu-icon: rgba(255, 255, 255, 0.9);
-  --blok-video-menu-row-active: var(--blok-video-accent);
-  @supports (color: color-mix(in lab, red, red)) {
-    --blok-video-menu-row-active: color-mix(in srgb, var(--blok-video-accent) 14%, transparent);
-  }
-  --blok-video-theater-scrim: rgba(0, 0, 0, 0.8);
-  --blok-video-theater-shadow: 0 30px 60px -20px rgba(0, 0, 0, 0.6);
-  --blok-video-scrim-strong: rgba(0, 0, 0, 0.6);
-  --blok-video-scrim-mid: rgba(0, 0, 0, 0.2);
-  --blok-video-shadow-hover: 0 8px 24px -8px rgba(0, 0, 0, 0.18);
-  --blok-video-focus-ring: var(--blok-focus-ring);
+  --blok-ease-spring-island: cubic-bezier(0.34, 1.56, 0.64, 1);
   --blok-find-match-bg: rgba(255, 212, 0, 0.32);
   --blok-find-match-active-bg: rgba(255, 138, 0, 0.5);
   --blok-find-lens-ring: rgba(255, 128, 0, 0.72);
@@ -947,6 +917,7 @@
     --blok-selection-inactive: rgba(255, 255, 255, 0.16);
     --blok-selection-highlight: rgba(35, 131, 226, 0.25);
     --blok-bg-light: rgba(255, 255, 255, 0.08);
+    --blok-stub-hatch: rgba(255, 255, 255, 0.07);
     --blok-gray-text: #a39e98;
     --blok-menu-section-label: #9b9a97;
     --blok-dark: #191918;
@@ -959,6 +930,7 @@
     --blok-icon-active-text: var(--blok-text-primary);
     --blok-text-primary: #e2e0dc;
     --blok-text-secondary: #a39e98;
+    --blok-block-control: #a39e98;
     --blok-popover-border: rgba(255, 255, 255, 0.14);
     --blok-popover-shadow: rgba(0, 0, 0, 0.6);
     --blok-popover-bg: #252525;
@@ -1116,6 +1088,7 @@
   --blok-selection-inactive: rgba(255, 255, 255, 0.16);
   --blok-selection-highlight: rgba(35, 131, 226, 0.25);
   --blok-bg-light: rgba(255, 255, 255, 0.08);
+  --blok-stub-hatch: rgba(255, 255, 255, 0.07);
   --blok-gray-text: #a39e98;
   --blok-menu-section-label: #9b9a97;
   --blok-dark: #191918;
@@ -1128,6 +1101,7 @@
   --blok-icon-active-text: var(--blok-text-primary);
   --blok-text-primary: #e2e0dc;
   --blok-text-secondary: #a39e98;
+  --blok-block-control: #a39e98;
   --blok-popover-border: rgba(255, 255, 255, 0.14);
   --blok-popover-shadow: rgba(0, 0, 0, 0.6);
   --blok-popover-bg: #252525;
@@ -1296,7 +1270,7 @@
   border-color: var(--blok-active-icon);
   box-shadow: none;
   animation: blok-checkbox-pop 280ms linear;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 10 10' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M2.25 5.125l1.75 1.75 3.75-3.75' stroke='white' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 10 10' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M2 5 4 7 8 3' stroke='white' stroke-width='1.25' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E");
   background-size: 10px 10px;
   background-position: center;
   background-repeat: no-repeat;
@@ -1369,6 +1343,11 @@
 }
 [data-blok-component="callout"] button:has(+ [data-blok-toggle-children] > :first-child h3) {
   --_blok-callout-heading-size: var(--blok-heading-3-font-size, 1.25rem);
+}
+@property --emoji-stage-wash {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: transparent;
 }
 @property --blok-image-mend-angle {
   syntax: '<angle>';
@@ -1503,6 +1482,7 @@
 @layer properties {
   @supports ((-webkit-hyphens: none) and (not (margin-trim: inline))) or ((-moz-orient: inline) and (not (color:rgb(from red r g b)))) {
     :root, :host {
+      --emoji-stage-wash: transparent;
       --blok-embed-window-tone: transparent;
     }
     *, ::before, ::after, ::backdrop {

@@ -1,4 +1,5 @@
 import { describeFile } from '../../shared/tool-descriptions/file';
+import { linkClipboardHtml } from '../../shared/clipboard-html';
 import { MEDIA_ACTION_HANDLERS } from '../../shared/tool-actions/media';
 import { fileSanitize } from '../../shared/tool-descriptions/sanitize/blocks';
 import type {
@@ -20,11 +21,13 @@ import type { VideoData } from '../../../types/tools/video';
 import { IconCaption, IconCopy, IconDownload, IconFile, IconLinkExternal, IconReplace } from '../../components/icons';
 import { PASTE_EXTENSIONS, PASTE_MIME_TYPES } from './constants';
 import { renderEmptyState, type EmptyStateElement } from './empty-state';
-import { renderUploadingState, type UploadingStateElement } from './uploading-state';
+import { renderUploadingState, type UploadingStateElement } from '../image/uploading-state';
 import { renderCaptionRow, renderFileCard } from './ui';
+import { mountCardObject, type CardUnit } from './card';
 import { Uploader } from './uploader';
 import { FileToolError } from './errors';
 import { uploadErrorMessage } from '../../components/utils/upload-error-message';
+import { uploadErrorLines, type UploadErrorLineKeys, type UploadErrorLines } from '../../components/utils/upload-error-lines';
 import { resolveUploadError } from '../../components/utils/media-upload-error';
 import { safeHttpHref, safePreviewSrc } from './url';
 import { isPreviewable } from './preview';
@@ -36,11 +39,32 @@ import type { LazySheet } from '../../components/utils/lazy-styles';
 
 type ToolState = 'EMPTY' | 'LOADING' | 'RENDERED' | 'ERROR';
 
+const ERROR_LINE_KEYS: UploadErrorLineKeys = {
+  failed: 'tools.file.errorUploadFailed',
+  failedDetail: 'tools.file.errorUploadFailedDetail',
+  tooLargeTitle: 'tools.file.errorFileTooLargeTitle',
+  tooLargeDetail: 'tools.file.errorFileTooLargeDetail',
+  unsupportedTitle: 'tools.file.errorUnsupportedTitle',
+  unsupportedDetail: 'tools.file.errorUnsupportedDetail',
+  invalidUrlTitle: 'tools.file.errorInvalidUrlTitle',
+  invalidUrlDetail: 'tools.file.errorInvalidUrlDetail',
+};
+
 /** Image filenames/URLs that should auto-convert the File block into an Image. */
 const IMAGE_EXTENSION_RE = /\.(png|jpe?g|gif|webp|svg)(?:[?#]|$)/i;
 
 /** Video filenames/URLs that should auto-convert the File block into a Video. */
 const VIDEO_EXTENSION_RE = /\.(mp4|webm|ogg|mov|m4v)(?:[?#]|$)/i;
+
+/** Plural keys: i18n picks `_one`, `_few`, `_many`… from the count. */
+const CARD_COUNT_KEYS: Record<CardUnit, string> = {
+  pages: 'tools.file.cardPages',
+  lines: 'tools.file.cardLines',
+  sheets: 'tools.file.cardSheets',
+  slides: 'tools.file.cardSlides',
+  files: 'tools.file.cardFiles',
+  rows: 'tools.file.cardRows',
+};
 
 export class FileTool implements BlockTool {
   public static get 'blok.runtimePartsOwner'(): string {
@@ -78,8 +102,10 @@ export class FileTool implements BlockTool {
   private state: ToolState;
   private uploadingEl: UploadingStateElement | null = null;
   private lastFileName: string | null = null;
-  private errorMessage: string | null = null;
+  /** The error card's title and detail. */
+  private errorLines: UploadErrorLines | null = null;
   private previewTeardown: (() => void) | null = null;
+  private cardTeardown: (() => void) | null = null;
   /** When the pending upload is an image, the result converts to an Image block. */
   private pendingImageConversion = false;
   /** When the pending upload is a video, the result converts to a Video block. */
@@ -189,6 +215,11 @@ export class FileTool implements BlockTool {
         onActivate: (): void => void navigator.clipboard?.writeText(this.data.url),
       },
     ];
+  }
+
+  /** A link to the file, without its size label. */
+  public static clipboardHtml(data: FileData): string | null {
+    return linkClipboardHtml(data.url, [data.fileName], data);
   }
 
   public static get toolbox(): ToolboxConfig {
@@ -363,7 +394,7 @@ export class FileTool implements BlockTool {
    * @returns false when the block was converted to an image or a video instead
    */
   private showResult(result: FileUploadResult, from: readonly string[]): boolean {
-    this.errorMessage = null;
+    this.errorLines = null;
     this.data = {
       ...this.data,
       url: result.url,
@@ -430,19 +461,23 @@ export class FileTool implements BlockTool {
 
   private applyError(err: unknown, source: { file?: File; url?: string }): void {
     const own = err instanceof FileToolError ? err : null;
+    const t = (key: string): string => this.api.i18n.t(key);
+    const message = uploadErrorMessage(own ?? { code: 'UPLOAD_FAILED' }, t, {
+      tooLarge: 'tools.file.errorFileTooLarge',
+      generic: 'tools.file.errorUploadFailed',
+    });
     const outcome = resolveUploadError({
       tool: 'file',
       error: own,
       cause: err,
-      message: uploadErrorMessage(own ?? { code: 'UPLOAD_FAILED' }, (key) => this.api.i18n.t(key), {
-        tooLarge: 'tools.file.errorFileTooLarge',
-        generic: 'tools.file.errorUploadFailed',
-      }),
+      message,
       source,
       onUploadError: this.config.onUploadError,
     });
 
-    this.errorMessage = outcome.kind === 'message' ? outcome.message : null;
+    this.errorLines = outcome.kind === 'message'
+      ? uploadErrorLines({ error: own, own: message, shown: outcome.message, t, keys: ERROR_LINE_KEYS })
+      : null;
     this.state = outcome.kind === 'message' ? 'ERROR' : 'EMPTY';
     this.renderState();
   }
@@ -505,11 +540,49 @@ export class FileTool implements BlockTool {
         render: this.api.i18n.t('tools.file.previewRender'),
         loading: this.api.i18n.t('tools.file.previewLoading'),
         error: this.api.i18n.t('tools.file.previewError'),
+        errorDetail: this.api.i18n.t('tools.file.previewErrorDetail'),
+        errorNoLinkDetail: this.api.i18n.t('tools.file.errorInvalidUrlDetail'),
         download: this.api.i18n.t('tools.file.previewDownload'),
         openInNewTab: this.api.i18n.t('tools.file.previewOpenInNewTab'),
         backToContent: this.api.i18n.t('tools.file.previewBackToContent'),
+        text: this.api.i18n.t('tools.file.previewTypeText'),
+        // Templates: the preview fills the slots once it has counted.
+        lines: this.api.i18n.t('tools.file.previewLines', { count: '{count}' }),
+        linesOne: this.api.i18n.t('tools.file.previewLinesOne'),
+        pageOf: this.api.i18n.t('tools.file.previewPageOf', { page: '{page}', total: '{total}' }),
+        prevPage: this.api.i18n.t('tools.file.previewPrevPage'),
+        nextPage: this.api.i18n.t('tools.file.previewNextPage'),
+        zoomIn: this.api.i18n.t('tools.file.previewZoomIn'),
+        zoomOut: this.api.i18n.t('tools.file.previewZoomOut'),
+        slideN: this.api.i18n.t('tools.file.previewSlideN', { number: '{number}' }),
+        sum: this.api.i18n.t('tools.file.previewSum'),
+        average: this.api.i18n.t('tools.file.previewAverage'),
+        count: this.api.i18n.t('tools.file.previewCount'),
+        table: this.api.i18n.t('tools.file.previewTable'),
+        wrap: this.api.i18n.t('tools.file.previewWrap'),
+        copy: this.api.i18n.t('tools.file.previewCopy'),
+        copied: this.api.i18n.t('tools.file.previewCopied'),
+        outline: this.api.i18n.t('tools.file.previewOutline'),
+        logAll: this.api.i18n.t('tools.file.previewLogAll'),
+        logErrors: this.api.i18n.t('tools.file.previewLogErrors'),
+        logWarnings: this.api.i18n.t('tools.file.previewLogWarnings'),
+        cancel: this.api.i18n.t('notifier.cancel'),
+        pdfPassword: this.api.i18n.t('tools.file.previewPdfPassword'),
+        pdfPasswordWrong: this.api.i18n.t('tools.file.previewPdfPasswordWrong'),
+        pdfOpen: this.api.i18n.t('tools.file.previewPdfOpen'),
+        pdfPageN: this.api.i18n.t('tools.file.previewPdfPageN', { number: '{number}' }),
+        findPlaceholder: this.api.i18n.t('find.placeholder'),
+        findNoResults: this.api.i18n.t('find.noResults'),
+        findPrevious: this.api.i18n.t('find.previous'),
+        findNext: this.api.i18n.t('find.next'),
+        findClose: this.api.i18n.t('find.close'),
+        thumbnails: this.api.i18n.t('tools.file.previewThumbnails'),
       },
+      size: this.data.size,
       directionSource: this.root,
+      fetchPreview: this.config.fetchPreview,
+      pdfAssetsUrl: this.config.pdfAssetsUrl,
+      previewEndpoint: this.config.previewEndpoint,
     });
   }
 
@@ -522,6 +595,8 @@ export class FileTool implements BlockTool {
   public destroy(): void {
     this.previewTeardown?.();
     this.previewTeardown = null;
+    this.cardTeardown?.();
+    this.cardTeardown = null;
   }
 
   private renderState(): void {
@@ -530,6 +605,8 @@ export class FileTool implements BlockTool {
     }
     this.previewTeardown?.();
     this.previewTeardown = null;
+    this.cardTeardown?.();
+    this.cardTeardown = null;
     this.root.innerHTML = '';
     this.uploadingEl = null;
 
@@ -563,13 +640,13 @@ export class FileTool implements BlockTool {
     const i18n = this.api.i18n;
     return renderUploadingState({
       fileName: this.lastFileName,
-      labels: {
-        uploading: i18n.t('tools.file.uploading'),
-        cancel: i18n.t('tools.file.cancelUpload'),
-        progress: i18n.t('tools.file.uploadProgress'),
-      },
+      // With a file name the shared title ("Uploading") leads; without one this line stands alone.
+      ...(this.lastFileName === null ? { statusLabel: i18n.t('tools.file.uploading') } : {}),
+      cancelLabel: i18n.t('tools.file.cancelUpload'),
+      progressLabel: i18n.t('tools.file.uploadProgress'),
       onCancel: () => this.transitionToEmpty(),
       preview: 'file',
+      i18n,
     });
   }
 
@@ -579,8 +656,18 @@ export class FileTool implements BlockTool {
     wrap.className = 'blok-file-error-state';
     wrap.setAttribute('data-role', 'file-error');
 
-    const message = document.createElement('span');
-    message.textContent = this.errorMessage ?? i18n.t('tools.file.errorUploadFailed');
+    const lines = this.errorLines ?? uploadErrorLines({ error: null, own: '', shown: '', t: (key) => i18n.t(key), keys: ERROR_LINE_KEYS });
+    const text = document.createElement('div');
+    text.className = 'blok-file-error-state__text';
+    const title = document.createElement('span');
+    title.className = 'blok-file-error-state__title';
+    title.setAttribute('data-role', 'file-error-title');
+    title.textContent = lines.title;
+    const detail = document.createElement('span');
+    detail.className = 'blok-file-error-state__detail';
+    detail.setAttribute('data-role', 'file-error-detail');
+    detail.textContent = lines.detail;
+    text.append(title, detail);
 
     const retry = document.createElement('button');
     retry.type = 'button';
@@ -589,7 +676,7 @@ export class FileTool implements BlockTool {
     retry.textContent = i18n.t('tools.file.errorReplace');
     retry.addEventListener('click', () => this.transitionToEmpty());
 
-    wrap.append(message, retry);
+    wrap.append(text, retry);
     return wrap;
   }
 
@@ -598,7 +685,13 @@ export class FileTool implements BlockTool {
     wrap.className = 'blok-file-rendered';
     const onPreview = isPreviewable(this.data) ? (): void => this.openPreview() : undefined;
     const onRename = this.readOnly ? undefined : (next: string): void => this.renameFile(next);
-    wrap.appendChild(renderFileCard(this.data, onPreview, this.api.i18n.t('tools.file.download'), onRename));
+    const card = renderFileCard(this.data, onPreview, this.api.i18n.t('tools.file.download'), onRename);
+    wrap.appendChild(card);
+    this.cardTeardown = this.config.cardPreview === false ? null : mountCardObject(card, {
+      data: this.data,
+      config: this.config,
+      countLabel: (unit, count) => this.api.i18n.t(CARD_COUNT_KEYS[unit], { count }),
+    });
 
     const hasCaption = (this.data.caption ?? '') !== '';
     // Hidden by default: the row shows only when explicitly toggled on or when

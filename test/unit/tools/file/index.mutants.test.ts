@@ -121,7 +121,7 @@ const mount = (data: Partial<FileData> = {}): { tool: FileTool; root: HTMLElemen
 
 /** Fills the empty state's link form and submits it. */
 const submitUrl = (root: HTMLElement, url: string): void => {
-  root.querySelector<HTMLButtonElement>('[data-src="embed"]')?.click();
+  root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
   const input = root.querySelector<HTMLInputElement>('input[type="url"]');
 
   if (input === null) {
@@ -693,7 +693,8 @@ describe('FileTool mutants', () => {
       uploader.handleFile.mockImplementation(() => new Promise(() => undefined));
       tool.onPaste(pasteFile(new File(['x'], 'report.pdf', { type: 'application/pdf' })));
 
-      expect(root.textContent).toContain('tools.file.uploading report.pdf');
+      expect(root.querySelector('.blok-image-uploading__label')?.textContent).toBe('Uploading');
+      expect(root.querySelector('[data-role="filename"]')?.textContent).toBe('report.pdf');
       expect(root.querySelector('[data-action="cancel"]')?.getAttribute('aria-label')).toBe(
         'tools.file.cancelUpload',
       );
@@ -795,7 +796,8 @@ describe('FileTool mutants', () => {
 
       const wrap = root.querySelector('[data-role="file-error"]');
 
-      expect(wrap?.textContent).toContain('tools.file.errorUploadFailed');
+      expect(wrap?.querySelector('[data-role="file-error-title"]')?.textContent).toBe('tools.file.errorUploadFailed');
+      expect(wrap?.querySelector('[data-role="file-error-detail"]')?.textContent).toBe('tools.file.errorUploadFailedDetail');
       expect(wrap?.className).toBe('blok-file-error-state');
 
       const retry = wrap?.querySelector('button');
@@ -906,10 +908,44 @@ describe('FileTool mutants', () => {
           render: 'tools.file.previewRender',
           loading: 'tools.file.previewLoading',
           error: 'tools.file.previewError',
+          errorDetail: 'tools.file.previewErrorDetail',
+          errorNoLinkDetail: 'tools.file.errorInvalidUrlDetail',
           download: 'tools.file.previewDownload',
           openInNewTab: 'tools.file.previewOpenInNewTab',
           backToContent: 'tools.file.previewBackToContent',
+          text: 'tools.file.previewTypeText',
+          lines: 'tools.file.previewLines',
+          linesOne: 'tools.file.previewLinesOne',
+          pageOf: 'tools.file.previewPageOf',
+          prevPage: 'tools.file.previewPrevPage',
+          nextPage: 'tools.file.previewNextPage',
+          zoomIn: 'tools.file.previewZoomIn',
+          zoomOut: 'tools.file.previewZoomOut',
+          slideN: 'tools.file.previewSlideN',
+          sum: 'tools.file.previewSum',
+          average: 'tools.file.previewAverage',
+          count: 'tools.file.previewCount',
+          table: 'tools.file.previewTable',
+          wrap: 'tools.file.previewWrap',
+          copy: 'tools.file.previewCopy',
+          copied: 'tools.file.previewCopied',
+          outline: 'tools.file.previewOutline',
+          logAll: 'tools.file.previewLogAll',
+          logErrors: 'tools.file.previewLogErrors',
+          logWarnings: 'tools.file.previewLogWarnings',
+          cancel: 'notifier.cancel',
+          pdfPassword: 'tools.file.previewPdfPassword',
+          pdfPasswordWrong: 'tools.file.previewPdfPasswordWrong',
+          pdfOpen: 'tools.file.previewPdfOpen',
+          pdfPageN: 'tools.file.previewPdfPageN',
+          findPlaceholder: 'find.placeholder',
+          findNoResults: 'find.noResults',
+          findPrevious: 'find.previous',
+          findNext: 'find.next',
+          findClose: 'find.close',
+          thumbnails: 'tools.file.previewThumbnails',
         },
+        size: undefined,
         directionSource: root,
       });
       expect(root.firstElementChild?.className).toBe('blok-file-rendered');

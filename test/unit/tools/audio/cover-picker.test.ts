@@ -55,7 +55,7 @@ describe('openCoverPicker', () => {
     expect(dialog).not.toBeNull();
 
     // Drive the Link tab: click the embed tab, type a URL, submit.
-    const linkTab = dialog!.querySelector<HTMLButtonElement>('[data-tab="embed"]');
+    const linkTab = dialog!.querySelector<HTMLButtonElement>('[data-action="from-link"]');
     linkTab?.click();
     const input = dialog!.querySelector<HTMLInputElement>('input[type="url"]');
     if (input) { input.value = 'https://cdn/cover.png'; }
@@ -81,12 +81,9 @@ describe('openCoverPicker', () => {
     anchor.remove();
   });
 
-  it('slides the new panel in on tab switch without tweening the popover height', () => {
-    // Make the WAAPI path reachable: real animate + reduced-motion off. A
-    // floating popover has nothing reflowing beneath it, so the inline height
-    // tween only read as lag — the picker uses the directional content slide
-    // instead: the new panel slides + fades in while the popover resizes
-    // instantly (no bottom-edge crawl).
+  it('opens the link field in place, with no animation driven from script', () => {
+    // The buttons and the field share one cell, so the popover keeps its size
+    // and nothing has to be tweened by hand.
     const animateSpy = vi.fn((..._args: unknown[]) => ({ finished: Promise.resolve(undefined) }));
     const proto = HTMLElement.prototype as unknown as { animate?: unknown };
     const original = proto.animate;
@@ -98,17 +95,14 @@ describe('openCoverPicker', () => {
       document.body.appendChild(anchor);
       const handle = openCoverPicker({ anchor, onFile: vi.fn(), onUrl: vi.fn() });
       const dialog = document.querySelector('[data-role="audio-cover-picker"]')!;
+      const card = dialog.querySelector('.blok-media-empty__card')!;
 
       animateSpy.mockClear();
-      dialog.querySelector<HTMLButtonElement>('[data-tab="embed"]')!.click();
+      dialog.querySelector<HTMLButtonElement>('[data-action="from-link"]')!.click();
 
-      // The incoming panel content slides/fades in...
-      expect(animateSpy).toHaveBeenCalled();
-      // ...but the popover height itself never tweens (that crawl read as lag).
-      const tweensHeight = animateSpy.mock.calls.some(([frames]: unknown[]) =>
-        Array.isArray(frames)
-        && frames.some((f: unknown) => f !== null && typeof f === 'object' && 'height' in f));
-      expect(tweensHeight).toBe(false);
+      expect(card.getAttribute('data-mode')).toBe('link');
+      expect(dialog.querySelector('input[type="url"]')).toHaveFocus();
+      expect(animateSpy).not.toHaveBeenCalled();
 
       handle.close();
     } finally {
@@ -346,6 +340,104 @@ describe('openCoverPicker', () => {
     window.dispatchEvent(new Event('scroll'));
 
     expect(dialog.dataset.side).toBe('top');
+    handle.close();
+  });
+});
+
+describe('openCoverPicker — ink well surface', () => {
+  const open = (over: Partial<Parameters<typeof openCoverPicker>[0]> = {}): { handle: ReturnType<typeof openCoverPicker>; dialog: HTMLElement; onUrl: ReturnType<typeof vi.fn> } => {
+    const anchor = document.createElement('div');
+
+    document.body.appendChild(anchor);
+    const onUrl = vi.fn();
+    const handle = openCoverPicker({ anchor, onFile: vi.fn(), onUrl, surface: 'ink-well', ...over });
+    const dialog = document.querySelector<HTMLElement>('[data-role="audio-cover-picker"]');
+
+    if (!dialog) throw new Error('no picker');
+
+    return { handle, dialog, onUrl };
+  };
+
+  const text = (dialog: HTMLElement, selector: string): string | undefined => dialog.querySelector(selector)?.textContent?.trim();
+
+  it('shows the ink well beside the shared uploader', () => {
+    const { dialog, handle } = open();
+
+    expect(dialog.getAttribute('data-surface')).toBe('ink-well');
+    expect(dialog.querySelector('[data-role="ink-well"]')).not.toBeNull();
+    expect(dialog.querySelector('[data-tab]')).toBeNull();
+    expect(text(dialog, '.blok-media-empty__title')).toBe('Add a cover');
+    expect(text(dialog, '.blok-media-empty__hint')).toBe('Drag an image here, choose one, or paste a link.');
+    expect(text(dialog, '[data-action="choose-file"]')).toBe('Choose file');
+    expect(text(dialog, '[data-action="from-link"]')).toBe('From a link');
+    expect(dialog.querySelector<HTMLInputElement>('input[type="url"]')?.placeholder).toBe('Paste an image URL…');
+    handle.close();
+  });
+
+  it('says Change cover when the track already has one', () => {
+    const { dialog, handle } = open({ current: 'https://cdn/old.png' });
+
+    expect(text(dialog, '.blok-media-empty__title')).toBe('Change cover');
+    handle.close();
+  });
+
+  it('translates the well through i18n', () => {
+    const i18n = { t: (key: string) => `[${key}]`, has: () => true } as unknown as NonNullable<Parameters<typeof openCoverPicker>[0]['i18n']>;
+    const { dialog, handle } = open({ i18n });
+
+    expect(text(dialog, '.blok-media-empty__title')).toBe('[tools.audio.coverAdd]');
+    expect(text(dialog, '.blok-media-empty__hint')).toBe('[tools.audio.coverHint]');
+    expect(text(dialog, '[data-action="from-link"]')).toBe('[tools.audio.emptyLink]');
+    expect(dialog.querySelector<HTMLInputElement>('input[type="url"]')?.placeholder).toBe('[tools.audio.coverUrlPlaceholder]');
+    handle.close();
+  });
+
+  it('forwards a link and an error, and focuses the well first', () => {
+    const { dialog, handle, onUrl } = open();
+    const input = dialog.querySelector<HTMLInputElement>('input[type="url"]');
+
+    expect(dialog.querySelector('[data-role="ink-well"]')).toHaveFocus();
+
+    dialog.querySelector<HTMLElement>('[data-action="from-link"]')?.click();
+    if (input) input.value = 'https://cdn/cover.png';
+    input?.dispatchEvent(new Event('input'));
+    dialog.querySelector<HTMLElement>('[data-action="submit-url"]')?.click();
+    expect(onUrl).toHaveBeenCalledWith('https://cdn/cover.png');
+
+    handle.setError('Upload failed');
+    expect(text(dialog, '[data-role="error"]')).toBe('Upload failed');
+    handle.close();
+  });
+
+  it('settles at once when nothing is opening, on either surface', async () => {
+    const well = open();
+    const done = vi.fn();
+
+    await well.handle.settle().then(done);
+    well.handle.close();
+
+    const anchor = document.createElement('div');
+
+    document.body.appendChild(anchor);
+    const card = openCoverPicker({ anchor, onFile: vi.fn(), onUrl: vi.fn() });
+
+    await card.settle().then(done);
+    card.close();
+
+    expect(done).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the shared uploader card when no surface is asked for', () => {
+    const anchor = document.createElement('div');
+
+    document.body.appendChild(anchor);
+    const handle = openCoverPicker({ anchor, onFile: vi.fn(), onUrl: vi.fn() });
+    const dialog = document.querySelector('[data-role="audio-cover-picker"]');
+
+    expect(dialog?.getAttribute('data-surface')).toBe('card');
+    expect(dialog?.querySelector('[data-role="ink-well"]')).toBeNull();
+    expect(dialog?.querySelector('[data-blok-media-empty-state] [data-action="from-link"]')).not.toBeNull();
+    expect(dialog?.querySelector('[data-blok-media-preview]')).toBeNull();
     handle.close();
   });
 });

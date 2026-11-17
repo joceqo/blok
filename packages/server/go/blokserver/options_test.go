@@ -78,6 +78,12 @@ func fromCSharp(t *testing.T, spec map[string]json.RawMessage) Options {
 			read(raw, &o.CollabS3Prefix)
 		case "CollabJournal":
 			read(raw, &o.CollabJournal)
+		case "CollabEnforceRestoreGuards":
+			read(raw, &o.CollabEnforceRestoreGuards)
+		case "CollabRestoreTrashesPages":
+			read(raw, &o.CollabRestoreTrashesPages)
+		case "CollabStampAuthority":
+			read(raw, &o.CollabStampAuthority)
 		case "CollabMaxConnectionsPerUserPerDoc":
 			read(raw, &o.CollabMaxConnectionsPerUserPerDoc)
 		case "CollabMaxConnections":
@@ -88,6 +94,10 @@ func fromCSharp(t *testing.T, spec map[string]json.RawMessage) Options {
 			var ms int64
 			read(raw, &ms)
 			o.CollabKeepAliveInterval = new(time.Duration(ms) * time.Millisecond)
+		case "CollabChangeSignalWindowMs":
+			var ms int64
+			read(raw, &ms)
+			o.CollabChangeSignalWindow = new(time.Duration(ms) * time.Millisecond)
 		case "CollabInboundFramesPerSecond":
 			read(raw, &o.CollabInboundFramesPerSecond)
 		case "CollabInboundBurstFrames":
@@ -98,6 +108,12 @@ func fromCSharp(t *testing.T, spec map[string]json.RawMessage) Options {
 			read(raw, &o.CollabInboundAwarenessBytesPerSecond)
 		case "RichTextFields":
 			read(raw, &o.RichTextFields)
+		case "FileBytesEnabled":
+			read(raw, &o.FileBytesEnabled)
+		case "FileBytesMaxBytes":
+			read(raw, &o.FileBytesMaxBytes)
+		case "FilesCors":
+			read(raw, &o.FilesCORS)
 		case "Version":
 			read(raw, &o.Version)
 		default:

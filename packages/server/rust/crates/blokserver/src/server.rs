@@ -27,7 +27,10 @@ enum CollabRoute {
     HistoryRead,
     HistoryDelete,
     HistoryRestore,
+    HistoryRestorePreview,
     HistoryChanges,
+    HistoryAt,
+    HistoryChangesBetween,
 }
 
 impl CollabRoute {
@@ -45,7 +48,14 @@ impl CollabRoute {
             CollabRoute::HistoryRead => routes.history_read(request, response).await,
             CollabRoute::HistoryDelete => routes.history_delete(request, response).await,
             CollabRoute::HistoryRestore => routes.history_restore(request, response).await,
+            CollabRoute::HistoryRestorePreview => {
+                routes.history_restore_preview(request, response).await
+            }
             CollabRoute::HistoryChanges => routes.history_changes(request, response).await,
+            CollabRoute::HistoryAt => routes.history_at(request, response).await,
+            CollabRoute::HistoryChangesBetween => {
+                routes.history_changes_between(request, response).await
+            }
         }
     }
 }
@@ -92,6 +102,8 @@ pub(crate) struct Inner {
     pub(crate) host_names: Vec<String>,
     pub limiter: RateLimiter,
     pub clock: Clock,
+    /// Final URLs /file-bytes found to be PDFs.
+    pub(crate) pdf_checks: crate::filebytes::PdfCheckCache,
     pub(crate) store: OnceLock<Result<Arc<dyn Store>, String>>,
     fetcher: Mutex<blok_outbound::Fetcher>,
     #[cfg_attr(not(feature = "conformance"), allow(dead_code))]
@@ -171,6 +183,7 @@ impl Server {
             public_path,
             host_names,
             limiter,
+            pdf_checks: crate::filebytes::PdfCheckCache::new(Arc::clone(&clock)),
             clock,
             store: OnceLock::new(),
             fetcher: Mutex::new(blok_outbound::Fetcher::new(Arc::new(
@@ -302,6 +315,15 @@ impl Server {
                 protect,
             );
         }
+        if o.file_bytes_enabled {
+            self.shell(
+                &mut router,
+                &format!("{prefix}/file-bytes"),
+                "GET",
+                crate::filebytes::file_bytes,
+                protect,
+            );
+        }
         if o.has_storage() {
             self.shell(
                 &mut router,
@@ -371,6 +393,8 @@ impl Server {
             rooms: Arc::new(move || rooms.rooms()),
             max_message_bytes: usize::try_from(o.collab_max_message_bytes).unwrap_or(0),
             corrupt_log: Some(Arc::new(move |doc: &str| corrupt.corrupt_log(doc))),
+            enforce_restore_guards: o.collab_enforce_restore_guards,
+            stamp_authority: o.collab_stamp_authority,
         });
         for (path, method, route) in [
             ("/reset", "POST", CollabRoute::Reset),
@@ -389,9 +413,20 @@ impl Server {
                 CollabRoute::HistoryRestore,
             ),
             (
+                "/history/{lineage}/{sequence}/restore/preview",
+                "POST",
+                CollabRoute::HistoryRestorePreview,
+            ),
+            (
                 "/history/{lineage}/{sequence}/changes",
                 "GET",
                 CollabRoute::HistoryChanges,
+            ),
+            ("/history/at", "GET", CollabRoute::HistoryAt),
+            (
+                "/history/changes",
+                "GET",
+                CollabRoute::HistoryChangesBetween,
             ),
         ] {
             let routes = routes.clone();

@@ -732,7 +732,7 @@
                 "command": {
                   "name": "history.restore",
                   "summary": "Restore a saved version, as the version history's Restore does: the document becomes that version, title and icon too.",
-                  "guidance": "Only when the user asks for it. Sub-pages keep their own history. No other version is deleted. history.undo cannot undo a restore: to go back, restore the result's previous version. A version that removes, unlocks or reshapes a database a person locked asks the person first; a no, or no way to ask, fails with APPROVAL_REQUIRED. Read the document again before your next write.",
+                  "guidance": "Only when the user asks for it. Sub-pages keep their own history. No other version is deleted. history.undo cannot undo a restore: to go back, restore the result's previous version. A version that removes, unlocks or reshapes a database a person locked asks the person first; a no, or no way to ask, fails with APPROVAL_REQUIRED. A version history.read cannot read (a missing, non-string, empty or repeated block id, or a parent cycle) fails with TOOL_ACTION_FAILED before anyone is asked. Read the document again before your next write.",
                   "args": {
                     "type": "object",
                     "properties": {
@@ -879,6 +879,22 @@
                                               "type": "string"
                                             }
                                           }
+                                        },
+                                        "annotation": {
+                                          "type": "object",
+                                          "description": "Plain-text hint card on hover.",
+                                          "required": [
+                                            "text"
+                                          ],
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "text": {
+                                              "type": "string"
+                                            },
+                                            "subtitle": {
+                                              "type": "string"
+                                            }
+                                          }
                                         }
                                       },
                                       "patternProperties": {
@@ -1012,6 +1028,22 @@
                                               "type": "string"
                                             },
                                             "rel": {
+                                              "type": "string"
+                                            }
+                                          }
+                                        },
+                                        "annotation": {
+                                          "type": "object",
+                                          "description": "Plain-text hint card on hover.",
+                                          "required": [
+                                            "text"
+                                          ],
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "text": {
+                                              "type": "string"
+                                            },
+                                            "subtitle": {
                                               "type": "string"
                                             }
                                           }
@@ -1323,7 +1355,7 @@
                     },
                     {
                       "name": "database.addView",
-                      "summary": "Add a view at the end and open it."
+                      "summary": "Add a view at the end and open it, or a widget to a dashboard view."
                     },
                     {
                       "name": "database.applyTemplate",
@@ -1347,7 +1379,11 @@
                     },
                     {
                       "name": "database.deleteProperty",
-                      "summary": "Remove a property from the schema. Row values stay in the rows."
+                      "summary": "Move a property from the schema to deletedProperties. Row values stay in the rows."
+                    },
+                    {
+                      "name": "database.deletePropertyPermanently",
+                      "summary": "Remove a deleted property for good: its deletedProperties entry and its value in every row and template."
                     },
                     {
                       "name": "database.deleteRow",
@@ -1355,7 +1391,7 @@
                     },
                     {
                       "name": "database.deleteView",
-                      "summary": "Delete a view. If it was open, its neighbour opens."
+                      "summary": "Delete a view. If it was open, its neighbour opens. A dashboard takes its widget views with it; a widget view leaves its dashboard."
                     },
                     {
                       "name": "database.duplicateProperty",
@@ -1367,7 +1403,7 @@
                     },
                     {
                       "name": "database.duplicateView",
-                      "summary": "Copy a view with all its settings to the end, and open the copy."
+                      "summary": "Copy a view with all its settings to the end, and open the copy. A dashboard is copied with its widgets; a copied widget goes next to it on its dashboard."
                     },
                     {
                       "name": "database.editComment",
@@ -1416,6 +1452,10 @@
                       "summary": "Resolve a thread, anyone's, as its resolve button does. Then it leaves reads and takes no reply, edit or delete: nothing reopens it."
                     },
                     {
+                      "name": "database.restoreProperty",
+                      "summary": "Move a deleted property back into the schema, at its old position. Its row values show again."
+                    },
+                    {
                       "name": "database.setDefaultTemplate",
                       "summary": "Set the template new rows start from, or null for none."
                     },
@@ -1458,6 +1498,10 @@
                       "summary": "Read the document as an outline, a subtree, or chosen blocks in full. A full read adds meta: when the block was last edited and by whom, as the block menu shows; a person has a name only when the host's user directory knows them."
                     },
                     {
+                      "name": "doc.setCover",
+                      "summary": "Set this document's cover, the wide image above the title. null removes it. A gallery cover is one of Blok's built-in fills: red, orange, yellow, green, blue, purple, pink, gray. position is the image's vertical position in percent, 0 (top) to 100 (bottom), default 50."
+                    },
+                    {
                       "name": "doc.setIcon",
                       "summary": "Set this document's icon. null clears it."
                     },
@@ -1486,6 +1530,10 @@
                     {
                       "name": "history.changes",
                       "summary": "What changed between two versions: added, removed, changed and moved blocks."
+                    },
+                    {
+                      "name": "history.previewRestore",
+                      "summary": "Preview a restore of a saved version. Writes nothing."
                     },
                     {
                       "name": "history.read",
@@ -1666,7 +1714,7 @@
                       "reason": "host"
                     }
                   ],
-                  "guidance": "Rich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format."
+                  "guidance": "Rich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format."
                 }
               },
               "isError": false
@@ -10729,6 +10777,10 @@
                       ]
                     }
                   ]
+                },
+                {
+                  "type": "close",
+                  "code": 4409
                 }
               ],
               "in": [
@@ -11458,6 +11510,10 @@
                       ]
                     }
                   ]
+                },
+                {
+                  "type": "close",
+                  "code": 1001
                 }
               ],
               "in": [
@@ -17719,6 +17775,682 @@
       }
     },
     {
+      "maskKeys": [
+        "activeAt",
+        "lastEditedAt",
+        "createdAt",
+        "savedAt",
+        "startedAt",
+        "frameBytes"
+      ],
+      "name": "previewRestore: posts the preview route with databases and no key; 404 and 503 answer as the reads do; nothing is written",
+      "steps": [
+        {
+          "room": {
+            "peer": "alice",
+            "connect": true
+          },
+          "expect": null
+        },
+        {
+          "send": {
+            "method": "tools/call",
+            "params": {
+              "name": "blok_open",
+              "arguments": {
+                "documentId": "live-doc",
+                "write": true
+              }
+            }
+          },
+          "capture": {
+            "h": "/result/structuredContent/handle"
+          },
+          "expect": {
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "json": "<same as structuredContent>"
+                }
+              ],
+              "structuredContent": {
+                "handle": "${h}",
+                "mode": "live",
+                "write": true,
+                "durability": "acknowledged",
+                "expiresAfterIdleMs": 600000,
+                "contractRevision": "${liveContractRevision}"
+              },
+              "isError": false
+            },
+            "jsonrpc": "2.0",
+            "id": 1
+          }
+        },
+        {
+          "room": {
+            "settle": true
+          },
+          "expect": null
+        },
+        {
+          "send": {
+            "method": "tools/call",
+            "params": {
+              "name": "blok_execute",
+              "arguments": {
+                "handle": "${h}",
+                "commands": [
+                  {
+                    "name": "block.insert",
+                    "args": {
+                      "type": "paragraph",
+                      "id": "p1",
+                      "data": {
+                        "text": "one"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "expect": {
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "json": "<same as structuredContent>"
+                }
+              ],
+              "structuredContent": {
+                "ok": true,
+                "revision": "l1",
+                "results": [
+                  {
+                    "id": "p1",
+                    "childIds": []
+                  }
+                ],
+                "changed": {
+                  "created": [
+                    "p1"
+                  ]
+                },
+                "blocks": [
+                  {
+                    "id": "p1",
+                    "type": "paragraph",
+                    "depth": 0,
+                    "text": "one",
+                    "data": {
+                      "text": [
+                        {
+                          "text": "one"
+                        }
+                      ]
+                    },
+                    "meta": {
+                      "lastEditedAt": "<masked>",
+                      "lastEditedBy": {
+                        "id": "alice"
+                      }
+                    }
+                  }
+                ],
+                "delivery": {
+                  "durable": true,
+                  "pending": false,
+                  "serverSequence": "1",
+                  "savedVersion": null
+                }
+              },
+              "isError": false
+            },
+            "jsonrpc": "2.0",
+            "id": 2
+          }
+        },
+        {
+          "room": {
+            "settle": true
+          },
+          "expect": null
+        },
+        {
+          "send": {
+            "method": "tools/call",
+            "params": {
+              "name": "blok_execute",
+              "arguments": {
+                "handle": "${h}",
+                "commands": [
+                  {
+                    "name": "history.versions",
+                    "args": {}
+                  }
+                ]
+              }
+            }
+          },
+          "capture": {
+            "vNow": "/result/structuredContent/results/0/versions/0/version",
+            "vBase": "/result/structuredContent/results/0/versions/1/version"
+          },
+          "expect": {
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "json": "<same as structuredContent>"
+                }
+              ],
+              "structuredContent": {
+                "ok": true,
+                "revision": "l1",
+                "results": [
+                  {
+                    "versions": [
+                      {
+                        "version": "${vNow}",
+                        "savedAt": "<masked>",
+                        "startedAt": "<masked>",
+                        "actors": [
+                          "agent:alice:claude-code"
+                        ]
+                      },
+                      {
+                        "version": "${vBase}",
+                        "savedAt": "<masked>",
+                        "startedAt": "<masked>",
+                        "actors": []
+                      }
+                    ]
+                  }
+                ],
+                "delivery": {
+                  "durable": false,
+                  "pending": false,
+                  "serverSequence": null,
+                  "savedVersion": null
+                }
+              },
+              "isError": false
+            },
+            "jsonrpc": "2.0",
+            "id": 3
+          }
+        },
+        {
+          "room": {
+            "settle": true
+          },
+          "expect": null
+        },
+        {
+          "room": {
+            "httpRequests": true
+          },
+          "expect": [
+            {
+              "method": "GET",
+              "path": "/sync/live-doc/history",
+              "ifMatch": null,
+              "idempotencyKey": false,
+              "answered": null
+            }
+          ]
+        },
+        {
+          "send": {
+            "method": "tools/call",
+            "params": {
+              "name": "blok_execute",
+              "arguments": {
+                "handle": "${h}",
+                "commands": [
+                  {
+                    "name": "history.previewRestore",
+                    "args": {
+                      "version": "${vBase}",
+                      "databases": "keep"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "expect": {
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "json": "<same as structuredContent>"
+                }
+              ],
+              "structuredContent": {
+                "ok": true,
+                "revision": "l1",
+                "results": [
+                  {
+                    "version": "${vBase}",
+                    "wouldUndo": {
+                      "blocks": [
+                        {
+                          "id": "p1",
+                          "type": "paragraph",
+                          "kind": "removed"
+                        }
+                      ],
+                      "page": []
+                    },
+                    "guards": [],
+                    "fits": true,
+                    "frameBytes": "<masked>",
+                    "limitBytes": 1048576
+                  }
+                ],
+                "delivery": {
+                  "durable": false,
+                  "pending": false,
+                  "serverSequence": null,
+                  "savedVersion": null
+                }
+              },
+              "isError": false
+            },
+            "jsonrpc": "2.0",
+            "id": 4
+          }
+        },
+        {
+          "room": {
+            "settle": true
+          },
+          "expect": null
+        },
+        {
+          "room": {
+            "httpRequests": true
+          },
+          "expect": [
+            {
+              "method": "POST",
+              "path": "/sync/live-doc/history/L1/0/restore/preview?databases=keep",
+              "ifMatch": null,
+              "idempotencyKey": false,
+              "answered": null
+            }
+          ]
+        },
+        {
+          "room": {
+            "inject": {
+              "answerHttp": {
+                "match": "/restore/preview",
+                "status": 404
+              }
+            }
+          },
+          "expect": null
+        },
+        {
+          "send": {
+            "method": "tools/call",
+            "params": {
+              "name": "blok_execute",
+              "arguments": {
+                "handle": "${h}",
+                "commands": [
+                  {
+                    "name": "history.previewRestore",
+                    "args": {
+                      "version": "${vBase}"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "expect": {
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "json": "<same as structuredContent>"
+                }
+              ],
+              "structuredContent": {
+                "ok": false,
+                "revision": "l1",
+                "error": {
+                  "code": "VERSION_NOT_FOUND",
+                  "message": "There is no version \"${vBase}\". history.versions lists them.",
+                  "path": "/commands/0/args/version",
+                  "retryable": false,
+                  "commandIndex": 0
+                },
+                "delivery": {
+                  "durable": false,
+                  "pending": false,
+                  "serverSequence": null,
+                  "savedVersion": null
+                }
+              },
+              "isError": true
+            },
+            "jsonrpc": "2.0",
+            "id": 5
+          }
+        },
+        {
+          "room": {
+            "settle": true
+          },
+          "expect": null
+        },
+        {
+          "room": {
+            "inject": {
+              "answerHttp": {
+                "match": "/restore/preview",
+                "status": 503
+              }
+            }
+          },
+          "expect": null
+        },
+        {
+          "send": {
+            "method": "tools/call",
+            "params": {
+              "name": "blok_execute",
+              "arguments": {
+                "handle": "${h}",
+                "commands": [
+                  {
+                    "name": "history.previewRestore",
+                    "args": {
+                      "version": "${vBase}"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "expect": {
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "json": "<same as structuredContent>"
+                }
+              ],
+              "structuredContent": {
+                "ok": false,
+                "revision": "l1",
+                "error": {
+                  "code": "TOOL_ACTION_FAILED",
+                  "message": "The version history failed: The sync server answered 503: ",
+                  "retryable": true,
+                  "commandIndex": 0,
+                  "path": "/commands/0/args"
+                },
+                "delivery": {
+                  "durable": false,
+                  "pending": false,
+                  "serverSequence": null,
+                  "savedVersion": null
+                }
+              },
+              "isError": true
+            },
+            "jsonrpc": "2.0",
+            "id": 6
+          }
+        },
+        {
+          "room": {
+            "settle": true
+          },
+          "expect": null
+        },
+        {
+          "room": {
+            "httpRequests": true
+          },
+          "expect": [
+            {
+              "method": "POST",
+              "path": "/sync/live-doc/history/L1/0/restore/preview",
+              "ifMatch": null,
+              "idempotencyKey": false,
+              "answered": 404
+            },
+            {
+              "method": "POST",
+              "path": "/sync/live-doc/history/L1/0/restore/preview",
+              "ifMatch": null,
+              "idempotencyKey": false,
+              "answered": 503
+            }
+          ]
+        },
+        {
+          "room": {
+            "peer": "alice",
+            "read": true
+          },
+          "expect": [
+            {
+              "id": "p1",
+              "type": "paragraph",
+              "data": {
+                "text": "one"
+              },
+              "lastEditedAt": "<masked>",
+              "lastEditedBy": "alice",
+              "createdAt": "<masked>",
+              "createdBy": "alice",
+              "createdWith": "agent:alice:claude-code",
+              "lastEditedWith": "agent:alice:claude-code"
+            }
+          ]
+        },
+        {
+          "send": {
+            "method": "tools/call",
+            "params": {
+              "name": "blok_close",
+              "arguments": {
+                "handle": "${h}"
+              }
+            }
+          },
+          "expect": {
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "json": "<same as structuredContent>"
+                }
+              ],
+              "structuredContent": {
+                "closed": true,
+                "unsavedBatches": 0,
+                "hostRecordLags": true
+              },
+              "isError": false
+            },
+            "jsonrpc": "2.0",
+            "id": 7
+          }
+        }
+      ],
+      "expectExit": {
+        "code": 0
+      }
+    },
+    {
+      "maskKeys": [
+        "activeAt",
+        "lastEditedAt",
+        "createdAt",
+        "savedAt",
+        "startedAt"
+      ],
+      "name": "previewRestore on a read-only handle is unavailable and asks the sync server nothing",
+      "steps": [
+        {
+          "room": {
+            "peer": "alice",
+            "connect": true
+          },
+          "expect": null
+        },
+        {
+          "send": {
+            "method": "tools/call",
+            "params": {
+              "name": "blok_open",
+              "arguments": {
+                "documentId": "live-doc"
+              }
+            }
+          },
+          "capture": {
+            "h": "/result/structuredContent/handle"
+          },
+          "expect": {
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "json": "<same as structuredContent>"
+                }
+              ],
+              "structuredContent": {
+                "handle": "${h}",
+                "mode": "live",
+                "write": false,
+                "durability": "acknowledged",
+                "expiresAfterIdleMs": 600000,
+                "contractRevision": "${liveContractRevision}"
+              },
+              "isError": false
+            },
+            "jsonrpc": "2.0",
+            "id": 1
+          }
+        },
+        {
+          "room": {
+            "settle": true
+          },
+          "expect": null
+        },
+        {
+          "send": {
+            "method": "tools/call",
+            "params": {
+              "name": "blok_execute",
+              "arguments": {
+                "handle": "${h}",
+                "commands": [
+                  {
+                    "name": "history.previewRestore",
+                    "args": {
+                      "version": "L1:0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "expect": {
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "json": "<same as structuredContent>"
+                }
+              ],
+              "structuredContent": {
+                "ok": false,
+                "revision": "l0",
+                "error": {
+                  "code": "COMMAND_UNAVAILABLE",
+                  "message": "history.previewRestore needs a handle that can write: the sync server previews a restore only for writers. Open the document again with write: true.",
+                  "commandIndex": 0,
+                  "retryable": false,
+                  "details": {
+                    "reason": "host",
+                    "requires": [
+                      "versionHistory"
+                    ]
+                  }
+                },
+                "delivery": {
+                  "durable": false,
+                  "pending": false,
+                  "serverSequence": null,
+                  "savedVersion": null
+                }
+              },
+              "isError": true
+            },
+            "jsonrpc": "2.0",
+            "id": 2
+          }
+        },
+        {
+          "room": {
+            "settle": true
+          },
+          "expect": null
+        },
+        {
+          "room": {
+            "httpRequests": true
+          },
+          "expect": []
+        },
+        {
+          "send": {
+            "method": "tools/call",
+            "params": {
+              "name": "blok_close",
+              "arguments": {
+                "handle": "${h}"
+              }
+            }
+          },
+          "expect": {
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "json": "<same as structuredContent>"
+                }
+              ],
+              "structuredContent": {
+                "closed": true,
+                "unsavedBatches": 0,
+                "hostRecordLags": true
+              },
+              "isError": false
+            },
+            "jsonrpc": "2.0",
+            "id": 3
+          }
+        }
+      ],
+      "expectExit": {
+        "code": 0
+      }
+    },
+    {
       "argv": [
         "--sync-url",
         "${roomWs}",
@@ -18806,6 +19538,10 @@
                   "type": "operation",
                   "lineage": "L1",
                   "operationId": "op1"
+                },
+                {
+                  "type": "close",
+                  "code": 1009
                 }
               ],
               "in": [
@@ -18847,6 +19583,10 @@
                   "type": "operation",
                   "lineage": "L1",
                   "operationId": "op1"
+                },
+                {
+                  "type": "close",
+                  "code": 1009
                 }
               ],
               "in": [

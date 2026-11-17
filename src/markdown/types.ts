@@ -23,4 +23,9 @@ export interface InternalMarkdownImportConfig extends MarkdownImportConfig {
    * set it; the public importer returns segments.
    */
   htmlText?: boolean;
+  /**
+   * The page a link with this visible text points at, when it should become
+   * the page's mention. Read with `htmlText` only. The paste sets it.
+   */
+  pageIdFromHref?: (url: string, text: string) => string | undefined;
 }

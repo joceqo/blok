@@ -1,6 +1,8 @@
 import { CONVERTIBLE_TYPES } from '../database/property-conversion';
 import { DATABASE_COMMENT_ACTIONS } from './database-comments';
 import { DATABASE_ROW_DATA } from './database-row';
+import { PAGE_ICON_SCHEMA } from './page';
+import { COVER_GALLERY } from '../page-cover';
 
 import type { BlockToolDescription, BlokSchema, ToolActionDeclaration } from '../../../types/tools/tool-description';
 
@@ -354,8 +356,18 @@ const GROUP_SETTINGS = {
     textBy: { type: 'string', enum: ['exact', 'alphabet'] },
     hideEmptyGroups: { type: 'boolean' },
     colorColumns: { type: 'boolean', description: 'Board only. Default true.' },
+    showAggregation: { type: 'boolean', description: 'Board subGroupSettings only: each sub-group band shows its page count. Default false.' },
   },
 };
+
+/** A form's cover, as doc.setCover takes a page's: an image URL or a built-in gallery fill. */
+const FORM_COVER_SCHEMA = {
+  description: 'The cover above the form header. position is the image\'s vertical position in percent, default 50.',
+  oneOf: [
+    { type: 'object', additionalProperties: false, required: ['type', 'url'], properties: { type: { const: 'image' }, url: { type: 'string' }, position: { type: 'integer', minimum: 0, maximum: 100 } } },
+    { type: 'object', additionalProperties: false, required: ['type', 'id'], properties: { type: { const: 'gallery' }, id: { enum: [...COVER_GALLERY] }, position: { type: 'integer', minimum: 0, maximum: 100 } } },
+  ],
+} as const;
 
 /** Tier 3 (D6) view slots. Blok stores them; the host levers act on them. */
 const TIER3_VIEW_FIELDS = {
@@ -371,15 +383,20 @@ const TIER3_VIEW_FIELDS = {
         type: 'string', enum: ['none', 'view', 'comment', 'edit', 'full'],
         description: 'What a respondent may do with the page their answer becomes. Default none.',
       },
+      title: { type: 'string', description: 'The heading above the questions.' },
+      description: { type: 'string', description: 'The line under the title.' },
+      icon: { ...PAGE_ICON_SCHEMA, description: 'The icon above the title.' },
+      cover: FORM_COVER_SCHEMA,
       submitLabel: { type: 'string' },
       confirmation: { type: 'string', description: 'Text shown after a submit.' },
     },
   },
   mapBy: { type: 'string', description: 'Map: the place property id. Default the first place property.' },
   mapHeight: { type: 'string', enum: ['small', 'medium', 'large', 'extraLarge'], description: 'Map height: 300, 400, 600 or 800 px. Default medium.' },
+  dashboardViewId: { type: 'string', description: 'This view is a widget of the dashboard view with this id, and has no tab.' },
   dashboard: {
     type: 'object',
-    description: 'Dashboard slot. Blok draws no dashboard yet.',
+    description: 'Dashboard layout: rows of up to four widgets, each showing a view by id.',
     required: ['rows'],
     additionalProperties: false,
     properties: {
@@ -424,6 +441,78 @@ const TIER3_VIEW_FIELDS = {
   dataSourceId: { type: 'string', description: 'Multi-source slot: the database block whose rows this view shows. Absent means this database. Blok reads only its own rows yet.' },
 };
 
+const PROPERTY_DEFINITION = {
+  type: 'object',
+  required: ['id', 'name', 'type', 'position'],
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string' },
+    name: { type: 'string' },
+    type: {
+      type: 'string',
+      enum: PROPERTY_TYPES,
+    },
+    position: { type: 'string', description: 'Fractional-index sort key.' },
+    databaseLocked: { type: 'boolean', description: 'Read on the title property only: locks the schema and views. Data entry still works.' },
+    defaultTemplateId: { type: 'string', description: 'Read on the title property only: the template row new rows start from.' },
+    pageLayoutStructure: { type: 'string', enum: ['simple', 'tabbed'], description: 'Read on the title property only: the row page structure. Default simple.' },
+    pageLayoutGroupIn: { type: 'string', enum: ['page', 'panel'], description: 'Read on the title property only: where the row page property group sits. Default page.' },
+    pageLayoutPropertyIcons: { type: 'boolean', enum: [false], description: 'Read on the title property only: false hides the icon beside each row page property label. Absent means shown.' },
+    pageLayoutPropertyLabels: { type: 'boolean', enum: [false], description: 'Read on the title property only: false hides the property labels in the row page heading. Absent means shown.' },
+    pageLayoutTemplates: { type: 'boolean', enum: [false], description: 'Read on the title property only: false hides the database templates on an empty row page. Absent means shown.' },
+    pageLayoutFullWidth: { type: 'boolean', enum: [true], description: 'Read on the title property only: true lays every row page out full width. Absent means off.' },
+    pageLayoutTabsId: { type: 'string', description: 'Read on the title property only: id of the tabs child of this database that holds the row page view tabs (first tab is Content; each other tab holds one linked database). Kept while Simple. Absent means none yet. A tab or tabs child carrying `draft` is someone\'s unapplied layout draft, not part of the layout.' },
+    pageLayoutPlacements: {
+      type: 'array',
+      description: 'Read on the title property only: where properties sit on the row page. A property with no entry sits in the property group.',
+      items: {
+        type: 'object',
+        required: ['id', 'place'],
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', description: 'The property id.' },
+          place: { type: 'string', enum: ['heading', 'page', 'panel', 'section', 'group'], description: 'heading pins it under the title; page and panel give it a module of its own; group keeps it in the property group, ahead of the properties with no entry.' },
+          sectionId: { type: 'string', description: 'With place "section": the section it sits in.' },
+        },
+      },
+    },
+    pageLayoutSections: {
+      type: 'array',
+      description: 'Read on the title property only: named sections of the row page property group.',
+      items: {
+        type: 'object',
+        required: ['id', 'name'],
+        additionalProperties: false,
+        properties: { id: { type: 'string' }, name: { type: 'string' } },
+      },
+    },
+    config: {
+      type: 'object',
+      description: 'Type-specific options; select/multiSelect carry their choices here.',
+      required: ['options'],
+      additionalProperties: false,
+      properties: {
+        options: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['id', 'label', 'position'],
+            additionalProperties: false,
+            properties: {
+              id: { type: 'string' },
+              label: { type: 'string' },
+              color: { type: 'string' },
+              position: { type: 'string' },
+              groupId: { type: 'string', description: 'Status only: the id of the status group holding this option.' },
+            },
+          },
+        },
+      },
+    },
+    ...PROPERTY_SETTINGS,
+  },
+};
+
 export const DATABASE_DATA = {
   type: 'object',
   description: 'Schema and view configuration only — rows are child `database-row` blocks.',
@@ -443,6 +532,7 @@ export const DATABASE_DATA = {
     },
     activeViewId: { type: 'string', description: 'Id of the view shown by default.' },
     hideDataSourceTitles: { type: 'boolean', description: 'Hides the title line above the tabs for every view. Default false.' },
+    description: { type: 'string', description: 'The line under the title of a full-page database, as inline HTML (b, i, u, s, a, code). An inline database keeps it but does not show it. "" removes it.' },
     icon: {
       type: 'object',
       description: 'The icon before the title: one of Blok\'s glyphs on a tinted tile.',
@@ -534,75 +624,18 @@ export const DATABASE_DATA = {
     schema: {
       type: 'array',
       description: 'Column definitions. Exactly one must have type "title".',
-      items: {
-        type: 'object',
-        required: ['id', 'name', 'type', 'position'],
-        additionalProperties: false,
+      items: PROPERTY_DEFINITION,
+    },
+    deletedProperties: {
+      type: 'object',
+      description: 'Deleted properties, keyed by property id. Row values stay in the rows until database.deletePropertyPermanently, so database.restoreProperty shows them again.',
+      additionalProperties: {
+        ...PROPERTY_DEFINITION,
+        required: [...PROPERTY_DEFINITION.required, 'deletedAt'],
         properties: {
-          id: { type: 'string' },
-          name: { type: 'string' },
-          type: {
-            type: 'string',
-            enum: PROPERTY_TYPES,
-          },
-          position: { type: 'string', description: 'Fractional-index sort key.' },
-          databaseLocked: { type: 'boolean', description: 'Read on the title property only: locks the schema and views. Data entry still works.' },
-          defaultTemplateId: { type: 'string', description: 'Read on the title property only: the template row new rows start from.' },
-          pageLayoutStructure: { type: 'string', enum: ['simple', 'tabbed'], description: 'Read on the title property only: the row page structure. Default simple.' },
-          pageLayoutGroupIn: { type: 'string', enum: ['page', 'panel'], description: 'Read on the title property only: where the row page property group sits. Default page.' },
-          pageLayoutPropertyIcons: { type: 'boolean', enum: [false], description: 'Read on the title property only: false hides the icon beside each row page property label. Absent means shown.' },
-          pageLayoutPropertyLabels: { type: 'boolean', enum: [false], description: 'Read on the title property only: false hides the property labels in the row page heading. Absent means shown.' },
-          pageLayoutTemplates: { type: 'boolean', enum: [false], description: 'Read on the title property only: false hides the database templates on an empty row page. Absent means shown.' },
-          pageLayoutFullWidth: { type: 'boolean', enum: [true], description: 'Read on the title property only: true lays every row page out full width. Absent means off.' },
-          pageLayoutTabsId: { type: 'string', description: 'Read on the title property only: id of the tabs child of this database that holds the row page view tabs (first tab is Content; each other tab holds one linked database). Kept while Simple. Absent means none yet. A tab or tabs child carrying `draft` is someone\'s unapplied layout draft, not part of the layout.' },
-          pageLayoutPlacements: {
-            type: 'array',
-            description: 'Read on the title property only: where properties sit on the row page. A property with no entry sits in the property group.',
-            items: {
-              type: 'object',
-              required: ['id', 'place'],
-              additionalProperties: false,
-              properties: {
-                id: { type: 'string', description: 'The property id.' },
-                place: { type: 'string', enum: ['heading', 'page', 'panel', 'section', 'group'], description: 'heading pins it under the title; page and panel give it a module of its own; group keeps it in the property group, ahead of the properties with no entry.' },
-                sectionId: { type: 'string', description: 'With place "section": the section it sits in.' },
-              },
-            },
-          },
-          pageLayoutSections: {
-            type: 'array',
-            description: 'Read on the title property only: named sections of the row page property group.',
-            items: {
-              type: 'object',
-              required: ['id', 'name'],
-              additionalProperties: false,
-              properties: { id: { type: 'string' }, name: { type: 'string' } },
-            },
-          },
-          config: {
-            type: 'object',
-            description: 'Type-specific options; select/multiSelect carry their choices here.',
-            required: ['options'],
-            additionalProperties: false,
-            properties: {
-              options: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  required: ['id', 'label', 'position'],
-                  additionalProperties: false,
-                  properties: {
-                    id: { type: 'string' },
-                    label: { type: 'string' },
-                    color: { type: 'string' },
-                    position: { type: 'string' },
-                    groupId: { type: 'string', description: 'Status only: the id of the status group holding this option.' },
-                  },
-                },
-              },
-            },
-          },
-          ...PROPERTY_SETTINGS,
+          ...PROPERTY_DEFINITION.properties,
+          deletedAt: { type: 'number', description: 'When, in epoch milliseconds.' },
+          deletedBy: { type: 'string', description: 'Who, as a person id.' },
         },
       },
     },
@@ -669,7 +702,7 @@ export const DATABASE_DATA = {
                 questionName: { type: 'string', description: 'Form: a detached question label; absent follows the property name.' },
                 longAnswer: { type: 'boolean', description: 'Form: a multi-line text answer; absent means a one-line answer.' },
                 maxSelections: { type: 'integer', minimum: 1, description: 'Form: maximum multi-select, people or relation selections.' },
-                showOptionsAs: { type: 'string', enum: ['list', 'dropdown'], description: 'Form: how a choice question lists its options; absent is list for multi-select, dropdown for select and status.' },
+                showOptionsAs: { type: 'string', enum: ['list', 'dropdown'], description: 'Form: how a choice question lists its options; absent is list for select and multi-select, dropdown for status.' },
               },
             },
           },
@@ -678,7 +711,7 @@ export const DATABASE_DATA = {
             enum: ['alphabetical'],
             description: 'alphabetical: a property properties does not list goes after the title, by name (a row page relation tab). Absent: unlisted properties go last.',
           },
-          wrapCells: { type: 'boolean', description: 'Wrap every cell. Default true for a board, false otherwise.' },
+          wrapCells: { type: 'boolean', description: 'Wrap every cell; on a calendar, wrap page titles to two lines. Default true for a board, false otherwise.' },
           frozenColumnCount: { type: 'integer', minimum: 0, description: 'Columns from the start that stay put on horizontal scroll. Default 0.' },
           showVerticalLines: { type: 'boolean', description: 'Default true.' },
           loadLimit: { type: 'integer', enum: [10, 25, 50, 100], description: 'Rows shown before "Load more".' },
@@ -696,11 +729,12 @@ export const DATABASE_DATA = {
           },
           fitImage: { type: 'boolean', description: 'Gallery or board: show the whole image instead of cropping it. Default false.' },
           cardLayout: { type: 'string', enum: ['compact', 'list'], description: 'Board: list puts each card property on its own line, compact sets them side by side. Default list.' },
+          directTitleEdit: { type: 'boolean', description: 'List: a title click edits the title in place instead of opening the row. Default false.' },
           calendarBy: { type: 'string', description: 'Calendar: the date property id that places each row. Default the first date property.' },
           calendarRange: { type: 'string', enum: ['month', 'week'], description: 'Calendar range. Default month.' },
           showWeekends: { type: 'boolean', description: 'Calendar. Default true.' },
           timelineBy: { type: 'string', description: 'Timeline: the date property id that places each bar. Default the first date property.' },
-          timelineEndBy: { type: 'string', description: 'Timeline: a second date property id that ends each bar. Absent means timelineBy holds the range.' },
+          timelineEndBy: { type: 'string', description: 'Timeline: the date property id that ends each bar. Set, even to timelineBy, turns "Separate start and end dates" on. Absent or equal to timelineBy: timelineBy holds the range.' },
           timelineZoom: {
             type: 'string',
             enum: ['hours', 'day', 'week', 'bi_week', 'month', 'quarter', 'year', '5_years'],
@@ -708,6 +742,7 @@ export const DATABASE_DATA = {
           },
           timelineCenter: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: "Timeline: the shared centre day (YYYY-MM-DD). A person's own last centre wins over it." },
           showTimelineTable: { type: 'boolean', description: 'Timeline: show the table panel. Default false.' },
+          toolbarMinimized: { type: 'boolean', description: 'The view toolbar is minimized to Expand and settings. Default false.' },
           tableProperties: {
             type: 'array',
             description: 'Timeline table panel columns, apart from the bar properties; array order is column order.',
@@ -754,10 +789,15 @@ export const DATABASE_DATA = {
           },
           hiddenGroups: GROUP_REFS,
           collapsedGroups: GROUP_REFS,
+          pinnedGroups: { ...GROUP_REFS, description: 'Board: groups listed under "Pinned groups", shown in group order. Pinning does not move a column.' },
           hideGroupAggregation: { type: 'boolean' },
           groupCalculation: {
             ...VIEW_CALCULATION,
             description: 'Board: the calculation beside every group name. Absent means count all rows, shown as "99+" above 99. fn count is saved only to keep that cap off.',
+          },
+          subGroupCalculation: {
+            ...VIEW_CALCULATION,
+            description: 'Board with subGroupBy: the calculation beside every sub-group band name while subGroupSettings.showAggregation is on. Read like groupCalculation.',
           },
           filterTree: { ...filterGroup(1), description: 'Advanced filter. Rows must match it and every simple filter. Older clients ignore it.' },
           groupSettings: GROUP_SETTINGS,
@@ -775,13 +815,14 @@ export const DATABASE_DATA = {
                 propertyId: { type: 'string' },
                 operator: { type: 'string' },
                 value: { description: 'Any property value; shape follows the property type.' },
-                color: { type: 'string' },
+                color: { type: 'string', enum: [...COLORS, 'match'], description: 'An option color, or "match": a select or status rule takes the row\'s option color, a multi-select rule its first option\'s.' },
                 applyTo: { type: 'string', enum: ['row', 'property'], description: 'Table only. Default row.' },
               },
             },
           },
           showPageIcon: { type: 'boolean', description: 'Default true.' },
           showDataSourceTitle: { type: 'boolean', description: 'Linked views only: show the source title. Default true.' },
+          showAuthorByline: { type: 'boolean', description: 'Feed: show the author and post time above each post. Default true.' },
           subItemsDisplay: {
             type: 'string',
             enum: ['nested', 'card', 'flattened'],
@@ -822,11 +863,14 @@ const withOptionalId = (items: Record<string, unknown>): Record<string, unknown>
   required: (items.required as string[]).filter(key => key !== 'id'),
 });
 
+// A widget is made with addView dashboardViewId, so its layout entry comes with it.
+const { dashboardViewId: _widgetOf, ...SETTABLE_VIEW_PROPERTIES } = VIEW_PROPERTIES;
+
 const VIEW_SETTING_ARGS: Record<string, unknown> = {
-  ...VIEW_PROPERTIES,
+  ...SETTABLE_VIEW_PROPERTIES,
   // Spelled out, these take the agent tool schema past the OpenAI depth limit (src/agent/render-tools.ts); the saved view is still checked whole.
   filterTree: { type: 'object', description: 'Advanced filter: { conjunction: "and" | "or", filterRules: [rule or group] }, a rule being { propertyId, operator, value } and a group nesting the same shape, three layers deep. Ids are filled in when missing. Rows must match it and every simple filter.' },
-  dashboard: { type: 'object', description: 'Dashboard slot, same shape as the saved view field. Blok draws no dashboard yet.' },
+  dashboard: { type: 'object', description: 'Dashboard layout, same shape as the saved view field. To add a widget use database.addView with dashboardViewId.' },
   colorRules: { ...VIEW_PROPERTIES.colorRules, items: withOptionalId(VIEW_PROPERTIES.colorRules.items as Record<string, unknown>) },
   form: {
     type: 'object',
@@ -841,6 +885,10 @@ const VIEW_SETTING_ARGS: Record<string, unknown> = {
         type: 'string', enum: ['none', 'view', 'comment', 'edit', 'full'],
         description: `What a respondent may do with the page their answer becomes. Default none. Only where the host shares forms. ${ASKS}`,
       }),
+      title: nullable({ type: 'string' }),
+      description: nullable({ type: 'string' }),
+      icon: nullable({ ...PAGE_ICON_SCHEMA, description: 'The icon above the title.' }),
+      cover: nullable(FORM_COVER_SCHEMA),
       submitLabel: nullable({ type: 'string' }),
       confirmation: nullable({ type: 'string' }),
     },
@@ -881,6 +929,7 @@ const PAGE_LAYOUT_SETTINGS = Object.fromEntries(Object.entries(DATABASE_DATA.pro
   .filter(([key]) => key.startsWith('pageLayout')));
 
 const PROPERTY_ID = { type: 'string', minLength: 1, description: 'Id of a property in schema.' };
+const DELETED_PROPERTY_ID = { type: 'string', minLength: 1, description: 'Id of a deleted property: a key of deletedProperties.' };
 
 const OPTION_ID = { type: 'string', minLength: 1, description: 'Id of an option in the property\'s config.options.' };
 
@@ -897,7 +946,8 @@ const NEW_OPTION = {
   properties: { label: { type: 'string', minLength: 1 }, color: COLOR },
 };
 
-const ADDABLE_VIEW_TYPES = ['board', 'table', 'list', 'gallery', 'calendar', 'timeline', 'chart', 'feed', 'form', 'map'];
+const LAYOUT_VIEW_TYPES = ['board', 'table', 'list', 'gallery', 'calendar', 'timeline', 'chart', 'feed', 'form', 'map'];
+const ADDABLE_VIEW_TYPES = [...LAYOUT_VIEW_TYPES, 'dashboard'];
 
 const closed = (properties: Record<string, unknown>, required: string[] = []): BlokSchema => ({
   type: 'object', required, additionalProperties: false, properties,
@@ -914,10 +964,23 @@ export const DATABASE_ACTIONS: ToolActionDeclaration[] = [
   },
   {
     name: 'addView',
-    summary: 'Add a view at the end and open it.',
-    guidance: 'A board or chart groups by groupBy, else by the first select property. A board needs a select property. A map adds a Place property when there is none. Change its settings with database.updateView.',
+    summary: 'Add a view at the end and open it, or a widget to a dashboard view.',
+    guidance: 'A board or chart groups by groupBy, else by the first select property. A board needs a select property. A map adds a Place property when there is none. Change its settings with database.updateView. '
+      + 'With dashboardViewId the view is a widget of that dashboard: a table, list or chart (for one big number, then set chartType number), with no tab of its own; the open view stays. '
+      + 'It joins the last row while that row has one widget, else starts a row; placement { row } puts it at the end of that row (0-based, at most four a row) and { newRow: true } starts a row at the end.',
     target: 'block',
-    args: closed({ type: { enum: ADDABLE_VIEW_TYPES }, name: { type: 'string' }, groupBy: { type: 'string', description: 'Property id to group by.' } }, ['type']),
+    args: closed({
+      type: { enum: ADDABLE_VIEW_TYPES },
+      name: { type: 'string' },
+      groupBy: { type: 'string', description: 'Property id to group by.' },
+      dashboardViewId: { type: 'string', description: 'A dashboard view of this database: the new view becomes one of its widgets.' },
+      placement: {
+        type: 'object',
+        additionalProperties: false,
+        description: 'Where the widget goes. Only with dashboardViewId.',
+        properties: { row: { type: 'integer', minimum: 0 }, newRow: { type: 'boolean', enum: [true] } },
+      },
+    }, ['type']),
     result: closed({ viewId: { type: 'string' } }, ['viewId']),
     mirrors: [],
   },
@@ -930,7 +993,7 @@ export const DATABASE_ACTIONS: ToolActionDeclaration[] = [
   },
   {
     name: 'duplicateView',
-    summary: 'Copy a view with all its settings to the end, and open the copy.',
+    summary: 'Copy a view with all its settings to the end, and open the copy. A dashboard is copied with its widgets; a copied widget goes next to it on its dashboard.',
     target: 'block',
     args: closed({ viewId: VIEW_ID }, ['viewId']),
     result: closed({ viewId: { type: 'string' } }, ['viewId']),
@@ -938,7 +1001,7 @@ export const DATABASE_ACTIONS: ToolActionDeclaration[] = [
   },
   {
     name: 'deleteView',
-    summary: 'Delete a view. If it was open, its neighbour opens.',
+    summary: 'Delete a view. If it was open, its neighbour opens. A dashboard takes its widget views with it; a widget view leaves its dashboard.',
     target: 'block',
     preconditions: ['At least one view must remain.'],
     args: closed({ viewId: VIEW_ID }, ['viewId']),
@@ -973,8 +1036,8 @@ export const DATABASE_ACTIONS: ToolActionDeclaration[] = [
     summary: 'Change a view\'s layout type, as the view settings Layout menu does.',
     guidance: 'A board without a grouping groups by the first select, multi-select or status property, else the first property it can group by. A map adds a Place property when there is none. A timeline starts with no table columns.',
     target: 'block',
-    preconditions: ['The database is not locked.', 'A board needs a property it can group by.'],
-    args: closed({ viewId: VIEW_ID, type: { enum: ADDABLE_VIEW_TYPES } }, ['viewId', 'type']),
+    preconditions: ['The database is not locked.', 'A board needs a property it can group by.', 'A dashboard widget stays a table, list or chart.'],
+    args: closed({ viewId: VIEW_ID, type: { enum: LAYOUT_VIEW_TYPES } }, ['viewId', 'type']),
     mirrors: [],
   },
   {
@@ -1146,10 +1209,28 @@ export const DATABASE_ACTIONS: ToolActionDeclaration[] = [
   },
   {
     name: 'deleteProperty',
-    summary: 'Remove a property from the schema. Row values stay in the rows.',
+    summary: 'Move a property from the schema to deletedProperties. Row values stay in the rows.',
+    guidance: 'database.restoreProperty brings it back with its values. database.deletePropertyPermanently removes it for good.',
     target: 'block',
     preconditions: ['The title property cannot be deleted.'],
     args: closed({ propertyId: PROPERTY_ID }, ['propertyId']),
+    mirrors: [],
+  },
+  {
+    name: 'restoreProperty',
+    summary: 'Move a deleted property back into the schema, at its old position. Its row values show again.',
+    guidance: 'If a live property took its name, it gets the lowest free " N" suffix.',
+    target: 'block',
+    preconditions: ['The property must be in deletedProperties.'],
+    args: closed({ propertyId: DELETED_PROPERTY_ID }, ['propertyId']),
+    mirrors: [],
+  },
+  {
+    name: 'deletePropertyPermanently',
+    summary: 'Remove a deleted property for good: its deletedProperties entry and its value in every row and template.',
+    target: 'block',
+    preconditions: ['The property must be in deletedProperties.'],
+    args: closed({ propertyId: DELETED_PROPERTY_ID }, ['propertyId']),
     mirrors: [],
   },
   {

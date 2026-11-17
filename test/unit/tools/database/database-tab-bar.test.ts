@@ -7,7 +7,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // query `[data-blok-database-tab-context]` and
 // `[data-blok-database-tab-action="…"]` as expected.
 // ---------------------------------------------------------------------------
-vi.mock('../../../../src/components/utils/popover', () => {
+vi.mock('../../../../src/components/utils/popover', async (importOriginal) => {
+  const real = await importOriginal<{ PopoverDesktop: abstract new (...args: never[]) => unknown }>();
+  const { stubMissingMethods } = await import('../../helpers/stub-missing-methods');
+
   const PopoverItemType = { Default: 'default', Separator: 'separator', Html: 'html' };
 
   class MockPopoverDesktop {
@@ -86,6 +89,8 @@ vi.mock('../../../../src/components/utils/popover', () => {
     }
   }
 
+  stubMissingMethods(MockPopoverDesktop, real.PopoverDesktop);
+
   return { PopoverDesktop: MockPopoverDesktop, PopoverMobile: MockPopoverDesktop, PopoverItemType };
 });
 
@@ -139,12 +144,14 @@ vi.mock('../../../../src/tools/database/database-view-popover', () => {
     }
   }
 
-  return { DatabaseViewPopover: MockDatabaseViewPopover };
+  return { ADD_VIEW_MENU_WIDTH: 390, DatabaseViewPopover: MockDatabaseViewPopover };
 });
 
 import { DatabaseTabBar } from '../../../../src/tools/database/database-tab-bar';
 import { IconChart, IconGallery, IconTable, IconViewCalendar, IconViewFeed } from '../../../../src/components/icons';
 import { resyncPortalDirections } from '../../../../src/components/utils/portal-direction';
+import { HINT_DELAY, destroy as destroyTooltip } from '../../../../src/components/utils/tooltip';
+import { hover, shownHint } from './hint-harness';
 import type { DatabaseViewConfig, ViewType } from '../../../../src/tools/database/types';
 import type { API } from '../../../../types';
 
@@ -208,6 +215,80 @@ describe('DatabaseTabBar', () => {
       api,
     });
   };
+
+  // notion-motion.md Round 9: the "+" hints "Add a new view"; Blok keeps its 500ms hover delay.
+  describe('the tab-bar "+" hint', () => {
+    afterEach(() => {
+      destroyTooltip();
+      vi.useRealTimers();
+    });
+
+    it('shows "Add a new view" after the hover delay', () => {
+      destroyTooltip();
+      vi.useFakeTimers();
+      const view = makeView({ type: 'table' });
+      const el = createTabBar([view], view.id).render();
+
+      document.body.appendChild(el);
+      hover(el.querySelector('[data-blok-database-add-view]'));
+      vi.advanceTimersByTime(HINT_DELAY - 1);
+      expect(shownHint()).toBeNull();
+      vi.advanceTimersByTime(1);
+      expect(shownHint()?.text).toBe('Add a new view');
+      el.remove();
+    });
+  });
+
+  // notion-motion.md Round 14 "View tab drag" and Round 15 §A "Tab": a tab hints its name, then "Table view of New database".
+  describe('the view tab hint', () => {
+    afterEach(() => {
+      destroyTooltip();
+      vi.useRealTimers();
+    });
+
+    const api = {
+      i18n: {
+        t: (key: string, vars?: Record<string, string | number>) => (vars === undefined ? key : `${key}:${JSON.stringify(vars)}`),
+        has: () => true,
+      },
+    } as unknown as API;
+
+    it('names the view, then its layout and the database, after the hover delay', () => {
+      destroyTooltip();
+      vi.useFakeTimers();
+      const view = makeView({ type: 'table', name: 'Tasks' });
+      const el = new DatabaseTabBar({
+        views: [view], activeViewId: view.id, onTabClick, onAddView, onRename, onDuplicate, onDelete, onReorder, api,
+        sourceTitle: () => 'Projects',
+      }).render();
+
+      document.body.appendChild(el);
+      hover(el.querySelector('[data-blok-database-tab]'));
+      vi.advanceTimersByTime(HINT_DELAY - 1);
+      expect(shownHint()).toBeNull();
+      vi.advanceTimersByTime(1);
+      expect(shownHint()?.text).toBe('Taskstools.database.tabViewOf:{"layout":"tools.database.viewTypeTable","database":"Projects"}');
+      expect(shownHint()?.placement).toBe('bottom');
+      el.remove();
+    });
+
+    // notion-motion.md Round 23 §7: a dashboard has no source, so its hint reads "Dashboard" / "Dashboard view".
+    it('names a dashboard, then its layout with no database', () => {
+      destroyTooltip();
+      vi.useFakeTimers();
+      const view = makeView({ type: 'dashboard', name: 'Dashboard' });
+      const el = new DatabaseTabBar({
+        views: [view], activeViewId: view.id, onTabClick, onAddView, onRename, onDuplicate, onDelete, onReorder, api,
+        sourceTitle: () => 'Projects',
+      }).render();
+
+      document.body.appendChild(el);
+      hover(el.querySelector('[data-blok-database-tab]'));
+      vi.advanceTimersByTime(HINT_DELAY);
+      expect(shownHint()?.text).toBe('Dashboardtools.database.tabView:{"layout":"tools.database.viewTypeDashboard"}');
+      el.remove();
+    });
+  });
 
   describe('render()', () => {
     it('gives a table view tab the table icon', () => {
@@ -405,7 +486,21 @@ describe('DatabaseTabBar', () => {
       document.body.appendChild(el);
       const tab = el.querySelector('[data-view-id="v1"]') as HTMLElement;
       tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
-      expect(document.querySelector('[data-blok-database-tab-context]')?.getAttribute('data-mock-popover-class')).toBe('blok-database-menu');
+      expect(document.querySelector('[data-blok-database-tab-context]')?.getAttribute('data-mock-popover-class')?.split(' ')).toContain('blok-database-menu');
+      el.remove();
+    });
+
+    it('marks the tab expanded while its menu is open, so it takes the pressed fill (notion-motion.md Round 27 §3)', () => {
+      const bar = createTabBar([makeView({ id: 'v1' })], 'v1');
+      const el = bar.render();
+      document.body.appendChild(el);
+      const tab = el.querySelector('[data-view-id="v1"]') as HTMLElement;
+
+      tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+      expect(tab.getAttribute('aria-expanded')).toBe('true');
+      bar.destroy();
+      // A role=tab with aria-expanded="false" reads "collapsed"; a closed menu leaves no mark.
+      expect(tab.hasAttribute('aria-expanded')).toBe(false);
       el.remove();
     });
 
@@ -682,6 +777,53 @@ describe('DatabaseTabBar', () => {
       el.remove();
 
       expect(undo.defaultPrevented).toBe(true);
+    });
+
+    // notion-motion.md Round 14: no ghost and no drop line; the pressed tab moves, the others slide aside.
+    it('moves the pressed tab itself with the pointer, with no ghost', () => {
+      const views = [makeView({ id: 'v1', position: 'a0' }), makeView({ id: 'v2', position: 'a1' }), makeView({ id: 'v3', position: 'a2' })];
+      const { bar, el } = createBarWithLayout(views, 'v1');
+      const tab = el.querySelector('[data-view-id="v1"]') as HTMLElement;
+
+      tab.dispatchEvent(new PointerEvent('pointerdown', { clientX: 50, clientY: 15, bubbles: true }));
+      document.dispatchEvent(new PointerEvent('pointermove', { clientX: 200, clientY: 15 }));
+
+      expect(tab.style.transform).toBe('translateX(150px)');
+      expect(document.querySelector('[data-blok-database-tab-ghost]')).toBeNull();
+      bar.destroy();
+      el.remove();
+    });
+
+    it('slides each tab the pressed one passes aside by its width', () => {
+      const views = [makeView({ id: 'v1', position: 'a0' }), makeView({ id: 'v2', position: 'a1' }), makeView({ id: 'v3', position: 'a2' })];
+      const { bar, el } = createBarWithLayout(views, 'v1');
+      const tab = (id: string): HTMLElement => el.querySelector(`[data-view-id="${id}"]`) as HTMLElement;
+
+      tab('v1').dispatchEvent(new PointerEvent('pointerdown', { clientX: 50, clientY: 15, bubbles: true }));
+      document.dispatchEvent(new PointerEvent('pointermove', { clientX: 200, clientY: 15 }));
+      expect(tab('v2').style.transform).toBe('translateX(-100px)');
+      expect(tab('v3').style.transform).toBe('');
+
+      document.dispatchEvent(new PointerEvent('pointermove', { clientX: 60, clientY: 15 }));
+      expect(tab('v2').style.transform).toBe('');
+      bar.destroy();
+      el.remove();
+    });
+
+    it('puts every tab back at once when the drag ends', () => {
+      const views = [makeView({ id: 'v1', position: 'a0' }), makeView({ id: 'v2', position: 'a1' })];
+      const { bar, el } = createBarWithLayout(views, 'v1');
+      const tab = (id: string): HTMLElement => el.querySelector(`[data-view-id="${id}"]`) as HTMLElement;
+
+      tab('v1').dispatchEvent(new PointerEvent('pointerdown', { clientX: 50, clientY: 15, bubbles: true }));
+      document.dispatchEvent(new PointerEvent('pointermove', { clientX: 200, clientY: 15 }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+      expect(el.hasAttribute('data-dragging')).toBe(false);
+      expect(tab('v1').style.transform).toBe('');
+      expect(tab('v2').style.transform).toBe('');
+      bar.destroy();
+      el.remove();
     });
 
     it('cancels drag on Escape key', () => {

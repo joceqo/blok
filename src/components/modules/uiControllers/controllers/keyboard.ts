@@ -4,13 +4,18 @@ import { SelectionUtils as Selection } from '../../../selection/index';
 import { isIosDevice } from '../../../utils/browser';
 import { deliverOnSubmit } from '../../../utils/on-submit';
 import { getCaretOffset } from '../../../utils/caret/selection';
-import { markEscapeConsumed } from '../../../utils/consumed-escape';
+import { isEscapeConsumed, markEscapeConsumed } from '../../../utils/consumed-escape';
 import { runConvert } from '../../../utils/convert-refusal';
 import { hasEscapeLayer } from '../../../utils/dismissable-layer';
+import { announceHistoryPress } from '../../../utils/history-announcement';
+import { historyKeyOf, type HistoryKey } from '../../../utils/history-keys';
+import { announceDeletedRoots, selectionRoots } from '../../../utils/selection-roots';
+import { deleteWithTrashToast } from '../../../utils/trash-toast';
 import { findCommonNestedContainer, scheduleCaretIntoNestedContainer } from '../../../utils/nested-container-caret';
 import { PopoverRegistry } from '../../../utils/popover/popover-registry';
 import { HEADER_TOOL_NAME, LIST_TOOL_NAME } from '../../blockEvents/constants';
 import { isInsideKeyboardOwner } from '../../blockEvents/utils/keyboard';
+import { noteDeleteForNbsp } from '../../../utils/delete-boundary-nbsp';
 import { KEYS_REQUIRING_CARET_CAPTURE } from '../constants';
 
 import { Controller } from './_base';
@@ -76,10 +81,6 @@ const shortcutLetter = (event: KeyboardEvent): string => {
 
 const isInsideEditable = (target: EventTarget | null): boolean =>
   target instanceof Element && target.closest('[contenteditable]:not([contenteditable="false"])') !== null;
-
-const isHistoryKey = (event: KeyboardEvent, letter: string): boolean =>
-  ((event.metaKey || event.ctrlKey) && letter.toLowerCase() === 'z')
-  || (event.ctrlKey && !event.shiftKey && letter.toLowerCase() === 'y');
 
 /**
  * KeyboardController handles all document-level keyboard events.
@@ -174,11 +175,7 @@ export class KeyboardController extends Controller {
       return;
     }
 
-    if (shortcutLetter(event).toLowerCase() === 'z') {
-      this.handleZ(event);
-    } else {
-      this.handleY(event);
-    }
+    this.handleHistoryKey(event, historyKeyOf(event, shortcutLetter(event)));
   };
 
   private readonly markActiveHandler = (): void => {
@@ -225,13 +222,6 @@ export class KeyboardController extends Controller {
       return;
     }
 
-    // A word-boundary checkpoint that is due must close BEFORE the browser
-    // writes this character. By `input` the mutation observer has already
-    // buffered it, and the split's flush would carry it into the old step.
-    if (event instanceof InputEvent && event.inputType === 'insertText' && event.data !== null) {
-      this.Blok.YjsManager.checkAndHandleBoundary();
-    }
-
     // force: a beforeinput is the start of a fresh user edit, so the
     // caret-before is the caret right now — discard any stale pending snapshot
     // left dangling by a previous operation's no-op follow-up write.
@@ -241,6 +231,10 @@ export class KeyboardController extends Controller {
     // never fires it. See `BlockYjsSync.noteUserInput`.
     if (event.target instanceof Node) {
       this.Blok.BlockManager.noteUserInput(event.target);
+    }
+
+    if (event instanceof InputEvent && event.target instanceof HTMLElement) {
+      noteDeleteForNbsp(event, event.target);
     }
   };
 
@@ -367,7 +361,8 @@ export class KeyboardController extends Controller {
 
     const target = event.target;
     const key = shortcutLetter(event);
-    const historyKey = isHistoryKey(event, key);
+    const history = historyKeyOf(event, key);
+    const historyKey = history !== null;
 
     /**
      * A Tool can claim the whole keyboard for a subtree it renders by marking it
@@ -381,7 +376,9 @@ export class KeyboardController extends Controller {
      * which keeps its native undo.
      */
     if (isInsideKeyboardOwner(target)) {
-      this.pendingOwnerHistoryKey = historyKey && !isTextEntry(target) && !isInsideEditable(target) ? event : null;
+      const walksHistory = history === 'undo' || history === 'redo';
+
+      this.pendingOwnerHistoryKey = walksHistory && !isTextEntry(target) && !isInsideEditable(target) ? event : null;
 
       return;
     }
@@ -459,12 +456,13 @@ export class KeyboardController extends Controller {
 
       case 'z':
       case 'Z':
-        this.handleZ(event);
-        break;
-
       case 'y':
       case 'Y':
-        this.handleY(event);
+        if (history === null) {
+          this.handleDefault(event);
+        } else {
+          this.handleHistoryKey(event, history);
+        }
         break;
 
       default:
@@ -500,7 +498,7 @@ export class KeyboardController extends Controller {
     }
 
     // Don't replay the conversion while a drag is in progress (mirrors the
-    // undo/redo guard in handleZ — mutating the tree under the drag is unsafe).
+    // undo/redo guard in handleHistoryKey — mutating the tree under the drag is unsafe).
     if (this.Blok.DragManager.isDragging) {
       event.preventDefault();
       event.stopPropagation();
@@ -800,9 +798,17 @@ export class KeyboardController extends Controller {
       return;
     }
 
-    const nestedContainer = findCommonNestedContainer(BlockManager.blocks.filter((block) => block.selected));
+    const selected = BlockManager.blocks.filter((block) => block.selected);
+    const nestedContainer = findCommonNestedContainer(selected);
+    const roots = selectionRoots(selected);
 
-    const insertedBlock = BlockManager.deleteSelectedBlocksAndInsertReplacement();
+    const insertedBlock = deleteWithTrashToast(this.Blok, roots, () => BlockManager.deleteSelectedBlocksAndInsertReplacement());
+
+    // Only the count is said, so leave navigation mode quietly. After the delete,
+    // which reads the selection; before setToBlock, whose clearSelection would say the exit.
+    BlockSelection.disableNavigationMode(false, false);
+
+    announceDeletedRoots(this.Blok.I18n, roots, (id) => BlockManager.getBlockById(id) !== undefined);
 
     if (insertedBlock) {
       Caret.setToBlock(insertedBlock, Caret.positions.START);
@@ -898,6 +904,10 @@ export class KeyboardController extends Controller {
      * from being enabled when closing block settings.
      */
     if (PopoverRegistry.instance.hasOpenPopovers()) {
+      // Each editor on the page gets the press; the first one closed a popover already.
+      if (isEscapeConsumed(event)) {
+        return;
+      }
       // Later Blok Escape handlers (navigation mode, a row peek) skip a consumed press.
       markEscapeConsumed(event);
       // A layer (modal, toast) listens later on document and would also peel on this press.
@@ -1177,23 +1187,16 @@ export class KeyboardController extends Controller {
       return;
     }
 
-    if (event.inputType === 'historyRedo') {
-      this.Blok.YjsManager.redo();
-    } else {
-      this.Blok.YjsManager.undo();
-    }
+    this.runHistory(event.inputType === 'historyRedo' ? 'redo' : 'undo');
   }
 
   /**
-   * Handle Cmd/Ctrl+Z (undo) and Cmd/Ctrl+Shift+Z (redo)
+   * Handle an undo, redo or blocked history key (see `historyKeyOf`).
    * @param event - keyboard event
+   * @param history - what the key does to history
    */
-  private handleZ(event: KeyboardEvent): void {
-    const isMeta = event.metaKey || event.ctrlKey;
-
-    if (!isMeta) {
-      this.handleDefault(event);
-
+  private handleHistoryKey(event: KeyboardEvent, history: HistoryKey): void {
+    if (history === null) {
       return;
     }
 
@@ -1209,8 +1212,11 @@ export class KeyboardController extends Controller {
      * The Escape handler already guards on `DragManager.isDragging` (see
      * handleEscape above). Mirror that here: swallow the keystroke so the
      * drag completes cleanly, then the user can undo.
+     *
+     * A blocked key is swallowed the same way: its default could be the
+     * browser's own undo, which would rewind block DOM behind Yjs.
      */
-    if (this.Blok.DragManager.isDragging) {
+    if (history === 'blocked' || this.Blok.DragManager.isDragging) {
       event.preventDefault();
       event.stopPropagation();
 
@@ -1227,50 +1233,31 @@ export class KeyboardController extends Controller {
     event.preventDefault();
     event.stopPropagation();
 
-    if (event.shiftKey) {
-      this.Blok.YjsManager.redo();
-    } else {
-      this.Blok.YjsManager.undo();
-    }
+    this.runHistory(history);
   }
 
   /**
-   * Handle Ctrl+Y (redo) — the Windows/Linux redo alias. Notion accepts both
-   * Ctrl+Shift+Z and Ctrl+Y for redo; the latter is routed here. Uses the same
-   * drag guard and double-fire dedup as handleZ so a single press redoes once.
-   *
-   * The redo alias is Ctrl+Y WITHOUT Shift. Ctrl+Shift+Y is a distinct combo
-   * (e.g. a block tool's "CMD+SHIFT+Y" insert shortcut), so when Shift is held
-   * we must fall through to default handling and let the event keep propagating
-   * to the tool-shortcut listener — otherwise the stopPropagation below swallows
-   * it and a spurious redo fires.
-   * @param event - keyboard event
+   * Run one undo or redo for a user press and say what it did.
+   * @param direction - which history to walk
    */
-  private handleY(event: KeyboardEvent): void {
-    if (!event.ctrlKey || event.shiftKey) {
-      this.handleDefault(event);
+  private runHistory(direction: 'undo' | 'redo'): void {
+    const { YjsManager, I18n, Toolbar, BlockSelection } = this.Blok;
 
+    // Notion closes the slash menu on undo and redo, and redo does not reopen it (U178).
+    if (Toolbar.toolbox.opened) {
+      Toolbar.toolbox.close();
+    }
+
+    const applied = direction === 'undo' ? YjsManager.undo(true) : YjsManager.redo();
+
+    // Notion says "Nothing to undo" only with the caret in the page (RM8), not with blocks block-selected (U121).
+    const caretInEditor = this.wrapperElement?.contains(window.getSelection()?.anchorNode ?? null) === true;
+
+    if (!applied && direction === 'undo' && (BlockSelection.anyBlockSelected || !caretInEditor)) {
       return;
     }
 
-    if (this.Blok.DragManager.isDragging) {
-      event.preventDefault();
-      event.stopPropagation();
-
-      return;
-    }
-
-    if (event === this.lastHistoryEvent) {
-      event.preventDefault();
-
-      return;
-    }
-    this.lastHistoryEvent = event;
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    this.Blok.YjsManager.redo();
+    announceHistoryPress((key) => I18n.t(key), direction, applied);
   }
 
   /**

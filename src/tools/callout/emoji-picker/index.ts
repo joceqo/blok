@@ -6,13 +6,15 @@ import { loadEmojiLocale, type EmojiLocaleData } from '../../../components/utils
 import { prefetchEmojiPickerData } from '../../../components/utils/emoji/emoji-prefetch';
 import { hide as hideTooltip, onHover } from '../../../components/utils/tooltip';
 import { DATA_ATTR } from '../../../components/constants';
+import { emojiColor } from '../../../components/utils/emoji/emoji-color';
 import { getElementDirection, logicalArrow } from '../../../components/utils/direction';
 import { syncPortalDirection } from '../../../components/utils/portal-direction';
 import { getTabbables } from '../../../components/utils/modal-dialog';
 import { createPositionTracker, type PositionTracker } from '../../../components/utils/popover/anchored-position';
 import {
   REMOVE_EMOJI_KEY, FILTER_EMOJIS_KEY, CALLOUT_EMOJI_CATEGORY_KEY, NO_EMOJIS_FOUND_KEY, EMOJI_SEARCH_RESULTS_KEY, PICK_RANDOM_KEY, SKIN_TONE_KEY,
-  EDIT_ICON_KEY,
+  EDIT_ICON_KEY, EMOJI_CHIP_PEOPLE_KEY, EMOJI_CHIP_NATURE_KEY, EMOJI_CHIP_FOOD_KEY, EMOJI_CHIP_TRAVEL_KEY,
+  RECENT_EMOJIS_KEY, CURRENT_ICON_KEY, NO_ICON_YET_KEY, PICK_ICON_KEY,
   EMOJI_CATEGORY_PEOPLE_KEY, EMOJI_CATEGORY_NATURE_KEY, EMOJI_CATEGORY_FOOD_KEY, EMOJI_CATEGORY_ACTIVITY_KEY,
   EMOJI_CATEGORY_TRAVEL_KEY, EMOJI_CATEGORY_OBJECTS_KEY, EMOJI_CATEGORY_SYMBOLS_KEY, EMOJI_CATEGORY_FLAGS_KEY,
 } from '../constants';
@@ -33,15 +35,15 @@ import {
   IconCross,
   IconTrash,
   IconEmojiDice,
-  IconEmojiSparkles,
-  IconEmojiWink,
-  IconEmojiSprout,
-  IconEmojiBowl,
-  IconEmojiGamepad,
-  IconEmojiMap,
-  IconEmojiLightbulb,
-  IconEmojiHearts,
-  IconEmojiFlag,
+  IconEmojiNavSparkles,
+  IconEmojiNavSmile,
+  IconEmojiNavCat,
+  IconEmojiNavBurger,
+  IconEmojiNavBall,
+  IconEmojiNavCar,
+  IconEmojiNavBulb,
+  IconEmojiNavHeart,
+  IconEmojiNavFlag,
 } from '../../../components/icons';
 
 interface I18n {
@@ -49,7 +51,8 @@ interface I18n {
 }
 
 interface EmojiPickerOptions {
-  onSelect: (native: string) => void;
+  /** `origin` is the picked glyph's rect, so the host can animate from it. */
+  onSelect: (native: string, origin?: DOMRect) => void;
   onRemove: () => void;
   i18n: I18n;
   locale: string;
@@ -73,38 +76,80 @@ interface EmojiPickerOptions {
   label?: string;
 }
 
-interface ReelRow {
-  top: number;
-  height: number;
-  glyphs: HTMLElement[];
+const UNCAPPED_RESULTS = Number.POSITIVE_INFINITY;
+
+/** The inline ":" menu shows up to this many matches as one block, with no category names and no bar. */
+const INLINE_FLAT_MAX = 30;
+/** Icon and short chip label for each emoji category (display order). */
+const CATEGORY_NAV: ReadonlyArray<readonly [id: string, icon: string, chipKey?: string]> = [
+  ['callout', IconEmojiNavSparkles],
+  ['people', IconEmojiNavSmile, EMOJI_CHIP_PEOPLE_KEY],
+  ['nature', IconEmojiNavCat, EMOJI_CHIP_NATURE_KEY],
+  ['foods', IconEmojiNavBurger, EMOJI_CHIP_FOOD_KEY],
+  ['activity', IconEmojiNavBall],
+  ['places', IconEmojiNavCar, EMOJI_CHIP_TRAVEL_KEY],
+  ['objects', IconEmojiNavBulb],
+  ['symbols', IconEmojiNavHeart],
+  ['flags', IconEmojiNavFlag],
+];
+
+const RECENT_STORAGE_KEY = 'blok-emoji-recent';
+/** One grid row. */
+const RECENT_LIMIT = 10;
+
+function loadRecent(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(RECENT_STORAGE_KEY) ?? '[]');
+
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string').slice(0, RECENT_LIMIT) : [];
+  } catch {
+    return [];
+  }
 }
 
-const UNCAPPED_RESULTS = Number.POSITIVE_INFINITY;
-const REEL_DISTORTION = {
-  maxTiltDeg: 50,
-  maxSquashX: 0.09,
-  maxSquashY: 0.25,
-  maxDim: 0.32,
-  perspective: 400,
+function saveRecent(list: string[]): void {
+  try {
+    localStorage.setItem(RECENT_STORAGE_KEY, JSON.stringify(list));
+  } catch {
+    // Storage full or blocked: the row simply does not persist.
+  }
+}
+
+/** Swatch colour of each skin tone (default + 5 Fitzpatrick modifiers), for the dial and the toggle dot. */
+const SKIN_TONE_COLORS: readonly string[] = ['#ffcc4d', '#f7dece', '#f3d2a2', '#d5ab88', '#af7e57', '#7c533e'];
+
+/**
+ * The skin-tone dial: a half ring hanging under the toggle, in its own 140×88 box.
+ * Must match the box in emoji-picker.css. The centre sits 16px under the box top,
+ * so the ring opens just below the toggle.
+ */
+const SKIN_DIAL = { cx: 70, cy: 16, inner: 30, outer: 62, chosen: 5, hover: 2.5, gap: 1, rim: 2, span: Math.PI * 0.176 } as const;
+const skinToneAngle = (index: number): number => Math.PI * (0.94 - index * 0.176);
+const toDegrees = (radians: number): number => (radians * 180) / Math.PI;
+
+/** The box around a segment at its largest (chosen) reach, in dial-box pixels. */
+const skinSegmentBox = (index: number): { x: number; y: number; width: number; height: number } => {
+  const { cx, cy, inner, outer, chosen, span } = SKIN_DIAL;
+  const mid = skinToneAngle(index);
+  const points = [inner, outer + chosen].flatMap(radius => Array.from({ length: 9 }, (_, k) => {
+    const angle = mid - span / 2 + span * (k / 8);
+
+    return { x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius };
+  }));
+  const x = Math.floor(Math.min(...points.map(point => point.x)));
+  const y = Math.floor(Math.min(...points.map(point => point.y)));
+
+  return {
+    x,
+    y,
+    width: Math.ceil(Math.max(...points.map(point => point.x))) - x,
+    height: Math.ceil(Math.max(...points.map(point => point.y))) - y,
+  };
 };
-
-/** SVG icon for each emoji category (display order). */
-const CATEGORY_NAV: ReadonlyArray<readonly [id: string, icon: string]> = [
-  ['callout', IconEmojiSparkles],
-  ['people', IconEmojiWink],
-  ['nature', IconEmojiSprout],
-  ['foods', IconEmojiBowl],
-  ['activity', IconEmojiGamepad],
-  ['places', IconEmojiMap],
-  ['objects', IconEmojiLightbulb],
-  ['symbols', IconEmojiHearts],
-  ['flags', IconEmojiFlag],
-];
-
-/** Raised-hand emoji for each skin tone (default + 5 Fitzpatrick modifiers). */
-const SKIN_TONE_HANDS: readonly string[] = [
-  '✋', '✋🏻', '✋🏼', '✋🏽', '✋🏾', '✋🏿',
-];
+const SKIN_SPRING = 'cubic-bezier(0.34, 1.56, 0.64, 1)';
+const SKIN_FOLD = 'cubic-bezier(0.6, 0, 0.4, 1)';
+/** The landing circle's box reaches this far above the dial box, up to the toggle. */
+const SKIN_BLOB_TOP = 60;
 
 const SKIN_TONE_STORAGE_KEY = 'blok-emoji-skin-tone';
 
@@ -137,17 +182,8 @@ const ICON_DICE = IconEmojiDice;
 
 export { prefetchEmojiPickerData };
 
-/**
- * Public warm-up for hosts, exported from `@bloklabs/core/tools`. Signature is
- * hand-mirrored in `types/tools-entry.d.ts`.
- * @param locale - Blok locale code; defaults to English
- */
-export function preloadEmojiData(locale = 'en'): void {
-  prefetchEmojiPickerData(locale);
-}
-
 export class EmojiPicker {
-  private onSelect: (native: string) => void;
+  private onSelect: (native: string, origin?: DOMRect) => void;
   private onRemove: () => void;
   private readonly i18n: I18n;
   private readonly _locale: string;
@@ -165,11 +201,18 @@ export class EmojiPicker {
 
   private _element: HTMLElement;
   private _body: HTMLElement;
-  private _header!: HTMLElement;
   private _nav: HTMLElement;
-  private _filterInput: HTMLInputElement;
+  private _filterInput!: HTMLInputElement;
   private _announcer: HTMLElement;
-  private _clearSearchButton: HTMLButtonElement;
+  private _clearSearchButton!: HTMLButtonElement;
+  private _stage: HTMLElement | null = null;
+  /** What the stage shows now; null before its first paint. */
+  private _stageGlyph: string | null = null;
+  /** The host's current emoji, shown on the stage while nothing is pointed at. */
+  private _current = '';
+  /** Natives the rendered Recent row holds, to know when a reopen must rebuild it. */
+  private _renderedRecent = '';
+  private _byNative = new Map<string, ProcessedEmoji>();
   private _open = false;
   private _allEmojis: ProcessedEmoji[] = [];
   private _skinTone = 0;
@@ -199,9 +242,6 @@ export class EmojiPicker {
   private _navRafId = 0;
   private _emojiButtons: HTMLButtonElement[] = [];
   private _focusedEmoji: HTMLButtonElement | null = null;
-  /** Reel rows per section, with `top` measured from the section's own top. */
-  private _reelRows = new Map<HTMLElement, ReelRow[]>();
-  private _curledGlyphs = new Set<HTMLElement>();
   /** Bound capture-phase Escape handler, registered on `document` while open. */
   private _onDocumentKeydown: (e: KeyboardEvent) => void;
   /** Skin tone selector buttons for visual updates. */
@@ -209,6 +249,11 @@ export class EmojiPicker {
   private _skinToneToggle!: HTMLButtonElement;
   private _skinTonePopover!: HTMLElement;
   private _skinToneCloseAnimation: Animation | null = null;
+  /** Every running dial animation and timer, so a close or reopen can stop them all. */
+  private _skinToneAnimations = new Set<Animation>();
+  private _skinToneTimers = new Set<number>();
+  /** A chosen tone whose dot and grid repaint waits for the landing circle. */
+  private _skinTonePending = false;
 
   constructor(options: EmojiPickerOptions) {
     this.onSelect = options.onSelect;
@@ -224,20 +269,15 @@ export class EmojiPicker {
 
     const body = this._element.querySelector<HTMLElement>('[data-emoji-picker-body]');
     const nav = this._element.querySelector<HTMLElement>('[data-emoji-picker-nav]');
-    const filterInput = this._element.querySelector<HTMLInputElement>('input[type="text"]');
     const announcer = this._element.querySelector<HTMLElement>('[data-emoji-picker-announcer]');
 
-    const clearSearchButton = this._element.querySelector<HTMLButtonElement>('[data-emoji-picker-clear]');
-
-    if (body === null || nav === null || filterInput === null || announcer === null || clearSearchButton === null) {
+    if (body === null || nav === null || announcer === null) {
       throw new Error('EmojiPicker: failed to build required elements');
     }
 
     this._body = body;
     this._nav = nav;
-    this._filterInput = filterInput;
     this._announcer = announcer;
-    this._clearSearchButton = clearSearchButton;
 
     this._onDocumentKeydown = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape' || !this._open) {
@@ -288,7 +328,7 @@ export class EmojiPicker {
   public async open(
     anchor: HTMLElement,
     anchorRect?: DOMRect,
-    handlers?: Pick<EmojiPickerOptions, 'onSelect' | 'onRemove'>
+    handlers?: Pick<EmojiPickerOptions, 'onSelect' | 'onRemove'> & { current?: string }
   ): Promise<void> {
     const active = document.activeElement;
 
@@ -296,6 +336,8 @@ export class EmojiPicker {
       this.onSelect = handlers.onSelect;
       this.onRemove = handlers.onRemove;
     }
+
+    this._current = handlers?.current ?? '';
 
     // Focus inside the picker means it is being reopened for another anchor:
     // close() must then fall back to that anchor, not to the hidden picker.
@@ -317,11 +359,8 @@ export class EmojiPicker {
 
     if (toneChanged) {
       this._skinTone = storedTone;
-      this.updateSkinGlyph(this._skinToneToggle, SKIN_TONE_HANDS[storedTone]);
-
-      for (const [i, btn] of this._skinToneButtons.entries()) {
-        this.applySkinToneActiveStyle(btn, i === storedTone);
-      }
+      this.paintSkinToneToggle();
+      this.syncSkinToneSegments();
     }
 
     // Chained before the dataset await on purpose: a cached locale's callback
@@ -341,6 +380,12 @@ export class EmojiPicker {
       this._allEmojis = await loadEmojiGrid();
     }
     if (!this._open) return;
+
+    if (this._hasFullGrid && this._renderedRecent !== this.recentEmojis().map(emoji => emoji.native).join(' ')) {
+      this._hasFullGrid = false;
+    }
+
+    this.showStageIdle();
 
     if (this._hasFullGrid) {
       // Identical markup to what a rebuild would produce — only the tone (which
@@ -377,7 +422,6 @@ export class EmojiPicker {
         this.position(this._anchorEl);
 
         if (event === undefined) {
-          this._reelRows.clear();
           this.measureCell();
           this.scheduleScrollEffects();
         }
@@ -414,6 +458,7 @@ export class EmojiPicker {
       .then(emojis => {
         this._hasKeywords = true;
         this._allEmojis = emojis;
+        this._byNative.clear();
         this.refilterWhileTyping();
       })
       .catch(() => undefined)
@@ -438,7 +483,6 @@ export class EmojiPicker {
     this._scrollDestination = null;
     cancelAnimationFrame(this._navRafId);
     this._navRafId = 0;
-    this.resetReel();
     this._positionTracker?.detach();
     this._positionTracker = null;
 
@@ -507,8 +551,6 @@ export class EmojiPicker {
     // Header: search input + random button + remove button
     const header = document.createElement('div');
 
-    this._header = header;
-
     header.setAttribute('data-emoji-picker-header', '');
     header.className = 'flex items-center gap-2.5 px-3 pt-3 pb-2';
 
@@ -524,6 +566,7 @@ export class EmojiPicker {
     input.setAttribute('aria-label', this.i18n.t(FILTER_EMOJIS_KEY));
     input.placeholder = this.i18n.t(FILTER_EMOJIS_KEY);
     input.addEventListener('input', () => this.handleFilterChange(input.value));
+    this._filterInput = input;
 
     searchWrapper.appendChild(input);
 
@@ -539,6 +582,7 @@ export class EmojiPicker {
       input.focus();
     });
     searchWrapper.appendChild(clearSearch);
+    this._clearSearchButton = clearSearch;
 
     // Skin tone hand toggle (separate button next to search input)
     const skinToneWrapper = document.createElement('div');
@@ -558,9 +602,14 @@ export class EmojiPicker {
       'hover:bg-neutral-100 theme-dark:hover:bg-neutral-800',
       'active:scale-90 transition-all duration-100',
     ].join(' ');
-    this.updateSkinGlyph(skinToggle, SKIN_TONE_HANDS[this._skinTone]);
+    const dot = document.createElement('span');
+
+    dot.setAttribute('data-emoji-skin-dot', '');
+    dot.setAttribute('aria-hidden', 'true');
+    skinToggle.appendChild(dot);
     skinToggle.addEventListener('click', () => this.toggleSkinTonePopover());
     this._skinToneToggle = skinToggle;
+    this.paintSkinToneToggle();
     skinToneWrapper.appendChild(skinToggle);
 
     // Skin tone popover (hidden by default, anchored below toggle)
@@ -610,25 +659,18 @@ export class EmojiPicker {
     if (!this._pickOnly) {
       header.appendChild(actionGroup);
     }
-    el.appendChild(header);
 
-    if (this._inline) {
-      // Inline mode's search surface is the typed ":query" text itself
-      // (see EmojiTrigger.setQuery) — no visible field to show. Random-pick
-      // and remove don't apply either: there is no already-chosen emoji
-      // glyph to reroll or clear.
-      searchWrapper.hidden = true;
-      randomBtn.hidden = true;
-      removeBtn.hidden = true;
+    // The inline menu has no header: the typed ":query" is its search field,
+    // there is no chosen emoji to reroll or remove, and the skin tone comes
+    // from the stored choice.
+    if (!this._inline) {
+      el.appendChild(header);
     }
 
-    // Scrollable body
     const body = document.createElement('div');
     body.setAttribute('data-emoji-picker-body', '');
     body.className = 'overflow-y-auto max-h-[260px] px-1.5 pb-2';
-    el.appendChild(body);
 
-    // Category navigation bar (below emoji grid)
     const nav = document.createElement('div');
     nav.setAttribute('data-emoji-picker-nav', '');
     nav.className = [
@@ -639,7 +681,13 @@ export class EmojiPicker {
 
     footer.setAttribute('data-emoji-picker-footer', '');
     footer.appendChild(nav);
-    el.appendChild(footer);
+
+    if (this._inline) {
+      el.append(body, footer);
+    } else {
+      // The chips sit under the search, in DOM order too, so Tab follows what you see.
+      el.append(footer, body, this.buildStage(body));
+    }
 
     const announcer = document.createElement('div');
     announcer.setAttribute('data-emoji-picker-announcer', '');
@@ -656,10 +704,12 @@ export class EmojiPicker {
         e.preventDefault();
       }
 
+      // A dial that is already folding shut finishes its fold; a tone in flight lands at once.
       if (!this._skinTonePopover.hidden
+        && this._skinToneCloseAnimation === null
         && !this._skinTonePopover.contains(target)
         && !this._skinToneToggle.contains(target)) {
-        this.closeSkinTonePopover();
+        this.closeSkinTonePopover(!this._skinTonePending);
       }
     });
 
@@ -715,6 +765,168 @@ export class EmojiPicker {
     });
 
     return el;
+  }
+
+  /**
+   * The strip under the grid: the host's current icon at rest, or the emoji
+   * under the pointer or the focus, standing on a shadow of its own colour.
+   * With no icon it shows a line smiley and an invitation.
+   * @param body - the grid's scroll container, whose pointer and focus it follows
+   */
+  private buildStage(body: HTMLElement): HTMLElement {
+    const stage = document.createElement('div');
+    const glyph = document.createElement('span');
+    const text = document.createElement('span');
+    const kicker = document.createElement('span');
+    const name = document.createElement('span');
+
+    stage.setAttribute('data-emoji-picker-stage', '');
+    // The buttons carry the names; this strip only shows them again.
+    stage.setAttribute('aria-hidden', 'true');
+    glyph.setAttribute('data-emoji-picker-stage-glyph', '');
+    text.setAttribute('data-emoji-picker-stage-text', '');
+    kicker.setAttribute('data-emoji-picker-stage-kicker', '');
+    name.setAttribute('data-emoji-picker-stage-name', '');
+    text.append(kicker, name);
+    stage.append(glyph, text);
+    this._stage = stage;
+
+    const emojiAt = (target: EventTarget | null): HTMLElement | null =>
+      target instanceof Element ? target.closest<HTMLElement>('[data-emoji-native]') : null;
+
+    body.addEventListener('pointerover', (event) => {
+      const button = emojiAt(event.target);
+
+      if (button !== null) {
+        this.showOnStage(button);
+      }
+    });
+    body.addEventListener('pointerleave', () => {
+      const focused = emojiAt(document.activeElement);
+
+      if (focused !== null && body.contains(focused)) {
+        this.showOnStage(focused);
+      } else {
+        this.showStageIdle();
+      }
+    });
+    body.addEventListener('focusin', (event) => {
+      const button = emojiAt(event.target);
+
+      if (button !== null) {
+        this.showOnStage(button);
+      }
+    });
+    body.addEventListener('focusout', (event) => {
+      if (emojiAt(event.relatedTarget) === null) {
+        this.showStageIdle();
+      }
+    });
+
+    return stage;
+  }
+
+  private setStage(glyph: string, kicker: string, label: string): void {
+    if (this._stage === null) {
+      return;
+    }
+
+    const [glyphEl, text] = this._stage.children;
+    const name = text.children[1];
+    // The first paint rides the picker's own opening.
+    const changed = this._stageGlyph !== null && this._stageGlyph !== glyph;
+
+    this._stageGlyph = glyph;
+
+    if (glyph === '') {
+      glyphEl.innerHTML = IconEmojiNavSmile;
+    } else {
+      glyphEl.textContent = glyph;
+    }
+
+    text.children[0].textContent = kicker;
+    name.textContent = label;
+    this._stage.toggleAttribute('data-emoji-picker-stage-empty', glyph === '');
+    this._stage.style.setProperty('--emoji-stage-wash', emojiColor(glyph) ?? 'transparent');
+
+    const still = !this._open || !changed || typeof glyphEl.animate !== 'function'
+      || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (still) {
+      return;
+    }
+
+    // An emoji drops onto its shadow and squashes; the smiley only fades back. The shadow's colour crossfades in CSS.
+    glyphEl.animate(glyph === ''
+      ? [{ transform: 'scale(.8)', opacity: 0 }, { transform: 'none', opacity: 1 }]
+      : [
+        { transform: 'translateY(-16px) scale(.9, 1.1)', opacity: 0 },
+        { transform: 'translateY(0) scale(1.12, .86)', opacity: 1, offset: 0.55 },
+        { transform: 'none' },
+      ], { duration: glyph === '' ? 260 : 420, easing: 'ease-out' });
+    name.animate([{ transform: 'translateY(5px)', opacity: 0 }, { transform: 'none', opacity: 1 }], { duration: 200, easing: 'ease-out' });
+  }
+
+  /** The stage and the ":" menu hint name an emoji like a title: "Kissing face", not the label's "kissing face". */
+  private titleName(emoji: ProcessedEmoji | undefined): string {
+    const name = emoji === undefined ? '' : this.getDisplayName(emoji);
+
+    return name.charAt(0).toLocaleUpperCase(this._locale) + name.slice(1);
+  }
+
+  private showStageIdle(): void {
+    const emoji = this.emojiByNative(this._current);
+
+    this.setStage(
+      this._current,
+      this.i18n.t(this._current === '' ? NO_ICON_YET_KEY : CURRENT_ICON_KEY),
+      this._current === '' ? this.i18n.t(PICK_ICON_KEY) : this.titleName(emoji)
+    );
+  }
+
+  private showOnStage(button: HTMLElement): void {
+    const emoji = this.emojiByNative(button.getAttribute('data-emoji-native') ?? '');
+    const section = button.closest('[data-emoji-section]')?.querySelector('[data-emoji-section-title] > span');
+
+    this.setStage(
+      button.firstElementChild?.textContent ?? '',
+      section?.textContent ?? '',
+      this.titleName(emoji)
+    );
+  }
+
+  /** Finds an emoji by its base glyph or any of its skin-tone glyphs. */
+  private emojiByNative(native: string): ProcessedEmoji | undefined {
+    if (this._byNative.size === 0) {
+      this._byNative = new Map(this._allEmojis.flatMap(emoji =>
+        [emoji.native, ...emoji.skins].map(glyph => [glyph, emoji] as const)));
+    }
+
+    return this._byNative.get(native);
+  }
+
+  /** Recent picks that still exist in the data, newest first. Never in inline mode. */
+  private recentEmojis(): ProcessedEmoji[] {
+    if (this._inline) {
+      return [];
+    }
+
+    return loadRecent()
+      .map(native => this.emojiByNative(native))
+      .filter((emoji): emoji is ProcessedEmoji => emoji !== undefined);
+  }
+
+  /**
+   * Hands a pick to the host and remembers it for the Recent row.
+   * @param emoji - the picked emoji
+   * @param origin - where its glyph was on screen
+   */
+  private select(emoji: ProcessedEmoji, origin: DOMRect | undefined): void {
+    if (!this._inline) {
+      saveRecent([emoji.native, ...loadRecent().filter(native => native !== emoji.native)].slice(0, RECENT_LIMIT));
+    }
+
+    this.onSelect(this.getSkinnedNative(emoji), origin);
   }
 
   private handleEmojiKeydown(event: KeyboardEvent): void {
@@ -786,16 +998,14 @@ export class EmojiPicker {
 
   // ─── Skin Tone Selector ─────────────────────────────────────
 
+  /**
+   * The skin-tone dial. Each tone is a real button clipped to its ring segment, so it
+   * keeps its name, focus and keyboard order while only its segment takes clicks.
+   */
   private buildSkinTonePopover(): HTMLElement {
     const popover = document.createElement('div');
 
     popover.setAttribute('data-emoji-picker-skin-tone', '');
-    popover.className = [
-      'absolute end-0 top-full mt-1.5 z-20',
-      'flex items-center gap-0.5 p-1',
-      'bg-white border border-neutral-200/70 shadow-lg',
-      'theme-dark:bg-neutral-800 theme-dark:border-neutral-700/50',
-    ].join(' ');
     popover.hidden = true;
     popover.setAttribute('role', 'group');
     popover.setAttribute('aria-label', this.i18n.t(SKIN_TONE_KEY));
@@ -818,123 +1028,414 @@ export class EmojiPicker {
       this._skinToneButtons[(index + direction + this._skinToneButtons.length) % this._skinToneButtons.length]?.focus();
     });
 
-    const indicator = document.createElement('span');
-
-    indicator.setAttribute('data-emoji-skin-indicator', '');
-    indicator.setAttribute('aria-hidden', 'true');
-    popover.appendChild(indicator);
-    popover.style.setProperty('--emoji-skin-index', String(this._skinTone));
-    this._skinToneButtons = [];
-
-    for (const [index, hand] of SKIN_TONE_HANDS.entries()) {
+    this._skinToneButtons = SKIN_TONE_COLORS.map((color, index) => {
       const btn = document.createElement('button');
+      const box = skinSegmentBox(index);
 
       btn.type = 'button';
-      this.updateSkinGlyph(btn, hand);
-      btn.style.setProperty('--emoji-tone-order', String(index));
       btn.setAttribute('aria-label', `${this.i18n.t(SKIN_TONE_KEY)} ${index + 1}`);
-      btn.className = [
-        'w-[32px] h-[32px] flex items-center justify-center',
-        'text-[1.2rem] leading-none cursor-pointer select-none',
-        'hover:bg-neutral-100 theme-dark:hover:bg-neutral-700',
-        'active:scale-90 transition-all duration-100',
-      ].join(' ');
-      this.applySkinToneActiveStyle(btn, index === this._skinTone);
-      btn.addEventListener('click', () => {
-        this.setSkinTone(index);
-        this.closeSkinTonePopover(true);
-      });
+      // Each button covers only its own segment, so its centre (where pointer tools aim) is on the tone.
+      btn.style.left = `${box.x}px`;
+      btn.style.top = `${box.y}px`;
+      btn.style.width = `${box.width}px`;
+      btn.style.height = `${box.height}px`;
+      btn.style.setProperty('transform-origin', `${SKIN_DIAL.cx - box.x}px ${SKIN_DIAL.cy - box.y}px`);
+      btn.style.setProperty('--emoji-tone-color', color);
+      btn.style.setProperty('--emoji-tone-shape', `path('${this.skinSegmentPath(index, 0, box)}')`);
+      btn.style.setProperty('--emoji-tone-shape-hover', `path('${this.skinSegmentPath(index, SKIN_DIAL.hover, box)}')`);
+      btn.style.setProperty('--emoji-tone-shape-on', `path('${this.skinSegmentPath(index, SKIN_DIAL.chosen, box)}')`);
+      btn.style.setProperty('--emoji-tone-fill', `path('${this.skinSegmentPath(index, 0, box, SKIN_DIAL.rim)}')`);
+      btn.style.setProperty('--emoji-tone-fill-hover', `path('${this.skinSegmentPath(index, SKIN_DIAL.hover, box, SKIN_DIAL.rim)}')`);
+      btn.style.setProperty('--emoji-tone-fill-on', `path('${this.skinSegmentPath(index, SKIN_DIAL.chosen, box, SKIN_DIAL.rim)}')`);
+      btn.addEventListener('click', () => this.chooseSkinTone(index));
       popover.appendChild(btn);
-      this._skinToneButtons.push(btn);
-    }
+
+      return btn;
+    });
+    this.syncSkinToneSegments();
+
+    // A clipped button cannot show an outline, so a keyboard ring traces its segment instead.
+    const ring = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const ringPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+
+    ring.setAttribute('data-emoji-skin-focus', '');
+    ring.setAttribute('aria-hidden', 'true');
+    ring.setAttribute('hidden', '');
+    ring.appendChild(ringPath);
+    popover.appendChild(ring);
+    popover.addEventListener('focusin', (event) => {
+      const index = this._skinToneButtons.indexOf(event.target as HTMLButtonElement);
+      const keyboard = index >= 0 && this.isKeyboardFocus(this._skinToneButtons[index]);
+
+      ring.toggleAttribute('hidden', !keyboard);
+
+      if (keyboard) {
+        ringPath.setAttribute('d', this.skinSegmentPath(index, SKIN_DIAL.chosen));
+      }
+    });
+    popover.addEventListener('focusout', () => {
+      ring.setAttribute('hidden', '');
+    });
 
     return popover;
   }
 
-  private applySkinToneActiveStyle(btn: HTMLButtonElement, active: boolean): void {
-    const classes = ['bg-neutral-100', 'theme-dark:bg-neutral-700', 'ring-2', 'ring-neutral-300/60', 'theme-dark:ring-neutral-600/60'];
+  /**
+   * A ring segment in pixels; `grow` reaches the outer edge further out.
+   * @param index - the tone
+   * @param grow - how far past the ring the outer edge reaches
+   * @param origin - draw relative to this box instead of the dial box
+   * @param inset - pull every edge in by this many pixels (the tone inside its rim)
+   */
+  private skinSegmentPath(index: number, grow: number, origin = { x: 0, y: 0 }, inset = 0): string {
+    const { cx, cy, inner: ringInner, outer, gap: ringGap, span } = SKIN_DIAL;
+    const r = outer + grow - inset;
+    const inner = ringInner + inset;
+    const gap = ringGap + inset;
+    const mid = skinToneAngle(index);
+    // A fixed 1px gap at both radii keeps the seams even.
+    const at = (radius: number, angle: number): string =>
+      `${(cx + Math.cos(angle) * radius - origin.x).toFixed(2)} ${(cy + Math.sin(angle) * radius - origin.y).toFixed(2)}`;
+    const o0 = mid + span / 2 - gap / r, o1 = mid - span / 2 + gap / r;
+    const i0 = mid + span / 2 - gap / inner, i1 = mid - span / 2 + gap / inner;
 
-    btn.setAttribute('aria-pressed', String(active));
+    return `M${at(r, o0)} A${r} ${r} 0 0 0 ${at(r, o1)} L${at(inner, i1)} A${inner} ${inner} 0 0 1 ${at(inner, i0)} Z`;
+  }
 
-    if (active) {
-      btn.classList.add(...classes);
-    } else {
-      btn.classList.remove(...classes);
+  /**
+   * The dial hangs centred under its toggle; next to the picker's edge (the inline ":"
+   * picker puts the toggle at the far end) it shifts back inside, as the picker clips it.
+   */
+  private keepSkinDialInside(): void {
+    const margin = 4;
+
+    this._skinTonePopover.style.removeProperty('--emoji-skin-shift');
+
+    const dial = this._skinTonePopover.getBoundingClientRect();
+    const bounds = this._element.getBoundingClientRect();
+
+    if (dial.width === 0 || bounds.width === 0) {
+      return;
+    }
+
+    const shift = Math.min(0, bounds.right - margin - dial.right) + Math.max(0, bounds.left + margin - dial.left);
+
+    if (shift !== 0) {
+      this._skinTonePopover.style.setProperty('--emoji-skin-shift', `${shift}px`);
+    }
+  }
+
+  /** Engines without `:focus-visible` in `matches()` (jsdom) count as pointer focus. */
+  private isKeyboardFocus(element: Element): boolean {
+    try {
+      return element.matches(':focus-visible');
+    } catch {
+      return false;
+    }
+  }
+
+  /** Making the dial inert drops focus without a focusout, so the ring is hidden by hand. */
+  private hideSkinToneFocusRing(): void {
+    this._skinTonePopover.querySelector('[data-emoji-skin-focus]')?.setAttribute('hidden', '');
+  }
+
+  private syncSkinToneSegments(): void {
+    for (const [index, btn] of this._skinToneButtons.entries()) {
+      btn.setAttribute('aria-pressed', String(index === this._skinTone));
+    }
+  }
+
+  private paintSkinToneToggle(): void {
+    this._skinToneToggle.setAttribute('data-emoji-skin-current', String(this._skinTone));
+    this._skinToneToggle.style.setProperty('--emoji-skin-dot', SKIN_TONE_COLORS[this._skinTone] ?? SKIN_TONE_COLORS[0]);
+  }
+
+  private skinMotion(): boolean {
+    return typeof this._skinTonePopover.animate === 'function' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
+  /**
+   * A tracked animation; resolves when it ends or is stopped. It stays tracked after it
+   * ends: a `fill: 'forwards'` fold keeps its segment hidden until stopSkinToneMotion cancels it.
+   */
+  private animateSkin(element: Element, frames: Keyframe[], options: KeyframeAnimationOptions): Promise<void> {
+    const animation = element.animate(frames, options);
+
+    this._skinToneAnimations.add(animation);
+
+    return animation.finished.then(() => undefined, () => undefined);
+  }
+
+  private skinDelay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const id = window.setTimeout(() => {
+        this._skinToneTimers.delete(id);
+        resolve();
+      }, ms);
+
+      this._skinToneTimers.add(id);
+    });
+  }
+
+  /** Stops every dial animation and timer, drops the landing circle and paints a pending tone. */
+  private stopSkinToneMotion(): void {
+    for (const animation of this._skinToneAnimations) {
+      animation.cancel();
+    }
+
+    for (const id of this._skinToneTimers) {
+      window.clearTimeout(id);
+    }
+
+    this._skinToneAnimations.clear();
+    this._skinToneTimers.clear();
+    this._skinTonePopover.querySelector('[data-emoji-skin-blob]')?.remove();
+
+    for (const btn of this._skinToneButtons) {
+      btn.style.removeProperty('opacity');
+    }
+
+    if (this._skinTonePending) {
+      this._skinTonePending = false;
+      this.paintSkinTone(false);
     }
   }
 
   private toggleSkinTonePopover(): void {
     if (!this._skinTonePopover.hidden && this._skinToneCloseAnimation === null) {
-      this.closeSkinTonePopover();
+      this.closeSkinTonePopover(true);
 
       return;
     }
 
-    this._skinToneCloseAnimation?.cancel();
+    this.stopSkinToneMotion();
     this._skinToneCloseAnimation = null;
     this._skinTonePopover.inert = false;
     this._skinTonePopover.removeAttribute('aria-hidden');
-    this._skinTonePopover.style.setProperty('--emoji-skin-index', String(this._skinTone));
     this._skinTonePopover.hidden = false;
+    this.keepSkinDialInside();
+    this.syncSkinToneSegments();
     this.updateSkinToneToggleActive();
+
+    if (this.skinMotion()) {
+      // A folding fan: every segment starts stacked on the first and unfolds into place.
+      for (const [index, btn] of this._skinToneButtons.entries()) {
+        const from = toDegrees(skinToneAngle(0) - skinToneAngle(index));
+
+        void this.animateSkin(btn, [
+          { transform: `rotate(${from}deg) scale(0.55)`, opacity: index === 0 ? 0 : 1 },
+          { transform: `rotate(${from}deg) scale(0.55)`, opacity: 1, offset: 0.08 },
+          { transform: 'none', opacity: 1 },
+        ], { duration: 400, delay: index * 22, easing: SKIN_SPRING, fill: 'backwards' });
+      }
+    }
+
     if (!this._inline) {
       this._skinToneButtons[this._skinTone]?.focus();
     }
   }
 
+  /**
+   * Hides the dial. Animated (toggle, click elsewhere in the picker), the fan folds shut
+   * onto the first tone first. Unanimated (picker close, Escape), it stops every motion at once.
+   * @param animate - fold before hiding
+   */
   private closeSkinTonePopover(animate = false): void {
-    this._skinToneCloseAnimation?.cancel();
-    this._skinToneCloseAnimation = null;
-
     if (this._open && !this._inline && this._skinTonePopover.contains(document.activeElement)) {
       this._skinToneToggle.focus();
     }
 
+    this.hideSkinToneFocusRing();
     this._skinTonePopover.inert = true;
     this._skinTonePopover.setAttribute('aria-hidden', 'true');
 
-    if (animate && this._open && typeof this._skinTonePopover.animate === 'function'
-      && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      this._skinToneCloseAnimation = this._skinTonePopover.animate([
-        { opacity: 1, transform: 'scale(1)' },
-        { opacity: 0, transform: 'translateY(-3px) scale(0.96)' },
-      ], { duration: 140, delay: 120, easing: 'ease-in', fill: 'forwards' });
-      this._skinToneCloseAnimation.onfinish = () => this.closeSkinTonePopover();
-    } else {
+    if (!animate || !this._open || this._skinTonePopover.hidden || !this.skinMotion()) {
+      this.stopSkinToneMotion();
+      this._skinToneCloseAnimation = null;
       this._skinTonePopover.hidden = true;
+      this.updateSkinToneToggleActive();
+
+      return;
     }
 
+    const folds = this._skinToneButtons.map((btn, index) => {
+      return this.animateSkin(btn, [
+        { transform: 'none', opacity: 1 },
+        { transform: `rotate(${toDegrees(skinToneAngle(0) - skinToneAngle(index))}deg) scale(0.5)`, opacity: 0 },
+      ], { duration: 260, delay: (SKIN_TONE_COLORS.length - 1 - index) * 14, easing: SKIN_FOLD, fill: 'forwards' });
+    });
+
+    this._skinToneCloseAnimation = [...this._skinToneAnimations].at(-1) ?? null;
     this.updateSkinToneToggleActive();
+    void Promise.all(folds).then(() => {
+      if (this._skinTonePopover.inert) {
+        this.closeSkinTonePopover();
+      }
+    });
   }
 
   private updateSkinToneToggleActive(): void {
     const active = !this._skinTonePopover.hidden && this._skinToneCloseAnimation === null;
 
     this._skinToneToggle.setAttribute('aria-expanded', String(active));
+  }
 
-    const classes = ['bg-neutral-100', 'theme-dark:bg-neutral-700'];
+  /**
+   * Chooses a tone. With motion, the other tones fold shut behind it and the chosen
+   * segment rounds into a circle on its flight to the toggle, landing at the dot's size;
+   * the dot and the grid take the tone when it lands.
+   * @param index - the chosen tone
+   */
+  private chooseSkinTone(index: number): void {
+    const motion = this._open && this.skinMotion();
 
-    if (active) {
-      this._skinToneToggle.classList.add(...classes);
-    } else {
-      this._skinToneToggle.classList.remove(...classes);
+    this.setSkinTone(index, motion);
+
+    if (!motion) {
+      this.closeSkinTonePopover();
+
+      return;
+    }
+
+    this.hideSkinToneFocusRing();
+    this._skinTonePopover.inert = true;
+    this._skinTonePopover.setAttribute('aria-hidden', 'true');
+
+    // Inline mode leaves the caret in the document.
+    if (!this._inline) {
+      this._skinToneToggle.focus({ preventScroll: true });
+    }
+
+    const folds = this._skinToneButtons.map((btn, other) => {
+      if (other === index) {
+        return Promise.resolve();
+      }
+
+      return this.animateSkin(btn, [
+        { transform: 'none', opacity: 1 },
+        { transform: `rotate(${toDegrees(skinToneAngle(index) - skinToneAngle(other))}deg) scale(0.8)`, opacity: 0 },
+      ], { duration: 220, delay: Math.abs(other - index) * 16, easing: SKIN_FOLD, fill: 'forwards' });
+    });
+
+    this._skinToneCloseAnimation = [...this._skinToneAnimations].at(-1) ?? null;
+    this.updateSkinToneToggleActive();
+
+    // The circle lifts off while the fold is still closing behind it.
+    void this.skinDelay(120)
+      .then(() => this.flySkinToneHome(index))
+      .then(() => Promise.all(folds))
+      .then(() => {
+        if (!this._skinTonePending) {
+          return;
+        }
+
+        this._skinTonePending = false;
+        // Close first: closing stops every dial animation, and the dot's pop must survive it.
+        this.closeSkinTonePopover();
+        this.paintSkinTone(true);
+      });
+  }
+
+  /**
+   * The chosen segment morphs into a circle while it flies to the toggle dot. Both shapes
+   * are traced with the same points in the same direction, so the outline never twists.
+   */
+  private async flySkinToneHome(index: number): Promise<void> {
+    const btn = this._skinToneButtons[index];
+
+    if (btn === undefined || !this._skinTonePending) {
+      return;
+    }
+
+    const { cx, cy, inner, outer, chosen, span } = SKIN_DIAL;
+    const steps = 24;
+    const mid = skinToneAngle(index);
+    const sample = (radius: number, from: number, to: number): Array<{ x: number; y: number }> =>
+      Array.from({ length: steps }, (_, k) => {
+        const angle = from + (to - from) * (k / (steps - 1));
+
+        return { x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius };
+      });
+    const wedge = [
+      ...sample(outer + chosen, mid + span / 2, mid - span / 2),
+      ...sample(inner, mid - span / 2, mid + span / 2),
+    ];
+    const centre = { x: cx + Math.cos(mid) * (inner + outer) / 2, y: cy + Math.sin(mid) * (inner + outer) / 2 };
+    const box = this._skinTonePopover.getBoundingClientRect();
+    const dot = this._skinToneToggle.querySelector('[data-emoji-skin-dot]')?.getBoundingClientRect();
+    const target = dot === undefined || dot.width === 0
+      ? { x: cx, y: -14 }
+      : { x: dot.left + dot.width / 2 - box.left, y: dot.top + dot.height / 2 - box.top };
+    const radius = dot === undefined || dot.width === 0 ? 8 : dot.width / 2;
+    const signedArea = wedge.reduce((sum, point, k) => {
+      const next = wedge[(k + 1) % wedge.length];
+
+      return sum + point.x * next.y - next.x * point.y;
+    }, 0);
+    const start = Math.atan2(wedge[0].y - centre.y, wedge[0].x - centre.x);
+    const directions = wedge.map((_, k) => start + Math.sign(signedArea) * ((2 * Math.PI * k) / wedge.length));
+    const bend = { x: (centre.x + target.x) / 2 + 34, y: (centre.y + target.y) / 2 + 8 };
+    const ease = (t: number): number => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+    const frames = Array.from({ length: 13 }, (_, k) => {
+      const t = k / 12;
+      const u = 1 - t;
+      const pos = {
+        x: u * u * centre.x + 2 * u * t * bend.x + t * t * target.x,
+        y: u * u * centre.y + 2 * u * t * bend.y + t * t * target.y,
+      };
+      // Fully round by mid-flight, so it travels as a circle.
+      const round = Math.min(1, t / 0.5);
+      const shape = round * round * (3 - 2 * round);
+      const r = 13 + (radius - 13) * ease(t);
+      const points = wedge.map((point, j) => {
+        const wx = point.x + pos.x - centre.x;
+        const wy = point.y + pos.y - centre.y;
+        const x = wx + (pos.x + Math.cos(directions[j]) * r - wx) * shape;
+        const y = wy + (pos.y + Math.sin(directions[j]) * r - wy) * shape + SKIN_BLOB_TOP;
+
+        return `${x.toFixed(1)}px ${y.toFixed(1)}px`;
+      });
+
+      return { clipPath: `polygon(${points.join(', ')})` };
+    });
+    const blob = document.createElement('span');
+
+    blob.setAttribute('data-emoji-skin-blob', '');
+    blob.setAttribute('aria-hidden', 'true');
+    blob.style.setProperty('--emoji-tone-color', SKIN_TONE_COLORS[index] ?? SKIN_TONE_COLORS[0]);
+    blob.style.clipPath = frames[0].clipPath;
+    this._skinTonePopover.appendChild(blob);
+    btn.style.opacity = '0';
+    await this.animateSkin(blob, frames, { duration: 380, easing: 'linear', fill: 'forwards' });
+    blob.remove();
+  }
+
+  /**
+   * Stores a tone. The dot and the grid follow at once, or wait for the landing.
+   * @param index - the tone
+   * @param deferPaint - leave the repaint to the landing circle
+   */
+  private setSkinTone(index: number, deferPaint = false): void {
+    this._skinTone = index;
+    saveSkinTone(index);
+    this.syncSkinToneSegments();
+    this._skinTonePending = deferPaint;
+
+    if (!deferPaint) {
+      this.paintSkinTone(true);
     }
   }
 
-  private setSkinTone(index: number): void {
-    this._skinTone = index;
-    saveSkinTone(index);
+  private paintSkinTone(animate: boolean): void {
+    this.paintSkinToneToggle();
 
-    // Update the hand toggle to reflect current skin tone
-    this.updateSkinGlyph(this._skinToneToggle, SKIN_TONE_HANDS[index], true);
-    this._skinTonePopover.style.setProperty('--emoji-skin-index', String(index));
+    const dot = this._skinToneToggle.querySelector('[data-emoji-skin-dot]');
 
-    // Update skin tone popover button visuals
-    for (const [i, btn] of this._skinToneButtons.entries()) {
-      this.applySkinToneActiveStyle(btn, i === index);
+    if (animate && dot !== null && this._open && this.skinMotion()) {
+      void this.animateSkin(dot, [{ transform: 'scale(0.4)' }, { transform: 'scale(1.35)', offset: 0.55 }, { transform: 'none' }], { duration: 260, easing: SKIN_SPRING });
     }
 
-    this.applySkinToneToGrid(true);
+    this.applySkinToneToGrid(animate);
   }
 
   private updateSkinGlyph(host: HTMLElement, native: string, animate = false, delay = 0): void {
@@ -955,7 +1456,6 @@ export class EmojiPicker {
 
     if (animate && typeof glyph.animate === 'function'
       && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      // The outer glyph owns the reel transform; the inner span owns the swap.
       glyph.animate([
         { transform: 'translateY(8px) rotateX(-65deg) scale(0.8)', opacity: 0 },
         { transform: 'translateY(-2px) rotateX(0deg) scale(1.08)', opacity: 1, offset: 0.65 },
@@ -1013,7 +1513,7 @@ export class EmojiPicker {
       return;
     }
 
-    this.onSelect(this.getSkinnedNative(emoji));
+    this.select(emoji, this._element.querySelector('[data-emoji-picker-random]')?.getBoundingClientRect());
   }
 
   private scheduleScrollEffects(): void {
@@ -1026,18 +1526,7 @@ export class EmojiPicker {
       }
 
       this.updateActiveNav();
-      this.updateReel();
     });
-  }
-
-  private resetReel(): void {
-    for (const glyph of this._curledGlyphs) {
-      glyph.style.removeProperty('transform');
-      glyph.style.removeProperty('transform-origin');
-      glyph.style.removeProperty('opacity');
-    }
-
-    this._curledGlyphs.clear();
   }
 
   /**
@@ -1081,115 +1570,13 @@ export class EmojiPicker {
     }
   }
 
-  /**
-   * Rows from the section's top, from rects: offsetTop rounds at every
-   * offsetParent, and a deferred section is one, so summed offsets drop up
-   * to a pixel — a visible share of the curl. Glyphs must not be curled.
-   */
-  private measureReelRows(section: HTMLElement, sectionTop: number, scale: number): ReelRow[] {
-    const rows: ReelRow[] = [];
-
-    for (const item of section.querySelectorAll<HTMLElement>('[data-emoji-native], [data-emoji-section-title]')) {
-      const glyph = item.firstElementChild;
-
-      if (!(glyph instanceof HTMLElement)) {
-        continue;
-      }
-
-      // Measure the glyph, not its box: the band is one glyph deep, and a
-      // section heading's box is mostly padding, so measuring that curls the
-      // label a padding-height early — exactly where scrollToSection lands.
-      const height = glyph.offsetHeight;
-
-      if (height === 0) {
-        continue;
-      }
-
-      const top = (glyph.getBoundingClientRect().top - sectionTop) / scale;
-      const row = rows.at(-1);
-
-      if (row?.top === top) {
-        row.glyphs.push(glyph);
-      } else {
-        rows.push({ top, height, glyphs: [glyph] });
-      }
-    }
-
-    return rows;
-  }
-
-  /** Rects shrink with the opening animation's scale; layout does not. */
-  private openingScale(): number {
-    const match = /^matrix\((?:[^,]+,){3}([^,]+)/.exec(getComputedStyle(this._element).transform);
-    const scale = match === null ? NaN : parseFloat(match[1]);
-
-    return scale > 0 ? scale : 1;
-  }
-
-  private updateReel(): void {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      || this._body.scrollHeight <= this._body.clientHeight) {
-      this.resetReel();
-
-      return;
-    }
-
-    const viewTop = this._body.scrollTop;
-    const viewBottom = viewTop + this._body.clientHeight;
-    const sections = this.sectionsInView();
-
-    // A curled glyph's rect is not its row.
-    if (sections.some(section => !this._reelRows.has(section))) {
-      this.resetReel();
-    }
-
-    const scale = this.openingScale();
-    const bodyTop = this._body.getBoundingClientRect().top;
-    const rows = sections.flatMap(section => {
-      const sectionTop = section.getBoundingClientRect().top;
-      // Measure after layout changes, not on every scroll frame.
-      const sectionRows = this._reelRows.get(section) ?? this.measureReelRows(section, sectionTop, scale);
-      const top = (sectionTop - bodyTop) / scale - this._body.clientTop + viewTop;
-
-      this._reelRows.set(section, sectionRows);
-
-      return sectionRows.map(row => ({ ...row, top: top + row.top }));
-    });
-
-    this.resetReel();
-
-    for (const row of rows) {
-      if (row.top + row.height <= viewTop || row.top >= viewBottom) {
-        continue;
-      }
-
-      // Start one row from the edge; waiting for clipping hides most of the curl.
-      const center = row.top + row.height / 2;
-      const topCurl = viewTop > 0 ? Math.max(0, 1 - (center - viewTop) / row.height) : 0;
-      const bottomCurl = viewBottom < this._body.scrollHeight ? Math.max(0, 1 - (viewBottom - center) / row.height) : 0;
-      const curl = Math.min(1, Math.max(topCurl, bottomCurl));
-
-      if (curl === 0) {
-        continue;
-      }
-
-      const atTop = topCurl >= bottomCurl;
-      const tilt = (REEL_DISTORTION.maxTiltDeg * curl * (atTop ? 1 : -1)).toFixed(2);
-      const scaleX = (1 - REEL_DISTORTION.maxSquashX * curl).toFixed(3);
-      const scaleY = (1 - REEL_DISTORTION.maxSquashY * curl).toFixed(3);
-
-      for (const glyph of row.glyphs) {
-        glyph.style.transform = `perspective(${REEL_DISTORTION.perspective}px) rotateX(${tilt}deg) scaleX(${scaleX}) scaleY(${scaleY})`;
-        glyph.style.transformOrigin = atTop ? 'center bottom' : 'center top';
-        glyph.style.opacity = (1 - REEL_DISTORTION.maxDim * curl).toFixed(3);
-        this._curledGlyphs.add(glyph);
-      }
-    }
-  }
-
   // ─── Category Navigation ──────────────────────────────────
 
-  private buildCategoryNav(visibleCategories: Set<string>): void {
+  /**
+   * @param visibleCategories - categories that have a section to jump to
+   * @param shownCategories - categories that get a button; one with no section is disabled
+   */
+  private buildCategoryNav(visibleCategories: Set<string>, shownCategories: Set<string> = visibleCategories): void {
     this._nav.innerHTML = '';
 
     const indicator = document.createElement('span');
@@ -1200,8 +1587,8 @@ export class EmojiPicker {
     this._navButtons.clear();
     this._activeNavId = '';
 
-    for (const [catId, catIcon] of CATEGORY_NAV) {
-      if (!visibleCategories.has(catId)) {
+    for (const [catId, catIcon, chipKey] of CATEGORY_NAV) {
+      if (!shownCategories.has(catId)) {
         continue;
       }
 
@@ -1209,9 +1596,20 @@ export class EmojiPicker {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.innerHTML = catIcon;
-      onHover(btn, catLabel, { placement: 'top', delay: 300 });
+
+      if (this._inline) {
+        onHover(btn, catLabel, { placement: 'top', delay: 300 });
+      } else {
+        const chip = document.createElement('span');
+
+        chip.setAttribute('data-emoji-nav-label', '');
+        chip.textContent = chipKey === undefined ? catLabel : this.i18n.t(chipKey);
+        btn.appendChild(chip);
+      }
+
       btn.setAttribute('aria-label', catLabel);
       btn.setAttribute('data-emoji-nav', catId);
+      btn.disabled = !visibleCategories.has(catId);
       btn.className = [
         'flex-1 h-[36px] flex items-center justify-center',
         'cursor-pointer opacity-50',
@@ -1330,19 +1728,20 @@ export class EmojiPicker {
     if (query.trim() === '') {
       this._announcer.textContent = '';
       this.setNavHidden(false);
+      this.setFlat(false);
       this.renderEmojiGrid(this._allEmojis);
 
       return;
     }
 
-    this.setNavHidden(true);
-    // Uncapped: the grid renders every match, unlike the inline trigger's
-    // flat, length-limited menu.
     const results = searchEmojisRanked(this._allEmojis, query, this._localeData, UNCAPPED_RESULTS);
 
     this.announceResults(results.length);
 
     if (results.length === 0) {
+      this.setNavHidden(true);
+      this.setFlat(false);
+
       if (!this._showingEmptyState) {
         this.renderEmptyState();
       }
@@ -1350,22 +1749,61 @@ export class EmojiPicker {
       this._body.innerHTML = '';
       this._emojiButtons = [];
       this._focusedEmoji = null;
-      this._reelRows.clear();
-      this.resetReel();
       this._sectionEls.clear();
       this._showingEmptyState = false;
       this._hasFullGrid = false;
-
-      const byCategory = groupEmojisByCategory(results);
-
-      for (const [category, categoryEmojis] of byCategory) {
-        const section = this.buildSection(this.translateCategory(category), categoryEmojis);
-
-        section.setAttribute('data-emoji-section', category);
-        this._sectionEls.set(category, section);
-        this._body.appendChild(section);
-      }
+      this.renderResults(results);
     }
+
+    // A short list changes the menu's height, which moves a menu that sits above the caret.
+    if (this._inline && this._open && this._anchorEl !== null) {
+      this.position(this._anchorEl);
+    }
+  }
+
+  /**
+   * The full picker lists matches under category names, without its chips.
+   * The inline menu keeps its bar for a long list, and shows a short one as a
+   * single block in best-match order.
+   * @param results - the matches, best first
+   */
+  private renderResults(results: ProcessedEmoji[]): void {
+    const flat = this._inline && results.length <= INLINE_FLAT_MAX;
+
+    this.setFlat(flat);
+
+    if (flat) {
+      const section = document.createElement('div');
+
+      section.setAttribute('data-emoji-section', 'results');
+      section.appendChild(this.buildGrid(results));
+      this._body.appendChild(section);
+      this.setNavHidden(true);
+
+      return;
+    }
+
+    const byCategory = groupEmojisByCategory(results);
+
+    for (const [category, categoryEmojis] of byCategory) {
+      const section = this.buildSection(this.translateCategory(category), categoryEmojis);
+
+      section.setAttribute('data-emoji-section', category);
+      this._sectionEls.set(category, section);
+      this._body.appendChild(section);
+    }
+
+    if (this._inline) {
+      this.buildCategoryNav(new Set(byCategory.keys()), new Set(this._allEmojis.map(emoji => emoji.category)));
+      this.scheduleScrollEffects();
+    }
+
+    this.setNavHidden(!this._inline);
+  }
+
+  /** Publishes the short-list layout on the picker root, where the CSS reads it. */
+  private setFlat(flat: boolean): void {
+    this._element.toggleAttribute('data-emoji-picker-flat', flat);
   }
 
   /** Writes the current result count (or the empty message) to the live region. */
@@ -1379,12 +1817,21 @@ export class EmojiPicker {
     this._body.innerHTML = '';
     this._emojiButtons = [];
     this._focusedEmoji = null;
-    this._reelRows.clear();
-    this.resetReel();
     this._sectionEls.clear();
     this._showingEmptyState = false;
 
     const visibleCategories = new Set<string>();
+    const recent = this.recentEmojis();
+
+    this._renderedRecent = recent.map(emoji => emoji.native).join(' ');
+
+    if (recent.length > 0) {
+      // Outside _sectionEls: it has no chip, and the first chip stays current over it.
+      const section = this.buildSection(this.i18n.t(RECENT_EMOJIS_KEY), recent);
+
+      section.setAttribute('data-emoji-section', 'recent');
+      this._body.appendChild(section);
+    }
 
     if (this._curated) {
       const calloutEmojis = CURATED_CALLOUT_EMOJIS
@@ -1415,6 +1862,7 @@ export class EmojiPicker {
 
     this.buildCategoryNav(visibleCategories);
     this.setNavHidden(false);
+    this.setFlat(false);
     this._hasFullGrid = true;
 
     // Set initial active nav after layout
@@ -1425,8 +1873,6 @@ export class EmojiPicker {
     this._body.innerHTML = '';
     this._emojiButtons = [];
     this._focusedEmoji = null;
-    this._reelRows.clear();
-    this.resetReel();
     this._showingEmptyState = true;
     this._sectionEls.clear();
     this._hasFullGrid = false;
@@ -1476,11 +1922,6 @@ export class EmojiPicker {
     }
 
     this._body.appendChild(empty);
-
-    if (this._inline) {
-      this._header.hidden = true;
-      this._body.appendChild(this._header);
-    }
   }
 
   private translateCategory(categoryId: string): string {
@@ -1504,16 +1945,11 @@ export class EmojiPicker {
     label.textContent = title;
     heading.appendChild(label);
 
-    if (this._inline && this._sectionEls.size === 0) {
-      this._header.hidden = false;
-      heading.appendChild(this._header);
-    }
-
     section.appendChild(heading);
     section.appendChild(this.buildGrid(emojis));
 
     if (this._sectionEls.size > 0) {
-      // Must match the 8-column grid's media query in emoji-picker.css.
+      // Must match the grid columns and the 8-column media query in emoji-picker.css.
       const columns = window.matchMedia('(max-width: 380px)').matches ? 8 : 10;
 
       section.setAttribute('data-emoji-section-deferred', '');
@@ -1579,7 +2015,10 @@ export class EmojiPicker {
       const name = this.getDisplayName(emoji);
 
       button.setAttribute('aria-label', name);
-      onHover(button, name, { placement: 'bottom' });
+
+      if (this._inline) {
+        onHover(button, this.titleName(emoji), { placement: 'bottom' });
+      }
     }
   }
 
@@ -1619,10 +2058,14 @@ export class EmojiPicker {
         'transition-transform duration-75',
       ].join(' ');
       btn.addEventListener('click', () => {
-        this.onSelect(this.getSkinnedNative(emoji));
+        this.select(emoji, glyph.getBoundingClientRect());
         this.close();
       });
-      onHover(btn, this.getDisplayName(emoji), { placement: 'bottom' });
+
+      // The stage names the emoji under the pointer; inline mode has no stage.
+      if (this._inline) {
+        onHover(btn, this.titleName(emoji), { placement: 'bottom' });
+      }
       grid.appendChild(btn);
     }
 

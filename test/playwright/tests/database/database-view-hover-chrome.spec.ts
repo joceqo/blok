@@ -94,12 +94,12 @@ const THEMES = [
     pillBg: 'rgb(255, 255, 255)',
     pillBorder: 'rgb(240, 239, 237)',
     divider: 'rgba(42, 28, 0, 0.07)',
-    overlay: 'linear-gradient(rgba(33, 27, 23, 0.05), rgba(33, 27, 23, 0.05))',
+    overlay: 'rgba(33, 27, 23, 0.05)',
     chipBorder: 'rgb(255, 255, 255)',
     // research/26 §4d.
     chipHover: 'rgb(56, 56, 54)',
     questionBg: 'rgb(255, 255, 255)',
-    questionRing: 'rgb(182, 212, 243) 0px 0px 0px 0.5px inset',
+    questionRing: 'rgb(182, 212, 243) 0px 0px 0px 0px, rgb(182, 212, 243) 0px 0px 0px 0.5px inset',
     // research/21 §1k.
     answerBorder: 'rgb(240, 239, 237)',
   },
@@ -109,11 +109,11 @@ const THEMES = [
     pillBg: 'rgb(47, 47, 47)',
     pillBorder: 'rgb(44, 44, 43)',
     divider: 'rgba(255, 255, 243, 0.082)',
-    overlay: 'linear-gradient(rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.055))',
+    overlay: 'rgba(255, 255, 255, 0.055)',
     chipBorder: 'rgb(25, 25, 25)',
     chipHover: 'rgb(230, 229, 227)',
     questionBg: 'rgb(25, 25, 25)',
-    questionRing: 'rgb(53, 95, 139) 0px 0px 0px 0.5px inset',
+    questionRing: 'rgb(53, 95, 139) 0px 0px 0px 0px, rgb(53, 95, 139) 0px 0px 0px 0.5px inset',
     // research/21 §1k.
     answerBorder: 'rgb(44, 44, 43)',
   },
@@ -184,9 +184,11 @@ for (const theme of THEMES) {
       const bar = page.locator('[data-blok-database-timeline-bar][data-row-id="r1"]');
       const chip = page.locator('[data-blok-database-timeline-row][data-row-id="r2"] [data-blok-database-timeline-offscreen="after"]');
 
-      await expect(bar).toHaveCSS('background-image', 'none');
+      const tint = (): Promise<string> => bar.evaluate((el) => getComputedStyle(el, '::before').backgroundColor);
+
+      expect(await tint()).toBe('rgba(0, 0, 0, 0)');
       await bar.hover();
-      await expect(bar).toHaveCSS('background-image', theme.overlay);
+      await expect.poll(tint).toBe(theme.overlay);
       await expect(chip).toBeVisible();
       await expect(chip).toHaveCSS('border-top-color', theme.chipBorder);
       await expect(chip).toHaveCSS('border-top-width', '1px');
@@ -214,7 +216,7 @@ for (const theme of THEMES) {
 
       await expect(question).toHaveCSS('background-color', theme.questionBg);
       await expect(question).toHaveCSS('box-shadow', theme.questionRing);
-      await expect(question.getByRole('textbox').first()).toHaveCSS('border-top-color', theme.answerBorder);
+      await expect(question.getByRole('textbox', { name: 'Name', exact: true })).toHaveCSS('border-top-color', theme.answerBorder);
       await expect(question).toHaveCSS('border-top-left-radius', '12px');
       await expect(question).toHaveCSS('padding-top', '12px');
       await expect(chip).toHaveAccessibleName('Edit question');

@@ -131,6 +131,19 @@ export interface CaretSnapshot {
   offset: number;
   /** Offset of the selection's other end when it was a range inside the same input. */
   end?: number;
+  /**
+   * The selection's end when the range ended in another block's input. Kept
+   * apart from `end` because a peer rewrite rebases `end` by this block's text.
+   */
+  endIn?: { blockId: string; inputIndex: number; offset: number };
+  /** The range's anchor was at its end (Shift+ArrowUp), so restore keeps it there. */
+  backward?: true;
+  /** The caret was in the page title. `blockId` is then empty. */
+  title?: true;
+  /** Block-selected ids, with no caret. `blockId` is then the first of them. */
+  blocks?: string[];
+  /** A selection a tool held itself (a table cell range). It wins over the caret fields. */
+  toolSelection?: { blockId: string; state: Record<string, unknown> };
 }
 
 /**

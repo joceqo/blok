@@ -12,6 +12,7 @@ import { generateKeyBetween } from '../../../../src/shared/database/fractional-i
 import type { Blok, OutputBlockData } from '@/types';
 import { ensureBlokBundleBuilt } from '../helpers/ensure-build';
 import { expect, gotoTestPage, test } from '../helpers/shared-page';
+import { POINTER_MENU_WINDOW, expectPointerMenu, placeAt } from '../helpers/pointer-menu';
 
 /** Valid fractional keys. `a000`-style keys are ones the library rejects. */
 const rowKey = (i: number): string => Array.from({ length: i }).reduce<string>((key) => generateKeyBetween(key, null), 'a0');
@@ -137,10 +138,9 @@ test.describe('gallery', () => {
 
     await expect(page.locator('[data-blok-database-gallery-card]')).toHaveCount(3);
     await expect(card(page, 'r1').locator('[data-blok-database-gallery-title]')).toHaveText('Launch');
-    // findings-listgallery L13: the preview is 16:9 of the card width at every card size.
-    const width = (await card(page, 'r1').boundingBox())?.width ?? 0;
-
-    expect((await card(page, 'r1').locator('[data-blok-database-gallery-preview]').boundingBox())?.height).toBeCloseTo(width * 9 / 16, 0);
+    // research/07, 08:317, listgallery.png: a medium preview is 146.25px tall; the card adds the 38.5px title.
+    expect((await card(page, 'r1').locator('[data-blok-database-gallery-preview]').boundingBox())?.height).toBeCloseTo(146.25, 1);
+    expect((await card(page, 'r1').boundingBox())?.height).toBeCloseTo(184.75, 1);
     await expect(page.locator('[data-blok-database-gallery-grid]')).toHaveCSS('gap', '16px');
   });
 
@@ -176,10 +176,8 @@ test.describe('gallery', () => {
 
     await mount(page, blocks({ type: 'gallery', cardPreview: 'property:p-image' }, rows));
 
-    // findings-listgallery L13: the empty cover keeps the 16:9 preview of the card width.
-    const width = (await card(page, 'r2').boundingBox())?.width ?? 0;
-
-    expect((await card(page, 'r2').locator('[data-blok-database-gallery-preview]').boundingBox())?.height).toBeCloseTo(width * 9 / 16, 0);
+    // The empty cover keeps the medium preview height (research/07, 08:317).
+    expect((await card(page, 'r2').locator('[data-blok-database-gallery-preview]').boundingBox())?.height).toBeCloseTo(146.25, 1);
   });
 
   test('"Page cover" shows the row\'s own cover, and follows a cover set in the drawer', async ({ page }) => {
@@ -198,7 +196,7 @@ test.describe('gallery', () => {
     await drawer(page).locator('[data-blok-database-drawer-add-cover]').click();
     const picker = page.getByRole('dialog', { name: 'Set cover image' });
 
-    await picker.getByRole('tab', { name: 'Link' }).click();
+    await picker.getByRole('button', { name: 'Link' }).click();
     await picker.getByRole('textbox', { name: 'Image URL' }).fill('https://example.com/new-cover.png');
     await picker.getByRole('button', { name: 'Insert' }).click();
 
@@ -213,6 +211,30 @@ test.describe('gallery', () => {
     const large = (await card(page, 'r1').boundingBox())?.width ?? 0;
 
     expect(large).toBeGreaterThan(small);
+  });
+
+  // notion-motion.md "Round 6", gallery card sizes: on a 692 wide grid Small is 3 x 220 with a 123.75 cover, Large 2 x 338 with 190.125.
+  test('small and large cards fill a 692 wide grid like Notion', async ({ page }) => {
+    const measure = async (size: string): Promise<{ widths: number[]; cover: number }> => {
+      await mount(page, blocks({ type: 'gallery', cardSize: size }));
+      await page.locator('[data-blok-database-gallery-grid]').evaluate((grid) => {
+        grid.style.setProperty('width', '692px');
+      });
+      const widths = await page.locator('[data-blok-database-gallery-card]').evaluateAll((cards) => cards.map((c) => c.getBoundingClientRect().width));
+      const cover = (await card(page, 'r1').locator('[data-blok-database-gallery-preview]').boundingBox())?.height ?? 0;
+
+      return { widths, cover };
+    };
+
+    const large = await measure('large');
+
+    expect(large.widths.slice(0, 2)).toEqual([ 338, 338 ]);
+    expect(large.cover).toBeCloseTo(190.125, 1);
+
+    const small = await measure('small');
+
+    expect(small.widths).toEqual([ 220, 220, 220 ]);
+    expect(small.cover).toBeCloseTo(123.75, 1);
   });
 
   test('"+ New" in the trailing card adds a row', async ({ page }) => {
@@ -311,11 +333,11 @@ test.describe('gallery', () => {
 
       await page.keyboard.press('Shift+ArrowUp');
       expect(await selectedIds(page)).toEqual(['r2', 'r3']);
-      await expect(page.locator('[data-blok-database-table-selection-bar]')).toBeVisible();
+      // notion-motion.md Round 12: a gallery pick shows no bar.
+      await expect(page.locator('[data-blok-database-table-selection-bar]')).toHaveCount(0);
 
       await page.keyboard.press('Escape');
       expect(await selectedIds(page)).toEqual([]);
-      await expect(page.locator('[data-blok-database-table-selection-bar]')).toHaveCount(0);
       await expect(drawer(page)).toHaveCount(0);
     });
 
@@ -434,15 +456,32 @@ test.describe('gallery', () => {
       await expect(page.locator('[data-blok-database-gallery]')).toHaveCSS('outline-style', 'none');
     });
 
-    test('Cmd/Ctrl-click and Shift-click pick cards for the selection bar instead of opening them', async ({ page }) => {
+    test('Cmd/Ctrl-click and Shift-click pick cards instead of opening them, and ⌘/ opens their action menu', async ({ page }) => {
       await mount(page, blocks({ type: 'gallery' }));
 
       await card(page, 'r1').click({ modifiers: ['ControlOrMeta'] });
       await card(page, 'r3').click({ modifiers: ['Shift'] });
 
       expect(await selectedIds(page)).toEqual(['r1', 'r2', 'r3']);
-      await expect(page.locator('[data-blok-database-table-selection-bar]')).toBeVisible();
       await expect(drawer(page)).toHaveCount(0);
+      // notion-motion.md Round 12: no bar; ⌘/ opens the menu with its search focused, and Escape closes only the menu.
+      await expect(page.locator('[data-blok-database-table-selection-bar]')).toHaveCount(0);
+      await page.keyboard.press('ControlOrMeta+/');
+      await expect(page.getByPlaceholder('Search actions…')).toBeFocused();
+      // On the first picked card's left edge and bottom, 265 wide, once the scale-in ends.
+      const cardBox = await card(page, 'r1').boundingBox();
+
+      if (cardBox === null) throw new Error('no layout');
+      await expect.poll(async () => {
+        const box = await page.locator('[data-blok-popover-opened]').locator('[data-blok-popover-container]').first().boundingBox();
+
+        return box === null ? null : [Math.round(box.x - cardBox.x), Math.round(box.y - (cardBox.y + cardBox.height)), Math.round(box.width)];
+      }).toEqual([0, 0, 265]);
+      await page.keyboard.press('Escape');
+      await expect(page.getByPlaceholder('Search actions…')).toHaveCount(0);
+      expect(await selectedIds(page)).toEqual(['r1', 'r2', 'r3']);
+      await page.keyboard.press('Escape');
+      expect(await selectedIds(page)).toEqual([]);
     });
 
     for (const modifier of ['Shift', 'ControlOrMeta'] as const) {
@@ -623,6 +662,25 @@ test.describe('calendar', () => {
     const oneDay = (await day(page, '2026-10-12').boundingBox())?.width ?? 0;
 
     expect(trip).toBeGreaterThan(oneDay * 2);
+  });
+
+  // notion-motion.md Round 25 §5: off, one 21px line in a 28px card; on, every card is 40 tall with at most two 17px lines.
+  test('"Wrap page titles" makes every card 40 tall with at most two title lines', async ({ page }) => {
+    const longTitle = 'A very long event title that keeps going across several lines to test wrapping';
+    const rows = [
+      { id: 'r1', properties: { 'p-title': longTitle, 'p-due': '2026-10-07' } },
+      { id: 'r2', properties: { 'p-title': 'Zed', 'p-due': '2026-10-08' } },
+    ];
+
+    await mount(page, blocks({ type: 'calendar' }, rows));
+    expect((await event(page, 'r1').boundingBox())?.height).toBe(28);
+    expect((await event(page, 'r2').boundingBox())?.height).toBe(28);
+
+    await mount(page, blocks({ type: 'calendar', wrapCells: true }, rows));
+    expect((await event(page, 'r1').boundingBox())?.height).toBe(40);
+    expect((await event(page, 'r2').boundingBox())?.height).toBe(40);
+    expect(await event(page, 'r1').locator('[data-blok-database-calendar-event-title]').evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+    expect(await event(page, 'r1').locator('[data-blok-database-calendar-event-title]').evaluate((el) => getComputedStyle(el).webkitLineClamp)).toBe('2');
   });
 
   // 78-alarm-calendar.png: 28px card, +24px per shown property, each on its own line and cut at the edge.
@@ -907,4 +965,25 @@ test.describe('calendar', () => {
     await expect(day(page, '2026-10-09').locator('[data-blok-database-calendar-event][data-row-id="r1"]')).toHaveCount(1);
     await expect(day(page, '2026-10-15').locator('[data-blok-database-calendar-event]')).toHaveCount(0);
   });
+});
+
+// notion-motion.md Round 59 §4: gallery cards and calendar events open their row menu at the pointer, with the flip.
+test.describe('right-click menu at the pointer', () => {
+  for (const [name, view, target] of [
+    ['a gallery card', { type: 'gallery' }, (page: Page) => card(page, 'r1')],
+    ['a calendar event', { type: 'calendar' }, (page: Page) => event(page, 'r1')],
+  ] as const) {
+    test(`${name}'s menu opens under the pointer near the top and above it near the bottom`, async ({ page }) => {
+      await page.setViewportSize(POINTER_MENU_WINDOW);
+      await mount(page, blocks(view));
+      await placeAt(page, target(page), 192);
+      const near = await expectPointerMenu(page, target(page));
+
+      await placeAt(page, target(page), 592);
+      const far = await expectPointerMenu(page, target(page));
+
+      expect(near.top).toBeCloseTo(near.y + 1, 0);
+      expect(far.top + far.height).toBeCloseTo(far.y, 0);
+    });
+  }
 });

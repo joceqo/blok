@@ -9,6 +9,8 @@
  * tool spreads {@link INLINE_TEXT_SANITIZE} into its `text` sanitize config.
  */
 import type { SanitizerConfig } from '../../types';
+import type { TagConfig } from '../../types/configs/sanitizer-config';
+import { ANNOTATION_ATTR, ANNOTATION_SUBTITLE_ATTR } from './annotation-mark';
 import { EQUATION_SOURCE_ATTR } from './equation-mark';
 import { preservePageReferenceAnchor } from './page-reference';
 
@@ -80,6 +82,51 @@ export const preserveEquationSpan = (node: Element): { [attr: string]: boolean |
 };
 
 /**
+ * The one `span` rule for text fields: an annotation span keeps its two
+ * attributes, an equation span follows {@link preserveEquationSpan}, and any
+ * other span is unwrapped.
+ * @param node - the cleaner's copy of the node, in its sandbox document
+ * @returns attribute config for a kept span, else `false` to drop the tag
+ */
+export const preserveInlineSpan = (node: Element): { [attr: string]: boolean | string } | false => {
+  const text = node.getAttribute(ANNOTATION_ATTR);
+
+  // Empty, not blank: the servers apply the same test and have no JS trim().
+  if (text === null || text === '') {
+    return preserveEquationSpan(node);
+  }
+
+  const subtitle = node.getAttribute(ANNOTATION_SUBTITLE_ATTR);
+
+  return subtitle !== null && subtitle !== ''
+    ? { [ANNOTATION_ATTR]: true, [ANNOTATION_SUBTITLE_ATTR]: true }
+    : { [ANNOTATION_ATTR]: true };
+};
+
+/**
+ * A `span` rule for a pipeline that does not use {@link INLINE_TEXT_SANITIZE}
+ * (the paste passes): an annotation span is kept whatever the tools say, and
+ * any other span follows the rule the tools gave.
+ * @param ordinaryRule - the span rule the pipeline would otherwise apply
+ */
+export const protectAnnotationSpan = (
+  ordinaryRule: SanitizerConfig[string] | undefined
+): ((node: Element) => TagConfig) => (node) => {
+  const text = node.getAttribute(ANNOTATION_ATTR);
+
+  if (text !== null && text !== '') {
+    return preserveInlineSpan(node);
+  }
+
+  if (typeof ordinaryRule === 'function') {
+    return ordinaryRule(node);
+  }
+
+  // 'plaintext' marks a data field, not a tag; as a tag rule it unwraps the span.
+  return ordinaryRule === 'plaintext' ? false : ordinaryRule ?? false;
+};
+
+/**
  * Tag → rule map for inline formatting that text-bearing block tools allow in
  * their `text` field. Spread this into a tool's `text` sanitize config so the
  * marks produced by the inline tools (bold, italic, underline, strikethrough,
@@ -100,5 +147,5 @@ export const INLINE_TEXT_SANITIZE = {
   sup: {},
   sub: {},
   mark: preserveColorStyles,
-  span: preserveEquationSpan,
+  span: preserveInlineSpan,
 } as unknown as SanitizerConfig;

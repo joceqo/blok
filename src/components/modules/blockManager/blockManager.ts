@@ -23,7 +23,7 @@ import { DATA_ATTR } from '../../constants';
 import { BlockChanged, BlockRendered, BlockReplayed } from '../../events';
 import { generateBlockId, logLabeled } from '../../utils';
 import { sanitizeBlocks } from '../../utils/sanitizer';
-import { acceptsChildren, isChildToolAllowed } from '../../utils/child-tools';
+import { acceptsChildren, isChildToolAllowed, resolveChildTool } from '../../utils/child-tools';
 import { assertHierarchy, validateHierarchy } from '../../utils/hierarchy-invariant';
 import { findOwn } from '../../utils/own-element';
 import { adoptsSectionOnConvert, endsSection } from '../../../shared/turn-into';
@@ -32,6 +32,8 @@ import type { TreePlacement } from '../../utils/tree-order';
 import { lastChildBefore } from '../api/block-placement';
 import { getBlockNestingDepth } from '../drag/utils/depthUtils';
 import { isInsideTableCell } from '../../../tools/table/table-restrictions';
+import { SELF_PLACING_PARENTS } from '../../../tools/nested-blocks';
+import { Dom as $ } from '../../dom';
 
 // Imported modules
 import { BlockEventBinder } from './event-binder';
@@ -46,6 +48,7 @@ import { BlockYjsSync } from './yjs-sync';
 import { carriesReadOnly } from '../../utils/read-only-blocks';
 import { captureDataKeySnapshot, type DataKeySnapshot } from '../yjs/document-store';
 import { agentAttribution, type Attribution } from '../../../shared/agent/attribution';
+import { REPARENT_IN_PLACE } from '../../utils/index-move-neighbours';
 
 interface AgentScopeInput {
   ids: ReadonlySet<string>;
@@ -72,6 +75,14 @@ interface SyncBlockDataOptions {
   normalize?: 'all' | 'missing' | 'record';
   /** Data the tool worked out itself from these keys: it joins the undo step that wrote their values. */
   derivedFrom?: readonly string[];
+  /** An undo step that is not an edit (`dispatchChange({ edit: false })`): no lastEditedAt/By stamp. */
+  nonEdit?: boolean;
+  /**
+   * A user edit held in an open reconcile window, landed early (see
+   * `BlockYjsSync.landHeldUserEdits`). Dropped only if a reconcile body runs
+   * when the save resolves.
+   */
+  heldUserEdit?: boolean;
 }
 
 /**
@@ -437,6 +448,9 @@ export class BlockManager extends Module {
    */
   private readonly emittedDataKeys = new WeakMap<Block, Set<string>>();
 
+  /** Blocks with a buffered write that is an edit, so its flush stamps lastEditedAt/By. */
+  private readonly editsAwaitingFlush = new Set<string>();
+
   /** True while `insertMany` renders a document; see `normalizeRenderedBlocks`. */
   private isRenderingDocument = false;
 
@@ -623,6 +637,9 @@ export class BlockManager extends Module {
         },
         replaceBlock: (index, newBlock) => {
           this.blocksStore.replace(index, newBlock);
+        },
+        reindentSubtree: (block) => {
+          this.hierarchy.reindentSubtree(block);
         },
         onBlockRemoved: (block, index, replaySource) => {
           this.operations.forgetCurrentBlock(block);
@@ -1139,16 +1156,22 @@ export class BlockManager extends Module {
    * always lands in ONE clean block at the seam of the deleted span, instead of
    * merging into whichever adjacent block still holds the caret (Notion parity).
    * Backspace/Delete leaves it `false` so a partial multi-block delete does not
-   * spawn a stray empty paragraph.
+   * spawn a stray empty paragraph. A container emptied by the delete that has no
+   * text of its own (a callout) gets the replacement inside it, so the caret has
+   * somewhere to go.
    * @param forceReplacement - always insert a replacement block, even for a
    *   partial (non-whole-document) selection
    */
   public deleteSelectedBlocksAndInsertReplacement(forceReplacement = false): Block | undefined {
     // Collect selected blocks, expanded to include each one's flat-indent
-    // followers (Notion deletes a Tab-nested parent together with its children),
-    // then attach indices sorted descending for safe removal.
-    const expandedBlocks = this.withFlatIndentFollowers(this.blocks.filter((block) => block.selected))
-      .filter((block) => !carriesReadOnly(block, (id) => this.getBlockById(id)));
+    // followers (Notion deletes a Tab-nested parent together with its children)
+    // and to the layouts they fill, so no empty column_list is left behind.
+    // Then attach indices sorted descending for safe removal.
+    // Read-only blocks drop out before the layout lift, so a layout holding one
+    // is never covered and never deleted with it.
+    const isWritable = (block: Block): boolean => !carriesReadOnly(block, (id) => this.getBlockById(id));
+    const expandedBlocks = this.withFlatIndentFollowers(this.withCoveredLayouts(this.blocks.filter((block) => block.selected && isWritable(block))))
+      .filter(isWritable);
     const selectedBlockEntries = expandedBlocks
       .map((block) => ({ block, index: this.blocks.indexOf(block) }))
       .sort((a, b) => b.index - a.index);
@@ -1169,26 +1192,42 @@ export class BlockManager extends Module {
 
       return (doomed.has(parent) && parent.tool.deletesChildren) || takenByAncestor(parent, seen);
     };
-    const allBlocksDeleted = this.blocks.every((block) => doomed.has(block) || takenByAncestor(block, new Set([block])));
-    const shouldInsertReplacement = allBlocksDeleted || forceReplacement;
+    const isGone = (block: Block): boolean => doomed.has(block) || takenByAncestor(block, new Set([block]));
+    const allBlocksDeleted = this.blocks.every(isGone);
 
     // Get insertion index (minimum index among selected blocks)
     const firstSelected = selectedBlockEntries[selectedBlockEntries.length - 1];
     const insertionIndex = firstSelected.index;
-    // The replacement goes to the root, after the root blocks before the
+    const selectionParent = firstSelected.block.parentId === null ? undefined : this.getBlockById(firstSelected.block.parentId);
+    const emptiedContainer = selectionParent !== undefined && !isGone(selectionParent) &&
+      this.blocks.every((block) => block.parentId !== selectionParent.id || isGone(block)) &&
+      this.leftWithoutCaretPlace(selectionParent, firstSelected.block)
+      ? selectionParent
+      : undefined;
+    const shouldInsertReplacement = allBlocksDeleted || forceReplacement || emptiedContainer !== undefined;
+
+    // An emptied container gets the replacement inside it. Otherwise the
+    // replacement goes to the root, after the root blocks before the
     // selection. A table/database cell keeps the index insert: the table
     // claims the new block into the cell.
-    const selectionParent = firstSelected.block.parentId === null ? undefined : this.getBlockById(firstSelected.block.parentId);
-    const placement: TreePlacement | undefined = selectionParent !== undefined && isSelfPlacedParent(selectionParent, (id) => this.getBlockById(id))
-      ? undefined
-      : { parentId: null, afterId: lastChildBefore({ blocks: this.blocks, getBlockById: (id) => this.getBlockById(id) }, null, insertionIndex) };
+    const placement: TreePlacement | undefined = (() => {
+      if (emptiedContainer !== undefined) {
+        return { parentId: emptiedContainer.id, afterId: null };
+      }
+
+      return selectionParent !== undefined && isSelfPlacedParent(selectionParent, (id) => this.getBlockById(id))
+        ? undefined
+        : { parentId: null, afterId: lastChildBefore({ blocks: this.blocks, getBlockById: (id) => this.getBlockById(id) }, null, insertionIndex) };
+    })();
     const blockIds = selectedBlockEntries.map(({ block }) => block.id);
 
-    const defaultToolName = this.config.defaultBlock;
+    const defaultBlock = this.config.defaultBlock;
 
-    if (defaultToolName === undefined) {
+    if (defaultBlock === undefined) {
       throw new Error('Could not insert default Block. Default block tool is not defined in the configuration.');
     }
+
+    const defaultToolName = emptiedContainer === undefined ? defaultBlock : resolveChildTool(emptiedContainer, defaultBlock, defaultBlock);
 
     // Generate new block ID upfront for the transaction (only if needed)
     const newBlockId = shouldInsertReplacement ? generateBlockId() : undefined;
@@ -1228,6 +1267,31 @@ export class BlockManager extends Module {
   }
 
   /**
+   * Whether removing all of `container`'s children leaves the caret nowhere to
+   * go inside it: the children sat in its own nested-blocks slot and it has no
+   * text of its own (a callout, not a toggle or a parent paragraph). Layout
+   * pieces and tools that manage their own children keep their empty state.
+   * @param container - the parent of the deleted blocks
+   * @param child - one of the deleted children, still mounted
+   */
+  private leftWithoutCaretPlace(container: Block, child: Block): boolean {
+    const { tool } = container;
+
+    if (tool.isLayout || tool.ownsChildren || SELF_PLACING_PARENTS.has(container.name) || !acceptsChildren(container)) {
+      return false;
+    }
+
+    const slot = child.holder.parentElement?.closest(`[${DATA_ATTR.nestedBlocks}]`);
+    const ownerOf = (element: Element): Element | null => element.closest(`[${DATA_ATTR.element}]`);
+
+    if (slot === null || slot === undefined || ownerOf(slot) !== container.holder) {
+      return false;
+    }
+
+    return $.findAllInputs(container.holder).every((input) => ownerOf(input) !== container.holder);
+  }
+
+  /**
    * Attention!
    * After removing insert the new default typed Block and focus on it
    * Removes all blocks
@@ -1261,9 +1325,10 @@ export class BlockManager extends Module {
 
   /**
    * Split current Block
+   * @param tailTool - tool for the second half; the current block's tool when omitted
    */
-  public split(): Block {
-    return this.operations.split(this.blocksStore);
+  public split(tailTool?: string): Block {
+    return this.operations.split(this.blocksStore, tailTool);
   }
 
   /**
@@ -1292,7 +1357,7 @@ export class BlockManager extends Module {
    * Unlike `transactForTool`, this may stay open across async boundaries, so a
    * pointer gesture (table corner drag, "+" button drag) commits as a single
    * undo entry instead of one per row or column. Block operations otherwise
-   * call `stopCapturing()` per operation, and the 500ms Yjs `captureTimeout`
+   * call `stopCapturing()` per operation, and the Yjs `captureTimeout`
    * does not merge them.
    *
    * Every call MUST be paired with `endToolTransaction()`.
@@ -1494,6 +1559,15 @@ export class BlockManager extends Module {
   }
 
   /**
+   * See {@link BlockRepository.withCoveredLayouts}.
+   * @param blocks - selected blocks, in document order
+   * @returns {Block[]} the blocks, with covered layouts in place of their units
+   */
+  public withCoveredLayouts(blocks: Block[]): Block[] {
+    return this.repository.withCoveredLayouts(blocks);
+  }
+
+  /**
    * Returns the depth (nesting level) of a block in the hierarchy.
    * @param block - the block to get depth for
    * @returns {number} - depth level (0 for root, 1 for first level children, etc.)
@@ -1579,6 +1653,7 @@ export class BlockManager extends Module {
       block.call(BlockToolAPI.MOVED, {
         fromIndex: index,
         toIndex: index,
+        [REPARENT_IN_PLACE]: true,
       });
     }
 
@@ -1792,6 +1867,11 @@ export class BlockManager extends Module {
    */
   public getBlockByChildNode(childNode: Node): Block | undefined {
     return this.repository.getBlockByChildNode(childNode);
+  }
+
+  /** See `BlockYjsSync.landHeldUserEdits`. */
+  public landHeldUserEdits(): void {
+    this.yjsSync.landHeldUserEdits();
   }
 
   /**
@@ -2258,11 +2338,22 @@ export class BlockManager extends Module {
       if (isEcho && source === 'mutation') {
         this.yjsSync.noteSuppressedMutation(block);
       } else if (!isEcho) {
-        void this.syncBlockDataToYjs(block, block.isDerivedChange ? { untracked: true, normalize: 'all', derivedFrom: block.derivedFrom } : undefined);
+        void this.syncBlockDataToYjs(block, this.mutationSyncOptions(block));
       }
     }
 
     return block;
+  }
+
+  /**
+   * How a block's own `dispatchChange` reaches the document.
+   * @param block - the block that reported the change
+   * @returns sync options, or undefined for an ordinary edit
+   */
+  private mutationSyncOptions(block: Block): SyncBlockDataOptions | undefined {
+    if (block.isDerivedChange) return { untracked: true, normalize: 'all', derivedFrom: block.derivedFrom };
+
+    return block.isNonEditChange ? { nonEdit: true } : undefined;
   }
 
   /**
@@ -2698,7 +2789,11 @@ export class BlockManager extends Module {
     // block's own mutation record is the fresh path back. Only a rewrite of
     // THIS block counts: a paste's structural window opening mid-save must not
     // drop the text it just split.
-    if (this.yjsSync.isSyncingFromYjs && this.yjsSync.isRewritingFromDocument(block)) {
+    const rewriting = options?.heldUserEdit === true
+      ? this.yjsSync.isRunningOperationBody
+      : this.yjsSync.isSyncingFromYjs && this.yjsSync.isRewritingFromDocument(block);
+
+    if (rewriting) {
       return;
     }
 
@@ -2731,6 +2826,10 @@ export class BlockManager extends Module {
 
       return;
     }
+
+    // The buffer keeps only the newest flush callback, so the stamp is owed per
+    // block: a move coalesced with an edit of the same block still stamps.
+    if (!isMaterializing && options?.nonEdit !== true) this.editsAwaitingFlush.add(block.id);
 
     this.Blok.YjsManager.enqueueBlockDataWrite(block.id, data, (entries) => {
       return this.flushBlockDataWrites(block, entries, flushOptions);
@@ -2840,11 +2939,13 @@ export class BlockManager extends Module {
       }
 
       // The editor's own write is not an edit.
-      if (!dataChangedRef.value || options.isMaterializing) {
+      if (options.isMaterializing) {
         return;
       }
 
-      this.stampBlockEdit(block);
+      const edited = this.editsAwaitingFlush.delete(block.id);
+
+      if (dataChangedRef.value && edited) this.stampBlockEdit(block);
     };
 
     if (options.derivedFrom !== undefined) {

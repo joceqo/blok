@@ -34,7 +34,7 @@ const createMockBlok = (): BlokModules => {
   return {
     BlockManager: blockManager as unknown as BlokModules['BlockManager'],
     BlockSelection: { clearSelection: vi.fn() } as unknown as BlokModules['BlockSelection'],
-    InlineToolbar: { opened: false, close: vi.fn() } as unknown as BlokModules['InlineToolbar'],
+    InlineToolbar: { opened: false, close: vi.fn(), tryToShow: vi.fn(), followRestoredRange: vi.fn() } as unknown as BlokModules['InlineToolbar'],
     Caret: caret as unknown as BlokModules['Caret'],
   } as unknown as BlokModules;
 };
@@ -267,7 +267,8 @@ describe('UndoHistory', () => {
         blockManager.currentBlock = { id, currentInputIndex: 0, currentInput: undefined, inputs: [] };
       };
 
-      blockManager.getBlockById.mockImplementation((id: string) => ({ id, inputs: [], parentId: null }));
+      // Detached holders: a block that is not on the page is not selected instead.
+      blockManager.getBlockById.mockImplementation((id: string) => ({ id, inputs: [], parentId: null, holder: document.createElement('div') }));
 
       const label = (entries: CaretHistoryEntry[]): string[] =>
         entries.map((entry) => `${entry.kind}:${entry.before?.blockId ?? '-'}`);
@@ -578,85 +579,6 @@ describe('UndoHistory', () => {
     });
   });
 
-  describe('smart grouping', () => {
-    it('hasPendingBoundary returns false initially', () => {
-      expect(history.hasPendingBoundary()).toBe(false);
-    });
-
-    it('hasPendingBoundary returns true after markBoundary', () => {
-      vi.useFakeTimers();
-
-      history.markBoundary();
-
-      expect(history.hasPendingBoundary()).toBe(true);
-
-      vi.useRealTimers();
-    });
-
-    it('clears pending boundary after timeout', () => {
-      vi.useFakeTimers();
-
-      history.markBoundary();
-      expect(history.hasPendingBoundary()).toBe(true);
-
-      vi.advanceTimersByTime(150);
-
-      expect(history.hasPendingBoundary()).toBe(false);
-
-      vi.useRealTimers();
-    });
-
-    it('clearBoundary clears pending boundary immediately', () => {
-      vi.useFakeTimers();
-
-      history.markBoundary();
-      expect(history.hasPendingBoundary()).toBe(true);
-
-      history.clearBoundary();
-
-      expect(history.hasPendingBoundary()).toBe(false);
-
-      // Timeout should not cause issues
-      vi.advanceTimersByTime(150);
-
-      vi.useRealTimers();
-    });
-
-    it('checkAndHandleBoundary creates checkpoint after timeout', () => {
-      vi.useFakeTimers();
-      const stopSpy = vi.spyOn(history.undoManager, 'stopCapturing');
-
-      history.markBoundary();
-      vi.advanceTimersByTime(50); // Only 50ms elapsed
-
-      history.checkAndHandleBoundary();
-      expect(stopSpy).not.toHaveBeenCalled(); // Not enough time
-
-      vi.advanceTimersByTime(60); // Now 110ms total
-
-      history.checkAndHandleBoundary();
-      expect(stopSpy).toHaveBeenCalledTimes(1);
-      expect(history.hasPendingBoundary()).toBe(false);
-
-      vi.useRealTimers();
-    });
-
-    it('boundary timer fires stopCapturing to checkpoint a finished word', () => {
-      vi.useFakeTimers();
-      const stopSpy = vi.spyOn(history.undoManager, 'stopCapturing');
-
-      history.markBoundary();
-      // Let the boundary timer fire on its own after the idle window.
-      vi.advanceTimersByTime(150);
-
-      // A per-word checkpoint is created and the pending boundary clears.
-      expect(stopSpy).toHaveBeenCalledTimes(1);
-      expect(history.hasPendingBoundary()).toBe(false);
-
-      vi.useRealTimers();
-    });
-  });
-
   describe('setBlok', () => {
     it('updates the Blok modules reference', () => {
       const newBlok: BlokModules = {} as unknown as BlokModules;
@@ -678,7 +600,6 @@ describe('UndoHistory', () => {
 
       expect(history.canUndo()).toBe(false);
       expect(history.canRedo()).toBe(false);
-      expect(history.hasPendingBoundary()).toBe(false);
     });
 
     it('clears the UndoManager and resets history state', () => {
@@ -915,7 +836,7 @@ describe('UndoHistory', () => {
     });
 
     it('falls back to block start when input no longer exists', () => {
-      const block = { id: 'b1', inputs: [], parentId: null };
+      const block = { id: 'b1', inputs: [document.createElement('div')], parentId: null };
       const snapshot = { blockId: 'b1', inputIndex: 5, offset: 10 }; // input at index 5 doesn't exist
 
       (blok.BlockManager as unknown as { getBlockById: typeof vi.fn }).getBlockById = vi.fn().mockReturnValue(block);
@@ -1009,6 +930,260 @@ describe('UndoHistory', () => {
       window.getSelection()?.setBaseAndExtent(text, 6, text, 11);
 
       expect(history.captureCaretSnapshot()).toEqual({ blockId: 'b1', inputIndex: 0, offset: 6, end: 11 });
+      input.remove();
+    });
+
+    it('records the end of a range that ends in another block', () => {
+      const first = document.createElement('div');
+      const second = document.createElement('div');
+
+      first.textContent = 'Alpha one';
+      second.textContent = 'Beta two';
+      document.body.append(first, second);
+      const b1 = { id: 'b1', inputs: [first], currentInputIndex: 0, currentInput: first };
+      const b2 = { id: 'b2', inputs: [second], currentInputIndex: 0, currentInput: second };
+
+      (blok.BlockManager as unknown as { getBlockByChildNode: ReturnType<typeof vi.fn> }).getBlockByChildNode
+        .mockImplementation((node: Node) => (second.contains(node) ? b2 : b1));
+      const range = document.createRange();
+
+      range.setStart(first.firstChild as Text, 6);
+      range.setEnd(second.firstChild as Text, 8);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+
+      expect(history.captureCaretSnapshot()).toEqual({
+        blockId: 'b1',
+        inputIndex: 0,
+        offset: 6,
+        endIn: { blockId: 'b2', inputIndex: 0, offset: 8 },
+      });
+      first.remove();
+      second.remove();
+    });
+
+    it('re-selects a range that ends in another block', () => {
+      const first = document.createElement('div');
+      const second = document.createElement('div');
+
+      first.textContent = 'Alpha one';
+      second.textContent = 'Beta two';
+      document.body.append(first, second);
+      const blocks: Record<string, unknown> = {
+        b1: { id: 'b1', inputs: [first], parentId: null },
+        b2: { id: 'b2', inputs: [second], parentId: null },
+      };
+
+      (blok.BlockManager as unknown as { getBlockById: typeof vi.fn }).getBlockById = vi.fn().mockImplementation((id: string) => blocks[id]);
+      (history as unknown as { caretUndoStack: CaretHistoryEntry[] }).caretUndoStack.push({
+        before: { blockId: 'b1', inputIndex: 0, offset: 6, endIn: { blockId: 'b2', inputIndex: 0, offset: 8 } },
+        after: null,
+      });
+
+      history.undo();
+
+      const selection = window.getSelection();
+
+      expect([
+        selection?.anchorNode === first.firstChild,
+        selection?.anchorOffset,
+        selection?.focusNode === second.firstChild,
+        selection?.focusOffset,
+      ]).toEqual([true, 6, true, 8]);
+      first.remove();
+      second.remove();
+    });
+
+    it('records a backward range that ends in another block from its start, marked backward', () => {
+      const first = document.createElement('div');
+      const second = document.createElement('div');
+
+      first.textContent = 'Alpha one';
+      second.textContent = 'Beta two';
+      document.body.append(first, second);
+      const b1 = { id: 'b1', inputs: [first], currentInputIndex: 0, currentInput: first };
+      const b2 = { id: 'b2', inputs: [second], currentInputIndex: 0, currentInput: second };
+
+      (blok.BlockManager as unknown as { getBlockByChildNode: ReturnType<typeof vi.fn> }).getBlockByChildNode
+        .mockImplementation((node: Node) => (second.contains(node) ? b2 : b1));
+      window.getSelection()?.setBaseAndExtent(second.firstChild as Text, 3, first.firstChild as Text, 0);
+
+      expect(history.captureCaretSnapshot()).toEqual({
+        blockId: 'b1',
+        inputIndex: 0,
+        offset: 0,
+        endIn: { blockId: 'b2', inputIndex: 0, offset: 3 },
+        backward: true,
+      });
+      first.remove();
+      second.remove();
+    });
+
+    it('re-selects a backward range across blocks with its anchor at the end', () => {
+      const first = document.createElement('div');
+      const second = document.createElement('div');
+
+      first.textContent = 'Alpha one';
+      second.textContent = 'Beta two';
+      document.body.append(first, second);
+      const blocks: Record<string, unknown> = {
+        b1: { id: 'b1', inputs: [first], parentId: null },
+        b2: { id: 'b2', inputs: [second], parentId: null },
+      };
+
+      (blok.BlockManager as unknown as { getBlockById: typeof vi.fn }).getBlockById = vi.fn().mockImplementation((id: string) => blocks[id]);
+      (history as unknown as { caretUndoStack: CaretHistoryEntry[] }).caretUndoStack.push({
+        before: { blockId: 'b1', inputIndex: 0, offset: 0, endIn: { blockId: 'b2', inputIndex: 0, offset: 3 }, backward: true },
+        after: null,
+      });
+
+      history.undo();
+
+      const selection = window.getSelection();
+
+      expect([
+        selection?.anchorNode === second.firstChild,
+        selection?.anchorOffset,
+        selection?.focusNode === first.firstChild,
+        selection?.focusOffset,
+      ]).toEqual([true, 3, true, 0]);
+      first.remove();
+      second.remove();
+    });
+
+    // Notion U038: undo that puts the text back re-selects it forward.
+    it('re-selects a backward range inside one input forward when the step removed its text', () => {
+      const input = document.createElement('div');
+
+      input.textContent = 'hello world';
+      document.body.appendChild(input);
+      const block = { id: 'b1', inputs: [input], currentInputIndex: 0, currentInput: input, parentId: null };
+      const text = input.firstChild as Text;
+
+      (blok.BlockManager as unknown as { getBlockByChildNode: ReturnType<typeof vi.fn> }).getBlockByChildNode.mockReturnValue(block);
+      window.getSelection()?.setBaseAndExtent(text, 11, text, 6);
+
+      const snapshot = history.captureCaretSnapshot();
+
+      expect(snapshot).toEqual({ blockId: 'b1', inputIndex: 0, offset: 6, end: 11, backward: true });
+
+      (blok.BlockManager as unknown as { getBlockById: typeof vi.fn }).getBlockById = vi.fn().mockReturnValue(block);
+      window.getSelection()?.removeAllRanges();
+      (history as unknown as { caretUndoStack: CaretHistoryEntry[] }).caretUndoStack.push({
+        before: snapshot,
+        after: { blockId: 'b1', inputIndex: 0, offset: 6 },
+      });
+
+      history.undo();
+
+      const selection = window.getSelection();
+
+      expect([selection?.anchorOffset, selection?.focusOffset]).toEqual([6, 11]);
+      input.remove();
+    });
+
+    // Notion RM2 item 5: undo of Cmd+B keeps the user's direction.
+    it('keeps a backward range inside one input backward when the step left the same range selected', () => {
+      const input = document.createElement('div');
+
+      input.textContent = 'hello world';
+      document.body.appendChild(input);
+      const block = { id: 'b1', inputs: [input], currentInputIndex: 0, currentInput: input, parentId: null };
+      const range = { blockId: 'b1', inputIndex: 0, offset: 6, end: 11, backward: true as const };
+
+      (blok.BlockManager as unknown as { getBlockById: typeof vi.fn }).getBlockById = vi.fn().mockReturnValue(block);
+      (history as unknown as { caretUndoStack: CaretHistoryEntry[] }).caretUndoStack.push({ before: range, after: { ...range } });
+
+      history.undo();
+
+      const selection = window.getSelection();
+
+      expect([selection?.anchorOffset, selection?.focusOffset]).toEqual([11, 6]);
+      input.remove();
+    });
+
+    // Notion U162: a table cell range outlives Delete, undo and redo, with no caret.
+    it('records a tool selection over the caret left in one of its cells', () => {
+      const holder = document.createElement('div');
+      const grid = document.createElement('div');
+      const input = document.createElement('div');
+
+      input.textContent = 'A1';
+      grid.setAttribute('data-blok-tool-selection', JSON.stringify({ minRow: 0, maxRow: 0, minCol: 0, maxCol: 1 }));
+      grid.appendChild(input);
+      holder.appendChild(grid);
+      document.body.appendChild(holder);
+      const table = { id: 'tbl', holder, inputs: [], currentInputIndex: 0, currentInput: undefined };
+      const cell = { id: 'c00', holder: input, inputs: [input], currentInputIndex: 0, currentInput: input };
+
+      (blok.BlockManager as unknown as { getBlockByChildNode: ReturnType<typeof vi.fn> }).getBlockByChildNode
+        .mockImplementation((node: Node) => (node === grid || node === holder ? table : cell));
+      window.getSelection()?.collapse(input.firstChild, 2);
+
+      expect(history.captureCaretSnapshot()).toEqual({
+        blockId: 'c00',
+        inputIndex: 0,
+        offset: 2,
+        toolSelection: { blockId: 'tbl', state: { minRow: 0, maxRow: 0, minCol: 0, maxCol: 1 } },
+      });
+      holder.remove();
+    });
+
+    const undoToolSelectionStep = (after: CaretHistoryEntry['after']): { call: ReturnType<typeof vi.fn>; input: HTMLElement } => {
+      const input = document.createElement('div');
+
+      input.contentEditable = 'true';
+      input.textContent = 'A1';
+      document.body.appendChild(input);
+      input.focus();
+      window.getSelection()?.collapse(input.firstChild, 1);
+      const call = vi.fn();
+      const table = { id: 'tbl', holder: document.createElement('div'), inputs: [], parentId: null, call };
+      const cell = { id: 'c00', holder: input, inputs: [input], parentId: 'tbl', call: vi.fn() };
+
+      (blok.BlockManager as unknown as { getBlockById: typeof vi.fn }).getBlockById = vi.fn()
+        .mockImplementation((id: string) => (id === 'tbl' ? table : cell));
+      (history as unknown as { caretUndoStack: CaretHistoryEntry[] }).caretUndoStack.push({
+        before: { blockId: 'c00', inputIndex: 0, offset: 2, toolSelection: { blockId: 'tbl', state: { minRow: 0, maxRow: 0, minCol: 0, maxCol: 1 } } },
+        after,
+      });
+
+      history.undo();
+
+      return { call, input };
+    };
+
+    it('hands a cell range the step kept back to its table and leaves no caret', () => {
+      const { call, input } = undoToolSelectionStep({
+        blockId: 'tbl', inputIndex: 0, offset: 0, toolSelection: { blockId: 'tbl', state: { minRow: 0, maxRow: 0, minCol: 0, maxCol: 1 } },
+      });
+
+      expect(call).toHaveBeenCalledWith('restoreHistorySelection', { minRow: 0, maxRow: 0, minCol: 0, maxCol: 1 });
+      expect(window.getSelection()?.rangeCount).toBe(0);
+      expect(input).not.toHaveFocus();
+      input.remove();
+    });
+
+    it('puts the caret back instead when the step ended the cell range (a merge)', () => {
+      const { call, input } = undoToolSelectionStep({ blockId: 'c00', inputIndex: 0, offset: 2 });
+
+      expect(call).not.toHaveBeenCalled();
+      expect(blok.Caret.setToInput).toHaveBeenCalledWith(input, expect.anything(), 2);
+      input.remove();
+    });
+
+    it('records nothing extra for a collapsed caret', () => {
+      const input = document.createElement('div');
+
+      input.textContent = 'hello world';
+      document.body.appendChild(input);
+      const block = { id: 'b1', inputs: [input], currentInputIndex: 0, currentInput: input };
+      const text = input.firstChild as Text;
+
+      (blok.BlockManager as unknown as { getBlockByChildNode: ReturnType<typeof vi.fn> }).getBlockByChildNode.mockReturnValue(block);
+      window.getSelection()?.setBaseAndExtent(text, 6, text, 6);
+
+      expect(history.captureCaretSnapshot()).toEqual({ blockId: 'b1', inputIndex: 0, offset: 6 });
       input.remove();
     });
 

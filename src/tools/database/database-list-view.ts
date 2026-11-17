@@ -1,17 +1,18 @@
-import { fileChipIcon, pageIconElement, pagePlaceholderIcon } from './page-icon';
+import { fileChipIcon, pagePlaceholderIcon, rowPageGlyph } from './page-icon';
 import { showAvatarsOnly } from './avatar-only';
 import type { I18n } from '../../../types';
-import type { DatabaseRow, PropertyDefinition, PropertyValue, SelectOption } from './types';
+import type { DatabaseRow, OpenPagesIn, PropertyDefinition, PropertyValue, SelectOption } from './types';
 import type { DatabaseViewRenderer } from './database-view-renderer';
 import { filesOf, readPropertyValue } from './property-values';
 import { safeImageSrc } from '../../components/utils/sanitize-url';
 import { createGroupPill, renderCellValue } from './cells';
 import { rowCellContext } from './reminders';
 import type { CellContext } from './cells';
-import { IconChevronDown, IconDotsHorizontal, IconMenu, IconPencil, IconPlus, IconSidebarRight } from '../../components/icons';
+import { IconDotsHorizontal, IconExpandDiagonal, IconPeekCenter, IconPeekSide, IconPencilLine, IconPlayerPlay, IconPlus, IconRowGrip } from '../../components/icons';
 import { startInlineRename } from '../../components/utils/inline-rename';
 import { onHover } from '../../components/utils/tooltip';
 import { propertyHint } from './property-hint';
+import { PROPERTY_TYPE_META } from './database-property-types';
 import { syncCommentBadge } from './database-comment-badge';
 import type { CommentBadges } from './database-comment-badge';
 
@@ -39,7 +40,7 @@ interface DatabaseListViewOptions {
   /** Shift+Enter on a row: a new item below it, in the same group (`null` when ungrouped). */
   onNewBelow?: (rowId: string, groupKey: string | null) => void;
   onTitleEdit?: (rowId: string, title: string) => void;
-  /** Open in side peek on a title being edited. Saving the title may redraw the view, so a bubbling click is not enough. */
+  /** The open button on a title being edited. Saving the title may redraw the view, so a bubbling click is not enough. */
   onOpenRow?: (rowId: string) => void;
   /** Rows the flat list holds in all, when `rows` is only the first page (load limit). */
   total?: number;
@@ -49,7 +50,18 @@ interface DatabaseListViewOptions {
   onLoadMore?: (groupKey: string) => void;
   /** A lasso from the page margin: these rows become the selection. Absent when read-only. */
   lassoRows?: (rowIds: string[]) => void;
+  /** "Directly edit page name": a title click edits it in place, and the button after it opens the row. */
+  directTitleEdit?: boolean;
+  /** The view's Open pages in: names the button that opens the row. Default side. */
+  openPagesIn?: OpenPagesIn;
 }
+
+/** notion-motion.md Round 26 §4: the open button's label and icon per Open pages in. */
+const OPEN_BUTTON: Record<OpenPagesIn, { key: string; icon: string }> = {
+  side: { key: 'tools.page.openInSidePeek', icon: IconPeekSide },
+  center: { key: 'tools.database.openInCenterPeek', icon: IconPeekCenter },
+  full: { key: 'tools.database.openAsPage', icon: IconExpandDiagonal },
+};
 
 /** Types without an editor: computed, or written by Blok itself. */
 const NOT_EDITABLE = new Set<PropertyDefinition['type']>([
@@ -77,7 +89,7 @@ export class DatabaseListView implements DatabaseViewRenderer {
   private readonly showPageIcon: boolean;
   private readonly onToggleCollapse: ((optionId: string, collapsed: boolean) => void) | undefined;
   private readonly settings: Pick<DatabaseListViewOptions,
-    'cellContext' | 'commentBadges' | 'locale' | 'onPropertyEdit' | 'onNewBelow' | 'onTitleEdit' | 'onOpenRow' | 'total' | 'getTotal' | 'onLoadMore' | 'lassoRows'>;
+    'cellContext' | 'commentBadges' | 'locale' | 'onPropertyEdit' | 'onNewBelow' | 'onTitleEdit' | 'onOpenRow' | 'total' | 'getTotal' | 'onLoadMore' | 'lassoRows' | 'directTitleEdit' | 'openPagesIn'>;
   private wrapper: HTMLDivElement | null = null;
   /** Where a Shift+Arrow selection started (findings-listgallery L20). */
   private selectionAnchor: HTMLElement | null = null;
@@ -107,6 +119,7 @@ export class DatabaseListView implements DatabaseViewRenderer {
     wrapper.setAttribute('data-blok-database-list', '');
     // Tab and Shift+Enter belong to the list, not to Blok's block indent and split.
     wrapper.setAttribute('data-blok-keyboard-owner', '');
+    wrapper.toggleAttribute('data-direct-edit', this.directEdit);
 
     if (this.groupOptions !== undefined && this.groupOptions.length > 0 && this.getGroupRows !== undefined) {
       for (const option of this.groupOptions) {
@@ -190,7 +203,7 @@ export class DatabaseListView implements DatabaseViewRenderer {
   /**
    * Swaps a row's title for an input; Enter or blur commits through `onTitleEdit`.
    * While it is open the row shows the page glyph, and the pencil turns into
-   * Open in side peek (findings-listgallery L05).
+   * the open button (findings-listgallery L05; Round 26 §4).
    */
   editTitle(rowId: string): void {
     const rowEl = this.rowElement(rowId);
@@ -202,11 +215,13 @@ export class DatabaseListView implements DatabaseViewRenderer {
     const original = titleEl.hasAttribute('data-placeholder') ? '' : titleEl.textContent ?? '';
     const edit = rowEl.querySelector<HTMLElement>('[data-blok-database-list-row-edit]');
     const glyph = rowEl.querySelector(':scope > :is([data-blok-database-page-icon], [data-blok-database-page-icon-placeholder])') === null ? pagePlaceholderIcon() : null;
+    const ghosts = this.directEdit ? this.addGhosts(rowEl) : [];
     const endEditing = (): void => {
       rowEl.removeAttribute('data-editing');
       glyph?.remove();
-      if (edit !== null) {
-        edit.innerHTML = IconPencil;
+      ghosts.forEach((ghost) => ghost.remove());
+      if (edit !== null && !this.directEdit) {
+        edit.innerHTML = IconPencilLine;
         edit.setAttribute('aria-label', this.i18n.t('tools.database.editCardTitle'));
       }
     };
@@ -240,9 +255,53 @@ export class DatabaseListView implements DatabaseViewRenderer {
       rowEl.querySelector('[data-blok-database-list-row-main]')?.before(glyph);
     }
     if (edit !== null) {
-      edit.innerHTML = IconSidebarRight;
-      edit.setAttribute('aria-label', this.i18n.t('tools.page.openInSidePeek'));
+      const open = this.openButton();
+
+      edit.innerHTML = open.icon;
+      edit.setAttribute('aria-label', open.label);
     }
+  }
+
+  /**
+   * notion-motion.md Round 26 §4: "Add <property>" for each empty visible Date while the title is edited.
+   * Only a Date was measured. A click saves the title and opens that cell's editor.
+   */
+  private addGhosts(rowEl: HTMLElement): HTMLElement[] {
+    const propertiesEl = rowEl.querySelector<HTMLElement>(':scope > [data-blok-database-list-row-properties]');
+    const rowId = rowEl.getAttribute('data-row-id') ?? '';
+
+    if (propertiesEl === null) {
+      return [];
+    }
+    const shown = new Set([...propertiesEl.children].map((el) => el.getAttribute('data-property-id')));
+
+    return this.visiblePropertyIds
+      .map((id) => this.schema.find((p) => p.id === id))
+      .filter((p): p is PropertyDefinition => p !== undefined && p.type === 'date' && !shown.has(p.id))
+      .map((property) => {
+        const ghost = document.createElement('span');
+        const glyph = document.createElement('span');
+
+        ghost.setAttribute('data-blok-database-list-row-ghost', '');
+        ghost.setAttribute('data-property-id', property.id);
+        ghost.setAttribute('role', 'button');
+        glyph.setAttribute('aria-hidden', 'true');
+        glyph.innerHTML = PROPERTY_TYPE_META[property.type].icon;
+        ghost.append(glyph, this.i18n.t('tools.database.cardAddProperty', { property: property.name }));
+        // Keep the caret in the title until the click lands.
+        ghost.addEventListener('mousedown', (event) => event.preventDefault());
+        ghost.addEventListener('click', (event) => {
+          event.stopPropagation();
+          rowEl.querySelector<HTMLInputElement>('[data-blok-database-list-title-input]')?.blur();
+          // Saving the title may redraw the list: anchor on the row as it is now.
+          const anchor = this.rowElement(rowId)?.querySelector<HTMLElement>(':scope > [data-blok-database-list-row-properties]') ?? propertiesEl;
+
+          this.settings.onPropertyEdit?.(rowId, property.id, anchor);
+        });
+        propertiesEl.appendChild(ghost);
+
+        return ghost;
+      });
   }
 
   private rowElement(rowId: string): HTMLElement | null {
@@ -281,10 +340,17 @@ export class DatabaseListView implements DatabaseViewRenderer {
 
       return;
     }
+    // notion-motion.md Round 25 §6: with "Directly edit page name" on, the title edits in place.
+    if (this.directEdit && rowEl !== null && rowEl !== undefined && target?.closest('[data-blok-database-list-row-title]') !== null) {
+      event.stopPropagation();
+      this.editTitle(rowEl.getAttribute('data-row-id') ?? '');
+
+      return;
+    }
     if (rowEl !== null && rowEl !== undefined && target?.closest('[data-blok-database-list-row-edit]') !== null) {
       event.stopPropagation();
-      // While editing it is Open in side peek: save the title, then open the row.
-      if (rowEl.hasAttribute('data-editing')) {
+      // While editing, or with direct edit on, it is Open in side peek: save the title, then open the row.
+      if (rowEl.hasAttribute('data-editing') || this.directEdit) {
         rowEl.querySelector<HTMLInputElement>('[data-blok-database-list-title-input]')?.blur();
         this.settings.onOpenRow?.(rowEl.getAttribute('data-row-id') ?? '');
 
@@ -517,7 +583,7 @@ export class DatabaseListView implements DatabaseViewRenderer {
     toggle.setAttribute('data-blok-database-list-group-toggle', '');
     toggle.setAttribute('aria-expanded', 'true');
     toggle.setAttribute('aria-label', this.i18n.t('tools.database.tableCollapseGroup'));
-    toggle.innerHTML = IconChevronDown;
+    toggle.innerHTML = IconPlayerPlay;
     label.setAttribute('data-blok-database-list-group-label', '');
     label.appendChild(this.groupValue(option));
     header.append(toggle, label);
@@ -622,8 +688,7 @@ export class DatabaseListView implements DatabaseViewRenderer {
       rowEl.appendChild(this.createGutter(row.id));
     }
 
-    // notion-spec-2 §21.8: a row with no emoji shows the empty-page glyph.
-    const icon = this.showPageIcon ? pageIconElement(row) ?? pagePlaceholderIcon() : null;
+    const icon = this.showPageIcon ? rowPageGlyph(row, this.settings.cellContext?.rowHasBody?.(row.id) === true, true) : null;
 
     if (icon !== null) {
       rowEl.appendChild(icon);
@@ -666,23 +731,38 @@ export class DatabaseListView implements DatabaseViewRenderer {
     handle.setAttribute('data-row-id', rowId);
     handle.setAttribute('aria-label', this.i18n.t('tools.database.tableDragHandle'));
     handle.tabIndex = -1;
-    handle.innerHTML = IconMenu;
+    handle.innerHTML = IconRowGrip;
     gutter.appendChild(handle);
 
     return gutter;
   }
 
-  /** Notion's white "Edit" pencil after the title: renames the row in place (findings-listgallery L04). */
+  /**
+   * Notion's white "Edit" pencil after the title: renames the row in place (findings-listgallery L04).
+   * With direct edit on it is "Open in side peek" (notion-motion.md Round 25 §6).
+   */
   private createEditButton(): HTMLButtonElement {
     const edit = document.createElement('button');
 
     edit.type = 'button';
     edit.setAttribute('data-blok-database-list-row-edit', '');
-    edit.setAttribute('aria-label', this.i18n.t('tools.database.editCardTitle'));
+    const { label, icon } = this.directEdit ? this.openButton() : { label: this.i18n.t('tools.database.editCardTitle'), icon: IconPencilLine };
+
+    edit.setAttribute('aria-label', label);
     edit.tabIndex = -1;
-    edit.innerHTML = IconPencil;
+    edit.innerHTML = icon;
 
     return edit;
+  }
+
+  private openButton(): { label: string; icon: string } {
+    const { key, icon } = OPEN_BUTTON[this.settings.openPagesIn ?? 'side'];
+
+    return { label: this.i18n.t(key), icon };
+  }
+
+  private get directEdit(): boolean {
+    return this.settings.directTitleEdit === true && !this.readOnly;
   }
 
   private createTitleElement(title: string): HTMLDivElement {
@@ -809,7 +889,7 @@ export class DatabaseListView implements DatabaseViewRenderer {
  * tokens (findings-listgallery L16). It corrects for a transformed ancestor,
  * where a fixed box at 0,0 is not the viewport corner. The caller removes it.
  */
-export const pointerAnchor = (rowEl: HTMLElement, event: MouseEvent): HTMLElement => {
+export const pointerAnchor = (rowEl: HTMLElement, event: Pick<MouseEvent, 'clientX' | 'clientY'>): HTMLElement => {
   const point = document.createElement('span');
 
   point.setAttribute('data-blok-database-menu-point', '');
@@ -822,6 +902,30 @@ export const pointerAnchor = (rowEl: HTMLElement, event: MouseEvent): HTMLElemen
   point.style.top = `${event.clientY - origin.top}px`;
 
   return point;
+};
+
+// A feed card is not listed: Notion opens the database block's menu there, not the row menu (notion-motion.md Round 60 §4).
+const POINTER_MENU_ROWS = [
+  '[data-blok-database-list-row]',
+  '[data-blok-database-board] [data-blok-database-card]',
+  '[data-blok-database-gallery-card]',
+  '[data-blok-database-table-row]',
+  '[data-blok-database-timeline-bar]',
+  '[data-blok-database-timeline-table-row]',
+  '[data-blok-database-calendar-event]',
+].join(', ');
+
+/**
+ * A right-click menu at the pointer: below it with its top 1px under the pointer when it fits, else above
+ * with its bottom on the pointer when its top keeps the card menu's 12px margin, else clamped.
+ * Rows not listed keep the menu on the row.
+ * notion-motion.md Round 58 §6 (threshold 12: top 11.1 no, 12.1 yes), Round 59 §4 (table rows, gallery cards,
+ * timeline bars and panel rows, calendar events).
+ */
+export const pointerMenuPlacement = (rowEl: HTMLElement, event: Pick<MouseEvent, 'clientX' | 'clientY'>): { anchor: HTMLElement; coverFlipOffset: number } | undefined => {
+  if (!rowEl.matches(POINTER_MENU_ROWS)) return undefined;
+
+  return { anchor: pointerAnchor(rowEl, { clientX: event.clientX, clientY: event.clientY + 1 }), coverFlipOffset: 1 };
 };
 
 /** Image file names and data URLs; any other file keeps its chip. */

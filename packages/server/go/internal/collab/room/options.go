@@ -29,9 +29,15 @@ type Options struct {
 	CommitTimeout time.Duration
 	// Now is the room's clock; time.Now when nil.
 	Now func() time.Time
+	// RestoreTrashesPages: a history restore, by any path, sets data.trashed
+	// on a page pointer the point lacks instead of removing it.
+	RestoreTrashesPages bool
 	// Timers is TimeProvider.CreateTimer: the export, eviction and persist
 	// timers and every CommitTimeout bound run on it. Wall time when nil.
 	Timers Timers
+	// ChangeSignalWindow: how long one change window runs from a
+	// document's first journalled write. Used only with a ChangeObserver.
+	ChangeSignalWindow time.Duration
 }
 
 // Timers runs f once d has passed on its clock. stop cancels f and reports
@@ -72,6 +78,7 @@ func DefaultOptions() Options {
 		RetryBackoff:                 2 * time.Second,
 		RetryBackoffCap:              60 * time.Second,
 		CommitTimeout:                10 * time.Second,
+		ChangeSignalWindow:           60 * time.Second,
 	}
 }
 

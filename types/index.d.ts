@@ -46,6 +46,7 @@ import {
   Width,
   Placeholder,
   Title,
+  BlokTitle,
   Tokens,
   EditorI18n,
   Handlers,
@@ -70,6 +71,7 @@ export {
   InlineToolConstructorOptions,
   BlockToolConstructable,
   BlockToolConstructorOptions,
+  PageHeaderAction,
   BlockTool,
   BlockToolData,
   BlockOrigin,
@@ -140,6 +142,7 @@ export {
   BlokUploader,
   UploadContext,
   UploadedAsset,
+  UrlUploadDecisionContext,
   PersistedDocument,
   SaveContext,
   SaveResult,
@@ -225,6 +228,7 @@ export {
   DatabaseSetup,
   SubItemsDisplay,
   SubItemsFilter,
+  DeletedPropertyDefinition,
 } from './tools/database';
 export { BlockId } from './data-formats/block-id';
 export {
@@ -263,6 +267,8 @@ export {
   Width,
   EditorWidth,
   Title,
+  BlokTitle,
+  TitleCover,
   TitleChange,
   TitleConfig,
   TitleSetOptions,
@@ -705,7 +711,7 @@ export interface PendingBlok {
   /** Runtime i18n API (read + `update`), exposed immediately after construction. */
   i18n: EditorI18n;
   /** Page title API, exposed immediately after construction. */
-  title: Title;
+  title: BlokTitle;
 }
 
 /** How deep a readiness query looks: boot completion, or content in the DOM. */
@@ -804,7 +810,7 @@ export class Blok {
    * Page title and icon. Exposed immediately after construction; calls made
    * before `isReady` are replayed once modules exist.
    */
-  public title: Title;
+  public title: BlokTitle;
   constructor(configuration?: BlokConfig|string);
 
   /**

@@ -17,18 +17,103 @@ import type { ListItemStyle } from '../list/types';
 import { trimTrailingBreaks } from '../../components/utils/trailing-breaks';
 import { CELL_CODE_TAG } from '../../components/modules/paste/constants';
 import { parseUntrustedHtml } from '../../components/utils/inert-html';
+import { splitAroundImages } from '../../components/modules/normalizeInlineImages';
 
 export type CellBlockInsert =
   | { tool: 'paragraph'; data: { text: string } }
   | { tool: 'list'; data: { text: string; style: ListItemStyle; checked: boolean; depth: number } }
-  | { tool: 'code'; data: { code: string } };
+  | { tool: 'code'; data: { code: string } }
+  | { tool: 'image'; data: { url: string; alt?: string } };
 
 export { CELL_BLOCK_TAGS_SANITIZE } from '../../shared/table/cell-sanitize';
 
-const BR_SPLIT_RE = /<br\s*\/?>/i;
+const BR_AT_START_RE = /^<br\s*\/?>/i;
 
-const splitInlineSegments = (html: string): string[] =>
-  html.split(BR_SPLIT_RE).map(segment => segment.trim()).filter(Boolean);
+/** Longest `<br ... />` the split looks for; a `<br>` with more padding than this is left alone. */
+const BR_LOOKAHEAD = 16;
+
+/**
+ * Index just past the tag that opens at `from`. A `>` inside a quoted
+ * attribute value does not end the tag.
+ * @param html - the markup
+ * @param from - index of the tag's `<`
+ */
+const endOfTag = (html: string, from: number): number => {
+  const scan = /[>"']/g;
+
+  scan.lastIndex = from + 1;
+
+  const state = { match: scan.exec(html) };
+
+  while (state.match !== null) {
+    if (state.match[0] === '>') {
+      return state.match.index + 1;
+    }
+
+    const closingQuote = html.indexOf(state.match[0], state.match.index + 1);
+
+    if (closingQuote === -1) {
+      return html.length;
+    }
+
+    scan.lastIndex = closingQuote + 1;
+    state.match = scan.exec(html);
+  }
+
+  return html.length;
+};
+
+/**
+ * Split inline markup on its `<br>` tags. A plain `split(/<br>/)` also cuts a
+ * `<br>` written INSIDE an attribute value (a hint's text is one), which tears
+ * the element in two; this walks tag by tag instead.
+ * @param html - inline markup
+ */
+const splitInlineSegments = (html: string): string[] => {
+  const segments: string[] = [];
+  const cursor = { start: 0, index: html.indexOf('<') };
+
+  while (cursor.index !== -1) {
+    const lineBreak = BR_AT_START_RE.exec(html.slice(cursor.index, cursor.index + BR_LOOKAHEAD));
+
+    if (lineBreak === null) {
+      cursor.index = html.indexOf('<', endOfTag(html, cursor.index));
+
+      continue;
+    }
+
+    segments.push(html.slice(cursor.start, cursor.index));
+    cursor.start = cursor.index + lineBreak[0].length;
+    cursor.index = html.indexOf('<', cursor.start);
+  }
+
+  segments.push(html.slice(cursor.start));
+
+  return segments.map(segment => segment.trim()).filter(Boolean);
+};
+
+const imageData = (url: string, alt: string | null): { url: string; alt?: string } =>
+  alt !== null && alt !== '' ? { url, alt } : { url };
+
+/**
+ * A cell holds an image as its own block. Left inline, the saver splits it out
+ * with an id no live block has.
+ */
+const inlineSegmentToInserts = (html: string): CellBlockInsert[] => {
+  const pieces = splitAroundImages(html);
+
+  if (pieces === null) {
+    return [{ tool: 'paragraph', data: { text: html } }];
+  }
+
+  return pieces.flatMap((piece): CellBlockInsert[] => {
+    if (piece.kind === 'image') {
+      return [{ tool: 'image', data: imageData(piece.url, piece.alt) }];
+    }
+
+    return piece.empty ? [] : [{ tool: 'paragraph', data: { text: piece.html } }];
+  });
+};
 
 const isListElement = (node: Node): node is HTMLElement =>
   node instanceof HTMLElement && (node.tagName === 'UL' || node.tagName === 'OL');
@@ -132,12 +217,15 @@ export const protectPastedCellBlocks = (html: string): string => {
 const isCodeElement = (node: Node): node is HTMLElement =>
   node instanceof HTMLElement && (node.tagName === 'PRE' || node.tagName === CELL_CODE_TAG.toUpperCase());
 
+const escapeText = (value: string): string =>
+  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
 const nodesToInserts = (nodes: Node[]): CellBlockInsert[] => {
   const inserts: CellBlockInsert[] = [];
   const inlineParts: string[] = [];
 
   const flushInline = (): void => {
-    splitInlineSegments(inlineParts.join('')).forEach(text => inserts.push({ tool: 'paragraph', data: { text } }));
+    splitInlineSegments(inlineParts.join('')).forEach(text => inserts.push(...inlineSegmentToInserts(text)));
     inlineParts.length = 0;
   };
 
@@ -158,13 +246,32 @@ const nodesToInserts = (nodes: Node[]): CellBlockInsert[] => {
       flushInline();
       ownPastedRows(node).flatMap(ownPastedCells).forEach(cell => inserts.push(...nodesToInserts(Array.from(cell.childNodes))));
     } else {
-      inlineParts.push(node instanceof HTMLElement ? node.outerHTML : (node.textContent ?? ''));
+      // inlineParts is HTML: a text node's `<` must stay text, not turn into a tag.
+      inlineParts.push(node instanceof HTMLElement ? node.outerHTML : escapeText(node.textContent ?? ''));
     }
   }
 
   flushInline();
 
   return inserts;
+};
+
+const escapeAttribute = (value: string): string =>
+  value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const cellBlockText = (data: Record<string, unknown>): string =>
+  typeof data.text === 'string' ? data.text : '';
+
+/** An image block as the inline `<img>` that {@link parseCellContentToBlocks} reads back. */
+const imageHtml = (data: Record<string, unknown>): string => {
+  if (typeof data.url !== 'string' || data.url === '') {
+    return '';
+  }
+
+  const src = data.url;
+  const alt = typeof data.alt === 'string' && data.alt !== '' ? ` alt="${escapeAttribute(data.alt)}"` : '';
+
+  return `<img src="${escapeAttribute(src)}"${alt}>`;
 };
 
 /**
@@ -174,6 +281,10 @@ const nodesToInserts = (nodes: Node[]): CellBlockInsert[] => {
 export const cellBlockFallbackText = (data: Record<string, unknown>): string => {
   if (typeof data.text === 'string') {
     return data.text;
+  }
+
+  if (typeof data.url === 'string') {
+    return imageHtml(data);
   }
 
   if (typeof data.code !== 'string') {
@@ -253,7 +364,7 @@ export const serializeCellBlocksToHtml = (blocks: SerializableCellBlock[]): stri
   for (const block of blocks) {
     if (!isSerializableListBlock(block)) {
       flushList();
-      paragraphRun.push(typeof block.data.text === 'string' ? block.data.text : '');
+      paragraphRun.push(block.tool === 'image' ? imageHtml(block.data) : cellBlockText(block.data));
       continue;
     }
 

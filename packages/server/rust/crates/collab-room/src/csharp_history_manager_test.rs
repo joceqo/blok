@@ -238,6 +238,7 @@ impl Bench {
             log: None,
             operations,
             activity: None,
+            notes: None,
         })
     }
 
@@ -979,6 +980,99 @@ async fn a_restore_makes_the_live_document_equal_the_point_as_one_journalled_edi
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_preview_with_trash_counts_the_restorer_in_its_frame() {
+    let b = Bench::new();
+    let manager = b.manager(Options {
+        restore_trashes_pages: true,
+        ..Options::default()
+    });
+    blocks(&manager).await;
+    let page = EditOp::Insert {
+        id: Str::from("pg"),
+        block: node(r#"{"type":"page","data":{"pageId":"sub"}}"#),
+        after: Some(Str::from("a")),
+        parent: None,
+    };
+    edit(&manager, page, None).await;
+    let lineage = b.lineage();
+    let frame = async |actor: &str| {
+        let (_, preview, _) = manager
+            .preview_restore(DOC, &lineage, 0, None, actor)
+            .await
+            .expect("preview");
+        preview.expect("a preview").frame_bytes
+    };
+
+    let (short, long) = (frame("u").await, frame(&"u".repeat(200)).await);
+
+    assert!(long > short, "{short} vs {long}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restore_removes_a_later_page_pointer_by_default() {
+    let b = Bench::new();
+    let manager = b.manager(Options::default());
+    blocks(&manager).await;
+    let page = EditOp::Insert {
+        id: Str::from("pg"),
+        block: node(r#"{"type":"page","data":{"pageId":"sub"}}"#),
+        after: Some(Str::from("a")),
+        parent: None,
+    };
+    edit(&manager, page, None).await;
+
+    let (_, result) = restore(&manager, &b.lineage(), 0, OP_RESTORE, Some("u9"), None).await;
+
+    let result = result.expect("an edit");
+    assert_eq!(result.status, EditStatus::Applied, "{:?}", result.err);
+    let live = blocks(&manager).await;
+    assert!(!json(&live).contains(r#""id":"pg""#), "{}", json(&live));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restore_trashes_a_page_pointer_added_after_the_point() {
+    let b = Bench::new();
+    let manager = b.manager(Options {
+        now: Some(Arc::new(|| seconds(1_700_000_999))),
+        restore_trashes_pages: true,
+        ..Options::default()
+    });
+    blocks(&manager).await;
+    let page = EditOp::Insert {
+        id: Str::from("pg"),
+        block: node(r#"{"type":"page","data":{"pageId":"sub"}}"#),
+        after: Some(Str::from("a")),
+        parent: None,
+    };
+    edit(&manager, page, None).await;
+
+    let (_, result) = restore(&manager, &b.lineage(), 0, OP_RESTORE, Some("u9"), None).await;
+
+    let result = result.expect("an edit");
+    assert_eq!(result.status, EditStatus::Applied, "{:?}", result.err);
+    let live = blocks(&manager).await;
+    let Value::Array(items) = &live else {
+        panic!("{}", json(&live))
+    };
+    let pointer = items
+        .iter()
+        .find_map(|item| match item {
+            Value::Object(block) if field(block, "id") == Some(&Value::String(Str::from("pg"))) => {
+                Some(block)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no pointer in {}", json(&live)));
+    let Some(Value::Object(data)) = field(pointer, "data") else {
+        panic!("{}", json(&live))
+    };
+    assert_eq!(
+        field(data, "trashed").map(json).as_deref(),
+        Some(r#"{"at":1700000999000,"by":"u9","formerParentId":null,"formerIndex":1}"#)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restore_reaches_a_lineage_a_reset_replaced() {
     let b = Bench::new();
     let manager = b.manager(Options::default());
@@ -1440,4 +1534,790 @@ async fn a_delete_refuses_the_current_lineage_and_removes_an_old_one() {
     );
     let listed = manager.history(DOC, Duration::ZERO).await.expect("list");
     assert!(listed.lineages.iter().all(|l| l.lineage != old));
+}
+
+// Changes by time range: one budget across lineages.
+
+fn whole_time() -> (std::time::SystemTime, std::time::SystemTime) {
+    (
+        blok_dotnet::time_from_ticks(0),
+        blok_dotnet::time_from_ticks(3_155_378_975_999_999_999),
+    )
+}
+
+// Two lineages whose rows together pass the byte cap: the older lineage
+// replays with what the newer one left, so the answer stops at the cap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changes_between_keeps_one_byte_budget_across_lineages() {
+    let b = Bench::new();
+    let manager = b.manager(Options::default());
+    blocks(&manager).await;
+    edit(&manager, update("a", "old one"), None).await;
+    edit(&manager, update("a", "old two"), None).await;
+    reset(&manager).await;
+    blocks(&manager).await;
+    edit(&manager, update("a", "new one"), None).await;
+    let current = b.lineage();
+    let (from, to) = whole_time();
+    let all = manager
+        .changes_between(DOC, from, to, None, MAX_CHANGE_RECORDS, MAX_CHANGE_BYTES)
+        .await
+        .expect("all");
+    assert_eq!((all.records.len(), all.truncated), (3, false));
+    let budget = record_bytes(&all.records[0].changes) + record_bytes(&all.records[1].changes) / 2;
+
+    let result = manager
+        .changes_between(DOC, from, to, None, MAX_CHANGE_RECORDS, budget)
+        .await
+        .expect("cut");
+
+    assert!(result.truncated);
+    let lineages: Vec<&str> = result.records.iter().map(|r| r.lineage.as_str()).collect();
+    assert_eq!(lineages, [current.as_str()]);
+}
+
+// A lineage cut by its own replay ends the answer: an older lineage that
+// would still fit must not follow it, or the cut rows would be skipped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changes_between_stops_at_a_lineage_its_own_replay_cut() {
+    let b = Bench::new();
+    let manager = b.manager(Options::default());
+    blocks(&manager).await;
+    edit(&manager, update("a", "s"), None).await;
+    reset(&manager).await;
+    blocks(&manager).await;
+    edit(&manager, update("a", &"x".repeat(1000)), None).await;
+    edit(&manager, update("a", &"y".repeat(1000)), None).await;
+    let current = b.lineage();
+    let (from, to) = whole_time();
+    let all = manager
+        .changes_between(DOC, from, to, None, MAX_CHANGE_RECORDS, MAX_CHANGE_BYTES)
+        .await
+        .expect("all");
+    assert_eq!(all.records.len(), 3);
+    let budget = record_bytes(&all.records[0].changes) + record_bytes(&all.records[2].changes);
+
+    let result = manager
+        .changes_between(DOC, from, to, None, MAX_CHANGE_RECORDS, budget)
+        .await
+        .expect("cut");
+
+    assert!(result.truncated);
+    let rows: Vec<(&str, u64)> = result
+        .records
+        .iter()
+        .map(|r| (r.lineage.as_str(), r.changes.sequence))
+        .collect();
+    assert_eq!(rows, [(current.as_str(), 2)]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changes_between_reads_at_most_eight_lineages() {
+    let b = Bench::new();
+    let manager = b.manager(Options::default());
+    blocks(&manager).await;
+    let mut lineages = Vec::new();
+    for i in 0..=MAX_RANGE_LINEAGES {
+        if i > 0 {
+            reset(&manager).await;
+            blocks(&manager).await;
+        }
+        edit(&manager, update("a", &format!("v{i}")), None).await;
+        lineages.push(b.lineage());
+    }
+    let (from, to) = whole_time();
+
+    let result = manager
+        .changes_between(DOC, from, to, None, MAX_CHANGE_RECORDS, MAX_CHANGE_BYTES)
+        .await
+        .expect("range");
+
+    assert!(result.truncated);
+    let got: Vec<&str> = result.records.iter().map(|r| r.lineage.as_str()).collect();
+    let want: Vec<&str> = lineages[1..].iter().rev().map(String::as_str).collect();
+    assert_eq!(got, want);
+}
+
+// Twins of C# CollabHistoryManagerTests.Notes.
+
+struct FailingNotes;
+
+impl RecordNotesStore for FailingNotes {
+    fn write<'a>(
+        &'a self,
+        _doc_id: &'a str,
+        _lineage: &'a str,
+        _sequence: u64,
+        _note: RecordNote,
+    ) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async { Err(Error::message("the notes are down")) })
+    }
+
+    fn read<'a>(
+        &'a self,
+        _doc_id: &'a str,
+        _lineage: &'a str,
+    ) -> BoxFuture<'a, Result<std::collections::HashMap<u64, RecordNote>, Error>> {
+        Box::pin(async { Err(Error::message("the notes are down")) })
+    }
+}
+
+impl Bench {
+    fn noted(
+        &self,
+        notes: Arc<dyn RecordNotesStore>,
+        logs: Option<Arc<Mutex<Vec<String>>>>,
+    ) -> Manager {
+        Manager::new(ManagerOptions {
+            store: self.store.clone(),
+            endpoint: self.endpoint.clone(),
+            converter: Arc::new(runtime_converter()),
+            room: Options::default(),
+            log: logs.map(|logs| -> Log {
+                Arc::new(move |line: &str| logs.lock().unwrap().push(line.to_owned()))
+            }),
+            operations: Some(self.journal.clone()),
+            activity: None,
+            notes: Some(notes),
+        })
+    }
+}
+
+fn person() -> RecordNote {
+    RecordNote {
+        kind: KIND_PERSON.to_owned(),
+        on_behalf_of: None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_journalled_edit_leaves_a_note_of_its_actors_kind_never_read_from_the_ids_text() {
+    let bench = Bench::new();
+    let notes = Arc::new(MemoryRecordNotes::default());
+    let manager = bench.noted(notes.clone(), None);
+    blocks(&manager).await;
+    edit(&manager, update("a", "1"), Some("u1")).await;
+    edit(&manager, update("a", "2"), Some("agent:alice:claude-code")).await;
+    edit(&manager, update("a", "3"), None).await;
+
+    let written = notes.read(DOC, &bench.lineage()).await.unwrap();
+    assert_eq!(written.get(&1), Some(&person()));
+    assert_eq!(written.get(&2), Some(&person()));
+    assert_eq!(written.get(&3), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_edit_notes_the_agent_and_its_person() {
+    let bench = Bench::new();
+    let notes = Arc::new(MemoryRecordNotes::default());
+    let manager = bench.noted(notes.clone(), None);
+    blocks(&manager).await;
+    let op = update("a", "by an agent");
+    let digest = canonical_body_digest(std::slice::from_ref(&op)).expect("digest");
+    let plan: PlanOps = Arc::new(move |_| {
+        let op = op.clone();
+        Box::pin(async move { Ok(vec![op]) })
+    });
+    let result = manager
+        .agent_edit_noted(
+            DOC,
+            plan,
+            &fresh_id(),
+            &digest,
+            "bot-7",
+            None,
+            None,
+            classify_actor("bot-7", true, "carol"),
+        )
+        .await
+        .expect("edit");
+    assert_eq!(result.status, EditStatus::Applied, "{:?}", result.err);
+    let written = notes.read(DOC, &bench.lineage()).await.unwrap();
+    assert_eq!(
+        written.get(&1),
+        Some(&RecordNote {
+            kind: KIND_AGENT.to_owned(),
+            on_behalf_of: Some("carol".to_owned()),
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_list_carries_actor_kinds_only_with_a_record_notes_store() {
+    let bench = Bench::new();
+    let manager = bench.noted(Arc::new(MemoryRecordNotes::default()), None);
+    blocks(&manager).await;
+    edit(&manager, update("a", "1"), Some("u1")).await;
+    edit(&manager, update("a", "2"), Some("agent:u1:cursor")).await;
+
+    let noted = manager.history(DOC, Duration::ZERO).await.unwrap();
+    assert_eq!(
+        noted.versions[0].actor_kinds,
+        Some(vec![
+            ActorKind {
+                id: "u1".to_owned(),
+                note: person()
+            },
+            ActorKind {
+                id: "agent:u1:cursor".to_owned(),
+                note: person()
+            },
+        ])
+    );
+    assert_eq!(noted.versions[1].actor_kinds, Some(Vec::new()));
+    let plain = bench
+        .manager(Options::default())
+        .history(DOC, Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(
+        plain
+            .versions
+            .iter()
+            .all(|version| version.actor_kinds.is_none())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn by_actor_starts_a_version_when_the_actor_changes() {
+    let bench = Bench::new();
+    let manager = bench.manager(Options::default());
+    blocks(&manager).await;
+    edit(&manager, update("a", "1"), Some("u1")).await;
+    edit(&manager, update("a", "2"), Some("u1")).await;
+    edit(&manager, update("a", "3"), Some("u2")).await;
+
+    let sequences = |list: HistoryList| -> Vec<u64> {
+        list.versions
+            .iter()
+            .map(|version| version.sequence)
+            .collect()
+    };
+    assert_eq!(
+        sequences(manager.history(DOC, Duration::ZERO).await.unwrap()),
+        [3, 0]
+    );
+    assert_eq!(
+        sequences(manager.history_by(DOC, Duration::ZERO, true).await.unwrap()),
+        [3, 2, 0]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_note_that_fails_never_fails_the_edit() {
+    let bench = Bench::new();
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let manager = bench.noted(Arc::new(FailingNotes), Some(logs.clone()));
+    blocks(&manager).await;
+    edit(&manager, update("a", "kept"), Some("u1")).await;
+
+    assert_eq!(bench.committed().len(), 1);
+    assert!(
+        logs.lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("record note")),
+        "{:?}",
+        logs.lock().unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_restore_is_noted_as_its_restorer() {
+    let bench = Bench::new();
+    let notes = Arc::new(MemoryRecordNotes::default());
+    let manager = bench.noted(notes.clone(), None);
+    blocks(&manager).await;
+    edit(&manager, update("a", "1"), Some("u1")).await;
+    let lineage = bench.lineage();
+
+    let (status, edit) = restore(&manager, &lineage, 0, &fresh_id(), Some("u2"), None).await;
+    assert_eq!(status, HistoryStatus::Ready);
+    assert_eq!(edit.map(|edit| edit.status), Some(EditStatus::Applied));
+    assert_eq!(
+        notes.read(DOC, &lineage).await.unwrap().get(&2),
+        Some(&person())
+    );
+}
+
+// Twins of C# CollabHistoryManagerTests.Signals: change signals and audit
+// events through the manager.
+
+/// The clock, and each waiting timer with its due time.
+type SignalClocked = (Duration, Vec<(Duration, tokio::sync::oneshot::Sender<()>)>);
+
+#[derive(Default)]
+struct SignalTimers(Mutex<SignalClocked>);
+
+impl SignalTimers {
+    fn advance(&self, by: Duration) {
+        let mut state = self.0.lock().unwrap();
+        state.0 += by;
+        let now = state.0;
+        let (due, waiting): (Vec<_>, Vec<_>) = state.1.drain(..).partition(|(at, _)| *at <= now);
+        state.1 = waiting;
+        drop(state);
+        for (_, fire) in due {
+            let _ = fire.send(());
+        }
+    }
+}
+
+impl Timers for SignalTimers {
+    fn sleep(&self, d: Duration) -> BoxFuture<'static, ()> {
+        let (fire, fired) = tokio::sync::oneshot::channel();
+        let mut state = self.0.lock().unwrap();
+        let at = state.0 + d;
+        state.1.push((at, fire));
+        Box::pin(async move {
+            if fired.await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        })
+    }
+}
+
+#[derive(Default)]
+struct SignalObserver {
+    signals: Mutex<Vec<ChangeSignal>>,
+    events: Mutex<Vec<AuditEvent>>,
+    failure: Option<String>,
+    gate: Option<tokio::sync::Semaphore>,
+    /// The first on_changes never returns; `entered` is told when it starts.
+    hang_first: bool,
+    entered: tokio::sync::Notify,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl ActivityObserver for SignalObserver {
+    fn record<'a>(
+        &'a self,
+        _doc_id: &'a str,
+        _actor_id: &'a str,
+        _at: std::time::SystemTime,
+        _kind: ActivityKind,
+    ) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn changes(&self) -> Option<&dyn ChangeObserver> {
+        Some(self)
+    }
+
+    fn audit(&self) -> Option<&dyn AuditObserver> {
+        Some(self)
+    }
+}
+
+impl ChangeObserver for SignalObserver {
+    fn on_changes<'a>(&'a self, signal: &'a ChangeSignal) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            if self.hang_first && self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+            {
+                self.entered.notify_one();
+                std::future::pending::<()>().await;
+            }
+            if let Some(gate) = &self.gate {
+                let _permit = gate.acquire().await;
+            }
+            if let Some(failure) = &self.failure {
+                return Err(Error::message(failure.clone()));
+            }
+            self.signals.lock().unwrap().push(signal.clone());
+            Ok(())
+        })
+    }
+}
+
+impl AuditObserver for SignalObserver {
+    fn on_event<'a>(&'a self, event: &'a AuditEvent) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
+        })
+    }
+}
+
+struct ActivityOnly;
+
+impl ActivityObserver for ActivityOnly {
+    fn record<'a>(
+        &'a self,
+        _doc_id: &'a str,
+        _actor_id: &'a str,
+        _at: std::time::SystemTime,
+        _kind: ActivityKind,
+    ) -> BoxFuture<'a, Result<(), Error>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+struct SignalBench {
+    bench: Bench,
+    clock: Arc<Mutex<std::time::SystemTime>>,
+    timers: Arc<SignalTimers>,
+    logs: Arc<Mutex<Vec<String>>>,
+    manager: Manager,
+}
+
+impl SignalBench {
+    async fn new(observer: Arc<dyn ActivityObserver>, window: Option<Duration>) -> SignalBench {
+        let bench = Bench::new();
+        let clock = Arc::new(Mutex::new(UNIX_EPOCH + Duration::from_secs(1_800_000_000)));
+        let timers = Arc::new(SignalTimers::default());
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let now = clock.clone();
+        let mut room = Options {
+            now: Some(Arc::new(move || *now.lock().unwrap())),
+            timers: Some(timers.clone()),
+            ..Options::default()
+        };
+        if let Some(window) = window {
+            room.change_signal_window = window;
+        }
+        let written = logs.clone();
+        let manager = Manager::new(ManagerOptions {
+            store: bench.store.clone(),
+            endpoint: bench.endpoint.clone(),
+            converter: Arc::new(runtime_converter()),
+            room,
+            log: Some(Arc::new(move |m: &str| {
+                written.lock().unwrap().push(m.to_owned())
+            })),
+            operations: Some(bench.journal.clone()),
+            activity: Some(observer),
+            notes: None,
+        });
+        blocks(&manager).await;
+        SignalBench {
+            bench,
+            clock,
+            timers,
+            logs,
+            manager,
+        }
+    }
+
+    /// Moves both clocks, then waits for `closed` windows in all.
+    async fn advance(&self, by: Duration, closed: usize) {
+        *self.clock.lock().unwrap() += by;
+        self.timers.advance(by);
+        let hub = self.manager.0.signals.as_ref().expect("a hub");
+        for _ in 0..2000 {
+            if hub.closed_windows() >= closed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(
+            hub.closed_windows() >= closed,
+            "{} windows closed",
+            hub.closed_windows()
+        );
+        self.manager.settle().await;
+    }
+
+    fn now(&self) -> std::time::SystemTime {
+        *self.clock.lock().unwrap()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_signal_per_window_names_the_changed_blocks_and_their_authors() {
+    let observer = Arc::new(SignalObserver::default());
+    let b = SignalBench::new(observer.clone(), None).await;
+    let opened = b.now();
+    edit(&b.manager, update("a", "two"), Some("u1")).await;
+    b.advance(Duration::from_secs(30), 0).await;
+    edit(&b.manager, insert("b", "three", "a"), Some("u2")).await;
+    b.manager.settle().await;
+    assert!(observer.signals.lock().unwrap().is_empty());
+
+    b.advance(Duration::from_secs(30), 1).await;
+
+    let signals = observer.signals.lock().unwrap().clone();
+    assert_eq!(signals.len(), 1, "{signals:?}");
+    let signal = &signals[0];
+    assert_eq!(
+        (
+            signal.doc_id.as_str(),
+            signal.lineage.clone(),
+            signal.from_sequence,
+            signal.to_sequence
+        ),
+        (DOC, b.bench.lineage(), 1, 2)
+    );
+    assert_eq!(
+        (signal.window_start, signal.window_end),
+        (opened, opened + Duration::from_secs(60))
+    );
+    let block = |id: &str, kind: &str| SignalBlock {
+        id: id.to_owned(),
+        kind: kind.to_owned(),
+    };
+    assert_eq!(
+        signal.blocks,
+        vec![block("a", "changed"), block("b", "added")]
+    );
+    let author = |id: &str| SignalAuthor {
+        id: id.to_owned(),
+        kind: Some("person".to_owned()),
+    };
+    assert_eq!(signal.authors, vec![author("u1"), author("u2")]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edit_after_the_window_opens_the_next_one() {
+    let observer = Arc::new(SignalObserver::default());
+    let b = SignalBench::new(observer.clone(), None).await;
+    edit(&b.manager, update("a", "two"), None).await;
+    b.advance(Duration::from_secs(60), 1).await;
+    edit(&b.manager, update("a", "three"), None).await;
+    b.advance(Duration::from_secs(60), 2).await;
+
+    let ranges: Vec<_> = observer
+        .signals
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| (s.from_sequence, s.to_sequence))
+        .collect();
+    assert_eq!(ranges, vec![(1, 1), (2, 2)]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_block_added_and_removed_in_one_window_sends_nothing() {
+    let observer = Arc::new(SignalObserver::default());
+    let b = SignalBench::new(observer.clone(), None).await;
+    edit(&b.manager, insert("b", "brief", "a"), None).await;
+    edit(&b.manager, remove("b"), None).await;
+    b.advance(Duration::from_secs(60), 1).await;
+
+    assert!(observer.signals.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lineage_change_closes_the_window() {
+    let observer = Arc::new(SignalObserver::default());
+    let b = SignalBench::new(observer.clone(), None).await;
+    edit(&b.manager, update("a", "two"), None).await;
+    let first = b.bench.lineage();
+    reset(&b.manager).await;
+    edit(&b.manager, update("a", "three"), None).await;
+    let second = b.bench.lineage();
+    // The first window closed early; let it go out before time passes its
+    // call timeout.
+    b.manager.settle().await;
+    b.advance(Duration::from_secs(60), 2).await;
+
+    let lineages: Vec<_> = observer
+        .signals
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.lineage.clone())
+        .collect();
+    assert_eq!(lineages, vec![first, second]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_window_length_comes_from_the_options() {
+    let observer = Arc::new(SignalObserver::default());
+    let b = SignalBench::new(observer.clone(), Some(Duration::from_secs(300))).await;
+    edit(&b.manager, update("a", "two"), None).await;
+    b.advance(Duration::from_secs(240), 0).await;
+    edit(&b.manager, update("a", "three"), None).await;
+    b.manager.settle().await;
+    assert!(observer.signals.lock().unwrap().is_empty());
+
+    b.advance(Duration::from_secs(60), 1).await;
+
+    let signals = observer.signals.lock().unwrap().clone();
+    assert_eq!(signals.len(), 1, "{signals:?}");
+    assert_eq!((signals[0].from_sequence, signals[0].to_sequence), (1, 2));
+    assert_eq!(
+        signals[0]
+            .window_end
+            .duration_since(signals[0].window_start)
+            .unwrap(),
+        Duration::from_secs(300)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_observer_is_logged_and_edits_go_on() {
+    let observer = Arc::new(SignalObserver {
+        failure: Some("host down".to_owned()),
+        ..SignalObserver::default()
+    });
+    let b = SignalBench::new(observer, None).await;
+    edit(&b.manager, update("a", "two"), None).await;
+    b.advance(Duration::from_secs(60), 1).await;
+    edit(&b.manager, update("a", "three"), None).await;
+
+    assert!(
+        b.logs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("host down"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_observer_never_holds_the_room() {
+    let observer = Arc::new(SignalObserver {
+        gate: Some(tokio::sync::Semaphore::new(0)),
+        ..SignalObserver::default()
+    });
+    let b = SignalBench::new(observer.clone(), None).await;
+    edit(&b.manager, update("a", "two"), None).await;
+    *b.clock.lock().unwrap() += Duration::from_secs(60);
+    b.timers.advance(Duration::from_secs(60));
+    for i in 0..5 {
+        edit(&b.manager, update("a", &format!("edit {i}")), None).await;
+    }
+    assert_eq!(b.bench.committed().len(), 6);
+    observer.gate.as_ref().unwrap().add_permits(10);
+    // Before the next advance, which would also pass the call timeout.
+    for _ in 0..2000 {
+        if !observer.signals.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    b.advance(Duration::from_secs(60), 2).await;
+    assert_eq!(observer.signals.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_observer_with_neither_half_gets_no_hub() {
+    let b = Bench::new();
+    let manager = Manager::new(ManagerOptions {
+        store: b.store.clone(),
+        endpoint: b.endpoint.clone(),
+        converter: Arc::new(runtime_converter()),
+        room: Options::default(),
+        log: None,
+        operations: Some(b.journal.clone()),
+        activity: Some(Arc::new(ActivityOnly)),
+        notes: None,
+    });
+    assert!(manager.0.signals.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edit_is_a_content_edited_event_with_the_actors_note() {
+    let observer = Arc::new(SignalObserver::default());
+    let b = SignalBench::new(observer.clone(), None).await;
+    edit(&b.manager, update("a", "two"), Some("u1")).await;
+    edit(&b.manager, update("a", "three"), Some("u1")).await;
+    b.manager.settle().await;
+
+    let events = observer.events.lock().unwrap().clone();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].event_type, AUDIT_CONTENT_EDITED);
+    assert_eq!(events[0].doc_id, DOC);
+    assert_eq!(
+        events[0].actor,
+        Some(AuditActor {
+            id: "u1".to_owned(),
+            kind: Some("person".to_owned()),
+            on_behalf_of: None,
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deleting_a_lineage_and_purging_are_events() {
+    let observer = Arc::new(SignalObserver::default());
+    let b = SignalBench::new(observer.clone(), None).await;
+    let old = b.bench.lineage();
+    reset(&b.manager).await;
+    let (status, _) = b.manager.delete_lineage_by(DOC, &old, "u9").await.unwrap();
+    assert_eq!(status, HistoryStatus::Ready);
+    purge(&b.manager).await;
+    b.manager.settle().await;
+
+    let events = observer.events.lock().unwrap().clone();
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[0].event_type, AUDIT_LINEAGE_DELETED);
+    assert_eq!(events[0].lineage.as_deref(), Some(old.as_str()));
+    assert_eq!(
+        events[0].actor,
+        Some(AuditActor {
+            id: "u9".to_owned(),
+            kind: Some("person".to_owned()),
+            on_behalf_of: None,
+        })
+    );
+    assert_eq!(events[1].event_type, AUDIT_DOCUMENT_PURGED);
+    assert_eq!(events[1].actor, None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hung_observer_call_times_out_and_later_signals_still_flow() {
+    let observer = Arc::new(SignalObserver {
+        hang_first: true,
+        ..SignalObserver::default()
+    });
+    let b = SignalBench::new(observer.clone(), None).await;
+    edit(&b.manager, update("a", "two"), None).await;
+    *b.clock.lock().unwrap() += Duration::from_secs(60);
+    b.timers.advance(Duration::from_secs(60));
+    tokio::time::timeout(Duration::from_secs(30), observer.entered.notified())
+        .await
+        .expect("the first signal reached the observer");
+    *b.clock.lock().unwrap() += Duration::from_secs(30);
+    b.timers.advance(Duration::from_secs(30));
+    tokio::time::timeout(Duration::from_secs(60), b.manager.settle())
+        .await
+        .expect("the pump moved on past the hung call");
+
+    edit(&b.manager, update("a", "three"), None).await;
+    b.advance(Duration::from_secs(60), 2).await;
+
+    let signals = observer.signals.lock().unwrap().clone();
+    assert_eq!(signals.len(), 1, "{signals:?}");
+    assert_eq!((signals[0].from_sequence, signals[0].to_sequence), (2, 2));
+    assert!(
+        b.logs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("ran past"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_window_past_one_read_names_only_the_records_it_folded() {
+    let observer = Arc::new(SignalObserver::default());
+    let b = SignalBench::new(observer.clone(), None).await;
+    for i in 0..=MAX_CHANGE_RECORDS {
+        edit(&b.manager, update("a", &format!("edit {i}")), None).await;
+    }
+    b.advance(Duration::from_secs(60), 1).await;
+
+    let signals = observer.signals.lock().unwrap().clone();
+    assert_eq!(signals.len(), 1, "{signals:?}");
+    assert!(signals[0].truncated);
+    assert_eq!((signals[0].from_sequence, signals[0].to_sequence), (2, 201));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_window_past_the_longest_runs_one_day() {
+    let observer = Arc::new(SignalObserver::default());
+    let b = SignalBench::new(observer.clone(), Some(Duration::from_secs(60 * 86_400))).await;
+    edit(&b.manager, update("a", "two"), None).await;
+    b.advance(Duration::from_secs(86_400), 1).await;
+
+    let signals = observer.signals.lock().unwrap().clone();
+    assert_eq!(signals.len(), 1, "{signals:?}");
+    assert_eq!(
+        signals[0]
+            .window_end
+            .duration_since(signals[0].window_start)
+            .unwrap(),
+        Duration::from_secs(86_400)
+    );
 }

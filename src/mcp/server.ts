@@ -9,6 +9,7 @@ import { contractFlagsOf } from './contract-flags';
 import { createTicketProvider } from './auth/tickets';
 import { createToolDispatcher } from './dispatcher';
 import type { Caller, DispatcherDeps } from './dispatcher';
+import { prepareHandleStore } from './handle-store-files';
 import { HandleRegistry } from './handles';
 import { createOpenLive } from './live/open-live';
 import { createOpener, createSource } from './opener';
@@ -19,6 +20,7 @@ import { mcpInstructions } from './instructions';
 import type { Dispatch } from './sdk-server';
 import type { HandleSession } from './session';
 import { listMcpTools } from './tools';
+import { SharedHandles } from './shared-handles';
 import { createUploaderService } from './uploads';
 import type { McpTool } from './tools';
 
@@ -27,6 +29,7 @@ export interface AssembledMcp {
   /** Sent on initialize; built from the contract tools/list renders. */
   instructions: string;
   dispatch: Dispatch;
+  /** This process's handles: all of them, or with a handleStore only the live ones. */
   handles: HandleRegistry<HandleSession>;
   stop(): Promise<void>;
 }
@@ -56,6 +59,8 @@ const drain = async (sets: Set<Promise<unknown>>[], seen = new Set<Promise<unkno
 };
 
 export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): AssembledMcp => {
+  // Callers check the options first, so a refused start makes no --handle-store directory.
+  prepareHandleStore(options.handleStore);
   const handleIdleMs = options.handleIdleMs ?? DEFAULTS.handleIdleMs;
   const pageMap = (options.pageTitles ?? DEFAULTS.pageTitles) === 'page-map';
   const source = createSource(options.source);
@@ -69,7 +74,7 @@ export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): A
     void closing.catch(() => undefined).finally(() => pageCloses.delete(closing));
   };
   // portsFor needs the opener and the opener needs portsFor: bind the open late.
-  const late: { open: DispatcherDeps['open'] | null; createPage: ((caller: Caller) => Promise<{ pageId: string }>) | null } = {
+  const late: { open: DispatcherDeps['open'] | null; createPage: ((caller: Caller, parentDocumentId: string) => Promise<{ pageId: string }>) | null } = {
     open: null, createPage: null,
   };
   const portsFor = (
@@ -77,6 +82,7 @@ export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): A
     _actor?: AgentActor,
     isOpenDocument?: (pageId: string) => Promise<boolean>,
     unconfirmed?: () => void,
+    documentId = '',
   ): AgentPorts => createHeadlessPorts({
     sanitizeFor: (type) => contracts.runtimes.get(type)?.sanitize,
     richTextFieldsFor: contracts.richTextFieldsFor,
@@ -101,7 +107,7 @@ export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): A
           throw new Error('blok-mcp: the opener is not ready');
         }
 
-        return late.createPage(caller);
+        return late.createPage(caller, documentId);
       },
     }),
   });
@@ -152,9 +158,17 @@ export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): A
 
   sweeper.unref();
 
+  const table = options.handleStore === undefined ? handles : new SharedHandles({
+    local: handles,
+    store: options.handleStore,
+    idleMs: handleIdleMs,
+    maxPerPrincipal: options.maxHandlesPerPrincipal ?? DEFAULTS.maxHandlesPerPrincipal,
+    contractRevision: contracts.stored.revision,
+    restore: opener.restore,
+  });
   const authorize = options.authorize;
   const dispatch = createToolDispatcher({
-    handles,
+    handles: table,
     open: deps.open ?? opener.open,
     list: deps.list ?? opener.list,
     stillAllowed: async (caller, documentId, write) =>
@@ -188,7 +202,7 @@ export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): A
         });
         const work = (async () => {
           await Promise.all([
-            handles.closeAll(async session => {
+            table.closeAll(async session => {
               await session.close('closed');
             }),
             Promise.allSettled([...sweeps]),

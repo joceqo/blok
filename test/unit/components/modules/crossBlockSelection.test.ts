@@ -368,6 +368,27 @@ describe('CrossBlockSelection', () => {
       expect(toggleChild.selected).toBe(false);
     });
 
+    it('grows from a block the menu selected, not from the block a click left as anchor', () => {
+      // A click in blocks[0] set the anchors; the block menu then selected blocks[2].
+      blocks[2].selected = true;
+      setPrivate(crossBlockSelection, 'firstSelectedBlock', blocks[0]);
+      setPrivate(crossBlockSelection, 'lastSelectedBlock', blocks[0]);
+
+      crossBlockSelection.toggleBlockSelectedState(true);
+
+      expect(blocks.map((block) => block.selected)).toEqual([false, false, true, true]);
+    });
+
+    it('grows up from a block the menu selected, not from the block a click left as anchor', () => {
+      blocks[3].selected = true;
+      setPrivate(crossBlockSelection, 'firstSelectedBlock', blocks[0]);
+      setPrivate(crossBlockSelection, 'lastSelectedBlock', blocks[0]);
+
+      crossBlockSelection.toggleBlockSelectedState(false);
+
+      expect(blocks.map((block) => block.selected)).toEqual([false, false, true, true]);
+    });
+
     it('announces the selected block count as the keyboard selection grows (H9)', () => {
       (announce as ReturnType<typeof vi.fn>).mockClear();
 
@@ -406,6 +427,31 @@ describe('CrossBlockSelection', () => {
       crossBlockSelection.clear(createKeyboardEventWithKey('ArrowUp'));
 
       expect(caretSetToBlock).toHaveBeenCalledWith(blocks[0], blokState.Caret.positions.START);
+    });
+
+    it('never puts the caret in the block a click left behind when another block was selected later (Notion U108, U109, U142)', () => {
+      // A click in blocks[0] set the anchors; the block menu then selected blocks[1].
+      blocks[1].selected = true;
+      setPrivate(crossBlockSelection, 'firstSelectedBlock', blocks[0]);
+      setPrivate(crossBlockSelection, 'lastSelectedBlock', blocks[0]);
+
+      crossBlockSelection.clear(createKeyboardEventWithKey('Backspace'));
+
+      expect(caretSetToBlock).not.toHaveBeenCalledWith(blocks[0], expect.anything());
+      expect(accessPrivate<Block | null>(crossBlockSelection, 'firstSelectedBlock')).toBeNull();
+    });
+
+    it('puts the caret at the end of the selected block on Enter when a click left the anchors elsewhere', () => {
+      const blokState = accessPrivate<CrossBlockSelection['Blok']>(crossBlockSelection, 'Blok');
+
+      // A click in blocks[0] set the anchors; the block menu then selected blocks[2].
+      blocks[2].selected = true;
+      setPrivate(crossBlockSelection, 'firstSelectedBlock', blocks[0]);
+      setPrivate(crossBlockSelection, 'lastSelectedBlock', blocks[0]);
+
+      crossBlockSelection.clear(createKeyboardEventWithKey('Enter'));
+
+      expect(caretSetToBlock).toHaveBeenCalledWith(blocks[2], blokState.Caret.positions.END);
     });
 
     it('skips caret restoration when nothing is selected', () => {
@@ -494,6 +540,23 @@ describe('CrossBlockSelection', () => {
       expect(blocks[3].selected).toBe(false);
       expect(accessPrivate<Block>(crossBlockSelection, 'firstSelectedBlock')).toBe(blocks[0]);
       expect(accessPrivate<Block>(crossBlockSelection, 'lastSelectedBlock')).toBe(blocks[2]);
+    });
+
+    it('grows from a block the menu selected, not from the block a click left as anchor', () => {
+      // A click in blocks[0] set the anchors; the block menu then selected blocks[2].
+      setPrivate(crossBlockSelection, 'firstSelectedBlock', blocks[0]);
+      setPrivate(crossBlockSelection, 'lastSelectedBlock', blocks[0]);
+      blocks[2].selected = true;
+      const event = {
+        button: _.mouseButtons.LEFT,
+        shiftKey: true,
+        target: blocks[3].holder,
+        preventDefault: vi.fn(),
+      } as unknown as MouseEvent;
+
+      enableCrossBlockSelection.call(crossBlockSelection, event);
+
+      expect(blocks.map((block) => block.selected)).toEqual([false, false, true, true]);
     });
 
     it('selects the inclusive range upward when the anchor is below the clicked block', () => {

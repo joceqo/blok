@@ -19,6 +19,8 @@ const ruleBody = (selector: string): string =>
     .map((rule) => rule[2])
     .join(';');
 
+const colors = readFileSync(resolve(__dirname, '../../../src/styles/colors.css'), 'utf8');
+
 /** A token's value in the light block, then the two dark blocks. */
 const tokenValues = (name: string): string[] =>
   [ ...database.matchAll(new RegExp(`${name}: ([^;]+);`, 'g')) ].map((m) => m[1].trim());
@@ -35,6 +37,11 @@ describe('view tabs (research/07:45-50, 222)', () => {
     expect(body).toContain('line-height: 16.8px');
     expect(body).toContain('font-weight: 500');
     expect(ruleBody('[data-blok-database-tab] svg')).toContain('width: 20px');
+  });
+
+  it('take the 0.076 pressed fill while their menu is open (notion-motion.md Round 27 §3)', () => {
+    expect(ruleBody('[data-blok-database-tab][aria-expanded="true"]')).toContain('background-color: var(--blok-database-button-pressed-bg)');
+    expect(tokenValues('--blok-database-button-pressed-bg')[0]).toBe('rgba(33, 27, 23, 0.076)');
   });
 
   it('take Notion ink and fill in light and dark', () => {
@@ -63,6 +70,15 @@ describe('toolbar Filter and Sort (research/07:53)', () => {
     expect(body).toContain('width: 28px');
     expect(body).toContain('height: 28px');
     expect(body).toContain('color: var(--blok-database-table-header-icon)');
+  });
+
+  // side-by-side-v1.md X3: Notion's glyphs are 12-13px wide (filter 13x8, sort 13x11); Blok's
+  // 20-unit icons drawn at 16px came out 10px wide. At their own 20px they match.
+  it('draw their icons at the icons\' own 20px, inside the same 28px button', () => {
+    const body = ruleBody('[data-blok-database-view-toolbar] [data-blok-database-toolbar-icon]');
+
+    expect(body).toContain('padding: var(--blok-space-1)');
+    expect(ruleBody('[data-blok-database-view-toolbar] [data-blok-database-toolbar-icon] svg')).toMatch(/width: 20px;\s*height: 20px/);
   });
 });
 
@@ -179,13 +195,14 @@ describe('fill handle (D3)', () => {
 
 describe('the row open in the side peek (notion-live-8/62-close-hover.png)', () => {
   it('gets Notion\'s 1px ring round the whole row, from the table\'s start, without catching the pointer', () => {
-    const ring = ruleBody('[data-blok-database-table-row]:has(> [data-blok-database-table-cell] > [data-blok-database-table-open][data-peeked])::before');
+    const ring = ruleBody('[data-blok-database-table-row]::before');
 
     expect(ring).toContain("content: ''");
     expect(ring).toContain('position: absolute');
     expect(ring).toContain('inset: 0');
     expect(ring).toContain('pointer-events: none');
     expect(ring).toContain('box-shadow: inset 0 0 0 1px var(--blok-icon-active-text)');
+    expect(ruleBody('[data-blok-database-table-row]:has(> [data-blok-database-table-cell] > [data-blok-database-table-open][data-peeked])::before')).toContain('opacity: 1');
   });
 });
 
@@ -215,9 +232,11 @@ describe('row page peek in dark (research/21 §1m)', () => {
     expect(tokenValues('--blok-database-peek-backdrop')).toEqual(['rgba(15, 15, 15, 0.6)', 'rgba(15, 15, 15, 0.8)', 'rgba(15, 15, 15, 0.8)']);
   });
 
-  // side-by-side #30, notion-live-3/raw/peek-1.png: same title ink (y 88-110), first label ink at y 147, not 142.
-  it('puts the side peek\'s first property 17px under the title', () => {
-    expect(ruleBody('[data-blok-database-drawer][data-peek-mode="side"] [data-blok-database-drawer-title]')).toContain('margin-bottom: 17px');
+  // notion-motion.md Round 33 §3: Notion's first label is at 133.4 with up to 4 properties and 141.4 with 5 or more,
+  // the title at 80 in both. Blok's label sits 7 into a row that starts 9 under the title (134), 8 more once spaced.
+  it('puts the side peek\'s first property 9px under the title, 8 more with 5 or more properties', () => {
+    expect(ruleBody('[data-blok-database-drawer][data-peek-mode="side"] [data-blok-database-drawer-title]')).toContain('margin-bottom: 9px');
+    expect(ruleBody('[data-blok-database-drawer][data-peek-mode="side"] [data-blok-database-drawer-props-spaced]')).toContain('padding-top: var(--blok-space-2)');
   });
 
   it('inks the title in the database ink: rgb(44, 44, 43) light (research/26 §1e), rgb(240, 239, 237) dark', () => {
@@ -307,6 +326,24 @@ describe('view overflow list (research/13:81, notion-measure5/51-one-more.json)'
     expect(buttons).not.toBe('');
     expect(buttons).not.toContain('opacity: 0');
   });
+
+  // notion-motion.md Round 38 §5: the menu is capped at 50vh; its list scrolls, with New view in it.
+  it('caps the menu at half the window and scrolls its list, not the search', () => {
+    expect(ruleBody('[data-blok-database-tab-overflow-dropdown][data-blok-top-layer][popover]')).toContain('max-height: 50vh');
+    const list = ruleBody('[data-blok-database-tab-overflow-dropdown] > [role="listbox"]');
+
+    expect(list).toContain('overflow-y: auto');
+    expect(list).toContain('min-height: 0');
+  });
+
+  // notion-motion.md Round 29 §4: the search box is 258 wide, 16 in from the panel (4 padding + 12).
+  // Its fill and radius stay the shared field look (src/styles/field.css), a user rule.
+  it('insets the view search 12px each side, so it is 258 wide in the 290 panel', () => {
+    const search = ruleBody('[data-blok-database-tab-overflow-dropdown] > [data-blok-field="search"]');
+
+    expect(search).toContain('margin-inline: var(--blok-space-3)');
+    expect(search).not.toMatch(/border-radius|background/);
+  });
 });
 
 describe('row page tab bar "N more…" (research/13 §3a)', () => {
@@ -371,8 +408,8 @@ describe('row page property drag handle', () => {
     expect(ruleBody(`${shown} + [data-blok-database-drawer-prop-icon]`)).toContain('display: none');
   });
 
-  // Notion's dragHandleFillSmall: in the 18x24 icon slot, opacity 0 → 1 over 0.15s while the icon fades out.
-  it('crossfades with the type icon in the same 18x24 slot', () => {
+  // notion-motion.md Round 26 §5: Notion's dragHandleFillSmall takes the 18x24 icon slot at once, with no fade.
+  it('swaps with the type icon in the same 18x24 slot, at once', () => {
     const handle = ruleBody(`${head} > ${overIcon}`);
 
     expect(handle).toContain('display: inline-flex');
@@ -381,7 +418,7 @@ describe('row page property drag handle', () => {
     expect(handle).toContain('inline-size: 18px');
     expect(handle).toContain('block-size: 24px');
     expect(handle).toContain('opacity: 0');
-    expect(handle).toContain('transition: opacity 0.15s');
+    expect(handle).not.toContain('transition');
     expect(handle).toContain('color: var(--blok-database-peek-label-icon)');
     expect(handle).not.toContain('display: none');
     expect(ruleBody(`${hoveredHead} > ${overIcon}`)).toContain('opacity: 1');
@@ -390,10 +427,10 @@ describe('row page property drag handle', () => {
 
     expect(icon).toContain('display: inline-flex');
     expect(icon).toContain('opacity: 0');
-    expect(ruleBody(`${head} > [data-blok-database-drawer-prop-icon]`)).toContain('transition: opacity 0.15s');
+    expect(ruleBody(`${head} > [data-blok-database-drawer-prop-icon]`)).not.toContain('transition');
   });
 
-  it('only crossfades where a pointer can hover', () => {
+  it('only swaps where a pointer can hover', () => {
     const hoverOnly = [ ...database.matchAll(/@media \(hover: hover\) \{((?:[^{}]*\{[^{}]*\})*[^{}]*)\}/g) ].map((m) => m[1]).join(' ');
 
     expect(hoverOnly).toContain(`${head} > ${overIcon}`);
@@ -449,6 +486,15 @@ describe('row page Add a property', () => {
     expect(ruleBody('[data-blok-database-drawer-add-prop] svg')).toContain('inline-size: 16px');
   });
 
+  // notion-motion.md Round 26 §5: 4 under the last row (the list's own 4px gap), hover `background 0.1s ease-in-out`.
+  it('sits 4 under the last row and fills over 0.1s ease-in-out', () => {
+    const body = ruleBody('[data-blok-database-drawer-add-prop]');
+
+    expect(ruleBody('[data-blok-database-drawer-props]')).toContain('gap: var(--blok-space-1)');
+    expect(body).not.toContain('margin-top');
+    expect(body).toContain('transition: background-color 0.1s ease-in-out');
+  });
+
   // Notion's plusFillSmall: 1px lower than centre. Its rgb(173, 169, 163) is 2.34:1 on white, so the icon takes 142,139,134 (3.39:1).
   it('draws the plus 1px low in the type icon ink, apart from the text', () => {
     const svg = ruleBody('[data-blok-database-drawer-add-prop] svg');
@@ -474,12 +520,29 @@ describe('row page header hover row', () => {
     expect(ruleBody(`${selector} svg`)).toContain('inline-size: 14px');
   });
 
-  it('shows on hover of the page head or the title, not the whole content', () => {
+  it('shows on hover of the page head, or on a full page its title, not the whole content', () => {
     expect(database.includes('[data-blok-database-drawer-content]:hover [data-blok-database-drawer-add-icon]')).toBe(false);
     expect(database.includes('[data-blok-database-drawer-content]:hover [data-blok-database-drawer-customize]')).toBe(false);
-    const shown = '[data-blok-database-drawer-page-head]:is(:hover, :has(+ [data-blok-database-drawer-title]:hover)) [data-blok-database-drawer-customize],';
+    expect(database.includes('[data-blok-database-drawer-page-head]:hover [data-blok-database-drawer-customize],')).toBe(true);
+    expect(database.includes('[data-peek-mode="full"] [data-blok-database-drawer-page-head]:has(+ [data-blok-database-drawer-title]:hover) [data-blok-database-drawer-customize],')).toBe(true);
+  });
 
-    expect(database.includes(shown)).toBe(true);
+  // notion-motion.md Round 56 §1, §6: in a peek the row shows only near its top: the bar or the page head.
+  it('shows in a side or center peek while the top bar is hovered, not the whole peek', () => {
+    for (const button of buttons) {
+      expect(database.includes(`[data-blok-database-drawer]:not([data-peek-mode="full"]):hover ${button}`)).toBe(false);
+      expect(database.includes(`[data-blok-database-drawer]:not([data-peek-mode="full"]):has(> [data-blok-database-drawer-toolbar]:hover) ${button}`)).toBe(true);
+    }
+  });
+
+  // Round 56 §1: Notion's zone is the bar plus 44..80 under it; the head reaches up over the content's top padding to fill it.
+  it('lets a peek page head reach up to the bar without moving anything', () => {
+    const head = ruleBody('[data-blok-database-drawer]:is([data-peek-mode="side"], [data-peek-mode="center"]) [data-blok-database-drawer-page-head]');
+
+    expect(head).toContain('margin-block: calc(-1 * var(--_blok-peek-head-reach)) 0');
+    expect(head).toContain('padding-block: var(--_blok-peek-head-reach) var(--blok-space-1)');
+    expect(ruleBody('[data-blok-database-drawer][data-peek-mode="side"]')).toContain('--_blok-peek-head-reach: var(--blok-space-1)');
+    expect(ruleBody('[data-blok-database-drawer][data-peek-mode="side"] [data-blok-database-drawer-content]')).toContain('padding-block-start: var(--blok-space-1)');
   });
 });
 
@@ -535,5 +598,114 @@ describe('status pill', () => {
   // Notion's 10px is half the 20px height: the pill role renders the same, and the radius law wants a role.
   it('keeps the pill radius role, which a 20px pill draws at 10px', () => {
     expect(ruleBody('[data-blok-database-option-pill][data-status-group]')).toContain('border-radius: var(--blok-radius-pill)');
+  });
+});
+
+// notion-motion.md Round 26 §5 (r26-cb-parts.raw): the database checkbox is 16x16 with a 3px radius.
+describe('database checkbox', () => {
+  it('rounds the box 3px', () => {
+    expect(ruleBody('[data-blok-database-checkbox]')).toContain('border-radius: var(--blok-radius-checkbox)');
+    expect(colors).toContain('--blok-radius-checkbox: 0.1875rem;');
+  });
+});
+
+// notion-motion.md Round 31 §2.
+describe('map view chrome', () => {
+  // Notion's map is 6; the user's "media frames = block 10" decision keeps Blok's block role.
+  it('rounds the map with the block role, not a map token', () => {
+    expect(ruleBody('[data-blok-database-map-canvas]')).toContain('border-radius: var(--blok-radius-block)');
+    expect(colors).not.toContain('--blok-radius-map');
+  });
+
+  // Round 52 §2: Notion's map is 684x400 at the column start (539), 8 short of the 692 column, 14 under the toolbar.
+  it('keeps the map in the text column, 8 short of its end, 8 under the view top', () => {
+    const map = ruleBody('[data-blok-database-map]');
+
+    expect(map).toContain('padding-inline-start: max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2))');
+    expect(map).toContain('padding-inline-end: calc(max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2)) + var(--blok-space-2))');
+    expect(map).toContain('padding-block-start: var(--blok-space-2)');
+  });
+
+  // Round 52 §2: a column of 312x28 rows, pitch 29; a 20 icon box at +8, text at +36; hover 20ms ease-in.
+  it('stacks the "No place" rows: 28 tall, 1 apart, icon box 20 at 8, text at 36', () => {
+    // 320 wide with rows of 312: 4 in on each side.
+    const box = ruleBody('[data-blok-database-map-no-place-list]');
+
+    expect(box).toContain('padding: var(--blok-space-1)');
+    expect(box).not.toContain('gap:');
+    const list = ruleBody('[data-blok-database-map-no-place-rows]');
+
+    expect(list).toContain('display: flex');
+    expect(list).toContain('flex-direction: column');
+    expect(list).toContain('gap: var(--blok-space-0-25)');
+    const row = ruleBody('[data-blok-database-map-no-place-row]');
+
+    expect(row).toContain('display: flex');
+    expect(row).toContain('block-size: 28px');
+    expect(row).toContain('padding: 0 var(--blok-space-2)');
+    expect(row).toContain('gap: var(--blok-space-2)');
+    expect(row).toContain('transition: background-color 20ms ease-in');
+    const icon = ruleBody('[data-blok-database-map-no-place-row] > :is([data-blok-database-page-icon], [data-blok-database-page-icon-placeholder])');
+
+    expect(icon).toContain('inline-size: 20px');
+    expect(icon).toContain('block-size: 20px');
+  });
+
+  // Round 53 §8a: the field is 296x28, 12 in and 12 down; the rows start 52 down, so 55 + 29 per row (229 for 6).
+  it('boxes the "No place" search as a 296x28 field, 12 in, with the rows 12 under it', () => {
+    const field = ruleBody('[data-blok-database-map-no-place-list] > [data-blok-database-map-no-place-search]');
+
+    expect(field).toContain('margin: var(--blok-space-2) var(--blok-space-2) var(--blok-space-3)');
+    expect(field).toContain('width: auto');
+    // Notion's 6 sides; the shared field's 1px border adds one.
+    expect(field).toContain('padding-inline: var(--blok-space-1-5)');
+    expect(field).toContain('font-size: 14px');
+  });
+
+  it('holds Add pin in a 28px white pill, radius 6, padding 2, 8 in from the corner', () => {
+    const pill = ruleBody('[data-blok-database-map-add-pin-pill]');
+
+    expect(pill).toContain('position: absolute');
+    expect(pill).toContain('inset-block-start: var(--blok-space-2)');
+    expect(pill).toContain('inset-inline-end: var(--blok-space-2)');
+    expect(pill).toContain('padding: var(--blok-space-0-5)');
+    expect(pill).toContain('border-radius: var(--blok-radius-control)');
+    expect(pill).toContain('background-color: var(--blok-bg-primary)');
+    // Round 52 §2: 0.027 8/12 + 0.027 2/6 + a 0.07 ring, as the place cell's map link.
+    expect(pill).toContain('box-shadow: var(--blok-database-place-map-link-shadow)');
+    const button = ruleBody('[data-blok-database-map-add-pin]');
+
+    expect(button).toContain('inline-size: 24px');
+    expect(button).toContain('block-size: 24px');
+    expect(button).toContain('border-radius: var(--blok-radius-control-sm)');
+    expect(button).not.toContain('box-shadow');
+    // Round 52 §2: the button is clear on the white pill; its hover fill eases in 100ms.
+    expect(button).toContain('background-color: transparent');
+    expect(button).toContain('transition: background-color 0.1s ease-in-out');
+    expect(button).not.toContain('position: absolute');
+  });
+
+  it('stacks the pin card: a 26px page icon over the crumb and a 13px 600 title', () => {
+    expect(ruleBody('[data-blok-database-map-pin-card]')).toContain('flex-direction: column');
+    expect(ruleBody('[data-blok-database-map-pin-card-icon] svg')).toContain('inline-size: 26px');
+    expect(ruleBody('[data-blok-database-map-pin-card-icon] svg')).toContain('block-size: 26px');
+    const title = ruleBody('[data-blok-database-map-pin-card-title]');
+
+    expect(title).toContain('font-size: 13px');
+    expect(title).toContain('font-weight: 600');
+    expect(title).toContain('line-height: 14.95px');
+  });
+});
+
+// notion-motion.md Round 59 §5: Edit property's add field is 276x28, 12 in from the 300 flyout, typed in the database ink.
+describe('options add field (Round 59 §5)', () => {
+  it('is 28 tall, 8 in from the list (12 from the flyout), typed in the database ink, with an AA placeholder', () => {
+    const body = ruleBody('[data-blok-database-options-add-input]');
+
+    expect(body).toContain('box-sizing: border-box');
+    expect(body).toContain('block-size: 28px');
+    expect(body).toContain('margin-inline: var(--blok-space-2)');
+    expect(body).toContain('color: var(--blok-database-ink)');
+    expect(ruleBody('[data-blok-database-options-add-input]::placeholder')).toContain('color: var(--blok-database-ink-tertiary)');
   });
 });

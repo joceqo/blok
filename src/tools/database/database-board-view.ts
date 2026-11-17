@@ -1,4 +1,4 @@
-import { fileChipIcon, pageIconElement, showsPageIcon } from './page-icon';
+import { fileChipIcon, rowPageGlyph, showsPageIcon } from './page-icon';
 import type { I18n } from '../../../types';
 import type { SelectOption, DatabaseRow, DatabaseViewConfig, PropertyDefinition, CardSize } from './types';
 import type { DatabaseViewRenderer } from './database-view-renderer';
@@ -12,7 +12,7 @@ import { createCardPreview } from './database-card-preview';
 import type { BodyBlock } from './row-body';
 import { resolveBoardCardPreview, resolveCardLayout, resolveCardSize, resolveFitImage, resolveViewProperties } from './view-settings';
 import { getElementDirection } from '../../components/utils/direction';
-import { IconPlus, IconPencilLine, IconDotsHorizontal, IconChevronDown, IconPage, IconSidebarRight } from '../../components/icons';
+import { IconPlus, IconPencilLine, IconDotsHorizontal, IconPlayerPlay, IconPage, IconPin, IconPinFilled, IconSidebarRight } from '../../components/icons';
 import { startInlineRename } from '../../components/utils/inline-rename';
 import { onHover } from '../../components/utils/tooltip';
 import { onPropertyHover } from './property-hint';
@@ -22,6 +22,8 @@ import type { CommentBadges } from './database-comment-badge';
 
 interface DatabaseBoardViewOptions {
   readOnly: boolean;
+  /** "Lock database": no "+ New group", and Unpin does nothing (notion-motion.md Round 25 §2, Round 26 §1). */
+  structureLocked?: boolean;
   i18n: I18n;
   options: SelectOption[];
   /** A column's rows; with sub-groups, only those in the `subKey` lane. */
@@ -34,8 +36,6 @@ interface DatabaseBoardViewOptions {
   aggregate?: (optionId: string) => string;
   /** The count's hover hint. None for Count all, as in Notion. */
   aggregateHint?: string;
-  /** How many groups the view hides; above zero, a button after the columns shows them again. */
-  hiddenGroupCount?: number;
   /** The board's view: card size, preview and the properties cards show. Without it cards show only the title. */
   view?: DatabaseViewConfig;
   /** Localized schema. */
@@ -61,14 +61,22 @@ interface DatabaseBoardViewOptions {
   addCardLabel?: string;
   /** A lasso from the margin or a drag box over empty board space: these cards become the selection. Absent when read-only. */
   lassoRows?: (rowIds: string[]) => void;
+  /** The view's pinned groups in group order, hidden ones included, each with its row count. */
+  pinnedGroups?: Array<{ option: SelectOption; count: number }>;
 }
 
 /** A card title edit in progress, carried across a redraw so typed text is not lost. */
-export interface CardTitleDraft {
-  rowId: string;
-  value: string;
+/** What a title edit asks of its owner when it ends. */
+export interface CardTitleHooks {
   /** Enter with a name: make the next new card (feel findings B09). */
   onEnter?: () => void;
+  /** Escape with no name: select the card (notion-motion.md, Round 8c). */
+  onEscapeEmpty?: () => void;
+}
+
+export interface CardTitleDraft extends CardTitleHooks {
+  rowId: string;
+  value: string;
 }
 
 export interface BoardLane {
@@ -78,6 +86,10 @@ export interface BoardLane {
   option?: SelectOption;
   /** The view saved this band collapsed. */
   collapsed?: boolean;
+  /** The band's calculation text, set while the band shows its aggregation. */
+  aggregate?: string;
+  /** "<calculation> in <property>"; none for Count all. */
+  aggregateHint?: string;
 }
 
 /** Card widths per card size (research/07; feel findings B30: Small 180, Large 320). */
@@ -117,17 +129,16 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
   private readonly titlePropertyId: string;
   private readonly onTitleEdit: ((rowId: string, newTitle: string) => void) | undefined;
   private readonly hideCounts: boolean;
-  private readonly hiddenGroupCount: number;
   private readonly aggregate: ((optionId: string) => string) | undefined;
   private readonly aggregateHint: string | undefined;
-  private readonly settings: Pick<DatabaseBoardViewOptions, 'view' | 'schema' | 'bodyOf' | 'locale' | 'onPropertyEdit' | 'subGroups' | 'onLaneToggle' | 'cellContext' | 'getTotal' | 'onLoadMore' | 'commentBadges' | 'addCardLabel' | 'lassoRows'>;
+  private readonly settings: Pick<DatabaseBoardViewOptions, 'view' | 'schema' | 'bodyOf' | 'locale' | 'onPropertyEdit' | 'subGroups' | 'onLaneToggle' | 'cellContext' | 'getTotal' | 'onLoadMore' | 'commentBadges' | 'addCardLabel' | 'lassoRows' | 'pinnedGroups' | 'structureLocked'>;
   private root: HTMLElement | null = null;
   private box: { startX: number; startY: number; el: HTMLElement | null; picked: string | null } | null = null;
   private readonly editHints = new WeakMap<HTMLElement, HTMLElement>();
-  private editing: { rowId: string; input: HTMLInputElement; onEnter?: () => void } | null = null;
+  private editing: ({ rowId: string; input: HTMLInputElement } & CardTitleHooks) | null = null;
 
   constructor({
-    readOnly, i18n, options, getRows, titlePropertyId, onTitleEdit, hideCounts, hiddenGroupCount, aggregate, aggregateHint, ...settings
+    readOnly, i18n, options, getRows, titlePropertyId, onTitleEdit, hideCounts, aggregate, aggregateHint, ...settings
   }: DatabaseBoardViewOptions) {
     this.aggregate = aggregate;
     this.aggregateHint = aggregateHint;
@@ -139,7 +150,6 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
     this.titlePropertyId = titlePropertyId;
     this.onTitleEdit = onTitleEdit;
     this.hideCounts = hideCounts ?? false;
-    this.hiddenGroupCount = hiddenGroupCount ?? 0;
   }
 
   /**
@@ -185,27 +195,30 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
       }
     }
 
-    // A Status board drops a hidden column without a trace (findings-board B25); Settings › Group lists it.
-    if (this.hiddenGroupCount > 0 && !this.readOnly && !this.isStatusBoard) {
-      const hiddenBtn = document.createElement('button');
+    // A board drops a hidden column without a trace (findings-board B25, notion-motion.md Round 24 §1); Settings › Group lists it.
+    const pinned = this.settings.pinnedGroups ?? [];
+    // notion-motion.md Round 24 §1: "+ New group" and "Pinned groups" share one strip after the last column.
+    const strip = !this.readOnly && pinned.length > 0 && lanes === undefined ? document.createElement('div') : null;
 
-      hiddenBtn.type = 'button';
-      hiddenBtn.setAttribute('data-blok-database-hidden-groups', '');
-      hiddenBtn.setAttribute('aria-haspopup', 'menu');
-      hiddenBtn.textContent = this.i18n.t('tools.database.hiddenGroups');
-      buttonRow.appendChild(hiddenBtn);
-    }
+    strip?.setAttribute('data-blok-database-group-strip', '');
 
-    // Notion's Status board has no add-group button (findings-board B04).
-    if (!this.readOnly && !this.isStatusBoard) {
+    // Notion's Status board has no add-group button (findings-board B04); a locked one neither (Round 25 §2).
+    if (!this.readOnly && !this.isStatusBoard && this.settings.structureLocked !== true) {
       const addColumnBtn = document.createElement('button');
 
       addColumnBtn.setAttribute('data-blok-database-add-column', '');
       addColumnBtn.setAttribute('aria-label', this.i18n.t('tools.database.newGroup'));
-      addColumnBtn.textContent = '+ ' + this.i18n.t('tools.database.newGroup');
-      addColumnBtn.style.minWidth = '260px';
-      addColumnBtn.style.flex = '0 0 260px';
-      buttonRow.appendChild(addColumnBtn);
+      const addColumnIcon = document.createElement('span');
+
+      addColumnIcon.setAttribute('data-blok-database-add-column-icon', '');
+      addColumnIcon.innerHTML = IconPlus;
+      addColumnBtn.append(addColumnIcon, this.i18n.t('tools.database.newGroup'));
+      (strip ?? buttonRow).appendChild(addColumnBtn);
+    }
+
+    if (strip !== null) {
+      strip.appendChild(this.createPinnedGroups(pinned));
+      buttonRow.appendChild(strip);
     }
 
     wrapper.appendChild(boardArea);
@@ -351,7 +364,7 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
     return heads;
   }
 
-  /** One sub-group: its label (no count, research/31 §3), then a row of every column holding only its cards. */
+  /** One sub-group: its label, its count only once Show aggregation is picked (research/31 §3), then a row of every column holding only its cards. */
   private createLane(lane: BoardLane): HTMLElement {
     const section = document.createElement('section');
     const header = document.createElement('div');
@@ -368,19 +381,68 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
     section.setAttribute('aria-label', lane.label);
     header.setAttribute('data-blok-database-board-lane-header', '');
     header.appendChild(this.createLaneToggle(section, lane));
-    if (lane.option !== undefined) {
-      header.appendChild(createGroupPill(lane.option, this.settings.schema?.find((p) => p.id === this.settings.view?.subGroupBy)));
-    } else {
-      const label = document.createElement('span');
+    const label = document.createElement('span');
 
+    label.setAttribute('data-blok-database-board-lane-label', '');
+    if (lane.option !== undefined) {
+      label.appendChild(createGroupPill(lane.option, this.settings.schema?.find((p) => p.id === this.settings.view?.subGroupBy)));
+    } else {
       label.textContent = lane.label;
-      header.appendChild(label);
+    }
+    header.appendChild(label);
+    if (lane.aggregate !== undefined) {
+      header.appendChild(this.createLaneCount(lane));
+    }
+    if (!this.readOnly) {
+      header.appendChild(this.createLaneActions(lane.key));
     }
     columns.setAttribute('data-blok-database-board-lane-columns', '');
     columns.append(...columnEls);
     section.append(header, columns);
 
     return section;
+  }
+
+  /** notion-motion.md Round 31 §3: a button that opens the calculation menu. Read-only cannot change it, so it is text there. */
+  private createLaneCount(lane: BoardLane): HTMLElement {
+    const count = document.createElement(this.readOnly ? 'span' : 'button');
+
+    if (count instanceof HTMLButtonElement) {
+      count.type = 'button';
+      count.setAttribute('aria-haspopup', 'menu');
+    }
+    count.setAttribute('data-blok-database-board-lane-count', '');
+    count.setAttribute('data-sub-group', lane.key);
+    count.textContent = lane.aggregate ?? '';
+    count.hidden = count.textContent === '';
+    if (lane.aggregateHint !== undefined) {
+      onHover(count, lane.aggregateHint, { placement: 'top' });
+    }
+
+    return count;
+  }
+
+  /** notion-motion.md Round 29 §6: ⋯ then +, shown while the band header is hovered (database.css). The owner handles the clicks. */
+  private createLaneActions(key: string): HTMLElement {
+    const actions = document.createElement('span');
+    const menu = document.createElement('button');
+    const add = document.createElement('button');
+
+    actions.setAttribute('data-blok-database-board-lane-actions', '');
+    menu.type = 'button';
+    menu.setAttribute('data-blok-database-board-lane-menu', '');
+    menu.setAttribute('data-sub-group', key);
+    menu.setAttribute('aria-label', this.i18n.t('tools.database.groupMenuLabel'));
+    menu.setAttribute('aria-haspopup', 'menu');
+    menu.innerHTML = IconDotsHorizontal;
+    add.type = 'button';
+    add.setAttribute('data-blok-database-board-lane-add', '');
+    add.setAttribute('data-sub-group', key);
+    add.setAttribute('aria-label', this.i18n.t('tools.database.newPage'));
+    add.innerHTML = IconPlus;
+    actions.append(menu, add);
+
+    return actions;
   }
 
   /** research/31 §3: only the arrow turns; the cards hide at once. */
@@ -394,7 +456,7 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
 
     toggle.type = 'button';
     toggle.setAttribute('data-blok-database-board-lane-toggle', '');
-    toggle.innerHTML = IconChevronDown;
+    toggle.innerHTML = IconPlayerPlay;
     setCollapsed(lane.collapsed === true);
     toggle.addEventListener('click', () => {
       const collapsed = !section.hasAttribute('data-collapsed');
@@ -593,7 +655,8 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
     cardsContainer.setAttribute('data-blok-keyboard-owner', '');
     cardsContainer.style.display = 'flex';
     cardsContainer.style.flexDirection = 'column';
-    cardsContainer.style.paddingTop = '3px';
+    // notion-motion.md Round 29 §6: under a band header (no column header) the first card sits 8 down.
+    cardsContainer.style.paddingTop = withHeader ? '3px' : '8px';
 
     for (const row of rows) {
       const cardEl = this.createCardElement(row, titlePropertyId);
@@ -644,16 +707,22 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
     el.style.setProperty('flex', `0 0 ${columnWidth}`);
 
     const c = this.columnColor(option);
+    const colorColumns = this.settings.view?.groupSettings?.colorColumns !== false;
+
+    // notion-motion.md Round 42 §1: ⋯ and + take the option's dot ink; a group with no colour takes the plain accent.
+    if (colorColumns) {
+      el.style.setProperty('--_blok-group-glyph', c === undefined ? 'var(--blok-database-column-accent)' : `var(--blok-database-column-${c}-glyph, var(--blok-database-status-dot-${c}))`);
+    }
 
     // "Color columns" off: columns and cards drop the hue, pills keep it.
-    if (c !== undefined && this.settings.view?.groupSettings?.colorColumns !== false) {
+    if (c !== undefined && colorColumns) {
 
       // Only some hues were measured (colors.css); the rest derive from the option pill.
       el.style.setProperty('--_blok-group-tint', `var(--blok-database-column-${c}-bg, color-mix(in srgb, var(--blok-database-option-${c}-bg) 22%, transparent))`);
       el.style.setProperty('--_blok-group-ring', `var(--blok-database-column-${c}-ring, color-mix(in srgb, var(--blok-database-option-${c}-bg) 49%, transparent))`);
       // Unmeasured hues fall back to the pill text, which holds AA on the tint; the Marker text did not.
       el.style.setProperty('--_blok-group-accent', `var(--blok-database-column-${c}-accent, var(--blok-database-option-${c}-text))`);
-      // Only dark defines a card tint, and only for measured hues; the rest keep the plain card.
+      // Only dark tints the card at rest; light cards stay white. Default has no hue token and keeps the plain card.
       el.style.setProperty('--_blok-group-card', `var(--blok-database-column-${c}-card-bg, var(--blok-database-card-bg))`);
       el.style.setProperty('--_blok-group-card-hover', `var(--blok-database-column-${c}-card-hover-bg, var(--blok-database-card-bg-hover))`);
       // "+ New page" hovers to the card fill only where measured; other hues keep the list hover.
@@ -671,6 +740,60 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
   }
 
   /** The pill, the row count and, when editable, the header buttons. */
+  /**
+   * notion-motion.md Round 24 §1 (r24-pinsec-1.raw): a "Pinned groups" header, then one row per group: its pill and
+   * count (a click opens the group), and an Unpin button. The tool handles the clicks by attribute.
+   */
+  private createPinnedGroups(pinned: Array<{ option: SelectOption; count: number }>): HTMLElement {
+    const section = document.createElement('div');
+    const header = document.createElement('button');
+    const headerIcon = document.createElement('span');
+
+    section.setAttribute('data-blok-database-pinned-groups', '');
+    header.type = 'button';
+    header.setAttribute('data-blok-database-pinned-groups-header', '');
+    headerIcon.setAttribute('aria-hidden', 'true');
+    headerIcon.innerHTML = IconPin;
+    header.append(headerIcon, this.i18n.t('tools.database.pinnedGroups'));
+    section.appendChild(header);
+
+    for (const { option, count } of pinned) {
+      const line = document.createElement('div');
+      const open = document.createElement('button');
+      const pill = document.createElement('span');
+      const countEl = document.createElement('span');
+      const unpin = document.createElement('button');
+      const color = this.isStatusBoard && option.id !== NO_VALUE_GROUP_KEY ? shownStatusOption(option).color : option.color;
+
+      line.setAttribute('data-blok-database-pinned-group', '');
+      line.setAttribute('data-option-id', option.id);
+      open.type = 'button';
+      open.setAttribute('data-blok-database-pinned-group-open', '');
+      open.setAttribute('data-option-id', option.id);
+      pill.setAttribute('data-blok-database-pinned-group-pill', '');
+      pill.textContent = option.label;
+      if (color !== undefined) {
+        pill.style.backgroundColor = `var(--blok-database-option-${color}-bg)`;
+        pill.style.color = `var(--blok-database-option-${color}-text)`;
+      }
+      countEl.setAttribute('data-blok-database-pinned-group-count', '');
+      countEl.textContent = String(count);
+      open.append(pill, countEl);
+      unpin.type = 'button';
+      unpin.setAttribute('data-blok-database-pinned-group-unpin', '');
+      unpin.setAttribute('data-option-id', option.id);
+      unpin.setAttribute('aria-label', this.i18n.t('tools.database.groupUnpin'));
+      unpin.innerHTML = IconPinFilled;
+      // Round 26 §1 (r26-lock-strip.raw): locked, Unpin keeps its pointer, hover and hint; the tool ignores the click.
+      if (this.settings.structureLocked === true) unpin.setAttribute('aria-disabled', 'true');
+      onHover(unpin, this.i18n.t('tools.database.groupUnpin'));
+      line.append(open, unpin);
+      section.appendChild(line);
+    }
+
+    return section;
+  }
+
   private createColumnHeader(option: SelectOption, count: number): HTMLElement {
     const header = document.createElement('div');
 
@@ -678,7 +801,7 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
     header.style.display = 'flex';
     header.style.alignItems = 'center';
     header.style.padding = '0';
-    header.style.gap = '6px';
+    header.style.gap = '3px';
     header.style.cursor = 'grab';
 
     const pill = document.createElement('div');
@@ -725,7 +848,7 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
       onHover(countEl, this.aggregateHint, { placement: 'top' });
     }
 
-    countEl.hidden = this.hideCounts;
+    countEl.hidden = this.hideCounts || countEl.textContent === '';
     header.appendChild(countEl);
 
     if (!this.readOnly) {
@@ -799,7 +922,7 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
       cardEl.setAttribute('data-empty', '');
     }
 
-    const icon = showsPageIcon(this.settings.view) ? pageIconElement(row) : null;
+    const icon = showsPageIcon(this.settings.view) ? rowPageGlyph(row, this.settings.cellContext?.rowHasBody?.(row.id) === true, false) : null;
 
     if (icon !== null) {
       cardEl.appendChild(icon);
@@ -915,7 +1038,7 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
   }
 
   /** Edits a card's title in place; `value` seeds a draft carried over a redraw. */
-  editTitle(rowId: string, options: { value?: string; onEnter?: () => void } = {}): void {
+  editTitle(rowId: string, options: { value?: string } & CardTitleHooks = {}): void {
     const cardEl = this.root?.querySelector<HTMLElement>(`[data-blok-database-card][data-row-id="${CSS.escape(rowId)}"]`);
 
     if (this.readOnly || cardEl === null || cardEl === undefined) {
@@ -933,11 +1056,13 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
     }
     this.editing = null;
 
-    return { rowId: editing.rowId, value: editing.input.value, ...(editing.onEnter !== undefined ? { onEnter: editing.onEnter } : {}) };
+    const { input, ...hooks } = editing;
+
+    return { ...hooks, value: input.value };
   }
 
   restoreTitleDraft(draft: CardTitleDraft): void {
-    this.editTitle(draft.rowId, { value: draft.value, ...(draft.onEnter !== undefined ? { onEnter: draft.onEnter } : {}) });
+    this.editTitle(draft.rowId, draft);
   }
 
   /**
@@ -945,7 +1070,7 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
    * (research/36 §4). While it is open the card shows the page glyph and the
    * pencil turns into Open in side peek (feel findings B22).
    */
-  private startCardTitleEdit(cardEl: HTMLElement, rowId: string, options: { value?: string; onEnter?: () => void } = {}): void {
+  private startCardTitleEdit(cardEl: HTMLElement, rowId: string, options: { value?: string } & CardTitleHooks = {}): void {
     const titleEl = cardEl.querySelector<HTMLElement>('[data-blok-database-card-title]');
 
     if (titleEl === null) {
@@ -954,7 +1079,7 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
 
     // An untitled card shows placeholder text; it must not seed the input or count as the old title.
     const originalTitle = titleEl.hasAttribute('data-placeholder') ? '' : titleEl.textContent ?? '';
-    const state: { viaEnter: boolean; input: HTMLInputElement | null } = { viaEnter: false, input: null };
+    const state: { viaEnter: boolean; viaEscape: boolean; input: HTMLInputElement | null } = { viaEnter: false, viaEscape: false, input: null };
     const editBtn = cardEl.querySelector<HTMLElement>('[data-blok-database-edit-card]');
     const editHint = this.editHints.get(cardEl);
     const endEditing = (): void => {
@@ -1000,9 +1125,15 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
         input.addEventListener('keydown', (event) => {
           // eslint-disable-next-line @typescript-eslint/no-deprecated -- Keep the IME 229 fallback when isComposing is false.
           state.viaEnter = event.key === 'Enter' && !event.isComposing && event.keyCode !== 229;
+          state.viaEscape = event.key === 'Escape';
         });
         state.input = input;
-        this.editing = { rowId, input, ...(options.onEnter !== undefined ? { onEnter: options.onEnter } : {}) };
+        this.editing = {
+          rowId,
+          input,
+          ...(options.onEnter !== undefined ? { onEnter: options.onEnter } : {}),
+          ...(options.onEscapeEmpty !== undefined ? { onEscapeEmpty: options.onEscapeEmpty } : {}),
+        };
       },
       buildRestored: buildTitleDiv,
       onCommit: (newTitle) => {
@@ -1023,6 +1154,10 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
         if (state.viaEnter && newTitle !== '') {
           editing.onEnter?.();
         }
+        // Only the unnamed Escape: a named one selects nothing (research/35:362).
+        if (state.viaEscape && newTitle === '') {
+          editing.onEscapeEmpty?.();
+        }
       },
     });
 
@@ -1033,8 +1168,8 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
     }
     input.setSelectionRange(input.value.length, input.value.length);
     cardEl.setAttribute('data-editing', '');
-    // A page with its own icon keeps it; the blank page glyph stands in for none.
-    if (cardEl.querySelector(':scope > [data-blok-database-page-icon]') === null) {
+    // A page with its own icon or a body keeps its glyph; the blank page glyph stands in for none.
+    if (cardEl.querySelector(':scope > :is([data-blok-database-page-icon], [data-blok-database-page-icon-placeholder])') === null) {
       const glyph = document.createElement('span');
 
       glyph.setAttribute('data-blok-database-card-edit-glyph', '');
@@ -1106,13 +1241,14 @@ export class DatabaseBoardView implements DatabaseViewRenderer {
       return;
     }
 
-    const countEl = columnEl.querySelector('[data-blok-database-column-count]');
+    const countEl = columnEl.querySelector<HTMLElement>('[data-blok-database-column-count]');
 
     if (countEl !== null) {
       const optionId = columnEl.getAttribute('data-option-id');
       const cardCount = cardsContainer.querySelectorAll('[data-blok-database-card]').length;
 
       countEl.textContent = this.aggregate !== undefined && optionId !== null ? this.aggregate(optionId) : String(cardCount);
+      countEl.hidden = this.hideCounts || countEl.textContent === '';
     }
   }
 }

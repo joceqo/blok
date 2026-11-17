@@ -118,7 +118,7 @@ const editor = new Blok({
         option: 'levels',
         type: 'number[]',
         default: '[1,2,3,4,5,6]',
-        description: 'Restrict which heading levels are available.',
+        description: 'Restrict which heading levels are available. A pasted or loaded heading whose level is not in the list takes the nearest allowed level, and the deeper one on a tie. With `[1, 2, 3, 4]`, H5 and H6 become level 4, as in Notion.',
       },
       {
         option: 'defaultLevel',
@@ -431,7 +431,7 @@ const editor = new Blok({
     type: 'block',
     title: 'Database',
     description:
-      'A multi-view database block supporting board (Kanban) and list views. It stores a schema of typed properties (text, select, multiSelect, date, checkbox, etc.) and view configurations. Rows are stored as child `database-row` blocks.\n\nIt supports grouping, drag-and-drop reordering, inline editing, and an optional backend sync adapter. (`sorts` and `filters` are persisted in the view config but are not applied yet.)',
+      'A multi-view database block supporting board (Kanban) and list views. It stores a schema of typed properties (text, select, multiSelect, date, checkbox, etc.) and view configurations. Rows are stored as child `database-row` blocks.\n\nIt supports grouping, drag-and-drop reordering, inline editing, and an optional backend sync adapter. (`sorts` and `filters` are persisted in the view config but are not applied yet.)\n\nDeleting a property moves it to `deletedProperties`, a map keyed by property id. Its row values stay in the rows.\n\nA database made from the toolbox saves an empty map from the start. An older database gets the key on its first delete. Until then, two people deleting at the same moment can keep only one of the two deletes. The other property is then gone with no entry, as before this map existed.\n\nCall these through `block.call(name, { propertyId })`:\n\n- `restoreProperty` brings it back with its values. If another property took its name meanwhile, it gets a " N" suffix.\n- `deletePropertyPermanently` removes the entry and strips its values from every row.\n\nEach one is a single undo step. A locked database refuses a delete, a restore and a permanent delete. So does a linked view with Lock views on.\n\nViews keep their filters, sorts and columns on a deleted property. They use them again after a restore.\n\nA dashboard view (`type: \'dashboard\'`) shows widgets in rows: charts, numbers, tables and lists. Each widget is a view of its own. Its `dashboardViewId` names its dashboard, so it gets no tab. The dashboard\'s `dashboard.rows` holds the layout. Deleting a dashboard deletes its widget views.',
     importExample: `import { Database } from '@bloklabs/core/tools';`,
     configOptions: [
       {
@@ -441,15 +441,25 @@ const editor = new Blok({
         description:
           'Optional backend sync adapter for persisting schema, row, and view changes to an external data source.',
       },
+      {
+        option: 'openFullPage',
+        type: '(input: { databaseId: string; viewId: string }) => void',
+        default: 'undefined',
+        description:
+          'Runs when someone clicks ⤢ "Open as full page" on an inline database. Use it to show the database on its own page in your app.\n\nWithout it, the database fills the editor and the URL gets `#<databaseId>?full`. Back returns, and a reload opens it again. Nothing in the document changes.',
+      },
     ],
     saveDataShape: `interface DatabaseData {
   title?: string;                      // Database title
   schema: PropertyDefinition[];        // Column definitions (id, name, type, position, config)
-  views: DatabaseViewConfig[];         // View configs — only 'board' and 'list' are rendered
-                                       // ('table' and 'gallery' exist in the ViewType union
-                                       // but fall back to the board renderer)
+  views: DatabaseViewConfig[];         // View configs. A dashboard widget is a view too:
+                                       // its dashboardViewId names the dashboard, and it has no tab
   activeViewId: string;                // Currently active view ID
   fullPage?: boolean;                  // The database is a whole page; the page title is its title
+  description?: string;               // Inline HTML under the title; shown only when fullPage is true
+  deletedProperties?: Record<string, DeletedPropertyDefinition>; // Deleted properties by id:
+                                       // PropertyDefinition plus deletedAt (epoch ms) and deletedBy (person id).
+                                       // Absent until the first delete on databases made before it existed
 }
 // Rows are NOT stored here — they are child database-row blocks.`,
     saveDataExample: `{
@@ -495,7 +505,7 @@ const editor = new Blok({
     type: 'block',
     title: 'Database Row',
     description:
-      'An internal block tool that stores a single database row. It is not user-insertable: rows are created and managed by the parent Database block. Each row stores property values that conform to the parent database schema, plus a position string for ordering.',
+      'An internal block tool that stores a single database row. It is not user-insertable: rows are created and managed by the parent Database block. Each row stores property values that conform to the parent database schema, plus a position string for ordering.\n\nA row\'s page body is its child blocks. The block menu\'s "Move to" lists these pages, with a search field. It moves the chosen blocks, with their children, to the end of the page body as one undo step. A row whose `pageId` points at a page in another document is not listed.',
     importExample: `import { DatabaseRow } from '@bloklabs/core/tools';`,
     configOptions: [],
     saveDataShape: `interface DatabaseRowData {
@@ -703,7 +713,7 @@ const editor = new Blok({
     type: 'block',
     title: 'Code',
     description:
-      'A syntax-highlighted code block with a language picker, an optional line-number gutter, and a copy-to-clipboard button. It highlights 30+ languages with its own built-in highlighter, so there is nothing extra to install. The LaTeX and Mermaid languages include a live preview tab.\n\nPasting markdown fenced code blocks (```) or `<pre>` elements automatically creates a code block. The language comes across whenever the pasted source names it: a fence that opens with ```sql, or a labelled code block copied out of an app such as Gemini.',
+      'A syntax-highlighted code block with a language picker, an optional line-number gutter, and a copy-to-clipboard button. It highlights 30+ languages with its own built-in highlighter, so there is nothing extra to install. The LaTeX and Mermaid languages include a live preview tab.\n\nThe language and file name sit in a tab on the top edge of the block. While you type, a breadcrumb next to the tab names the code block the caret is in, such as `fibonacci() › if`.\n\nThe language picker groups languages by family, such as Web and Scripting.\n\nPasting markdown fenced code blocks (```) or `<pre>` elements automatically creates a code block. The language comes across whenever the pasted source names it: a fence that opens with ```sql, or a labelled code block copied out of an app such as Gemini.',
     importExample: `import { Code } from '@bloklabs/core/tools';`,
     configOptions: [],
     saveDataShape: `interface CodeData {
@@ -748,7 +758,7 @@ const editor = new Blok({
         type: 'ImageUploader',
         default: 'undefined',
         description:
-          'Consumer-supplied uploader with optional `uploadByFile(file, ctx)` and `uploadByUrl(url, ctx)` methods, each resolving to `{ url, fileName? }`. When omitted, images fall back to a local blob URL (uploadByFile) or the pasted URL (uploadByUrl). An SVG file becomes a `data:image/svg+xml` URL, up to 256 KB.',
+          'Consumer-supplied uploader with optional `uploadByFile(file, ctx)` and `uploadByUrl(url, ctx)` methods, each resolving to `{ url, fileName? }`. When omitted, images fall back to a local blob URL (uploadByFile) or the pasted URL (uploadByUrl). An SVG file becomes a `data:image/svg+xml` URL, up to 256 KB.\n\nAdd `shouldUploadUrl(url, ctx)` to decide whether a pasted image URL is uploaded (`true`) or kept (`false`). The editor `uploader` option describes it.',
       },
       {
         option: 'types',
@@ -1133,7 +1143,7 @@ const editor = new Blok({
         type: '(href: string) => string | null | undefined',
         default: 'undefined',
         description:
-          'Turns a URL back into a page id, or returns `null` when the URL is not a page link. Blok passes an absolute URL. With it, pasting a page link offers Mention, which inserts an inline reference to the page instead of a plain link.',
+          'Turns a URL back into a page id, or returns `null` when the URL is not a page link. Blok passes an absolute URL.\n\nWith it, pasting a page link offers Mention, which inserts an inline reference to the page instead of a plain link. In pasted Markdown or HTML, a link to a known page becomes that page\'s mention on its own when its text is the page\'s title (from `resolve`) or the URL itself. A link with other text stays a link.',
       },
       {
         option: 'open',
@@ -1147,7 +1157,7 @@ const editor = new Blok({
         type: '(pageId: string) => PageInfo | null | undefined | Promise<…>',
         default: 'undefined',
         description:
-          'Returns authorized current page metadata. `null` means the page does not exist; `{ access: \'none\' }` hides the title and icon and shows No access; `undefined` leaves a neutral label. A returned title or icon is displayed but never saved in the page block.\n\nThe host must check permissions before returning metadata. `subscribe` triggers another lookup when access or metadata changes.',
+          'Returns authorized current page metadata. `null` means the page does not exist; `{ access: \'none\' }` hides the title and icon and shows No access; `undefined` leaves a neutral label. A returned title or icon is displayed but never saved in the page block.\n\nThe host must check permissions before returning metadata. `subscribe` triggers another lookup when access or metadata changes.\n\nPaste asks it too. Pasted content can name any page id, so a pasted mention or page link stays one only when the page is already in the document or `resolve` returns it with access. Otherwise it pastes as plain text, or as a plain link when it had a URL. Without `resolve`, only pages already in the document stay.',
       },
       {
         option: 'create',
@@ -1161,7 +1171,7 @@ const editor = new Blok({
         type: 'boolean',
         default: 'false',
         description:
-          'Offers "Database - Full page" in the toolbox\'s Database section. It makes a sub-page that holds a new database and opens it. The link shows a table glyph until the page gets an icon.\n\nTurn it on only when `create` stores `document` as the new page\'s content and the `database` tool is registered.',
+          'Offers "Database - Full page" in the toolbox\'s Database section. It makes a sub-page that holds a new database and opens it. The link shows a table glyph until the page gets an icon.\n\nIt also adds two items to the block menu:\n\n- "Turn into page" on an inline database moves it, with its rows and their pages, to a new page made by `create`. A link takes its place.\n- "Turn into inline database" on a database page link does the reverse. It needs `loadDocument`. Add `canMoveInto` to refuse a page first: a link\'s page id is block data any collaborator can set.\n\nEach one is a single undo step. The page\'s document stays as it was, so undo can bring the link back.\n\nTurn it on only when `create` stores `document` as the new page\'s content and the `database` tool is registered.',
       },
       {
         option: 'createFromMention',
@@ -1193,6 +1203,12 @@ const editor = new Blok({
     saveDataShape: `interface PageData {
   pageId: string;
   kind?: 'database';  // Set by "Database - Full page"
+  trashed?: {         // Set by a server restore with CollabRestoreTrashesPages
+    at: number;       // Unix ms
+    by: string | null;
+    formerParentId: string | null;
+    formerIndex: number;
+  };
 }`,
     saveDataExample: `{
   "id": "pg001",
@@ -1283,7 +1299,7 @@ const editor = new Blok({
     type: 'block',
     title: 'File',
     description:
-      'An attachment card for any uploaded file. It shows a type icon, filename, human-readable size, a download action, and an optional caption.\n\nFiles are sent through an uploader that you supply. When there is none, the tool falls back to a local blob URL (uploadByFile) or to the pasted URL itself (uploadByUrl). An optional MIME allowlist and max size can gate what is accepted.\n\nThe fallback blob URL gets a safe type. Any type outside a short safe list becomes `text/plain`, such as HTML, SVG, XML, zip, Office or untyped files. The bytes stay the same. Read the file\'s type from `mimeType`, not from the blob.\n\nThe PDF preview frames only a `blob:` PDF, re-typed as `application/pdf`. A remote http(s) PDF gets an "Open in new tab" link instead, because the preview never frames a remote page. With a strict CSP, the preview may need `blob:` in `connect-src`, since it reads the blob with `fetch`.',
+      'An attachment card for any uploaded file. It shows a type icon, filename, a download action, and an optional caption. Its size shows only where the size is what defines the file: an archive, or a file of an unknown type.\n\nThe far side of the card holds an object made from the file itself. A PDF or Word file shows its first page, and a spreadsheet its first cells. A deck shows its first slide, code its first lines in an editor tab, a video a filmstrip of its frames, and a picture a photo print. Audio shows a record, an archive a folder, any other file a punch card.\n\nThe object lifts and leans toward the pointer, and the card\'s second line gains a count: pages, lines, sheets, slides, files or the duration. Blok reads the file to draw it; a file it cannot read keeps the plain card. `cardPreview: false` turns the object off.\n\nFiles are sent through an uploader that you supply. When there is none, the tool falls back to a local blob URL (uploadByFile) or to the pasted URL itself (uploadByUrl). An optional MIME allowlist and max size can gate what is accepted.\n\nThe fallback blob URL gets a safe type. Any type outside a short safe list becomes `text/plain`, such as HTML, SVG, XML, zip, Office or untyped files. The bytes stay the same. Read the file\'s type from `mimeType`, not from the blob.\n\nA click on the card of a file that can be previewed opens it in a window. The header names the file type and offers Download and, for an http(s) file, Open in new tab.\n\n- Word: pages, with a page counter and zoom.\n- Excel and CSV: a spreadsheet grid. Each sheet is a tab. Dragging over cells shows their sum, average and count.\n- PowerPoint: one slide at a time over a filmstrip. The arrow keys turn the slides.\n- Code: line numbers, indent guides, a minimap, Wrap lines and Copy.\n- Logs: coloured levels and a filter for errors and warnings.\n- Markdown: the rendered page with an outline of its headings, or its source.\n- PDF: pages drawn with pdf.js, with a page counter and zoom. Text can be selected, and links in the file open safely. A locked PDF asks for its password.\n\nA PDF that cannot be read shows an error card that offers a download.\n\nAn http(s) PDF needs its bytes. Blok tries these ways in order and uses the first that works:\n\n- `fetchPreview`, when you set it.\n- The url itself. This works only when the file\'s host answers CORS. No cookies are sent.\n- `previewEndpoint`, a Blok server\'s `GET /file-bytes` route.\n- When none works, an "Open in new tab" link.\n\nBytes that are not a PDF end on the error card, not on the link.\n\nOlder browsers keep the old behaviour. Without `Promise.withResolvers`, Web Workers or a 2D canvas, a `blob:` PDF shows in the browser\'s PDF viewer. An http(s) PDF then gets the link.\n\npdf.js runs in a worker loaded from a `blob:` URL. With a strict CSP, allow `blob:` in `worker-src`. When the CSP blocks that worker, the PDF shows the error card with its download. A `blob:` PDF is read with `fetch`, so it may also need `blob:` in `connect-src`.\n\nA CSP without `\'wasm-unsafe-eval\'` also works. Blok then decodes JBIG2, CCITT and JPEG 2000 images in JavaScript, and JPEG 2000 decodes several times slower.',
     importExample: `import { File } from '@bloklabs/core/tools';`,
     configOptions: [
       {
@@ -1345,11 +1361,39 @@ const editor = new Blok({
         description:
           'Placeholder text shown in the caption field. Defaults to the localized `tools.file.captionPlaceholder` string.',
       },
+      {
+        option: 'fetchPreview',
+        type: '(url: string, init: { signal: AbortSignal }) => Promise<Blob | ArrayBuffer | Response>',
+        default: 'undefined',
+        description:
+          'Fetches a PDF\'s bytes for the preview when the browser cannot read the url itself. For example, the host sends no CORS headers or needs a cookie. Blok calls it first, with the http(s) url and a signal that aborts when the preview closes.\n\nResolve to a `Blob`, an `ArrayBuffer` or a `Response`. If it throws or answers with a `Response` that is not ok, Blok tries the url itself next.',
+      },
+      {
+        option: 'previewEndpoint',
+        type: '{ url: string; headers?: Record<string, string> | (() => Promise<Record<string, string>>) }',
+        default: 'undefined',
+        description:
+          'A Blok server\'s `/file-bytes` route. Blok tries it for an http(s) PDF after `fetchPreview` and the url itself.\n\nBlok reads the file in ranges of at most 1 MiB. It sends `headers` with every range. A function is called again for each range, so a short-lived pass stays fresh.\n\nThe `server` shorthand fills this in when the file tool is registered. It uses the `ticket` pass as the headers, when you set one. The route is off on the server by default.',
+      },
+      {
+        option: 'cardPreview',
+        type: 'boolean',
+        default: 'true',
+        description:
+          'Whether a file card shows an object made from the file itself. That is the first page of a PDF or Word file, the first cells of a spreadsheet or the first slide of a deck. Code shows its first lines in an editor tab, a video a filmstrip of its frames, and a picture a photo print. Audio shows a record, an archive a folder, any other file a punch card.\n\nTo draw it, Blok reads the file when the card comes near the screen. It reads the first 4 KB of a text or code file, and only the needed ranges of a PDF or a video. Word, Excel and PowerPoint files are read whole, up to 20 MiB. A PDF goes through `fetchPreview` and `previewEndpoint`, like the preview. A file that cannot be read keeps the plain card.\n\nSet `false` to keep the plain card for every file and make no such request.',
+      },
+      {
+        option: 'pdfAssetsUrl',
+        type: 'string',
+        default: 'undefined',
+        description:
+          'Base URL of a folder that holds pdf.js\'s `cmaps/`, `wasm/`, `iccs/` and `standard_fonts/` folders. Copy them from the `pdfjs-dist` package, at the version in Blok\'s own `package.json`. A relative URL works.\n\nMost hosts do not need it. Blok ships the CJK cmaps, the JBIG2, CCITT and JPEG 2000 decoders and the Symbol and ZapfDingbats fonts. It loads each file only when a PDF needs it.\n\nSet it to show CMYK and ICC colours exactly. pdf.js reads that data only from a URL, so without it those colours look a little off.',
+      },
     ],
     saveDataShape: `interface FileData {
   url: string;             // File source URL — http(s) or blob:
   fileName?: string;       // Original filename, when known
-  size?: number;           // File size in bytes; rendered human-readable
+  size?: number;           // File size in bytes; shown only for an archive or an unknown file
   mimeType?: string;       // MIME type; used to pick the type icon
   caption?: string;        // Plain-text caption
   captionVisible?: boolean; // Whether the caption row is shown. Opt-in: when omitted it
@@ -1393,7 +1437,7 @@ const editor = new Blok({
     type: 'block',
     title: 'Audio',
     description:
-      'A music-player style audio block. It renders an uploaded or linked audio file with a custom control bar. The bar has play/pause, a waveform scrubber, volume, playback speed and loop.\n\nThe block also takes optional cover art and title/artist metadata. An optional caption is switched on from the block settings menu (`captionVisible`). Waveform peaks and duration are decoded once and cached in the saved data, so playback renders instantly on reload.\n\nAudio is sent through a consumer-supplied uploader. When none is provided, the tool falls back to a local blob URL (uploadByFile) or the pasted URL (uploadByUrl).\n\nShare links from Dropbox, GitHub, GitLab, Hugging Face, Google Cloud Storage, and the Internet Archive are rewritten to their direct-content form automatically. Google Drive and OneDrive links also need an `uploadByUrl` backend, because those hosts block anonymous browser hotlinking.\n\nAn optional MIME allowlist and max size gate what is accepted.',
+      'An audio block for any recording: music, a podcast, a voice message, a lecture. It renders an uploaded or linked audio file with a custom control bar. The bar has play/pause, a seek slider, time, volume, playback speed and loop.\n\nAbove the bar the player draws a ridgeline: the track as a landscape of ridges that rolls toward you while it plays. Click or drag on it to seek. The Compact item in the block settings menu turns the player into one row (`compact`). The ridgeline gives way to a wire: one seek line with a bead at the playhead, which hums with the track.\n\nThe block also takes optional cover art, a title and an author (saved as `artist`). The cover is a small thumbnail beside the title and author. Click it to set one: the picker holds the ink drop in a well, and a dropped, chosen or linked image opens out of the ink.\n\nWithout a cover the block shows an ink drop that moves with the music: hits dent it and throw off droplets. It listens to the track live where the browser allows it. For audio the browser will not let a page listen to, it reads the motion saved with the block (`motion`).\n\nAn optional caption is switched on from the block settings menu (`captionVisible`).\n\nPeaks, duration and the cover motion are worked out once and cached in the saved data, so the player renders instantly on reload.\n\nAudio is sent through a consumer-supplied uploader. When none is provided, the tool falls back to a local blob URL (uploadByFile) or the pasted URL (uploadByUrl).\n\nShare links from Dropbox, GitHub, GitLab, Hugging Face, Google Cloud Storage, and the Internet Archive are rewritten to their direct-content form automatically. Google Drive and OneDrive links also need an `uploadByUrl` backend, because those hosts block anonymous browser hotlinking.\n\nAn optional MIME allowlist and max size gate what is accepted.',
     importExample: `import { Audio } from '@bloklabs/core/tools';`,
     configOptions: [
       {
@@ -1441,26 +1485,28 @@ const editor = new Blok({
   url: string;             // Audio source URL — http(s) or blob:
   caption?: string;        // Plain-text caption
   captionVisible?: boolean; // Caption is opt-in — switch it on in block settings
-  title?: string;          // Track title (from file metadata or edited)
-  artist?: string;         // Track artist
+  title?: string;          // Title (from file metadata or edited)
+  artist?: string;         // Author: artist, host or speaker
   coverUrl?: string;       // Cover art image URL
   loop?: boolean;          // Loop playback
+  compact?: boolean;       // Compact player: one row, with a wire to seek on in place of the ridgeline. Off when absent
   width?: number;          // Pass-through width value; not currently surfaced in the audio UI
   alignment?: 'left' | 'center' | 'right';
   fileName?: string;       // Original filename, when known
   mimeType?: string;       // MIME type
   duration?: number;       // Decoded duration in seconds (cached)
-  peaks?: number[];        // Cached waveform peaks for the scrubber
+  peaks?: number[];        // Cached peaks the ridgeline is drawn from
+  motion?: string;         // Cached hits and loudness for the cover's ink drop, base64. Opaque
 }`,
     saveDataExample: `{
   "id": "aud001",
   "type": "audio",
   "data": {
-    "url": "https://example.com/media/track.mp3",
-    "fileName": "track.mp3",
+    "url": "https://example.com/media/episode-12.mp3",
+    "fileName": "episode-12.mp3",
     "mimeType": "audio/mpeg",
-    "title": "My Song",
-    "artist": "The Artist",
+    "title": "Episode 12: Shipping on Fridays",
+    "artist": "The Release Notes Podcast",
     "alignment": "center"
   }
 }`,
@@ -1850,6 +1896,63 @@ const editor = new Blok({
     // without it the editor starts with an "unsupported block" stub.
     paragraph: Paragraph,
     equation: Equation,
+  },
+});`,
+  },
+  {
+    id: 'annotation',
+    exportName: 'Annotation',
+    type: 'inline',
+    title: 'Note',
+    description:
+      'Adds a note to a phrase. A reader sees a dotted underline, and a card with the note opens on hover.\n\nThe writer selects text and presses Note in the inline toolbar. A small card opens and they type the note. The note is plain text, and line breaks are allowed. Under the note there is an optional caption line, quieter than the note, for example who said a quote. There is no keyboard shortcut.\n\nFour things save the note.\n\n- The Done button.\n- Cmd/Ctrl+Enter.\n- Escape.\n- A click elsewhere.\n\nClearing the text removes the note, and so does the remove button. Clicking an existing note in an editable editor opens the card to edit it, and the phrase shows a hand cursor.\n\nThe reader card opens half a second after the pointer rests on the phrase. A click pins it. Escape or a click elsewhere closes it. In read-only mode the phrase is focusable, and Enter or Space toggles the card.\n\nThe reader card works in every editor, even one that did not register the tool. Only writing and editing need the tool.\n\nThe tool is opt-in. It is not in `defaultInlineTools` or `allTools`, so register it explicitly under the `annotation` key.\n\nCopying and pasting text between blocks keeps the note. Find in page and plain-text copy see only the phrase, not the note.\n\nMarkdown export writes each note as a footnote. The phrase gets a `[^1]` reference, and the text and caption go into a `[^1]:` line at the end. Markdown import does not turn footnotes back into notes.',
+    importExample: `import { Annotation } from '@bloklabs/core/tools';`,
+    configOptions: [
+      {
+        option: 'defaultSubtitle',
+        type: 'string',
+        default: 'undefined',
+        description:
+          'Pre-fills the caption line of a new note. The writer can change or clear it. The config type is `AnnotationConfig`.',
+      },
+    ],
+    saveDataShape: `// A mark on a run of the block's text field. Both values are plain text,
+// and subtitle is optional.
+// { "text": "phrase", "marks": { "annotation": { "text": "Note", "subtitle": "Subtitle" } } }
+//
+// The same run as HTML:
+// <span data-blok-annotation="Note" data-blok-annotation-subtitle="Subtitle">phrase</span>
+//
+// Markdown export writes a footnote:
+// phrase[^1]
+//
+// [^1]: Note — Subtitle`,
+    saveDataExample: `{
+  "type": "paragraph",
+  "data": {
+    "text": [
+      { "text": "The launch slipped because of " },
+      {
+        "text": "the audit",
+        "marks": { "annotation": { "text": "The security review took two extra weeks.", "subtitle": "From the team interview" } }
+      }
+    ]
+  }
+}`,
+    usageExample: `import { Blok } from '@bloklabs/core';
+import { Annotation, Paragraph } from '@bloklabs/core/tools';
+
+const editor = new Blok({
+  holder: 'editor',
+  tools: {
+    // Paragraph is the default block and is not bundled with the core —
+    // without it the editor starts with an "unsupported block" stub.
+    paragraph: Paragraph,
+    // Note is opt-in: it is not in defaultInlineTools or allTools.
+    annotation: {
+      class: Annotation,
+      config: { defaultSubtitle: 'From the team interview' },
+    },
   },
 });`,
   },

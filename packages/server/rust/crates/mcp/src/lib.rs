@@ -8,14 +8,25 @@ pub mod authorize;
 pub mod awareness;
 pub mod bundle;
 pub mod cli;
+pub mod create_page;
 mod depth;
+pub mod document_source;
+pub mod embed;
+#[cfg(test)]
+mod embed_tests;
 pub mod errors;
 pub mod files;
+pub mod handle_store;
+pub mod handle_store_files;
+#[cfg(all(test, unix))]
+mod handle_store_files_tests;
 pub mod handles;
 pub mod http;
 pub mod inflight;
 mod lenient;
 pub mod live;
+#[cfg(test)]
+mod live_orphans_tests;
 pub mod oauth;
 pub mod options;
 pub mod outbound;
@@ -30,6 +41,11 @@ pub mod stdio;
 pub mod uploads;
 pub mod ws;
 
+/// The agent crate whose `PageCreator` a host implements for `Hooks::page_creator`.
+pub use blok_blokagent;
+/// The rmcp this crate is built on, so a host compiles against the same pinned version.
+pub use rmcp;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -38,7 +54,7 @@ use serde_json::Value;
 
 use crate::authorize::Webhook;
 use crate::bundle::Bundle;
-use crate::cli::{AuthorizeSpec, StartError};
+use crate::cli::StartError;
 use crate::oauth::OAuth;
 use crate::outbound::Outbound;
 use crate::protocol::Handler;
@@ -71,15 +87,26 @@ pub async fn run_cli(argv: Vec<String>, env: Value, cwd: &Path) -> i32 {
             return 1;
         }
     };
-    let authorize = started
-        .authorize
-        .as_ref()
-        .map(|AuthorizeSpec::Webhook(url)| Webhook::new(url.clone(), Outbound::new()));
-    let embedded = match Embedded::new(bundle, &started.options, authorize, None).await {
-        Ok(embedded) => embedded,
-        Err(err) => {
+    let hooks = match cli::hooks_of(&started) {
+        Ok(hooks) => hooks,
+        // Only --handle-store files: on Windows is refused here.
+        Err(StartError::Config(message) | StartError::Failed(message)) => {
+            eprintln!("blok-mcp: {message}");
+            return 2;
+        }
+        Err(StartError::Bundle(err)) => {
             eprintln!("blok-mcp: {err}");
             return 1;
+        }
+    };
+    let embedded = match Embedded::build(bundle, &started.options, hooks).await {
+        Ok(embedded) => embedded,
+        Err(err) => {
+            eprintln!("blok-mcp: {}", err.message());
+            return match err {
+                server::BuildError::Config(_) => 2,
+                server::BuildError::Failed(_) => 1,
+            };
         }
     };
     // Boxed: the whole server future nested here passes the compiler's layout depth.
@@ -133,6 +160,24 @@ impl Embedded {
         rooms: Option<Arc<blok_blokagent::Executor>>,
     ) -> Result<Embedded, String> {
         Embedded::with_uploads(bundle, options, authorize, rooms, None).await
+    }
+
+    /// From the options object and the hooks, telling a refused option
+    /// (exit code 2) from a failure.
+    pub async fn build(
+        bundle: Arc<Bundle>,
+        options: &Value,
+        hooks: options::Hooks,
+    ) -> Result<Embedded, server::BuildError> {
+        let version = bundle.call_text("version", "{}").await?;
+        let mcp = Arc::new(Mcp::build(bundle, options, hooks).await?);
+        mcp.spawn_sweeper();
+        Ok(Embedded {
+            mcp,
+            version,
+            auth: options.get("auth").cloned().unwrap_or(Value::Null),
+            http_transport: is_http(options),
+        })
     }
 
     /// From typed options and the hooks that are functions in Node, as a

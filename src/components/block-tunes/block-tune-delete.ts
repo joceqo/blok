@@ -7,6 +7,7 @@ import { BUILT_IN_TUNE_DESCRIPTIONS } from '../../shared/tool-descriptions/inlin
 import type { API, BlockTune } from '../../../types';
 import type { MenuConfig } from '../../../types/tools/menu-config';
 import { IconTrash } from '../icons';
+import { announceDeletedRoots } from '../utils/selection-roots';
 import { beautifyShortcut } from '../utils/string';
 
 /**
@@ -44,14 +45,23 @@ export class DeleteTune implements BlockTune {
       name: 'delete',
       isDestructive: true,
       secondaryLabel: beautifyShortcut('DELETE'),
-      onActivate: (): void => this.handleClick(),
+      // Returns the delete's promise, so the block menu can wait for it (Trash toast).
+      onActivate: (): Promise<void> => this.handleClick(),
     };
   }
 
   /**
    * Delete block conditions passed
    */
-  public handleClick(): void {
-    void this.api.blocks.delete();
+  public async handleClick(): Promise<void> {
+    const index = this.api.blocks.getCurrentBlockIndex();
+    const id = this.api.blocks.getBlockByIndex(index)?.id;
+
+    // Notion leaves no caret after a menu Delete (U104).
+    await this.api.blocks.delete(index, false);
+
+    if (id !== undefined) {
+      announceDeletedRoots(this.api.i18n, [{ id, parentId: null }], (blockId) => this.api.blocks.getById(blockId) !== null);
+    }
   }
 }

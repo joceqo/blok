@@ -22,7 +22,7 @@ const openConversion = async (page: Page, surface: 'settings' | 'inline', curren
   } else {
     await content.click();
     await page.getByTestId('settings-toggler').click();
-    await page.getByRole('menuitem', { name: 'Convert to', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Turn into', exact: true }).click();
   }
 };
 
@@ -93,7 +93,6 @@ for (const surface of ['settings', 'inline'] as const) {
         await expect.poll(() => rows.evaluateAll(elements => elements.map(element => element.getAttribute('aria-label') ?? element.textContent?.trim())))
           .toEqual(LIST_ORDER);
 
-        // Layout boxes, not client rects: the mobile scroll reel scales rows near the edge.
         const measurements = await rows.evaluateAll(elements => elements.map(element => {
           if (!(element instanceof HTMLElement)) {
             throw new Error('Row is not an HTML element');
@@ -287,7 +286,7 @@ test('custom heading without level data keeps its original icon', async ({ page 
   });
   await page.getByText('A clearer convert menu', { exact: true }).click();
   await page.getByTestId('settings-toggler').click();
-  await page.getByRole('menuitem', { name: 'Convert to', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Turn into', exact: true }).click();
   const heading = page.getByRole('menuitem', { name: 'Heading 1', exact: true });
 
   await expect(heading).toBeVisible();
@@ -326,7 +325,7 @@ test('partial heading group keeps Columns on its own row', async ({ page }) => {
   }
   await expect(page.locator('[data-blok-selected="true"]')).toHaveCount(2);
   await page.getByTestId('settings-toggler').click();
-  await page.getByRole('menuitem', { name: 'Convert to', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Turn into', exact: true }).click();
   const heading = page.getByRole('menuitem', { name: 'Heading 1', exact: true });
   const columns = page.getByRole('menuitem', { name: 'Columns', exact: true });
 
@@ -350,7 +349,7 @@ test('partial heading group keeps Columns on its own row', async ({ page }) => {
 test('search keeps full conversion labels and keyboard activation', async ({ page }) => {
   await page.getByText('A clearer convert menu', { exact: true }).click();
   await page.getByTestId('settings-toggler').click();
-  await page.getByRole('menuitem', { name: 'Convert to', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Turn into', exact: true }).click();
   const search = page.getByRole('combobox', { name: 'Find an action…', exact: true }).last();
 
   await search.fill('Toggle heading 6');

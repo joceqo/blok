@@ -26,7 +26,7 @@ import { LEGACY_BODY_TYPES, LEGACY_ITEM_TYPES } from '../../../shared/rich-text/
 import { htmlToSegmentsDom } from '../../utils/rich-text-dom';
 import { resolveHashTarget } from '../../utils/hash-target';
 import { highlightBlockArrival } from '../../utils/highlight-block-arrival';
-import { assertCanMoveUnder, BlockPlacementError, findBlock, isUnder, resolvePlacement, type BlockTree } from './block-placement';
+import { BlockPlacementError, findBlock, resolveMoveTo, resolvePlacement, type BlockTree } from './block-placement';
 
 import { logLabeled } from './../../utils';
 
@@ -89,7 +89,23 @@ export class BlocksAPI extends Module {
       endTransaction: (): void => this.endTransaction(),
       setPointerDragActive: (active: boolean): void => this.setPointerDragActive(active),
       scrollToBlock: (id: string, options?: { select?: boolean }): void => this.scrollToBlock(id, options),
+      copy: (event: ClipboardEvent, ids: string[]): void => this.copy(event, ids),
     };
+  }
+
+  /**
+   * Writes the blocks with these ids to a copy event, as a block selection's copy does.
+   * @param event - the copy event
+   * @param ids - block ids, in clipboard order
+   */
+  public copy(event: ClipboardEvent, ids: string[]): void {
+    const blocks = ids.map((id) => this.Blok.BlockManager.getBlockById(id)).filter((block) => block !== undefined);
+
+    if (blocks.length === 0) {
+      return;
+    }
+    // setData only works during the event, and the copy writes before its first await.
+    void this.Blok.BlockSelection.copySelectedBlocks(event, { blocks });
   }
 
   /**
@@ -355,10 +371,11 @@ export class BlocksAPI extends Module {
     const page = {
       title: Object.hasOwn(data, 'title') ? data.title ?? undefined : kept.title,
       icon: Object.hasOwn(data, 'icon') ? data.icon ?? undefined : kept.icon,
+      cover: Object.hasOwn(data, 'cover') ? data.cover ?? undefined : kept.cover,
     };
 
     // loadPage flushes the typing buffer, and an echo render can land mid-typing.
-    if (page.title !== current.title || JSON.stringify(page.icon) !== JSON.stringify(current.icon)) {
+    if (page.title !== current.title || JSON.stringify(page.icon) !== JSON.stringify(current.icon) || JSON.stringify(page.cover) !== JSON.stringify(current.cover)) {
       this.Blok.YjsManager.loadPage(page);
       this.Blok.PageTitle?.refresh();
     }
@@ -610,10 +627,19 @@ export class BlocksAPI extends Module {
    * @param data - tool data
    * @param options - parent, position, id, tunes, focus, replace
    */
-  public insertAt = (type?: string, data?: BlockToolData, options: InsertAtOptions = {}): BlockAPIInterface =>
-    options.anonymous === true
+  public insertAt = (type?: string, data?: BlockToolData, options: InsertAtOptions = {}): BlockAPIInterface => {
+    const placed = options.anonymous === true
       ? this.Blok.YjsManager.withoutAuthor(() => this.placeBlock(type, data, options, 'api'))
       : this.placeBlock(type, data, options, 'api');
+    const block = options.select === true ? this.Blok.BlockManager.getBlockById(placed.id) : undefined;
+
+    if (block !== undefined) {
+      this.Blok.BlockSelection.clearSelection();
+      this.Blok.BlockSelection.selectBlock(block);
+    }
+
+    return placed;
+  };
 
   /**
    * Add a block the way a toolbox pick does: wait for the tool's
@@ -686,41 +712,10 @@ export class BlocksAPI extends Module {
    * @param target - new parent and position
    */
   public moveTo(id: string, target: MoveToTarget): void {
-    const { BlockManager } = this.Blok;
     const block = findBlock(this.tree, id);
-    const { position } = target;
+    const placement = resolveMoveTo(this.tree, block, target);
 
-    const refId = ((): string | undefined => {
-      if (typeof position !== 'object') {
-        return undefined;
-      }
-
-      return 'before' in position ? position.before : position.after;
-    })();
-
-    if (refId === id) {
-      throw new BlockPlacementError(`cannot place "${id}" relative to itself`);
-    }
-
-    const placement = resolvePlacement(this.tree, target.parentId, position);
-
-    assertCanMoveUnder(this.tree, block, placement.parentId, refId);
-
-    const descendants = BlockManager.blocks.filter(candidate => isUnder(this.tree, candidate, block.id));
-    const from = BlockManager.getBlockIndex(block);
-    const end = from + descendants.length;
-    // A slot inside or right after its own subtree needs no flat move.
-    const movesFlat = placement.index <= from || placement.index > end + 1;
-    const toIndex = from < placement.index ? placement.index - 1 : placement.index;
-
-    // move() silently refuses a restricted tool whose slot neighbour is a
-    // table cell block, even for the slot right after a table. Drop this when
-    // the pin "blocks.move puts a header right after a table" passes.
-    if (movesFlat && isRestrictedInTableCell(block.name) && isInsideTableCell(BlockManager.getBlockByIndex(toIndex))) {
-      throw new BlockPlacementError(`cannot move "${block.name}" to a slot next to a table cell block`);
-    }
-
-    BlockManager.moveTo(block, { parentId: placement.parentId, afterId: placement.afterId });
+    this.Blok.BlockManager.moveTo(block, { parentId: placement.parentId, afterId: placement.afterId });
   }
 
   /**

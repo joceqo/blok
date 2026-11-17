@@ -28,11 +28,12 @@ mod wire;
 pub use cancel::{Cancel, CancelReason};
 pub use errors::Error;
 pub use executor::{Executor, FactoryOptions, InvokeFuture, Invoker};
-pub use room::Rooms;
+pub use room::{HistoryAccess, HistoryPolicy, Rooms};
 pub use session::Session;
 pub use translate::translate;
 pub use types::{
-    Actor, Execution, HostFuture, Options, PageCreator, PageLocation, PageTarget, StoredPage,
+    Actor, Execution, HostFuture, Options, PageCreateRequest, PageCreator, PageLocation,
+    PageTarget, StoredPage,
 };
 
 #[cfg(test)]
@@ -47,6 +48,8 @@ mod executor_test;
 mod formula_dates_test;
 #[cfg(test)]
 mod formula_limits_test;
+#[cfg(test)]
+mod history_hooks_test;
 #[cfg(test)]
 mod host_fixture_test;
 #[cfg(test)]

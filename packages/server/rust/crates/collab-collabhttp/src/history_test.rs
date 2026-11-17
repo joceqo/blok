@@ -484,9 +484,16 @@ async fn a_read_carries_the_plain_keys_of_the_page_and_values_maps() {
         ]
         .into_iter()
         .collect();
+        let cover: blok_jsjson::Object = [
+            (Str::from("type"), Value::String(Str::from("gallery"))),
+            (Str::from("id"), Value::String(Str::from("dusk"))),
+        ]
+        .into_iter()
+        .collect();
         page.set(txn, "title", Value::String(Str::from("Plan")))?;
         page.set(txn, "icon", Value::Object(icon))?;
-        page.set(txn, "cover", Value::String(Str::from("blue")))?;
+        page.set(txn, "cover", Value::Object(cover))?;
+        page.set(txn, "banner", Value::String(Str::from("blue")))?;
         values.set(txn, "title", Value::String(Str::from("Old title")))?;
         values.set(txn, "nested", blok_yjs::Map::new(Vec::new()))?;
         values.set(txn, "gone", Value::Undefined)
@@ -505,8 +512,12 @@ async fn a_read_carries_the_plain_keys_of_the_page_and_values_maps() {
         &parse(r#"{"type":"emoji","value":"🚀"}"#.as_bytes()).unwrap()
     );
     assert_eq!(
+        blok_jsjson::stringify(at(&body, &["cover"])).unwrap(),
+        r#"{"type":"gallery","id":"dusk"}"#
+    );
+    assert_eq!(
         blok_jsjson::stringify(at(&body, &["page"])).unwrap(),
-        r#"{"cover":"blue"}"#
+        r#"{"banner":"blue"}"#
     );
     assert_eq!(
         blok_jsjson::stringify(at(&body, &["values"])).unwrap(),
@@ -1051,4 +1062,74 @@ async fn every_route_needs_a_journal_that_keeps_history() {
     }
     no_journal.drain().await;
     journal_only.drain().await;
+}
+
+#[derive(Default)]
+struct DeleteAudit(std::sync::Mutex<Vec<blok_collab_room::AuditEvent>>);
+
+impl blok_collab_room::ActivityObserver for DeleteAudit {
+    fn record<'a>(
+        &'a self,
+        _doc_id: &'a str,
+        _actor_id: &'a str,
+        _at: std::time::SystemTime,
+        _kind: blok_collab_room::ActivityKind,
+    ) -> blok_collab::BoxFuture<'a, Result<(), blok_collab_room::Error>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn audit(&self) -> Option<&dyn blok_collab_room::AuditObserver> {
+        Some(self)
+    }
+}
+
+impl blok_collab_room::AuditObserver for DeleteAudit {
+    fn on_event<'a>(
+        &'a self,
+        event: &'a blok_collab_room::AuditEvent,
+    ) -> blok_collab::BoxFuture<'a, Result<(), blok_collab_room::Error>> {
+        Box::pin(async move {
+            self.0.lock().unwrap().push(event.clone());
+            Ok(())
+        })
+    }
+}
+
+// C# and Go pass the pass's user to the delete; history.lineageDeleted names it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delete_names_the_pass_user_in_its_audit_event() {
+    let audit = std::sync::Arc::new(DeleteAudit::default());
+    let history = start_app(AppOptions {
+        journal: true,
+        ticket_mode: true,
+        activity: Some(audit.clone()),
+        ..AppOptions::default()
+    })
+    .await;
+    let old = ticket_lineage(&history).await;
+    let reset = history.request("POST", "/reset", &TICKET, "").await;
+    assert_eq!(reset.status, 204, "reset = {}", reset.text());
+    let deleted = history
+        .request("DELETE", &format!("/history/{old}"), &TICKET, "")
+        .await;
+    assert_eq!(deleted.status, 204, "{}", deleted.text());
+    history.manager.settle().await;
+
+    let deletes: Vec<_> = audit
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| event.event_type == blok_collab_room::AUDIT_LINEAGE_DELETED)
+        .cloned()
+        .collect();
+    assert_eq!(deletes.len(), 1, "{deletes:?}");
+    assert_eq!(
+        deletes[0].actor,
+        Some(blok_collab_room::AuditActor {
+            id: "u1".to_owned(),
+            kind: Some("person".to_owned()),
+            on_behalf_of: None,
+        })
+    );
 }

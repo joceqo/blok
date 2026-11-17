@@ -211,6 +211,35 @@ describe.each(sessions)('database view settings on a %s session', (_name, open) 
     }
   });
 
+  // notion-motion.md Round 31 §1: the form header's title and description.
+  it('form title and description are form texts too', async () => {
+    const session = open(seedOf(databaseBlock([{ ...baseView, type: 'form', form: { public: true } }])));
+
+    try {
+      expect(errorOf(await update(session, { form: { title: 'Signup', description: 'Tell us' } }))).toBeUndefined();
+      expect((await viewOf(session)).form).toEqual({ public: true, title: 'Signup', description: 'Tell us' });
+      expect(errorOf(await update(session, { form: { description: null } }))).toBeUndefined();
+      expect((await viewOf(session)).form).toEqual({ public: true, title: 'Signup' });
+    } finally {
+      await session.close();
+    }
+  });
+
+  // notion-motion.md Round 31 §1: the form header's "Form icon" and "Form cover".
+  it('form icon and cover are form settings too, and a malformed one is refused', async () => {
+    const session = open(seedOf(databaseBlock([{ ...baseView, type: 'form' }])));
+
+    try {
+      expect(errorOf(await update(session, { form: { icon: { type: 'emoji', value: '🎉' }, cover: { type: 'gallery', id: 'blue' } } }))).toBeUndefined();
+      expect((await viewOf(session)).form).toEqual({ icon: { type: 'emoji', value: '🎉' }, cover: { type: 'gallery', id: 'blue' } });
+      expect(errorOf(await update(session, { form: { cover: null } }))).toBeUndefined();
+      expect((await viewOf(session)).form).toEqual({ icon: { type: 'emoji', value: '🎉' } });
+      expect(errorOf(await update(session, { form: { icon: 'x' } }))).toBeDefined();
+    } finally {
+      await session.close();
+    }
+  });
+
   it('a board keeps its grouping', async () => {
     const session = open(seedOf(databaseBlock([{ ...baseView, type: 'board', groupBy: 'st' }])));
 

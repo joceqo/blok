@@ -11,7 +11,8 @@ import type { API, BlockAPI, BlockToolConstructorOptions } from '../../../../typ
 interface SettingsItem {
   name: string;
   title: string;
-  isActive?: boolean;
+  isActive?: boolean | (() => boolean);
+  closeOnActivate?: boolean;
   onActivate: () => void;
   children?: { items: SettingsItem[] };
 }
@@ -91,6 +92,9 @@ const mountTable = (
 const getSettings = (tool: Table): SettingsItem[] =>
   tool.renderSettings() as unknown as SettingsItem[];
 
+const activeState = (item: SettingsItem): boolean | undefined =>
+  (typeof item.isActive === 'function' ? item.isActive() : item.isActive);
+
 const getSettingsItem = (tool: Table, name: string): SettingsItem => {
   const item = getSettings(tool).find(entry => entry.name === name);
 
@@ -135,7 +139,7 @@ describe('Table block settings menu', () => {
     it('header row toggle turns the heading row on and persists it', () => {
       const { tool, element } = mountTable({ content: [['A', 'B'], ['C', 'D']] });
 
-      expect(getSettingsItem(tool, 'table-heading-row').isActive).toBe(false);
+      expect(activeState(getSettingsItem(tool, 'table-heading-row'))).toBe(false);
 
       getSettingsItem(tool, 'table-heading-row').onActivate();
 
@@ -143,7 +147,17 @@ describe('Table block settings menu', () => {
 
       expect(firstRow?.hasAttribute('data-blok-table-heading')).toBe(true);
       expect(tool.save(element).withHeadings).toBe(true);
-      expect(getSettingsItem(tool, 'table-heading-row').isActive).toBe(true);
+      expect(activeState(getSettingsItem(tool, 'table-heading-row'))).toBe(true);
+    });
+
+    // Notion U161: the header switches toggle in place, so the open menu must read the new state.
+    it.each(['table-heading-row', 'table-heading-column'])('%s keeps the menu open and reports its state live', (name) => {
+      const { tool } = mountTable({ content: [['A', 'B'], ['C', 'D']] });
+      const item = getSettingsItem(tool, name);
+
+      expect(item.closeOnActivate).not.toBe(true);
+      item.onActivate();
+      expect(activeState(item)).toBe(true);
     });
 
     it('header row toggle turns the heading row back off', () => {
@@ -330,6 +344,30 @@ describe('Table block settings menu', () => {
       const firstCell = element.querySelector('[data-blok-table-cell-col="0"]');
 
       expect(firstCell?.hasAttribute('data-blok-table-heading-col')).toBe(true);
+    });
+  });
+
+  // Notion U162: undo and redo hand a cell range back with no caret.
+  describe('restoreHistorySelection', () => {
+    it('selects the recorded cell range', () => {
+      const { tool, element } = mountTable({ content: [['A', 'B'], ['C', 'D']] });
+
+      tool.restoreHistorySelection({ minRow: 0, maxRow: 0, minCol: 0, maxCol: 1 });
+
+      expect(Array.from(element.querySelectorAll('[data-blok-table-cell-selected]'))
+        .map(cell => `${cell.getAttribute('data-blok-table-cell-row') ?? ''},${cell.getAttribute('data-blok-table-cell-col') ?? ''}`))
+        .toEqual(['0,0', '0,1']);
+    });
+
+    it.each([
+      ['a range outside the grid', { minRow: 0, maxRow: 5, minCol: 0, maxCol: 1 }],
+      ['a malformed range', { minRow: 'x' }],
+    ])('ignores %s', (_name, state) => {
+      const { tool, element } = mountTable({ content: [['A', 'B'], ['C', 'D']] });
+
+      tool.restoreHistorySelection(state);
+
+      expect(element.querySelectorAll('[data-blok-table-cell-selected]')).toHaveLength(0);
     });
   });
 });

@@ -35,8 +35,21 @@ export interface PageData extends BlockToolData {
   backgroundColor?: string;
   /** `'database'`: the page holds a full-page database, so the link shows the table glyph. */
   kind?: 'database';
+  /** Set when the page went to Trash. A server restore with `CollabRestoreTrashesPages` writes it on a later sub-page instead of deleting the block. */
+  trashed?: PageTrashed;
   /** @deprecated Written only by pre-release builds; ignored on input and never saved. */
   cache?: PageCache;
+}
+
+/** When, by whom and from where a page went to Trash. */
+export interface PageTrashed {
+  /** ms since the epoch. */
+  at: number;
+  /** `null` when the server had no user. */
+  by: string | null;
+  /** `null` at the top level. */
+  formerParentId: string | null;
+  formerIndex: number;
 }
 
 /**
@@ -67,7 +80,7 @@ export interface PageSearchResult {
 
 /** Page tool config. Every hook is optional. */
 export interface PageConfig {
-  /** Offers "Database - Full page" in the toolbox. Needs a `create` that stores `document`. */
+  /** Offers "Database - Full page" and "Turn into page"; with `loadDocument`, "Turn into inline database". Needs a `create` that stores `document`. */
   databasePages?: boolean;
   /** Offers "New page" in the "@" menu. Needs a `create` that stores `title` and `parentId`. */
   createFromMention?: boolean;
@@ -79,7 +92,7 @@ export interface PageConfig {
   pageIdFromHref?(href: string): string | null | undefined;
   /** Opens the page on a plain click. Without it the link navigates to `href`. */
   open?(pageId: string, ctx: { event?: MouseEvent | KeyboardEvent }): void;
-  /** Authorized metadata. `null` means missing; `undefined` means unresolved. */
+  /** Authorized metadata. `null` means missing; `undefined` means unresolved. Paste keeps a pasted page id only when this grants it or the page is already in the document. */
   resolve?(pageId: string): PageInfo | null | undefined | Promise<PageInfo | null | undefined>;
   /** Makes the page a new page block points at. May answer with the host's own id. */
   create?(init: PageCreateInit): PageCreateResult | Promise<PageCreateResult>;
@@ -95,6 +108,8 @@ export interface PageConfig {
   preview?(pageId: string): OutputBlockData[] | null | undefined | Promise<OutputBlockData[] | null | undefined>;
   /** The page's own document, for the editor's agent. `null` when missing. */
   loadDocument?(pageId: string): OutputData | null | Promise<OutputData | null>;
+  /** Asked before "Turn into inline database" reads a page and moves its database in. Only `true` allows it. */
+  canMoveInto?(pageId: string): boolean | Promise<boolean>;
   /** Saves the page's document after an agent batch changed it. */
   saveDocument?(pageId: string, data: OutputData): void | Promise<void>;
 }

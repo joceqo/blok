@@ -40,8 +40,11 @@ const bodies: Record<string, Array<{ type: string; data: unknown }>> = {
 const openRow = vi.fn();
 const footer = vi.fn();
 
+/** Feeds share one age timer, so every test destroys its views. */
+const rendered: DatabaseFeedView[] = [];
+
 const render = (overrides: Partial<FeedViewOptions> = {}): HTMLElement => {
-  const el = new DatabaseFeedView({
+  const feed = new DatabaseFeedView({
     view,
     schema,
     rows,
@@ -53,8 +56,10 @@ const render = (overrides: Partial<FeedViewOptions> = {}): HTMLElement => {
     personName: (id) => (id === 'u1' ? 'Ada' : undefined),
     handlers: { openRow, loadMore: vi.fn() },
     ...overrides,
-  }).createView();
+  });
+  const el = feed.createView();
 
+  rendered.push(feed);
   document.body.appendChild(el);
 
   return el;
@@ -69,7 +74,31 @@ describe('DatabaseFeedView', () => {
   });
 
   afterEach(() => {
+    rendered.splice(0).forEach((feed) => feed.destroy());
     vi.restoreAllMocks();
+  });
+
+  // notion-motion.md Round 33 §5 (r33-feed-*.raw): an edited post reads "12m (edited)"; "(edited)" is its own
+  // element after the time. An unedited post shows only the time.
+  it('marks an edited post "(edited)" after its time, and leaves an unedited one alone', () => {
+    const at = Date.parse('2026-10-09T10:00:00Z');
+    const el = render({
+      rows: [
+        { ...rows[0], meta: { createdBy: 'u1', createdAt: at, lastEditedAt: at + 60_000 } },
+        { id: 'r3', position: 'a2', properties: { 'p-title': 'Same' }, meta: { createdBy: 'u1', createdAt: at, lastEditedAt: at } },
+      ],
+      total: 2,
+    });
+    const edited = (rowId: string): Element | null | undefined => card(el, rowId)?.querySelector('[data-blok-database-feed-time] + [data-blok-database-feed-edited]');
+
+    expect(edited('r1')?.textContent).toBe('tools.database.feedEdited');
+    expect(card(el, 'r3')?.querySelector('[data-blok-database-feed-edited]')).toBeNull();
+  });
+
+  // notion-motion.md Round 33 §5: the Layout page's "Show author byline" switch, on by default.
+  it('draws no byline when the view turns the author byline off', () => {
+    expect(card(render(), 'r1')?.querySelector('[data-blok-database-feed-byline]')).not.toBeNull();
+    expect(card(render({ view: { ...view, showAuthorByline: false } }), 'r1')?.querySelector('[data-blok-database-feed-byline]')).toBeNull();
   });
 
   // research/30 B6 measured the date cell only; the feed time keeps "N days ago".
@@ -135,7 +164,7 @@ describe('DatabaseFeedView', () => {
       feed.destroy();
     });
 
-    it('runs one timer per view and stops it on destroy', () => {
+    it('runs one shared timer and stops it with the last view', () => {
       const base = vi.getTimerCount();
       const { feed, time } = live(55_000);
 
@@ -200,6 +229,42 @@ describe('DatabaseFeedView', () => {
     expect(card(el, 'r3')?.querySelector('[data-blok-database-feed-author]')?.textContent).toBe('tools.database.personAnonymous');
   });
 
+  // notion-motion.md Round 32 §3 Feed: the byline starts with the author's round avatar.
+  describe('byline avatar', () => {
+    const avatarOf = (el: HTMLElement, rowId: string): Element | null | undefined =>
+      card(el, rowId)?.querySelector('[data-blok-database-feed-byline]')?.firstElementChild;
+
+    it('draws the author\'s initial before the name when there is no picture', () => {
+      const avatar = avatarOf(render(), 'r1');
+
+      expect(avatar?.getAttribute('data-blok-database-person-initial')).toBe('A');
+      expect(avatar?.getAttribute('aria-hidden')).toBe('true');
+    });
+
+    it('shows the author\'s picture when the host has one', () => {
+      const avatar = avatarOf(render({ personAvatar: (id) => (id === 'u1' ? 'https://example.com/ada.png' : undefined) }), 'r1');
+
+      expect(avatar?.tagName).toBe('IMG');
+      expect(avatar?.getAttribute('src')).toBe('https://example.com/ada.png');
+      expect(avatar?.getAttribute('alt')).toBe('');
+      expect(avatar?.hasAttribute('data-blok-database-person-avatar')).toBe(true);
+    });
+
+    it('drops an unsafe picture URL and keeps the initial', () => {
+      const avatar = avatarOf(render({ personAvatar: () => 'javascript:alert(1)' }), 'r1');
+
+      expect(avatar?.tagName).toBe('SPAN');
+      expect(avatar?.getAttribute('data-blok-database-person-initial')).toBe('A');
+    });
+
+    it('draws a blank avatar for an anonymous answer', () => {
+      const anonymous: DatabaseRow = { id: 'r3', position: 'a2', properties: { 'p-title': 'Resp' }, meta: { anonymous: true } };
+      const avatar = avatarOf(render({ rows: [anonymous], total: 1 }), 'r3');
+
+      expect(avatar?.getAttribute('data-blok-database-person-initial')).toBe('');
+    });
+  });
+
   it('shows the title, the author byline and only the visible properties', () => {
     const first = card(render(), 'r1');
 
@@ -253,6 +318,98 @@ describe('DatabaseFeedView', () => {
     el.querySelector<HTMLElement>('[data-blok-database-feed-more]')?.click();
     expect(loadMore).toHaveBeenCalled();
     expect(render().querySelector('[data-blok-database-feed-more]')).toBeNull();
+  });
+
+  // notion-motion.md Round 48 §C: Notion caps the preview at 500 and shows a "See more" chip when it runs over.
+  describe('the See more chip', () => {
+    const observers: Array<{ disconnect: () => void; fire: () => void }> = [];
+    const heights = (scroll: number, client: number): void => {
+      vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(scroll);
+      vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(client);
+    };
+    const chipOf = (el: HTMLElement): HTMLButtonElement | null =>
+      card(el, 'r1')?.querySelector<HTMLButtonElement>('[data-blok-database-feed-body] > [data-blok-database-feed-fade] > [data-blok-database-feed-see-more]') ?? null;
+    const bodyOf = (el: HTMLElement): HTMLElement | null => card(el, 'r1')?.querySelector<HTMLElement>('[data-blok-database-feed-body]') ?? null;
+
+    beforeEach(() => {
+      observers.length = 0;
+      vi.stubGlobal('ResizeObserver', class {
+        private readonly callback: () => void;
+        private live = true;
+        readonly disconnect = vi.fn(() => {
+          this.live = false;
+        });
+        constructor(callback: () => void) {
+          this.callback = callback;
+          observers.push({ disconnect: this.disconnect, fire: () => this.live && this.callback() });
+        }
+        observe(): void {}
+        unobserve(): void {}
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('shows over a fade when the preview runs past its cap, and goes when it fits', () => {
+      const el = render();
+
+      heights(668, 500);
+      observers.forEach((observer) => observer.fire());
+
+      expect(chipOf(el)?.textContent?.trim()).toBe('tools.database.feedSeeMore');
+
+      heights(300, 300);
+      observers.forEach((observer) => observer.fire());
+      expect(chipOf(el)).toBeNull();
+      expect(bodyOf(el)?.querySelector('[data-blok-database-feed-fade]')).toBeNull();
+    });
+
+    // notion-motion.md Round 49 §A1: the click lifts the cap in place, with no peek, and drops the chip and the fade.
+    it('expands the preview in place on click, without opening the row', () => {
+      const el = render();
+
+      heights(668, 500);
+      observers.forEach((observer) => observer.fire());
+      chipOf(el)?.click();
+
+      expect(openRow).not.toHaveBeenCalled();
+      expect(bodyOf(el)?.hasAttribute('data-expanded')).toBe(true);
+      expect(bodyOf(el)?.querySelector('[data-blok-database-feed-fade]')).toBeNull();
+      observers.forEach((observer) => observer.fire());
+      expect(chipOf(el)).toBeNull();
+    });
+
+    // notion-motion.md Round 49 §A1: after a tab switch the preview is capped again; the open state is not saved.
+    it('caps the preview again when the view is built anew', () => {
+      const first = render();
+
+      heights(668, 500);
+      observers.forEach((observer) => observer.fire());
+      chipOf(first)?.click();
+      const again = render();
+
+      observers.forEach((observer) => observer.fire());
+      expect(bodyOf(again)?.hasAttribute('data-expanded')).toBe(false);
+      expect(chipOf(again)).not.toBeNull();
+    });
+
+    it('stays away from a preview that fits', () => {
+      const el = render();
+
+      heights(300, 300);
+      observers.forEach((observer) => observer.fire());
+      expect(chipOf(el)).toBeNull();
+    });
+
+    it('stops watching when the feed goes', () => {
+      render();
+      rendered.splice(0).forEach((feed) => feed.destroy());
+
+      expect(observers.length).toBeGreaterThan(0);
+      observers.forEach((observer) => expect(observer.disconnect).toHaveBeenCalled());
+    });
   });
 
   it('hands each card a footer slot to the host, for comments and reactions', () => {

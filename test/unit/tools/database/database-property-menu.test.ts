@@ -23,7 +23,7 @@ interface CapturedItem {
   children?: { items: CapturedItem[]; align?: string; searchable?: boolean; width?: string; minWidth?: string; placement?: string; clickOnly?: boolean; class?: string };
 }
 
-interface CapturedPopover { items: CapturedItem[]; destroyed: boolean; params: Record<string, unknown>; activated: string[]; focused: string[]; hidden: Record<string, boolean>; closed?: () => void; hide: () => void; transitionAtShow?: string; moves: Array<{ position: DOMRect; positionContext?: HTMLElement }> }
+interface CapturedPopover { items: CapturedItem[]; destroyed: boolean; holds?: number; released?: number; params: Record<string, unknown>; activated: string[]; focused: string[]; hidden: Record<string, boolean>; closed?: () => void; hide: () => void; transitionAtShow?: string; moves: Array<{ position: DOMRect; positionContext?: HTMLElement }> }
 
 const captured = vi.hoisted((): { popovers: CapturedPopover[]; instances: Array<{ closeSubmenuOnEscape: () => boolean }> } => ({ popovers: [], instances: [] }));
 
@@ -45,6 +45,14 @@ vi.mock('../../../../src/components/utils/popover', () => ({
 
     closeSubmenuOnEscape(): boolean {
       return false;
+    }
+
+    holdOpen(): () => void {
+      this.record.holds = (this.record.holds ?? 0) + 1;
+
+      return () => {
+        this.record.released = (this.record.released ?? 0) + 1;
+      };
     }
 
     activateItemByName(name: string): void {
@@ -180,7 +188,7 @@ describe('DatabasePropertyMenu', () => {
     expect(container.element.querySelector<HTMLElement>('[data-blok-popover-container]')?.style.getPropertyValue('--max-height')).toBe('364px');
     expect(params.cover).toBe(true);
     expect(params.viewportMargin).toBe(11.6);
-    expect([position.x, position.y]).toEqual([654, 202.4]);
+    expect([position.x, position.y]).toEqual([648, 202.4]);
     menu.destroy();
   });
 
@@ -339,6 +347,28 @@ describe('DatabasePropertyMenu', () => {
     expect(params?.animateClose).toBe(true);
   });
 
+  // notion-motion.md Round 10 "Edit property flyout": it opens about 130ms after the row lights, and fades with no scale.
+  it('opens its submenus after 125ms and marks Edit property, which fades with no scale (database.css)', () => {
+    open(prop('select'));
+
+    expect(byName(lastItems(), 'editProperty').children?.class).toBe('blok-database-edit-property');
+    expect((captured.instances.at(-1) as unknown as { nestedOpenDelay?: number }).nestedOpenDelay).toBe(125);
+  });
+
+  // notion-live/motion-header.json + header.png: the Name cell spans x 539..818, its menu box starts at x 533, y 296 (the cell's bottom).
+  it('opens the header menu 6px left of its cell, at the cell\'s bottom', () => {
+    const anchor = document.body.appendChild(document.createElement('div'));
+
+    vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(DOMRect.fromRect({ x: 539, y: 260, width: 280, height: 36 }));
+    const menu = new DatabasePropertyMenu({ i18n: { t: (key: string) => key, getLocale: () => 'en' } as never, hasPeople: false, ...callbacks() });
+
+    menu.open(prop('text'), anchor);
+
+    expect(captured.popovers[captured.popovers.length - 1]?.params.position).toMatchObject({ x: 533, y: 296 });
+    menu.destroy();
+    anchor.remove();
+  });
+
   it.each(['close', 'Enter'] as const)('notifies its host once when closed through %s', (method) => {
     const onClose = vi.fn();
     const menu = new DatabasePropertyMenu({
@@ -386,11 +416,24 @@ describe('DatabasePropertyMenu', () => {
     expect(cb.onRename).not.toHaveBeenCalled();
   });
 
-  it('changes type from the Change type list, which leaves out the current type and the title', () => {
+  // notion-motion.md Round 44 §3 (r44-tp-change.raw): a plain 200-wide list, the current type kept with a ✓.
+  it('keeps the current type in the 200-wide Change type list, checked, and picking it changes nothing', () => {
+    const cb = open(prop('text'));
+    const change = byName(lastItems(), 'changeType');
+    const types = change.children?.items ?? [];
+    const current = byName(types, 'type-text');
+
+    expect(current.trailingIcon).toBe(IconCheck);
+    expect(types.filter((t) => t.trailingIcon !== undefined).map((t) => t.name)).toEqual(['type-text']);
+    expect(change.children?.width).toBe('200px');
+    current.onActivate?.(current);
+    expect(cb.onChangeType).not.toHaveBeenCalled();
+  });
+
+  it('changes type from the Change type list, which leaves out the title', () => {
     const cb = open(prop('text'));
     const types = byName(lastItems(), 'changeType').children?.items ?? [];
 
-    expect(types.map((t) => t.name)).not.toContain('type-text');
     expect(types.map((t) => t.name)).not.toContain('type-title');
     expect(types.map((t) => t.name)).not.toContain('type-person');
     byName(types, 'type-number').onActivate?.(byName(types, 'type-number'));
@@ -404,15 +447,61 @@ describe('DatabasePropertyMenu', () => {
     expect((byName(lastItems(), 'changeType').children?.items ?? []).map((t) => t.name)).toContain('type-person');
   });
 
-  it('asks before deleting', () => {
+  // notion-motion.md Round 14: Delete property asks in Notion's 406px confirm dialog, focus on a red Delete.
+  it('asks in a dialog before deleting, with focus on Delete', async () => {
     const cb = open(prop('text'));
     const del = byName(lastItems(), 'delete');
 
-    expect(del.onActivate).toBeUndefined();
     expect(del.isDestructive).toBe(true);
-    del.confirmation?.onActivate(del);
+    expect(del.closeOnActivate).toBe(true);
+    expect(del.confirmation).toBeUndefined();
+    del.onActivate?.(del);
 
-    expect(cb.onDelete).toHaveBeenCalledWith('p');
+    const dialog = document.querySelector<HTMLElement>('[data-blok-database-confirm-dialog]');
+    const confirm = document.querySelector<HTMLButtonElement>('[data-blok-database-confirm-action="confirm"]');
+
+    expect(dialog?.getAttribute('role')).toBe('alertdialog');
+    expect(dialog?.hasAttribute('data-roomy')).toBe(true);
+    expect(document.querySelector('[data-blok-database-confirm-title]')?.textContent).toBe('tools.database.deletePropertyConfirm');
+    expect(confirm?.textContent).toBe('blockSettings.delete');
+    expect(confirm?.hasAttribute('data-destructive')).toBe(true);
+    expect(confirm).toHaveFocus();
+    expect(cb.onDelete).not.toHaveBeenCalled();
+
+    confirm?.click();
+    await vi.waitFor(() => expect(cb.onDelete).toHaveBeenCalledWith('p'));
+  });
+
+  // notion-motion.md Round 14 (r14-confirm-geom.raw): "Delete this property from New database? It will be removed from all views."
+  it('names the database in the question and says every view loses it', () => {
+    const cb = callbacks();
+    const menu = new DatabasePropertyMenu({
+      i18n: { t: (key: string, params?: Record<string, string>) => `${key}:${params?.name ?? ''}`, getLocale: () => 'en' } as never,
+      hasPeople: false,
+      ...cb,
+      databaseName: () => 'Tasks',
+    });
+
+    menu.open(prop('text'), document.createElement('button'));
+    const del = byName(lastItems(), 'delete');
+
+    del.onActivate?.(del);
+
+    expect(document.querySelector('[data-blok-database-confirm-title]')?.textContent).toBe('tools.database.deletePropertyFromConfirm:Tasks');
+  });
+
+  it('keeps the property when the dialog is cancelled', async () => {
+    const cb = open(prop('text'));
+    const del = byName(lastItems(), 'delete');
+
+    del.onActivate?.(del);
+    expect(document.querySelector('[data-blok-database-confirm-dialog]')).not.toBeNull();
+    document.querySelector<HTMLButtonElement>('[data-blok-database-confirm-action="cancel"]')?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelector('[data-blok-database-confirm-dialog]')).toBeNull();
+    expect(cb.onDelete).not.toHaveBeenCalled();
   });
 
   it('duplicates', () => {
@@ -1248,7 +1337,8 @@ describe('DatabasePropertyMenu', () => {
 
       expect([...(list?.querySelectorAll('[data-blok-database-select-option]') ?? [])].map((row) => row.textContent?.trim())).toEqual(['Idea', 'Build']);
       list?.querySelector<HTMLElement>('[data-blok-database-select-option="o2"] [data-blok-database-select-option-menu]')?.click();
-      list?.querySelector<HTMLElement>('[data-blok-database-option-color="red"]')?.click();
+      // notion-motion.md Round 57 §2: the option's menu is its own popover.
+      document.querySelector<HTMLElement>('[data-blok-database-option-panel="o2"] [data-blok-database-option-color="red"]')?.click();
 
       expect(cb.onOptionsChange).toHaveBeenCalledWith('p', [options[0], { ...options[1], color: 'red' }]);
     });
@@ -1271,16 +1361,19 @@ describe('DatabasePropertyMenu', () => {
       const list = byName(byName(lastItems(), 'editProperty').children?.items ?? [], 'options').element;
 
       list?.querySelector<HTMLElement>('[data-blok-database-select-option="o2"] [data-blok-database-select-option-menu]')?.click();
-      list?.querySelector<HTMLElement>('[data-blok-database-option-color="red"]')?.click();
+      // notion-motion.md Round 57 §2: the option's menu is its own popover.
+      document.querySelector<HTMLElement>('[data-blok-database-option-panel="o2"] [data-blok-database-option-color="red"]')?.click();
 
       expect(onOptionsChange).toHaveBeenCalled();
-      expect(popover?.moves.map((move) => [move.positionContext, move.position.x, move.position.y, move.position.width])).toEqual([[live, 40, 133, 200]]);
-      expect(captured.popovers[captured.popovers.length - 1]).toBe(popover);
+      expect(popover?.moves.map((move) => [move.positionContext, move.position.x, move.position.y, move.position.width])).toEqual([[live, 34, 133, 200]]);
+      // The menu is moved, not drawn again: the only new popover is the option's own menu.
+      expect(captured.popovers.slice(captured.popovers.indexOf(popover) + 1).map((p) => String(p.params.class).includes('blok-database-option-menu'))).toEqual([true]);
+      expect(popover?.destroyed).toBe(false);
       menu.destroy();
       live.remove();
     });
 
-    it('a status option\'s "Set as default" saves the default with the status settings (research/30 §10f)', () => {
+    it('a status option\'s "Set as default" saves the default with the status settings (research/30 §10f)', async () => {
       const status = { ...createDefaultStatusSettings(), showAs: 'checkbox' as const };
       const statusOptions = [
         { id: 'n', label: 'Not started', position: 'a0', groupId: 'todo' },
@@ -1290,9 +1383,34 @@ describe('DatabasePropertyMenu', () => {
       const list = byName(byName(lastItems(), 'editProperty').children?.items ?? [], 'options').element;
 
       list?.querySelector<HTMLElement>('[data-blok-database-select-option="i"] [data-blok-database-select-option-menu]')?.click();
-      list?.querySelector<HTMLElement>('[data-blok-database-option-set-default]')?.click();
+      document.querySelector<HTMLElement>('[data-blok-database-option-set-default]')?.click();
+      // notion-motion.md Round 57 §4: it asks first.
+      expect(cb.onUpdate).not.toHaveBeenCalled();
+      document.querySelector<HTMLElement>('[data-blok-database-confirm-action="confirm"]')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
 
       expect(cb.onUpdate).toHaveBeenCalledWith('p', { status: { ...status, defaultOptionId: 'i' } });
+    });
+
+    // notion-motion.md Round 56 §5: a status option's own menu opens over Edit property, which stays open under it.
+    it('a status option\'s menu holds Edit property open and closes with it', () => {
+      const statusOptions = [{ id: 'n', label: 'Not started', position: 'a0', groupId: 'todo' }];
+      const menu = new DatabasePropertyMenu({ i18n: { t: (key: string) => key, getLocale: () => 'en' } as never, hasPeople: false, ...callbacks() });
+      const anchor = document.body.appendChild(document.createElement('div'));
+
+      menu.open(prop('status', { status: createDefaultStatusSettings(), config: { options: statusOptions } }), anchor);
+      const host = captured.popovers[captured.popovers.length - 1];
+      const list = byName(byName(lastItems(), 'editProperty').children?.items ?? [], 'options').element;
+
+      list?.querySelector<HTMLElement>('[data-blok-database-select-option="n"]')?.click();
+      const flyout = captured.popovers[captured.popovers.length - 1];
+
+      expect(flyout).not.toBe(host);
+      expect(host?.holds).toBe(1);
+      menu.close();
+      expect(flyout?.destroyed).toBe(true);
+      expect(host?.released).toBe(1);
     });
 
     // notion-spec-2 §17.3: "Sort Manual" heads a select's Edit property, a click-only 250 wide list under it.

@@ -19,7 +19,9 @@ use crate::{
     ActivityObserver, Converter, Endpoint, Error, OperationStore, Options, WorkingSetStore,
 };
 
-/// CollabRoomManager's constructor arguments.
+/// CollabRoomManager's constructor arguments. Build one with
+/// `ManagerOptions::new`, then set the optional fields.
+#[non_exhaustive]
 pub struct ManagerOptions {
     pub store: Arc<dyn WorkingSetStore>,
     pub endpoint: Arc<dyn Endpoint>,
@@ -29,6 +31,28 @@ pub struct ManagerOptions {
     /// None means no journal: v1 only, no history.
     pub operations: Option<Arc<dyn OperationStore>>,
     pub activity: Option<Arc<dyn ActivityObserver>>,
+    /// None keeps no record notes: history answers carry no actor kinds.
+    pub notes: Option<Arc<dyn crate::RecordNotesStore>>,
+}
+
+impl ManagerOptions {
+    /// The three required seams; every optional one is off.
+    pub fn new(
+        store: Arc<dyn WorkingSetStore>,
+        endpoint: Arc<dyn Endpoint>,
+        converter: Arc<dyn Converter>,
+    ) -> ManagerOptions {
+        ManagerOptions {
+            store,
+            endpoint,
+            converter,
+            room: Options::default(),
+            log: None,
+            operations: None,
+            activity: None,
+            notes: None,
+        }
+    }
 }
 
 struct Cooldown {
@@ -53,6 +77,8 @@ pub(crate) struct Shared {
     pub log: Option<Log>,
     pub operations: Option<Arc<dyn OperationStore>>,
     pub activity: Option<Arc<dyn ActivityObserver>>,
+    pub notes: Option<Arc<dyn crate::RecordNotesStore>>,
+    pub signals: Option<crate::signals::SignalHub>,
     rooms: Mutex<Rooms>,
     draining: AtomicBool,
     replaced: Mutex<Vec<Replaced>>,
@@ -204,6 +230,7 @@ pub(crate) fn time_span(d: std::time::Duration) -> String {
 impl Manager {
     /// Builds the manager; nothing is loaded until a doc is used.
     pub fn new(o: ManagerOptions) -> Manager {
+        let window = o.room.change_signal_window;
         Manager(Arc::new(Shared {
             store: o.store,
             endpoint: o.endpoint,
@@ -211,7 +238,9 @@ impl Manager {
             options: o.room.with_defaults(),
             log: o.log,
             operations: o.operations,
+            signals: crate::signals::SignalHub::for_observer(o.activity.as_ref(), window),
             activity: o.activity,
+            notes: o.notes,
             rooms: Mutex::new(Rooms::default()),
             draining: AtomicBool::new(false),
             replaced: Mutex::new(Vec::new()),
@@ -409,15 +438,45 @@ impl Manager {
         expect: Option<Precondition>,
         applied: Option<Applied>,
     ) -> Result<EditResult, Error> {
+        self.agent_edit_noted(
+            doc_id,
+            plan,
+            operation_id,
+            digest,
+            actor_id,
+            expect,
+            applied,
+            None,
+        )
+        .await
+    }
+
+    /// `agent_edit` with the record note in place of one read from
+    /// `actor_id`, as the in-process agent executor writes.
+    #[allow(clippy::too_many_arguments, reason = "the Go and C# signatures")]
+    pub async fn agent_edit_noted(
+        &self,
+        doc_id: &str,
+        plan: PlanOps,
+        operation_id: &str,
+        digest: &[u8],
+        actor_id: &str,
+        expect: Option<Precondition>,
+        applied: Option<Applied>,
+        note: Option<crate::RecordNote>,
+    ) -> Result<EditResult, Error> {
         check_edit_ids(doc_id, operation_id)?;
         if expect.is_some() && self.0.operations.is_none() {
             return Ok(EditResult::status(EditStatus::PreconditionRequired));
         }
-        self.edit_in_room(
-            doc_id,
-            request(plan, true, operation_id, digest, actor_id, expect, applied),
-        )
-        .await
+        let mut request = request(plan, true, operation_id, digest, actor_id, expect, applied);
+        request.note = note;
+        self.edit_in_room(doc_id, request).await
+    }
+
+    /// The configured clock: what stamps and timestamps read.
+    pub fn now(&self) -> SystemTime {
+        self.0.options.now()
     }
 
     pub(crate) async fn edit_in_room(
@@ -590,6 +649,19 @@ impl Manager {
             }
         }
         self.0.store.delete(doc_id).await?;
+        if let Some(hub) = &self.0.signals {
+            hub.forget(doc_id);
+            hub.event(
+                &self.0,
+                crate::AuditEvent {
+                    event_type: crate::AUDIT_DOCUMENT_PURGED.to_owned(),
+                    doc_id: doc_id.to_owned(),
+                    at: self.0.options.now(),
+                    actor: None,
+                    lineage: None,
+                },
+            );
+        }
         Ok(PurgeOutcome::Purged)
     }
 
@@ -649,6 +721,9 @@ impl Manager {
         for room in self.live_rooms() {
             room.settle().await;
         }
+        if let Some(hub) = &self.0.signals {
+            hub.settle().await;
+        }
     }
 }
 
@@ -679,6 +754,8 @@ fn request(
         actor_id: actor_id.to_owned(),
         expect,
         applied,
+        dry_run: false,
+        note: None,
     }
 }
 

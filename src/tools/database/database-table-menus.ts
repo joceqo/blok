@@ -1,11 +1,13 @@
 import type { I18n } from '../../../types';
 import type { PopoverItemDefaultBaseParams, PopoverItemParams } from '@/types/utils/popover/popover-item';
 import { PopoverEvent } from '@/types/utils/popover/popover-event';
-import { DATABASE_MENU_CLASS } from './database-group-menu';
+import { DATABASE_MENU_CLASS, DATABASE_SUBMENU_OPEN_DELAY_MS } from './database-group-menu';
 import { PopoverDesktop } from '../../components/utils/popover';
 import { PopoverItemType } from '../../components/utils/popover/components/popover-item';
 import {
   IconArrowDiagonal,
+  IconArrowRightLine,
+  IconCheck,
   IconCopy,
   IconExpandFullscreen,
   IconEmojiSmile,
@@ -20,18 +22,21 @@ import {
   IconMessage,
   IconPageLayout,
   IconPin,
+  IconPinSlash,
   IconPreview,
-  IconReturn,
   IconSigma,
   IconSort,
   IconSplitView,
   IconTrash,
+  IconUTurnLeft,
 } from '../../components/icons';
 import { beautifyShortcut } from '../../components/utils/string';
 import { CALCULATIONS_FOR_TYPE } from './database-calculations';
-import type { CalculationFn, DatabaseRow, OpenPagesIn, PropertyDefinition } from './types';
+import type { CalculationFn, DatabaseRow, LoadLimit, OpenPagesIn, PropertyDefinition } from './types';
+import { LOAD_LIMITS } from './view-settings';
 import { formatClock, formatRelativeStamp } from './cells/date-format';
 import { toLocalDay } from './relative-dates';
+import { safeImageSrc } from '../../components/utils/sanitize-url';
 
 type T = Pick<I18n, 't'>;
 
@@ -66,6 +71,53 @@ export const DATE_FNS: readonly CalculationFn[] = ['earliest_date', 'latest_date
 const CHECKBOX_COUNT_FNS: readonly CalculationFn[] = ['count', 'checked', 'unchecked'];
 const CHECKBOX_PERCENT_FNS: readonly CalculationFn[] = ['percent_checked', 'percent_unchecked'];
 
+/** Every calculation menu: rows drop the last 1px gap (database.css), so four make Notion's 200x123. */
+export const DATABASE_CALC_MENU_CLASS = 'blok-database-calc-menu';
+/** notion-motion.md Round 11: the calculation menu is 200 wide. */
+export const CALC_MENU_MIN_WIDTH = '200px';
+/** notion-motion.md Round 12 "Calculation submenu sizes": every calculation list is 250 wide. */
+export const CALC_LIST_WIDTH = '250px';
+
+/**
+ * The Count list's "Show large counts as 99+" row with its hint line, then the divider under it
+ * (research/22 §5, r11-calc-count-sub.png). The table and the board share it.
+ */
+export const capCountsItems = (
+  t: (key: string) => string,
+  row: { name: string; isActive: boolean; onActivate: () => void; closeOnActivate?: boolean }
+): PopoverItemParams[] => {
+  const title = document.createElement('span');
+  const name = document.createElement('span');
+  const hint = document.createElement('span');
+  // notion-motion.md Round 16 §9: a switch after the title. The item's aria-checked carries the state.
+  const track = document.createElement('span');
+
+  title.setAttribute('data-blok-database-calc-cap', '');
+  name.setAttribute('data-blok-database-calc-cap-title', '');
+  name.textContent = t('tools.database.calcShowLargeCounts');
+  track.setAttribute('data-blok-database-switch-track', '');
+  track.setAttribute('aria-hidden', 'true');
+  track.appendChild(document.createElement('span'));
+  hint.setAttribute('data-blok-database-calc-hint', '');
+  hint.textContent = t('tools.database.calcShowLargeCountsHint');
+  title.append(name, track, hint);
+
+  return [
+    {
+      type: PopoverItemType.Default,
+      name: row.name,
+      title: t('tools.database.calcShowLargeCounts'),
+      titleEl: title,
+      isActive: row.isActive,
+      // The popover flips the item, and with it the switch, while the menu stays open.
+      toggle: true,
+      ...(row.closeOnActivate === true ? { closeOnActivate: true } : {}),
+      onActivate: row.onActivate,
+    },
+    { type: PopoverItemType.Separator },
+  ];
+};
+
 /** The column's "Show large counts as 99+" state and its toggle. */
 export interface CountCap {
   capCounts: boolean;
@@ -95,19 +147,22 @@ export const calculationItems = (
     type: PopoverItemType.Default,
     title: i18n.t(titleKey),
     isActive: current !== undefined && fns.includes(current),
-    children: { items: [...lead, ...fns.map(leaf)] },
+    children: { items: [...lead, ...fns.map(leaf)], width: CALC_LIST_WIDTH },
   });
   const checkbox = property.type === 'checkbox';
   const offered = CALCULATIONS_FOR_TYPE[property.type] ?? [];
-  const capToggle: PopoverItemParams[] = cap === undefined || checkbox
+  // The menu stays open, so the state is kept here: `cap.capCounts` is the state the menu opened with.
+  const capped = { on: cap?.capCounts === true };
+  const capToggle: PopoverItemParams[] = cap === undefined
     ? []
-    : [{
-      type: PopoverItemType.Default,
+    : capCountsItems((key) => i18n.t(key), {
       name: 'database-calc-cap-counts',
-      title: i18n.t('tools.database.calcShowLargeCounts'),
-      isActive: cap.capCounts,
-      onActivate: () => cap.onCapCounts(!cap.capCounts),
-    }];
+      isActive: capped.on,
+      onActivate: () => {
+        capped.on = !capped.on;
+        cap.onCapCounts(capped.on);
+      },
+    });
   const items: PopoverItemParams[] = [
     {
       type: PopoverItemType.Default,
@@ -130,12 +185,24 @@ export const calculationItems = (
   return items;
 };
 
+/**
+ * Where a footer cell's calculation menu opens: on its value or "Calculate" box, left edges
+ * and the box's bottom (notion-motion.md Rounds 11-12). The cell stays the trigger, so Escape focuses it.
+ */
+export const calcMenuAt = (cell: HTMLElement): OpenMenuOptions['at'] => {
+  const box = cell.querySelector<HTMLElement>('[data-blok-database-table-calc-box]') ?? cell;
+
+  return { position: box.getBoundingClientRect(), positionContext: box };
+};
+
 /** A column header menu: 28px rows and no 400px cap (database.css). */
 export const DATABASE_HEADER_MENU_CLASS = `${DATABASE_MENU_CLASS} blok-database-header-menu`;
-/** The table row menu: 29px rows (database.css). */
+/** The row menu: 29px rows (database.css). */
 const DATABASE_ROW_MENU_CLASS = `${DATABASE_MENU_CLASS} blok-database-row-menu`;
-/** The same row menu from a card's "•••" or a right-click: 265 wide and no 400px cap (database.css, feel findings B15). */
+/** The row menu of every view: 265 wide and no 400px cap (database.css, feel findings B15). */
 const DATABASE_CARD_MENU_CLASS = `${DATABASE_ROW_MENU_CLASS} blok-database-card-menu`;
+/** The card menu opened from a list row's handle: beside the handle, scaling from its centre (database.css). */
+const DATABASE_HANDLE_MENU_CLASS = `${DATABASE_CARD_MENU_CLASS} blok-database-handle-menu`;
 
 export interface OpenMenuOptions {
   searchable?: boolean;
@@ -143,12 +210,43 @@ export interface OpenMenuOptions {
   onClose?: () => void;
   /**
    * Which database menu this is: its row size comes from the class. A row menu opens left of its ⋮⋮;
-   * a card menu is the same row menu, opened over its "•••".
+   * a card menu is the same row menu, opened over its "•••"; a handle menu is the card menu, opened beside its handle.
+   * A calc menu is the footer value's: header rows, 200 wide, no gap under its button.
+   * A selection menu is the card menu of picked cards, opened under its anchor with no gap.
    */
-  kind?: 'header' | 'row' | 'card';
+  kind?: 'header' | 'row' | 'card' | 'handle' | 'calc' | 'selection';
+  /** Where the menu opens instead of the anchor's box; `positionContext` moves it with the page. */
+  at?: { position: DOMRect; positionContext: HTMLElement };
+  /** The least gap to the window's edges, instead of the kind's own. */
+  viewportMargin?: number;
+  /** The gap to the anchor, instead of the kind's own. */
+  offset?: number;
+  /** The menu's end edge on the anchor's end edge. */
+  alignEnd?: boolean;
+  /** A card menu that does not fit below opens above, its bottom this far over the anchor's top, when it fits there. */
+  coverFlipOffset?: number;
 }
 
-const MENU_CLASS = { header: DATABASE_HEADER_MENU_CLASS, row: DATABASE_ROW_MENU_CLASS, card: DATABASE_CARD_MENU_CLASS } as const;
+const MENU_CLASS = {
+  header: DATABASE_HEADER_MENU_CLASS,
+  // notion-motion.md Round 36 §4: the table ⋮⋮ menu scales from its centre, as the list's handle menu.
+  row: DATABASE_HANDLE_MENU_CLASS,
+  // Round 36 §4: the card ⋯ menu fades in with no scale (database.css).
+  card: `${DATABASE_CARD_MENU_CLASS} blok-database-fade-menu`,
+  handle: DATABASE_HANDLE_MENU_CLASS,
+  calc: `${DATABASE_HEADER_MENU_CLASS} ${DATABASE_CALC_MENU_CLASS}`,
+  selection: DATABASE_CARD_MENU_CLASS,
+} as const;
+
+/** Notion's handle menu is 265 wide; the side is picked before the menu is measured. */
+const HANDLE_MENU_WIDTH = 265;
+const HANDLE_MENU_GAP = 5;
+
+const MENU_MIN_WIDTH: Partial<Record<NonNullable<OpenMenuOptions['kind']>, string>> = { row: `${HANDLE_MENU_WIDTH}px`, card: '265px', handle: `${HANDLE_MENU_WIDTH}px`, calc: CALC_MENU_MIN_WIDTH, selection: '265px' };
+
+/** Left of the handle, or right when a 265px menu and its gap do not fit before the window's left edge. */
+const handleMenuSide = (anchor: HTMLElement): 'left' | 'right' =>
+  anchor.getBoundingClientRect().left - HANDLE_MENU_GAP - HANDLE_MENU_WIDTH < 0 ? 'right' : 'left';
 
 /** Opens a menu under `anchor`; `data-popover-open` marks the anchor while it is up. */
 export const openMenu = (
@@ -157,20 +255,42 @@ export const openMenu = (
   options: OpenMenuOptions = {}
 ): PopoverDesktop => {
   const menuClass = options.kind === undefined ? DATABASE_MENU_CLASS : MENU_CLASS[options.kind];
-  const popover = new PopoverDesktop({
+  const params = {
     class: menuClass,
-    ...(options.kind === 'row' ? { placeLeftOfAnchor: true, viewportMargin: 8 } : {}),
+    // notion-motion.md Round 35: the table's ⋮⋮ menu ends 5px before the handle, as the list's does.
+    // Round 36 §4: pushed up to ~12px over the window bottom. The margin is top and bottom only here.
+    // Round 38 §3: with no room on the left it flips to the right, 5px past the handle.
+    ...(options.kind === 'row' ? { placeLeftOfAnchor: true, asideSide: handleMenuSide(anchor), offset: HANDLE_MENU_GAP, viewportMargin: 12 } : {}),
+    // notion-motion.md Round 10: the right edge 5px before the handle, centred on it; pushed up to ~12px over the window bottom.
+    // Round 16 §7: with no room on the left it flips to the right, 5px past the handle.
+    ...(options.kind === 'handle' ? { placeLeftOfAnchor: true, asideSide: handleMenuSide(anchor), offset: HANDLE_MENU_GAP, viewportMargin: 12 } : {}),
+    // notion-motion.md Round 11: the footer value's menu, 200x123, on the button's bottom edge.
+    // Round 12 "Board selection": the ⌘/ menu's top is the first picked card's bottom.
+    ...(options.kind === 'calc' || options.kind === 'selection' ? { offset: 0 } : {}),
     animateClose: true,
     trigger: anchor,
     items,
-    width: 'auto',
-    minWidth: options.kind === 'card' ? '265px' : '220px',
+    width: 'auto' as const,
+    minWidth: (options.kind === undefined ? undefined : MENU_MIN_WIDTH[options.kind]) ?? '220px',
     // A card's menu opens over its "•••", shifted to stay in the window (feel findings B15, 09-notion-card-menu.png).
-    ...(options.kind === 'card' ? { cover: true } : {}),
+    // Round 35: a tall card menu stops 12px above the window bottom.
+    ...(options.kind === 'card' ? { cover: true, viewportMargin: 12 } : {}),
     autoFocusFirstItem: false,
     ...(options.searchable === true ? { searchable: true } : {}),
     ...(options.searchPlaceholder !== undefined ? { messages: { search: options.searchPlaceholder } } : {}),
-  });
+    ...(options.viewportMargin !== undefined ? { viewportMargin: options.viewportMargin } : {}),
+    ...(options.offset !== undefined ? { offset: options.offset } : {}),
+    ...(options.coverFlipOffset !== undefined ? { coverFlipOffset: options.coverFlipOffset } : {}),
+  };
+  const at = options.at;
+  const popover = new PopoverDesktop(at === undefined ? params : { ...params, position: at.position, positionContext: at.positionContext });
+
+  // notion-motion.md Round 12: Escape closes one layer of a calculation menu at a time.
+  if (options.kind === 'calc') {
+    popover.escapeClosesSubmenuFirst = true;
+  }
+  popover.nestedOpenDelay = DATABASE_SUBMENU_OPEN_DELAY_MS;
+  popover.alignEnd = options.alignEnd === true;
 
   const state = { closed: false };
 
@@ -239,7 +359,7 @@ export const headerViewItems = (ctx: HeaderMenuContext): PopoverItemParams[] => 
     type: PopoverItemType.Default,
     title: i18n.t('tools.database.tableCalculate'),
     icon: IconSigma,
-    children: { items: calculationItems(property, ctx.calculation, i18n, ctx.onCalculate, ctx.countCap) },
+    children: { items: calculationItems(property, ctx.calculation, i18n, ctx.onCalculate, ctx.countCap), minWidth: CALC_MENU_MIN_WIDTH, class: DATABASE_CALC_MENU_CLASS },
   };
   // research/08: Files and ID offer no Group; research/20 §1d: nor does Place. None can group a view.
   const groupable = property.type !== 'files' && property.type !== 'uniqueId' && property.type !== 'place';
@@ -273,18 +393,18 @@ export const headerViewItems = (ctx: HeaderMenuContext): PopoverItemParams[] => 
     ...lead,
     ...queries,
     ctx.frozenHere
-      ? item('database-header-unfreeze', 'tools.database.tableUnfreeze', ctx.onUnfreeze, IconPin)
+      ? item('database-header-unfreeze', 'tools.database.tableUnfreeze', ctx.onUnfreeze, IconPinSlash)
       : item('database-header-freeze', 'tools.database.tableFreeze', ctx.onFreeze, IconPin),
   ];
 
   if (!isTitle) {
     items.push(item('database-header-hide', 'tools.database.tableHide', ctx.onHide, IconEyeSlash));
   }
-  // Notion offers no wrap toggle on a checkbox or a button column.
+  // Notion offers no wrap toggle on a checkbox or a button column. Round 29 §2: each state has its own glyph.
   if (property.type !== 'checkbox' && property.type !== 'button') {
     items.push(ctx.wrapped
-      ? item('database-header-unwrap', 'tools.database.tableUnwrap', () => ctx.onWrap(false), IconReturn)
-      : item('database-header-wrap', 'tools.database.tableWrap', () => ctx.onWrap(true), IconReturn));
+      ? item('database-header-unwrap', 'tools.database.tableUnwrap', () => ctx.onWrap(false), IconArrowRightLine)
+      : item('database-header-wrap', 'tools.database.tableWrap', () => ctx.onWrap(true), IconUTurnLeft));
   }
   items.push(
     item('database-header-insert-left', 'tools.database.tableInsertLeft', () => ctx.onInsert('left'), IconColumnInsertLeft),
@@ -326,7 +446,7 @@ export interface RowMenuContext {
   moveTargets?: Array<{ id: string; title: string }>;
   onMoveTo?: (databaseId: string) => void;
   /** Who edited the row last, and when, already formatted. */
-  lastEdited?: { name?: string; time: string };
+  lastEdited?: { name?: string; avatarUrl?: string; time: string };
   /** Words and characters of the row. Without it or lastEdited there is no footer. */
   counts?: { words: number; characters: number };
 }
@@ -335,7 +455,7 @@ export interface RowMenuFooterSource {
   row: Pick<DatabaseRow, 'properties' | 'meta'> | undefined;
   titlePropertyId: string;
   locale: string;
-  people?: ReadonlyArray<{ id: string; name: string }>;
+  people?: ReadonlyArray<{ id: string; name: string; avatarUrl?: string }>;
   now?: Date;
   hourCycle?: 'h12' | 'h23';
   /** research/35 §19: an edit from today reads "Today at 4:54 AM". Without it, "Today 4:54 AM". */
@@ -362,9 +482,16 @@ export const rowMenuFooter = (source: RowMenuFooterSource): Pick<RowMenuContext,
   const time = source.i18n !== undefined && toLocalDay(new Date(at)) === toLocalDay(now)
     ? source.i18n.t('tools.database.rowEditedTodayAt', { time: formatClock(new Date(at), source.locale, source.hourCycle) })
     : formatRelativeStamp(at, source.locale, {}, now, source.hourCycle);
-  const name = meta?.lastEditedBy === undefined ? undefined : source.people?.find((person) => person.id === meta.lastEditedBy)?.name;
+  const person = meta?.lastEditedBy === undefined ? undefined : source.people?.find((candidate) => candidate.id === meta.lastEditedBy);
 
-  return { lastEdited: { ...(name !== undefined ? { name } : {}), time }, counts };
+  return {
+    lastEdited: {
+      ...(person !== undefined ? { name: person.name } : {}),
+      ...(person?.avatarUrl !== undefined ? { avatarUrl: person.avatarUrl } : {}),
+      time,
+    },
+    counts,
+  };
 };
 
 const OPEN_IN: ReadonlyArray<{ mode: OpenPagesIn; icon: string; key: string }> = [
@@ -373,25 +500,56 @@ const OPEN_IN: ReadonlyArray<{ mode: OpenPagesIn; icon: string; key: string }> =
   { mode: 'full', icon: IconExpandFullscreen, key: 'tools.database.openPagesFull' },
 ];
 
-/** research/08's footer: "Last edited by ⟨name⟩", the time, then "1 word, 5 characters". */
+/** The editor's photo, or the name's first letter in a circle (the person cell's look, database.css). */
+const footerAvatar = (name: string, avatarUrl: string | undefined): HTMLElement => {
+  const src = avatarUrl === undefined ? null : safeImageSrc(avatarUrl);
+
+  if (src !== null) {
+    const img = document.createElement('img');
+
+    img.src = src;
+    img.alt = '';
+    img.setAttribute('data-blok-database-person-avatar', '');
+
+    return img;
+  }
+  const initial = document.createElement('span');
+
+  initial.setAttribute('data-blok-database-person-initial', [...name][0]?.toUpperCase() ?? '');
+  initial.setAttribute('aria-hidden', 'true');
+
+  return initial;
+};
+
+/**
+ * notion-motion.md Round 35 (r35-rowmenu.raw): "Last edited", the avatar and name on their own line,
+ * the time, then "1 word, 5 characters".
+ */
 export const rowFooter = (i18n: T, lastEdited: RowMenuContext['lastEdited'], counts: RowMenuContext['counts']): PopoverItemParams => {
   const footer = document.createElement('div');
-  const line = (text: string): void => {
+  const line = (part: string, text: string): HTMLElement => {
     const el = document.createElement('div');
 
+    el.setAttribute(`data-blok-database-row-menu-footer-${part}`, '');
     el.textContent = text;
     footer.append(el);
+
+    return el;
   };
 
   footer.setAttribute('data-blok-database-row-menu-footer', '');
   if (lastEdited !== undefined) {
-    line(lastEdited.name === undefined
-      ? i18n.t('tools.database.rowLastEdited')
-      : i18n.t('tools.database.rowLastEditedBy', { name: lastEdited.name }));
-    line(lastEdited.time);
+    line('label', i18n.t('tools.database.rowLastEdited'));
+    if (lastEdited.name !== undefined) {
+      line('person', lastEdited.name).prepend(footerAvatar(lastEdited.name, lastEdited.avatarUrl));
+    }
+    line('time', lastEdited.time);
   }
   if (counts !== undefined) {
-    line(i18n.t('tools.database.rowWordCount', { words: counts.words, characters: counts.characters }));
+    line('counts', i18n.t('tools.database.rowCounts', {
+      words: i18n.t('tools.database.rowWords', { count: counts.words }),
+      characters: i18n.t('tools.database.rowCharacters', { count: counts.characters }),
+    }));
   }
 
   return { type: PopoverItemType.Html, element: footer, name: 'last-edited' };
@@ -462,6 +620,33 @@ export const rowActionItems = (ctx: RowActionContext, options: { trashShortcut: 
         onActivate: onDelete,
       }]
       : []),
+  ];
+};
+
+/**
+ * The Load more row's ⋯ (notion-motion.md Round 29 §1): "Show on first load", then 10/25/50/100 pages.
+ * The current limit carries the checkmark.
+ */
+export const loadLimitItems = (i18n: T, current: LoadLimit, onPick: (limit: LoadLimit) => void): PopoverItemParams[] => {
+  const heading = document.createElement('div');
+
+  // The row menu heading's look. Presentation: the menu's list may only own items.
+  heading.className = 'pl-2 pr-3 pt-0.5 pb-1 text-xs font-medium text-menu-section-label cursor-default select-none';
+  heading.setAttribute('role', 'presentation');
+  heading.setAttribute('data-blok-database-load-limit-heading', '');
+  heading.textContent = i18n.t('tools.database.tableShowOnFirstLoad');
+
+  return [
+    { type: PopoverItemType.Html, element: heading },
+    ...LOAD_LIMITS.map((limit): PopoverItemParams => ({
+      type: PopoverItemType.Default,
+      name: `database-load-limit-${limit}`,
+      title: i18n.t('tools.database.settingsLoadLimitPages', { count: limit }),
+      isActive: limit === current,
+      ...(limit === current ? { trailingIcon: IconCheck } : {}),
+      closeOnActivate: true,
+      onActivate: () => onPick(limit),
+    })),
   ];
 };
 
@@ -546,5 +731,51 @@ export const rowMenuItems = (ctx: RowMenuContext): PopoverItemParams[] => {
     line,
     ...rowActionItems(ctx, { trashShortcut: true }),
     ...(ctx.lastEdited !== undefined || ctx.counts !== undefined ? [line, rowFooter(i18n, ctx.lastEdited, ctx.counts)] : []),
+  ];
+};
+
+/** Duplicate and Move to Trash for picked rows: the list bar's "…" and the board ⌘/ menu. */
+export const selectionActionItems = (ctx: Pick<SelectionMenuContext, 'i18n' | 'onDuplicate' | 'onDelete'>): [PopoverItemDefaultBaseParams, PopoverItemDefaultBaseParams] => [
+  { type: PopoverItemType.Default, name: 'database-selection-duplicate', title: ctx.i18n.t('tools.database.tableDuplicate'), icon: IconCopy, closeOnActivate: true, onActivate: ctx.onDuplicate },
+  { type: PopoverItemType.Default, name: 'database-selection-delete', title: ctx.i18n.t('tools.database.tableMoveToTrash'), icon: IconTrash, closeOnActivate: true, onActivate: ctx.onDelete },
+];
+
+export interface SelectionMenuContext {
+  i18n: T;
+  /** What Edit property › lists: the bar's bulk-editable properties. */
+  properties: PropertyDefinition[];
+  onEditProperty: (propertyId: string) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+}
+
+/**
+ * The ⌘/ menu of picked board or gallery cards (notion-motion.md Round 12 "Board selection").
+ * Notion's Edit icon, Copy links to all, Move to and Ask AI are left out: Blok does them for one row only, or not at all.
+ * Notion shows no shortcut on Move to Trash here.
+ */
+export const selectionMenuItems = (ctx: SelectionMenuContext): PopoverItemParams[] => {
+  const { i18n } = ctx;
+  const [duplicate, trash] = selectionActionItems(ctx);
+
+  return [
+    rowMenuHeading(i18n),
+    {
+      type: PopoverItemType.Default,
+      title: i18n.t('tools.database.tableEditProperty'),
+      icon: IconListBulleted,
+      children: {
+        items: ctx.properties.map((property) => ({
+          type: PopoverItemType.Default as const,
+          name: `database-bulk-edit-${property.id}`,
+          title: property.name,
+          closeOnActivate: true,
+          onActivate: () => ctx.onEditProperty(property.id),
+        })),
+      },
+    },
+    { type: PopoverItemType.Separator },
+    { ...duplicate, secondaryLabel: beautifyShortcut('CMD+D') },
+    trash,
   ];
 };

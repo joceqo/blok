@@ -48,7 +48,37 @@ describe('FileTool — rendering', () => {
   it('renders the empty state when data.url is empty', () => {
     const root = new FileTool(createOptions()).render();
     expect(root.querySelector('input[type="file"]')).not.toBeNull();
-    expect(root.querySelector('[data-tab="embed"]')).not.toBeNull();
+    expect(root.querySelector('[data-action="from-link"]')).not.toBeNull();
+  });
+
+  it('gives the card its object: an archive shows a folder at once', () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 404 })));
+    const root = new FileTool(createOptions({ url: 'https://cdn/assets.zip', fileName: 'assets.zip' })).render();
+
+    expect(root.querySelector('[data-role="file-object"]')?.getAttribute('data-file-object')).toBe('archive');
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the plain card and reads nothing when cardPreview is off', () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const root = new FileTool(createOptions({ url: 'https://cdn/assets.zip', fileName: 'assets.zip' }, { cardPreview: false })).render();
+
+    expect(root.querySelector('[data-role="file-card-wrapper"]')).not.toBeNull();
+    expect(root.querySelector('[data-role="file-object"]')).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('takes the object away when the block is removed', () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 404 })));
+    const tool = new FileTool(createOptions({ url: 'https://cdn/assets.zip', fileName: 'assets.zip' }));
+    const root = tool.render();
+
+    tool.removed();
+
+    expect(root.querySelector('[data-role="file-object"]')).toBeNull();
+    vi.unstubAllGlobals();
   });
 
   it('renders the download card when data.url is present', () => {
@@ -193,9 +223,10 @@ describe('FileTool — upload flow', () => {
     const root = tool.render();
     tool.onPaste(filePasteEvent(new File([new Uint8Array(50)], 'big.bin', { type: 'application/octet-stream' })));
     await flush();
-    const msg = root.querySelector('[data-role="file-error"] span');
-    expect(msg?.textContent).toBe('tools.file.errorFileTooLarge');
-    expect(msg?.textContent).not.toContain('FILE_TOO_LARGE');
+    const card = root.querySelector('[data-role="file-error"]');
+    expect(card?.querySelector('[data-role="file-error-title"]')?.textContent).toBe('tools.file.errorFileTooLargeTitle');
+    expect(card?.querySelector('[data-role="file-error-detail"]')?.textContent).toBe('tools.file.errorFileTooLargeDetail');
+    expect(card?.textContent).not.toContain('FILE_TOO_LARGE');
   });
 });
 
@@ -347,7 +378,7 @@ describe('FileTool — image auto-convert', () => {
     const tool = new FileTool(createOptions({}, {}, undefined, api));
     const root = tool.render();
 
-    root.querySelector<HTMLButtonElement>('[data-tab="embed"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
     const urlInput = root.querySelector<HTMLInputElement>('.blok-media-empty__embed-input');
     const submit = root.querySelector<HTMLButtonElement>('[data-action="submit-url"]');
     if (!urlInput || !submit) throw new Error('embed url field missing');
@@ -689,7 +720,7 @@ describe('FileTool — an upload belongs to the pick that started it', () => {
     });
     const tool = new FileTool(createOptions({}, { uploader: { uploadByUrl }, onUploadError }));
     const root = tool.render();
-    root.querySelector<HTMLButtonElement>('[data-tab="embed"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
     const urlInput = root.querySelector<HTMLInputElement>('.blok-media-empty__embed-input');
     const submit = root.querySelector<HTMLButtonElement>('[data-action="submit-url"]');
     if (!urlInput || !submit) throw new Error('embed url field missing');
@@ -712,6 +743,7 @@ describe('FileTool — an upload belongs to the pick that started it', () => {
     tool.onPaste(filePasteEvent(pdf()));
     await Promise.resolve();
 
-    expect(root.querySelector('.blok-file-uploading [data-blok-media-preview="file"]')).not.toBeNull();
+    expect(root.querySelector('[data-role="uploading"] [data-blok-media-preview="file"]')).not.toBeNull();
+    expect(root.querySelector('.blok-file-uploading')).toBeNull();
   });
 });

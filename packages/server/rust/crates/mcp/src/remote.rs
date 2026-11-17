@@ -173,6 +173,7 @@ enum Command {
     Execute(ExecuteInput, oneshot::Sender<Result<Executed, Fault>>),
     Read(Value, Value, oneshot::Sender<Result<String, Fault>>),
     IsEmpty(oneshot::Sender<Result<bool, Fault>>),
+    Document(oneshot::Sender<Result<String, Fault>>),
     PagesNeeded(Value, Value, Value, oneshot::Sender<Result<Value, Fault>>),
     Close(oneshot::Sender<Value>),
 }
@@ -188,6 +189,17 @@ impl RemoteRoom {
         let (reply, answer) = oneshot::channel();
         self.commands
             .send(Command::Execute(input, reply))
+            .map_err(|_| Fault::Internal("the room is gone".to_owned()))?;
+        answer
+            .await
+            .map_err(|_| Fault::Internal("the room is gone".to_owned()))?
+    }
+
+    /// The room's document as this copy holds it now.
+    pub async fn document(&self) -> Result<String, Fault> {
+        let (reply, answer) = oneshot::channel();
+        self.commands
+            .send(Command::Document(reply))
             .map_err(|_| Fault::Internal("the room is gone".to_owned()))?;
         answer
             .await
@@ -585,6 +597,16 @@ impl Room {
                     Some(Command::Execute(input, reply)) => {
                         let answer = Box::pin(self.execute(input)).await;
                         let _ = reply.send(answer);
+                    }
+                    Some(Command::Document(reply)) => {
+                        let document = self.export().await;
+                        #[cfg(test)]
+                        let document = if self.shared.bundle.fail_room_read.load(Ordering::SeqCst) {
+                            Err(Fault::Internal("failed for a test".to_owned()))
+                        } else {
+                            document
+                        };
+                        let _ = reply.send(document);
                     }
                     Some(Command::PagesNeeded(batch, actor, approval, reply)) => {
                         let answer = self.pages_needed(&batch, &actor, &approval).await;
@@ -1701,6 +1723,17 @@ impl Room {
             self.read_only = true;
             return Err(Fault::Internal(err.to_string()));
         }
+        #[cfg(test)]
+        if self
+            .shared
+            .bundle
+            .fail_after_room_write
+            .load(Ordering::SeqCst)
+        {
+            return Err(Fault::Internal(
+                "failed for a test after the room write".to_owned(),
+            ));
+        }
         let after_blocks = blocks_of(&self.export().await?);
         for block in before_blocks.iter().chain(after_blocks.iter()) {
             if let Some(id) = str_of(block, "id")
@@ -2139,6 +2172,57 @@ impl Room {
         })
     }
 
+    /// The preview route's answer for a history.previewRestore, keyed by its
+    /// version (null for a 404). Arguments the bundle refuses ask nothing.
+    async fn history_preview(&self, args: &Value) -> Result<Value, (String, Option<u16>)> {
+        let mut previews = Map::new();
+        let Some(version) = args
+            .get("version")
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+        else {
+            return Ok(Value::Object(previews));
+        };
+        let query = match args.get("databases") {
+            None => String::new(),
+            Some(Value::String(databases)) if databases == "keep" || databases == "restore" => {
+                format!("?databases={databases}")
+            }
+            Some(_) => return Ok(Value::Object(previews)),
+        };
+        let Some(path) = point_path(version) else {
+            previews.insert(version.to_owned(), Value::Null);
+            return Ok(Value::Object(previews));
+        };
+        let url = format!("{}/{path}/restore/preview{query}", self.history_base());
+        let answer = self
+            .history_send("POST", &url, Vec::new())
+            .await
+            .map_err(|m| (m, None))?;
+        if answer.status == 404 {
+            previews.insert(version.to_owned(), Value::Null);
+            return Ok(Value::Object(previews));
+        }
+        if !(200..=299).contains(&answer.status) {
+            return Err((
+                format!(
+                    "The sync server answered {}: {}",
+                    answer.status,
+                    String::from_utf8_lossy(&answer.body).trim()
+                ),
+                Some(answer.status),
+            ));
+        }
+        let Ok(body) = serde_json::from_slice::<Value>(&answer.body) else {
+            return Err((
+                "The sync server sent a restore preview it could not read.".to_owned(),
+                None,
+            ));
+        };
+        previews.insert(version.to_owned(), body);
+        Ok(Value::Object(previews))
+    }
+
     /// The versionHistory input for a history command: the list and the
     /// documents the command names, or `failed` with the reason.
     async fn load_versions(&self, name: &str, batch: &Value) -> Value {
@@ -2158,6 +2242,18 @@ impl Room {
             out
         };
         let mut out = json!({});
+        if name == "history.previewRestore" {
+            // A read-only handle's ticket cannot reach the preview route, so
+            // nothing is asked and the bundle refuses the preview.
+            if !self.spec.write {
+                return json!({ "previews": {} });
+            }
+            // A preview asks its own route and reads nothing else.
+            return match self.history_preview(&args).await {
+                Ok(previews) => json!({ "previews": previews }),
+                Err(err) => failed(err),
+            };
+        }
         if name == "history.versions" || name == "history.restore" {
             match self.history_versions(args.get("group")).await {
                 Ok(versions) => out["versions"] = versions,

@@ -159,6 +159,8 @@ internal sealed class CollabRoom : IDisposable
   private readonly ICollabWorkingSetStore store;
   private readonly ICollabOperationStore? operationStore;
   private readonly ICollabActivityObserver? activityObserver;
+  private readonly CollabChangeSignalHub? signalHub;
+  private readonly ICollabRecordNotes? recordNotes;
   private readonly IDocEndpointClient endpoint;
   private readonly ICollabDocConverter converter;
   private readonly CollabRoomOptions options;
@@ -282,12 +284,16 @@ internal sealed class CollabRoom : IDisposable
       TimeProvider timeProvider,
       Action<string>? log,
       ICollabOperationStore? operationStore = null,
-      ICollabActivityObserver? activityObserver = null)
+      ICollabActivityObserver? activityObserver = null,
+      ICollabRecordNotes? recordNotes = null,
+      CollabChangeSignalHub? signalHub = null)
   {
     DocId = docId;
+    this.signalHub = signalHub;
     this.store = store;
     this.operationStore = operationStore;
     this.activityObserver = activityObserver;
+    this.recordNotes = recordNotes;
     this.endpoint = endpoint;
     this.converter = converter;
     this.options = options;
@@ -557,11 +563,12 @@ internal sealed class CollabRoom : IDisposable
       string? actorId,
       CollabEditPrecondition? expect,
       Func<YDoc, CollabEditReceipt?, CancellationToken, ValueTask>? applied,
+      CollabRecordNote? note,
       CancellationToken cancellationToken)
   {
     ArgumentNullException.ThrowIfNull(planOps);
 
-    return EditCoreAsync(planOps, gateFrameSize: true, operationId, digest, actorId, expect, applied, cancellationToken);
+    return EditCoreAsync(planOps, gateFrameSize: true, operationId, digest, actorId, expect, applied, cancellationToken, note: note);
   }
 
   /// <summary>
@@ -594,6 +601,21 @@ internal sealed class CollabRoom : IDisposable
         cancellationToken);
   }
 
+  /// <summary>
+  /// Runs <paramref name="planOps"/> in the lane after the precondition check, then stops: no op-id
+  /// lookup, nothing applied or journalled. A plan that ran answers
+  /// <see cref="CollabEditStatus.Previewed"/> with the head it planned against.
+  /// </summary>
+  internal Task<CollabEditResult?> PreviewAsync(
+      Func<YDoc, CancellationToken, ValueTask<IReadOnlyList<CollabEditOp>>> planOps,
+      CollabEditPrecondition? expect,
+      CancellationToken cancellationToken)
+  {
+    ArgumentNullException.ThrowIfNull(planOps);
+
+    return EditCoreAsync(planOps, gateFrameSize: false, "", default, null, expect, null, cancellationToken, dryRun: true);
+  }
+
   private Task<CollabEditResult?> EditCoreAsync(
       Func<YDoc, CancellationToken, ValueTask<IReadOnlyList<CollabEditOp>>> planOps,
       bool gateFrameSize,
@@ -602,7 +624,9 @@ internal sealed class CollabRoom : IDisposable
       string? actorId,
       CollabEditPrecondition? expect,
       Func<YDoc, CollabEditReceipt?, CancellationToken, ValueTask>? applied,
-      CancellationToken cancellationToken)
+      CancellationToken cancellationToken,
+      bool dryRun = false,
+      CollabRecordNote? note = null)
   {
     return RunAsync<CollabEditResult?>(
         async () =>
@@ -639,7 +663,7 @@ internal sealed class CollabRoom : IDisposable
             return new CollabEditResult(CollabEditStatus.Purged, null);
           }
 
-          if (session is not null)
+          if (session is not null && !dryRun)
           {
             CollabOperationLookup committed;
 
@@ -675,7 +699,10 @@ internal sealed class CollabRoom : IDisposable
 
                 return new CollabEditResult(CollabEditStatus.Conflict, null);
             }
+          }
 
+          if (session is not null)
+          {
             if (expect is not null &&
                 (!string.Equals(expect.Lineage, tag.Lineage, StringComparison.Ordinal) ||
                  expect.Sequence != committedThrough))
@@ -722,6 +749,13 @@ internal sealed class CollabRoom : IDisposable
             UpdateEvictionLocked();
 
             throw;
+          }
+
+          if (dryRun)
+          {
+            UpdateEvictionLocked();
+
+            return new CollabEditResult(CollabEditStatus.Previewed, null, new CollabEditReceipt(tag, committedThrough));
           }
 
           localUpdates.Clear();
@@ -835,7 +869,8 @@ internal sealed class CollabRoom : IDisposable
               actorId,
               CollabOperationSource.HttpEdit,
               update,
-              digest);
+              digest,
+              note);
 
           if (sequence is null)
           {
@@ -867,6 +902,12 @@ internal sealed class CollabRoom : IDisposable
   /// </summary>
   private async Task<bool> FitsOneFrameLocked(IReadOnlyList<CollabEditOp> ops)
   {
+    return await PlannedFrameBytesAsync(doc!, converter, ops, lifetime.Token) <= FrameLimit(options);
+  }
+
+  /// <summary>The most bytes one planned update's frames may take.</summary>
+  internal static long FrameLimit(CollabRoomOptions options)
+  {
     // 0 means unset, as in the options. With no announced limit, 1 MiB, the
     // local store's default, stands in. A custom store's own limit is unknown.
     var limit = options.AnnouncedMaxMessageBytes is > 0 ? options.AnnouncedMaxMessageBytes.Value : 1 << 20;
@@ -878,7 +919,7 @@ internal sealed class CollabRoom : IDisposable
       limit = Math.Min(limit, storeLimit);
     }
 
-    return await PlannedFrameBytesAsync(doc!, converter, ops, lifetime.Token) <= limit;
+    return limit;
   }
 
   /// <summary>
@@ -886,6 +927,18 @@ internal sealed class CollabRoom : IDisposable
   /// <paramref name="live"/> would broadcast, measured on a scratch copy.
   /// </summary>
   internal static async Task<long> PlannedFrameBytesAsync(
+      YDoc live,
+      ICollabDocConverter converter,
+      IReadOnlyList<CollabEditOp> ops,
+      CancellationToken cancellationToken)
+  {
+    return (await ApplyToScratchAsync(live, converter, ops, cancellationToken)).FrameBytes;
+  }
+
+  /// <summary>
+  /// Applies <paramref name="ops"/> to a copy of <paramref name="live"/> and counts the frames it would broadcast.
+  /// </summary>
+  internal static async Task<(YDoc Scratch, long FrameBytes)> ApplyToScratchAsync(
       YDoc live,
       ICollabDocConverter converter,
       IReadOnlyList<CollabEditOp> ops,
@@ -909,7 +962,7 @@ internal sealed class CollabRoom : IDisposable
 
     await converter.ApplyOpsAsync(scratch, ops, cancellationToken);
 
-    return frameBytes;
+    return (scratch, frameBytes);
   }
 
   /// <summary>
@@ -2807,9 +2860,20 @@ internal sealed class CollabRoom : IDisposable
         break;
     }
 
-    if (ApplyRemoteLocked(operation.Update) is null)
+    if (ApplyRemoteLocked(operation.Update) is not { } applied)
     {
       RejectLocked(membership, operation, "invalid-update");
+
+      return;
+    }
+
+    // A reload's residual round resends the whole delete set (see the v1
+    // path). Ack it at the head and journal nothing. With no head yet an ack
+    // has no sequence to name (it must be at least 1), so that one is still
+    // journalled.
+    if (!applied.Changed && committedThrough > 0)
+    {
+      AcknowledgeLocked(membership, operation, committedThrough);
 
       return;
     }
@@ -2836,6 +2900,31 @@ internal sealed class CollabRoom : IDisposable
   }
 
   /// <summary>
+  /// Stores who wrote the record just journalled. Not atomic with the
+  /// journal: a crash, a timeout or a throw here loses only this note, and
+  /// never fails the edit or closes the room.
+  /// </summary>
+  private async Task WriteNoteLocked(ulong sequence, CollabRecordNote? note)
+  {
+    if (recordNotes is null || note is null)
+    {
+      return;
+    }
+
+    try
+    {
+      using var deadline = new CancellationTokenSource(options.CommitTimeout, timeProvider);
+      using var bounded = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token, deadline.Token);
+
+      await recordNotes.WriteAsync(DocId, tag.Lineage, sequence, note, bounded.Token);
+    }
+    catch (Exception error)
+    {
+      log?.Invoke($"collab: the record note of {sequence} in \"{DocId}\" was not written: {error.Message}");
+    }
+  }
+
+  /// <summary>
   /// The durable step journal-backed write paths share. It answers the sequence
   /// or closes the room before anything is published.
   /// </summary>
@@ -2844,7 +2933,8 @@ internal sealed class CollabRoom : IDisposable
       string? actorId,
       CollabOperationSource source,
       byte[] update,
-      ReadOnlyMemory<byte> digest)
+      ReadOnlyMemory<byte> digest,
+      CollabRecordNote? note = null)
   {
     CollabOperationAppendResult appended;
 
@@ -2895,6 +2985,11 @@ internal sealed class CollabRoom : IDisposable
     }
 
     committedThrough = appended.ServerSequence;
+
+    var written = note ?? CollabActorKinds.Classify(actorId);
+
+    await WriteNoteLocked(appended.ServerSequence, written);
+    signalHub?.Committed(DocId, tag.Lineage, appended.ServerSequence, actorId, written);
 
     // After the append, never before: an edit is reported once it is durable.
     RecordActivityLocked(actorId, CollabActivityKind.Edited);

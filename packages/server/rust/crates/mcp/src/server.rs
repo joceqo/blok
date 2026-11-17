@@ -9,7 +9,9 @@ use serde_json::{Map, Value, json};
 
 use crate::authorize::{Authorize, Webhook};
 use crate::bundle::{Bundle, Obj, RawObject};
+use crate::document_source::{CustomSource, DocumentCaller, document_caller};
 use crate::errors::{Fault, HostError};
+use crate::handle_store::{Acquired, HandleLease, HandleRecord, HandleStore, StoreError};
 use crate::handles::Handles;
 use crate::live::{Live, TicketRequest};
 use crate::options::{AgentActorFn, Hooks};
@@ -79,6 +81,53 @@ pub struct Stored {
     version: Option<String>,
     /// A save failed and the reload did too: reload before the next call.
     stale: bool,
+    /// Who opened the handle: a host's source acts for them (opener.ts sourceFor).
+    opener: Arc<DocumentCaller>,
+    /// The opener's agent actor, as a handle store keeps it.
+    actor: Value,
+}
+
+impl Stored {
+    /// A handle a shared store kept, rebuilt for its opener: the record
+    /// carries the document, so nothing is loaded.
+    fn from_record(record: &HandleRecord) -> Stored {
+        let text = |key: &str| {
+            record
+                .actor
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        };
+        Stored {
+            write: record.write,
+            document: record.document.get().to_owned(),
+            history: record.history.get().to_owned(),
+            version: record.version.clone(),
+            stale: record.stale,
+            opener: Arc::new(DocumentCaller {
+                principal: record.principal.clone(),
+                client_name: record.client_name.clone(),
+                scopes: record.scopes.clone(),
+                actor: crate::options::AgentActor {
+                    id: text("id").unwrap_or_default(),
+                    name: text("name").unwrap_or_default(),
+                    on_behalf_of: text("onBehalfOf"),
+                    color: text("color"),
+                },
+            }),
+            actor: record.actor.clone(),
+        }
+    }
+
+    /// What changes between calls; a record is saved only when it did.
+    fn state(&self) -> (&str, &str, Option<&str>, bool) {
+        (
+            &self.document,
+            &self.history,
+            self.version.as_deref(),
+            self.stale,
+        )
+    }
 }
 
 pub enum Session {
@@ -101,12 +150,84 @@ pub struct Mcp {
     source: Option<Source>,
     authorize: Option<Arc<dyn Authorize>>,
     agent_actor: Option<AgentActorFn>,
+    page_creator: Option<Arc<dyn blok_blokagent::PageCreator>>,
+    /// Where stored handles live; None keeps them in `handles`.
+    store: Option<Arc<dyn HandleStore>>,
+    max_handles: usize,
+    idle: Duration,
+    store_sweep_every: Duration,
+    /// How long one store sweep may run before it is dropped.
+    store_sweep_limit: Duration,
+    /// Held while the store is swept, so a stop can wait for a sweep.
+    sweeping: Arc<tokio::sync::Mutex<()>>,
+    /// Set by a stop; cancels the sweep in flight.
+    stop_sweeps: tokio::sync::watch::Sender<bool>,
     live: Option<Live>,
     live_shared: Option<Arc<LiveShared>>,
     rooms: Option<Rooms>,
 }
 
 const DEFAULT_IDLE_MS: u64 = 600_000;
+// Above the slowest stored call (a 30 s endpoint load); a longer wait is better told to retry.
+const LEASE_WAIT: Duration = Duration::from_secs(30);
+// Well inside the files store's 30 s lease, so a slow call keeps its lease.
+const LEASE_RENEW_EVERY: Duration = Duration::from_secs(5);
+const STORE_SWEEP_EVERY: Duration = Duration::from_secs(60);
+// Ends a sweep well before the next is due, as Go and C# do.
+const STORE_SWEEP_LIMIT: Duration = Duration::from_secs(30);
+// How long a stop waits for a cancelled sweep; one that will not end is left behind.
+const SWEEP_STOP_WAIT: Duration = Duration::from_secs(1);
+const STORE_DOWN: &str = "The handle store is unavailable. Retry shortly.";
+
+/// A store failure: logged in full, and retryable for the agent, since a
+/// store outage passes.
+fn store_failed(err: StoreError) -> Fault {
+    eprintln!("blok-mcp: the handle store failed: {err}");
+    HostError::surface("SOURCE_UNAVAILABLE", STORE_DOWN).into()
+}
+
+/// Keeps a lease while a call runs; never ends. A failed renew is logged
+/// and the call goes on: a lost lease shows when the call saves or removes.
+async fn keep_renewing(lease: &dyn HandleLease) {
+    loop {
+        tokio::time::sleep(LEASE_RENEW_EVERY).await;
+        if let Err(err) = lease.renew().await {
+            eprintln!("blok-mcp: renewing a handle lease failed: {err}");
+        }
+    }
+}
+
+async fn release(lease: &dyn HandleLease) {
+    if let Err(err) = lease.release().await {
+        eprintln!("blok-mcp: releasing a handle lease failed: {err}");
+    }
+}
+
+/// A store lease that is given back even when its call is dropped (a client
+/// gone mid-call), so the next call does not wait it out.
+struct HeldLease(Option<Box<dyn HandleLease>>);
+
+impl HeldLease {
+    fn lease(&self) -> &dyn HandleLease {
+        self.0.as_deref().expect("a held lease")
+    }
+
+    async fn release(mut self) {
+        if let Some(lease) = self.0.take() {
+            release(&*lease).await;
+        }
+    }
+}
+
+impl Drop for HeldLease {
+    fn drop(&mut self) {
+        if let Some(lease) = self.0.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(async move { release(&*lease).await });
+        }
+    }
+}
 
 fn opt<'a>(options: &'a Value, key: &str) -> Option<&'a Value> {
     options.get(key).filter(|v| !v.is_null())
@@ -189,6 +310,8 @@ fn page_writes(counted: &Value) -> Vec<(String, Value)> {
 struct HostWork {
     created: Vec<String>,
     create_failure: Option<Value>,
+    /// The host's creator was cancelled after it made `created`.
+    cancelled: bool,
     page_writes: Vec<Value>,
     /// A live page write went out but was not acknowledged.
     unconfirmed: bool,
@@ -234,6 +357,39 @@ fn agent_error_of(error: &HostError) -> Value {
         ));
     }
     agent
+}
+
+/// A server error that stopped a batch after its pages were made. The cause
+/// is blokagent's (pagecreate.rs stopped_after_creating), as the C# and Go
+/// servers give it; the error itself goes only to stderr.
+fn runtime_failure(message: &str) -> HostError {
+    eprintln!("blok-mcp: a batch stopped after its pages were made: {message}");
+    HostError::as_is(json!({
+        "code": "APPLY_FAILED",
+        "message": "The batch stopped on a server error. Nothing was written.",
+        "retryable": true,
+    }))
+}
+
+// runtime_failure's log line for a creator failure, which is already logged in full.
+const HOST_STOPPED: &str = "the host could not create a page";
+
+/// The pages of `created` that `document` links from no page block; None
+/// when it is no document.
+fn unlinked_pages<'a>(document: &str, created: &'a [String]) -> Option<Vec<&'a String>> {
+    let document: Value = serde_json::from_str(document).ok()?;
+    let blocks = document.get("blocks")?.as_array()?;
+    let linked: std::collections::HashSet<&str> = blocks
+        .iter()
+        .filter(|block| str_of(block, "type") == Some("page"))
+        .filter_map(|block| block.pointer("/data/pageId").and_then(Value::as_str))
+        .collect();
+    Some(
+        created
+            .iter()
+            .filter(|page_id| !linked.contains(page_id.as_str()))
+            .collect(),
+    )
 }
 
 /// The bundle's isBatchEnvelope: commands of {name, args, ref?}.
@@ -310,16 +466,29 @@ impl crate::stdio::Requests for Mcp {
 }
 
 /// Node's checkOptionSafety, which createBlokMcpServer runs for every
-/// host: the CLI's checks hold for a library host too.
-async fn check_options(
+/// host: the CLI's checks hold for a library host too. Some: its refusal.
+pub(crate) async fn option_refusal(
     bundle: &Bundle,
     options: &Value,
-    authorize: bool,
-    uploads: Option<&crate::uploads::Uploads>,
-) -> Result<(), Fault> {
+    hooks: &Hooks,
+) -> Result<Option<String>, crate::bundle::BundleError> {
+    let (authorize, uploads, custom_source) = (
+        hooks.authorize.is_some(),
+        hooks.uploads.as_ref(),
+        hooks.source.is_some(),
+    );
     let mut checked = options.clone();
     if authorize {
         checked["authorize"] = Value::Bool(true);
+    }
+    if hooks.page_creator.is_some() {
+        checked["createPage"] = Value::Bool(true);
+    }
+    // No handleStore here: the bundle only checks that a host store has
+    // count, tryAdd, acquire and sweep, which the Rust trait always has.
+    // A host's source is a source: with a ticket URL it still needs a per-document check.
+    if custom_source {
+        checked["source"] = json!({ "kind": "custom" });
     }
     if let Some(uploads) = uploads {
         let mut described = json!({ "uploadByFile": true, "limits": uploads.limits });
@@ -334,9 +503,32 @@ async fn check_options(
             &json!({ "options": checked }).to_string(),
         )
         .await?;
-    match answer.get("error").and_then(Value::as_str) {
-        Some(error) => Err(Fault::Internal(error.to_owned())),
-        None => Ok(()),
+    Ok(answer
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_owned))
+}
+
+/// Why `Mcp::build` made no server.
+#[derive(Debug)]
+pub enum BuildError {
+    /// The options or hooks are refused (Node's McpConfigError): exit code 2.
+    Config(String),
+    /// Anything else, such as an engine failure: exit code 1.
+    Failed(String),
+}
+
+impl BuildError {
+    pub fn message(&self) -> &str {
+        match self {
+            BuildError::Config(message) | BuildError::Failed(message) => message,
+        }
+    }
+}
+
+impl From<crate::bundle::BundleError> for BuildError {
+    fn from(err: crate::bundle::BundleError) -> Self {
+        BuildError::Failed(err.0)
     }
 }
 
@@ -364,9 +556,9 @@ impl Mcp {
     ) -> Result<Mcp, Fault> {
         let hooks = Hooks {
             authorize: authorize.map(|hook| Arc::new(hook) as Arc<dyn Authorize>),
-            agent_actor: None,
             uploads,
             rooms,
+            ..Hooks::default()
         };
         Mcp::with_hooks(bundle, options, hooks).await
     }
@@ -378,22 +570,52 @@ impl Mcp {
         options: &Value,
         hooks: Hooks,
     ) -> Result<Mcp, Fault> {
+        Mcp::build(bundle, options, hooks)
+            .await
+            .map_err(|err| Fault::Internal(err.message().to_owned()))
+    }
+
+    /// As `with_hooks`, telling a refused option from a failure.
+    pub async fn build(
+        bundle: Arc<Bundle>,
+        options: &Value,
+        hooks: Hooks,
+    ) -> Result<Mcp, BuildError> {
+        if hooks.source.is_some() && opt(options, "source").is_some() {
+            return Err(BuildError::Config(
+                "hooks.source (the host's own document source) cannot be combined with options.source".to_owned(),
+            ));
+        }
+        if let Some(refusal) = option_refusal(&bundle, options, &hooks).await? {
+            return Err(BuildError::Config(refusal));
+        }
+        // The bundle sees no rooms in the options; they are live rooms too.
+        if hooks.page_creator.is_some() && hooks.rooms.is_some() {
+            return Err(BuildError::Config(
+                "--create-page works in stored mode only: it cannot be used with live rooms (hooks.rooms)".to_owned(),
+            ));
+        }
+        if let Some(root) = hooks.uploads.as_ref().and_then(|u| u.root.as_ref()) {
+            crate::uploads::check_root(root).map_err(BuildError::Config)?;
+        }
         let Hooks {
             authorize,
             agent_actor,
             uploads,
             rooms,
+            source: custom,
+            page_creator,
+            handle_store: store,
         } = hooks;
-        check_options(&bundle, options, authorize.is_some(), uploads.as_ref()).await?;
-        if let Some(root) = uploads.as_ref().and_then(|u| u.root.as_ref()) {
-            crate::uploads::check_root(root).map_err(Fault::Internal)?;
-        }
         let mut flags = surface_flags(options);
         if uploads.is_some() {
             flags["uploads"] = Value::Bool(true);
         }
         if rooms.is_some() {
             flags["sync"] = Value::Bool(true);
+        }
+        if custom.is_some() {
+            flags["source"] = Value::Bool(true);
         }
         let surface = bundle.call("mcpSurface", &flags.to_string()).await?;
         let list = |key: &str| {
@@ -423,14 +645,21 @@ impl Mcp {
                 .unwrap_or(json!([])),
         };
         let outbound = Outbound::new();
-        let source = match opt(options, "source") {
-            Some(source) if str_of(source, "kind") == Some("files") => {
+        let source = match (custom, opt(options, "source")) {
+            (Some(custom), _) => Some(Source::Custom(CustomSource::new(custom))),
+            // A host's source is a trait object; options alone cannot carry one.
+            (None, Some(source)) if str_of(source, "kind") == Some("custom") => {
+                return Err(BuildError::Config(
+                    "source kind \"custom\" needs the host's source in hooks.source".to_owned(),
+                ));
+            }
+            (None, Some(source)) if str_of(source, "kind") == Some("files") => {
                 Some(Source::Files(crate::files::FilesSource::new(
                     str_of(source, "dir").unwrap_or("."),
                     bundle.clone(),
                 )))
             }
-            Some(source) => Some(Source::Endpoint(Box::new(EndpointSource::new(
+            (None, Some(source)) => Some(Source::Endpoint(Box::new(EndpointSource::new(
                 str_of(source, "url").unwrap_or_default().to_owned(),
                 str_of(source, "endpointAuth")
                     .unwrap_or_default()
@@ -438,8 +667,12 @@ impl Mcp {
                 str_of(source, "list").map(str::to_owned),
                 outbound.clone(),
             )))),
-            None => None,
+            (None, None) => None,
         };
+        // After every option check: the files store makes its directory here.
+        if let Some(store) = &store {
+            store.start().map_err(BuildError::Config)?;
+        }
         let idle_ms = opt(options, "handleIdleMs")
             .cloned()
             .unwrap_or(json!(DEFAULT_IDLE_MS));
@@ -467,12 +700,20 @@ impl Mcp {
             principal: str_of(options, "principal").unwrap_or("local").to_owned(),
             idle_ms,
             handles: Handles::new(idle, max),
+            store,
+            max_handles: max,
+            idle,
+            store_sweep_every: STORE_SWEEP_EVERY,
+            store_sweep_limit: STORE_SWEEP_LIMIT,
+            sweeping: Arc::default(),
+            stop_sweeps: tokio::sync::watch::Sender::new(false),
             calls: Arc::default(),
             reserved: std::sync::Mutex::default(),
             uploads,
             source,
             authorize,
             agent_actor,
+            page_creator,
             live_shared,
             live,
             rooms: rooms.map(|executor| Rooms::new(executor, &flags)),
@@ -497,13 +738,61 @@ impl Mcp {
                 mcp.handles.sweep();
             }
         });
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        let weak = Arc::downgrade(self);
+        let (every, limit) = (self.store_sweep_every, self.store_sweep_limit);
+        tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(every);
+            ticks.tick().await;
+            loop {
+                ticks.tick().await;
+                let Some(mcp) = weak.upgrade() else { return };
+                let _sweeping = mcp.sweeping.lock().await;
+                // Checked under the lock: a stop that took it first ends the sweeps.
+                if mcp.handles.is_closed() {
+                    return;
+                }
+                let mut stop = mcp.stop_sweeps.subscribe();
+                let outcome = tokio::select! {
+                    outcome = tokio::time::timeout(limit, store.sweep(mcp.idle)) => outcome,
+                    _ = stop.wait_for(|stopped| *stopped) => return,
+                };
+                match outcome {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        eprintln!("blok-mcp: sweeping the handle store failed: {err}");
+                    }
+                    Err(_) => eprintln!(
+                        "blok-mcp: sweeping the handle store took over {} s, so it was stopped",
+                        limit.as_secs_f64()
+                    ),
+                }
+            }
+        });
     }
 
     /// Node's stop: each handle closes once its calls are done, so a room
     /// gets its presence departure and close frame. Gives up after `limit`.
+    /// A sweep of the handle store in flight is cancelled and waited for up
+    /// to 1 s; none starts after.
     pub async fn close_all(&self, limit: Duration) {
         let mut closing = tokio::task::JoinSet::new();
-        for session in self.handles.take_all() {
+        let sessions = self.handles.take_all();
+        self.stop_sweeps.send_replace(true);
+        let sweeping = self.sweeping.clone();
+        closing.spawn(async move {
+            if tokio::time::timeout(SWEEP_STOP_WAIT, sweeping.lock())
+                .await
+                .is_err()
+            {
+                eprintln!(
+                    "blok-mcp: a handle store sweep ignored its cancel; shutting down without it"
+                );
+            }
+        });
+        for session in sessions {
             closing.spawn(async move {
                 let session = session.lock_owned().await;
                 if let Session::Remote(room) = &*session {
@@ -625,6 +914,9 @@ impl Mcp {
             Some("blok_open") => self.open(&step, caller, cancelled).await?,
             Some("blok_close") => {
                 let handle = str_of(&step, "handle").unwrap_or_default();
+                if self.shared(handle) {
+                    return self.close_shared(handle, caller).await;
+                }
                 // A refused check still closes, so the handle does not keep its
                 // --max-handles slot; an unknown handle fails again in remove.
                 let refusal = self.on_handle(caller, handle, false).await.map(drop).err();
@@ -666,14 +958,73 @@ impl Mcp {
             && (self.live.is_some() || self.source.is_some())
     }
 
+    /// The host's creator, as Node's createHostPage: None refuses, and any
+    /// other failure is logged in full while the agent sees only
+    /// HOST_PAGE_FAILED. A cancel is the failure() CANCELLED.
+    async fn host_page(
+        &self,
+        creator: &dyn blok_blokagent::PageCreator,
+        caller: &Caller,
+        opener: &DocumentCaller,
+        parent: &str,
+    ) -> Result<String, Fault> {
+        let request = blok_blokagent::PageCreateRequest {
+            parent_document_id: Some(parent.to_owned()),
+            principal: Some(caller.principal.clone()),
+            actor: blok_blokagent::Actor {
+                id: opener.actor.id.clone(),
+                name: opener.actor.name.clone(),
+                on_behalf_of: opener.actor.on_behalf_of.clone(),
+            },
+            suggested_page_id: mint_page_id(),
+        };
+        let host_failed = || {
+            Fault::Host(HostError::surface(
+                "SOURCE_UNAVAILABLE",
+                crate::create_page::HOST_PAGE_FAILED,
+            ))
+        };
+        // MCP never cancels a stored batch (a cancelled call is still applied).
+        match creator
+            .create(&blok_blokagent::Cancel::new(), &request)
+            .await
+        {
+            Ok(None) => Err(HostError::surface(
+                "FORBIDDEN",
+                "You may not create a page document here.",
+            )
+            .into()),
+            Ok(Some(page_id)) if crate::create_page::is_page_id(&page_id) => Ok(page_id),
+            Ok(Some(page_id)) => {
+                eprintln!(
+                    "blok-mcp: the host page creator answered no valid page id (1-512 code points, no control characters, not \".\" or \"..\"): {page_id:?}"
+                );
+                Err(host_failed())
+            }
+            Err(err) if err.is_cancel() => {
+                Err(HostError::failure("CANCELLED", crate::create_page::CANCELLED).into())
+            }
+            Err(err) => {
+                eprintln!("blok-mcp: the host could not create a page: {err}");
+                Err(host_failed())
+            }
+        }
+    }
+
     /// Node's opener.createPage: a new id, authorized like a write open; a
     /// stored page is saved empty, a live one is joined once and must be.
+    /// With the host's creator, the host makes it (`host_page`).
     async fn create_page(
         &self,
         caller: &Caller,
         actor: &Value,
         client_name: &str,
+        opener: &DocumentCaller,
+        parent: &str,
     ) -> Result<String, Fault> {
+        if let Some(creator) = &self.page_creator {
+            return self.host_page(&**creator, caller, opener, parent).await;
+        }
         let page_id = mint_page_id();
         let named = |fault: Fault| match fault {
             Fault::Host(mut error) => {
@@ -724,7 +1075,7 @@ impl Mcp {
                 )
                 .into());
             };
-            let loaded = source.load(&page_id).await?;
+            let loaded = source.load(&page_id, Some(opener)).await?;
             // The endpoint source saves without a version check, so this is its only guard.
             if !loaded.missing {
                 return Err(HostError::surface(
@@ -746,6 +1097,7 @@ impl Mcp {
                     &page_id,
                     text.get("text").and_then(Value::as_str).unwrap_or_default(),
                     loaded.version.as_deref(),
+                    Some(opener),
                 )
                 .await?;
             Ok(())
@@ -756,24 +1108,90 @@ impl Mcp {
         }
     }
 
+    /// A batch failed after its pages were made: it fails as Node's
+    /// withUnusedPages fails it, naming the pages `parent` (the parent as
+    /// saved, or the room read again) does not link, with `fault` as cause.
+    /// With no parent to read, or every page linked, `fault` passes on: a
+    /// host must never delete a page the parent may use (blokagent's
+    /// room_links_none).
+    async fn orphaned(&self, created: &[String], parent: Option<&str>, fault: Fault) -> Fault {
+        let Some(unused) = parent.and_then(|parent| unlinked_pages(parent, created)) else {
+            return fault;
+        };
+        if unused.is_empty() {
+            return fault;
+        }
+        let cause = match &fault {
+            Fault::Host(error) => error.clone(),
+            Fault::Internal(message) => runtime_failure(message),
+        };
+        // The bundle sets the cause's retryable by the helper that built it.
+        let cause = match self.error_answer("blok_read", &cause).await {
+            Ok(answer) => serde_json::from_str::<Value>(&answer.structured)
+                .ok()
+                .and_then(|answer| answer.get("error").cloned()),
+            Err(_) => None,
+        };
+        let Some(cause) = cause else {
+            return fault;
+        };
+        let orphaned: Vec<Value> = unused
+            .iter()
+            .map(|page_id| json!({ "command": "block.insert", "type": "page", "prepared": { "pageId": page_id } }))
+            .collect();
+        let message = format!(
+            "The batch failed after the host did work for it ({}). Clean up the listed items.",
+            str_of(&cause, "message").unwrap_or_default()
+        );
+        Fault::Host(HostError {
+            helper: crate::errors::Helper::Failure,
+            error: json!({
+                "code": "ORPHANED_SIDE_EFFECT",
+                "message": message,
+                "details": { "orphaned": orphaned, "cause": cause },
+            }),
+        })
+    }
+
     /// Makes the pages and does the page write a batch needs, in Node's
     /// order: a creation that fails stops there and goes to the bundle,
     /// which refuses that insert inside the batch.
+    #[allow(clippy::too_many_arguments)]
     async fn host_work(
         &self,
         caller: &Caller,
         actor: &Value,
         client_name: &str,
+        opener: &DocumentCaller,
         open_document: &str,
         live_parent: bool,
         counted: &Value,
     ) -> Result<HostWork, Fault> {
         let mut work = HostWork::default();
         for _ in 0..pages_to_make(counted) {
-            match self.create_page(caller, actor, client_name).await {
+            match self
+                .create_page(caller, actor, client_name, opener, open_document)
+                .await
+            {
                 Ok(page_id) => work.created.push(page_id),
+                // A host failure past the first page is a server stop, as Node answers it.
+                Err(Fault::Host(error))
+                    if !work.created.is_empty()
+                        && error.code() == "SOURCE_UNAVAILABLE"
+                        && error.error.get("message")
+                            == Some(&json!(crate::create_page::HOST_PAGE_FAILED)) =>
+                {
+                    work.create_failure = Some(runtime_failure(HOST_STOPPED).failed_input());
+                    break;
+                }
                 Err(Fault::Host(error)) => {
+                    work.cancelled = error.code() == "CANCELLED" && !work.created.is_empty();
                     work.create_failure = Some(error.failed_input());
+                    break;
+                }
+                // The bundle refuses the insert and names the pages made so far.
+                Err(Fault::Internal(message)) if !work.created.is_empty() => {
+                    work.create_failure = Some(runtime_failure(&message).failed_input());
                     break;
                 }
                 Err(other) => return Err(other),
@@ -784,6 +1202,7 @@ impl Mcp {
                 caller,
                 actor,
                 client_name,
+                opener,
                 open_document,
                 live_parent,
                 &page_id,
@@ -813,6 +1232,7 @@ impl Mcp {
         caller: &Caller,
         actor: &Value,
         client_name: &str,
+        opener: &DocumentCaller,
         open_document: &str,
         live_parent: bool,
         page_id: &str,
@@ -889,13 +1309,15 @@ impl Mcp {
                 )
                 .into());
             };
-            let loaded = source.load(page_id).await?;
+            let loaded = source.load(page_id, Some(opener)).await?;
             let mut stored = Stored {
                 write: true,
                 document: loaded.document,
                 history: "{}".to_owned(),
                 version: loaded.version,
                 stale: false,
+                opener: Arc::new(opener.clone()),
+                actor: actor.clone(),
             };
             Box::pin(self.execute(
                 caller,
@@ -946,6 +1368,238 @@ impl Mcp {
         }
     }
 
+    /// A handle this process does not hold lives in the shared store.
+    fn shared(&self, handle: &str) -> bool {
+        self.store.is_some() && !self.handles.has(handle)
+    }
+
+    /// The cap before an open: the store's handles of the principal and this
+    /// process's live ones.
+    async fn assert_room(&self, principal: &str) -> Result<(), Fault> {
+        let Some(store) = &self.store else {
+            return Ok(self.handles.assert_room(principal)?);
+        };
+        if self.handles.is_closed() {
+            return Err(crate::handles::shutting_down().into());
+        }
+        let stored = store
+            .count(principal.to_owned(), self.idle)
+            .await
+            .map_err(store_failed)?;
+        if stored + self.handles.count(principal) >= self.max_handles {
+            return Err(crate::handles::handle_limit(self.max_handles).into());
+        }
+        Ok(())
+    }
+
+    /// A live handle holds a socket, so it stays in this process.
+    async fn add_live(
+        &self,
+        principal: &str,
+        document_id: &str,
+        session: Session,
+    ) -> Result<String, Fault> {
+        if self.store.is_some() {
+            self.assert_room(principal).await?;
+        }
+        Ok(self.handles.add(principal, document_id, session)?)
+    }
+
+    /// A stored handle goes into the store when there is one: counted and
+    /// added as one step there, beside this process's live handles.
+    async fn add_stored(
+        &self,
+        principal: &str,
+        document_id: &str,
+        stored: Stored,
+    ) -> Result<String, Fault> {
+        let Some(store) = &self.store else {
+            return Ok(self
+                .handles
+                .add(principal, document_id, Session::Stored(stored))?);
+        };
+        if self.handles.is_closed() {
+            return Err(crate::handles::shutting_down().into());
+        }
+        let handle = crate::handles::new_handle();
+        let room = self
+            .max_handles
+            .saturating_sub(self.handles.count(principal));
+        let record = self.record_of(document_id, &stored)?;
+        let added = store
+            .try_add(handle.clone(), record, room, self.idle)
+            .await
+            .map_err(store_failed)?;
+        if !added {
+            return Err(crate::handles::handle_limit(self.max_handles).into());
+        }
+        Ok(handle)
+    }
+
+    fn record_of(&self, document_id: &str, stored: &Stored) -> Result<HandleRecord, Fault> {
+        let raw = |text: &str| {
+            serde_json::value::RawValue::from_string(text.to_owned())
+                .map_err(|err| Fault::Internal(format!("a handle record: {err}")))
+        };
+        Ok(HandleRecord {
+            v: 1,
+            contract_revision: self
+                .surface
+                .stored_revision
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            principal: stored.opener.principal.clone(),
+            client_name: stored.opener.client_name.clone(),
+            scopes: stored.opener.scopes.clone(),
+            actor: stored.actor.clone(),
+            document_id: document_id.to_owned(),
+            write: stored.write,
+            version: stored.version.clone(),
+            stale: stored.stale,
+            document: raw(&stored.document)?,
+            history: raw(&stored.history)?,
+        })
+    }
+
+    /// The store's lease on a handle of `principal`. A handle Blok never
+    /// minted is unknown before the store is asked.
+    async fn lease_of(&self, handle: &str, principal: &str) -> Result<HeldLease, Fault> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or_else(|| Fault::Internal("no handle store".to_owned()))?;
+        if !crate::handle_store::is_store_handle(handle) {
+            return Err(crate::handles::unknown_handle().into());
+        }
+        let acquired = store
+            .acquire(handle.to_owned(), self.idle, LEASE_WAIT)
+            .await
+            .map_err(store_failed)?;
+        let lease = match acquired {
+            Acquired::Lease(lease) => lease,
+            Acquired::Unknown => return Err(crate::handles::unknown_handle().into()),
+            Acquired::Busy => {
+                return Err(HostError::surface(
+                    "SOURCE_UNAVAILABLE",
+                    "Another call is using this handle. Retry shortly.",
+                )
+                .into());
+            }
+        };
+        // Checked here, not by the store: a store bug must not hand one user's handle to another.
+        let lease = HeldLease(Some(lease));
+        if lease.lease().record().v != 1 || lease.lease().record().principal != principal {
+            lease.release().await;
+            return Err(crate::handles::unknown_handle().into());
+        }
+        Ok(lease)
+    }
+
+    /// One call on a handle in the store: lease it, rebuild the session from
+    /// its record, run (the source save happens here), save the record if it
+    /// changed, release. A record that cannot be saved after the source save
+    /// is removed: the answer stands, and the next call answers UNKNOWN_HANDLE.
+    async fn on_shared(
+        &self,
+        handle: &str,
+        write: bool,
+        call: &Value,
+        caller: &Caller,
+        approval: &Approval,
+    ) -> Result<Outcome, Fault> {
+        let held = self.lease_of(handle, &caller.principal).await?;
+        let lease = held.lease();
+        let ran = async {
+            let record = lease.record();
+            if Some(record.contract_revision.as_str()) != self.surface.stored_revision.as_str() {
+                return Err(HostError::surface(
+                    "VERSION_SKEW",
+                    "This handle was opened on a server with another tool contract. Call blok_open again.",
+                )
+                .into());
+            }
+            if !self
+                .allowed(&caller.principal, &record.document_id, write)
+                .await
+            {
+                return Err(HostError::surface(
+                    "FORBIDDEN",
+                    "You no longer have access to this document.",
+                )
+                .into());
+            }
+            let mut stored = Stored::from_record(record);
+            let outcome = self
+                .on_stored(
+                    caller,
+                    &record.document_id,
+                    &mut stored,
+                    call,
+                    &record.actor,
+                    &record.client_name,
+                    approval,
+                )
+                .await;
+            let before = (
+                record.document.get(),
+                record.history.get(),
+                record.version.as_deref(),
+                record.stale,
+            );
+            if stored.state() != before {
+                self.keep(lease, &record.document_id, &stored).await;
+            }
+            outcome
+        };
+        let ran = tokio::select! {
+            ran = ran => ran,
+            () = keep_renewing(lease) => unreachable!("renewing never ends"),
+        };
+        held.release().await;
+        ran
+    }
+
+    async fn keep(&self, lease: &dyn HandleLease, document_id: &str, stored: &Stored) {
+        let saved = match self.record_of(document_id, stored) {
+            Ok(record) => lease.save(record).await,
+            Err(fault) => Err(StoreError(format!("{fault:?}"))),
+        };
+        if let Err(err) = saved {
+            // The source already has the work; a record left behind would save with an old version.
+            eprintln!(
+                "blok-mcp: saving a handle to the handle store failed, so the handle is closed: {err}"
+            );
+            if let Err(err) = lease.remove().await {
+                eprintln!("blok-mcp: removing a handle from the handle store failed: {err}");
+            }
+        }
+    }
+
+    /// blok_close on a handle in the store. A refused check still closes, so
+    /// the handle does not keep its place under the cap.
+    async fn close_shared(&self, handle: &str, caller: &Caller) -> Result<Outcome, Fault> {
+        let held = self.lease_of(handle, &caller.principal).await?;
+        let allowed = self
+            .allowed(&caller.principal, &held.lease().record().document_id, false)
+            .await;
+        let removed = held.lease().remove().await;
+        held.release().await;
+        removed.map_err(store_failed)?;
+        if !allowed {
+            return Err(HostError::surface(
+                "FORBIDDEN",
+                "You no longer have access to this document.",
+            )
+            .into());
+        }
+        Ok(Outcome::Answer(Answer {
+            structured: json!({ "closed": true, "unsavedBatches": 0, "hostRecordLags": false })
+                .to_string(),
+            is_error: false,
+        }))
+    }
+
     async fn on_handle(
         &self,
         caller: &Caller,
@@ -972,7 +1626,17 @@ impl Mcp {
         let Some(source) = &self.source else {
             return Ok(unsupported);
         };
-        let Some(listing) = source.list(&ListRequest::from_value(request)).await else {
+        // A host's source lists for the current caller.
+        let lister = if source.acts_for_caller() {
+            let (actor, client_name) = self.actor(caller).await?;
+            Some(document_caller(caller, &actor, &client_name))
+        } else {
+            None
+        };
+        let Some(listing) = source
+            .list(&ListRequest::from_value(request), lister.as_ref())
+            .await
+        else {
             return Ok(unsupported);
         };
         let listing = listing?;
@@ -1094,7 +1758,7 @@ impl Mcp {
         cancelled: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<Answer, Fault> {
         // Opening can mint a ticket and join a room, so refuse at the cap first.
-        self.handles.assert_room(&caller.principal)?;
+        self.assert_room(&caller.principal).await?;
         let write = step.get("write") == Some(&Value::Bool(true));
         let requested = str_of(step, "mode").unwrap_or("auto");
         if !self.allowed(&caller.principal, document_id, write).await {
@@ -1158,13 +1822,16 @@ impl Mcp {
             )
             .into());
         };
-        let loaded = source.load(document_id).await?;
+        let opener = document_caller(caller, &actor, &client_name);
+        let loaded = source.load(document_id, Some(&opener)).await?;
         let stored = Stored {
             write,
             document: loaded.document,
             history: "{}".to_owned(),
             version: loaded.version,
             stale: false,
+            opener: Arc::new(opener),
+            actor: actor.clone(),
         };
         let view = match step.get("view") {
             None => None,
@@ -1201,8 +1868,8 @@ impl Mcp {
             "exists": !loaded.missing,
         });
         let handle = self
-            .handles
-            .add(&caller.principal, document_id, Session::Stored(stored))?;
+            .add_stored(&caller.principal, document_id, stored)
+            .await?;
         let mut input = Obj::new()
             .str("handle", &handle)
             .val("expiresAfterIdleMs", &self.idle_ms)
@@ -1281,8 +1948,8 @@ impl Mcp {
             session["unavailableCommands"] = self.surface.live_unavailable.clone();
         }
         let handle = self
-            .handles
-            .add(&caller.principal, document_id, Session::Remote(room))?;
+            .add_live(&caller.principal, document_id, Session::Remote(room))
+            .await?;
         let mut input = Obj::new()
             .str("handle", &handle)
             .val("expiresAfterIdleMs", &self.idle_ms)
@@ -1345,8 +2012,17 @@ impl Mcp {
                     let counted = room
                         .pages_needed(batch.clone(), actor.clone(), asking.clone())
                         .await?;
+                    let opener = document_caller(caller, actor, client_name);
                     work = self
-                        .host_work(caller, actor, client_name, document_id, true, &counted)
+                        .host_work(
+                            caller,
+                            actor,
+                            client_name,
+                            &opener,
+                            document_id,
+                            true,
+                            &counted,
+                        )
                         .await?;
                 }
                 let unconfirmed = work.unconfirmed;
@@ -1354,7 +2030,7 @@ impl Mcp {
                     batch: batch.clone(),
                     actor: actor.clone(),
                     approval: asking,
-                    created_pages: work.created,
+                    created_pages: work.created.clone(),
                     create_failure: work.create_failure,
                     page_writes: work.page_writes,
                     uploads: None,
@@ -1364,7 +2040,16 @@ impl Mcp {
                 let mut reads = Vec::new();
                 let executed = loop {
                     input.uploads = self.uploads.as_ref().map(|uploads| uploads.input(&answers));
-                    let executed = room.execute(input.clone()).await?;
+                    let executed = match room.execute(input.clone()).await {
+                        Ok(executed) => executed,
+                        Err(fault) => {
+                            // The room may have written before the error.
+                            let parent = room.document().await.ok();
+                            return Err(self
+                                .orphaned(&work.created, parent.as_deref(), fault)
+                                .await);
+                        }
+                    };
                     match (executed, &self.uploads) {
                         (Executed::Upload(upload), Some(uploads)) if answers.len() < 4 => {
                             answers.push(uploads.answer(&upload, &batch, &mut reads).await);
@@ -1490,8 +2175,8 @@ impl Mcp {
             journaled,
         };
         let handle = self
-            .handles
-            .add(&caller.principal, document_id, Session::Room(room))?;
+            .add_live(&caller.principal, document_id, Session::Room(room))
+            .await?;
         let mut input = Obj::new()
             .str("handle", &handle)
             .val("expiresAfterIdleMs", &self.idle_ms)
@@ -1616,7 +2301,7 @@ impl Mcp {
             .source
             .as_ref()
             .ok_or_else(|| Fault::Internal("a stored handle without a source".to_owned()))?;
-        let loaded = source.load(document_id).await?;
+        let loaded = source.load(document_id, Some(&*stored.opener)).await?;
         stored.document = loaded.document;
         stored.version = loaded.version;
         // A reload starts a fresh agent in Node: its undo steps are gone.
@@ -1634,37 +2319,67 @@ impl Mcp {
         let handle = str_of(step, "handle").unwrap_or_default();
         let write = step.get("write") == Some(&Value::Bool(true));
         let call = step.get("call").cloned().unwrap_or(Value::Null);
+        if self.shared(handle) {
+            return self.on_shared(handle, write, &call, caller, approval).await;
+        }
         let mut lease = self.on_handle(caller, handle, write).await?;
         let document_id = lease.document_id.clone();
-        let (actor, client_name) = self.actor(caller).await?;
-        let stored = match &mut *lease.session {
-            Session::Stored(stored) => stored,
+        match &mut *lease.session {
+            // A stored handle writes as its opener, as with a handle store (on_shared).
+            Session::Stored(stored) => {
+                let (actor, client_name) =
+                    (stored.actor.clone(), stored.opener.client_name.clone());
+                self.on_stored(
+                    caller,
+                    &document_id,
+                    stored,
+                    &call,
+                    &actor,
+                    &client_name,
+                    approval,
+                )
+                .await
+            }
             Session::Room(room) => {
-                return self
-                    .on_room(&document_id, room, &call, &actor, &client_name, approval)
-                    .await;
+                let (actor, client_name) = self.actor(caller).await?;
+                self.on_room(&document_id, room, &call, &actor, &client_name, approval)
+                    .await
             }
             Session::Remote(room) => {
-                return self
-                    .on_remote(
-                        caller,
-                        &document_id,
-                        room,
-                        &call,
-                        &actor,
-                        &client_name,
-                        approval,
-                    )
-                    .await;
+                let (actor, client_name) = self.actor(caller).await?;
+                self.on_remote(
+                    caller,
+                    &document_id,
+                    room,
+                    &call,
+                    &actor,
+                    &client_name,
+                    approval,
+                )
+                .await
             }
-        };
-        match str_of(&call, "name") {
+        }
+    }
+
+    /// One call on a stored handle's document.
+    #[allow(clippy::too_many_arguments)]
+    async fn on_stored(
+        &self,
+        caller: &Caller,
+        document_id: &str,
+        stored: &mut Stored,
+        call: &Value,
+        actor: &Value,
+        client_name: &str,
+        approval: &Approval,
+    ) -> Result<Outcome, Fault> {
+        match str_of(call, "name") {
             Some("blok_read") => {
                 if stored.stale {
-                    self.reload(&document_id, stored).await?;
+                    self.reload(document_id, stored).await?;
                 }
                 let input = self
-                    .session_input("stored", stored.write, &stored.document, &actor)
+                    .session_input("stored", stored.write, &stored.document, actor)
                     .val("view", call.get("view").unwrap_or(&json!({})))
                     .finish();
                 Ok(Outcome::Answer(answer_of(
@@ -1673,7 +2388,7 @@ impl Mcp {
             }
             Some("blok_describe") => {
                 let input = self
-                    .session_input("stored", stored.write, &stored.document, &actor)
+                    .session_input("stored", stored.write, &stored.document, actor)
                     .val("query", call.get("query").unwrap_or(&json!({})))
                     .finish();
                 Ok(Outcome::Answer(answer_of(
@@ -1683,11 +2398,11 @@ impl Mcp {
             _ => {
                 self.execute(
                     caller,
-                    &document_id,
+                    document_id,
                     stored,
-                    &call,
-                    &actor,
-                    &client_name,
+                    call,
+                    actor,
+                    client_name,
                     approval,
                 )
                 .await
@@ -1728,8 +2443,17 @@ impl Mcp {
                 .val("approval", &asking)
                 .finish();
             let counted = self.bundle.call("agentPagesNeeded", &counting).await?;
+            let opener = stored.opener.clone();
             work = self
-                .host_work(caller, actor, client_name, document_id, false, &counted)
+                .host_work(
+                    caller,
+                    actor,
+                    client_name,
+                    &opener,
+                    document_id,
+                    false,
+                    &counted,
+                )
                 .await?;
         }
         let mut input = self
@@ -1756,7 +2480,14 @@ impl Mcp {
             if let Some(uploads) = &self.uploads {
                 call = call.val("uploads", &uploads.input(&answers));
             }
-            let out = self.bundle.call_raw("agentExecute", &call.finish()).await?;
+            let out = match self.bundle.call_raw("agentExecute", &call.finish()).await {
+                Ok(out) => out,
+                Err(err) => {
+                    return Err(self
+                        .orphaned(&work.created, Some(&stored.document), err.into())
+                        .await);
+                }
+            };
             match (out.value("upload"), &self.uploads) {
                 // A read, then its upload: never more than a few turns.
                 (Some(upload), Some(uploads)) if answers.len() < 4 => {
@@ -1772,22 +2503,46 @@ impl Mcp {
                 requested_schema: ask.get("requestedSchema").cloned().unwrap_or(Value::Null),
             }));
         }
-        let result = out
-            .text("result")
-            .ok_or_else(|| Fault::Internal("agentExecute gave no result".to_owned()))?
-            .to_owned();
-        if let Some(document) = out.text("document") {
-            stored.document = document.to_owned();
+        let Some(mut result) = out.text("result").map(str::to_owned) else {
+            let fault = Fault::Internal("agentExecute gave no result".to_owned());
+            return Err(self
+                .orphaned(&work.created, Some(&stored.document), fault)
+                .await);
+        };
+        if self.page_creator.is_some()
+            && !work.created.is_empty()
+            && let Some(reported) = crate::create_page::report_orphaned(
+                &result,
+                &stored.document,
+                &work.created,
+                work.cancelled,
+            )
+        {
+            result = reported;
         }
-        if let Some(history) = out.text("history") {
-            stored.history = history.to_owned();
-        }
+        // Memory takes a batch to save only once the source has it, so a
+        // failed save leaves no edit and no undo step behind.
+        let keep = |stored: &mut Stored| {
+            if let Some(document) = out.text("document") {
+                stored.document = document.to_owned();
+            }
+            if let Some(history) = out.text("history") {
+                stored.history = history.to_owned();
+            }
+        };
         let mut answer = Obj::new().raw("result", &result);
+        let mut refused = false;
         if out.value("save") == Some(Value::Bool(true)) {
-            let text = out
+            let Some(text) = out
                 .value("documentText")
                 .and_then(|v| v.as_str().map(str::to_owned))
-                .ok_or_else(|| Fault::Internal("agentExecute gave no documentText".to_owned()))?;
+            else {
+                stored.stale = true;
+                let fault = Fault::Internal("agentExecute gave no documentText".to_owned());
+                return Err(self
+                    .orphaned(&work.created, Some(&stored.document), fault)
+                    .await);
+            };
             // As Node: the answer is built before the save, so nothing that can
             // fail follows it, and a failed answer saved nothing a retry repeats.
             let stand_in = saved_version_stand_in();
@@ -1807,14 +2562,22 @@ impl Mcp {
                 Ok(built) => built,
                 Err(fault) => {
                     stored.stale = true;
-                    return Err(fault);
+                    return Err(self
+                        .orphaned(&work.created, Some(&stored.document), fault)
+                        .await);
                 }
             };
             match source
-                .save(document_id, &text, stored.version.as_deref())
+                .save(
+                    document_id,
+                    &text,
+                    stored.version.as_deref(),
+                    Some(&*stored.opener),
+                )
                 .await
             {
                 Ok(version) => {
+                    keep(stored);
                     let saved =
                         serde_json::to_string(&version).unwrap_or_else(|_| "null".to_owned());
                     stored.version = version;
@@ -1831,40 +2594,63 @@ impl Mcp {
                     // Memory must match the source: drop the refused work.
                     stored.stale = true;
                     let _ = self.reload(document_id, stored).await;
+                    // A refused save stays unreported (packages/mcp/README.md).
+                    refused = true;
                     match fault {
                         Fault::Host(error) => answer = answer.val("failed", &error.failed_input()),
                         Fault::Internal(message) => return Err(Fault::Internal(message)),
                     }
                 }
             }
+        } else {
+            keep(stored);
         }
         if let Some(delivery) = unconfirmed_delivery(work.unconfirmed, &result, None) {
             answer = answer.val("delivery", &delivery);
         }
-        let raw = self
+        let built = self
             .bundle
             .call_raw("mcpExecuteAnswer", &answer.finish())
-            .await?;
-        Ok(Outcome::Answer(answer_of(&raw)?))
+            .await
+            .map_err(Fault::from)
+            .and_then(|raw| answer_of(&raw));
+        match built {
+            Ok(built) => Ok(Outcome::Answer(built)),
+            Err(fault) if refused => Err(fault),
+            Err(fault) => Err(self
+                .orphaned(&work.created, Some(&stored.document), fault)
+                .await),
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     async fn stored_write(bundle: Arc<Bundle>) -> (Mcp, std::path::PathBuf, String) {
+        stored_write_with(bundle, json!({})).await
+    }
+
+    async fn stored_write_with(
+        bundle: Arc<Bundle>,
+        extra: Value,
+    ) -> (Mcp, std::path::PathBuf, String) {
         let dir = std::env::temp_dir().join(format!(
             "blok-mcp-answer-{}-{}",
             std::process::id(),
             Arc::as_ptr(&bundle) as usize
         ));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("doc.json"), r#"{"blocks":[]}"#).unwrap();
-        let options = json!({
+        let mut options = json!({
             "transport": { "kind": "stdio" }, "auth": { "kind": "none" },
             "source": { "kind": "files", "dir": dir.to_string_lossy() },
         });
+        for (key, value) in extra.as_object().unwrap() {
+            options[key] = value.clone();
+        }
         let mcp = Mcp::new(bundle, &options, None, None).await.unwrap();
         let opened = execute(
             &mcp,
@@ -1896,7 +2682,161 @@ mod tests {
     }
 
     fn set_title(handle: &str) -> Value {
-        json!({ "handle": handle, "commands": [{ "name": "doc.setTitle", "args": { "title": "Kept" } }] })
+        titled(handle, "Kept")
+    }
+
+    fn titled(handle: &str, title: &str) -> Value {
+        json!({ "handle": handle, "commands": [{ "name": "doc.setTitle", "args": { "title": title } }] })
+    }
+
+    fn one(handle: &str, name: &str) -> Value {
+        json!({ "handle": handle, "commands": [{ "name": name, "args": {} }] })
+    }
+
+    // A save that never happened must leave memory as the source holds it,
+    // with no undo step that could bring the lost batch back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_batch_that_fails_before_its_save_leaves_memory_as_the_source() {
+        let bundle = Arc::new(Bundle::new(1).unwrap());
+        let (mcp, dir, handle) = stored_write(bundle.clone()).await;
+        let first = execute(&mcp, "blok_execute", titled(&handle, "First"))
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.structured);
+        *bundle.drop_member.lock().unwrap() = Some(("agentExecute", "documentText"));
+        let _ = execute(&mcp, "blok_execute", set_title(&handle)).await;
+        *bundle.drop_member.lock().unwrap() = None;
+        let file = || std::fs::read_to_string(dir.join("doc.json")).unwrap();
+        assert!(
+            file().contains("First") && !file().contains("Kept"),
+            "{}",
+            file()
+        );
+        let read = execute(&mcp, "blok_read", json!({ "handle": handle }))
+            .await
+            .unwrap();
+        assert!(
+            read.structured.contains("First") && !read.structured.contains("Kept"),
+            "{}",
+            read.structured
+        );
+        let _ = execute(&mcp, "blok_execute", one(&handle, "history.undo")).await;
+        let _ = execute(&mcp, "blok_execute", one(&handle, "history.redo")).await;
+        assert!(!file().contains("Kept"), "{}", file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn two_pages(handle: &str) -> Value {
+        json!({ "handle": handle, "commands": [
+            { "name": "block.insert", "args": { "type": "page", "id": "pg1", "data": {} } },
+            { "name": "block.insert", "args": { "type": "page", "id": "pg2", "data": {} } },
+        ] })
+    }
+
+    /// Runs a two-page batch with `break_it` set on the bundle; answers the
+    /// batch's error and the page files on disk.
+    async fn pages_then_failure(break_it: impl FnOnce(&Bundle)) -> (Value, Vec<String>) {
+        let bundle = Arc::new(Bundle::new(1).unwrap());
+        let (mcp, dir, handle) =
+            stored_write_with(bundle.clone(), json!({ "pageTitles": "page-map" })).await;
+        break_it(&bundle);
+        let answer = execute(&mcp, "blok_execute", two_pages(&handle))
+            .await
+            .expect("the made pages are reported, not a JSON-RPC error");
+        assert!(answer.is_error, "{}", answer.structured);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("doc.json")).unwrap(),
+            r#"{"blocks":[]}"#
+        );
+        let mut pages: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter_map(|name| name.strip_suffix(".json").map(str::to_owned))
+            .filter(|name| name != "doc")
+            .collect();
+        pages.sort();
+        let _ = std::fs::remove_dir_all(&dir);
+        let error = serde_json::from_str::<Value>(&answer.structured).unwrap()["error"].clone();
+        (error, pages)
+    }
+
+    /// blokagent's cause for a batch a server error stopped, as C# and Go
+    /// report it too (pagecreate.rs stopped_after_creating).
+    /// The bundle adds the failed insert's commandIndex when it fails one.
+    pub(crate) fn assert_server_stop(cause: &Value) {
+        let mut cause = cause.clone();
+        if let Some(cause) = cause.as_object_mut() {
+            cause.remove("commandIndex");
+        }
+        assert_eq!(
+            cause,
+            json!({ "code": "APPLY_FAILED", "message": "The batch stopped on a server error. Nothing was written.", "retryable": true })
+        );
+    }
+
+    fn orphaned_ids(error: &Value) -> Vec<String> {
+        assert_eq!(error["code"], "ORPHANED_SIDE_EFFECT", "{error}");
+        assert_eq!(error["retryable"], false, "{error}");
+        let mut ids: Vec<String> = error["details"]["orphaned"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                assert_eq!(entry["command"], "block.insert", "{entry}");
+                assert_eq!(entry["type"], "page", "{entry}");
+                entry["prepared"]["pageId"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_page_creation_that_breaks_reports_the_pages_already_made() {
+        let (error, pages) = pages_then_failure(|bundle| {
+            *bundle.fail.lock().unwrap() = Some(("mcpDocumentText", "blocks"));
+            bundle
+                .fail_after
+                .store(1, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+        assert_eq!(pages.len(), 1, "{pages:?}");
+        assert_eq!(orphaned_ids(&error), pages);
+        assert_server_stop(&error["details"]["cause"]);
+        assert_eq!(error["details"]["cause"]["commandIndex"], 1, "{error}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_batch_run_that_breaks_after_its_pages_reports_them() {
+        let (error, pages) = pages_then_failure(|bundle| {
+            *bundle.fail.lock().unwrap() = Some(("agentExecute", "createdPages"));
+        })
+        .await;
+        assert_eq!(pages.len(), 2, "{pages:?}");
+        assert_eq!(orphaned_ids(&error), pages);
+        assert_server_stop(&error["details"]["cause"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_answer_that_breaks_after_its_pages_reports_them() {
+        let (error, pages) = pages_then_failure(|bundle| {
+            *bundle.fail.lock().unwrap() = Some(("mcpExecuteAnswer", r#""durable":true"#));
+        })
+        .await;
+        assert_eq!(pages.len(), 2, "{pages:?}");
+        assert_eq!(orphaned_ids(&error), pages);
+        assert_server_stop(&error["details"]["cause"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_text_that_is_missing_after_its_pages_reports_them() {
+        let (error, pages) = pages_then_failure(|bundle| {
+            *bundle.drop_member.lock().unwrap() = Some(("agentExecute", "documentText"));
+        })
+        .await;
+        assert_eq!(pages.len(), 2, "{pages:?}");
+        assert_eq!(orphaned_ids(&error), pages);
+        assert_server_stop(&error["details"]["cause"]);
     }
 
     // Node builds the answer before it saves, so a call that fails to
@@ -1936,6 +2876,173 @@ mod tests {
             std::fs::read_to_string(dir.join("doc.json"))
                 .unwrap()
                 .contains("Kept")
+        );
+    }
+
+    enum Sweeping {
+        Takes(Duration),
+        Hangs,
+        /// Blocks its thread, so dropping it cannot end it.
+        BlocksThread(Duration),
+    }
+
+    /// A store whose sweep is slow (or never ends), and counts its runs.
+    struct SlowSweep {
+        inner: crate::handle_store::MemoryHandleStore,
+        started: std::sync::atomic::AtomicUsize,
+        finished: std::sync::atomic::AtomicUsize,
+        sweeping: Sweeping,
+    }
+
+    impl HandleStore for SlowSweep {
+        fn count(
+            &self,
+            principal: String,
+            idle: Duration,
+        ) -> crate::uploads::BoxFuture<'_, Result<usize, StoreError>> {
+            self.inner.count(principal, idle)
+        }
+        fn try_add(
+            &self,
+            handle: String,
+            record: HandleRecord,
+            max: usize,
+            idle: Duration,
+        ) -> crate::uploads::BoxFuture<'_, Result<bool, StoreError>> {
+            self.inner.try_add(handle, record, max, idle)
+        }
+        fn acquire(
+            &self,
+            handle: String,
+            idle: Duration,
+            timeout: Duration,
+        ) -> crate::uploads::BoxFuture<'_, Result<Acquired, StoreError>> {
+            self.inner.acquire(handle, idle, timeout)
+        }
+        fn sweep(&self, _: Duration) -> crate::uploads::BoxFuture<'_, Result<(), StoreError>> {
+            use std::sync::atomic::Ordering;
+            Box::pin(async move {
+                self.started.fetch_add(1, Ordering::SeqCst);
+                match self.sweeping {
+                    Sweeping::Takes(took) => tokio::time::sleep(took).await,
+                    Sweeping::Hangs => std::future::pending::<()>().await,
+                    Sweeping::BlocksThread(took) => std::thread::sleep(took),
+                }
+                self.finished.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+
+    /// An Mcp on `store` that sweeps it every 20 ms, with its sweeper running.
+    async fn sweeping_mcp(store: Arc<SlowSweep>, limit: Option<Duration>) -> Arc<Mcp> {
+        let options = json!({ "transport": { "kind": "stdio" }, "auth": { "kind": "none" } });
+        let hooks = Hooks {
+            handle_store: Some(store),
+            ..Hooks::default()
+        };
+        let mut mcp = Mcp::build(Arc::new(Bundle::new(1).unwrap()), &options, hooks)
+            .await
+            .unwrap();
+        mcp.store_sweep_every = Duration::from_millis(20);
+        if let Some(limit) = limit {
+            mcp.store_sweep_limit = limit;
+        }
+        let mcp = Arc::new(mcp);
+        mcp.spawn_sweeper();
+        mcp
+    }
+
+    fn slow_sweep(sweeping: Sweeping) -> Arc<SlowSweep> {
+        Arc::new(SlowSweep {
+            inner: crate::handle_store::MemoryHandleStore::new(),
+            started: Default::default(),
+            finished: Default::default(),
+            sweeping,
+        })
+    }
+
+    // Polls off the runtime: its timers can stall while a sweep blocks a worker.
+    fn until_a_sweep_starts(store: &SlowSweep) {
+        while store.started.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    // Go and C# give a store sweep 30 s.
+    #[tokio::test]
+    async fn a_store_sweep_may_run_30_seconds() {
+        let store = slow_sweep(Sweeping::Takes(Duration::ZERO));
+        let mcp = sweeping_mcp(store, None).await;
+        assert_eq!(mcp.store_sweep_limit, Duration::from_secs(30));
+    }
+
+    // A hung sweep is dropped at its time limit, so the next one runs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_hung_store_sweep_is_cut_off_by_its_time_limit() {
+        use std::sync::atomic::Ordering;
+        let store = slow_sweep(Sweeping::Hangs);
+        let mcp = sweeping_mcp(store.clone(), Some(Duration::from_millis(100))).await;
+        let waiting = std::time::Instant::now();
+        while store.started.load(Ordering::SeqCst) < 2 {
+            assert!(
+                waiting.elapsed() < Duration::from_secs(5),
+                "no second sweep"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        mcp.close_all(Duration::from_secs(5)).await;
+    }
+
+    // A stop cancels the sweep in flight rather than waiting it out, and no
+    // sweep starts after it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_cancels_the_store_sweep_and_ends_it() {
+        use std::sync::atomic::Ordering;
+        let store = slow_sweep(Sweeping::Takes(Duration::from_secs(5)));
+        let mcp = sweeping_mcp(store.clone(), None).await;
+        until_a_sweep_starts(&store);
+        let stopping = std::time::Instant::now();
+        mcp.close_all(Duration::from_secs(30)).await;
+        assert!(
+            stopping.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            stopping.elapsed()
+        );
+        assert_eq!(store.finished.load(Ordering::SeqCst), 0);
+        let after = store.started.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(store.started.load(Ordering::SeqCst), after);
+    }
+
+    // A hung sweep is cancelled by a stop well before its time limit.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_hung_store_sweep_never_holds_up_a_stop() {
+        let store = slow_sweep(Sweeping::Hangs);
+        let mcp = sweeping_mcp(store.clone(), None).await;
+        until_a_sweep_starts(&store);
+        let stopping = std::time::Instant::now();
+        mcp.close_all(Duration::from_secs(30)).await;
+        assert!(
+            stopping.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            stopping.elapsed()
+        );
+    }
+
+    // A sweep that cannot be cancelled holds up a stop for about 1 s, then
+    // the stop goes on without it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stop_waits_at_most_a_second_for_a_sweep_that_ignores_its_cancel() {
+        let store = slow_sweep(Sweeping::BlocksThread(Duration::from_secs(4)));
+        let mcp = sweeping_mcp(store.clone(), None).await;
+        until_a_sweep_starts(&store);
+        let stopping = std::time::Instant::now();
+        mcp.close_all(Duration::from_secs(30)).await;
+        let took = stopping.elapsed();
+        assert!(
+            took >= Duration::from_millis(900) && took < Duration::from_secs(2),
+            "{took:?}"
         );
     }
 }

@@ -974,6 +974,55 @@
       },
       "error": "",
       "localPublicPath": ""
+    },
+    {
+      "name": "change signal window of one day",
+      "options": {
+        "CollabChangeSignalWindowMs": 86400000
+      },
+      "error": "",
+      "localPublicPath": ""
+    },
+    {
+      "name": "change signal window past one day",
+      "options": {
+        "CollabChangeSignalWindowMs": 86400001
+      },
+      "error": "CollabChangeSignalWindow must be at most one day (got 1.00:00:00.0010000)",
+      "localPublicPath": ""
+    },
+    {
+      "name": "change signal window past fifty days",
+      "options": {
+        "CollabChangeSignalWindowMs": 4320000000
+      },
+      "error": "CollabChangeSignalWindow must be at most one day (got 50.00:00:00)",
+      "localPublicPath": ""
+    },
+    {
+      "name": "change signal window below zero uses the default",
+      "options": {
+        "CollabChangeSignalWindowMs": -1000
+      },
+      "error": "",
+      "localPublicPath": ""
+    },
+    {
+      "name": "file bytes with a zero cap",
+      "options": {
+        "FileBytesEnabled": true,
+        "FileBytesMaxBytes": 0
+      },
+      "error": "FileBytesMaxBytes must be a positive number of bytes (got 0)",
+      "localPublicPath": ""
+    },
+    {
+      "name": "a zero file bytes cap while the route is off",
+      "options": {
+        "FileBytesMaxBytes": 0
+      },
+      "error": "",
+      "localPublicPath": ""
     }
   ]
 }

@@ -36,16 +36,59 @@ public static class BlokMcpServiceCollectionExtensions
     var options = new BlokMcpOptions();
 
     configure(options);
+    CheckStandalone(options);
+    services.AddBlokShell(options, embedded: false);
+
+    return services.AddBlokMcpServer(options.OAuth is not null);
+  }
+
+  // As WithBlok refuses the standalone-only options: an ignored Caller would answer every caller it names 401.
+  private static void CheckStandalone(BlokMcpOptions options)
+  {
+    if (options.Caller is not null)
+    {
+      throw new BlokMcpConfigException("BlokMcpOptions.Caller works only on a host's server (WithBlok); AddBlokMcp names callers from its own sign-in and Principal");
+    }
+    if (options.AnonymousPrincipal is not null)
+    {
+      throw new BlokMcpConfigException("BlokMcpOptions.AnonymousPrincipal works only on a host's server (WithBlok); AddBlokMcp serves anonymous callers as Principal");
+    }
+  }
+
+  /// <summary>
+  /// What blok-mcp's own server and a host's server (WithBlok) share: the runtime, the config
+  /// from <paramref name="options"/>, the shell, the surface, IBlokMcp and the drain on stop.
+  /// </summary>
+  internal static void AddBlokShell(this IServiceCollection services, BlokMcpOptions options, bool embedded)
+  {
     // The host's rules see the signed-in user, not one made from the principal.
     services.AddHttpContextAccessor();
+    if (options.CommandLineHost is { } parsed)
+    {
+      // The runtime BlokMcpCommandLine already started, and the HTTP caller its --authorize webhook uses.
+      // A factory, not an instance: the container disposes only what a factory made.
+      services.TryAddSingleton(_ => parsed.Http);
+      services.TryAddSingleton(parsed);
+    }
     services.TryAddSingleton(_ => new McpHttpCaller());
     // Its own runtime, not the app's IBlokRuntime: MCP batches need a larger allocation budget.
     services.TryAddSingleton(provider => new BlokMcpHost(new McpBundle(BlokMcpHost.Runtime()), provider.GetRequiredService<McpHttpCaller>()));
-    services.TryAddSingleton(provider => ConfigOf(options, provider));
+    services.TryAddSingleton(provider => ConfigOf(options, provider, embedded));
     // The CLI stops the core on ApplicationStopping itself.
     services.AddHostedService<McpDrain>();
+    services.AddBlokCore();
+  }
 
-    return services.AddBlokMcpServer(options.OAuth is not null);
+  private static void AddBlokCore(this IServiceCollection services)
+  {
+    services.TryAddSingleton(provider =>
+    {
+      var host = provider.GetRequiredService<BlokMcpHost>();
+
+      return new McpServerCore(host.Bundle, provider.GetRequiredService<McpConfig>(), host.Http);
+    });
+    services.TryAddSingleton<McpSurfaceCache>();
+    services.TryAddSingleton<IBlokMcp, BlokMcp>();
   }
 
   /// <summary>The tool's registration: the host and config it already built.</summary>
@@ -60,13 +103,7 @@ public static class BlokMcpServiceCollectionExtensions
   // The bearer scheme only with OAuth: as an app's only scheme it would become its default.
   private static IServiceCollection AddBlokMcpServer(this IServiceCollection services, bool oauth)
   {
-    services.TryAddSingleton(provider =>
-    {
-      var host = provider.GetRequiredService<BlokMcpHost>();
-
-      return new McpServerCore(host.Bundle, provider.GetRequiredService<McpConfig>(), host.Http);
-    });
-    services.TryAddSingleton<McpSurfaceCache>();
+    services.AddBlokCore();
     services.AddMcpServer().WithHttpTransport(transport =>
     {
       transport.SessionMode = HttpServerSessionMode.Stateless;
@@ -161,15 +198,37 @@ public static class BlokMcpServiceCollectionExtensions
   private static readonly Action<Microsoft.Extensions.Logging.ILogger, string, Exception?> HookFailed =
       Microsoft.Extensions.Logging.LoggerMessage.Define<string>(Microsoft.Extensions.Logging.LogLevel.Error, new Microsoft.Extensions.Logging.EventId(1, "HookFailed"), "{Message}");
 
-  private static McpConfig ConfigOf(BlokMcpOptions options, IServiceProvider provider)
+  internal static McpConfig ConfigOf(BlokMcpOptions options, IServiceProvider provider, bool embedded = false)
+  {
+    try
+    {
+      return ConfigOf(options, provider, embedded ? EmbeddedCheckMessage : null);
+    }
+    // A host's server starts with Blok's config errors, as Node's createBlok throws McpConfigError.
+    catch (InvalidOperationException error) when (embedded)
+    {
+      throw new BlokMcpConfigException(error.Message, error);
+    }
+  }
+
+  private const string EmbeddedCheckMessage =
+      "Blok on a host server needs a per-document check: set BlokMcpOptions.Authorize or register IBlokAuthorization, "
+      + "or serve live rooms only with TicketUrl and no document source. To let every caller reach every document, set BlokMcpOptions.AllowEveryCallerEveryDocument.";
+
+  private static McpConfig ConfigOf(BlokMcpOptions options, IServiceProvider provider, string? checkMessage)
   {
     var authorize = options.Authorize;
     var rules = provider.GetService<IBlokAuthorization>();
     McpAuthorize? hook = authorize is not null
         ? async (principal, documentId, write, token) => await authorize(new BlokMcpAccessRequest(principal, documentId, write), token)
-        : rules is not null ? (principal, documentId, write, token) => AllowedByRulesAsync(rules, provider.GetService<IHttpContextAccessor>(), principal, documentId, write, token) : null;
+        : rules is not null ? (principal, documentId, write, token) => AllowedByRulesAsync(rules, provider.GetService<IHttpContextAccessor>(), options.Caller is not null && principal != options.AnonymousPrincipal, principal, documentId, write, token) : null;
 
-    var source = options.FilesDirectory is not null || options.DocumentEndpoint is not null;
+    if (options.DocumentSource is not null && (options.FilesDirectory is not null || options.DocumentEndpoint is not null))
+    {
+      throw new InvalidOperationException("Set one document source: DocumentSource, FilesDirectory or DocumentEndpoint.");
+    }
+    // A host's own store is a source too: with it, a ticket route alone checks nothing per document.
+    var source = HasSource(options);
     // As Node's hostDecides: the host's ticket route decides when there is no source.
     var hostDecides = options.TicketUrl is not null && !source;
 
@@ -177,10 +236,15 @@ public static class BlokMcpServiceCollectionExtensions
     {
       throw new InvalidOperationException("Set BlokMcpOptions.SyncUrl or LiveRooms, not both.");
     }
+    // The creator replaces only the stored create, so a room would still make Blok's own pages.
+    if (options.PageCreator is not null && options.LiveRooms)
+    {
+      throw new InvalidOperationException("BlokMcpOptions.PageCreator works in stored mode only: it cannot be used with LiveRooms.");
+    }
     // Node's checkOptionSafety over HTTP: OAuth says who calls, not which documents they may open.
     if (hook is null && !hostDecides && !options.AllowEveryCallerEveryDocument)
     {
-      throw new InvalidOperationException(
+      throw new InvalidOperationException(checkMessage ??
           "Blok's MCP endpoint needs a per-document check: set BlokMcpOptions.Authorize or register IBlokAuthorization. "
           + "To let every caller reach every document, set BlokMcpOptions.AllowEveryCallerEveryDocument.");
     }
@@ -201,7 +265,7 @@ public static class BlokMcpServiceCollectionExtensions
           ? new McpSourceConfig.Files(dir)
           : options.DocumentEndpoint is Uri endpoint
               ? new McpSourceConfig.Endpoint(endpoint.OriginalString, options.DocumentEndpointAuthorization, options.DocumentListEndpoint?.OriginalString)
-              : null,
+              : options.DocumentSource is { } custom ? new McpSourceConfig.Custom(custom) : null,
       OAuth = options.OAuth is { } oauth ? new McpOAuth(oauth.Issuer, oauth.Audience, oauth.JwksUri.OriginalString) : null,
       Principal = options.Principal,
       Schema = options.Schema,
@@ -214,8 +278,15 @@ public static class BlokMcpServiceCollectionExtensions
           ? new JsonObject(fields.Select(pair => KeyValuePair.Create(pair.Key, (JsonNode?)new JsonArray([.. pair.Value.Select(name => (JsonNode)name)]))))
           : null,
       Authorize = hook,
+      PageCreator = options.PageCreator,
+      HandleStore = options.HandleStore,
       Rooms = options.LiveRooms ? RoomsOf(provider) : null,
     };
+  }
+
+  private static bool HasSource(BlokMcpOptions options)
+  {
+    return options.FilesDirectory is not null || options.DocumentEndpoint is not null || options.DocumentSource is not null;
   }
 
   private static McpTickets? TicketsOf(BlokMcpOptions options)
@@ -262,18 +333,23 @@ public static class BlokMcpServiceCollectionExtensions
 
     // The per-document check already passed above: a hook, AllowEveryCallerEveryDocument, or a
     // ticket route with no source each stand for Node's --authorize here.
-    if (authorize || options.AllowEveryCallerEveryDocument || (options.TicketUrl is not null && options.FilesDirectory is null && options.DocumentEndpoint is null))
+    if (authorize || options.AllowEveryCallerEveryDocument || (options.TicketUrl is not null && !HasSource(options)))
     {
       check["authorize"] = true;
     }
-    if (options.FilesDirectory is not null || options.DocumentEndpoint is not null)
+    if (HasSource(options))
     {
-      check["source"] = new JsonObject { ["kind"] = options.FilesDirectory is not null ? "files" : "endpoint" };
+      check["source"] = new JsonObject { ["kind"] = options.FilesDirectory is not null ? "files" : options.DocumentEndpoint is not null ? "endpoint" : "custom" };
     }
     if (options.SyncUrl is { } sync)
     {
       check["sync"] = new JsonObject { ["url"] = sync.OriginalString };
     }
+    if (options.PageCreator is not null)
+    {
+      check["createPage"] = true;
+    }
+    // No handleStore here: that check only looks for the store's functions, which IBlokMcpHandleStore guarantees.
     // Node's names: the shared check words its refusal with them.
     if (options.Schema is { } schema)
     {
@@ -335,10 +411,13 @@ public static class BlokMcpServiceCollectionExtensions
 
   // IBlokAuthorization only narrows: a write also needs read.
   private static async Task<bool> AllowedByRulesAsync(
-      IBlokAuthorization rules, IHttpContextAccessor? http, string principal, string documentId, bool write, CancellationToken cancellationToken)
+      IBlokAuthorization rules, IHttpContextAccessor? http, bool callerHook, string principal, string documentId, bool write, CancellationToken cancellationToken)
   {
     var signedIn = http?.HttpContext?.User;
-    var user = HostUserName(signedIn) == principal
+    // The host's Caller hook named this request's user from claims Blok cannot read (such as a
+    // custom id claim), so the rules get that user as signed in, with every claim. Not when the
+    // hook named nobody and the call runs as AnonymousPrincipal.
+    var user = (callerHook && signedIn?.Identity?.IsAuthenticated == true) || HostUserName(signedIn) == principal
         ? signedIn!
         : new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", principal), new Claim(ClaimTypes.NameIdentifier, principal)], "blok-mcp"));
 

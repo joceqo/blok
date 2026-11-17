@@ -1,0 +1,156 @@
+{
+  "$comment": "CollabActorKinds.Classify and .Attribution as C# answers them. Captured by CollabAttributionCaptureTests; do not edit by hand. agent and onBehalfOf are what an in-process agent passes; note is the record\u0027s sidecar note; by and with are the block stamps under stamp authority. An actor id\u0027s text never makes it an agent.",
+  "cases": [
+    {
+      "name": "no actor",
+      "actor": null,
+      "agent": false,
+      "onBehalfOf": null,
+      "note": null,
+      "by": null,
+      "with": null
+    },
+    {
+      "name": "an empty actor",
+      "actor": "",
+      "agent": false,
+      "onBehalfOf": null,
+      "note": null,
+      "by": null,
+      "with": null
+    },
+    {
+      "name": "a person",
+      "actor": "u1",
+      "agent": false,
+      "onBehalfOf": null,
+      "note": {
+        "kind": "person"
+      },
+      "by": "u1",
+      "with": null
+    },
+    {
+      "name": "a ticket user that looks like an MCP agent is a person",
+      "actor": "agent:alice:claude-code",
+      "agent": false,
+      "onBehalfOf": null,
+      "note": {
+        "kind": "person"
+      },
+      "by": "agent:alice:claude-code",
+      "with": null
+    },
+    {
+      "name": "a ticket user that names a person to pose for is a person",
+      "actor": "agent:org:alice:cursor",
+      "agent": false,
+      "onBehalfOf": null,
+      "note": {
+        "kind": "person"
+      },
+      "by": "agent:org:alice:cursor",
+      "with": null
+    },
+    {
+      "name": "a ticket user of just the prefix is a person",
+      "actor": "agent:",
+      "agent": false,
+      "onBehalfOf": null,
+      "note": {
+        "kind": "person"
+      },
+      "by": "agent:",
+      "with": null
+    },
+    {
+      "name": "a ticket user with another case is a person",
+      "actor": "Agent:alice:claude-code",
+      "agent": false,
+      "onBehalfOf": null,
+      "note": {
+        "kind": "person"
+      },
+      "by": "Agent:alice:claude-code",
+      "with": null
+    },
+    {
+      "name": "an in-process agent with its person",
+      "actor": "bot-7",
+      "agent": true,
+      "onBehalfOf": "carol",
+      "note": {
+        "kind": "agent",
+        "onBehalfOf": "carol"
+      },
+      "by": "carol",
+      "with": "bot-7"
+    },
+    {
+      "name": "an in-process agent with no person",
+      "actor": "bot-7",
+      "agent": true,
+      "onBehalfOf": null,
+      "note": {
+        "kind": "agent"
+      },
+      "by": "bot-7",
+      "with": null
+    },
+    {
+      "name": "an in-process agent with an empty person",
+      "actor": "bot-7",
+      "agent": true,
+      "onBehalfOf": "",
+      "note": {
+        "kind": "agent"
+      },
+      "by": "bot-7",
+      "with": null
+    },
+    {
+      "name": "an in-process agent\u0027s id is never read for its person",
+      "actor": "agent:alice:claude-code",
+      "agent": true,
+      "onBehalfOf": "carol",
+      "note": {
+        "kind": "agent",
+        "onBehalfOf": "carol"
+      },
+      "by": "carol",
+      "with": "agent:alice:claude-code"
+    },
+    {
+      "name": "an in-process agent with an agent-looking id and no person",
+      "actor": "agent:alice:claude-code",
+      "agent": true,
+      "onBehalfOf": null,
+      "note": {
+        "kind": "agent"
+      },
+      "by": "agent:alice:claude-code",
+      "with": null
+    },
+    {
+      "name": "an in-process agent with no id",
+      "actor": null,
+      "agent": true,
+      "onBehalfOf": "carol",
+      "note": null,
+      "by": null,
+      "with": null
+    },
+    {
+      "name": "non-ASCII ids",
+      "actor": "\u00E9\uD83D\uDE00",
+      "agent": true,
+      "onBehalfOf": "\u00FC",
+      "note": {
+        "kind": "agent",
+        "onBehalfOf": "\u00FC"
+      },
+      "by": "\u00FC",
+      "with": "\u00E9\uD83D\uDE00"
+    }
+  ]
+}

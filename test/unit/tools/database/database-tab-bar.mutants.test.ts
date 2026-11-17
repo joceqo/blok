@@ -21,6 +21,8 @@ interface RecordedPopoverParams {
   width?: string;
   minWidth?: string;
   autoFocusFirstItem?: boolean;
+  class?: string;
+  offset?: number;
 }
 
 interface ContextPopoverProbe {
@@ -34,6 +36,9 @@ interface ContextPopoverProbe {
 interface ViewPopoverProbe {
   destroyCount: number;
   openedWith: HTMLElement | null;
+  placement: string | undefined;
+  /** Stands in for the popover's own DOM. */
+  surface: HTMLElement;
   select(type: string): void;
   fireClose(): void;
 }
@@ -43,7 +48,10 @@ const probes = vi.hoisted(() => ({
   views: [] as ViewPopoverProbe[],
 }));
 
-vi.mock('../../../../src/components/utils/popover', () => {
+vi.mock('../../../../src/components/utils/popover', async (importOriginal) => {
+  const real = await importOriginal<{ PopoverDesktop: abstract new (...args: never[]) => unknown }>();
+  const { stubMissingMethods } = await import('../../helpers/stub-missing-methods');
+
   class MockPopoverDesktop {
     private readonly closedHandlers: Array<() => void> = [];
     private readonly probe: ContextPopoverProbe;
@@ -92,6 +100,8 @@ vi.mock('../../../../src/components/utils/popover', () => {
     }
   }
 
+  stubMissingMethods(MockPopoverDesktop, real.PopoverDesktop);
+
   return { PopoverDesktop: MockPopoverDesktop, PopoverMobile: MockPopoverDesktop };
 });
 
@@ -103,6 +113,8 @@ vi.mock('../../../../src/tools/database/database-view-popover', () => {
       this.probe = {
         destroyCount: 0,
         openedWith: null,
+        placement: undefined,
+        surface: document.createElement('div'),
         select: (type: string): void => {
           options.onSelect(type);
         },
@@ -113,21 +125,29 @@ vi.mock('../../../../src/tools/database/database-view-popover', () => {
       probes.views.push(this.probe);
     }
 
-    open(anchor: HTMLElement): void {
+    open(anchor: HTMLElement, placement?: string): void {
       this.probe.openedWith = anchor;
+      this.probe.placement = placement;
+      document.body.appendChild(this.probe.surface);
+    }
+
+    contains(node: Node): boolean {
+      return this.probe.surface.contains(node);
     }
 
     close(): void {
+      this.probe.surface.remove();
       this.probe.fireClose();
     }
 
     destroy(): void {
       this.probe.destroyCount += 1;
+      this.probe.surface.remove();
       this.probe.fireClose();
     }
   }
 
-  return { DatabaseViewPopover: MockDatabaseViewPopover };
+  return { ADD_VIEW_MENU_WIDTH: 390, DatabaseViewPopover: MockDatabaseViewPopover };
 });
 
 /**
@@ -260,22 +280,6 @@ const uncaughtDuring = (run: () => void): string[] => {
 
   return seen;
 };
-
-const hideComputedShorthand = (): void => {
-  const real = window.getComputedStyle.bind(window);
-
-  // Model an engine that does not serialize the computed border-radius shorthand.
-  vi.spyOn(window, 'getComputedStyle').mockImplementation((element, pseudo) => new Proxy(real(element, pseudo), {
-    get: (target, key) => (key === 'borderRadius' ? '' : Reflect.get(target, key, target) as unknown),
-  }));
-};
-
-const corners = (element: HTMLElement | null | undefined): string[] => [
-  element?.style.borderTopLeftRadius ?? '',
-  element?.style.borderTopRightRadius ?? '',
-  element?.style.borderBottomRightRadius ?? '',
-  element?.style.borderBottomLeftRadius ?? '',
-];
 
 describe('DatabaseTabBar — surviving-mutant coverage', () => {
   let onTabClick: ReturnType<typeof vi.fn<(viewId: string) => void>>;
@@ -718,9 +722,19 @@ describe('DatabaseTabBar — surviving-mutant coverage', () => {
 
       expect(probe.params.trigger).toBe(tabOf(el, 'v2'));
       expect(probe.params.width).toBe('auto');
-      expect(probe.params.minWidth).toBe('160px');
       expect(probe.params.autoFocusFirstItem).toBe(false);
       expect(probe.shownCount).toBe(1);
+    });
+
+    it('draws the view menu as Notion does: 28-tall rows in a 220-wide box, 4 under the tab (notion-motion.md Round 27 §3)', () => {
+      const { el } = mount(threeViews(), 'v1');
+      const probe = openContextOn(tabOf(el, 'v2'));
+      const classes = probe.params.class?.split(' ') ?? [];
+
+      // header-menu: 28-tall rows, 14px text; column-menu: 20px icon at +8, rules 12 in.
+      expect(classes).toEqual(expect.arrayContaining(['blok-database-header-menu', 'blok-database-column-menu']));
+      expect(probe.params.minWidth).toBe('220px');
+      expect(probe.params.offset).toBe(4);
     });
 
     it('routes duplicate and delete to the tab that was right-clicked', () => {
@@ -936,15 +950,15 @@ describe('DatabaseTabBar — surviving-mutant coverage', () => {
         expect(queryOne(el, '[data-blok-database-tab-more]').textContent).toBe('5 more…');
       });
 
-      it('budgets the 28px "+" with its margin and gaps, and 1px between tabs, while every tab shows (feel/findings-toolbar V26, V33)', () => {
+      it('budgets the 28px "+" with its gaps, and 1px between tabs, while every tab shows (feel/findings-toolbar V26, V33)', () => {
         const { el } = mount(threeViews(), 'v1');
 
-        // 31 (add) + 3 × 101 = 334: every tab fits exactly.
-        layOutForOverflow(el, 334);
+        // 30 (add) + 3 × 101 = 333: every tab fits exactly.
+        layOutForOverflow(el, 333);
         lastResizeProbe().fire();
         expect(el.querySelector('[data-blok-database-tab-more]')).toBeNull();
 
-        layOutForOverflow(el, 333);
+        layOutForOverflow(el, 332);
         lastResizeProbe().fire();
         expect(el.querySelector('[data-blok-database-tab-more]')?.textContent).toBe('1 more…');
       });
@@ -1124,6 +1138,22 @@ describe('DatabaseTabBar — surviving-mutant coverage', () => {
       expect(dropdown.style.zIndex).toBe('1000');
     });
 
+    // notion-motion.md Round 38 §5: with room neither below nor above, the menu slides up over its button,
+    // its bottom 8.3 from the window.
+    it('slides the menu up over its button when it fits neither below nor above', () => {
+      vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(717);
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        if (this.hasAttribute('data-blok-database-tab-more')) {
+          return new DOMRect(801.9, 342.2, 80.6, 32);
+        }
+
+        return this.hasAttribute('data-blok-database-tab-overflow-dropdown') ? new DOMRect(0, 0, 290, 358.5) : new DOMRect();
+      });
+      const { dropdown } = openDropdown(threeViews(), 'v1');
+
+      expect(parseFloat(dropdown.style.top)).toBeCloseTo(350.2, 1);
+    });
+
     it('lists every view in position order, whatever order they were passed in', () => {      const views = [
         makeView({ id: 'v3', name: 'Three', position: 'a2' }),
         makeView({ id: 'v1', name: 'One', position: 'a0' }),
@@ -1232,14 +1262,115 @@ describe('DatabaseTabBar — surviving-mutant coverage', () => {
       expect(newBtn.textContent?.trim()).toBe('New view');
     });
 
-    it('closes the dropdown and opens the add-view popover on the add button', () => {
-      const { el, dropdown } = openDropdown(threeViews(), 'v1');
+    // notion-motion.md Round 31 §3: Add view opens as a side flyout off the New view row; the list stays open.
+    it('keeps the dropdown open and opens Add view beside its New view row', () => {
+      const { dropdown } = openDropdown(threeViews(), 'v1');
+      const newRow = queryOne(dropdown, '[data-blok-database-tab-overflow-new]');
+
+      newRow.click();
+
+      expect(document.querySelector('[data-blok-database-tab-overflow-dropdown]')).toBe(dropdown);
+      expect(probes.views.length).toBe(1);
+      expect(lastViewPopover().openedWith).toBe(newRow);
+      expect(lastViewPopover().placement).toBe('aside');
+    });
+
+    // notion-motion.md Round 32 §1 (r32-a-more-newview-narrow.*): with no room on the right, Notion flips the flyout left.
+    it('with no room for the flyout on the right, opens it on the left of the New view row and keeps the dropdown', () => {
+      const { dropdown } = openDropdown(threeViews(), 'v1');
+      const newRow = queryOne(dropdown, '[data-blok-database-tab-overflow-new]');
+
+      vi.spyOn(newRow, 'getBoundingClientRect').mockReturnValue(new DOMRect(window.innerWidth - 300, 100, 280, 28));
+      newRow.click();
+
+      expect(document.querySelector('[data-blok-database-tab-overflow-dropdown]')).toBe(dropdown);
+      expect(lastViewPopover().openedWith).toBe(newRow);
+      expect(lastViewPopover().placement).toBe('aside-left');
+    });
+
+    // notion-motion.md Round 38 §6: with room on neither side Add view stays on the menu's right, slid over it,
+    // and the menu stays open.
+    it('with room on neither side, keeps the dropdown and opens Add view over the right of the New view row', () => {
+      const { dropdown } = openDropdown(threeViews(), 'v1');
+      const newRow = queryOne(dropdown, '[data-blok-database-tab-overflow-new]');
+
+      vi.spyOn(newRow, 'getBoundingClientRect').mockReturnValue(new DOMRect(100, 100, window.innerWidth - 200, 28));
+      newRow.click();
+
+      expect(document.querySelector('[data-blok-database-tab-overflow-dropdown]')).toBe(dropdown);
+      expect(lastViewPopover().openedWith).toBe(newRow);
+      expect(lastViewPopover().placement).toBe('aside-over');
+    });
+
+    it('a press inside the flyout keeps the dropdown open', () => {
+      const { dropdown } = openDropdown(threeViews(), 'v1');
 
       queryOne(dropdown, '[data-blok-database-tab-overflow-new]').click();
+      lastViewPopover().surface.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+      expect(document.querySelector('[data-blok-database-tab-overflow-dropdown]')).toBe(dropdown);
+    });
+
+    it('Escape closes the flyout first, then the dropdown', () => {
+      const { dropdown } = openDropdown(threeViews(), 'v1');
+
+      queryOne(dropdown, '[data-blok-database-tab-overflow-new]').click();
+      window.dispatchEvent(key('Escape'));
+
+      expect(lastViewPopover().surface.isConnected).toBe(false);
+      expect(document.querySelector('[data-blok-database-tab-overflow-dropdown]')).toBe(dropdown);
+      window.dispatchEvent(key('Escape'));
+      expect(document.querySelector('[data-blok-database-tab-overflow-dropdown]')).toBeNull();
+    });
+
+    it('picking a layout in the flyout adds the view and closes the dropdown', () => {
+      const { dropdown } = openDropdown(threeViews(), 'v1');
+
+      queryOne(dropdown, '[data-blok-database-tab-overflow-new]').click();
+      lastViewPopover().select('board');
+
+      expect(onAddView).toHaveBeenCalledWith('board');
+      expect(document.querySelector('[data-blok-database-tab-overflow-dropdown]')).toBeNull();
+    });
+
+    // notion-motion.md Round 38 §6: the first outside click closes only the Add view card, the second the menu.
+    it('an outside press with the flyout open leaves the dropdown open', () => {
+      const { dropdown } = openDropdown(threeViews(), 'v1');
+
+      queryOne(dropdown, '[data-blok-database-tab-overflow-new]').click();
+      document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+      expect(document.querySelector('[data-blok-database-tab-overflow-dropdown]')).toBe(dropdown);
+    });
+
+    it('the press after the flyout closed itself closes the dropdown', () => {
+      const { dropdown } = openDropdown(threeViews(), 'v1');
+
+      queryOne(dropdown, '[data-blok-database-tab-overflow-new]').click();
+      lastViewPopover().fireClose();
+      document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
 
       expect(document.querySelector('[data-blok-database-tab-overflow-dropdown]')).toBeNull();
-      expect(probes.views.length).toBe(1);
-      expect(lastViewPopover().openedWith).toBe(queryOne(el, '[data-blok-database-add-view]'));
+    });
+
+    it('an outside press with no flyout open closes the dropdown', () => {
+      openDropdown(threeViews(), 'v1');
+      document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+      expect(document.querySelector('[data-blok-database-tab-overflow-dropdown]')).toBeNull();
+    });
+
+    it('closing the dropdown closes the flyout', () => {
+      const { dropdown } = openDropdown(threeViews(), 'v1');
+
+      queryOne(dropdown, '[data-blok-database-tab-overflow-new]').click();
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+      expect(document.querySelector('[data-blok-database-tab-overflow-dropdown]')).toBeNull();
+      expect(lastViewPopover().surface.isConnected).toBe(false);
     });
 
     it('opens the add-view popover from Enter on the new-view action', () => {
@@ -1343,17 +1474,15 @@ describe('DatabaseTabBar — surviving-mutant coverage', () => {
 
     const ghost = (): HTMLElement | null => document.body.querySelector('[data-blok-database-tab-ghost]');
 
-    it('starts the drag at exactly the threshold and builds one ghost', () => {
+    it('starts the drag at exactly the threshold, moving the tab itself', () => {
       const { el } = mount(threeViews(), 'v1');
 
       dragFrom(el, 'v1', 50);
       document.dispatchEvent(pointer('pointermove', 60));
 
-      expect(ghost()).not.toBeNull();
-
-      document.dispatchEvent(pointer('pointermove', 200));
-
-      expect(document.body.querySelectorAll('[data-blok-database-tab-ghost]').length).toBe(1);
+      expect(el.getAttribute('data-dragging')).toBe('');
+      expect(tabOf(el, 'v1').style.transform).toBe('translateX(10px)');
+      expect(ghost()).toBeNull();
     });
 
     it('does not start the drag below the threshold', () => {
@@ -1366,30 +1495,7 @@ describe('DatabaseTabBar — surviving-mutant coverage', () => {
       expect(el.hasAttribute('data-dragging')).toBe(false);
     });
 
-    it('describes the ghost so it floats over the bar at the tab it came from', () => {
-      const { el } = mount(threeViews(), 'v1');
-
-      dragFrom(el, 'v1', 50);
-      document.dispatchEvent(pointer('pointermove', 200));
-
-      const floating = ghost();
-
-      if (floating === null) {
-        throw new Error('no ghost was built');
-      }
-
-      expect(el.getAttribute('data-dragging')).toBe('');
-      expect(floating.getAttribute('data-blok-database-tab-ghost')).toBe('');
-      expect(floating.style.position).toBe('fixed');
-      expect(floating.style.pointerEvents).toBe('none');
-      expect(floating.style.zIndex).toBe('50');
-      expect(floating.style.opacity).toBe('0.7');
-      expect(floating.style.top).toBe('40px');
-      expect(floating.style.width).toBe('100px');
-      expect(floating.style.left).toBe('150px');
-    });
-
-    it('closes the source slot while dragging, so the other tabs reflow (feel/findings-toolbar V27)', () => {
+    it('marks the dragged tab while the drag runs', () => {
       const { el } = mount(threeViews(), 'v1');
 
       dragFrom(el, 'v1', 50);
@@ -1400,26 +1506,6 @@ describe('DatabaseTabBar — surviving-mutant coverage', () => {
       expect(tabOf(el, 'v1').hasAttribute('data-blok-database-tab-drag-source')).toBe(false);
     });
 
-    it('keeps the radius of the tab it came from', () => {
-      const sheet = document.createElement('style');
-
-      // Longhands: jsdom does not expand a stylesheet shorthand into computed longhands.
-      sheet.textContent = '[data-blok-database-tab] { border-top-left-radius: 1px; border-top-right-radius: 2px; border-bottom-right-radius: 3px; border-bottom-left-radius: 4px; }';
-      document.head.appendChild(sheet);
-
-      try {
-        const { el } = mount(threeViews(), 'v1');
-
-        hideComputedShorthand();
-        dragFrom(el, 'v1', 50);
-        document.dispatchEvent(pointer('pointermove', 200));
-
-        expect(corners(ghost())).toEqual(['1px', '2px', '3px', '4px']);
-      } finally {
-        sheet.remove();
-      }
-    });
-
     it('tracks the pointer while the drag continues', () => {
       const { el } = mount(threeViews(), 'v1');
 
@@ -1427,13 +1513,7 @@ describe('DatabaseTabBar — surviving-mutant coverage', () => {
       document.dispatchEvent(pointer('pointermove', 200));
       document.dispatchEvent(pointer('pointermove', 260));
 
-      const floating = ghost();
-
-      if (floating === null) {
-        throw new Error('no ghost was built');
-      }
-
-      expect(floating.style.left).toBe('210px');
+      expect(tabOf(el, 'v1').style.transform).toBe('translateX(210px)');
     });
 
     it('survives the dragged tab disappearing mid-gesture', () => {
@@ -1643,7 +1723,7 @@ describe('DatabaseTabBar — surviving-mutant coverage', () => {
       document.dispatchEvent(pointer('pointermove', 220));
       document.dispatchEvent(key('a'));
 
-      expect(ghost()).not.toBeNull();
+      expect(el.getAttribute('data-dragging')).toBe('');
     });
 
     it('stops listening once the drag is cancelled', () => {

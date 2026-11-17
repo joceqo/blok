@@ -156,6 +156,7 @@ const createHarness = (options: HarnessOptions = {}): Harness => {
 
         return createBlock(insertOptions.tool);
       },
+      removeBlock: (): Promise<void> => Promise.resolve(),
       paste: (tool: string, event: FakePasteEvent, replace: boolean): Promise<FakeBlock> => {
         pastes.push({ tool,
           event,
@@ -164,6 +165,7 @@ const createHarness = (options: HarnessOptions = {}): Harness => {
         return Promise.resolve(createBlock(tool));
       },
       setBlockParent,
+      getBlockById: (id: string): FakeBlock | undefined => lookup.get(id),
       ...transact,
     },
     Caret: {
@@ -175,11 +177,8 @@ const createHarness = (options: HarnessOptions = {}): Harness => {
     },
     Tools: {
       blockTools: {
-        get: (name: string): { sanitizeConfig: SanitizerConfig } | undefined => {
-          const config = options.sanitizeConfigs?.[name];
-
-          return config === undefined ? undefined : { sanitizeConfig: config };
-        },
+        // Every tool is registered; only the listed ones declare a sanitize config.
+        get: (name: string): { sanitizeConfig: SanitizerConfig | undefined } => ({ sanitizeConfig: options.sanitizeConfigs?.[name] }),
       },
     },
   } as unknown as BlokModules;
@@ -607,7 +606,29 @@ describe('BlokDataHandler — mutation coverage', () => {
   });
 
   describe('pattern matching before Blok JSON', () => {
-    it('pastes the matched pattern instead of the JSON blocks', async () => {
+    // Blok's own text/plain is the Markdown of the copied blocks, so it can read as one pattern.
+    it('inserts the JSON blocks from the Blok clipboard even when the plain text matches a tool pattern', async () => {
+      const harness = createHarness();
+      const handler = createHandler(harness, createRegistry([linkPattern], linkPattern));
+
+      const result = await handler.handle(JSON.stringify([
+        { id: 'b1',
+          tool: 'paragraph',
+          data: { text: 'https://example.com' } },
+        { id: 'b2',
+          tool: 'paragraph',
+          data: { text: '' } },
+      ]), { canReplaceCurrentBlock: true,
+        plainData: 'https://example.com',
+        fromBlokClipboard: true });
+
+      expect(harness.pastes).toEqual([]);
+      expect(result).toBe(true);
+      expect(harness.inserts.map(insert => insert.data.text)).toEqual(['https://example.com', '']);
+      expect(harness.inserts.map(insert => insert.replace)).toEqual([true, false]);
+    });
+
+    it('pastes the matched pattern instead of converted foreign JSON blocks', async () => {
       const harness = createHarness();
       const handler = createHandler(harness, createRegistry([linkPattern], linkPattern));
 

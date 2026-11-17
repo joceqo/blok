@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { IconChevronDown, IconDotsHorizontal, IconMenu, IconPageEmpty, IconPencil, IconPlus } from '../../../../src/components/icons';
+import { IconDotsHorizontal, IconPageEmpty, IconPencilLine, IconPlayerPlay, IconPlus, IconRowGrip } from '../../../../src/components/icons';
 import { DatabaseListView } from '../../../../src/tools/database/database-list-view';
 import type { DatabaseRow, PropertyDefinition, SelectOption } from '../../../../src/tools/database/types';
 import type { I18n } from '../../../../types';
@@ -52,10 +52,10 @@ const serialized = (svg: string): string => {
 const gutterHtml = (rowId: string): string =>
   '<div data-blok-database-list-row-gutter="">'
   + `<button type="button" data-blok-database-list-row-add="" aria-label="T(tools.database.tableAddBelow)" tabindex="-1">${serialized(IconPlus)}</button>`
-  + `<button type="button" data-blok-database-list-row-handle="" data-row-id="${rowId}" aria-label="T(tools.database.tableDragHandle)" tabindex="-1">${serialized(IconMenu)}</button>`
+  + `<button type="button" data-blok-database-list-row-handle="" data-row-id="${rowId}" aria-label="T(tools.database.tableDragHandle)" tabindex="-1">${serialized(IconRowGrip)}</button>`
   + '</div>';
 
-const EDIT_HTML = `<button type="button" data-blok-database-list-row-edit="" aria-label="T(tools.database.editCardTitle)" tabindex="-1">${serialized(IconPencil)}</button>`;
+const EDIT_HTML = `<button type="button" data-blok-database-list-row-edit="" aria-label="T(tools.database.editCardTitle)" tabindex="-1">${serialized(IconPencilLine)}</button>`;
 
 const rowHtml = (rowId: string, title: string, tabindex = '0'): string =>
   `<div data-blok-database-list-row="" data-row-id="${rowId}" role="listitem" tabindex="${tabindex}">`
@@ -192,10 +192,10 @@ describe('DatabaseListView — mutation coverage', () => {
   });
 
   /** The chevron as the DOM serializes it once parsed. */
-const chevronHtml = (): string => {
+const caretHtml = (): string => {
   const span = document.createElement('span');
 
-  span.innerHTML = IconChevronDown;
+  span.innerHTML = IconPlayerPlay;
 
   return span.innerHTML;
 };
@@ -219,7 +219,7 @@ describe('createView — grouped branch', () => {
         '<div data-blok-database-list="" data-blok-keyboard-owner="">'
         + '<div data-blok-database-list-group="" data-option-id="opt-a">'
         + '<div data-blok-database-list-group-header="">'
-        + `<button type="button" data-blok-database-list-group-toggle="" aria-expanded="true" aria-label="T(tools.database.tableCollapseGroup)">${chevronHtml()}</button>`
+        + `<button type="button" data-blok-database-list-group-toggle="" aria-expanded="true" aria-label="T(tools.database.tableCollapseGroup)">${caretHtml()}</button>`
         + '<span data-blok-database-list-group-label=""><span data-blok-database-list-group-title="">Alpha</span></span>'
         + '<span data-blok-database-list-group-actions="">'
         + `<button type="button" data-blok-database-column-menu="" data-option-id="opt-a" aria-label="T(tools.database.groupMenuLabel)" aria-haspopup="menu">${serialized(IconDotsHorizontal)}</button>`

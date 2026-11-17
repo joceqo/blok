@@ -110,6 +110,10 @@ func (s *Server) buildRoomManager() (*room.Manager, error) {
 
 	roomOptions := room.OptionsWith(func(ro *room.Options) {
 		ro.AnnouncedMaxMessageBytes = int64(o.CollabMaxMessageBytes)
+		ro.RestoreTrashesPages = o.CollabRestoreTrashesPages
+		if o.CollabChangeSignalWindow > 0 {
+			ro.ChangeSignalWindow = o.CollabChangeSignalWindow
+		}
 		ro.Now = func() time.Time { return s.clock() }
 		if o.Timers != nil {
 			ro.Timers = o.Timers
@@ -136,6 +140,7 @@ func (s *Server) buildRoomManager() (*room.Manager, error) {
 		Log:        s.collabLog,
 		Operations: operations,
 		Activity:   o.CollabActivityObserver,
+		Notes:      o.CollabRecordNotes,
 	}), nil
 }
 
@@ -259,7 +264,10 @@ func (s *Server) warnOpenSyncRoutes(prefix string) {
 		"GET " + prefix + "/sync/{doc}/history/{lineage}/{sequence}",
 		"DELETE " + prefix + "/sync/{doc}/history/{lineage}",
 		"POST " + prefix + "/sync/{doc}/history/{lineage}/{sequence}/restore",
+		"POST " + prefix + "/sync/{doc}/history/{lineage}/{sequence}/restore/preview",
 		"GET " + prefix + "/sync/{doc}/history/{lineage}/{sequence}/changes",
+		"GET " + prefix + "/sync/{doc}/history/at",
+		"GET " + prefix + "/sync/{doc}/history/changes",
 	}
 	sync, reset, edit, state := "GET "+prefix+"/sync/{doc}", "POST "+prefix+"/sync/{doc}/reset",
 		"POST "+prefix+"/sync/{doc}/edit", "GET "+prefix+"/sync/{doc}/state"
@@ -294,9 +302,39 @@ func (s *Server) AgentExecutor() (*blokagent.Executor, error) {
 				s.agentErr = err
 				return
 			}
-			rooms = blokagent.NewRooms(manager)
+			rooms = blokagent.NewRoomsWithHistory(manager, agentHistoryPolicy(s.options.Authorization))
 		}
 		s.agent = blokagent.NewOnRuntime(s.runtime, rooms)
 	})
 	return s.agent, s.agentErr
+}
+
+// agentHistoryPolicy is the host's history hooks for an agent call. The
+// agent has no request, so the hooks get a user named by the person it acts
+// for, else the agent. Nil when the host sets neither hook.
+func agentHistoryPolicy(hook Authorization) blokagent.HistoryPolicy {
+	reader, reads := hook.(HistoryReadAuthorizer)
+	windower, windows := hook.(HistoryWindower)
+	if !reads && !windows {
+		return nil
+	}
+	return func(ctx context.Context, userID, docID string) (blokagent.HistoryAccess, error) {
+		user := User{ID: userID, Name: userID, Authenticated: true}
+		access := blokagent.HistoryAccess{CanRead: true}
+		if reads {
+			allowed, err := reader.CanReadHistory(ctx, user, docID)
+			if err != nil {
+				return blokagent.HistoryAccess{}, err
+			}
+			access.CanRead = allowed
+		}
+		if windows {
+			window, err := windower.HistoryWindow(ctx, user, docID)
+			if err != nil {
+				return blokagent.HistoryAccess{}, err
+			}
+			access.Window = window
+		}
+		return access, nil
+	}
 }

@@ -96,6 +96,27 @@ public sealed class BlokServerOptions
   public bool UnfurlDisabled { get; set; } = true;
 
   /// <summary>
+  /// Opens <c>GET /file-bytes</c>, behind the same guard as <c>/unfurl</c>:
+  /// the PDF preview reads a file's bytes through it, one range at a time.
+  /// Off by default, and apart from <see cref="UnfurlDisabled"/>, since it
+  /// relays whole files.
+  /// </summary>
+  public bool FileBytesEnabled { get; set; }
+
+  /// <summary>
+  /// Largest file <c>GET /file-bytes</c> serves, in bytes (100 MiB by
+  /// default). Must be positive while the route is open.
+  /// </summary>
+  public long FileBytesMaxBytes { get; set; } = 100L << 20;
+
+  /// <summary>
+  /// Sends CORS headers on stored local files to an origin in
+  /// <see cref="AllowedOrigins"/>, so a page on another origin can read them.
+  /// Off by default.
+  /// </summary>
+  public bool FilesCors { get; set; }
+
+  /// <summary>
   /// S3-compatible endpoint: a full HTTP(S) origin with no credentials, path,
   /// query or fragment. Plain HTTP is accepted only against loopback.
   /// </summary>
@@ -210,6 +231,41 @@ public sealed class BlokServerOptions
   /// positive: a zero cap closes every connection on its first frame.
   /// </summary>
   public int CollabMaxMessageBytes { get; set; } = 1 << 20;
+
+  /// <summary>
+  /// Refuses a history restore with 409 when it would change who can see or
+  /// fill out a database view, or unlock or reshape a locked database, until
+  /// the request confirms each kind (<c>X-Blok-Restore-Confirm</c> or a body
+  /// <c>{"confirm":[...]}</c>). Off, the default, restores without asking.
+  /// </summary>
+  public bool CollabEnforceRestoreGuards { get; set; }
+
+  /// <summary>
+  /// A history restore sets <c>data.trashed</c> on a <c>page</c> block added
+  /// after the restored point, instead of removing it, so the sub-page stays
+  /// reachable. Off, the default, removes the block. A host that turns it on
+  /// must show such a block as in Trash: the editor does not hide it.
+  /// </summary>
+  public bool CollabRestoreTrashesPages { get; set; }
+
+  /// <summary>
+  /// How long one change window runs from a document's first journalled
+  /// write before <see cref="Blok.Server.Collab.ICollabActivityObserver.OnChangesAsync"/>
+  /// is told what changed in it. Used only when the registered observer
+  /// overrides that member. Default 60 seconds; zero or less uses the
+  /// default. At most one day: <see cref="Validate"/> refuses a longer one.
+  /// </summary>
+  public TimeSpan CollabChangeSignalWindow { get; set; } = TimeSpan.FromSeconds(60);
+
+  /// <summary>
+  /// Makes the server the author of block stamps on <c>POST /sync/{doc}/edit</c>.
+  /// An insert's <c>createdAt</c>/<c>By</c>/<c>With</c> and <c>lastEditedAt</c>/<c>By</c>/<c>With</c>
+  /// are replaced, and an update stamps its block's <c>lastEdited*</c>. By is
+  /// the person and With the agent; an agent with no person is By with no
+  /// With. Off, the default, an insert keeps the stamps the caller sent and an
+  /// update stamps nothing. A restore keeps the stamps it brings back either way.
+  /// </summary>
+  public bool CollabStampAuthority { get; set; }
 
   /// <summary>
   /// WebSocket keep-alive ping interval; zero turns pings off. A socket that
@@ -335,6 +391,12 @@ public sealed class BlokServerOptions
           $"--rate-limit must be zero or greater (got {RateLimitPerMinute})");
     }
 
+    if (FileBytesEnabled && FileBytesMaxBytes <= 0)
+    {
+      throw new InvalidOperationException(
+          $"FileBytesMaxBytes must be a positive number of bytes (got {FileBytesMaxBytes})");
+    }
+
     ValidateCollab();
 
     if (StorageDirectory != "" && S3Bucket == "")
@@ -431,6 +493,12 @@ public sealed class BlokServerOptions
       throw new InvalidOperationException(
           $"CollabMaxMessageBytes must be a positive number of bytes (got {CollabMaxMessageBytes}): " +
           "a zero cap closes every sync connection on its first frame");
+    }
+
+    if (CollabChangeSignalWindow > TimeSpan.FromDays(1))
+    {
+      throw new InvalidOperationException(
+          $"CollabChangeSignalWindow must be at most one day (got {CollabChangeSignalWindow})");
     }
 
     if (CollabKeepAliveInterval < TimeSpan.Zero)

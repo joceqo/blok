@@ -19,11 +19,33 @@ import (
 // Rooms is the collaboration server's live rooms, which ExecuteInRoom
 // edits. blokserver.Server.AgentExecutor builds an executor over its own
 // rooms; a host does not make one.
-type Rooms struct{ manager *room.Manager }
+type Rooms struct {
+	manager *room.Manager
+	policy  HistoryPolicy
+}
 
 // NewRooms wraps a room manager. It is for blokserver, which owns the
 // manager.
 func NewRooms(manager *room.Manager) *Rooms { return &Rooms{manager: manager} }
+
+// HistoryAccess is what the host's history hooks allow one agent call.
+// CanRead false refuses history.versions, history.read, history.changes,
+// history.restore and history.previewRestore;
+// Window nil shows the whole history.
+type HistoryAccess struct {
+	CanRead bool
+	Window  *time.Duration
+}
+
+// HistoryPolicy asks the host's history hooks for userID on docID: the
+// person the agent acts for, else the agent.
+type HistoryPolicy func(ctx context.Context, userID, docID string) (HistoryAccess, error)
+
+// NewRoomsWithHistory is NewRooms with the host's history hooks, asked on
+// every agent history command. It is for blokserver.
+func NewRoomsWithHistory(manager *room.Manager, policy HistoryPolicy) *Rooms {
+	return &Rooms{manager: manager, policy: policy}
+}
 
 // NewOnRuntime is for blokserver: an executor over the server's own engine
 // pool, the one its rooms read HTML with, as a C# host shares one
@@ -209,7 +231,7 @@ func (e *Executor) ExecuteInRoom(ctx context.Context, docID, batchJSON string, a
 				// Made outside the room lane, so a slow host never holds
 				// the room. The lane run checks the count again.
 				input.Members = append(input.Members, member("document", state))
-				made, refusal, err := e.createPages(ctx, input, options, actor)
+				made, refusal, err := e.createPages(ctx, input, options, actor, docID)
 				if err != nil {
 					return Execution{}, err
 				}
@@ -312,7 +334,7 @@ func (e *Executor) ExecuteInRoom(ctx context.Context, docID, batchJSON string, a
 		}
 		e.history.add(docID, actor, recorded)
 		return nil
-	})
+	}, agentNote(actor))
 	var asked *askError
 	if errors.As(err, &asked) {
 		return Execution{askJSON: &asked.json}, nil
@@ -505,7 +527,7 @@ func versionCommand(batch *jsjson.Node) (string, *jsjson.Node, error) {
 		return "", nil, err
 	}
 	switch value {
-	case "history.versions", "history.read", "history.changes", "history.restore":
+	case "history.versions", "history.read", "history.changes", "history.restore", "history.previewRestore":
 	default:
 		return "", nil, nil
 	}

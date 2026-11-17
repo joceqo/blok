@@ -178,13 +178,43 @@ test.describe('database view settings', () => {
     await byTestId(page, 'database-settings-filter').click();
     await byTestId(page, 'database-filter-advanced').click();
     await byTestId(page, 'database-filter-add-rule-root').click();
-    await byTestId(page, 'database-pick-property-p-amount').click();
+    await byTestId(page, 'database-filter-add-rule').click();
+    await expect(byTestId(page, 'database-filter-add-menu')).toHaveCount(0);
     await byTestId(page, 'database-filter-add-rule-root').click();
-    await byTestId(page, 'database-pick-property-p-stage').click();
+    await byTestId(page, 'database-filter-add-rule').click();
     await byTestId(page, 'database-filter-conjunction-root').click();
     await byTestId(page, 'database-filter-conjunction-or').click();
 
     await expect(byTestId(page, 'database-advanced-pill')).toHaveText('2 rules');
+  });
+
+  // notion-motion.md Round 19 §1 (r19-adv-andor.raw): "And ⌄" is 61 wide and reads in full.
+  test('shows the whole "And" on the root conjunction button', async ({ page }) => {
+    const rule = { propertyId: 'p-title', operator: 'contains', value: '' };
+
+    await mount(page, blocks({ filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'f1', ...rule }, { id: 'f2', ...rule }] } }));
+    await byTestId(page, 'database-advanced-pill').click();
+
+    const button = byTestId(page, 'database-filter-conjunction-root');
+
+    await expect(button).toHaveText('And');
+
+    // The popover scales in on open; measure after it settles.
+    const fit = await button.evaluate(async (element) => {
+      await Promise.all(document.getAnimations().map((animation) => animation.finished));
+      const label = element.querySelector('[data-blok-database-panel-label]');
+
+      if (label === null) return null;
+      const range = document.createRange();
+
+      range.selectNodeContents(label);
+
+      return { text: range.getBoundingClientRect().width, box: label.getBoundingClientRect().width, button: element.getBoundingClientRect().width };
+    });
+
+    expect(fit).not.toBeNull();
+    expect(fit?.text).toBeLessThanOrEqual(fit?.box ?? 0);
+    expect(fit?.button).toBeGreaterThanOrEqual(61);
   });
 
   test('groups by a select and hides a group', async ({ page }) => {
@@ -236,8 +266,184 @@ test.describe('database view settings', () => {
     await byTestId(page, 'database-color-add').click();
     await byTestId(page, 'database-pick-property-p-amount').click();
 
-    await expect(page.locator('[data-row-id="r1"][data-blok-database-color="gray"]')).toHaveCount(1);
+    // notion-motion.md Round 21 §1: a new Number rule starts on Green.
+    await expect(page.locator('[data-row-id="r1"][data-blok-database-color="green"]')).toHaveCount(1);
     await expect(page.locator('[data-row-id="r3"][data-blok-database-color]')).toHaveCount(0);
+  });
+
+  // notion-motion.md Round 20 §4 (r20-cc-list-style.raw, r20-cc-is.raw, r20-cc-selval.raw), Round 21 §1 (r21-cc-*-cc.raw).
+  test('lays out conditional color cards and the value field at Notion\'s sizes', async ({ page }) => {
+    await mount(page, blocks({ colorRules: [
+      { id: 'c1', propertyId: 'p-stage', operator: 'is_not_empty', value: null, color: 'match' },
+      { id: 'c2', propertyId: 'p-stage', operator: 'equals', value: null, color: 'match' },
+      { id: 'c3', propertyId: 'p-amount', operator: 'equals', value: null, color: 'gray' },
+      { id: 'c4', propertyId: 'p-title', operator: 'contains', value: null, color: 'gray' },
+    ] }));
+    await byTestId(page, 'database-toolbar-settings').click();
+    await byTestId(page, 'database-settings-color').click();
+    await byTestId(page, 'database-color-value-c2').click();
+    await expect(byTestId(page, 'database-filter-value-picker')).toBeVisible();
+
+    const box = await page.evaluate(async () => {
+      await Promise.all(document.getAnimations().map((animation) => animation.finished));
+      const rect = (selector: string): DOMRect | undefined => document.querySelector(selector)?.getBoundingClientRect();
+      const one = rect('[data-blok-testid="database-color-rule-c1"]');
+      const two = rect('[data-blok-testid="database-color-rule-c2"]');
+      const wrapper = rect('[data-blok-testid="database-color-value-c2"]');
+      const field = rect('[data-blok-testid="database-color-value-c2"] [data-blok-database-color-rule-field]');
+      const flyout = rect('[data-blok-testid="database-filter-value-picker"]');
+      const three = rect('[data-blok-testid="database-color-rule-c3"]');
+      const input = rect('[data-blok-testid="database-color-rule-c3"] [data-blok-database-color-rule-box]');
+      const four = rect('[data-blok-testid="database-color-rule-c4"]');
+      const name = document.querySelector('[data-blok-testid="database-color-rule-c1"] [data-blok-database-color-rule-name]');
+      const label = document.querySelector('[data-blok-testid="database-color-operator-c1"] [data-blok-database-chip-operator-label]');
+      const textRect = (node: Element | null | undefined): DOMRect | undefined => {
+        if (!node) return undefined;
+        const range = document.createRange();
+
+        range.selectNodeContents(node);
+
+        return range.getBoundingClientRect();
+      };
+      const nameText = textRect(name);
+      const labelText = textRect(label);
+
+      if (!one || !two || !wrapper || !field || !flyout || !three || !input || !four || !nameText || !labelText) return null;
+
+      return {
+        card: [one.width, one.height],
+        wrapper: [wrapper.x - two.x, wrapper.y - two.y, wrapper.width, wrapper.height],
+        field: [field.x - two.x, field.y - two.y, field.width, field.height],
+        flyout: [flyout.x - wrapper.x, flyout.y - wrapper.bottom, flyout.width],
+        input: [input.x - three.x, input.y - three.y, input.width, input.height],
+        heights: [two.height, three.height, four.height],
+        gap: Math.round((labelText.x - nameText.right) * 10) / 10,
+      };
+    });
+
+    expect(box?.card).toEqual([258, 100]);
+    expect(box?.heights).toEqual([143, 141, 137]);
+    expect(box?.gap).toBe(4);
+    expect(box?.wrapper).toEqual([9, 36, 240, 34]);
+    expect(box?.field).toEqual([13, 38, 232, 30]);
+    expect(box?.flyout).toEqual([0, 4, 240]);
+    // r21-cc-num-field.raw: a 232x28 box 36 down the card.
+    expect(box?.input).toEqual([13, 36, 232, 28]);
+  });
+
+  // notion-motion.md Round 21 §1 (r21-cc-add3.raw, r21-cc-add3-srch.raw): the property list opens above
+  // "Add another" when it does not fit below, its bottom 4 over the button, and keeps that bottom while filtered.
+  test('opens the color property list above "Add another" when it does not fit below', async ({ page }) => {
+    await page.setViewportSize({ width: 1512, height: 560 });
+    await mount(page, blocks({ colorRules: [
+      { id: 'c1', propertyId: 'p-stage', operator: 'is_not_empty', value: null, color: 'match' },
+      { id: 'c2', propertyId: 'p-amount', operator: 'is_not_empty', value: null, color: 'green' },
+      { id: 'c3', propertyId: 'p-title', operator: 'is_not_empty', value: null, color: 'green' },
+    ] }));
+    await byTestId(page, 'database-toolbar-settings').click();
+    await byTestId(page, 'database-settings-color').click();
+    await byTestId(page, 'database-color-add').click();
+    await expect(byTestId(page, 'database-color-property-picker')).toBeVisible();
+    // The click may scroll the panel, so the button is read once the list is open.
+    const settled = async (): Promise<{ top: number; bottom: number; add: number } | null> => page.evaluate(async () => {
+      await Promise.all(document.getAnimations().map((animation) => animation.finished));
+      const rect = document.querySelector('[data-blok-testid="database-color-property-picker"]')?.getBoundingClientRect();
+      const add = document.querySelector('[data-blok-testid="database-color-add"]')?.getBoundingClientRect();
+
+      return rect === undefined || add === undefined ? null : { top: rect.top, bottom: rect.bottom, add: add.top };
+    });
+    const full = await settled();
+
+    expect(full?.bottom).toBeCloseTo((full?.add ?? 0) - 4, 0);
+
+    await page.keyboard.type('Am');
+    await expect(byTestId(page, 'database-pick-property-p-stage')).toHaveCount(0);
+    // The list re-places on its next resize callback.
+    await expect.poll(async () => Math.round((await settled())?.bottom ?? 0)).toBe(Math.round((full?.add ?? 0) - 4));
+    expect((await settled())?.top).toBeGreaterThan(full?.top ?? 0);
+  });
+
+  // notion-motion.md Round 22 §6 (r22-flip-cc-op.raw): a rule's operator list opens above its button, its bottom on the
+  // button's top, when it does not fit below.
+  test('opens a color rule\'s operator list above its button when it does not fit below', async ({ page }) => {
+    await page.setViewportSize({ width: 1512, height: 530 });
+    await mount(page, blocks({ colorRules: [
+      { id: 'c1', propertyId: 'p-stage', operator: 'is_not_empty', value: null, color: 'match' },
+      { id: 'c2', propertyId: 'p-amount', operator: 'is_not_empty', value: null, color: 'green' },
+      { id: 'c3', propertyId: 'p-stage', operator: 'is_not_empty', value: null, color: 'match' },
+      { id: 'c4', propertyId: 'p-title', operator: 'is_not_empty', value: null, color: 'green' },
+    ] }));
+    await byTestId(page, 'database-toolbar-settings').click();
+    await byTestId(page, 'database-settings-color').click();
+    await byTestId(page, 'database-color-apply-c4').scrollIntoViewIfNeeded();
+    await byTestId(page, 'database-color-operator-c4').click();
+    await expect(byTestId(page, 'database-filter-operator-picker')).toBeVisible();
+    const placed = await page.evaluate(async () => {
+      await Promise.all(document.getAnimations().map((animation) => animation.finished));
+      const list = document.querySelector('[data-blok-testid="database-filter-operator-picker"]')?.getBoundingClientRect();
+      const button = document.querySelector('[data-blok-testid="database-color-operator-c4"]')?.getBoundingClientRect();
+
+      return list === undefined || button === undefined ? null : { bottom: list.bottom, button: button.top, belowEnd: button.bottom + list.height };
+    });
+
+    expect(placed?.belowEnd).toBeGreaterThan(530 - 12);
+    expect(placed?.bottom).toBeCloseTo(placed?.button ?? 0, 0);
+  });
+
+  // notion-motion.md Round 23 §1 (r23-flipH-*.raw): the Date filter popover is at most half the window tall and keeps
+  // 8 from the window's top and bottom. Under a chip at 277 it opens above at 530 and slides up over the chip at 600.
+  const placeDateFilter = async (page: Page, height: number): Promise<{ top: number; bottom: number; height: number; chipTop: number; chipBottom: number } | null> => {
+    await page.setViewportSize({ width: 1512, height });
+    const [database, ...rows] = blocks({ filters: [{ id: 'f1', propertyId: 'p-due', operator: 'equals', value: null }] });
+    const data = database.data as { schema: unknown[] };
+
+    await mount(page, [{ ...database, data: { ...data, schema: [...data.schema, { id: 'p-due', name: 'Due', type: 'date', position: 'a3' }] } }, ...rows]);
+    await page.evaluate(() => {
+      const holder = document.getElementById('blok');
+
+      if (holder !== null) holder.style.marginTop = '0px';
+      const chip = document.querySelector('[data-blok-testid="database-filter-pill-f1"]')?.getBoundingClientRect();
+
+      if (holder !== null && chip !== undefined) holder.style.marginTop = `${277 - chip.top}px`;
+    });
+    await byTestId(page, 'database-filter-pill-f1').click();
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => {
+      const holder = document.getElementById('blok');
+      const chip = document.querySelector('[data-blok-testid="database-filter-pill-f1"]')?.getBoundingClientRect();
+
+      if (holder !== null && chip !== undefined) holder.style.marginTop = `${parseFloat(holder.style.marginTop) + 277 - chip.top}px`;
+    });
+    await byTestId(page, 'database-filter-pill-f1').click();
+    await expect(byTestId(page, 'database-filter-popover')).toBeVisible();
+    const placed = await page.evaluate(async () => {
+      await Promise.all(document.getAnimations().map((animation) => animation.finished));
+      const panel = document.querySelector('[data-blok-testid="database-filter-popover"]');
+      const box = panel?.closest('[data-blok-popover-container]')?.getBoundingClientRect();
+      const chip = document.querySelector('[data-blok-testid="database-filter-pill-f1"]')?.getBoundingClientRect();
+
+      return box === undefined || chip === undefined ? null : { top: box.top, bottom: box.bottom, height: box.height, chipTop: chip.top, chipBottom: chip.bottom };
+    });
+
+    return placed;
+  };
+
+  test('opens a Date filter popover above its chip, half the window tall, in a 530-tall window', async ({ page }) => {
+    const placed = await placeDateFilter(page, 530);
+
+    expect(placed?.chipTop).toBeCloseTo(277, 0);
+    expect(placed?.height).toBeCloseTo(265, 0);
+    expect(placed?.bottom).toBeCloseTo(277 - 4, 0);
+    expect(placed?.top).toBeCloseTo(8, 0);
+  });
+
+  test('slides a Date filter popover up over its chip, 8 from the bottom, in a 600-tall window', async ({ page }) => {
+    const placed = await placeDateFilter(page, 600);
+
+    expect(placed?.chipTop).toBeCloseTo(277, 0);
+    expect(placed?.height).toBeCloseTo(300, 0);
+    expect(placed?.bottom).toBeCloseTo(600 - 8, 0);
+    expect(placed?.top).toBeLessThan(placed?.chipBottom ?? 0);
   });
 
   test('searches rows by title and property text', async ({ page }) => {
@@ -325,6 +531,82 @@ test.describe('database view settings', () => {
     await expect(knob).toHaveCSS('transition', /transform 0.2s ease-out/);
     await byTestId(page, 'database-settings-lock').click();
     await expect(knob).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 12, 0)');
+  });
+
+  // notion-live/settings.png and vs-propvis.png, panel box top y 130 (motion-vspage.json):
+  // field box 49–79, rows 274 wide at x 8, root rows 28 tall on a 29px step, Property visibility rows on 28.
+  test('lays out the root and Property visibility pages at Notion\'s offsets', async ({ page }) => {
+    await mount(page, blocks());
+    await byTestId(page, 'database-toolbar-settings').click();
+    const panel = byTestId(page, 'database-view-settings');
+    const boxes = async (selectors: string[]): Promise<Array<{ top: number; bottom: number; left: number; width: number; height: number }>> =>
+      panel.evaluate((root, list) => {
+        const origin = root.getBoundingClientRect();
+
+        return list.map((selector) => {
+          const r = (root.querySelector(selector) ?? root).getBoundingClientRect();
+
+          return { top: r.top - origin.top, bottom: r.bottom - origin.top, left: r.left - origin.left, width: r.width, height: r.height };
+        });
+      }, selectors);
+
+    const [field, layout, visibility, separator, source] = await boxes([
+      '[data-blok-testid="database-settings-view-name"]',
+      '[data-blok-testid="database-settings-layout"]',
+      '[data-blok-testid="database-settings-properties"]',
+      '[data-blok-database-panel-separator]',
+      '[data-blok-testid="database-settings-source"]',
+    ]);
+    const beforeSeparator = await panel.evaluate((root) => {
+      const line = root.querySelector('[data-blok-database-panel-separator]');
+      const row = line?.previousElementSibling;
+
+      return row === null || row === undefined ? 0 : row.getBoundingClientRect().bottom - root.getBoundingClientRect().top;
+    });
+
+    expect(field.top + field.height / 2).toBeCloseTo(64, 0);
+    expect(layout.top).toBeCloseTo(86, 0);
+    expect(visibility.top - layout.top).toBeCloseTo(29, 0);
+    expect(layout.width).toBe(274);
+    expect(layout.left).toBe(8);
+    expect(separator.height).toBe(1);
+    expect(separator.top - beforeSeparator).toBeCloseTo(11, 0);
+    expect(source.top - beforeSeparator).toBeCloseTo(52, 0);
+
+    await byTestId(page, 'database-settings-properties').click();
+    const [search, label, first, second] = await boxes([
+      '[data-blok-testid="database-property-search"]',
+      '[data-blok-database-property-visibility-header]',
+      '[data-blok-database-panel-list-item]',
+      '[data-blok-database-panel-list-item] + [data-blok-database-panel-list-item]',
+    ]);
+
+    expect(search.top + search.height / 2).toBeCloseTo(64, 0);
+    expect(label.top + label.height / 2).toBeCloseTo(110, 0);
+    expect(first.top).toBeCloseTo(124, 0);
+    expect(second.top - first.top).toBe(28);
+    expect(first.width).toBe(274);
+  });
+
+  // research/10 L16 and research/35 L197: a property opens its Edit property panel; New property asks for a name and a type.
+  test('Edit properties opens a property\'s editor and New property', async ({ page }) => {
+    await mount(page, blocks());
+    await byTestId(page, 'database-toolbar-settings').click();
+    await byTestId(page, 'database-settings-edit-properties').click();
+    await expect(byTestId(page, 'database-edit-properties-search')).toBeFocused();
+    await byTestId(page, 'database-edit-property-p-amount').click();
+
+    await expect(byTestId(page, 'database-view-settings')).toBeHidden();
+    await expect(page.getByRole('textbox', { name: 'Property name' })).toHaveValue('Amount');
+    await page.keyboard.press('Escape');
+
+    await byTestId(page, 'database-toolbar-settings').click();
+    await byTestId(page, 'database-settings-edit-properties').click();
+    await byTestId(page, 'database-edit-properties-new').click();
+    const name = page.getByRole('textbox', { name: 'Property name' });
+
+    await expect(name).toBeVisible();
+    await expect(name).toHaveValue('');
   });
 
   test('Cmd/Ctrl+Alt+T folds every group', async ({ page }) => {

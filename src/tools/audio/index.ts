@@ -1,4 +1,5 @@
 import { describeAudio } from '../../shared/tool-descriptions/audio';
+import { linkClipboardHtml } from '../../shared/clipboard-html';
 import { MEDIA_ACTION_HANDLERS } from '../../shared/tool-actions/media';
 import { audioSanitize } from '../../shared/tool-descriptions/sanitize/blocks';
 import type {
@@ -21,6 +22,7 @@ import {
   IconAlignLeft,
   IconAlignRight,
   IconCaption,
+  IconCollapseFullscreen,
   IconCopy,
   IconDownload,
   IconImage,
@@ -34,13 +36,17 @@ import { deliverToRebuiltBlock, putBackOnRebuiltBlock, releaseObjectUrl } from '
 import { DEFAULT_CAPTION_PLACEHOLDER, DEFAULT_MIME_TYPES, URL_PATTERN } from './constants';
 import { renderEmptyState, type EmptyStateElement } from './empty-state';
 import { tr } from './i18n';
-import { renderCaptionRow, renderErrorState, renderNowPlaying, type ErrorService } from './ui';
+import { renderCaptionRow, renderCoverArt, renderErrorState, renderNowPlaying, type ErrorService, type ErrorState } from './ui';
 import { openCoverPicker, validateCoverFile, type CoverPickerHandle } from './cover-picker';
 import { attachControls, type ControlsHandle } from './controls';
+import { attachInkCover, type InkCoverHandle } from './cover-ink';
 import { attachWaveform, decodePeaks, type WaveformHandle } from './waveform';
+import { attachWire } from './wire';
 import { readTrackMetadata, resolveCover } from './metadata';
 import { Uploader, AudioUploadError, type UploadResult } from './uploader';
-import { uploadErrorMessage } from '../../components/utils/upload-error-message';
+import { parseTooLargeDetail, uploadErrorMessage } from '../../components/utils/upload-error-message';
+import { uploadErrorLines, type UploadErrorLineKeys, type UploadErrorLines } from '../../components/utils/upload-error-lines';
+import { formatBytes } from '../../components/utils/format-bytes';
 import { resolveUploadError } from '../../components/utils/media-upload-error';
 import { pickDisplayMaxSize } from '../../components/utils/max-size';
 import { logLabeled } from '../../components/utils/logger';
@@ -51,6 +57,38 @@ import { whenNearViewport } from '../../components/utils/near-viewport';
 import type { LazySheet } from '../../components/utils/lazy-styles';
 
 type ToolState = 'EMPTY' | 'LOADING' | 'RENDERED' | 'ERROR';
+
+const ERROR_LINE_KEYS: UploadErrorLineKeys = {
+  failed: 'tools.audio.errorUploadFailed',
+  failedDetail: 'tools.audio.errorUploadFailedDetail',
+  tooLargeTitle: 'tools.audio.errorFileTooLargeTitle',
+  tooLargeDetail: 'tools.audio.errorFileTooLargeDetail',
+  unsupportedTitle: 'tools.audio.errorUnsupportedTitle',
+  unsupportedDetail: 'tools.audio.errorUnsupportedDetail',
+  invalidUrlTitle: 'tools.audio.errorInvalidUrlTitle',
+  invalidUrlDetail: 'tools.audio.errorInvalidUrlDetail',
+};
+
+/** The title for a link the named service will not let us play. */
+const SHARE_LINK_TITLES: Record<string, string | undefined> = {
+  GOOGLE_DRIVE_NEEDS_UPLOADER: 'tools.audio.errorGoogleDriveTitle',
+  ONEDRIVE_NEEDS_UPLOADER: 'tools.audio.errorOneDriveTitle',
+};
+
+/** English for a host that has not registered these keys. */
+const ERROR_LINE_FALLBACKS: Record<string, string | undefined> = {
+  'tools.audio.errorUploadFailed': 'Upload failed',
+  'tools.audio.errorUploadFailedDetail': 'Check your connection and try again.',
+  'tools.audio.errorFileTooLargeTitle': 'Audio is too large',
+  'tools.audio.errorFileTooLargeDetail': '{size} exceeds the {max} limit.',
+  'tools.audio.errorUnsupportedTitle': 'This file type isn’t supported',
+  'tools.audio.errorUnsupportedDetail': 'Choose a different file.',
+  'tools.audio.errorInvalidUrlTitle': 'This link doesn’t work',
+  'tools.audio.errorInvalidUrlDetail': 'Check the link and try again.',
+  'tools.audio.errorGoogleDriveTitle': 'Google Drive audio can’t play here',
+  'tools.audio.errorOneDriveTitle': 'OneDrive audio can’t play here',
+  'tools.audio.errorShareLinkDetail': 'Download the file and upload it here instead.',
+};
 
 export class AudioTool implements BlockTool {
   public static get 'blok.runtimePartsOwner'(): string {
@@ -90,12 +128,17 @@ export class AudioTool implements BlockTool {
   private state: ToolState;
   private uploadingEl: UploadingStateElement | null = null;
   private lastFileName: string | null = null;
-  private errorMessage: string | null = null;
+  /** The error card's title and detail. */
+  private errorLines: UploadErrorLines | null = null;
   private errorService: ErrorService | undefined;
+  /** File size and limit in bytes, when the failure was a file over the limit. */
+  private errorSizes: { size: number; max: number } | null = null;
+  private errorCard: ErrorState | null = null;
   private lastSource: { kind: 'file'; file: File } | { kind: 'url'; url: string } | null = null;
   private controlsHandle: ControlsHandle | null = null;
   private stopNearWatch: () => void = () => undefined;
   private waveformHandle: WaveformHandle | null = null;
+  private inkHandle: InkCoverHandle | null = null;
   private destroyed = false;
   private coverPicker: CoverPickerHandle | null = null;
   /** Pending fallback timer for the caption collapse-out animation. */
@@ -132,12 +175,14 @@ export class AudioTool implements BlockTool {
     if (typeof this.data.artist === 'string') out.artist = this.data.artist;
     if (this.data.coverUrl !== undefined) out.coverUrl = this.data.coverUrl;
     if (this.data.loop) out.loop = true;
+    if (this.data.compact) out.compact = true;
     if (this.data.width !== undefined) out.width = this.data.width;
     if (this.data.alignment !== undefined) out.alignment = this.data.alignment;
     if (this.data.fileName !== undefined) out.fileName = this.data.fileName;
     if (this.data.mimeType !== undefined) out.mimeType = this.data.mimeType;
     if (this.data.duration !== undefined) out.duration = this.data.duration;
     if (this.data.peaks !== undefined) out.peaks = this.data.peaks;
+    if (typeof this.data.motion === 'string') out.motion = this.data.motion;
     return out;
   }
 
@@ -145,11 +190,16 @@ export class AudioTool implements BlockTool {
     return typeof data.url === 'string' && data.url.length > 0;
   }
 
+  /** A link to the audio. The cover is left out, or a paste makes it an image. */
+  public static clipboardHtml(data: AudioData): string | null {
+    return linkClipboardHtml(data.url, [data.title, data.fileName], data);
+  }
+
   public static get toolbox(): ToolboxConfig {
     return {
       icon: IconMusic,
       titleKey: 'audio',
-      searchTerms: ['audio', 'music', 'sound', 'song', 'mp3', 'track', 'media'],
+      searchTerms: ['audio', 'music', 'sound', 'song', 'mp3', 'track', 'media', 'podcast', 'voice', 'recording'],
       section: 'media',
       preview: { render: renderAudioPreview, descriptionKey: 'toolbox.preview.audio' },
     };
@@ -245,6 +295,14 @@ export class AudioTool implements BlockTool {
         onActivate: (): void => this.toggleCaption(),
       },
       {
+        icon: IconCollapseFullscreen,
+        title: tr(i18n, 'tools.audio.compact', 'Compact'),
+        name: 'audio-compact',
+        isActive: this.data.compact === true,
+        closeOnActivate: true,
+        onActivate: (): void => this.toggleCompact(),
+      },
+      {
         icon: IconPlayerLoop,
         title: tr(i18n, 'tools.audio.loop', 'Loop'),
         name: 'audio-loop',
@@ -313,6 +371,10 @@ export class AudioTool implements BlockTool {
     this.controlsHandle = null;
     this.waveformHandle?.destroy();
     this.waveformHandle = null;
+    this.inkHandle?.destroy();
+    this.inkHandle = null;
+    this.errorCard?.destroy();
+    this.errorCard = null;
     this.coverPicker?.close();
     this.coverPicker = null;
   }
@@ -454,7 +516,7 @@ export class AudioTool implements BlockTool {
       fileName: result.fileName ?? this.lastFileName ?? this.data.fileName,
       mimeType: file?.type || this.data.mimeType,
     };
-    this.errorMessage = null;
+    this.errorLines = null;
     this.state = 'RENDERED';
     this.renderState();
   }
@@ -512,6 +574,7 @@ export class AudioTool implements BlockTool {
         if (decoded && decoded.peaks.length) {
           this.data.peaks = decoded.peaks;
           this.data.duration = decoded.duration;
+          if (decoded.motion) this.data.motion = decoded.motion;
           this.renderState();
           this.block.dispatchChange({ derived: true, from: ['url'] });
         }
@@ -521,19 +584,37 @@ export class AudioTool implements BlockTool {
 
   private applyError(err: unknown, source: { file?: File; url?: string }): void {
     const own = err instanceof AudioUploadError ? err : null;
+    const message = this.uploadErrorText(own);
     const outcome = resolveUploadError({
       tool: 'audio',
       error: own,
       cause: err,
-      message: this.uploadErrorText(own),
+      message,
       source,
       onUploadError: this.config.onUploadError,
     });
 
-    this.errorMessage = outcome.kind === 'message' ? outcome.message : null;
+    this.errorLines = outcome.kind === 'message' ? this.linesFor(own, message, outcome.message) : null;
     this.errorService = errorServiceOf(own);
+    this.errorSizes = own?.code === 'FILE_TOO_LARGE' ? parseTooLargeDetail(own.detail) : null;
     this.state = outcome.kind === 'message' ? 'ERROR' : 'EMPTY';
     this.renderState();
+  }
+
+  /**
+   * The error card's two lines. `uploadErrorText` is the same failure as one
+   * sentence, which is what `onUploadError` receives.
+   */
+  private linesFor(err: AudioUploadError | null, own: string, shown: string): UploadErrorLines {
+    const t = (key: string): string => tr(this.api.i18n, key, ERROR_LINE_FALLBACKS[key] ?? key);
+    const shareTitle = SHARE_LINK_TITLES[err?.code ?? ''];
+
+    // A share link has its own advice, unless the host app replaced our sentence.
+    if (shareTitle !== undefined && shown === own) {
+      return { title: t(shareTitle), detail: t('tools.audio.errorShareLinkDetail') };
+    }
+
+    return uploadErrorLines({ error: err, own, shown, t, keys: ERROR_LINE_KEYS });
   }
 
   private uploadErrorText(err: AudioUploadError | null): string {
@@ -566,6 +647,7 @@ export class AudioTool implements BlockTool {
     r.setAttribute('data-state', this.state.toLowerCase());
     r.setAttribute('data-align', this.data.alignment ?? 'center');
     r.setAttribute('data-caption', this.isCaptionVisible() ? 'on' : 'off');
+    r.setAttribute('data-compact', this.data.compact ? 'on' : 'off');
   }
 
   private renderState(): void {
@@ -575,6 +657,10 @@ export class AudioTool implements BlockTool {
     this.controlsHandle = null;
     this.waveformHandle?.destroy();
     this.waveformHandle = null;
+    this.inkHandle?.destroy();
+    this.inkHandle = null;
+    this.errorCard?.destroy();
+    this.errorCard = null;
     this.stopNearWatch();
     this.root.replaceChildren();
     this.uploadingEl = null;
@@ -626,11 +712,16 @@ export class AudioTool implements BlockTool {
   private renderError(): void {
     if (!this.root) return;
     const canUpload = !this.readOnly && this.config.sources !== 'url';
-    this.root.appendChild(renderErrorState({
-      message: this.errorMessage ?? tr(this.api.i18n, 'tools.audio.errorUploadFailed', 'Upload failed'),
+    this.errorCard = renderErrorState({
+      ...(this.errorLines ?? this.linesFor(null, '', '')),
       service: this.errorService,
-      ...(this.errorService
-        ? { badge: tr(this.api.i18n, 'tools.audio.errorBadge', 'Needle skipped') }
+      ...(this.errorSizes
+        ? {
+          tooLarge: {
+            size: formatBytes(this.errorSizes.size),
+            limit: tr(this.api.i18n, 'tools.audio.emptyMaxSize', 'max {size}').replace(/\{size\}/g, formatBytes(this.errorSizes.max)),
+          },
+        }
         : {}),
       replaceLabel: tr(this.api.i18n, 'tools.audio.errorReplace', 'Replace'),
       onReplace: () => this.transitionToEmpty(),
@@ -643,15 +734,16 @@ export class AudioTool implements BlockTool {
           },
         }
         : {}),
-    }));
+    });
+    this.root.appendChild(this.errorCard.element);
   }
 
   private renderRendered(): void {
     if (!this.root) return;
-    const titlePlaceholder = tr(this.api.i18n, 'tools.audio.titlePlaceholder', 'Track title');
-    const artistPlaceholder = tr(this.api.i18n, 'tools.audio.artistPlaceholder', 'Artist');
+    const titlePlaceholder = tr(this.api.i18n, 'tools.audio.titlePlaceholder', 'Title');
+    const artistPlaceholder = tr(this.api.i18n, 'tools.audio.artistPlaceholder', 'Author');
 
-    const { figure, audio, waveformMount, title, artist, body, coverButton } = renderNowPlaying(this.data, {
+    const { figure, audio, waveformMount, title, artist, body, coverButton, ink } = renderNowPlaying(this.data, {
       editable: !this.readOnly,
       titlePlaceholder,
       artistPlaceholder,
@@ -663,10 +755,8 @@ export class AudioTool implements BlockTool {
       audio.preload = 'metadata';
     });
 
-    // Waveform (if peaks are available)
-    if (this.data.peaks?.length) {
-      this.waveformHandle = attachWaveform({ mount: waveformMount, media: audio, peaks: this.data.peaks, stage: figure });
-    }
+    this.mountTrackDrawing(figure, audio, waveformMount);
+    if (ink) this.inkHandle = attachInkCover({ canvas: ink, media: audio, motion: this.data.motion, peaks: this.data.peaks });
 
     // Transport controls — appended into the right-column body (under waveform)
     this.controlsHandle = attachControls({
@@ -804,6 +894,32 @@ export class AudioTool implements BlockTool {
     this.captionExitTimer = setTimeout(finish, 360);
   }
 
+  /** A compact player draws the wire. A full one draws the ridgeline when it has peaks. */
+  private mountTrackDrawing(figure: HTMLElement, audio: HTMLAudioElement, mount: HTMLElement): void {
+    if (this.data.compact) {
+      this.waveformHandle = attachWire({ mount, media: audio, motion: this.data.motion, peaks: this.data.peaks });
+
+      return;
+    }
+    if (!this.data.peaks?.length) return;
+    this.waveformHandle = attachWaveform({ mount, media: audio, peaks: this.data.peaks, stage: figure });
+  }
+
+  /** Swaps the drawing in place: a re-render would rebuild the <audio> and stop a playing track. */
+  private toggleCompact(): void {
+    this.data.compact = this.data.compact ? undefined : true;
+    this.block.dispatchChange();
+    this.syncRootAttributes();
+    this.waveformHandle?.destroy();
+    this.waveformHandle = null;
+
+    const figure = this.root?.querySelector<HTMLElement>('[data-role="audio-figure"]');
+    const audio = figure?.querySelector<HTMLAudioElement>('[data-role="audio-media"]');
+    const mount = figure?.querySelector<HTMLElement>('[data-role="audio-waveform"]');
+
+    if (figure && audio && mount) this.mountTrackDrawing(figure, audio, mount);
+  }
+
   private toggleLoop(): void {
     this.data.loop = this.data.loop !== true ? true : undefined;
     this.block.dispatchChange();
@@ -860,6 +976,8 @@ export class AudioTool implements BlockTool {
       anchor,
       trigger,
       i18n: this.api.i18n,
+      surface: 'ink-well',
+      ...(this.data.coverUrl ? { current: this.data.coverUrl } : {}),
       onFile: (file) => this.applyCoverFile(file),
       onUrl: (url) => this.applyCoverUrl(url),
       onClose: () => {
@@ -887,14 +1005,32 @@ export class AudioTool implements BlockTool {
           if (url.startsWith('blob:')) URL.revokeObjectURL(url);
           return;
         }
-        this.setCover(url);
-        this.coverPicker?.close();
+        this.landCover(url);
       })
       .catch(() => {
         this.coverPicker?.setError(
           tr(this.api.i18n, 'tools.audio.errorUploadFailed', 'Upload failed')
         );
       });
+  }
+
+  /**
+   * Sets a cover picked in the ink well, once the well has opened onto it.
+   * Setting it sooner rebuilds the player under the picker and closes it mid-motion.
+   */
+  private landCover(url: string): void {
+    const settled = this.coverPicker?.settle() ?? Promise.resolve();
+
+    void settled.then(() => {
+      if (this.destroyed) {
+        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+
+        return;
+      }
+      this.setCover(url);
+      this.root?.querySelector('[data-role="audio-cover"]')?.classList.add('is-fresh');
+      this.coverPicker?.close();
+    });
   }
 
   private applyCoverUrl(url: string): void {
@@ -904,8 +1040,7 @@ export class AudioTool implements BlockTool {
       .uploadByUrl(url, { kind: 'image', tool: this.block.name })
       .then(({ url: stored }) => {
         if (this.destroyed) return;
-        this.setCover(stored);
-        this.coverPicker?.close();
+        this.landCover(stored);
       })
       .catch(() => {
         this.coverPicker?.setError(
@@ -918,7 +1053,7 @@ export class AudioTool implements BlockTool {
     const prev = this.data.coverUrl;
     if (prev && prev !== url && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
     this.data.coverUrl = url;
-    this.renderState();
+    this.swapCoverArt();
     this.block.dispatchChange();
   }
 
@@ -926,8 +1061,36 @@ export class AudioTool implements BlockTool {
     const prev = this.data.coverUrl;
     if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
     this.data.coverUrl = undefined;
-    this.renderState();
+    this.swapCoverArt();
     this.block.dispatchChange();
+  }
+
+  /**
+   * Replaces only the art inside the cover. A full re-render would rebuild the
+   * <audio> element and stop playback.
+   */
+  private swapCoverArt(): void {
+    const cover = this.root?.querySelector<HTMLElement>('[data-role="audio-cover"]');
+    const audio = this.root?.querySelector<HTMLAudioElement>('[data-role="audio-media"]');
+
+    if (this.state !== 'RENDERED' || !cover || !audio) {
+      this.renderState();
+
+      return;
+    }
+    this.inkHandle?.destroy();
+    this.inkHandle = null;
+    // Drop the reveal and flush styles, so the next picked cover replays it.
+    cover.classList.remove('is-fresh');
+    cover.getBoundingClientRect();
+    cover.querySelectorAll(':scope > img, :scope > [data-role="audio-cover-ink"]').forEach((el) => el.remove());
+
+    const art = renderCoverArt(this.data.coverUrl);
+
+    cover.prepend(art);
+    if (art instanceof HTMLCanvasElement) {
+      this.inkHandle = attachInkCover({ canvas: art, media: audio, motion: this.data.motion, peaks: this.data.peaks });
+    }
   }
 }
 

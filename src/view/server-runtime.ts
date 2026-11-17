@@ -1,6 +1,6 @@
 import type { HostService, ManifestOverrides } from '../../types';
 import type { LooseOutputBlockData, LooseOutputData, OutputBlockData, OutputData } from '../../types/data-formats/output-data';
-import type { AgentActor, AgentApprovalRequest, AgentApprover, AgentBatch, AgentError, AgentResult, AgentVersion, AgentVersionHistory } from '../../types/agent';
+import type { AgentActor, AgentApprovalRequest, AgentApprover, AgentBatch, AgentError, AgentRestorePreview, AgentResult, AgentVersion, AgentVersionHistory } from '../../types/agent';
 // Imported by file rather than through `src/components/utils`: the barrel
 // reaches the DOM, this module does not.
 import { getBlokVersion } from '../components/utils/version';
@@ -8,11 +8,11 @@ import { markdownToBlocksWithReport } from '../markdown';
 import { pagesInsert } from '../agent/guidance';
 import { approvalKey } from '../shared/agent/approval';
 import { COMMANDS } from '../shared/agent/commands';
-import { createDocumentAgentSession, type CarriedHistory } from '../shared/agent/document-session';
+import { createDocumentAgentSession } from '../shared/agent/document-session';
+import { carriedHistory } from '../shared/agent/carried-history';
 import { AgentFailure, failure } from '../shared/agent/errors';
-import { contentRevision } from '../shared/agent/revision';
+import { readOnlyPreview } from '../shared/agent/version-history';
 import type { AgentPorts } from '../shared/agent/types';
-import { DocSnapshot } from '../shared/agent/snapshot';
 import { buildBuiltInSnapshot } from '../shared/built-in-snapshot';
 import { readCustomToolsFile, snapshotWithCustomTools } from '../shared/custom-tools-file';
 import { approvalQuestion, canElicit, elicitationApprover, readInputResponse } from '../shared/mcp/approval';
@@ -472,12 +472,14 @@ const isBatchEnvelope = (value: unknown): boolean =>
  * fetch error says so), which decide whether a retry can help.
  * A restore needs both `versions` and its version in `documents`; with
  * `restores: true` Jint checks it and names it as `restore` in the output.
+ * A preview needs its version in `previews`: the route's answer, or null for a 404.
+ * The host asked the route with the command's own `databases`.
  */
-const loadedVersionHistory = (value: unknown, onRestore?: (version: string) => void): AgentVersionHistory | undefined => {
+const loadedVersionHistory = (value: unknown, onRestore?: (version: string) => void, readOnly = false): AgentVersionHistory | undefined => {
   if (!isRecord(value)) {
     return undefined;
   }
-  const { versions, documents, failed, status, retryable } = value;
+  const { versions, documents, previews, failed, status, retryable } = value;
   const loaded = (version: string): boolean => isRecord(documents) && Object.hasOwn(documents, version);
   const refuse = (what: string): Promise<never> => Promise.reject(Object.assign(
     new Error(typeof failed === 'string' ? failed : `The host did not load ${what}.`),
@@ -490,6 +492,16 @@ const loadedVersionHistory = (value: unknown, onRestore?: (version: string) => v
     read: version => isRecord(documents) && loaded(version)
       ? Promise.resolve(isStoredDocument(documents[version]) ? documents[version] : null)
       : refuse(`version "${version}"`),
+    previewRestore: version => {
+      if (readOnly) {
+        return Promise.reject(readOnlyPreview());
+      }
+
+      // Only null is no such version; any other body goes on, so the agent refuses it as Node's does.
+      return isRecord(previews) && Object.hasOwn(previews, version)
+        ? Promise.resolve(previews[version] === null ? null : previews[version] as AgentRestorePreview)
+        : refuse(`the restore preview of version "${version}"`);
+    },
     // Jint only checks the restore; the host restores the version named in the output.
     ...(onRestore !== undefined && {
       restore: (version: string) => {
@@ -515,33 +527,6 @@ const contractWhere = (input: Record<string, unknown>): { runtime: 'jint' | 'csh
   ...(createsPages(input) && { prepares: ['page'] }),
   ...(input.comments === false && { comments: false as const }),
 });
-
-const isCarriedEntry = (value: unknown): value is OutputData | 'other' => value === 'other' || isStoredDocument(value);
-
-/**
- * The steps a C# session carries between calls. They hold only while the document is the one the
- * last call returned: a revision that differs means someone else saved it, so the steps are lost.
- */
-const carriedHistory = (
-  value: unknown,
-  document: OutputData,
-  load: (raw: OutputData) => OutputData
-): CarriedHistory | undefined => {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const past = Array.isArray(value.past) ? value.past.filter(isCarriedEntry) : [];
-  const future = Array.isArray(value.future) ? value.future.filter(isCarriedEntry) : [];
-
-  const lost = value.lost === true;
-
-  if (value.revision !== contentRevision(DocSnapshot.fromOutput(document).toOutput())) {
-    return { past: [], future: [], lost: lost || past.length + future.length > 0 };
-  }
-  const loaded = (entry: OutputData | 'other'): OutputData | 'other' => entry === 'other' ? entry : load(entry);
-
-  return { past: past.map(loaded), future: future.map(loaded), lost };
-};
 
 /**
  * Jint cannot wait on the host, so C# creates the pages first (agentPagesNeeded counts them)
@@ -826,10 +811,12 @@ const createServerAgentSession = (
   openPage?: OpenPage
 ): ReturnType<typeof createDocumentAgentSession> => {
   const setup = isRecord(input.mcp) ? mcpSetup(input.mcp) : serverSetup(input);
-  const versionHistory = loadedVersionHistory(input.versionHistory, setup.restores ? onRestore : undefined);
+  // The ticket of a read-only live handle cannot reach the preview route, so the host never asks it.
+  const readOnlyLive = isRecord(input.mcp) && input.mcp.mode === 'live' && input.mcp.write !== true;
+  const versionHistory = loadedVersionHistory(input.versionHistory, setup.restores ? onRestore : undefined, readOnlyLive);
   const load = (raw: OutputData): OutputData => loadStoredDocument(raw, setup.richTextFieldsFor);
   const loaded = load(document);
-  const history = carriedHistory(input.history, loaded, load);
+  const history = carriedHistory(input.history, loaded, load, isStoredDocument);
   const hostRevision = hostRevisionOf(input.revision);
 
   return createDocumentAgentSession({

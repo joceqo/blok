@@ -31,6 +31,14 @@ export const RICH_TEXT_MARKS = {
       additionalProperties: false,
       properties: { href: { type: 'string' }, target: { type: 'string' }, rel: { type: 'string' } },
     },
+    annotation: {
+      type: 'object',
+      // Short on purpose: this schema is sent to an agent on every call (render-tools-parity size budget).
+      description: 'Plain-text hint card on hover.',
+      required: ['text'],
+      additionalProperties: false,
+      properties: { text: { type: 'string' }, subtitle: { type: 'string' } },
+    },
   },
   patternProperties: { '^tag:': { type: 'object', additionalProperties: { type: 'string' } } },
 } as const;

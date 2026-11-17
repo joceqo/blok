@@ -5,18 +5,10 @@ import type { DatabaseTimelineViewOptions, TimelineGroup, TimelineHandlers } fro
 import { TIMELINE_DAY_WIDTH, timelineWindow } from '../../../../src/tools/database/timeline-dates';
 import { daysBetween } from '../../../../src/tools/database/calendar-dates';
 import { IconArrowLeftSmall, IconArrowRightSmall, IconChevronDoubleRight } from '../../../../src/components/icons';
-import { hide, showReadout } from '../../../../src/components/utils/tooltip';
-import type * as Tooltip from '../../../../src/components/utils/tooltip';
 import type { DatabaseRow, DatabaseViewConfig, PropertyDefinition, SelectOption } from '../../../../src/tools/database/types';
 
 /** An icon string as the DOM serializes it once it is set as innerHTML. */
 const markup = (svg: string): string => Object.assign(document.createElement('span'), { innerHTML: svg }).innerHTML;
-
-vi.mock('../../../../src/components/utils/tooltip', async (importOriginal) => ({
-  ...await importOriginal<typeof Tooltip>(),
-  showReadout: vi.fn(),
-  hide: vi.fn(),
-}));
 
 const schema: PropertyDefinition[] = [
   { id: 'p-title', name: 'Name', type: 'title', position: 'a0' },
@@ -166,6 +158,21 @@ describe('DatabaseTimelineView', () => {
       expect(bar(root, 'r2').style.insetInlineStart).toBe(`${px('2026-10-12') + 1.5}px`);
     });
 
+    // notion-motion.md Round 48 A5: in Quarter, Year and 5 Years a bar starts 2px into its span and is max(span - 3, 11) wide.
+    it.each([
+      ['quarter', 3, 33],
+      ['quarter', 1, 11],
+      ['year', 3, 12],
+      ['5_years', 3, 11],
+    ] as const)('%s zoom insets a %i-day bar to Notion\'s %ipx, 2px in', (zoom, days, width) => {
+      const end = days === 1 ? '2026-10-12' : `2026-10-12/2026-10-${String(11 + days)}`;
+      const { root } = mount({ view: timelineView({ timelineZoom: zoom }), groups: single([row('r1', 'Trip', end)]) });
+      const start = daysBetween(timelineWindow(CENTER, zoom).start, '2026-10-12') * TIMELINE_DAY_WIDTH[zoom];
+
+      expect(bar(root, 'r1').style.width).toBe(`${width}px`);
+      expect(bar(root, 'r1').style.insetInlineStart).toBe(`${start + 2}px`);
+    });
+
     it('marks the zoom level and draws the canvas as wide as the window', () => {
       const { root } = mount({ view: timelineView({ timelineZoom: 'year' }) });
       const window = timelineWindow(CENTER, 'year');
@@ -240,17 +247,459 @@ describe('DatabaseTimelineView', () => {
         .toBe(new Intl.DateTimeFormat('ar-EG', { day: 'numeric' }).format(new Date(2026, 9, 9)));
     });
 
-    it('marks today on the date axis', () => {
-      const { root } = mount();
-      const marker = root.querySelector<HTMLElement>('[data-blok-database-timeline-today-line]');
+    // notion-motion.md Round 33 §4 (r33-timeline-*.raw): at 15:11 the line sits 25/40 into today's column,
+    // and it moves with the clock, a minute at a time.
+    describe('today line', () => {
+      const lineAt = (root: HTMLElement): number =>
+        parseFloat(root.querySelector<HTMLElement>('[data-blok-database-timeline-today-line]')?.style.insetInlineStart ?? '');
 
-      expect(marker?.style.insetInlineStart).toBe(`${px(CENTER) + 20}px`);
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        vi.setSystemTime(new Date(2026, 9, 9, 15, 11));
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('marks the time of day in today\'s column', () => {
+        expect(lineAt(mount().root)).toBeCloseTo(px(CENTER) + 40 * (15 * 60 + 11) / 1440, 3);
+      });
+
+      it('moves as the minutes pass', () => {
+        const { root } = mount();
+
+        vi.advanceTimersByTime(2 * 60_000);
+
+        expect(lineAt(root)).toBeCloseTo(px(CENTER) + 40 * (15 * 60 + 13) / 1440, 3);
+      });
+
+      it('stops its clock on destroy', () => {
+        const { view } = mount();
+
+        expect(vi.getTimerCount()).toBeGreaterThan(0);
+        view.destroy();
+
+        expect(vi.getTimerCount()).toBe(0);
+      });
+    });
+
+    // notion-motion.md Round 34 §5 (r34-timeline-hours-nowlabel.raw, r33-timeline-nowline-hours-1.raw): Hours zoom
+    // names the time on the now-line in the tick row, centres each tick on its time, has no day pill,
+    // and drops the ticks the label would cover.
+    describe('hours zoom now label', () => {
+      const NOW_LABEL = '[data-blok-database-timeline-now-label]';
+      const hours = (): HTMLElement => mount({ view: timelineView({ timelineZoom: 'hours' }) }).root;
+      const hoursStart = timelineWindow(CENTER, 'hours').start;
+      const tickAt = (root: HTMLElement, hour: number, minute: number): HTMLElement => {
+        const index = daysBetween(hoursStart, CENTER) * 96 + hour * 4 + minute / 15;
+        const tick = root.querySelectorAll<HTMLElement>('[data-blok-database-timeline-units] > [data-day]')[index];
+
+        if (tick === undefined) throw new Error('no tick');
+
+        return tick;
+      };
+      const xOf = (el: HTMLElement | null): number => parseFloat(el?.style.insetInlineStart ?? '');
+
+      /** Lays out the label 48.58 wide on its x and each tick's text 44 wide on its time. */
+      const layout = (): void => {
+        vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+          const owner = this.parentElement;
+          const isLabel = owner?.matches(NOW_LABEL) === true;
+
+          // A hidden tick has no box.
+          if (owner?.hidden === true) return { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) };
+          const center = owner === null ? 0 : xOf(owner) + (isLabel ? 0 : parseFloat(owner.style.width) / 2);
+          const width = isLabel ? 48.58 : 44;
+
+          return { left: center - width / 2, right: center + width / 2, top: 0, bottom: 14, width, height: 14, x: center - width / 2, y: 0, toJSON: () => ({}) };
+        });
+      };
+
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'queueMicrotask'] });
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('reads the time in the locale\'s clock, on the now-line, with no day pill', () => {
+        vi.setSystemTime(new Date(2026, 9, 9, 17, 38));
+        const root = hours();
+        const label = root.querySelector<HTMLElement>(`[data-blok-database-timeline-units] > ${NOW_LABEL}`);
+
+        expect(label?.textContent).toMatch(/^5:38\sPM$/);
+        expect(xOf(label)).toBeCloseTo(xOf(root.querySelector<HTMLElement>('[data-blok-database-timeline-today-line]')), 5);
+        expect(root.querySelector('[data-blok-database-timeline-today-dot]')).toBeNull();
+        vi.advanceTimersByTime(60_000);
+        expect(label?.textContent).toMatch(/^5:39\sPM$/);
+      });
+
+      it('centres each tick on its time', () => {
+        vi.setSystemTime(new Date(2026, 9, 9, 17, 38));
+        const tick = tickAt(hours(), 17, 15);
+        const time = (daysBetween(hoursStart, CENTER) + (17 * 60 + 15) / 1440) * TIMELINE_DAY_WIDTH.hours;
+
+        expect(xOf(tick) + parseFloat(tick.style.width) / 2).toBeCloseTo(time, 5);
+        expect(tick.textContent).toMatch(/^5:15\sPM$/);
+      });
+
+      // At 5:38 Notion drops 5:30 and 5:45 (39 and 34 px away) and keeps 5:15 and 6:00 (112 and 107).
+      it('hides the ticks the label covers, and keeps the rest', () => {
+        vi.setSystemTime(new Date(2026, 9, 9, 17, 38));
+        layout();
+        const root = hours();
+
+        vi.runAllTicks();
+        expect([[17, 15], [17, 30], [17, 45], [18, 0]].map(([h, m]) => tickAt(root, h, m).hidden)).toEqual([false, true, true, false]);
+      });
+
+      // At 3:29 Notion drops 3:30 and keeps 3:15 and 3:45 (68 and 78 px away).
+      it('keeps a tick 68 px away', () => {
+        vi.setSystemTime(new Date(2026, 9, 9, 15, 29));
+        layout();
+        const root = hours();
+
+        vi.runAllTicks();
+        expect([[15, 15], [15, 30], [15, 45]].map(([h, m]) => tickAt(root, h, m).hidden)).toEqual([false, true, false]);
+      });
+
+      it('keeps a tick hidden while the label still covers it', () => {
+        vi.setSystemTime(new Date(2026, 9, 9, 17, 38));
+        layout();
+        const root = hours();
+
+        vi.runAllTicks();
+        vi.advanceTimersByTime(60_000);
+        expect(tickAt(root, 17, 30).hidden).toBe(true);
+      });
+
+      it('brings a tick back once the line has moved off it', () => {
+        vi.setSystemTime(new Date(2026, 9, 9, 17, 38));
+        layout();
+        const root = hours();
+
+        vi.runAllTicks();
+        vi.advanceTimersByTime(3 * 60_000);
+        expect(tickAt(root, 17, 30).hidden).toBe(false);
+      });
+    });
+
+    // notion-motion.md Round 47 A1b (r47-n-tl-day-today.raw): Day zoom names the time on the now-line ("2:58 PM"),
+    // centres each hour tick on its hour, and draws no 22px day pill.
+    it('day zoom names the time on the now-line, centres hour ticks and draws no day pill', () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'queueMicrotask'] });
+      vi.setSystemTime(new Date(2026, 9, 9, 14, 58));
+      const root = mount({ view: timelineView({ timelineZoom: 'day' }) }).root;
+      const ticks = root.querySelectorAll<HTMLElement>('[data-blok-database-timeline-units] > [data-day]');
+      const width = TIMELINE_DAY_WIDTH.day / 24;
+
+      expect(root.querySelector('[data-blok-database-timeline-units] > [data-blok-database-timeline-now-label]')?.textContent).toMatch(/^2:58\sPM$/);
+      expect(root.querySelector('[data-blok-database-timeline-today-dot]')).toBeNull();
+      expect(parseFloat(ticks[1].style.insetInlineStart)).toBeCloseTo(width - width / 2, 5);
+      vi.useRealTimers();
+    });
+
+    // notion-motion.md Round 48 A1, A2, A4 (r48-n-<zoom>-hdr.raw): Quarter, Year and 5 Years put each label on its
+    // unit's start line, the today circle on today's start, hide the ticks the circle covers, and draw month lines in the body.
+    describe('far zoom header (Round 48)', () => {
+      const MONDAY = '2026-11-16';
+      const xOf = (el: Element | null | undefined): number => parseFloat((el as HTMLElement | null)?.style.insetInlineStart ?? '');
+      const far = (zoom: 'quarter' | 'year' | '5_years' | 'month'): HTMLElement =>
+        mount({ view: timelineView({ timelineZoom: zoom }), center: MONDAY, today: MONDAY }).root;
+      const ticks = (root: HTMLElement): HTMLElement[] => [...root.querySelectorAll<HTMLElement>('[data-blok-database-timeline-units] > [data-day]')];
+      const tickOn = (root: HTMLElement, day: string): HTMLElement => {
+        const tick = ticks(root).find((el) => el.getAttribute('data-day') === day);
+
+        if (tick === undefined) throw new Error(`no tick ${day}`);
+
+        return tick;
+      };
+      const px = (root: HTMLElement, day: string, zoom: 'quarter' | 'year' | '5_years' | 'month'): number =>
+        daysBetween(timelineWindow(MONDAY, zoom).start, day) * TIMELINE_DAY_WIDTH[zoom];
+
+      /** The dot is 22 wide on its x; a tick's text is 7 a digit, centred in its box. */
+      const layout = (): void => {
+        vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+          const owner = this.parentElement;
+          const isDot = this.hasAttribute('data-blok-database-timeline-today-dot');
+          const hidden = owner?.hidden === true;
+          const tickCenter = owner === null ? 0 : xOf(owner) + parseFloat(owner.style.width) / 2;
+          const center = isDot ? xOf(this) : tickCenter;
+          const textWidth = isDot ? 22 : 7 * (this.textContent ?? '').length;
+          const width = hidden ? 0 : textWidth;
+
+          return { left: center - width / 2, right: center + width / 2, top: 0, bottom: 14, width, height: 14, x: center - width / 2, y: 0, toJSON: () => ({}) };
+        });
+      };
+
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'queueMicrotask'] });
+        vi.setSystemTime(new Date(2026, 10, 16, 18, 27));
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it.each([
+        ['quarter', '2026-11-02'],
+        ['year', '2026-11-02'],
+        ['5_years', '2026-12-01'],
+      ] as const)('%s zoom centres each tick label on its start line', (zoom, day) => {
+        const root = far(zoom);
+        const tick = tickOn(root, day);
+
+        expect(xOf(tick) + parseFloat(tick.style.width) / 2).toBeCloseTo(px(root, day, zoom), 5);
+      });
+
+      it.each(['quarter', 'year', '5_years'] as const)('%s zoom keeps the today circle, on the start of today, and has no now label', (zoom) => {
+        const root = far(zoom);
+
+        expect(xOf(root.querySelector('[data-blok-database-timeline-today-dot]'))).toBeCloseTo(px(root, MONDAY, zoom), 5);
+        expect(root.querySelector('[data-blok-database-timeline-now-label]')).toBeNull();
+      });
+
+      it('month zoom keeps the circle in the middle of today', () => {
+        const root = far('month');
+
+        expect(xOf(root.querySelector('[data-blok-database-timeline-today-dot]'))).toBe(px(root, MONDAY, 'month') + TIMELINE_DAY_WIDTH.month / 2);
+      });
+
+      it.each([
+        ['quarter', ['2026-11-16'], ['2026-11-09', '2026-11-23']],
+        ['year', ['2026-11-16'], ['2026-11-09', '2026-11-23']],
+        ['5_years', ['2026-11-01', '2026-12-01'], ['2026-10-01', '2027-01-01']],
+      ] as const)('%s zoom hides the tick labels the today circle covers', (zoom, covered, kept) => {
+        layout();
+        const root = far(zoom);
+
+        vi.runAllTicks();
+        expect(covered.map((day) => tickOn(root, day).hidden)).toEqual(covered.map(() => true));
+        expect(kept.map((day) => tickOn(root, day).hidden)).toEqual(kept.map(() => false));
+      });
+
+      // notion-motion.md Round 48 A4: Week and Bi-week write "T 17"; on today "M" stays and the circle sits on the number.
+      describe('weekday letters', () => {
+        const near = (zoom: 'week' | 'bi_week'): HTMLElement =>
+          mount({ view: timelineView({ timelineZoom: zoom }), center: MONDAY, today: MONDAY }).root;
+        const DOT = '[data-blok-database-timeline-today-dot]';
+
+        it.each(['week', 'bi_week'] as const)('%s zoom writes the weekday letter before each day number', (zoom) => {
+          const tick = tickOn(near(zoom), '2026-11-17');
+
+          expect(tick.querySelector('[data-blok-database-timeline-weekday]')?.textContent).toBe('T');
+          expect(tick.querySelector('[data-blok-database-timeline-day-number]')?.textContent).toBe('17');
+          expect(tick.firstElementChild?.textContent).toBe('T17');
+        });
+
+        it.each(['week', 'bi_week'] as const)('%s zoom puts the today circle on today\'s number, after its letter', (zoom) => {
+          const dot = near(zoom).querySelector<HTMLElement>(DOT);
+
+          expect(dot?.parentElement?.hasAttribute('data-blok-database-timeline-day-number')).toBe(true);
+          expect(dot?.closest('[data-day]')?.getAttribute('data-day')).toBe(MONDAY);
+          expect(dot?.style.insetInlineStart).toBe('');
+        });
+
+        it('keeps today\'s tick, letter and circle, though the circle covers its number', () => {
+          vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+            const tick = this.closest<HTMLElement>('[data-day]');
+            const center = tick === null ? 0 : xOf(tick) + parseFloat(tick.style.width) / 2;
+            const width = this.matches(DOT) ? 22 : 7 * (this.textContent ?? '').length;
+
+            return { left: center - width / 2, right: center + width / 2, top: 0, bottom: 14, width, height: 14, x: center - width / 2, y: 0, toJSON: () => ({}) };
+          });
+          const root = near('week');
+
+          vi.runAllTicks();
+          expect(tickOn(root, MONDAY).hidden).toBe(false);
+          expect(tickOn(root, '2026-11-17').hidden).toBe(false);
+        });
+      });
+
+      it.each(['quarter', 'year', '5_years'] as const)('%s zoom draws a body line on the 1st of every month', (zoom) => {
+        const root = far(zoom);
+        const window = timelineWindow(MONDAY, zoom);
+        const firsts = Array.from({ length: window.days }, (_, i) => i).filter((i) => {
+          const date = new Date(2026, 0, 1);
+
+          date.setFullYear(Number(window.start.slice(0, 4)), Number(window.start.slice(5, 7)) - 1, Number(window.start.slice(8)) + i);
+
+          return date.getDate() === 1;
+        });
+        const lines = [...root.querySelectorAll('[data-blok-database-timeline-background] > [data-blok-database-timeline-month-line]')];
+
+        expect(lines.map(xOf)).toEqual(firsts.map((i) => i * TIMELINE_DAY_WIDTH[zoom]));
+      });
+
+      // notion-motion.md Round 48 A1 (fitted to four reads): the toolbar names the tick unit under the chart's
+      // left edge, by its start. At 18:27 in a 708 view: Year "August 2026" (the week of Aug 31), Quarter
+      // "October 2026" (the week of Oct 12), 5 Years "2025" (the year alone).
+      it.each([
+        ['year', 'August 2026'],
+        ['quarter', 'October 2026'],
+        ['5_years', '2025'],
+      ] as const)('%s zoom names the unit under the left edge in the toolbar', (zoom, label) => {
+        const root = far(zoom);
+
+        Object.defineProperty(scroller(root), 'clientWidth', { value: 708, configurable: true });
+        vi.runAllTicks();
+
+        expect(root.querySelector('[data-blok-database-timeline-month]')?.textContent).toBe(label);
+      });
+
+      it('draws no month lines at month zoom', () => {
+        expect(far('month').querySelector('[data-blok-database-timeline-month-line]')).toBeNull();
+      });
+    });
+
+    // notion-motion.md Round 35 Part B (r35-timeline-hours-open.raw, r35-timeline-hours-grid.raw).
+    describe('hours zoom opens at now (Round 35)', () => {
+      const VIEWPORT = 708;
+      const hoursStart = timelineWindow(CENTER, 'hours').start;
+      const nowX = (hour: number, minute: number): number =>
+        (daysBetween(hoursStart, CENTER) + (hour * 60 + minute) / 1440) * TIMELINE_DAY_WIDTH.hours;
+      /** Mounts, gives the scroller a width, then lets the first draw scroll. */
+      const open = (overrides: Partial<DatabaseTimelineViewOptions> = {}): HTMLElement => {
+        const { root } = mount(overrides);
+
+        Object.defineProperty(scroller(root), 'clientWidth', { value: VIEWPORT, configurable: true });
+        vi.runAllTicks();
+
+        return root;
+      };
+
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'queueMicrotask'] });
+        vi.setSystemTime(new Date(2026, 9, 9, 19, 46));
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('centres the now-line in the viewport, and again when the view opens a second time', () => {
+        const first = open({ view: timelineView({ timelineZoom: 'hours' }) });
+        const line = first.querySelector<HTMLElement>('[data-blok-database-timeline-today-line]');
+
+        expect(scroller(first).scrollLeft).toBeCloseTo(nowX(19, 46) - VIEWPORT / 2, 5);
+        expect(parseFloat(line?.style.insetInlineStart ?? '')).toBeCloseTo(nowX(19, 46), 5);
+        document.body.innerHTML = '';
+        expect(scroller(open({ view: timelineView({ timelineZoom: 'hours' }) })).scrollLeft).toBeCloseTo(nowX(19, 46) - VIEWPORT / 2, 5);
+      });
+
+      it('centres on the stored day\'s start when that day is not today', () => {
+        const root = open({ view: timelineView({ timelineZoom: 'hours' }), today: '2026-10-08' });
+
+        expect(scroller(root).scrollLeft).toBeCloseTo(nowX(0, 0) - VIEWPORT / 2, 5);
+      });
+
+      // notion-motion.md Round 46 B "Initial scroll": at 12:50 the now-line sits at the scroller centre, today's column 21.4 left of it.
+      it('month zoom also centres the now-line, not the start of today', () => {
+        vi.setSystemTime(new Date(2026, 9, 9, 12, 50));
+        const root = open();
+        const start = timelineWindow(CENTER, 'month').start;
+
+        expect(scroller(root).scrollLeft).toBeCloseTo((daysBetween(start, CENTER) + 770 / 1440) * TIMELINE_DAY_WIDTH.month - VIEWPORT / 2, 5);
+      });
+
+      it('month zoom centres the stored day\'s start when that day is not today', () => {
+        const root = open({ today: '2026-10-08' });
+        const start = timelineWindow(CENTER, 'month').start;
+
+        expect(scroller(root).scrollLeft).toBe(daysBetween(start, CENTER) * TIMELINE_DAY_WIDTH.month - VIEWPORT / 2);
+      });
+
+      // notion-motion.md Round 47 A1: Notion centres the now moment in every zoom, on open and on Today.
+      // 5 Years was too coarse to tell apart in Notion; it takes the same rule.
+      it.each(['day', 'week', 'bi_week', 'quarter', 'year', '5_years'] as const)('%s zoom centres the now-line too', (zoom) => {
+        vi.setSystemTime(new Date(2026, 9, 9, 12, 50));
+        const root = open({ view: timelineView({ timelineZoom: zoom }) });
+        const start = timelineWindow(CENTER, zoom).start;
+
+        expect(scroller(root).scrollLeft).toBeCloseTo((daysBetween(start, CENTER) + 770 / 1440) * TIMELINE_DAY_WIDTH[zoom] - VIEWPORT / 2, 5);
+      });
+
+      it('draws a line every 15 minutes in the body, on the ticks, and none at other zooms', () => {
+        const root = open({ view: timelineView({ timelineZoom: 'hours' }) });
+        const lines = [...root.querySelectorAll<HTMLElement>('[data-blok-database-timeline-background] > [data-blok-database-timeline-tick-line]')];
+        const ticks = [...root.querySelectorAll<HTMLElement>('[data-blok-database-timeline-units] > [data-day]')];
+
+        expect(lines).toHaveLength(timelineWindow(CENTER, 'hours').days * 96);
+        expect(lines.map((el) => parseFloat(el.style.insetInlineStart))).toEqual(
+          ticks.map((el) => parseFloat(el.style.insetInlineStart) + parseFloat(el.style.width) / 2)
+        );
+        document.body.innerHTML = '';
+        expect(open().querySelector('[data-blok-database-timeline-tick-line]')).toBeNull();
+      });
+
+      // notion-motion.md Round 48 A3: Day has a line every hour, Week every day; Bi-week and Month none.
+      it('draws a line every hour in Day and every day in Week, on the ticks', () => {
+        const linesOf = (root: HTMLElement): number[] =>
+          [...root.querySelectorAll<HTMLElement>('[data-blok-database-timeline-background] > [data-blok-database-timeline-tick-line]')]
+            .map((el) => parseFloat(el.style.insetInlineStart));
+        const day = open({ view: timelineView({ timelineZoom: 'day' }) });
+        const ticks = [...day.querySelectorAll<HTMLElement>('[data-blok-database-timeline-units] > [data-day]')];
+
+        expect(linesOf(day)).toHaveLength(timelineWindow(CENTER, 'day').days * 24);
+        expect(linesOf(day)).toEqual(ticks.map((el) => parseFloat(el.style.insetInlineStart) + parseFloat(el.style.width) / 2));
+
+        document.body.innerHTML = '';
+        const week = open({ view: timelineView({ timelineZoom: 'week' }) });
+
+        expect(linesOf(week)).toEqual(Array.from({ length: timelineWindow(CENTER, 'week').days }, (_, i) => i * TIMELINE_DAY_WIDTH.week));
+
+        document.body.innerHTML = '';
+        expect(linesOf(open({ view: timelineView({ timelineZoom: 'bi_week' }) }))).toEqual([]);
+      });
+
+      it('has one tick row under a toolbar that reads the full date', () => {
+        const root = open({ view: timelineView({ timelineZoom: 'hours' }) });
+
+        expect(root.querySelector('[data-blok-database-timeline-groups]')).toBeNull();
+        expect(root.style.getPropertyValue('--blok-database-timeline-header-rows')).toBe('1');
+        expect(root.querySelector('[data-blok-database-timeline-month]')?.textContent).toBe('October 9, 2026');
+        document.body.innerHTML = '';
+        expect(open().querySelector('[data-blok-database-timeline-month]')?.textContent).toMatch(/^[A-Z][a-z]+ 2026$/);
+      });
+
+      it('reads the full date in the editor\'s locale', () => {
+        const root = open({ view: timelineView({ timelineZoom: 'hours' }), locale: 'de-DE' });
+
+        expect(root.querySelector('[data-blok-database-timeline-month]')?.textContent).toBe('9. Oktober 2026');
+      });
+
+      it('sets the day period of a tick apart, inside the text the now label measures', () => {
+        const root = open({ view: timelineView({ timelineZoom: 'hours' }) });
+        const index = daysBetween(hoursStart, CENTER) * 96 + 17 * 4 + 1;
+        const tick = root.querySelectorAll<HTMLElement>('[data-blok-database-timeline-units] > [data-day]')[index];
+        const period = tick?.firstElementChild?.querySelector('[data-blok-database-timeline-day-period]');
+
+        expect(period?.textContent).toBe('PM');
+        expect(tick?.textContent).toMatch(/^5:15\sPM$/);
+      });
+
+      it('has no day period span in a 24-hour locale', () => {
+        const root = open({ view: timelineView({ timelineZoom: 'hours' }), locale: 'de-DE' });
+
+        expect(root.querySelector('[data-blok-database-timeline-day-period]')).toBeNull();
+      });
     });
 
     it('shades weekends at day-level zoom and not at year zoom', () => {
       expect(mount().root.querySelectorAll('[data-blok-database-timeline-weekend]').length).toBeGreaterThan(0);
       document.body.innerHTML = '';
       expect(mount({ view: timelineView({ timelineZoom: 'year' }) }).root.querySelectorAll('[data-blok-database-timeline-weekend]')).toHaveLength(0);
+    });
+
+    // notion-motion.md Round 35 Part B: on a Sunday, Notion's Hours body is rgb(253), the bare canvas.
+    it('does not shade a Sunday in Hours zoom', () => {
+      const sunday = '2026-11-15';
+      const { root } = mount({ view: timelineView({ timelineZoom: 'hours' }), center: sunday, today: sunday });
+
+      expect(root.querySelectorAll('[data-blok-database-timeline-weekend]')).toHaveLength(0);
+      expect(root.querySelector('[data-blok-database-timeline-background]')).not.toBeNull();
     });
 
     it('says so when the database has no date property', () => {
@@ -285,6 +734,15 @@ describe('DatabaseTimelineView', () => {
   });
 
   describe('table panel', () => {
+    // notion-motion.md Round 54 §4: « and the month text follow the panel's end (603 → 1003 with Date and Status shown).
+    it('tells the toolbar how many columns past Name the panel shows', () => {
+      const { root } = mount({
+        view: timelineView({ showTimelineTable: true, tableProperties: [{ id: 'p-due', visible: true }, { id: 'p-notes', visible: true }] }),
+      });
+
+      expect(root.style.getPropertyValue('--blok-database-timeline-table-more')).toBe('2');
+    });
+
     it('keeps an undated item\'s empty lane while the table shows, so panel rows and lanes line up (findings C03)', () => {
       const { root } = mount({ view: timelineView({ showTimelineTable: true }) });
 
@@ -302,6 +760,27 @@ describe('DatabaseTimelineView', () => {
       expect(title?.firstElementChild?.hasAttribute('data-blok-database-page-icon-placeholder')).toBe(true);
     });
 
+    // notion-motion.md Round 53 §3: the panel never scrolls sideways; a sideways wheel over it scrolls the chart.
+    it('turns a sideways wheel over the panel into a chart scroll, and leaves an upright one alone', () => {
+      const { root } = mount({ view: timelineView({ showTimelineTable: true }) });
+      const panel = root.querySelector<HTMLElement>('[data-blok-database-timeline-table]');
+      const chart = scroller(root);
+
+      if (panel === null) throw new Error('no panel');
+      chart.scrollLeft = 1000;
+      const sideways = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: 300, deltaY: 10 });
+
+      panel.dispatchEvent(sideways);
+      expect(chart.scrollLeft).toBe(1300);
+      expect(sideways.defaultPrevented).toBe(true);
+
+      const upright = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: 5, deltaY: 100 });
+
+      panel.dispatchEvent(upright);
+      expect(chart.scrollLeft).toBe(1300);
+      expect(upright.defaultPrevented).toBe(false);
+    });
+
     it('ends the panel with "+ New", and the canvas lane beside it stays empty', () => {
       const { root, handlers } = mount({ view: timelineView({ showTimelineTable: true }) });
       const add = root.querySelector<HTMLElement>('[data-blok-database-timeline-table] [data-blok-database-timeline-table-new]');
@@ -310,7 +789,8 @@ describe('DatabaseTimelineView', () => {
       expect(root.querySelector('[data-blok-database-timeline-new-lane] [data-blok-database-timeline-new]')).toBeNull();
       expect(root.querySelector('[data-blok-database-timeline-new-lane]')).not.toBeNull();
       add?.click();
-      expect(handlers.addRow).toHaveBeenCalledWith(null, { start: '2026-10-09/2026-10-13' });
+      // notion-motion.md Round 50 §5: the panel's row gets no date at Month zoom too.
+      expect(handlers.addRow).toHaveBeenCalledWith(null, {});
     });
 
     it('is hidden by default and its toggle asks to show it', () => {
@@ -321,6 +801,58 @@ describe('DatabaseTimelineView', () => {
       expect(toggle?.getAttribute('aria-pressed')).toBe('false');
       toggle?.click();
       expect(handlers.toggleTable).toHaveBeenCalled();
+    });
+
+    // timeline.png / tlcollapse.png: the days keep their x when the table toggles.
+    it('hands the toggle where the first day sits on the window', () => {
+      const { root, handlers } = mount({ view: timelineView({ showTimelineTable: true }) });
+      const el = scroller(root);
+
+      rect(root, 100, 0, 1000, 400);
+      rect(el, 380, 0, 720, 400);
+      el.scrollLeft = 600;
+      root.querySelector<HTMLElement>('[data-blok-database-timeline-table-toggle]')?.click();
+      expect(handlers.toggleTable).toHaveBeenCalledWith({ start: '2026-07-01', at: -220 });
+    });
+
+    it('a draw handed that place scrolls so the first day sits there again', async () => {
+      const { root } = mount({ origin: { start: '2026-07-01', at: -220 } });
+      const el = scroller(root);
+
+      rect(root, 100, 0, 1000, 400);
+      rect(el, 100, 0, 1000, 400);
+      await Promise.resolve();
+      expect(el.scrollLeft).toBe(320);
+    });
+
+    // notion-motion.md Round 46 B "Opening the panel": dates keep their window x. The view's own box moves when the panel opens.
+    it.each([
+      { name: 'opening', before: { root: 531, chart: 531 }, after: { root: 270, chart: 646 }, expected: 2686 + 115 },
+      { name: 'closing', before: { root: 270, chart: 646 }, after: { root: 531, chart: 531 }, expected: 2686 - 115 },
+    ])('$name the table keeps every day at the same window x, though the view\'s box moves', async ({ before, after, expected }) => {
+      const first = mount();
+
+      rect(first.root, before.root, 0, 1230, 400);
+      rect(scroller(first.root), before.chart, 0, 708, 400);
+      await Promise.resolve();
+      scroller(first.root).scrollLeft = 2686;
+      first.root.querySelector<HTMLElement>('[data-blok-database-timeline-table-toggle]')?.click();
+      const handed = vi.mocked(first.handlers.toggleTable).mock.calls[0]?.[0];
+      const second = mount({ origin: handed });
+
+      rect(second.root, after.root, 0, 1230, 400);
+      rect(scroller(second.root), after.chart, 0, 708, 400);
+      await Promise.resolve();
+      expect(scroller(second.root).scrollLeft).toBe(expected);
+    });
+
+    it('a place from another window is ignored: the draw centres as usual', async () => {
+      const handed = mount({ origin: { start: '2026-08-01', at: -320 } }).root;
+      const plain = mount().root;
+
+      await Promise.resolve();
+      expect(scroller(handed).scrollLeft).toBe(scroller(plain).scrollLeft);
+      expect(scroller(handed).scrollLeft).not.toBe(320);
     });
 
     it('lists the table properties, not the bar properties, with one row per item', () => {
@@ -344,7 +876,7 @@ describe('DatabaseTimelineView', () => {
       const footer = root.querySelector('[data-blok-database-timeline-table] [data-blok-database-timeline-table-footer]');
       const title = footer?.querySelector('[data-blok-database-table-calc][data-property-id="p-title"]');
 
-      expect(title?.querySelector('[data-blok-database-table-calc-label]')?.textContent).toBe('tools.database.calcCountAll');
+      expect(title?.querySelector('[data-blok-database-table-calc-label]')?.textContent).toBe('tools.database.calcCount');
       expect(title?.querySelector('[data-blok-database-table-calc-value]')?.textContent).toBe('3');
     });
 
@@ -359,22 +891,57 @@ describe('DatabaseTimelineView', () => {
       const readOnly = mount({ readOnly: true, view: timelineView({ showTimelineTable: true }) });
 
       expect(readOnly.root.querySelector('[data-blok-database-timeline-table-footer] button')).toBeNull();
+      // notion-motion.md Round 11 "Read-only database": no "Calculate" node at all.
+      expect(readOnly.root.querySelector('[data-blok-database-timeline-table-footer] [data-blok-database-table-calc-placeholder]')).toBeNull();
     });
 
-    it('opens a row from its title in the table panel', () => {
+    // notion-motion.md Round 56 §9: a panel title click, or Cmd+click, opens the title editor in place; no peek, no pick.
+    it.each([{ metaKey: false }, { metaKey: true }])('edits a row\'s title in place on a panel title click (metaKey $metaKey)', ({ metaKey }) => {
+      const renameRow = vi.fn();
+      const pickRow = vi.fn();
+      const { root, handlers } = mount({ view: timelineView({ showTimelineTable: true }), handlers: { ...makeHandlers(), renameRow, pickRow } });
+      const title = root.querySelector<HTMLElement>('[data-blok-database-timeline-table-row][data-row-id="r2"] [data-blok-database-timeline-table-title]');
+
+      title?.dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey }));
+      const input = document.querySelector<HTMLInputElement>('[data-blok-database-cell-input="title"]');
+
+      expect(input).toHaveFocus();
+      expect(handlers.openRow).not.toHaveBeenCalled();
+      expect(pickRow).not.toHaveBeenCalled();
+      if (input === null) throw new Error('no input');
+      input.value = 'Holiday';
+      key(input, 'Enter');
+      expect(renameRow).toHaveBeenCalledWith('r2', 'Holiday');
+    });
+
+    // notion-motion.md Round 57 §5: a panel row's title has the table's OPEN pill, which opens the row in the peek.
+    it('opens a row from the OPEN pill in its panel title, without editing the title', () => {
       const { root, handlers } = mount({ view: timelineView({ showTimelineTable: true }) });
+      const open = root.querySelector<HTMLElement>('[data-blok-database-timeline-table-row][data-row-id="r2"] [data-blok-database-timeline-table-title] [data-blok-database-table-open]');
+
+      expect(open?.lastElementChild?.textContent).toBe('tools.database.tableOpen');
+      expect(open?.querySelector('[data-blok-database-table-open-icon] svg')).not.toBeNull();
+      open?.click();
+      expect(handlers.openRow).toHaveBeenCalledWith('r2');
+      expect(document.querySelector('[data-blok-database-cell-input="title"]')).toBeNull();
+    });
+
+    it('still opens a row from its panel title when read-only', () => {
+      const { root, handlers } = mount({ readOnly: true, view: timelineView({ showTimelineTable: true }) });
 
       root.querySelector<HTMLElement>('[data-blok-database-timeline-table-row][data-row-id="r2"] [data-blok-database-timeline-table-title]')?.click();
       expect(handlers.openRow).toHaveBeenCalledWith('r2');
+      expect(document.querySelector('[data-blok-database-cell-input="title"]')).toBeNull();
     });
 
-    it('opens a row from anywhere in its title cell, and renames it without dropping its comment badge', () => {
+    it('edits from anywhere in the title cell, and renames it without dropping its comment badge', () => {
       const commentBadges = { databaseId: 'db', count: (rowId: string) => (rowId === 'r2' ? 1 : 0), open: vi.fn() };
       const { root, handlers, view } = mount({ view: timelineView({ showTimelineTable: true }), commentBadges });
       const cell = root.querySelector<HTMLElement>('[data-blok-database-timeline-table-row][data-row-id="r2"] [data-property-id="p-title"]');
 
       cell?.click();
-      expect(handlers.openRow).toHaveBeenCalledWith('r2');
+      expect(document.querySelector('[data-blok-database-cell-input="title"]')).not.toBeNull();
+      expect(handlers.openRow).not.toHaveBeenCalled();
 
       view.updateRowTitle(root, 'r2', 'Holiday');
       expect(cell?.textContent).toContain('Holiday');
@@ -405,6 +972,24 @@ describe('DatabaseTimelineView', () => {
       expect(button?.nextElementSibling?.hasAttribute('data-blok-database-timeline-zoom')).toBe(true);
       button?.click();
       expect(manage).toHaveBeenCalledTimes(1);
+    });
+
+    // notion-motion.md Timeline: after a table toggle the old chevron shrinks out over the new one.
+    it('keeps the old chevron, mirrored and hidden from readers, on the draw after a table toggle', () => {
+      const { root } = mount({ tableSwapped: true });
+      const toggle = root.querySelector('[data-blok-database-timeline-table-toggle]');
+      const old = toggle?.querySelector('[data-blok-database-timeline-toggle-out]');
+
+      expect(old?.innerHTML).toBe(markup(IconChevronDoubleRight));
+      expect(old?.getAttribute('aria-hidden')).toBe('true');
+      expect(toggle?.hasAttribute('data-swapped')).toBe(true);
+    });
+
+    it('draws one chevron when the table was not just toggled', () => {
+      const { root } = mount();
+
+      expect(root.querySelector('[data-blok-database-timeline-toggle-out]')).toBeNull();
+      expect(root.querySelector('[data-blok-database-timeline-table-toggle]')?.hasAttribute('data-swapped')).toBe(false);
     });
 
     // findings C05: » toggle, the shown month, then Month ⌄ · ‹ · Today · ›.
@@ -476,6 +1061,90 @@ describe('DatabaseTimelineView', () => {
       expect(handlers.addRow).toHaveBeenCalledWith(null, { start: '2026-10-09/2026-10-13' });
     });
 
+    // notion-motion.md Round 24 §4 Timeline: hovering the "+ New" lane shows a 197x34 ghost bar at the hovered day.
+    describe('"+ New" lane ghost bar', () => {
+      const lane = (root: HTMLElement): HTMLElement => {
+        const el = root.querySelector<HTMLElement>('[data-blok-database-timeline-new-lane]');
+
+        if (el === null) throw new Error('no lane');
+
+        return el;
+      };
+      const ghost = (root: HTMLElement): HTMLElement | null => root.querySelector<HTMLElement>('[data-blok-database-timeline-new-ghost]');
+      const range = (root: HTMLElement): HTMLElement | null => root.querySelector<HTMLElement>('[data-blok-database-timeline-range]');
+
+      it('puts a 5-day ghost bar at the hovered day and pills those days in the header', () => {
+        const { root } = mount();
+
+        rect(canvas(root), 0, 0, timelineWindow(CENTER, 'month').days * 40, 400);
+        pointer('pointermove', lane(root), px('2026-10-20') + 20, 390);
+
+        expect(ghost(root)?.style.insetInlineStart).toBe(`${px('2026-10-20') + 1.5}px`);
+        expect(ghost(root)?.style.width).toBe('197px');
+        expect(ghost(root)?.getAttribute('data-day')).toBe('2026-10-20');
+        expect(range(root)?.style.insetInlineStart).toBe(`${px('2026-10-20')}px`);
+        expect(range(root)?.style.width).toBe(`${5 * TIMELINE_DAY_WIDTH.month}px`);
+      });
+
+      it('drops the header pill when the pointer leaves the lane', () => {
+        const { root } = mount();
+
+        rect(canvas(root), 0, 0, timelineWindow(CENTER, 'month').days * 40, 400);
+        pointer('pointermove', lane(root), px('2026-10-20') + 20, 390);
+        lane(root).dispatchEvent(new PointerEvent('pointerleave'));
+
+        expect(range(root)).toBeNull();
+        expect(ghost(root)?.hasAttribute('data-day')).toBe(false);
+      });
+
+      // notion-motion.md Round 25 §4: the click makes a 5-day bar from the hovered day.
+      it('adds a 5-day bar starting on the hovered day when the ghost is clicked', () => {
+        const { root, handlers } = mount();
+
+        rect(canvas(root), 0, 0, timelineWindow(CENTER, 'month').days * 40, 400);
+        pointer('pointermove', lane(root), px('2026-10-20') + 20, 390);
+        ghost(root)?.click();
+        expect(handlers.addRow).toHaveBeenCalledWith(null, { start: '2026-10-20/2026-10-24' });
+      });
+
+      // notion-motion.md Round 48 A9: at Day zoom the ghost is 3 hours (153.3 = 3h - 3) and the click writes a timed range.
+      // Notion started it at 6:30 with the pointer near 6:45; why is unread, so Blok takes the hovered 15-minute slot.
+      it('puts a 3-hour ghost on the hovered 15-minute slot at Day zoom, and adds that timed bar', () => {
+        const dayStart = timelineWindow(CENTER, 'day').start;
+        const perMinute = TIMELINE_DAY_WIDTH.day / 1440;
+        const slot = daysBetween(dayStart, CENTER) * TIMELINE_DAY_WIDTH.day + (18 * 60 + 30) * perMinute;
+        const { root, handlers } = mount({ view: timelineView({ timelineZoom: 'day' }) });
+
+        rect(canvas(root), 0, 0, timelineWindow(CENTER, 'day').days * TIMELINE_DAY_WIDTH.day, 400);
+        pointer('pointermove', lane(root), slot + 10 * perMinute, 390);
+
+        expect(parseFloat(ghost(root)?.style.insetInlineStart ?? '')).toBeCloseTo(slot + 1.5, 5);
+        expect(parseFloat(ghost(root)?.style.width ?? '')).toBeCloseTo(180 * perMinute - 3, 5);
+
+        pointer('pointermove', lane(root), slot + 20 * perMinute, 390);
+        expect(parseFloat(ghost(root)?.style.insetInlineStart ?? '')).toBeCloseTo(slot + 15 * perMinute + 1.5, 5);
+
+        pointer('pointermove', lane(root), slot + 10 * perMinute, 390);
+        ghost(root)?.click();
+        expect(handlers.addRow).toHaveBeenCalledWith(null, { start: '2026-10-09T18:30/2026-10-09T21:30' });
+      });
+
+      it('writes a timed start and end for a Day-zoom ghost when the view has an end property', () => {
+        const dayStart = timelineWindow(CENTER, 'day').start;
+        const perMinute = TIMELINE_DAY_WIDTH.day / 1440;
+        const { root, handlers } = mount({ view: timelineView({ timelineZoom: 'day' }), endPropertyId: 'p-end' });
+
+        rect(canvas(root), 0, 0, timelineWindow(CENTER, 'day').days * TIMELINE_DAY_WIDTH.day, 400);
+        pointer('pointermove', lane(root), daysBetween(dayStart, CENTER) * TIMELINE_DAY_WIDTH.day + (22 * 60 + 50) * perMinute, 390);
+        ghost(root)?.click();
+        expect(handlers.addRow).toHaveBeenCalledWith(null, { start: '2026-10-09T22:45', end: '2026-10-10T01:45' });
+      });
+
+      it('has no ghost when read-only', () => {
+        expect(ghost(mount({ readOnly: true }).root)).toBeNull();
+      });
+    });
+
     it('names a new bar in place: Enter keeps it selected, Escape keeps the name and drops the selection', () => {
       const renameRow = vi.fn();
       const pickRow = vi.fn();
@@ -500,6 +1169,25 @@ describe('DatabaseTimelineView', () => {
       key(second, 'Escape');
       expect(renameRow).toHaveBeenCalledWith('r2', 'Lambda');
       expect(pickRow).toHaveBeenCalledTimes(1);
+    });
+
+    // notion-motion.md Round 50 §5: a row with no bar is named in a box over its panel title.
+    it('names a new undated row over its panel title', () => {
+      const renameRow = vi.fn();
+      const { root, view } = mount({ view: timelineView({ showTimelineTable: true }), handlers: { ...makeHandlers(), renameRow } });
+
+      view.editTitle('r3');
+      const input = document.querySelector<HTMLInputElement>('[data-blok-database-cell-input="title"]');
+
+      expect(input).toHaveFocus();
+      expect(input?.placeholder).toBe('');
+      expect(view.interacting).toBe(true);
+      expect(root.querySelector('[data-blok-database-timeline-table-row][data-row-id="r3"]')?.hasAttribute('data-blok-database-editor-open')).toBe(true);
+      if (input === null) throw new Error('no input');
+      input.value = 'Zeta';
+      key(input, 'Enter');
+      expect(renameRow).toHaveBeenCalledWith('r3', 'Zeta');
+      expect(view.interacting).toBe(false);
     });
 
     it('has no "+ New", resize handles or drag handles when read-only', () => {
@@ -676,6 +1364,18 @@ describe('DatabaseTimelineView', () => {
       expect(handlers.navigate).toHaveBeenCalledWith('2027-03-01');
     });
 
+    // notion-motion.md Round 54 §1: a Day-zoom range ends at its end date's 00:00, so a screen starting there has it off to the left.
+    it('shows the "before" chip for a Day-zoom range that ends where the screen starts', () => {
+      const { root, view } = mount({ view: timelineView({ timelineZoom: 'day' }), groups: single([row('r1', 'Alpha', '2026-10-12/2026-10-16')]) });
+      const el = scroller(root);
+
+      Object.defineProperty(el, 'clientWidth', { value: 400, configurable: true });
+      el.scrollLeft = daysBetween(timelineWindow(CENTER, 'day').start, '2026-10-16') * TIMELINE_DAY_WIDTH.day + 10;
+      view.refreshOffscreen();
+
+      expect(root.querySelector<HTMLElement>('[data-blok-database-timeline-row][data-row-id="r1"] [data-blok-database-timeline-offscreen="before"]')?.hidden).toBe(false);
+    });
+
     // findings C17: a bar cut by the screen's start keeps a "←" chip before its title.
     it('marks a bar that starts before the screen and still shows, and its chip jumps to its start', () => {
       const { root, view } = mount();
@@ -692,6 +1392,61 @@ describe('DatabaseTimelineView', () => {
       expect(chip?.nextElementSibling?.hasAttribute('data-blok-database-timeline-bar-title')).toBe(true);
       chip?.click();
       expect(el.scrollLeft).toBeLessThan(px('2026-10-13'));
+    });
+
+    // notion-motion.md Timeline (tlcollapse.png, Gamma): a bar cut by the screen's end shows a "→" chip at that end.
+    it('marks a bar that runs past the screen\'s end, and its "→" chip jumps to it', () => {
+      const { root, view } = mount();
+      const el = scroller(root);
+
+      Object.defineProperty(el, 'clientWidth', { value: 400, configurable: true });
+      el.scrollLeft = px('2026-10-04');
+      view.refreshOffscreen();
+
+      expect(bar(root, 'r2').hasAttribute('data-clipped-end')).toBe(true);
+      expect(bar(root, 'r1').hasAttribute('data-clipped-end')).toBe(false);
+      const chip = bar(root, 'r2').querySelector<HTMLElement>('[data-blok-database-timeline-bar-chip="end"]');
+
+      expect(chip?.innerHTML).toBe(markup(IconArrowRightSmall));
+      chip?.click();
+      expect(el.scrollLeft).toBeGreaterThan(px('2026-10-04'));
+    });
+
+    it('scrolls a bar cut at both ends forward from its "→" chip, to its end', () => {
+      const { root, view } = mount({ groups: single([row('r1', 'Long', '2026-10-01/2026-10-20')]) });
+      const el = scroller(root);
+
+      Object.defineProperty(el, 'clientWidth', { value: 400, configurable: true });
+      el.scrollLeft = px('2026-10-05');
+      view.refreshOffscreen();
+
+      expect(bar(root, 'r1').hasAttribute('data-clipped-start')).toBe(true);
+      expect(bar(root, 'r1').hasAttribute('data-clipped-end')).toBe(true);
+      bar(root, 'r1').querySelector<HTMLElement>('[data-blok-database-timeline-bar-chip="end"]')?.click();
+
+      // The end day, with one day of room after it.
+      expect(el.scrollLeft).toBe(px('2026-10-22') - 400);
+    });
+
+    // A Day zoom day (1250) is wider than the screen: a jump lands the bar's edge on the screen edge, with no day of room.
+    it('brings a bar onto the screen at day zoom, where a day is wider than the screen', () => {
+      const view = timelineView({ timelineZoom: 'day' });
+      const { root, view: timeline } = mount({ view, groups: single([row('r1', 'Early', '2026-10-07'), row('r2', 'Long', '2026-10-06/2026-10-11')]) });
+      const el = scroller(root);
+      const start = timelineWindow(CENTER, 'day').start;
+      const at = (day: string): number => daysBetween(start, day) * TIMELINE_DAY_WIDTH.day;
+
+      Object.defineProperty(el, 'clientWidth', { value: 708, configurable: true });
+      el.scrollLeft = at('2026-10-09');
+      timeline.refreshOffscreen();
+      root.querySelector<HTMLElement>('[data-blok-database-timeline-row][data-row-id="r1"] [data-blok-database-timeline-offscreen="before"]')?.click();
+      expect(el.scrollLeft).toBe(at('2026-10-07'));
+
+      el.scrollLeft = at('2026-10-09');
+      timeline.refreshOffscreen();
+      bar(root, 'r2').querySelector<HTMLElement>('[data-blok-database-timeline-bar-chip="end"]')?.click();
+      // notion-motion.md Round 54 §1: the range is drawn to its end date's 00:00, so that is the edge brought on screen.
+      expect(el.scrollLeft).toBe(at('2026-10-11') - 708);
     });
 
     // research/26 §4d: Notion draws a straight arrow in the chip, not a chevron.
@@ -733,13 +1488,127 @@ describe('DatabaseTimelineView', () => {
 
       rect(canvas(root), 0, 0, timelineWindow(CENTER, 'hours').days * TIMELINE_DAY_WIDTH.hours, 400);
 
-      expect(bar(root, 'r1').style.insetInlineStart).toBe(`${daysBetween(hoursStart, CENTER) * TIMELINE_DAY_WIDTH.hours + 9 * hourPx}px`);
+      expect(bar(root, 'r1').style.insetInlineStart).toBe(`${daysBetween(hoursStart, CENTER) * TIMELINE_DAY_WIDTH.hours + 9 * hourPx + 2}px`);
 
       pointer('pointerdown', bar(root, 'r1'), xAt(9), 50);
       pointer('pointermove', document, xAt(12), 50);
       pointer('pointerup', document, xAt(12), 50);
 
       expect(handlers.writeDates).toHaveBeenCalledWith('r1', { start: '2026-10-09T12:00' });
+    });
+
+    // notion-motion.md Round 48 A9: a 60px Day-zoom drag moved an all-day bar 1h15m, and it stayed 24 hours wide.
+    it('moves a bar at Day zoom by 15-minute steps, an all-day bar becoming timed', () => {
+      const dayStart = timelineWindow(CENTER, 'day').start;
+      const midnight = daysBetween(dayStart, CENTER) * TIMELINE_DAY_WIDTH.day;
+      const { root, handlers } = mount({
+        view: timelineView({ timelineZoom: 'day' }),
+        groups: single([row('r1', 'Gamma', CENTER)]),
+      });
+
+      rect(canvas(root), 0, 0, timelineWindow(CENTER, 'day').days * TIMELINE_DAY_WIDTH.day, 400);
+      pointer('pointerdown', bar(root, 'r1'), midnight + 300, 50);
+      pointer('pointermove', document, midnight + 360, 50);
+
+      expect(parseFloat(bar(root, 'r1').style.insetInlineStart)).toBeCloseTo(midnight + 75 * (TIMELINE_DAY_WIDTH.day / 1440) + 1.5, 5);
+      expect(parseFloat(bar(root, 'r1').style.width)).toBeCloseTo(TIMELINE_DAY_WIDTH.day - 3, 5);
+
+      pointer('pointerup', document, midnight + 360, 50);
+
+      expect(handlers.writeDates).toHaveBeenCalledWith('r1', { start: '2026-10-09T01:15/2026-10-10T01:15' });
+    });
+
+    // notion-motion.md Round 54 §1: Day zoom draws an all-day range to its end date's 00:00 (Nov 16 → 20 is 4997, Nov 18 → 19 is 1247).
+    it.each([
+      ['2026-10-12/2026-10-16', 4],
+      ['2026-10-12/2026-10-13', 1],
+      ['2026-10-12', 1],
+    ] as const)('draws %s at Day zoom %i day(s) wide', (due, days) => {
+      const { root } = mount({ view: timelineView({ timelineZoom: 'day' }), groups: single([row('r1', 'Alpha', due)]) });
+
+      expect(parseFloat(bar(root, 'r1').style.width)).toBeCloseTo(days * TIMELINE_DAY_WIDTH.day - 3, 5);
+    });
+
+    it('draws a range from a separate end property to its end date\'s 00:00 at Day zoom', () => {
+      const { root } = mount({
+        view: timelineView({ timelineZoom: 'day' }),
+        endPropertyId: 'p-end',
+        groups: single([row('r1', 'Alpha', '2026-10-12', { 'p-end': '2026-10-16' })]),
+      });
+
+      expect(parseFloat(bar(root, 'r1').style.width)).toBeCloseTo(4 * TIMELINE_DAY_WIDTH.day - 3, 5);
+    });
+
+    // notion-motion.md Round 54 §1: Beta's end edge +30px read "Nov 19, 12:30 AM" mid-drag and wrote Nov 19 12:30 AM.
+    it('drags a range\'s end edge from its end date\'s midnight at Day zoom', () => {
+      const dayStart = timelineWindow(CENTER, 'day').start;
+      const endMidnight = daysBetween(dayStart, '2026-10-13') * TIMELINE_DAY_WIDTH.day;
+      const { root, handlers } = mount({
+        view: timelineView({ timelineZoom: 'day' }),
+        groups: single([row('r1', 'Beta', '2026-10-12/2026-10-13')]),
+      });
+      const handle = bar(root, 'r1').querySelector('[data-blok-database-timeline-resize="end"]');
+
+      if (handle === null) throw new Error('no handle');
+      rect(canvas(root), 0, 0, timelineWindow(CENTER, 'day').days * TIMELINE_DAY_WIDTH.day, 400);
+      pointer('pointerdown', handle, endMidnight, 50);
+      expect(bar(root, 'r1').querySelector('[data-blok-database-timeline-edge-readout="end"]')?.textContent).toBe('Oct 13, 12:00 AM');
+      pointer('pointermove', document, endMidnight + 30, 50);
+      expect(bar(root, 'r1').querySelector('[data-blok-database-timeline-edge-readout="end"]')?.textContent).toBe('Oct 13, 12:30 AM');
+      expect(parseFloat(bar(root, 'r1').style.width)).toBeCloseTo((1440 + 30) * (TIMELINE_DAY_WIDTH.day / 1440) - 3, 5);
+      pointer('pointerup', document, endMidnight + 30, 50);
+
+      expect(handlers.writeDates).toHaveBeenCalledWith('r1', { start: '2026-10-12T00:00/2026-10-13T00:30' });
+    });
+
+    // notion-motion.md Round 46 B: after a move the bar is left selected. Round 47 A3: a resized bar is selected mid-drag.
+    it('leaves a moved bar selected, and not an unmoved one', () => {
+      const landRow = vi.fn();
+      const { root } = mount({ handlers: { ...makeHandlers(), landRow } });
+
+      layOut(root);
+      pointer('pointerdown', bar(root, 'r2'), xOf('2026-10-12'), 50);
+      pointer('pointermove', document, xOf('2026-10-14'), 50);
+      pointer('pointerup', document, xOf('2026-10-14'), 50);
+      expect(landRow).toHaveBeenCalledWith('r2');
+      expect(landRow).toHaveBeenCalledTimes(1);
+
+      pointer('pointerdown', bar(root, 'r1'), xOf('2026-10-09'), 50);
+      pointer('pointerup', document, xOf('2026-10-09'), 50);
+      expect(landRow).toHaveBeenCalledTimes(1);
+    });
+
+    // notion-motion.md Round 48 A8: an edge press selects the bar at once, before any move, and it stays selected.
+    it('selects a bar when its edge is pressed', () => {
+      const landRow = vi.fn();
+      const { root } = mount({ handlers: { ...makeHandlers(), landRow } });
+      const end = bar(root, 'r1').querySelector('[data-blok-database-timeline-resize="end"]');
+
+      layOut(root);
+      if (end === null) throw new Error('no handle');
+      pointer('pointerdown', end, xOf('2026-10-09'), 50);
+      expect(landRow).toHaveBeenCalledWith('r1');
+      pointer('pointermove', document, xOf('2026-10-11'), 50);
+      pointer('pointermove', document, xOf('2026-10-12'), 50);
+      pointer('pointerup', document, xOf('2026-10-12'), 50);
+      expect(landRow).toHaveBeenCalledTimes(1);
+    });
+
+    // notion-motion.md Round 49 B9: an edge pressed and let go with no move leaves the bar selected and opens no peek.
+    it('does not open the bar when its edge is pressed and let go without a move', () => {
+      const handlers = { ...makeHandlers(), landRow: vi.fn() };
+      const { root } = mount({ handlers });
+      const end = bar(root, 'r1').querySelector<HTMLElement>('[data-blok-database-timeline-resize="end"]');
+
+      layOut(root);
+      if (end === null) throw new Error('no handle');
+      pointer('pointerdown', end, xOf('2026-10-09'), 50);
+      pointer('pointerup', document, xOf('2026-10-09'), 50);
+      end.click();
+
+      expect(handlers.openRow).not.toHaveBeenCalled();
+      expect(handlers.writeDates).not.toHaveBeenCalled();
+      expect(handlers.landRow).toHaveBeenCalledWith('r1');
     });
 
     it('drags the end edge to a later day', () => {
@@ -854,6 +1723,62 @@ describe('DatabaseTimelineView', () => {
       expect(root.querySelector('[data-blok-database-timeline-edge-readout]')).toBeNull();
     });
 
+    // notion-motion.md Round 49 B9: the edge readout shows from the press, before any move, and stays after a release with no move.
+    it('reads the pressed edge at once and keeps it after a release with no move', () => {
+      const { root } = mount();
+      const handle = bar(root, 'r1').querySelector('[data-blok-database-timeline-resize="end"]');
+
+      layOut(root);
+      if (handle === null) throw new Error('no handle');
+      pointer('pointerdown', handle, xOf('2026-10-09'), 50);
+      expect(bar(root, 'r1').querySelector('[data-blok-database-timeline-edge-readout="end"]')?.textContent).toBe('Oct 9');
+
+      pointer('pointerup', document, xOf('2026-10-09'), 50);
+      expect(bar(root, 'r1').querySelector('[data-blok-database-timeline-edge-readout="end"]')?.textContent).toBe('Oct 9');
+    });
+
+    // notion-motion.md Round 50 §2: the kept readout lives while the pointer is on the edge. Escape and a press do not drop it there.
+    it('drops the kept readout when the pointer leaves the edge, and keeps it on Escape while there', () => {
+      const { root } = mount();
+      const handle = bar(root, 'r1').querySelector('[data-blok-database-timeline-resize="end"]');
+
+      layOut(root);
+      if (handle === null) throw new Error('no handle');
+      pointer('pointerdown', handle, xOf('2026-10-09'), 50);
+      pointer('pointerup', document, xOf('2026-10-09'), 50);
+      key(document, 'Escape');
+      expect(bar(root, 'r1').querySelector('[data-blok-database-timeline-edge-readout="end"]')?.textContent).toBe('Oct 9');
+
+      handle.dispatchEvent(new PointerEvent('pointerleave', { clientX: xOf('2026-10-12'), clientY: 50 }));
+      expect(root.querySelector('[data-blok-database-timeline-edge-readout]')).toBeNull();
+    });
+
+    // notion-motion.md Round 49 B9: at Day zoom the readout of a timed bar carries the time ("Nov 19, 7:30 AM").
+    it('reads a timed edge with its time at Day zoom', () => {
+      const { root } = mount({
+        view: timelineView({ timelineZoom: 'day' }),
+        groups: single([row('r1', 'Tb', '2026-10-09T04:30/2026-10-09T07:30')]),
+      });
+      const handle = bar(root, 'r1').querySelector('[data-blok-database-timeline-resize="end"]');
+
+      if (handle === null) throw new Error('no handle');
+      pointer('pointerdown', handle, 100, 50);
+      expect(bar(root, 'r1').querySelector('[data-blok-database-timeline-edge-readout="end"]')?.textContent).toBe('Oct 9, 7:30 AM');
+    });
+
+    // notion-motion.md Round 51 §2, Round 50 §3: at Day zoom a pressed all-day edge reads its midnight ("Nov 18, 12:00 AM").
+    it.each(['start', 'end'] as const)('reads a pressed all-day %s edge at Day zoom with 12:00 AM', (edge) => {
+      const { root } = mount({
+        view: timelineView({ timelineZoom: 'day' }),
+        groups: single([row('r1', 'Ad', '2026-10-09')]),
+      });
+      const handle = bar(root, 'r1').querySelector(`[data-blok-database-timeline-resize="${edge}"]`);
+
+      if (handle === null) throw new Error('no handle');
+      pointer('pointerdown', handle, 100, 50);
+      expect(bar(root, 'r1').querySelector(`[data-blok-database-timeline-edge-readout="${edge}"]`)?.textContent).toBe('Oct 9, 12:00 AM');
+    });
+
     it('marks the moved range too, with no readout', () => {
       const { root } = mount();
 
@@ -869,11 +1794,79 @@ describe('DatabaseTimelineView', () => {
     });
   });
 
+  // notion-motion.md Timeline (tlhover.png): hovering a bar marks its days in the header at once.
+  describe('bar hover marks its days in the header', () => {
+    const range = (root: HTMLElement): HTMLElement | null => root.querySelector<HTMLElement>('[data-blok-database-timeline-range]');
+    const edges = (root: HTMLElement): Array<string | null> =>
+      [...root.querySelectorAll('[data-blok-database-timeline-units] > [data-range-edge]')].map((el) => el.getAttribute('data-day'));
+    const over = (target: Element, related: Element | null = null): void => {
+      target.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, relatedTarget: related }));
+    };
+    const out = (target: Element, related: Element | null): void => {
+      target.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, relatedTarget: related }));
+    };
+
+    it('shows the pill over the bar\'s days, with its first and last day in ink', () => {
+      const { root } = mount();
+
+      over(bar(root, 'r2'));
+
+      expect(range(root)?.hasAttribute('data-hover')).toBe(true);
+      expect(range(root)?.style.insetInlineStart).toBe(`${px('2026-10-12')}px`);
+      expect(range(root)?.style.width).toBe(`${3 * TIMELINE_DAY_WIDTH.month}px`);
+      expect(edges(root)).toEqual(['2026-10-12', '2026-10-14']);
+    });
+
+    it('keeps the pill while the pointer moves inside the bar, and drops it when the pointer leaves', () => {
+      const { root } = mount();
+      const title = bar(root, 'r2').querySelector('[data-blok-database-timeline-bar-title]');
+
+      if (title === null) throw new Error('no title');
+      over(bar(root, 'r2'));
+      out(bar(root, 'r2'), title);
+      expect(range(root)).not.toBeNull();
+
+      out(title, canvas(root));
+      expect(range(root)).toBeNull();
+      expect(edges(root)).toEqual([]);
+    });
+
+    it('moves the pill to the next bar hovered', () => {
+      const { root } = mount();
+
+      over(bar(root, 'r2'));
+      out(bar(root, 'r2'), bar(root, 'r1'));
+      over(bar(root, 'r1'), bar(root, 'r2'));
+
+      expect(range(root)?.style.insetInlineStart).toBe(`${px('2026-10-09')}px`);
+      expect(edges(root)).toEqual(['2026-10-09']);
+    });
+
+    it('leaves a drag\'s pill alone when the pointer leaves the bar mid-drag', () => {
+      const { root } = mount();
+
+      rect(canvas(root), 0, 0, timelineWindow(CENTER, 'month').days * 40, 400);
+      over(bar(root, 'r1'));
+      pointer('pointerdown', bar(root, 'r1'), px('2026-10-09') + 20, 50);
+      pointer('pointermove', document, px('2026-10-12') + 20, 50);
+      out(bar(root, 'r1'), canvas(root));
+
+      expect(range(root)?.hasAttribute('data-hover')).toBe(false);
+      expect(edges(root)).toEqual(['2026-10-12']);
+      pointer('pointerup', document, px('2026-10-12') + 20, 50);
+    });
+  });
+
   describe('hours zoom: 15-minute snap (research/22 §9)', () => {
     const hoursStart = timelineWindow(CENTER, 'hours').start;
-    /** Canvas pixels to midnight of CENTER; hours zoom draws one pixel per minute. */
+    /** Canvas pixels to midnight of CENTER. */
     const midnight = daysBetween(hoursStart, CENTER) * TIMELINE_DAY_WIDTH.hours;
-    const at = (minutes: number): number => midnight + minutes;
+    const perMinute = TIMELINE_DAY_WIDTH.hours / 1440;
+    const at = (minutes: number): number => midnight + minutes * perMinute;
+    /** The bar's start past its hour: the 1px line, then 1px clear. */
+    const START = 2;
+    const startOf = (el: HTMLElement): number => parseFloat(el.style.insetInlineStart);
+    const widthOf = (el: HTMLElement): number => parseFloat(el.style.width);
     const mountHours = (overrides: Partial<DatabaseTimelineViewOptions> = {}): Mounted => {
       const mounted = mount({
         view: timelineView({ timelineZoom: 'hours' }),
@@ -885,6 +1878,8 @@ describe('DatabaseTimelineView', () => {
 
       return mounted;
     };
+    const readout = (root: HTMLElement, edge: 'start' | 'end'): string | null | undefined =>
+      bar(root, 'r1').querySelector(`[data-blok-database-timeline-edge-readout="${edge}"]`)?.textContent;
     const handleOf = (root: HTMLElement, edge: 'start' | 'end'): HTMLElement => {
       const handle = bar(root, 'r1').querySelector<HTMLElement>(`[data-blok-database-timeline-resize="${edge}"]`);
 
@@ -892,6 +1887,31 @@ describe('DatabaseTimelineView', () => {
 
       return handle;
     };
+
+    // notion-motion.md Round 51 §4: Notion's 1-hour bar and its ghost are 288.7 wide, 3 under the hour.
+    // Round 53 §1: it starts 1.03 after its hour line's pixel; Blok's line pixel is the one after the hour.
+    it('draws a 1-hour bar 3px under the hour, 1px clear of its hour line', () => {
+      const { root } = mountHours();
+
+      expect(widthOf(bar(root, 'r1'))).toBeCloseTo(60 * perMinute - 3, 5);
+      expect(startOf(bar(root, 'r1'))).toBeCloseTo(at(180) + START, 5);
+    });
+
+    // notion-motion.md Round 51 §4: Notion's header band showed no pill on an Hours edge press.
+    it('draws no header pill over an edge, on its press or while it is dragged', () => {
+      const { root } = mountHours();
+      const handle = handleOf(root, 'end');
+      const pill = (): Element | null => root.querySelector('[data-blok-database-timeline-range]');
+
+      bar(root, 'r1').dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+      expect(pill()).not.toBeNull();
+      handle.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, relatedTarget: bar(root, 'r1') }));
+      expect(pill()).toBeNull();
+      pointer('pointerdown', handle, at(239), 50);
+      expect(pill()).toBeNull();
+      pointer('pointermove', document, at(247), 50);
+      expect(pill()).toBeNull();
+    });
 
     it('rounds a move to the nearest 15 minutes on drop', () => {
       const { root, handlers } = mountHours();
@@ -917,33 +1937,58 @@ describe('DatabaseTimelineView', () => {
       expect(handlers.writeDates).toHaveBeenCalledWith('r1', { start: '2026-10-09T02:45/2026-10-09T03:45' });
     });
 
+    // notion-motion.md Round 53 §2: a move that rounds to no change leaves the bar where it was, not where it was dropped.
+    it('puts the bar back where it was after a move that rounds to no change', () => {
+      const { root, handlers } = mountHours();
+
+      pointer('pointerdown', bar(root, 'r1'), at(200), 50);
+      pointer('pointermove', document, at(206), 50);
+      pointer('pointerup', document, at(206), 50);
+
+      expect(startOf(bar(root, 'r1'))).toBeCloseTo(at(180) + START, 5);
+      expect(widthOf(bar(root, 'r1'))).toBeCloseTo(60 * perMinute - 3, 5);
+      expect(handlers.writeDates).not.toHaveBeenCalled();
+    });
+
+    // notion-motion.md Round 53 §4: an all-day bar's pressed edge reads "Nov 17, 12:00 AM" at Hours.
+    it('reads an all-day bar\'s pressed edge with its midnight', () => {
+      const { root } = mountHours({ groups: single([row('r1', 'Day', CENTER)]) });
+
+      pointer('pointerdown', handleOf(root, 'start'), at(1), 50);
+
+      expect(readout(root, 'start')).toBe('Oct 9, 12:00 AM');
+      pointer('pointerup', document, at(1), 50);
+    });
+
     it('drags a move as a ghost that follows the pointer unsnapped, with no readout', () => {
       const { root } = mountHours();
 
       pointer('pointerdown', bar(root, 'r1'), at(200), 50);
       pointer('pointermove', document, at(208), 50);
 
-      expect(bar(root, 'r1').style.insetInlineStart).toBe(`${at(188)}px`);
-      expect(bar(root, 'r1').style.width).toBe('60px');
+      expect(startOf(bar(root, 'r1'))).toBeCloseTo(at(188) + START, 5);
+      expect(widthOf(bar(root, 'r1'))).toBeCloseTo(60 * perMinute - 3, 5);
       expect(bar(root, 'r1').hasAttribute('data-dragging')).toBe(true);
-      expect(showReadout).not.toHaveBeenCalled();
+      expect(root.querySelector('[data-blok-database-timeline-edge-readout]')).toBeNull();
     });
 
+    // notion-motion.md Round 51 §4: Hours reads the edge in the same light box as Day and Month, from the press on.
     it('snaps a left-edge resize live and shows the new start beside the edge', () => {
       const { root, handlers } = mountHours();
       const handle = handleOf(root, 'start');
 
       pointer('pointerdown', handle, at(181), 50);
+      expect(readout(root, 'start')).toBe('Oct 9, 3:00 AM');
       pointer('pointermove', document, at(173), 50);
 
-      expect(bar(root, 'r1').style.insetInlineStart).toBe(`${at(165)}px`);
-      expect(bar(root, 'r1').style.width).toBe('75px');
-      expect(showReadout).toHaveBeenLastCalledWith(handle, 'Oct 9, 2:45 AM', expect.objectContaining({ placement: 'left' }));
+      expect(startOf(bar(root, 'r1'))).toBeCloseTo(at(165) + START, 5);
+      expect(widthOf(bar(root, 'r1'))).toBeCloseTo(75 * perMinute - 3, 5);
+      expect(readout(root, 'start')).toBe('Oct 9, 2:45 AM');
 
       pointer('pointerup', document, at(173), 50);
 
       expect(handlers.writeDates).toHaveBeenCalledWith('r1', { start: '2026-10-09T02:45/2026-10-09T04:00' });
-      expect(hide).toHaveBeenCalled();
+      expect(root.querySelector('[data-blok-database-timeline-edge-readout]')).toBeNull();
     });
 
     it('reads the unchanged start while a left-edge resize is under half a step', () => {
@@ -953,7 +1998,7 @@ describe('DatabaseTimelineView', () => {
       pointer('pointerdown', handle, at(181), 50);
       pointer('pointermove', document, at(176), 50);
 
-      expect(showReadout).toHaveBeenLastCalledWith(handle, 'Oct 9, 3:00 AM', expect.anything());
+      expect(readout(root, 'start')).toBe('Oct 9, 3:00 AM');
       pointer('pointerup', document, at(176), 50);
       expect(handlers.writeDates).not.toHaveBeenCalled();
     });
@@ -965,8 +2010,8 @@ describe('DatabaseTimelineView', () => {
       pointer('pointerdown', handle, at(239), 50);
       pointer('pointermove', document, at(247), 50);
 
-      expect(bar(root, 'r1').style.width).toBe('75px');
-      expect(showReadout).toHaveBeenLastCalledWith(handle, 'Oct 9, 4:15 AM', expect.objectContaining({ placement: 'right' }));
+      expect(widthOf(bar(root, 'r1'))).toBeCloseTo(75 * perMinute - 3, 5);
+      expect(readout(root, 'end')).toBe('Oct 9, 4:15 AM');
       pointer('pointerup', document, at(247), 50);
 
       expect(handlers.writeDates).toHaveBeenCalledWith('r1', { start: '2026-10-09T03:00/2026-10-09T04:15' });
@@ -979,23 +2024,112 @@ describe('DatabaseTimelineView', () => {
       pointer('pointermove', document, at(150), 50);
       key(document, 'Escape');
 
-      expect(bar(root, 'r1').style.insetInlineStart).toBe(`${at(180)}px`);
-      expect(bar(root, 'r1').style.width).toBe('60px');
-      expect(hide).toHaveBeenCalled();
+      expect(startOf(bar(root, 'r1'))).toBeCloseTo(at(180) + START, 5);
+      expect(widthOf(bar(root, 'r1'))).toBeCloseTo(60 * perMinute - 3, 5);
+      expect(root.querySelector('[data-blok-database-timeline-edge-readout]')).toBeNull();
       expect(handlers.writeDates).not.toHaveBeenCalled();
     });
+  });
 
-    it('shows no readout for a resize at other zooms', () => {
-      const { root } = mount();
+  describe('Day zoom (notion-motion.md Round 49 B6, B8, B10)', () => {
+    const dayStart = timelineWindow(CENTER, 'day').start;
+    const midnight = daysBetween(dayStart, CENTER) * TIMELINE_DAY_WIDTH.day;
+    const perMinute = TIMELINE_DAY_WIDTH.day / 1440;
+    const at = (minutes: number): number => midnight + minutes * perMinute;
+    const mountDay = (overrides: Partial<DatabaseTimelineViewOptions> = {}): Mounted => {
+      const mounted = mount({ view: timelineView({ timelineZoom: 'day' }), ...overrides });
+
+      rect(canvas(mounted.root), 0, 0, timelineWindow(CENTER, 'day').days * TIMELINE_DAY_WIDTH.day, 400);
+
+      return mounted;
+    };
+    const range = (root: HTMLElement): HTMLElement | null => root.querySelector<HTMLElement>('[data-blok-database-timeline-range]');
+
+    // B8: Tb "4:30 AM → 7:30 AM" with the centre at 4:33; Zeta "7:00 AM → 10:00 AM" with the centre at 7:07.
+    it.each([
+      [4 * 60 + 33, '2026-10-09T04:30/2026-10-09T07:30'],
+      [7 * 60 + 7, '2026-10-09T07:00/2026-10-09T10:00'],
+    ])('a "No date" pick with the chart centre at minute %i writes 3 hours floored to 15 minutes', (centre, written) => {
+      const { root, view, handlers } = mountDay();
+      const el = scroller(root);
+
+      Object.defineProperty(el, 'clientWidth', { value: 720, configurable: true });
+      el.scrollLeft = at(centre) - 360;
+      view.noDateControl()?.open(document.body.appendChild(document.createElement('button')));
+      document.querySelector<HTMLElement>('[data-blok-database-no-date-row]')?.click();
+
+      expect(handlers.writeDates).toHaveBeenCalledWith('r3', { start: written });
+    });
+
+    it('the table panel "+ New" adds a row with no date', () => {
+      const { root, handlers } = mountDay({ view: timelineView({ timelineZoom: 'day', showTimelineTable: true }) });
+
+      root.querySelector<HTMLElement>('[data-blok-database-timeline-table-new]')?.click();
+
+      expect(handlers.addRow).toHaveBeenCalledWith(null, {});
+    });
+
+    // notion-motion.md Round 50 §3: an all-day bar's edge drag at Day zoom turns it timed, by 15 minutes.
+    it('turns an all-day bar timed when its edge is dragged', () => {
+      const { root, handlers } = mountDay({ groups: single([row('r1', 'Gamma', '2026-10-09')]) });
       const handle = bar(root, 'r1').querySelector<HTMLElement>('[data-blok-database-timeline-resize="end"]');
 
-      rect(canvas(root), 0, 0, timelineWindow(CENTER, 'month').days * 40, 400);
       if (handle === null) throw new Error('no handle');
-      pointer('pointerdown', handle, px('2026-10-09') + 20, 50);
-      pointer('pointermove', document, px('2026-10-11') + 20, 50);
-      pointer('pointerup', document, px('2026-10-11') + 20, 50);
+      pointer('pointerdown', handle, at(24 * 60), 50);
+      pointer('pointermove', document, at(24 * 60) + 30, 50);
+      pointer('pointerup', document, at(24 * 60) + 30, 50);
 
-      expect(showReadout).not.toHaveBeenCalled();
+      expect(handlers.writeDates).toHaveBeenCalledWith('r1', { start: '2026-10-09T00:00/2026-10-10T00:30' });
+    });
+
+    // B6: from 8:30, +18px → 8:45, +10px → 9:00, +25px → 9:30.
+    it.each([
+      [18, '2026-10-09T05:30/2026-10-09T08:45'],
+      [10, '2026-10-09T05:30/2026-10-09T08:45'],
+      [25, '2026-10-09T05:30/2026-10-09T09:00'],
+    ])('snaps a right-edge resize of %ipx to the nearest 15 minutes', (dx, written) => {
+      const { root, handlers } = mountDay({ groups: single([row('r1', 'Tb', '2026-10-09T05:30/2026-10-09T08:30')]) });
+      const handle = bar(root, 'r1').querySelector<HTMLElement>('[data-blok-database-timeline-resize="end"]');
+
+      if (handle === null) throw new Error('no handle');
+      pointer('pointerdown', handle, at(510), 50);
+      pointer('pointermove', document, at(510) + dx, 50);
+      pointer('pointerup', document, at(510) + dx, 50);
+
+      expect(handlers.writeDates).toHaveBeenCalledWith('r1', { start: written });
+    });
+
+    it('reads the dragged edge with its time', () => {
+      const { root } = mountDay({ groups: single([row('r1', 'Tb', '2026-10-09T05:30/2026-10-09T08:30')]) });
+      const handle = bar(root, 'r1').querySelector<HTMLElement>('[data-blok-database-timeline-resize="end"]');
+
+      if (handle === null) throw new Error('no handle');
+      pointer('pointerdown', handle, at(510), 50);
+      pointer('pointermove', document, at(510) + 18, 50);
+
+      expect(bar(root, 'r1').querySelector('[data-blok-database-timeline-edge-readout="end"]')?.textContent).toBe('Oct 9, 8:45 AM');
+      pointer('pointerup', document, at(510) + 18, 50);
+    });
+
+    // B10: Notion drew no pill under a pressed, moved or selected timed bar at Day zoom.
+    it('draws no header pill for a hovered or dragged bar', () => {
+      const { root } = mountDay({ groups: single([row('r1', 'Tb', '2026-10-09T05:30/2026-10-09T08:30')]) });
+
+      bar(root, 'r1').dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+      expect(range(root)).toBeNull();
+
+      pointer('pointerdown', bar(root, 'r1'), at(400), 50);
+      pointer('pointermove', document, at(400) + 60, 50);
+      expect(range(root)).toBeNull();
+      pointer('pointerup', document, at(400) + 60, 50);
+    });
+
+    // B10: Week zoom keeps a 188 pill (180 + 8) under a timed bar.
+    it('keeps the whole-day pill for a timed bar at Week zoom', () => {
+      const { root } = mount({ view: timelineView({ timelineZoom: 'week' }), groups: single([row('r1', 'Tb', '2026-10-09T05:30/2026-10-09T08:30')]) });
+
+      bar(root, 'r1').dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+      expect(range(root)).not.toBeNull();
     });
   });
 
@@ -1041,6 +2175,18 @@ describe('DatabaseTimelineView', () => {
       });
 
       expect(arrows(root)).toEqual(['r1>r2', 'r2>r1!']);
+    });
+
+    // notion-motion.md Round 54 §1: at Day zoom a range ends at its end date's 00:00, so its arrow leaves from there.
+    it('starts an arrow out of a Day-zoom range at the range\'s drawn end', () => {
+      const { root } = mount({
+        view: timelineView({ timelineZoom: 'day', arrowsBy: 'p-notes' }),
+        groups: single([row('r1', 'Alpha', '2026-10-12/2026-10-16'), row('r2', 'Next', '2026-10-17')]),
+        arrows: [{ from: 'r1', to: 'r2' }],
+      });
+      const from = daysBetween(timelineWindow(CENTER, 'day').start, '2026-10-16') * TIMELINE_DAY_WIDTH.day;
+
+      expect(root.querySelector<HTMLElement>('[data-blok-database-timeline-arrow]')?.style.getPropertyValue('--blok-database-arrow-from')).toBe(`${from}px`);
     });
 
     it('skips an arrow whose end has no dates', () => {

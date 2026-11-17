@@ -3,6 +3,7 @@ import { HEADER_PATTERN, CHECKLIST_PATTERN, UNORDERED_LIST_PATTERN, ORDERED_LIST
 import { hasUnsafeScheme } from '../../../utils/sanitize-url';
 import { htmlToPlainText } from '../../../utils/plain-text';
 import { isSamePageLink } from '../../../../tools/link/registry';
+import { announceConversion } from '../../../utils/conversion-announcement';
 
 import { BlockEventComposer } from './__base';
 
@@ -164,7 +165,7 @@ export class MarkdownShortcuts extends BlockEventComposer {
      * Divider shortcut triggers on the third hyphen — no space needed.
      */
     if (event.data === '-') {
-      return this.handleDividerShortcut();
+      return this.handleDividerShortcut() || this.handleEmDash();
     }
 
     /**
@@ -256,16 +257,18 @@ export class MarkdownShortcuts extends BlockEventComposer {
       const remainingHtml = this.extractRemainingHtml(currentInput, shortcutLength);
       const caretOffset = this.getCaretOffset(currentInput) - shortcutLength;
 
-      const newBlock = BlockManager.replace(currentBlock, LIST_TOOL_NAME, {
+      const checklistData = {
         text: remainingHtml,
         style: 'checklist',
         checked: isChecked,
         ...(depth > 0 ? { depth } : {}),
-      });
+      };
+      const newBlock = BlockManager.replace(currentBlock, LIST_TOOL_NAME, checklistData);
 
       this.setCaretAfterConversion(newBlock, caretOffset);
 
       this.Blok.YjsManager.stopCapturing();
+      announceConversion(this.Blok.I18n, listTool, checklistData);
 
       return true;
     }
@@ -279,16 +282,18 @@ export class MarkdownShortcuts extends BlockEventComposer {
       const remainingHtml = this.extractRemainingHtml(currentInput, shortcutLength);
       const caretOffset = this.getCaretOffset(currentInput) - shortcutLength;
 
-      const newBlock = BlockManager.replace(currentBlock, LIST_TOOL_NAME, {
+      const unorderedData = {
         text: remainingHtml,
         style: 'unordered',
         checked: false,
         ...(depth > 0 ? { depth } : {}),
-      });
+      };
+      const newBlock = BlockManager.replace(currentBlock, LIST_TOOL_NAME, unorderedData);
 
       this.setCaretAfterConversion(newBlock, caretOffset);
 
       this.Blok.YjsManager.stopCapturing();
+      announceConversion(this.Blok.I18n, listTool, unorderedData);
 
       return true;
     }
@@ -330,6 +335,7 @@ export class MarkdownShortcuts extends BlockEventComposer {
     this.setCaretAfterConversion(newBlock, caretOffset);
 
     this.Blok.YjsManager.stopCapturing();
+    announceConversion(this.Blok.I18n, listTool, listData);
 
     return true;
   }
@@ -438,6 +444,53 @@ export class MarkdownShortcuts extends BlockEventComposer {
 
     // The DOM was mutated directly (not via a Tool re-render), so notify the
     // block to flush the change to Yjs — see the CRDT sync contract.
+    currentBlock.dispatchChange();
+
+    this.Blok.YjsManager.stopCapturing();
+
+    return true;
+  }
+
+  /**
+   * Notion turns a typed "--" into an em dash. It is its own undo step, so one
+   * undo gives back the literal "--".
+   * @returns true if "--" was replaced
+   */
+  private handleEmDash(): boolean {
+    const currentBlock = this.Blok.BlockManager.currentBlock;
+    const currentInput = currentBlock?.currentInput;
+
+    if (!currentBlock || !currentInput) {
+      return false;
+    }
+
+    const selection = window.getSelection();
+
+    if (selection === null || !selection.isCollapsed || selection.rangeCount === 0) {
+      return false;
+    }
+
+    const { startContainer: node, startOffset: offset } = selection.getRangeAt(0);
+
+    if (!(node instanceof Text) || !currentInput.contains(node) || node.parentElement?.closest('code')) {
+      return false;
+    }
+
+    if (offset < 2 || node.data.slice(offset - 2, offset) !== '--') {
+      return false;
+    }
+
+    this.Blok.YjsManager.startSubStep();
+
+    node.replaceData(offset - 2, 2, '\u2014');
+
+    const caretRange = document.createRange();
+
+    caretRange.setStart(node, offset - 1);
+    caretRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(caretRange);
+
     currentBlock.dispatchChange();
 
     this.Blok.YjsManager.stopCapturing();
@@ -596,14 +649,16 @@ export class MarkdownShortcuts extends BlockEventComposer {
     const remainingHtml = this.extractRemainingHtml(currentInput, match.shortcutLength);
     const caretOffset = this.getCaretOffset(currentInput) - match.shortcutLength;
 
-    const newBlock = BlockManager.replace(currentBlock, HEADER_TOOL_NAME, {
+    const headerData = {
       text: remainingHtml,
       level: match.level,
-    });
+    };
+    const newBlock = BlockManager.replace(currentBlock, HEADER_TOOL_NAME, headerData);
 
     this.setCaretAfterConversion(newBlock, caretOffset);
 
     this.Blok.YjsManager.stopCapturing();
+    announceConversion(this.Blok.I18n, headerTool, headerData);
 
     return true;
   }
@@ -663,11 +718,12 @@ export class MarkdownShortcuts extends BlockEventComposer {
     const remainingHtml = this.extractRemainingHtml(currentInput, shortcutLength);
     const caretOffset = this.getCaretOffset(currentInput) - shortcutLength;
 
-    const newBlock = BlockManager.replace(currentBlock, HEADER_TOOL_NAME, {
+    const toggleHeaderData = {
       text: remainingHtml,
       level,
       isToggleable: true,
-    });
+    };
+    const newBlock = BlockManager.replace(currentBlock, HEADER_TOOL_NAME, toggleHeaderData);
 
     if (caretOffset > 0) {
       this.setCaretAfterConversion(newBlock, caretOffset);
@@ -676,6 +732,7 @@ export class MarkdownShortcuts extends BlockEventComposer {
     }
 
     this.Blok.YjsManager.stopCapturing();
+    announceConversion(this.Blok.I18n, headerTool, toggleHeaderData);
 
     return true;
   }
@@ -727,19 +784,21 @@ export class MarkdownShortcuts extends BlockEventComposer {
     const remainingHtml = this.extractRemainingHtml(currentInput, shortcutLength);
     const caretOffset = this.getCaretOffset(currentInput) - shortcutLength;
 
-    const newBlock = BlockManager.replace(currentBlock, TOGGLE_TOOL_NAME, {
+    const toggleData = {
       text: remainingHtml,
-    });
+    };
+    const newBlock = BlockManager.replace(currentBlock, TOGGLE_TOOL_NAME, toggleData);
 
     this.setCaretAfterConversion(newBlock, caretOffset);
 
     this.Blok.YjsManager.stopCapturing();
+    announceConversion(this.Blok.I18n, toggleTool, toggleData);
 
     return true;
   }
 
   /**
-   * Check if current block content is exactly "---" and convert to divider.
+   * Check if current block content is exactly "---" or "\u2014-" and convert to divider.
    * Unlike other shortcuts, this triggers on the third hyphen keystroke — no space needed.
    */
   private handleDividerShortcut(): boolean {
@@ -786,6 +845,7 @@ export class MarkdownShortcuts extends BlockEventComposer {
     Caret.setToBlock(paragraphBlock, Caret.positions.START);
 
     this.Blok.YjsManager.stopCapturing();
+    announceConversion(this.Blok.I18n, dividerTool, {});
 
     return true;
   }
@@ -830,13 +890,15 @@ export class MarkdownShortcuts extends BlockEventComposer {
     const remainingHtml = this.extractRemainingHtml(currentInput, shortcutLength);
     const caretOffset = this.getCaretOffset(currentInput) - shortcutLength;
 
-    const newBlock = BlockManager.replace(currentBlock, QUOTE_TOOL_NAME, {
+    const quoteData = {
       text: remainingHtml,
-    });
+    };
+    const newBlock = BlockManager.replace(currentBlock, QUOTE_TOOL_NAME, quoteData);
 
     this.setCaretAfterConversion(newBlock, caretOffset);
 
     this.Blok.YjsManager.stopCapturing();
+    announceConversion(this.Blok.I18n, quoteTool, quoteData);
 
     return true;
   }
@@ -883,13 +945,15 @@ export class MarkdownShortcuts extends BlockEventComposer {
     const remainingHtml = this.extractRemainingHtml(currentInput, shortcutLength);
 
     // `code` is a PLAINTEXT field: store the text, not the markup.
-    const newBlock = BlockManager.replace(currentBlock, CODE_TOOL_NAME, {
+    const codeData = {
       code: htmlToPlainText(remainingHtml),
-    });
+    };
+    const newBlock = BlockManager.replace(currentBlock, CODE_TOOL_NAME, codeData);
 
     this.setCaretAfterConversion(newBlock, 0);
 
     this.Blok.YjsManager.stopCapturing();
+    announceConversion(this.Blok.I18n, codeTool, codeData);
 
     return true;
   }

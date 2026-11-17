@@ -343,6 +343,15 @@ fn canonical_databases(mut blocks: Vec<Node>) -> Vec<Node> {
         {
             relabelled.remove("automations");
         }
+        // The editor also saves an empty deletedProperties map on every database.
+        if kind == "database"
+            && deep_equals(
+                lookup(Some(&relabelled), "deletedProperties"),
+                Some(&new_object(Vec::new())),
+            )
+        {
+            relabelled.remove("deletedProperties");
+        }
         set_member(block, "data", relabelled);
     }
     blocks
@@ -527,7 +536,8 @@ fn rich_fields() -> &'static BTreeMap<String, HashSet<String>> {
 
 // Rich text, as C# RichText.IsRichText and Canonicalize.
 
-const MARK_ORDER: [&str; 11] = [
+const MARK_ORDER: [&str; 12] = [
+    "annotation",
     "link",
     "color",
     "background",
@@ -701,6 +711,19 @@ fn mark_value(key: &str, raw: &Node) -> Option<Node> {
         }
         return Some(link);
     }
+    if key == "annotation" {
+        let text = string_of(lookup(Some(raw), "text")).filter(|text| !text.is_empty())?;
+        if raw.kind != Kind::Object {
+            return None;
+        }
+        let mut annotation = new_object(vec![new_member("text", str_node(&text))]);
+        if let Some(subtitle) =
+            string_of(lookup(Some(raw), "subtitle")).filter(|subtitle| !subtitle.is_empty())
+        {
+            set_member(&mut annotation, "subtitle", str_node(&subtitle));
+        }
+        return Some(annotation);
+    }
     if BOOLEAN_MARKS.contains(&key) {
         return (raw.kind == Kind::True).then(|| new_bool(true));
     }
@@ -840,7 +863,7 @@ fn normalizer_matches_the_type_script_normalizer() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!(ran, 8, "ran {ran} normalizer cases, want the 8 C# runs");
+    assert_eq!(ran, 9, "ran {ran} normalizer cases, want the 9 C# runs");
 }
 
 #[test]

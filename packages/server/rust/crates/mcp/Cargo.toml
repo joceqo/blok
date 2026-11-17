@@ -1,10 +1,12 @@
 [package]
 name = "blok-mcp"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish.workspace = true
+repository.workspace = true
+description = "Blok's MCP server: lets MCP clients read and edit Blok documents."
+publish = true
 
 [lib]
 name = "blok_mcp"
@@ -17,24 +19,24 @@ path = "src/main.rs"
 [dependencies]
 base64 = "0.22"
 libc = "0.2"
-blok-blokagent = { path = "../blokagent" }
-blok-blokserver-ticket = { path = "../blokserver-ticket" }
-blok-collab-convert = { path = "../collab-convert" }
-blok-collab-docendpoint = { path = "../collab-docendpoint" }
-blok-collab-wire = { path = "../collab-wire" }
-blok-lib0 = { path = "../lib0" }
-blok-dotnet = { path = "../dotnet" }
-blok-jsjson = { path = "../jsjson" }
-blok-http = { path = "../http" }
-blok-jsruntime = { path = "../jsruntime" }
-blok-yjs = { path = "../yjs" }
-blok-outbound = { path = "../outbound" }
+blok-blokagent.workspace = true
+blok-blokserver-ticket.workspace = true
+blok-collab-convert.workspace = true
+blok-collab-docendpoint.workspace = true
+blok-collab-wire.workspace = true
+blok-lib0.workspace = true
+blok-dotnet.workspace = true
+blok-jsjson.workspace = true
+blok-http.workspace = true
+blok-jsruntime.workspace = true
+blok-yjs.workspace = true
+blok-outbound.workspace = true
 bytes = "1"
 flate2 = "1"
 http = "1"
 http-body-util = { version = "0.1", features = ["channel"] }
 ring = "0.17"
-serde = "1"
+serde = { version = "1", features = ["derive"] }
 # Pinned: rmcp ships a minor release about every week, and the MCP
 # conformance suite is what proves a bump. Client and auth features stay off:
 # they pull reqwest, which dials outside the outbound law.
@@ -44,6 +46,11 @@ rmcp = { version = "=3.9.0", default-features = false, features = ["server", "tr
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 sha2 = "0.10"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "signal", "sync", "time", "net", "io-util", "io-std", "fs"] }
+
+[target.'cfg(unix)'.dependencies]
+# The files handle store refuses a directory another user owns; rustix reads
+# the user id without unsafe code.
+rustix = { version = "1", features = ["process"] }
 
 [dev-dependencies]
 blok-blokserver = { path = "../blokserver" }

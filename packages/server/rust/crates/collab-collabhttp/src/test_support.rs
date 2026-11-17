@@ -645,12 +645,16 @@ pub struct AppOptions {
     pub journal: bool,
     pub ticket_mode: bool,
     pub authorization: Option<Arc<RecordingAuthorization>>,
+    /// Any other hook; it wins over `authorization`.
+    pub policy: Option<Arc<dyn Authorization>>,
     /// None keeps the room's default, as the C# harness does.
     pub retry_backoff: Option<Duration>,
     /// The journal keeps no history.
     pub no_history: bool,
     /// Where the journal lives; a fresh directory when None.
     pub journal_dir: Option<PathBuf>,
+    /// The rooms' activity observer.
+    pub activity: Option<Arc<dyn blok_collab_room::ActivityObserver>>,
 }
 
 pub struct App {
@@ -707,30 +711,32 @@ pub async fn start_app(options: AppOptions) -> App {
             hook: Arc::default(),
         })
     });
-    let manager = Manager::new(ManagerOptions {
-        store: Arc::new(LocalStore::new(temp_dir(), None)),
-        endpoint: endpoint.clone(),
-        converter: converter.clone(),
-        room,
-        log: None,
-        operations: journal
-            .clone()
-            .map(|journal| journal as Arc<dyn OperationStore>),
-        activity: None,
-    });
+    let mut o = ManagerOptions::new(
+        Arc::new(LocalStore::new(temp_dir(), None)),
+        endpoint.clone(),
+        converter.clone(),
+    );
+    o.room = room;
+    o.operations = journal
+        .clone()
+        .map(|journal| journal as Arc<dyn OperationStore>);
+    o.activity = options.activity.clone();
+    let manager = Manager::new(o);
     let rooms = manager.clone();
     let corrupt = Arc::new(Mutex::new(Vec::new()));
     let logged = corrupt.clone();
     let routes = Handlers::new(Config {
         ticket_mode: options.ticket_mode,
-        authorization: options
+        authorization: options.policy.or(options
             .authorization
-            .map(|hook| hook as Arc<dyn Authorization>),
+            .map(|hook| hook as Arc<dyn Authorization>)),
         rooms: Arc::new(move || Ok(rooms.clone())),
         max_message_bytes: 8 << 20,
         corrupt_log: Some(Arc::new(move |doc: &str| {
             logged.lock().unwrap().push(doc.to_owned());
         })),
+        enforce_restore_guards: false,
+        stamp_authority: false,
     });
     let mut router = Router::new();
     for (pattern, method, which) in [
@@ -754,6 +760,13 @@ pub async fn start_app(options: AppOptions) -> App {
             "POST",
             Route::Restore,
         ),
+        (
+            "/sync/{doc}/history/{lineage}/{sequence}/restore/preview",
+            "POST",
+            Route::Preview,
+        ),
+        ("/sync/{doc}/history/at", "GET", Route::At),
+        ("/sync/{doc}/history/changes", "GET", Route::Range),
     ] {
         let routes = routes.clone();
         router.handle(
@@ -789,6 +802,9 @@ pub async fn start_app(options: AppOptions) -> App {
                         Route::Delete => routes.history_delete(request, response).await,
                         Route::Changes => routes.history_changes(request, response).await,
                         Route::Restore => routes.history_restore(request, response).await,
+                        Route::Preview => routes.history_restore_preview(request, response).await,
+                        Route::At => routes.history_at(request, response).await,
+                        Route::Range => routes.history_changes_between(request, response).await,
                     }
                 }
             },
@@ -815,6 +831,9 @@ enum Route {
     Delete,
     Changes,
     Restore,
+    Preview,
+    At,
+    Range,
 }
 
 impl App {

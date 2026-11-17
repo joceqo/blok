@@ -1,3 +1,10 @@
+/* Registered so the stage shadow can crossfade from one emoji's colour to the next. */
+@property --emoji-stage-wash {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: transparent;
+}
+
 /* Body-mounted controls do not inherit the editor's element resets. */
 :where([data-blok-emoji-picker]) :where(button, input) {
   appearance: none;
@@ -84,7 +91,8 @@
 }
 
 [data-blok-emoji-picker] [data-emoji-picker-skin-toggle] {
-  font-size: 19px;
+  display: grid;
+  place-items: center;
 }
 
 [data-blok-emoji-picker] :is([data-emoji-picker-random], [data-emoji-picker-remove]) > svg {
@@ -121,112 +129,110 @@
   background: var(--blok-item-hover-bg);
 }
 
-/* Anchor the tray to the header, so all six tones fit on narrow screens. */
+/* The toggle shows the current tone as a dot. */
+[data-blok-emoji-picker] [data-emoji-skin-dot] {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--blok-radius-pill);
+  background: var(--emoji-skin-dot, #ffcc4d);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blok-text-primary) 14%, transparent);
+}
+
+/* The dial hangs centred under the toggle. Its 140×88 box and the ring
+   centre (70, 16) must match SKIN_DIAL in emoji-picker/index.ts. */
 [data-blok-emoji-picker] [data-emoji-picker-header] > div:has(> [data-emoji-picker-skin-toggle]) {
-  position: static;
+  position: relative;
 }
 
 [data-blok-emoji-picker] [data-emoji-picker-skin-tone] {
-  top: calc(100% - 4px);
-  inset-inline-end: 12px;
-  width: min(236px, calc(100% - 24px));
-  box-sizing: border-box;
-  margin: 0;
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  padding: var(--blok-space-1-25);
-  gap: 0;
-  border: 1px solid var(--blok-popover-border);
-  border-radius: var(--blok-radius-surface);
-  --blok-radius-inner: max(var(--blok-radius-floor), calc(var(--blok-radius-surface) - var(--blok-border-width-hairline) - var(--blok-space-1-25)));
-  background: var(--blok-popover-bg);
-  box-shadow: var(--blok-popover-box-shadow);
-  transform-origin: right top;
-  animation: blok-emoji-tones-in 240ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/* The picker root carries `dir` (syncPortalDirection): the tray grows from its end corner. */
-[data-blok-emoji-picker][dir="rtl"] [data-emoji-picker-skin-tone] {
-  transform-origin: left top;
-}
-
-[data-blok-emoji-picker] [data-emoji-picker-skin-tone] button {
-  position: relative;
-  z-index: 1;
-  width: 100%;
-  min-width: 0;
-  height: 36px;
-  border: 1px solid transparent;
-  border-radius: var(--blok-radius-inner, var(--blok-radius-control-lg));
-  font-size: 22px;
-  box-shadow: none;
-  transition: transform 140ms ease-out;
-}
-
-[data-blok-emoji-picker] [data-emoji-picker-skin-tone] button[aria-pressed='true'] {
-  background: transparent;
-}
-
-[data-blok-emoji-picker] [data-emoji-skin-indicator] {
   position: absolute;
-  top: 5px;
-  inset-inline-start: 5px;
-  width: calc((100% - 10px) / 6);
-  height: 36px;
-  box-sizing: border-box;
-  border: 1px solid var(--blok-popover-border);
-  border-radius: var(--blok-radius-inner, var(--blok-radius-control-lg));
-  background: var(--blok-item-hover-bg);
-  transform: translateX(calc(var(--emoji-skin-index, 0) * 100%));
-  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
-  pointer-events: none;
+  z-index: 30;
+  --emoji-skin-dial: 140px;
+  top: 100%;
+  left: 50%;
+  width: var(--emoji-skin-dial);
+  height: 88px;
+  /* --emoji-skin-shift pulls the dial back inside the picker near its edge (keepSkinDialInside). */
+  margin: 0 0 0 calc(var(--emoji-skin-dial) / -2 + var(--emoji-skin-shift, 0px));
+  padding: 0;
+  filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--blok-text-primary) 18%, transparent));
 }
 
-/* Tones run right to left in RTL, so the highlight steps leftward. */
-[data-blok-emoji-picker][dir="rtl"] [data-emoji-skin-indicator] {
-  transform: translateX(calc(var(--emoji-skin-index, 0) * -100%));
+/* The ring opens from the dot's left in LTR and from its right in RTL. */
+[data-blok-emoji-picker][dir="rtl"] [data-emoji-picker-skin-tone] {
+  transform: scaleX(-1);
+}
+
+/* Each tone is a button over its segment's box (placed in script), clipped to the segment.
+   The button paints the rim; ::before paints the tone, clipped to the same segment pulled in by SKIN_DIAL.rim. */
+[data-blok-emoji-picker] [data-emoji-picker-skin-tone] button {
+  position: absolute;
+  cursor: pointer;
+  background: var(--blok-popover-bg);
+  clip-path: var(--emoji-tone-shape);
+  transition: clip-path 160ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+[data-blok-emoji-picker] [data-emoji-picker-skin-tone] button::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--emoji-tone-color);
+  clip-path: var(--emoji-tone-fill);
+  transition: clip-path 160ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+[data-blok-emoji-picker] [data-emoji-picker-skin-tone] button:focus-visible {
+  outline: none;
+}
+
+@media (hover: hover) {
+  [data-blok-emoji-picker] [data-emoji-picker-skin-tone] button:hover {
+    clip-path: var(--emoji-tone-shape-hover);
+  }
+
+  [data-blok-emoji-picker] [data-emoji-picker-skin-tone] button:hover::before {
+    clip-path: var(--emoji-tone-fill-hover);
+  }
+}
+
+/* The chosen tone reaches a little further out instead of carrying a mark. */
+[data-blok-emoji-picker] [data-emoji-picker-skin-tone] button[aria-pressed='true'] {
+  clip-path: var(--emoji-tone-shape-on);
+}
+
+[data-blok-emoji-picker] [data-emoji-picker-skin-tone] button[aria-pressed='true']::before {
+  clip-path: var(--emoji-tone-fill-on);
+}
+
+[data-blok-emoji-picker] [data-emoji-skin-focus] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  fill: none;
+  stroke: var(--blok-focus-ring);
+  stroke-width: 2;
+}
+
+/* The landing circle reaches up from the dial to the toggle dot. */
+[data-blok-emoji-picker] [data-emoji-skin-blob] {
+  position: absolute;
+  top: -60px;
+  left: 0;
+  width: var(--emoji-skin-dial);
+  height: calc(100% + 60px);
+  background: var(--emoji-tone-color);
+  pointer-events: none;
 }
 
 [data-blok-emoji-picker] [data-emoji-skin-glyph] {
   display: block;
   transform-origin: center;
   backface-visibility: hidden;
-}
-
-[data-blok-emoji-picker] [data-emoji-picker-skin-tone] [data-emoji-skin-glyph] {
-  animation: blok-emoji-empty-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  animation-delay: calc(var(--emoji-tone-order, 0) * 20ms);
-}
-
-[data-blok-emoji-picker][data-emoji-picker-inline] [data-emoji-picker-header] {
-  position: absolute;
-  inset: 4px 0 auto;
-  justify-content: flex-end;
-  padding: 0;
-  gap: 0;
-  pointer-events: none;
-}
-
-[data-blok-emoji-picker][data-emoji-picker-inline] [data-emoji-picker-skin-toggle],
-[data-blok-emoji-picker][data-emoji-picker-inline] [data-emoji-picker-skin-tone] {
-  pointer-events: auto;
-}
-
-[data-blok-emoji-picker][data-emoji-picker-inline] [data-emoji-picker-skin-toggle] {
-  background: var(--blok-icon-bg);
-}
-
-[data-blok-emoji-picker][data-emoji-picker-inline] [data-emoji-picker-skin-tone] {
-  top: calc(100% + 2px);
-  inset-inline-end: 0;
-  width: min(236px, 100%);
-}
-
-[data-blok-emoji-picker][data-emoji-picker-inline] [data-emoji-section-title]:has([data-emoji-picker-header]) {
-  position: relative;
-  box-sizing: border-box;
-  min-height: 44px;
-  padding-inline-end: 44px;
 }
 
 [data-blok-emoji-picker] [data-emoji-picker-body] {
@@ -359,6 +365,13 @@
   display: none;
 }
 
+/* A category with no match while the inline menu searches. The longer selector beats the Tailwind hover fill. */
+[data-blok-emoji-picker][data-blok-popover] [data-emoji-nav]:disabled {
+  background: transparent;
+  cursor: default;
+  opacity: 0.28;
+}
+
 /* Search uses the footer's space without resizing the picker.
    Keyed off the root attribute, never `:has()`: a `:has()` anchored here makes
    every glyph text swap below invalidate all ~8300 nodes of the grid. */
@@ -472,7 +485,8 @@
 }
 
 @media (hover: hover) {
-  [data-blok-emoji-picker] :is([data-emoji-picker-header] button, [data-emoji-native], [data-emoji-picker-empty] button):hover {
+  /* Skin-tone segments sit in the header but keep their own colours on hover. */
+  [data-blok-emoji-picker] :is([data-emoji-picker-header] button:not([data-emoji-picker-skin-tone] button), [data-emoji-native], [data-emoji-picker-empty] button):hover {
     background: var(--blok-item-hover-bg);
   }
 
@@ -507,13 +521,211 @@
     translate: 0 -1px;
   }
 
-  [data-blok-emoji-picker] [data-emoji-nav]:hover {
+  [data-blok-emoji-picker] [data-emoji-nav]:hover:not(:disabled) {
     color: var(--blok-text-primary);
   }
 }
 
+/* A short inline result list is one block, only as tall as its rows.
+   Must stay below the navless rule, which fixes the height at 306px. */
+[data-blok-emoji-picker][data-emoji-picker-inline][data-emoji-picker-flat] [data-emoji-picker-body] {
+  flex-basis: auto;
+  height: auto;
+  padding-block: var(--blok-space-1-5);
+}
+
+/* A set row height, not the square ratio: WebKit makes an auto-height grid of ratio cells 17px too tall. */
+[data-blok-emoji-picker][data-emoji-picker-inline][data-emoji-picker-flat] [data-emoji-native] {
+  height: var(--emoji-cell);
+  aspect-ratio: auto;
+}
+
+/* ─── Spotlight + Showcase: every picker except the inline ":" one ───
+   Order: search, named chips, grid, stage. The stage is 54px and the grid
+   220px; while searching the chips hide and the grid takes their 41px. */
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-header] {
+  padding: var(--blok-space-2) var(--blok-space-2) var(--blok-space-2) var(--blok-space-3);
+  border-bottom: 1px solid var(--blok-popover-border);
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-footer] {
+  flex: 0 0 auto;
+  border-top: 0;
+  border-bottom: 1px solid var(--blok-popover-border);
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-nav] {
+  display: flex;
+  gap: var(--blok-space-0-5);
+  padding: var(--blok-space-1-5) var(--blok-space-2);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-nav]::-webkit-scrollbar {
+  display: none;
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-nav] {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--blok-space-1-5);
+  height: 28px;
+  padding: 0 var(--blok-space-2-5) 0 var(--blok-space-2);
+  border-radius: var(--blok-radius-pill);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 1;
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-nav] svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-nav][aria-current='true'] svg {
+  transform: none;
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-nav-indicator] {
+  top: var(--blok-space-1-5);
+  height: 28px;
+  border: 0;
+  border-radius: var(--blok-radius-pill);
+  background: var(--blok-item-hover-bg);
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-body] {
+  flex-basis: 220px;
+  height: 220px;
+  max-height: 220px;
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline])[data-emoji-picker-navless] [data-emoji-picker-body] {
+  flex-basis: 261px;
+  height: 261px;
+  max-height: 261px;
+}
+
+/* The compact grid. Must match the column count in buildSection(). */
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-grid] {
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: 0;
+}
+
+/* Rows are shorter than the cells are wide, so the button's square ratio is dropped. */
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-native] {
+  height: 34px;
+  aspect-ratio: auto;
+  font-size: 24px;
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-section-title] {
+  padding: var(--blok-space-2) var(--blok-space-1-5) var(--blok-space-0-75);
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-section]:first-child [data-emoji-section-title] {
+  padding-top: var(--blok-space-2-5);
+}
+
+/* Must equal the real height: heading (8px + 18px line-height + 3px), the grid's
+   two 2px paddings, then one measured row per row. */
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-section][data-emoji-section-deferred] {
+  contain-intrinsic-size: auto calc(var(--blok-space-2) + 18px + var(--blok-space-0-75) + var(--blok-space-1) + var(--emoji-rows, 1) * var(--emoji-cell));
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-stage] {
+  position: relative;
+  z-index: 0;
+  flex: 0 0 54px;
+  display: flex;
+  align-items: center;
+  gap: var(--blok-space-3);
+  padding: 0 var(--blok-space-3-5) 0 var(--blok-space-3);
+  overflow: hidden;
+  border-top: 1px solid var(--blok-popover-border);
+  --emoji-stage-wash: transparent;
+  transition: --emoji-stage-wash 380ms ease-out;
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-stage-glyph] {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  /* Lifts the glyph off the shadow under it. */
+  padding-bottom: var(--blok-space-1);
+  font-size: 30px;
+  line-height: 1;
+}
+
+/* The floor: a small shadow in the emoji's own colour, sampled in script. */
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-stage-glyph]::after {
+  position: absolute;
+  bottom: 1px;
+  left: 50%;
+  width: 22px;
+  height: 5px;
+  content: '';
+  background: color-mix(in srgb, var(--emoji-stage-wash) 60%, transparent);
+  border-radius: 50%;
+  filter: blur(2.5px);
+  translate: -50% 0;
+}
+
+/* No icon yet: a line smiley on a gray floor. */
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-stage][data-emoji-picker-stage-empty] [data-emoji-picker-stage-glyph] {
+  color: color-mix(in srgb, var(--blok-text-primary) 38%, transparent);
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-stage][data-emoji-picker-stage-empty] [data-emoji-picker-stage-glyph]::after {
+  background: color-mix(in srgb, black 24%, transparent);
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-stage-glyph] svg {
+  display: block;
+  width: 28px;
+  height: 28px;
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-stage-text] {
+  display: grid;
+  gap: var(--blok-space-0-25);
+  min-width: 0;
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-stage-kicker] {
+  color: var(--blok-text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-stage-name] {
+  overflow: hidden;
+  color: var(--blok-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-picker-stage][data-emoji-picker-stage-empty] [data-emoji-picker-stage-name] {
+  color: var(--blok-text-secondary);
+  font-weight: 400;
+}
+
 @media (max-width: 380px) {
-  [data-blok-emoji-picker] [data-emoji-grid] {
+  [data-blok-emoji-picker] [data-emoji-grid],
+  [data-blok-emoji-picker]:not([data-emoji-picker-inline]) [data-emoji-grid] {
     grid-template-columns: repeat(8, minmax(0, 1fr));
   }
 }

@@ -12,7 +12,7 @@ import {
   isCaretAtLastLine,
   focus,
 } from '../../components/utils/caret';
-import { PAGE_REFERENCE_ATTR, PAGE_REFERENCE_FALLBACK } from '../../shared/page-reference';
+import { PAGE_REFERENCE_ATTR, PAGE_REFERENCE_FALLBACK, mayHoldPageReference } from '../../shared/page-reference';
 
 import { CELL_ATTR, ROW_ATTR, CELL_COL_ATTR, ownCells, ownRows } from './table-core';
 import { cellBlockFallbackText, parseCellContentToBlocks } from './table-cell-paste';
@@ -42,7 +42,7 @@ const previousWith = (from: Element | null, attr: string): Element | null =>
 const neutralizeCopiedPageReferences = (data: Record<string, unknown>): Record<string, unknown> => {
   const text = data?.text;
 
-  if (typeof text !== 'string' || !text.includes(PAGE_REFERENCE_ATTR)) {
+  if (typeof text !== 'string' || !mayHoldPageReference(text)) {
     return data;
   }
 
@@ -672,7 +672,7 @@ export class TableCellBlocks {
    * The flat index right after `blockId` and its descendants.
    * @param blockId - the block
    */
-  private indexAfterSubtreeOf(blockId: string): number {
+  public indexAfterSubtreeOf(blockId: string): number {
     const count = this.api.blocks.getBlocksCount();
     const rootIndex = this.api.blocks.getBlockIndex(blockId);
 
@@ -2637,7 +2637,8 @@ export class TableCellBlocks {
     const allCells = this.gridElement.querySelectorAll(`[${CELL_ATTR}]`);
     const blockIds = this.getBlockIdsFromCells(allCells);
 
-    this.deleteBlocks(blockIds);
+    // The table is going, so no cell is left to put a caret in (Notion U163).
+    this.deleteBlocks(blockIds, false);
   }
 
   /**

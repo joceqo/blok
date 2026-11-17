@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { constructed } = vi.hoisted(() => ({ constructed: [] as Array<Record<string, unknown>> }));
 
-vi.mock('../../../../src/components/utils/popover', () => {
+vi.mock('../../../../src/components/utils/popover', async (importOriginal) => {
+  const real = await importOriginal<{ PopoverDesktop: abstract new (...args: never[]) => unknown }>();
+  const { stubMissingMethods } = await import('../../helpers/stub-missing-methods');
+
   class MockPopoverDesktop {
     constructor(params: Record<string, unknown>) {
       constructed.push(params);
@@ -15,6 +18,8 @@ vi.mock('../../../../src/components/utils/popover', () => {
     destroy(): void { /* no-op */ }
   }
 
+  stubMissingMethods(MockPopoverDesktop, real.PopoverDesktop);
+
   return { PopoverDesktop: MockPopoverDesktop };
 });
 
@@ -23,7 +28,7 @@ import type { HeaderMenuContext } from '../../../../src/tools/database/database-
 import type { PopoverItemParams } from '@/types/utils/popover/popover-item';
 import type { PropertyDefinition } from '../../../../src/tools/database/types';
 import en from '../../../../src/components/i18n/locales/en.json';
-import { IconColumnInsertLeft, IconColumnInsertRight, IconGroup } from '../../../../src/components/icons';
+import { IconArrowRightLine, IconColumnInsertLeft, IconColumnInsertRight, IconGroup, IconPin, IconPinSlash, IconUTurnLeft } from '../../../../src/components/icons';
 
 describe('table view menus', () => {
   beforeEach(() => {
@@ -41,11 +46,23 @@ describe('table view menus', () => {
     expect(constructed[0]?.class).toBe('blok-database-menu');
   });
 
-  it('opens a row menu to the left of its handle, centred on it, with the row menu size', () => {
+  // notion-motion.md Round 35 "Table row ⋮⋮ menu": the card menu's look, 265 wide with 14px 400 text,
+  // its right edge 5px before the handle and centred on it.
+  it('opens the table row menu with the card menu look, 5px left of its handle and centred on it', () => {
     openMenu(document.createElement('button'), [], { kind: 'row' });
 
-    expect(String(constructed[0]?.class).split(' ')).toEqual(['blok-database-menu', 'blok-database-row-menu']);
+    expect(constructed[0]?.minWidth).toBe('265px');
     expect(constructed[0]?.placeLeftOfAnchor).toBe(true);
+    expect(constructed[0]?.offset).toBe(5);
+  });
+
+  // notion-motion.md Round 36 §4: the table row menu scales in from its centre, as the list's handle menu
+  // (the handle class carries transform-origin: center), and stops about 12px above the window bottom.
+  it('opens the table row menu from its centre, 12px from the window top and bottom', () => {
+    openMenu(document.createElement('button'), [], { kind: 'row' });
+
+    expect(String(constructed[0]?.class).split(' ')).toEqual(['blok-database-menu', 'blok-database-row-menu', 'blok-database-card-menu', 'blok-database-handle-menu']);
+    expect(constructed[0]?.viewportMargin).toBe(12);
   });
 
   it('marks a column header menu, so only it takes the header row size', () => {
@@ -58,7 +75,8 @@ describe('table view menus', () => {
   it('opens a card menu 265 wide with the row menu size, marked so CSS lifts its height cap', () => {
     openMenu(document.createElement('button'), [], { kind: 'card' });
 
-    expect(String(constructed[0]?.class).split(' ')).toEqual(['blok-database-menu', 'blok-database-row-menu', 'blok-database-card-menu']);
+    // notion-motion.md Round 36 §4: the card ⋯ menu only fades in; the fade class drops the scale (database.css).
+    expect(String(constructed[0]?.class).split(' ')).toEqual(['blok-database-menu', 'blok-database-row-menu', 'blok-database-card-menu', 'blok-database-fade-menu']);
     expect(constructed[0]?.minWidth).toBe('265px');
     expect(constructed[0]?.placeLeftOfAnchor).toBeUndefined();
   });
@@ -70,6 +88,64 @@ describe('table view menus', () => {
 
     expect(constructed[0]?.cover).toBe(true);
     expect(constructed[1]?.cover).toBeUndefined();
+  });
+
+  // notion-motion.md Round 35 "Board card ⋯ menu": a tall menu stops 12.1px above the window bottom.
+  it('keeps a card menu 12px from the window edge', () => {
+    openMenu(document.createElement('button'), [], { kind: 'card' });
+
+    expect(constructed[0]?.viewportMargin).toBe(12);
+  });
+
+  // notion-motion.md Round 10 "List view row menu anchor": the row menu opens left of the list row's handle,
+  // its right edge 5px before it, centred on it, 265 wide; the timeline menu ends about 12px over the window bottom.
+  it('opens a handle menu as the card menu, left of its handle with a 5px gap and 12px from the window edge', () => {
+    openMenu(document.createElement('button'), [], { kind: 'handle' });
+
+    expect(String(constructed[0]?.class).split(' ')).toEqual(['blok-database-menu', 'blok-database-row-menu', 'blok-database-card-menu', 'blok-database-handle-menu']);
+    expect(constructed[0]?.minWidth).toBe('265px');
+    expect(constructed[0]?.placeLeftOfAnchor).toBe(true);
+    expect(constructed[0]?.offset).toBe(5);
+    expect(constructed[0]?.viewportMargin).toBe(12);
+    expect(constructed[0]?.cover).toBeUndefined();
+  });
+
+  // notion-motion.md Round 16 §7: with no room on its left, the handle menu flips to the right, 5px past the handle.
+  it('opens a handle menu on the right of its handle when the 265px menu has no room on the left', () => {
+    const handle = (left: number): HTMLButtonElement => {
+      const button = document.createElement('button');
+
+      button.getBoundingClientRect = () => new DOMRect(left, 345, 18, 24);
+
+      return button;
+    };
+
+    openMenu(handle(84), [], { kind: 'handle' });
+    openMenu(handle(519), [], { kind: 'handle' });
+
+    expect(constructed[0]?.asideSide).toBe('right');
+    expect(constructed[0]?.placeLeftOfAnchor).toBe(true);
+    expect(constructed[0]?.offset).toBe(5);
+    expect(constructed[1]?.asideSide).toBe('left');
+  });
+
+  // notion-motion.md Round 38 §3: near the window's left edge the table ⋮⋮ menu flips to the right, 5px past the handle.
+  it('opens the table row menu on the right of its handle when the 265px menu has no room on the left', () => {
+    const handle = (left: number): HTMLButtonElement => {
+      const button = document.createElement('button');
+
+      button.getBoundingClientRect = () => new DOMRect(left, 87, 18, 24);
+
+      return button;
+    };
+
+    openMenu(handle(42), [], { kind: 'row' });
+    openMenu(handle(477), [], { kind: 'row' });
+
+    expect(constructed[0]?.asideSide).toBe('right');
+    expect(constructed[0]?.placeLeftOfAnchor).toBe(true);
+    expect(constructed[0]?.offset).toBe(5);
+    expect(constructed[1]?.asideSide).toBe('left');
   });
 });
 
@@ -178,6 +254,15 @@ describe('column header menu glyphs', () => {
     expect(chevron('database-header-group')).toBeUndefined();
   });
 
+  // notion-motion.md Round 11, r11-calc-submenu-number.png: the Calculate submenu is the footer's 200-wide menu.
+  it('opens Calculate as the 200-wide calculation menu', () => {
+    const calculate = headerViewItems(ctx('number')).find((item) => 'title' in item && item.title === 'tools.database.tableCalculate');
+    const children = calculate !== undefined && 'children' in calculate ? calculate.children : undefined;
+
+    expect(children?.minWidth).toBe('200px');
+    expect(children?.class).toBe('blok-database-calc-menu');
+  });
+
   // notion-live-8/80-menu-number.png: Group is a dot grid; Insert left and right push an arrow into a bar.
   it('draws Notion\'s Group and Insert glyphs', () => {
     const items = headerViewItems(ctx('text'));
@@ -190,5 +275,19 @@ describe('column header menu glyphs', () => {
     expect(icon('database-header-group')).toBe(IconGroup);
     expect(icon('database-header-insert-left')).toBe(IconColumnInsertLeft);
     expect(icon('database-header-insert-right')).toBe(IconColumnInsertRight);
+  });
+
+  // notion-motion.md Round 29 §2 and §5: Wrap and Unwrap differ, and Unfreeze crosses out Freeze's pin.
+  it('draws different glyphs for Wrap and Unwrap, and a crossed-out pin for Unfreeze', () => {
+    const icon = (over: Partial<HeaderMenuContext>, name: string): unknown => {
+      const found = headerViewItems(ctx('text', over)).find((item) => 'name' in item && item.name === name);
+
+      return found !== undefined && 'icon' in found ? found.icon : undefined;
+    };
+
+    expect(icon({ wrapped: false }, 'database-header-wrap')).toBe(IconUTurnLeft);
+    expect(icon({ wrapped: true }, 'database-header-unwrap')).toBe(IconArrowRightLine);
+    expect(icon({ frozenHere: false }, 'database-header-freeze')).toBe(IconPin);
+    expect(icon({ frozenHere: true }, 'database-header-unfreeze')).toBe(IconPinSlash);
   });
 });

@@ -4,7 +4,7 @@ import { DatabaseTableView, createTableState } from '../../../../src/tools/datab
 import type { TableHandlers, TableState, DatabaseTableViewOptions, TableGroup } from '../../../../src/tools/database/database-table-view';
 import { calculationItems } from '../../../../src/tools/database/database-table-menus';
 import { PROPERTY_TYPE_META } from '../../../../src/tools/database/database-property-types';
-import { IconInfo, IconPeekSide } from '../../../../src/components/icons';
+import { IconFilter, IconInfo, IconPeekSide, IconPlayerPlay, IconRowGrip } from '../../../../src/components/icons';
 import { HINT_DELAY, destroy as destroyTooltip } from '../../../../src/components/utils/tooltip';
 import { TOOLTIP_MUTED_INK } from '../../../../src/components/modules/toolbar/tooltip';
 import { PopoverRegistry } from '../../../../src/components/utils/popover/popover-registry';
@@ -184,6 +184,24 @@ describe('DatabaseTableView', () => {
         expected.innerHTML = PROPERTY_TYPE_META[type].icon;
         expect(iconOf(`p-${type}`)).toBe(expected.innerHTML);
       }
+    });
+
+    // Notion's title "Aa" is wider than its other header glyphs (m38-table.png), so the stylesheet sizes it by type.
+    it('marks the title header icon with its property type', () => {
+      const { root } = mount({});
+      const icon = root.querySelector(`[role="columnheader"][data-property-id="${schema[0].id}"] [data-blok-database-table-column-icon]`);
+
+      expect(schema[0].type).toBe('title');
+      expect(icon?.getAttribute('data-type')).toBe('title');
+    });
+
+    // Notion's row grip is 8x16 (rowhover.png); the editor's block handle keeps IconMenu.
+    it('draws the row handle with the tall row grip', () => {
+      const { root } = mount({});
+      const expected = document.createElement('span');
+
+      expected.innerHTML = IconRowGrip;
+      expect(root.querySelector('[data-blok-database-table-row-handle]')?.innerHTML).toBe(expected.innerHTML);
     });
 
     it('draws a property\'s own icon in its header instead of the type icon (research/04, R-2022-11-17)', () => {
@@ -468,9 +486,99 @@ describe('DatabaseTableView', () => {
       const { root } = mount({ view });
 
       expect(cell(root, 'r1', 'p-title').hasAttribute('data-frozen')).toBe(true);
-      expect(cell(root, 'r1', 'p-title').style.insetInlineStart).toBe('0px');
-      expect(cell(root, 'r1', 'p-notes').style.insetInlineStart).toBe('250px');
+      expect(cell(root, 'r1', 'p-title').style.insetInlineStart).toBe('calc(0px + var(--_blok-database-frozen-shift, 0px))');
+      expect(cell(root, 'r1', 'p-notes').style.insetInlineStart).toBe('calc(250px + var(--_blok-database-frozen-shift, 0px))');
       expect(cell(root, 'r1', 'p-amount').hasAttribute('data-frozen')).toBe(false);
+    });
+
+    // notion-motion.md Round 28 §5: a darker line after the last frozen column, header included.
+    it('marks the last frozen column, header included, as the frozen edge', () => {
+      const view = tableView({ frozenColumnCount: 2, properties: [{ id: 'p-title', visible: true, width: 250 }, { id: 'p-notes', visible: true, width: 100 }] });
+      const { root } = mount({ view });
+      const header = root.querySelector('[role="columnheader"][data-property-id="p-notes"]');
+
+      expect(cell(root, 'r1', 'p-notes').hasAttribute('data-frozen-edge')).toBe(true);
+      expect(header?.hasAttribute('data-frozen-edge')).toBe(true);
+      expect(cell(root, 'r1', 'p-title').hasAttribute('data-frozen-edge')).toBe(false);
+      expect(cell(root, 'r1', 'p-amount').hasAttribute('data-frozen-edge')).toBe(false);
+    });
+
+    /** Mounts with a scroller whose measured inline-start padding is `pad`, as the stylesheet would give it. */
+    const mountPadded = (pad: number, view: DatabaseViewConfig): { root: HTMLElement; scroller: HTMLElement } => {
+      const observed: ResizeObserverCallback[] = [];
+
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(callback: ResizeObserverCallback) {
+          observed.push(callback);
+        }
+
+        observe = vi.fn();
+        unobserve = vi.fn();
+        disconnect = vi.fn();
+      });
+      const { root } = mount({ view });
+      const scroller = root.querySelector<HTMLElement>('[data-blok-database-table-scroller]');
+
+      if (scroller === null) throw new Error('no scroller');
+      scroller.style.paddingInlineStart = `${pad}px`;
+      observed.forEach((callback) => callback([], {} as ResizeObserver));
+
+      return { root, scroller };
+    };
+    const scrollTo = (scroller: HTMLElement, left: number): void => {
+      Object.assign(scroller, { scrollLeft: left }).dispatchEvent(new Event('scroll'));
+    };
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    // notion-motion.md Round 46 §A and Round 29 §5: the frozen block sticks 30px in from the scroller's edge
+    // (x 300 with the scroller at 270), so with the 269px text-column padding it sticks at scrollLeft 239.
+    it('sticks the frozen block 30px in from the scroller edge, not at the text column', () => {
+      const { scroller } = mountPadded(269, tableView({ frozenColumnCount: 1 }));
+
+      expect(scroller.style.getPropertyValue('--_blok-database-frozen-shift')).toBe('-239px');
+    });
+
+    // notion-motion.md Round 28 §5: the frozen edge casts a shadow only once content slides under the frozen block.
+    it('marks the scroller only once the frozen block has stuck, and clears it back before that', () => {
+      const { scroller } = mountPadded(269, tableView({ frozenColumnCount: 1 }));
+
+      expect(scroller.hasAttribute('data-scrolled')).toBe(false);
+      scrollTo(scroller, 200);
+      expect(scroller.hasAttribute('data-scrolled')).toBe(false);
+      scrollTo(scroller, 240);
+      expect(scroller.hasAttribute('data-scrolled')).toBe(true);
+      scrollTo(scroller, 0);
+      expect(scroller.hasAttribute('data-scrolled')).toBe(false);
+      // Right-to-left scrolls negative.
+      scrollTo(scroller, -240);
+      expect(scroller.hasAttribute('data-scrolled')).toBe(true);
+    });
+
+    // notion-motion.md Round 47 §B6: the stick (239) clips the strip, but Notion's shadow comes on at 268, 29 later.
+    it('casts the frozen shadow from 29px after the stick, both ways and in right-to-left', () => {
+      const { scroller } = mountPadded(269, tableView({ frozenColumnCount: 1 }));
+
+      scrollTo(scroller, 239);
+      expect(scroller.hasAttribute('data-scrolled')).toBe(true);
+      expect(scroller.hasAttribute('data-frozen-shadow')).toBe(false);
+      scrollTo(scroller, 267);
+      expect(scroller.hasAttribute('data-frozen-shadow')).toBe(false);
+      scrollTo(scroller, 268);
+      expect(scroller.hasAttribute('data-frozen-shadow')).toBe(true);
+      scrollTo(scroller, 0);
+      expect(scroller.hasAttribute('data-frozen-shadow')).toBe(false);
+      scrollTo(scroller, -268);
+      expect(scroller.hasAttribute('data-frozen-shadow')).toBe(true);
+    });
+
+    it('never marks a table with no frozen column, so nothing clips its edge', () => {
+      const { scroller } = mountPadded(269, tableView());
+
+      scrollTo(scroller, 400);
+      expect(scroller.hasAttribute('data-scrolled')).toBe(false);
     });
 
     it('right-aligns number cells', () => {
@@ -490,12 +598,77 @@ describe('DatabaseTableView', () => {
       expect(handlers.rerender).toHaveBeenCalled();
     });
 
+    // notion-motion.md Round 29 §1: one full-width row, the ↓ icon and "Load more", then a ⋯ for the load limit.
+    it('draws Load more as a row with the down arrow, the label and a ⋯ that sets the load limit', () => {
+      const many = Array.from({ length: 12 }, (_, i) => row(`r${String(i).padStart(2, '0')}`, `Row ${i}`));
+      const setLoadLimit = vi.fn();
+      const { root, state } = mount({ rows: many, view: tableView({ loadLimit: 10 }), handlers: { ...makeHandlers(), setLoadLimit } });
+      const line = root.querySelector<HTMLElement>('[data-blok-database-table-load-more-row]');
+      const more = line?.querySelector<HTMLElement>('[data-blok-database-table-load-more]');
+      const dots = line?.querySelector<HTMLElement>('[data-blok-database-table-load-limit-menu]');
+
+      expect(more?.textContent?.trim()).toBe('tools.database.tableLoadMore');
+      expect(more?.querySelector('svg')).not.toBeNull();
+      expect(dots?.getAttribute('aria-label')).toBe('tools.database.settingsLoadLimit');
+      expect(more?.contains(dots ?? null)).toBe(false);
+
+      dots?.click();
+      expect(state.loaded.has('')).toBe(false);
+      const heading = document.querySelector('[data-blok-database-load-limit-heading]');
+      const options = [10, 25, 50, 100].map((n) => document.querySelector<HTMLElement>(`[data-blok-item-name="database-load-limit-${n}"]`));
+
+      expect(heading?.textContent).toBe('tools.database.tableShowOnFirstLoad');
+      expect(options.map((item) => item?.textContent?.trim())).toEqual([10, 25, 50, 100].map((n) => `tools.database.settingsLoadLimitPages:${n}`));
+      expect(options[0]?.hasAttribute('data-blok-popover-item-active')).toBe(true);
+      expect(options[0]?.querySelector('[data-blok-testid="popover-item-trailing-icon"] svg')).not.toBeNull();
+      expect(options[1]?.hasAttribute('data-blok-popover-item-active')).toBe(false);
+
+      options[1]?.click();
+      expect(setLoadLimit).toHaveBeenCalledWith(25);
+    });
+
+    // notion-motion.md Round 30 §3: the menu opens 8px below the ⋯, its right edge on the ⋯'s right edge.
+    it('opens the load limit menu 8px below the ⋯ with their right edges aligned', () => {
+      const many = Array.from({ length: 12 }, (_, i) => row(`r${String(i).padStart(2, '0')}`, `Row ${i}`));
+      const { root } = mount({ rows: many, view: tableView({ loadLimit: 10 }), handlers: { ...makeHandlers(), setLoadLimit: vi.fn() } });
+      const dots = root.querySelector<HTMLElement>('[data-blok-database-table-load-limit-menu]');
+
+      if (dots === null) throw new Error('no ⋯');
+      Object.defineProperty(dots, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ left: 651, right: 675, top: 300, bottom: 324, width: 24, height: 24, x: 651, y: 300, toJSON: () => ({}) }),
+      });
+      dots.click();
+      const menu = document.querySelector<HTMLElement>('[data-blok-popover]');
+      const width = menu?.offsetWidth ?? 0;
+
+      expect(menu?.style.top).toBe('332px');
+      expect(menu?.style.left).toBe(`${675 - width}px`);
+      document.querySelector<HTMLElement>('[data-blok-item-name="database-load-limit-10"]')?.click();
+    });
+
+    it('keeps Load more but leaves out the ⋯ when the view cannot change its load limit', () => {
+      const many = Array.from({ length: 12 }, (_, i) => row(`r${String(i).padStart(2, '0')}`, `Row ${i}`));
+      const { root } = mount({ rows: many, view: tableView({ loadLimit: 10 }) });
+
+      expect(root.querySelector('[data-blok-database-table-load-more]')).not.toBeNull();
+      expect(root.querySelector('[data-blok-database-table-load-limit-menu]')).toBeNull();
+    });
+
     it('shows Edit filters and New page when filters hide every row', () => {
       const { root, handlers } = mount({ rows: [], view: tableView({ filters: [{ propertyId: 'p-amount', operator: 'is_not_empty', value: null }] }) });
       const empty = root.querySelector<HTMLElement>('[data-blok-database-table-empty]');
 
       expect(empty).not.toBeNull();
-      empty?.querySelector<HTMLElement>('[data-blok-database-table-edit-filters]')?.click();
+      // notion-motion.md Round 41 Part B: Notion's "Edit filters" leads with the filter icon.
+      const edit = empty?.querySelector<HTMLElement>('[data-blok-database-table-edit-filters]');
+
+      const filterIcon = document.createElement('div');
+
+      filterIcon.innerHTML = IconFilter;
+      expect(edit?.querySelector('svg')?.outerHTML).toBe(filterIcon.querySelector('svg')?.outerHTML);
+      expect(edit?.textContent?.trim()).toBe('tools.database.tableEditFilters');
+      edit?.click();
       expect(handlers.editFilters).toHaveBeenCalled();
     });
 
@@ -506,6 +679,8 @@ describe('DatabaseTableView', () => {
       const clear = empty?.querySelector<HTMLElement>('[data-blok-database-table-clear-search]');
 
       expect(clear?.textContent).toBe('tools.database.searchClear');
+      // notion-motion.md Round 41 Part B: "Clear search" has no icon.
+      expect(clear?.querySelector('svg')).toBeNull();
       expect(empty?.querySelector('[data-blok-database-table-edit-filters]')).toBeNull();
       expect(empty?.querySelector('[data-blok-database-table-add-row]')).not.toBeNull();
       clear?.click();
@@ -564,6 +739,17 @@ describe('DatabaseTableView', () => {
       expect(value('p-notes')).toBe('3');
     });
 
+    // notion-motion.md Round 10 (r10-calc-none-*.raw): with no calculation set there is no footer row at all;
+    // the column header menu sets the first one.
+    it('draws no footer row while no shown column is calculated, with rows or without', () => {
+      expect(mount().root.querySelector('[data-blok-database-table-footer]')).toBeNull();
+      expect(mount({ rows: [] }).root.querySelector('[data-blok-database-table-footer]')).toBeNull();
+      expect(mount({ view: tableView({ properties: [{ id: 'p-amount', visible: false }], calculations: [{ id: 'p-amount', fn: 'sum' }] }) })
+        .root.querySelector('[data-blok-database-table-footer]')).toBeNull();
+      expect(mount({ rows: [], view: tableView({ calculations: [{ id: 'p-amount', fn: 'sum' }] }) })
+        .root.querySelector('[data-blok-database-table-footer]')).not.toBeNull();
+    });
+
     it('renders a calculation footer and leaves empty footer cells marked', () => {
       const view = tableView({ calculations: [{ id: 'p-amount', fn: 'sum' }] });
       const { root } = mount({ view });
@@ -572,6 +758,60 @@ describe('DatabaseTableView', () => {
       expect(footerCell('p-amount')?.querySelector('[data-blok-database-table-calc-value]')?.textContent).toBe('1235.5');
       expect(footerCell('p-amount')?.querySelector('[data-blok-database-table-calc-label]')?.textContent).toBe('tools.database.calcSum');
       expect(footerCell('p-notes')?.hasAttribute('data-empty')).toBe(true);
+    });
+
+    // notion-motion.md Round 11 "Footer labels, every function": the footer names a function shorter than its menu item,
+    // and a percent takes its count's label.
+    it.each([
+      ['p-amount', 'count', 'tools.database.calcCount'],
+      ['p-amount', 'count_values', 'tools.database.calcFooterCountValues'],
+      ['p-amount', 'unique', 'tools.database.calcFooterUnique'],
+      ['p-amount', 'empty', 'tools.database.calcFooterEmpty'],
+      ['p-amount', 'not_empty', 'tools.database.calcFooterNotEmpty'],
+      ['p-amount', 'percent_empty', 'tools.database.calcFooterEmpty'],
+      ['p-amount', 'percent_not_empty', 'tools.database.calcFooterNotEmpty'],
+      ['p-amount', 'sum', 'tools.database.calcSum'],
+      ['p-amount', 'average', 'tools.database.calcAverage'],
+      ['p-amount', 'median', 'tools.database.calcMedian'],
+      ['p-amount', 'min', 'tools.database.calcMin'],
+      ['p-amount', 'max', 'tools.database.calcMax'],
+      ['p-amount', 'range', 'tools.database.calcRange'],
+      ['p-done', 'checked', 'tools.database.calcChecked'],
+      ['p-done', 'unchecked', 'tools.database.calcUnchecked'],
+      ['p-done', 'percent_checked', 'tools.database.calcChecked'],
+      ['p-done', 'percent_unchecked', 'tools.database.calcUnchecked'],
+      ['p-when', 'earliest_date', 'tools.database.calcFooterEarliest'],
+      ['p-when', 'latest_date', 'tools.database.calcFooterLatest'],
+      ['p-when', 'date_range', 'tools.database.calcRange'],
+    ] as const)('labels a %s %s footer %s', (id, fn, key) => {
+      const withDate = [...schema, { id: 'p-when', name: 'When', type: 'date' as const, position: 'a5' }];
+      const { root } = mount({ schema: withDate, view: tableView({ calculations: [{ id, fn }] }) });
+      const label = root.querySelector(`[data-blok-database-table-calc][data-property-id="${id}"] [data-blok-database-table-calc-label]`);
+
+      expect(label?.textContent).toBe(key);
+    });
+
+    // notion-motion.md Round 11: "Percents show 3 decimals (33.333%)".
+    it('shows a percent with up to 3 decimals', () => {
+      const { root } = mount({ view: tableView({ calculations: [{ id: 'p-done', fn: 'percent_checked' }] }) });
+      const value = root.querySelector('[data-blok-database-table-calc][data-property-id="p-done"] [data-blok-database-table-calc-value]');
+
+      expect(value?.textContent).toBe('33.333%');
+    });
+
+    // research/21 §1d: the hover fills a 70x21 box around the label and value, not the cell.
+    it('puts a footer cell\'s label and value, or its Calculate prompt, in one box', () => {
+      const { root } = mount({ view: tableView({ calculations: [{ id: 'p-amount', fn: 'sum' }] }) });
+      const box = (id: string): Element | null | undefined =>
+        root.querySelector(`[data-blok-database-table-calc][data-property-id="${id}"]`)?.firstElementChild;
+
+      expect(box('p-amount')?.hasAttribute('data-blok-database-table-calc-box')).toBe(true);
+      expect([...(box('p-amount')?.children ?? [])].map((el) => el.getAttributeNames().find((name) => name.startsWith('data-blok')))).toEqual([
+        'data-blok-database-table-calc-label',
+        'data-blok-database-table-calc-value',
+      ]);
+      expect(box('p-notes')?.hasAttribute('data-blok-database-table-calc-box')).toBe(true);
+      expect(box('p-notes')?.firstElementChild?.hasAttribute('data-blok-database-table-calc-placeholder')).toBe(true);
     });
 
     it('read-only: no gutter, no new page row, no editor on click', () => {
@@ -623,8 +863,8 @@ describe('DatabaseTableView', () => {
       expect(root.querySelector('[data-blok-database-table-selection-bar]')).toBeNull();
     });
 
-    // notion-spec-2 §19.4: Tab saves, closes and selects the cell to the right, no editor open.
-    it('Tab in a cell editor saves, closes and selects the cell to the right', () => {
+    // notion-motion.md Round 57 §1: Tab after a change in a Text editor saves and closes, and no cell is selected.
+    it('Tab in a Text cell editor after a change saves and closes, and leaves no cell selected', () => {
       const { root, handlers } = mount();
 
       cell(root, 'r1', 'p-notes').click();
@@ -632,11 +872,12 @@ describe('DatabaseTableView', () => {
       editorField().dispatchEvent(new Event('input', { bubbles: true }));
       const event = press(editorField(), 'Tab');
 
-      expect(selectedCells(root)).toEqual(['r1/p-amount']);
+      expect(selectedCells(root)).toEqual([]);
+      expect(anchorCell(root)).toBeNull();
       expect(event.defaultPrevented).toBe(true);
       expect(editor()).toBeNull();
       expect(handlers.commitCell).toHaveBeenCalledWith('r1', 'p-notes', 'typed');
-      expect(grid(root)).toHaveFocus();
+      expect(document.body).toHaveFocus();
     });
 
     it('Tab in a Number cell editor saves and selects the cell to the right', () => {
@@ -651,15 +892,52 @@ describe('DatabaseTableView', () => {
       expect(handlers.commitCell).toHaveBeenCalledWith('r2', 'p-amount', 42);
     });
 
-    // Shift+Tab is not measured in Notion: it mirrors Tab.
-    it('Shift+Tab in a cell editor saves and selects the cell to the left', () => {
+    // notion-motion.md Round 57 §1: Tab with the value unchanged closes the editor and selects the next cell.
+    it('Tab in a Text cell editor with the value unchanged selects the cell to the right', () => {
+      const { root, handlers } = mount();
+
+      cell(root, 'r1', 'p-notes').click();
+      editorField().value = 'shortx';
+      editorField().dispatchEvent(new Event('input', { bubbles: true }));
+      editorField().value = 'short';
+      editorField().dispatchEvent(new Event('input', { bubbles: true }));
+      press(editorField(), 'Tab');
+
+      expect(selectedCells(root)).toEqual(['r1/p-amount']);
+      expect(editor()).toBeNull();
+      expect(handlers.commitCell).not.toHaveBeenCalled();
+      expect(grid(root)).toHaveFocus();
+    });
+
+    // notion-motion.md Round 29 §3: in a Number editor, Shift+Tab commits and selects the cell to the left.
+    it('Shift+Tab in a Number cell editor saves and selects the cell to the left', () => {
+      const { root, handlers } = mount();
+
+      cell(root, 'r2', 'p-amount').click();
+      editorField().value = '42';
+      press(editorField(), 'Tab', { shiftKey: true });
+
+      expect(selectedCells(root)).toEqual(['r2/p-notes']);
+      expect(editor()).toBeNull();
+      expect(handlers.commitCell).toHaveBeenCalledWith('r2', 'p-amount', 42);
+    });
+
+    // notion-motion.md Round 57 §1: Shift+Tab out of a Text editor leaves no cell selected, changed or not.
+    it.each([
+      ['unchanged', 'short'],
+      ['changed', 'typed'],
+    ])('Shift+Tab in a Text cell editor with the value %s leaves no cell selected', (_case, value) => {
       const { root } = mount();
 
       cell(root, 'r1', 'p-notes').click();
+      editorField().value = value;
+      editorField().dispatchEvent(new Event('input', { bubbles: true }));
       press(editorField(), 'Tab', { shiftKey: true });
 
-      expect(selectedCells(root)).toEqual(['r1/p-title']);
+      expect(selectedCells(root)).toEqual([]);
+      expect(anchorCell(root)).toBeNull();
       expect(editor()).toBeNull();
+      expect(document.body).toHaveFocus();
     });
 
     // feel/findings-table T13: Notion's bar shows the first 4 properties; the rest wait under "…".
@@ -710,6 +988,89 @@ describe('DatabaseTableView', () => {
       expect(slot.hasAttribute('data-blok-database-selecting')).toBe(false);
     });
 
+    describe('selection bar fade-out (notion-motion.md Round 16 §2)', () => {
+      const LEAVING = '[data-blok-database-table-selection-bar-leaving]';
+      const selectRow = (root: HTMLElement): void => {
+        cell(root, 'r1', 'p-notes').click();
+        press(editorField(), 'Escape');
+        press(grid(root), 'Escape');
+      };
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('drops the property buttons, fades the rest out for 200ms, then removes it', () => {
+        vi.useFakeTimers();
+        const slot = document.createElement('div');
+
+        document.body.appendChild(slot);
+        const { root } = mount({ selectionBarSlot: () => slot });
+
+        selectRow(root);
+        press(grid(root), 'Escape');
+        const leaving = slot.querySelector<HTMLElement>(LEAVING);
+
+        expect(leaving).not.toBeNull();
+        expect(leaving?.querySelector('[data-blok-database-table-selection-property]')).toBeNull();
+        expect(leaving?.querySelector('[data-blok-database-table-selection-count]')).not.toBeNull();
+        expect(leaving?.querySelector('[data-blok-database-table-selection-delete]')).not.toBeNull();
+        expect(leaving?.querySelector('[data-blok-database-table-selection-more]')).not.toBeNull();
+        expect(leaving?.getAttribute('aria-hidden')).toBe('true');
+        expect(slot.querySelector('[data-blok-database-table-selection-bar]')).toBeNull();
+        expect(slot.hasAttribute('data-blok-database-selecting')).toBe(false);
+
+        vi.advanceTimersByTime(199);
+        expect(slot.querySelector(LEAVING)).not.toBeNull();
+        vi.advanceTimersByTime(1);
+        expect(slot.querySelector(LEAVING)).toBeNull();
+      });
+
+      it('goes at once under reduced motion', () => {
+        vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce'), addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+        const slot = document.createElement('div');
+
+        document.body.appendChild(slot);
+        const { root } = mount({ selectionBarSlot: () => slot });
+
+        selectRow(root);
+        press(grid(root), 'Escape');
+
+        expect(slot.querySelector(LEAVING)).toBeNull();
+        expect(slot.querySelector('[data-blok-database-table-selection-bar]')).toBeNull();
+        vi.unstubAllGlobals();
+      });
+
+      it('a new selection while the old bar fades shows only one bar', () => {
+        vi.useFakeTimers();
+        const slot = document.createElement('div');
+
+        document.body.appendChild(slot);
+        const { root } = mount({ selectionBarSlot: () => slot });
+
+        selectRow(root);
+        press(grid(root), 'Escape');
+        selectRow(root);
+
+        expect(slot.querySelector(LEAVING)).toBeNull();
+        expect(slot.querySelectorAll('[data-blok-database-table-selection-bar]')).toHaveLength(1);
+      });
+
+      it('destroy removes a fading bar at once', () => {
+        vi.useFakeTimers();
+        const slot = document.createElement('div');
+
+        document.body.appendChild(slot);
+        const { root, view } = mount({ selectionBarSlot: () => slot });
+
+        selectRow(root);
+        press(grid(root), 'Escape');
+        view.destroy();
+
+        expect(slot.querySelector(LEAVING)).toBeNull();
+      });
+    });
+
     it('arrows move the selected cell and stop at the edges', () => {
       const { root } = mount();
 
@@ -742,15 +1103,18 @@ describe('DatabaseTableView', () => {
       expect(editor()).toBeNull();
     });
 
-    it('Tab moves right; Shift+Tab extends the range left and keeps the anchor', () => {
+    // notion-motion.md Round 29 §3: Shift+Tab on a selected cell is swallowed and the selection stays.
+    it('Tab moves right; Shift+Tab on a selected cell keeps the selection where it is', () => {
       const { root } = mount();
 
       selectCell(root, 'r1', 'p-amount');
       press(grid(root), 'Tab');
       expect(anchorCell(root)).toBe('r1/p-stage');
-      press(grid(root), 'Tab', { shiftKey: true });
+      const event = press(grid(root), 'Tab', { shiftKey: true });
+
+      expect(selectedCells(root)).toEqual(['r1/p-stage']);
       expect(anchorCell(root)).toBe('r1/p-stage');
-      expect(selectedCells(root)).toEqual(['r1/p-amount', 'r1/p-stage']);
+      expect(event.defaultPrevented).toBe(true);
     });
 
     it('Enter opens the editor; Enter in the editor commits and moves down', () => {
@@ -978,6 +1342,20 @@ describe('DatabaseTableView', () => {
 
       press(grid(root), 'Escape');
       expect([...root.querySelectorAll('[data-blok-database-table-row][aria-selected="true"]')].map((el) => el.getAttribute('data-row-id'))).toEqual(['r1', 'r2']);
+    });
+
+    // notion-motion.md Round 30 §4: Shift+click on another cell selects that row; it does not extend a range.
+    it('Shift+click on a cell selects its row, not a range', () => {
+      const { root } = mount();
+      const rowsSelected = (): Array<string | null> =>
+        [...root.querySelectorAll('[data-blok-database-table-row][aria-selected="true"]')].map((el) => el.getAttribute('data-row-id'));
+
+      selectCell(root, 'r1', 'p-notes');
+      cell(root, 'r2', 'p-amount').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+
+      expect(rowsSelected()).toEqual(['r2']);
+      expect(selectedCells(root)).toEqual([]);
+      expect(editor()).toBeNull();
     });
 
     it('points aria-activedescendant at the selected cell, so a screen reader follows it', () => {
@@ -1234,6 +1612,101 @@ describe('DatabaseTableView', () => {
       expect(open?.lastElementChild?.textContent).toBe('tools.database.tableOpen');
     });
 
+    // notion-motion.md Round 28 §1 (r28-narrowpill-threshold.raw): the title column shows the icon pill at 100 and OPEN
+    // from 102, whatever the label's width (Notion's 102 OPEN overlaps the title). 101 is unread; Blok counts it as narrow.
+    describe('narrow title column', () => {
+      const sized = (root: HTMLElement, cellWidth: number): HTMLElement => {
+        const titleCell = cell(root, 'r1', 'p-title');
+        const open = titleCell.querySelector<HTMLElement>('[data-blok-database-table-open]');
+
+        if (open === null) {
+          throw new Error('no OPEN');
+        }
+        vi.spyOn(titleCell, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, cellWidth, 37));
+
+        return open;
+      };
+      const over = (target: Element): void => {
+        target.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+      };
+
+      it.each([100, 101])('turns OPEN into the icon pill in a %ipx title column', (width) => {
+        const { root } = mount();
+        const open = sized(root, width);
+
+        over(cell(root, 'r1', 'p-notes'));
+        expect(open.hasAttribute('data-compact')).toBe(true);
+        expect(open.lastElementChild?.textContent).toBe('tools.database.tableOpen');
+      });
+
+      // A labelled button that fits with the 4px end inset keeps its label from 102.
+      it('keeps the label from 102 when the labelled button fits', () => {
+        const { root } = mount();
+        const open = sized(root, 102);
+
+        vi.spyOn(open, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, open.hasAttribute('data-compact') ? 30 : 96, 24));
+        over(cell(root, 'r1', 'p-title'));
+        expect(open.hasAttribute('data-compact')).toBe(false);
+      });
+
+      // Hungarian's labelled OPEN is 108 wide: at 102 it would spill past the cell's start edge.
+      it('turns into the icon pill at 102 when the labelled button would spill past the cell', () => {
+        const { root } = mount();
+        const open = sized(root, 102);
+
+        vi.spyOn(open, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, open.hasAttribute('data-compact') ? 30 : 108, 24));
+        over(cell(root, 'r1', 'p-title'));
+        expect(open.hasAttribute('data-compact')).toBe(true);
+      });
+
+      // notion-motion.md Round 46 §A: the labelled pill sits 4 in from the cell end, so 98 + 4 still fits in 102.
+      it('keeps the label at 102 for a 98px labelled button, with the 4px end inset', () => {
+        const { root } = mount();
+        const open = sized(root, 102);
+
+        vi.spyOn(open, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, open.hasAttribute('data-compact') ? 30 : 98, 24));
+        over(cell(root, 'r1', 'p-title'));
+        expect(open.hasAttribute('data-compact')).toBe(false);
+      });
+
+      it('fits again when the pointer leaves the table and comes back to the same row', () => {
+        const { root } = mount();
+        const open = sized(root, 102);
+
+        over(cell(root, 'r1', 'p-title'));
+        expect(open.hasAttribute('data-compact')).toBe(false);
+        sized(root, 100);
+        grid(root).dispatchEvent(new PointerEvent('pointerleave'));
+        over(cell(root, 'r1', 'p-title'));
+        expect(open.hasAttribute('data-compact')).toBe(true);
+      });
+
+      it('fits the selected title cell too, where OPEN shows without a hover', () => {
+        const { root } = mount();
+        const open = sized(root, 100);
+
+        selectCell(root, 'r1', 'p-title');
+        expect(open.hasAttribute('data-compact')).toBe(true);
+      });
+
+      it('measures the selected title cell once, not on every repaint of the same selection', () => {
+        const { root } = mount();
+        const open = sized(root, 100);
+        const titleCell = cell(root, 'r1', 'p-title');
+
+        selectCell(root, 'r1', 'p-title');
+        const reads = vi.mocked(titleCell.getBoundingClientRect).mock.calls.length;
+
+        expect(reads).toBeGreaterThan(0);
+        // A range grows and shrinks; the anchor stays on the title cell, and each step repaints.
+        press(grid(root), 'ArrowRight', { shiftKey: true });
+        press(grid(root), 'ArrowLeft', { shiftKey: true });
+        expect(titleCell.hasAttribute('data-blok-database-table-cell-anchor')).toBe(true);
+        expect(vi.mocked(titleCell.getBoundingClientRect).mock.calls.length).toBe(reads);
+        expect(open.hasAttribute('data-compact')).toBe(true);
+      });
+    });
+
     it('the OPEN button opens the row', () => {
       const { root, handlers } = mount();
 
@@ -1417,6 +1890,31 @@ describe('DatabaseTableView', () => {
       expect(changes.properties?.find((p) => p.id === 'p-notes')?.width).toBe(280);
     });
 
+    // notion-motion.md Round 27 §3 "Column resize": min width 100, for the title column and the others.
+    it('a resize stops at 100 however far the pointer goes', () => {
+      const { root, handlers } = mount();
+      const handle = header(root, 'p-notes').querySelector<HTMLElement>('[data-blok-database-table-resize]');
+
+      if (handle === null) {
+        throw new Error('no handle');
+      }
+      pointer(handle, 'pointerdown', 300);
+      pointer(document, 'pointermove', 0);
+
+      expect(header(root, 'p-notes').style.width).toBe('100px');
+      pointer(document, 'pointerup', 0);
+      expect(vi.mocked(handlers.updateView).mock.calls[0][0].properties?.find((p) => p.id === 'p-notes')?.width).toBe(100);
+    });
+
+    it('a saved width under 100 draws at 100 and is not rewritten', () => {
+      const { root, handlers } = mount({ view: tableView({ properties: [{ id: 'p-title', visible: true, width: 40 }, { id: 'p-notes', visible: true, width: 50 }] }) });
+
+      expect(header(root, 'p-title').style.width).toBe('100px');
+      expect(header(root, 'p-notes').style.width).toBe('100px');
+      expect(cell(root, 'r1', 'p-notes').style.width).toBe('100px');
+      expect(handlers.updateView).not.toHaveBeenCalled();
+    });
+
     it('a double-click fit leaves room for the AI Autofill sparkle beside the header button', () => {
       const autofillSchema = schema.map((p) => (p.id === 'p-notes' ? { ...p, autofill: { mode: 'summary' as const } } : p));
       const { root, handlers } = mount({ schema: autofillSchema, autofill: { filling: () => false, run: vi.fn(), open: vi.fn() } });
@@ -1449,12 +1947,120 @@ describe('DatabaseTableView', () => {
       expect(handlers.openPropertyMenu).not.toHaveBeenCalled();
     });
 
+    // notion-motion.md "Column header drag": only the header row moves, and the other headers slide aside.
+    describe('drag', () => {
+      const lay = (root: HTMLElement): HTMLElement[] => {
+        const headers = [...root.querySelectorAll<HTMLElement>('[role="columnheader"][data-property-id]')];
+
+        headers.forEach((el, i) => vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(new DOMRect(i * 200, 0, 200, 36)));
+
+        return headers;
+      };
+
+      it('slides the headers between the start and the pointer aside by the dragged width, and leaves the body alone', () => {
+        const { root } = mount();
+        const headers = lay(root);
+
+        pointer(header(root, 'p-notes'), 'pointerdown', 250, 10);
+        pointer(document, 'pointermove', 560, 10);
+
+        expect(header(root, 'p-amount').style.transform).toBe('translateX(-200px)');
+        expect(header(root, 'p-title').style.transform).toBe('');
+        expect(headers.slice(3).every((el) => el.style.transform === '')).toBe(true);
+        expect(header(root, 'p-notes').hasAttribute('data-dragging')).toBe(true);
+        expect(cell(root, 'r1', 'p-amount').style.transform).toBe('');
+        expect(root.querySelector('[data-blok-database-table-column-drop-line]')).toBeNull();
+        expect(document.querySelector('[data-blok-database-table-column-ghost]')).not.toBeNull();
+        pointer(document, 'pointerup', 560, 10);
+      });
+
+      it('slides headers the other way when the drag goes left, and puts them back on release', () => {
+        const { root, handlers } = mount();
+
+        lay(root);
+        pointer(header(root, 'p-amount'), 'pointerdown', 450, 10);
+        pointer(document, 'pointermove', 250, 10);
+
+        expect(header(root, 'p-notes').style.transform).toBe('translateX(200px)');
+
+        pointer(document, 'pointerup', 250, 10);
+
+        expect(header(root, 'p-notes').style.transform).toBe('');
+        expect(header(root, 'p-amount').hasAttribute('data-dragging')).toBe(false);
+        expect(vi.mocked(handlers.updateView).mock.lastCall?.[0].properties?.map((p) => p.id).slice(0, 3)).toEqual(['p-title', 'p-amount', 'p-notes']);
+      });
+
+      // notion-motion.md Round 27 §3 "Column drag": after Escape and mouseup the order stayed.
+      it('Escape cancels the drag: the headers go back, the release writes nothing and opens no menu', () => {
+        const { root, handlers } = mount();
+        const outside = vi.fn();
+
+        lay(root);
+        document.addEventListener('keydown', outside);
+        pointer(header(root, 'p-amount'), 'pointerdown', 450, 10);
+        pointer(document, 'pointermove', 250, 10);
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+
+        expect(header(root, 'p-notes').style.transform).toBe('');
+        expect(header(root, 'p-amount').hasAttribute('data-dragging')).toBe(false);
+        expect(document.querySelector('[data-blok-database-table-column-ghost]')).toBeNull();
+        expect(outside).not.toHaveBeenCalled();
+
+        pointer(document, 'pointermove', 100, 10);
+        pointer(header(root, 'p-amount'), 'pointerup', 100, 10);
+        header(root, 'p-amount').querySelector<HTMLElement>('[data-blok-database-table-column-button]')?.click();
+
+        expect(handlers.updateView).not.toHaveBeenCalled();
+        expect(handlers.openPropertyMenu).not.toHaveBeenCalled();
+        document.removeEventListener('keydown', outside);
+      });
+
+      it('a cancelled pointer after Escape leaves the next click alone', async () => {
+        const { root, handlers } = mount();
+
+        lay(root);
+        pointer(header(root, 'p-amount'), 'pointerdown', 450, 10);
+        pointer(document, 'pointermove', 250, 10);
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        pointer(document, 'pointercancel', 250, 10);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        pointer(header(root, 'p-notes'), 'pointerup', 250, 10);
+        header(root, 'p-notes').querySelector<HTMLElement>('[data-blok-database-table-column-button]')?.click();
+
+        expect(handlers.openPropertyMenu).toHaveBeenCalledWith('p-notes', header(root, 'p-notes'));
+      });
+    });
+
     it('the + header button asks for a new property', () => {
       const { root, handlers } = mount();
       const add = root.querySelector<HTMLElement>('[data-blok-database-table-add-property]');
 
       add?.click();
       expect(handlers.addProperty).toHaveBeenCalledWith(add);
+    });
+
+    // notion-motion.md Round 41 Part A: Notion's header row ends with "+" and a "⋯" named "Show or hide properties".
+    it('the ⋯ after the header "+" opens property visibility under itself', () => {
+      const handlers = { ...makeHandlers(), propertyVisibility: vi.fn() };
+      const { root } = mount({ handlers });
+      const add = root.querySelector<HTMLElement>('[data-blok-database-table-add-property]');
+      const more = root.querySelector<HTMLElement>('[data-blok-database-table-property-visibility]');
+
+      expect(add?.nextElementSibling).toBe(more);
+      expect(more?.getAttribute('aria-label')).toBe('tools.database.tableShowHideProperties');
+      expect(more?.querySelector('svg')).not.toBeNull();
+      more?.click();
+      expect(handlers.propertyVisibility).toHaveBeenCalledWith(more);
+      expect(handlers.addProperty).not.toHaveBeenCalled();
+    });
+
+    // r41-n-empty-table.png: the title-only header shows the labelled "+ Add property" and no ⋯.
+    it('leaves the ⋯ out while the title is the only property, and when nothing opens property visibility', () => {
+      const lone = mount({ schema: [schema[0]], handlers: { ...makeHandlers(), propertyVisibility: vi.fn() } }).root;
+
+      expect(lone.querySelector('[data-blok-database-table-property-visibility]')).toBeNull();
+      document.body.innerHTML = '';
+      expect(mount().root.querySelector('[data-blok-database-table-property-visibility]')).toBeNull();
     });
 
     it('header view items freeze, hide, wrap and insert through the view helpers', () => {
@@ -1492,13 +2098,24 @@ describe('DatabaseTableView', () => {
       { key: '__none__', label: 'No Stage', rows: [rows()[1], rows()[2]] },
     ];
 
-    it('draws one section per group with its count and rows', () => {
+    // notion-motion.md Round 9 (r9-group-header-open.raw): Notion's table group header shows no count.
+    it('draws one section per group with its rows and no count', () => {
       const { root } = mount({ groups: groups() });
       const sections = [...root.querySelectorAll('[data-blok-database-table-group]')];
 
       expect(sections.map((el) => el.getAttribute('data-group-key'))).toEqual(['o-idea', '__none__']);
-      expect(sections[1].querySelector('[data-blok-database-table-group-count]')?.textContent).toBe('2');
+      expect(sections[1].querySelector('[data-blok-database-table-group-header]')?.textContent?.trim()).toBe('No Stage');
       expect(sections[1].querySelectorAll('[data-blok-database-table-row]')).toHaveLength(2);
+    });
+
+    it('draws the group caret as a filled triangle, like Notion (research/07:85)', () => {
+      const { root } = mount({ groups: groups() });
+      const caret = root.querySelector<HTMLElement>('[data-blok-database-table-group-toggle]');
+
+      const expected = document.createElement('span');
+
+      expected.innerHTML = IconPlayerPlay;
+      expect(caret?.innerHTML).toBe(expected.innerHTML);
     });
 
     it('collapsing a group removes its rows at once and remembers it', () => {
@@ -1517,6 +2134,122 @@ describe('DatabaseTableView', () => {
 
       root.querySelector<HTMLElement>('[data-blok-database-table-group][data-group-key="o-idea"] [data-blok-database-table-add-row]')?.click();
       expect(handlers.addRow).toHaveBeenCalledWith('o-idea');
+    });
+
+    // notion-motion.md Round 10 "Group header ⋯ menu": each group header holds its own ⋯ and +.
+    it('the group header ⋯ opens that group\'s menu from its own header', () => {
+      const handlers = { ...makeHandlers(), groupMenu: vi.fn(), addGroupPage: vi.fn() };
+      const { root } = mount({ groups: groups(), handlers });
+      const header = root.querySelector<HTMLElement>('[data-group-key="__none__"] [data-blok-database-table-group-header]');
+      const more = header?.querySelector<HTMLElement>('[data-blok-database-table-group-menu]');
+
+      more?.click();
+
+      expect(handlers.groupMenu).toHaveBeenCalledWith('__none__', more, header);
+      expect(more?.getAttribute('aria-haspopup')).toBe('menu');
+    });
+
+    // Round 10 "Group header +": a page at the end of that group, opened in the peek.
+    it('the group header + adds a page to that group', () => {
+      const handlers = { ...makeHandlers(), groupMenu: vi.fn(), addGroupPage: vi.fn() };
+      const { root } = mount({ groups: groups(), handlers });
+
+      root.querySelector<HTMLElement>('[data-group-key="o-idea"] [data-blok-database-table-group-header] [data-blok-database-table-group-add]')?.click();
+
+      expect(handlers.addGroupPage).toHaveBeenCalledWith('o-idea');
+      expect(handlers.addRow).not.toHaveBeenCalled();
+    });
+
+    it('draws no ⋯ or + where the host offers no group actions, or read-only', () => {
+      expect(mount({ groups: groups() }).root.querySelector('[data-blok-database-table-group-actions]')).toBeNull();
+      expect(mount({ groups: groups(), readOnly: true, handlers: { ...makeHandlers(), groupMenu: vi.fn(), addGroupPage: vi.fn() } })
+        .root.querySelector('[data-blok-database-table-group-actions]')).toBeNull();
+    });
+
+    it('repeats the column header row at the top of each group, like Notion', () => {
+      const { root } = mount({ groups: groups() });
+      const sections = [...root.querySelectorAll('[data-blok-database-table-group]')];
+
+      expect(grid(root).querySelectorAll(':scope > [data-blok-database-table-header]')).toHaveLength(0);
+      for (const section of sections) {
+        const content = section.querySelector('[data-blok-database-table-group-content]');
+        const header = content?.firstElementChild;
+
+        expect(header?.hasAttribute('data-blok-database-table-header')).toBe(true);
+        expect([...(header?.querySelectorAll('[role="columnheader"]') ?? [])].map((el) => el.getAttribute('data-property-id')))
+          .toEqual(['p-title', 'p-notes', 'p-amount', 'p-stage', 'p-done']);
+        expect(header?.hasAttribute('aria-rowindex')).toBe(false);
+      }
+    });
+
+    it('a collapsed group hides its header row and opening it brings the row back', () => {
+      const { root } = mount({ groups: groups() });
+      const section = root.querySelector<HTMLElement>('[data-blok-database-table-group][data-group-key="__none__"]');
+      const toggle = section?.querySelector<HTMLElement>('[data-blok-database-table-group-toggle]');
+
+      toggle?.click();
+      expect(section?.querySelectorAll('[data-blok-database-table-header]')).toHaveLength(0);
+      toggle?.click();
+      expect(section?.querySelectorAll('[data-blok-database-table-header]')).toHaveLength(1);
+    });
+
+    it('keeps one header row when no group is drawn', () => {
+      const { root } = mount({ groups: [] });
+
+      expect(root.querySelectorAll('[data-blok-database-table-header]')).toHaveLength(1);
+    });
+
+    it('a header in any group opens the property menu for its column', () => {
+      const { root, handlers } = mount({ groups: groups() });
+      const header = root.querySelector<HTMLElement>('[data-group-key="__none__"] [data-blok-database-table-column-header][data-property-id="p-notes"]');
+
+      header?.click();
+      expect(handlers.openPropertyMenu).toHaveBeenCalledWith('p-notes', header);
+    });
+
+    it('every group header checkbox follows the row selection', () => {
+      const { root } = mount({ groups: groups() });
+
+      root.querySelector<HTMLElement>('[data-row-id="r2"] [data-blok-database-table-row-checkbox]')?.click();
+      const boxes = [...root.querySelectorAll('[data-blok-database-table-select-all]')];
+
+      expect(boxes).toHaveLength(2);
+      expect(boxes.map((box) => box.getAttribute('aria-checked'))).toEqual(['mixed', 'mixed']);
+    });
+
+    it('resizing a column from a later group resizes it in every group', () => {
+      const { root, handlers } = mount({ groups: groups() });
+      const handle = root.querySelector<HTMLElement>('[data-group-key="__none__"] [data-blok-database-table-column-header][data-property-id="p-notes"] [data-blok-database-table-resize]');
+
+      handle?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: 100 }));
+      document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 140 }));
+      const widths = [...root.querySelectorAll<HTMLElement>('[data-blok-database-table-column-header][data-property-id="p-notes"]')].map((el) => el.style.width);
+
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 140 }));
+      expect(widths).toHaveLength(2);
+      expect(new Set(widths).size).toBe(1);
+      expect(handlers.updateView).toHaveBeenCalled();
+    });
+
+    it('draws no calculation footer in a group while nothing is calculated', () => {
+      const { root } = mount({ groups: groups() });
+
+      expect(root.querySelectorAll('[data-blok-database-table-group] [data-blok-database-table-footer]')).toHaveLength(0);
+    });
+
+    it('draws no group footer for a calculation on a hidden column', () => {
+      const view = tableView({ properties: [{ id: 'p-amount', visible: false }], calculations: [{ id: 'p-amount', fn: 'sum' }] });
+      const { root } = mount({ groups: groups(), view });
+
+      expect(root.querySelectorAll('[data-blok-database-table-group] [data-blok-database-table-footer]')).toHaveLength(0);
+    });
+
+    it('gives each group its footer once a shown column is calculated', () => {
+      const { root } = mount({ groups: groups(), view: tableView({ calculations: [{ id: 'p-amount', fn: 'sum' }] }) });
+      const footers = [...root.querySelectorAll('[data-blok-database-table-group] [data-blok-database-table-footer]')];
+
+      expect(footers).toHaveLength(2);
+      expect(footers[0].querySelector('[data-property-id="p-amount"] [data-blok-database-table-calc-value]')?.textContent).toBe('1200');
     });
   });
 
@@ -1547,6 +2280,93 @@ describe('DatabaseTableView', () => {
 
     const rect = (top: number): DOMRect => ({ top, bottom: top + 37, left: 0, right: 600, width: 600, height: 37, x: 0, y: top, toJSON: () => ({}) });
 
+    /** Drags r1 below r3; the drop redraws the table the way the tool does. */
+    const dropWithRedraw = (): { handlers: TableHandlers; state: TableState; redrawn: () => HTMLElement } => {
+      const handlers = makeHandlers();
+      const state = createTableState();
+      const first = mount({ handlers, state });
+      const second: { root: HTMLElement | null } = { root: null };
+
+      vi.mocked(handlers.moveRow).mockImplementation(() => {
+        first.view.destroy();
+        first.root.remove();
+        second.root = mount({ handlers, state }).root;
+      });
+      const rowEls = [...first.root.querySelectorAll<HTMLElement>('[data-blok-database-table-row]')];
+
+      rowEls.forEach((el, i) => vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(rect(i * 37)));
+      rowEls[0].querySelector<HTMLElement>('[data-blok-database-table-row-handle]')
+        ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 10, button: 0 }));
+      document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 5, clientY: 100 }));
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 5, clientY: 100 }));
+
+      return {
+        handlers,
+        state,
+        redrawn: () => {
+          if (second.root === null) throw new Error('no redraw');
+
+          return second.root;
+        },
+      };
+    };
+
+    // notion-motion.md Round 40 §1: Notion's selection bar stays put on a drop; it does not fade in again.
+    it('a drop that redraws the table shows the selection bar without its entrance', () => {
+      const { redrawn, handlers, state } = dropWithRedraw();
+      const bar = redrawn().querySelector('[data-blok-database-table-selection-bar]');
+
+      expect(bar?.hasAttribute('data-still')).toBe(true);
+
+      // Only the drop's own redraw skips it.
+      const later = mount({ handlers, state });
+
+      expect(later.root.querySelector('[data-blok-database-table-selection-bar]')?.hasAttribute('data-still')).toBe(false);
+    });
+
+    // notion-motion.md Round 40 §1: the dropped row's tint fades in, 200ms ease (database.css runs it while data-landed is on).
+    it('marks the dropped row so its tint fades in, and clears the mark when the fade ends', () => {
+      const { redrawn } = dropWithRedraw();
+      const dropped = redrawn().querySelector<HTMLElement>('[data-row-id="r1"]');
+
+      expect(dropped?.getAttribute('aria-selected')).toBe('true');
+      expect(dropped?.hasAttribute('data-landed')).toBe(true);
+      expect(redrawn().querySelectorAll('[data-landed]')).toHaveLength(1);
+
+      dropped?.dispatchEvent(new Event('animationend'));
+      expect(dropped?.hasAttribute('data-landed')).toBe(false);
+    });
+
+    // notion-motion.md Round 40 §1: the drop line fades 1→0 over 200ms where it was, though the table redraws.
+    it('leaves the drop line fading out on the page after the drop redraws the table', () => {
+      vi.useFakeTimers();
+      try {
+        dropWithRedraw();
+        const line = document.querySelector<HTMLElement>('[data-blok-database-drop-line]');
+
+        expect(line).not.toBeNull();
+        expect(line?.style.opacity).toBe('0');
+        expect(line?.style.height).toBe('4px');
+        vi.advanceTimersByTime(200);
+        expect(document.querySelector('[data-blok-database-drop-line]')).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('removes the drop line at once when the drag is cancelled', () => {
+      const { root } = mount();
+      const rowEls = [...root.querySelectorAll<HTMLElement>('[data-blok-database-table-row]')];
+
+      rowEls.forEach((el, i) => vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(rect(i * 37)));
+      rowEls[0].querySelector<HTMLElement>('[data-blok-database-table-row-handle]')
+        ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 10, button: 0 }));
+      document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 5, clientY: 100 }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+      expect(document.querySelector('[data-blok-database-drop-line], [data-blok-database-table-drop-line]')).toBeNull();
+    });
+
     // feel/findings-table T15: Notion's row menu has its own row size and opens beside ⋮⋮.
     it('opens the row menu from ⋮⋮ as the row menu', () => {
       const { root } = mount();
@@ -1557,6 +2377,16 @@ describe('DatabaseTableView', () => {
 
       expect(menu).not.toBeNull();
       expect(menu?.querySelector('[data-blok-database-row-menu-footer]')).not.toBeNull();
+    });
+
+    // research/36 §6: Notion's row handle › Move to Trash shows the "Moved to Trash" toast.
+    it('the row menu\'s Move to Trash asks for the toast', () => {
+      const { root, handlers } = mount();
+
+      root.querySelector<HTMLElement>('[data-row-id="r1"] [data-blok-database-table-row-handle]')?.click();
+      document.querySelector<HTMLElement>('[data-blok-popover-custom-class~="blok-database-row-menu"] [data-blok-item-name="database-row-delete"]')?.click();
+
+      expect(handlers.deleteRows).toHaveBeenCalledWith(['r1'], true);
     });
 
     it('drops a row between two others and ignores the click on release', () => {
@@ -1581,6 +2411,62 @@ describe('DatabaseTableView', () => {
       expect(document.querySelector('[data-blok-database-table-row-ghost]')).toBeNull();
     });
 
+    // notion-motion.md Round 9 "Row drag" (r9-rowdrag-mid.raw): the 4px line's top sits on the row boundary, not centred on it.
+    it('puts the drop line\'s top on the row boundary', () => {
+      const { root } = mount();
+      const rowEls = [...root.querySelectorAll<HTMLElement>('[data-blok-database-table-row]')];
+
+      rowEls.forEach((el, i) => vi.spyOn(el, 'getBoundingClientRect').mockReturnValue(rect(i * 37)));
+      rowEls[0].querySelector<HTMLElement>('[data-blok-database-table-row-handle]')
+        ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 10, button: 0 }));
+      document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 5, clientY: 60 }));
+
+      expect(root.querySelector<HTMLElement>('[data-blok-database-table-drop-line]')?.style.top).toBe('74px');
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 5, clientY: 60 }));
+    });
+
+    // Notion's row ghost moves sideways with the pointer (notion-live/rowdrag-mid.png: +74px).
+    it('moves the row ghost sideways with the pointer, keeping the press offset', () => {
+      const { root } = mount();
+      const rowEls = [...root.querySelectorAll<HTMLElement>('[data-blok-database-table-row]')];
+
+      rowEls.forEach((el, i) => vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({ ...rect(i * 37), left: 40, x: 40 }));
+      rowEls[0].querySelector<HTMLElement>('[data-blok-database-table-row-handle]')
+        ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 50, clientY: 10, button: 0 }));
+      document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 200, clientY: 60 }));
+
+      const ghost = document.querySelector<HTMLElement>('[data-blok-database-table-row-ghost]');
+
+      expect(ghost?.style.left).toBe('190px');
+      expect(ghost?.style.top).toBe('50px');
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 200, clientY: 60 }));
+    });
+
+    // notion-motion.md "Table row drag": pressing ⋮⋮ selects the row, so the selection bar shows during the drag.
+    it('selects the row on a press of ⋮⋮, before it moves', () => {
+      const { root } = mount();
+
+      root.querySelector<HTMLElement>('[data-row-id="r2"] [data-blok-database-table-row-handle]')
+        ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 50, button: 0 }));
+
+      expect(root.querySelector('[data-row-id="r2"]')?.getAttribute('aria-selected')).toBe('true');
+      expect(root.querySelector('[data-blok-database-table-selection-count]')?.textContent).toBe('tools.database.tableSelectedCount:1');
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 5, clientY: 50 }));
+    });
+
+    it('keeps a selection of several rows when one of them is pressed', () => {
+      const { root } = mount();
+      const checkbox = (id: string): HTMLElement | null => root.querySelector<HTMLElement>(`[data-row-id="${id}"] [data-blok-database-table-row-checkbox]`);
+
+      checkbox('r1')?.click();
+      checkbox('r2')?.click();
+      root.querySelector<HTMLElement>('[data-row-id="r2"] [data-blok-database-table-row-handle]')
+        ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 50, button: 0 }));
+
+      expect(root.querySelector('[data-blok-database-table-selection-count]')?.textContent).toBe('tools.database.tableSelectedCount:2');
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientX: 5, clientY: 50 }));
+    });
+
     it('in a sorted view a drop goes to the sorted-drop hook instead', () => {
       const { root, handlers } = mount({ view: tableView({ sorts: [{ propertyId: 'p-amount', direction: 'asc' }] }) });
       const rowEls = [...root.querySelectorAll<HTMLElement>('[data-blok-database-table-row]')];
@@ -1598,7 +2484,7 @@ describe('DatabaseTableView', () => {
 
   describe('calculation menu', () => {
     it('closes its open menu when the table is torn down, so a redraw leaves no stray popover', async () => {
-      const { root, view } = mount();
+      const { root, view } = mount({ view: tableView({ calculations: [{ id: 'p-amount', fn: 'sum' }] }) });
 
       root.querySelector<HTMLElement>('[data-blok-database-table-calc][data-property-id="p-amount"]')?.click();
       expect(document.querySelector('[data-blok-popover-opened], [data-blok-popover]')).not.toBeNull();
@@ -1607,6 +2493,64 @@ describe('DatabaseTableView', () => {
       await Promise.resolve();
 
       expect(document.querySelector('[data-blok-popover-opened]')).toBeNull();
+    });
+
+    // notion-motion.md Round 11: a set value's menu is 200 wide. Its place on the box is checked in
+    // database-calc-footer-offsets.spec.ts; the footer button is the trigger, so Escape can focus it.
+    it('opens a set value\'s menu 200 wide, with the footer button as its trigger', () => {
+      const { root } = mount({ view: tableView({ calculations: [{ id: 'p-amount', fn: 'sum' }] }) });
+      const calc = root.querySelector<HTMLElement>('[data-blok-database-table-calc][data-property-id="p-amount"]');
+      const box = calc?.querySelector<HTMLElement>('[data-blok-database-table-calc-box]');
+
+      box?.click();
+
+      expect(calc?.hasAttribute('data-popover-open')).toBe(true);
+      expect(document.querySelector<HTMLElement>('[data-blok-popover-custom-class~="blok-database-header-menu"]')?.style.getPropertyValue('--width')).toBe('200px');
+    });
+
+    // notion-motion.md Round 12 "Escape in calculation menus": Escape 1 closes the submenu, Escape 2 the menu,
+    // and focus goes back to the footer button.
+    it('Escape closes the open submenu first, then the menu, and hands focus back to the footer button', () => {
+      const { root } = mount({ view: tableView({ calculations: [{ id: 'p-amount', fn: 'sum' }] }) });
+      const calc = root.querySelector<HTMLElement>('[data-blok-database-table-calc][data-property-id="p-amount"]');
+      const opened = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[data-blok-popover-opened="true"]')];
+
+      calc?.querySelector<HTMLElement>('[data-blok-database-table-calc-box]')?.click();
+      [...document.querySelectorAll<HTMLElement>('[data-blok-popover-item]')].find((el) => el.textContent?.includes('tools.database.calcMoreOptions'))?.click();
+      expect(document.querySelector('[data-blok-nested] [data-blok-popover-item]')?.textContent).toContain('tools.database.calcSum');
+      document.querySelector<HTMLElement>('[data-blok-nested] [data-blok-popover-item]')?.focus();
+
+      PopoverRegistry.instance.closeTopmost();
+      expect(document.querySelector('[data-blok-nested] [data-blok-popover-item]')).toBeNull();
+      expect(opened()).toHaveLength(1);
+
+      PopoverRegistry.instance.closeTopmost();
+      expect(opened()).toHaveLength(0);
+      expect(calc).toHaveFocus();
+    });
+
+    // notion-motion.md Round 11: 200x123. The calc class drops the last row's 1px gap (database.css).
+    it('marks the footer menu as a calculation menu', () => {
+      const { root } = mount({ view: tableView({ calculations: [{ id: 'p-amount', fn: 'sum' }] }) });
+
+      root.querySelector<HTMLElement>('[data-blok-database-table-calc][data-property-id="p-amount"] [data-blok-database-table-calc-box]')?.click();
+
+      expect(document.querySelector('[data-blok-popover-custom-class~="blok-database-calc-menu"]')).not.toBeNull();
+    });
+
+    // r11-calc-count-sub.png and r11-group-agg-menu.raw: the Count list is 250 wide.
+    it('opens the Count list 250 wide', () => {
+      const items = calculationItems({ type: 'number' }, undefined, { t: (key: string) => key }, vi.fn()) as Array<{ title?: string; children?: { width?: string } }>;
+
+      expect(items.find((item) => item.title === 'tools.database.calcCount')?.children?.width).toBe('250px');
+    });
+
+    // notion-motion.md Round 11 "Read-only database": no "Calculate" node exists in a locked table's footer.
+    it('read-only: an empty footer cell holds no Calculate, a set one keeps its value', () => {
+      const { root } = mount({ readOnly: true, view: tableView({ calculations: [{ id: 'p-amount', fn: 'sum' }] }) });
+
+      expect(root.querySelector('[data-blok-database-table-calc-placeholder]')).toBeNull();
+      expect(root.querySelector('[data-blok-database-table-calc][data-property-id="p-amount"] [data-blok-database-table-calc-value]')?.textContent).toBe('1235.5');
     });
 
     it('offers None, Count and Percent, plus More options on a number column', () => {
@@ -1637,6 +2581,7 @@ describe('DatabaseTableView', () => {
 
       expect(count.map((item) => item.title)).toEqual([
         'tools.database.calcShowLargeCounts',
+        undefined,
         'tools.database.calcCountAll',
         'tools.database.calcCountValues',
         'tools.database.calcCountUnique',
@@ -1648,16 +2593,60 @@ describe('DatabaseTableView', () => {
       expect(onCap).toHaveBeenCalledWith(true);
     });
 
-    it('has no 99+ toggle on a checkbox column (research/08)', () => {
+    // The 99+ switch flips in the open menu, so a second press turns the cap back off.
+    it('flips the 99+ switch in place: each press sends the other state', () => {
+      const onCap = vi.fn();
+      const items = calculationItems({ type: 'text' }, 'count', { t: (key: string) => key }, vi.fn(), { capCounts: false, onCapCounts: onCap }) as Array<{
+        title?: string;
+        children?: { items?: Array<{ title?: string; toggle?: boolean; onActivate?: () => void }> };
+      }>;
+      const cap = items.find((item) => item.title === 'tools.database.calcCount')?.children?.items?.[0];
+
+      cap?.onActivate?.();
+      cap?.onActivate?.();
+
+      expect(cap?.toggle).toBe(true);
+      expect(onCap.mock.calls).toEqual([[true], [false]]);
+    });
+
+    // notion-motion.md Round 12 (r12-sub-count-checkbox.raw): a checkbox's Count list starts with the 99+ row too.
+    it('starts a checkbox column\'s Count list with the 99+ toggle', () => {
       const items = calculationItems({ type: 'checkbox' }, undefined, { t: (key: string) => key }, vi.fn(), { capCounts: false, onCapCounts: vi.fn() }) as Array<{ title?: string; children?: { items?: Array<{ title?: string }> } }>;
       const count = items.find((item) => item.title === 'tools.database.calcCount');
 
-      expect(count?.children?.items?.map((item) => item.title)).not.toContain('tools.database.calcShowLargeCounts');
+      expect(count?.children?.items?.map((item) => item.title)).toEqual([
+        'tools.database.calcShowLargeCounts',
+        undefined,
+        'tools.database.calcCountAll',
+        'tools.database.calcChecked',
+        'tools.database.calcUnchecked',
+      ]);
+    });
+
+    // notion-motion.md Round 12 "Calculation submenu sizes": every list is 250 wide.
+    it('opens every calculation list 250 wide', () => {
+      const widths = (type: PropertyDefinition['type']): Array<string | undefined> =>
+        (calculationItems({ type }, undefined, { t: (key: string) => key }, vi.fn()) as Array<{ children?: { width?: string } }>)
+          .filter((item) => item.children !== undefined)
+          .map((item) => item.children?.width);
+
+      expect(widths('number')).toEqual(['250px', '250px', '250px']);
+      expect(widths('date')).toEqual(['250px', '250px', '250px']);
+      expect(widths('checkbox')).toEqual(['250px', '250px']);
+    });
+
+    // r11-calc-count-sub.png, notion-motion.md Round 12: the 99+ row carries its hint line, and a divider sits under it.
+    it('gives the 99+ row its hint line and a divider under it', () => {
+      const items = calculationItems({ type: 'number' }, undefined, { t: (key: string) => key }, vi.fn(), { capCounts: false, onCapCounts: vi.fn() }) as Array<{ title?: string; children?: { items?: Array<{ type?: string; titleEl?: HTMLElement }> } }>;
+      const count = items.find((item) => item.title === 'tools.database.calcCount')?.children?.items ?? [];
+
+      expect(count[0].titleEl?.querySelector('[data-blok-database-calc-hint]')?.textContent).toBe('tools.database.calcShowLargeCountsHint');
+      expect(count[1].type).toBe('separator');
     });
 
     it('a button column has no footer menu: Notion offers no Calculate there', () => {
       const withButton: PropertyDefinition[] = [...schema, { id: 'p-act', name: 'Act', type: 'button', position: 'a5' }];
-      const { root } = mount({ schema: withButton });
+      const { root } = mount({ schema: withButton, view: tableView({ calculations: [{ id: 'p-amount', fn: 'sum' }] }) });
       const cell = root.querySelector<HTMLElement>('[data-blok-database-table-calc][data-property-id="p-act"]');
 
       expect(cell).not.toBeNull();

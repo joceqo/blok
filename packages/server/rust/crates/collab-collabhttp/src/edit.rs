@@ -103,6 +103,17 @@ impl Handlers {
             &admitted.user,
             admitted.has_user,
         );
+        // After the digest, which is of the request as sent, so a retry
+        // still matches.
+        let ops = if self.config.stamp_authority {
+            let now = manager
+                .now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_millis() as u64);
+            blok_collab_room::stamp_authority(ops, &actor, now as f64)
+        } else {
+            ops
+        };
         let edit = manager.edit(&admitted.doc, ops, &operation_id, &digest, &actor, expect);
         match while_connected(&request, edit).await {
             Some(Ok(result)) => {
@@ -218,7 +229,10 @@ pub(crate) enum ReadError {
 }
 
 /// Counts while it reads, in 8 KiB chunks; Content-Length is not trusted.
-async fn read_body(request: &mut Request, max_bytes: usize) -> Result<Vec<u8>, ReadError> {
+pub(crate) async fn read_body(
+    request: &mut Request,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ReadError> {
     let mut buffer = Vec::new();
     let Some(body) = request.body_mut() else {
         return Ok(buffer);

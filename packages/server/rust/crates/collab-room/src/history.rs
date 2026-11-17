@@ -1,20 +1,28 @@
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use blok_collab_convert::{
-    build_replay, describe_structure, plain_page_maps, read_page_maps, restore_digest,
+    build_replay, describe_structure, plain_page_maps, read_page_maps, restore_digest_keeping,
 };
 use blok_collab_journal::{Context, LineageDeleteOutcome, LineageInfo, RecordHeader};
 use blok_jsjson::{Object, Str, Value};
 use blok_yjs::Doc;
 
-use crate::changes::{RecordChanges, replay_changes};
+use crate::changes::{
+    BlockChange, BlockChangeKind, RecordChanges, diff_blocks, diff_page, page_fields,
+    replay_changes,
+};
 use crate::error::{is_cancellation, is_corrupt, is_transient};
 use crate::manager::Manager;
-use crate::ops::{EditResult, EditStatus, PlanOps, Precondition};
-use crate::restore::plan_restore;
+use crate::ops::{
+    EditResult, EditStatus, PlanOps, Precondition, Receipt, apply_to_scratch, frame_limit,
+};
+use crate::restore::{RestoreTrash, plan_restore_pinned};
+use crate::restore_guards::{RestoreGuard, restore_guards};
+use crate::restore_scope::{keep_databases, kept_restore_guards};
 use crate::timeline::{
-    LineageHeaders, TIMELINE_IDLE_GAP, TIMELINE_MAX_SPAN, Version, group_versions,
+    LineageHeaders, TIMELINE_IDLE_GAP, TIMELINE_MAX_SPAN, Version, group_versions_by,
 };
 use crate::{Error, HistoryStore};
 
@@ -134,7 +142,7 @@ fn blocks_of(output: Option<&Object>) -> Vec<Value> {
 /// History reads take no lane and run on the caller's task; the store's
 /// reads block, as Go's do.
 impl Manager {
-    fn history_store(&self) -> Option<&dyn HistoryStore> {
+    pub(crate) fn history_store(&self) -> Option<&dyn HistoryStore> {
         self.0.operations.as_ref().and_then(|o| o.as_history())
     }
 
@@ -143,7 +151,7 @@ impl Manager {
         self.history_store().is_some()
     }
 
-    fn is_purged(
+    pub(crate) fn is_purged(
         &self,
         ctx: &Context,
         history: &dyn HistoryStore,
@@ -158,6 +166,50 @@ impl Manager {
     /// Every lineage and its versions newest first. A group above zero
     /// replaces both default grouping limits.
     pub async fn history(&self, doc_id: &str, group: Duration) -> Result<HistoryList, Error> {
+        self.history_by(doc_id, group, false).await
+    }
+
+    /// The record notes of one lineage; None without a store. A store that
+    /// fails reads as no notes: they are informational.
+    pub async fn read_notes(
+        &self,
+        doc_id: &str,
+        lineage: &str,
+    ) -> Option<std::collections::HashMap<u64, crate::RecordNote>> {
+        let notes = self.0.notes.clone()?;
+        match notes.read(doc_id, lineage).await {
+            Ok(read) => Some(read),
+            Err(err) => {
+                self.0.logf(&format!(
+                    "collab: the record notes of \"{doc_id}\" could not be read: {err}"
+                ));
+                Some(Default::default())
+            }
+        }
+    }
+
+    /// `history` where `by_actor` also starts a version where the actor
+    /// changes. With a record notes store, each version carries its actor
+    /// kinds.
+    pub async fn history_by(
+        &self,
+        doc_id: &str,
+        group: Duration,
+        by_actor: bool,
+    ) -> Result<HistoryList, Error> {
+        self.history_windowed(doc_id, group, by_actor, None).await
+    }
+
+    /// history_by over what a window with this cut shows: groups are built
+    /// from visible records only, and a lineage whose baseline is hidden has
+    /// no created_at. None shows everything.
+    pub async fn history_windowed(
+        &self,
+        doc_id: &str,
+        group: Duration,
+        by_actor: bool,
+        cut: Option<SystemTime>,
+    ) -> Result<HistoryList, Error> {
         let Some(history) = self.history_store() else {
             return Ok(HistoryList::status(HistoryStatus::None));
         };
@@ -179,7 +231,7 @@ impl Manager {
             }
             Ok((lineages, with_headers))
         };
-        let (lineages, with_headers) = match read() {
+        let (mut lineages, mut with_headers) = match read() {
             Ok(read) => read,
             Err(err) if is_corrupt(&err) => {
                 self.0.logf(&format!(
@@ -192,15 +244,48 @@ impl Manager {
         if self.is_purged(&ctx, history, doc_id)? {
             return Ok(HistoryList::status(HistoryStatus::Purged));
         }
+        if let Some(cut) = cut {
+            with_headers = crate::window::visible_timeline(&with_headers, cut);
+            for (lineage, visible) in lineages.iter_mut().zip(&with_headers) {
+                lineage.created_at = visible.lineage.created_at;
+            }
+        }
         let (idle_gap, max_span) = if group > Duration::ZERO {
             (group, group)
         } else {
             (TIMELINE_IDLE_GAP, TIMELINE_MAX_SPAN)
         };
+        let mut notes = None;
+        if self.0.notes.is_some() {
+            let mut by_lineage = std::collections::HashMap::new();
+            for lineage in &lineages {
+                let read = self
+                    .read_notes(doc_id, &lineage.lineage)
+                    .await
+                    .unwrap_or_default();
+                by_lineage.insert(lineage.lineage.clone(), read);
+            }
+            notes = Some(by_lineage);
+        }
+        let note_of = notes.as_ref().map(|notes| {
+            move |lineage: &str, sequence: u64| {
+                notes
+                    .get(lineage)
+                    .and_then(|notes| notes.get(&sequence))
+                    .cloned()
+            }
+        });
+        let versions = group_versions_by(
+            &with_headers,
+            idle_gap,
+            max_span,
+            by_actor,
+            note_of.as_ref(),
+        );
         Ok(HistoryList {
             status: HistoryStatus::Ready,
             lineages,
-            versions: group_versions(&with_headers, idle_gap, max_span),
+            versions,
         })
     }
 
@@ -282,7 +367,7 @@ impl Manager {
             }
             None => {}
         }
-        for plain in plain_page_maps(&doc, &["title", "icon"])? {
+        for plain in plain_page_maps(&doc, &["title", "icon", "cover"])? {
             output.set(Str::from(plain.name), Value::Object(plain.map));
         }
         let json = blok_collab_docendpoint::serialize(&Value::Object(output))?;
@@ -441,6 +526,17 @@ impl Manager {
         doc_id: &str,
         lineage: &str,
     ) -> Result<(HistoryStatus, Option<LineageDeleteOutcome>), Error> {
+        self.delete_lineage_by(doc_id, lineage, "").await
+    }
+
+    /// delete_lineage by a known actor ("" for none), named in its
+    /// history.lineageDeleted event.
+    pub async fn delete_lineage_by(
+        &self,
+        doc_id: &str,
+        lineage: &str,
+        actor_id: &str,
+    ) -> Result<(HistoryStatus, Option<LineageDeleteOutcome>), Error> {
         let Some(history) = self.history_store() else {
             return Ok((HistoryStatus::None, None));
         };
@@ -451,6 +547,26 @@ impl Manager {
         let outcome = history.delete_lineage(&ctx, doc_id, lineage)?;
         if outcome == LineageDeleteOutcome::Purged || self.is_purging(doc_id) {
             return Ok((HistoryStatus::Purged, Some(LineageDeleteOutcome::Purged)));
+        }
+        if outcome == LineageDeleteOutcome::Deleted
+            && let Some(hub) = &self.0.signals
+        {
+            hub.event(
+                &self.0,
+                crate::AuditEvent {
+                    event_type: crate::AUDIT_LINEAGE_DELETED.to_owned(),
+                    doc_id: doc_id.to_owned(),
+                    at: self.0.options.now(),
+                    actor: crate::classify_actor(actor_id, false, "").map(|note| {
+                        crate::AuditActor {
+                            id: actor_id.to_owned(),
+                            kind: Some(note.kind),
+                            on_behalf_of: note.on_behalf_of,
+                        }
+                    }),
+                    lineage: Some(lineage.to_owned()),
+                },
+            );
         }
         Ok((HistoryStatus::Ready, Some(outcome)))
     }
@@ -466,39 +582,154 @@ impl Manager {
         actor_id: &str,
         expect: Option<Precondition>,
     ) -> Result<(HistoryStatus, Option<EditResult>), Error> {
-        let point = self.read_point(doc_id, lineage, sequence).await?;
+        let (status, edit, _) = self
+            .restore_guarded(
+                doc_id,
+                lineage,
+                sequence,
+                operation_id,
+                actor_id,
+                expect,
+                None,
+            )
+            .await?;
+        Ok((status, edit))
+    }
+
+    /// restore with the guards enforced when `confirmed` is Some: a guard
+    /// whose kind it lacks refuses the restore, which changes nothing and
+    /// answers the guards with no edit. The check runs in the lane after the
+    /// duplicate check, so a refusal consumes no key and a committed retry
+    /// still gets its receipt.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "restore's arguments and the confirmed kinds"
+    )]
+    pub async fn restore_guarded(
+        &self,
+        doc_id: &str,
+        lineage: &str,
+        sequence: u64,
+        operation_id: &str,
+        actor_id: &str,
+        expect: Option<Precondition>,
+        confirmed: Option<HashSet<String>>,
+    ) -> Result<(HistoryStatus, Option<EditResult>, Vec<RestoreGuard>), Error> {
+        let outcome = self
+            .restore_with(
+                doc_id,
+                lineage,
+                sequence,
+                operation_id,
+                actor_id,
+                expect,
+                confirmed,
+                RestoreOptions::default(),
+            )
+            .await?;
+        Ok((outcome.status, outcome.edit, outcome.refused))
+    }
+
+    /// restore_guarded with its options. A hidden point is never rebuilt; it
+    /// is refused in the lane, after the duplicate check, so a committed
+    /// retry still gets its receipt.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "restore's arguments, the confirmed kinds and the options"
+    )]
+    pub async fn restore_with(
+        &self,
+        doc_id: &str,
+        lineage: &str,
+        sequence: u64,
+        operation_id: &str,
+        actor_id: &str,
+        expect: Option<Precondition>,
+        confirmed: Option<HashSet<String>>,
+        options: RestoreOptions,
+    ) -> Result<RestoreOutcome, Error> {
+        let point = if options.hidden {
+            Point::status(HistoryStatus::NotFound)
+        } else {
+            self.read_point(doc_id, lineage, sequence).await?
+        };
         // A missing point still goes to the room: a retry whose lineage was
         // deleted since gets its first receipt from the duplicate check.
         if point.status != HistoryStatus::Ready && point.status != HistoryStatus::NotFound {
-            return Ok((point.status, None));
+            return Ok(RestoreOutcome {
+                status: point.status,
+                ..RestoreOutcome::default()
+            });
         }
+        let (hidden, keep) = (options.hidden, options.keep_databases);
+        let refused: Arc<Mutex<Vec<RestoreGuard>>> = Arc::default();
+        let confirmed = Arc::new(confirmed);
         let target = Arc::new(blocks_of(point.output.as_ref()));
         let target_doc = point
             .doc
             .filter(|_| point.status != HistoryStatus::NotFound);
         let converter = self.0.converter.clone();
+        let trash = Arc::new(self.restore_trash(actor_id));
+        let refusal = refused.clone();
         let plan: PlanOps = Arc::new(move |doc: Doc| {
-            let (target, target_doc, converter) =
-                (target.clone(), target_doc.clone(), converter.clone());
+            let (target, target_doc, converter, confirmed, refusal, trash) = (
+                target.clone(),
+                target_doc.clone(),
+                converter.clone(),
+                confirmed.clone(),
+                refusal.clone(),
+                trash.clone(),
+            );
             Box::pin(async move {
+                if hidden {
+                    return Err(Error::Other(Box::new(RestoreHidden)));
+                }
                 let Some(target_doc) = target_doc else {
                     return Err(Error::RestorePointMissing);
                 };
                 let structure = describe_structure(&doc)?;
                 let exported = converter.export(&doc).await?;
                 let current = blocks_of(Some(&exported));
-                Ok(plan_restore(
+                let kept = keep.then(|| keep_databases(&current, &target));
+                if let Some(kept) = &kept
+                    && !kept.orphaned.is_empty()
+                {
+                    // Never confirmable, and refused whether or not the
+                    // server enforces guards.
+                    *refusal
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = kept.orphaned.clone();
+                    return Err(Error::Other(Box::new(RestoreOrphaned)));
+                }
+                let aim = kept
+                    .as_ref()
+                    .map_or(target.as_slice(), |kept| kept.target.as_slice());
+                if let Some(confirmed) = confirmed.as_ref() {
+                    let guards = match &kept {
+                        Some(kept) => kept_restore_guards(&current, kept),
+                        None => restore_guards(&current, aim),
+                    };
+                    if guards.iter().any(|guard| !confirmed.contains(guard.kind)) {
+                        *refusal
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = guards;
+                        return Err(Error::Other(Box::new(RestoreGuarded)));
+                    }
+                }
+                Ok(plan_restore_pinned(
                     &current,
                     &structure,
-                    &target,
+                    aim,
                     &read_page_maps(&doc)?,
                     &read_page_maps(&target_doc)?,
+                    trash.as_ref().as_ref(),
+                    kept.as_ref().map(|kept| &kept.pinned),
                 ))
             })
         });
         // The request, never the plan: a retry plans against a doc that
         // moved.
-        let digest = restore_digest(lineage, sequence);
+        let digest = restore_digest_keeping(lineage, sequence, keep);
         let request = crate::ops::EditRequest {
             plan,
             gate_frame_size: true,
@@ -507,17 +738,332 @@ impl Manager {
             actor_id: actor_id.to_owned(),
             expect,
             applied: None,
+            dry_run: false,
+            note: None,
         };
         let edit = match self.edit_in_room(doc_id, request).await {
-            Err(Error::RestorePointMissing) => return Ok((HistoryStatus::NotFound, None)),
+            Err(Error::RestorePointMissing) => {
+                return Ok(RestoreOutcome {
+                    status: HistoryStatus::NotFound,
+                    ..RestoreOutcome::default()
+                });
+            }
+            Err(Error::Other(err)) if err.is::<RestoreHidden>() => {
+                return Ok(RestoreOutcome {
+                    status: HistoryStatus::NotFound,
+                    hidden: true,
+                    ..RestoreOutcome::default()
+                });
+            }
+            Err(Error::Other(err)) if err.is::<RestoreGuarded>() => {
+                let guards = std::mem::take(
+                    &mut *refused
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                );
+                return Ok(RestoreOutcome {
+                    status: HistoryStatus::Ready,
+                    refused: guards,
+                    ..RestoreOutcome::default()
+                });
+            }
+            Err(Error::Other(err)) if err.is::<RestoreOrphaned>() => {
+                let guards = std::mem::take(
+                    &mut *refused
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                );
+                return Ok(RestoreOutcome {
+                    status: HistoryStatus::Ready,
+                    refused: guards,
+                    refused_as: "restore_refused",
+                    ..RestoreOutcome::default()
+                });
+            }
             other => other?,
         };
         if edit.status == EditStatus::Applied {
             self.0.document_replaced(doc_id);
         }
-        Ok((HistoryStatus::Ready, Some(edit)))
+        Ok(RestoreOutcome {
+            status: HistoryStatus::Ready,
+            edit: Some(edit),
+            ..RestoreOutcome::default()
+        })
     }
 }
+
+/// CollabRestoreOptions. `hidden`: the host's history window hides the
+/// point.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RestoreOptions {
+    pub hidden: bool,
+    /// databases=keep: every database stays as it is now.
+    pub keep_databases: bool,
+}
+
+/// CollabRestoreResult: `edit` when Ready and run, `refused` when a guard
+/// refused it, `hidden` when the window hid the point.
+#[derive(Debug)]
+pub struct RestoreOutcome {
+    pub status: HistoryStatus,
+    pub edit: Option<EditResult>,
+    pub refused: Vec<RestoreGuard>,
+    pub hidden: bool,
+    /// The refusal's error: confirmation_required, or restore_refused for a
+    /// guard no confirm can pass.
+    pub refused_as: &'static str,
+}
+
+impl Default for RestoreOutcome {
+    fn default() -> Self {
+        Self {
+            status: HistoryStatus::Ready,
+            edit: None,
+            refused: Vec::new(),
+            hidden: false,
+            refused_as: "confirmation_required",
+        }
+    }
+}
+
+/// A keep restore's planner refused: it would orphan a kept database.
+#[derive(Debug)]
+struct RestoreOrphaned;
+
+impl std::fmt::Display for RestoreOrphaned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("collab: the restore would orphan a kept database")
+    }
+}
+
+impl std::error::Error for RestoreOrphaned {}
+
+/// A restore's planner refused: the host's window hides its point.
+#[derive(Debug)]
+struct RestoreHidden;
+
+impl std::fmt::Display for RestoreHidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("collab: the history window hides the restore point")
+    }
+}
+
+impl std::error::Error for RestoreHidden {}
+
+/// A restore planned and measured against the live doc, with nothing
+/// applied: the blocks and page keys it would change, its guards, and its
+/// frame size against the one-update limit.
+#[derive(Debug, Default)]
+pub struct RestorePreview {
+    pub blocks: Vec<BlockChange>,
+    pub page: Vec<String>,
+    pub guards: Vec<RestoreGuard>,
+    pub frame_bytes: i64,
+    pub limit_bytes: i64,
+    /// The revision it planned against, for the real call's If-Match.
+    pub head: Option<Receipt>,
+}
+
+impl RestorePreview {
+    /// The preview route's body. The agent's history.previewRestore answers
+    /// the same body.
+    pub fn json(&self) -> Value {
+        let key = |name: &str| Str::from_utf8(name.as_bytes());
+        let text = |value: &str| Value::String(key(value));
+        let blocks = self
+            .blocks
+            .iter()
+            .map(|change| {
+                let mut row = Object::new();
+                row.set(key("id"), Value::String(change.id.clone()));
+                row.set(
+                    key("type"),
+                    change.kind_type.clone().map_or(Value::Null, Value::String),
+                );
+                row.set(
+                    key("kind"),
+                    text(match change.kind {
+                        BlockChangeKind::Added => "added",
+                        BlockChangeKind::Removed => "removed",
+                        BlockChangeKind::Changed => "changed",
+                        BlockChangeKind::Moved => "moved",
+                    }),
+                );
+                Value::Object(row)
+            })
+            .collect();
+        let mut undo = Object::new();
+        undo.set(key("blocks"), Value::Array(blocks));
+        undo.set(
+            key("page"),
+            Value::Array(self.page.iter().map(|page| text(page)).collect()),
+        );
+        let head = self.head.as_ref().map_or(String::new(), |head| {
+            format!("{}:{}", head.tag.lineage, head.server_sequence)
+        });
+        let mut body = Object::new();
+        body.set(key("wouldUndo"), Value::Object(undo));
+        body.set(
+            key("guards"),
+            Value::Array(self.guards.iter().map(RestoreGuard::json).collect()),
+        );
+        body.set(
+            key("fits"),
+            Value::Bool(self.frame_bytes <= self.limit_bytes),
+        );
+        body.set(key("frameBytes"), Value::Number(self.frame_bytes as f64));
+        body.set(key("limitBytes"), Value::Number(self.limit_bytes as f64));
+        body.set(key("expectRevision"), text(&head));
+        Value::Object(body)
+    }
+}
+
+impl Manager {
+    /// The trash input a restore plans with: None unless the rooms'
+    /// restore_trashes_pages is on.
+    fn restore_trash(&self, actor_id: &str) -> Option<RestoreTrash> {
+        if !self.0.options.restore_trashes_pages {
+            return None;
+        }
+        let at = self
+            .0
+            .options
+            .now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as i64);
+        Some(RestoreTrash {
+            by: (!actor_id.is_empty()).then(|| actor_id.to_owned()),
+            at,
+        })
+    }
+
+    /// A restore's dry run. A refusal before the plan (a stale If-Match, a
+    /// purge, a room that cannot load) comes back as the edit.
+    pub async fn preview_restore(
+        &self,
+        doc_id: &str,
+        lineage: &str,
+        sequence: u64,
+        expect: Option<Precondition>,
+        actor_id: &str,
+    ) -> Result<(HistoryStatus, Option<RestorePreview>, Option<EditResult>), Error> {
+        self.preview_restore_with(
+            doc_id,
+            lineage,
+            sequence,
+            expect,
+            actor_id,
+            RestoreOptions::default(),
+        )
+        .await
+    }
+
+    /// preview_restore with its options. A kept database's orphaning shows
+    /// as a guard.
+    pub async fn preview_restore_with(
+        &self,
+        doc_id: &str,
+        lineage: &str,
+        sequence: u64,
+        expect: Option<Precondition>,
+        actor_id: &str,
+        options: RestoreOptions,
+    ) -> Result<(HistoryStatus, Option<RestorePreview>, Option<EditResult>), Error> {
+        let keep = options.keep_databases;
+        let point = self.read_point(doc_id, lineage, sequence).await?;
+        let (HistoryStatus::Ready, Some(target_doc)) = (point.status, point.doc.clone()) else {
+            let status = match point.status {
+                HistoryStatus::Ready => HistoryStatus::NotFound,
+                other => other,
+            };
+            return Ok((status, None, None));
+        };
+        let target = Arc::new(blocks_of(point.output.as_ref()));
+        let target_maps = Arc::new(read_page_maps(&target_doc)?);
+        let converter = self.0.converter.clone();
+        let preview: Arc<Mutex<RestorePreview>> = Arc::default();
+        let filled = preview.clone();
+        // The restorer's id is part of the frame the real restore sends.
+        let trash = Arc::new(self.restore_trash(actor_id));
+        let plan: PlanOps = Arc::new(move |doc: Doc| {
+            let (target, target_maps, converter, filled, trash) = (
+                target.clone(),
+                target_maps.clone(),
+                converter.clone(),
+                filled.clone(),
+                trash.clone(),
+            );
+            Box::pin(async move {
+                let current = blocks_of(Some(&converter.export(&doc).await?));
+                let kept = keep.then(|| keep_databases(&current, &target));
+                let aim = kept
+                    .as_ref()
+                    .map_or(target.as_slice(), |kept| kept.target.as_slice());
+                let ops = plan_restore_pinned(
+                    &current,
+                    &describe_structure(&doc)?,
+                    aim,
+                    &read_page_maps(&doc)?,
+                    &target_maps,
+                    trash.as_ref().as_ref(),
+                    kept.as_ref().map(|kept| &kept.pinned),
+                );
+                let (scratch, frame_bytes) =
+                    apply_to_scratch(&doc, converter.as_ref(), &ops).await?;
+                let after = blocks_of(Some(&converter.export(&scratch).await?));
+                let mut preview = filled
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                preview.blocks = diff_blocks(&current, &after);
+                preview.page = diff_page(&page_fields(&doc)?, &page_fields(&scratch)?);
+                preview.guards = match &kept {
+                    Some(kept) => kept_restore_guards(&current, kept),
+                    None => restore_guards(&current, aim),
+                };
+                preview.frame_bytes = frame_bytes;
+                Ok(ops)
+            })
+        });
+        let request = crate::ops::EditRequest {
+            plan,
+            gate_frame_size: false,
+            operation_id: String::new(),
+            digest: Vec::new(),
+            actor_id: String::new(),
+            expect,
+            applied: None,
+            dry_run: true,
+            note: None,
+        };
+        let edit = self.edit_in_room(doc_id, request).await?;
+        // A plan that ran answers Applied with the head it planned against.
+        if edit.status != EditStatus::Applied {
+            return Ok((HistoryStatus::Ready, None, Some(edit)));
+        }
+        let mut preview = std::mem::take(
+            &mut *preview
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        preview.limit_bytes = frame_limit(&self.0.options);
+        preview.head = edit.receipt;
+        Ok((HistoryStatus::Ready, Some(preview), None))
+    }
+}
+
+/// A restore's planner refused: a guard is present the request did not
+/// confirm. Carried in Error::Other so Error keeps its variants.
+#[derive(Debug)]
+struct RestoreGuarded;
+
+impl std::fmt::Display for RestoreGuarded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("collab: the restore needs confirmation")
+    }
+}
+
+impl std::error::Error for RestoreGuarded {}
 
 fn replay_point(
     ctx: &Context,

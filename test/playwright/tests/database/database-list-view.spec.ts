@@ -111,6 +111,33 @@ test.describe('list view', () => {
     expect((await slot(page, 'r1', 'p-stage').locator('[data-blok-database-option-pill]').boundingBox())?.height).toBeCloseTo(18, 0);
   });
 
+  // listview.png (side-by-side-v1, List): a long title is cut with "…" and every property stays in view.
+  // The title box keeps a 120px floor, so the properties must fit in the rest of the 640px row.
+  // A select pill and a checkbox need about 100px, which leaves room whatever the platform font.
+  test('a long title gives way to the properties, which all stay in view', async ({ page }) => {
+    const long = blocks({ type: 'list', name: 'List', visibleProperties: ['p-stage', 'p-done'] });
+    const first = long.find((block) => block.id === 'r1');
+
+    if (first !== undefined) {
+      (first.data as { properties: Record<string, unknown> }).properties['p-title'] = 'Alpha is a very long row title that keeps going and going so it has to do something';
+    }
+    await mount(page, long);
+    await page.evaluate(() => {
+      const holder = document.getElementById('blok');
+
+      if (holder !== null) holder.style.maxWidth = '640px';
+    });
+
+    const title = row(page, 'r1').locator('[data-blok-database-list-row-title]');
+    const properties = row(page, 'r1').locator('[data-blok-database-list-row-properties]');
+    const fit = await properties.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
+
+    expect(fit.scroll).toBeLessThanOrEqual(fit.client);
+    expect(await title.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+    await expect(title).toHaveCSS('text-overflow', 'ellipsis');
+    expect((await row(page, 'r1').locator('[data-blok-database-list-row-main]').boundingBox())?.width).toBeGreaterThanOrEqual(120);
+  });
+
   test('edits a property in place on click, and the page stays closed', async ({ page }) => {
     await mount(page, blocks({ type: 'list', name: 'List' }));
 
@@ -146,6 +173,39 @@ test.describe('list view', () => {
     const [a, b] = [saved.find((r) => r.id === 'r1')?.position ?? '', saved.find((r) => r.id === 'r2')?.position ?? ''];
 
     expect(inserted !== undefined && inserted.position > a && inserted.position < b).toBe(true);
+  });
+});
+
+// notion-motion.md Round 25 §6: "Directly edit page name".
+test.describe('list "Directly edit page name"', () => {
+  test('off, a title click opens the row', async ({ page }) => {
+    await mount(page, blocks({ type: 'list', name: 'List' }));
+    await row(page, 'r1').locator('[data-blok-database-list-row-title]').click();
+
+    await expect(page.locator('[data-blok-database-drawer]')).toBeVisible();
+    await expect(page.locator('[data-blok-database-list-title-input]')).toHaveCount(0);
+  });
+
+  test('on, a title click puts the caret in the title, and a 26x20 Open in side peek shows on hover', async ({ page }) => {
+    await mount(page, blocks({ type: 'list', name: 'List', directTitleEdit: true }));
+    await row(page, 'r1').hover();
+    const button = row(page, 'r1').getByRole('button', { name: 'Open in side peek' });
+    const box = await button.boundingBox();
+
+    expect(box?.width).toBe(26);
+    expect(box?.height).toBe(20);
+    await row(page, 'r1').locator('[data-blok-database-list-row-title]').click();
+
+    await expect(page.locator('[data-blok-database-list-title-input]')).toBeFocused();
+    await expect(page.locator('[data-blok-database-drawer]')).not.toBeVisible();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' One');
+    await page.keyboard.press('Enter');
+    expect((await savedRows(page)).find((r) => r.id === 'r1')?.properties['p-title']).toBe('Alpha One');
+
+    await row(page, 'r1').hover();
+    await button.click();
+    await expect(page.locator('[data-blok-database-drawer]')).toBeVisible();
   });
 });
 

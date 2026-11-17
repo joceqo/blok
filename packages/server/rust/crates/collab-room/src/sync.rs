@@ -219,8 +219,16 @@ impl Room {
             LookupOutcome::Conflict => return reject("operation-id-conflict"),
             LookupOutcome::NotCommitted => {}
         }
-        if self.apply_remote_locked(st, update).is_none() {
+        let Some(applied) = self.apply_remote_locked(st, update) else {
             return reject("invalid-update");
+        };
+        // A reload's residual round resends the whole delete set (see the v1
+        // path). Ack it at the head and journal nothing. With no head yet an
+        // ack has no sequence to name (it must be at least 1), so that one is
+        // still journalled.
+        if !applied.changed && st.committed_through > 0 {
+            self.acknowledge_locked(st, member.as_ref(), operation_id, st.committed_through);
+            return;
         }
         let Some(sequence) = self
             .append_committed_locked(
@@ -230,6 +238,7 @@ impl Room {
                 member.protocol_source(),
                 update,
                 &digest,
+                None,
             )
             .await
         else {
@@ -253,6 +262,7 @@ impl Room {
 
     /// The durable step every journal write shares. It answers the
     /// sequence, or closes the room before anything is published.
+    #[allow(clippy::too_many_arguments, reason = "the Go and C# signatures")]
     pub(crate) async fn append_committed_locked(
         &self,
         st: &mut State,
@@ -261,6 +271,7 @@ impl Room {
         source: OperationSource,
         update: &[u8],
         digest: &[u8],
+        note: Option<crate::RecordNote>,
     ) -> Option<u64> {
         let session = st.session.clone()?;
         let actor = (!actor_id.is_empty()).then(|| actor_id.to_owned());
@@ -299,6 +310,21 @@ impl Room {
             return None;
         }
         st.committed_through = appended.sequence;
+        let note = note.or_else(|| crate::classify_actor(actor_id, false, ""));
+        self.write_note_locked(st, appended.sequence, note.clone())
+            .await;
+        if let Some(manager) = self.manager.upgrade()
+            && let Some(hub) = &manager.signals
+        {
+            hub.committed(
+                &self.manager,
+                &self.doc_id,
+                &st.tag.lineage,
+                appended.sequence,
+                actor_id,
+                note.clone(),
+            );
+        }
         // After the append: an edit is reported once it is durable.
         self.record_activity_locked(st, actor_id, ActivityKind::Edited);
         st.operations_since_checkpoint += 1;
@@ -310,6 +336,28 @@ impl Room {
             self.post(Job::Checkpoint);
         }
         Some(appended.sequence)
+    }
+
+    /// Stores who wrote the record just journalled. Not atomic with the
+    /// journal: a crash, a timeout or an error here loses only this note,
+    /// and never fails the edit or closes the room.
+    async fn write_note_locked(&self, st: &State, sequence: u64, note: Option<crate::RecordNote>) {
+        let (Some(notes), Some(note)) = (self.notes.clone(), note) else {
+            return;
+        };
+        let written = self
+            .lifetime
+            .run_for(
+                self.options.sleep(self.options.commit_timeout),
+                notes.write(&self.doc_id, &st.tag.lineage, sequence, note),
+            )
+            .await;
+        if let Err(err) = written {
+            self.logf(&format!(
+                "collab: the record note of {sequence} in \"{}\" was not written: {err}",
+                self.doc_id
+            ));
+        }
     }
 
     fn acknowledge_locked(
@@ -391,6 +439,7 @@ impl Room {
                 member.protocol_source(),
                 update,
                 &digest,
+                None,
             )
             .await
             .is_none()

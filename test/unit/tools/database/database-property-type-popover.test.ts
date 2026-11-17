@@ -3,6 +3,8 @@ import { DatabasePropertyTypePopover } from '../../../../src/tools/database/data
 import type { PropertyType } from '../../../../src/tools/database/types';
 import type { I18n } from '../../../../types';
 import { propertyTypeMeta } from '../../../../src/tools/database/database-property-types';
+import { HINT_DELAY, destroy as destroyTooltip } from '../../../../src/components/utils/tooltip';
+import { hover, shownHint } from './hint-harness';
 
 const rect = (overrides: Partial<DOMRect>): DOMRect => ({
   x: 0, y: 0, width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0,
@@ -27,6 +29,136 @@ describe('DatabasePropertyTypePopover', () => {
     popover.destroy();
     anchor.remove();
     vi.restoreAllMocks();
+  });
+
+  // notion-motion.md Round 26 §5 (r26-type-qtip.raw): a "?" on the type row hints what the type does. Only Number's
+  // text was recorded, so only Number has one. The hint waits Blok's 500ms, on hover only.
+  describe('type help', () => {
+    const help = (type: string): HTMLElement | null =>
+      document.querySelector<HTMLElement>(`[data-blok-database-property-type-option="${type}"] [data-blok-database-property-type-help]`);
+
+    it('hints Number\'s description after the delay, on hover only', () => {
+      destroyTooltip();
+      vi.useFakeTimers();
+      try {
+        const i18n = { t: vi.fn((key: string) => key), has: vi.fn(() => true), getEnglishTranslation: vi.fn(() => ''), getLocale: vi.fn(() => 'en') } as unknown as I18n;
+        const withHelp = new DatabasePropertyTypePopover({ onSelect, i18n });
+
+        withHelp.open(anchor);
+        expect(help('number')).not.toBeNull();
+
+        help('number')?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+        vi.advanceTimersByTime(HINT_DELAY);
+        expect(shownHint()).toBeNull();
+
+        hover(help('number'));
+        vi.advanceTimersByTime(HINT_DELAY - 1);
+        expect(shownHint()).toBeNull();
+        vi.advanceTimersByTime(1);
+        expect(shownHint()).toEqual({ text: 'tools.database.propertyTypeHelpNumber', placement: 'right' });
+        // notion-motion.md Round 27 §1: the box's left edge sits 6 after the "?" (hover() puts its right edge at 720).
+        expect(document.querySelector<HTMLElement>('[data-blok-testid="tooltip"]')?.style.left).toBe('726px');
+        withHelp.destroy();
+      } finally {
+        vi.useRealTimers();
+        destroyTooltip();
+      }
+    });
+
+    // notion-motion.md Round 27 §1 (r27-tip-*.raw) recorded the text of every type but ID; Round 28 §3 (r28-idtip.raw) read ID's.
+    // Blok's Verification is not in Notion's list.
+    it('puts a "?" with its own text on every type Notion has, and none on Verification', () => {
+      const keyed = new DatabasePropertyTypePopover({ onSelect, hasPeople: true, i18n: { t: (key: string) => key } as unknown as I18n });
+      const read: Array<[string, string]> = [
+        ['text', 'Text'], ['number', 'Number'], ['select', 'Select'], ['multiSelect', 'MultiSelect'], ['status', 'Status'],
+        ['date', 'Date'], ['person', 'Person'], ['files', 'Files'], ['checkbox', 'Checkbox'], ['url', 'Url'], ['email', 'Email'],
+        ['phone', 'Phone'], ['formula', 'Formula'], ['relation', 'Relation'], ['rollup', 'Rollup'], ['createdTime', 'CreatedTime'],
+        ['createdBy', 'CreatedBy'], ['lastEditedTime', 'LastEditedTime'], ['lastEditedBy', 'LastEditedBy'], ['button', 'Button'],
+        ['place', 'Place'], ['uniqueId', 'UniqueId'],
+      ];
+
+      destroyTooltip();
+      vi.useFakeTimers();
+      try {
+        keyed.open(anchor);
+        for (const [type] of read) expect(help(type), type).not.toBeNull();
+        expect(help('verification')).toBeNull();
+        for (const [type, suffix] of read) {
+          hover(help(type));
+          vi.advanceTimersByTime(HINT_DELAY);
+          expect(shownHint()?.text, type).toBe(`tools.database.propertyTypeHelp${suffix}`);
+          help(type)?.dispatchEvent(new MouseEvent('mouseleave'));
+          vi.advanceTimersByTime(HINT_DELAY);
+        }
+      } finally {
+        keyed.destroy();
+        vi.useRealTimers();
+        destroyTooltip();
+      }
+    });
+
+    // notion-motion.md Round 28 §3 (r28-idtip.raw): the type help box is `text-align: start`.
+    it('lines its help text up at the start', () => {
+      const keyed = new DatabasePropertyTypePopover({ onSelect, i18n: { t: (key: string) => key } as unknown as I18n });
+      const lines = (): Element | null | undefined => document.querySelector('[data-blok-testid="tooltip-content"]')?.firstElementChild;
+
+      destroyTooltip();
+      vi.useFakeTimers();
+      try {
+        keyed.open(anchor);
+        hover(help('uniqueId'));
+        vi.advanceTimersByTime(HINT_DELAY);
+        expect(lines()?.classList.contains('text-start')).toBe(true);
+        expect(lines()?.textContent).toBe('tools.database.propertyTypeHelpUniqueId');
+        help('uniqueId')?.dispatchEvent(new MouseEvent('mouseleave'));
+        vi.advanceTimersByTime(HINT_DELAY);
+      } finally {
+        keyed.destroy();
+        vi.useRealTimers();
+        destroyTooltip();
+      }
+    });
+
+    // notion-motion.md Round 28 §3 (r28-addprop.raw): the grid's "?" rows step 34 within a group and 48 across a rule,
+    // so the rules part Text…Email, Relation…Place and the four automatic types.
+    it('parts the header "+" grid into three groups with a rule before Relation and before Created time', () => {
+      const grid = new DatabasePropertyTypePopover({ onSelect, layout: 'grid', hasPeople: true });
+
+      grid.open(anchor);
+      const body = document.querySelector('[data-blok-database-property-type-grid]');
+      const after = [...(body?.querySelectorAll('[data-blok-database-property-type-rule]') ?? [])]
+        .map((rule) => rule.nextElementSibling?.getAttribute('data-blok-database-property-type-option'));
+
+      expect(after).toEqual(['relation', 'createdTime']);
+      grid.destroy();
+    });
+
+    it('keeps the list layout without rules', () => {
+      popover.open(anchor);
+      expect(document.querySelector('[data-blok-database-property-type-rule]')).toBeNull();
+    });
+
+    // notion-motion.md Round 28 §3 (r28-addprop.raw, r28-idtip.png): the header "+" grid has a 14px "?" in every cell too.
+    it('puts the "?" in the header "+" grid as well', () => {
+      const grid = new DatabasePropertyTypePopover({ onSelect, layout: 'grid', i18n: { t: (key: string) => key } as unknown as I18n });
+
+      destroyTooltip();
+      vi.useFakeTimers();
+      try {
+        grid.open(anchor);
+        expect(help('text')).not.toBeNull();
+        expect(help('uniqueId')).not.toBeNull();
+        hover(help('uniqueId'));
+        vi.advanceTimersByTime(HINT_DELAY);
+        expect(shownHint()).toEqual({ text: 'tools.database.propertyTypeHelpUniqueId', placement: 'right' });
+        help('uniqueId')?.dispatchEvent(new MouseEvent('mouseleave'));
+        vi.advanceTimersByTime(HINT_DELAY);
+      } finally {
+        grid.destroy();
+        vi.useRealTimers();
+        destroyTooltip();
+      }
+    });
   });
 
   describe('open()', () => {
@@ -363,6 +495,70 @@ describe('DatabasePropertyTypePopover', () => {
         flow.destroy();
       });
 
+      // notion-motion.md Round 44 §3 (r44-tp-add-head.raw; r34-typemenu-*.raw agree): the name box stays in the new
+      // column's slot and the 400 menu starts 11 left of it (field 1111.5, menu 1100.5; field 819, menu 808).
+      it('starts the menu 11 left of the name box, which stays at the "+"', () => {
+        const widths = new Map([['data-blok-database-property-type-popover', 400], ['data-blok-database-property-type-header', 378]]);
+
+        vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+          return [...widths].find(([attr]) => this.hasAttribute(attr))?.[1] ?? 0;
+        });
+        vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(rect({ x: 500, left: 500, y: 170.4, top: 170.4, width: 28, height: 28, right: 528, bottom: 198.4 }));
+        const flow = new DatabasePropertyTypePopover({ onSelect: vi.fn(), withNameField: true, layout: 'grid', nameOverAnchor: true });
+
+        flow.open(anchor);
+        const root = document.querySelector<HTMLElement>('[data-blok-database-property-type-popover]');
+        const header = root?.querySelector<HTMLElement>(':scope > [data-blok-database-property-type-header]');
+
+        expect(root?.style.left).toBe('489px');
+        expect(header?.style.left).toBe('11px');
+        flow.destroy();
+      });
+
+      // Pushed in from the window's right, the menu ends 12 from it. Notion was never read pushed this far; the name box
+      // keeps as close to the "+" as the menu allows.
+      it('keeps the name box inside the menu when the menu is pushed in from the window edge', () => {
+        const widths = new Map([['data-blok-database-property-type-popover', 400], ['data-blok-database-property-type-header', 378]]);
+
+        vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+          return [...widths].find(([attr]) => this.hasAttribute(attr))?.[1] ?? 0;
+        });
+        vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(rect({ x: 900, left: 900, y: 170.4, top: 170.4, width: 28, height: 28, right: 928, bottom: 198.4 }));
+        const flow = new DatabasePropertyTypePopover({ onSelect: vi.fn(), withNameField: true, layout: 'grid', nameOverAnchor: true });
+
+        flow.open(anchor);
+        const root = document.querySelector<HTMLElement>('[data-blok-database-property-type-popover]');
+        const header = root?.querySelector<HTMLElement>(':scope > [data-blok-database-property-type-header]');
+        const menuLeft = parseFloat(root?.style.left ?? '');
+        const headerLeft = parseFloat(header?.style.left ?? '');
+
+        expect(menuLeft + 400).toBe(window.innerWidth - 12);
+        expect(headerLeft).toBe(400 - 378);
+        expect(header?.style.top).toBe('-32px');
+        flow.destroy();
+      });
+
+      // notion-motion.md Round 34 §6 (r34-typemenu-plus-midscreen.raw): with no room below or above, the whole menu moves up,
+      // its bottom 12.3 above the window, and the name row rides up with it, right on the grid's top.
+      it('moves the name row up with the menu when there is no room below', () => {
+        // Taller than the room above or below the "+" in jsdom's 768 window.
+        const heights = new Map([['data-blok-database-property-type-popover', 400], ['data-blok-database-property-type-header', 28]]);
+
+        vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+          return [...heights].find(([attr]) => this.hasAttribute(attr))?.[1] ?? 0;
+        });
+        vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(rect({ x: 654, left: 654, y: 380, top: 380, width: 28, height: 28, right: 682, bottom: 408 }));
+        const flow = new DatabasePropertyTypePopover({ onSelect: vi.fn(), withNameField: true, layout: 'grid', nameOverAnchor: true });
+
+        flow.open(anchor);
+        const root = document.querySelector<HTMLElement>('[data-blok-database-property-type-popover]');
+        const header = root?.querySelector<HTMLElement>(':scope > [data-blok-database-property-type-header]');
+
+        expect(header?.style.top).toBe('-28px');
+        expect(parseFloat(root?.style.top ?? '') + 400).toBeCloseTo(window.innerHeight - 12.3, 5);
+        flow.destroy();
+      });
+
       it('opens with the first row highlighted, and Enter on an empty name makes it', () => {
         const named = vi.fn<(type: PropertyType, name: string) => void>();
         const flow = new DatabasePropertyTypePopover({ onSelect: named, withNameField: true, layout: 'grid', nameOverAnchor: true });
@@ -408,6 +604,27 @@ describe('DatabasePropertyTypePopover', () => {
         press('Enter');
 
         expect(named).toHaveBeenCalledWith('multiSelect', '');
+        flow.destroy();
+      });
+
+      // Without Person, Email is alone on its line before the rule; Relation starts the next group at the first column.
+      it('walks across a rule by line, not by count', () => {
+        const flow = new DatabasePropertyTypePopover({ onSelect: vi.fn(), withNameField: true, layout: 'grid' });
+
+        flow.open(anchor);
+        for (const _ of [1, 2, 3, 4]) press('ArrowDown');
+        press('ArrowRight');
+        expect(active()).toEqual(['phone']);
+        press('ArrowDown');
+        expect(active()).toEqual(['email']);
+        press('ArrowRight');
+        expect(active()).toEqual(['email']);
+        press('ArrowDown');
+        expect(active()).toEqual(['relation']);
+        press('ArrowRight');
+        expect(active()).toEqual(['rollup']);
+        press('ArrowUp');
+        expect(active()).toEqual(['email']);
         flow.destroy();
       });
 
@@ -522,6 +739,40 @@ describe('DatabasePropertyTypePopover', () => {
       field.dispatchEvent(new Event('input'));
       expect([...document.querySelectorAll<HTMLElement>('[data-blok-database-property-type-option]')].every((option) => !option.hidden)).toBe(true);
       flow.destroy();
+    });
+
+    // notion-motion.md Round 44 §3 (r44-tp-search.raw): in the header "+" grid too, "Select type" stays and the field opens under it.
+    it('keeps "Select type" and opens the search field under it in the header grid', () => {
+      const i18n = { t: (key: string) => `i18n:${key}`, has: () => true } as unknown as I18n;
+      const flow = new DatabasePropertyTypePopover({ onSelect: vi.fn(), withNameField: true, i18n, layout: 'grid', nameOverAnchor: true });
+
+      flow.open(anchor);
+      const heading = document.querySelector('[data-blok-database-property-type-list-heading]');
+
+      heading?.querySelector<HTMLButtonElement>('[data-blok-database-property-type-search]')?.click();
+      const field = document.querySelector<HTMLInputElement>('[data-blok-database-property-type-search-input]');
+
+      expect(heading?.textContent?.trim()).toBe('i18n:tools.database.formSelectType');
+      expect(heading?.nextElementSibling).toBe(field);
+      expect(field).toHaveFocus();
+      flow.destroy();
+    });
+
+    // notion-motion.md Round 41 Part A: a 1px line closes the AI Autofill rows, before "Select type".
+    it('closes the AI Autofill rows with a line, and draws none without them', () => {
+      const flow = new DatabasePropertyTypePopover({ onSelect: vi.fn(), withNameField: true, onAutofill: vi.fn() });
+
+      flow.open(anchor);
+      const translate = document.querySelector('[data-blok-database-property-autofill-option="translate"]');
+
+      expect(translate?.nextElementSibling?.hasAttribute('data-blok-database-property-autofill-rule')).toBe(true);
+      flow.destroy();
+
+      const plain = new DatabasePropertyTypePopover({ onSelect: vi.fn(), withNameField: true });
+
+      plain.open(anchor);
+      expect(document.querySelector('[data-blok-database-property-autofill-rule]')).toBeNull();
+      plain.destroy();
     });
 
     it('draws Summarize with the Text lines glyph', () => {
@@ -730,7 +981,7 @@ describe('DatabasePropertyTypePopover', () => {
     it('closes popover when clicking outside', () => {
       popover.open(anchor);
        
-      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
       const el = document.querySelector('[data-blok-database-property-type-popover]');
       expect(el).toBeNull();
     });
@@ -739,9 +990,145 @@ describe('DatabasePropertyTypePopover', () => {
       popover.open(anchor);
       const el = document.querySelector('[data-blok-database-property-type-popover]') as HTMLElement;
        
-      el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      el.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
       const stillOpen = document.querySelector('[data-blok-database-property-type-popover]');
       expect(stillOpen).not.toBeNull();
+    });
+  });
+
+  // notion-motion.md Round 44 §3 (r44-tp-add-head.raw): the header "+" name box opens with a 24 "Select icon" button at +4,
+  // a gray emoji glyph, then the field at +32. Property icons are saved data (PropertySettingsV2.icon).
+  describe('header "+" Select icon', () => {
+    const shown: Element[] = [];
+
+    beforeEach(() => {
+      shown.length = 0;
+      vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+      // jsdom has no Popover API.
+      Object.defineProperty(HTMLElement.prototype, 'popover', { configurable: true, get(this: HTMLElement) { return this.getAttribute('popover'); } });
+      Object.defineProperty(HTMLElement.prototype, 'showPopover', { configurable: true, writable: true, value(this: HTMLElement) { shown.push(this); } });
+      Object.defineProperty(HTMLElement.prototype, 'hidePopover', { configurable: true, writable: true, value(this: HTMLElement) { shown.splice(shown.indexOf(this), 1); } });
+    });
+
+    afterEach(() => {
+      for (const key of ['popover', 'showPopover', 'hidePopover']) Reflect.deleteProperty(HTMLElement.prototype, key);
+      vi.unstubAllGlobals();
+      document.body.innerHTML = '';
+    });
+
+    const i18n = { t: (key: string) => key, has: () => true, getLocale: () => 'en' } as unknown as I18n;
+    const openFlow = (pick: (type: PropertyType, name: string, icon?: string) => void): { flow: DatabasePropertyTypePopover; button: HTMLElement } => {
+      const flow = new DatabasePropertyTypePopover({ onSelect: pick, withNameField: true, i18n, layout: 'grid', nameOverAnchor: true });
+
+      flow.open(anchor);
+      const header = document.querySelector('[data-blok-database-property-type-header]');
+      const button = header?.querySelector<HTMLElement>(':scope > button[data-blok-database-property-type-icon-button]');
+
+      if (button === null || button === undefined) throw new Error('no Select icon button');
+
+      return { flow, button };
+    };
+    const pickEmoji = async (): Promise<string> => {
+      const emoji = await vi.waitFor(() => {
+        const button = document.querySelector<HTMLElement>('[data-blok-emoji-picker] [data-emoji-grid] button[data-emoji-native]');
+        const native = button?.querySelector('[data-emoji-glyph]')?.textContent ?? '';
+
+        if (button === null || native === '') throw new Error('grid not ready');
+
+        return { button, native };
+      }, { timeout: 5000 });
+
+      // The menu's outside-press check runs first, as for a real click.
+      emoji.button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      emoji.button.click();
+
+      return emoji.native;
+    };
+
+    it('heads the name box with a Select icon button in place of the type glyph', () => {
+      const { flow, button } = openFlow(vi.fn());
+      const header = button.parentElement;
+
+      expect(button.getAttribute('aria-label')).toBe('tools.database.propertyIcon');
+      expect(button.querySelector('svg')).not.toBeNull();
+      expect(button.nextElementSibling?.hasAttribute('data-blok-database-property-name-input')).toBe(true);
+      expect(header?.querySelector('[data-blok-database-property-type-glyph]')).toBeNull();
+      flow.destroy();
+    });
+
+    it('keeps the bordered type glyph in the row page list', () => {
+      const flow = new DatabasePropertyTypePopover({ onSelect: vi.fn(), withNameField: true, i18n });
+
+      flow.open(anchor);
+      expect(document.querySelector('[data-blok-database-property-type-glyph]')).not.toBeNull();
+      expect(document.querySelector('[data-blok-database-property-type-icon-button]')).toBeNull();
+      flow.destroy();
+    });
+
+    it('opens the emoji picker above the menu, shows the pick, and gives it to the new property', async () => {
+      const pick = vi.fn<(type: PropertyType, name: string, icon?: string) => void>();
+      const { flow, button } = openFlow(pick);
+
+      button.click();
+      const picker = document.querySelector('[data-blok-emoji-picker]');
+
+      expect(shown.at(-1)?.contains(picker)).toBe(true);
+      const native = await pickEmoji();
+
+      expect(button.textContent).toBe(native);
+      expect(document.querySelector('[data-blok-database-property-type-popover]')).not.toBeNull();
+      document.querySelector<HTMLElement>('[data-blok-database-property-type-option="number"]')?.click();
+      expect(pick).toHaveBeenCalledWith('number', '', native);
+      expect(shown.some((el) => el.contains(picker))).toBe(false);
+      flow.destroy();
+    });
+
+    it('gives the picked icon to the Text property Enter makes from a typed name', async () => {
+      const pick = vi.fn<(type: PropertyType, name: string, icon?: string) => void>();
+      const { flow, button } = openFlow(pick);
+
+      button.click();
+      const native = await pickEmoji();
+      const field = document.querySelector<HTMLInputElement>('[data-blok-database-property-name-input]');
+
+      if (field === null) throw new Error('no name field');
+      field.value = 'Mood';
+      field.dispatchEvent(new Event('input'));
+      field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      expect(pick).toHaveBeenCalledWith('text', 'Mood', native);
+      flow.destroy();
+    });
+
+    // Notion's focus after a pick is unmeasured; Blok goes back to the name field, so the name can be typed next.
+    it('puts focus back in the name field after a pick', async () => {
+      const { flow, button } = openFlow(vi.fn());
+
+      // A real click focuses the button first.
+      button.focus();
+      button.click();
+      await pickEmoji();
+      expect(document.querySelector('[data-blok-database-property-name-input]')).toHaveFocus();
+      flow.destroy();
+    });
+
+    // r44-tp-add-head.raw: while the menu is open Notion's "+" is the new column's 378-wide slot, so the header ⋯ sits past the name box.
+    it('marks the "+" as the open slot while the menu is open', () => {
+      const { flow } = openFlow(vi.fn());
+
+      expect(anchor.hasAttribute('data-blok-database-property-type-slot')).toBe(true);
+      flow.close(true);
+      expect(anchor.hasAttribute('data-blok-database-property-type-slot')).toBe(false);
+      flow.destroy();
+    });
+
+    it('takes the picker down with the menu', () => {
+      const { flow, button } = openFlow(vi.fn());
+
+      button.click();
+      const picker = document.querySelector('[data-blok-emoji-picker]');
+
+      flow.destroy();
+      expect(shown.some((el) => el.contains(picker))).toBe(false);
     });
   });
 });

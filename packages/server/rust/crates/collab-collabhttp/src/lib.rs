@@ -36,6 +36,13 @@ pub struct Config {
     /// Reports an unreadable stored version: C# logs it at Error, event id 3
     /// (CollabHistoryCorrupt).
     pub corrupt_log: Option<DocLog>,
+    /// A restore that would change sharing, or unlock or reshape a locked
+    /// database, is refused 409 until the request confirms each kind. Off
+    /// keeps the restore unasked.
+    pub enforce_restore_guards: bool,
+    /// An /edit insert gets the server's stamps and an update stamps its
+    /// block. Off keeps the caller's.
+    pub stamp_authority: bool,
 }
 
 /// Serves the routes. Clones share one config.
@@ -199,6 +206,10 @@ mod csharp_test;
 mod dropped_peer_test;
 #[cfg(test)]
 mod edit_result_test;
+#[cfg(test)]
+mod history_hooks_test;
+#[cfg(test)]
+mod history_scope_test;
 #[cfg(test)]
 mod history_test;
 #[cfg(test)]

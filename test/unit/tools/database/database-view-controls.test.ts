@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DatabaseViewControls } from '../../../../src/tools/database/database-view-controls';
 import type { ViewControlsHost } from '../../../../src/tools/database/database-view-controls';
-import type { DatabaseViewConfig, PropertyDefinition } from '../../../../src/tools/database/types';
+import { operatorPick } from '../../../../src/tools/database/database-filter-chip';
+import type { DatabaseViewConfig, FilterRule, PropertyDefinition } from '../../../../src/tools/database/types';
+import { HINT_DELAY, destroy as destroyTooltip } from '../../../../src/components/utils/tooltip';
+import { hover, shownHint } from './hint-harness';
+import { PAGE_LIST_ROLLUP } from '../../../../src/shared/database/value-helpers';
+import { IconSigma } from '../../../../src/components/icons';
 
 const schema: PropertyDefinition[] = [
   { id: 'title', name: 'Name', type: 'title', position: 'a0' },
@@ -22,7 +27,6 @@ const click = (id: string): void => {
 };
 
 const setup = (options: {
-  rows?: number;
   readOnly?: boolean;
   locked?: boolean;
   schema?: () => PropertyDefinition[];
@@ -39,7 +43,6 @@ const setup = (options: {
     fallback: { get: (key) => storage.get(key), set: (key, value) => { storage.set(key, value); } },
     savedView: () => saved.view,
     schema: options.schema ?? (() => schema),
-    rowCount: () => options.rows ?? 5,
     locked: () => options.locked === true,
     readOnly: () => options.readOnly === true,
     viewCount: () => 1,
@@ -73,6 +76,21 @@ describe('DatabaseViewControls', () => {
     vi.restoreAllMocks();
   });
 
+  // notion-motion.md Round 22 §3: a Number formula's new colour rule starts on "=". The host knows it is a formula.
+  it('starts a Number formula\'s colour rule on "="', () => {
+    const { saved } = setup({
+      schema: () => [...schema, { id: 'fn', name: 'Double', type: 'number', position: 'a3' }],
+      levers: { storedType: (id) => (id === 'fn' ? 'formula' : undefined) },
+    });
+
+    click('database-toolbar-settings');
+    click('database-settings-color');
+    click('database-color-add');
+    click('database-pick-property-fn');
+
+    expect(saved.view.colorRules?.[0]).toMatchObject({ propertyId: 'fn', operator: 'equals' });
+  });
+
   it('draws Filter, Sort, search and settings as named icon buttons, as Notion does (research/07:53)', () => {
     setup();
 
@@ -87,6 +105,13 @@ describe('DatabaseViewControls', () => {
     expect(q('database-toolbar-sort')?.getAttribute('aria-label')).toBe('tools.database.settingsSort');
   });
 
+  // The fold probes write on it on every resize; they are not edits.
+  it('draws the toolbar as mutation-free, so its own writes are not block changes', () => {
+    const { controls } = setup();
+
+    expect(controls.toolbar.getAttribute('data-blok-mutation-free')).toBe('true');
+  });
+
   it('marks Filter, Sort, Automations, AI Autofill and search as the group a narrow bar hides together (notion-spec-2 §26.1)', () => {
     setup({ levers: {
       automations: { read: () => undefined, schema: () => schema, views: () => [], writable: () => true, write: () => true },
@@ -99,6 +124,18 @@ describe('DatabaseViewControls', () => {
       'database-toolbar-filter', 'database-toolbar-sort', 'database-toolbar-automations', 'database-toolbar-autofill', 'database-toolbar-search',
     ]);
     expect(q('database-toolbar-settings')?.hasAttribute('data-blok-database-toolbar-foldable')).toBe(false);
+  });
+
+  // notion-live/rowdrag-mid.png: with rows picked, Notion's bar drops Filter, Sort and Automations; ✨, search, settings and New stay.
+  it('marks Filter, Sort and Automations as the icons the table selection bar hides', () => {
+    setup({ levers: {
+      automations: { read: () => undefined, schema: () => schema, views: () => [], writable: () => true, write: () => true },
+      autofill: { properties: () => schema, writable: () => true, open: vi.fn() },
+    } });
+    const hidden = [...document.querySelectorAll<HTMLElement>('[data-blok-database-toolbar-selection-hides]')]
+      .map((el) => el.getAttribute('data-blok-testid'));
+
+    expect(hidden).toEqual(['database-toolbar-filter', 'database-toolbar-sort', 'database-toolbar-automations']);
   });
 
   describe('"No date (N)" for a calendar or timeline (findings C03/C04)', () => {
@@ -186,6 +223,20 @@ describe('DatabaseViewControls', () => {
     ]);
   });
 
+  // notion-motion.md Round 52 §2: Notion's Map toolbar has no Sort.
+  it('hides Sort on a map view only', () => {
+    const { controls, saved } = setup();
+
+    saved.view = { ...saved.view, type: 'map' };
+    controls.refresh();
+    expect(q('database-toolbar-sort')?.hidden).toBe(true);
+    expect(q('database-toolbar-filter')?.hidden).toBe(false);
+
+    saved.view = { ...saved.view, type: 'list' };
+    controls.refresh();
+    expect(q('database-toolbar-sort')?.hidden).toBe(false);
+  });
+
   // research/23 §2e: the column header's Group follows the same rule as the settings picker.
   it('turns Hide empty groups on when a column header groups by a number', () => {
     const { controls, host } = setup();
@@ -193,6 +244,62 @@ describe('DatabaseViewControls', () => {
     controls.groupBy('num', document.body.appendChild(document.createElement('button')));
 
     expect(host.updateView).toHaveBeenCalledWith({ groupBy: 'num', groupSettings: { hideEmptyGroups: true } });
+  });
+
+  // notion-motion.md Round 41 Part A: the filter picker draws Formula as Σ. The host reads a formula as its result type.
+  describe('a formula read as its text result', () => {
+    const withFormula = (): ReturnType<typeof setup> => setup({
+      schema: () => [...schema, { id: 'fo', name: 'Formula', type: 'text', position: 'a3' }],
+      levers: { storedType: (id) => (id === 'fo' ? 'formula' : undefined) },
+    });
+    const glyph = (row: Element | null | undefined): string | undefined => row?.querySelector('svg path')?.getAttribute('d') ?? undefined;
+    const sigma = /d="([^"]+)"/.exec(IconSigma)?.[1];
+
+    it('draws Σ in the Filter picker', () => {
+      withFormula();
+      click('database-toolbar-filter');
+
+      expect(glyph(q('database-pick-property-fo'))).toBe(sigma);
+    });
+
+    // notion-motion.md Round 41, Round 42 §3: both pickers take the strong ink; the list says which picker it is.
+    it('names the Filter picker list "filter" and the Sort picker list "sort"', () => {
+      setup();
+      click('database-toolbar-filter');
+      expect(q('database-filter-picker')?.querySelector('[data-blok-database-picker-list]')?.getAttribute('data-blok-database-picker-list')).toBe('filter');
+      document.body.innerHTML = '';
+      setup();
+      click('database-toolbar-sort');
+      expect(q('database-sort-picker')?.querySelector('[data-blok-database-picker-list]')?.getAttribute('data-blok-database-picker-list')).toBe('sort');
+    });
+
+    // notion-motion.md Round 42 §3: the first row is filled on open. Like the group ⋯ menu, the fill then
+    // follows the pointer, so only one row is filled at a time.
+    it('fills the Sort picker\'s first row on open, and the fill follows the pointer', () => {
+      setup();
+      click('database-toolbar-sort');
+      const rows = (): Element[] => [...(q('database-sort-picker')?.querySelectorAll('[data-blok-database-picker-list] [data-blok-database-panel-row]') ?? [])];
+      const filled = (): number[] => rows().flatMap((row, index) => row.hasAttribute('data-active') ? [index] : []);
+
+      expect(filled()).toEqual([0]);
+      rows()[1].dispatchEvent(new MouseEvent('mousemove', { bubbles: true }));
+      expect(filled()).toEqual([1]);
+    });
+
+    it('draws Σ in the Sort picker', () => {
+      withFormula();
+      click('database-toolbar-sort');
+
+      expect(glyph(q('database-pick-property-fo'))).toBe(sigma);
+    });
+
+    it('draws Σ on the Property visibility page', () => {
+      withFormula();
+      click('database-toolbar-settings');
+      click('database-settings-properties');
+
+      expect(glyph(q('database-property-visible-fo')?.closest('[data-blok-database-property-visibility-row]'))).toBe(sigma);
+    });
   });
 
   it('never offers a button property in "+ Filter"', () => {
@@ -216,6 +323,478 @@ describe('DatabaseViewControls', () => {
     expect(search).toHaveFocus();
     expect(q('database-pick-property-title')?.hasAttribute('data-active')).toBe(true);
     expect(q('database-pick-property-num')?.hasAttribute('data-active')).toBe(false);
+  });
+
+  // notion-motion.md Round 5 (filter-field.png), side-by-side-v1 (sort-open.png).
+  it('names the Filter picker search "Filter by…"', () => {
+    setup();
+    click('database-toolbar-filter');
+
+    expect((q('database-filter-picker-search') as HTMLInputElement).placeholder).toBe('tools.database.filterByPlaceholder');
+    expect(q('database-filter-picker-search')?.getAttribute('aria-label')).toBe('tools.database.filterByPlaceholder');
+  });
+
+  // notion-motion.md Round 10: the Sort and Filter pickers share one measured layout (database.css "picker" page).
+  it('marks the Sort and Filter pickers as the picker page', () => {
+    setup();
+    click('database-toolbar-filter');
+    expect(q('database-filter-picker')?.getAttribute('data-blok-database-panel-page')).toBe('picker');
+    document.body.innerHTML = '';
+    setup();
+    click('database-toolbar-sort');
+    expect(q('database-sort-picker')?.getAttribute('data-blok-database-panel-page')).toBe('picker');
+  });
+
+  it('names the Sort picker search "Sort by…"', () => {
+    setup();
+    click('database-toolbar-sort');
+
+    expect((q('database-sort-picker-search') as HTMLInputElement).placeholder).toBe('tools.database.sortByPlaceholder');
+  });
+
+  // notion-motion.md Round 5: the Filter list's last row is "Add advanced filter", pinned under the scrolling list.
+  it('ends "+ Filter" with "Add advanced filter" under the property list, and it opens the advanced filter', () => {
+    const { controls, saved } = setup();
+
+    click('database-toolbar-filter');
+    const picker = q('database-filter-picker');
+    const list = picker?.querySelector('[data-blok-database-picker-list]');
+    const footer = q('database-filter-picker-advanced');
+
+    expect(footer).not.toBeNull();
+    expect(text(footer)).toBe('tools.database.filterAddAdvanced');
+    expect(list?.contains(footer)).toBe(false);
+    expect(picker?.lastElementChild).toBe(footer);
+    expect(list?.contains(q('database-pick-property-num'))).toBe(true);
+
+    click('database-filter-picker-advanced');
+
+    expect(q('database-filter-picker')).toBeNull();
+    expect(q('database-advanced-filter')).not.toBeNull();
+    expect(document.querySelector('[data-blok-testid="database-advanced-filter"] [data-blok-testid^="database-filter-add-rule-"]')).not.toBeNull();
+    // notion-motion.md Round 18 §2 (r18-adv-open.raw): it starts with one rule, "Where Name Contains".
+    expect(controls.effective(saved.view).filterTree?.filterRules).toEqual([expect.objectContaining({ propertyId: 'title', operator: 'contains', value: '' })]);
+  });
+
+  // notion-motion.md Round 18 §2 (r18-adv-open.raw, r18-adv-bar.raw): the "1 rule" chip shows at once, and the popover opens under it.
+  it('shows the advanced chip at once and opens the advanced filter under it', () => {
+    const { controls } = setup();
+
+    click('database-toolbar-filter');
+    click('database-filter-picker-advanced');
+
+    expect(controls.filterBar.hidden).toBe(false);
+    expect(q('database-advanced-pill')?.hasAttribute('data-popover-open')).toBe(true);
+    expect(q('database-filter-bar-add')?.hasAttribute('data-popover-open')).toBe(false);
+  });
+
+  // notion-motion.md Round 18 §2 (r18-adv-open.raw, -prop.raw, -op.raw): each rule is edited inline, its pickers are flyouts.
+  describe('advanced filter rules edited inline', () => {
+    const openAdvanced = (): { controls: DatabaseViewControls; saved: { view: DatabaseViewConfig }; ruleId: () => string; rule: () => Record<string, unknown> | undefined } => {
+      const { controls, saved } = setup();
+
+      click('database-toolbar-filter');
+      click('database-filter-picker-advanced');
+      const rule = (): Record<string, unknown> | undefined => controls.effective(saved.view).filterTree?.filterRules[0] as Record<string, unknown> | undefined;
+
+      return { controls, saved, rule, ruleId: () => String(rule()?.id) };
+    };
+    const panelDepthIsOne = (): boolean => document.querySelector('[data-blok-testid="database-advanced-filter"] [data-blok-testid="database-panel-back"]') === null;
+
+    it('draws the rule as property, operator, value and ⋯ controls, in a popover sized to them', () => {
+      const { ruleId } = openAdvanced();
+      const id = ruleId();
+
+      expect(text(q(`database-filter-rule-property-${id}`))).toBe('Name');
+      expect(text(q(`database-filter-rule-operator-${id}`))).toBe('tools.database.filterOperator.contains');
+      expect(q(`database-filter-rule-value-${id}`)).toBeInstanceOf(HTMLInputElement);
+      expect(q(`database-filter-rule-more-${id}`)).not.toBeNull();
+      expect(q('database-advanced-filter')?.style.width).not.toBe('290px');
+    });
+
+    it('opens the property list as a 280-wide flyout, and a pick resets the operator', () => {
+      const { ruleId, rule } = openAdvanced();
+      const id = ruleId();
+
+      click(`database-filter-rule-property-${id}`);
+
+      expect(panelDepthIsOne()).toBe(true);
+      expect(q('database-filter-rule-property-picker')?.style.width).toBe('280px');
+      click('database-pick-property-num');
+
+      expect(rule()).toEqual(expect.objectContaining({ id, propertyId: 'num', operator: 'equals', value: null }));
+      expect(q('database-filter-rule-property-picker')).toBeNull();
+      expect(text(q(`database-filter-rule-property-${id}`))).toBe('Amount');
+    });
+
+    it('opens the operator list as a 190-wide flyout under its button', () => {
+      const { ruleId, rule } = openAdvanced();
+      const id = ruleId();
+
+      click(`database-filter-rule-operator-${id}`);
+
+      expect(panelDepthIsOne()).toBe(true);
+      expect(q('database-filter-operator-picker')?.style.width).toBe('190px');
+      click('database-filter-op-does_not_contain');
+
+      expect(rule()).toEqual(expect.objectContaining({ id, operator: 'does_not_contain' }));
+    });
+
+    it('keeps typing in the value field across the redraw each keystroke causes', () => {
+      const { ruleId, rule } = openAdvanced();
+      const id = ruleId();
+      const type = (value: string): void => {
+        const input = q(`database-filter-rule-value-${id}`) as HTMLInputElement;
+
+        input.focus();
+        input.value = value;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+
+      type('a');
+      type('ab');
+
+      expect(rule()).toEqual(expect.objectContaining({ value: 'ab' }));
+      expect(q(`database-filter-rule-value-${id}`)).toHaveFocus();
+    });
+
+    // notion-motion.md Round 18 §2 (r18-adv-addrule.raw), Round 19 §1 (r19-adv-two.raw, r19-adv-group.raw).
+    it('"+ Add filter rule ⌄" opens a menu; "Add filter rule" adds a Name rule at once, with no picker', () => {
+      const { controls, saved } = openAdvanced();
+      const tree = (): DatabaseViewConfig['filterTree'] => controls.effective(saved.view).filterTree;
+
+      click(`database-filter-add-rule-${tree()?.id ?? ''}`);
+      const menu = q('database-filter-add-menu');
+
+      expect(menu?.style.width).toBe('206.9px');
+      expect(text(q('database-filter-add-rule'))).toBe('tools.database.filterAddRule');
+      expect(text(q('database-filter-add-group')?.querySelector('[data-blok-database-panel-label]'))).toBe('tools.database.filterAddGroup');
+      expect(text(q('database-filter-add-group')?.querySelector('[data-blok-database-panel-description]'))).toBe('tools.database.filterAddGroupDescription');
+      click('database-filter-add-rule');
+
+      expect(q('database-filter-add-menu')).toBeNull();
+      expect(q('database-filter-rule-property-picker')).toBeNull();
+      expect(panelDepthIsOne()).toBe(true);
+      expect(tree()?.filterRules).toEqual([
+        expect.objectContaining({ propertyId: 'title', operator: 'contains' }),
+        expect.objectContaining({ propertyId: 'title', operator: 'contains', value: '' }),
+      ]);
+    });
+
+    it('"Add filter group" adds a group that holds one Name rule', () => {
+      const { controls, saved } = openAdvanced();
+      const tree = (): DatabaseViewConfig['filterTree'] => controls.effective(saved.view).filterTree;
+
+      click(`database-filter-add-rule-${tree()?.id ?? ''}`);
+      click('database-filter-add-group');
+
+      expect(tree()?.filterRules[1]).toEqual(expect.objectContaining({
+        filterRules: [expect.objectContaining({ propertyId: 'title', operator: 'contains', value: '' })],
+      }));
+    });
+
+    // notion-motion.md Round 20 §2 (r20-g-two.raw, r20-g-grp-parts.raw): a new rule takes the property in use.
+    it('seeds a new rule and a new group with the property of the rule above, not always Name', () => {
+      const { controls, saved, ruleId } = openAdvanced();
+      const tree = (): DatabaseViewConfig['filterTree'] => controls.effective(saved.view).filterTree;
+
+      click(`database-filter-rule-property-${ruleId()}`);
+      click('database-pick-property-num');
+      click(`database-filter-add-rule-${tree()?.id ?? ''}`);
+      click('database-filter-add-rule');
+      expect(tree()?.filterRules[1]).toEqual(expect.objectContaining({ propertyId: 'num', operator: 'equals', value: null }));
+
+      click(`database-filter-add-rule-${tree()?.id ?? ''}`);
+      click('database-filter-add-group');
+      expect(tree()?.filterRules[2]).toEqual(expect.objectContaining({
+        filterRules: [expect.objectContaining({ propertyId: 'num', operator: 'equals', value: null })],
+      }));
+    });
+
+    // notion-motion.md Round 20 §5 (r20-g-inner2-parts.raw, r20-g-lvl3add-parts.raw): the opposite of the parent's And/Or.
+    it('gives a new group the opposite And/Or of its parent', () => {
+      const { controls, saved } = openAdvanced();
+      const tree = (): DatabaseViewConfig['filterTree'] => controls.effective(saved.view).filterTree;
+      const rootId = tree()?.id ?? '';
+
+      click(`database-filter-add-rule-${rootId}`);
+      click('database-filter-add-rule');
+      click(`database-filter-conjunction-${rootId}`);
+      click('database-filter-conjunction-or');
+      click(`database-filter-add-rule-${rootId}`);
+      click('database-filter-add-group');
+      const middle = tree()?.filterRules[2];
+
+      expect(middle).toEqual(expect.objectContaining({ conjunction: 'and' }));
+      click(`database-filter-add-rule-${middle?.id ?? ''}`);
+      click('database-filter-add-group');
+      const inner = (tree()?.filterRules[2] as { filterRules: unknown[] } | undefined)?.filterRules[1];
+
+      expect(inner).toEqual(expect.objectContaining({ conjunction: 'or' }));
+    });
+
+    // notion-motion.md Round 20 §2 (r20-g-lvl3.png): the deepest group cannot add a group, so its button has no ⌄ and adds a rule at once.
+    it('gives a third-level group a plain "+ Add filter rule" that adds a rule at once', () => {
+      const { controls, saved } = openAdvanced();
+      const tree = (): DatabaseViewConfig['filterTree'] => controls.effective(saved.view).filterTree;
+
+      click(`database-filter-add-rule-${tree()?.id ?? ''}`);
+      click('database-filter-add-group');
+      const middleId = tree()?.filterRules[1]?.id ?? '';
+
+      click(`database-filter-add-rule-${middleId}`);
+      click('database-filter-add-group');
+      const deepest = (): { id: string; filterRules: unknown[] } | undefined =>
+        (tree()?.filterRules[1] as { filterRules: Array<{ id: string; filterRules: unknown[] }> } | undefined)?.filterRules[1];
+      const add = q(`database-filter-add-rule-${deepest()?.id ?? ''}`);
+
+      expect(add?.querySelector('[data-blok-database-chip-chevron]')).toBeNull();
+      expect(q(`database-filter-add-rule-${middleId}`)?.querySelector('[data-blok-database-chip-chevron]')).not.toBeNull();
+      add?.click();
+
+      expect(q('database-filter-add-menu')).toBeNull();
+      expect(deepest()?.filterRules).toHaveLength(2);
+    });
+
+    const rowsOf = (menu: string): Array<[string | undefined, boolean]> => [...(q(menu)?.querySelectorAll('[data-blok-database-panel-row]') ?? [])]
+      .map((row) => [text(row.querySelector('[data-blok-database-panel-label]')), row.hasAttribute('data-danger')]);
+
+    // notion-motion.md Round 19 §1 (r19-adv-rulemore.raw): 150.8 wide under the ⋯; Remove (red), Duplicate, Turn into group.
+    it('opens the rule ⋯ as Remove, Duplicate and Turn into group', () => {
+      const { ruleId } = openAdvanced();
+
+      click(`database-filter-rule-more-${ruleId()}`);
+
+      expect(panelDepthIsOne()).toBe(true);
+      expect(q('database-filter-rule-more-menu')?.style.width).toBe('150.8px');
+      expect(rowsOf('database-filter-rule-more-menu')).toEqual([
+        ['tools.database.filterRemove', true],
+        ['tools.database.filterDuplicate', false],
+        ['tools.database.filterTurnIntoGroup', false],
+      ]);
+    });
+
+    it('removes, duplicates and groups the rule from its ⋯', () => {
+      const { ruleId, controls, saved } = openAdvanced();
+      const id = ruleId();
+      const rules = (): NonNullable<DatabaseViewConfig['filterTree']>['filterRules'] => controls.effective(saved.view).filterTree?.filterRules ?? [];
+
+      click(`database-filter-rule-more-${id}`);
+      click('database-filter-duplicate');
+      expect(rules()).toHaveLength(2);
+      expect(rules()[1]).toEqual(expect.objectContaining({ propertyId: 'title', operator: 'contains' }));
+      expect(rules()[1].id).not.toBe(id);
+
+      click(`database-filter-rule-more-${id}`);
+      click('database-filter-turn-into-group');
+      expect(rules()[0]).toEqual(expect.objectContaining({ filterRules: [expect.objectContaining({ id })] }));
+
+      click(`database-filter-rule-more-${id}`);
+      click('database-filter-remove');
+      expect(rules()[0]).toEqual(expect.objectContaining({ filterRules: [] }));
+    });
+
+    // notion-motion.md Round 19 §1 (r19-adv-andor.raw): "And ⌄" opens a 190.2-wide flyout, two rows with hints.
+    it('opens And/Or as a flyout under its button, the current one checked', () => {
+      const { controls, saved } = openAdvanced();
+      const tree = (): DatabaseViewConfig['filterTree'] => controls.effective(saved.view).filterTree;
+      const rootId = tree()?.id ?? '';
+
+      click(`database-filter-add-rule-${rootId}`);
+      click('database-filter-add-rule');
+      expect(q(`database-filter-conjunction-${rootId}`)?.querySelector('[data-blok-database-chip-chevron]')).not.toBeNull();
+      click(`database-filter-conjunction-${rootId}`);
+
+      expect(panelDepthIsOne()).toBe(true);
+      expect(q('database-filter-conjunction-picker')?.style.width).toBe('190.2px');
+      const rows = [...(q('database-filter-conjunction-picker')?.querySelectorAll('[data-blok-database-panel-row]') ?? [])];
+
+      expect(rows.map((row) => [
+        text(row.querySelector('[data-blok-database-panel-label]')),
+        text(row.querySelector('[data-blok-database-panel-description]')),
+        row.getAttribute('aria-checked'),
+      ])).toEqual([
+        ['tools.database.filterAnd', 'tools.database.filterAndDescription', 'true'],
+        ['tools.database.filterOr', 'tools.database.filterOrDescription', 'false'],
+      ]);
+      click('database-filter-conjunction-or');
+
+      expect(tree()?.conjunction).toBe('or');
+      expect(q('database-filter-conjunction-picker')).toBeNull();
+      expect(text(q(`database-filter-conjunction-${rootId}`))).toBe('tools.database.filterOr');
+    });
+
+    // notion-motion.md Round 19 §1 (r19-adv-group.raw, r19-adv-group2.raw): "And", then the box in the property column, then its ⋯.
+    it('lays a group out as its And, its box and its ⋯, and a new group reads "Or"', () => {
+      const { controls, saved } = openAdvanced();
+      const tree = (): DatabaseViewConfig['filterTree'] => controls.effective(saved.view).filterTree;
+
+      click(`database-filter-add-rule-${tree()?.id ?? ''}`);
+      click('database-filter-add-group');
+      const group = tree()?.filterRules[1];
+      const groupId = group?.id ?? '';
+      const box = q(`database-filter-group-${groupId}`);
+      const line = box?.parentElement;
+
+      expect(group).toEqual(expect.objectContaining({ conjunction: 'or' }));
+      expect(line?.hasAttribute('data-blok-database-filter-group-line')).toBe(true);
+      // The And/Or sits in its column's cell (notion-motion.md Round 25 §3).
+      expect([...(line?.children ?? [])].map((el) => el.getAttribute('data-blok-testid') ?? el.firstElementChild?.getAttribute('data-blok-testid') ?? el.textContent?.trim())).toEqual([
+        `database-filter-conjunction-${tree()?.id ?? ''}`,
+        `database-filter-group-${groupId}`,
+        `database-filter-group-more-${groupId}`,
+      ]);
+      expect(box?.querySelector('[data-blok-testid^="database-filter-delete-group-"]')).toBeNull();
+
+      click(`database-filter-add-rule-${groupId}`);
+      click('database-filter-add-rule');
+      expect(text(box?.ownerDocument.querySelector(`[data-blok-testid="database-filter-conjunction-${groupId}"]`))).toBe('tools.database.filterOr');
+    });
+
+    // notion-motion.md Round 19 §1 (r19-adv-groupmore.raw): 232.4 wide; Remove, Duplicate, Turn into filter, Wrap in group.
+    it('gives a group its own ⋯: Remove, Duplicate, Turn into filter and Wrap in group', () => {
+      const { controls, saved } = setup();
+      const inner = { id: 'a', propertyId: 'num', operator: 'is_empty', value: null } as const;
+      const rules = (): NonNullable<DatabaseViewConfig['filterTree']>['filterRules'] => controls.effective(saved.view).filterTree?.filterRules ?? [];
+
+      saved.view = { ...saved.view, filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'g', conjunction: 'or', filterRules: [inner] }] } };
+      controls.refresh();
+      click('database-advanced-pill');
+      click('database-filter-group-more-g');
+
+      expect(q('database-filter-group-more-menu')?.style.width).toBe('232.4px');
+      expect(rowsOf('database-filter-group-more-menu')).toEqual([
+        ['tools.database.filterRemove', true],
+        ['tools.database.filterDuplicate', false],
+        ['tools.database.filterTurnIntoFilter', false],
+        ['tools.database.filterWrapInGroup', false],
+      ]);
+      expect(text(q('database-filter-wrap-in-group')?.querySelector('[data-blok-database-panel-description]'))).toBe('tools.database.filterWrapInGroupDescription');
+
+      click('database-filter-wrap-in-group');
+      expect(rules()[0]).toEqual(expect.objectContaining({ filterRules: [expect.objectContaining({ id: 'g' })] }));
+
+      click('database-filter-group-more-g');
+      click('database-filter-turn-into-filter');
+      expect(rules()[0]).toEqual(expect.objectContaining({ filterRules: [inner] }));
+    });
+  });
+
+  // notion-motion.md Round 18 §2 (r18-adv-bar.raw): the advanced chip goes first, before the simple chips.
+  it('puts the advanced filter chip before the simple filter chips', () => {
+    const { controls, saved } = setup();
+
+    saved.view = {
+      ...saved.view,
+      filters: [{ id: 'f1', propertyId: 'title', operator: 'contains', value: 'a' }],
+      filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'a', propertyId: 'num', operator: 'is_empty', value: null }] },
+    };
+    controls.refresh();
+    const order = [...document.querySelectorAll('[data-blok-database-filter-pills] > [data-blok-database-filter-pill]')].map((el) => el.getAttribute('data-blok-testid'));
+
+    expect(order).toEqual(['database-advanced-pill', 'database-filter-pill-f1']);
+  });
+
+  // notion-motion.md Round 19 §1 (r19-adv-group2-bar.raw): rule, rule, group(rule, rule) reads "3 rules".
+  it('counts the advanced chip by its top-level items', () => {
+    const { controls, saved } = setup({ levers: { i18n: { t: (key: string, vars?: Record<string, string | number>) => `${key} ${String(vars?.count ?? '')}` } } });
+    const rule = (id: string): FilterRule => ({ id, propertyId: 'num', operator: 'is_empty', value: null });
+
+    saved.view = {
+      ...saved.view,
+      filterTree: { id: 'root', conjunction: 'and', filterRules: [rule('a'), rule('b'), { id: 'g', conjunction: 'or', filterRules: [rule('c'), rule('d')] }] },
+    };
+    controls.refresh();
+
+    expect(q('database-advanced-pill')?.getAttribute('aria-label')).toBe('tools.database.filterRuleCount 3');
+  });
+
+  // notion-motion.md Round 19 §1 (r19-adv-chipclick.raw): the "N rules" chip opens the advanced popover under it.
+  it('opens the advanced filter under its chip, not view settings', () => {
+    const { controls, saved } = setup();
+
+    saved.view = { ...saved.view, filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'a', propertyId: 'num', operator: 'is_empty', value: null }] } };
+    controls.refresh();
+    click('database-advanced-pill');
+
+    expect(q('database-view-settings')).toBeNull();
+    expect(q('database-advanced-filter')).not.toBeNull();
+    expect(q('database-advanced-pill')?.hasAttribute('data-popover-open')).toBe(true);
+  });
+
+  // notion-motion.md Round 19 §1 (r19-adv-cb*.raw): Checkbox's value is a 220-wide menu of Unchecked and Checked.
+  it('picks an advanced Checkbox value from a menu that closes on the pick', () => {
+    const { controls, saved } = setup({ schema: () => [...schema, { id: 'done', name: 'Done', type: 'checkbox', position: 'a3' }] });
+
+    saved.view = { ...saved.view, filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'r', propertyId: 'done', operator: 'equals', value: null }] } };
+    controls.refresh();
+    click('database-advanced-pill');
+    click('database-filter-rule-value-r');
+
+    expect(q('database-filter-value-picker')?.style.width).toBe('220px');
+    expect(q('database-advanced-filter')?.querySelector('[data-blok-testid="database-panel-back"]')).toBeNull();
+    click('database-filter-checkbox-true');
+
+    expect(controls.effective(saved.view).filterTree?.filterRules[0]).toEqual(expect.objectContaining({ value: true }));
+    expect(q('database-filter-value-picker')).toBeNull();
+    expect(text(q('database-filter-rule-value-r'))).not.toBe('tools.database.filterValue');
+  });
+
+  // notion-motion.md Round 20 §2 (r20-adv-*-parts.raw): an empty advanced value names what to pick, in secondary ink.
+  it.each([
+    ['select', 'equals', 'tools.database.filterSelectOption'],
+    ['multiSelect', 'contains', 'tools.database.filterSelectOption'],
+    ['status', 'equals', 'tools.database.filterSelectOption'],
+    ['checkbox', 'equals', 'tools.database.filterSelectValue'],
+    ['person', 'contains', 'tools.database.filterSelectPeople'],
+    ['createdBy', 'contains', 'tools.database.filterSelectPeople'],
+    ['lastEditedBy', 'contains', 'tools.database.filterSelectPeople'],
+    ['relation', 'contains', 'tools.database.filterSelectPage'],
+    ['date', 'equals', 'tools.database.filterSelectDate'],
+  ] as const)('shows an empty advanced %s value as its placeholder', (type, operator, key) => {
+    const options = [{ id: 'o', label: 'O', position: 'a0' }];
+    const { controls, saved } = setup({
+      schema: () => [...schema, { id: 'p', name: 'P', type, position: 'a3', config: { options } }],
+      levers: { relatedRows: () => [{ id: 'x', title: 'X' }] },
+    });
+
+    saved.view = { ...saved.view, filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'r', propertyId: 'p', operator, value: null }] } };
+    controls.refresh();
+    click('database-advanced-pill');
+
+    expect(text(q('database-filter-rule-value-r'))).toBe(key);
+    expect(q('database-filter-rule-value-r')?.hasAttribute('data-blok-database-filter-placeholder')).toBe(true);
+  });
+
+  // notion-motion.md Round 20 §2 (r20-adv-typed-parts.raw): the advanced button prints the long day; the chip keeps "Mar 5, 2025".
+  it('prints an advanced date value as the long day, March 5, 2025', () => {
+    const { controls, saved } = setup({ schema: () => [...schema, { id: 'due', name: 'Due', type: 'date', position: 'a3' }] });
+
+    saved.view = { ...saved.view, filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'r', propertyId: 'due', operator: 'equals', value: '2025-03-05' }] } };
+    controls.refresh();
+    click('database-advanced-pill');
+
+    expect(text(q('database-filter-rule-value-r'))).toBe(new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'long', day: 'numeric' }).format(new Date(2025, 2, 5)));
+    expect(text(q('database-filter-rule-value-r'))).toContain('2025');
+  });
+
+  it('drops the placeholder mark once the advanced value is set', () => {
+    const { controls, saved } = setup({ schema: () => [...schema, { id: 'done', name: 'Done', type: 'checkbox', position: 'a3' }] });
+
+    saved.view = { ...saved.view, filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'r', propertyId: 'done', operator: 'equals', value: true }] } };
+    controls.refresh();
+    click('database-advanced-pill');
+
+    expect(q('database-filter-rule-value-r')?.hasAttribute('data-blok-database-filter-placeholder')).toBe(false);
+  });
+
+  it('gives "+ Sort" no advanced footer', () => {
+    setup();
+    click('database-toolbar-sort');
+
+    expect(q('database-sort-picker')).not.toBeNull();
+    expect(q('database-filter-picker-advanced')).toBeNull();
+    expect(q('database-sort-picker')?.querySelector('[data-blok-database-picker-list]')).not.toBeNull();
   });
 
   it('filters "+ Filter" as you type, moves the highlight with the arrows and picks it with Enter', () => {
@@ -258,6 +837,55 @@ describe('DatabaseViewControls', () => {
     expect(q('database-view-save')).toBeNull();
   });
 
+  // research/11 §4 (35-filter-saved.png): on a row page, Save for everyone asks first.
+  describe('Save for everyone on a row page', () => {
+    const rowPage = (): ReturnType<typeof setup> => setup({ levers: {
+      i18n: { t: (key: string, vars?: Record<string, string | number>) => (vars?.name === undefined ? key : `${key} ${String(vars.name)}`) },
+      rowPageDatabaseName: () => 'Measure DB 3',
+    } });
+    const dialog = (): HTMLElement | null => document.querySelector('[data-blok-database-confirm-dialog]');
+    const action = (name: string): HTMLElement | null => dialog()?.querySelector(`[data-blok-database-confirm-action="${name}"]`) ?? null;
+
+    afterEach(() => {
+      document.querySelectorAll('[data-blok-database-confirm]').forEach((el) => el.remove());
+    });
+
+    it('asks "Updating layout for all pages…" before it saves, and saves on "Save for all pages"', async () => {
+      const { controls, host } = rowPage();
+
+      controls.filterBy('num', document.body);
+      click('database-view-save');
+
+      expect(host.updateView).not.toHaveBeenCalled();
+      expect(dialog()?.querySelector('[data-blok-database-confirm-title]')?.textContent).toBe('tools.database.saveForAllTitle');
+      const description = dialog()?.querySelector('[data-blok-database-confirm-description]');
+
+      expect(description?.textContent).toBe('tools.database.saveForAllDescription Measure DB 3');
+      expect(description?.querySelector('strong')?.textContent).toBe('Measure DB 3');
+      expect(action('confirm')?.textContent).toBe('tools.database.saveForAllConfirm');
+      expect(action('confirm')?.hasAttribute('data-primary')).toBe(true);
+      expect(action('cancel')?.textContent).toBe('tools.database.layoutCancel');
+      expect(action('cancel')?.hasAttribute('data-quiet')).toBe(false);
+      expect(action('confirm')).toHaveFocus();
+
+      action('confirm')?.click();
+      await vi.waitFor(() => expect(host.updateView).toHaveBeenCalledWith({ filters: [expect.objectContaining({ propertyId: 'num' })] }));
+      expect(controls.hasPersonalEdits('v1')).toBe(false);
+    });
+
+    it('keeps the draft on Cancel', async () => {
+      const { controls, host } = rowPage();
+
+      controls.filterBy('num', document.body);
+      click('database-view-save');
+      action('cancel')?.click();
+      await vi.waitFor(() => expect(dialog()).toBeNull());
+
+      expect(host.updateView).not.toHaveBeenCalled();
+      expect(controls.hasPersonalEdits('v1')).toBe(true);
+    });
+  });
+
   it('standalone Save for everyone keeps authorized combined personal filters and sorts', () => {
     const { controls, host, saved } = setup();
     const anchor = document.createElement('button');
@@ -288,6 +916,8 @@ describe('DatabaseViewControls', () => {
 
     expect(controls.effective(saved.view).sorts).toEqual([expect.objectContaining({ propertyId: 'num', direction: 'desc' })]);
     expect(text(q('database-sort-pill'))).toBe('Amount');
+    // notion-motion.md Round 25 §3: one sort shows Notion's 8×14 arrow.
+    expect(q('database-sort-pill')?.hasAttribute('data-blok-database-sort-arrow')).toBe(true);
 
     click('database-view-reset');
 
@@ -305,14 +935,29 @@ describe('DatabaseViewControls', () => {
     expect(controls.effective(saved.view).sorts).toEqual([expect.objectContaining({ propertyId: 'num', direction: 'asc' })]);
   });
 
-  it('shows search from three rows and redraws as the person types', () => {
-    const few = setup({ rows: 2 });
+  // notion-motion.md Round 41 Part B: Notion shows 🔍 on a 0-row board with Name + Status.
+  it('shows search on a database with no rows: only a property besides the title gates it', () => {
+    const { controls } = setup();
+
+    expect(q('database-toolbar-search')?.hidden).toBe(false);
+    click('database-toolbar-search');
+    const input = q('database-search-input') as HTMLInputElement;
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(q('database-toolbar-search')?.hidden).toBe(false);
+    controls.destroy();
+  });
+
+  // notion-motion.md:826: a brand-new title-only database shows no 🔍.
+  it('keeps search back on a title-only database', () => {
+    setup({ schema: () => schema.slice(0, 1) });
 
     expect(q('database-toolbar-search')?.hidden).toBe(true);
-    few.controls.destroy();
-    document.body.innerHTML = '';
+  });
 
-    const { controls, host } = setup({ rows: 3 });
+  it('redraws as the person types', () => {
+    const { controls, host } = setup();
 
     expect(q('database-toolbar-search')?.hidden).toBe(false);
     click('database-toolbar-search');
@@ -385,11 +1030,24 @@ describe('DatabaseViewControls', () => {
       const chip = q('database-filter-pill-f1');
 
       expect(chip?.querySelector('[data-blok-database-chip-glyph] svg')).not.toBeNull();
-      expect(chip?.querySelector('[data-blok-database-chip-name]')?.textContent).toBe('Select:');
+      // notion-motion.md Round 19 §2 (r19-sel-red-bar.raw): only the name is 500, so the colon sits outside its span.
+      expect(chip?.querySelector('[data-blok-database-chip-name]')?.textContent).toBe('Select');
       expect(chip?.querySelector('[data-blok-database-chip-value]')?.textContent).toBe('Red');
+      expect(chip?.querySelector('[data-blok-database-chip-text]')?.textContent).toBe('Select: Red');
       expect(chip?.querySelector('[data-blok-database-chip-chevron] svg')).not.toBeNull();
       expect(text(chip)).toBe('Select: Red');
       expect(chip?.getAttribute('aria-label')).toBe('Select: Red');
+    });
+
+    it('writes the operator after the name, as Notion\'s "Name: Contains a" and "Number = 5" (Round 18 §2)', () => {
+      const { controls, saved } = setup();
+
+      saved.view = { ...saved.view, filters: [{ id: 'f1', propertyId: 'num', operator: 'equals', value: 5 }] };
+      controls.refresh();
+      const chip = q('database-filter-pill-f1');
+
+      expect(chip?.querySelector('[data-blok-database-chip-name]')?.textContent).toBe('Amount');
+      expect(chip?.querySelector('[data-blok-database-chip-value]')?.textContent).toBe('tools.database.filterOperator.numberEquals 5');
     });
 
     it('shows only the name, without a colon, while the filter has no value', () => {
@@ -444,6 +1102,86 @@ describe('DatabaseViewControls', () => {
       return env;
     };
 
+    // research/08:232 and shots-08/67-filter-number.png: a value-field filter popover is 220 wide. The option
+    // token field's width was never measured, so it keeps 260.
+    it('opens a value-field filter 220 wide', () => {
+      const env = setup();
+
+      env.saved.view = { ...env.saved.view, filters: [{ id: 'f2', propertyId: 'title', operator: 'contains', value: '' }] };
+      env.controls.refresh();
+      click('database-filter-pill-f2');
+
+      expect(q('database-filter-popover')?.style.width).toBe('220px');
+    });
+
+    // notion-motion.md Round 19 §2 (r19-cb-new.raw, r19-cb-checked.raw): the Checkbox popover is 220 wide (220×95, 220×132).
+    it('opens a Checkbox filter 220 wide', () => {
+      const env = setup({ schema: () => [...schema, { id: 'done', name: 'Done', type: 'checkbox', position: 'a3' }] });
+
+      env.saved.view = { ...env.saved.view, filters: [{ id: 'f3', propertyId: 'done', operator: 'equals', value: true }] };
+      env.controls.refresh();
+      click('database-filter-pill-f3');
+
+      expect(q('database-filter-popover')?.style.width).toBe('220px');
+    });
+
+    // notion-motion.md Round 20 §1 (r20-st.raw, r20-st-rows.raw, r20-st.png): Status lists group rows, each before its
+    // options, then "Clear selection". No search field; the operator button takes focus.
+    describe('Status', () => {
+      const status: PropertyDefinition = { id: 'st', name: 'Status', type: 'status', position: 'a3', config: { options: [
+        { id: 's1', label: 'Not started', position: 'a0', groupId: 'todo' },
+        { id: 's3', label: 'Done', position: 'a0', groupId: 'complete' },
+        { id: 's4', label: 'Archived', position: 'a1', groupId: 'complete' },
+      ] } };
+      const openStatus = (value: string[] = []): ReturnType<typeof setup> => {
+        const env = setup({ schema: () => [...schema, status] });
+
+        env.saved.view = { ...env.saved.view, filters: [{ id: 'fs', propertyId: 'st', operator: 'equals', value }] };
+        env.controls.refresh();
+        click('database-filter-pill-fs');
+
+        return env;
+      };
+      const valueOf = (env: ReturnType<typeof setup>): unknown => env.controls.effective(env.saved.view).filters[0]?.value;
+
+      it('lists each group before its options, then Clear selection, with no search', () => {
+        openStatus();
+        const rows = [...(q('database-filter-popover')?.querySelectorAll('[data-blok-database-panel-row]') ?? [])]
+          .map((row) => row.getAttribute('data-blok-testid'));
+
+        expect(q('database-filter-popover')?.style.width).toBe('260px');
+        expect(q('database-filter-option-search')).toBeNull();
+        expect(rows).toEqual([
+          'database-filter-status-group-todo', 'database-filter-option-s1',
+          'database-filter-status-group-inProgress',
+          'database-filter-status-group-complete', 'database-filter-option-s3', 'database-filter-option-s4',
+          'database-filter-clear-selection',
+        ]);
+        expect(text(q('database-filter-status-group-complete'))).toBe('Complete');
+        expect(q('database-filter-status-group-complete')?.getAttribute('data-color')).toBe('green');
+        expect(q('database-filter-option-s3')?.hasAttribute('data-blok-database-filter-status-option')).toBe(true);
+        expect(text(q('database-filter-clear-selection'))).toBe('tools.database.filterClearSelection');
+        expect(q('database-filter-operator')).toHaveFocus();
+      });
+
+      it('ticks every option of a group from its row, and unticks them when all are ticked', () => {
+        const env = openStatus(['s1']);
+
+        click('database-filter-status-group-complete');
+        expect(valueOf(env)).toEqual(['s1', 's3', 's4']);
+        expect(q('database-filter-status-group-complete')?.getAttribute('aria-checked')).toBe('true');
+        click('database-filter-status-group-complete');
+        expect(valueOf(env)).toEqual(['s1']);
+      });
+
+      it('clears every pick from Clear selection', () => {
+        const env = openStatus(['s1', 's3']);
+
+        click('database-filter-clear-selection');
+        expect(valueOf(env)).toEqual([]);
+      });
+    });
+
     it('heads the popover with "Name operator" and a "…" button, 260 wide', () => {
       open();
       const popover = q('database-filter-popover');
@@ -466,6 +1204,32 @@ describe('DatabaseViewControls', () => {
       expect(controls.effective(saved.view).filters[0]?.value).toEqual([]);
     });
 
+    // notion-motion.md Round 32 §3 Filter chip (r32-b-filterchip.raw): the field says "Select one or more options…",
+    // and each option has a 14px checkbox before its pill. The box carries the tick, so the row has no trailing ✓.
+    it('puts a checkbox before each option pill and a placeholder in the token field', () => {
+      open();
+      const red = q('database-filter-option-red');
+      const blue = q('database-filter-option-blue');
+      const box = (row: HTMLElement | null): Element | null | undefined => row?.firstElementChild;
+
+      expect(box(red)?.hasAttribute('data-blok-database-checkbox')).toBe(true);
+      expect(box(red)?.getAttribute('data-state')).toBe('checked');
+      expect(box(red)?.getAttribute('aria-hidden')).toBe('true');
+      expect(box(blue)?.getAttribute('data-state')).toBe('unchecked');
+      expect(red?.querySelector('[data-blok-database-panel-check]')).toBeNull();
+      expect(red?.getAttribute('aria-checked')).toBe('true');
+    });
+
+    // notion-motion.md Round 33 §2 Select filter (r33-filter-*.raw): the placeholder is cleared once a token is chosen.
+    it('shows the placeholder only while no option is chosen', () => {
+      open();
+      const search = (): HTMLInputElement => q('database-filter-option-search') as HTMLInputElement;
+
+      expect(search().placeholder).toBe('');
+      click('database-filter-token-remove-red');
+      expect(search().placeholder).toBe('tools.database.filterOptionsPlaceholder');
+    });
+
     it('narrows the options as the person types in the token field', () => {
       open();
       const search = q('database-filter-option-search') as HTMLInputElement;
@@ -486,6 +1250,201 @@ describe('DatabaseViewControls', () => {
       expect(controls.effective(saved.view).filters).toEqual([]);
     });
   });
+  // notion-motion.md Round 13 (r13-filter-ops-id.raw): ID lists =, ≠, >, <, ≥, ≤, Is empty, Is not empty.
+  it('lists Is empty and Is not empty on an ID filter, and hides the value field for them', () => {
+    const env = setup({ schema: () => [...schema, { id: 'uid', name: 'ID', type: 'uniqueId', position: 'a3' }] });
+
+    env.saved.view = { ...env.saved.view, filters: [{ id: 'f1', propertyId: 'uid', operator: 'equals', value: null }] };
+    env.controls.refresh();
+    click('database-filter-pill-f1');
+    click('database-filter-operator');
+    const ops = [...document.querySelectorAll('[data-blok-testid^="database-filter-op-"]')].map((el) => el.getAttribute('data-blok-testid')?.replace('database-filter-op-', ''));
+
+    expect(ops).toEqual(['equals', 'does_not_equal', 'greater_than', 'less_than', 'greater_than_or_equal_to', 'less_than_or_equal_to', 'is_empty', 'is_not_empty']);
+
+    click('database-filter-op-is_empty');
+
+    expect(env.controls.effective(env.saved.view).filters[0]).toMatchObject({ operator: 'is_empty', value: null });
+    expect(q('database-filter-value')).toBeNull();
+  });
+
+  // notion-motion.md Round 18 §2 (r18-filter-op-open.raw): the operator list is a 190-wide flyout under its button; the popover stays.
+  describe('filter operator flyout', () => {
+    const open = (): ReturnType<typeof setup> => {
+      const env = setup();
+
+      env.saved.view = { ...env.saved.view, filters: [{ id: 'f1', propertyId: 'title', operator: 'contains', value: 'a' }] };
+      env.controls.refresh();
+      click('database-filter-pill-f1');
+      click('database-filter-operator');
+
+      return env;
+    };
+
+    it('opens beside the rule popover, 190 wide, in the flyout layout, the current operator checked', () => {
+      open();
+      const flyout = q('database-filter-operator-picker');
+
+      expect(flyout?.style.width).toBe('190px');
+      expect(flyout?.getAttribute('data-blok-database-panel-page')).toBe('sort-flyout');
+      expect(q('database-filter-popover')?.contains(flyout)).toBe(false);
+      expect(q('database-filter-popover')?.querySelector('[data-blok-testid="database-filter-operator"]')).not.toBeNull();
+      expect(q('database-filter-op-contains')?.getAttribute('aria-checked')).toBe('true');
+    });
+
+    it('a pick writes the operator, closes the flyout and relabels the open popover', () => {
+      const { controls, saved } = open();
+
+      click('database-filter-op-starts_with');
+
+      expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'starts_with', value: 'a' });
+      expect(q('database-filter-operator-picker')).toBeNull();
+      expect(q('database-filter-popover')?.isConnected).toBe(true);
+      expect(text(q('database-filter-operator'))).toBe('Name tools.database.filteroperator.startswith');
+    });
+
+    it('Escape closes only the flyout', () => {
+      open();
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+      expect(q('database-filter-operator-picker')).toBeNull();
+      expect(q('database-filter-popover')).not.toBeNull();
+      expect(q('database-filter-operator')).toHaveFocus();
+    });
+  });
+
+  // notion-motion.md Round 18 §2 (r18-filter-more.raw): the rule ⋯ is a 240-wide flyout beside its button.
+  describe('filter rule ⋯ flyout', () => {
+    const open = (): ReturnType<typeof setup> => {
+      const env = setup();
+
+      env.saved.view = { ...env.saved.view, filters: [{ id: 'f1', propertyId: 'title', operator: 'contains', value: 'a' }] };
+      env.controls.refresh();
+      click('database-filter-pill-f1');
+      click('database-filter-more');
+
+      return env;
+    };
+
+    it('opens beside the rule popover, 240 wide, with Delete filter and Add to advanced filter', () => {
+      open();
+      const flyout = q('database-filter-more-menu');
+
+      expect(flyout?.style.width).toBe('240px');
+      expect(q('database-filter-popover')?.contains(flyout)).toBe(false);
+      expect(q('database-filter-popover')?.querySelector('[data-blok-testid="database-filter-operator"]')).not.toBeNull();
+      expect(flyout?.querySelector('[data-blok-testid="database-filter-delete"]')).not.toBeNull();
+      expect(flyout?.querySelector('[data-blok-testid="database-filter-to-advanced"]')).not.toBeNull();
+    });
+
+    it('Delete filter removes the rule and closes the flyout and the popover', () => {
+      const { controls, saved } = open();
+
+      click('database-filter-delete');
+
+      expect(controls.effective(saved.view).filters).toEqual([]);
+      expect(q('database-filter-more-menu')).toBeNull();
+      expect(q('database-filter-popover')).toBeNull();
+    });
+
+    it('Escape closes only the flyout', () => {
+      open();
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+      expect(q('database-filter-more-menu')).toBeNull();
+      expect(q('database-filter-popover')).not.toBeNull();
+    });
+  });
+
+  // notion-motion.md Round 13 (r13-filter-ops-rollup.png, -rollup.raw, -rollup-op.raw): "Rollup any ⌄ contains ⌄",
+  // the first menu Any / None / Every, the second the URL list, and a text field.
+  describe('rollup of the Name chip', () => {
+    const names = Object.assign(
+      { id: 'names', name: 'Names', type: 'relation', position: 'a3', rollup: { relationPropertyId: 'rel', targetPropertyId: 'title', function: 'show_original' } } as PropertyDefinition,
+      { [PAGE_LIST_ROLLUP]: true }
+    );
+
+    const open = (filter: { operator: string; value: unknown }): ReturnType<typeof setup> => {
+      const env = setup({ schema: () => [...schema, names] });
+
+      env.saved.view = { ...env.saved.view, filters: [{ id: 'f1', propertyId: 'names', ...filter } as DatabaseViewConfig['filters'][number]] };
+      env.controls.refresh();
+      click('database-filter-pill-f1');
+
+      return env;
+    };
+
+    it('heads the popover "Names any ⌄ contains ⌄", 220 wide, with the text field focused', () => {
+      open({ operator: 'any:contains', value: '' });
+
+      expect(q('database-filter-popover')?.style.width).toBe('220px');
+      expect(text(q('database-filter-quantifier'))).toBe('tools.database.filteroperator.any');
+      expect(text(q('database-filter-operator'))).toBe('tools.database.filteroperator.contains');
+      expect(text(q('database-filter-quantifier')?.parentElement)).toBe('Names tools.database.filteroperator.any tools.database.filteroperator.contains');
+      expect(q('database-filter-value')).toHaveFocus();
+    });
+
+    it('picks None from Any / None / Every and keeps the text operator', () => {
+      const { controls, saved } = open({ operator: 'any:contains', value: 'x' });
+
+      click('database-filter-quantifier');
+      const rows = [...document.querySelectorAll('[data-blok-testid^="database-filter-quantifier-"]')].map((el) => el.getAttribute('data-blok-testid'));
+
+      expect(rows).toEqual(['database-filter-quantifier-any', 'database-filter-quantifier-none', 'database-filter-quantifier-every']);
+      expect(q('database-filter-quantifier-any')?.getAttribute('aria-checked')).toBe('true');
+
+      click('database-filter-quantifier-none');
+
+      expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'none:contains', value: 'x' });
+    });
+
+    it('lists the text operators second and keeps the quantifier', () => {
+      const { controls, saved } = open({ operator: 'every:contains', value: 'x' });
+
+      click('database-filter-operator');
+      const ops = [...document.querySelectorAll('[data-blok-testid^="database-filter-op-"]')].map((el) => el.getAttribute('data-blok-testid')?.replace('database-filter-op-', ''));
+
+      expect(ops).toEqual(['equals', 'does_not_equal', 'contains', 'does_not_contain', 'starts_with', 'ends_with', 'is_empty', 'is_not_empty']);
+      expect(q('database-filter-op-contains')?.getAttribute('aria-checked')).toBe('true');
+
+      click('database-filter-op-starts_with');
+
+      expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'every:starts_with', value: 'x' });
+    });
+
+    // Saved before the text quantifiers: a bare "any" with related row ids keeps the row picker and its pill text.
+    it('keeps an older "any" + row ids filter on the related-row picker', () => {
+      const env = setup({ schema: () => [...schema, names], levers: { relatedRows: () => [{ id: 'r1', title: 'Beta' }] } });
+
+      env.saved.view = { ...env.saved.view, filters: [{ id: 'f1', propertyId: 'names', operator: 'any', value: ['r1'] }] };
+      env.controls.refresh();
+
+      expect(text(q('database-filter-pill-f1'))).toBe('Names: Beta');
+      expect(q('database-filter-pill-f1')?.hasAttribute('data-active')).toBe(true);
+
+      click('database-filter-pill-f1');
+
+      expect(q('database-filter-quantifier')).toBeNull();
+      expect(q('database-filter-value')).toBeNull();
+      expect(q('database-filter-related-r1')?.getAttribute('aria-checked')).toBe('true');
+
+      click('database-filter-operator');
+      const ops = [...document.querySelectorAll('[data-blok-testid^="database-filter-op-"]')].map((el) => el.getAttribute('data-blok-testid')?.replace('database-filter-op-', ''));
+
+      expect(ops).toEqual(['any', 'none', 'every', 'is_empty', 'is_not_empty']);
+    });
+
+    it('writes the typed text', () => {
+      const { controls, saved } = open({ operator: 'any:contains', value: '' });
+      const input = q('database-filter-value') as HTMLInputElement;
+
+      input.value = 'des';
+      input.dispatchEvent(new Event('input'));
+
+      expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'any:contains', value: 'des' });
+    });
+  });
+
   describe('date chip (Notion: operator list and relative-date editor)', () => {
     const date: PropertyDefinition = { id: 'due', name: 'Due', type: 'date', position: 'a3' };
 
@@ -506,11 +1465,108 @@ describe('DatabaseViewControls', () => {
       select.dispatchEvent(new Event('change'));
     };
 
+    // notion-motion.md Round 19 §2 (r19-date-is-before-bar.raw): "Date: Before Nov 10", in the editor's language.
+    it('prints a dated chip as a short date in the editor\'s language', () => {
+      const env = setup({ schema: () => [...schema, date], levers: { i18n: { t: (key: string, vars?: Record<string, string | number>) => (vars === undefined ? key : `${key}(${String(vars.value)})`), getLocale: () => 'de' } } });
+
+      env.saved.view = { ...env.saved.view, filters: [{ id: 'f1', propertyId: 'due', operator: 'before', value: '2026-11-10' }] };
+      env.controls.refresh();
+      const day = new Intl.DateTimeFormat('de', { month: 'short', day: 'numeric' }).format(new Date(2026, 10, 10));
+
+      expect(q('database-filter-pill-f1')?.getAttribute('aria-label')).toBe(`Due: tools.database.filterPillBefore(${day})`);
+    });
+
+    // notion-motion.md Round 19 §2 (r19-date-is.raw): after a relative rule, "is" leaves the day empty and the chip goes gray.
+    it('switches a relative date filter to "is" with no day', () => {
+      const { controls, saved } = open({ operator: 'relative_to_today', value: 'this:1:week' });
+
+      click('database-filter-operator');
+      click('database-filter-op-equals');
+
+      expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'equals', value: null });
+      expect(q('database-filter-pill-f1')?.hasAttribute('data-active')).toBe(false);
+    });
+
+    // notion-motion.md Round 19 §1 (r19-adv-date-is.raw): an advanced Date "is" rule starts on Today.
+    it('keeps Today when a rule editor switches a span to "is"', () => {
+      expect(operatorPick(date, 'equals', { operator: 'relative_to_today', value: 'this:1:week' })).toEqual({ operator: 'equals', value: 'today' });
+    });
+
+    // notion-motion.md Round 13 (r13-filter-date.png, r13-filter-ops-date.raw): "Start date ⌄ is relative to today ⌄",
+    // the first button choosing Start date / End date.
+    it('heads a date filter with the Start date / End date chooser in place of the name', () => {
+      const { controls, saved } = open({ operator: 'this_week', value: null });
+
+      expect(text(q('database-filter-side'))).toBe('tools.database.dateStart');
+      expect(text(q('database-filter-operator'))).toBe('tools.database.filteroperator.isrelativetotoday');
+      expect(text(q('database-filter-side')?.parentElement)).toBe('tools.database.dateStart tools.database.filteroperator.isrelativetotoday');
+
+      click('database-filter-side');
+      const rows = [...document.querySelectorAll('[data-blok-testid="database-filter-side-picker"] [data-blok-testid^="database-filter-side-"]')].map((el) => el.getAttribute('data-blok-testid'));
+
+      expect(rows).toEqual(['database-filter-side-start', 'database-filter-side-end']);
+      expect(text(q('database-filter-side-end'))).toBe('tools.database.dateEnd');
+      expect(q('database-filter-side-start')?.getAttribute('aria-checked')).toBe('true');
+
+      click('database-filter-side-end');
+
+      expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'end:this_week', value: null });
+      expect(text(q('database-filter-side'))).toBe('tools.database.dateEnd');
+    });
+
+    // notion-motion.md Round 22 §2 (r22-sd-simple-rows.raw): a 190-wide flyout under the button, not a new page.
+    // Blok keeps its ✓ on the current side.
+    it('opens Start date / End date as a flyout over the popover, and gives the focus back to its button', () => {
+      open({ operator: 'equals', value: null });
+
+      click('database-filter-side');
+
+      expect(q('database-filter-side-picker')?.style.width).toBe('190px');
+      expect(q('database-filter-popover')?.contains(q('database-filter-side-picker'))).toBe(false);
+      expect(q('database-filter-value')).not.toBeNull();
+      expect(q('database-panel-back')).toBeNull();
+
+      click('database-filter-side-end');
+
+      expect(q('database-filter-side-picker')).toBeNull();
+      expect(q('database-filter-side')).toHaveFocus();
+    });
+
+    it('keeps End date through the relative editor and an operator pick, and goes back to Start date', () => {
+      const { controls, saved } = open({ operator: 'end:this_week', value: null });
+
+      pick('database-filter-unit', 'month');
+      expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'end:relative_to_today', value: 'this:1:month' });
+
+      click('database-filter-operator');
+      expect(q('database-filter-op-relative_to_today')?.getAttribute('aria-checked')).toBe('true');
+      click('database-filter-op-before');
+      expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'end:before' });
+
+      click('database-filter-side');
+      click('database-filter-side-start');
+      expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'before' });
+    });
+
+    it('has no Start date / End date chooser on Created time', () => {
+      const env = setup({ schema: () => [...schema, { id: 'ct', name: 'Created', type: 'createdTime', position: 'a3' }] });
+
+      env.saved.view = { ...env.saved.view, filters: [{ id: 'f1', propertyId: 'ct', operator: 'equals', value: null }] };
+      env.controls.refresh();
+      click('database-filter-pill-f1');
+
+      expect(q('database-filter-side')).toBeNull();
+      expect(text(q('database-filter-operator'))).toBe('Created tools.database.filteroperator.is');
+    });
+
     it('edits "This week" with This / unit selects, a calendar and the moving-date note', () => {
       const { controls, saved, host } = open({ operator: 'this_week', value: null });
 
       expect((q('database-filter-direction') as HTMLSelectElement).value).toBe('this');
       expect((q('database-filter-unit') as HTMLSelectElement).value).toBe('week');
+      // notion-motion.md Round 13: Past / Next / This, then day / week / month / year.
+      expect([...(q('database-filter-direction') as HTMLSelectElement).options].map((o) => o.value)).toEqual(['past', 'next', 'this']);
+      expect([...(q('database-filter-unit') as HTMLSelectElement).options].map((o) => o.value)).toEqual(['day', 'week', 'month', 'year']);
       expect(q('database-filter-count')).toBeNull();
       expect(document.querySelectorAll('[data-blok-database-chip-day][data-in-window]')).toHaveLength(7);
       expect(text(document.querySelector('[data-blok-database-chip-note]'))).toBe('tools.database.filterUpdatesWithDate');
@@ -519,6 +1575,420 @@ describe('DatabaseViewControls', () => {
       pick('database-filter-unit', 'month');
 
       expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'relative_to_today', value: 'this:1:month' });
+    });
+
+    // notion-motion.md Round 20 §3 (r20-ct.raw, r20-ct-rel.raw, r20-ct-wk.raw, r20-ct-custom.raw, r20-ct-2025.raw):
+    // one "Select or type a date…" field with a presets ⌄, and the month calendar under it.
+    describe('"is" day field and calendar', () => {
+      const popover = (): HTMLElement => {
+        const el = q('database-filter-popover');
+
+        if (el === null) throw new Error('no popover');
+
+        return el;
+      };
+      const field = (): HTMLInputElement => q('database-filter-value') as HTMLInputElement;
+      const day = (iso: string): HTMLElement | null => popover().querySelector(`[data-blok-database-date-day="${iso}"]`);
+      const enter = (el: Element): void => {
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      };
+
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date(2026, 10, 13, 10, 0));
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      // notion-motion.md Round 23 §1 (r23-flipH-*.raw): the popover is never taller than half the window.
+      it('caps the popover at half the window', () => {
+        open({ operator: 'equals', value: null });
+
+        expect(popover().style.maxHeight).toBe('50vh');
+      });
+
+      it('opens on an empty, focused field with a presets ⌄, then this month\'s calendar with no Today button', () => {
+        open({ operator: 'equals', value: null });
+
+        expect(field().placeholder).toBe('tools.database.filterDatePlaceholder');
+        expect(field().value).toBe('');
+        expect(field()).toHaveFocus();
+        expect(q('database-filter-date-presets')?.getAttribute('aria-label')).toBe('tools.database.filterDatePresets');
+        expect(q('database-filter-date-clear')).toBeNull();
+        expect(q('database-filter-date-today')).toBeNull();
+        expect(text(popover().querySelector('[data-blok-database-date-month]'))).toBe('Nov 2026');
+        expect(popover().querySelector('[data-blok-database-date-today]')).toBeNull();
+        expect(day('2026-11-13')?.hasAttribute('data-today')).toBe(true);
+        expect(popover().querySelector('[data-blok-database-date-day][aria-selected="true"]')).toBeNull();
+        expect(document.querySelector('[data-blok-database-chip-note]')).toBeNull();
+      });
+
+      it('lists the presets then Custom date under the field, 240 wide, with the ✓ on Custom date while empty', () => {
+        open({ operator: 'equals', value: null });
+
+        click('database-filter-date-presets');
+        const rows = [...(q('database-filter-date-menu')?.querySelectorAll('[data-blok-testid^="database-filter-date-"]') ?? [])].map((el) => el.getAttribute('data-blok-testid'));
+
+        expect(rows).toEqual([
+          'database-filter-date-today', 'database-filter-date-tomorrow', 'database-filter-date-yesterday', 'database-filter-date-one_week_ago',
+          'database-filter-date-one_week_from_now', 'database-filter-date-one_month_ago', 'database-filter-date-one_month_from_now', 'database-filter-date-custom',
+        ]);
+        expect(q('database-filter-date-menu')?.style.width).toBe('240px');
+        expect(text(q('database-filter-date-custom'))).toBe('tools.database.filterDateCustom');
+        expect(q('database-filter-date-custom')?.getAttribute('aria-checked')).toBe('true');
+        expect(q('database-filter-date-today')?.getAttribute('aria-checked')).toBe('false');
+      });
+
+      it('writes a preset\'s name into the field, marks its day and notes that it follows the date', () => {
+        const { controls, saved } = open({ operator: 'equals', value: null });
+
+        click('database-filter-date-presets');
+        click('database-filter-date-one_week_ago');
+
+        expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'equals', value: 'one_week_ago' });
+        expect(q('database-filter-date-menu')).toBeNull();
+        expect(field().value).toBe('tools.database.filterDateOneWeekAgo');
+        expect(day('2026-11-06')?.getAttribute('aria-selected')).toBe('true');
+        expect(day('2026-11-13')?.hasAttribute('data-today')).toBe(true);
+        expect(text(document.querySelector('[data-blok-database-chip-note]'))).toBe('tools.database.filterUpdatesWithDate');
+        expect(q('database-filter-date-clear')).not.toBeNull();
+
+        click('database-filter-date-presets');
+        expect(q('database-filter-date-one_week_ago')?.getAttribute('aria-checked')).toBe('true');
+        expect(q('database-filter-date-custom')?.getAttribute('aria-checked')).toBe('false');
+      });
+
+      it('clears a preset from Custom date and focuses the empty field', () => {
+        const { controls, saved } = open({ operator: 'equals', value: 'one_week_ago' });
+
+        click('database-filter-date-presets');
+        click('database-filter-date-custom');
+
+        expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'equals', value: null });
+        expect(field()).toHaveFocus();
+        expect(field().value).toBe('');
+        expect(document.querySelector('[data-blok-database-chip-note]')).toBeNull();
+      });
+
+      it('commits a typed date on Enter, not while typing, and turns the calendar to its month', () => {
+        const { controls, saved } = open({ operator: 'equals', value: null });
+
+        field().value = 'March 5, 2025';
+        field().dispatchEvent(new Event('input', { bubbles: true }));
+        expect(controls.effective(saved.view).filters[0]).toMatchObject({ value: null });
+
+        enter(field());
+
+        expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'equals', value: '2025-03-05' });
+        expect(field().value).toBe('March 5, 2025');
+        expect(text(popover().querySelector('[data-blok-database-date-month]'))).toBe('Mar 2025');
+        expect(day('2025-03-05')?.getAttribute('aria-selected')).toBe('true');
+        expect(document.querySelector('[data-blok-database-chip-note]')).toBeNull();
+      });
+
+      // notion-motion.md Round 23 §1 (r23-y*-ds.raw): a day with no year stays this year up to 30 days back, else next year.
+      it.each([
+        ['march 5', '2027-03-05'],
+        ['November 20', '2026-11-20'],
+        ['Nov 13', '2026-11-13'],
+        ['Nov 12', '2026-11-12'],
+        ['Oct 14', '2026-10-14'],
+        ['Oct 13', '2027-10-13'],
+        ['Dec 25', '2026-12-25'],
+        ['3/5/25', '2025-03-05'],
+      ])('reads "%s" as %s', (typed, iso) => {
+        const { controls, saved } = open({ operator: 'equals', value: null });
+
+        field().value = typed;
+        enter(field());
+
+        expect(controls.effective(saved.view).filters[0]).toMatchObject({ value: iso });
+      });
+
+      // notion-motion.md Round 22 §1: Tab and a click inside the popover commit typed text, as Enter does.
+      describe('commits typed text without Enter', () => {
+        const settle = (): Promise<void> => new Promise((resolve) => {
+          setTimeout(resolve, 0);
+        });
+        const type = (text: string): void => {
+          field().value = text;
+          field().dispatchEvent(new Event('input', { bubbles: true }));
+        };
+        /** A pointer press on `el`: down, the field's blur, up, then the click, as a browser orders them. */
+        const press = (el: Element): void => {
+          el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+          field().blur();
+          el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+          (el as HTMLElement).click();
+        };
+
+        it('on Tab, and hands the focus to the new ⊗ (r22-d-t1-tab-ds.raw)', async () => {
+          const { controls, saved } = open({ operator: 'equals', value: null });
+
+          type('3/5/25');
+          q('database-filter-date-presets')?.focus();
+          await settle();
+
+          expect(controls.effective(saved.view).filters[0]).toMatchObject({ value: '2025-03-05' });
+          expect(field().value).toBe('March 5, 2025');
+          expect(q('database-filter-date-clear')).toHaveFocus();
+        });
+
+        it('on a click inside the popover (r22-d-t2-clickin-ds.raw)', async () => {
+          const { controls, saved } = open({ operator: 'equals', value: null });
+
+          type('2025-03-05');
+          press(popover().querySelector('[data-blok-database-date-month]') as Element);
+          await settle();
+
+          expect(controls.effective(saved.view).filters[0]).toMatchObject({ value: '2025-03-05' });
+        });
+
+        it('lets a clicked day win over the typed text', async () => {
+          const { controls, saved } = open({ operator: 'equals', value: null });
+
+          type('2025-03-05');
+          press(day('2026-11-20') as Element);
+          await settle();
+
+          expect(controls.effective(saved.view).filters[0]).toMatchObject({ value: '2026-11-20' });
+        });
+
+        it('commits before the ⌄ opens its menu, with the ✓ on Custom date', async () => {
+          const { controls, saved } = open({ operator: 'equals', value: null });
+
+          type('3/5/25');
+          press(q('database-filter-date-presets') as Element);
+          await settle();
+
+          expect(controls.effective(saved.view).filters[0]).toMatchObject({ value: '2025-03-05' });
+          expect(q('database-filter-date-custom')?.getAttribute('aria-checked')).toBe('true');
+        });
+
+        // notion-motion.md Round 23 §1 (r23-o1-*-ds.raw, r23-o2-*-ds.raw): a click outside commits a day and drops other text.
+        it('on a click outside the popover', async () => {
+          const { controls, saved } = open({ operator: 'equals', value: null });
+
+          type('3/5/25');
+          document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+          await settle();
+
+          expect(q('database-filter-popover')).toBeNull();
+          expect(controls.effective(saved.view).filters[0]).toMatchObject({ value: '2025-03-05' });
+        });
+
+        it('keeps the old day when a click outside finds no date', async () => {
+          const { controls, saved } = open({ operator: 'equals', value: '2025-03-05' });
+
+          type('March 5, 2025zzz');
+          document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+          await settle();
+
+          expect(q('database-filter-popover')).toBeNull();
+          expect(controls.effective(saved.view).filters[0]).toMatchObject({ value: '2025-03-05' });
+          expect(document.querySelector('[data-blok-database-chip-date-error]')).toBeNull();
+        });
+
+        it('throws the text away on Escape (r22-d-t3-esc-ds.raw)', async () => {
+          const { controls } = open({ operator: 'equals', value: null });
+
+          const input = field();
+
+          type('march 5');
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+          expect(q('database-filter-popover')).toBeNull();
+          // A browser blurs the field as the popover closes; jsdom does not.
+          input.dispatchEvent(new FocusEvent('blur'));
+          await settle();
+
+          expect(controls.hasPersonalEdits('v1')).toBe(false);
+        });
+      });
+
+      it('keeps a preset when Enter finds its own name in the field', () => {
+        const { controls, saved } = open({ operator: 'before', value: 'one_week_ago' });
+
+        enter(field());
+
+        expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'before', value: 'one_week_ago' });
+        expect(field().hasAttribute('aria-invalid')).toBe(false);
+      });
+
+      it('marks text that is no date and writes nothing', () => {
+        const { controls, saved } = open({ operator: 'equals', value: null });
+
+        field().value = 'soon';
+        enter(field());
+
+        expect(field().getAttribute('aria-invalid')).toBe('true');
+        expect(controls.effective(saved.view).filters[0]).toMatchObject({ value: null });
+      });
+
+      // notion-motion.md Round 22 §1 (r22-d-t5-*-ds.raw, r22-d-t5-tip.raw): "Invalid date" shows outside the popover,
+      // left of the field, and the text stays.
+      describe('"Invalid date"', () => {
+        const message = (): HTMLElement | null => document.querySelector('[data-blok-database-chip-date-error]');
+
+        it('shows on a failed Enter, outside the popover, and names the field\'s error', () => {
+          open({ operator: 'equals', value: null });
+
+          field().value = 'zzz';
+          enter(field());
+
+          expect(message()?.textContent).toBe('tools.database.filterInvalidDate');
+          expect(message()?.getAttribute('role')).toBe('alert');
+          expect(popover().contains(message())).toBe(false);
+          expect(field().getAttribute('aria-describedby')).toBe(message()?.id);
+          expect(field().value).toBe('zzz');
+        });
+
+        it('shows on a failed Tab, and goes once the text changes', async () => {
+          open({ operator: 'equals', value: null });
+
+          field().value = 'zzz';
+          field().blur();
+          await new Promise((resolve) => {
+            setTimeout(resolve, 0);
+          });
+          expect(message()).not.toBeNull();
+
+          field().value = 'zz';
+          field().dispatchEvent(new Event('input', { bubbles: true }));
+
+          expect(message()).toBeNull();
+          expect(field().hasAttribute('aria-describedby')).toBe(false);
+        });
+
+        it('goes when the popover closes', () => {
+          open({ operator: 'equals', value: null });
+
+          field().value = 'zzz';
+          enter(field());
+          field().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+
+          expect(q('database-filter-popover')).toBeNull();
+          expect(message()).toBeNull();
+        });
+
+        // notion-motion.md Round 23 §1 (r23-tip-360.raw, r23-tip-320.raw): with no room on the left it goes under the
+        // field box, centred on it, its top 4 above the box's bottom.
+        it.each([
+          [100, 'left'],
+          [60, 'below'],
+        ])('with the field box at x %s, sits %s of it', (left, side) => {
+          open({ operator: 'equals', value: null });
+          const box = popover().querySelector('[data-blok-database-chip-date-field]') as HTMLElement;
+
+          vi.spyOn(box, 'getBoundingClientRect').mockReturnValue(new DOMRect(left, 101.5, 236, 28));
+          vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+            return this === box ? new DOMRect(left, 101.5, 236, 28) : new DOMRect(0, 0, 80.7, 26.8);
+          });
+          field().value = 'zzz';
+          enter(field());
+
+          const tip = message();
+
+          expect(tip?.style.left).toBe(side === 'left' ? `${left - 80.7}px` : `${left + 118 - 80.7 / 2}px`);
+          expect(tip?.style.top).toBe(side === 'left' ? `${101.5 + (28 - 26.8) / 2}px` : `${101.5 + 28 - 4}px`);
+        });
+
+        it('does not show while typing', () => {
+          open({ operator: 'equals', value: null });
+
+          field().value = 'qq';
+          field().dispatchEvent(new Event('input', { bubbles: true }));
+
+          expect(message()).toBeNull();
+        });
+      });
+
+      it('picks a clicked day, and steps months without writing', () => {
+        const { controls, saved } = open({ operator: 'on_or_after', value: null });
+
+        popover().querySelector<HTMLButtonElement>('[data-blok-database-date-next]')?.click();
+        expect(text(popover().querySelector('[data-blok-database-date-month]'))).toBe('Dec 2026');
+        expect(controls.hasPersonalEdits('v1')).toBe(false);
+
+        day('2026-12-24')?.click();
+
+        expect(controls.effective(saved.view).filters[0]).toMatchObject({ operator: 'on_or_after', value: '2026-12-24' });
+        expect(field().value).toBe('December 24, 2026');
+        expect(text(popover().querySelector('[data-blok-database-date-month]'))).toBe('Dec 2026');
+      });
+
+      it('keeps the focus on a day picked with Enter after the page redraws', () => {
+        const { controls, saved } = open({ operator: 'equals', value: '2026-11-20' });
+
+        day('2026-11-20')?.focus();
+        day('2026-11-20')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+        expect(day('2026-11-21')).toHaveFocus();
+        day('2026-11-21')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+        expect(day('2026-11-28')).toHaveFocus();
+        day('2026-11-28')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+        expect(day('2026-11-21')).toHaveFocus();
+
+        enter(day('2026-11-21') as HTMLElement);
+
+        expect(controls.effective(saved.view).filters[0]).toMatchObject({ value: '2026-11-21' });
+        expect(day('2026-11-21')).toHaveFocus();
+      });
+
+      it('clears the value from ⊗ and focuses the field', () => {
+        const { controls, saved } = open({ operator: 'equals', value: '2025-03-05' });
+
+        expect(field().value).toBe('March 5, 2025');
+        expect(q('database-filter-date-clear')?.getAttribute('aria-label')).toBe('tools.database.dateClear');
+
+        click('database-filter-date-clear');
+
+        expect(controls.effective(saved.view).filters[0]).toMatchObject({ value: null });
+        expect(field()).toHaveFocus();
+      });
+
+      // Round 20 §3: after "is on or after" was picked, focus went to the date input, not the operator button.
+      it('focuses the date field after an operator pick that shows it', () => {
+        open({ operator: 'relative_to_today', value: 'this:1:week' });
+
+        click('database-filter-operator');
+        click('database-filter-op-on_or_after');
+
+        expect(field()).toHaveFocus();
+      });
+
+      // notion-motion.md Round 22 §1 (r22-d-t1-custom-ds.raw): Custom date clears a typed day too; the focus goes to the ⌄.
+      it('clears a typed day when Custom date is picked and focuses the ⌄', () => {
+        const { controls, saved } = open({ operator: 'equals', value: '2025-03-05' });
+
+        click('database-filter-date-presets');
+        click('database-filter-date-custom');
+
+        expect(controls.effective(saved.view).filters[0]).toMatchObject({ value: null });
+        expect(field().value).toBe('');
+        expect(text(popover().querySelector('[data-blok-database-date-month]'))).toBe('Nov 2026');
+        expect(q('database-filter-date-presets')).toHaveFocus();
+      });
+
+      it('writes nothing and marks nothing on Enter in an empty field', () => {
+        const { controls } = open({ operator: 'equals', value: null });
+
+        enter(field());
+
+        expect(field().hasAttribute('aria-invalid')).toBe(false);
+        expect(controls.hasPersonalEdits('v1')).toBe(false);
+      });
+
+      it('gives the focus back to the ⌄ when Escape closes its menu', () => {
+        open({ operator: 'equals', value: null });
+
+        click('database-filter-date-presets');
+        q('database-filter-date-today')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+
+        expect(q('database-filter-date-menu')).toBeNull();
+        expect(q('database-filter-popover')).not.toBeNull();
+        expect(q('database-filter-date-presets')).toHaveFocus();
+      });
     });
 
     it('opens an old "past month" filter as Past 1 month and writes nothing until a change', () => {
@@ -534,8 +2004,8 @@ describe('DatabaseViewControls', () => {
     it('opens an old "is not" filter with its name and value, and lists Notion\'s operators', () => {
       const { controls } = open({ operator: 'does_not_equal', value: 'today' });
 
-      expect(text(q('database-filter-operator'))).toBe('Due tools.database.filteroperator.isnot');
-      expect(q('database-filter-date-today')?.getAttribute('aria-checked')).toBe('true');
+      expect(text(q('database-filter-operator'))).toBe('tools.database.filteroperator.isnot');
+      expect((q('database-filter-value') as HTMLInputElement).value).toBe('tools.database.filterDateToday');
       expect(controls.hasPersonalEdits('v1')).toBe(false);
 
       click('database-filter-operator');
@@ -606,12 +2076,224 @@ describe('DatabaseViewControls', () => {
       expect(controls.effective(saved.view).sorts[0]).toMatchObject({ propertyId: 'num', direction: 'desc' });
     });
 
-    it('opens the sort panel from the Sort button while a sort exists', () => {
+    // notion-motion.md Round 17 §5: the rule's pickers are flyouts under their button; the rule panel stays.
+    it('opens the direction list as a 180-wide flyout over the rule panel, the current direction checked', () => {
+      withSort();
+      click('database-sort-pill');
+      click('database-sort-direction-s1');
+      const flyout = q('database-sort-direction-picker');
+
+      expect(flyout?.style.width).toBe('180px');
+      expect(flyout?.getAttribute('data-blok-database-panel-page')).toBe('sort-flyout');
+      expect(q('database-sort-panel')?.contains(flyout)).toBe(false);
+      expect(q('database-sort-panel')?.querySelector('[data-blok-testid="database-sort-row-s1"]')).not.toBeNull();
+      expect(q('database-sort-direction-asc')?.getAttribute('aria-checked')).toBe('true');
+      expect(q('database-sort-direction-desc')?.getAttribute('aria-checked')).toBe('false');
+    });
+
+    it('closes the direction flyout on a pick and keeps the rule panel', () => {
+      withSort();
+      click('database-sort-pill');
+      click('database-sort-direction-s1');
+      click('database-sort-direction-desc');
+
+      expect(q('database-sort-direction-picker')).toBeNull();
+      expect(q('database-sort-panel')?.isConnected).toBe(true);
+    });
+
+    it('opens the property list as a 280-wide flyout over the rule panel, and a pick changes the rule', () => {
+      const { controls, saved } = withSort();
+
+      click('database-sort-pill');
+      click('database-sort-property-s1');
+      const flyout = q('database-sort-property-picker');
+
+      expect(flyout?.style.width).toBe('280px');
+      expect(q('database-sort-panel')?.contains(flyout)).toBe(false);
+      expect(q('database-sort-panel')?.querySelector('[data-blok-testid="database-sort-row-s1"]')).not.toBeNull();
+
+      click('database-pick-property-title');
+
+      expect(controls.effective(saved.view).sorts[0]).toMatchObject({ propertyId: 'title' });
+      expect(q('database-sort-property-picker')).toBeNull();
+      expect(q('database-sort-panel')?.isConnected).toBe(true);
+    });
+
+    it('Escape closes only the direction flyout and puts focus back on its button', () => {
+      withSort();
+      click('database-sort-pill');
+      click('database-sort-direction-s1');
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+      expect(q('database-sort-direction-picker')).toBeNull();
+      expect(q('database-sort-panel')).not.toBeNull();
+      expect(q('database-sort-direction-s1')).toHaveFocus();
+    });
+
+    it('puts focus back on the rule\'s button after a pick, with the new label', () => {
+      withSort();
+      click('database-sort-pill');
+      click('database-sort-direction-s1');
+      click('database-sort-direction-desc');
+
+      expect(q('database-sort-direction-s1')).toHaveFocus();
+      expect(text(q('database-sort-direction-s1'))).toContain('tools.database.sortHighLow');
+    });
+
+    it('closes a rule flyout when the sort panel closes another way', () => {
+      const { controls } = withSort();
+
+      click('database-sort-pill');
+      click('database-sort-direction-s1');
+      controls.destroy();
+
+      expect(q('database-sort-direction-picker')).toBeNull();
+    });
+
+    // notion-motion.md Round 17 §5: "Add sort" goes away once every property is sorted.
+    it('hides "Add sort" when every sortable property is sorted', () => {
+      const env = setup();
+
+      env.saved.view = { ...env.saved.view, sorts: [{ id: 's1', propertyId: 'num', direction: 'asc' }, { id: 's2', propertyId: 'title', direction: 'asc' }] };
+      env.controls.refresh();
+      click('database-sort-pill');
+
+      expect(q('database-sort-panel')).not.toBeNull();
+      expect(q('database-sort-add')).toBeNull();
+    });
+
+    // notion-motion.md Round 46 §C.5: the toolbar's filter and sort pickers open 4 under the button (303.2 under 299.2).
+    it.each([
+      ['database-toolbar-filter', 'database-filter-picker'],
+      ['database-toolbar-sort', 'database-sort-picker'],
+    ])('%s opens its picker 4px under the button', (button, picker) => {
+      setup();
+      const anchor = q(button);
+
+      if (anchor === null) throw new Error('no button');
+      anchor.getBoundingClientRect = () => new DOMRect(1100, 275, 28, 24);
+      click(button);
+
+      expect(q(picker)?.closest<HTMLElement>('[data-blok-popover]')?.style.top).toBe('303px');
+    });
+
+    // notion-motion.md Round 47 §D: the bar's "+ Filter" chip opens its picker 4 under it, as the toolbar button does.
+    it('opens the "+ Filter" chip\'s picker 4px under the chip', () => {
+      withSort();
+      const add = q('database-filter-bar-add');
+
+      if (add === null) throw new Error('no chip');
+      add.getBoundingClientRect = () => new DOMRect(700, 301, 60, 24);
+      click('database-filter-bar-add');
+
+      expect(q('database-filter-picker')?.closest<HTMLElement>('[data-blok-popover]')?.style.top).toBe('329px');
+    });
+
+    it('opens 4px under the chip', () => {
+      withSort();
+      const chip = q('database-sort-pill');
+
+      if (chip === null) throw new Error('no chip');
+      chip.getBoundingClientRect = () => new DOMRect(539, 277, 82, 24);
+      click('database-sort-pill');
+
+      expect(q('database-sort-panel')?.closest<HTMLElement>('[data-blok-popover]')?.style.top).toBe('305px');
+    });
+
+    // notion-motion.md Rounds 10-11 "Add sort picker": a separate picker under the row, its search focused,
+    // the already-sorted property left out, the sort panel still open under it.
+    it('opens "Add sort" as a separate picker over the open sort panel, search focused', () => {
+      withSort();
+      click('database-sort-pill');
+      click('database-sort-add');
+      const picker = q('database-sort-add-picker');
+
+      expect(picker).not.toBeNull();
+      expect(q('database-sort-panel')?.isConnected).toBe(true);
+      expect(q('database-sort-panel')?.contains(picker)).toBe(false);
+      expect(q('database-sort-add')).not.toBeNull();
+      expect(q('database-sort-add-picker-search')).toHaveFocus();
+      expect(picker?.style.width).toBe('280px');
+      expect(picker?.querySelector('[data-blok-testid="database-pick-property-num"]')).toBeNull();
+      expect(picker?.querySelector('[data-blok-testid="database-pick-property-title"]')).not.toBeNull();
+    });
+
+    it('adds the picked property, closes only the picker and redraws the panel with the new rule', () => {
+      const { controls, saved } = withSort();
+
+      click('database-sort-pill');
+      click('database-sort-add');
+      click('database-pick-property-title');
+
+      expect(controls.effective(saved.view).sorts.map((sort) => sort.propertyId)).toEqual(['num', 'title']);
+      expect(q('database-sort-add-picker')).toBeNull();
+      expect(q('database-sort-panel')?.querySelectorAll('[data-blok-database-sort-row]')).toHaveLength(2);
+    });
+
+    it('moves focus to "Delete sort" when the last unsorted property is added', () => {
+      withSort();
+      click('database-sort-pill');
+      click('database-sort-add');
+      click('database-pick-property-title');
+
+      expect(q('database-sort-add')).toBeNull();
+      expect(q('database-sort-delete-all')).toHaveFocus();
+    });
+
+    it('Escape closes only the picker and puts focus back on "Add sort"', () => {
+      withSort();
+      click('database-sort-pill');
+      click('database-sort-add');
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+      expect(q('database-sort-add-picker')).toBeNull();
+      expect(q('database-sort-panel')).not.toBeNull();
+      expect(q('database-sort-add')).toHaveFocus();
+    });
+
+    it('closes the picker when the sort panel closes another way', () => {
+      const { controls } = withSort();
+
+      click('database-sort-pill');
+      click('database-sort-add');
+      controls.destroy();
+
+      expect(q('database-sort-add-picker')).toBeNull();
+    });
+
+    it('names the panel page "sort" for its measured rule spacing', () => {
+      withSort();
+      click('database-sort-pill');
+
+      expect(q('database-sort-panel')?.getAttribute('data-blok-database-panel-page')).toBe('sort');
+    });
+
+    it('still lists every property when an existing sort changes its property', () => {
+      withSort();
+      click('database-sort-pill');
+      click('database-sort-property-s1');
+
+      expect(q('database-pick-property-num')).not.toBeNull();
+    });
+
+    // notion-motion.md Round 17 §5: with a sort, ⇅ first hides the bar, then shows it and opens the panel.
+    it('hides the filter bar on the first Sort button click, with no panel', () => {
       withSort();
       click('database-toolbar-sort');
 
-      expect(q('database-sort-panel')).not.toBeNull();
+      expect(q('database-sort-panel')).toBeNull();
+      expect(q('database-sort-pill')).toBeNull();
     });
+
+    it('shows the bar and opens the sort panel under the chip on the next click', () => {
+      withSort();
+      click('database-toolbar-sort');
+      click('database-toolbar-sort');
+
+      expect(q('database-sort-panel')).not.toBeNull();
+      expect(q('database-sort-pill')?.hasAttribute('data-popover-open')).toBe(true);
+    });
+
 
     it('deletes every sort and closes', () => {
       const { controls, saved } = withSort();
@@ -648,10 +2330,21 @@ describe('DatabaseViewControls', () => {
       expect(controls.effective(saved.view).sorts).toEqual([expect.objectContaining({ propertyId: 'alpha', direction: 'asc' })]);
       expect(q('database-sort-picker')).toBeNull();
     });
+
+    // notion-motion.md Round 47 §D: picking a property opens the new sort's panel under its chip.
+    it('opens the new sort\'s panel under its chip after a pick', () => {
+      setup({ schema: () => many });
+
+      click('database-toolbar-sort');
+      click('database-pick-property-alpha');
+
+      expect(q('database-sort-panel')).not.toBeNull();
+      expect(q('database-sort-pill')?.hasAttribute('data-popover-open')).toBe(true);
+    });
   });
   describe('search box (Notion: the magnifier stays, a clear ×)', () => {
     it('keeps the magnifier in front of the input', () => {
-      setup({ rows: 3 });
+      setup();
       click('database-toolbar-search');
       const magnifier = q('database-toolbar-search');
 
@@ -660,7 +2353,7 @@ describe('DatabaseViewControls', () => {
     });
 
     it('shows a clear × once there is a query, and the × empties the search and keeps the focus', () => {
-      const { controls, host } = setup({ rows: 3 });
+      const { controls, host } = setup();
 
       click('database-toolbar-search');
       const input = q('database-search-input') as HTMLInputElement;
@@ -682,7 +2375,7 @@ describe('DatabaseViewControls', () => {
     });
 
     it('takes the magnifier and the × away on Escape', () => {
-      setup({ rows: 3 });
+      setup();
       click('database-toolbar-search');
       (q('database-search-input') as HTMLInputElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 
@@ -691,6 +2384,193 @@ describe('DatabaseViewControls', () => {
       expect(q('database-toolbar-search')?.hidden).toBe(false);
     });
   });
+  // notion-motion.md Round 4 re-checks: while search is open Notion shows "»" ("Minimize") left of the icons.
+  // It closes the search and minimizes the whole toolbar, saved with the view; « ("Expand") brings it back.
+  describe('» minimizes the toolbar (Notion "Minimize")', () => {
+    it('shows » left of the icons while the search is open, and » closes the search and minimizes the toolbar', () => {
+      const { controls, host } = setup();
+
+      expect(q('database-toolbar-minimize')?.hidden).toBe(true);
+      click('database-toolbar-search');
+      const minimize = q('database-toolbar-minimize');
+
+      expect(minimize?.hidden).toBe(false);
+      expect(minimize?.getAttribute('aria-label')).toBe('tools.database.filterBarMinimize');
+      expect(q('database-toolbar-no-date')?.nextElementSibling).toBe(q('database-toolbar-filter'));
+
+      click('database-toolbar-minimize');
+
+      expect(host.updateView).toHaveBeenCalledWith({ toolbarMinimized: true });
+      expect(q('database-search-input')).toBeNull();
+      expect(q('database-toolbar-minimize')?.hidden).toBe(true);
+      expect(controls.toolbar.hasAttribute('data-minimized')).toBe(true);
+      expect(controls.filterBar.hidden).toBe(true);
+    });
+
+    // notion-motion.md Round 41 Part B (r41-n-empty-form.png): a form view's toolbar has no ».
+    it('shows no » on a form view', () => {
+      const form = { id: 'v1', name: 'Form builder', type: 'form', position: 'a0', sorts: [], filters: [], visibleProperties: [] } as DatabaseViewConfig;
+
+      setup({ levers: { savedView: () => form } });
+
+      expect(q('database-toolbar-minimize')?.hidden).toBe(true);
+    });
+
+    it('takes » away when a sorted view switches to a form', () => {
+      const { controls, saved } = setup();
+
+      saved.view = { ...saved.view, sorts: [{ propertyId: 'title', direction: 'asc' }] };
+      controls.refresh();
+      expect(q('database-toolbar-minimize')?.hidden).toBe(false);
+
+      saved.view = { ...saved.view, type: 'form' };
+      controls.refresh();
+
+      expect(q('database-toolbar-minimize')?.hidden).toBe(true);
+    });
+
+    it('opens a view saved minimized with only « and settings', () => {
+      const { controls, saved } = setup();
+
+      saved.view = { ...saved.view, toolbarMinimized: true };
+      controls.refresh();
+      const expand = q('database-toolbar-expand');
+
+      expect(controls.toolbar.hasAttribute('data-minimized')).toBe(true);
+      expect(expand?.hidden).toBe(false);
+      expect(expand?.getAttribute('aria-label')).toBe('tools.toggle.ariaLabelExpand');
+      expect(expand?.querySelector('svg')).not.toBeNull();
+      expect(q('database-toolbar-minimize')?.hidden).toBe(true);
+    });
+
+    it('« brings every control back, and fades them in once', () => {
+      vi.useFakeTimers();
+      try {
+        const { controls, host, saved } = setup();
+
+        saved.view = { ...saved.view, toolbarMinimized: true };
+        controls.refresh();
+        // The host redraws inside updateView and may lay out: the fade mark must already be on.
+        const markedAtUpdate: boolean[] = [];
+
+        vi.mocked(host.updateView).mockImplementation((changes) => {
+          markedAtUpdate.push(controls.toolbar.hasAttribute('data-expanding'));
+          saved.view = { ...saved.view, ...changes };
+        });
+        click('database-toolbar-expand');
+
+        expect(markedAtUpdate).toEqual([true]);
+        expect(host.updateView).toHaveBeenCalledWith({ toolbarMinimized: false });
+        expect(controls.toolbar.hasAttribute('data-minimized')).toBe(false);
+        expect(q('database-toolbar-expand')?.hidden).toBe(true);
+        expect(controls.toolbar.hasAttribute('data-expanding')).toBe(true);
+        vi.advanceTimersByTime(300);
+        expect(controls.toolbar.hasAttribute('data-expanding')).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('shows « with no » while minimized, even with the search open', () => {
+      const { controls, saved } = setup();
+
+      click('database-toolbar-search');
+      saved.view = { ...saved.view, toolbarMinimized: true };
+      controls.refresh();
+
+      expect(q('database-toolbar-minimize')?.hidden).toBe(true);
+      expect(q('database-toolbar-expand')?.hidden).toBe(false);
+    });
+
+    // A blur on an empty query closes the search, so the press must not take the focus first.
+    it('keeps the focus in the field on press, and gives it to settings, which stays, after', () => {
+      setup();
+      click('database-toolbar-search');
+      const press = new MouseEvent('pointerdown', { bubbles: true, cancelable: true });
+
+      q('database-toolbar-minimize')?.dispatchEvent(press);
+      expect(press.defaultPrevented).toBe(true);
+
+      click('database-toolbar-minimize');
+      expect(q('database-toolbar-settings')).toHaveFocus();
+    });
+
+    it('hints its name on hover, after the delay', () => {
+      destroyTooltip();
+      vi.useFakeTimers();
+      try {
+        setup();
+        click('database-toolbar-search');
+        hover(q('database-toolbar-minimize'));
+        vi.advanceTimersByTime(HINT_DELAY - 1);
+        expect(shownHint()).toBeNull();
+        vi.advanceTimersByTime(1);
+        expect(shownHint()?.text).toBe('tools.database.filterBarMinimize');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Notion: the field goes width 150→0 and opacity 1→0 over 200ms ease, then leaves.
+    it('keeps the field while it shrinks away, and drops it when the shrink ends', () => {
+      setup();
+      click('database-toolbar-search');
+      const input = q('database-search-input') as HTMLInputElement;
+
+      input.style.transitionDuration = '0.2s';
+      click('database-toolbar-minimize');
+
+      expect(input.isConnected).toBe(true);
+      expect(input.hasAttribute('data-closing')).toBe(true);
+      expect(q('database-toolbar-minimize')?.hidden).toBe(true);
+      expect(q('database-search-clear')).toBeNull();
+
+      input.dispatchEvent(new Event('transitionend'));
+
+      expect(input.isConnected).toBe(false);
+      expect(input.hasAttribute('data-closing')).toBe(false);
+    });
+
+    it('drops the field after the shrink time even when no transitionend comes', () => {
+      vi.useFakeTimers();
+      try {
+        setup();
+        click('database-toolbar-search');
+        const input = q('database-search-input') as HTMLInputElement;
+
+        input.style.transitionDuration = '0.2s';
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        expect(input.isConnected).toBe(true);
+        vi.advanceTimersByTime(300);
+        expect(input.isConnected).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('opens again over a field that is still shrinking', () => {
+      vi.useFakeTimers();
+      try {
+        setup();
+        click('database-toolbar-search');
+        const input = q('database-search-input') as HTMLInputElement;
+
+        input.style.transitionDuration = '0.2s';
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        click('database-toolbar-search');
+        vi.advanceTimersByTime(300);
+        input.dispatchEvent(new Event('transitionend'));
+
+        expect(input.isConnected).toBe(true);
+        expect(input.hasAttribute('data-closing')).toBe(false);
+        expect(input).toHaveFocus();
+        expect(q('database-toolbar-minimize')?.hidden).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe('Escape gives focus back to the button that opened the popover (findings K03)', () => {
     const escape = (): void => {
       (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -733,7 +2613,7 @@ describe('DatabaseViewControls', () => {
     });
 
     it('Search', () => {
-      setup({ rows: 3 });
+      setup();
       click('database-toolbar-search');
       escape();
 
@@ -771,7 +2651,7 @@ describe('DatabaseViewControls', () => {
     });
 
     it('paints every match in the view with the Highlight API and leaves the DOM as it was', () => {
-      const { controls } = setup({ rows: 3 });
+      const { controls } = setup();
       const root = document.createElement('div');
       const body = document.createElement('div');
 
@@ -795,6 +2675,26 @@ describe('DatabaseViewControls', () => {
       click('database-search-clear');
 
       expect(registry.has('blok-database-search-match')).toBe(false);
+    });
+
+    it('never tints the OPEN pill inside a timeline panel title', () => {
+      const { controls } = setup();
+      const root = document.createElement('div');
+      const body = document.createElement('div');
+
+      body.innerHTML = '<div data-blok-database-timeline-table-title><span>Open day</span>'
+        + '<button data-blok-database-table-open><span></span><span>Open</span></button></div>';
+      root.append(controls.toolbar, controls.filterBar, body);
+      document.body.append(root);
+
+      click('database-toolbar-search');
+      const input = q('database-search-input') as HTMLInputElement;
+
+      input.value = 'open';
+      input.dispatchEvent(new Event('input'));
+
+      expect(registry.get('blok-database-search-match')?.ranges.map((range) => range.toString())).toEqual(['Open']);
+      expect(registry.get('blok-database-search-match')?.ranges[0]?.startContainer.parentElement?.closest('[data-blok-database-table-open]')).toBeNull();
     });
   });
   describe('Filter toggles the chip bar; » minimizes it (Notion)', () => {
@@ -858,6 +2758,32 @@ describe('DatabaseViewControls', () => {
 
       expect(controls.filterBar.hidden).toBe(false);
       expect(q('database-sort-pill')).not.toBeNull();
+    });
+
+    // notion-motion.md Round 10 "Add filter picker": the already-filtered property is left out.
+    it('leaves the filtered property out of "+ Filter"', () => {
+      withFilter();
+      click('database-filter-bar-add');
+
+      expect(q('database-filter-picker')).not.toBeNull();
+      expect(q('database-pick-property-num')).toBeNull();
+      expect(q('database-pick-property-title')).not.toBeNull();
+    });
+
+    // notion-motion.md Round 18 §2 (r18-bar-addfilter-allused.raw): an empty list says "No results".
+    it('says "No results" in "+ Filter" once every property is filtered', () => {
+      const { controls, saved } = setup();
+
+      saved.view = {
+        ...saved.view,
+        filters: [{ id: 'f1', propertyId: 'num', operator: 'greater_than', value: 5 }, { id: 'f2', propertyId: 'title', operator: 'contains', value: 'a' }],
+      };
+      controls.refresh();
+      click('database-filter-bar-add');
+      const note = q('database-filter-picker')?.querySelector('[data-blok-database-panel-note]');
+
+      expect(note?.textContent).toBe('find.noResults');
+      expect(q('database-filter-picker-advanced')).not.toBeNull();
     });
 
     it('keeps the bar, with only "+ Filter", after the last rule is deleted', () => {

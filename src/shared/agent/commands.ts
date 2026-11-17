@@ -2,6 +2,7 @@ import type { CoreCommandName } from '../../../types/agent';
 import type { HostService } from '../../../types/tools/tool-description';
 import { EMBED_SEGMENT, RICH_TEXT_MARKS, TEXT_SEGMENT } from '../tool-descriptions/rich-text';
 import type { JsonSchema } from './types';
+import { COVER_GALLERY } from '../page-cover';
 
 export interface CoreCommandSpec {
   argsSchema: JsonSchema;
@@ -71,6 +72,7 @@ const READ_ARGS: Record<string, JsonSchema> = {
   rootId: parentId, depth: { type: 'integer', minimum: 0 }, ids: { type: 'array', items: id }, detail: { enum: ['outline', 'full'] },
   limit: { type: 'integer', minimum: 1, maximum: 1000 }, cursor: { type: 'string' }, textLimit: { type: 'integer', minimum: 0 },
 };
+const COVER_POSITION: JsonSchema = { type: 'integer', minimum: 0, maximum: 100 };
 const version: JsonSchema = { type: 'string', minLength: 1, description: 'A version from history.versions.' };
 const from: JsonSchema = { ...version, description: 'The older version, from history.versions.' };
 
@@ -88,6 +90,15 @@ export const COMMANDS: Record<CoreCommandName, CoreCommandSpec> = {
       obj({ type: { const: 'image' }, url: { type: 'string' } }, ['type', 'url']),
     ],
   } }, ['icon'])),
+  'doc.setCover': write("Set this document's cover, the wide image above the title. null removes it. "
+    + `A gallery cover is one of Blok's built-in fills: ${COVER_GALLERY.join(', ')}. `
+    + 'position is the image\'s vertical position in percent, 0 (top) to 100 (bottom), default 50.', obj({ cover: {
+    oneOf: [
+      { type: 'null' },
+      obj({ type: { const: 'image' }, url: { type: 'string' }, position: COVER_POSITION }, ['type', 'url']),
+      obj({ type: { const: 'gallery' }, id: { enum: [...COVER_GALLERY] }, position: COVER_POSITION }, ['type', 'id']),
+    ],
+  } }, ['cover'])),
   'block.insert': write('Insert a block, with optional children.', {
     ...insertSpec,
     properties: {
@@ -159,7 +170,16 @@ export const COMMANDS: Record<CoreCommandName, CoreCommandSpec> = {
     ...write('Restore a saved version, as the version history\'s Restore does: the document becomes that version, title and icon too.', obj({ version }, ['version']),
       'Only when the user asks for it. Sub-pages keep their own history. No other version is deleted. history.undo cannot undo a restore: '
       + 'to go back, restore the result\'s previous version. A version that removes, unlocks or reshapes a database a person locked asks '
-      + 'the person first; a no, or no way to ask, fails with APPROVAL_REQUIRED. Read the document again before your next write.'),
+      + 'the person first; a no, or no way to ask, fails with APPROVAL_REQUIRED. A version history.read cannot read (a missing, non-string, '
+      + 'empty or repeated block id, or a parent cycle) fails with TOOL_ACTION_FAILED before anyone is asked. '
+      + 'Read the document again before your next write.'),
     requires: ['versionHistory'],
   },
+  'history.previewRestore': versionRead('Preview a restore of a saved version. Writes nothing.', obj({
+    version,
+    databases: { enum: ['keep', 'restore'], description: 'keep: the preview keeps the databases as they are now. Omit it, or restore, to preview them restored too.' },
+  }, ['version']), 'Preview before every history.restore. wouldUndo lists the blocks (id, type, kind) and page fields the restore would change, '
+    + 'guards what it would ask the person about, and fits whether it is small enough to send. Then pin the restore to this batch\'s top-level '
+    + 'revision: send it as the restore batch\'s expectRevision, so a document that changed since is STALE, never a surprise. '
+    + 'history.restore always restores databases, so a "keep" preview is not what it writes.'),
 };

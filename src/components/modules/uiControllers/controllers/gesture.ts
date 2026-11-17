@@ -1,3 +1,5 @@
+import type { Block } from '../../../block';
+import type { GestureKind } from '../../yjs/undo-history';
 import { DATA_ATTR } from '../../../constants';
 import { isCaretAtEndOfInput, isCaretAtStartOfInput } from '../../../utils/caret/boundaries';
 import { isPasteContinuation } from '../../../utils/paste-continuation';
@@ -10,8 +12,11 @@ const PASSIVE_KEYS = new Set([
   'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown',
 ]);
 
+/** Named keys that edit text; see `isEditKey`. */
+const EDIT_KEYS = new Set(['Tab', 'Enter', 'Backspace', 'Delete']);
+
 /** Input types that continue a typing run; `historyUndo`/`historyRedo` are left to the keyboard router. */
-const TYPING_INPUT_TYPES = new Set(['insertText', 'insertReplacementText', 'deleteContentBackward', 'deleteContentForward']);
+const TYPING_INPUT_TYPES = new Set(['insertText', 'insertReplacementText', 'insertLineBreak', 'deleteContentBackward', 'deleteContentForward']);
 const IGNORED_INPUT_TYPES = new Set(['insertCompositionText', 'historyUndo', 'historyRedo']);
 
 /**
@@ -35,14 +40,18 @@ export class GestureController extends Controller {
   private composing = false;
 
   private readonly keydownHandler = (event: Event): void => {
-    if (!(event instanceof KeyboardEvent) || event.isComposing || this.isToolboxOpen() || !this.owns(event)) {
+    if (!(event instanceof KeyboardEvent) || event.isComposing || this.isToolboxOpen() || !(this.owns(event) || this.ownsNavigationKey(event) || this.ownsMenuPick(event))) {
       return;
     }
 
     const kind = this.keyKind(event);
 
     if (kind !== null) {
-      this.Blok.YjsManager.beginGesture(kind);
+      this.begin(kind);
+    }
+
+    if (this.isEditKey(event) && event.target instanceof Node) {
+      this.Blok.BlockManager.noteUserInput(event.target);
     }
   };
 
@@ -51,23 +60,23 @@ export class GestureController extends Controller {
       return;
     }
 
-    this.Blok.YjsManager.beginGesture(TYPING_INPUT_TYPES.has(event.inputType) ? 'typing' : 'discrete');
+    this.begin(TYPING_INPUT_TYPES.has(event.inputType) ? 'typing' : 'discrete');
   };
 
   private readonly discreteHandler = (event: Event): void => {
     if (this.owns(event) && !isPasteContinuation(event)) {
-      this.Blok.YjsManager.beginGesture('discrete');
+      this.begin('discrete');
     }
   };
 
   private readonly pointerdownHandler = (event: Event): void => {
     const insideToolbox = this.isToolboxOpen() && event.target instanceof Element && event.target.closest('[data-blok-popover]') !== null;
 
-    if (insideToolbox || !this.owns(event)) {
+    if (insideToolbox || !(this.owns(event) || this.inBlockMenu(event.target))) {
       return;
     }
 
-    this.Blok.YjsManager.beginGesture('discrete');
+    this.begin('discrete');
 
     // A drag inside the editor may pause longer than the capture timeout.
     // Only the main button drags; a right press opens a context menu, which
@@ -92,7 +101,7 @@ export class GestureController extends Controller {
       return;
     }
 
-    this.Blok.YjsManager.beginGesture('typing');
+    this.begin('typing');
     // The user may pause over the candidate list; the composition stays one step.
     this.composing = true;
     this.Blok.YjsManager.holdCapture();
@@ -104,6 +113,16 @@ export class GestureController extends Controller {
       this.Blok.YjsManager.releaseCapture();
     }
   };
+
+  /**
+   * Start a gesture. An edit still held from the last key (one made in the
+   * frame after an undo) belongs to the step this gesture closes, so it lands first.
+   * @param kind - see `UndoHistory.beginGesture`
+   */
+  private begin(kind: GestureKind): void {
+    this.Blok.BlockManager.landHeldUserEdits();
+    this.Blok.YjsManager.beginGesture(kind);
+  }
 
   /**
    * Set the editor wrapper element
@@ -149,7 +168,7 @@ export class GestureController extends Controller {
    * @param event - the keydown
    * @returns the gesture kind, or null for a key that starts no gesture
    */
-  private keyKind(event: KeyboardEvent): 'typing' | 'discrete' | null {
+  private keyKind(event: KeyboardEvent): GestureKind | null {
     const key = event.key ?? '';
 
     if (PASSIVE_KEYS.has(key)) {
@@ -167,30 +186,75 @@ export class GestureController extends Controller {
     // Deleting inside the text types; deleting across the edge merges blocks.
     const input = this.caretInput();
 
-    if (key === 'Backspace' && input !== null && !isCaretAtStartOfInput(input)) {
-      return 'typing';
+    if (key === 'Backspace' && input !== null) {
+      return isCaretAtStartOfInput(input) ? 'merge' : 'typing';
     }
 
     if (key === 'Delete' && input !== null && !isCaretAtEndOfInput(input)) {
       return 'typing';
     }
 
+    if (key === 'Enter' && input !== null && !event.altKey) {
+      return this.enterKind(event);
+    }
+
     return 'discrete';
+  }
+
+  /**
+   * A key that edits text. A tool that handles it itself (Tab in code) fires
+   * no beforeinput, so this mark is what tells its DOM change from an undo's
+   * rewrite in the frame after the undo; without it the change lands
+   * untracked. It must run before the tool's listener. Never a shortcut:
+   * a marked Cmd+Z would make the undo's own rewrite a new step.
+   * @param event - the keydown
+   */
+  private isEditKey(event: KeyboardEvent): boolean {
+    const key = event.key ?? '';
+
+    if (event.ctrlKey || event.metaKey || event.altKey) {
+      return false;
+    }
+
+    return key.length === 1 || EDIT_KEYS.has(key);
+  }
+
+  /**
+   * Enter with a collapsed caret in a block input. In code it types a newline
+   * (Notion U153); elsewhere Shift+Enter types a soft break (U032) and Enter
+   * splits the block.
+   * @param event - the keydown
+   */
+  private enterKind(event: KeyboardEvent): GestureKind {
+    const lineBreaks = this.caretBlock()?.tool.isLineBreaksEnabled === true;
+
+    if (lineBreaks) {
+      return event.shiftKey ? 'discrete' : 'typing';
+    }
+
+    return event.shiftKey ? 'typing' : 'split';
+  }
+
+  /**
+   * The block holding a collapsed caret, or undefined
+   */
+  private caretBlock(): Block | undefined {
+    const selection = window.getSelection();
+
+    if (selection === null || !selection.isCollapsed || selection.anchorNode === null) {
+      return undefined;
+    }
+
+    return this.Blok.BlockManager.getBlockByChildNode(selection.anchorNode);
   }
 
   /**
    * The input holding a collapsed caret, or null
    */
   private caretInput(): HTMLElement | null {
-    const selection = window.getSelection();
+    const anchor = window.getSelection()?.anchorNode ?? null;
 
-    if (selection === null || !selection.isCollapsed || selection.anchorNode === null) {
-      return null;
-    }
-
-    const block = this.Blok.BlockManager.getBlockByChildNode(selection.anchorNode);
-
-    return block?.inputs.find((input) => input.contains(selection.anchorNode)) ?? null;
+    return this.caretBlock()?.inputs.find((input) => input.contains(anchor)) ?? null;
   }
 
   /**
@@ -214,7 +278,46 @@ export class GestureController extends Controller {
 
     const anchor = window.getSelection()?.anchorNode ?? null;
 
-    return anchor !== null && this.isInsideWrapper(anchor);
+    return (anchor !== null && this.isInsideWrapper(anchor)) || this.isInsideOutsideTitle(event.target);
+  }
+
+  /**
+   * The page title can be mounted outside the wrapper (`pageTitle.holder`).
+   * Without its own gesture, a title step takes its caret-before after the edit.
+   * @param target - the event target
+   */
+  private isInsideOutsideTitle(target: EventTarget | null): boolean {
+    const title = this.Blok.PageTitle?.titleElement ?? null;
+
+    return title !== null && target instanceof Node && title.contains(target) && this.wrapperElement?.contains(title) !== true;
+  }
+
+  /**
+   * In navigation mode focus sits on the page body with no caret, and the keys
+   * act on this editor's selected blocks. Only a key aimed at the body: one
+   * typed into a menu field must not close the step, nor may a click.
+   * @param event - the keydown
+   */
+  private ownsNavigationKey(event: Event): boolean {
+    return event.target === document.body && this.Blok.BlockSelection.anyBlockSelected;
+  }
+
+  /**
+   * The block menu is mounted on the body and its block is selected, so the
+   * caret is not in the editor. A pick there must still start the step, or
+   * its caret-before is the caret from before the menu opened.
+   * @param target - the event target
+   */
+  private inBlockMenu(target: EventTarget | null): boolean {
+    return target instanceof HTMLElement && this.Blok.BlockSettings.contains(target);
+  }
+
+  /**
+   * A key that picks in the block menu. A letter typed into its search does not.
+   * @param event - the keydown
+   */
+  private ownsMenuPick(event: KeyboardEvent): boolean {
+    return (event.key ?? '').length > 1 && this.inBlockMenu(event.target);
   }
 
   /**

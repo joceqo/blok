@@ -26,6 +26,25 @@ const CATALOG_ONLY_KEYS = new Set([
   // in the catalog rather than deleted from all locales — same rationale as
   // tools.bookmark.error above.
   'emoji.nothingFound',
+  // The code language picker lost its Suggested section to family groups.
+  // Kept for public BlokMessageKey compatibility: it shipped in 2.1.0.
+  'tools.code.suggested',
+  // The timeline's end picker lost its None choice to the Separate start and end dates switch.
+  // Kept for public BlokMessageKey compatibility: it shipped in 2.1.0.
+  'tools.database.timelineEndNone',
+  // The board lost its Hidden groups button; Settings › Group un-hides groups.
+  // Kept for public BlokMessageKey compatibility: it shipped in 2.1.0.
+  'tools.database.hiddenGroups',
+  // The board's Layout page says "Fit media", as the gallery does.
+  // Kept for public BlokMessageKey compatibility: it shipped in 2.1.0.
+  'tools.database.galleryFitImage',
+  // The timeline's "Separate end date" row became Start date and End date.
+  // Kept for public BlokMessageKey compatibility: it shipped in 2.1.0.
+  'tools.database.timelineEndBy',
+  // The row menu footer reads "Last edited" over the person, and "1 word, 5 characters" from plurals.
+  // Kept for public BlokMessageKey compatibility: they shipped in 2.1.0.
+  'tools.database.rowLastEditedBy',
+  'tools.database.rowWordCount',
 ]);
 
 const sourceFiles = (directory: string): string[] => {
@@ -213,6 +232,10 @@ const deriveLifecycle = (): {
   addDynamic('toolNames.database');
   // The page picker calls tools.page.moreResults with a count; the plural rule adds the suffix.
   for (const category of ['one', 'other']) addDynamic(`tools.page.moreResults_${category}`);
+  // A multi-block Turn into calls a11y.blocksConvertedTo with a count.
+  for (const category of ['one', 'other']) addDynamic(`a11y.blocksConvertedTo_${category}`);
+  // Deleting selected blocks calls a11y.blocksDeleted with a count.
+  for (const category of ['one', 'other']) addDynamic(`a11y.blocksDeleted_${category}`);
 
   for (const key of literal) dynamic.delete(key);
 
@@ -276,7 +299,7 @@ const getLifecycle = (): ReturnType<typeof deriveLifecycle> => {
 };
 
 describe('current English catalog lifecycle coverage', () => {
-  it('rebuilds a disjoint 2055 + 138 + 519 + 4 closure for all 2716 keys', () => {
+  it('rebuilds a disjoint 2241 + 146 + 599 + 11 closure for all 2997 keys', () => {
     const { lifecycle } = getLifecycle();
     const counts = Object.fromEntries(
       ([
@@ -290,7 +313,7 @@ describe('current English catalog lifecycle coverage', () => {
       ])
     );
 
-    expect(lifecycle.size).toBe(2716);
+    expect(lifecycle.size).toBe(2997);
     expect(counts).toEqual({
       // tools.callout.editIcon moved finite-dynamic -> executable-literal when
       // the callout emoji button stopped being named by the emoji glyph and
@@ -494,7 +517,69 @@ describe('current English catalog lifecycle coverage', () => {
       // +1: the notice when the host's frame check refuses an embed, tools.embed.checkBlocked, by literal.
       // +1: the notifier deck's close-all button, notifier.dismissAll, by literal.
       // +2: the table size card's "Pick on grid" / "Type numbers" button, by literal.
-      'executable-literal': 2055,
+      // +2: Turn into page / Turn into inline database, tools.database.turnIntoPage and tools.page.turnIntoInlineDatabase.
+      // -1: tools.database.deleteColumn moved to registered-namespace-compatible when the
+      // board header's Delete column button was removed; the key still ships to every locale.
+      // +3: undo and redo key presses announce a11y.undone, redone and nothingToRedo by literal.
+      // +6: the emoji picker's chip labels, Recent row and Current icon kicker (tools.callout.*), by literal.
+      // +1: the table footer's Count values label, tools.database.calcFooterCountValues, by literal.
+      // +1: a markdown shortcut announces a11y.convertedTo by literal.
+      // +1: an empty undo press announces a11y.nothingToUndo by literal.
+      // +2: the emoji picker's empty stage, tools.callout.noIconYet and pickIconYouLike, by literal.
+      // +5: the table footer's Unique, Empty, Not empty, Earliest and Latest labels (tools.database.calcFooter*), by literal.
+      // -1: tools.database.columnTitlePlaceholder left the literal calls when "+ New group" began asking for the name.
+      // +1: tools.database.openPagesNewTab labels the peek mode menu's new-tab row by literal.
+      // +5: the code language picker's family labels (tools.code.family*), by literal.
+      // -1: tools.code.suggested left the literal calls when the picker dropped Suggested (now catalog-only).
+      // +1: the audio block's Compact setting calls tools.audio.compact by literal.
+      // +5: the annotation ("Hint") tool's four tools.annotation.* strings and toolNames.annotation, the hint card's name, by literal.
+      // +3: the Dashboard view's name, its Add widget button and its empty line (tools.database.viewTypeDashboard, dashboardAddWidget, dashboardEmpty), by literal.
+      // +3: the dashboard menus call tools.database.chartTypeNumber, duplicateView and deleteView by literal (moved from registered-namespace-compatible).
+      // +5: the video error card's title and detail lines (tools.video.errorUploadFailedDetail, errorFileTooLargeTitle, errorFileTooLargeDetail, errorUnplayableDetail, errorNotMediaUrlTitle), by literal.
+      // +23: the page cover's 20 title.cover* keys and the database description's 3, by literal.
+      // +11: the one-surface media empty state's sentences (tools.<tool>.emptyHint, emptyHintUpload, tools.image.emptyHintLink, emptyDropAnywhere, tools.audio.coverHint), by literal.
+      // +1: the block menu's Move to item (blockSettings.moveTo), by literal.
+      // -14: the media empty state lost its tabs, hint line and tablist name: tools.<tool>.emptyUpload,
+      // emptyOrDropHere (tools.file.emptyDropHint), emptySourceAria, tools.audio.coverUpload and
+      // coverSourceAria have no caller now. Still shipped: they are in BlokMessageKey since 2.1.0.
+      // -1: tools.audio.coverOrDropHere has no caller: the ink well shows the uploader's sentence (coverHint). Still shipped.
+      // -1: the audio error card dropped its badge; tools.audio.errorBadge has no caller now. Still shipped.
+      // +22: every media error card has a title and a detail: the audio (10), file (8) and video (4) error*Title / error*Detail keys, by literal.
+      // +28: the file preview's counts, pager, zoom, slide, status bar, table, wrap, copy, outline and log filter labels (tools.file.preview*), by literal.
+      // +1: a negated filter chip reads "Not Red" (tools.database.filterPillNot), by literal.
+      // +4: a dated filter chip reads "Before Nov 10" (tools.database.filterPillBefore, After, OnOrBefore, OnOrAfter), by literal.
+      // +8: a one-unit relative date chip reads "Past week" (tools.database.filterRelativePast*/Next* per unit), by literal.
+      // +5: an empty advanced rule value names what to pick (tools.database.filterSelect*), by literal.
+      // +1: the Status filter's "Clear selection" row (tools.database.filterClearSelection), by literal.
+      // +1: a view tab's hint "Table view of New database" (tools.database.tabViewOf), by literal.
+      // +4: the PDF preview's password prompt, Open button and page names (tools.file.previewPdf*), by literal.
+      // +1: a dashboard tab's hint "Dashboard view" (tools.database.tabView), by literal.
+      // +1: the PDF thumbnail rail's toggle (tools.file.previewThumbnails), by literal.
+      // +2: Round 24 layout rows (tools.database.galleryFitMedia, timelineSeparateDates) by literal.
+      // -1: tools.database.timelineEndNone is now catalog-only (the end picker lost its None choice).
+      // -1: the board's "Hidden groups" button is gone (tools.database.hiddenGroups left the catalog).
+      // +2: the board's pinned strip calls tools.database.pinnedGroups and groupUnpin by literal.
+      // +1: the pinned group modal's search field calls tools.database.searchPlaceholder by literal.
+      // -1: tools.database.galleryFitImage is now catalog-only (the board says "Fit media").
+      // -1: tools.database.timelineEndBy is now catalog-only (Start date and End date rows).
+      // +3: the list's open button (openInCenterPeek, openAsPage) and the type menu's Number "?" (propertyTypeHelpNumber).
+      // +1: the pinned group modal's sort chip calls tools.database.sortCount by literal.
+      // -2: tools.file.cardFiles and cardFilesOne are gone (see registered-namespace-compatible).
+      // -8: the file preview header shows no counts, so tools.file.previewPages, previewSheets, previewSlides,
+      // previewRows and their One forms are gone.
+      // +20: the type menu's "?" on every other type Round 27 read (tools.database.propertyTypeHelp*).
+      // +1: ID's "?" (tools.database.propertyTypeHelpUniqueId), read in Round 28.
+      // +3: the table's Load more ⋯ calls tableShowOnFirstLoad (new), settingsLoadLimit and settingsLoadLimitPages by literal.
+      // -2 / +1: the row menu footer's rowLastEditedBy and rowWordCount went catalog-only; rowCounts joins its plurals.
+      // +1: the view tab menu's Source row calls tools.database.settingsSource by literal.
+      // +1: the table header row's ⋯ calls tools.database.tableShowHideProperties by literal.
+      // +1: the status option menu's Group row calls tools.database.groupStatusGroup by literal.
+      // +2: Edit property's Set as default confirm calls statusDefaultConfirm and its description by literal.
+      // +1: the same confirm calls statusDefaultConfirmEmphasis by literal for its bold phrase.
+      // +1: Edit property's add field calls addOptionPlaceholder by literal.
+      // +1 / -1: the row page cover calls tools.database.downloadCover by literal; its Change
+      // button now reads title.changeCover, so tools.database.changeCover left (see below).
+      'executable-literal': 2241,
       // +10: the tabs block calls its 9 tools.tabs.* keys and toolbox.preview.tabs by literal.
       // toolNames.page moved here from finite-dynamic when the page-reference picker called it directly.
       // -5: tools.video.back/on/off/speedDecrease/speedIncrease left i18nLabel
@@ -507,7 +592,11 @@ describe('current English catalog lifecycle coverage', () => {
       // +9: the Ask AI action labels, assistant.action.<skill id>.
       // +1: toolNames.databaseFullPage (f6d462a0).
       // +2: the picker's tools.page.moreResults_one/_other, a plural of one literal call.
-      'finite-dynamic': 138,
+      // +2: a11y.blocksConvertedTo_one/_other, a plural of the multi-block Turn into call.
+      // +2: a11y.blocksDeleted_one/_other, a plural of the selected-block delete call.
+      // +1: the audio seek slider's tools.audio.seek, built by i18nLabel like play and volume.
+      // +4: the video speed submenu's back, speedDecrease, speedIncrease and the new speedNormal, built by i18nLabel.
+      'finite-dynamic': 146,
       // 12 of the 20 image darkroom keys are called by literal. The 8 filter
       // names stay here: filter-strip.ts builds them from the preset name.
       // +9: the markup tool names; markup-panel.ts builds them from a short key.
@@ -572,8 +661,47 @@ describe('current English catalog lifecycle coverage', () => {
       // -4: the groupSort* keys (see executable-literal).
       // -1: propertyNamePlaceholder (see executable-literal).
       // -1: tools.database.rollupProperty (see executable-literal).
-      'registered-namespace-compatible': 519,
-      'catalog-only': 4,
+      // +3: the Filter / Sort pickers' filterByPlaceholder, sortByPlaceholder and filterAddAdvanced, via the tools.database t().
+      // +2: View settings' settingsEditProperties and settingsNewProperty, via the panel's t().
+      // +1: the empty Sort page's sortNew title, via the panel's t().
+      // -1: the New menu's "Empty" row reads cellEmpty; templateEmptyPage is gone.
+      // +1: tools.database.columnTitlePlaceholder, no longer called by literal; still shipped.
+      // +3: the row-page "Updating layout for all pages" dialog's saveForAll* keys, via the controls' t().
+      // +1: the date filter's "Custom date" row, tools.database.filterDateCustom (chip t() prefixes the namespace).
+      // -3: chartTypeNumber, duplicateView and deleteView moved to executable-literal (dashboard menus).
+      // -3: tools.video.back, speedDecrease and speedIncrease have a caller again (the speed submenu).
+      // +14: the retired media empty state keys above.
+      // +1: tools.audio.coverOrDropHere, above.
+      // +2 / -1: the advanced chip's tools.database.filterRuleCount_one/_other replace filterRuleCount, via the controls' t().
+      // +1: tools.audio.errorBadge, see above.
+      // +1: a conditional color rule's Match option (tools.database.colorMatchOption), via the panel's t().
+      // +1: a colour swatch's hint, "Blue background" (tools.database.colorBackgroundHint), via the panel's t().
+      // +1: an empty Select colour rule value reads "Select..." (tools.database.colorValuePlaceholder), through the panel's t().
+      // +2: the date filter field's placeholder and its presets ⌄ (tools.database.filterDatePlaceholder, filterDatePresets), through the chip's t().
+      // +1: a Multi-select colour rule's "Match first option" (tools.database.colorMatchFirstOption), through the panel's t().
+      // +1: a board colour rule's "Card background" (tools.database.colorCardBackground), through the panel's t().
+      // +8: the typed-speed help line (tools.audio/video.speedEntryRange, TooHigh, TooLow, NotNumber), through speed-entry.ts's t().
+      // +1: the Date filter's "Invalid date" message (tools.database.filterInvalidDate), through the chip's t().
+      // -1: tools.database.searchPlaceholder is now called by literal (the pinned group modal).
+      // +2: the Layout page's "Wrap page titles" and "Directly edit page name" (tools.database.settingsWrapPageTitles,
+      // settingsDirectEditPageName), through the panel's t().
+      // -1: tools.database.sortCount (see executable-literal).
+      // +12: the file card's counts (tools.file.cardPages, cardLines, cardSheets, cardSlides, cardFiles, cardRows, each _one/_other);
+      // the file tool picks the base key from a map, so no call names one by literal.
+      // -2: settingsLoadLimit and settingsLoadLimitPages are now called by literal (see executable-literal).
+      // +1: the select filter's token field calls filterOptionsPlaceholder through the chip's tools.database. prefix.
+      // +1: a Feed's Layout page "Wrap properties" (tools.database.settingsWrapProperties), through the panel's t().
+      // +8: Property visibility's "Hidden in <layout>" heads (settingsHiddenIn*, settingsHiddenProperties), picked from a map.
+      // +4: the row menu footer's tools.database.rowWords_one/_other and rowCharacters_one/_other, via a count.
+      // -1: tools.database.settingsSource is now called by literal (see executable-literal).
+      // +8: View settings "Manage data sources" (settingsManageSources, manageSources*, manageSourcesViews_one/_other), through the panel's t().
+      // -1: tools.database.groupStatusGroup is now called by literal (see executable-literal).
+      // +1: tools.database.changeCover lost its literal caller; it shipped in 2.1.0, so it stays.
+      'registered-namespace-compatible': 599,
+      // +1: Settings › Group's pin button names itself with groupPin through the panel's tools.database. prefix.
+      // +1: tools.database.galleryFitImage, above. +1: tools.database.timelineEndBy, above.
+      // +2: tools.database.rowLastEditedBy and rowWordCount, above.
+      'catalog-only': 11,
     });
     expect(
       [...lifecycle.entries()]

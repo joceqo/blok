@@ -1,16 +1,20 @@
 import { cleanPageField } from '../../../shared/page-title-icon';
+import { isPageCover } from '../../../shared/page-cover';
 
 import type * as Y from 'yjs';
-import type { PageIcon } from '../../../../types/tools/page';
+import type { PageCover, PageIcon } from '../../../../types/tools/page';
 
 export { cleanPageField };
 
-export type PageFieldKey = 'title' | 'icon';
+export type PageFieldKey = 'title' | 'icon' | 'cover';
 
 export interface PageFields {
   title?: string;
   icon?: PageIcon;
+  cover?: PageCover;
 }
+
+export type PageFieldValue = string | PageIcon | PageCover | null | undefined;
 
 const isPageIcon = (value: unknown): value is PageIcon => {
   if (typeof value !== 'object' || value === null) {
@@ -29,14 +33,16 @@ const isPageIcon = (value: unknown): value is PageIcon => {
 export const readPageFields = (map: Y.Map<unknown>): PageFields => {
   const title = map.get('title');
   const icon = map.get('icon');
+  const cover = map.get('cover');
 
   return {
     ...(typeof title === 'string' && title !== '' && { title }),
     ...(isPageIcon(icon) && { icon }),
+    ...(isPageCover(cover) && { cover }),
   };
 };
 
-export const writePageField = (map: Y.Map<unknown>, key: PageFieldKey, value: string | PageIcon | null | undefined): void => {
+export const writePageField = (map: Y.Map<unknown>, key: PageFieldKey, value: PageFieldValue): void => {
   const clean = cleanPageField(value);
 
   if (clean === undefined || clean === null || clean === '') {

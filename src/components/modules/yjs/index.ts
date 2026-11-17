@@ -1,7 +1,6 @@
 import type * as Y from 'yjs';
 
 import type { RichText } from '../../../../types/rich-text';
-import type { PageIcon } from '../../../../types/tools/page';
 import type { BlokModules } from '../../../types-internal/blok-modules';
 import type { ModuleConfig } from '../../../types-internal/module-config';
 import type { Attribution } from '../../../shared/agent/attribution';
@@ -11,11 +10,11 @@ import { logLabeled } from '../../utils';
 
 import { BlockObserver } from './block-observer';
 import { DocumentStore, type DataKeySnapshot } from './document-store';
-import { cleanPageField, readPageFields, writePageField, type PageFieldKey, type PageFields } from './page-fields';
-import { YBlockSerializer, isBoundaryCharacter, type YjsOutputBlockData } from './serializer';
+import { cleanPageField, readPageFields, writePageField, type PageFieldKey, type PageFieldValue, type PageFields } from './page-fields';
+import { YBlockSerializer, type YjsOutputBlockData } from './serializer';
 import type { AwarenessChange, BlockChangeCallback, BlockPlacement, CaretHistoryEntry, CaretSnapshot } from './types';
 import { UndoHistory } from './undo-history';
-import type { ClosedStep } from './undo-history';
+import type { ClosedStep, GestureKind } from './undo-history';
 import { BlockWriteBuffer, type BufferedBlockWriteFlush } from './write-buffer';
 
 /**
@@ -204,8 +203,8 @@ export class YjsManager extends Module {
       this.replayMovePlacement(blockId, placement, origin);
     });
 
-    // Barrier inside UndoHistory so the internal 100ms word-boundary timer's
-    // stopCapturing also flushes buffered typing writes before splitting.
+    // Barrier inside UndoHistory so every split it makes on its own (typing
+    // window, sub-step) flushes buffered typing writes first.
     this.undoHistory.setFlushPendingWritesHook(() => this.flushPendingBlockWrites());
     this.undoHistory.setBeforeGestureHook(() => this.beforeUserStep.forEach((listener) => listener()));
 
@@ -272,7 +271,7 @@ export class YjsManager extends Module {
     const source = transaction.local ? replay : 'remote';
 
     event.keysChanged.forEach((key: string) => {
-      if (key === 'title' || key === 'icon') {
+      if (key === 'title' || key === 'icon' || key === 'cover') {
         this.pageListeners.forEach((listener) => listener(key, source));
       }
     });
@@ -1017,8 +1016,8 @@ export class YjsManager extends Module {
     return this.undoHistory.mergeTopUndoSteps(previous, current, expected);
   }
 
-  public undoStep(token: CaretHistoryEntry): boolean {
-    return this.undoHistory.undoStep(token);
+  public undoStep(token: CaretHistoryEntry, userPress = false): boolean {
+    return this.undoHistory.undoStep(token, userPress);
   }
 
   public redoStep(token: CaretHistoryEntry): boolean {
@@ -1027,10 +1026,13 @@ export class YjsManager extends Module {
 
   /**
    * Undo the last operation.
+   * @param keyPress - the user pressed the undo key, not an API call
+   * @returns whether a step applied
    */
-  public undo(): void {
+  public undo(keyPress = false): boolean {
     this.beforeUserStep.forEach((listener) => listener());
-    this.undoHistory.undo();
+
+    return this.undoHistory.undo(undefined, keyPress);
   }
 
   /**
@@ -1049,10 +1051,12 @@ export class YjsManager extends Module {
 
   /**
    * Redo the last undone operation.
+   * @returns whether a step applied
    */
-  public redo(): void {
+  public redo(): boolean {
     this.beforeUserStep.forEach((listener) => listener());
-    this.undoHistory.redo();
+
+    return this.undoHistory.redo();
   }
 
   /**
@@ -1124,7 +1128,7 @@ export class YjsManager extends Module {
     this.documentStore.pageFromJSON(fields);
   }
 
-  public setPageField(key: PageFieldKey, value: string | PageIcon | null, options: { typing?: boolean; record?: boolean } = {}): void {
+  public setPageField(key: PageFieldKey, value: Exclude<PageFieldValue, undefined>, options: { typing?: boolean; record?: boolean } = {}): void {
     const current = this.documentStore.page.get(key);
     // Cleaned before the compare: a write that only adds a NUL must not make an empty undo step.
     const clean = cleanPageField(value);
@@ -1192,7 +1196,7 @@ export class YjsManager extends Module {
    * step again once it has landed, so the write does not join this gesture.
    * @param kind - see {@link UndoHistory.beginGesture}
    */
-  public beginGesture(kind: 'typing' | 'discrete'): void {
+  public beginGesture(kind: GestureKind): void {
     const inFlight = new Set(this.pendingBlockWrites);
 
     if (this.undoHistory.beginGesture(kind) && inFlight.size > 0) {
@@ -1223,6 +1227,16 @@ export class YjsManager extends Module {
   /** See {@link UndoHistory.holdCapture}. */
   public holdCapture(): void {
     this.undoHistory.holdCapture();
+  }
+
+  /** See {@link UndoHistory.markBlocksBefore}. */
+  public markBlocksBefore(ids: readonly string[]): void {
+    this.undoHistory.markBlocksBefore(ids);
+  }
+
+  /** See {@link UndoHistory.reapplyCaretAfterRebuild}. */
+  public reapplyCaretAfterRebuild(blockId: string): void {
+    this.undoHistory.reapplyCaretAfterRebuild(blockId);
   }
 
   /** See {@link UndoHistory.rebaseCaretSnapshots}. */
@@ -1354,6 +1368,11 @@ export class YjsManager extends Module {
     this.documentStore.transact(fn, 'local');
   }
 
+  /** True from `destroy()` on, also while it waits for a last save to land. */
+  public get isDestroying(): boolean {
+    return this.isTearingDown;
+  }
+
   /** True inside a {@link transactWithoutCapture} scope. */
   public get isTransactingWithoutCapture(): boolean {
     return this.documentStore.isTransactingWithoutCapture;
@@ -1391,46 +1410,6 @@ export class YjsManager extends Module {
     this.undoHistory.withoutCaretMark(() => {
       this.undoHistory.addToStepThatWrote(data, () => this.documentStore.transactWithoutCapture(fn), from);
     });
-  }
-
-  // ========== Public API: Smart Grouping ==========
-
-  /**
-   * Check if there is a pending boundary waiting for timeout.
-   * @returns true if a boundary character was typed and hasn't timed out yet
-   */
-  public hasPendingBoundary(): boolean {
-    return this.undoHistory.hasPendingBoundary();
-  }
-
-  /**
-   * Mark that a boundary character (space, punctuation) was just typed.
-   */
-  public markBoundary(): void {
-    this.undoHistory.markBoundary();
-  }
-
-  /**
-   * Clear the pending boundary state without creating a checkpoint.
-   */
-  public clearBoundary(): void {
-    this.undoHistory.clearBoundary();
-  }
-
-  /**
-   * Check if a pending boundary has timed out and create a checkpoint if so.
-   */
-  public checkAndHandleBoundary(): void {
-    this.undoHistory.checkAndHandleBoundary();
-  }
-
-  /**
-   * Check if a character is a boundary character.
-   * @param char - Single character to check
-   * @returns true if the character is a boundary character
-   */
-  public static isBoundaryCharacter(char: string): boolean {
-    return isBoundaryCharacter(char);
   }
 
   // ========== Public API: Events ==========

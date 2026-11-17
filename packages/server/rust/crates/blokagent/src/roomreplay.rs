@@ -171,7 +171,7 @@ impl Executor {
         cancel.check()?;
         let edit = live
             .manager
-            .agent_edit(
+            .agent_edit_noted(
                 doc_id,
                 plan,
                 &new_guid(),
@@ -179,6 +179,7 @@ impl Executor {
                 &actor.id,
                 expect,
                 Some(applied),
+                agent_note(actor),
             )
             .await;
         let edit = match edit {
@@ -529,4 +530,9 @@ fn replayed_step(
             Ok(())
         })
     })
+}
+
+/// The record note of an in-process agent's write.
+pub(crate) fn agent_note(actor: &crate::types::Actor) -> Option<blok_collab_room::RecordNote> {
+    blok_collab_room::classify_actor(&actor.id, true, actor.on_behalf_of.as_deref().unwrap_or(""))
 }

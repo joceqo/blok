@@ -15,14 +15,29 @@ internal sealed class PagePorts
 
   private const string OpenDocumentMessage = "This page block points at the document you have open. Use doc.setTitle or doc.setIcon instead.";
 
-  /// <summary>Makes one page document and returns its id; null when blok-mcp makes none.</summary>
-  internal Func<McpCaller, CancellationToken, Task<string>>? Create { get; init; }
+  /// <summary>Makes one page document under the parent document id and returns its id; null when blok-mcp makes none.</summary>
+  internal Func<McpCaller, string, CancellationToken, Task<string>>? Create { get; init; }
 
   /// <summary>Opens a page's own document with write access, as blok_open does.</summary>
   internal required Func<string, McpCaller, CancellationToken, Task<IHandleSession>> Open { get; init; }
 
   /// <summary>Holds a page session's close, which nobody waits for, until stop.</summary>
   internal required Action<Task> TrackClose { get; init; }
+
+  /// <summary>The host's logger (BlokMcpOptions' app logging); stderr when null.</summary>
+  internal Action<string, Exception>? LogError { get; init; }
+
+  /// <summary>Logs a failure in full: the host's logger, else stderr (stdout may carry the protocol).</summary>
+  internal async Task LogAsync(string message, Exception error)
+  {
+    if (LogError is { } log)
+    {
+      log(message, error);
+
+      return;
+    }
+    await Console.Error.WriteLineAsync($"{message}: {error}");
+  }
 
   internal static bool HasPageAction(JsonNode? batch)
   {
@@ -40,27 +55,88 @@ internal sealed class PagePorts
 
   /*
    * Makes the batch's pages first and passes their ids as createdPages. A page the host
-   * could not make goes in as createPageFailure: the bundle fails that insert with it.
+   * could not make goes in as createPageFailure: the bundle fails that insert with it, and
+   * after earlier pages names them as orphans (with commandIndex and revision). A cancel after
+   * a page was made goes in the same way, as CANCELLED. Any other throw leaves the pages made
+   * so far in created, for StrandedAnswerAsync.
    */
-  internal async Task AddCreatedPagesAsync(McpBundle bundle, JsonObject input, McpCaller caller, CancellationToken cancellationToken)
+  internal async Task AddCreatedPagesAsync(McpBundle bundle, JsonObject input, McpCaller caller, string parentDocumentId, JsonArray created, CancellationToken cancellationToken)
   {
     var needed = await bundle.CallAsync("agentPagesNeeded", input, cancellationToken);
-    var created = new JsonArray();
 
     for (var count = PageIds.ToMake(needed); count > 0; count--)
     {
+      // A host may ignore the token, so a cancel must also stop the loop here.
+      if (cancellationToken.IsCancellationRequested && created.Count > 0)
+      {
+        input["createPageFailure"] = AsIs(Cancelled);
+        break;
+      }
+      cancellationToken.ThrowIfCancellationRequested();
       try
       {
-        created.Add(await Create!(caller, cancellationToken));
+        created.Add(await Create!(caller, parentDocumentId, cancellationToken));
+      }
+      catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && created.Count > 0)
+      {
+        input["createPageFailure"] = AsIs(Cancelled);
+        break;
       }
       catch (McpHostError error)
       {
         // As the error input mcpErrorAnswer takes: its helper decides retryable.
-        input["createPageFailure"] = error.ToInput("blok_execute");
+        input["createPageFailure"] = error.HostStopped && created.Count > 0 ? AsIs(ServerStop) : error.ToInput("blok_execute");
         break;
       }
     }
-    input["createdPages"] = created;
+    input["createdPages"] = created.DeepClone();
+  }
+
+  /// <summary>Blok.Server's cause for a batch a host failure stopped after it made pages.</summary>
+  internal static JsonObject ServerStop => new() { ["code"] = "APPLY_FAILED", ["message"] = "The batch stopped on a server error. Nothing was written.", ["retryable"] = true };
+
+  private static JsonObject Cancelled => new() { ["code"] = "CANCELLED", ["message"] = "The batch was cancelled. Nothing was written.", ["retryable"] = false };
+
+  private static JsonObject AsIs(JsonObject error)
+  {
+    return new JsonObject { ["tool"] = "blok_execute", ["helper"] = "as-is", ["error"] = error };
+  }
+
+  /*
+   * The host made pages, then the batch stopped on a cancel or a server error before the parent
+   * was written. The answer names the pages to clean up, in Blok.Server's shape
+   * (BlokAgentExecutor.StoppedAfterCreating). It is built without the token: a cancel would stop it too.
+   */
+  internal async Task<JsonObject> StrandedAnswerAsync(McpBundle bundle, Exception error, JsonArray created)
+  {
+    var cancelled = error is OperationCanceledException;
+
+    if (!cancelled)
+    {
+      await LogAsync("blok-mcp: a batch failed after it made pages", error);
+    }
+    var cause = cancelled ? Cancelled : ServerStop;
+    var orphaned = new JsonArray([.. created.Select(pageId => (JsonNode)new JsonObject
+    {
+      ["command"] = "block.insert",
+      ["type"] = "page",
+      ["prepared"] = new JsonObject { ["pageId"] = pageId?.DeepClone() },
+    })]);
+    var result = new JsonObject
+    {
+      ["ok"] = false,
+      ["error"] = new JsonObject
+      {
+        ["code"] = "ORPHANED_SIDE_EFFECT",
+        ["message"] = $"The batch failed after the host did work for it ({McpJson.String(cause["message"])}). Clean up the listed items.",
+        ["retryable"] = false,
+        ["details"] = new JsonObject { ["orphaned"] = orphaned, ["cause"] = cause },
+      },
+      ["warnings"] = new JsonArray(),
+    };
+    var built = await bundle.CallAsync("mcpExecuteAnswer", new JsonObject { ["result"] = result }, CancellationToken.None);
+
+    return (JsonObject)built["answer"]!;
   }
 
   /*

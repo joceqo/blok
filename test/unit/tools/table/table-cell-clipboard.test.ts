@@ -6,6 +6,7 @@ import {
   buildClipboardPlainText,
   parseClipboardHtml,
   parseGenericHtmlTable,
+  parsePlainTextGrid,
 } from '../../../../src/tools/table/table-cell-clipboard';
 
 describe('table-cell-clipboard', () => {
@@ -347,6 +348,37 @@ describe('table-cell-clipboard', () => {
       const result = parseClipboardHtml(html);
 
       expect(result).toEqual(payload);
+    });
+
+    it('keeps column widths that match the copied columns', () => {
+      const payload: TableCellsClipboard = {
+        rows: 1,
+        cols: 2,
+        cells: [[{ blocks: [] }, { blocks: [] }]],
+        colWidths: [140, 220.5],
+      };
+
+      expect(parseClipboardHtml(buildClipboardHtml(payload))?.colWidths).toEqual([140, 220.5]);
+    });
+
+    it.each([
+      ['a wrong count', [140]],
+      ['a zero width', [140, 0]],
+      ['a negative width', [140, -5]],
+      ['a non-number', [140, '220']],
+      ['a non-array', 'wide'],
+    ])('drops column widths with %s', (_label, colWidths) => {
+      const html = buildClipboardHtml({
+        rows: 1,
+        cols: 2,
+        cells: [[{ blocks: [] }, { blocks: [] }]],
+        colWidths,
+      } as unknown as TableCellsClipboard);
+
+      const result = parseClipboardHtml(html);
+
+      expect(result).not.toBeNull();
+      expect(result).not.toHaveProperty('colWidths');
     });
 
     it('should roundtrip: buildClipboardHtml -> parseClipboardHtml returns same data', () => {
@@ -1593,8 +1625,43 @@ describe('table-cell-clipboard', () => {
       expect(rows[1].querySelectorAll('td')).toHaveLength(1);
     });
 
-    it('skips merge-covered positions in the plain-text flavor', () => {
-      expect(buildClipboardPlainText(mergedPayload())).toBe('merged\tR0C2\nR1C2');
+    it('writes an empty field for merge-covered positions in the plain-text flavor', () => {
+      expect(buildClipboardPlainText(mergedPayload())).toBe('merged\t\tR0C2\n\t\tR1C2');
+    });
+
+    it('keeps later cells in their column when a covered slot sits mid-row', () => {
+      const payload: TableCellsClipboard = {
+        rows: 2,
+        cols: 3,
+        cells: [
+          [
+            { blocks: [{ tool: 'paragraph', data: { text: 'A' } }] },
+            { blocks: [{ tool: 'paragraph', data: { text: 'tall' } }], rowspan: 2 },
+            { blocks: [{ tool: 'paragraph', data: { text: 'C' } }] },
+          ],
+          [
+            { blocks: [{ tool: 'paragraph', data: { text: 'D' } }] },
+            { blocks: [], covered: true },
+            { blocks: [{ tool: 'paragraph', data: { text: 'F' } }] },
+          ],
+        ],
+      };
+
+      const text = buildClipboardPlainText(payload);
+      const grid = parsePlainTextGrid(text);
+
+      expect(text).toBe('A\ttall\tC\nD\t\tF');
+      expect(grid?.cells[1][2].blocks.map(block => block.data.text)).toEqual(['F']);
+      expect(grid?.cells[1][1].blocks.map(block => block.data.text)).not.toContain('F');
+    });
+
+    it('keeps markup in plain text as text, so a tab paste gives no image or bold', () => {
+      const grid = parsePlainTextGrid('<img src=x onerror=alert(1)>\t<b>x</b> & y\n1\t2');
+
+      expect(grid?.cells[0].map(cell => cell.blocks)).toEqual([
+        [{ tool: 'paragraph', data: { text: '&lt;img src=x onerror=alert(1)&gt;' } }],
+        [{ tool: 'paragraph', data: { text: '&lt;b&gt;x&lt;/b&gt; &amp; y' } }],
+      ]);
     });
   });
 

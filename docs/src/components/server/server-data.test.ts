@@ -131,6 +131,7 @@ describe('server docs data', () => {
         expect(intro).toBe(source);
       }
       expect(intro).toContain('48');
+      expect(intro).not.toMatch(/No release has shipped|не выходили ни в одном релизе/);
     });
   });
 
@@ -160,14 +161,15 @@ describe('server docs data', () => {
       expect(code('go')).toContain('server.Handler()');
     });
 
-    it('builds the Rust server from source, since it ships nothing', () => {
-      expect(code('rust')).toContain('cargo build --release -p blok-mcp');
-      expect(build('rust')?.description).toMatch(/ships nothing|not published/i);
+    it('installs the Rust command from crates.io and adds the crate to an app', () => {
+      expect(code('rust')).toContain('cargo install blok-mcp');
+      expect(code('rust')).toContain('cargo add blok-mcp');
+      expect(build('rust')?.description).toMatch(/crates\.io/);
     });
 
     it('flags package and tool installs, and only those, as install copies', () => {
       const isInstall = (text: string) =>
-        /^(dotnet add package|dotnet tool install|go install|npm install)\b/.test(text);
+        /^(cargo add|cargo install|dotnet add package|dotnet tool install|go install|npm install)\b/.test(text);
 
       for (const sample of serverMcpBuilds.flatMap((entry) => entry.samples)) {
         expect(sample.install === true, sample.label).toBe(isInstall(sample.code));
@@ -482,6 +484,9 @@ describe('server docs data', () => {
       '--collab-s3-prefix',
       '--doc-endpoint',
       '--doc-endpoint-auth',
+      '--file-bytes',
+      '--file-bytes-max-bytes',
+      '--files-cors',
       '--listen',
       '--max-upload',
       '--no-unfurl',
@@ -557,7 +562,7 @@ describe('server docs data', () => {
     expect(prose).toMatch(inOrder('--rate-limit', 'ticket', '60', 'otherwise', '0'));
   });
 
-  it('states the thirty-six service limits the design refuses to bury', () => {
+  it('states the thirty-seven service limits the design refuses to bury', () => {
     expect(serverLimits.map((l) => l.id)).toEqual([
       'no-documents',
       'collab-replaces-persistence',
@@ -577,6 +582,7 @@ describe('server docs data', () => {
       'loopback-host',
       'upload-by-url-json',
       'frame-check',
+      'file-bytes',
       'outbound-redirects',
       'proxy-rate-limit',
       'ticket-not-scoped',
@@ -614,6 +620,23 @@ describe('server docs data', () => {
     expect(body).toMatch(/not a security check/);
   });
 
+  it('describes GET /file-bytes: off by default, PDF only, 1 MiB an answer, and its statuses', () => {
+    const body = serverLimits.find((l) => l.id === 'file-bytes')?.body ?? '';
+
+    expect(body).toMatch(inOrder('GET /file-bytes', 'off by default', '--file-bytes'));
+    expect(body).toMatch(/--no-unfurl/);
+    expect(body).toMatch(inOrder('--file-bytes-max-bytes', '100 MiB'));
+    expect(body).toMatch(inOrder('FileBytesEnabled', 'FileBytesMaxBytes', 'FilesCors'));
+    expect(body).toMatch(/FilesCORS/);
+    expect(body).toMatch(/%PDF-/);
+    expect(body).toMatch(/1 MiB/);
+    expect(body).toMatch(/write: false/);
+    for (const status of ['404', '413', '415', '416', '429', '502']) {
+      expect(body).toContain(status);
+    }
+    expect(body).toMatch(inOrder('--files-cors', '--allow-origin'));
+  });
+
   it('prices the outbound fetch limits: five redirects, no https to http, each hop rate-limited', () => {
     const body = serverLimits.find((l) => l.id === 'outbound-redirects')?.body ?? '';
 
@@ -624,10 +647,15 @@ describe('server docs data', () => {
     expect(body).toMatch(/--rate-limit/);
   });
 
-  it('prices version history: points, the five routes, the journal and trimming', () => {
+  it('prices version history: points, the eight routes, the journal and trimming', () => {
     const body = serverLimits.find((l) => l.id === 'collab-version-history')?.body ?? '';
 
-    expect(body).toMatch(/Five routes/);
+    expect(body).toMatch(/Eight routes/);
+    expect(body).toMatch(inOrder('truncated', 'olderEnd', 'olderEnd.sequence'));
+    expect(body).toMatch(inOrder('detail=properties', 'database-row', 'properties', 'database', 'schema', 'created', 'views'));
+    expect(body).toMatch(inOrder('GET /sync/\\{doc\\}/history/at', 'offset', '%2B', '302', 'application/json', 'not_found'));
+    expect(body).toMatch(inOrder('GET /sync/\\{doc\\}/history/changes', 'from', 'to', '24 hours', 'before=', 'olderEnd'));
+    expect(body).toMatch(inOrder('POST /sync/\\{doc\\}/history/\\{lineage\\}/\\{sequence\\}/restore/preview', 'expectRevision', 'If-Match', '404'));
     expect(body).toMatch(inOrder('group', '1, 15 or 60', '400'));
     expect(body).toMatch(inOrder('GET /sync/\\{doc\\}/history/\\{lineage\\}/\\{sequence\\}/changes', 'since', 'truncated'));
     expect(body).toMatch(inOrder('added', 'removed', 'changed', 'moved'));

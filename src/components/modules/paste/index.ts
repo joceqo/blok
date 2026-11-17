@@ -1,6 +1,7 @@
 import { Module } from '../../__module';
 import { Dom as dom$ } from '../../dom';
 import { findOwn } from '../../utils/own-element';
+import { carriesReadOnly } from '../../utils/read-only-blocks';
 import { recordPasteHandling } from '../../utils/paste-continuation';
 import { log } from '../../utils/logger';
 import { waitAtMost } from '../../utils/lazy-styles';
@@ -8,6 +9,7 @@ import { rangeAtTextOffsets, textOffsetOf } from '../../utils/caret/selection';
 
 import { BLOK_MIME_TYPE, NEXT_SPACE_MIMES, NOTION_BLOCKS_V3_MIME } from './constants';
 import { ToolRegistry } from './tool-registry';
+import { blokClipboardText } from './blok-clipboard-text';
 // Type only: the pipeline loads on the first paste.
 import type { PasteEngine } from './engine';
 import type { Block } from '../../block';
@@ -164,11 +166,12 @@ export class Paste extends Module {
   /**
    * Handle pasted data transfer object. Reads it at once: the browser empties
    * a clipboard once its event is over, and the pipeline may still be loading.
+   * @param trustPageIds - only for markup the editor's own code hands in, never a clipboard
    */
-  public async processDataTransfer(dataTransfer: DataTransfer, pasteTarget?: Element, loadedAtEvent = this.engineLoaded): Promise<void> {
+  public async processDataTransfer(dataTransfer: DataTransfer, pasteTarget?: Element, loadedAtEvent = this.engineLoaded, trustPageIds = false): Promise<void> {
     const snapshot = snapshotOf(dataTransfer);
 
-    await this.withEngine(snapshot, false, loadedAtEvent, engine => engine.processDataTransfer(snapshot, pasteTarget));
+    await this.withEngine(snapshot, false, loadedAtEvent, engine => engine.processDataTransfer(snapshot, pasteTarget, trustPageIds));
   }
 
   /** The paste pipeline. One shared load; a failed one is dropped so the next paste tries again. */
@@ -378,6 +381,7 @@ export class Paste extends Module {
     const holder = this.Blok.UI.nodes.holder;
 
     this.listeners.on(holder, 'paste', this.handlePasteEventWrapper);
+    this.listeners.on(document, 'paste', this.handleDocumentPasteEvent);
     this.listeners.on(holder, 'keydown', this.handleShiftStateWrapper);
     this.listeners.on(holder, 'keyup', this.handleShiftStateWrapper);
     this.listeners.on(holder, 'drop', this.handleDropEventWrapper);
@@ -392,6 +396,7 @@ export class Paste extends Module {
     const holder = this.Blok.UI.nodes.holder;
 
     this.listeners.off(holder, 'paste', this.handlePasteEventWrapper);
+    this.listeners.off(document, 'paste', this.handleDocumentPasteEvent);
     this.listeners.off(holder, 'keydown', this.handleShiftStateWrapper);
     this.listeners.off(holder, 'keyup', this.handleShiftStateWrapper);
     this.listeners.off(holder, 'drop', this.handleDropEventWrapper);
@@ -561,11 +566,10 @@ export class Paste extends Module {
    * Check if browser behavior suits better.
    */
   private isNativeBehaviour(element: EventTarget): boolean {
-    return dom$.isNativeInput(element) ||
-      (element instanceof HTMLElement && (
-        element.contentEditable === 'plaintext-only' ||
-        element.getAttribute('contenteditable') === 'plaintext-only'
-      ));
+    // The target can be a highlight span inside a plain-text host (code), so read the host.
+    const host = element instanceof Element ? element.closest('[contenteditable]') : null;
+
+    return dom$.isNativeInput(element) || host?.getAttribute('contenteditable') === 'plaintext-only';
   }
 
   /**
@@ -603,7 +607,15 @@ export class Paste extends Module {
     // Read now: the awaits below can outlive the event, and the browser empties its clipboard then.
     const clipboard = event.clipboardData ? snapshotOf(event.clipboardData) : null;
     const loadedAtEvent = this.engineLoaded;
-    const { BlockManager, BlockEvents, Toolbar } = this.Blok;
+    const { BlockManager, BlockEvents, BlockSelection, CrossBlockSelection, Toolbar } = this.Blok;
+
+    // Before the first await: a native paste into the focused block must not run as well.
+    if (CrossBlockSelection.textSelection === null && BlockSelection.anyBlockSelected) {
+      event.preventDefault();
+      await this.pasteOverBlockSelection(clipboard, loadedAtEvent);
+
+      return;
+    }
 
     /**
      * A paste over a cross-block text selection replaces it. The range spans two
@@ -623,10 +635,13 @@ export class Paste extends Module {
     const currentBlock = (replacedTextSelection ? BlockManager.currentBlock : undefined) ??
       BlockManager.setCurrentBlockByChildNode(event.target as HTMLElement);
 
-    if (
-      !currentBlock ||
-      (event.target && this.isNativeBehaviour(event.target) && clipboard && !clipboard.types.includes('Files'))
-    ) {
+    if (!currentBlock) {
+      return;
+    }
+
+    if (event.target && this.isNativeBehaviour(event.target) && clipboard && !clipboard.types.includes('Files')) {
+      this.pasteBlokTextIntoPlainHost(event, clipboard);
+
       return;
     }
 
@@ -651,5 +666,90 @@ export class Paste extends Module {
     }
 
     Toolbar.moveAndOpen();
+  };
+
+  /**
+   * A plain-text host (code) takes the browser's own paste, but Blok's text/plain
+   * is Markdown, so a Blok block copy would land as a fenced block. Insert its
+   * blocks' text instead. Native inputs keep the browser paste.
+   */
+  private pasteBlokTextIntoPlainHost(event: ClipboardEvent, clipboard: DataTransfer): void {
+    const blok = clipboard.getData(BLOK_MIME_TYPE);
+    const text = blok === '' || dom$.isNativeInput(event.target) ? null : blokClipboardText(blok);
+    const range = window.getSelection()?.rangeCount ? window.getSelection()?.getRangeAt(0) : undefined;
+
+    if (text === null || text === '' || range === undefined) {
+      return;
+    }
+    event.preventDefault();
+
+    // insertText fires the input events the host refreshes on, and joins native undo. jsdom has no execCommand.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- no other API inserts text as a user edit
+    if (typeof document.execCommand === 'function' && document.execCommand('insertText', false, text)) {
+      return;
+    }
+    const node = document.createTextNode(text);
+
+    range.deleteContents();
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+  }
+
+  /**
+   * A paste over selected blocks replaces them, like typing over them: they
+   * go, and the paste lands in the empty block left in their place.
+   */
+  private async pasteOverBlockSelection(clipboard: DataTransfer | null, loadedAtEvent: boolean): Promise<void> {
+    const { BlockManager, BlockSelection, Caret, Toolbar } = this.Blok;
+    const first = BlockManager.blocks.find(block => block.selected);
+    const defaultTool = this.config.defaultBlock;
+    // The shared replacement goes to the root, so a nested selection swaps its
+    // first block in place instead: the paste then stays in the toggle or cell.
+    const nested = first !== undefined && first.parentId !== null && defaultTool !== undefined &&
+      !carriesReadOnly(first, id => BlockManager.getBlockById(id));
+    const replacement = nested ? BlockManager.replace(first, defaultTool, {}) : BlockManager.deleteSelectedBlocksAndInsertReplacement(true);
+
+    if (nested) {
+      BlockManager.deleteSelectedBlocksAndInsertReplacement();
+    }
+
+    BlockSelection.clearSelection();
+
+    if (replacement === undefined || clipboard === null) {
+      return;
+    }
+
+    Caret.setToBlock(replacement, Caret.positions.START);
+
+    if (this.isShiftHeld) {
+      await this.processAsText(clipboard.getData('text/plain'), loadedAtEvent);
+    } else {
+      await this.processDataTransfer(clipboard, replacement.currentInput, loadedAtEvent);
+    }
+
+    Toolbar.moveAndOpen();
+  }
+
+  /**
+   * The browser fires a paste at the focused element. After a rubber-band or
+   * keyboard block selection that is body, outside the holder listener.
+   */
+  private handleDocumentPasteEvent = (event: Event): void => {
+    const target = event.target;
+    const holder = this.Blok.UI.nodes.holder;
+
+    if (
+      event.defaultPrevented ||
+      (target instanceof Node && holder.contains(target)) ||
+      (target instanceof HTMLElement && (dom$.isNativeInput(target) || target.isContentEditable)) ||
+      !this.Blok.BlockSelection.anyBlockSelected
+    ) {
+      return;
+    }
+
+    this.handlePasteEventWrapper(event);
   };
 }

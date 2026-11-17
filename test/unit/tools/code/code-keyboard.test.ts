@@ -1,7 +1,6 @@
 // test/unit/tools/code/code-keyboard.test.ts
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { TAB_STRING } from '../../../../src/tools/code/constants';
 
 /**
  * Helper: create a code element with text content and place the caret at a given offset.
@@ -96,7 +95,8 @@ describe('handleCodeKeydown', () => {
     expect(codeElement.textContent).toContain('\n');
   });
 
-  it('inserts a tab (2 spaces) for Tab and returns true', async () => {
+  // Notion U154: Tab writes one tab character.
+  it('inserts a tab character for Tab and returns true', async () => {
     const { handleCodeKeydown } = await import('../../../../src/tools/code/code-keyboard');
     const codeElement = setupCodeElement('hello', 5);
     const onExit = vi.fn();
@@ -105,13 +105,22 @@ describe('handleCodeKeydown', () => {
     const handled = handleCodeKeydown(event, codeElement, onExit);
 
     expect(handled).toBe(true);
-    expect(codeElement.textContent).toBe('hello' + TAB_STRING);
+    expect(codeElement.textContent).toBe('hello\t');
+  });
+
+  it('removes one leading tab character for Shift+Tab', async () => {
+    const { handleCodeKeydown } = await import('../../../../src/tools/code/code-keyboard');
+    const codeElement = setupCodeElement('\t\thello', 2);
+    const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true });
+
+    handleCodeKeydown(event, codeElement, vi.fn());
+
+    expect(codeElement.textContent).toBe('\thello');
   });
 
   it('removes leading spaces for Shift+Tab and returns true', async () => {
     const { handleCodeKeydown } = await import('../../../../src/tools/code/code-keyboard');
-    const text = TAB_STRING + 'hello';
-    const codeElement = setupCodeElement(text, TAB_STRING.length);
+    const codeElement = setupCodeElement('  hello', 2);
     const onExit = vi.fn();
     const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true });
 
@@ -153,7 +162,7 @@ describe('handleCodeKeydown', () => {
 
     handleCodeKeydown(event, codeElement, onExit);
 
-    expect(codeElement.textContent).toBe('a' + TAB_STRING + 'b');
+    expect(codeElement.textContent).toBe('a\tb');
   });
 
   it('Enter inserts newline at caret position', async () => {
@@ -285,8 +294,8 @@ describe('handleCodeKeydown — Enter bracket expansion', () => {
 
     handleCodeKeydown(event, codeElement, vi.fn());
 
-    expect(codeElement.textContent).toBe(`{\n${TAB_STRING}\n}`);
-    expect(caretOffsetIn(codeElement)).toBe(2 + TAB_STRING.length);
+    expect(codeElement.textContent).toBe(`{\n\t\n}`);
+    expect(caretOffsetIn(codeElement)).toBe(2 + 1);
   });
 
   it('expands parentheses', async () => {
@@ -296,8 +305,8 @@ describe('handleCodeKeydown — Enter bracket expansion', () => {
 
     handleCodeKeydown(event, codeElement, vi.fn());
 
-    expect(codeElement.textContent).toBe(`(\n${TAB_STRING}\n)`);
-    expect(caretOffsetIn(codeElement)).toBe(2 + TAB_STRING.length);
+    expect(codeElement.textContent).toBe(`(\n\t\n)`);
+    expect(caretOffsetIn(codeElement)).toBe(2 + 1);
   });
 
   it('expands square brackets', async () => {
@@ -307,8 +316,8 @@ describe('handleCodeKeydown — Enter bracket expansion', () => {
 
     handleCodeKeydown(event, codeElement, vi.fn());
 
-    expect(codeElement.textContent).toBe(`[\n${TAB_STRING}\n]`);
-    expect(caretOffsetIn(codeElement)).toBe(2 + TAB_STRING.length);
+    expect(codeElement.textContent).toBe(`[\n\t\n]`);
+    expect(caretOffsetIn(codeElement)).toBe(2 + 1);
   });
 
   it('preserves outer indent when expanding brackets on an indented line', async () => {
@@ -319,8 +328,8 @@ describe('handleCodeKeydown — Enter bracket expansion', () => {
 
     handleCodeKeydown(event, codeElement, vi.fn());
 
-    expect(codeElement.textContent).toBe(`  if (x) {\n  ${TAB_STRING}\n  }`);
-    expect(caretOffsetIn(codeElement)).toBe(11 + 2 + TAB_STRING.length);
+    expect(codeElement.textContent).toBe(`  if (x) {\n  \t\n  }`);
+    expect(caretOffsetIn(codeElement)).toBe(11 + 2 + 1);
   });
 
   it('does not expand when char after caret is not the matching closer', async () => {
@@ -332,8 +341,8 @@ describe('handleCodeKeydown — Enter bracket expansion', () => {
     handleCodeKeydown(event, codeElement, vi.fn());
 
     // Falls through to "deeper indent after opener" rule
-    expect(codeElement.textContent).toBe(`{\n${TAB_STRING}abc}`);
-    expect(caretOffsetIn(codeElement)).toBe(2 + TAB_STRING.length);
+    expect(codeElement.textContent).toBe(`{\n\tabc}`);
+    expect(caretOffsetIn(codeElement)).toBe(2 + 1);
   });
 
   it('does not expand when bracket types do not match (e.g. {] )', async () => {
@@ -344,7 +353,7 @@ describe('handleCodeKeydown — Enter bracket expansion', () => {
     handleCodeKeydown(event, codeElement, vi.fn());
 
     // Deeper indent after opener applies; closer just stays where it was
-    expect(codeElement.textContent).toBe(`{\n${TAB_STRING}]`);
+    expect(codeElement.textContent).toBe(`{\n\t]`);
   });
 });
 
@@ -363,8 +372,19 @@ describe('handleCodeKeydown — Enter deeper indent after opener', () => {
 
     handleCodeKeydown(event, codeElement, vi.fn());
 
-    expect(codeElement.textContent).toBe(`if (x) {\n${TAB_STRING}`);
-    expect(caretOffsetIn(codeElement)).toBe(9 + TAB_STRING.length);
+    expect(codeElement.textContent).toBe(`if (x) {\n\t`);
+    expect(caretOffsetIn(codeElement)).toBe(9 + 1);
+  });
+
+  it('adds one tab after a tab-indented line ending with {', async () => {
+    const { handleCodeKeydown } = await import('../../../../src/tools/code/code-keyboard');
+    const codeElement = setupCodeElement('\tif (a) {', 9);
+    const event = new KeyboardEvent('keydown', { key: 'Enter' });
+
+    handleCodeKeydown(event, codeElement, vi.fn());
+
+    expect(codeElement.textContent).toBe('\tif (a) {\n\t\t');
+    expect(caretOffsetIn(codeElement)).toBe(12);
   });
 
   it('combines existing indent with one extra unit', async () => {
@@ -375,8 +395,8 @@ describe('handleCodeKeydown — Enter deeper indent after opener', () => {
 
     handleCodeKeydown(event, codeElement, vi.fn());
 
-    expect(codeElement.textContent).toBe(`  fn(\n  ${TAB_STRING}`);
-    expect(caretOffsetIn(codeElement)).toBe(6 + 2 + TAB_STRING.length);
+    expect(codeElement.textContent).toBe(`  fn(\n  \t`);
+    expect(caretOffsetIn(codeElement)).toBe(6 + 2 + 1);
   });
 });
 

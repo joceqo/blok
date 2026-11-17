@@ -3,9 +3,12 @@ import { DatabaseModel } from '../../../../src/tools/database/database-model';
 import { openFilterPill, openViewSettings } from '../../../../src/tools/database/database-view-settings-panel';
 import type { ViewSettingsContext, ViewSettingsStart } from '../../../../src/tools/database/database-view-settings-panel';
 import type { DatabasePanel } from '../../../../src/tools/database/database-panel';
-import type { DatabaseViewConfig, PropertyDefinition } from '../../../../src/tools/database/types';
-import { IconTable, IconViewBoard } from '../../../../src/components/icons';
+import type { ColorRule, DatabaseViewConfig, FilterGroup, FilterRule, PropertyDefinition } from '../../../../src/tools/database/types';
+import { COLOR_RULE_TYPES } from '../../../../src/tools/database/view-data';
+import { IconPin, IconPinFilled, IconTable, IconViewBoard } from '../../../../src/components/icons';
 import { PopoverItemType } from '../../../../src/components/utils/popover/components/popover-item';
+import type { PopoverItemParams } from '../../../../types/utils/popover/popover-item';
+import { NUMBER_LIST_ROLLUP, PAGE_LIST_ROLLUP } from '../../../../src/shared/database/value-helpers';
 
 const schema: PropertyDefinition[] = [
   { id: 'title', name: 'Name', type: 'title', position: 'a0' },
@@ -24,6 +27,7 @@ const click = (id: string): void => {
 };
 
 const exists = (id: string): boolean => document.querySelector(`[data-blok-testid="${id}"]`) !== null;
+const q = (id: string): HTMLElement | null => document.querySelector<HTMLElement>(`[data-blok-testid="${id}"]`);
 
 interface Harness {
   ctx: ViewSettingsContext;
@@ -147,14 +151,14 @@ describe('view settings panel', () => {
     ]);
   });
 
-  it('shows no value on an empty Filter, Sort, Group or Conditional color, and the count once set', () => {
+  it('shows no value on an empty Filter, Sort, Group or Conditional color, and a value once set', () => {
     const value = (id: string): string | null => document.querySelector(`[data-blok-testid="database-settings-${id}"] [data-blok-database-panel-value]`)?.textContent ?? null;
     const first = harness({ type: 'board' }).open();
 
     for (const id of ['filter', 'sort', 'group', 'subgroup', 'color']) expect(value(id), id).toBeNull();
     first.close();
     harness({ type: 'board', sorts: [{ id: 's', propertyId: 'num', direction: 'asc' }], groupBy: 'stage' }).open();
-    expect(value('sort')).toBe('1');
+    expect(value('sort')).toBe('Amount');
     expect(value('group')).toBe('Stage');
   });
 
@@ -323,6 +327,72 @@ describe('view settings panel', () => {
       expect(exists('database-sort-add')).toBe(true);
     });
 
+    // notion-motion.md Round 9 (r9-vs-filter.raw, r9-vs-sort.raw): "Add filter" over "Filter by…", "New sort" over "Sort by…".
+    const title = (): string => document.querySelector('[data-blok-database-panel-header]')?.textContent ?? '';
+    const search = (): HTMLInputElement | null => document.querySelector<HTMLInputElement>('[data-blok-testid="database-property-picker-search"]');
+    const page = (): string | null | undefined => document.querySelector('[data-blok-testid="database-view-settings"]')?.getAttribute('data-blok-database-panel-page');
+
+    it('an empty Filter page reads "Add filter" over a "Filter by…" search, and reads "Filter" once a filter exists', () => {
+      harness().open();
+      click('database-settings-filter');
+
+      expect(title()).toContain('tools.database.filterAdd');
+      expect(search()?.placeholder).toBe('tools.database.filterByPlaceholder');
+      expect(search()?.getAttribute('aria-label')).toBe('tools.database.filterByPlaceholder');
+      expect(page()).toBe('pick');
+      click('database-pick-property-num');
+      click('database-panel-back');
+      expect(title()).toContain('tools.database.settingsFilter');
+      expect(title()).not.toContain('tools.database.filterAdd');
+      expect(page()).not.toBe('pick');
+    });
+
+    it('an empty Sort page reads "New sort" over a "Sort by…" search, and reads "Sort" once a sort exists', () => {
+      harness().open();
+      click('database-settings-sort');
+
+      expect(title()).toContain('tools.database.sortNew');
+      expect(search()?.placeholder).toBe('tools.database.sortByPlaceholder');
+      expect(search()?.getAttribute('aria-label')).toBe('tools.database.sortByPlaceholder');
+      expect(page()).toBe('pick');
+      click('database-pick-property-due');
+      expect(title()).toContain('tools.database.settingsSort');
+      expect(title()).not.toContain('tools.database.sortNew');
+      expect(page()).not.toBe('pick');
+    });
+
+    // notion-motion.md Round 10 "Group by list": ungrouped, the Group page is the property list titled "Group by".
+    it('the ungrouped Group page is the "Group by" picker; grouped, it carries the Group page name', () => {
+      harness().open();
+      click('database-settings-group');
+      expect(page()).toBe('pick');
+      expect(title()).toContain('tools.database.groupBy');
+      click('database-pick-property-stage');
+      expect(page()).toBe('group');
+    });
+
+    // Round 10 '"Group by ›" list with a grouping set': the same picker layout, and no "None" row.
+    it('opens "Group by ›" as the picker page, with no None row', () => {
+      harness().open();
+      click('database-settings-group');
+      click('database-pick-property-stage');
+      click('database-group-by');
+      expect(page()).toBe('pick');
+      expect(exists('database-group-none')).toBe(false);
+      expect(exists('database-pick-property-num')).toBe(true);
+    });
+
+    // Round 10 "Add sort picker": the already-sorted property is left out, in the picker layout.
+    it('"Add sort" leaves out the sorted property', () => {
+      harness().open();
+      click('database-settings-sort');
+      click('database-pick-property-due');
+      click('database-sort-add');
+      expect(page()).toBe('pick');
+      expect(exists('database-pick-property-due')).toBe(false);
+      expect(exists('database-pick-property-num')).toBe(true);
+    });
+
     it('Group lists None (checked), then Name, then A→Z; a pick groups', () => {
       const h = harness();
 
@@ -337,13 +407,70 @@ describe('view settings panel', () => {
     });
   });
 
+  // notion-motion.md Round 13: the rule editor picks a date's Start date / End date and a Name rollup's Any / None / Every too.
+  describe('rule editor lead parts', () => {
+    const ops = (): Array<string | undefined> => [...document.querySelectorAll('[data-blok-testid^="database-filter-op-"]')]
+      .map((el) => el.getAttribute('data-blok-testid')?.replace('database-filter-op-', ''));
+
+    it('keeps End date through the date editor and an operator pick, and goes back to Start date', () => {
+      const h = harness({ filters: [{ id: 'f1', propertyId: 'due', operator: 'end:this_week', value: null }] });
+
+      h.openPill('f1');
+      expect(document.querySelector('[data-blok-testid="database-filter-side"]')?.textContent).toContain('tools.database.dateEnd');
+
+      const unit = document.querySelector<HTMLSelectElement>('[data-blok-testid="database-filter-unit"]');
+
+      if (unit === null) throw new Error('no unit');
+      unit.value = 'month';
+      unit.dispatchEvent(new Event('change'));
+      expect(h.state.view.filters[0]).toMatchObject({ operator: 'end:relative_to_today', value: 'this:1:month' });
+
+      click('database-filter-operator');
+      click('database-filter-op-before');
+      expect(h.state.view.filters[0]).toMatchObject({ operator: 'end:before' });
+
+      click('database-filter-side');
+      expect(document.querySelector('[data-blok-testid="database-filter-side-end"]')?.getAttribute('aria-checked')).toBe('true');
+      click('database-filter-side-start');
+      expect(h.state.view.filters[0]).toMatchObject({ operator: 'before' });
+    });
+
+    it('edits a Name rollup rule with Any / None / Every, the text operators and a text field', () => {
+      const names = Object.assign(
+        { id: 'names', name: 'Names', type: 'relation', position: 'a6', rollup: { relationPropertyId: 'rel', targetPropertyId: 'title', function: 'show_original' } } as PropertyDefinition,
+        { [PAGE_LIST_ROLLUP]: true }
+      );
+      const h = harness({ filters: [{ id: 'f1', propertyId: 'names', operator: 'any:contains', value: '' }] });
+
+      h.ctx.schema = () => [...schema, names];
+      h.openPill('f1');
+
+      click('database-filter-quantifier');
+      expect([...document.querySelectorAll('[data-blok-testid^="database-filter-quantifier-"]')].map((el) => el.getAttribute('data-blok-testid')))
+        .toEqual(['database-filter-quantifier-any', 'database-filter-quantifier-none', 'database-filter-quantifier-every']);
+      click('database-filter-quantifier-none');
+      expect(h.state.view.filters[0]).toMatchObject({ operator: 'none:contains' });
+
+      click('database-filter-operator');
+      expect(ops()).toEqual(['equals', 'does_not_equal', 'contains', 'does_not_contain', 'starts_with', 'ends_with', 'is_empty', 'is_not_empty']);
+      click('database-filter-op-starts_with');
+      expect(h.state.view.filters[0]).toMatchObject({ operator: 'none:starts_with' });
+
+      const input = document.querySelector<HTMLInputElement>('[data-blok-testid="database-filter-value"]');
+
+      if (input === null) throw new Error('no value field');
+      input.value = 'x';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      expect(h.state.view.filters[0]).toMatchObject({ operator: 'none:starts_with', value: 'x' });
+    });
+  });
+
   // filter-sort's date filter (findings V18): the settings rule editor reuses the chip's date editor.
   describe('date rule editor', () => {
     const openRule = (filter: { operator: string; value: unknown }): ReturnType<typeof harness> => {
       const h = harness({ filters: [{ id: 'f1', propertyId: 'due', operator: filter.operator, value: filter.value as never }] });
 
-      h.open('filter');
-      click('database-filter-row-f1');
+      h.openPill('f1');
 
       return h;
     };
@@ -435,11 +562,22 @@ describe('view settings panel', () => {
       h.ctx.layouts = ['table', 'board', 'list', 'gallery', 'calendar', 'timeline', 'chart', 'feed', 'map', 'form'];
       h.open('layout');
 
+      // notion-motion.md Round 23 §6: a Table view's Layout list has no Form; Form stays in Add view.
       expect(tiles().map((tile) => tile.getAttribute('data-blok-database-layout-tile'))).toEqual([
-        'table', 'board', 'timeline', 'calendar', 'list', 'gallery', 'chart', 'feed', 'map', 'form',
+        'table', 'board', 'timeline', 'calendar', 'list', 'gallery', 'chart', 'feed', 'map',
       ]);
       for (const tile of tiles()) expect(tile.querySelector('svg')).not.toBeNull();
       expect(tiles()[1].textContent?.trim()).toBe('tools.database.viewTypeBoard');
+    });
+
+    // A Form view's own Layout list is unread in Notion (Round 23 §6), so it keeps its own tile.
+    it('keeps the Form tile in a Form view\'s own list', () => {
+      const h = harness({ type: 'form' });
+
+      h.ctx.layouts = ['table', 'board', 'form'];
+      h.open('layout');
+
+      expect(tiles().map((tile) => tile.getAttribute('data-blok-database-layout-tile'))).toEqual(['table', 'board', 'form']);
     });
 
     // Notion rings the pick blue; Blok marks it gray with a ✓ (no-blue law, findings "Deliberate deviations").
@@ -464,6 +602,141 @@ describe('view settings panel', () => {
         'database-settings-data-source-title', 'database-settings-vertical-lines', 'database-settings-page-icon', 'database-settings-wrap',
         'database-settings-open-pages', 'database-settings-load-limit',
       ]);
+    });
+  });
+
+  // notion-motion.md Round 24 §4: each layout lists its own rows; Calendar and Timeline put theirs before Open pages in.
+  describe('Layout page rows per view (Round 24)', () => {
+    const ids = (): Array<string | null> =>
+      [...document.querySelectorAll<HTMLElement>(['settings', 'calendar', 'timeline']
+        .map((prefix) => `[data-blok-testid="database-view-settings"] [data-blok-testid^="database-${prefix}-"]`).join(', '))]
+        .map((el) => el.getAttribute('data-blok-testid'));
+    const own = (name: string): PopoverItemParams => ({ type: PopoverItemType.Default, name, title: name, isActive: false, onActivate: vi.fn() });
+
+    // Round 24 §4, Round 25 §6: a List has "Directly edit page name" (off) after Show page icon, and no Wrap row.
+    it('gives a List "Directly edit page name", off, and no Wrap row', () => {
+      const h = harness({ type: 'list' });
+
+      h.open('layout');
+
+      expect(ids()).toEqual(['database-settings-page-icon', 'database-settings-direct-edit', 'database-settings-open-pages', 'database-settings-load-limit']);
+      expect(q('database-settings-direct-edit')?.textContent).toBe('tools.database.settingsDirectEditPageName');
+      expect(q('database-settings-direct-edit')?.getAttribute('aria-checked')).toBe('false');
+      click('database-settings-direct-edit');
+      expect(h.ctx.updateView).toHaveBeenLastCalledWith({ directTitleEdit: true });
+    });
+
+    // Round 25 §5, §7: Calendar's "Wrap page titles" switch sits after Show page icon.
+    it('gives a Calendar "Wrap page titles" and no Load limit, and puts its own rows before Open pages in', () => {
+      const h = harness({ type: 'calendar' });
+
+      h.ctx.layoutItems = () => [own('calendar-weekends')];
+      h.open('layout');
+
+      expect(ids()).toEqual(['database-settings-page-icon', 'database-settings-wrap', 'database-calendar-weekends', 'database-settings-open-pages']);
+      expect(q('database-settings-wrap')?.textContent).toBe('tools.database.settingsWrapPageTitles');
+      expect(q('database-settings-wrap')?.getAttribute('aria-checked')).toBe('false');
+      click('database-settings-wrap');
+      expect(h.ctx.updateView).toHaveBeenLastCalledWith({ wrapCells: true });
+    });
+
+    // notion-motion.md Round 33 §5: a Feed lists Show author byline (on) after the Wrap row.
+    it('gives a Feed "Show author byline", on, after Wrap', () => {
+      const h = harness({ type: 'feed' });
+
+      h.open('layout');
+
+      expect(ids()).toEqual([
+        'database-settings-page-icon', 'database-settings-wrap', 'database-settings-author-byline',
+        'database-settings-open-pages', 'database-settings-load-limit',
+      ]);
+      expect(q('database-settings-author-byline')?.textContent).toBe('tools.database.settingsShowAuthorByline');
+      expect(q('database-settings-author-byline')?.getAttribute('aria-checked')).toBe('true');
+      click('database-settings-author-byline');
+      expect(h.ctx.updateView).toHaveBeenLastCalledWith({ showAuthorByline: false });
+    });
+
+    // notion-motion.md Round 34 §3: a Feed's Wrap row reads "Wrap properties", off.
+    it('calls a Feed\'s Wrap row "Wrap properties"', () => {
+      const h = harness({ type: 'feed' });
+
+      h.open('layout');
+
+      expect(q('database-settings-wrap')?.textContent).toBe('tools.database.settingsWrapProperties');
+      expect(q('database-settings-wrap')?.getAttribute('aria-checked')).toBe('false');
+    });
+
+    it('gives a Timeline no Wrap, and puts its own rows before Open pages in and Load limit', () => {
+      const h = harness({ type: 'timeline' });
+
+      h.ctx.layoutItems = () => [own('timeline-show-table')];
+      h.open('layout');
+
+      expect(ids()).toEqual(['database-settings-page-icon', 'database-timeline-show-table', 'database-settings-open-pages', 'database-settings-load-limit']);
+    });
+  });
+
+  // notion-motion.md Round 25 §7: where the separator sits, and the board's Group by and Color columns rows.
+  describe('Layout page rows and separators (Round 25)', () => {
+    /** The page's rows after the tiles; a separator reads "—". */
+    const parts = (): string[] => {
+      const all = [...document.querySelectorAll<HTMLElement>('[data-blok-testid="database-view-settings"] > *')];
+      const tiles = all.findIndex((el) => el.hasAttribute('data-blok-database-layout-tiles'));
+
+      return all.slice(tiles + 1).map((el) => (el.hasAttribute('data-blok-database-panel-separator') ? '—' : el.getAttribute('data-blok-testid') ?? ''));
+    };
+    const own = (name: string): PopoverItemParams => ({ type: PopoverItemType.Default, name, title: name, isActive: false, onActivate: vi.fn() });
+
+    it('puts a board\'s Group by and Color columns before Open pages in, then a separator and the card rows', () => {
+      const h = harness({ type: 'board', groupBy: 'stage' });
+
+      h.ctx.layoutItems = () => [own('board-card-preview'), own('board-card-size')];
+      h.open('layout');
+
+      expect(parts()).toEqual([
+        'database-settings-page-icon', 'database-settings-wrap',
+        'database-settings-group-by', 'database-settings-color-columns',
+        'database-settings-open-pages', 'database-settings-load-limit',
+        '—', 'database-board-card-preview', 'database-board-card-size', 'database-settings-card-layout',
+      ]);
+      expect(q('database-settings-group-by')?.textContent).toContain('Stage');
+    });
+
+    it('lets Color columns write the group setting', () => {
+      const h = harness({ type: 'board', groupBy: 'stage' });
+
+      h.open('layout');
+      click('database-settings-color-columns');
+      expect(h.ctx.updateView).toHaveBeenLastCalledWith({ groupSettings: { colorColumns: false } });
+    });
+
+    // notion-motion.md Round 26 §3: the Layout page's Group by opens the Group page, and Back returns to Layout.
+    it('opens the Group page from the board\'s Group by row, and Back returns to Layout', () => {
+      harness({ type: 'board', groupBy: 'stage' }).open('layout');
+      click('database-settings-group-by');
+
+      expect(exists('database-group-hide-all')).toBe(true);
+      expect(exists('database-pick-property-prog')).toBe(false);
+
+      click('database-panel-back');
+      expect(exists('database-settings-color-columns')).toBe(true);
+      expect(exists('database-group-hide-all')).toBe(false);
+    });
+
+    it('gives no Color columns row when the board groups by a property without colors', () => {
+      harness({ type: 'board', groupBy: 'owner' }).open('layout');
+
+      expect(exists('database-settings-group-by')).toBe(true);
+      expect(exists('database-settings-color-columns')).toBe(false);
+    });
+
+    it.each(['calendar', 'timeline'] as const)('puts no separator before a %s\'s own rows', (type) => {
+      const h = harness({ type });
+
+      h.ctx.layoutItems = () => [own(`${type}-own`)];
+      h.open('layout');
+
+      expect(parts()).not.toContain('—');
     });
   });
 
@@ -542,6 +815,14 @@ describe('view settings panel', () => {
     expect(document.querySelector<HTMLButtonElement>('[data-blok-testid="database-gallery-fit-image"]')?.disabled).toBe(true);
   });
 
+  // notion-motion.md Round 9 (r9-vs-layout.raw): database.css holds the Layout page's measured row box by this name.
+  it('names the Layout page "layout"', () => {
+    harness().open();
+    click('database-settings-layout');
+
+    expect(document.querySelector('[data-blok-testid="database-view-settings"]')?.getAttribute('data-blok-database-panel-page')).toBe('layout');
+  });
+
   it('marks the layout\'s default open mode with "Default for <layout>", under that mode only', () => {
     const h = harness();
 
@@ -586,6 +867,26 @@ describe('view settings panel', () => {
       click('database-settings-layout');
 
       expect(exists('database-settings-data-source-title')).toBe(false);
+    });
+
+    // notion-motion.md Round 32 §3 (Settings → Layout): a database with its own rows lists "Show data source titles" first.
+    // research/30 §B17: it is the tab menu's block-wide setting.
+    it('is the first row on a database with its own rows when the block offers its titles switch, and toggles it', () => {
+      const h = harness();
+      const toggle = vi.fn();
+
+      h.ctx.dataSourceTitles = { shown: () => false, toggle };
+      h.open();
+      click('database-settings-layout');
+
+      const row = document.querySelector('[data-blok-testid="database-settings-data-source-title"]');
+
+      expect(rowsAfterTiles()[0]).toBe('database-settings-data-source-title');
+      expect(row?.textContent).toContain('tools.database.showDataSourceTitles');
+      expect(row?.getAttribute('aria-checked')).toBe('false');
+      click('database-settings-data-source-title');
+      expect(toggle).toHaveBeenCalledTimes(1);
+      expect(h.ctx.updateView).not.toHaveBeenCalled();
     });
   });
 
@@ -672,8 +973,260 @@ describe('view settings panel', () => {
   // findings V14 (12-notion-propvis.png): search, "Shown in <layout>" + Hide all, type glyphs, eye toggles.
   describe('Property visibility page', () => {
     const eye = (id: string): HTMLElement | null => document.querySelector(`[data-blok-testid="database-property-visible-${id}"]`);
-    const listed = (): string[] => [...document.querySelectorAll<HTMLElement>('[data-blok-testid="database-properties-list"] [data-item-id]')]
+    const idsIn = (testId: string): string[] => [...document.querySelectorAll<HTMLElement>(`[data-blok-testid="${testId}"] [data-item-id]`)]
       .map((row) => row.getAttribute('data-item-id') ?? '');
+    const listed = (): string[] => [...idsIn('database-properties-list'), ...idsIn('database-properties-hidden-list')];
+    const shownIds = (): string[] => idsIn('database-properties-list');
+    const hiddenIds = (): string[] => idsIn('database-properties-hidden-list');
+    const sections = (): string[] => [...document.querySelectorAll('[data-blok-database-property-visibility-header] [data-blok-database-panel-section]')]
+      .map((el) => el.textContent ?? '');
+
+    // notion-motion.md Round 35 §1 (r35-propvis.raw): "Shown in table" (9) with Hide all, then "Hidden in table" (8) with Show all.
+    describe('Shown and Hidden sections', () => {
+      it('lists shown properties under "Shown in table" and hidden ones under "Hidden in table", each in view order', () => {
+        harness({ properties: [{ id: 'title', visible: true }, { id: 'due', visible: false }, { id: 'num', visible: true }, { id: 'stage', visible: false }, { id: 'prog', visible: true }, { id: 'owner', visible: false }] }).open('properties');
+
+        expect(sections()).toEqual(['tools.database.settingsShownInTable', 'tools.database.settingsHiddenInTable']);
+        expect(shownIds()).toEqual(['title', 'num', 'prog']);
+        expect(hiddenIds()).toEqual(['due', 'stage', 'owner']);
+        expect(q('database-property-hide-all')?.textContent).toBe('tools.database.groupHideAll');
+        expect(q('database-property-show-all')?.textContent).toBe('tools.database.groupShowAll');
+      });
+
+      it('has no Hidden section while every property is shown', () => {
+        harness({ properties: [{ id: 'due', visible: true }, { id: 'num', visible: true }, { id: 'stage', visible: true }, { id: 'prog', visible: true }, { id: 'owner', visible: true }] }).open('properties');
+
+        expect(sections()).toEqual(['tools.database.settingsShownInTable']);
+        expect(exists('database-properties-hidden-list')).toBe(false);
+        expect(exists('database-property-show-all')).toBe(false);
+      });
+
+      it('moves a row to Hidden when its eye hides it, and back to Shown when shown, one view update each', () => {
+        const h = harness({ properties: [{ id: 'due', visible: true }, { id: 'num', visible: false }] });
+
+        h.open('properties');
+        vi.mocked(h.ctx.updateView).mockClear();
+        eye('due')?.click();
+        expect(h.ctx.updateView).toHaveBeenCalledTimes(1);
+        expect(shownIds()).not.toContain('due');
+        expect(hiddenIds()).toContain('due');
+
+        eye('due')?.click();
+        expect(h.ctx.updateView).toHaveBeenCalledTimes(2);
+        expect(shownIds()).toContain('due');
+        expect(hiddenIds()).not.toContain('due');
+      });
+
+      it('keeps focus on the eye after its row changes section', () => {
+        const h = harness({ properties: [{ id: 'due', visible: true }] });
+
+        h.open('properties');
+        eye('due')?.focus();
+        eye('due')?.click();
+        expect(eye('due')?.closest('[data-blok-testid="database-properties-hidden-list"]')).not.toBeNull();
+        expect(eye('due')).toHaveFocus();
+      });
+
+      it('Show all shows every hidden property in one view update', () => {
+        const h = harness({ properties: [{ id: 'due', visible: false }, { id: 'num', visible: false }, { id: 'stage', visible: true }] });
+
+        h.open('properties');
+        vi.mocked(h.ctx.updateView).mockClear();
+        click('database-property-show-all');
+        expect(h.ctx.updateView).toHaveBeenCalledTimes(1);
+        expect(hiddenIds()).toEqual([]);
+        expect(exists('database-property-show-all')).toBe(false);
+        expect(shownIds()).toEqual(expect.arrayContaining(['due', 'num', 'stage']));
+      });
+
+      it('Hide all moves every shown property but the title to Hidden in one view update', () => {
+        const h = harness({ properties: [{ id: 'due', visible: true }, { id: 'num', visible: false }] });
+
+        h.open('properties');
+        vi.mocked(h.ctx.updateView).mockClear();
+        click('database-property-hide-all');
+        expect(h.ctx.updateView).toHaveBeenCalledTimes(1);
+        expect(shownIds()).toEqual(['title']);
+        expect(hiddenIds()).toEqual(expect.arrayContaining(['due', 'num']));
+      });
+
+      // notion-motion.md Round 36 §1 (r36-pv-allhidden.raw): with only the title left, Hide all stays, enabled.
+      it('keeps Hide all once only the title is shown, and a click changes nothing', () => {
+        const h = harness({ properties: [{ id: 'due', visible: true }, { id: 'num', visible: false }] });
+
+        h.open('properties');
+        click('database-property-hide-all');
+        expect(shownIds()).toEqual(['title']);
+        expect(q('database-property-hide-all')?.textContent).toBe('tools.database.groupHideAll');
+        expect(q('database-property-hide-all')).toBeEnabled();
+        vi.mocked(h.ctx.updateView).mockClear();
+        click('database-property-hide-all');
+        expect(h.ctx.updateView).not.toHaveBeenCalled();
+        expect(hiddenIds()).toEqual(expect.arrayContaining(['due', 'num']));
+      });
+
+      // notion-motion.md Round 39 §5: pressing Hide all keeps focus in the search when it is there;
+      // from anywhere else the press focuses the button, as any button. The press's default action moves focus.
+      it('keeps focus in the search when Hide all is pressed from it', () => {
+        harness({ properties: [{ id: 'title', visible: true }, { id: 'due', visible: false }] }).open('properties');
+        q('database-property-search')?.focus();
+        const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+
+        q('database-property-hide-all')?.dispatchEvent(press);
+        expect(press.defaultPrevented).toBe(true);
+        click('database-property-hide-all');
+        expect(q('database-property-search')).toHaveFocus();
+      });
+
+      it('lets Hide all take focus when the search does not have it', () => {
+        harness({ properties: [{ id: 'title', visible: true }, { id: 'due', visible: false }] }).open('properties');
+        eye('due')?.focus();
+        const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+
+        q('database-property-hide-all')?.dispatchEvent(press);
+        expect(press.defaultPrevented).toBe(false);
+      });
+
+      // notion-motion.md Round 36 §1: focus goes to the search after Show all and after Hide all.
+      it('focuses the search after Show all', () => {
+        harness({ properties: [{ id: 'due', visible: false }, { id: 'num', visible: true }] }).open('properties');
+        q('database-property-show-all')?.focus();
+        click('database-property-show-all');
+        expect(q('database-property-search')).toHaveFocus();
+      });
+
+      it('focuses the search after Hide all', () => {
+        harness({ properties: [{ id: 'title', visible: true }, { id: 'due', visible: true }, { id: 'num', visible: false }] }).open('properties');
+        q('database-property-hide-all')?.focus();
+        click('database-property-hide-all');
+        expect(q('database-property-search')).toHaveFocus();
+      });
+
+      // notion-motion.md Round 36 §1: one ordered list; every toggle moves the property to the Shown/Hidden boundary.
+      it('lists the most recently hidden property first under Hidden', () => {
+        const h = harness({ properties: ['title', 'due', 'num', 'stage', 'prog', 'owner'].map((id) => ({ id, visible: true })) });
+
+        h.open('properties');
+        vi.mocked(h.ctx.updateView).mockClear();
+        eye('owner')?.click();
+        eye('num')?.click();
+        eye('prog')?.click();
+        expect(hiddenIds()).toEqual(['prog', 'num', 'owner']);
+        expect(shownIds()).toEqual(['title', 'due', 'stage']);
+        expect(h.ctx.updateView).toHaveBeenCalledTimes(3);
+      });
+
+      it('puts a re-shown property at the end of Shown, and its column last', () => {
+        const h = harness({ properties: [{ id: 'title', visible: true }, { id: 'due', visible: true }, { id: 'stage', visible: false }, { id: 'num', visible: true }, { id: 'prog', visible: true }, { id: 'owner', visible: true }] });
+
+        h.open('properties');
+        eye('stage')?.click();
+        expect(shownIds()).toEqual(['title', 'due', 'num', 'prog', 'owner', 'stage']);
+        expect(h.state.view.properties?.filter((p) => p.visible).map((p) => p.id)).toEqual(['title', 'due', 'num', 'prog', 'owner', 'stage']);
+      });
+
+      it('Show all appends the hidden properties after the shown ones, in their Hidden order', () => {
+        const h = harness({ properties: [{ id: 'title', visible: true }, { id: 'due', visible: false }, { id: 'num', visible: true }, { id: 'stage', visible: false }, { id: 'prog', visible: true }, { id: 'owner', visible: false }] });
+
+        h.open('properties');
+        click('database-property-show-all');
+        expect(shownIds()).toEqual(['title', 'num', 'prog', 'due', 'stage', 'owner']);
+        expect(h.state.view.properties?.map((p) => p.id)).toEqual(['title', 'num', 'prog', 'due', 'stage', 'owner']);
+      });
+
+      it('Hide all keeps the shown order at the top of Hidden', () => {
+        harness({ properties: [{ id: 'title', visible: true }, { id: 'stage', visible: true }, { id: 'due', visible: true }, { id: 'num', visible: false }] }).open('properties');
+        click('database-property-hide-all');
+        expect(hiddenIds()).toEqual(['stage', 'due', 'prog', 'owner', 'num']);
+      });
+
+      it('the search narrows both sections', () => {
+        harness({ properties: [{ id: 'due', visible: false }, { id: 'num', visible: true }, { id: 'stage', visible: true }, { id: 'prog', visible: false }, { id: 'owner', visible: true }] }).open('properties');
+        const search = q('database-property-search');
+
+        if (!(search instanceof HTMLInputElement)) throw new Error('no search');
+        search.value = 'r';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        // Only "Progress" (hidden) and "Owner" (shown) carry an r.
+        expect(shownIds()).toEqual(['owner']);
+        expect(hiddenIds()).toEqual(['prog']);
+      });
+
+      // notion-motion.md Round 36 §1: "te" matched Multi-select, so letters match in sequence.
+      it('the search matches letters in sequence, ignoring case', () => {
+        harness({ properties: [{ id: 'due', visible: true }, { id: 'num', visible: true }, { id: 'stage', visible: false }] }).open('properties');
+        const search = q('database-property-search');
+
+        if (!(search instanceof HTMLInputElement)) throw new Error('no search');
+        search.value = 'AE';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        // "Name" and "Stage" hold an a then an e; "Amount" has no e after its a.
+        expect(shownIds()).toEqual(['title']);
+        expect(hiddenIds()).toEqual(['stage']);
+      });
+
+      it('hides Hide all and Show all while a query is present', () => {
+        harness({ properties: [{ id: 'due', visible: false }, { id: 'num', visible: true }, { id: 'stage', visible: true }, { id: 'prog', visible: false }, { id: 'owner', visible: true }] }).open('properties');
+        const search = q('database-property-search');
+
+        if (!(search instanceof HTMLInputElement)) throw new Error('no search');
+        search.value = 'r';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        expect(sections()).toEqual(['tools.database.settingsShownInTable', 'tools.database.settingsHiddenInTable']);
+        expect(exists('database-property-hide-all')).toBe(false);
+        expect(exists('database-property-show-all')).toBe(false);
+      });
+
+      it('reads "No results" with no headers when nothing matches', () => {
+        harness({ properties: [{ id: 'due', visible: false }] }).open('properties');
+        const search = q('database-property-search');
+
+        if (!(search instanceof HTMLInputElement)) throw new Error('no search');
+        search.value = 'zzz';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        expect(sections()).toEqual([]);
+        expect(document.querySelector('[data-blok-database-panel-page="properties"] [data-blok-database-panel-note]')?.textContent).toBe('find.noResults');
+      });
+
+      it('drops a section whose rows the search filtered out', () => {
+        harness({ properties: [{ id: 'due', visible: false }, { id: 'num', visible: true }] }).open('properties');
+        const search = q('database-property-search');
+
+        if (!(search instanceof HTMLInputElement)) throw new Error('no search');
+        search.value = 'amou';
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        expect(sections()).toEqual(['tools.database.settingsShownInTable']);
+        expect(shownIds()).toEqual(['num']);
+      });
+
+      it('Alt+Arrow on a hidden row moves it among the hidden rows only', () => {
+        const h = harness({ properties: [{ id: 'title', visible: true }, { id: 'due', visible: false }, { id: 'num', visible: true }, { id: 'stage', visible: false }, { id: 'prog', visible: true }, { id: 'owner', visible: false }] });
+
+        h.open('properties');
+        const handle = q('database-properties-hidden-list-handle-stage');
+
+        handle?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', altKey: true, bubbles: true }));
+        expect(hiddenIds()).toEqual(['stage', 'due', 'owner']);
+        expect(shownIds()).toEqual(['title', 'num', 'prog']);
+        // At the top of its section it stays put: the move never crosses into Shown.
+        q('database-properties-hidden-list-handle-stage')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', altKey: true, bubbles: true }));
+        expect(hiddenIds()).toEqual(['stage', 'due', 'owner']);
+      });
+
+      it('Alt+Arrow on a shown row reorders the shown rows', () => {
+        harness({ properties: [{ id: 'title', visible: true }, { id: 'due', visible: true }, { id: 'num', visible: false }, { id: 'stage', visible: true }] }).open('properties');
+
+        q('database-properties-list-handle-stage')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', altKey: true, bubbles: true }));
+        expect(shownIds().slice(0, 3)).toEqual(['title', 'stage', 'due']);
+        expect(hiddenIds()).toEqual(['num']);
+      });
+
+      it('a chart reads "Properties" and "Hidden properties"', () => {
+        harness({ type: 'chart', properties: [{ id: 'due', visible: false }] }).open('properties');
+
+        expect(sections()).toEqual(['tools.database.propertiesSection', 'tools.database.settingsHiddenProperties']);
+      });
+    });
 
     it('opens with its search focused, and the search narrows the list without losing the field', () => {
       const h = harness();
@@ -707,7 +1260,7 @@ describe('view settings panel', () => {
 
     it('draws each row as a type glyph, the name and an eye switch', () => {
       harness({ properties: [{ id: 'due', visible: false }] }).open('properties');
-      const row = document.querySelector('[data-blok-testid="database-properties-list"] [data-item-id="due"]');
+      const row = document.querySelector('[data-blok-testid="database-properties-hidden-list"] [data-item-id="due"]');
 
       expect(row?.querySelector('[data-blok-database-panel-icon] svg')).not.toBeNull();
       expect(row?.textContent).toContain('Due');
@@ -774,7 +1327,7 @@ describe('view settings panel', () => {
 
       click('database-settings-properties');
       expect(exists('database-property-visible-due')).toBe(true);
-      expect(document.querySelector('[data-blok-testid="database-properties-list"]')?.textContent).not.toContain('Name');
+      expect(document.querySelector('[data-blok-database-panel-page="properties"]')?.textContent).not.toContain('Name');
     });
 
     // research/35:197: the page reads "Shown in feed | Hide all | Note".
@@ -790,9 +1343,10 @@ describe('view settings panel', () => {
       click('database-property-hide-all');
 
       expect(h.ctx.updateView).toHaveBeenCalledTimes(1);
-      expect(h.state.view.properties?.filter((p) => p.visible).map((p) => p.id)).toEqual([]);
+      expect(h.state.view.properties?.filter((p) => p.id !== 'title' && p.visible).map((p) => p.id)).toEqual([]);
       expect(h.state.view.properties?.some((p) => p.id === 'title' && !p.visible)).toBe(false);
-      expect(document.querySelector('[data-blok-testid="database-property-hide-all"]')?.textContent).toContain('tools.database.groupShowAll');
+      expect(exists('database-property-hide-all')).toBe(false);
+      expect(document.querySelector('[data-blok-testid="database-property-show-all"]')?.textContent).toBe('tools.database.groupShowAll');
     });
 
     it('has no header when only the title exists', () => {
@@ -840,8 +1394,263 @@ describe('view settings panel', () => {
     expect(document.querySelector(`[data-blok-testid="database-sort-direction-${sort.id ?? ''}"]`)?.textContent).toContain('tools.database.sortLowHigh');
 
     click(`database-sort-direction-${sort.id ?? ''}`);
+    click('database-sort-direction-desc');
 
     expect(h.state.view.sorts[0].direction).toBe('desc');
+  });
+
+  // notion-motion.md Round 17 §5: on the Sort page the rule's pickers are flyouts under their button, the page stays.
+  describe('sort rule pickers', () => {
+    const q = (id: string): HTMLElement | null => document.querySelector(`[data-blok-testid="${id}"]`);
+
+    it('opens the direction list as a 180-wide flyout instead of flipping, the current one checked', () => {
+      const h = harness({ sorts: [{ id: 's1', propertyId: 'num', direction: 'asc' }] });
+      const panel = h.open('sort');
+
+      click('database-sort-direction-s1');
+      const flyout = q('database-sort-direction-picker');
+
+      expect(h.state.view.sorts[0].direction).toBe('asc');
+      expect(flyout?.style.width).toBe('180px');
+      expect(panel.root.contains(flyout)).toBe(false);
+      expect(q('database-sort-direction-asc')?.getAttribute('aria-checked')).toBe('true');
+
+      click('database-sort-direction-desc');
+
+      expect(h.state.view.sorts[0].direction).toBe('desc');
+      expect(q('database-sort-direction-picker')).toBeNull();
+      expect(panel.root.isConnected).toBe(true);
+    });
+
+    it('opens the property list as a 280-wide flyout and keeps the Sort page', () => {
+      const h = harness({ sorts: [{ id: 's1', propertyId: 'num', direction: 'asc' }] });
+      const panel = h.open('sort');
+
+      click('database-sort-property-s1');
+      const flyout = q('database-sort-property-picker');
+
+      expect(flyout?.style.width).toBe('280px');
+      expect(panel.root.contains(flyout)).toBe(false);
+      expect(panel.depth).toBe(1);
+
+      click('database-pick-property-due');
+
+      expect(h.state.view.sorts[0].propertyId).toBe('due');
+      expect(q('database-sort-property-picker')).toBeNull();
+    });
+
+    it('puts focus back on the direction button after a pick', () => {
+      harness({ sorts: [{ id: 's1', propertyId: 'num', direction: 'asc' }] }).open('sort');
+      click('database-sort-direction-s1');
+      click('database-sort-direction-desc');
+
+      expect(q('database-sort-direction-s1')).toHaveFocus();
+    });
+
+    it('closes a rule flyout when the panel closes', () => {
+      const panel = harness({ sorts: [{ id: 's1', propertyId: 'num', direction: 'asc' }] }).open('sort');
+
+      click('database-sort-direction-s1');
+      panel.close();
+
+      expect(q('database-sort-direction-picker')).toBeNull();
+    });
+  });
+
+  // notion-motion.md Round 17 §5: the Sort row shows the sorted property's name.
+  describe('Sort row value', () => {
+    const valueOf = (): string | null | undefined =>
+      document.querySelector('[data-blok-testid="database-settings-sort"] [data-blok-database-panel-value]')?.textContent;
+
+    it('names the sorted property when there is one sort', () => {
+      harness({ sorts: [{ id: 's1', propertyId: 'num', direction: 'asc' }] }).open();
+
+      expect(valueOf()).toBe('Amount');
+    });
+
+    it('keeps the count with two sorts', () => {
+      harness({ sorts: [{ id: 's1', propertyId: 'num', direction: 'asc' }, { id: 's2', propertyId: 'due', direction: 'asc' }] }).open();
+
+      expect(valueOf()).toBe('2');
+    });
+  });
+
+  // notion-motion.md Round 18 §2 (r18-settings-filterrow-*.raw): one filter reads as its property's name.
+  describe('Filter row value', () => {
+    const valueOf = (): string | null | undefined =>
+      document.querySelector('[data-blok-testid="database-settings-filter"] [data-blok-database-panel-value]')?.textContent;
+
+    it('names the filtered property when there is one filter', () => {
+      harness({ filters: [{ id: 'f1', propertyId: 'num', operator: 'equals', value: 5 }] }).open();
+
+      expect(valueOf()).toBe('Amount');
+    });
+
+    it('keeps the count with two filters', () => {
+      harness({ filters: [{ id: 'f1', propertyId: 'num', operator: 'equals', value: 5 }, { id: 'f2', propertyId: 'due', operator: 'is_empty', value: null }] }).open();
+
+      expect(valueOf()).toBe('2');
+    });
+
+    // notion-motion.md Round 19 §1 (r19-settings.raw): an advanced filter of 3 items and 4 rules reads "1".
+    it('counts an advanced filter as one filter', () => {
+      const rule = (id: string): FilterRule => ({ id, propertyId: 'num', operator: 'is_empty', value: null });
+      const filterTree: FilterGroup = { id: 'root', conjunction: 'and', filterRules: [rule('a'), rule('b'), { id: 'g', conjunction: 'or', filterRules: [rule('c'), rule('d')] }] };
+
+      harness({ filterTree }).open();
+      expect(valueOf()).toBe('1');
+
+      document.body.innerHTML = '';
+      harness({ filterTree, filters: [{ id: 'f1', propertyId: 'num', operator: 'equals', value: 5 }] }).open();
+      expect(valueOf()).toBe('2');
+    });
+  });
+
+  // notion-motion.md Round 18 §2 (r18-settings-addfilter.raw): an empty "Add filter" list says "No results".
+  it('says "No results" on the Add filter page once every property is filtered', () => {
+    harness({ filters: schema.map((p, i) => ({ id: `f${i}`, propertyId: p.id, operator: 'is_not_empty', value: null })) }).open();
+    click('database-settings-filter');
+    click('database-filter-add');
+
+    expect(document.querySelector('[data-blok-database-property-picker-list] [data-blok-database-panel-note]')?.textContent).toBe('find.noResults');
+  });
+
+  // notion-motion.md Round 18 §2 (r18-settings-filterpage.raw, r18-settings-chipclick.raw): the Filters page lists chips.
+  describe('Filters page chips', () => {
+    const withFilter = (view: Partial<DatabaseViewConfig> = {}): Harness => {
+      const h = harness({ filters: [{ id: 'f1', propertyId: 'title', operator: 'contains', value: 'a' }], ...view });
+
+      h.open('filter');
+
+      return h;
+    };
+    const settings = (): HTMLElement | null => document.querySelector('[data-blok-testid="database-view-settings"]');
+
+    it('shows each filter as its chip, with a drag handle', () => {
+      withFilter();
+      const chip = q('database-filter-row-f1');
+
+      expect(chip?.hasAttribute('data-blok-database-filter-pill')).toBe(true);
+      expect(chip?.hasAttribute('data-active')).toBe(true);
+      expect(chip?.querySelector('[data-blok-database-chip-name]')?.textContent).toBe('Name');
+      expect(exists('database-filters-list-handle-f1')).toBe(true);
+    });
+
+    it('a chip click opens the rule popover beside the page, which stays', () => {
+      withFilter();
+      click('database-filter-row-f1');
+      const popover = q('database-filter-popover');
+
+      expect(popover).not.toBeNull();
+      expect(settings()?.contains(popover)).toBe(false);
+      expect(settings()?.querySelector('[data-blok-testid="database-filter-row-f1"]')).not.toBeNull();
+    });
+
+    it('Escape in the rule popover closes only it', () => {
+      withFilter();
+      click('database-filter-row-f1');
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+      expect(q('database-filter-popover')).toBeNull();
+      expect(settings()).not.toBeNull();
+    });
+
+    it('has no Advanced filter row while there is no advanced filter', () => {
+      withFilter();
+
+      expect(exists('database-filter-advanced')).toBe(false);
+    });
+
+    // notion-motion.md Round 19 §1 (r19-settings-filterpage.raw, r19-settings-advchip.raw): the advanced filter is its chip.
+    // notion-motion.md Round 19 §1 (r19-adv-group2-bar.raw): rule, rule, group(rule, rule) reads "3 rules", as on the bar chip.
+    it('counts the advanced chip on the Filters page by its top-level items', () => {
+      const rule = (id: string): FilterRule => ({ id, propertyId: 'num', operator: 'is_empty', value: null });
+
+      const h = harness({ filterTree: { id: 'root', conjunction: 'and', filterRules: [rule('a'), rule('b'), { id: 'g', conjunction: 'or', filterRules: [rule('c'), rule('d')] }] } });
+
+      h.ctx.i18n = { t: (key: string, params?: Record<string, string | number>) => `${key} ${String(params?.count ?? '')}` };
+      h.open('filter');
+
+      expect(q('database-filter-advanced-chip')?.textContent).toContain('tools.database.filterRuleCount 3');
+    });
+
+    it('lists the advanced filter as its chip, which opens the advanced popover beside the page', () => {
+      withFilter({ filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'a', propertyId: 'num', operator: 'is_empty', value: null }] } });
+      const chip = q('database-filter-advanced-chip');
+
+      expect(exists('database-filter-advanced')).toBe(false);
+      expect(chip?.hasAttribute('data-blok-database-filter-pill')).toBe(true);
+      expect(settings()?.contains(chip)).toBe(true);
+      expect(exists('database-filters-advanced-handle-advanced')).toBe(true);
+
+      click('database-filter-advanced-chip');
+      const popover = q('database-advanced-filter');
+
+      expect(popover).not.toBeNull();
+      expect(settings()?.contains(popover)).toBe(false);
+      expect(settings()?.querySelector('[data-blok-testid="database-filter-advanced-chip"]')).not.toBeNull();
+    });
+
+    // notion-motion.md Round 19 §1 (r19-adv-sel-red.raw): the operator has its own button, so the value button reads "Red" alone.
+    it('names only the value on an advanced rule\'s value button', () => {
+      withFilter({ filterTree: { id: 'root', conjunction: 'and', filterRules: [
+        { id: 'a', propertyId: 'stage', operator: 'does_not_equal', value: ['o1'] },
+        { id: 'b', propertyId: 'owner', operator: 'contains', value: ['me'] },
+      ] } });
+      click('database-filter-advanced-chip');
+
+      expect(q('database-filter-rule-value-a')?.textContent?.trim()).toBe('Idea');
+      expect(q('database-filter-rule-value-b')?.textContent?.trim()).toBe('tools.database.filterMe');
+    });
+
+    // notion-motion.md Round 20 §2 (r20-adv-st-val.raw, r20-adv-st-two.png), Round 39 §1 (r39-pm-nrules.png):
+    // picked options show as their tokens, with no status dot.
+    it('draws picked Select and Status values as option tokens on the value button', () => {
+      withFilter({ filterTree: { id: 'root', conjunction: 'and', filterRules: [
+        { id: 'a', propertyId: 'stage', operator: 'equals', value: ['o1'] },
+        { id: 'b', propertyId: 'prog', operator: 'equals', value: ['s1'] },
+      ] } });
+      click('database-filter-advanced-chip');
+
+      const select = q('database-filter-rule-value-a')?.querySelectorAll('[data-blok-database-option-pill]') ?? [];
+      const status = q('database-filter-rule-value-b')?.querySelectorAll('[data-blok-database-option-pill]') ?? [];
+
+      expect([...select].map((pill) => pill.textContent)).toEqual(['Idea']);
+      expect([...status].map((pill) => pill.textContent)).toEqual(['Not started']);
+      expect(status[0]?.hasAttribute('data-color')).toBe(true);
+      expect(status[0]?.hasAttribute('data-status-group')).toBe(false);
+      expect(q('database-filter-rule-value-a')?.getAttribute('aria-label')).toBe('Idea');
+    });
+
+    it('shows a picked token on the value button while its flyout stays open', () => {
+      withFilter({ filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'a', propertyId: 'stage', operator: 'equals', value: [] }] } });
+      click('database-filter-advanced-chip');
+      click('database-filter-rule-value-a');
+      click('database-filter-option-o1');
+
+      expect(q('database-filter-value-picker')).not.toBeNull();
+      expect(q('database-filter-rule-value-a')?.querySelector('[data-blok-database-option-pill]')?.textContent).toBe('Idea');
+      expect(q('database-filter-rule-value-a')?.hasAttribute('data-blok-database-filter-placeholder')).toBe(false);
+    });
+
+    it('keeps the placeholder as plain text when no option is picked', () => {
+      withFilter({ filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'a', propertyId: 'stage', operator: 'equals', value: [] }] } });
+      click('database-filter-advanced-chip');
+
+      expect(q('database-filter-rule-value-a')?.querySelector('[data-blok-database-option-pill]')).toBeNull();
+      expect(q('database-filter-rule-value-a')?.hasAttribute('data-blok-database-filter-placeholder')).toBe(true);
+    });
+  });
+
+  // notion-motion.md Round 17 §5: "Add sort" goes away once every property is sorted.
+  it('hides "Add sort" when every property is sorted', () => {
+    const h = harness({ sorts: [{ id: 's1', propertyId: 'title', direction: 'asc' }] });
+
+    h.ctx.schema = () => [{ id: 'title', name: 'Name', type: 'title', position: 'a0' }];
+    h.open('sort');
+
+    expect(exists('database-sort-row-s1')).toBe(true);
+    expect(exists('database-sort-add')).toBe(false);
   });
 
   it('draws a sort as Notion\'s property button with its type icon and an icon-only remove × (research/26 §3a)', () => {
@@ -1044,12 +1853,13 @@ describe('view settings panel', () => {
     ] });
 
     h.open('filter');
+    click('database-filter-add');
     click('database-filter-advanced');
     const add = document.querySelector<HTMLElement>('[data-blok-testid^="database-filter-add-rule-"]');
 
     if (add === null) throw new Error('no advanced filter add button');
     add.click();
-    click('database-pick-property-due');
+    click('database-filter-add-rule');
 
     expect(h.state.view.filters).toEqual([]);
     expect(h.state.view.filterTree?.filterRules).toHaveLength(3);
@@ -1067,24 +1877,205 @@ describe('view settings panel', () => {
     const root = (): string => h.state.view.filterTree?.id ?? '';
 
     click(`database-filter-add-rule-${root()}`);
-    click('database-pick-property-num');
-    click(`database-filter-add-group-${root()}`);
+    click('database-filter-add-rule');
+    click(`database-filter-add-rule-${root()}`);
+    click('database-filter-add-group');
 
     const tree = h.state.view.filterTree;
     const layer2 = tree?.filterRules.find((node) => 'filterRules' in node);
 
     expect(tree?.filterRules).toHaveLength(2);
     expect(exists(`database-filter-conjunction-${root()}`)).toBe(true);
+    // notion-motion.md Round 25 §3: And/Or ends where "Where" ends, so it sits in the 60px column's cell.
+    expect(document.querySelector(`[data-blok-testid="database-filter-conjunction-${root()}"]`)?.parentElement?.hasAttribute('data-blok-database-filter-conjunction-cell')).toBe(true);
+    expect(document.querySelector('[data-blok-database-filter-where]')?.textContent).toBe('tools.database.filterWhere');
 
-    click(`database-filter-add-group-${layer2?.id ?? ''}`);
+    click(`database-filter-add-rule-${layer2?.id ?? ''}`);
+    click('database-filter-add-group');
     const layer3 = h.state.view.filterTree?.filterRules
       .flatMap((node) => ('filterRules' in node ? node.filterRules : []))
       .find((node) => 'filterRules' in node);
 
     expect(layer3).toBeDefined();
     expect(exists(`database-filter-add-rule-${layer3?.id ?? ''}`)).toBe(true);
-    expect(exists(`database-filter-add-group-${layer3?.id ?? ''}`)).toBe(false);
+    click(`database-filter-add-rule-${layer3?.id ?? ''}`);
+    expect(exists('database-filter-add-menu')).toBe(false);
+    expect(exists('database-filter-add-group')).toBe(false);
     expect(h.ctx.updateView).not.toHaveBeenCalled();
+  });
+
+  // notion-motion.md Round 19 §1 (r19-adv-sel*.raw, r19-adv-cb*.raw): a value that is not text is a flyout under its button.
+  describe('advanced rule value flyouts', () => {
+    const openRule = (rule: Record<string, unknown>): Harness => {
+      const h = harness({ filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'r', ...rule } as never] } });
+
+      h.open('filter');
+      click('database-filter-advanced-chip');
+      click('database-filter-rule-value-r');
+
+      return h;
+    };
+    const value = (h: Harness): unknown => (h.state.view.filterTree?.filterRules[0] as { value?: unknown } | undefined)?.value;
+    const pushed = (): boolean => document.querySelector('[data-blok-testid="database-advanced-filter"] [data-blok-testid="database-panel-back"]') !== null;
+
+    it('picks a Select option in a 260-wide flyout, the rule list staying', () => {
+      const h = openRule({ propertyId: 'stage', operator: 'equals', value: null });
+      const flyout = q('database-filter-value-picker');
+
+      expect(pushed()).toBe(false);
+      expect(flyout?.style.width).toBe('260px');
+      expect(q('database-advanced-filter')?.contains(flyout)).toBe(false);
+      click('database-filter-option-o1');
+
+      expect(value(h)).toEqual(['o1']);
+      expect(q('database-filter-value-picker')).not.toBeNull();
+    });
+
+    // r19-adv-date*.raw: Date rows carry "Start date ⌄" after the property; its list is Notion's 190-wide side menu.
+    it('gives a Date rule a Start date / End date button with a flyout', () => {
+      const h = openRule({ propertyId: 'due', operator: 'this_week', value: null });
+      const operator = (): string | undefined => (h.state.view.filterTree?.filterRules[0] as { operator?: string } | undefined)?.operator;
+
+      // Round 23 §2 (r23-adv-btns.raw): 4 after the property button, not 8 (database.css).
+      expect(q('database-filter-rule-side-r')?.hasAttribute('data-blok-database-filter-rule-side')).toBe(true);
+      click('database-filter-rule-side-r');
+      expect(q('database-filter-side-picker')?.style.width).toBe('190px');
+      click('database-filter-side-end');
+
+      expect(operator()).toBe('end:this_week');
+      expect(q('database-filter-rule-side-r')?.textContent?.trim()).toBe('tools.database.dateEnd');
+    });
+
+    // notion-motion.md Round 22 §2 (r22-adv-seldate*.raw, r22-adv-fclick*.raw, r22-adv-t1-tab.raw): the simple popover's
+    // field and calendar; no ⌄ or ⊗ while empty; a click on the empty field opens the presets.
+    describe('a Date "Is" value', () => {
+      const field = (): HTMLInputElement | null => q('database-filter-value-picker')?.querySelector<HTMLInputElement>('[data-blok-database-chip-date-input]') ?? null;
+
+      it('shows the focused field and the month calendar, with no ⌄ or ⊗ while empty', () => {
+        openRule({ propertyId: 'due', operator: 'equals', value: null });
+
+        expect(field()).not.toBeNull();
+        expect(field()).toHaveFocus();
+        expect(q('database-filter-value-picker')?.querySelector('[data-blok-database-chip-month] [data-blok-database-date-day]')).not.toBeNull();
+        expect(exists('database-filter-date-presets')).toBe(false);
+        expect(exists('database-filter-date-clear')).toBe(false);
+        expect(exists('database-filter-date-today')).toBe(false);
+      });
+
+      it('opens the presets from a click on the empty field, and a pick closes the flyout', () => {
+        const h = openRule({ propertyId: 'due', operator: 'equals', value: null });
+
+        field()?.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+
+        expect(q('database-filter-date-menu')?.style.width).toBe('240px');
+        expect(q('database-filter-date-custom')?.getAttribute('aria-checked')).toBe('true');
+
+        click('database-filter-date-one_week_ago');
+
+        expect(value(h)).toBe('one_week_ago');
+        expect(exists('database-filter-value-picker')).toBe(false);
+        expect(q('database-filter-rule-preset-r')?.textContent?.trim()).toBe('tools.database.filterDateOneWeekAgo');
+        expect(exists('database-filter-rule-value-r')).toBe(false);
+      });
+
+      // notion-motion.md Round 23 §2 (r23-adv-btns.raw): "Custom date ⌄" then "Select a date ⌄", the second a fixed 165.
+      it('shows a Custom date button before the Select a date button', () => {
+        openRule({ propertyId: 'due', operator: 'equals', value: null });
+        const rule = q('database-filter-rule-r');
+        const preset = q('database-filter-rule-preset-r');
+        const day = q('database-filter-rule-value-r');
+
+        expect(preset?.textContent?.trim()).toBe('tools.database.filterDateCustom');
+        expect(day?.textContent?.trim()).toBe('tools.database.filterSelectDate');
+        expect(day?.hasAttribute('data-blok-database-filter-rule-day')).toBe(true);
+        expect(preset?.nextElementSibling).toBe(day);
+        expect(rule?.contains(preset)).toBe(true);
+      });
+
+      // Round 22 §2 / Round 23 §2 (r22-adv-preset-rows.raw, r23-adv-preset.raw): the presets flyout is 180 wide, under the button.
+      it('opens the presets in a 180-wide flyout from Custom date, and a preset leaves one button', () => {
+        const h = openRule({ propertyId: 'due', operator: 'equals', value: null });
+
+        click('database-filter-rule-preset-r');
+        expect(q('database-filter-date-menu')?.style.width).toBe('180px');
+        expect(q('database-filter-date-custom')?.getAttribute('aria-checked')).toBe('true');
+        click('database-filter-date-tomorrow');
+
+        expect(value(h)).toBe('tomorrow');
+        expect(exists('database-filter-date-menu')).toBe(false);
+        expect(q('database-filter-rule-preset-r')?.textContent?.trim()).toBe('tools.database.filterDateTomorrow');
+        expect(exists('database-filter-rule-value-r')).toBe(false);
+      });
+
+      it('clears a preset from Custom date, bringing the Select a date button back', () => {
+        const h = harness({ filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'r', propertyId: 'due', operator: 'equals', value: 'tomorrow' }] } });
+
+        h.open('filter');
+        click('database-filter-advanced-chip');
+        click('database-filter-rule-preset-r');
+        click('database-filter-date-custom');
+
+        expect(value(h)).toBeNull();
+        expect(exists('database-filter-rule-value-r')).toBe(true);
+      });
+
+      // notion-motion.md Round 23 §2 (r23-adv-tab-btns.raw): after Tab the button reads the day at once, the flyout still open.
+      it('writes the typed day on the button at once on Tab', async () => {
+        openRule({ propertyId: 'due', operator: 'equals', value: null });
+        const input = field();
+
+        if (input === null) throw new Error('no field');
+        input.value = '3/5/25';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.blur();
+        await new Promise((resolve) => {
+          setTimeout(resolve, 0);
+        });
+
+        expect(exists('database-filter-value-picker')).toBe(true);
+        expect(q('database-filter-rule-value-r')?.textContent?.trim()).toBe('March 5, 2025');
+        expect(q('database-filter-rule-value-r')?.hasAttribute('data-blok-database-filter-placeholder')).toBe(false);
+      });
+
+      it('commits typed text on Enter, then shows the day and a ⊗', () => {
+        const h = openRule({ propertyId: 'due', operator: 'equals', value: null });
+        const input = field();
+
+        if (input === null) throw new Error('no field');
+        input.value = '3/5/25';
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+
+        expect(value(h)).toBe('2025-03-05');
+        expect(field()?.value).toBe('March 5, 2025');
+        expect(exists('database-filter-date-clear')).toBe(true);
+      });
+
+      it('picks a calendar day', () => {
+        const h = openRule({ propertyId: 'due', operator: 'equals', value: '2026-11-13' });
+
+        q('database-filter-value-picker')?.querySelector<HTMLElement>('[data-blok-database-date-day="2026-11-20"]')?.click();
+
+        expect(value(h)).toBe('2026-11-20');
+      });
+    });
+
+    it('starts an advanced Date "Is" rule on Today', () => {
+      const h = openRule({ propertyId: 'due', operator: 'this_week', value: null });
+
+      click('database-filter-rule-operator-r');
+      click('database-filter-op-equals');
+
+      expect(h.state.view.filterTree?.filterRules[0]).toEqual(expect.objectContaining({ operator: 'equals', value: 'today' }));
+    });
+
+    it('keeps a text value as a field in the row', () => {
+      const h = harness({ filterTree: { id: 'root', conjunction: 'and', filterRules: [{ id: 'r', propertyId: 'title', operator: 'contains', value: '' }] } });
+
+      h.open('filter');
+      click('database-filter-advanced-chip');
+
+      expect(q('database-filter-rule-value-r')).toBeInstanceOf(HTMLInputElement);
+    });
   });
 
   it('sets And or Or on a group', () => {
@@ -1100,11 +2091,74 @@ describe('view settings panel', () => {
     });
 
     h.open('filter');
-    click('database-filter-advanced');
+    click('database-filter-advanced-chip');
     click('database-filter-conjunction-root');
     click('database-filter-conjunction-or');
 
     expect(h.state.view.filterTree?.conjunction).toBe('or');
+  });
+
+  // notion-motion.md, Round 8c "Hidden groups": a group is its name and an eye; a hidden one is faded.
+  it('lists each group with an eye that hides or shows it', () => {
+    const h = harness({ type: 'board', groupBy: 'stage', hiddenGroups: [{ id: 'none' }] });
+
+    h.open('group');
+    const rows = (): Array<[string | undefined, boolean]> => [...document.querySelectorAll('[data-blok-database-group-visibility-row]')]
+      .map((row) => [row.textContent?.trim(), row.hasAttribute('data-hidden')]);
+    const eye = (key: string): Element | null => document.querySelector(`[data-blok-testid="database-group-visible-${key}"]`);
+
+    expect(rows()).toEqual([['Idea', false], ['No Stage', true]]);
+    // notion-motion.md, Round 8c: the eye is a plain button labelled by what a click does.
+    expect([eye('o1')?.getAttribute('role'), eye('o1')?.getAttribute('aria-label'), eye('o1')?.hasAttribute('aria-checked')])
+      .toEqual([null, 'tools.database.groupHide', false]);
+    expect(eye('none')?.getAttribute('aria-label')).toBe('tools.database.groupShow');
+
+    click('database-group-visible-none');
+
+    expect(h.state.view.hiddenGroups ?? []).toEqual([]);
+    expect(rows()).toEqual([['Idea', false], ['No Stage', false]]);
+    expect(eye('none')?.getAttribute('aria-label')).toBe('tools.database.groupHide');
+  });
+
+  // notion-motion.md Round 24 §1 (r24-grp.raw, r24-pinpz.raw): a board group row has a 24px "Pin group" button before
+  // its eye. A click pins it and the button reads "Unpin group".
+  it('pins a board group from its row and unpins it again', () => {
+    const h = harness({ type: 'board', groupBy: 'stage' });
+
+    h.open('group');
+    const pin = (): Element | null => document.querySelector('[data-blok-testid="database-group-pin-o1"]');
+    const parsed = (svg: string): string => Object.assign(document.createElement('span'), { innerHTML: svg }).innerHTML;
+
+    expect(pin()?.nextElementSibling?.getAttribute('data-blok-testid')).toBe('database-group-visible-o1');
+    expect(pin()?.getAttribute('aria-label')).toBe('tools.database.groupPin');
+    // notion-motion.md Round 25 §2 (r25-grp-pinbtn-hover.raw): the outline pin swaps to the filled one on hover.
+    expect(pin()?.querySelector('[data-blok-database-group-pin-glyph="rest"]')?.innerHTML).toBe(parsed(IconPin));
+    expect(pin()?.querySelector('[data-blok-database-group-pin-glyph="hover"]')?.innerHTML).toBe(parsed(IconPinFilled));
+
+    click('database-group-pin-o1');
+
+    expect(h.state.view.pinnedGroups).toEqual([{ id: 'o1' }]);
+    expect(pin()?.getAttribute('aria-label')).toBe('tools.database.groupUnpin');
+    // Pinned: the filled pin at rest and on hover.
+    expect(pin()?.querySelector('[data-blok-database-group-pin-glyph="rest"]')?.innerHTML).toBe(parsed(IconPinFilled));
+
+    click('database-group-pin-o1');
+
+    expect(h.state.view.pinnedGroups).toEqual([]);
+  });
+
+  it('offers no pin on a table\'s groups', () => {
+    harness({ type: 'table', groupBy: 'stage' }).open('group');
+
+    expect(document.querySelector('[data-blok-testid="database-group-pin-o1"]')).toBeNull();
+  });
+
+  it('puts Hide all on the Groups label row', () => {
+    harness({ type: 'board', groupBy: 'stage' }).open('group');
+
+    const hideAll = document.querySelector('[data-blok-testid="database-group-hide-all"]');
+
+    expect(hideAll?.parentElement?.textContent).toBe('tools.database.groupGroupstools.database.groupHideAll');
   });
 
   it('groups a date by week and hides every group at once', () => {
@@ -1375,8 +2429,8 @@ describe('view settings panel', () => {
   });
 
   it.each([
-    ['ascending', ['To-do (1)', 'In progress (1)', 'Complete (1)']],
-    ['descending', ['Complete (1)', 'In progress (1)', 'To-do (1)']],
+    ['ascending', ['To-do', 'In progress', 'Complete']],
+    ['descending', ['Complete', 'In progress', 'To-do']],
   ] as const)('renders status Group %s in the configured progress order', (sort, labels) => {
     const status: PropertyDefinition = {
       id: 'prog', name: 'Progress', type: 'status', position: 'a0',
@@ -1412,7 +2466,7 @@ describe('view settings panel', () => {
     const panel = h.open('group');
 
     try {
-      expect([...panel.root.querySelectorAll('[data-blok-testid^="database-group-visible-"]')].map((row) => row.textContent?.trim()))
+      expect([...panel.root.querySelectorAll('[data-blok-database-group-visibility-row]')].map((row) => row.textContent?.trim()))
         .toEqual(labels);
     } finally {
       panel.close();
@@ -1471,7 +2525,7 @@ describe('view settings panel', () => {
     h.ctx.thisPageDatabase = () => 'a';
     h.open();
     click('database-settings-color');
-    click('database-color-condition-c1');
+    click('database-color-value-c1');
 
     expect(document.querySelector('[data-blok-testid="database-filter-related-r1"]')).not.toBeNull();
     expect(document.querySelector('[data-blok-testid="database-filter-related-this-page"]')).toBeNull();
@@ -1498,14 +2552,563 @@ describe('view settings panel', () => {
     click('database-pick-property-num');
     const [rule] = h.state.view.colorRules ?? [];
 
-    expect(rule).toMatchObject({ propertyId: 'num', operator: 'is_not_empty', color: 'gray' });
+    expect(rule).toMatchObject({ propertyId: 'num', operator: 'is_not_empty', color: 'green' });
 
+    click(`database-color-background-${rule.id}`);
+    click('database-color-pick-gray');
     click(`database-color-background-${rule.id}`);
     click('database-color-pick-green');
     click(`database-color-apply-${rule.id}`);
     click('database-color-apply-property');
 
     expect(h.state.view.colorRules?.[0]).toMatchObject({ color: 'green', applyTo: 'property' });
+  });
+
+  // notion-motion.md Round 20 §4 (r20-cc-apply.raw): "Apply to" opens a flyout under its value: Entire row, This property.
+  it('opens "Apply to" as a flyout under its value and keeps the color page', () => {
+    const h = harness({ colorRules: [{ id: 'c1', propertyId: 'num', operator: 'is_not_empty', value: null, color: 'gray' }] });
+    const panel = h.open();
+
+    click('database-settings-color');
+    click('database-color-apply-c1');
+    const flyout = q('database-color-apply-picker');
+
+    expect(flyout).not.toBeNull();
+    expect(panel.root.contains(flyout)).toBe(false);
+    expect(q('database-color-apply-row')?.getAttribute('aria-checked')).toBe('true');
+    expect(q('database-color-apply-property')?.textContent).toBe('tools.database.colorApplyProperty');
+
+    click('database-color-apply-property');
+
+    expect(h.state.view.colorRules?.[0].applyTo).toBe('property');
+    expect(q('database-color-apply-picker')).toBeNull();
+    expect(q('database-color-apply-c1')?.textContent?.trim()).toBe('tools.database.colorApplyProperty');
+  });
+
+  // notion-motion.md Round 20 §4 (r20-cc-is.raw): the card's trash is "Delete conditional color rule".
+  it('names the rule trash "Delete conditional color rule", as Notion does', async () => {
+    const { default: en } = await import('../../../../src/components/i18n/locales/en.json');
+
+    expect(en['tools.database.colorDelete']).toBe('Delete conditional color rule');
+  });
+
+  it('names the cell choice "This property", as Notion does', async () => {
+    const { default: en } = await import('../../../../src/components/i18n/locales/en.json');
+
+    expect(en['tools.database.colorApplyProperty']).toBe('This property');
+  });
+
+  // notion-motion.md Round 20 §4: a new Select rule starts on "Match option".
+  it('starts a new Select rule on "Match option"', () => {
+    const h = harness();
+
+    h.open();
+    click('database-settings-color');
+    click('database-color-add');
+    click('database-pick-property-stage');
+    const [rule] = h.state.view.colorRules ?? [];
+
+    expect(rule).toMatchObject({ propertyId: 'stage', color: 'match' });
+    expect(q(`database-color-background-${rule.id}`)?.textContent?.trim()).toBe('tools.database.colorMatchOption');
+  });
+
+  // notion-motion.md Round 21 §1: what a new rule starts on, per type, also as a second rule.
+  describe('a new conditional color rule (Round 21)', () => {
+    const typed: PropertyDefinition[] = [
+      ...schema,
+      { id: 'txt', name: 'Notes', type: 'text', position: 'b0' },
+      { id: 'cb', name: 'Done', type: 'checkbox', position: 'b1' },
+      { id: 'tags', name: 'Tags', type: 'multiSelect', position: 'b2', config: { options: [{ id: 'm1', label: 'One', position: 'a0' }] } },
+      { id: 'f', name: 'Formula', type: 'formula', position: 'b3' },
+      { id: 'rel', name: 'Rel', type: 'relation', position: 'b4', relation: { targetDatabaseId: 'x' } },
+      { id: 'roll', name: 'Roll', type: 'rollup', position: 'b5' },
+      { id: 'cby', name: 'Created by', type: 'createdBy', position: 'b6' },
+      { id: 'ct', name: 'Created', type: 'createdTime', position: 'b7' },
+      { id: 'lby', name: 'Edited by', type: 'lastEditedBy', position: 'b8' },
+      { id: 'lt', name: 'Edited', type: 'lastEditedTime', position: 'b9' },
+    ];
+    const add = (h: Harness, id: string): ColorRule => {
+      click('database-color-add');
+      click(`database-pick-property-${id}`);
+      const rules = h.state.view.colorRules ?? [];
+
+      return rules[rules.length - 1];
+    };
+    const open = (view: Partial<DatabaseViewConfig> = {}): Harness => {
+      const h = harness(view);
+
+      h.ctx.schema = () => typed;
+      h.open();
+      click('database-settings-color');
+
+      return h;
+    };
+
+    it.each([
+      ['txt', 'green'], ['num', 'green'], ['due', 'green'], ['cb', 'green'], ['owner', 'green'],
+      ['stage', 'match'], ['prog', 'match'], ['tags', 'match'],
+      // notion-motion.md Round 22 §3: Green on these too.
+      ['title', 'green'], ['f', 'green'], ['rel', 'green'], ['roll', 'green'],
+      ['cby', 'green'], ['ct', 'green'], ['lby', 'green'], ['lt', 'green'],
+    ])('starts %s on %s, first or second', (id, color) => {
+      const h = open();
+
+      expect(add(h, id).color).toBe(color);
+      expect(add(h, id).color).toBe(color);
+    });
+
+    it('starts Checkbox on "is" with no value and every other type on "is not empty"', () => {
+      const h = open();
+
+      expect(add(h, 'cb')).toMatchObject({ operator: 'equals', value: null });
+      expect(add(h, 'prog')).toMatchObject({ operator: 'is_not_empty', value: null });
+      expect(add(h, 'txt')).toMatchObject({ operator: 'is_not_empty', value: null });
+    });
+
+    // notion-motion.md Round 22 §3: a Number formula starts on "=" with its input. The panel gets it as its result type.
+    it('starts a Number formula on "=", and a plain Number on "is not empty"', () => {
+      const h = open();
+
+      h.ctx.schema = () => [...typed, { id: 'fn', name: 'Double', type: 'number', position: 'c0' }];
+      h.ctx.storedType = (id) => (id === 'fn' ? 'formula' : typed.find((p) => p.id === id)?.type);
+
+      expect(add(h, 'fn')).toMatchObject({ operator: 'equals', value: null, color: 'green' });
+      expect(q(`database-color-value-${h.state.view.colorRules?.[0]?.id ?? ''}`)).toBeInstanceOf(HTMLInputElement);
+      expect(add(h, 'num')).toMatchObject({ operator: 'is_not_empty' });
+    });
+
+    // notion-motion.md Round 22 §3, §4: a Number rollup shown as is reads "Rollup any ⌄ = ⌄" with a "=" input.
+    it('starts a Number Show original rollup on "any" and "=", with the number operators', () => {
+      const h = open();
+      const hours = Object.assign(
+        { id: 'hrs', name: 'Hours', type: 'text', position: 'c1', number: {}, rollup: { relationPropertyId: 'rel', targetPropertyId: 'n', function: 'show_original' } } as PropertyDefinition,
+        { [NUMBER_LIST_ROLLUP]: true }
+      );
+
+      h.ctx.schema = () => [...typed, hours];
+      h.ctx.storedType = (id) => (id === 'hrs' ? 'rollup' : typed.find((p) => p.id === id)?.type);
+
+      const rule = add(h, 'hrs');
+
+      expect(rule).toMatchObject({ operator: 'any:equals', value: null, color: 'green' });
+      expect(q(`database-color-quantifier-${rule.id}`)?.querySelector('[data-blok-database-chip-operator-label]')?.textContent).toBe('tools.database.filteroperator.any');
+      expect(q(`database-color-operator-${rule.id}`)?.querySelector('[data-blok-database-chip-operator-label]')?.textContent).toBe('tools.database.filteroperator.numberequals');
+      expect(q(`database-color-rule-${rule.id}`)?.querySelector('[data-blok-database-color-rule-prefix]')?.textContent).toBe('=');
+      expect(q(`database-color-value-${rule.id}`)).toBeInstanceOf(HTMLInputElement);
+
+      click(`database-color-operator-${rule.id}`);
+      expect([...document.querySelectorAll('[data-blok-testid="database-filter-operator-picker"] [data-blok-testid^="database-filter-op-"]')].map((el) => el.getAttribute('data-blok-testid')))
+        .toEqual(['equals', 'does_not_equal', 'greater_than', 'less_than', 'greater_than_or_equal_to', 'less_than_or_equal_to', 'is_empty', 'is_not_empty'].map((op) => `database-filter-op-${op}`));
+      click('database-filter-op-greater_than');
+      expect(h.state.view.colorRules?.[0]).toMatchObject({ operator: 'any:greater_than' });
+
+      click(`database-color-quantifier-${rule.id}`);
+      click('database-filter-quantifier-every');
+      expect(h.state.view.colorRules?.[0]).toMatchObject({ operator: 'every:greater_than' });
+    });
+
+    it('gives a Number rollup rule saved without a quantifier "any" once a number operator is picked', () => {
+      const h = harness({ colorRules: [{ id: 'c1', propertyId: 'hrs', operator: 'is_not_empty', value: null, color: 'green' }] });
+      const hours = Object.assign(
+        { id: 'hrs', name: 'Hours', type: 'text', position: 'c1', number: {}, rollup: { relationPropertyId: 'rel', targetPropertyId: 'n', function: 'show_original' } } as PropertyDefinition,
+        { [NUMBER_LIST_ROLLUP]: true }
+      );
+
+      h.ctx.schema = () => [...typed, hours];
+      h.open();
+      click('database-settings-color');
+      click('database-color-operator-c1');
+      click('database-filter-op-greater_than');
+      expect(h.state.view.colorRules?.[0]).toMatchObject({ operator: 'any:greater_than' });
+    });
+
+    it('never starts a rule on an operator its own flyout cannot offer', () => {
+      const h = open();
+
+      for (const property of typed.filter((p) => COLOR_RULE_TYPES.includes(p.type))) {
+        const rule = add(h, property.id);
+
+        click(`database-color-operator-${rule.id}`);
+        const picked = document.querySelector('[data-blok-testid="database-filter-operator-picker"] [aria-checked="true"]');
+
+        expect(picked?.getAttribute('data-blok-testid'), property.type).toBe(`database-filter-op-${rule.operator}`);
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        q('database-filter-operator-picker')?.closest('[data-blok-popover]')?.remove();
+      }
+    });
+
+    // The Status filter keeps Is, Is not (database-filter-labels.test.ts).
+    it('offers Is, Is not, Is empty, Is not empty on a Status rule', () => {
+      open({ colorRules: [{ id: 'c1', propertyId: 'prog', operator: 'is_not_empty', value: null, color: 'match' }] });
+      const ops = (): (string | null)[] => [...document.querySelectorAll('[data-blok-testid="database-filter-operator-picker"] [data-blok-testid^="database-filter-op-"]')]
+        .map((el) => el.getAttribute('data-blok-testid'));
+
+      click('database-color-operator-c1');
+      expect(ops()).toEqual(['database-filter-op-equals', 'database-filter-op-does_not_equal', 'database-filter-op-is_empty', 'database-filter-op-is_not_empty']);
+    });
+
+    it('labels the Multi-select switch and value "Match first option", Status "Match option"', () => {
+      open({ colorRules: [
+        { id: 'c1', propertyId: 'tags', operator: 'is_not_empty', value: null, color: 'match' },
+        { id: 'c2', propertyId: 'prog', operator: 'is_not_empty', value: null, color: 'match' },
+      ] });
+
+      expect(q('database-color-background-c1')?.textContent?.trim()).toBe('tools.database.colorMatchFirstOption');
+      expect(q('database-color-background-c2')?.textContent?.trim()).toBe('tools.database.colorMatchOption');
+      click('database-color-background-c1');
+      expect(q('database-color-match-option')?.textContent).toContain('tools.database.colorMatchFirstOption');
+      expect(q('database-color-match-option')?.getAttribute('aria-checked')).toBe('true');
+      click('database-color-pick-red');
+      click('database-color-background-c2');
+      expect(q('database-color-match-option')?.textContent).toContain('tools.database.colorMatchOption');
+    });
+  });
+
+  // notion-motion.md Round 20 §4: a ⠿ handle on each card reorders the rules; the order is their priority.
+  it('reorders conditional color rules by their handle', () => {
+    const h = harness({
+      colorRules: [
+        { id: 'c1', propertyId: 'num', operator: 'is_not_empty', value: null, color: 'gray' },
+        { id: 'c2', propertyId: 'stage', operator: 'is_not_empty', value: null, color: 'green' },
+      ],
+    });
+
+    h.open();
+    click('database-settings-color');
+    const handle = q('database-color-rules-handle-c1');
+
+    expect(handle?.getAttribute('aria-label')).toBe('tools.database.settingsDragToReorder');
+    handle?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }));
+
+    expect(h.state.view.colorRules?.map((rule) => rule.id)).toEqual(['c2', 'c1']);
+  });
+
+  // notion-motion.md Round 20 §4 (r20-cc-bg.raw, r20-cc-swatches.raw): a 190-wide flyout, Match option, 10 swatches.
+  describe('conditional color picker', () => {
+    const COLORS = ['default', 'gray', 'brown', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'red'];
+
+    it('opens under the value with a focused Match option switch and ten unnamed swatches', () => {
+      const h = harness({ colorRules: [{ id: 'c1', propertyId: 'stage', operator: 'is_not_empty', value: null, color: 'match' }] });
+      const panel = h.open();
+
+      click('database-settings-color');
+      click('database-color-background-c1');
+      const flyout = q('database-color-background-picker');
+      const toggle = q('database-color-match-option');
+
+      expect(flyout?.style.width).toBe('190px');
+      expect(panel.root.contains(flyout)).toBe(false);
+      expect(toggle?.getAttribute('aria-checked')).toBe('true');
+      expect(toggle).toHaveFocus();
+      expect([...(flyout?.querySelectorAll('[data-blok-database-color-swatch]') ?? [])].map((el) => el.getAttribute('data-color'))).toEqual(COLORS);
+      expect(q('database-color-pick-blue')?.textContent).toBe('');
+      expect(q('database-color-pick-blue')?.getAttribute('aria-label')).toBe('tools.database.colorBackgroundHint');
+    });
+
+    it('closes on a swatch pick, turns Match option off and shows the swatch before the name', () => {
+      const h = harness({ colorRules: [{ id: 'c1', propertyId: 'stage', operator: 'is_not_empty', value: null, color: 'match' }] });
+
+      h.open();
+      click('database-settings-color');
+      click('database-color-background-c1');
+      click('database-color-pick-blue');
+
+      expect(h.state.view.colorRules?.[0].color).toBe('blue');
+      expect(q('database-color-background-picker')).toBeNull();
+      expect(q('database-color-background-c1')?.querySelector('[data-blok-database-color-chip]')?.getAttribute('data-color')).toBe('blue');
+
+      click('database-color-background-c1');
+
+      expect(q('database-color-match-option')?.getAttribute('aria-checked')).toBe('false');
+      expect(q('database-color-pick-blue')?.getAttribute('aria-pressed')).toBe('true');
+      expect(q('database-color-pick-red')?.getAttribute('aria-pressed')).toBe('false');
+
+      click('database-color-match-option');
+
+      expect(h.state.view.colorRules?.[0].color).toBe('match');
+    });
+
+    it('has no Match option for a rule on a property without options', () => {
+      const h = harness({ colorRules: [{ id: 'c1', propertyId: 'num', operator: 'is_not_empty', value: null, color: 'gray' }] });
+
+      h.open();
+      click('database-settings-color');
+      click('database-color-background-c1');
+
+      expect(q('database-color-background-picker')).not.toBeNull();
+      expect(q('database-color-match-option')).toBeNull();
+    });
+  });
+
+  // notion-motion.md Round 20 §4 (r20-cc-intro.raw, r20-cc-sel.raw, r20-cc-list-style.raw, r20-cc-ops.raw, r20-cc-del*.raw).
+  describe('conditional color page', () => {
+    const note = (): Element | null => document.querySelector('[data-blok-testid="database-view-settings"] [data-blok-database-panel-note]');
+
+    it('shows the intro text and a "New color setting" button while there is no rule', () => {
+      harness().open();
+      click('database-settings-color');
+
+      expect(note()?.textContent).toBe('tools.database.colorBlurb');
+      expect(q('database-color-add')?.hasAttribute('data-blok-database-color-new')).toBe(true);
+    });
+
+    it('drops the intro once a rule exists and heads each card "Property operator ⌄" with a trash', () => {
+      const h = harness({ colorRules: [{ id: 'c1', propertyId: 'stage', operator: 'is_not_empty', value: null, color: 'match' }] });
+
+      h.open();
+      click('database-settings-color');
+      const operator = q('database-color-operator-c1');
+
+      expect(note()).toBeNull();
+      expect(q('database-color-add')?.hasAttribute('data-blok-database-color-add-another')).toBe(true);
+      expect(q('database-color-rule-c1')?.querySelector('[data-blok-database-chip-header]')?.contains(operator)).toBe(true);
+      // notion-motion.md Round 21 §1: the property name is plain text outside the operator button.
+      expect(operator?.textContent?.trim()).toBe('tools.database.filteroperator.isnotempty');
+      expect(operator?.previousElementSibling?.textContent).toBe('Stage');
+      expect(operator?.previousElementSibling?.hasAttribute('data-blok-database-color-rule-name')).toBe(true);
+      expect(q('database-color-delete-c1')?.getAttribute('aria-label')).toBe('tools.database.colorDelete');
+      expect(q('database-color-condition-c1')).toBeNull();
+    });
+
+    it('picks the operator from a 190-wide flyout under the header button', () => {
+      const h = harness({ colorRules: [{ id: 'c1', propertyId: 'stage', operator: 'is_not_empty', value: null, color: 'match' }] });
+      const panel = h.open();
+
+      click('database-settings-color');
+      click('database-color-operator-c1');
+      const flyout = q('database-filter-operator-picker');
+
+      expect(flyout?.style.width).toBe('190px');
+      expect(panel.root.contains(flyout)).toBe(false);
+      click('database-filter-op-equals');
+
+      expect(h.state.view.colorRules?.[0].operator).toBe('equals');
+      expect(q('database-filter-operator-picker')).toBeNull();
+    });
+
+    it('shows a value field under the header when the operator takes one, opening the value flyout', () => {
+      const h = harness({ colorRules: [{ id: 'c1', propertyId: 'stage', operator: 'equals', value: null, color: 'match' }] });
+
+      h.open();
+      click('database-settings-color');
+      const card = q('database-color-rule-c1');
+      const header = card?.querySelector('[data-blok-database-chip-header]');
+
+      expect(header?.nextElementSibling).toBe(q('database-color-value-c1'));
+      click('database-color-value-c1');
+      expect(q('database-filter-value-picker')).not.toBeNull();
+    });
+
+    // notion-motion.md Round 20 §4 (r20-cc-is.raw, r20-cc-red.png): an empty Select value reads "Select...", a pick shows its token.
+    it('shows a Select rule\'s value as its option token, and "Select..." while empty', () => {
+      const h = harness({ colorRules: [{ id: 'c1', propertyId: 'stage', operator: 'equals', value: null, color: 'match' }] });
+
+      h.open();
+      click('database-settings-color');
+
+      expect(q('database-color-value-c1')?.textContent).toBe('tools.database.colorValuePlaceholder');
+
+      h.ctx.updateView({ colorRules: [{ id: 'c1', propertyId: 'stage', operator: 'equals', value: ['o1'], color: 'match' }] });
+      const token = q('database-color-value-c1')?.querySelector('[data-blok-database-option-pill]');
+
+      expect(token?.textContent).toBe('Idea');
+      expect(q('database-color-value-c1')?.hasAttribute('data-empty')).toBe(false);
+    });
+
+    // notion-motion.md Round 21 §1 (r21-cc-date-cc.raw, r21-cc-date-is-cc.raw): "Date is not empty" until the operator
+    // takes a value, then "Start date ⌄ is ⌄".
+    it('heads a Date rule with its name until the operator takes a value', () => {
+      const h = harness({ colorRules: [{ id: 'c1', propertyId: 'due', operator: 'is_not_empty', value: null, color: 'green' }] });
+      const header = (): Element | null | undefined => q('database-color-rule-c1')?.querySelector('[data-blok-database-color-rule-header]');
+
+      h.open();
+      click('database-settings-color');
+
+      expect(q('database-color-side-c1')).toBeNull();
+      expect(header()?.querySelector('[data-blok-database-color-rule-name]')?.textContent).toBe('Due');
+      expect(header()?.hasAttribute('data-blok-database-color-rule-plain-date')).toBe(true);
+
+      h.ctx.updateView({ colorRules: [{ id: 'c1', propertyId: 'due', operator: 'equals', value: null, color: 'green' }] });
+
+      expect(q('database-color-side-c1')?.textContent?.trim()).toBe('tools.database.dateStart');
+      expect(header()?.querySelector('[data-blok-database-color-rule-name]')).toBeNull();
+      expect(header()?.hasAttribute('data-blok-database-color-rule-plain-date')).toBe(false);
+
+      // An End date side stays visible, or the rule would look like it reads the start.
+      h.ctx.updateView({ colorRules: [{ id: 'c1', propertyId: 'due', operator: 'end:is_empty', value: null, color: 'green' }] });
+
+      expect(q('database-color-side-c1')?.textContent?.trim()).toBe('tools.database.dateEnd');
+    });
+
+    // notion-motion.md Round 22 §4 (r22-cc-num-*-cc.raw): each comparison puts its own symbol before the value.
+    it('puts the operator\'s own symbol before a Number rule\'s value', () => {
+      const h = harness({ colorRules: [{ id: 'c1', propertyId: 'num', operator: 'equals', value: null, color: 'green' }] });
+      const prefix = (): Element | null | undefined => q('database-color-rule-c1')?.querySelector('[data-blok-database-color-rule-prefix]');
+
+      h.open();
+      click('database-settings-color');
+
+      expect(prefix()?.textContent).toBe('=');
+      expect(prefix()?.parentElement?.contains(q('database-color-value-c1'))).toBe(true);
+
+      for (const [operator, symbol] of [
+        ['does_not_equal', '≠'], ['greater_than', '>'], ['less_than', '<'],
+        ['greater_than_or_equal_to', '≥'], ['less_than_or_equal_to', '≤'],
+      ]) {
+        h.ctx.updateView({ colorRules: [{ id: 'c1', propertyId: 'num', operator, value: null, color: 'green' }] });
+
+        expect(prefix()?.textContent, operator).toBe(symbol);
+      }
+    });
+
+    // notion-motion.md Round 22 §4: a Number formula does the same. A Text rule has no prefix.
+    it('puts the symbol before a Number formula\'s value, and none before a Text one', () => {
+      const h = harness({ colorRules: [
+        { id: 'c1', propertyId: 'fn', operator: 'does_not_equal', value: null, color: 'green' },
+        { id: 'c2', propertyId: 'title', operator: 'equals', value: null, color: 'green' },
+      ] });
+
+      h.ctx.schema = () => [...schema, { id: 'fn', name: 'Double', type: 'number', position: 'c0' }];
+      h.open();
+      click('database-settings-color');
+
+      expect(q('database-color-rule-c1')?.querySelector('[data-blok-database-color-rule-prefix]')?.textContent).toBe('≠');
+      expect(q('database-color-rule-c2')?.querySelector('[data-blok-database-color-rule-prefix]')).toBeNull();
+    });
+
+    // notion-motion.md Round 21 §2 (r21-board-cc-cc.raw, r21-list-cc-cc.raw): a board says "Card background", a list
+    // "Page background"; neither has "Apply to".
+    it.each([
+      ['board', 'tools.database.colorCardBackground'],
+      ['list', 'tools.database.colorPageBackground'],
+      ['table', 'tools.database.colorPageBackground'],
+    ] as const)('labels a %s rule\'s background %s', (type, label) => {
+      harness({ type, colorRules: [{ id: 'c1', propertyId: 'num', operator: 'is_not_empty', value: null, color: 'green' }] }).open();
+      click('database-settings-color');
+
+      expect(q('database-color-rule-c1')?.querySelector('[data-blok-database-color-setting-label]')?.textContent).toBe(label);
+      expect(exists('database-color-apply-c1')).toBe(type === 'table');
+    });
+
+    // notion-motion.md Round 21 §1: "Select..." on Status, Multi-select, Date, Checkbox and Person too.
+    it('reads "Select..." on every measured picker type while empty', () => {
+      const h = harness({ colorRules: [
+        { id: 'c1', propertyId: 'prog', operator: 'equals', value: null, color: 'match' },
+        { id: 'c2', propertyId: 'tags', operator: 'contains', value: null, color: 'match' },
+        { id: 'c3', propertyId: 'due', operator: 'equals', value: null, color: 'green' },
+        { id: 'c4', propertyId: 'cb', operator: 'equals', value: null, color: 'green' },
+        { id: 'c5', propertyId: 'owner', operator: 'contains', value: null, color: 'green' },
+      ] });
+
+      h.ctx.schema = () => [...schema,
+        { id: 'tags', name: 'Tags', type: 'multiSelect', position: 'b0', config: { options: [{ id: 'm1', label: 'One', position: 'a0' }] } },
+        { id: 'cb', name: 'Done', type: 'checkbox', position: 'b1' }];
+      h.open();
+      click('database-settings-color');
+
+      for (const id of ['c1', 'c2', 'c3', 'c4', 'c5']) {
+        const value = q(`database-color-value-${id}`);
+
+        expect(value?.textContent, id).toBe('tools.database.colorValuePlaceholder');
+        expect(value?.hasAttribute('data-empty'), id).toBe(true);
+      }
+    });
+
+    // notion-motion.md Round 22 §3: "Select..." on Relation, Created by/time and Last edited by/time too.
+    it('reads "Select..." on Relation, Created and Last edited rules while empty', () => {
+      const h = harness({ colorRules: [
+        { id: 'c1', propertyId: 'rel', operator: 'contains', value: null, color: 'green' },
+        { id: 'c2', propertyId: 'cby', operator: 'contains', value: null, color: 'green' },
+        { id: 'c3', propertyId: 'lby', operator: 'contains', value: null, color: 'green' },
+        { id: 'c4', propertyId: 'ct', operator: 'equals', value: null, color: 'green' },
+        { id: 'c5', propertyId: 'lt', operator: 'equals', value: null, color: 'green' },
+      ] });
+
+      h.ctx.schema = () => [...schema,
+        { id: 'rel', name: 'Rel', type: 'relation', position: 'b0', relation: { targetDatabaseId: 'x' } },
+        { id: 'cby', name: 'Created by', type: 'createdBy', position: 'b1' },
+        { id: 'lby', name: 'Edited by', type: 'lastEditedBy', position: 'b2' },
+        { id: 'ct', name: 'Created', type: 'createdTime', position: 'b3' },
+        { id: 'lt', name: 'Edited', type: 'lastEditedTime', position: 'b4' }];
+      h.ctx.relatedRows = () => [{ id: 'r1', title: 'Alpha' }];
+      h.open();
+      click('database-settings-color');
+
+      for (const id of ['c1', 'c2', 'c3', 'c4', 'c5']) {
+        expect(q(`database-color-value-${id}`)?.textContent, id).toBe('tools.database.colorValuePlaceholder');
+      }
+    });
+
+    // notion-motion.md Round 21 §1 (r21-cc-st-picked.png): a Status pick shows as its option token.
+    it('shows a Status pick as its option token', () => {
+      const h = harness({ colorRules: [{ id: 'c1', propertyId: 'prog', operator: 'equals', value: ['s1'], color: 'match' }] });
+
+      h.open();
+      click('database-settings-color');
+
+      expect(q('database-color-value-c1')?.querySelector('[data-blok-database-option-pill]')?.textContent).toBe('Not started');
+      expect(q('database-color-value-c1')?.hasAttribute('data-empty')).toBe(false);
+    });
+
+    // notion-motion.md Round 20 §4 (r20-cc-new.raw): the property list is a 258-wide flyout with a focused search.
+    it('picks a new rule\'s property from a flyout and stays on the color page', () => {
+      const h = harness();
+      const panel = h.open();
+
+      click('database-settings-color');
+      click('database-color-add');
+      const flyout = q('database-color-property-picker');
+
+      expect(flyout).not.toBeNull();
+      expect(panel.root.contains(flyout)).toBe(false);
+      expect(flyout?.style.width).toBe('258px');
+      expect(flyout?.querySelector('[data-blok-testid="database-property-picker-search"]')).toHaveFocus();
+
+      click('database-pick-property-num');
+      const [rule] = h.state.view.colorRules ?? [];
+
+      expect(q('database-color-property-picker')).toBeNull();
+      expect(q(`database-color-rule-${rule.id}`)).not.toBeNull();
+      expect(panel.root.contains(q('database-color-add'))).toBe(true);
+    });
+
+    // notion-motion.md Round 20 §4 (r20-cc-selval.raw): the value flyout is 240 wide, not the advanced filter's 260.
+    it('opens a 240-wide value flyout', () => {
+      harness({ colorRules: [{ id: 'c1', propertyId: 'stage', operator: 'equals', value: null, color: 'match' }] }).open();
+      click('database-settings-color');
+      click('database-color-value-c1');
+
+      expect(q('database-filter-value-picker')?.style.width).toBe('240px');
+    });
+
+    it('deletes a rule at once with its trash, and the last delete brings back the intro', () => {
+      const h = harness({ colorRules: [{ id: 'c1', propertyId: 'num', operator: 'is_not_empty', value: null, color: 'gray' }] });
+
+      h.open();
+      click('database-settings-color');
+      click('database-color-delete-c1');
+
+      expect(h.state.view.colorRules).toEqual([]);
+      expect(note()?.textContent).toBe('tools.database.colorBlurb');
+    });
+  });
+
+  it('keeps conditional color rules in order while the view is locked', () => {
+    const h = harness({
+      colorRules: [
+        { id: 'c1', propertyId: 'num', operator: 'is_not_empty', value: null, color: 'gray' },
+        { id: 'c2', propertyId: 'stage', operator: 'is_not_empty', value: null, color: 'green' },
+      ],
+    });
+
+    h.state.locked = true;
+    h.open();
+    click('database-settings-color');
+    q('database-color-rules-handle-c1')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }));
+
+    expect(h.state.view.colorRules?.map((rule) => rule.id)).toEqual(['c1', 'c2']);
+    expect(q('database-color-rules-handle-c1')).toBeNull();
+    expect(document.querySelector('[data-blok-database-color-rules]')).not.toBeNull();
   });
 
   it('blocks shared edits while locked, but not personal filters', () => {
@@ -1776,5 +3379,119 @@ describe('view settings panel — AI Autofill', () => {
     click('database-autofill-pick-notes');
 
     expect(open).toHaveBeenCalledWith('notes');
+  });
+});
+
+// research/26 §1a L32 (row order), research/35 §2.2 L196-197 and 33-edit-properties.png (the page),
+// research/10 L16 (a property opens its Edit property panel), research/28 L131 (a map has no row).
+describe('view settings: Edit properties', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  const rowIds = (): string[] => [...document.querySelectorAll<HTMLElement>('[data-blok-testid^="database-settings-"]')]
+    .map((el) => el.getAttribute('data-blok-testid') ?? '');
+
+  const editRowNames = (): Array<string | null> => [...document.querySelectorAll('[data-blok-testid^="database-edit-property-"]')]
+    .map((row) => row.querySelector('[data-blok-database-panel-label]')?.textContent ?? null);
+
+  const withEditProperties = (view: Partial<DatabaseViewConfig> = {}, writable = true): { h: Harness; edit: ReturnType<typeof vi.fn>; add: ReturnType<typeof vi.fn> } => {
+    const h = harness(view);
+    const edit = vi.fn();
+    const add = vi.fn();
+
+    h.ctx.dataSources = { list: () => [{ id: 'db', title: 'Tasks', fits: true }], current: () => 'db', pick: vi.fn() };
+    h.ctx.automations = { read: () => undefined, schema: () => [], views: () => [], writable: () => true, write: () => true };
+    h.ctx.editProperties = { properties: () => schema, writable: () => writable, edit, add };
+
+    return { h, edit, add };
+  };
+
+  it('sits between Source and Automations under Data source settings', () => {
+    withEditProperties().h.open();
+    const root = rowIds();
+    const at = root.indexOf('database-settings-edit-properties');
+
+    expect(at).toBeGreaterThan(-1);
+    expect(root[at - 1]).toBe('database-settings-source');
+    expect(root[at + 1]).toBe('database-settings-automations');
+    expect(document.querySelector('[data-blok-testid="database-settings-edit-properties"]')?.textContent).toContain('tools.database.settingsEditProperties');
+  });
+
+  it('has no row without the lever, on a map, or a usable one when the database cannot be written', () => {
+    harness().open();
+    expect(exists('database-settings-edit-properties')).toBe(false);
+    document.body.innerHTML = '';
+
+    withEditProperties({ type: 'map' }).h.open();
+    expect(exists('database-settings-edit-properties')).toBe(false);
+    document.body.innerHTML = '';
+
+    withEditProperties({}, false).h.open();
+    expect(document.querySelector<HTMLButtonElement>('[data-blok-testid="database-settings-edit-properties"]')?.disabled).toBe(true);
+  });
+
+  it('opens "Properties": a focused search, every property in schema order, then New property', () => {
+    withEditProperties().h.open();
+    click('database-settings-edit-properties');
+    const panel = document.querySelector<HTMLElement>('[data-blok-testid="database-view-settings"]');
+    const search = document.querySelector<HTMLInputElement>('[data-blok-testid="database-edit-properties-search"]');
+    const listed = editRowNames();
+
+    expect(panel?.querySelector('[data-blok-database-panel-header]')?.textContent).toContain('tools.database.propertiesSection');
+    expect(search?.placeholder).toBe('tools.database.settingsSearchProperty');
+    expect(search).toHaveFocus();
+    expect(listed).toEqual(['Name', 'Due', 'Amount', 'Stage', 'Progress', 'Owner']);
+    expect(document.querySelector('[data-blok-testid="database-edit-property-due"] [data-blok-database-panel-chevron]')).not.toBeNull();
+    expect(document.querySelector('[data-blok-testid="database-edit-properties-new"]')?.textContent).toContain('tools.database.settingsNewProperty');
+  });
+
+  it('filters by the search, and reads "No results" when nothing matches', () => {
+    withEditProperties().h.open();
+    click('database-settings-edit-properties');
+    const search = document.querySelector<HTMLInputElement>('[data-blok-testid="database-edit-properties-search"]');
+
+    if (search === null) throw new Error('no search');
+    search.value = 'am';
+    search.dispatchEvent(new Event('input'));
+    expect(editRowNames()).toEqual(['Name', 'Amount']);
+
+    search.value = 'zzz';
+    search.dispatchEvent(new Event('input'));
+    expect(document.querySelectorAll('[data-blok-testid^="database-edit-property-"]')).toHaveLength(0);
+    expect(document.querySelector('[data-blok-testid="database-view-settings"]')?.textContent).toContain('find.noResults');
+    expect(search).toHaveFocus();
+  });
+
+  it('leaves the title out of a feed\'s list', () => {
+    withEditProperties({ type: 'feed' }).h.open();
+    click('database-settings-edit-properties');
+
+    expect(exists('database-edit-property-title')).toBe(false);
+    expect(exists('database-edit-property-due')).toBe(true);
+  });
+
+  it('opens a property\'s Edit property panel and New property, closing the panel first', () => {
+    const { h, edit, add } = withEditProperties();
+    const panel = h.open();
+    const close = vi.spyOn(panel, 'close');
+
+    click('database-settings-edit-properties');
+    click('database-edit-property-due');
+
+    expect(edit).toHaveBeenCalledWith('due');
+    expect(close.mock.invocationCallOrder[0]).toBeLessThan(edit.mock.invocationCallOrder[0]);
+
+    const again = h.open();
+
+    click('database-settings-edit-properties');
+    click('database-edit-properties-new');
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(again).toBeDefined();
   });
 });

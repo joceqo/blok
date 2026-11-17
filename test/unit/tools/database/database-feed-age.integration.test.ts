@@ -18,7 +18,7 @@ const rerender = (tool: unknown): void => {
   (tool as { rerenderView: () => void }).rerenderView();
 };
 
-// research/36 §10: the byline age updates live, from one timer per feed view.
+// research/36 §10: the byline age updates live, from one timer shared by every feed.
 describe('Feed byline age in the database', () => {
   const now = new Date(2026, 9, 22, 9, 35, 0).getTime();
 
@@ -34,12 +34,12 @@ describe('Feed byline age in the database', () => {
     document.body.innerHTML = '';
   });
 
-  const feed = (): ReturnType<typeof buildTool> => {
+  const feed = (createdAt = now - 55_000): ReturnType<typeof buildTool> => {
     const doc = makeDoc([fakeRow('a', 'db', { title: 'F1' }, 'a0')]);
     const block = doc.rows.get('a')?.block as unknown as { createdBy?: string; createdAt?: number };
 
     block.createdBy = 'u1';
-    block.createdAt = now - 55_000;
+    block.createdAt = createdAt;
 
     return buildTool(doc, {}, tableData(SCHEMA, { type: 'feed' }));
   };
@@ -52,6 +52,21 @@ describe('Feed byline age in the database', () => {
     vi.advanceTimersByTime(30_000);
     expect(time()).toBe('1m');
     tool.destroy();
+  });
+
+  // research/36 §10: every card changed on the same wall-clock second, so the tick is the app's, not each view's.
+  it('ticks every feed on the same clock, whenever each one mounted', () => {
+    const first = feed();
+
+    vi.advanceTimersByTime(20_000);
+    const second = feed(Date.now() - 55_000);
+    const time = (): string | null | undefined => second.el.querySelector('[data-blok-database-feed-time]')?.textContent;
+
+    expect(time()).toBe('tools.database.feedJustNow');
+    vi.advanceTimersByTime(10_000);
+    expect(time()).toBe('1m');
+    first.tool.destroy();
+    second.tool.destroy();
   });
 
   it('leaves no timer behind after redraws and destroy', () => {
@@ -68,5 +83,55 @@ describe('Feed byline age in the database', () => {
     tool.destroy();
     vi.runOnlyPendingTimers();
     expect(vi.getTimerCount()).toBe(base);
+  });
+});
+
+// notion-motion.md Round 33 §5 (r33-feed-*.raw): a title edit in the peek renames the post and marks it "(edited)".
+describe('Feed rename from the peek', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+  });
+
+  it('renames the post and marks it "(edited)"', () => {
+    const doc = makeDoc([fakeRow('a', 'db', { title: 'Gamma' }, 'a0')]);
+    const block = doc.rows.get('a')?.block as unknown as { createdBy?: string; createdAt?: number };
+
+    block.createdBy = 'u1';
+    block.createdAt = Date.now() - 60_000;
+    const { tool, el } = buildTool(doc, {}, tableData(SCHEMA, { type: 'feed' }));
+
+    el.querySelector<HTMLElement>('[data-blok-database-feed-title]')?.click();
+    const title = document.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]');
+
+    if (title === null) throw new Error('no peek title');
+    title.value = 'Gamma 2';
+    title.dispatchEvent(new Event('input'));
+
+    expect(el.querySelector('[data-blok-database-feed-title]')?.textContent).toBe('Gamma 2');
+    expect(el.querySelector('[data-blok-database-feed-time] + [data-blok-database-feed-edited]')).not.toBeNull();
+    tool.destroy();
+  });
+
+  // An undo or a collaborator's rename reaches the feed as a block change, not through the peek.
+  it('renames the post when its row block changes', async () => {
+    const doc = makeDoc([fakeRow('a', 'db', { title: 'Gamma' }, 'a0')]);
+    const row = doc.rows.get('a');
+    const { tool, el } = buildTool(doc, {}, tableData(SCHEMA, { type: 'feed' }));
+
+    if (row === undefined) throw new Error('no row');
+    row.data = { ...row.data, properties: { ...row.data.properties, title: 'Gamma 2' } };
+    doc.api.events.emit('block changed', {
+      event: new CustomEvent('block-changed', { detail: { target: row.block, index: 0, origin: 'local' } }),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(el.querySelector('[data-blok-database-feed-title]')?.textContent).toBe('Gamma 2');
+    tool.destroy();
   });
 });

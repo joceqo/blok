@@ -1,7 +1,7 @@
 import { IconDownload } from '../../components/icons';
 import { DATA_ATTR } from '../../components/constants/data-attributes';
 import type { FileData } from '../../../types/tools/file';
-import { resolveFileIcon } from './file-icon';
+import { resolveFileIcon, showsFileSize } from './file-icon';
 import { humanFileSize } from './format';
 import { safeHttpHref } from './url';
 
@@ -57,6 +57,28 @@ const ACTIVATOR_STYLE: Partial<CSSStyleDeclaration> = {
   cursor: 'inherit',
 };
 
+/** Where the tray starts in IconDownload's single path. */
+const TRAY_START = 'M3.5 13';
+
+/**
+ * Splits the download icon into an arrow and a tray, so the arrow can drop
+ * into the tray on its own. Same drawing; left whole if the icon ever changes shape.
+ */
+function splitDownloadIcon(host: HTMLElement): void {
+  const path = host.querySelector('path');
+  const d = path?.getAttribute('d') ?? '';
+  const at = d.indexOf(TRAY_START);
+  if (path === null || at <= 0) {
+    return;
+  }
+  const tray = path.cloneNode(false) as SVGPathElement;
+  path.setAttribute('d', d.slice(0, at).trim());
+  path.setAttribute('data-part', 'arrow');
+  tray.setAttribute('d', d.slice(at));
+  tray.setAttribute('data-part', 'tray');
+  path.after(tray);
+}
+
 /** Renders the static download card: type icon, filename, size, download affordance. */
 export function renderFileCard(
   data: Partial<FileData> & { url: string },
@@ -67,6 +89,9 @@ export function renderFileCard(
   const wrapper = document.createElement('div');
   wrapper.className = 'blok-file-card-wrapper';
   wrapper.setAttribute('data-role', 'file-card-wrapper');
+  // A file is not a text link: Blok's link hover card (URL, copy, edit) stays off it,
+  // and the browser handles the download click itself.
+  wrapper.setAttribute(DATA_ATTR.linkOwner, '');
 
   const href = safeHttpHref(data.url);
   const downloadName = data.fileName ?? '';
@@ -135,7 +160,7 @@ export function renderFileCard(
   }
   meta.appendChild(name);
 
-  const sizeText = humanFileSize(data.size);
+  const sizeText = showsFileSize(category) ? humanFileSize(data.size) : '';
   if (sizeText) {
     const size = document.createElement('span');
     size.className = 'blok-file-size';
@@ -160,6 +185,7 @@ export function renderFileCard(
     download.setAttribute('aria-label', downloadLabel);
   }
   download.innerHTML = IconDownload;
+  splitDownloadIcon(download);
 
   wrapper.append(card, download);
   return wrapper;

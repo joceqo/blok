@@ -296,6 +296,10 @@ func canonicalDatabases(blocks []*jsjson.Node) []*jsjson.Node {
 		if kind == "database" && deepEquals(lookup(relabelled, "automations"), emptyAutomations()) {
 			relabelled.Remove("automations")
 		}
+		// The editor also saves an empty deletedProperties map on every database.
+		if kind == "database" && deepEquals(lookup(relabelled, "deletedProperties"), jsjson.NewObject()) {
+			relabelled.Remove("deletedProperties")
+		}
 		setMember(block, "data", relabelled)
 	}
 	return blocks
@@ -458,7 +462,7 @@ func loadRichFields(t *testing.T) {
 
 // Rich text, as C# RichText.IsRichText and Canonicalize.
 
-var markOrder = []string{"link", "color", "background", "highlight", "bold", "italic", "underline", "strikethrough", "code", "sup", "sub"}
+var markOrder = []string{"annotation", "link", "color", "background", "highlight", "bold", "italic", "underline", "strikethrough", "code", "sup", "sub"}
 
 var booleanMarks = map[string]bool{"highlight": true, "bold": true, "italic": true, "underline": true, "strikethrough": true, "code": true, "sup": true, "sub": true}
 
@@ -619,6 +623,17 @@ func markValue(key string, raw *jsjson.Node) *jsjson.Node {
 		}
 		return link
 	}
+	if key == "annotation" {
+		text, ok := stringOf(lookup(raw, "text"))
+		if raw.Kind != jsjson.KindObject || !ok || text == "" {
+			return nil
+		}
+		annotation := jsjson.NewObject(jsjson.NewMember("text", str(text)))
+		if subtitle, ok := stringOf(lookup(raw, "subtitle")); ok && subtitle != "" {
+			setMember(annotation, "subtitle", str(subtitle))
+		}
+		return annotation
+	}
 	if booleanMarks[key] {
 		if raw.Kind == jsjson.KindTrue {
 			return jsjson.NewBool(true)
@@ -742,8 +757,8 @@ func TestNormalizerMatchesTheTypeScriptNormalizer(t *testing.T) {
 			}
 		})
 	}
-	if ran != 8 {
-		t.Fatalf("ran %d normalizer cases, want the 8 C# runs", ran)
+	if ran != 9 {
+		t.Fatalf("ran %d normalizer cases, want the 9 C# runs", ran)
 	}
 }
 

@@ -15,6 +15,7 @@ pub trait Timers: Send + Sync {
 /// CollabRoomOptions. Default is C#'s defaults; an explicit zero stays zero,
 /// as a C# init property does.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct Options {
     pub export_debounce: Duration,
     pub export_max_delay: Duration,
@@ -33,11 +34,18 @@ pub struct Options {
     pub retry_backoff_cap: Duration,
     /// Bounds each store call made with the lane held.
     pub commit_timeout: Duration,
+    /// A history restore, by any path, sets data.trashed on a page pointer
+    /// the point lacks instead of removing it.
+    pub restore_trashes_pages: bool,
     /// SystemTime::now when None.
     pub now: Option<Clock>,
     /// The export, eviction and persist timers and every commit_timeout
     /// bound wait on it. Wall time when None.
     pub timers: Option<Arc<dyn Timers>>,
+    /// How long one change window runs from a document's first journalled
+    /// write. Used only with a ChangeObserver. Zero is 60 s, and it never
+    /// passes one day.
+    pub change_signal_window: Duration,
 }
 
 pub(crate) const MALFORMED_AWARENESS_LIMIT: i64 = 3;
@@ -66,8 +74,10 @@ impl Default for Options {
             retry_backoff: Duration::from_secs(2),
             retry_backoff_cap: Duration::from_secs(60),
             commit_timeout: Duration::from_secs(10),
+            restore_trashes_pages: false,
             now: None,
             timers: None,
+            change_signal_window: Duration::from_secs(60),
         }
     }
 }

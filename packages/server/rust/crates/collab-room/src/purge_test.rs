@@ -118,6 +118,7 @@ async fn an_empty_doc_id_is_refused_before_authorize_on_every_store() {
             log: None,
             operations,
             activity: None,
+            notes: None,
         });
         let replaced = Arc::new(Mutex::new(Vec::<String>::new()));
         let seen = replaced.clone();

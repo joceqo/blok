@@ -35,6 +35,8 @@ export interface Route extends Partial<RouteResponse> {
   byBody?: Array<{ when: Record<string, unknown>; response: RouteResponse }>;
   /** The nth request on this route gets the nth answer; the last one repeats. */
   sequence?: RouteResponse[];
+  /** Record the request body as the exact text sent (`bodyText`), not parsed JSON. */
+  rawBody?: boolean;
 }
 
 export type RouteTable = Record<string, Route>;
@@ -44,10 +46,15 @@ export interface RecordedRequest {
   path: string;
   headers: Record<string, unknown>;
   body?: unknown;
+  bodyText?: string;
 }
 
 // Header names a request record keeps; everything else varies by client library.
-const RECORDED_HEADERS = ['authorization', 'content-type', 'blok-doc-version', 'origin', 'sec-websocket-protocol'];
+const RECORDED_HEADERS = [
+  'authorization', 'content-type', 'blok-doc-version', 'origin', 'sec-websocket-protocol',
+  // The embed example's custom document source (packages/mcp/examples/embed/server.mjs).
+  'blok-if-version', 'blok-caller', 'blok-caller-client', 'blok-caller-actor', 'blok-caller-on-behalf-of',
+];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -212,13 +219,13 @@ const readBody = (req: IncomingMessage): Promise<string> => new Promise((resolve
   req.on('error', reject);
 });
 
-const recordOf = (req: IncomingMessage, body: unknown, secret?: string): RecordedRequest => ({
+const recordOf = (req: IncomingMessage, body: unknown, secret?: string, bodyText?: string): RecordedRequest => ({
   method: req.method ?? '',
   path: req.url ?? '',
   headers: Object.fromEntries(RECORDED_HEADERS
     .filter((name) => typeof req.headers[name] === 'string')
     .map((name) => [name, describeHeader(name, String(req.headers[name]), secret)])),
-  ...(body !== undefined && { body }),
+  ...(bodyText === undefined ? body !== undefined && { body } : { bodyText }),
 });
 
 /**
@@ -243,10 +250,10 @@ export const startFakeHost = async (routes: RouteTable, options: { secret?: stri
     void (async () => {
       const raw = await readBody(req);
       const body = parseBody(raw);
-
-      requests.push(recordOf(req, body, options.secret));
       const key = `${req.method ?? ''} ${(req.url ?? '').split('?')[0]}`;
       const route = routeFor(key);
+
+      requests.push(recordOf(req, body, options.secret, route?.rawBody === true ? raw : undefined));
       const nth = seen.get(key) ?? 0;
 
       seen.set(key, nth + 1);

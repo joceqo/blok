@@ -4,6 +4,8 @@ import { simulateKeydown } from '../../../helpers/simulate';
 import type { SelectOption, DatabaseRow, DatabaseViewConfig } from '../../../../src/tools/database/types';
 import type { I18n } from '../../../../types';
 import { HINT_DELAY, destroy as destroyTooltip } from '../../../../src/components/utils/tooltip';
+import { IconPlayerPlay } from '../../../../src/components/icons';
+import { NO_VALUE_GROUP_KEY } from '../../../../src/tools/database/group-keys';
 
 const makeOption = (overrides: Partial<SelectOption> = {}): SelectOption => ({
   id: 'opt-1', label: 'To Do', position: 'a0', ...overrides,
@@ -110,6 +112,44 @@ describe('DatabaseBoardView', () => {
       expect(header?.textContent?.trim()).toBe('High');
     });
 
+    // notion-motion.md Round 29 §6: the band toggle holds the table group's filled caret.
+    it('draws the filled caret in the toggle', () => {
+      const caret = new DOMParser().parseFromString(IconPlayerPlay, 'image/svg+xml').querySelector('path')?.getAttribute('d');
+
+      expect(toggleOf(lanesView([{ key: 'l1', label: 'High' }]), 'l1')?.querySelector('path')?.getAttribute('d')).toBe(caret);
+    });
+
+    // Round 29 §6: "Show group options" ⋯ then "Add new page in group" +, after the label.
+    it('puts ⋯ and + after the band label, naming the band', () => {
+      const header = laneOf(lanesView([{ key: 'l1', label: 'High' }]), 'l1')?.querySelector('[data-blok-database-board-lane-header]');
+      const label = header?.querySelector('[data-blok-database-board-lane-label]');
+      const actions = header?.querySelector('[data-blok-database-board-lane-actions]');
+      const menu = actions?.querySelector('button[data-blok-database-board-lane-menu]');
+      const add = actions?.querySelector('button[data-blok-database-board-lane-add]');
+
+      expect(label?.textContent).toBe('High');
+      expect(label?.nextElementSibling).toBe(actions);
+      expect(menu?.getAttribute('aria-label')).toBe('tools.database.groupMenuLabel');
+      expect(menu?.getAttribute('aria-haspopup')).toBe('menu');
+      expect(menu?.getAttribute('data-sub-group')).toBe('l1');
+      expect(add?.getAttribute('aria-label')).toBe('tools.database.newPage');
+      expect(add?.getAttribute('data-sub-group')).toBe('l1');
+      expect(menu?.nextElementSibling).toBe(add);
+    });
+
+    // Round 29 §6 (r29-subgroup-body.raw): a band's first card sits 8 under the band header.
+    it('starts a band column\'s cards 8px down', () => {
+      const cards = laneOf(lanesView([{ key: 'l1', label: 'High' }]), 'l1')?.querySelector<HTMLElement>('[data-blok-database-cards]');
+
+      expect(cards?.style.paddingTop).toBe('8px');
+    });
+
+    it('has no ⋯ or + in read-only mode', () => {
+      const board = lanesView([{ key: 'l1', label: 'High' }], undefined, true);
+
+      expect(board.querySelector('[data-blok-database-board-lane-actions]')).toBeNull();
+    });
+
     it('still folds a band in read-only mode', () => {
       const board = lanesView([{ key: 'l1', label: 'High' }], undefined, true);
 
@@ -164,15 +204,38 @@ describe('DatabaseBoardView', () => {
       expect(board.querySelector('[data-blok-database-column][data-option-id="ns"]')?.hasAttribute('data-color')).toBe(false);
     });
 
+    // notion-motion.md Round 42 §1: with Color columns on, ⋯ and + take the group's colour on Status and Select boards;
+    // a group with no colour gives 95,94,89. With it off, nothing is set and the CSS gives 161,158,153.
+    it('paints the header ⋯ and + in the group colour while Color columns is on, on status and select boards', () => {
+      const glyph = (board: HTMLElement, id: string): string | undefined =>
+        board.querySelector<HTMLElement>(`[data-blok-database-column][data-option-id="${id}"]`)?.style.getPropertyValue('--_blok-group-glyph');
+      const status = statusView([
+        makeOption({ id: 'ip', label: 'In progress', color: 'blue' }),
+        makeOption({ id: 'ns', label: 'Not started' }),
+        makeOption({ id: NO_VALUE_GROUP_KEY, label: 'No Status' }),
+      ]);
+      const select = new DatabaseBoardView({
+        readOnly: false, i18n, options: [makeOption({ id: 'y', color: 'yellow' })], getRows: () => [], titlePropertyId: 'title',
+      }).createView();
+      const off = statusView([makeOption({ id: 'ip', color: 'blue' })], { groupSettings: { colorColumns: false } });
+
+      expect(glyph(status, 'ip')).toBe('var(--blok-database-column-blue-glyph, var(--blok-database-status-dot-blue))');
+      expect(glyph(status, 'ns')).toBe('var(--blok-database-column-accent)');
+      expect(glyph(status, NO_VALUE_GROUP_KEY)).toBe('var(--blok-database-column-accent)');
+      expect(glyph(select, 'y')).toBe('var(--blok-database-column-yellow-glyph, var(--blok-database-status-dot-yellow))');
+      expect(glyph(off, 'ip')).toBe('');
+      expect(status.querySelector('[data-blok-database-column-actions]')?.hasAttribute('data-status')).toBe(false);
+    });
+
     // findings-board B04: nothing after the last column of a Status board.
     it('offers no add-group button', () => {
       expect(statusView([makeOption()]).querySelector('[data-blok-database-add-column]')).toBeNull();
     });
 
-    // findings-board B25: the hidden column just goes; Settings › Group lists it. Select boards are unmeasured and keep the button.
+    // findings-board B25: the hidden column just goes; Settings › Group lists it.
     it('offers no hidden-groups button', () => {
       const board = new DatabaseBoardView({
-        readOnly: false, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title', hiddenGroupCount: 1,
+        readOnly: false, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title',
         schema: [{ id: 's', name: 'Status', type: 'status', position: 'a1' }],
         view: { id: 'v', name: 'Board', type: 'board', position: 'a0', sorts: [], filters: [], visibleProperties: [], groupBy: 's' },
       }).createView();
@@ -281,27 +344,125 @@ describe('DatabaseBoardView', () => {
       expect(board.querySelector('[data-blok-database-column-count]')?.textContent).toBe('8');
     });
 
-    it('offers the hidden groups after the last column so they can be shown again', () => {
+    // notion-motion.md Round 13: an empty group shows no percent at all.
+    it('hides a count with no text, and shows it again once it has some', () => {
+      const totals = { value: '' };
       const view = new DatabaseBoardView({
-        readOnly: false, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title', hiddenGroupCount: 2,
+        readOnly: false, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title',
+        aggregate: () => totals.value,
       });
       const board = view.createView();
-      const button = board.querySelector('[data-blok-database-hidden-groups]');
+      const count = (): Element | null => board.querySelector('[data-blok-database-column-count]');
 
-      expect(button?.textContent).toBe('tools.database.hiddenGroups');
-      expect(button?.nextElementSibling?.hasAttribute('data-blok-database-add-column')).toBe(true);
+      expect(count()?.hasAttribute('hidden')).toBe(true);
+
+      totals.value = '100%';
+      const cards = board.querySelector<HTMLElement>('[data-blok-database-cards]');
+
+      if (cards !== null) view.appendRow(cards, makeRow({ id: 'row-2' }));
+
+      expect(count()?.hasAttribute('hidden')).toBe(false);
     });
 
-    it('offers no hidden-groups button in read-only, where it could not show a group again', () => {
+    // notion-motion.md Round 24 §1 (r24-pinsec-1.raw, r24-pinsec-two.raw): "Pinned groups" sits under "+ New group",
+    // one row per pinned group in the order given (group order), each with its pill, count and an Unpin button.
+    it('lists pinned groups under the add-group button', () => {
+      const board = new DatabaseBoardView({
+        readOnly: false, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title',
+        pinnedGroups: [
+          { option: makeOption({ id: 'red', label: 'Red', color: 'red' }), count: 1 },
+          { option: makeOption({ id: 'pz', label: 'Pz' }), count: 0 },
+        ],
+      }).createView();
+      const strip = board.querySelector('[data-blok-database-group-strip]');
+      const lines = [...board.querySelectorAll<HTMLElement>('[data-blok-database-pinned-group]')];
+
+      expect(strip?.firstElementChild?.hasAttribute('data-blok-database-add-column')).toBe(true);
+      expect(strip?.querySelector('[data-blok-database-pinned-groups-header]')?.textContent?.trim()).toBe('tools.database.pinnedGroups');
+      expect(lines.map((line) => [line.getAttribute('data-option-id'), line.querySelector('[data-blok-database-pinned-group-open]')?.textContent])).toEqual([
+        ['red', 'Red1'],
+        ['pz', 'Pz0'],
+      ]);
+      expect(lines[0].querySelector('[data-blok-database-pinned-group-unpin]')?.getAttribute('aria-label')).toBe('tools.database.groupUnpin');
+    });
+
+    // notion-motion.md Round 25 §2 (r25-pinsec-status.raw): a Status board has the same strip minus "+ New group",
+    // so "Pinned groups" is its first item.
+    it('lists pinned groups first on a Status board', () => {
+      const board = new DatabaseBoardView({
+        readOnly: false, i18n, options: [makeOption({ id: 'ip', label: 'In progress' })], getRows: () => [], titlePropertyId: 'title',
+        schema: [{ id: 's', name: 'Status', type: 'status', position: 'a1' }],
+        view: { id: 'v', name: 'Board', type: 'board', position: 'a0', sorts: [], filters: [], visibleProperties: [], groupBy: 's' },
+        pinnedGroups: [{ option: makeOption({ id: 'ip', label: 'In progress' }), count: 2 }],
+      }).createView();
+      const strip = board.querySelector('[data-blok-database-group-strip]');
+
+      expect(strip?.firstElementChild?.hasAttribute('data-blok-database-pinned-groups')).toBe(true);
+      expect(strip?.querySelector('[data-blok-database-add-column]')).toBeNull();
+      expect(strip?.querySelector('[data-blok-database-pinned-group-unpin]')).not.toBeNull();
+    });
+
+    // notion-motion.md Round 25 §2 (r25-pinsec-locked.raw): a locked database keeps the strip and its Unpin buttons;
+    // only "+ New group" goes. Round 26 §1 (r26-lock-strip.raw): Unpin keeps its pointer, hover and hint, and a click does nothing.
+    it('keeps the pinned strip on a locked database and drops "+ New group"', () => {
+      const locked = new DatabaseBoardView({
+        readOnly: false, structureLocked: true, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title',
+        pinnedGroups: [{ option: makeOption({ id: 'red', label: 'Red' }), count: 1 }],
+      }).createView();
+      const lockedNoPins = new DatabaseBoardView({
+        readOnly: false, structureLocked: true, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title',
+      }).createView();
+      const strip = locked.querySelector('[data-blok-database-group-strip]');
+
+      expect(locked.querySelector('[data-blok-database-add-column]')).toBeNull();
+      expect(lockedNoPins.querySelector('[data-blok-database-add-column]')).toBeNull();
+      expect(strip?.firstElementChild?.hasAttribute('data-blok-database-pinned-groups')).toBe(true);
+      const unpin = strip?.querySelector<HTMLButtonElement>('[data-blok-database-pinned-group-unpin]');
+
+      expect(unpin?.getAttribute('aria-disabled')).toBe('true');
+      expect(unpin?.disabled).toBe(false);
+    });
+
+    // Round 26 §1 (r26-lock-strip.raw): the hint "Unpin group", locked or not, after Blok's hint delay.
+    it.each([false, true])('hints "Unpin group" on hover (locked: %s)', (structureLocked) => {
+      destroyTooltip();
+      vi.useFakeTimers();
+      try {
+        const board = new DatabaseBoardView({
+          readOnly: false, structureLocked, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title',
+          pinnedGroups: [{ option: makeOption({ id: 'red', label: 'Red' }), count: 1 }],
+        }).createView();
+        const unpin = board.querySelector<HTMLElement>('[data-blok-database-pinned-group-unpin]');
+
+        if (unpin === null) throw new Error('no unpin');
+        document.body.appendChild(board);
+        unpin.dispatchEvent(new MouseEvent('mouseenter'));
+        vi.advanceTimersByTime(HINT_DELAY + 50);
+
+        expect(document.querySelector('[data-blok-testid="tooltip"][data-blok-shown="true"]')?.textContent).toBe('tools.database.groupUnpin');
+      } finally {
+        vi.useRealTimers();
+        destroyTooltip();
+        document.body.innerHTML = '';
+      }
+    });
+
+    it('draws no pinned strip without pins or in read-only', () => {
+      const plain = new DatabaseBoardView({ readOnly: false, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title' }).createView();
+      const readOnly = new DatabaseBoardView({
+        readOnly: true, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title', pinnedGroups: [{ option: makeOption(), count: 0 }],
+      }).createView();
+
+      expect(plain.querySelector('[data-blok-database-group-strip]')).toBeNull();
+      expect(readOnly.querySelector('[data-blok-database-pinned-groups]')).toBeNull();
+    });
+
+    // notion-motion.md Round 24 §1 (r24-pin-and-hidden.png): a Select board shows no trace of its hidden groups.
+    // Settings › Group shows them again.
+    it('offers no hidden-groups button on a Select board', () => {
       const view = new DatabaseBoardView({
-        readOnly: true, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title', hiddenGroupCount: 2,
+        readOnly: false, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title',
       });
-
-      expect(view.createView().querySelector('[data-blok-database-hidden-groups]')).toBeNull();
-    });
-
-    it('offers no hidden-groups button when nothing is hidden', () => {
-      const view = new DatabaseBoardView({ readOnly: false, i18n, options: [makeOption()], getRows: () => [], titlePropertyId: 'title' });
 
       expect(view.createView().querySelector('[data-blok-database-hidden-groups]')).toBeNull();
     });
@@ -565,13 +726,16 @@ describe('DatabaseBoardView', () => {
       expect(view('compact').querySelector('[data-blok-database-board]')?.getAttribute('data-card-layout')).toBe('compact');
     });
 
-    it('prefixes add-column button text with +', () => {
+    // notion-motion.md Round 23 §5: a plus icon, not a typed "+", then the words.
+    it('leads the add-column button with a plus icon instead of a typed +', () => {
       const view = new DatabaseBoardView({ readOnly: false, i18n, options: [], getRows: () => [], titlePropertyId: 'title' });
       const board = view.createView();
 
       const addColBtn = board.querySelector('[data-blok-database-add-column]');
 
-      expect(addColBtn?.textContent).toMatch(/^\+ /);
+      expect(addColBtn?.firstElementChild?.matches('[data-blok-database-add-column-icon]')).toBe(true);
+      expect(addColBtn?.querySelector('[data-blok-database-add-column-icon] svg')).not.toBeNull();
+      expect(addColBtn?.textContent).not.toMatch(/\+/);
     });
 
     it('renders colored dot in column header when color is defined', () => {
@@ -1032,6 +1196,16 @@ describe('DatabaseBoardView', () => {
       expect(header.style.gap).toBeTruthy();
     });
 
+    // notion-motion.md Round 32 §3 Board: the count sits 3px after the group pill.
+    it('puts the count 3px after the group pill', () => {
+      const options = [makeOption({ id: 'opt-1', position: 'a0' })];
+      const view = new DatabaseBoardView({ readOnly: false, i18n, options, getRows: () => [], titlePropertyId: 'title' });
+      const board = view.createView();
+      const header = board.querySelector('[data-blok-database-column-header]') as HTMLElement;
+
+      expect(header.style.gap).toBe('3px');
+    });
+
     it('board area has vertical padding set inline', () => {
       const view = new DatabaseBoardView({ readOnly: false, i18n, options: [], getRows: () => [], titlePropertyId: 'title' });
       const board = view.createView();
@@ -1132,14 +1306,15 @@ describe('DatabaseBoardView', () => {
       expect(addCardBtn.style.borderColor).toBe('');
     });
 
-    it('add-column button matches column width (260px) via flex', () => {
+    // notion-motion.md Round 16 §3: "+ New group" is 108 wide, as wide as its label, not a column.
+    it('add-column button keeps to its label instead of a column width', () => {
       const view = new DatabaseBoardView({ readOnly: false, i18n, options: [], getRows: () => [], titlePropertyId: 'title' });
       const board = view.createView();
 
       const addColBtn = board.querySelector('[data-blok-database-add-column]') as HTMLElement;
 
-      expect(addColBtn.style.minWidth).toBe('260px');
-      expect(addColBtn.style.flex).toBe('0 0 260px');
+      expect(addColBtn.style.minWidth).toBe('');
+      expect(addColBtn.style.flex).toBe('');
     });
   });
 

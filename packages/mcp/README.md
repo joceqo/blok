@@ -144,8 +144,44 @@ Stored mode is refused when `--sync-url` is set. A sync service owns those docum
   - A `sub` that is not a non-empty string, or that starts with `client:`, is refused. So is a token that names no `sub`, `client_id` or `azp`.
 - A request with a non-loopback `Origin` header is refused.
 - Live handles hold sockets, so run it as a long-lived process.
-- To scale out, route on the `Mcp-Param-Blok-Handle` header, so every call for a handle reaches the process that holds it.
-- Some clients do not mirror `x-mcp-header` parameters into headers. To serve them, run a single instance.
+- To scale out stored mode, give every process one shared handle store (`handleStore`, or `--handle-store files:<dir>` for processes on one machine). Any process can then serve any call for a stored handle. See "Shared handle store" below.
+- Live handles hold sockets and never go into the store. To scale out live mode, route on the `Mcp-Param-Blok-Handle` header, so every call for a live handle reaches the process that holds it. Some clients do not mirror `x-mcp-header` parameters into headers; to serve them in live mode, run a single instance.
+
+## Shared handle store
+
+By default each process keeps its stored handles in memory. With a handle store, a stored handle lives in the store as a record (`BlokMcpHandleRecord`, JSON, `v: 1`): the opener (principal, client name, scopes, actor), the document id, write access, the source version, whether it must reload, the document itself and its undo steps.
+
+- Each call leases the handle, rebuilds the session from the record, runs, saves the batch to the source, saves the record, and releases the lease.
+- If the record cannot be saved after the source save, the batch still answers, the error goes to stderr, and the handle is closed: the next call answers `UNKNOWN_HANDLE`.
+- A record opened under another tool contract (a rolling deploy) answers `VERSION_SKEW`; open the document again.
+- A call from another principal answers `UNKNOWN_HANDLE`. Blok checks this, not the store.
+- A process that stops drops only its own leases. It never clears the store.
+- The per-principal cap (`--max-handles`) counts the stored handles plus this process's live handles.
+
+What a store must do (`BlokMcpHandleStore`):
+
+- `count(principal, idleMs)` answers the principal's handles that have not expired.
+- `tryAdd(handle, record, maxPerPrincipal, idleMs)` counts the principal's handles and adds the new one as one atomic step. A plain `COUNT` then `INSERT` is not atomic: hold a per-principal lock (SQL `SELECT … FOR UPDATE` on a principal row, or a Redis Lua script).
+- `acquire(handle, idleMs, timeoutMs)` gives one lease per handle across all processes. It waits up to the timeout, then answers `busy`; Blok answers `SOURCE_UNAVAILABLE` (retryable). `unknown` means no such handle, or it expired.
+- The lease has `renew()`, `save(record)`, `release()` and `remove()`. Each one checks that the lease still holds the handle (a lease token: SQL `UPDATE … WHERE lease_token = ?`, Redis compare in a Lua script). A lost lease must make `renew`, `save` and `remove` throw and change nothing. `release` after the lease is gone does nothing.
+- There is no `remove` without a lease. `blok_close` and a record that could not be saved both remove through the lease.
+- `sweep(idleMs)` deletes every handle idle longer than `idleMs` that nobody leases, of every principal. Blok calls it every 60 seconds, and stops at shutdown. A store that expires records by itself (Redis `PEXPIRE` at release, `PERSIST` while leased) may do nothing. A SQL store needs it, or the records stay forever.
+- A handle expires after the idle time without a lease. A leased handle never expires; `release` restarts its idle time.
+- Leases need a time limit. A holder that dies must not hold a handle forever, so a lease ends unless it is renewed. Blok calls `renew()` every 5 seconds while a call holds the lease, so the store needs no timer of its own: give the lease a TTL of 30 seconds and extend it on each `renew`. A failed `renew` is logged, and the call goes on; if the lease was lost, its `save` or `remove` is refused.
+- Blok passes only handles of 1–128 characters of `[A-Za-z0-9_-]`. Any other handle from a client answers `UNKNOWN_HANDLE` before the store is called.
+- Records can be large: the undo steps are whole documents, and the newest step is always kept, so a record has no fixed size limit. In MySQL use `LONGTEXT` or `JSON`, not `TEXT` (64 KiB).
+- Keep the record exactly as given. `scopes: null` and `scopes: []` mean different things, so a serializer must not drop nulls (no `omitempty` in Go, no `WhenWritingNull` in C#).
+- A record of another format (`v` other than `1`) answers `UNKNOWN_HANDLE`.
+- Any error the store throws is logged in full, and the agent sees `SOURCE_UNAVAILABLE` (retryable). It is not answered as a protocol error, even when Blok runs inside a host's server: a store outage passes.
+
+Records are trusted. Blok checks only the principal and the tool contract of a record. Anyone who can write the store can forge the actor, scopes, client name, document and undo steps, and so write any content the principal may write. Keep the store writable by Blok's processes only.
+
+Exclusivity is best effort. Leases are time-limited, so a paused holder (a frozen process, a suspended VM) can lose its lease while it still runs, and two processes can run one call each on the same handle. The lost holder's own `save` and `remove` then fail, and the batch it already saved still answers. What keeps a save from being lost is the source's version check: a stale save must answer `409` (`DOCUMENT_CHANGED`). A source that does not check versions can lose writes across processes.
+
+`--handle-store files:<dir>` is the reference store. It keeps each handle in `<dir>` and locks with lock files, so several processes on one machine can share it. Its files are not meant to be shared with the C#, Go or Rust servers.
+
+- It refuses to start on Windows, where its privacy checks cannot be made. Use your own store there.
+- The directory must be owned by the process's effective user, with no group or world access (`chmod 700`), and must not be a link. A server running as root refuses a directory another user owns.
 
 ## Host duties
 
@@ -162,6 +198,13 @@ Stored mode is refused when `--sync-url` is set. A sync service owns those docum
   - With `--sync-url` the server joins the new page's room once and leaves. The sync service loads it empty and seeds it, so its ticket and `IBlokAuthorization` must let the agent open an id it has never seen, and your document endpoint must answer `null` for it. If the room is refused, the insert fails with `FORBIDDEN` or `SOURCE_UNAVAILABLE`.
   - In live mode your document endpoint gets no PUT for the new page yet. It gets one when someone writes in the page, or under a journal when the room is opened again.
   - The document stays, empty, if the batch fails after it was made or the insert is undone. When a later command in that batch fails, `error.details.orphaned` lists it. A save or a room that refuses the batch does not. Delete it yourself if you do not want it.
+  - To make each page yourself, for example as your own article, pass `createPage` (library) or `--create-page <url>` (webhook). It needs a stored `--source` and cannot be used with `--sync-url`: the server refuses to start. Without `page-map` it is never called.
+    - It gets `{ parentDocumentId, principal, actor, suggestedPageId }` and answers the new page id, or `null` to refuse. Use `suggestedPageId` or your own id: 1 to 512 characters, no control characters.
+    - Blok then does not run `--authorize` on the new id and saves nothing for it. You make the document your source loads for that id. A later `blok_open` of it runs `--authorize` as usual.
+    - `null` fails the insert with `FORBIDDEN` "You may not create a page document here.", and nothing is saved.
+    - A throw or a bad id is logged in full to stderr. The agent sees `SOURCE_UNAVAILABLE` "The host could not create the page.". When the batch already made pages, it sees `ORPHANED_SIDE_EFFECT` instead: `details.orphaned` lists them, and `details.cause` is `APPLY_FAILED` "The batch stopped on a server error. Nothing was written.". The parent is not saved.
+    - The webhook gets `POST` with `Content-Type: application/json` and the body `{ "parentDocumentId", "principal", "actor": { "id", "name", "onBehalfOf" }, "suggestedPageId" }`. `200 { "pageId": "<id>" }` makes the page; `200 { "pageId": null }` refuses. Any other status, a redirect, a body without `pageId`, a network error or no answer within 10 seconds is a host error, not a refusal.
+    - Undo, redo and `block.delete` never call it. An undone or failed insert leaves your page in place, with no parent pointing at it. Keep a new page hidden until a saved parent names its `pageId`.
   - Without `page-map`, a page insert fails with `COMMAND_UNAVAILABLE`, reason `host`. The page entry in `blok_describe` says the same: `insertUnavailableReason: "host"`.
   - One batch inserts at most 25 pages. A longer batch fails with `INVALID_ARGS` before any page is made.
   - Insert each page with its own `block.insert`. A page inside another block's `children` fails with `INVALID_ARGS`. A `block.update` that changes `data.pageId` fails with `FIELD_NOT_WRITABLE`.
@@ -244,6 +287,7 @@ Pass a value as the next argument: `--auth oauth`, not `--auth=oauth`. An unknow
 | `--oauth-audience <url>` | | none | This server's resource id. |
 | `--oauth-jwks <url>` | | none | Issuer's JWKS URL. |
 | `--authorize <module\|url>` | | none | Per-document access hook. A module path works in Node only. |
+| `--create-page <url>` | | none | Webhook that makes each new sub-page document. Needs `--page-titles page-map` to run, and `--source`; refused with `--sync-url`. |
 | `--principal <name>` | | `local` | Who the caller is over stdio. |
 | `--manifest <file>` | | none | Custom block and inline tools. |
 | `--manifest-overrides <file>` | | none | Tool and action overrides. |
@@ -252,17 +296,18 @@ Pass a value as the next argument: `--auth oauth`, not `--auth=oauth`. An unknow
 | `--schema mixed\|envelope\|full` | | `mixed` | How `blok_execute` describes its commands. `mixed` gives the full arguments of the common commands, so the model needs no `blok_describe` call for them. |
 | `--handle-idle-ms <ms>` | | `600000` | Idle time before a handle expires. |
 | `--max-handles <n>` | | `8` | Open handles per principal. |
+| `--handle-store memory\|files:<dir>` | | `memory` | Where stored handles live. `files:<dir>` shares them between processes on one machine. |
 | `--no-comments` | | comments on | Turn off the database comment commands. A host that keeps comments in its own system (a `comments` hook) must pass it, or agent comments stay invisible to people. `--comments` is accepted and changes nothing. |
 
 ## Other builds: C#, Go and Rust
 
-The same server is also written in C#, Go and Rust. They take the same flags and environment variables, and one shared conformance suite checks each against this package. No release has shipped them yet.
+The same server is also written in C#, Go and Rust. They take the same flags and environment variables, and one shared conformance suite checks each against this package. Each ships with every release, at the same version as this package.
 
 | Build | Install | In your app | README |
 |---|---|---|---|
 | C# | `dotnet tool install -g Blok.Mcp`, or `dnx Blok.Mcp` | `builder.Services.AddBlokMcp(...)` and `app.MapBlokMcp("/mcp")`, from the `Blok.Server.Mcp` NuGet package | `packages/server/dotnet/Blok.Mcp`, `packages/server/dotnet/Blok.Server.Mcp` |
 | Go | `go install github.com/JackUait/blok/packages/server/go/v2/cmd/blok-mcp@latest` | `blokmcp.New(blokmcp.Options{...})`, then `Handler()` or `ServeStdio` | `packages/server/go/blokmcp` |
-| Rust | Build from source: `cargo build --release -p blok-mcp` in `packages/server/rust` | `blok_mcp::Embedded::new(...)` | `packages/server/rust/crates/mcp` |
+| Rust | `cargo install blok-mcp` (Rust 1.99 or later) | `cargo add blok-mcp`, then `blok_mcp::Embedded::new(...)` | `packages/server/rust/crates/mcp` |
 
 Each library's options change faster than this page. Its README lists them.
 
@@ -291,3 +336,72 @@ Upgrade `@bloklabs/core`, `@bloklabs/server` and `@bloklabs/mcp` together. They 
 ## Embedding
 
 `createBlokMcpServer(options)` runs the same server inside your own Node backend. Its options are typed as `BlokMcpOptions`.
+
+### Add Blok to your own MCP server
+
+`createBlok(options, hooks)` serves Blok's `blok_*` tools and prompts on an MCP server you build with `@modelcontextprotocol/server`. Your server keeps its own name, instructions, tools, prompts, transport and sign-in. A working example is in [`examples/embed/server.mjs`](examples/embed/server.mjs).
+
+```js
+import { createMcpHandler, Server } from '@modelcontextprotocol/server';
+import { createBlok } from '@bloklabs/mcp';
+
+const blok = createBlok({ source: { kind: 'files', dir: './docs' }, authorize: async (principal, documentId, write) => true });
+const handler = createMcpHandler(() => {
+  const server = new Server({ name: 'my-app', version: '1.0.0' }, { instructions: `My instructions.\n\n${blok.instructions}` });
+
+  blok.attach(server, { tools: myTools, callTool: myCallTool, prompts: myPrompts, getPrompt: myGetPrompt });
+
+  return server;
+});
+// Pass the signed-in user as authInfo: handler.fetch(request, { authInfo: { ..., extra: { sub: userId } } }).
+```
+
+- Options are `BlokMcpOptions`; `transport` and `auth` are not needed. `parseBlokMcpArgs(argv, env)` reads the `blok-mcp` flags into them.
+- `authorize` is required, as over HTTP: Blok cannot see your transport. `auth: oauth` and `principal` are refused; your server signs callers in.
+- Who calls: by default the `authInfo` you passed to the SDK, named by `extra.sub`. Pass `hooks.caller(ctx)` to read it yourself. An anonymous caller gets the protocol error `-32600` "Blok needs a signed-in caller."; a caller with no name gets "Blok needs a named caller (sub or NameIdentifier).". `hooks.anonymousPrincipal` serves anonymous callers as that principal instead. All anonymous callers then share it: its handles and its handle limit. Pick a principal no real user can have.
+- Scopes: by default Blok ignores the token's scopes, since your server owns sign-in; make read-only agents in `authorize`. When `hooks.caller` returns `scopes`, Blok checks `blok.read` and `blok.write` as the standalone server does.
+- A handle belongs to the caller that opened it. Another principal gets `UNKNOWN_HANDLE`.
+- `attach` throws when one of your tool or prompt names is a Blok name, or when the server already answers `tools/list`, `tools/call`, `prompts/list` or `prompts/get`. It also throws when you list tools without `callTool`, or prompts without `getPrompt`. Other names reach your `callTool` and `getPrompt`. To install those four handlers yourself, use `blok.handlers(server, { tools, prompts })`; it checks your names the same way.
+- Blok's tools answer exactly as the standalone server's, including its protocol errors and the approval question (`input_required`, or elicitation for 2025 clients).
+- An error Blok did not expect, in a tool call, such as a throw from your `caller` hook, goes to stderr in full. The client gets `-32603` "Blok could not run this call.", never the error's text. Errors from your source or handle store answer `SOURCE_UNAVAILABLE` instead.
+- Origin and Host checks, a body size cap and OAuth are your server's job. Stateless HTTP (a server per request) is supported; stateful sessions are not promised.
+- `blok.close()` waits for calls in flight and closes every handle.
+
+### Your own document store
+
+Pass `source: { kind: 'custom', source }` to load and save stored documents through your own code. It replaces `files` and `endpoint`, and works with `createBlokMcpServer` too.
+
+```js
+import { BlokMcpSourceError } from '@bloklabs/mcp';
+
+const source = {
+  // One read for the text and its version, so they always match. Null: never saved.
+  load: async (caller, documentId) => {
+    const row = await db.read(documentId); // { text, version } or null
+
+    return row === null ? null : { documentText: row.text, version: row.version };
+  },
+  // ifVersion null: the document must not exist yet. Otherwise it must equal the stored version.
+  // writeIf compares and writes in one step and answers the new version, or null on a mismatch.
+  save: async (caller, documentId, documentText, ifVersion) => {
+    const version = await db.writeIf(documentId, documentText, ifVersion, caller.actor);
+
+    if (version === null) {
+      throw new BlokMcpSourceError('changed');
+    }
+
+    return { version };
+  },
+  // Optional: turns on blok_list_documents.
+  list: async (caller, { query, cursor, limit }) => ({ documents: [{ id: 'doc', title: 'Notes' }], nextCursor: null }),
+};
+```
+
+- `caller` is the caller that opened the handle: `{ principal, clientName, scopes, actor }`. Blok still runs `authorize` before every open and on every listed id.
+- `load` answers the document as JSON text, as you store it. Blok parses it as it parses a file: a `blocks` array, at most 48 levels deep, a repeated key keeps its last value, lone surrogates read as U+FFFD.
+- Ids are any string `authorize` allows, except `""`, `.` and `..`, which Blok refuses with `INVALID_ARGS` before it calls you. With `pageTitles: 'page-map'` and no `createPage`, Blok makes up the ids of new pages, so your store must take ids it did not choose.
+- A save answered without a version is a host bug: the agent sees `SOURCE_UNAVAILABLE` "The host may have saved this document but did not say which version. Read it before you retry.", and the handle reloads.
+- Refuse with `new BlokMcpSourceError(kind, agentMessage?)`: `changed` is `DOCUMENT_CHANGED`, `unavailable` is `SOURCE_UNAVAILABLE`, `forbidden` is `FORBIDDEN`, `invalidId` is `INVALID_ARGS`. The agent sees `agentMessage`, or Blok's own words when it is empty.
+- Any other throw, and a bad load or save answer, goes to stderr in full. The agent sees `SOURCE_UNAVAILABLE` in generic words.
+- A failed save drops the batch: the handle reloads your document, and the batch's undo step is gone.
+- A custom source counts as a source everywhere: with `--ticket-url` it still needs `authorize`.

@@ -219,7 +219,7 @@ for (const direction of DIRECTIONS) {
       })).toBe(direction);
     });
 
-    test('the video settings menu opens over the player with its speed ruler inside', async ({ page }) => {
+    test('the video settings menu opens over the player and its speed submenu keeps the wire left to right', async ({ page }) => {
       const caption = text(direction, 'My clip', 'مقطع فيديو');
 
       await createBlok(page, direction, [
@@ -229,8 +229,17 @@ for (const direction of DIRECTIONS) {
       const video = page.locator('[data-blok-tool="video"]');
       const gear = video.locator('[data-action="gear"]');
 
+      // The bar, gear included, stays hidden until the video has played once.
+      await video.getByTestId('video-player').evaluate(async (element) => {
+        const media = element as HTMLVideoElement;
+
+        media.muted = true;
+        await media.play();
+        media.pause();
+      });
       await video.hover();
-      await gear.click({ force: true });
+      await expect(gear).toBeVisible();
+      await gear.click();
 
       const menu = video.locator('[data-role="playback-menu"]');
 
@@ -240,25 +249,68 @@ for (const direction of DIRECTIONS) {
       const menuBox = await rect(menu);
       const gearBox = await rect(gear);
 
-      // The card grows from the gear toward the inline start, like in LTR.
-      const anchored = direction === 'rtl' ? menuBox.left - gearBox.left : gearBox.right - menuBox.right;
+      // The card opens toward the inline end of the gear and stays inside the bar.
+      // The bar is the gear's grandparent: gear → its wrapper → bar.
+      const barBox = await rect(gear.locator('xpath=../..'));
 
-      expect(Math.abs(anchored)).toBeLessThanOrEqual(TOLERANCE);
+      const pastGear = direction === 'rtl' ? gearBox.left - menuBox.left : menuBox.right - gearBox.right;
+      const insideBar = direction === 'rtl' ? menuBox.left - barBox.left : barBox.right - menuBox.right;
 
-      // The tape is pinned LTR in both directions; its needle marks the card's centre.
-      const ruler = menu.locator('[data-role="speed-ruler"]');
+      expect(pastGear).toBeGreaterThan(TOLERANCE);
+      expect(insideBar).toBeGreaterThanOrEqual(-TOLERANCE);
 
-      await expect(ruler).toHaveAttribute('dir', 'ltr');
+      // The row's chevron sits at the inline end, where the submenu comes from.
+      const speedRow = menu.locator('[data-action="open-speed"]');
+      const rowBox = await rect(speedRow);
+      const valueBox = await rect(speedRow.locator('[data-role="speed-value"]'));
+      const rowMiddle = (rowBox.left + rowBox.right) / 2;
 
-      const rulerBox = await rect(ruler);
-      const needle = await rect(ruler.locator('[data-role="speed-needle"]'));
+      expect(direction === 'rtl' ? valueBox.right < rowMiddle : valueBox.left > rowMiddle).toBe(true);
 
-      expect(rulerBox.left).toBeGreaterThanOrEqual(menuBox.left - 1);
-      expect(rulerBox.right).toBeLessThanOrEqual(menuBox.right + 1);
-      expect(Math.abs((needle.left + needle.right) / 2 - (menuBox.left + menuBox.right) / 2)).toBeLessThanOrEqual(TOLERANCE);
+      await speedRow.click();
+      await expect(menu).toHaveAttribute('data-pane', 'speed');
+      await settle(menu);
+
+      const cardBox = await rect(menu);
+
+      // The back row's value is at the inline end too.
+      const backBox = await rect(menu.locator('[data-action="menu-back"]'));
+      const backValue = await rect(menu.locator('[data-action="menu-back"] [data-role="speed-value"]'));
+      const backMiddle = (backBox.left + backBox.right) / 2;
+
+      expect(direction === 'rtl' ? backValue.right < backMiddle : backValue.left > backMiddle).toBe(true);
+
+      // The wire is pinned LTR in both directions, like every slider in the player.
+      const wire = menu.locator('[data-role="speed-wire"]');
+
+      await expect(wire).toHaveAttribute('dir', 'ltr');
+
+      const wireBox = await rect(wire);
+
+      expect(wireBox.left).toBeGreaterThanOrEqual(cardBox.left - 1);
+      expect(wireBox.right).toBeLessThanOrEqual(cardBox.right + 1);
+
+      const centres = (locator: Locator): Promise<number[]> =>
+        locator.evaluateAll((elements) => elements.map((element) => {
+          const box = element.getBoundingClientRect();
+
+          return (box.left + box.right) / 2;
+        }));
+      const pegs = await centres(wire.locator('[data-role="wire-peg"]'));
+      const presets = await centres(menu.locator('[data-role="speed-presets"] button'));
+
+      // Slowest on the left, fastest on the right, whatever the reading direction.
+      expect(pegs).toEqual([...pegs].sort((left, right) => left - right));
+      await expect(menu.locator('[data-role="speed-presets"] button').first()).toHaveText('0.25×');
+
+      // Every preset sits under its own peg.
+      expect(presets).toHaveLength(5);
+      presets.forEach((centre, index) => {
+        expect(Math.abs(centre - pegs[index])).toBeLessThanOrEqual(TOLERANCE);
+      });
     });
 
-    test('the audio speed menu grows from the gear toward the inline end', async ({ page }) => {
+    test('the audio speed menu opens centered over its gear', async ({ page }) => {
       const title = text(direction, 'Song', 'أغنية');
 
       await createBlok(page, direction, [
@@ -275,11 +327,12 @@ for (const direction of DIRECTIONS) {
 
       await expect(menu).toBeVisible();
 
+      await settle(menu);
       const menuBox = await rect(menu);
       const gearBox = await rect(gear);
-      const startGap = direction === 'rtl' ? gearBox.right - menuBox.right : menuBox.left - gearBox.left;
+      const centre = (box: Rect): number => (box.left + box.right) / 2;
 
-      expect(Math.abs(startGap)).toBeLessThanOrEqual(TOLERANCE);
+      expect(Math.abs(centre(menuBox) - centre(gearBox))).toBeLessThanOrEqual(TOLERANCE);
     });
     test('the embed hover toolbar sits in the inline-end corner', async ({ page }) => {
       await createBlok(page, direction, [{
@@ -343,17 +396,25 @@ for (const direction of DIRECTIONS) {
       expect(tilt).toBe(direction === 'rtl' ? -1 : 1);
     });
 
+    test('the code tab sits on the inline-start corner of the card', async ({ page }) => {
+      await createBlok(page, direction, [
+        { type: 'code', data: { code: 'print(1)', language: 'python', filename: 'a.py' } },
+      ]);
+
+      const [tabBox, cardBox] = await Promise.all([rect(page.getByTestId('code-tab')), rect(page.getByTestId('code-card'))]);
+      const startGap = direction === 'rtl' ? cardBox.right - tabBox.right : tabBox.left - cardBox.left;
+
+      expect(Math.abs(startGap)).toBeLessThanOrEqual(TOLERANCE);
+    });
+
     test('the code language picker section label keeps its start padding', async ({ page }) => {
-      await page.evaluate(() => {
-        localStorage.setItem('blok:code:recent-languages', JSON.stringify(['python', 'rust']));
-      });
       await createBlok(page, direction, [
         { type: 'code', data: { code: 'print(1)', language: 'python' } },
       ]);
 
       await page.getByTestId('code-language-btn').click();
 
-      const label = page.getByTestId('code-language-section');
+      const label = page.getByTestId('code-language-section').first();
 
       await expect(label).toBeVisible();
 

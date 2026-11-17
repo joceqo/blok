@@ -81,6 +81,7 @@ test.beforeEach(async ({ page }) => {
   await gotoTestPage(page);
 });
 
+// While searching, the grid takes the hidden chip row's 41px.
 test('keeps search, empty results, and restored results the same size within narrow viewports', async ({ page }) => {
   const picker = await openCalloutPicker(page);
   const search = picker.getByRole('searchbox', { name: 'Search emojis…' });
@@ -103,7 +104,7 @@ test('keeps search, empty results, and restored results the same size within nar
     await search.fill('bulb');
     await expect(body.locator('[data-emoji-native]')).not.toHaveCount(0);
     await expect.poll(() => picker.evaluate((element) => element.getBoundingClientRect().height)).toBe(initial.height);
-    await expect.poll(() => body.evaluate((element) => element.getBoundingClientRect().height)).toBe(bodyHeight + 46);
+    await expect.poll(() => body.evaluate((element) => element.getBoundingClientRect().height)).toBe(bodyHeight + 41);
 
     await search.fill('zzzznoemojimatcheszzzz');
     await expect(body.locator('[data-emoji-native]')).toHaveCount(0);
@@ -113,7 +114,7 @@ test('keeps search, empty results, and restored results the same size within nar
     expect(announcement?.width).toBeLessThanOrEqual(1);
     expect(announcement?.height).toBeLessThanOrEqual(1);
     await expect.poll(() => picker.evaluate((element) => element.getBoundingClientRect().height)).toBe(initial.height);
-    await expect.poll(() => body.evaluate((element) => element.getBoundingClientRect().height)).toBe(bodyHeight + 46);
+    await expect.poll(() => body.evaluate((element) => element.getBoundingClientRect().height)).toBe(bodyHeight + 41);
     await expect.poll(() => picker.evaluate((element) => element.getBoundingClientRect().width)).toBe(initial.width);
 
     await search.clear();
@@ -122,50 +123,20 @@ test('keeps search, empty results, and restored results the same size within nar
   }
 });
 
-test('curls only inner glyphs at both clipped edges and leaves the center and hit targets stable', async ({ page }) => {
-  const picker = await openCalloutPicker(page);
-  const emoji = picker.locator('[data-emoji-native]').nth(80);
-
-  await scrollEmojiTo(emoji, 'center');
-  await expect.poll(() => readGlyph(emoji)).toMatchObject({ transformed: false, buttonTransformed: false, clipped: false });
-  const center = await readGlyph(emoji);
-
-  await scrollEmojiTo(emoji, 'top');
-  await expect.poll(() => readGlyph(emoji)).toMatchObject({ transformed: true, buttonTransformed: false, clipped: true });
-  const top = await readGlyph(emoji);
-
-  await scrollEmojiTo(emoji, 'bottom');
-  await expect.poll(() => readGlyph(emoji)).toMatchObject({ transformed: true, buttonTransformed: false, clipped: true });
-  const bottom = await readGlyph(emoji);
-
-  expect(top?.tilt).toBeGreaterThan(30);
-  expect(top?.tilt).toBeLessThan(42);
-  expect(bottom?.tilt).toBeGreaterThan(30);
-  expect(bottom?.tilt).toBeLessThan(42);
-  expect(bottom?.transform).not.toBe(top?.transform);
-  expect(top?.width).toBe(center?.width);
-  expect(top?.height).toBe(center?.height);
-  expect(bottom?.width).toBe(center?.width);
-  expect(bottom?.height).toBe(center?.height);
-
-  await scrollEmojiTo(emoji, 'center');
-  await expect.poll(() => readGlyph(emoji)).toMatchObject({ transformed: false, buttonTransformed: false, clipped: false });
-});
-
-test('scrolls emoji directly beneath the search field without a blank header stripe', async ({ page }) => {
+test('scrolls emoji directly beneath the category chips without a blank stripe', async ({ page }) => {
   const picker = await openCalloutPicker(page);
   const emoji = picker.locator('[data-emoji-native]').nth(80);
 
   await scrollEmojiTo(emoji, 'top');
   const gap = await picker.evaluate((root) => {
-    const field = root.querySelector('[data-emoji-picker-search]');
+    const chips = root.querySelector('[data-emoji-picker-footer]');
     const body = root.querySelector('[data-emoji-picker-body]');
 
-    if (field === null || body === null) {
+    if (chips === null || body === null) {
       throw new Error('Missing picker layout');
     }
 
-    return body.getBoundingClientRect().top - field.getBoundingClientRect().bottom;
+    return body.getBoundingClientRect().top - chips.getBoundingClientRect().bottom;
   });
 
   expect(gap).toBeLessThanOrEqual(1);
@@ -187,7 +158,7 @@ test('keeps emoji hit targets still when hovering and pressing the glyph', async
   await page.mouse.up();
 });
 
-test('reduced motion disables edge curl and opening and empty-state animations', async ({ page }) => {
+test('reduced motion keeps scrolled emoji still and disables opening and empty-state animations', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const picker = await openCalloutPicker(page);
   const emoji = picker.locator('[data-emoji-native]').nth(80);
@@ -214,6 +185,7 @@ test('names emoji buttons and supports search-to-grid arrow navigation and keybo
   const search = picker.getByRole('searchbox', { name: 'Search emojis…' });
   const first = picker.locator('[data-emoji-native="💡"]');
   const second = picker.locator('[data-emoji-native="👉"]');
+  // Ten columns: the eleventh Callout emoji opens the second row.
   const nextRow = picker.locator('[data-emoji-native="🚫"]');
 
   await expect(first).toHaveAccessibleName(/light bulb/i);
@@ -249,8 +221,8 @@ test('cycles Tab through picker controls without editor interception or arrow fo
   const controls = [
     picker.getByRole('button', { name: 'Pick a random emoji', exact: true }),
     picker.getByRole('button', { name: 'Remove icon', exact: true }),
-    picker.locator('[data-emoji-native]').first(),
     ...await picker.locator('[data-emoji-nav]').all(),
+    picker.locator('[data-emoji-native]').first(),
     search,
   ];
 
@@ -259,8 +231,9 @@ test('cycles Tab through picker controls without editor interception or arrow fo
     await expect(control).toBeFocused();
   }
 
+  // The grid follows the chips, so Shift+Tab from the search wraps to it.
   await page.keyboard.press('Shift+Tab');
-  await expect(picker.getByRole('button', { name: 'Flags', exact: true })).toBeFocused();
+  await expect(picker.locator('[data-emoji-native]').first()).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(picker).not.toBeVisible();
   await expect(page.getByTestId('callout-emoji-btn')).toBeFocused();
@@ -416,7 +389,7 @@ test('announces skin-tone expansion, restores focus, and removes the icon with t
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   await expect(tones).toBeVisible();
   await tones.getByRole('button', { name: 'Skin tone 4', exact: true }).click();
-  await expect(toggle).toHaveText('✋🏽');
+  await expect(toggle).toHaveAttribute('data-emoji-skin-current', '3');
   await expect(picker.locator('[data-emoji-native="👉"]')).toHaveText('👉🏽');
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(toggle).toBeFocused();

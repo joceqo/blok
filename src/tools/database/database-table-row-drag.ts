@@ -1,4 +1,7 @@
+import type { AutoScroll } from '../../components/modules/drag/utils/AutoScroll';
 import { copyGhostContext, mountGhost } from './copy-ghost-radius';
+import { createDatabaseAutoScroll, rowAutoScrollSpeed } from './database-auto-scroll';
+import { DatabaseDropLine } from './database-drop-line';
 import type { TableState } from './database-table-grid';
 
 const THRESHOLD = 5;
@@ -18,27 +21,33 @@ export interface TableRowDropResult {
 export interface TableRowDragOptions {
   grid: HTMLElement;
   state: TableState;
+  /** A press on ⋮⋮, before any move. */
+  onPress?: (rowId: string) => void;
   onDrop: (result: TableRowDropResult) => void;
 }
 
 /**
  * Row drag from the ⋮⋮ handle, Notion's model (research/08): a ghost row at
- * opacity 0.4, a 4px drop line between rows, no reflow animation. A press
+ * opacity 0.4 that follows the pointer both ways, a 4px drop line between rows, no reflow animation. A press
  * that never moves stays a click, which opens the row menu.
  */
 export class DatabaseTableRowDrag {
   private readonly grid: HTMLElement;
   private readonly state: TableState;
   private readonly onDrop: (result: TableRowDropResult) => void;
-  private press: { rowEl: HTMLElement; x: number; y: number; offsetY: number } | null = null;
+  private readonly onPress: ((rowId: string) => void) | undefined;
+  private press: { rowEl: HTMLElement; x: number; y: number; offsetX: number; offsetY: number } | null = null;
   private ghost: HTMLElement | null = null;
   private line: HTMLElement | null = null;
   private target: { before: HTMLElement | null; after: HTMLElement | null; groupKey: string } | null = null;
+  private autoScroll: AutoScroll | null = null;
+  private lastY = 0;
 
   constructor(options: TableRowDragOptions) {
     this.grid = options.grid;
     this.state = options.state;
     this.onDrop = options.onDrop;
+    this.onPress = options.onPress;
     this.grid.addEventListener('pointerdown', this.handleDown);
   }
 
@@ -54,13 +63,17 @@ export class DatabaseTableRowDrag {
     if (rowEl === null || rowEl === undefined || event.button !== 0) {
       return;
     }
+    // No mousedown follows, so core's text drag never starts. The handle press
+    // moves no caret, and core would anchor on a caret left in another block.
+    event.preventDefault();
     const rect = rowEl.getBoundingClientRect();
 
-    this.press = { rowEl, x: event.clientX, y: event.clientY, offsetY: event.clientY - rect.top };
+    this.press = { rowEl, x: event.clientX, y: event.clientY, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
     document.addEventListener('pointermove', this.handleMove);
     document.addEventListener('pointerup', this.handleUp);
     document.addEventListener('pointercancel', this.handleCancel);
     document.addEventListener('keydown', this.handleKey, true);
+    this.onPress?.(rowEl.getAttribute('data-row-id') ?? '');
   };
 
   private readonly handleMove = (event: PointerEvent): void => {
@@ -77,9 +90,12 @@ export class DatabaseTableRowDrag {
     }
     event.preventDefault();
     if (this.ghost !== null) {
+      this.ghost.style.left = `${event.clientX - press.offsetX}px`;
       this.ghost.style.top = `${event.clientY - press.offsetY}px`;
     }
+    this.lastY = event.clientY;
     this.track(event.clientY);
+    this.autoScroll?.start(event.clientY);
   };
 
   private start(rowEl: HTMLElement): void {
@@ -106,6 +122,7 @@ export class DatabaseTableRowDrag {
     this.line = line;
     this.state.busy = true;
     rowEl.setAttribute('data-dragging', '');
+    this.autoScroll = createDatabaseAutoScroll(this.grid, 'y', rowAutoScrollSpeed, () => this.track(this.lastY));
   }
 
   private rowEls(): HTMLElement[] {
@@ -134,7 +151,8 @@ export class DatabaseTableRowDrag {
     const gridRect = this.grid.getBoundingClientRect();
     const edge = before !== null ? before.getBoundingClientRect().top : after?.getBoundingClientRect().bottom ?? gridRect.top;
 
-    line.style.top = `${edge - gridRect.top - 2}px`;
+    // notion-motion.md Round 9: the line's top sits on the boundary, not centred on it.
+    line.style.top = `${edge - gridRect.top}px`;
     line.setAttribute('data-visible', '');
   }
 
@@ -143,6 +161,7 @@ export class DatabaseTableRowDrag {
     const target = this.target;
     const dragged = this.ghost !== null;
 
+    this.fadeLine();
     this.stop();
     if (!dragged || press === null || target === null) {
       return;
@@ -180,11 +199,32 @@ export class DatabaseTableRowDrag {
     }
   };
 
+  /**
+   * notion-motion.md Round 40 §1: on a drop the line fades out where it was.
+   * The drop redraws the grid, so a copy on the page does the fade.
+   */
+  private fadeLine(): void {
+    const line = this.line;
+
+    if (line === null || !line.hasAttribute('data-visible')) return;
+    const box = line.getBoundingClientRect();
+    const scroller = this.grid.closest('[data-blok-database-table-scroller]')?.getBoundingClientRect() ?? box;
+    const left = Math.max(box.left, scroller.left);
+    const copy = new DatabaseDropLine(this.grid, this.grid.closest('dialog') ?? undefined);
+
+    copy.showHorizontal({ left, centerY: box.top + box.height / 2, width: Math.max(0, Math.min(box.right, scroller.right) - left) });
+    // Resolve the new line's style first, or the fade has no start.
+    void this.grid.getBoundingClientRect();
+    copy.hide();
+  }
+
   private stop(): void {
     document.removeEventListener('pointermove', this.handleMove);
     document.removeEventListener('pointerup', this.handleUp);
     document.removeEventListener('pointercancel', this.handleCancel);
     document.removeEventListener('keydown', this.handleKey, true);
+    this.autoScroll?.destroy();
+    this.autoScroll = null;
     this.press?.rowEl.removeAttribute('data-dragging');
     this.ghost?.remove();
     this.line?.remove();

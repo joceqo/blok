@@ -1,4 +1,5 @@
 import type { BlokModules } from '../../../../types-internal/blok-modules';
+import type { SanitizerConfig } from '../../../../../types/configs/sanitizer-config';
 import { isTextSerializable, parseClipboardHtml } from '../../../../tools/table/table-cell-clipboard';
 import { serializeCellBlocksToHtml } from '../../../../tools/table/table-cell-paste';
 import type { CellContent, LegacyCellContent, TableCellsClipboard, TableClipboardCell } from '../../../../tools/table/types';
@@ -8,6 +9,7 @@ import type { HandlerContext } from '../types';
 
 import type { PasteHandler } from './base';
 import { BasePasteHandler } from './base';
+import { cellBlockWithoutUnconfirmedPages, confirmPastedPageIds, pastedPageIds, withChildren } from '../pasted-page-gate';
 
 /**
  * Clamp a payload cell's spans to the payload bounds (malformed payloads must
@@ -56,11 +58,126 @@ const collectCoveredSlots = (payload: TableCellsClipboard): Map<string, [number,
 };
 
 /**
+ * Convert one clipboard cell to TableData content: mergedInto for covered
+ * merge slots, CellContent for origins with spans/colors/placement/structured
+ * blocks, plain text strings otherwise.
+ */
+const buildCellContent = (
+  cell: TableClipboardCell,
+  row: number,
+  col: number,
+  payload: TableCellsClipboard,
+  coveredSlots: Map<string, [number, number]>,
+): LegacyCellContent => {
+  const origin = coveredSlots.get(`${row}:${col}`);
+
+  if (origin !== undefined) {
+    return { blocks: [], mergedInto: origin };
+  }
+
+  // Serialize blocks structurally (lists → <ul>/<ol> markup) so the Table
+  // tool's cell parser reconstructs them as list blocks instead of the
+  // text join flattening them to a single line.
+  const text = serializeCellBlocksToHtml(cell.blocks);
+
+  const { colspan, rowspan } = clampSpans(cell, row, col, payload);
+  const hasColor = cell.color !== undefined;
+  const hasTextColor = cell.textColor !== undefined;
+  const hasPlacement = cell.placement !== undefined;
+  // Blocks the text channel cannot carry (image/code/embed, tunes, extra
+  // data keys, nested children) must be seeded structurally.
+  const needsStructuredBlocks = cell.blocks.some(block => !isTextSerializable(block));
+
+  if (!hasColor && !hasTextColor && !hasPlacement && !needsStructuredBlocks && colspan <= 1 && rowspan <= 1) {
+    return text;
+  }
+
+  const cellContent: CellContent = { blocks: [], text };
+
+  if (needsStructuredBlocks) {
+    cellContent.blockData = cell.blocks;
+  }
+
+  if (hasColor) {
+    cellContent.color = cell.color;
+  }
+
+  if (hasTextColor) {
+    cellContent.textColor = cell.textColor;
+  }
+
+  if (hasPlacement) {
+    cellContent.placement = cell.placement;
+  }
+
+  if (colspan > 1) {
+    cellContent.colspan = colspan;
+  }
+
+  if (rowspan > 1) {
+    cellContent.rowspan = rowspan;
+  }
+
+  return cellContent;
+};
+
+/**
+ * Table tool data for a clipboard payload.
+ */
+export const tableDataFromClipboard = (payload: TableCellsClipboard): {
+  withHeadings: boolean;
+  withHeadingColumn: boolean;
+  content: LegacyCellContent[][];
+  colWidths?: number[];
+} => {
+  // Build table content from the clipboard payload.
+  // Merge origins become CellContent with colspan/rowspan and their covered
+  // footprint gets mergedInto, so a copied merged region survives the paste.
+  // When a cell has color or textColor, use a CellContent object to preserve
+  // the colors — the Table tool will create paragraph blocks during its
+  // rendered() lifecycle. For plain cells, store text strings which the
+  // Table tool migrates to blocks normally. Legacy payloads without spans
+  // (covered flags only) fall back to a flat grid.
+  const coveredSlots = collectCoveredSlots(payload);
+
+  const content: LegacyCellContent[][] = payload.cells.map((row, r) =>
+    row.map((cell, c) => buildCellContent(cell, r, c, payload, coveredSlots)),
+  );
+
+  return {
+    withHeadings: payload.withHeadings === true,
+    withHeadingColumn: payload.withHeadingColumn === true,
+    content,
+    ...(payload.colWidths === undefined ? {} : { colWidths: payload.colWidths }),
+  };
+};
+
+/**
+ * Whether the paste is aimed at a table cell, whose own paste listener handles it.
+ */
+export const isTableCellPaste = (context: HandlerContext): boolean => {
+  const activeElement = document.activeElement as HTMLElement | null;
+
+  return Boolean(
+    activeElement?.closest('[data-blok-table-cell]') ||
+    context.currentBlock?.holder?.closest('[data-blok-table-cell-blocks]') ||
+    context.pasteTarget?.closest('[data-blok-table-cell]')
+  );
+};
+
+/**
  * Handles pasting table cell clipboard data outside of a table.
  * Creates a new Table block with the pasted cell content.
  * Priority 90: higher than HTML (40) but lower than BlokData (100).
  */
 export class TableCellsHandler extends BasePasteHandler implements PasteHandler {
+  /** Set when the editor goes; a paste still waiting on the host then drops. */
+  private destroyed = false;
+
+  destroy(): void {
+    this.destroyed = true;
+  }
+
   constructor(
     Blok: BlokModules,
     toolRegistry: ToolRegistry,
@@ -95,37 +212,30 @@ export class TableCellsHandler extends BasePasteHandler implements PasteHandler 
     // Additionally, bail when the paste event's original target was inside a
     // table cell, even if document.activeElement is now body (covers the case
     // where the event fired on the cell-blocks container itself).
-    const activeElement = document.activeElement as HTMLElement | null;
-
-    if (
-      activeElement?.closest('[data-blok-table-cell]') ||
-      context.currentBlock?.holder?.closest('[data-blok-table-cell-blocks]') ||
-      context.pasteTarget?.closest('[data-blok-table-cell]')
-    ) {
+    if (isTableCellPaste(context)) {
       return false;
+    }
+
+    const blocks = payload.cells.flat().flatMap(cell => withChildren(cell.blocks));
+    const rulesFor = (tool: string): SanitizerConfig | undefined => this.Blok.Tools.blockTools.get(tool)?.sanitizeConfig;
+    const pageIds = pastedPageIds(blocks, this.Blok.Tools.stubTool, rulesFor);
+
+    if (pageIds.size > 0 && context.trustPageIds !== true) {
+      const confirmed = await confirmPastedPageIds(this.Blok, pageIds);
+
+      // The host's resolve may be slow: the editor can be gone by now.
+      if (this.destroyed) {
+        return true;
+      }
+      payload.cells.flat().forEach((cell) => {
+        // eslint-disable-next-line no-param-reassign -- the payload was parsed for this paste
+        cell.blocks = cell.blocks.map(block => cellBlockWithoutUnconfirmedPages(block, confirmed, this.Blok.Tools.stubTool, rulesFor));
+      });
     }
 
     const { BlockManager, Caret } = this.Blok;
 
-    // Build table content from the clipboard payload.
-    // Merge origins become CellContent with colspan/rowspan and their covered
-    // footprint gets mergedInto, so a copied merged region survives the paste.
-    // When a cell has color or textColor, use a CellContent object to preserve
-    // the colors — the Table tool will create paragraph blocks during its
-    // rendered() lifecycle. For plain cells, store text strings which the
-    // Table tool migrates to blocks normally. Legacy payloads without spans
-    // (covered flags only) fall back to a flat grid.
-    const coveredSlots = collectCoveredSlots(payload);
-
-    const content: LegacyCellContent[][] = payload.cells.map((row, r) =>
-      row.map((cell, c) => this.buildCellContent(cell, r, c, payload, coveredSlots)),
-    );
-
-    const tableData = {
-      withHeadings: payload.withHeadings === true,
-      withHeadingColumn: payload.withHeadingColumn === true,
-      content,
-    };
+    const tableData = tableDataFromClipboard(payload);
 
     const canReplace = context.canReplaceCurrentBlock;
     const block = BlockManager.insert({
@@ -138,69 +248,5 @@ export class TableCellsHandler extends BasePasteHandler implements PasteHandler 
     Caret.setToBlock(block, Caret.positions.END);
 
     return true;
-  }
-
-  /**
-   * Convert one clipboard cell to TableData content: mergedInto for covered
-   * merge slots, CellContent for origins with spans/colors/placement/structured
-   * blocks, plain text strings otherwise.
-   */
-  private buildCellContent(
-    cell: TableClipboardCell,
-    row: number,
-    col: number,
-    payload: TableCellsClipboard,
-    coveredSlots: Map<string, [number, number]>,
-  ): LegacyCellContent {
-    const origin = coveredSlots.get(`${row}:${col}`);
-
-    if (origin !== undefined) {
-      return { blocks: [], mergedInto: origin };
-    }
-
-    // Serialize blocks structurally (lists → <ul>/<ol> markup) so the Table
-    // tool's cell parser reconstructs them as list blocks instead of the
-    // text join flattening them to a single line.
-    const text = serializeCellBlocksToHtml(cell.blocks);
-
-    const { colspan, rowspan } = clampSpans(cell, row, col, payload);
-    const hasColor = cell.color !== undefined;
-    const hasTextColor = cell.textColor !== undefined;
-    const hasPlacement = cell.placement !== undefined;
-    // Blocks the text channel cannot carry (image/code/embed, tunes, extra
-    // data keys, nested children) must be seeded structurally.
-    const needsStructuredBlocks = cell.blocks.some(block => !isTextSerializable(block));
-
-    if (!hasColor && !hasTextColor && !hasPlacement && !needsStructuredBlocks && colspan <= 1 && rowspan <= 1) {
-      return text;
-    }
-
-    const cellContent: CellContent = { blocks: [], text };
-
-    if (needsStructuredBlocks) {
-      cellContent.blockData = cell.blocks;
-    }
-
-    if (hasColor) {
-      cellContent.color = cell.color;
-    }
-
-    if (hasTextColor) {
-      cellContent.textColor = cell.textColor;
-    }
-
-    if (hasPlacement) {
-      cellContent.placement = cell.placement;
-    }
-
-    if (colspan > 1) {
-      cellContent.colspan = colspan;
-    }
-
-    if (rowspan > 1) {
-      cellContent.rowspan = rowspan;
-    }
-
-    return cellContent;
   }
 }

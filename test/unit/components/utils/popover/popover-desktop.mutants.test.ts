@@ -1724,6 +1724,25 @@ describe('PopoverDesktop — nested submenu lifecycle', () => {
 });
 
 describe('PopoverDesktop — hover open/close intents', () => {
+  // notion-motion.md Round 10 "Edit property flyout": a database menu opens its submenus about 130ms after the row lights.
+  it('waits the root menu\'s own submenu delay, and its submenus inherit it', () => {
+    vi.useFakeTimers();
+    const popover = createPopover({ items: [parentWithChildren()] });
+    const instance = asInternal(popover);
+    const parentElement = itemByName(popover, 'c-parent').getElement();
+
+    popover.nestedOpenDelay = 125;
+    instance.handleHover(hoverOn(parentElement as Element));
+    vi.advanceTimersByTime(124);
+
+    expect(instance.nestedPopover).toBeFalsy();
+
+    vi.advanceTimersByTime(1);
+
+    expect(instance.nestedPopover).toBeInstanceOf(PopoverDesktop);
+    expect((instance.nestedPopover as PopoverDesktop).nestedOpenDelay).toBe(125);
+  });
+
   it('cancels the deferred open when the pointer settles on chrome', () => {
     vi.useFakeTimers();
     const popover = createPopover({
@@ -3026,6 +3045,21 @@ describe('PopoverDesktop — nested beside placement geometry', () => {
 
       expect(asInternal(nested).nodes.popoverContainer.style.left).toBe(`${534 - rootLeft}px`);
       expect(nested.getElement().getAttribute('data-side')).toBe('left');
+    } finally {
+      sizeSpy.mockRestore();
+    }
+  });
+
+  // research/35 §1.8: Notion's template "…" submenu starts 4px past its menu's right edge (1231 → 1235).
+  it('opens a "…" submenu 4px past its menu\'s edge, not over it', () => {
+    const sizeSpy = vi.spyOn(PopoverDesktop.prototype, 'size', 'get')
+      .mockReturnValue({ width: 320, height: 80 });
+
+    try {
+      const { nested, rootLeft } = showWideSubmenu({ left: 400, right: 600 }, false, false, true);
+
+      expect(asInternal(nested).nodes.popoverContainer.style.left).toBe(`${604 - rootLeft}px`);
+      expect(nested.getElement().getAttribute('data-side')).toBe('right');
     } finally {
       sizeSpy.mockRestore();
     }

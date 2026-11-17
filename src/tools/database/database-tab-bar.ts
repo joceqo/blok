@@ -1,19 +1,22 @@
-import { IconChevronDown, IconViewBoard, IconChart, IconGallery, IconListBulleted, IconTable, IconPencil, IconCopy, IconTrash, IconPlus, IconSliders, IconColumns, IconMap, IconTabs, IconPreview, IconDatabase, IconViewCalendar, IconViewFeed, IconViewForm, IconViewTimeline, IconLink, IconDotsHorizontal } from '../../components/icons';
-import { DatabaseViewPopover } from './database-view-popover';
-import { DATABASE_MENU_CLASS } from './database-group-menu';
+import { IconChevronDown, IconViewBoard, IconChart, IconGallery, IconListBulleted, IconTable, IconPencil, IconCopy, IconTrash, IconPlus, IconSliders, IconMap, IconTabs, IconPreview, IconDatabase, IconViewCalendar, IconViewFeed, IconForm, IconViewTimeline, IconViewDashboard, IconLink, IconDotsHorizontal, IconPageLayout, IconEyeSlash, IconExpandDiagonal } from '../../components/icons';
+import { ADD_VIEW_MENU_WIDTH, DatabaseViewPopover } from './database-view-popover';
+import type { ViewPopoverPlacement } from './database-view-popover';
+import { DATABASE_MENU_CLASS, DATABASE_SUBMENU_OPEN_DELAY_MS } from './database-group-menu';
+import { DATABASE_HEADER_MENU_CLASS } from './database-table-menus';
 import { PopoverDesktop } from '../../components/utils/popover';
 import { PopoverItemType } from '../../components/utils/popover/components/popover-item';
 import { OverflowList } from '../../components/utils/overflow-list';
-import { planViewBarFold } from './database-view-bar-fold';
+import { foldMenuTop, planViewBarFold } from './database-view-bar-fold';
 import { PopoverEvent } from '@/types/utils/popover/popover-event';
 import type { PopoverItemParams } from '@/types/utils/popover/popover-item';
 import { startInlineRename } from '../../components/utils/inline-rename';
+import { onHover } from '../../components/utils/tooltip';
 import { rovingRadioGroup, type RovingRadioGroup } from '../../components/utils/roving-radio-group';
 import { DATA_ATTR } from '../../components/constants/data-attributes';
 import type { API } from '../../../types';
 import type { DatabaseTabDisplay, DatabaseViewConfig, ViewType } from './types';
-import { copyGhostRadius, mountGhost } from './copy-ghost-radius';
 import { isHistoryKey } from './database-keyboard';
+import { propertyHint } from './property-hint';
 import { positionBetween } from '../../shared/database/positions';
 
 const DRAG_THRESHOLD = 10;
@@ -46,9 +49,24 @@ export const VIEW_ICONS: Record<string, string> = {
   timeline: IconViewTimeline,
   chart: IconChart,
   feed: IconViewFeed,
-  form: IconViewForm,
+  form: IconForm,
   map: IconMap,
-  dashboard: IconColumns,
+  dashboard: IconViewDashboard,
+};
+
+/** Each layout's name, for a tab's hint. */
+const VIEW_LABEL_KEYS: Record<ViewType, string> = {
+  board: 'tools.database.viewTypeBoard',
+  list: 'tools.database.viewTypeList',
+  table: 'tools.database.viewTypeTable',
+  gallery: 'tools.database.viewTypeGallery',
+  calendar: 'tools.database.viewTypeCalendar',
+  timeline: 'tools.database.viewTypeTimeline',
+  chart: 'tools.database.viewTypeChart',
+  feed: 'tools.database.viewTypeFeed',
+  form: 'tools.database.viewTypeForm',
+  map: 'tools.database.viewTypeMap',
+  dashboard: 'tools.database.viewTypeDashboard',
 };
 
 export interface TabBarOptions {
@@ -65,10 +83,18 @@ export interface TabBarOptions {
   onEditView?: (viewId: string, anchor: HTMLElement) => void;
   /** "Rename" opens the view settings with the name field focused (findings V08). Without it, the tab renames inline. */
   onRenameView?: (viewId: string, anchor: HTMLElement) => void;
+  /** "Source ›": the view's data source, read when the menu opens; undefined leaves the row out. */
+  viewSource?: (viewId: string) => { name: string; enabled: boolean } | undefined;
+  /** "Source ›" pressed: opens the view settings' Source picker. */
+  onViewSource?: (viewId: string, anchor: HTMLElement) => void;
   /** "Copy link to view". */
   onCopyLink?: (viewId: string) => void;
+  /** "Open as full page": read when the menu opens; undefined leaves the row out. */
+  openFullPage?: () => ((viewId: string) => void) | undefined;
   /** "Edit title" in the title row's "…". */
   onEditTitle?: () => void;
+  /** "Edit layout" in the title row's "…": Customize layout on a row page. */
+  onEditLayout?: () => void;
   /** This person's "Display as". Defaults to both. */
   display?: DatabaseTabDisplay;
   /** Offers "Display as" in the tab menu. */
@@ -83,6 +109,8 @@ export interface TabBarOptions {
   onDataSourceTitlesToggle?: () => void;
   /** Offers "New data source" last in the add-view menu and the "N more…" list (research/23 §10). */
   onNewDataSource?: () => void;
+  /** The database's name, read on hover for each tab's "Table view of …" hint. */
+  sourceTitle?: () => string;
 }
 
 export class DatabaseTabBar {
@@ -108,7 +136,11 @@ export class DatabaseTabBar {
   private dragEnded = false;
   private dragViewId = '';
   private dragStartX = 0;
-  private ghostEl: HTMLElement | null = null;
+  /** The shown tabs and their centres at pickup: the slots the drop and the slides read, untouched by the transforms. */
+  private dragSlots: Array<{ tab: HTMLElement; center: number }> = [];
+  /** The dragged tab's own slot among them, and how far a passed tab slides: its width and the bar's gap. */
+  private dragHome = 0;
+  private dragStep = 0;
   private readonly boundDragMove: (e: PointerEvent) => void;
   private readonly boundDragUp: (e: PointerEvent) => void;
   private readonly boundDragCancel: () => void;
@@ -163,6 +195,7 @@ export class DatabaseTabBar {
     addBtn.setAttribute('data-blok-database-add-view', '');
     addBtn.setAttribute('aria-label', this.t('tools.database.addView', 'Add view'));
     addBtn.innerHTML = IconPlus;
+    onHover(addBtn, this.t('tools.database.addNewView', 'Add a new view'));
     addBtn.addEventListener('click', () => {
       this.openViewPopover(addBtn);
     });
@@ -304,13 +337,16 @@ export class DatabaseTabBar {
     viewBar?.removeAttribute('data-blok-database-fold-icons');
 
     const barStyle = viewBar === null ? null : getComputedStyle(viewBar);
+    // The toolbar's end margin keeps it in the text column. Only the end side: the start margin is auto, so it reads as the free space.
+    const toolbarStyle = toolbar === null ? null : getComputedStyle(toolbar);
+    const toolbarEnd = toolbarStyle === null ? 0 : Number.parseFloat(toolbarStyle.direction === 'rtl' ? toolbarStyle.marginLeft : toolbarStyle.marginRight) || 0;
     const width = viewBar === null || barStyle === null
       ? bar.clientWidth - padding
-      : viewBar.clientWidth - (Number.parseFloat(barStyle.paddingLeft) || 0) - (Number.parseFloat(barStyle.paddingRight) || 0) - padding;
+      : viewBar.clientWidth - (Number.parseFloat(barStyle.paddingLeft) || 0) - (Number.parseFloat(barStyle.paddingRight) || 0) - padding - toolbarEnd;
     const gap = full > 0 ? Number.parseFloat(barStyle?.columnGap ?? '') || 0 : 0;
-    // The 28px "+", its 1px margin, and the 1px gaps before it and before "N more…";
+    // The 28px "+" and the 1px gaps before it and before "N more…";
     // each tab pays the 1px gap before it (database.css).
-    const add = this.addBtnEl !== null && bar.contains(this.addBtnEl) ? 31 : 0;
+    const add = this.addBtnEl !== null && bar.contains(this.addBtnEl) ? 30 : 0;
     // "N more…" is measured with the widest count it can show.
     const probe = this.placeMoreButton(tabs.length);
     const more = probe.offsetWidth;
@@ -426,8 +462,33 @@ export class DatabaseTabBar {
     activateOnEnterOrSpace(tab, () => {
       this.activateTab(view.id, true);
     });
+    this.bindTabHint(tab, view);
 
     return tab;
+  }
+
+  /**
+   * notion-motion.md Round 14, Round 15 §A: the name, then "Table view of New database", under the tab.
+   * Round 23 §7: a dashboard has no source, so it reads "Dashboard view".
+   */
+  private bindTabHint(tab: HTMLElement, view: DatabaseViewConfig): void {
+    const { api, sourceTitle } = this.options;
+
+    if (api === undefined || sourceTitle === undefined) {
+      return;
+    }
+    const layout = api.i18n.t(VIEW_LABEL_KEYS[view.type]);
+    const hint = document.createElement('div');
+
+    // The title can change while the tabs stay, so the hint is rebuilt on each hover.
+    tab.addEventListener('mouseenter', () => {
+      const detail = view.type === 'dashboard'
+        ? api.i18n.t('tools.database.tabView', { layout })
+        : api.i18n.t('tools.database.tabViewOf', { layout, database: sourceTitle() });
+
+      hint.replaceChildren(propertyHint(view.name, detail));
+    });
+    onHover(tab, hint, { bare: true, placement: 'bottom' });
   }
 
   private openContextPopover(tab: HTMLElement, viewId: string): void {
@@ -455,6 +516,10 @@ export class DatabaseTabBar {
 
     const onEditView = this.options.onEditView;
     const onCopyLink = this.options.onCopyLink;
+    // The page opens on the shown view: switching first would save the switch, and opening changes nothing.
+    const onOpenFullPage = viewId === this.options.activeViewId ? this.options.openFullPage?.() : undefined;
+    // Notion's dashboard tab has no "Open as full page" (notion-motion.md Round 15 A).
+    const dashboard = this.options.views.find((view) => view.id === viewId)?.type === 'dashboard';
     // Notion's order (feel/findings-toolbar V07).
     const editItems: PopoverItemParams[] = [
       {
@@ -474,6 +539,7 @@ export class DatabaseTabBar {
           onEditView(viewId, menu.editAnchor);
         },
       }]),
+      ...this.sourceItems(viewId, menu.editAnchor),
     ];
     const shareItems: PopoverItemParams[] = [
       ...(onCopyLink === undefined ? [] : [{
@@ -482,6 +548,13 @@ export class DatabaseTabBar {
         title: t('tools.database.layoutCopyLinkToView', 'Copy link to view'),
         closeOnActivate: true,
         onActivate: () => onCopyLink(viewId),
+      }]),
+      ...(onOpenFullPage === undefined || dashboard ? [] : [{
+        icon: IconExpandDiagonal,
+        name: 'database-view-full-page',
+        title: t('tools.database.peekExpand', 'Open as full page'),
+        closeOnActivate: true,
+        onActivate: () => onOpenFullPage(viewId),
       }]),
       ...(menu.withDisplay ? this.dataSourceTitleItems() : []),
     ];
@@ -507,22 +580,31 @@ export class DatabaseTabBar {
       .filter((group) => group.length > 0)
       .flatMap((group, index) => index === 0 ? group : [{ type: PopoverItemType.Separator as const }, ...group]);
 
-    this.showMenu(trigger, items);
+    // notion-motion.md Round 27 §3: 220 wide, rows 28 at pitch 29, 20px icon at +8, rules 12 in, 4 under the tab.
+    this.showMenu(trigger, items, { class: `${DATABASE_HEADER_MENU_CLASS} blok-database-column-menu`, minWidth: '220px', offset: 4 });
   }
 
-  private showMenu(trigger: HTMLElement, items: PopoverItemParams[]): void {
+  private showMenu(
+    trigger: HTMLElement,
+    items: PopoverItemParams[],
+    look: { class: string; minWidth: string; offset?: number } = { class: DATABASE_MENU_CLASS, minWidth: '160px' }
+  ): void {
     this.closeContextPopover();
     this.contextPopover = new PopoverDesktop({
-      class: DATABASE_MENU_CLASS,
+      class: look.class,
       animateClose: true,
       trigger,
       width: 'auto',
-      minWidth: '160px',
+      minWidth: look.minWidth,
+      ...(look.offset === undefined ? {} : { offset: look.offset }),
       autoFocusFirstItem: false,
       items,
     });
+    // database.css gives an expanded tab the pressed fill (notion-motion.md Round 27 §3).
+    trigger.setAttribute('aria-expanded', 'true');
 
     this.contextPopover.on(PopoverEvent.Closed, () => {
+      trigger.removeAttribute('aria-expanded');
       if (this.contextPopover !== null) {
         const p = this.contextPopover;
         this.contextPopover = null;
@@ -530,7 +612,27 @@ export class DatabaseTabBar {
       }
     });
 
+    this.contextPopover.nestedOpenDelay = DATABASE_SUBMENU_OPEN_DELAY_MS;
     this.contextPopover.show();
+  }
+
+  /** notion-motion.md Round 35 (r35-tabmenu.raw): "Source" with the source's name in gray, then a chevron. */
+  private sourceItems(viewId: string, anchor: HTMLElement): PopoverItemParams[] {
+    const source = this.options.viewSource?.(viewId);
+    const onSource = this.options.onViewSource;
+
+    if (source === undefined || onSource === undefined) return [];
+
+    return [{
+      icon: IconDatabase,
+      name: 'database-view-source',
+      title: this.t('tools.database.settingsSource', 'Source'),
+      valueLabel: source.name,
+      chevron: true,
+      isDisabled: !source.enabled,
+      closeOnActivate: true,
+      onActivate: () => onSource(viewId, anchor),
+    }];
   }
 
   /** "Hide data source titles" (research/23 §10). The item stays with one source too. */
@@ -649,25 +751,43 @@ export class DatabaseTabBar {
     });
   }
 
-  private openViewPopover(anchor: HTMLElement): void {
+  private openViewPopover(anchor: HTMLElement, placement: ViewPopoverPlacement = 'below', focusFirst = false): void {
     if (this.viewPopover !== null) {
       this.viewPopover.destroy();
     }
     anchor.setAttribute('data-popover-open', '');
     this.barEl?.setAttribute('data-popover-open', '');
-    this.viewPopover = new DatabaseViewPopover({
+    const viewPopover: DatabaseViewPopover = new DatabaseViewPopover({
       onSelect: (type) => {
+        // The menu closes itself after a pick; the list closing must not destroy it mid-pick.
+        this.viewPopover = null;
+        this.closeOverflowDropdown();
         this.options.onAddView(type);
       },
       onClose: () => {
         anchor.removeAttribute('data-popover-open');
         this.barEl?.removeAttribute('data-popover-open');
+        // An outside click closes the card on its own; the fold list reads this to stay open for the next click.
+        if (this.viewPopover === viewPopover) {
+          this.viewPopover = null;
+        }
       },
       api: this.options.api,
       ...(this.options.hiddenViewTypes !== undefined ? { hidden: this.options.hiddenViewTypes } : {}),
       ...(this.options.onNewDataSource !== undefined && !this.readOnly ? { onNewSource: this.options.onNewDataSource } : {}),
     });
-    this.viewPopover.open(anchor);
+    this.viewPopover = viewPopover;
+    viewPopover.open(anchor, placement, focusFirst);
+  }
+
+  private closeViewPopover(): boolean {
+    if (this.viewPopover === null) return false;
+    const popover = this.viewPopover;
+
+    this.viewPopover = null;
+    popover.destroy();
+
+    return true;
   }
 
   /** Keeps the first `visibleCount` tabs and folds the rest. */
@@ -770,26 +890,46 @@ export class DatabaseTabBar {
           withDisplay: false,
         });
       },
-      onNew: () => {
-        const addBtn = this.element?.querySelector<HTMLElement>('[data-blok-database-add-view]');
+      // notion-motion.md Round 31 §3: Add view opens beside the New view row and the list stays open.
+      keepOpenOnNew: !this.readOnly,
+      onNew: (row, byKeyboard) => {
+        if (this.readOnly) return;
+        const rect = row.getBoundingClientRect();
 
-        if (addBtn === null || addBtn === undefined) return;
-        // A folded "+" has no box to hang the menu from.
-        this.openViewPopover(this.element?.hasAttribute('data-blok-database-tab-folded') === true ? anchor : addBtn);
+        if (rect.right + ADD_VIEW_MENU_WIDTH <= window.innerWidth) {
+          this.openViewPopover(row, 'aside', byKeyboard);
+
+          return;
+        }
+        // notion-motion.md Round 32 §1: no room on the right flips it to the left.
+        if (rect.left - ADD_VIEW_MENU_WIDTH >= 0) {
+          this.openViewPopover(row, 'aside-left', byKeyboard);
+
+          return;
+        }
+        // Round 38 §6: no room on either side keeps it on the right, slid in over the menu, which stays open.
+        this.openViewPopover(row, 'aside-over', byKeyboard);
       },
       ...(this.readOnly || this.options.onNewDataSource === undefined ? {} : {
         onNewSecond: { label: this.t('tools.database.newDataSource', 'New data source'), icon: IconDatabase, activate: this.options.onNewDataSource },
       }),
       // The row menu mounts in <body>, outside the list, but belongs to it.
-      ownsNode: (target) => this.contextPopover?.hasNode(target) === true,
+      ownsNode: (target) => this.contextPopover?.hasNode(target) === true || this.viewPopover?.contains(target) === true,
       closeLayer: () => {
         if (this.contextPopover === null) {
-          return false;
+          return this.closeViewPopover();
         }
         this.closeContextPopover();
 
         return true;
       },
+      onClose: () => {
+        this.closeViewPopover();
+      },
+      yieldsKeys: () => this.viewPopover !== null,
+      // notion-motion.md Round 38 §6: the first outside click closes only the Add view card.
+      peelsOutsidePress: () => this.viewPopover !== null,
+      placeTop: (box, height) => foldMenuTop(box, height, window.innerHeight),
       // A row rename owns its Escape (it restores the old name).
       ownsEscape: (target) => target instanceof HTMLInputElement && target.hasAttribute('data-blok-database-tab-rename-input'),
     });
@@ -813,32 +953,62 @@ export class DatabaseTabBar {
     list?.close();
   }
 
+  private dragSource(): HTMLElement | null {
+    return this.element?.querySelector<HTMLElement>(`[data-view-id="${this.dragViewId}"]`) ?? null;
+  }
+
+  /** Where a drop at `x` lands among the shown tabs other than the dragged one. */
+  private dropSlot(x: number): number {
+    const index = this.dragSlots.findIndex((slot) => x < slot.center);
+
+    return index === -1 ? this.dragSlots.length : index;
+  }
+
+  /**
+   * Notion (notion-motion.md Round 14): no ghost and no drop line. The pressed
+   * tab follows the pointer; each tab it passes slides by its width over
+   * database.css's 200ms ease.
+   */
   private handleDragMove(e: PointerEvent): void {
-    const dx = Math.abs(e.clientX - this.dragStartX);
-    if (!this.isDragging && dx < DRAG_THRESHOLD) return;
+    const dx = e.clientX - this.dragStartX;
+    if (!this.isDragging && Math.abs(dx) < DRAG_THRESHOLD) return;
+    const sourceTab = this.dragSource();
+
     if (!this.isDragging) {
       this.isDragging = true;
       this.element?.setAttribute('data-dragging', '');
-      const sourceTab = this.element?.querySelector(`[data-view-id="${this.dragViewId}"]`) as HTMLElement | null;
-      if (sourceTab !== null) {
-        this.ghostEl = sourceTab.cloneNode(true) as HTMLElement;
-        this.ghostEl.setAttribute('data-blok-database-tab-ghost', '');
-        this.ghostEl.style.position = 'fixed';
-        this.ghostEl.style.pointerEvents = 'none';
-        this.ghostEl.style.zIndex = '50';
-        this.ghostEl.style.opacity = '0.7';
-        copyGhostRadius(sourceTab, this.ghostEl);
-        const rect = sourceTab.getBoundingClientRect();
-        this.ghostEl.style.top = `${rect.top}px`;
-        this.ghostEl.style.width = `${rect.width}px`;
-        mountGhost(sourceTab, this.ghostEl);
-        // Its slot closes and the other tabs reflow under the pointer (feel/findings-toolbar V27).
-        sourceTab.setAttribute('data-blok-database-tab-drag-source', '');
-      }
+      sourceTab?.setAttribute('data-blok-database-tab-drag-source', '');
+      this.dragSlots = Array.from(this.element?.querySelectorAll<HTMLElement>('[data-blok-database-tab]') ?? [])
+        .filter((tab) => tab !== sourceTab && tab.style.display !== 'none')
+        .map((tab) => {
+          const rect = tab.getBoundingClientRect();
+
+          return { tab, center: (rect.left + rect.right) / 2 };
+        });
+      const source = sourceTab?.getBoundingClientRect();
+      const sourceCenter = source === undefined ? 0 : (source.left + source.right) / 2;
+
+      this.dragHome = this.dragSlots.filter((slot) => slot.center < sourceCenter).length;
+      this.dragStep = (source?.width ?? 0) + this.tabGap();
     }
-    if (this.ghostEl !== null) {
-      this.ghostEl.style.left = `${e.clientX - 50}px`;
-    }
+    if (sourceTab === null) return;
+    sourceTab.style.transform = `translateX(${dx}px)`;
+
+    const { dragHome: home, dragStep: step } = this;
+    const drop = this.dropSlot(e.clientX);
+
+    this.dragSlots.forEach(({ tab }, index) => {
+      const right = index < home && index >= drop;
+      const left = index >= home && index < drop;
+
+      Object.assign(tab.style, { transform: right || left ? `translateX(${right ? step : -step}px)` : '' });
+    });
+  }
+
+  private tabGap(): number {
+    const bar = this.element;
+
+    return bar === null ? 0 : Number.parseFloat(getComputedStyle(bar).columnGap) || 0;
   }
 
   private handleDragUp(e: PointerEvent): void {
@@ -853,11 +1023,9 @@ export class DatabaseTabBar {
     // Folded tabs can sit between shown ones (the current view stays shown):
     // a drop between shown tabs lands right after the one on its left; past
     // the row it goes after every view.
-    const shown = tabs.filter((t) => t.style.display !== 'none');
-    const dropIndex = shown.findIndex((t) => {
-      const rect = t.getBoundingClientRect();
-      return e.clientX < (rect.left + rect.right) / 2;
-    });
+    const shown = this.dragSlots.map((slot) => slot.tab);
+    const slot = this.dropSlot(e.clientX);
+    const dropIndex = slot === shown.length ? -1 : slot;
     const afterTab = dropIndex === -1 ? tabs.at(-1) : shown[dropIndex - 1];
     const nextIndex = afterTab === undefined ? 0 : tabs.indexOf(afterTab) + 1;
     const beforeTab = dropIndex === -1 ? undefined : tabs[nextIndex];
@@ -872,13 +1040,13 @@ export class DatabaseTabBar {
   }
 
   private cleanupDrag(): void {
-    if (this.ghostEl !== null) {
-      this.ghostEl.remove();
-      this.ghostEl = null;
-    }
+    // The flag goes first: without it the tabs jump back instead of sliding.
     this.element?.removeAttribute('data-dragging');
-    const sourceTab = this.element?.querySelector(`[data-view-id="${this.dragViewId}"]`) as HTMLElement | null;
+    const sourceTab = this.dragSource();
     sourceTab?.removeAttribute('data-blok-database-tab-drag-source');
+    if (sourceTab !== null) sourceTab.style.transform = '';
+    this.dragSlots.forEach(({ tab }) => Object.assign(tab.style, { transform: '' }));
+    this.dragSlots = [];
     this.isDragging = false;
     this.removeDragListeners();
   }
@@ -943,9 +1111,9 @@ export class DatabaseTabBar {
     button.innerHTML = IconDotsHorizontal;
     button.addEventListener('click', () => {
       if (this.contextPopover !== null) return;
-      const onCopyLink = this.options.onCopyLink;
-      const onEditTitle = this.options.onEditTitle;
-      const first: PopoverItemParams[] = [
+      const { onCopyLink, onEditTitle, onEditLayout, onDataSourceTitlesToggle } = this.options;
+      const hidden = this.options.dataSourceTitlesHidden === true;
+      const view: PopoverItemParams[] = [
         ...(onCopyLink === undefined ? [] : [{
           icon: IconLink,
           name: 'database-title-copy-link',
@@ -961,15 +1129,35 @@ export class DatabaseTabBar {
           onActivate: () => this.options.onDuplicate(viewId),
         },
       ];
-      const second: PopoverItemParams[] = onEditTitle === undefined ? [] : [{
-        icon: IconPencil,
-        name: 'database-title-edit',
-        title: t('tools.database.editCardTitle', 'Edit title'),
+      // A hidden title has nothing to edit.
+      const edit: PopoverItemParams[] = [
+        ...(onEditTitle === undefined || hidden ? [] : [{
+          icon: IconPencil,
+          name: 'database-title-edit',
+          title: t('tools.database.editCardTitle', 'Edit title'),
+          closeOnActivate: true,
+          onActivate: onEditTitle,
+        }]),
+        ...(onEditLayout === undefined ? [] : [{
+          icon: IconPageLayout,
+          name: 'database-title-edit-layout',
+          title: t('tools.database.editLayout', 'Edit layout'),
+          closeOnActivate: true,
+          onActivate: onEditLayout,
+        }]),
+      ];
+      const title: PopoverItemParams[] = onDataSourceTitlesToggle === undefined ? [] : [{
+        icon: IconEyeSlash,
+        name: 'database-title-hide',
+        title: hidden ? t('tools.database.showTitle', 'Show title') : t('tools.database.hideTitle', 'Hide title'),
         closeOnActivate: true,
-        onActivate: onEditTitle,
+        onActivate: onDataSourceTitlesToggle,
       }];
+      const items = [view, edit, title]
+        .filter((group) => group.length > 0)
+        .flatMap((group, index) => index === 0 ? group : [{ type: PopoverItemType.Separator as const }, ...group]);
 
-      this.showMenu(button, second.length === 0 ? first : [...first, { type: PopoverItemType.Separator }, ...second]);
+      this.showMenu(button, items);
     });
 
     return button;

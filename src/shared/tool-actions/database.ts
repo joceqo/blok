@@ -6,6 +6,8 @@ import { addRelated, relationEdit, relationIdsOf, removeRelated } from '../datab
 import { copiedReminders } from '../database/reminder-fit';
 import { mapRowValues } from '../database/row-move';
 import { linkedRowHome } from '../database/linked-source';
+import { copyDashboardWidgets, isWidgetView, MAX_WIDGETS_PER_ROW, WIDGET_VIEW_TYPES, ownedWidgetViews, placeWidget, removeWidgetsShowing, tabViews } from '../database/dashboard';
+import type { WidgetPlacement } from '../database/dashboard';
 import { newRowValues, prefillFilters, THIS_PAGE_FILTER_VALUE } from '../database/new-row-values';
 import { lastRowKey, pinnedRowOrders, rowOrderKey, UNORDERED_VIEW_TYPES } from '../database/row-order';
 import { descendantsOf, relationPair } from '../database/sub-item-tree';
@@ -24,7 +26,7 @@ import { applyViewChanges, GROUPABLE_TYPES, groupByChange, layoutChange, subGrou
 import { DATE_VALUE_FORMAT, parseDateValue } from '../database/date-value';
 import { isOutputData, isPlaceValue, isVerificationValue } from '../database/tier3-values';
 import { isFileValue, isReadOnlyType, personIdsOf } from '../database/value-helpers';
-import { revealedInLegacyView } from '../database/view-properties';
+import { resolveWrapCells, revealedInLegacyView } from '../database/view-properties';
 import { formAnswerProblem, formQuestions } from '../database/form-questions';
 import { MAX_NOTIFY_PEOPLE, runButtonActions } from '../database/button-actions';
 import { plainLine } from '../agent/approval';
@@ -35,7 +37,7 @@ import type { BlockPosition } from '../../../types/api/blocks';
 import type { ToolActionContext, ToolActionImpl } from '../../../types/tools/tool-description';
 import type { ChildCommandRoute } from '../agent/types';
 import type { ConvertibleRow } from '../database/property-conversion';
-import type { ButtonCallbackAction, ButtonSendNotificationAction, ConvertedValue, DatabaseViewConfig, DateReminder, PropertyDefinition, PropertyType, PropertyValue, RelationSettings, SelectOption, TemplateRepeat, ViewType } from '../database/types';
+import type { ButtonCallbackAction, ButtonSendNotificationAction, ConvertedValue, DashboardRow, DatabaseViewConfig, DateReminder, DeletedPropertyDefinition, PropertyDefinition, PropertyType, PropertyValue, RelationSettings, SelectOption, TemplateRepeat, ViewType } from '../database/types';
 
 type TargetBlock = NonNullable<ToolActionContext['block']>;
 
@@ -92,7 +94,7 @@ export const assertUnlocked = (ctx: ToolActionContext, state: DatabaseState): vo
 };
 
 /** Database fields the editor freezes with the schema while the database is locked (structureLocked). */
-const LOCKED_FIELDS = ['automations', 'source', 'hideDataSourceTitles', 'starter'];
+const LOCKED_FIELDS = ['automations', 'source', 'hideDataSourceTitles', 'starter', 'deletedProperties'];
 
 /** Everything a database lock freezes: the schema (which holds the lock), the views and LOCKED_FIELDS. */
 export const LOCK_PROTECTED_FIELDS: readonly string[] = ['schema', 'views', ...LOCKED_FIELDS];
@@ -168,8 +170,9 @@ const VIEW_NAMES: Partial<Record<ViewType, string>> = {
   timeline: DATABASE_DEFAULT_TEXT.viewTypeTimeline,
   chart: DATABASE_DEFAULT_TEXT.viewTypeChart,
   feed: DATABASE_DEFAULT_TEXT.viewTypeFeed,
-  form: DATABASE_DEFAULT_TEXT.viewTypeForm,
+  form: DATABASE_DEFAULT_TEXT.viewFormBuilder,
   map: DATABASE_DEFAULT_TEXT.viewTypeMap,
+  dashboard: DATABASE_DEFAULT_TEXT.viewTypeDashboard,
 };
 
 interface CreateArgs {
@@ -215,9 +218,52 @@ const withPlaceProperty = (ctx: ToolActionContext, state: DatabaseState): Partia
   return withNewProperty(state, property);
 };
 
-const addView: ToolActionImpl<{ type: ViewType; name?: string; groupBy?: string }, undefined, { viewId: string }> = {
+interface AddViewArgs {
+  type: ViewType;
+  name?: string;
+  groupBy?: string;
+  dashboardViewId?: string;
+  placement?: { row?: number; newRow?: boolean };
+}
+
+/** The dashboard a new widget joins, checked, and where in its rows it goes. */
+const widgetTarget = (ctx: ToolActionContext, state: DatabaseState, args: AddViewArgs): { dashboard: DatabaseViewConfig; placement: WidgetPlacement | undefined } | undefined => {
+  if (args.dashboardViewId === undefined) {
+    if (args.placement !== undefined) ctx.fail('INVALID_ARGS', 'placement goes with dashboardViewId.');
+
+    return undefined;
+  }
+  const dashboard = state.views.find(view => view.id === args.dashboardViewId);
+
+  if (dashboard?.type !== 'dashboard') {
+    return ctx.fail('PRECONDITION_FAILED', `This database has no dashboard view ${args.dashboardViewId}.`);
+  }
+  if (!WIDGET_VIEW_TYPES.includes(args.type)) {
+    ctx.fail('INVALID_ARGS', 'A dashboard widget is a table, list or chart view.');
+  }
+  const rows = dashboard.dashboard?.rows ?? [];
+  const { row, newRow } = args.placement ?? {};
+
+  if (row !== undefined && newRow !== undefined) ctx.fail('INVALID_ARGS', 'Pass row or newRow, not both.');
+  if (row !== undefined && rows[row] === undefined) ctx.fail('PRECONDITION_FAILED', `This dashboard has no row ${row}.`);
+  if (row !== undefined && (rows[row]?.widgets.length ?? 0) >= MAX_WIDGETS_PER_ROW) {
+    ctx.fail('PRECONDITION_FAILED', `Row ${row} already holds ${MAX_WIDGETS_PER_ROW} widgets.`);
+  }
+  if (row !== undefined) return { dashboard, placement: { rowId: rows[row]?.id ?? '' } };
+
+  return { dashboard, placement: newRow === true ? { newRowAt: rows.length } : undefined };
+};
+
+/** Right after the widget showing `viewId` in its row, or a new row under it when the row is full. */
+const besideWidget = (row: DashboardRow, rowIndex: number, viewId: string): WidgetPlacement =>
+  (row.widgets.length < MAX_WIDGETS_PER_ROW
+    ? { rowId: row.id, index: row.widgets.findIndex(widget => widget.viewId === viewId) + 1 }
+    : { newRowAt: rowIndex + 1 });
+
+const addView: ToolActionImpl<AddViewArgs, undefined, { viewId: string }> = {
   run: (ctx, args) => {
     const { block, state } = openDatabase(ctx);
+    const target = widgetTarget(ctx, state, args);
     const given = args.groupBy === undefined
       ? undefined
       : state.schema.find(property => property.id === args.groupBy) ?? ctx.fail('PRECONDITION_FAILED', `This database has no property ${args.groupBy}.`);
@@ -236,8 +282,17 @@ const addView: ToolActionImpl<{ type: ViewType; name?: string; groupBy?: string 
       type: args.type,
       position: positionAround(ctx, state.views),
       ...(groupBy === undefined ? {} : { groupBy: groupBy.id }),
+      ...(target === undefined ? {} : { dashboardViewId: target.dashboard.id }),
     }, schema));
 
+    if (target !== undefined) {
+      // As the editor's Add widget: the open view stays, the layout gains the widget.
+      const rows = placeWidget(target.dashboard.dashboard?.rows ?? [], { id: ctx.newId(), viewId: view.id, width: 12 }, target.placement, () => ctx.newId());
+
+      ctx.update(block.id, { ...place, views: [...views.map(each => (each.id === target.dashboard.id ? { ...each, dashboard: { rows } } : each)), view] });
+
+      return { viewId: view.id };
+    }
     ctx.update(block.id, { ...place, views: [...views, view], activeViewId: view.id });
 
     return { viewId: view.id };
@@ -272,14 +327,32 @@ const moveView: ToolActionImpl<{ viewId: string } & Placement> = {
 const deleteView: ToolActionImpl<{ viewId: string }> = {
   run: (ctx, args) => {
     const { block, state } = openDatabase(ctx);
-    const index = viewIndex(ctx, state, args.viewId);
+    const target = state.views[viewIndex(ctx, state, args.viewId)];
 
-    if (state.views.length === 1) {
+    if (target !== undefined && isWidgetView(target, state.views)) {
+      // A widget view leaves its dashboard's layout with it.
+      const views = state.views
+        .filter(view => view.id !== args.viewId)
+        .map(view => (view.id === target.dashboardViewId && view.dashboard !== undefined
+          ? { ...view, dashboard: { rows: removeWidgetsShowing(view.dashboard.rows, args.viewId) } }
+          : view));
+
+      ctx.update(block.id, { views });
+
+      return undefined;
+    }
+    const tabs = tabViews(state.views);
+    const index = tabs.findIndex(view => view.id === args.viewId);
+
+    if (tabs.length === 1) {
       ctx.fail('PRECONDITION_FAILED', 'A database keeps at least one view.');
     }
-    const views = state.views.filter(view => view.id !== args.viewId);
+    // As the editor: a dashboard takes the widget views it owns.
+    const gone = new Set([args.viewId, ...(target?.type === 'dashboard' ? ownedWidgetViews(state.views, args.viewId).map(view => view.id) : [])]);
+    const views = state.views.filter(view => !gone.has(view.id));
+    const left = tabViews(views);
     // As the editor: the view now at the deleted one's index, or the last one.
-    const neighbour = views[Math.min(index, views.length - 1)];
+    const neighbour = left[Math.min(index, left.length - 1)];
 
     ctx.update(block.id, state.activeViewId === args.viewId && neighbour !== undefined ? { views, activeViewId: neighbour.id } : { views });
 
@@ -297,8 +370,33 @@ const duplicateView: ToolActionImpl<{ viewId: string }, undefined, { viewId: str
     }
     // As the editor's duplicateView: every setting is copied, the copy goes last and opens.
     const { id: _id, position: _position, ...settings } = source;
-    const copy = savedView(newView({ ...settings, id: ctx.newId(), position: positionAround(ctx, state.views) }, state.schema));
+    // A table copy keeps its source's wrap even when the source stores none (a new table wraps).
+    const wrap = source.type === 'table' ? { wrapCells: resolveWrapCells(source) } : {};
+    const copy = savedView(newView({ ...settings, ...wrap, id: ctx.newId(), position: positionAround(ctx, state.views) }, state.schema));
 
+    if (isWidgetView(source, state.views)) {
+      // As the widget menu's Duplicate: the copy goes next to it on its dashboard, and the open view stays.
+      const views = state.views.map((view) => {
+        if (view.id !== source.dashboardViewId || view.dashboard === undefined) return view;
+        const rows = view.dashboard.rows;
+        const rowIndex = rows.findIndex(row => row.widgets.some(widget => widget.viewId === source.id && widget.databaseId === undefined));
+        const row = rows[rowIndex];
+        const placement = row === undefined ? undefined : besideWidget(row, rowIndex, source.id);
+
+        return { ...view, dashboard: { rows: placeWidget(rows, { id: ctx.newId(), viewId: copy.id, width: 12 }, placement, () => ctx.newId()) } };
+      });
+
+      ctx.update(block.id, { views: [...views, copy] });
+
+      return { viewId: copy.id };
+    }
+    if (source.type === 'dashboard') {
+      const copied = copyDashboardWidgets(state.views, source, copy.id, () => ctx.newId());
+
+      ctx.update(block.id, { views: [...state.views, { ...copy, dashboard: { rows: copied.rows } }, ...copied.widgets], activeViewId: copy.id });
+
+      return { viewId: copy.id };
+    }
     ctx.update(block.id, { views: [...state.views, copy], activeViewId: copy.id });
 
     return { viewId: copy.id };
@@ -365,6 +463,7 @@ const namedProperties = (changes: Record<string, unknown>): string[] => {
     ...idsIn(changes.colorRules, 'propertyId'),
     ...idsIn(changes.calculations, 'id'),
     ...(isRecord(changes.groupCalculation) && typeof changes.groupCalculation.id === 'string' ? [changes.groupCalculation.id] : []),
+    ...(isRecord(changes.subGroupCalculation) && typeof changes.subGroupCalculation.id === 'string' ? [changes.subGroupCalculation.id] : []),
     ...filterRuleProperties(changes.filterTree),
     ...preview,
     ...measure,
@@ -493,6 +592,9 @@ const setLayout: ToolActionImpl<{ viewId: string; type: ViewType }> = {
 
     if (view.type === args.type) {
       return undefined;
+    }
+    if (isWidgetView(view, state.views) && !WIDGET_VIEW_TYPES.includes(args.type)) {
+      ctx.fail('PRECONDITION_FAILED', 'A dashboard widget is a table, list or chart view.');
     }
     const sourceSchema = referenceSchema(ctx, block, state, view.dataSourceId);
     const change = layoutChange(view, args.type, sourceSchema ?? state.schema)
@@ -729,7 +831,7 @@ const moveOption: ToolActionImpl<OptionArgs & Placement> = {
 const holds = (value: unknown, optionId: string): boolean => (Array.isArray(value) ? value.includes(optionId) : value === optionId);
 
 /**
- * The editor (handleOptionDelete, clearRemovedOptions) keeps the rows and empties the value:
+ * The editor (clearRemovedOptions) keeps the rows and empties the value:
  * null for a single value, the array without the option for a multi-select. `rows: 'delete'`
  * deletes those rows instead.
  */
@@ -875,7 +977,7 @@ const templateOf = (ctx: ToolActionContext, databaseId: string, templateId: stri
     ?? ctx.fail('PRECONDITION_FAILED', `Block ${templateId} is not a template of this database.`);
 
 /** Page fields a row copies from a template (writeNewRow, applyTemplate). */
-const PAGE_FIELDS = ['icon', 'cover', 'fullWidth'] as const;
+const PAGE_FIELDS = ['icon', 'cover', 'coverPosition', 'fullWidth'] as const;
 
 const rawData = (ctx: ToolActionContext, id: string): Record<string, unknown> => {
   const data = ctx.read(id)?.data;
@@ -1329,7 +1431,8 @@ const applyTemplate: ToolActionImpl<{ rowId: string; templateId: string }> = {
     ctx.update(target.id, {
       properties,
       ...(title === undefined ? {} : { title }),
-      ...Object.fromEntries(PAGE_FIELDS.filter(field => own[field] === undefined && page[field] !== undefined).map(field => [field, page[field]])),
+      // A cover position belongs to its cover: it comes only when the cover does.
+      ...Object.fromEntries(PAGE_FIELDS.filter(field => own[field === 'coverPosition' ? 'cover' : field] === undefined && page[field] !== undefined).map(field => [field, page[field]])),
       ...(added.length === 0 ? {} : { reminders: { ...ownReminders, ...Object.fromEntries(added) } }),
     });
     copyBody(ctx, template.id, target.id);
@@ -1935,16 +2038,123 @@ const duplicateProperty: ToolActionImpl<{ propertyId: string }, undefined, { pro
   },
 };
 
-/** As DatabaseTool.deleteProperty: the schema entry goes, row values stay (D9). The title cannot go. */
+/** The saved deleted map, without entries a live property has the id of (DatabaseModel.getDeletedProperties). */
+const deletedPropertiesOf = (block: TargetBlock, state: DatabaseState): Record<string, DeletedPropertyDefinition> => {
+  const saved = block.data.deletedProperties;
+  const live = new Set(state.schema.map(property => property.id));
+
+  return isRecord(saved)
+    ? Object.fromEntries(Object.entries(jsonCopy(saved)).filter(([id, property]) => isRecord(property) && !live.has(id))) as Record<string, DeletedPropertyDefinition>
+    : {};
+};
+
+const without = <T>(map: Record<string, T>, key: string): Record<string, T> => {
+  const { [key]: _gone, ...rest } = map;
+
+  return rest;
+};
+
+/** The deleted entry for `propertyId` in a database (never a linked view), or a precondition failure. */
+const deletedEntry = (ctx: ToolActionContext, block: TargetBlock, state: DatabaseState, propertyId: string): DeletedPropertyDefinition => {
+  if (isRecord(block.data.source)) {
+    return ctx.fail('PRECONDITION_FAILED', 'This is a linked view: its deleted properties live on its source database.');
+  }
+
+  return deletedPropertiesOf(block, state)[propertyId] ?? ctx.fail('PRECONDITION_FAILED', `This database has no deleted property ${propertyId}.`);
+};
+
+/** As DatabaseTool.deleteProperty: the definition moves to deletedProperties, row values stay (D9). The title cannot go. */
 const deleteProperty: ToolActionImpl<{ propertyId: string }> = {
   run: (ctx, args) => {
     const { block, state } = openDatabase(ctx);
-    const index = propertyAt(ctx, state, args.propertyId);
 
-    if (state.schema[index]?.type === 'title') {
-      ctx.fail('PRECONDITION_FAILED', 'A database keeps its title property.');
+    if (isRecord(block.data.source)) {
+      return ctx.fail('PRECONDITION_FAILED', 'This is a linked view: its properties live on its source database.');
     }
-    ctx.update(block.id, { schema: state.schema.filter((_, i) => i !== index) });
+    const index = propertyAt(ctx, state, args.propertyId);
+    const property = state.schema[index];
+
+    if (property === undefined || property.type === 'title') {
+      return ctx.fail('PRECONDITION_FAILED', 'A database keeps its title property.');
+    }
+    const deleted: DeletedPropertyDefinition = {
+      ...property,
+      deletedAt: ctx.now ?? Date.now(),
+      ...(ctx.actorId !== undefined && ctx.actorId !== '' ? { deletedBy: ctx.actorId } : {}),
+    };
+
+    ctx.update(block.id, {
+      schema: state.schema.filter((_, i) => i !== index),
+      deletedProperties: { ...deletedPropertiesOf(block, state), [property.id]: deleted },
+    });
+
+    return undefined;
+  },
+};
+
+/** As DatabaseTool.restoreProperty: back at its position, a free name if a live property took its own. */
+const restoreProperty: ToolActionImpl<{ propertyId: string }> = {
+  run: (ctx, args) => {
+    const { block, state } = openDatabase(ctx);
+    const { deletedAt: _at, deletedBy: _by, ...property } = deletedEntry(ctx, block, state, args.propertyId);
+    const restored: PropertyDefinition = { ...property, name: freePropertyName(state.schema.map(each => each.name), property.name) };
+
+    ctx.update(block.id, {
+      schema: sortedByPosition([...state.schema, restored]),
+      deletedProperties: without(deletedPropertiesOf(block, state), args.propertyId),
+    });
+
+    return undefined;
+  },
+};
+
+/** As DatabaseTool.pruneAutofillWatch: "Only specific properties" forgets the id; with none left the trigger is None. */
+const withoutAutofillWatch = (schema: PropertyDefinition[], propertyId: string): PropertyDefinition[] => schema.map((property) => {
+  const watched = property.autofill?.onEditProperties;
+
+  if (property.autofill === undefined || watched?.includes(propertyId) !== true) {
+    return property;
+  }
+  const rest = watched.filter(id => id !== propertyId);
+  const { onEdit: _onEdit, onEditProperties: _watched, ...kept } = property.autofill;
+
+  return { ...property, autofill: rest.length > 0 ? { ...kept, onEdit: true, onEditProperties: rest } : kept };
+});
+
+/** The value, reminder and kept original of `propertyId` gone from one row's data, or undefined when it holds none. */
+const strippedRow = (data: Record<string, unknown>, propertyId: string): Record<string, unknown> | undefined => {
+  const patch: Record<string, unknown> = {};
+
+  for (const key of ['properties', 'reminders', 'convertedValues']) {
+    const map = data[key];
+
+    if (!isRecord(map) || !Object.hasOwn(map, propertyId)) continue;
+    const { [propertyId]: _gone, ...rest } = map;
+
+    patch[key] = key !== 'properties' && Object.keys(rest).length === 0 ? undefined : rest;
+  }
+
+  return Object.keys(patch).length > 0 ? patch : undefined;
+};
+
+/** As DatabaseTool.deletePropertyPermanently: the entry, every row's and template's value, and autofill watches of it go. */
+const deletePropertyPermanently: ToolActionImpl<{ propertyId: string }> = {
+  run: (ctx, args) => {
+    const { block, state } = openDatabase(ctx);
+
+    deletedEntry(ctx, block, state, args.propertyId);
+    const schema = withoutAutofillWatch(state.schema, args.propertyId);
+
+    ctx.update(block.id, {
+      deletedProperties: without(deletedPropertiesOf(block, state), args.propertyId),
+      ...(schema.some((property, i) => property !== state.schema[i]) ? { schema } : {}),
+    });
+    for (const row of rowBlocksOf(ctx, block.id)) {
+      const data = ctx.read(row.id)?.data;
+      const patch = isRecord(data) ? strippedRow(data, args.propertyId) : undefined;
+
+      if (patch !== undefined) ctx.update(row.id, patch);
+    }
 
     return undefined;
   },
@@ -2083,6 +2293,6 @@ export const DATABASE_ACTION_HANDLERS: Readonly<Record<string, ToolActionImpl>> 
   create, addView, renameView, duplicateView, deleteView, moveView, updateView, setLayout, setLock,
   addProperty, addOption, renameOption, moveOption, deleteOption,
   addRow, moveRow, setRowValues, deleteRow, applyTemplate, duplicateRow, moveRowTo,
-  updateProperty, duplicateProperty, deleteProperty, recolorOption,
+  updateProperty, duplicateProperty, deleteProperty, restoreProperty, deletePropertyPermanently, recolorOption,
   addTemplate, setDefaultTemplate, setTemplateRepeat, changePropertyType, submitForm, pressButton,
 };

@@ -76,6 +76,34 @@ func (m *Manager) isPurged(ctx context.Context, history HistoryStore, docID stri
 // History lists every lineage and its versions newest first. group > 0
 // replaces both default grouping limits.
 func (m *Manager) History(ctx context.Context, docID string, group time.Duration) (HistoryList, error) {
+	return m.HistoryBy(ctx, docID, group, false)
+}
+
+// ReadNotes is the record notes of one lineage; false without a store. A
+// store that fails reads as no notes: they are informational.
+func (m *Manager) ReadNotes(ctx context.Context, docID, lineage string) (map[uint64]RecordNote, bool) {
+	if m.notes == nil {
+		return nil, false
+	}
+	notes, err := m.notes.Read(ctx, docID, lineage)
+	if err != nil {
+		m.logf(`collab: the record notes of "` + docID + `" could not be read: ` + err.Error())
+		return map[uint64]RecordNote{}, true
+	}
+	return notes, true
+}
+
+// HistoryBy is History where byActor also starts a version where the actor
+// changes. With a record notes store, each version carries its actor kinds.
+func (m *Manager) HistoryBy(ctx context.Context, docID string, group time.Duration, byActor bool) (HistoryList, error) {
+	return m.HistoryWindowed(ctx, docID, group, byActor, nil)
+}
+
+// HistoryWindowed is HistoryBy over what a window with this cut shows:
+// groups are built from visible records only, and a lineage whose baseline
+// is hidden has no createdAt. A nil cut shows everything.
+func (m *Manager) HistoryWindowed(ctx context.Context, docID string, group time.Duration, byActor bool,
+	cut *time.Time) (HistoryList, error) {
 	history, ok := m.history()
 	if !ok {
 		return HistoryList{Status: HistoryNone}, nil
@@ -111,11 +139,31 @@ func (m *Manager) History(ctx context.Context, docID string, group time.Duration
 	if purged, err := m.isPurged(ctx, history, docID); err != nil || purged {
 		return HistoryList{Status: HistoryPurged}, err
 	}
+	if cut != nil {
+		withHeaders = VisibleTimeline(withHeaders, *cut)
+		for i := range lineages {
+			lineages[i].CreatedAt = withHeaders[i].Lineage.CreatedAt
+		}
+	}
 	idleGap, maxSpan := timelineIdleGap, timelineMaxSpan
 	if group > 0 {
 		idleGap, maxSpan = group, group
 	}
-	return HistoryList{Status: HistoryReady, Lineages: lineages, Versions: GroupVersions(withHeaders, idleGap, maxSpan)}, nil
+	var noteOf func(lineage string, sequence uint64) *RecordNote
+	if m.notes != nil {
+		byLineage := map[string]map[uint64]RecordNote{}
+		for _, lineage := range lineages {
+			byLineage[lineage.Lineage], _ = m.ReadNotes(ctx, docID, lineage.Lineage)
+		}
+		noteOf = func(lineage string, sequence uint64) *RecordNote {
+			if note, ok := byLineage[lineage][sequence]; ok {
+				return &note
+			}
+			return nil
+		}
+	}
+	return HistoryList{Status: HistoryReady, Lineages: lineages,
+		Versions: GroupVersionsBy(withHeaders, idleGap, maxSpan, byActor, noteOf)}, nil
 }
 
 type point struct {
@@ -224,7 +272,7 @@ func (m *Manager) ReadVersion(ctx context.Context, docID, lineage string, sequen
 	if p.time != nil {
 		output = withKeyAt(p.output, "time", p.time.UnixMilli())
 	}
-	for _, plain := range convert.PlainPageMaps(p.doc, map[string]bool{"title": true, "icon": true}) {
+	for _, plain := range convert.PlainPageMaps(p.doc, map[string]bool{"title": true, "icon": true, "cover": true}) {
 		output.Set(jsjson.FromString(plain.Name), plain.Map)
 	}
 	json, err := docendpoint.Serialize(output)
@@ -388,6 +436,12 @@ func sameSequences(changes []RecordChanges, window []uint64) bool {
 
 // DeleteLineage removes one superseded lineage.
 func (m *Manager) DeleteLineage(ctx context.Context, docID, lineage string) (HistoryStatus, journal.LineageDeleteOutcome, error) {
+	return m.DeleteLineageBy(ctx, docID, lineage, "")
+}
+
+// DeleteLineageBy is DeleteLineage by a known actor ("" for none), named in
+// its history.lineageDeleted event.
+func (m *Manager) DeleteLineageBy(ctx context.Context, docID, lineage, actorID string) (HistoryStatus, journal.LineageDeleteOutcome, error) {
 	history, ok := m.history()
 	if !ok {
 		return HistoryNone, 0, nil
@@ -402,6 +456,13 @@ func (m *Manager) DeleteLineage(ctx context.Context, docID, lineage string) (His
 	if outcome == journal.LineagePurged || m.isPurging(docID) {
 		return HistoryPurged, journal.LineagePurged, nil
 	}
+	if outcome == journal.LineageDeletedOutcome {
+		var actor *AuditActor
+		if note := ClassifyActor(actorID, false, ""); note != nil {
+			actor = &AuditActor{ID: actorID, Kind: note.Kind, OnBehalfOf: note.OnBehalfOf}
+		}
+		m.signals.event(AuditEvent{Type: AuditLineageDeleted, DocID: docID, At: m.options.Now(), Actor: actor, Lineage: lineage})
+	}
 	return HistoryReady, outcome, nil
 }
 
@@ -411,15 +472,77 @@ var errRestorePointMissing = errors.New("collab: the restore point is gone")
 // inside the lane after the duplicate and precondition checks.
 func (m *Manager) Restore(ctx context.Context, docID, lineage string, sequence uint64, operationID, actorID string,
 	expect *Precondition) (HistoryStatus, *EditResult, error) {
-	p, err := m.readPoint(ctx, docID, lineage, sequence)
-	if err != nil {
-		return 0, nil, err
+	status, edit, _, err := m.RestoreGuarded(ctx, docID, lineage, sequence, operationID, actorID, expect, nil)
+	return status, edit, err
+}
+
+var errRestoreGuarded = errors.New("collab: the restore needs confirmation")
+
+// restoreTrash is the trash input a restore plans with: nil unless the
+// rooms' RestoreTrashesPages is on.
+func (m *Manager) restoreTrash(actorID string) *RestoreTrash {
+	if !m.options.RestoreTrashesPages {
+		return nil
+	}
+	trash := &RestoreTrash{At: m.options.Now().UnixMilli()}
+	if actorID != "" {
+		trash.By = &actorID
+	}
+	return trash
+}
+
+// RestoreGuarded is Restore with the guards enforced when confirmed is not
+// nil: a guard whose kind it lacks refuses the restore, which then changes
+// nothing and answers the guards with a nil edit. The check runs in the
+// lane after the duplicate check, so a refusal consumes no key and a
+// committed retry still gets its receipt.
+func (m *Manager) RestoreGuarded(ctx context.Context, docID, lineage string, sequence uint64, operationID, actorID string,
+	expect *Precondition, confirmed map[string]bool) (HistoryStatus, *EditResult, []RestoreGuard, error) {
+	outcome, err := m.RestoreWith(ctx, docID, lineage, sequence, operationID, actorID, expect, confirmed, RestoreOptions{})
+	return outcome.Status, outcome.Edit, outcome.Refused, err
+}
+
+// RestoreOptions is CollabRestoreOptions. Hidden: the host's history window
+// hides the point.
+type RestoreOptions struct {
+	Hidden bool
+	// KeepDatabases is databases=keep: every database stays as it is now.
+	KeepDatabases bool
+}
+
+// RestoreOutcome is CollabRestoreResult: Edit when Ready and applied or
+// refused by the edit gates, Refused when a guard refused it, Hidden when
+// the window hid the point.
+type RestoreOutcome struct {
+	Status  HistoryStatus
+	Edit    *EditResult
+	Refused []RestoreGuard
+	Hidden  bool
+	// RefusedAs is the refusal's error: confirmation_required, or
+	// restore_refused for a guard no confirm can pass.
+	RefusedAs string
+}
+
+var errRestorePointHidden = errors.New("collab: the history window hides the restore point")
+
+// RestoreWith is RestoreGuarded with its options. A hidden point is never
+// rebuilt; it is refused in the lane, after the duplicate check, so a
+// committed retry still gets its receipt.
+func (m *Manager) RestoreWith(ctx context.Context, docID, lineage string, sequence uint64, operationID, actorID string,
+	expect *Precondition, confirmed map[string]bool, options RestoreOptions) (RestoreOutcome, error) {
+	p := point{status: HistoryNotFound}
+	if !options.Hidden {
+		var err error
+		if p, err = m.readPoint(ctx, docID, lineage, sequence); err != nil {
+			return RestoreOutcome{}, err
+		}
 	}
 	// A missing point still goes to the room: a retry whose lineage was
 	// deleted since gets its first receipt from the duplicate check.
 	if p.status != HistoryReady && p.status != HistoryNotFound {
-		return p.status, nil, nil
+		return RestoreOutcome{Status: p.status}, nil
 	}
+	var refused []RestoreGuard
 	var target []any
 	if p.output != nil {
 		if blocks, ok := p.output.Get(jsjson.FromString("blocks")); ok {
@@ -431,9 +554,13 @@ func (m *Manager) Restore(ctx context.Context, docID, lineage string, sequence u
 		targetMaps = convert.ReadPageMaps(p.doc)
 	}
 	// The request, never the plan: a retry plans against a doc that moved.
-	digest := convert.RestoreDigest(lineage, sequence)
+	digest := convert.RestoreDigestKeeping(lineage, sequence, options.KeepDatabases)
+	refusedAs := "confirmation_required"
 	edit, err := m.editInRoom(docID, func(r *Room) (*EditResult, error) {
 		return r.edit(ctx, func(ctx context.Context, doc *yjs.Doc) ([]convert.EditOp, error) {
+			if options.Hidden {
+				return nil, errRestorePointHidden
+			}
 			if p.status == HistoryNotFound || p.doc == nil {
 				return nil, errRestorePointMissing
 			}
@@ -446,19 +573,140 @@ func (m *Manager) Restore(ctx context.Context, docID, lineage string, sequence u
 			if blocks, ok := exported.Get(jsjson.FromString("blocks")); ok {
 				current, _ = blocks.([]any)
 			}
-			return PlanRestore(current, structure, target, convert.ReadPageMaps(doc), targetMaps), nil
-		}, true, operationID, digest, actorID, expect, nil)
+			aim := target
+			var pinned map[string]bool
+			if options.KeepDatabases {
+				kept := KeepDatabases(current, target)
+				// Never confirmable, and refused whether or not the server enforces guards.
+				if len(kept.Orphaned) > 0 {
+					refused, refusedAs = kept.Orphaned, "restore_refused"
+					return nil, errRestoreGuarded
+				}
+				aim, pinned = kept.Target, kept.Pinned
+			}
+			if confirmed != nil {
+				guards := RestoreGuards(current, aim)
+				if pinned != nil {
+					guards = KeptRestoreGuards(current, KeptDatabases{Target: aim, Pinned: pinned})
+				}
+				for _, guard := range guards {
+					if !confirmed[guard.Kind] {
+						refused = guards
+						return nil, errRestoreGuarded
+					}
+				}
+			}
+			return PlanRestorePinned(current, structure, aim, convert.ReadPageMaps(doc), targetMaps,
+				m.restoreTrash(actorID), pinned), nil
+		}, true, operationID, digest, actorID, expect, nil, nil)
 	})
+	if errors.Is(err, errRestorePointHidden) {
+		return RestoreOutcome{Status: HistoryNotFound, Hidden: true}, nil
+	}
 	if errors.Is(err, errRestorePointMissing) {
-		return HistoryNotFound, nil, nil
+		return RestoreOutcome{Status: HistoryNotFound}, nil
+	}
+	if errors.Is(err, errRestoreGuarded) {
+		return RestoreOutcome{Status: HistoryReady, Refused: refused, RefusedAs: refusedAs}, nil
 	}
 	if err != nil {
-		return 0, nil, err
+		return RestoreOutcome{}, err
 	}
 	if edit.Status == EditApplied {
 		m.documentReplaced(docID)
 	}
-	return HistoryReady, &edit, nil
+	return RestoreOutcome{Status: HistoryReady, Edit: &edit}, nil
+}
+
+// RestorePreview is a restore planned and measured against the live doc,
+// with nothing applied: the blocks and page keys it would change, its
+// guards, and its frame size against the one-update limit.
+type RestorePreview struct {
+	Blocks     []BlockChange
+	Page       []string
+	Guards     []RestoreGuard
+	FrameBytes int64
+	LimitBytes int64
+	// Head is the revision it planned against, for the real call's If-Match.
+	Head Receipt
+}
+
+// PreviewRestore is a restore's dry run. A refusal before the plan (a
+// stale If-Match, a purge, a room that cannot load) comes back as the edit.
+func (m *Manager) PreviewRestore(ctx context.Context, docID, lineage string, sequence uint64,
+	expect *Precondition, actorID string) (HistoryStatus, *RestorePreview, *EditResult, error) {
+	return m.PreviewRestoreWith(ctx, docID, lineage, sequence, expect, actorID, RestoreOptions{})
+}
+
+// PreviewRestoreWith is PreviewRestore with its options. A kept database's
+// orphaning shows as a guard.
+func (m *Manager) PreviewRestoreWith(ctx context.Context, docID, lineage string, sequence uint64,
+	expect *Precondition, actorID string, options RestoreOptions) (HistoryStatus, *RestorePreview, *EditResult, error) {
+	p, err := m.readPoint(ctx, docID, lineage, sequence)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	if p.status != HistoryReady {
+		return p.status, nil, nil, nil
+	}
+	var target []any
+	if blocks, ok := p.output.Get(jsjson.FromString("blocks")); ok {
+		target, _ = blocks.([]any)
+	}
+	targetMaps := convert.ReadPageMaps(p.doc)
+	preview := &RestorePreview{LimitBytes: frameLimit(m.options)}
+	edit, err := m.editInRoom(docID, func(r *Room) (*EditResult, error) {
+		return r.preview(ctx, func(ctx context.Context, doc *yjs.Doc) ([]convert.EditOp, error) {
+			current, err := liveBlocks(ctx, m.converter, doc)
+			if err != nil {
+				return nil, err
+			}
+			aim := target
+			var pinned map[string]bool
+			var kept *KeptDatabases
+			if options.KeepDatabases {
+				keep := KeepDatabases(current, target)
+				kept, aim, pinned = &keep, keep.Target, keep.Pinned
+			}
+			// The restorer's id is part of the frame the real restore sends.
+			ops := PlanRestorePinned(current, convert.DescribeStructure(doc), aim, convert.ReadPageMaps(doc), targetMaps,
+				m.restoreTrash(actorID), pinned)
+			scratch, frameBytes, err := applyToScratch(ctx, doc, m.converter, ops)
+			if err != nil {
+				return nil, err
+			}
+			after, err := liveBlocks(ctx, m.converter, scratch)
+			if err != nil {
+				return nil, err
+			}
+			preview.Blocks = DiffBlocks(current, after)
+			preview.Page = DiffPage(PageFields(doc), PageFields(scratch))
+			preview.Guards = RestoreGuards(current, aim)
+			if kept != nil {
+				preview.Guards = KeptRestoreGuards(current, *kept)
+			}
+			preview.FrameBytes = frameBytes
+			return ops, nil
+		}, expect)
+	})
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	if edit.Status != EditPreviewed {
+		return HistoryReady, nil, &edit, nil
+	}
+	preview.Head = *edit.Receipt
+	return HistoryReady, preview, nil, nil
+}
+
+func liveBlocks(ctx context.Context, converter Converter, doc *yjs.Doc) ([]any, error) {
+	exported, err := converter.Export(ctx, doc)
+	if err != nil {
+		return nil, err
+	}
+	blocks, _ := exported.Get(jsjson.FromString("blocks"))
+	list, _ := blocks.([]any)
+	return list, nil
 }
 
 func itoa64(n uint64) string { return strconv.FormatUint(n, 10) }

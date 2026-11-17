@@ -56,10 +56,73 @@ export const planViewBarFold = (parts: ViewBarParts): ViewBarFold => {
   if (all <= room) {
     return { tabs: 'all', icons, newButton };
   }
-  const fit = tabsThatFit(parts.tabs, parts.current, room - parts.more, 0);
+  const budget = room - parts.more;
+  // notion-motion.md Round 32 §3: a current view past the fit takes the last slot, it never adds one.
+  const slots = tabsThatFit(parts.tabs, -1, budget, 0).length;
+  const fitted = tabsThatFit(parts.tabs, parts.current, budget, 0);
+  const fit = fitted.length > slots ? [...fitted.slice(0, Math.max(0, slots - 1)), parts.current] : fitted;
   // Only "+" was short: one tab still folds, so "N more…" can offer New view.
   const dropped = fit.length < parts.tabs.length ? undefined : fit.filter((index) => index !== parts.current).at(-1);
   const shown = fit.filter((index) => index !== dropped);
 
   return { tabs: shown.length >= 2 ? shown : 'compact', icons, newButton };
+};
+
+/**
+ * Notion folds a one-view title row at fixed widths of the database block, not
+ * by what fits: Filter, Sort, Automations, AI Autofill and Search go together
+ * below 480 even with room to spare, New below 320, and the title truncates
+ * instead (notion-motion.md, Round 6 "Toolbar fold points"). Notion's width is
+ * the database block's box, which ends 8px past its last button. Blok's row
+ * content box is the same block box but ends at its last button, so these map
+ * by block width, not by button span as NEW_FOLD_WIDTH does: a database of the
+ * same width folds at the same point.
+ */
+export const TITLE_ROW_ICON_FOLD_WIDTH = 480;
+export const TITLE_ROW_NEW_FOLD_WIDTH = 320;
+
+/** The title row folds the same parts as the view bar: the icon group first, New last, Settings never. */
+export const planTitleRowFold = (width: number): Omit<ViewBarFold, 'tabs'> => ({
+  icons: width >= TITLE_ROW_ICON_FOLD_WIDTH,
+  newButton: width >= TITLE_ROW_NEW_FOLD_WIDTH,
+});
+
+/**
+ * Sets the fold marks database.css reads on a one-view title row. The marks go on
+ * the toolbar, which is mutation-free (database-view-controls.ts): the row is
+ * not, so a write there is a block change.
+ */
+export const foldTitleRow = (row: HTMLElement): void => {
+  const toolbar = row.querySelector<HTMLElement>(':scope > [data-blok-database-view-toolbar]');
+
+  if (toolbar === null || !row.isConnected) return;
+  const style = getComputedStyle(row);
+  const width = row.clientWidth - (Number.parseFloat(style.paddingLeft) || 0) - (Number.parseFloat(style.paddingRight) || 0);
+  const fold = planTitleRowFold(width);
+
+  toolbar.toggleAttribute('data-blok-database-fold-icons', !fold.icons);
+  toolbar.toggleAttribute('data-blok-database-fold-new', !fold.newButton);
+};
+
+/** notion-motion.md Round 38 §5: the gap under the "N more…" menu once it slides up. */
+const FOLD_MENU_WINDOW_MARGIN = 8.3;
+
+/**
+ * The "N more…" menu's top in the window (notion-motion.md Round 38 §5, r38-fold-flyout.raw):
+ * below the button + 4 when it fits; else above it, its bottom 4 over the button, when it fits there;
+ * else below, slid up until its bottom is 8.3 from the window, over the button.
+ * The above side reuses the 8.3 gap: an assumption. Notion only bounds it (365.2 of room did not flip, 385.2 did).
+ */
+export const foldMenuTop = (button: { top: number; bottom: number }, height: number, windowHeight: number): number => {
+  const below = button.bottom + 4;
+  const above = button.top - 4 - height;
+
+  if (below + height <= windowHeight - FOLD_MENU_WINDOW_MARGIN) {
+    return below;
+  }
+  if (above >= FOLD_MENU_WINDOW_MARGIN) {
+    return above;
+  }
+
+  return Math.max(FOLD_MENU_WINDOW_MARGIN, windowHeight - FOLD_MENU_WINDOW_MARGIN - height);
 };

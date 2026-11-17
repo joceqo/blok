@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDocumentAgentSession } from '../../../../src/shared/agent/document-session';
 import { createHeadlessAgentSetup } from '../../../../src/view/agent-runtime';
 
-import type { AgentActor, AgentVersion, AgentVersionHistory } from '../../../../types/agent';
+import type { AgentActor, AgentRestorePreview, AgentVersion, AgentVersionHistory } from '../../../../types/agent';
 import type { OutputData } from '../../../../types/data-formats/output-data';
 import type { HostService } from '../../../../types/tools/tool-description';
 
@@ -54,6 +54,7 @@ describe('version history commands', () => {
 
     expect(entries.map(entry => [entry.name, entry.available, entry.unavailableReason]).sort()).toEqual([
       ['history.changes', false, 'service'],
+      ['history.previewRestore', false, 'service'],
       ['history.read', false, 'service'],
       ['history.restore', false, 'service'],
       ['history.versions', false, 'service'],
@@ -559,6 +560,25 @@ describe('history.restore', () => {
       expect(history.restore).not.toHaveBeenCalled();
     });
 
+    it('never restores a version that repeats a block id: the host may write either copy', async () => {
+      const history = {
+        list: vi.fn(async () => VERSIONS),
+        read: vi.fn(async () => ({ blocks: [formDb({}), formDb({ public: true })] })),
+        restore: vi.fn(async () => true),
+      };
+      const setup = createHeadlessAgentSetup({ services: ['versionHistory'], runtime: 'node', restores: true });
+      const agent = createDocumentAgentSession({
+        document: { blocks: [formDb({})] }, tools: setup.tools, contract: setup.contract, actor, ports: setup.ports,
+        services: { versionHistory: history, databaseFormsHost: true },
+      });
+      const approve = vi.fn(async () => true);
+      const result = await agent.execute(RESTORE, { approve });
+
+      expect(history.restore).not.toHaveBeenCalled();
+      expect(approve).not.toHaveBeenCalled();
+      expect(!result.ok && result.error.code).toBe('TOOL_ACTION_FAILED');
+    });
+
     it('asks nothing when the version shares the view the same way', async () => {
       const { history, agent } = withForm({ public: true }, { public: true, submitLabel: 'Go' });
       const approve = vi.fn(async () => true);
@@ -592,6 +612,30 @@ describe('history.restore', () => {
 
       return { history, agent };
     };
+
+    it('never restores a version that repeats the locked database\'s id, whichever copy unlocks it', async () => {
+      const { history, agent } = withDatabase(false, [database(true), database(false)]);
+      const approve = vi.fn(async () => true);
+      const result = await agent.execute({ commands: [{ name: 'history.restore', args: { version: 'L:1' } }] }, { approve });
+
+      expect(history.restore).not.toHaveBeenCalled();
+      expect(approve).not.toHaveBeenCalled();
+      expect(!result.ok && result.error.code).toBe('TOOL_ACTION_FAILED');
+    });
+
+    it.each([
+      ['an empty id', [database(true), { id: '', type: 'paragraph', data: { text: 'x' } }]],
+      ['a missing id', [database(true), { type: 'paragraph', data: { text: 'x' } }]],
+      ['a parent cycle', [database(true), { id: 'p', parent: 'q', type: 'paragraph', data: { text: 'p' } }, { id: 'q', parent: 'p', type: 'paragraph', data: { text: 'q' } }]],
+    ] as Array<[string, OutputData['blocks']]>)('never restores a version with %s, as history.read cannot read it', async (_name, blocks) => {
+      const { history, agent } = withDatabase(true, blocks);
+      const approve = vi.fn(async () => true);
+      const result = await agent.execute({ commands: [{ name: 'history.restore', args: { version: 'L:1' } }] }, { approve });
+
+      expect(history.restore).not.toHaveBeenCalled();
+      expect(approve).not.toHaveBeenCalled();
+      expect(!result.ok && result.error.code).toBe('TOOL_ACTION_FAILED');
+    });
 
     it('is refused with APPROVAL_REQUIRED, and the host never restores', async () => {
       const { history, agent } = withDatabase(false);
@@ -655,6 +699,9 @@ describe('history.restore', () => {
       ['a version with different views under the same lock', [paragraph('a', 'Old'), {
         ...database(true), data: { ...database(true).data, views: [{ id: 'v9', name: 'Board', type: 'board', position: 'a0' }] },
       }]],
+      ['a version with different deleted properties under the same lock', [paragraph('a', 'Old'), {
+        ...database(true), data: { ...database(true).data, deletedProperties: { n: { id: 'n', name: 'Size', type: 'number', position: 'a1', deletedAt: 1 } } },
+      }]],
     ])('asks before %s', async (_label, blocks) => {
       const { history, agent } = withDatabase(true, blocks);
       const result = await agent.execute({ commands: [{ name: 'history.restore', args: { version: 'L:1' } }] });
@@ -689,5 +736,130 @@ describe('history.restore', () => {
     const result = await agent.execute({ commands: [{ name: 'history.restore', args: { version: 'L:1' } }] });
 
     expect(!result.ok && result.error).toMatchObject({ code: 'TOOL_ACTION_FAILED', retryable: true });
+  });
+});
+
+describe('history.previewRestore', () => {
+  const PREVIEW: AgentRestorePreview = {
+    wouldUndo: { blocks: [{ id: 'c', type: 'paragraph', kind: 'added' }], page: ['title'] },
+    guards: [],
+    fits: true,
+    frameBytes: 120,
+    limitBytes: 1048576,
+    expectRevision: 'L:3',
+  };
+  const previewing = (options: { previews?: boolean } = {}) => {
+    const history = {
+      ...fakeHistory(),
+      restore: vi.fn(async (): Promise<boolean | 'stale'> => true),
+      previewRestore: vi.fn(async (version: string, _options?: { databases?: 'keep' | 'restore' }): Promise<AgentRestorePreview | null> =>
+        STORED[version] === undefined ? null : PREVIEW),
+    };
+    const setup = createHeadlessAgentSetup({
+      services: ['versionHistory'], runtime: 'node', restores: true, ...(options.previews !== undefined && { previews: options.previews }),
+    });
+    const agent = createDocumentAgentSession({
+      document: current(), tools: setup.tools, contract: setup.contract, actor, ports: setup.ports,
+      services: { versionHistory: history },
+    });
+
+    return { history, setup, agent };
+  };
+
+  it('is a read that needs the version history, available where the host restores', () => {
+    const { setup } = previewing();
+    const entry = setup.contract.commands.find(command => command.name === 'history.previewRestore');
+
+    expect(entry).toMatchObject({ available: true, readOnly: true, requires: ['versionHistory'] });
+  });
+
+  it('is unavailable with reason host when the host cannot preview', async () => {
+    const { setup } = previewing({ previews: false });
+    const plain = session({ history: fakeHistory() });
+    const result = await plain.agent.execute({ commands: [{ name: 'history.previewRestore', args: { version: 'L:1' } }] });
+
+    expect(setup.contract.commands.find(command => command.name === 'history.previewRestore'))
+      .toMatchObject({ available: false, unavailableReason: 'host' });
+    expect(plain.setup.contract.commands.find(command => command.name === 'history.previewRestore'))
+      .toMatchObject({ available: false, unavailableReason: 'host' });
+    expect(!result.ok && [result.error.code, result.error.details?.reason]).toEqual(['COMMAND_UNAVAILABLE', 'host']);
+  });
+
+  it('returns what the host preview returns and writes nothing', async () => {
+    const { history, agent } = previewing();
+    const before = await agent.execute({ commands: [{ name: 'doc.read', args: {} }] });
+    const result = await agent.execute({ commands: [{ name: 'history.previewRestore', args: { version: 'L:1' } }] });
+    const after = await agent.execute({ commands: [{ name: 'doc.read', args: {} }] });
+
+    const { expectRevision: _tag, ...planned } = PREVIEW;
+
+    // The server's tag is never a batch revision here, so the agent never gets it to send back.
+    expect(result.ok && result.results).toEqual([{ version: 'L:1', ...planned }]);
+    expect(result.ok && result.changed).toEqual({ created: [], updated: [], moved: [], removed: [] });
+    expect(history.previewRestore.mock.calls).toEqual([['L:1', {}]]);
+    expect(history.restore).not.toHaveBeenCalled();
+    expect(before.ok && after.ok && after.revision).toBe(before.ok && before.revision);
+  });
+
+  it.each(['keep', 'restore'] as const)('passes databases: %s to the host', async (databases) => {
+    const { history, agent } = previewing();
+
+    await agent.execute({ commands: [{ name: 'history.previewRestore', args: { version: 'L:1', databases } }] });
+
+    expect(history.previewRestore.mock.calls).toEqual([['L:1', { databases }]]);
+  });
+
+  it('refuses any other databases value before asking the host', async () => {
+    const { history, agent } = previewing();
+    const result = await agent.execute({ commands: [{ name: 'history.previewRestore', args: { version: 'L:1', databases: 'all' } }] });
+
+    expect(!result.ok && result.error.code).toBe('INVALID_ARGS');
+    expect(history.previewRestore).not.toHaveBeenCalled();
+  });
+
+  it('says VERSION_NOT_FOUND when the host finds no such version', async () => {
+    const { agent } = previewing();
+    const result = await agent.execute({ commands: [{ name: 'history.previewRestore', args: { version: 'L:99' } }] });
+
+    expect(!result.ok && [result.error.code, result.error.path, result.error.retryable]).toEqual(['VERSION_NOT_FOUND', '/commands/0/args/version', false]);
+  });
+
+  it('fails with TOOL_ACTION_FAILED when the host answers something that is no preview', async () => {
+    const { history, agent } = previewing();
+
+    history.previewRestore.mockResolvedValueOnce({ wouldUndo: 'everything' } as unknown as AgentRestorePreview);
+    const result = await agent.execute({ commands: [{ name: 'history.previewRestore', args: { version: 'L:1' } }] });
+
+    expect(!result.ok && result.error.code).toBe('TOOL_ACTION_FAILED');
+  });
+
+  it('reports a failing host preview with the retry rule of the reads', async () => {
+    const { history, agent } = previewing();
+
+    history.previewRestore.mockRejectedValueOnce(Object.assign(new Error('HTTP 503'), { status: 503 }));
+    const result = await agent.execute({ commands: [{ name: 'history.previewRestore', args: { version: 'L:1' } }] });
+
+    expect(!result.ok && result.error).toMatchObject({ code: 'TOOL_ACTION_FAILED', retryable: true });
+  });
+
+  it('runs on a read-only session', async () => {
+    const { agent } = previewing();
+
+    agent.close();
+    const result = await agent.execute({ commands: [{ name: 'history.previewRestore', args: { version: 'L:1' } }] });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('a restore sent with the preview batch revision is STALE once the document changed', async () => {
+    const { history, agent } = previewing();
+    const preview = await agent.execute({ commands: [{ name: 'history.previewRestore', args: { version: 'L:1' } }] });
+    const revision = preview.ok ? preview.revision : '';
+
+    await agent.execute({ commands: [{ name: 'block.delete', args: { id: 'c' } }] });
+    const result = await agent.execute({ commands: [{ name: 'history.restore', args: { version: 'L:1' } }], expectRevision: revision });
+
+    expect(!result.ok && result.error.code).toBe('STALE');
+    expect(history.restore).not.toHaveBeenCalled();
   });
 });

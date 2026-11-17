@@ -94,6 +94,8 @@ const EXEMPT_SINKS: Record<string, string> = {
     'HTMLImageElement src — <img> is not a script-execution sink (javascript: URLs do not run in img)',
   'tools/file/docx/drawing.ts » url':
     'HTMLImageElement src set to a blob: URL this file made from zip bytes whose raster signature it checked — image loads cannot run script',
+  'tools/audio/ink-well.ts » url':
+    'off-DOM HTMLImageElement decode for the well canvas: a blob: URL made by createSafeObjectUrl from the picked file, or a link that passed safeImageSrc first — image loads cannot run script',
   'tools/image/tone-sampler.ts » src':
     'HTMLImageElement src for a hidden CORS copy of the picture already on screen, only read for its tone — image loads cannot run script',
   'tools/image/error-state.ts » file.preview':
@@ -116,7 +118,7 @@ const EXEMPT_SINKS: Record<string, string> = {
     'HTMLImageElement src (failed-image toast tile), set only after SAFE_THUMBNAIL allows blob: or a raster data: image — <img> is not a script-execution sink',
   'tools/image/probe-dimensions.ts » url':
     'HTMLImageElement src (off-DOM dimension probe) — <img> is not a script-execution sink',
-  'tools/audio/ui.ts » data.coverUrl':
+  'tools/audio/ui.ts » coverUrl':
     'HTMLImageElement src (cover art) — <img> is not a script-execution sink',
   'tools/audio/ui.ts » data.url':
     'HTMLAudioElement src — media elements do not execute javascript: URLs',
@@ -214,6 +216,8 @@ const EXEMPT_SINKS: Record<string, string> = {
     PPTX_BLOB,
   'tools/file/pptx/renderer/TextRenderer.ts » style: maskGrad':
     PPTX_FILL,
+  'tools/callout/emoji-landing.ts » style: `position:absolute;${css}`':
+    'landing dots: every caller is in this file and builds css from numbers, fixed strings and run.color, which is emojiColor() output (rgb() of three rounded canvas numbers) or the FALLBACK_COLOR literal — no stored text, so no url()',
   'playground/presence-face.ts » style: color':
     'dev playground only: a peer presence colour as a background — CSS url() cannot run script',
   'tools/table/table-resize.ts » style: `linear-gradient(to right, transparent var(--blok-table-resize-line-x), #3b82f6 var(--blok-table-resize-line-x), #3b82f6 calc(var(--blok-table-resize-line-x) + ${RESIZE_LINE_WIDTH}px), transparent calc(var(--blok-table-resize-line-x) + ${RESIZE_LINE_WIDTH}px))`':

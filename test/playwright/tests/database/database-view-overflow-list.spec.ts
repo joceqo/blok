@@ -53,12 +53,18 @@ const mount = async (page: Page, activeViewId = 'v0'): Promise<void> => {
   await expect(page.getByRole('grid')).toBeVisible();
 };
 
+/**
+ * Resolves two frames after the resize. Until the bar's ResizeObserver runs,
+ * the bar still shows the old fold, and a poll read then passes on it.
+ */
 const setWidth = (page: Page, width: number): Promise<void> => page.evaluate((w) => {
   const holder = document.getElementById('blok');
 
   if (holder !== null) {
     holder.style.maxWidth = `${w}px`;
   }
+
+  return new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }, width);
 
 const savedViewNames = (page: Page): Promise<string[]> => page.evaluate(async () => {
@@ -94,7 +100,7 @@ test.describe('database view overflow list', () => {
     await setWidth(page, 700);
     const shownTabs = page.locator('[data-blok-database-tab]:visible');
 
-    // The 700px holder holds a few tabs, never all eight. Polled: the bar refolds after the resize.
+    // The 700px holder holds a few tabs, never all eight.
     await expect.poll(async () => {
       const count = await shownTabs.count();
 
@@ -118,8 +124,6 @@ test.describe('database view overflow list', () => {
 
     for (let width = 360; width <= 900; width += 15) {
       await setWidth(page, width);
-      // Two frames: the bar's ResizeObserver runs, then layout settles.
-      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       const problem = await page.evaluate(() => {
         const bar = document.querySelector<HTMLElement>('[data-blok-database-tab-bar]');
         const more = bar?.querySelector<HTMLElement>('[data-blok-database-tab-more]');
@@ -161,7 +165,7 @@ test.describe('database view overflow list', () => {
     const visibleNames = async (): Promise<string[]> =>
       (await page.locator('[data-blok-database-tab]:visible').allTextContents()).map((name) => name.trim());
 
-    // Polled: the bar refolds after the resize; wait for a shown tab left of Seventh with some folded.
+    // A shown tab left of Seventh, with some folded.
     await expect.poll(async () => {
       const names = await visibleNames();
 
@@ -266,8 +270,120 @@ test.describe('database view overflow list', () => {
     await expect(list.locator('[data-highlighted]')).toHaveText('New view');
     await search.press('Enter');
 
-    await expect(list).toBeHidden();
+    // At 1200 wide there is no room on the list's right, so Add view opens on its left and the list stays.
     await expect(page.locator('[data-blok-database-view-option="board"]')).toBeVisible();
+    await expect(list).toBeVisible();
+  });
+
+  // notion-motion.md Round 32 §1 (r32-a-more-newview-narrow.*, 1150x717): with no room on the right the flyout
+  // flips left, its right edge on the list's left + 4, and stops 11.8 above the window bottom.
+  test('with no room on the right, New view opens Add view on the left of the list', async ({ page }) => {
+    // The list is capped at 50vh (Round 38 §5), so its New view row rises with a shorter window.
+    // Below about 530 tall the card centred on that row runs past the bottom, so the 11.8 clamp applies.
+    await page.setViewportSize({ width: 1150, height: 480 });
+    await mount(page);
+    const list = await openList(page);
+
+    await list.getByRole('option', { name: 'New view' }).click();
+    await expect(page.locator('[data-blok-database-view-option="board"]')).toBeVisible();
+    await expect(list).toBeVisible();
+    const box = await page.evaluate(async () => {
+      await Promise.all(document.getAnimations().map((animation) => animation.finished));
+      const surface = document.querySelector('[data-blok-database-view-option="board"]')?.closest('[data-blok-popover-container]');
+      const dropdown = document.querySelector('[data-blok-database-tab-overflow-dropdown]');
+      const row = document.querySelector('[data-blok-database-tab-overflow-new]');
+
+      if (!(surface instanceof HTMLElement) || dropdown === null || row === null) return null;
+      const flyout = surface.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+
+      return {
+        right: flyout.right,
+        bottom: flyout.bottom,
+        centre: flyout.top + flyout.height / 2,
+        rowCentre: rowRect.top + rowRect.height / 2,
+        listLeft: dropdown.getBoundingClientRect().left,
+        hasSource: surface.querySelector('[data-blok-database-view-new-source]') !== null,
+      };
+    });
+
+    expect(box).not.toBeNull();
+    // The clamp pushed the card up off the row's centre; if not, the window is too tall to test it.
+    expect(box?.centre ?? 0).toBeLessThan((box?.rowCentre ?? 0) - 1);
+    expect(480 - (box?.bottom ?? 0)).toBeCloseTo(11.8, 0);
+    expect(box?.right).toBeCloseTo((box?.listLeft ?? 0) + 4, 0);
+    // Round 31 §3: the list beside it already has its own "New data source".
+    expect(box?.hasSource).toBe(false);
+  });
+
+  // notion-motion.md Round 31 §3: a 390-wide flyout, its left on the list's right − 4, centred on the New view row; the list stays open.
+  test('New view opens Add view as a flyout beside the list, centred on its row', async ({ page }) => {
+    await page.setViewportSize({ width: 1512, height: 717 });
+    await mount(page);
+    const list = await openList(page);
+    const newRow = list.getByRole('option', { name: 'New view' });
+
+    await newRow.click();
+    const tile = page.locator('[data-blok-database-view-option="board"]');
+
+    await expect(tile).toBeVisible();
+    await expect(list).toBeVisible();
+    const box = await page.evaluate(async () => {
+      await Promise.all(document.getAnimations().map((animation) => animation.finished));
+      const surface = document.querySelector('[data-blok-database-view-option="board"]')?.closest('[data-blok-popover-container]');
+      const dropdown = document.querySelector('[data-blok-database-tab-overflow-dropdown]');
+      const row = document.querySelector('[data-blok-database-tab-overflow-new]');
+
+      if (!(surface instanceof HTMLElement) || dropdown === null || row === null) return null;
+      const flyout = surface.getBoundingClientRect();
+      const listRect = dropdown.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+
+      return { left: flyout.left, width: flyout.width, centre: flyout.top + flyout.height / 2, listRight: listRect.right, rowCentre: rowRect.top + rowRect.height / 2 };
+    });
+
+    expect(box).not.toBeNull();
+    expect(box?.width).toBeCloseTo(390, 0);
+    expect(box?.left).toBeCloseTo((box?.listRight ?? 0) - 4, 0);
+    expect(box?.centre).toBeCloseTo(box?.rowCentre ?? 0, 0);
+
+    await page.keyboard.press('Escape');
+    await expect(tile).toBeHidden();
+    await expect(list).toBeVisible();
+  });
+
+  // Blok moves focus into a popover for a keyboard user (user-approved difference).
+  test('from the keyboard, the flyout takes the keys, Enter adds a view, and Escape gives them back to the search', async ({ page }) => {
+    await page.setViewportSize({ width: 1512, height: 717 });
+    await mount(page);
+    const list = await openList(page);
+    const search = list.getByPlaceholder('Search for a view...');
+
+    await search.press('ArrowUp');
+    await search.press('ArrowUp');
+    await expect(list.locator('[data-highlighted]')).toHaveText('New view');
+    await search.press('Enter');
+
+    const table = page.locator('[data-blok-database-view-option="table"]');
+    const board = page.locator('[data-blok-database-view-option="board"]');
+
+    // The popover's keyboard highlight, not DOM focus.
+    await expect(table).toHaveAttribute('data-blok-focused', 'true');
+    await expect(list).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(table).toBeHidden();
+    await expect(list).toBeVisible();
+    await expect(search).toBeFocused();
+    await expect(list.locator('[data-highlighted]')).toHaveText('New view');
+
+    await search.press('Enter');
+    await expect(table).toHaveAttribute('data-blok-focused', 'true');
+    await page.keyboard.press('ArrowRight');
+    await expect(board).toHaveAttribute('data-blok-focused', 'true');
+    await expect(list.locator('[data-highlighted]')).toHaveText('New view');
+    await page.keyboard.press('Enter');
+    await expect(list).toBeHidden();
+    await expect.poll(async () => (await savedViewNames(page)).length).toBe(NAMES.length + 1);
   });
 
   test('arrows inside an open row menu do not move the list highlight', async ({ page }) => {

@@ -18,7 +18,10 @@ type MenuItem = { name?: string; title?: string; onActivate?: () => void };
 
 const popovers = vi.hoisted(() => ({ items: [] as unknown[][] }));
 
-vi.mock('../../../../src/components/utils/popover', () => {
+vi.mock('../../../../src/components/utils/popover', async (importOriginal) => {
+  const real = await importOriginal<{ PopoverDesktop: abstract new (...args: never[]) => unknown }>();
+  const { stubMissingMethods } = await import('../../helpers/stub-missing-methods');
+
   class MockPopoverDesktop {
     constructor(params: { items?: unknown[] } = {}) {
       popovers.items.push(params.items ?? []);
@@ -38,6 +41,8 @@ vi.mock('../../../../src/components/utils/popover', () => {
       return document.createElement('div');
     }
   }
+
+  stubMissingMethods(MockPopoverDesktop, real.PopoverDesktop);
 
   return { PopoverDesktop: MockPopoverDesktop, PopoverMobile: MockPopoverDesktop, PopoverItemType: { Default: 'default', Separator: 'separator', Html: 'html' } };
 });
@@ -64,6 +69,15 @@ const titlesItem = (el: HTMLElement, viewId = 'v1'): MenuItem | undefined => {
 };
 
 const title = (el: HTMLElement): HTMLElement | null => el.querySelector('[data-blok-database-title]');
+
+type HtmlItem = { element?: HTMLElement };
+
+/** The newest panel the popover mock was handed, by its test id. */
+const panelById = (testId: string): HTMLElement | undefined => (popovers.items as HtmlItem[][])
+  .flat()
+  .map((item) => item.element)
+  .filter((element): element is HTMLElement => element instanceof HTMLElement && element.getAttribute('data-blok-testid') === testId)
+  .at(-1);
 
 describe('DatabaseTool — "Hide data source titles" (research/23 §10)', () => {
   beforeEach(() => {
@@ -93,7 +107,7 @@ describe('DatabaseTool — "Hide data source titles" (research/23 §10)', () => 
   });
 
   // research/35 §15: a plain row of the tab's view menu, just before Duplicate.
-  it('sits in the tab\'s view menu after Copy link to view, in the group before Duplicate (feel/findings-toolbar V07)', () => {
+  it('sits in the tab\'s view menu after Copy link to view and Open as full page, in the group before Duplicate (feel/findings-toolbar V07)', () => {
     const doc = makeDoc([{ id: 'db', name: 'database', parentId: null, data: {} }]);
     const { el } = buildDatabase(doc, 'db', data());
 
@@ -102,7 +116,9 @@ describe('DatabaseTool — "Hide data source titles" (research/23 §10)', () => 
     const names = popovers.items.flat().filter(isMenuItem).map((item) => item.name).filter((name) => name !== undefined);
     const at = names.indexOf('database-view-data-source-titles');
 
-    expect(names[at - 1]).toBe('database-view-copy-link');
+    // notion-motion.md Round 14: Copy link to view, then Open as full page, then this row.
+    expect(names[at - 2]).toBe('database-view-copy-link');
+    expect(names[at - 1]).toBe('database-view-full-page');
     expect(names[at + 1]).toBe('database-view-duplicate');
   });
 
@@ -132,6 +148,24 @@ describe('DatabaseTool — "Hide data source titles" (research/23 §10)', () => 
 
     expect(title(el)?.hidden).toBe(false);
     expect('hideDataSourceTitles' in tool.save(document.createElement('div'))).toBe(false);
+  });
+
+  // notion-motion.md Round 32 §3 (Settings → Layout): the Layout page lists the same switch first (research/30 §B17).
+  it('the Layout page\'s "Show data source titles" switch hides the line and flips the tab menu to "Show"', () => {
+    const doc = makeDoc([{ id: 'db', name: 'database', parentId: null, data: {} }]);
+    const { tool, el } = buildDatabase(doc, 'db', data());
+
+    popovers.items.length = 0;
+    (tool as unknown as { controls: { openSettings: (a: HTMLElement, p: string) => void } }).controls.openSettings(el, 'root');
+    panelById('database-view-settings')?.querySelector<HTMLElement>('[data-blok-testid="database-settings-layout"]')?.click();
+    const row = panelById('database-view-settings')?.querySelector<HTMLElement>('[data-blok-testid="database-settings-data-source-title"]');
+
+    expect(row?.getAttribute('aria-checked')).toBe('true');
+    row?.click();
+
+    expect(title(el)?.hidden).toBe(true);
+    expect(tool.save(document.createElement('div')).hideDataSourceTitles).toBe(true);
+    expect(titlesItem(el)?.title).toBe('tools.database.showDataSourceTitles');
   });
 
   it('follows the saved flag when data is set again, as undo and peers do', () => {

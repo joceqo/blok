@@ -758,10 +758,8 @@ public sealed class CollabRoomTests
             SyncWire.Encode(new SyncUpdateFrame(YDocs.UpdateAppending(client, "!"))),
             CancellationToken.None)
         .AsTask();
-    var finished = await Task.WhenAny(receive, Task.Delay(TimeSpan.FromSeconds(5)));
 
-    Assert.Same(receive, finished);
-    await receive;
+    await receive.WaitAsync(TimeSpan.FromSeconds(5));
     Assert.Single(other.Received);
     Assert.Equal("hello!", await ExportedTextAsync(manager));
 
@@ -1247,6 +1245,66 @@ public sealed class CollabRoomTests
     Assert.Equal(1, manager.LiveRoomCount);
     Assert.Single(operations.Committed(DocId));
     Assert.Equal("hello!", await ExportedTextAsync(manager));
+  }
+
+  /// <summary>
+  /// A reload's residual round sends the whole delete set again under a new
+  /// id. The room already holds it, so nothing is journalled or relayed, and
+  /// the ack names the head so the client stops retrying.
+  /// </summary>
+  [Fact]
+  public async Task AV2OperationThatChangesNothingIsAckedAtTheHeadAndNotJournalled()
+  {
+    endpoint.Holds(DocId, "hello");
+    var manager = CreateJournalManager();
+    var writer = V2Member();
+    var other = new FakeMember();
+    var membership = await Join(manager, writer);
+    await Join(manager, other);
+    var client = await SyncedClientAsync(manager, "hello");
+    var delete = YDocs.UpdateDeleting(client, 0, 1);
+    await membership.ReceiveAsync(Operation(membership, OpOne, delete), CancellationToken.None);
+    writer.Received.Clear();
+    other.Received.Clear();
+
+    await membership.ReceiveAsync(Operation(membership, OpTwo, delete), CancellationToken.None);
+
+    var ack = Assert.IsType<AcknowledgementFrame>(Assert.Single(writer.Received));
+    Assert.Equal(OpTwo, ack.OperationId);
+    Assert.Equal(1UL, ack.ServerSequence);
+    Assert.Empty(other.Received);
+    Assert.Single(operations.Committed(DocId));
+
+    writer.Received.Clear();
+    await membership.ReceiveAsync(
+        Operation(membership, OpThree, YDocs.UpdateAppending(client, "!")),
+        CancellationToken.None);
+
+    Assert.Equal(2UL, writer.Received.OfType<AcknowledgementFrame>().Single().ServerSequence);
+    Assert.Equal(2, operations.Committed(DocId).Count);
+    Assert.Equal("ello!", await ExportedTextAsync(manager));
+  }
+
+  /// <summary>
+  /// An ack must name a committed sequence, and none exists yet, so a no-op
+  /// as the first operation is still journalled.
+  /// </summary>
+  [Fact]
+  public async Task AV2NoOpBeforeAnyCommitIsStillJournalled()
+  {
+    endpoint.Holds(DocId, "hello");
+    var manager = CreateJournalManager();
+    var writer = V2Member();
+    var membership = await Join(manager, writer);
+    var client = await SyncedClientAsync(manager, "hello");
+    var nothing = client.EncodeStateAsUpdate(client.EncodeStateVector());
+    writer.Received.Clear();
+
+    await membership.ReceiveAsync(Operation(membership, OpOne, nothing), CancellationToken.None);
+
+    var ack = Assert.IsType<AcknowledgementFrame>(Assert.Single(writer.Received.OfType<AcknowledgementFrame>()));
+    Assert.Equal(1UL, ack.ServerSequence);
+    Assert.Single(operations.Committed(DocId));
   }
 
   /// <summary>
@@ -4351,10 +4409,8 @@ public sealed class CollabRoomTests
         DocId,
         [Appending("b-1", "!")],
         CancellationToken.None).AsTask();
-    var finished = await Task.WhenAny(edit, Task.Delay(TimeSpan.FromSeconds(5)));
 
-    Assert.Same(edit, finished);
-    Assert.Equal(CollabEditStatus.Applied, (await edit).Status);
+    Assert.Equal(CollabEditStatus.Applied, (await edit.WaitAsync(TimeSpan.FromSeconds(5))).Status);
     Assert.Equal(2, operations.Committed(DocId).Count);
 
     endpoint.LoadGate.SetResult();
@@ -5866,6 +5922,64 @@ public sealed class CollabRoomTests
 
     // The frame carries no payload and earns no answer.
     Assert.Empty(member.Received);
+  }
+
+  /// <summary>
+  /// content.edited keeps its own stamps: a heartbeat that silences the next
+  /// Edited must not silence the audit event for a real edit.
+  /// </summary>
+  [Fact]
+  public async Task AnActiveFrameThenAnEditStillSendsContentEdited()
+  {
+    endpoint.Holds(DocId, "hello");
+    var audit = new AuditOnlyObserver();
+    var manager = new CollabRoomManager(store, endpoint, converter, new CollabRoomOptions(), time, log.Add, operations, audit);
+    var membership = await Join(manager, V2Member("user-1"));
+    var client = await SyncedClientAsync(manager, "hello");
+
+    await membership.ReceiveAsync(SyncWire.Encode(new ActivityFrame()), CancellationToken.None);
+    time.Advance(TimeSpan.FromSeconds(20));
+    await membership.ReceiveAsync(
+        Operation(membership, OpOne, YDocs.UpdateAppending(client, "a")),
+        CancellationToken.None);
+    await manager.SettleAsync();
+
+    var edited = Assert.Single(audit.Events);
+    Assert.Equal(CollabAuditEventTypes.ContentEdited, edited.Type);
+    Assert.Equal("user-1", edited.Actor?.Id);
+  }
+
+  private sealed class AuditOnlyObserver : ICollabActivityObserver
+  {
+    private readonly List<CollabAuditEvent> events = [];
+
+    internal IReadOnlyList<CollabAuditEvent> Events
+    {
+      get
+      {
+        lock (events)
+        {
+          return [.. events];
+        }
+      }
+    }
+
+    public ValueTask RecordAsync(
+        string documentId,
+        string actorId,
+        DateTimeOffset at,
+        CollabActivityKind kind,
+        CancellationToken cancellationToken = default) => ValueTask.CompletedTask;
+
+    public ValueTask OnEventAsync(CollabAuditEvent auditEvent, CancellationToken cancellationToken = default)
+    {
+      lock (events)
+      {
+        events.Add(auditEvent);
+      }
+
+      return ValueTask.CompletedTask;
+    }
   }
 
   /// <summary>

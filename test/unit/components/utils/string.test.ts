@@ -1,7 +1,32 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { capitalize, beautifyShortcut } from '../../../../src/components/utils/string';
+import { capitalize, beautifyShortcut, humanizeToolName } from '../../../../src/components/utils/string';
 
 describe('string', () => {
+  describe('humanizeToolName', () => {
+    it('stays fast on a very long run of capitals', () => {
+      const started = performance.now();
+
+      humanizeToolName('A'.repeat(100000));
+
+      expect(performance.now() - started).toBeLessThan(1000);
+    });
+
+    it.each([
+      ['kanban', 'Kanban'],
+      ['acme-interactive-pricing-calculator', 'Acme interactive pricing calculator'],
+      ['column_list', 'Column list'],
+      ['unknownTool', 'Unknown tool'],
+      ['myHTMLBlock', 'My html block'],
+      ['  poll  ', 'Poll'],
+      ['step2Form', 'Step2 form'],
+      ['Kanban Board', 'Kanban board'],
+      ['', ''],
+      ['--', '--'],
+    ])('turns %j into %j', (name, expected) => {
+      expect(humanizeToolName(name)).toBe(expected);
+    });
+  });
+
   describe('capitalize', () => {
     it('should capitalize first letter of a string', () => {
       expect(capitalize('hello')).toBe('Hello');

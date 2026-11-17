@@ -2,6 +2,8 @@ import { nanoid } from 'nanoid';
 import { RELATIVE_DATE_OPERATORS, RELATIVE_DATE_VALUES, parseRelativeSpan } from './relative-dates';
 import type { RelativeDateUnit } from './relative-dates';
 import { ME_FILTER_VALUE, THIS_PAGE_FILTER_VALUE } from './database-query';
+import { isNumberListRollup, isPageListRollup, statusGroupOf } from '../../shared/database/value-helpers';
+import { formatDatePart, formatShortDatePart, resolveLocale, toLocalDate } from './cells/date-format';
 import type { FilterConfig, PropertyDefinition, PropertyType, SortConfig } from './types';
 
 type Translate = (key: string, vars?: Record<string, string | number>) => string;
@@ -61,7 +63,7 @@ const OPERATORS: Record<PropertyType, OperatorChoice[]> = {
   phone: TEXT,
   richText: EMPTY,
   number: [...COMPARE, ...EMPTY],
-  uniqueId: COMPARE,
+  uniqueId: [...COMPARE, ...EMPTY],
   select: [op('equals', 'is'), op('does_not_equal', 'isNot'), ...EMPTY],
   status: [op('equals', 'is'), op('does_not_equal', 'isNot')],
   multiSelect: LIST,
@@ -90,8 +92,48 @@ const OPERATORS: Record<PropertyType, OperatorChoice[]> = {
 export const FILTERABLE_TYPES: readonly PropertyType[] = (Object.keys(OPERATORS) as PropertyType[])
   .filter((type) => type !== 'richText' && OPERATORS[type].length > 0);
 
+/** Notion's first rollup menu, in its order (notion-motion.md Round 13, r13-filter-ops-rollup.raw). */
+const QUANTIFIERS = [op('any', 'any'), op('none', 'none'), op('every', 'every')];
+
 /** A rollup that shows a list: Notion's API filters it with any / every / none. */
-const QUANTIFIED = [op('any', 'any'), op('every', 'every'), op('none', 'none'), ...EMPTY];
+const QUANTIFIED = [...QUANTIFIERS, ...EMPTY];
+
+export const quantifierChoices = (): OperatorChoice[] => QUANTIFIERS;
+
+/**
+ * A saved operator may lead with a part: a Name rollup's quantifier
+ * (`any:contains`) or a date's End date side (`end:before`).
+ */
+const LEAD = /^(any|none|every|end):(.+)$/;
+
+export const splitOperator = (operator: string): { lead?: string; operator: string } => {
+  const match = LEAD.exec(operator);
+
+  return match === null ? { operator } : { lead: match[1], operator: match[2] };
+};
+
+export const joinOperator = (lead: string | undefined, operator: string): string => (lead === undefined ? operator : `${lead}:${operator}`);
+
+/**
+ * A Name rollup filter in Notion's form: a quantifier, then a text operator. Filters saved
+ * before it (a bare `any` with row ids, a plain text operator) keep the row picker.
+ */
+export const isQuantifiedText = (property: PropertyDefinition, operator: string): boolean => {
+  const { lead } = splitOperator(operator);
+
+  return isPageListRollup(property) && lead !== undefined && lead !== 'end';
+};
+
+/** notion-motion.md Round 22 §3: a Number rollup shown as is leads with a quantifier, then a number operator. */
+export const isQuantifiedNumber = (property: PropertyDefinition, operator: string): boolean => {
+  const { lead } = splitOperator(operator);
+
+  return isNumberListRollup(property) && lead !== undefined && lead !== 'end';
+};
+
+/** `next` with the lead part `current` carries, unless `next` brings its own. */
+export const keepLead = (current: string, next: string): string =>
+  (splitOperator(next).lead === undefined ? joinOperator(splitOperator(current).lead, next) : next);
 
 const LIST_SHAPES: readonly PropertyType[] = ['multiSelect', 'person', 'relation', 'files'];
 
@@ -99,11 +141,24 @@ const LIST_SHAPES: readonly PropertyType[] = ['multiSelect', 'person', 'relation
 export const isRollupList = (property: Pick<PropertyDefinition, 'type' | 'rollup'>): boolean =>
   property.rollup !== undefined && LIST_SHAPES.includes(property.type);
 
-/** Operators for a property as its value shows: a rollup list gets any / every / none. */
-export const operatorChoicesFor = (property: Pick<PropertyDefinition, 'type' | 'rollup'>): OperatorChoice[] =>
-  isRollupList(property) ? QUANTIFIED : OPERATORS[property.type];
+/**
+ * Operators for a property as its value shows: a rollup list gets any / every / none.
+ * A rollup of the Name picks its quantifier apart, then a text operator.
+ */
+export const operatorChoicesFor = (property: PropertyDefinition, operator: string): OperatorChoice[] => {
+  if (isQuantifiedText(property, operator)) return TEXT;
+
+  return isRollupList(property) ? QUANTIFIED : OPERATORS[property.type];
+};
 
 export const operatorChoices = (type: PropertyType): OperatorChoice[] => OPERATORS[type];
+
+/** notion-motion.md Round 21 §1: a Status colour rule adds the emptiness checks its filter lacks. */
+const STATUS_COLOR_RULE = [op('equals', 'is'), op('does_not_equal', 'isNot'), ...EMPTY];
+
+/** A conditional colour rule's operators: the filter's, except Status. */
+export const colorRuleOperatorChoices = (property: PropertyDefinition, operator: string): OperatorChoice[] =>
+  (property.type === 'status' && !isRollupList(property) ? STATUS_COLOR_RULE : operatorChoicesFor(property, operator));
 
 /** The windows "Is within" offers, in menu order. */
 export const WITHIN_OPERATORS = ['this_week', 'past_week', 'past_month', 'past_year', 'next_week', 'next_month', 'next_year'] as const;
@@ -136,19 +191,28 @@ const isWithin = (operator: string): operator is typeof WITHIN_OPERATORS[number]
   (WITHIN_OPERATORS as readonly string[]).includes(operator);
 
 /** The menu operator a saved one belongs to: every window shows as "Is relative to today". */
-export const menuOperatorOf = (operator: string): string => (isWithin(operator) ? 'relative_to_today' : operator);
+export const menuOperatorOf = (operator: string): string => {
+  const inner = splitOperator(operator).operator;
+
+  return isWithin(inner) ? 'relative_to_today' : inner;
+};
 
 const isDateType = (type: PropertyType): boolean => type === 'date' || type === 'createdTime' || type === 'lastEditedTime';
 
-export const operatorLabelKey = (type: PropertyType, operator: string): string | undefined =>
-  [...OPERATORS[type], ...QUANTIFIED, ...(isDateType(type) ? LEGACY_DATE : [])]
-    .find((choice) => choice.operator === menuOperatorOf(operator) || choice.operator === operator)?.labelKey;
+export const operatorLabelKey = (type: PropertyType, operator: string): string | undefined => {
+  const inner = splitOperator(operator).operator;
+
+  return [...OPERATORS[type], ...TEXT, ...QUANTIFIED, ...(isDateType(type) ? LEGACY_DATE : [])]
+    .find((choice) => choice.operator === menuOperatorOf(inner) || choice.operator === inner)?.labelKey;
+};
 
 /** Whether an operator takes a value from the person. */
 export const operatorNeedsValue = (operator: string): boolean => {
-  if (operator === 'relative_to_today' || operator === 'is_between') return true;
+  const inner = splitOperator(operator).operator;
 
-  return operator !== 'is_empty' && operator !== 'is_not_empty' && !(RELATIVE_DATE_OPERATORS as readonly string[]).includes(operator);
+  if (inner === 'relative_to_today' || inner === 'is_between') return true;
+
+  return inner !== 'is_empty' && inner !== 'is_not_empty' && !(RELATIVE_DATE_OPERATORS as readonly string[]).includes(inner);
 };
 
 const idsOf = (value: unknown): string[] => {
@@ -161,13 +225,17 @@ const idsOf = (value: unknown): string[] => {
 export const defaultFilterFor = (property: PropertyDefinition): FilterConfig & { id: string } => {
   const base = { id: nanoid(), propertyId: property.id };
 
+  // notion-motion.md Round 13: a rollup filter opens on "any" + "contains".
+  if (isPageListRollup(property)) return { ...base, operator: 'any:contains', value: '' };
   if (isRollupList(property)) return { ...base, operator: 'any', value: [] };
 
   switch (property.type) {
     case 'date':
+      return { ...base, operator: 'this_week', value: null };
+    // notion-motion.md Round 13 and Round 20 §1: "is" with no date, so it hides nothing.
     case 'createdTime':
     case 'lastEditedTime':
-      return { ...base, operator: 'this_week', value: null };
+      return { ...base, operator: 'equals', value: null };
     case 'number':
     case 'uniqueId':
       return { ...base, operator: 'equals', value: null };
@@ -180,7 +248,8 @@ export const defaultFilterFor = (property: PropertyDefinition): FilterConfig & {
     case 'lastEditedBy':
     case 'relation':
       return { ...base, operator: 'contains', value: [] };
-    case 'checkbox': return { ...base, operator: 'equals', value: true };
+    // notion-motion.md Round 19 §2 (r19-cb-new.raw): no value yet, so it hides nothing.
+    case 'checkbox': return { ...base, operator: 'equals', value: null };
     case 'richText':
     case 'files':
     case 'formula':
@@ -205,6 +274,49 @@ const THIS_LABEL_KEYS: Record<RelativeDateUnit, string> = {
   year: 'tools.database.filterDateThisYear',
 };
 
+/** "Past week", not "Past 1 weeks" (Round 19 §2). One key per unit, so each locale can agree its words. */
+const ONE_SPAN_LABEL_KEYS: Record<'past' | 'next', Record<RelativeDateUnit, string>> = {
+  past: {
+    day: 'tools.database.filterRelativePastDay',
+    week: 'tools.database.filterRelativePastWeek',
+    month: 'tools.database.filterRelativePastMonth',
+    year: 'tools.database.filterRelativePastYear',
+  },
+  next: {
+    day: 'tools.database.filterRelativeNextDay',
+    week: 'tools.database.filterRelativeNextWeek',
+    month: 'tools.database.filterRelativeNextMonth',
+    year: 'tools.database.filterRelativeNextYear',
+  },
+};
+
+/** The stored day shape `toLocalDate` reads as wall-clock time. */
+const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?$/;
+
+/**
+ * A saved day as the chip prints it: "Nov 10" (Round 19 §2), "Mar 5, 2025" in
+ * another year (Round 20 §1). The value comes from
+ * document data, so a day off the calendar ("2026-02-30") stays as saved: the
+ * formatter throws on an invalid date, and `Date` would roll it into another day.
+ */
+const onCalendar = (part: string): boolean => {
+  const match = ISO_DAY.exec(part);
+
+  if (match === null) return false;
+  const [, y, m, d, hh = '0', mm = '0'] = match;
+  const date = toLocalDate(part);
+
+  return !Number.isNaN(date.getTime())
+    && date.getFullYear() === Number(y) && date.getMonth() === Number(m) - 1 && date.getDate() === Number(d)
+    && Number(hh) < 24 && Number(mm) < 60;
+};
+
+const shortDay = (part: string, locale: string): string =>
+  (onCalendar(part) ? formatShortDatePart(part, locale, undefined, toLocalDate(part).getFullYear() !== new Date().getFullYear()) : part);
+
+/** A saved day as an advanced rule's button prints it: "March 5, 2025" (Round 20 §2, r20-adv-typed-parts.raw). */
+export const longDay = (part: string, locale: string): string => (onCalendar(part) ? formatDatePart(part, locale) : part);
+
 const isRelativeValue = (value: unknown): value is typeof RELATIVE_DATE_VALUES[number] =>
   typeof value === 'string' && (RELATIVE_DATE_VALUES as readonly string[]).includes(value);
 
@@ -214,9 +326,11 @@ export const filterValueText = (
   property: PropertyDefinition,
   t: Translate,
   personName: (id: string) => string | undefined = () => undefined,
-  rowTitle: (id: string) => string | undefined = () => undefined
+  rowTitle: (id: string) => string | undefined = () => undefined,
+  locale: string = resolveLocale(undefined)
 ): string => {
-  const { operator, value } = filter;
+  const { value } = filter;
+  const operator = splitOperator(filter.operator).operator;
 
   if (operator === 'is_empty' || operator === 'is_not_empty') {
     return t(operator === 'is_empty' ? 'tools.database.filterOperator.isEmpty' : 'tools.database.filterOperator.isNotEmpty');
@@ -227,18 +341,24 @@ export const filterValueText = (
 
     if (span === undefined) return '';
     if (span.direction === 'this') return t(THIS_LABEL_KEYS[span.unit]);
+    if (span.count === 1) return t(ONE_SPAN_LABEL_KEYS[span.direction][span.unit]);
 
     return t(`tools.database.filterRelative${span.direction === 'past' ? 'Past' : 'Next'}`, { count: span.count, unit: t(`tools.database.filterUnit${span.unit.charAt(0).toUpperCase()}${span.unit.slice(1)}`) });
   }
   if (operator === 'is_between') {
     const range = typeof value === 'string' ? value.split('/') : [];
 
-    return range.length === 2 ? `${range[0]} → ${range[1]}` : '';
+    return range.length === 2 ? `${shortDay(range[0], locale)} → ${shortDay(range[1], locale)}` : '';
   }
-  if (property.type === 'checkbox') return value === true ? t('tools.database.filterChecked') : t('tools.database.filterUnchecked');
+  if (property.type === 'checkbox') {
+    if (typeof value !== 'boolean') return '';
+
+    return value ? t('tools.database.filterChecked') : t('tools.database.filterUnchecked');
+  }
   if (property.type === 'person' || property.type === 'createdBy' || property.type === 'lastEditedBy') {
     return idsOf(value).map((id) => (id === ME_FILTER_VALUE ? t('tools.database.filterMe') : personName(id) ?? '')).filter((name) => name !== '').join(', ');
   }
+  if (isQuantifiedText(property, filter.operator)) return typeof value === 'string' ? value : '';
   if (property.type === 'relation') {
     return idsOf(value).map((id) => (id === THIS_PAGE_FILTER_VALUE ? t('tools.database.filterThisPage') : rowTitle(id) ?? '')).filter((name) => name !== '').join(', ');
   }
@@ -249,21 +369,107 @@ export const filterValueText = (
     return ids.map((id) => options.find((o) => o.id === id)?.label ?? '').filter((label) => label !== '').join(', ');
   }
   if (['date', 'createdTime', 'lastEditedTime'].includes(property.type) && isRelativeValue(value)) return t(relativeValueLabelKey(value));
+  if (isDateType(property.type) && typeof value === 'string') return shortDay(value, locale);
 
   return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
 };
 
-/** "Due: This week" with a value, or just "Due" (research/08 pills). */
+/**
+ * A Status chip's values in pick order, a group whose every option is picked named once by the group
+ * (notion-motion.md Round 20 §1, r20-st-grp-bar.raw). The advanced button keeps the options (r20-adv-st-val.raw).
+ */
+const statusChipValue = (property: PropertyDefinition, value: unknown): string => {
+  const ids = idsOf(value);
+  const options = property.config?.options ?? [];
+  const named = new Set<string>();
+
+  return ids.map((id) => {
+    const group = statusGroupOf(property, id);
+
+    if (group === undefined) return '';
+    if (!options.filter((o) => statusGroupOf(property, o.id)?.id === group.id).every((o) => ids.includes(o.id))) {
+      return options.find((o) => o.id === id)?.label ?? '';
+    }
+    if (named.has(group.id)) return '';
+    named.add(group.id);
+
+    return group.name;
+  }).filter((name) => name !== '').join(', ');
+};
+
+/** Types whose pill names the operator (notion-motion.md Round 18 §2, Round 19 §2, Round 20 §1). */
+const PILL_OPERATOR_TYPES: ReadonlySet<PropertyType> = new Set([
+  'title', 'text', 'url', 'email', 'phone', 'number', 'uniqueId', 'select', 'status', 'checkbox',
+  'multiSelect', 'person', 'createdBy', 'lastEditedBy', 'date', 'createdTime', 'lastEditedTime', 'relation',
+]);
+
+/** Operators whose words wrap the value: "Not Red", "Before Nov 10" (Round 19 §2). */
+const PILL_TEMPLATE_KEYS: Readonly<Record<string, string>> = {
+  does_not_equal: 'tools.database.filterPillNot',
+  before: 'tools.database.filterPillBefore',
+  after: 'tools.database.filterPillAfter',
+  on_or_before: 'tools.database.filterPillOnOrBefore',
+  on_or_after: 'tools.database.filterPillOnOrAfter',
+};
+
+/** How a pill shows its operator: a template around the value, a word before it, or nothing. */
+const pillOperator = (type: PropertyType, operator: string): { template: string } | { word: string; colon: boolean } | undefined => {
+  if (!PILL_OPERATOR_TYPES.has(type) || !operatorNeedsValue(operator)) return undefined;
+  const key = operatorLabelKey(type, operator);
+
+  // "Number = 5": the symbol stands in for the colon.
+  if (type === 'number' || type === 'uniqueId') return key === undefined ? undefined : { word: key, colon: false };
+  const template = PILL_TEMPLATE_KEYS[operator];
+
+  if (template !== undefined) return { template };
+  // "is" prints no word: "Text: a", "Select: Red".
+  if (operator === 'equals' || operator === 'is_between' || operator === 'relative_to_today') return undefined;
+
+  return key === undefined ? undefined : { word: key, colon: true };
+};
+
+/**
+ * A pill's parts: "Name" + ":" + "Contains a", "Number" + "= 5" (no colon),
+ * "Select" + ":" + "Not Red", or "Due" alone before it has a value (Round 18 §2, Round 19 §2).
+ * The colon is its own part: only the name is weight 500.
+ */
+export const filterPillParts = (
+  filter: Pick<FilterConfig, 'operator' | 'value'>,
+  property: PropertyDefinition,
+  t: Translate,
+  personName?: (id: string) => string | undefined,
+  rowTitle?: (id: string) => string | undefined,
+  locale?: string
+): { name: string; colon: boolean; value: string } => {
+  const name = property.name;
+  const value = property.type === 'status' && idsOf(filter.value).length > 0
+    ? statusChipValue(property, filter.value)
+    : filterValueText(filter, property, t, personName, rowTitle, locale);
+
+  if (value === '') return { name, colon: false, value };
+  const { lead, operator } = splitOperator(filter.operator);
+  // A rollup's quantifier is no operator word (Round 13 reads "Names: des"); an End date side keeps its operator.
+  // A "This page" relation chip keeps it too: "Place: Contains This page" (notion-motion.md Round 21 §5).
+  const shown = (lead === undefined || lead === 'end') && !isRollupList(property) ? pillOperator(property.type, operator) : undefined;
+
+  if (shown === undefined) return { name, colon: true, value };
+  if ('template' in shown) return { name, colon: true, value: t(shown.template, { value }) };
+
+  return { name, colon: shown.colon, value: `${t(shown.word)} ${value}` };
+};
+
+/** The whole pill as one line, for its label. */
 export const filterPillLabel = (
   filter: Pick<FilterConfig, 'operator' | 'value'>,
   property: PropertyDefinition,
   t: Translate,
   personName?: (id: string) => string | undefined,
-  rowTitle?: (id: string) => string | undefined
+  rowTitle?: (id: string) => string | undefined,
+  locale?: string
 ): string => {
-  const value = filterValueText(filter, property, t, personName, rowTitle);
+  const { name, colon, value } = filterPillParts(filter, property, t, personName, rowTitle, locale);
 
-  return value === '' ? property.name : `${property.name}: ${value}`;
+  return value === '' ? name : `${name}${colon ? ':' : ''} ${value}`;
 };
 
 /** Per-type sort labels from the header menu (research/08). */

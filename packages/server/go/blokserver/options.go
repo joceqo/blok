@@ -57,6 +57,17 @@ type Options struct {
 	// so the zero value keeps them closed, like C#'s UnfurlDisabled = true.
 	UnfurlEnabled bool
 
+	// FileBytesEnabled opens GET /file-bytes, behind the same guard as
+	// /unfurl: the PDF preview reads a file's bytes through it. Off by
+	// default, apart from UnfurlEnabled, since it relays whole files.
+	FileBytesEnabled bool
+	// FileBytesMaxBytes is the largest file /file-bytes serves. Nil is
+	// 100 MiB.
+	FileBytesMaxBytes *int64
+	// FilesCORS sends CORS headers on stored local files for an allowed
+	// origin, so a page on another origin can read them. Off by default.
+	FilesCORS bool
+
 	S3Endpoint   string
 	S3Region     string
 	S3Bucket     string
@@ -102,6 +113,35 @@ type Options struct {
 	// calls.
 	CollabActivityObserver collabstore.ActivityObserver
 
+	// CollabEnforceRestoreGuards is CollabEnforceRestoreGuards: a history
+	// restore that would change who can see or fill out a view, or unlock or
+	// reshape a locked database, is refused 409 until the request confirms
+	// each kind (X-Blok-Restore-Confirm or a body {"confirm":[...]}). False,
+	// the default, restores without asking.
+	CollabEnforceRestoreGuards bool
+
+	// CollabRestoreTrashesPages is CollabRestoreTrashesPages: a history
+	// restore sets data.trashed on a page block added after the point instead
+	// of removing it. False, the default, removes it. A host that turns it on
+	// must show such a block as in Trash: the editor does not hide it.
+	CollabRestoreTrashesPages bool
+
+	// CollabChangeSignalWindow is CollabChangeSignalWindow: how long one
+	// change window runs from a document's first journalled write before a
+	// room.ChangeObserver is told what changed. Nil is 60 s; zero or less
+	// uses 60 s too. More than one day is refused.
+	CollabChangeSignalWindow *time.Duration
+
+	// CollabRecordNotes is UseCollabRecordNotes<T>: a note of who wrote each
+	// journal record, kept beside the journal. The history routes then carry
+	// actor kinds. Nil keeps none.
+	CollabRecordNotes collabstore.RecordNotes
+
+	// CollabStampAuthority is CollabStampAuthority: POST /edit inserts get the
+	// server's createdAt/By/With and lastEditedAt/By/With, and an update
+	// stamps its block's lastEdited*. False, the default, keeps the caller's.
+	CollabStampAuthority bool
+
 	// Clock is the TimeProvider override: tickets, the rate limit window, S3
 	// signing and the rooms' timestamps (activity, cooldowns, export
 	// deadlines) read it. Nil is the system clock.
@@ -126,9 +166,11 @@ func DefaultOptions() Options {
 		ListenAddress:                        &d.ListenAddress,
 		Auth:                                 &d.Auth,
 		MaxUploadBytes:                       &d.MaxUploadBytes,
+		FileBytesMaxBytes:                    &d.FileBytesMaxBytes,
 		CollabMaxConnectionsPerUserPerDoc:    &d.CollabMaxConnectionsPerUserPerDoc,
 		CollabMaxMessageBytes:                &d.CollabMaxMessageBytes,
 		CollabKeepAliveInterval:              &d.CollabKeepAliveInterval,
+		CollabChangeSignalWindow:             &d.CollabChangeSignalWindow,
 		CollabInboundFramesPerSecond:         &d.CollabInboundFramesPerSecond,
 		CollabInboundBurstFrames:             &d.CollabInboundBurstFrames,
 		CollabInboundResyncsPerMinute:        &d.CollabInboundResyncsPerMinute,
@@ -144,9 +186,11 @@ type settings struct {
 	ListenAddress                        string
 	Auth                                 string
 	MaxUploadBytes                       int64
+	FileBytesMaxBytes                    int64
 	CollabMaxConnectionsPerUserPerDoc    int
 	CollabMaxMessageBytes                int
 	CollabKeepAliveInterval              time.Duration
+	CollabChangeSignalWindow             time.Duration
 	CollabInboundFramesPerSecond         int
 	CollabInboundBurstFrames             int
 	CollabInboundResyncsPerMinute        int
@@ -160,9 +204,11 @@ func defaults() settings {
 		ListenAddress:                        "127.0.0.1:4000",
 		Auth:                                 "none",
 		MaxUploadBytes:                       32 << 20,
+		FileBytesMaxBytes:                    100 << 20,
 		CollabMaxConnectionsPerUserPerDoc:    8,
 		CollabMaxMessageBytes:                1 << 20,
 		CollabKeepAliveInterval:              15 * time.Second,
+		CollabChangeSignalWindow:             60 * time.Second,
 		CollabInboundFramesPerSecond:         50,
 		CollabInboundBurstFrames:             100,
 		CollabInboundResyncsPerMinute:        60,
@@ -186,9 +232,11 @@ func (o *Options) resolve() settings {
 		ListenAddress:                        pick(o.ListenAddress, d.ListenAddress),
 		Auth:                                 pick(o.Auth, d.Auth),
 		MaxUploadBytes:                       pick(o.MaxUploadBytes, d.MaxUploadBytes),
+		FileBytesMaxBytes:                    pick(o.FileBytesMaxBytes, d.FileBytesMaxBytes),
 		CollabMaxConnectionsPerUserPerDoc:    pick(o.CollabMaxConnectionsPerUserPerDoc, d.CollabMaxConnectionsPerUserPerDoc),
 		CollabMaxMessageBytes:                pick(o.CollabMaxMessageBytes, d.CollabMaxMessageBytes),
 		CollabKeepAliveInterval:              pick(o.CollabKeepAliveInterval, d.CollabKeepAliveInterval),
+		CollabChangeSignalWindow:             pick(o.CollabChangeSignalWindow, d.CollabChangeSignalWindow),
 		CollabInboundFramesPerSecond:         pick(o.CollabInboundFramesPerSecond, d.CollabInboundFramesPerSecond),
 		CollabInboundBurstFrames:             pick(o.CollabInboundBurstFrames, d.CollabInboundBurstFrames),
 		CollabInboundResyncsPerMinute:        pick(o.CollabInboundResyncsPerMinute, d.CollabInboundResyncsPerMinute),
@@ -236,6 +284,9 @@ func (o *settings) validate() (string, error) {
 	}
 	if o.RateLimitPerMinute < 0 {
 		return fail("--rate-limit must be zero or greater (got %d)", o.RateLimitPerMinute)
+	}
+	if o.FileBytesEnabled && o.FileBytesMaxBytes <= 0 {
+		return fail("FileBytesMaxBytes must be a positive number of bytes (got %d)", o.FileBytesMaxBytes)
 	}
 	// C# AddBlokDocuments refuses these in the call, not at the first
 	// conversion.
@@ -300,6 +351,8 @@ func (o *settings) validateCollab() error {
 		return fail("CollabMaxConnections must be zero (no ceiling) or greater (got %d)", o.CollabMaxConnections)
 	case o.CollabMaxMessageBytes <= 0:
 		return fail("CollabMaxMessageBytes must be a positive number of bytes (got %d): a zero cap closes every sync connection on its first frame", o.CollabMaxMessageBytes)
+	case o.CollabChangeSignalWindow > 24*time.Hour:
+		return fail("CollabChangeSignalWindow must be at most one day (got %s)", formatTimeSpan(o.CollabChangeSignalWindow))
 	case o.CollabKeepAliveInterval < 0:
 		return fail("CollabKeepAliveInterval must be zero (off) or greater (got %s)", formatTimeSpan(o.CollabKeepAliveInterval))
 	case o.CollabInboundFramesPerSecond < 0:

@@ -32,15 +32,17 @@ export function renderEmptyState(opts: EmptyStateOptions): EmptyStateElement {
     onUrl: opts.onUrl,
     labels: {
       add: tr(i18n, 'tools.video.emptyAddVideo', 'Add a video'),
-      upload: tr(i18n, 'tools.video.emptyUpload', 'From device'),
+      hint: tr(i18n, 'tools.video.emptyHint', 'Drag a video here, choose one from your device, or paste a link.'),
+      hintUpload: tr(i18n, 'tools.video.emptyHintUpload', 'Drag a video here or choose one from your device.'),
+      hintLink: tr(i18n, 'tools.image.emptyHintLink', 'Paste a link to it below.'),
+      dropAnywhere: tr(i18n, 'tools.image.emptyDropAnywhere', 'Let go anywhere in this block.'),
+      cancelLink: tr(i18n, 'notifier.cancel', 'Cancel'),
       embed: tr(i18n, 'tools.video.emptyLink', 'From a link'),
       chooseFile: tr(i18n, 'tools.video.emptyChooseFile', 'Choose a video'),
-      orDropHere: tr(i18n, 'tools.video.emptyOrDropHere', 'or drag it here'),
       dropToUpload: tr(i18n, 'tools.video.emptyDropToUpload', 'Drop to add'),
       urlPlaceholder: tr(i18n, 'tools.video.emptyUrlPlaceholder', 'Paste a video link…'),
       urlAria: tr(i18n, 'tools.video.emptyUrlAria', 'Video URL'),
       submit: tr(i18n, 'tools.video.emptyInsert', 'Add'),
-      sourceAria: tr(i18n, 'tools.video.emptySourceAria', 'Video source'),
       maxSize: (size) =>
         i18n?.has('tools.video.emptyMaxSize')
           ? i18n.t('tools.video.emptyMaxSize', { size })

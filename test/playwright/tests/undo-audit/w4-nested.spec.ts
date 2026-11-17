@@ -20,7 +20,7 @@ const UNDO = process.platform === 'darwin' ? 'Meta+z' : 'Control+z';
 const REDO = process.platform === 'darwin' ? 'Meta+Shift+z' : 'Control+Shift+z';
 const MOVE_DOWN = process.platform === 'darwin' ? 'Meta+Shift+ArrowDown' : 'Control+Shift+ArrowDown';
 // Yjs capture window is 500ms; wait past it so gestures stay separate undo steps.
-const CAPTURE_GAP = 700;
+const CAPTURE_GAP = 800;
 // onSave rides the trailing edge of a 400ms change window.
 const SAVE_SETTLE = 1500;
 
@@ -208,10 +208,9 @@ test.describe('hidden and nested targets', () => {
     expect(await tree(page)).toContainEqual(['x', 't']);
   });
 
-  // Backspace merges a toggle title into the block above; its children move
-  // under that block. The merge re-homes them through the Yjs-writing reparent,
-  // so redo puts them back under it, not at root.
-  test('W4N-3: redo of merging a toggle title into the block above restores where its children went', async ({ page }) => {
+  // Backspace at a toggle title start turns it into text in place (Notion
+  // U137); redo brings back the same document, children included.
+  test('W4N-3: redo of Backspace at a toggle title start restores where its children are', async ({ page }) => {
     await createBlok(page, toggleWithKids(true));
     await editable(page, 't').click();
     await page.keyboard.press('Home');
@@ -226,9 +225,10 @@ test.describe('hidden and nested targets', () => {
     expect(await save(page)).toEqual(merged);
   });
 
-  // Right after the merge the Yjs document (what redo and collaborators read)
-  // agrees with save() on where the children went.
-  test('W4N-3b: after merging a toggle title into the block above, the document agrees on where its children went', async ({ page }) => {
+  // Backspace at the title start turns the toggle into text in place (Notion
+  // U137). The Yjs document (what redo and collaborators read) agrees with
+  // save() that the children stay under it.
+  test('W4N-3b: after Backspace at a toggle title start, the document agrees the children stay under it', async ({ page }) => {
     await createBlok(page, toggleWithKids(true));
     await editable(page, 't').click();
     await page.keyboard.press('Home');
@@ -240,7 +240,7 @@ test.describe('hidden and nested targets', () => {
     const editorParent = (await save(page)).find(b => b.id === 'k1')?.parent;
 
     expect(docParent).toBe(editorParent);
-    expect(editorParent).toBe('top');
+    expect(editorParent).toBe('t');
   });
 
   test('control: redo of merging two paragraphs restores the merge', async ({ page }) => {
@@ -308,7 +308,9 @@ test.describe('hidden and nested targets', () => {
     await editable(page, 'top').click();
     await redo(page);
     expect(await save(page)).toEqual(collapsed);
-    await expect(holder(page, 'c')).toBeVisible();
+    // Redo lands where the caret was at the undo press (in "top"), so it opens nothing.
+    await expect(editable(page, 'top')).toBeFocused();
+    await expect(holder(page, 'c')).toBeHidden();
   });
 
   test('works: toggle > callout > list > nested list, edit and Enter undo/redo exactly', async ({ page }) => {

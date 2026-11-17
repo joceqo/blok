@@ -7,7 +7,6 @@ import {
   resolveBoardCardPreview,
   resolveShowTimelineTable,
   resolveTimelineBy,
-  resolveTimelineEndBy,
   resolveTimelineTableProperties,
   resolveCalendarBy,
   resolveCalendarRange,
@@ -57,35 +56,38 @@ const cardLayoutItems = (
   const imageProperties = schema.filter((p) => p.type === 'url' || p.type === 'files');
   const fit = resolveFitImage(view);
 
-  return [
-    {
-      type: PopoverItemType.Default,
-      name: `${prefix}-card-size`,
-      title: i18n.t('tools.database.galleryCardSize'),
-      children: {
-        items: CARD_SIZES.map(([value, key]) => choice(`${prefix}-card-size-${value}`, i18n.t(key), size === value, () => update({ cardSize: value }))),
-      },
+  const sizeRow: PopoverItemParams = {
+    type: PopoverItemType.Default,
+    name: `${prefix}-card-size`,
+    title: i18n.t('tools.database.galleryCardSize'),
+    children: {
+      items: CARD_SIZES.map(([value, key]) => choice(`${prefix}-card-size-${value}`, i18n.t(key), size === value, () => update({ cardSize: value }))),
     },
-    {
-      type: PopoverItemType.Default,
-      name: `${prefix}-card-preview`,
-      title: i18n.t('tools.database.galleryCardPreview'),
-      children: {
-        items: [
-          ...PREVIEWS.map(([value, key]) => choice(`${prefix}-card-preview-${value}`, i18n.t(key), previewKey === value, () => update({ cardPreview: value }))),
-          ...imageProperties.map((p) => {
-            const value: CardPreview = `property:${p.id}`;
+  };
+  const previewRow: PopoverItemParams = {
+    type: PopoverItemType.Default,
+    name: `${prefix}-card-preview`,
+    title: i18n.t('tools.database.galleryCardPreview'),
+    children: {
+      items: [
+        ...PREVIEWS.map(([value, key]) => choice(`${prefix}-card-preview-${value}`, i18n.t(key), previewKey === value, () => update({ cardPreview: value }))),
+        ...imageProperties.map((p) => {
+          const value: CardPreview = `property:${p.id}`;
 
-            return choice(`${prefix}-card-preview-${p.id}`, p.name, previewKey === value, () => update({ cardPreview: value }));
-          }),
-        ],
-      },
+          return choice(`${prefix}-card-preview-${p.id}`, p.name, previewKey === value, () => update({ cardPreview: value }));
+        }),
+      ],
     },
-    choice(`${prefix}-fit-image`, i18n.t('tools.database.galleryFitImage'), fit, () => update({ fitImage: !fit })),
-  ];
+  };
+  // notion-motion.md Round 24 §4, Round 25 §7, Round 26 §3: "Fit media" shows only once a preview is set.
+  const fitRow = preview.kind === 'none'
+    ? []
+    : [choice(`${prefix}-fit-image`, i18n.t('tools.database.galleryFitMedia'), fit, () => update({ fitImage: !fit }))];
+
+  return [previewRow, sizeRow, ...fitRow];
 };
 
-/** Card size, Card preview and Fit image (H-galleries). Files & media properties, and url properties holding an image link, can be the preview. */
+/** Card preview, Card size and Fit media (H-galleries). Files & media properties, and url properties holding an image link, can be the preview. */
 export const galleryLayoutItems = (
   view: DatabaseViewConfig,
   schema: PropertyDefinition[],
@@ -137,7 +139,7 @@ export const calendarLayoutItems = (
   ];
 };
 
-/** Show timeline by, a separate end date, Show table and the table's own columns (H-timelines). */
+/** Show timeline by (or Start date and End date), the separate dates switch, Show table and the table's own columns (H-timelines). */
 export const timelineLayoutItems = (
   view: DatabaseViewConfig,
   schema: PropertyDefinition[],
@@ -147,7 +149,9 @@ export const timelineLayoutItems = (
   const ordered = [...schema].sort((a, b) => (a.position < b.position ? -1 : 1));
   const dates = ordered.filter((p) => p.type === 'date');
   const by = resolveTimelineBy(view, schema);
-  const endBy = resolveTimelineEndBy(view, schema);
+  // On while timelineEndBy names a date property, the start one included (bars then read the start's range).
+  const endBy = dates.find((p) => p.id === view.timelineEndBy)?.id;
+  const separate = endBy !== undefined;
   const tableShown = resolveShowTimelineTable(view);
   const columns = resolveTimelineTableProperties(view, schema);
   const stored = Array.isArray(view.tableProperties) ? view.tableProperties : [];
@@ -160,25 +164,28 @@ export const timelineLayoutItems = (
         : [...stored.map((entry) => ({ ...entry })), { id, visible }],
     });
   };
+  const startRow: PopoverItemParams = {
+    type: PopoverItemType.Default,
+    name: 'timeline-show-by',
+    title: i18n.t(separate ? 'tools.database.dateStart' : 'tools.database.timelineShowBy'),
+    children: { items: dates.map((p) => choice(`timeline-show-by-${p.id}`, p.name, by === p.id, () => update({ timelineBy: p.id }))) },
+  };
+  // notion-motion.md Round 25 §4: on, "Start date" and "End date" stand where Show timeline by was.
+  // Notion's End list also has Created time; bars here read date properties only.
+  const endRow: PopoverItemParams = {
+    type: PopoverItemType.Default,
+    name: 'timeline-end-by',
+    title: i18n.t('tools.database.dateEnd'),
+    children: { items: dates.map((p) => choice(`timeline-end-by-${p.id}`, p.name, endBy === p.id, () => update({ timelineEndBy: p.id }))) },
+  };
 
   return [
-    {
-      type: PopoverItemType.Default,
-      name: 'timeline-show-by',
-      title: i18n.t('tools.database.timelineShowBy'),
-      children: { items: dates.map((p) => choice(`timeline-show-by-${p.id}`, p.name, by === p.id, () => update({ timelineBy: p.id }))) },
-    },
-    {
-      type: PopoverItemType.Default,
-      name: 'timeline-end-by',
-      title: i18n.t('tools.database.timelineEndBy'),
-      children: {
-        items: [
-          choice('timeline-end-by-none', i18n.t('tools.database.timelineEndNone'), endBy === undefined, () => update({ timelineEndBy: '' })),
-          ...dates.filter((p) => p.id !== by).map((p) => choice(`timeline-end-by-${p.id}`, p.name, endBy === p.id, () => update({ timelineEndBy: p.id }))),
-        ],
-      },
-    },
+    startRow,
+    ...(separate ? [endRow] : []),
+    // notion-motion.md Round 24 §4 Timeline: a switch, offered with one date property too (Round 25 §4).
+    ...(by === undefined ? [] : [
+      choice('timeline-separate-dates', i18n.t('tools.database.timelineSeparateDates'), separate, () => update({ timelineEndBy: separate ? '' : by })),
+    ]),
     choice('timeline-show-table', i18n.t('tools.database.timelineShowTable'), tableShown, () => update({ showTimelineTable: !tableShown })),
     {
       type: PopoverItemType.Default,

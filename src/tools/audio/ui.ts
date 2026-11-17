@@ -1,5 +1,14 @@
 import type { AudioData } from '../../../types/tools/audio';
 import { IconImage, IconUpload } from '../../components/icons';
+import { DATA_ATTR } from '../../components/constants/data-attributes';
+import { createInkBurst } from './error-scenes/ink-burst';
+import { pickErrorScene, type ErrorSceneName } from './error-scenes/pick';
+import { createPulledPlug } from './error-scenes/pulled-plug';
+import { createSand } from './error-scenes/sand';
+import { createShattered } from './error-scenes/shattered';
+import { mountErrorStage } from './error-scenes/stage';
+import type { ErrorScene, SceneFactory } from './error-scenes/types';
+import { createWontFit, type WontFitLabel } from './error-scenes/wont-fit';
 
 export interface NowPlayingOptions {
   editable: boolean;
@@ -17,6 +26,8 @@ export interface NowPlayingElements {
   title: HTMLElement;
   artist: HTMLElement;
   coverButton?: HTMLButtonElement;
+  /** The no-cover ink drop's canvas. Absent when there is artwork. */
+  ink?: HTMLCanvasElement;
 }
 
 function editableLine(role: string, value: string | undefined, editable: boolean, placeholder?: string): HTMLElement {
@@ -26,6 +37,24 @@ function editableLine(role: string, value: string | undefined, editable: boolean
   if (placeholder) el.setAttribute('data-placeholder', placeholder);
   el.textContent = value ?? '';
   return el;
+}
+
+/** The cover's art: the picture, or with no picture an ink drop drawn and moved by cover-ink.ts. */
+export function renderCoverArt(coverUrl: string | undefined): HTMLImageElement | HTMLCanvasElement {
+  if (coverUrl) {
+    const img = document.createElement('img');
+    img.setAttribute('loading', 'lazy');
+    img.src = coverUrl;
+    img.alt = '';
+
+    return img;
+  }
+  const ink = document.createElement('canvas');
+  ink.className = 'blok-audio-cover__ink';
+  ink.setAttribute('data-role', 'audio-cover-ink');
+  ink.setAttribute('aria-hidden', 'true');
+
+  return ink;
 }
 
 export function renderNowPlaying(data: AudioData, opts: NowPlayingOptions): NowPlayingElements {
@@ -46,27 +75,10 @@ export function renderNowPlaying(data: AudioData, opts: NowPlayingOptions): NowP
   const cover = document.createElement('div');
   cover.className = 'blok-audio-cover';
   cover.setAttribute('data-role', 'audio-cover');
-  if (data.coverUrl) {
-    const img = document.createElement('img');
-    img.setAttribute('loading', 'lazy');
-    img.src = data.coverUrl;
-    img.alt = '';
-    cover.appendChild(img);
-  } else {
-    // No artwork: stand a glossy black vinyl record in the panel instead of a
-    // flat "missing image" glyph. The disc (grooves + cream label + spindle, with
-    // a fixed specular it shimmers under) is pure CSS; its rotation is driven by
-    // disc.ts, which spins the platter up when the track plays and lets it coast
-    // down on pause — like a real turntable with mass.
-    const placeholder = document.createElement('span');
-    placeholder.className = 'blok-audio-cover__placeholder';
-    placeholder.setAttribute('aria-hidden', 'true');
-    const disc = document.createElement('span');
-    disc.className = 'blok-audio-cover__disc';
-    disc.setAttribute('data-role', 'audio-cover-disc');
-    placeholder.append(disc);
-    cover.appendChild(placeholder);
-  }
+  const art = renderCoverArt(data.coverUrl);
+  const ink = art instanceof HTMLCanvasElement ? art : undefined;
+
+  cover.appendChild(art);
 
   const coverButton = ((): HTMLButtonElement | undefined => {
     if (!opts.editable) {
@@ -90,8 +102,10 @@ export function renderNowPlaying(data: AudioData, opts: NowPlayingOptions): NowP
 
   const title = editableLine('audio-title', data.title, opts.editable, opts.titlePlaceholder);
   title.className = 'blok-audio-title';
+  title.setAttribute(DATA_ATTR.plainText, '');
   const artist = editableLine('audio-artist', data.artist, opts.editable, opts.artistPlaceholder);
   artist.className = 'blok-audio-artist';
+  artist.setAttribute(DATA_ATTR.plainText, '');
 
   const waveformMount = document.createElement('div');
   waveformMount.className = 'blok-audio-waveform';
@@ -111,7 +125,7 @@ export function renderNowPlaying(data: AudioData, opts: NowPlayingOptions): NowP
   if (data.loop) audio.loop = true;
 
   figure.append(toolbarAnchor, cover, body, audio);
-  return { figure, audio, cover, body, waveformMount, title, artist, coverButton };
+  return { figure, audio, cover, body, waveformMount, title, artist, coverButton, ink };
 }
 
 export interface CaptionRowOptions {
@@ -137,74 +151,74 @@ export function renderCaptionRow(opts: CaptionRowOptions): HTMLElement {
 
 export type ErrorService = 'google-drive' | 'onedrive';
 
-/** Bars in the dead waveform; the glitch sits a little before the middle. */
-const FLATLINE_BARS = 48;
-const GLITCH_BARS = [19, 20, 21];
+const SCENES: Record<ErrorSceneName, SceneFactory> = {
+  'shattered': createShattered,
+  'ink-burst': createInkBurst,
+  'sand': createSand,
+  'pulled-plug': createPulledPlug,
+};
 
 export interface ErrorStateOptions {
-  message: string;
+  /** What went wrong, in a few words. */
+  title: string;
+  /** What to do about it. */
+  detail: string;
   /** The share service the link came from, when that is why it failed. */
   service?: ErrorService;
-  /** Short decorative label above the message. */
-  badge?: string;
+  /** The file was over the size limit: the two lines for the record's label. */
+  tooLarge?: WontFitLabel;
   replaceLabel: string;
   onReplace(): void;
   /** Offer a file picker right on the card. Omit when uploading is not allowed. */
   upload?: { label: string; accept: string; onFile(file: File): void };
 }
 
+const sceneFor = (tooLarge: WontFitLabel | undefined): { name: string; scene: ErrorScene } => {
+  if (tooLarge) return { name: 'wont-fit', scene: createWontFit(tooLarge) };
+  const name = pickErrorScene();
+
+  return { name, scene: SCENES[name]() };
+};
+
+export interface ErrorState {
+  element: HTMLElement;
+  /** Stop the object. Call it when the card leaves the page. */
+  destroy(): void;
+}
+
 /**
- * The failed player: the same card as a working track, but the record is
- * cracked and the waveform is flat. Only the message and buttons are read out.
+ * The failed player: the words and buttons on one side, and one object that
+ * breaks on the other. A file over the limit always gets the record that will
+ * not fit; every other failure gets one of four objects at random. Only the
+ * message and buttons are read out.
  */
-export function renderErrorState(opts: ErrorStateOptions): HTMLElement {
+export function renderErrorState(opts: ErrorStateOptions): ErrorState {
   const wrap = document.createElement('div');
   wrap.className = 'blok-audio-error-state';
   wrap.setAttribute('data-role', 'audio-error');
   if (opts.service) wrap.setAttribute('data-reason', opts.service);
 
-  const art = document.createElement('div');
-  art.className = 'blok-audio-cover blok-audio-error-state__art';
-  art.setAttribute('data-role', 'audio-error-art');
-  art.setAttribute('aria-hidden', 'true');
-  const placeholder = document.createElement('span');
-  placeholder.className = 'blok-audio-cover__placeholder';
-  const disc = document.createElement('span');
-  disc.className = 'blok-audio-cover__disc';
-  placeholder.append(disc);
-  // Inside the disc so the crack turns with it; audio.css draws the line.
-  const crack = document.createElement('span');
-  crack.className = 'blok-audio-error-state__crack';
-  disc.append(crack);
-  art.append(placeholder);
+  const { name, scene } = sceneFor(opts.tooLarge);
+
+  wrap.setAttribute('data-scene', name);
+
+  const canvas = document.createElement('canvas');
+  canvas.className = 'blok-audio-error-state__scene';
+  canvas.setAttribute('data-role', 'audio-error-scene');
+  canvas.setAttribute('aria-hidden', 'true');
 
   const body = document.createElement('div');
   body.className = 'blok-audio-error-state__body';
 
-  if (opts.badge) {
-    const source = document.createElement('span');
-    source.className = 'blok-audio-error-state__source';
-    source.setAttribute('data-role', 'audio-error-source');
-    source.setAttribute('aria-hidden', 'true');
-    source.textContent = opts.badge;
-    body.append(source);
-  }
+  const title = document.createElement('p');
+  title.className = 'blok-audio-error-state__title';
+  title.setAttribute('data-role', 'audio-error-title');
+  title.textContent = opts.title;
 
   const message = document.createElement('p');
   message.className = 'blok-audio-error-state__message';
   message.setAttribute('data-role', 'audio-error-message');
-  message.textContent = opts.message;
-
-  const wave = document.createElement('div');
-  wave.className = 'blok-audio-error-state__wave';
-  wave.setAttribute('data-role', 'audio-error-wave');
-  wave.setAttribute('aria-hidden', 'true');
-  wave.append(...Array.from({ length: FLATLINE_BARS }, (_, i) => {
-    const bar = document.createElement('span');
-    if (GLITCH_BARS.includes(i)) bar.setAttribute('data-glitch', '');
-
-    return bar;
-  }));
+  message.textContent = opts.detail;
 
   const actions = document.createElement('div');
   actions.className = 'blok-audio-error-state__actions';
@@ -237,8 +251,8 @@ export function renderErrorState(opts: ErrorStateOptions): HTMLElement {
   retry.addEventListener('click', () => opts.onReplace());
   actions.append(retry);
 
-  body.append(message, wave, actions);
-  wrap.append(art, body);
+  body.append(title, message, actions);
+  wrap.append(canvas, body);
 
-  return wrap;
+  return { element: wrap, destroy: mountErrorStage(canvas, wrap, scene).destroy };
 }

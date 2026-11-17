@@ -41,7 +41,7 @@
                 "name": "blok-mcp",
                 "version": "${version}"
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
             },
             "jsonrpc": "2.0",
             "id": 1
@@ -78,7 +78,7 @@
                 "name": "blok-mcp",
                 "version": "${version}"
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
             },
             "jsonrpc": "2.0",
             "id": 1
@@ -115,7 +115,7 @@
                 "name": "blok-mcp",
                 "version": "${version}"
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
             },
             "jsonrpc": "2.0",
             "id": 1
@@ -152,7 +152,7 @@
                 "name": "blok-mcp",
                 "version": "${version}"
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
             },
             "jsonrpc": "2.0",
             "id": 1
@@ -189,7 +189,7 @@
                 "name": "blok-mcp",
                 "version": "${version}"
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
             },
             "jsonrpc": "2.0",
             "id": 1
@@ -253,7 +253,7 @@
                 "name": "blok-mcp",
                 "version": "${version}"
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
             },
             "jsonrpc": "2.0",
             "id": 1
@@ -315,7 +315,7 @@
                 "name": "blok-mcp",
                 "version": "${version}"
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
             },
             "jsonrpc": "2.0",
             "id": 1
@@ -377,7 +377,7 @@
                 "name": "blok-mcp",
                 "version": "${version}"
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
             },
             "jsonrpc": "2.0",
             "id": 1
@@ -439,7 +439,7 @@
                 "name": "blok-mcp",
                 "version": "${version}"
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
             },
             "jsonrpc": "2.0",
             "id": 1
@@ -468,7 +468,7 @@
                 "tools": {},
                 "prompts": {}
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it.",
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it.",
               "resultType": "complete",
               "ttlMs": 0,
               "cacheScope": "private",
@@ -535,7 +535,7 @@
                 "tools": {},
                 "prompts": {}
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it.",
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it.",
               "resultType": "complete",
               "ttlMs": 0,
               "cacheScope": "private",
@@ -2081,6 +2081,7 @@
                                     "database.deleteComment",
                                     "database.deleteOption",
                                     "database.deleteProperty",
+                                    "database.deletePropertyPermanently",
                                     "database.deleteRow",
                                     "database.deleteView",
                                     "database.duplicateProperty",
@@ -2096,6 +2097,7 @@
                                     "database.renameView",
                                     "database.replyToComment",
                                     "database.resolveComment",
+                                    "database.restoreProperty",
                                     "database.setDefaultTemplate",
                                     "database.setLayout",
                                     "database.setLock",
@@ -2105,6 +2107,7 @@
                                     "database.updateView",
                                     "doc.find",
                                     "doc.read",
+                                    "doc.setCover",
                                     "embed.create",
                                     "embed.setUrl",
                                     "file.setSource",
@@ -2252,6 +2255,22 @@
                                 "type": "string"
                               },
                               "rel": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "annotation": {
+                            "type": "object",
+                            "description": "Plain-text hint card on hover.",
+                            "required": [
+                              "text"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "text": {
+                                "type": "string"
+                              },
+                              "subtitle": {
                                 "type": "string"
                               }
                             }
@@ -3937,6 +3956,7 @@
                                     "database.deleteComment",
                                     "database.deleteOption",
                                     "database.deleteProperty",
+                                    "database.deletePropertyPermanently",
                                     "database.deleteRow",
                                     "database.deleteView",
                                     "database.duplicateProperty",
@@ -3952,6 +3972,7 @@
                                     "database.renameView",
                                     "database.replyToComment",
                                     "database.resolveComment",
+                                    "database.restoreProperty",
                                     "database.setDefaultTemplate",
                                     "database.setLayout",
                                     "database.setLock",
@@ -3961,6 +3982,7 @@
                                     "database.updateView",
                                     "doc.find",
                                     "doc.read",
+                                    "doc.setCover",
                                     "embed.create",
                                     "embed.setUrl",
                                     "file.setSource",
@@ -4108,6 +4130,22 @@
                                 "type": "string"
                               },
                               "rel": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "annotation": {
+                            "type": "object",
+                            "description": "Plain-text hint card on hover.",
+                            "required": [
+                              "text"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "text": {
+                                "type": "string"
+                              },
+                              "subtitle": {
                                 "type": "string"
                               }
                             }
@@ -5829,6 +5867,7 @@
                                     "database.deleteComment",
                                     "database.deleteOption",
                                     "database.deleteProperty",
+                                    "database.deletePropertyPermanently",
                                     "database.deleteRow",
                                     "database.deleteView",
                                     "database.duplicateProperty",
@@ -5844,6 +5883,7 @@
                                     "database.renameView",
                                     "database.replyToComment",
                                     "database.resolveComment",
+                                    "database.restoreProperty",
                                     "database.setDefaultTemplate",
                                     "database.setLayout",
                                     "database.setLock",
@@ -5853,6 +5893,7 @@
                                     "database.updateView",
                                     "doc.find",
                                     "doc.read",
+                                    "doc.setCover",
                                     "embed.create",
                                     "embed.setUrl",
                                     "file.setSource",
@@ -6000,6 +6041,22 @@
                                 "type": "string"
                               },
                               "rel": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "annotation": {
+                            "type": "object",
+                            "description": "Plain-text hint card on hover.",
+                            "required": [
+                              "text"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "text": {
+                                "type": "string"
+                              },
+                              "subtitle": {
                                 "type": "string"
                               }
                             }
@@ -7246,6 +7303,7 @@
                                 "database.deleteComment",
                                 "database.deleteOption",
                                 "database.deleteProperty",
+                                "database.deletePropertyPermanently",
                                 "database.deleteRow",
                                 "database.deleteView",
                                 "database.duplicateProperty",
@@ -7261,6 +7319,7 @@
                                 "database.renameView",
                                 "database.replyToComment",
                                 "database.resolveComment",
+                                "database.restoreProperty",
                                 "database.setDefaultTemplate",
                                 "database.setLayout",
                                 "database.setLock",
@@ -7270,6 +7329,7 @@
                                 "database.updateView",
                                 "doc.find",
                                 "doc.read",
+                                "doc.setCover",
                                 "doc.setIcon",
                                 "doc.setTitle",
                                 "embed.create",
@@ -9451,7 +9511,8 @@
                                         "chart",
                                         "feed",
                                         "form",
-                                        "map"
+                                        "map",
+                                        "dashboard"
                                       ]
                                     },
                                     "name": {
@@ -9460,6 +9521,27 @@
                                     "groupBy": {
                                       "type": "string",
                                       "description": "Property id to group by."
+                                    },
+                                    "dashboardViewId": {
+                                      "type": "string",
+                                      "description": "A dashboard view of this database: the new view becomes one of its widgets."
+                                    },
+                                    "placement": {
+                                      "type": "object",
+                                      "additionalProperties": false,
+                                      "description": "Where the widget goes. Only with dashboardViewId.",
+                                      "properties": {
+                                        "row": {
+                                          "type": "integer",
+                                          "minimum": 0
+                                        },
+                                        "newRow": {
+                                          "type": "boolean",
+                                          "enum": [
+                                            true
+                                          ]
+                                        }
+                                      }
                                     },
                                     "id": {
                                       "type": "string",
@@ -9752,6 +9834,41 @@
                                       "type": "string",
                                       "minLength": 1,
                                       "description": "Id of a property in schema."
+                                    },
+                                    "id": {
+                                      "type": "string",
+                                      "description": "Id of the block to act on."
+                                    }
+                                  }
+                                },
+                                "ref": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "args"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "const": "database.deletePropertyPermanently"
+                                },
+                                "args": {
+                                  "type": "object",
+                                  "required": [
+                                    "id",
+                                    "propertyId"
+                                  ],
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "propertyId": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "description": "Id of a deleted property: a key of deletedProperties."
                                     },
                                     "id": {
                                       "type": "string",
@@ -10410,6 +10527,41 @@
                                       "type": "string",
                                       "minLength": 1,
                                       "description": "Id of a thread: a comment straight under a row, from the row's comments in a full read."
+                                    },
+                                    "id": {
+                                      "type": "string",
+                                      "description": "Id of the block to act on."
+                                    }
+                                  }
+                                },
+                                "ref": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "args"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "const": "database.restoreProperty"
+                                },
+                                "args": {
+                                  "type": "object",
+                                  "required": [
+                                    "id",
+                                    "propertyId"
+                                  ],
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "propertyId": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "description": "Id of a deleted property: a key of deletedProperties."
                                     },
                                     "id": {
                                       "type": "string",
@@ -11874,7 +12026,7 @@
                                                       "list",
                                                       "dropdown"
                                                     ],
-                                                    "description": "Form: how a choice question lists its options; absent is list for multi-select, dropdown for select and status."
+                                                    "description": "Form: how a choice question lists its options; absent is list for select and multi-select, dropdown for status."
                                                   }
                                                 }
                                               }
@@ -11888,7 +12040,7 @@
                                           "anyOf": [
                                             {
                                               "type": "boolean",
-                                              "description": "Wrap every cell. Default true for a board, false otherwise."
+                                              "description": "Wrap every cell; on a calendar, wrap page titles to two lines. Default true for a board, false otherwise."
                                             },
                                             {
                                               "type": "null"
@@ -12059,6 +12211,17 @@
                                             }
                                           ]
                                         },
+                                        "directTitleEdit": {
+                                          "anyOf": [
+                                            {
+                                              "type": "boolean",
+                                              "description": "List: a title click edits the title in place instead of opening the row. Default false."
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
                                         "calendarBy": {
                                           "anyOf": [
                                             {
@@ -12111,7 +12274,7 @@
                                           "anyOf": [
                                             {
                                               "type": "string",
-                                              "description": "Timeline: a second date property id that ends each bar. Absent means timelineBy holds the range."
+                                              "description": "Timeline: the date property id that ends each bar. Set, even to timelineBy, turns \"Separate start and end dates\" on. Absent or equal to timelineBy: timelineBy holds the range."
                                             },
                                             {
                                               "type": "null"
@@ -12156,6 +12319,17 @@
                                             {
                                               "type": "boolean",
                                               "description": "Timeline: show the table panel. Default false."
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "toolbarMinimized": {
+                                          "anyOf": [
+                                            {
+                                              "type": "boolean",
+                                              "description": "The view toolbar is minimized to Expand and settings. Default false."
                                             },
                                             {
                                               "type": "null"
@@ -12478,6 +12652,30 @@
                                             }
                                           ]
                                         },
+                                        "pinnedGroups": {
+                                          "anyOf": [
+                                            {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "object",
+                                                "required": [
+                                                  "id"
+                                                ],
+                                                "additionalProperties": false,
+                                                "properties": {
+                                                  "id": {
+                                                    "type": "string",
+                                                    "description": "Option id of the group."
+                                                  }
+                                                }
+                                              },
+                                              "description": "Board: groups listed under \"Pinned groups\", shown in group order. Pinning does not move a column."
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
                                         "hideGroupAggregation": {
                                           "anyOf": [
                                             {
@@ -12533,6 +12731,57 @@
                                                 }
                                               },
                                               "description": "Board: the calculation beside every group name. Absent means count all rows, shown as \"99+\" above 99. fn count is saved only to keep that cap off."
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "subGroupCalculation": {
+                                          "anyOf": [
+                                            {
+                                              "type": "object",
+                                              "required": [
+                                                "id",
+                                                "fn"
+                                              ],
+                                              "additionalProperties": false,
+                                              "properties": {
+                                                "id": {
+                                                  "type": "string",
+                                                  "description": "Property id."
+                                                },
+                                                "fn": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "count",
+                                                    "count_values",
+                                                    "unique",
+                                                    "empty",
+                                                    "not_empty",
+                                                    "percent_empty",
+                                                    "percent_not_empty",
+                                                    "sum",
+                                                    "average",
+                                                    "median",
+                                                    "min",
+                                                    "max",
+                                                    "range",
+                                                    "earliest_date",
+                                                    "latest_date",
+                                                    "date_range",
+                                                    "checked",
+                                                    "unchecked",
+                                                    "percent_checked",
+                                                    "percent_unchecked"
+                                                  ]
+                                                },
+                                                "capCounts": {
+                                                  "type": "boolean",
+                                                  "description": "Show a count above 99 as \"99+\". Default false."
+                                                }
+                                              },
+                                              "description": "Board with subGroupBy: the calculation beside every sub-group band name while subGroupSettings.showAggregation is on. Read like groupCalculation."
                                             },
                                             {
                                               "type": "null"
@@ -12612,6 +12861,10 @@
                                                 "colorColumns": {
                                                   "type": "boolean",
                                                   "description": "Board only. Default true."
+                                                },
+                                                "showAggregation": {
+                                                  "type": "boolean",
+                                                  "description": "Board subGroupSettings only: each sub-group band shows its page count. Default false."
                                                 }
                                               }
                                             },
@@ -12693,6 +12946,10 @@
                                                 "colorColumns": {
                                                   "type": "boolean",
                                                   "description": "Board only. Default true."
+                                                },
+                                                "showAggregation": {
+                                                  "type": "boolean",
+                                                  "description": "Board subGroupSettings only: each sub-group band shows its page count. Default false."
                                                 }
                                               }
                                             },
@@ -12729,7 +12986,21 @@
                                                     "description": "Any property value; shape follows the property type."
                                                   },
                                                   "color": {
-                                                    "type": "string"
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "default",
+                                                      "gray",
+                                                      "brown",
+                                                      "orange",
+                                                      "yellow",
+                                                      "green",
+                                                      "blue",
+                                                      "purple",
+                                                      "pink",
+                                                      "red",
+                                                      "match"
+                                                    ],
+                                                    "description": "An option color, or \"match\": a select or status rule takes the row's option color, a multi-select rule its first option's."
                                                   },
                                                   "applyTo": {
                                                     "type": "string",
@@ -12763,6 +13034,17 @@
                                             {
                                               "type": "boolean",
                                               "description": "Linked views only: show the source title. Default true."
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "showAuthorByline": {
+                                          "anyOf": [
+                                            {
+                                              "type": "boolean",
+                                              "description": "Feed: show the author and post time above each post. Default true."
                                             },
                                             {
                                               "type": "null"
@@ -12857,6 +13139,131 @@
                                                 }
                                               ]
                                             },
+                                            "title": {
+                                              "anyOf": [
+                                                {
+                                                  "type": "string"
+                                                },
+                                                {
+                                                  "type": "null"
+                                                }
+                                              ]
+                                            },
+                                            "description": {
+                                              "anyOf": [
+                                                {
+                                                  "type": "string"
+                                                },
+                                                {
+                                                  "type": "null"
+                                                }
+                                              ]
+                                            },
+                                            "icon": {
+                                              "anyOf": [
+                                                {
+                                                  "description": "The icon above the title.",
+                                                  "oneOf": [
+                                                    {
+                                                      "type": "object",
+                                                      "required": [
+                                                        "type",
+                                                        "value"
+                                                      ],
+                                                      "properties": {
+                                                        "type": {
+                                                          "const": "emoji"
+                                                        },
+                                                        "value": {
+                                                          "type": "string"
+                                                        }
+                                                      }
+                                                    },
+                                                    {
+                                                      "type": "object",
+                                                      "required": [
+                                                        "type",
+                                                        "url"
+                                                      ],
+                                                      "properties": {
+                                                        "type": {
+                                                          "const": "image"
+                                                        },
+                                                        "url": {
+                                                          "type": "string"
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "type": "null"
+                                                }
+                                              ]
+                                            },
+                                            "cover": {
+                                              "anyOf": [
+                                                {
+                                                  "description": "The cover above the form header. position is the image's vertical position in percent, default 50.",
+                                                  "oneOf": [
+                                                    {
+                                                      "type": "object",
+                                                      "additionalProperties": false,
+                                                      "required": [
+                                                        "type",
+                                                        "url"
+                                                      ],
+                                                      "properties": {
+                                                        "type": {
+                                                          "const": "image"
+                                                        },
+                                                        "url": {
+                                                          "type": "string"
+                                                        },
+                                                        "position": {
+                                                          "type": "integer",
+                                                          "minimum": 0,
+                                                          "maximum": 100
+                                                        }
+                                                      }
+                                                    },
+                                                    {
+                                                      "type": "object",
+                                                      "additionalProperties": false,
+                                                      "required": [
+                                                        "type",
+                                                        "id"
+                                                      ],
+                                                      "properties": {
+                                                        "type": {
+                                                          "const": "gallery"
+                                                        },
+                                                        "id": {
+                                                          "enum": [
+                                                            "red",
+                                                            "orange",
+                                                            "yellow",
+                                                            "green",
+                                                            "blue",
+                                                            "purple",
+                                                            "pink",
+                                                            "gray"
+                                                          ]
+                                                        },
+                                                        "position": {
+                                                          "type": "integer",
+                                                          "minimum": 0,
+                                                          "maximum": 100
+                                                        }
+                                                      }
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "type": "null"
+                                                }
+                                              ]
+                                            },
                                             "submitLabel": {
                                               "anyOf": [
                                                 {
@@ -12911,7 +13318,7 @@
                                           "anyOf": [
                                             {
                                               "type": "object",
-                                              "description": "Dashboard slot, same shape as the saved view field. Blok draws no dashboard yet."
+                                              "description": "Dashboard layout, same shape as the saved view field. To add a widget use database.addView with dashboardViewId."
                                             },
                                             {
                                               "type": "null"
@@ -13062,6 +13469,86 @@
                                     }
                                   },
                                   "required": [],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "args"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "const": "doc.setCover"
+                                },
+                                "args": {
+                                  "type": "object",
+                                  "properties": {
+                                    "cover": {
+                                      "oneOf": [
+                                        {
+                                          "type": "null"
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "const": "image"
+                                            },
+                                            "url": {
+                                              "type": "string"
+                                            },
+                                            "position": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 100
+                                            }
+                                          },
+                                          "required": [
+                                            "type",
+                                            "url"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "const": "gallery"
+                                            },
+                                            "id": {
+                                              "enum": [
+                                                "red",
+                                                "orange",
+                                                "yellow",
+                                                "green",
+                                                "blue",
+                                                "purple",
+                                                "pink",
+                                                "gray"
+                                              ]
+                                            },
+                                            "position": {
+                                              "type": "integer",
+                                              "minimum": 0,
+                                              "maximum": 100
+                                            }
+                                          },
+                                          "required": [
+                                            "type",
+                                            "id"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "cover"
+                                  ],
                                   "additionalProperties": false
                                 }
                               },
@@ -14104,6 +14591,22 @@
                                                                 "type": "string"
                                                               }
                                                             }
+                                                          },
+                                                          "annotation": {
+                                                            "type": "object",
+                                                            "description": "Plain-text hint card on hover.",
+                                                            "required": [
+                                                              "text"
+                                                            ],
+                                                            "additionalProperties": false,
+                                                            "properties": {
+                                                              "text": {
+                                                                "type": "string"
+                                                              },
+                                                              "subtitle": {
+                                                                "type": "string"
+                                                              }
+                                                            }
                                                           }
                                                         },
                                                         "patternProperties": {
@@ -14237,6 +14740,22 @@
                                                                 "type": "string"
                                                               },
                                                               "rel": {
+                                                                "type": "string"
+                                                              }
+                                                            }
+                                                          },
+                                                          "annotation": {
+                                                            "type": "object",
+                                                            "description": "Plain-text hint card on hover.",
+                                                            "required": [
+                                                              "text"
+                                                            ],
+                                                            "additionalProperties": false,
+                                                            "properties": {
+                                                              "text": {
+                                                                "type": "string"
+                                                              },
+                                                              "subtitle": {
                                                                 "type": "string"
                                                               }
                                                             }
@@ -14643,6 +15162,22 @@
                                                                 "type": "string"
                                                               }
                                                             }
+                                                          },
+                                                          "annotation": {
+                                                            "type": "object",
+                                                            "description": "Plain-text hint card on hover.",
+                                                            "required": [
+                                                              "text"
+                                                            ],
+                                                            "additionalProperties": false,
+                                                            "properties": {
+                                                              "text": {
+                                                                "type": "string"
+                                                              },
+                                                              "subtitle": {
+                                                                "type": "string"
+                                                              }
+                                                            }
                                                           }
                                                         },
                                                         "patternProperties": {
@@ -14776,6 +15311,22 @@
                                                                 "type": "string"
                                                               },
                                                               "rel": {
+                                                                "type": "string"
+                                                              }
+                                                            }
+                                                          },
+                                                          "annotation": {
+                                                            "type": "object",
+                                                            "description": "Plain-text hint card on hover.",
+                                                            "required": [
+                                                              "text"
+                                                            ],
+                                                            "additionalProperties": false,
+                                                            "properties": {
+                                                              "text": {
+                                                                "type": "string"
+                                                              },
+                                                              "subtitle": {
                                                                 "type": "string"
                                                               }
                                                             }
@@ -14922,6 +15473,22 @@
                                                                 "type": "string"
                                                               }
                                                             }
+                                                          },
+                                                          "annotation": {
+                                                            "type": "object",
+                                                            "description": "Plain-text hint card on hover.",
+                                                            "required": [
+                                                              "text"
+                                                            ],
+                                                            "additionalProperties": false,
+                                                            "properties": {
+                                                              "text": {
+                                                                "type": "string"
+                                                              },
+                                                              "subtitle": {
+                                                                "type": "string"
+                                                              }
+                                                            }
                                                           }
                                                         },
                                                         "patternProperties": {
@@ -15055,6 +15622,22 @@
                                                                 "type": "string"
                                                               },
                                                               "rel": {
+                                                                "type": "string"
+                                                              }
+                                                            }
+                                                          },
+                                                          "annotation": {
+                                                            "type": "object",
+                                                            "description": "Plain-text hint card on hover.",
+                                                            "required": [
+                                                              "text"
+                                                            ],
+                                                            "additionalProperties": false,
+                                                            "properties": {
+                                                              "text": {
+                                                                "type": "string"
+                                                              },
+                                                              "subtitle": {
                                                                 "type": "string"
                                                               }
                                                             }
@@ -15737,6 +16320,22 @@
                                               "type": "string"
                                             }
                                           }
+                                        },
+                                        "annotation": {
+                                          "type": "object",
+                                          "description": "Plain-text hint card on hover.",
+                                          "required": [
+                                            "text"
+                                          ],
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "text": {
+                                              "type": "string"
+                                            },
+                                            "subtitle": {
+                                              "type": "string"
+                                            }
+                                          }
                                         }
                                       },
                                       "patternProperties": {
@@ -15884,6 +16483,22 @@
                                                             "type": "string"
                                                           }
                                                         }
+                                                      },
+                                                      "annotation": {
+                                                        "type": "object",
+                                                        "description": "Plain-text hint card on hover.",
+                                                        "required": [
+                                                          "text"
+                                                        ],
+                                                        "additionalProperties": false,
+                                                        "properties": {
+                                                          "text": {
+                                                            "type": "string"
+                                                          },
+                                                          "subtitle": {
+                                                            "type": "string"
+                                                          }
+                                                        }
                                                       }
                                                     },
                                                     "patternProperties": {
@@ -16020,6 +16635,22 @@
                                                             "type": "string"
                                                           }
                                                         }
+                                                      },
+                                                      "annotation": {
+                                                        "type": "object",
+                                                        "description": "Plain-text hint card on hover.",
+                                                        "required": [
+                                                          "text"
+                                                        ],
+                                                        "additionalProperties": false,
+                                                        "properties": {
+                                                          "text": {
+                                                            "type": "string"
+                                                          },
+                                                          "subtitle": {
+                                                            "type": "string"
+                                                          }
+                                                        }
                                                       }
                                                     },
                                                     "patternProperties": {
@@ -16094,6 +16725,22 @@
                                               "type": "string"
                                             },
                                             "rel": {
+                                              "type": "string"
+                                            }
+                                          }
+                                        },
+                                        "annotation": {
+                                          "type": "object",
+                                          "description": "Plain-text hint card on hover.",
+                                          "required": [
+                                            "text"
+                                          ],
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "text": {
+                                              "type": "string"
+                                            },
+                                            "subtitle": {
                                               "type": "string"
                                             }
                                           }
@@ -16271,6 +16918,22 @@
                                                             "type": "string"
                                                           }
                                                         }
+                                                      },
+                                                      "annotation": {
+                                                        "type": "object",
+                                                        "description": "Plain-text hint card on hover.",
+                                                        "required": [
+                                                          "text"
+                                                        ],
+                                                        "additionalProperties": false,
+                                                        "properties": {
+                                                          "text": {
+                                                            "type": "string"
+                                                          },
+                                                          "subtitle": {
+                                                            "type": "string"
+                                                          }
+                                                        }
                                                       }
                                                     },
                                                     "patternProperties": {
@@ -16404,6 +17067,22 @@
                                                             "type": "string"
                                                           },
                                                           "rel": {
+                                                            "type": "string"
+                                                          }
+                                                        }
+                                                      },
+                                                      "annotation": {
+                                                        "type": "object",
+                                                        "description": "Plain-text hint card on hover.",
+                                                        "required": [
+                                                          "text"
+                                                        ],
+                                                        "additionalProperties": false,
+                                                        "properties": {
+                                                          "text": {
+                                                            "type": "string"
+                                                          },
+                                                          "subtitle": {
                                                             "type": "string"
                                                           }
                                                         }
@@ -18095,6 +18774,7 @@
                                     "database.deleteComment",
                                     "database.deleteOption",
                                     "database.deleteProperty",
+                                    "database.deletePropertyPermanently",
                                     "database.deleteRow",
                                     "database.deleteView",
                                     "database.duplicateProperty",
@@ -18110,6 +18790,7 @@
                                     "database.renameView",
                                     "database.replyToComment",
                                     "database.resolveComment",
+                                    "database.restoreProperty",
                                     "database.setDefaultTemplate",
                                     "database.setLayout",
                                     "database.setLock",
@@ -18119,6 +18800,7 @@
                                     "database.updateView",
                                     "doc.find",
                                     "doc.read",
+                                    "doc.setCover",
                                     "embed.create",
                                     "embed.setUrl",
                                     "file.setSource",
@@ -18268,6 +18950,22 @@
                                 "type": "string"
                               },
                               "rel": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "annotation": {
+                            "type": "object",
+                            "description": "Plain-text hint card on hover.",
+                            "required": [
+                              "text"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "text": {
+                                "type": "string"
+                              },
+                              "subtitle": {
                                 "type": "string"
                               }
                             }
@@ -19956,6 +20654,7 @@
                                     "database.create",
                                     "database.deleteOption",
                                     "database.deleteProperty",
+                                    "database.deletePropertyPermanently",
                                     "database.deleteRow",
                                     "database.deleteView",
                                     "database.duplicateProperty",
@@ -19968,6 +20667,7 @@
                                     "database.recolorOption",
                                     "database.renameOption",
                                     "database.renameView",
+                                    "database.restoreProperty",
                                     "database.setDefaultTemplate",
                                     "database.setLayout",
                                     "database.setLock",
@@ -19977,6 +20677,7 @@
                                     "database.updateView",
                                     "doc.find",
                                     "doc.read",
+                                    "doc.setCover",
                                     "embed.create",
                                     "embed.setUrl",
                                     "file.setSource",
@@ -20124,6 +20825,22 @@
                                 "type": "string"
                               },
                               "rel": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "annotation": {
+                            "type": "object",
+                            "description": "Plain-text hint card on hover.",
+                            "required": [
+                              "text"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "text": {
+                                "type": "string"
+                              },
+                              "subtitle": {
                                 "type": "string"
                               }
                             }
@@ -21815,6 +22532,7 @@
                                     "database.deleteComment",
                                     "database.deleteOption",
                                     "database.deleteProperty",
+                                    "database.deletePropertyPermanently",
                                     "database.deleteRow",
                                     "database.deleteView",
                                     "database.duplicateProperty",
@@ -21830,6 +22548,7 @@
                                     "database.renameView",
                                     "database.replyToComment",
                                     "database.resolveComment",
+                                    "database.restoreProperty",
                                     "database.setDefaultTemplate",
                                     "database.setLayout",
                                     "database.setLock",
@@ -21839,6 +22558,7 @@
                                     "database.updateView",
                                     "doc.find",
                                     "doc.read",
+                                    "doc.setCover",
                                     "embed.create",
                                     "embed.setUrl",
                                     "file.setSource",
@@ -21986,6 +22706,22 @@
                                 "type": "string"
                               },
                               "rel": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "annotation": {
+                            "type": "object",
+                            "description": "Plain-text hint card on hover.",
+                            "required": [
+                              "text"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "text": {
+                                "type": "string"
+                              },
+                              "subtitle": {
                                 "type": "string"
                               }
                             }
@@ -22434,7 +23170,7 @@
                 "name": "blok-mcp",
                 "version": "${version}"
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- To make a new sub-page, insert a page block without data.pageId. Blok creates its document and sets data.pageId. Then write inside it.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- To make a new sub-page, insert a page block without data.pageId. Blok creates its document and sets data.pageId. Then write inside it.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
             },
             "jsonrpc": "2.0",
             "id": 1
@@ -23715,6 +24451,7 @@
                                     "database.deleteComment",
                                     "database.deleteOption",
                                     "database.deleteProperty",
+                                    "database.deletePropertyPermanently",
                                     "database.deleteRow",
                                     "database.deleteView",
                                     "database.duplicateProperty",
@@ -23730,6 +24467,7 @@
                                     "database.renameView",
                                     "database.replyToComment",
                                     "database.resolveComment",
+                                    "database.restoreProperty",
                                     "database.setDefaultTemplate",
                                     "database.setLayout",
                                     "database.setLock",
@@ -23739,6 +24477,7 @@
                                     "database.updateView",
                                     "doc.find",
                                     "doc.read",
+                                    "doc.setCover",
                                     "embed.create",
                                     "embed.setUrl",
                                     "file.setSource",
@@ -23886,6 +24625,22 @@
                                 "type": "string"
                               },
                               "rel": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "annotation": {
+                            "type": "object",
+                            "description": "Plain-text hint card on hover.",
+                            "required": [
+                              "text"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "text": {
+                                "type": "string"
+                              },
+                              "subtitle": {
                                 "type": "string"
                               }
                             }
@@ -26545,7 +27300,7 @@
                 "name": "blok-mcp",
                 "version": "${version}"
               },
-              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
+              "instructions": "How to write rich text in Blok:\nRich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format.\n\nRules for editing a Blok document:\n- Call blok_read when you need blocks, text or data you do not have. Address blocks by the ids it returns.\n- Rich text is segments, not Markdown and not HTML. To add Markdown, use the markdown.insert command.\n- When the blok_execute schema lists a command's full arguments, use them. Otherwise call blok_describe with { command } before using it for the first time. Call it with { tool } for a block type's data.\n- Someone may be typing in the document at the same time, so its text can change between your calls.\n- On a STALE error, call blok_read again and retry with fresh ids and text.\n- A CORRECTED warning means Blok changed your command. Check the result is what you meant.\n- Change only the blocks the request is about. To add something, insert a new block; do not convert or rewrite a nearby block to get it.\n- Put related edits in one blok_execute call.\n- A page block's data.pageId is the id of its sub-page document; open it with blok_open to write inside it."
             },
             "jsonrpc": "2.0",
             "id": 1

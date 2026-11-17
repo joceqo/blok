@@ -119,6 +119,17 @@ const (
 // one a room makes no calls at all.
 type ActivityObserver = room.ActivityObserver
 
+// RecordNotes is ICollabRecordNotes: one note per journal record, written
+// right after the append but not atomically with it. Blok never deletes
+// notes; delete a document's notes when you purge it.
+type RecordNotes = room.RecordNotes
+
+// RecordNote is CollabRecordNote.
+type RecordNote = room.RecordNote
+
+// NewMemoryRecordNotes is InMemoryCollabRecordNotes: notes in memory, lost on restart.
+func NewMemoryRecordNotes() *room.MemoryRecordNotes { return room.NewMemoryRecordNotes() }
+
 // ActivityKind is CollabActivityKind.
 type ActivityKind = room.ActivityKind
 
@@ -127,4 +138,39 @@ const (
 	ActivityActive = room.ActivityActive
 	ActivityEdited = room.ActivityEdited
 	ActivityLeft   = room.ActivityLeft
+)
+
+// ChangeObserver is ICollabActivityObserver.OnChangesAsync. An
+// ActivityObserver that also implements it is told what changed in each
+// window, by id only. Without it the room keeps no windows.
+type ChangeObserver = room.ChangeObserver
+
+// ChangeSignal is CollabChangeSignal. Signals can be lost: reconcile
+// through /history/changes and olderEnd.
+type ChangeSignal = room.ChangeSignal
+
+// SignalBlock, SignalProperties, SignalSchema and SignalAuthor are the
+// parts of a ChangeSignal.
+type (
+	SignalBlock      = room.SignalBlock
+	SignalProperties = room.SignalProperties
+	SignalSchema     = room.SignalSchema
+	SignalAuthor     = room.SignalAuthor
+)
+
+// AuditObserver is ICollabActivityObserver.OnEventAsync. An
+// ActivityObserver that also implements it is told each typed audit event.
+type AuditObserver = room.AuditObserver
+
+// AuditEvent and AuditActor are CollabAuditEvent and CollabAuditActor.
+type (
+	AuditEvent = room.AuditEvent
+	AuditActor = room.AuditActor
+)
+
+// The audit event types: CollabAuditEventTypes.
+const (
+	AuditContentEdited  = room.AuditContentEdited
+	AuditLineageDeleted = room.AuditLineageDeleted
+	AuditDocumentPurged = room.AuditDocumentPurged
 )

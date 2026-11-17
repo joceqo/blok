@@ -103,6 +103,7 @@ const createBlockSelection = (overrides: ModuleOverrides = {}): BlockSelectionSe
     blocks,
     currentBlock: blocks[0],
     getBlockByIndex: vi.fn((index: number) => blocks[index]),
+    withCoveredLayouts: (selected: Block[]): Block[] => selected,
     getBlock: vi.fn((element: HTMLElement) => blocks.find((block) => block.holder === element) ?? null),
     getBlockById: vi.fn((id: string) => blocks.find((block) => block.id === id) ?? undefined),
       getBlockDepth: vi.fn(() => 0),
@@ -142,6 +143,9 @@ const createBlockSelection = (overrides: ModuleOverrides = {}): BlockSelectionSe
     Paste: {
       MIME_TYPE: 'application/x-blok',
     } as unknown as BlokModules['Paste'],
+    ViewStateAPI: {
+      methods: { get: vi.fn(() => undefined) },
+    } as unknown as BlokModules['ViewStateAPI'],
     I18n: {
       t: vi.fn((key: string) => key === 'toolNames.text' ? 'Текст' : key),
       has: vi.fn((key: string) => key === 'toolNames.text'),
@@ -475,6 +479,7 @@ describe('BlockSelection', () => {
           defaultTool: paragraph,
           blockTools: new Map([['paragraph', paragraph]]),
         } as unknown as BlokModules['Tools'],
+        PageReferences: { shownLink: () => undefined } as unknown as BlokModules['PageReferences'],
       });
 
       setup.blocks.splice(0, setup.blocks.length, page, child);
@@ -733,12 +738,15 @@ describe('BlockSelection', () => {
         clipboardData,
       } as unknown as ClipboardEvent;
 
-      const table = blocks[0];
+      const [table, cellBlock] = blocks;
 
-      table.holder.innerHTML = '<table><tbody><tr><td colspan="2"><p>a</p></td><td><p>b</p></td></tr><tr><td><p>c</p></td><td><p>d</p></td></tr></tbody></table>';
       (table as unknown as { id: string }).id = 'block-table';
       (table as unknown as { name: string }).name = 'table';
-      (table as unknown as { preservedData: unknown }).preservedData = { withHeadings: true, content: [] };
+      (table as unknown as { preservedData: unknown }).preservedData = {
+        withHeadings: false,
+        content: [[{ blocks: ['cell-a'], colspan: 2 }, { blocks: [], mergedInto: [0, 0] }], ['c', 'd']],
+      };
+      Object.assign(cellBlock, { id: 'cell-a', parentId: 'block-table', preservedData: { text: 'a' } });
       table.selected = true;
 
       await blockSelection.copySelectedBlocks(clipboardEvent);
@@ -746,7 +754,8 @@ describe('BlockSelection', () => {
       const htmlCall = clipboardData.setData.mock.calls.find(([format]) => format === 'text/html');
       const html = htmlCall?.[1] as string;
 
-      expect(html).toContain('<table>');
+      // The table tag carries layout marks (data-blok-table-headings), so match its name only.
+      expect(html).toMatch(/<table[\s>]/);
       expect(html).toContain('<tr>');
       expect(html).toContain('<td');
       expect(html).toContain('colspan="2"');
@@ -772,7 +781,7 @@ describe('BlockSelection', () => {
           '<div data-blok-toggle-children></div>';
         childHolder.innerHTML = '<div>KIDTEXT</div>';
         toggleHolder.querySelector('[data-blok-toggle-children]')?.appendChild(childHolder);
-        Object.assign(toggle, { id: 'toggle', name: 'toggle', contentIds: ['kid'] });
+        Object.assign(toggle, { id: 'toggle', name: 'toggle', contentIds: ['kid'], preservedData: { text: 'TOGTITLE' } });
         Object.assign(child, { id: 'kid', parentId: 'toggle' });
       };
 
@@ -795,9 +804,10 @@ describe('BlockSelection', () => {
         expect(html.indexOf('TOGTITLE')).toBeLessThan(html.indexOf('KIDTEXT'));
         // Title and child stay separate paragraphs, not one run-on line.
         expect(html).not.toContain('TOGTITLEKIDTEXT');
+        expect(html).toBe('<details><summary>TOGTITLE</summary><p>KIDTEXT</p></details>');
       });
 
-      it('writes a selected callout\'s emoji and its child once each', async () => {
+      it('writes a selected callout as an aside around its child, without its emoji', async () => {
         const { blockSelection, blocks } = createBlockSelection();
         const clipboardData = { setData: vi.fn() };
         const [callout, child] = blocks;
@@ -819,7 +829,7 @@ describe('BlockSelection', () => {
         const html = htmlOf(clipboardData.setData);
 
         expect(count(html, 'INCALLOUT')).toBe(1);
-        expect(count(html, '💡')).toBe(1);
+        expect(html).toBe('<aside><p>INCALLOUT</p></aside>');
       });
 
       it('still writes an unselected child of a selected collapsed toggle', async () => {
@@ -846,8 +856,8 @@ describe('BlockSelection', () => {
           '<table><tbody><tr><td><div data-blok-table-cell-blocks data-blok-nested-blocks></div></td></tr></tbody></table>';
         cellBlock.holder.innerHTML = '<div>CELLTEXT</div>';
         table.holder.querySelector('[data-blok-table-cell-blocks]')?.appendChild(cellBlock.holder);
-        Object.assign(table, { id: 'table', name: 'table', contentIds: ['cell'] });
-        Object.assign(cellBlock, { id: 'cell', parentId: 'table' });
+        Object.assign(table, { id: 'table', name: 'table', contentIds: ['cell'], preservedData: { withHeadings: false, content: [[{ blocks: ['cell'] }]] } });
+        Object.assign(cellBlock, { id: 'cell', parentId: 'table', preservedData: { text: 'CELLTEXT' } });
         table.selected = true;
         cellBlock.selected = true;
 
@@ -908,6 +918,7 @@ describe('BlockSelection', () => {
           blocks: allHierarchyBlocks,
           currentBlock: parentBlock,
           getBlockByIndex: vi.fn((index: number) => allHierarchyBlocks[index]),
+          withCoveredLayouts: (selected: Block[]): Block[] => selected,
           getBlock: vi.fn(),
           getBlockById: vi.fn((id: string) => allHierarchyBlocks.find(b => b.id === id) ?? undefined),
       getBlockDepth: vi.fn(() => 0),
@@ -996,6 +1007,7 @@ describe('BlockSelection', () => {
           blocks: allBlocks,
           currentBlock: toggleBlock,
           getBlockByIndex: vi.fn((index: number) => allBlocks[index]),
+          withCoveredLayouts: (selected: Block[]): Block[] => selected,
           getBlock: vi.fn(),
           getBlockById: vi.fn((id: string) => allBlocks.find(b => b.id === id) ?? undefined),
       getBlockDepth: vi.fn(() => 0),
@@ -1049,6 +1061,44 @@ describe('BlockSelection', () => {
       const child2Data = serializedData.find(b => b.id === 'child-2');
       expect(child1Data?.parentId).toBe('toggle-id');
       expect(child2Data?.parentId).toBe('toggle-id');
+    });
+  });
+
+  describe('open state in the Blok clipboard', () => {
+    it('records whether each copied block is open in this browser, outside its data', async () => {
+      const outer = createBlockStub({ id: 'outer', contentIds: ['inner', 'plain'] });
+      const inner = createBlockStub({ id: 'inner', parentId: 'outer' });
+      const plain = createBlockStub({ id: 'plain', parentId: 'outer' });
+      const allBlocks = [outer, inner, plain];
+      const openIds = new Set(['outer']);
+
+      const { blockSelection, modules } = createBlockSelection({
+        BlockManager: {
+          blocks: allBlocks,
+          currentBlock: outer,
+          getBlockByIndex: vi.fn((index: number) => allBlocks[index]),
+          withCoveredLayouts: (selected: Block[]): Block[] => selected,
+          getBlock: vi.fn(),
+          getBlockById: vi.fn((id: string) => allBlocks.find(b => b.id === id) ?? undefined),
+          getBlockDepth: vi.fn(() => 0),
+        } as unknown as BlokModules['BlockManager'],
+        ViewStateAPI: {
+          methods: { get: vi.fn((id: string, key: string) => (key === 'open' && openIds.has(id) ? true : undefined)) },
+        } as unknown as BlokModules['ViewStateAPI'],
+      });
+
+      outer.selected = true;
+
+      const clipboardData = { setData: vi.fn() };
+
+      await blockSelection.copySelectedBlocks({ preventDefault: vi.fn(), clipboardData } as unknown as ClipboardEvent);
+
+      const mimeType = (modules.Paste as unknown as { MIME_TYPE: string }).MIME_TYPE;
+      const payload = (clipboardData.setData.mock.calls as Array<[string, string]>).find((call) => call[0] === mimeType)?.[1] ?? '[]';
+      const entries = JSON.parse(payload) as Array<{ id: string; open?: unknown; data: Record<string, unknown> }>;
+
+      expect(entries.map((entry) => [entry.id, entry.open])).toEqual([['outer', true], ['inner', false], ['plain', false]]);
+      expect(entries.every((entry) => !('open' in entry.data))).toBe(true);
     });
   });
 
@@ -1133,6 +1183,52 @@ describe('BlockSelection', () => {
   });
 
   describe('handleCommandA', () => {
+    const ownerTarget = (holder: HTMLElement, value: string, tag = 'div'): HTMLElement => {
+      const owner = document.createElement('div');
+      const target = document.createElement(tag);
+
+      owner.setAttribute('data-blok-keyboard-owner', value);
+      owner.appendChild(target);
+      holder.appendChild(owner);
+
+      return target;
+    };
+
+    it('selects every block on the first press from a non-text target in a select-all keyboard owner', () => {
+      const { blockSelection, blocks } = createBlockSelection();
+      const selectAllSpy = vi.spyOn(blockSelection as unknown as { selectAllBlocks: () => void }, 'selectAllBlocks');
+      const preventDefault = vi.fn();
+      const event = { target: ownerTarget(blocks[0].holder, 'select-all'), preventDefault } as unknown as KeyboardEvent;
+
+      (blockSelection as unknown as { handleCommandA: (keyboardEvent: KeyboardEvent) => void }).handleCommandA(event);
+
+      expect(selectAllSpy).toHaveBeenCalledTimes(1);
+      expect(preventDefault).toHaveBeenCalled();
+    });
+
+    it('leaves a second press from a select-all owner alone once every block is selected', () => {
+      const { blockSelection, blocks } = createBlockSelection();
+      const selectAllSpy = vi.spyOn(blockSelection as unknown as { selectAllBlocks: () => void }, 'selectAllBlocks');
+      const event = { target: ownerTarget(blocks[0].holder, 'select-all'), preventDefault: vi.fn() } as unknown as KeyboardEvent;
+      const handler = blockSelection as unknown as { handleCommandA: (keyboardEvent: KeyboardEvent) => void };
+
+      handler.handleCommandA(event);
+      handler.handleCommandA(event);
+
+      expect(selectAllSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the text stage for a text field inside a select-all owner, and for a plain owner', () => {
+      const { blockSelection, blocks } = createBlockSelection();
+      const selectAllSpy = vi.spyOn(blockSelection as unknown as { selectAllBlocks: () => void }, 'selectAllBlocks');
+      const handler = blockSelection as unknown as { handleCommandA: (keyboardEvent: KeyboardEvent) => void };
+
+      handler.handleCommandA({ target: ownerTarget(blocks[0].holder, 'select-all', 'input'), preventDefault: vi.fn() } as unknown as KeyboardEvent);
+      handler.handleCommandA({ target: ownerTarget(blocks[1].holder, ''), preventDefault: vi.fn() } as unknown as KeyboardEvent);
+
+      expect(selectAllSpy).not.toHaveBeenCalled();
+    });
+
     it('does not jump straight to all-blocks on the second Cmd+A for single-input tools', () => {
       const { blockSelection, blocks } = createBlockSelection();
       const selectAllSpy = vi.spyOn(blockSelection as unknown as { selectAllBlocks: () => void }, 'selectAllBlocks');
@@ -1319,6 +1415,7 @@ describe('BlockSelection', () => {
           blocks: allBlocks,
           currentBlock: c1,
           getBlockByIndex: vi.fn((index: number) => allBlocks[index]),
+          withCoveredLayouts: (selected: Block[]): Block[] => selected,
           getBlock: vi.fn((element: HTMLElement) => allBlocks.find((block) => block.holder === element) ?? null),
           getBlockById: vi.fn((id: string) => allBlocks.find((block) => block.id === id) ?? undefined),
           getBlockDepth: vi.fn(() => 0),
@@ -1376,6 +1473,7 @@ describe('BlockSelection', () => {
           blocks: allBlocks,
           currentBlock: parent,
           getBlockByIndex: vi.fn((index: number) => allBlocks[index]),
+          withCoveredLayouts: (selected: Block[]): Block[] => selected,
           getBlock: vi.fn((element: HTMLElement) => allBlocks.find((block) => block.holder === element) ?? null),
           getBlockById: vi.fn((id: string) => allBlocks.find((block) => block.id === id) ?? undefined),
           getBlockDepth: vi.fn(() => 0),
@@ -1432,6 +1530,7 @@ describe('BlockSelection', () => {
           blocks: allBlocks,
           currentBlock: parent,
           getBlockByIndex: vi.fn((index: number) => allBlocks[index]),
+          withCoveredLayouts: (selected: Block[]): Block[] => selected,
           getBlock: vi.fn((element: HTMLElement) => allBlocks.find((block) => block.holder === element) ?? null),
           getBlockById: vi.fn((id: string) => allBlocks.find((block) => block.id === id) ?? undefined),
           getBlockDepth: vi.fn(() => 0),
@@ -1500,9 +1599,6 @@ describe('BlockSelection', () => {
         insertContentAtCaretPosition: ReturnType<typeof vi.fn>;
       };
       const insertedBlock = createBlockStub();
-      const delaySpy = vi.spyOn(utils, 'delay').mockImplementation((fn) => {
-        return () => fn();
-      });
 
       blockManager.deleteSelectedBlocksAndInsertReplacement = vi.fn().mockReturnValue(insertedBlock);
 
@@ -1519,8 +1615,8 @@ describe('BlockSelection', () => {
       // A replacement block is forced so the char always lands in a clean block.
       expect(blockManager.deleteSelectedBlocksAndInsertReplacement).toHaveBeenCalledWith(true);
       expect(caret.setToBlock).toHaveBeenCalledWith(insertedBlock);
+      // At once: a key typed fast after it would land first ("yzx" for "xyz").
       expect(caret.insertContentAtCaretPosition).toHaveBeenCalledWith('x');
-      expect(delaySpy).toHaveBeenCalledTimes(1);
     });
 
     it('inserts empty string for non-printable keys', () => {
@@ -1590,6 +1686,57 @@ describe('BlockSelection', () => {
       // Verify the observable outcome: all blocks should be selected
       expect(blocks.every((block) => block.selected)).toBe(true);
       expect(blockSelection.allBlocksSelected).toBe(true);
+    });
+  });
+
+  describe('Cmd+A in read-only that lands outside the redactor', () => {
+    const pressCommandA = (target: EventTarget): KeyboardEvent => {
+      const event = new KeyboardEvent('keydown', { code: 'KeyA', key: 'a', metaKey: true, bubbles: true, cancelable: true });
+
+      target.dispatchEvent(event);
+
+      return event;
+    };
+
+    const setup = (): ReturnType<typeof createBlockSelection> => {
+      const setupResult = createBlockSelection();
+
+      Object.defineProperty(setupResult.modules.ReadOnly, 'isEnabled', { value: true, configurable: true });
+      setupResult.redactor.textContent = 'read-only text';
+      document.body.appendChild(setupResult.redactor);
+      vi.spyOn(Shortcuts, 'add').mockImplementation(() => undefined);
+      setupResult.blockSelection.prepare();
+
+      return setupResult;
+    };
+
+    const teardown = (blockSelection: BlockSelection): void => {
+      (blockSelection as unknown as { listeners: { removeAll: () => void } }).listeners.removeAll();
+    };
+
+    it('selects every block when the page selection is in this editor', () => {
+      const { blockSelection, blocks, redactor } = setup();
+
+      window.getSelection()?.collapse(redactor.firstChild, 2);
+      const event = pressCommandA(document.body);
+
+      expect(blocks.every((block) => block.selected)).toBe(true);
+      expect(event.defaultPrevented).toBe(true);
+      teardown(blockSelection);
+    });
+
+    it('leaves the page alone when the selection is in another editor', () => {
+      const { blockSelection, blocks } = setup();
+      const other = document.createElement('div');
+
+      other.textContent = 'another editor';
+      document.body.appendChild(other);
+      window.getSelection()?.collapse(other.firstChild, 2);
+      const event = pressCommandA(document.body);
+
+      expect(blocks.some((block) => block.selected)).toBe(false);
+      expect(event.defaultPrevented).toBe(false);
+      teardown(blockSelection);
     });
   });
 
@@ -2160,6 +2307,7 @@ describe('BlockSelection', () => {
           blocks: allBlocks,
           currentBlock: c1,
           getBlockByIndex: vi.fn((index: number) => allBlocks[index]),
+          withCoveredLayouts: (selected: Block[]): Block[] => selected,
           getBlock: vi.fn((element: HTMLElement) => allBlocks.find((block) => block.holder === element) ?? null),
           getBlockById: vi.fn((id: string) => allBlocks.find((block) => block.id === id) ?? undefined),
           getBlockDepth: vi.fn(() => 0),

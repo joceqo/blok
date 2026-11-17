@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -93,7 +93,7 @@ interface Host {
   directory: string;
 }
 
-async function startHost(journal: boolean, shared?: Host): Promise<Host> {
+async function startHost(journal: boolean, shared?: Host, extra: string[] = []): Promise<Host> {
   const directory = shared?.directory ?? await mkdtemp(join(tmpdir(), 'blok-collab-http-'));
   const endpoint = shared?.endpoint ?? await startDocEndpoint();
   const server = await startServer({
@@ -107,10 +107,22 @@ async function startHost(journal: boolean, shared?: Host): Promise<Host> {
       '--collab-dir', directory,
       '--doc-endpoint', endpoint.url,
       ...(journal ? ['--conformance-journal'] : []),
+      ...extra,
     ],
   });
 
   return { server, endpoint, directory };
+}
+
+/**
+ * The C# host builds its JS runtime on the first request that reaches the
+ * rooms: 4.7 to 4.9 s on a CI runner, against a 5 s test limit. A suite pays
+ * it here, from beforeAll, where the limit is a minute.
+ */
+async function warmUp(base: string): Promise<void> {
+  const answer = await send(base, 'POST', '/sync/warm-up/edit', [[KEY, 'warm-up']], insertBody('b1', 'x'));
+
+  expect(answer.status).toBe(204);
 }
 
 async function stopHost(host: Host | undefined): Promise<void> {
@@ -139,6 +151,7 @@ suite('collab HTTP routes without a journal', () => {
   beforeAll(async () => {
     host = await startHost(false);
     base = host.server.baseUrl;
+    await warmUp(base);
   }, 60_000);
 
   afterAll(async () => {
@@ -235,6 +248,8 @@ suite('collab HTTP routes without a journal', () => {
       ['GET', `/sync/doc-plain/history/${lineage}/0`],
       ['GET', `/sync/doc-plain/history/${lineage}/0/changes`],
       ['DELETE', `/sync/doc-plain/history/${lineage}`],
+      ['GET', '/sync/doc-plain/history/at?time=2026-10-07T12:00:00Z'],
+      ['GET', '/sync/doc-plain/history/changes'],
     ]) {
       const answer = await send(base, method, path);
 
@@ -267,6 +282,7 @@ suite('collab HTTP routes on a journal', () => {
   beforeAll(async () => {
     host = await startHost(true);
     base = host.server.baseUrl;
+    await warmUp(base);
   }, 60_000);
 
   afterAll(async () => {
@@ -347,10 +363,65 @@ suite('collab HTTP routes on a journal', () => {
     expect([atCap.status, atCap.headers['blok-doc-sequence']]).toEqual([204, '1']);
   });
 
+  // 1 insert, then 100 updates of about 21 KB: each row carries the text
+  // twice, so the rows pass the 4 MiB answer cap and the HTTP layer cuts them.
+  it('names the oldest row it sent as olderEnd when the byte cap cuts the answer', async () => {
+    const doc = '/sync/doc-byte-cut';
+    const text = (index: number): string => `${String(index).padStart(4, '0')}${'x'.repeat(20900)}`;
+    const first = await send(base, 'POST', `${doc}/edit`, [[KEY, 'c0']], insertBody('b1', text(0)));
+    const cutLineage = String(first.headers['blok-doc-lineage']);
+
+    for (let index = 1; index <= 100; index++) {
+      expect((await send(base, 'POST', `${doc}/edit`, [[KEY, `c${index}`]], updateBody('b1', text(index)))).status).toBe(204);
+    }
+
+    interface Cut { changes: { sequence: number }[]; truncated?: boolean; olderEnd?: { sequence: number } }
+    const version = JSON.parse((await send(base, 'GET', `${doc}/history/${cutLineage}/101/changes`)).body) as Cut;
+
+    expect(version.truncated).toBe(true);
+    expect(version.olderEnd?.sequence).toBe(version.changes[0].sequence);
+
+    const range = JSON.parse((await send(base, 'GET', `${doc}/history/changes?from=2000-01-01T00:00:00Z`)).body) as Cut;
+
+    expect(range.truncated).toBe(true);
+    expect(range.olderEnd?.sequence).toBe(range.changes.at(-1)?.sequence);
+  }, 180_000);
+
+  // 1 inserts b, then 200 edits of a: the 200-record cap reads none of b.
+  it('points a narrowed answer cut by the record cap past every record it read', async () => {
+    const doc = '/sync/doc-narrow-cap';
+    const first = await send(base, 'POST', `${doc}/edit`, [[KEY, 'n0']], insertBody('b', 'b'));
+    const narrowLineage = String(first.headers['blok-doc-lineage']);
+
+    await send(base, 'POST', `${doc}/edit`, [[KEY, 'na']], JSON.stringify({
+      ops: [{ op: 'insert', id: 'a', after: 'b', block: { type: 'paragraph', data: { text: 'a' } } }],
+    }));
+
+    for (let index = 1; index < 200; index++) {
+      expect((await send(base, 'POST', `${doc}/edit`, [[KEY, `n${index}`]], updateBody('a', `v${index}`))).status).toBe(204);
+    }
+
+    const cut = JSON.parse((await send(base, 'GET', `${doc}/history/${narrowLineage}/201/changes?block=b`)).body) as {
+      changes: unknown[]; truncated?: boolean; olderEnd?: { sequence: number };
+    };
+
+    expect([cut.changes, cut.truncated, cut.olderEnd?.sequence]).toEqual([[], true, 2]);
+
+    const rest = JSON.parse((await send(base, 'GET', `${doc}/history/${narrowLineage}/1/changes?block=b`)).body) as {
+      changes: { sequence: number }[];
+    };
+
+    expect(rest.changes.map((change) => change.sequence)).toEqual([1]);
+  }, 120_000);
+
   describe('history', () => {
     let lineage = '';
 
     beforeAll(async () => {
+      // Reading the state seeds the lineage. The pause puts its createdAt a few
+      // milliseconds before record 1, which the baseline-at-a-time test needs.
+      await send(base, 'GET', '/sync/doc-history/state');
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
       await send(base, 'POST', '/sync/doc-history/edit', [[KEY, 'h1']], insertBody('b1', 'first'));
       await send(base, 'POST', '/sync/doc-history/edit', [[KEY, 'h2']], insertBody('b2', 'second'));
 
@@ -477,6 +548,216 @@ suite('collab HTTP routes on a journal', () => {
       expect([answer.status, body.changes.map((change) => change.sequence)]).toEqual([200, [2, 3]]);
     });
 
+    const LONG_AGO = '2000-01-01T00:00:00Z';
+    const FAR_AHEAD = '2999-01-01T00:00:00Z';
+
+    it('reads the point at a time as JSON when the caller accepts JSON', async () => {
+      const answer = await send(base, 'GET', `/sync/doc-history/history/at?time=${FAR_AHEAD}`, [['Accept', 'text/html, Application/JSON;q=0.9']]);
+      const body = JSON.parse(answer.body) as { lineage: string; sequence: number; committedAt: number };
+
+      expect([answer.status, answer.headers['content-type'], answer.headers['cache-control']])
+        .toEqual([200, 'application/json', 'no-store']);
+      expect(Object.keys(body)).toEqual(['lineage', 'sequence', 'committedAt']);
+      expect([body.lineage, body.sequence, typeof body.committedAt]).toEqual([lineage, 3, 'number']);
+      expect([answer.headers['blok-history-lineage'], answer.headers['blok-history-sequence']]).toEqual([lineage, '3']);
+    });
+
+    it('redirects to the point at a time, relative to the history route', async () => {
+      const answer = await send(base, 'GET', `/sync/doc-history/history/at?time=${FAR_AHEAD}`, [['Accept', '*/*']]);
+
+      expect([answer.status, answer.headers.location, answer.body]).toEqual([302, `${lineage}/3`, '']);
+    });
+
+    it('answers 404 not_found as JSON for a time before the history starts', async () => {
+      const answer = await send(base, 'GET', `/sync/doc-history/history/at?time=${LONG_AGO}`, [['Accept', 'application/json']]);
+
+      expect([answer.status, answer.headers['content-type'], answer.body])
+        .toEqual([404, 'application/json', '{"reason":"not_found"}']);
+    });
+
+    it('reads the time of a record as that record, and an offset sent as %2B', async () => {
+      const list = await send(base, 'GET', `/sync/doc-history/history/${lineage}/3/changes`);
+      const second = (JSON.parse(list.body) as { changes: { sequence: number; committedAt: number }[] }).changes[1];
+      const rows = (JSON.parse(list.body) as { changes: { sequence: number; committedAt: number }[] }).changes;
+      // committedAt is whole milliseconds, so X.9999999 is past every record whose millisecond is X and
+      // before every later one: the point is the newest record whose committedAt is at most X.
+      const at = `${new Date(second.committedAt).toISOString().slice(0, -1)}9999%2B00:00`;
+      const expected = Math.max(...rows.filter((row) => row.committedAt <= second.committedAt).map((row) => row.sequence));
+      const answer = await send(base, 'GET', `/sync/doc-history/history/at?time=${at}`, [['Accept', 'application/json']]);
+
+      expect([answer.status, JSON.parse(answer.body)]).toEqual([200, {
+        lineage,
+        sequence: expected,
+        committedAt: rows.find((row) => row.sequence === expected)?.committedAt,
+      }]);
+    });
+
+    it('reads one millisecond before the first record as the baseline', async () => {
+      const list = await send(base, 'GET', `/sync/doc-history/history/${lineage}/3/changes`);
+      const first = (JSON.parse(list.body) as { changes: { committedAt: number }[] }).changes[0];
+      const history = JSON.parse((await send(base, 'GET', '/sync/doc-history/history')).body) as { lineages: { createdAt: number }[] };
+      const at = new Date(first.committedAt - 1).toISOString();
+      const answer = await send(base, 'GET', `/sync/doc-history/history/at?time=${at}`, [['Accept', 'application/json']]);
+
+      // Only meaningful when the lineage began before that millisecond.
+      expect(history.lineages[0].createdAt).toBeLessThan(first.committedAt - 1);
+      expect([answer.status, (JSON.parse(answer.body) as { sequence: number }).sequence]).toEqual([200, 0]);
+    });
+
+    it('pins the 24-hour default at its edge', async () => {
+      const list = await send(base, 'GET', `/sync/doc-history/history/${lineage}/3/changes`);
+      const first = (JSON.parse(list.body) as { changes: { sequence: number; committedAt: number }[] }).changes[0];
+      const day = 24 * 60 * 60 * 1000;
+      const sequencesUpTo = async (to: number): Promise<number[]> =>
+        (JSON.parse((await send(base, 'GET', `/sync/doc-history/history/changes?to=${new Date(to).toISOString()}`)).body) as {
+          changes: { sequence: number }[];
+        }).changes.map((change) => change.sequence);
+
+      // from = to - 24 h. Record 1 sits in [X, X + 1 ms) where X is its committedAt.
+      expect(await sequencesUpTo(first.committedAt + day)).toContain(first.sequence);
+      expect(await sequencesUpTo(first.committedAt + 1 + day)).not.toContain(first.sequence);
+    });
+
+    it('answers the literal at and changes paths as GET routes: preflight, and DELETE still finds no version', async () => {
+      for (const path of ['/sync/doc-history/history/at', '/sync/doc-history/history/changes']) {
+        const preflight = await send(base, 'OPTIONS', path, [['Origin', ALLOWED_ORIGIN], ['Access-Control-Request-Method', 'GET']]);
+        const deleted = await send(base, 'DELETE', path);
+
+        expect([path, preflight.status, preflight.headers['access-control-allow-methods']]).toEqual([path, 204, 'GET, OPTIONS']);
+        expect([path, deleted.status, deleted.body]).toEqual([path, 404, 'no such version\n']);
+      }
+    });
+
+    it('redirects to the same point with or without a trailing slash', async () => {
+      for (const path of ['/sync/doc-history/history/at', '/sync/doc-history/history/at/']) {
+        const answer = await send(base, 'GET', `${path}?time=${FAR_AHEAD}`);
+
+        expect([path, answer.status, new URL(String(answer.headers.location), new URL(path, base)).pathname])
+          .toEqual([path, 302, `/sync/doc-history/history/${lineage}/3`]);
+      }
+    });
+
+    it.each([
+      ['no time', ''],
+      ['no offset', '?time=2026-10-07T12:00:00'],
+      ['an offset sent as a raw +, which reads as a space', '?time=2026-10-07T12:00:00+03:00'],
+      ['a repeated time', `?time=${FAR_AHEAD}&time=${FAR_AHEAD}`],
+      ['a number', '?time=1791552000000'],
+    ])('refuses at with %s', async (_name, query) => {
+      const answer = await send(base, 'GET', `/sync/doc-history/history/at${query}`);
+
+      expect([answer.status, answer.body]).toEqual([400, 'time must be an ISO 8601 time with an offset\n']);
+    });
+
+    it('lists the changes in a time range newest first, each with its lineage', async () => {
+      const answer = await send(base, 'GET', `/sync/doc-history/history/changes?from=${LONG_AGO}&to=${FAR_AHEAD}`);
+      const body = JSON.parse(answer.body) as {
+        changes: { lineage: string; sequence: number; blocks: { id: string; kind: string }[] }[];
+        truncated?: boolean;
+      };
+
+      expect([answer.status, answer.headers['cache-control'], Object.keys(body)]).toEqual([200, 'no-store', ['changes']]);
+      expect(body.changes.map((change) => [change.lineage, change.sequence, change.blocks.map((block) => [block.id, block.kind])]))
+        .toEqual([[lineage, 3, [['b1', 'changed']]], [lineage, 2, [['b2', 'added']]], [lineage, 1, [['b1', 'added']]]]);
+      expect(Object.keys(body.changes[0])).toEqual(['lineage', 'sequence', 'committedAt', 'actor', 'blocks']);
+    });
+
+    it('defaults the range to the last 24 hours', async () => {
+      const answer = await send(base, 'GET', '/sync/doc-history/history/changes');
+      const recent = await send(base, 'GET', `/sync/doc-history/history/changes?to=${LONG_AGO}`);
+
+      expect((JSON.parse(answer.body) as { changes: { sequence: number }[] }).changes.map((change) => change.sequence))
+        .toEqual([3, 2, 1]);
+      expect([recent.status, recent.body]).toEqual([200, '{"changes":[]}']);
+    });
+
+    it('takes before as an exclusive point', async () => {
+      const answer = await send(base, 'GET', `/sync/doc-history/history/changes?from=${LONG_AGO}&before=${lineage}:3`);
+
+      expect((JSON.parse(answer.body) as { changes: { sequence: number }[] }).changes.map((change) => change.sequence))
+        .toEqual([2, 1]);
+    });
+
+    it('answers 404 for a before lineage the journal never held', async () => {
+      const answer = await send(base, 'GET', '/sync/doc-history/history/changes?before=ffffffffffffffffffffffffffffffff:1');
+
+      expect([answer.status, answer.body]).toEqual([404, 'no such version\n']);
+    });
+
+    it.each([
+      ['from after to', `?from=${FAR_AHEAD}&to=${LONG_AGO}`],
+      ['from with no offset', '?from=2026-10-07T12:00:00'],
+      ['a repeated to', `?to=${FAR_AHEAD}&to=${FAR_AHEAD}`],
+    ])('refuses a range with %s', async (_name, query) => {
+      const answer = await send(base, 'GET', `/sync/doc-history/history/changes${query}`);
+
+      expect([answer.status, answer.body])
+        .toEqual([400, 'from and to must be ISO 8601 times with an offset, from no later than to\n']);
+    });
+
+    it.each(['x', 'not-a-lineage:1', '0123456789abcdef0123456789abcdef', '0123456789abcdef0123456789abcdef:+1'])(
+      'refuses before=%s',
+      async (before) => {
+        const answer = await send(base, 'GET', `/sync/doc-history/history/changes?before=${before}`);
+
+        expect([answer.status, answer.body]).toEqual([400, 'before must be one <lineage>:<sequence>\n']);
+      },
+    );
+
+    it('breaks database edits down by property, schema entry and view with detail=properties', async () => {
+      const title = { id: 'title', name: 'Name', type: 'title', position: 'a' };
+      const status = { id: 'st', name: 'Status', type: 'status', position: 'b' };
+      const view = { id: 'v1', name: 'Table', type: 'table', position: 'a', sorts: [], filters: [] };
+      const database = (schema: Record<string, unknown>[], views: Record<string, unknown>[]): Record<string, unknown> => ({ schema, views, activeViewId: 'v1' });
+      const edit = async (key: string, ops: Record<string, unknown>[]): Promise<string> => {
+        const answer = await send(base, 'POST', '/sync/doc-database/edit', [[KEY, key]], JSON.stringify({ ops }));
+
+        expect(answer.status).toBe(204);
+
+        return String(answer.headers['blok-doc-lineage']);
+      };
+
+      await edit('d1', [
+        { op: 'insert', id: 'db', block: { type: 'database', data: database([title], [view]) } },
+        { op: 'insert', id: 'r1', parent: 'db', block: { type: 'database-row', data: { properties: { st: 'todo' } } } },
+      ]);
+      await edit('d2', [{ op: 'update', id: 'r1', data: { properties: { st: 'done' } } }]);
+      const dbLineage = await edit('d3', [{ op: 'update', id: 'db', data: database([title, status], [{ ...view, name: 'All' }]) }]);
+
+      type Block = { id: string; properties?: unknown; schema?: unknown; views?: unknown };
+      const read = async (path: string): Promise<Block[][]> =>
+        (JSON.parse((await send(base, 'GET', path)).body) as { changes: { blocks: Block[] }[] }).changes.map((change) => change.blocks);
+
+      const plain = await read(`/sync/doc-database/history/${dbLineage}/3/changes?since=1`);
+
+      expect(plain.flat().map((block) => Object.keys(block).filter((key) => ['properties', 'schema', 'views'].includes(key))))
+        .toEqual([[], []]);
+
+      const detailed = await read(`/sync/doc-database/history/${dbLineage}/3/changes?since=1&detail=properties`);
+
+      expect(detailed.map((blocks) => blocks.map(({ id, properties, schema, views }) => ({ id, properties, schema, views })))).toEqual([
+        [{ id: 'r1', properties: [{ id: 'st', before: 'todo', after: 'done' }], schema: undefined, views: undefined }],
+        [{ id: 'db', properties: undefined, schema: [{ id: 'st', name: 'Status', action: 'created' }], views: [{ id: 'v1', action: 'updated' }] }],
+      ]);
+
+      const ignored = await read(`/sync/doc-database/history/${dbLineage}/3/changes?since=1&detail=all`);
+
+      expect(ignored).toEqual(plain);
+
+      const ranged = await read('/sync/doc-database/history/changes?from=2000-01-01T00:00:00Z&detail=properties');
+
+      expect(ranged[1].map((block) => block.properties)).toEqual([[{ id: 'st', before: 'todo', after: 'done' }]]);
+    });
+
+    it.each(['detail=', 'detail=all', 'detail=properties&detail=properties'])('refuses ?%s on the range route only', async (query) => {
+      const range = await send(base, 'GET', `/sync/doc-history/history/changes?${query}`);
+      // The shipped route ignored unknown query keys before detail existed, and still does.
+      const shipped = await send(base, 'GET', `/sync/doc-history/history/${lineage}/3/changes?${query}`);
+
+      expect([range.status, range.body]).toEqual([400, 'detail must be properties\n']);
+      expect(shipped.status).toBe(200);
+    });
+
     it('restores a point as one journalled edit, needs the key, and dedupes a retry', async () => {
       const missing = await send(base, 'POST', `/sync/doc-history/history/${lineage}/1/restore`);
 
@@ -510,6 +791,345 @@ suite('collab HTTP routes on a journal', () => {
 
       expect([again.status, again.body]).toEqual([404, 'no such version\n']);
     });
+  });
+});
+
+const GUARDED_DOC = 'doc-guards';
+const CONFIRM = 'X-Blok-Restore-Confirm';
+
+/** Sequence 1 has a public form; sequence 2 locks the database and closes the form to the workspace. */
+async function seedGuardedDoc(base: string): Promise<string> {
+  const created = await send(base, 'POST', `/sync/${GUARDED_DOC}/edit`, [[KEY, 'g1']], JSON.stringify({
+    ops: [{ op: 'insert', id: 'db', block: { type: 'database', data: {
+      schema: [{ id: 't', type: 'title' }], views: [{ id: 'v1', type: 'table', form: { public: true } }],
+    } } }],
+  }));
+
+  expect([created.status, created.body]).toEqual([204, '']);
+
+  const locked = await send(base, 'POST', `/sync/${GUARDED_DOC}/edit`, [[KEY, 'g2']], JSON.stringify({
+    ops: [{ op: 'update', id: 'db', data: {
+      schema: [{ id: 't', type: 'title', databaseLocked: true }], views: [{ id: 'v1', type: 'table' }],
+    } }],
+  }));
+
+  expect([locked.status, locked.headers['blok-doc-sequence'], locked.body]).toEqual([204, '2', '']);
+
+  return String(locked.headers['blok-doc-lineage']);
+}
+
+const UNLOCK_AND_SHARE = [{ kind: 'unlock', blockId: 'db' }, { kind: 'share', blockId: 'db', viewId: 'v1' }];
+
+suite('collab restore guards, off by default', () => {
+  let host: Host | undefined;
+  let base = '';
+  let lineage = '';
+
+  // The first edit warms the server's rich text reader: seed where the time limit is a minute.
+  beforeAll(async () => {
+    host = await startHost(true);
+    base = host.server.baseUrl;
+    lineage = await seedGuardedDoc(base);
+  }, 60_000);
+
+  afterAll(async () => {
+    await stopHost(host);
+  });
+
+  it('restores a version that unlocks a database and brings back a public form, unasked', async () => {
+    const restore = await send(base, 'POST', `/sync/${GUARDED_DOC}/history/${lineage}/1/restore`, [[KEY, 'r1']]);
+
+    expect([restore.status, restore.headers['blok-doc-sequence']]).toEqual([204, '3']);
+  });
+});
+
+const TRASH_DOC = 'doc-trash';
+
+/** Sequence 1 holds paragraph a; sequence 2 adds a sub-page pointer after it. */
+async function seedPagePointerDoc(base: string): Promise<string> {
+  const first = await send(base, 'POST', `/sync/${TRASH_DOC}/edit`, [[KEY, 't1']], JSON.stringify({
+    ops: [{ op: 'insert', id: 'a', block: { type: 'paragraph', data: { text: 'a' } } }],
+  }));
+
+  expect([first.status, first.body]).toEqual([204, '']);
+
+  const second = await send(base, 'POST', `/sync/${TRASH_DOC}/edit`, [[KEY, 't2']], JSON.stringify({
+    ops: [{ op: 'insert', id: 'pg', after: 'a', block: { type: 'page', data: { pageId: 'sub' } } }],
+  }));
+
+  expect([second.status, second.headers['blok-doc-sequence'], second.body]).toEqual([204, '2', '']);
+
+  return String(second.headers['blok-doc-lineage']);
+}
+
+const pointerAfterRestore = async (base: string, lineage: string): Promise<Record<string, unknown> | undefined> => {
+  const restore = await send(base, 'POST', `/sync/${TRASH_DOC}/history/${lineage}/1/restore`, [[KEY, 'tr1']]);
+
+  expect([restore.status, restore.headers['blok-doc-sequence']]).toEqual([204, '3']);
+
+  const state = JSON.parse((await send(base, 'GET', `/sync/${TRASH_DOC}/state`)).body) as {
+    blocks: { id: string; data: Record<string, unknown> }[];
+  };
+
+  return state.blocks.find((block) => block.id === 'pg')?.data;
+};
+
+suite('collab restore of a later page pointer, off by default', () => {
+  let host: Host | undefined;
+  let base = '';
+  let lineage = '';
+
+  beforeAll(async () => {
+    host = await startHost(true);
+    base = host.server.baseUrl;
+    lineage = await seedPagePointerDoc(base);
+  }, 60_000);
+
+  afterAll(async () => {
+    await stopHost(host);
+  });
+
+  it('removes the pointer, as before', async () => {
+    expect(await pointerAfterRestore(base, lineage)).toBeUndefined();
+  });
+});
+
+suite('collab restore of a later page pointer, trashing on', () => {
+  let host: Host | undefined;
+  let base = '';
+  let lineage = '';
+
+  beforeAll(async () => {
+    host = await startHost(true, undefined, ['--conformance-restore-trashes-pages']);
+    base = host.server.baseUrl;
+    lineage = await seedPagePointerDoc(base);
+  }, 60_000);
+
+  afterAll(async () => {
+    await stopHost(host);
+  });
+
+  it('previews the pointer as changed, not removed', async () => {
+    const answer = await send(base, 'POST', `/sync/${TRASH_DOC}/history/${lineage}/1/restore/preview`);
+    const preview = JSON.parse(answer.body) as { wouldUndo: { blocks: { id: string; kind: string }[] }; fits: boolean };
+
+    expect(answer.status).toBe(200);
+    expect(preview.wouldUndo.blocks.map(({ id, kind }) => ({ id, kind }))).toEqual([{ id: 'pg', kind: 'changed' }]);
+    expect(preview.fits).toBe(true);
+  });
+
+  it('keeps the pointer in place and sets trashed on it', async () => {
+    const data = await pointerAfterRestore(base, lineage);
+    const trashed = data?.trashed as Record<string, unknown> | undefined;
+
+    expect(data?.pageId).toBe('sub');
+    expect(trashed).toMatchObject({ formerParentId: null, formerIndex: 1 });
+    expect(Number.isInteger(trashed?.at)).toBe(true);
+    expect(Object.keys(trashed ?? {}).sort()).toEqual(['at', 'by', 'formerIndex', 'formerParentId']);
+  });
+});
+
+suite('collab restore guards, enforced', () => {
+  let host: Host | undefined;
+  let base = '';
+  let lineage = '';
+
+  beforeAll(async () => {
+    host = await startHost(true, undefined, ['--conformance-restore-guards']);
+    base = host.server.baseUrl;
+    lineage = await seedGuardedDoc(base);
+  }, 60_000);
+
+  afterAll(async () => {
+    await stopHost(host);
+  });
+
+  const restore = (sequence: number, headers: [string, string][], body?: string): Promise<Answer> =>
+    send(base, 'POST', `/sync/${GUARDED_DOC}/history/${lineage}/${sequence}/restore`, headers, body);
+
+  const head = async (): Promise<string | undefined> =>
+    (await send(base, 'GET', `/sync/${GUARDED_DOC}/state`)).headers['blok-doc-sequence'];
+
+  it('refuses with 409, a JSON body naming every guard and the refusal header, and changes nothing', async () => {
+    const answer = await restore(1, [[KEY, 'k-refused']]);
+
+    expect(answer.status).toBe(409);
+    expect(answer.headers['content-type']).toBe('application/json');
+    expect(answer.headers['x-blok-restore-refusal']).toBe('confirmation_required');
+    expect(answer.headers['cache-control']).toBe('no-store');
+    expect(JSON.parse(answer.body)).toEqual({ error: 'confirmation_required', guards: UNLOCK_AND_SHARE });
+    expect(await head()).toBe('2');
+  });
+
+  it('still refuses when the confirm leaves out one kind present', async () => {
+    const answer = await restore(1, [[KEY, 'k-partial'], [CONFIRM, 'share']]);
+
+    expect([answer.status, answer.headers['x-blok-restore-refusal']]).toEqual([409, 'confirmation_required']);
+    expect(await head()).toBe('2');
+  });
+
+  it('ignores kinds it does not know and a body that does not parse', async () => {
+    const answer = await restore(1, [[KEY, 'k-unknown'], [CONFIRM, 'everything']], '{not json');
+
+    expect([answer.status, answer.headers['x-blok-restore-refusal']]).toEqual([409, 'confirmation_required']);
+  });
+
+  it.each([
+    ['an array', '[]'],
+    ['a number', '5'],
+    ['a repeated key', '{"confirm":["share","unlock"],"confirm":["share"]}'],
+  ])('confirms nothing with a body that is %s, and still answers the JSON refusal', async (_name, body) => {
+    const answer = await restore(1, [[KEY, 'k-odd-body'], [CONFIRM, 'share']], body);
+
+    expect([answer.status, answer.headers['x-blok-restore-refusal']]).toEqual([409, 'confirmation_required']);
+    expect(JSON.parse(answer.body)).toEqual({ error: 'confirmation_required', guards: UNLOCK_AND_SHARE });
+  });
+
+  it('restores once every kind is confirmed, under the key a refusal did not consume', async () => {
+    const answer = await restore(1, [[KEY, 'k-refused'], [CONFIRM, 'unlock'], [CONFIRM, ' share ,lockedReshape']]);
+
+    expect([answer.status, answer.headers['blok-doc-sequence']]).toEqual([204, '3']);
+  });
+
+  it('takes the confirm from a JSON body', async () => {
+    // Back to sequence 2's state, locked with the form closed: closing the form is a share change too.
+    const back = await restore(2, [[KEY, 'k-back'], [CONFIRM, 'share']]);
+
+    expect([back.status, back.headers['blok-doc-sequence']]).toEqual([204, '4']);
+
+    const answer = await restore(1, [[KEY, 'k-body']], JSON.stringify({ confirm: ['share', 'unlock'] }));
+
+    expect([answer.status, answer.headers['blok-doc-sequence']]).toEqual([204, '5']);
+  });
+
+  it('names a removed locked database as lockedReshape', async () => {
+    expect((await restore(2, [[KEY, 'k-relock'], [CONFIRM, 'share']])).status).toBe(204);
+
+    const answer = await restore(0, [[KEY, 'k-empty']]);
+
+    expect(answer.status).toBe(409);
+    expect(JSON.parse(answer.body)).toEqual({ error: 'confirmation_required', guards: [{ kind: 'lockedReshape', blockId: 'db' }] });
+  });
+
+  it('keeps the key-reuse 409 plain text, without the refusal header', async () => {
+    const answer = await restore(0, [[KEY, 'k-body']]);
+
+    expect(answer.status).toBe(409);
+    expect(answer.headers['content-type']).toBe('text/plain; charset=utf-8');
+    expect(answer.headers['x-blok-restore-refusal']).toBeUndefined();
+    expect(answer.body).toBe('the idempotency key was already used for a different edit\n');
+  });
+
+  it('a retry of a committed restore gets its receipt without a confirm', async () => {
+    const answer = await restore(1, [[KEY, 'k-refused']]);
+
+    expect([answer.status, answer.headers['blok-doc-sequence']]).toEqual([204, '3']);
+  });
+
+  it('a restore that raises no guard needs no confirm', async () => {
+    // Sequence 6 is k-relock (locked, form closed); restoring it over itself changes nothing a guard sees.
+    const answer = await restore(6, [[KEY, 'k-same']]);
+
+    expect(answer.status).toBe(204);
+  });
+});
+
+interface Preview {
+  wouldUndo: { blocks: { id: string; type: string | null; kind: string }[]; page: string[] };
+  guards: { kind: string; blockId: string; viewId?: string }[];
+  fits: boolean;
+  frameBytes: number;
+  limitBytes: number;
+  expectRevision: string;
+}
+
+suite('collab restore dry run', () => {
+  let host: Host | undefined;
+  let base = '';
+  let lineage = '';
+  const DOC = 'doc-preview';
+
+  beforeAll(async () => {
+    host = await startHost(true);
+    base = host.server.baseUrl;
+    await send(base, 'POST', `/sync/${DOC}/edit`, [[KEY, 'p1']], insertBody('a', 'first'));
+    await send(base, 'POST', `/sync/${DOC}/edit`, [[KEY, 'p2']], insertBody('b', 'second'));
+
+    const third = await send(base, 'POST', `/sync/${DOC}/edit`, [[KEY, 'p3']], updateBody('a', 'first, edited'));
+
+    expect([third.status, third.headers['blok-doc-sequence']]).toEqual([204, '3']);
+    lineage = String(third.headers['blok-doc-lineage']);
+  }, 60_000);
+
+  afterAll(async () => {
+    await stopHost(host);
+  });
+
+  const head = async (): Promise<string | undefined> =>
+    (await send(base, 'GET', `/sync/${DOC}/state`)).headers['blok-doc-sequence'];
+
+  it('answers the plan, its guards, its size and the head, writes nothing, and needs no key', async () => {
+    const answer = await send(base, 'POST', `/sync/${DOC}/history/${lineage}/1/restore/preview`);
+
+    expect(answer.status).toBe(200);
+    expect(answer.headers['content-type']).toBe('application/json');
+    expect(answer.headers['cache-control']).toBe('no-store');
+
+    const preview = JSON.parse(answer.body) as Preview;
+
+    expect(preview.wouldUndo).toEqual({
+      blocks: [{ id: 'a', type: 'paragraph', kind: 'changed' }, { id: 'b', type: 'paragraph', kind: 'removed' }],
+      page: [],
+    });
+    expect(preview.guards).toEqual([]);
+    expect(preview.fits).toBe(true);
+    expect(preview.frameBytes).toBeGreaterThan(0);
+    expect(preview.limitBytes).toBe(MAX_MESSAGE_BYTES);
+    expect(preview.expectRevision).toBe(`${lineage}:3`);
+    expect(Object.keys(preview)).toEqual(['wouldUndo', 'guards', 'fits', 'frameBytes', 'limitBytes', 'expectRevision']);
+    expect(await head()).toBe('3');
+  });
+
+  it('names the same blocks and kinds the real restore journals', async () => {
+    const preview = JSON.parse((await send(base, 'POST', `/sync/${DOC}/history/${lineage}/1/restore/preview`)).body) as Preview;
+    const restore = await send(base, 'POST', `/sync/${DOC}/history/${lineage}/1/restore`,
+      [[KEY, 'p-restore'], ['If-Match', `"${preview.expectRevision}"`]]);
+
+    expect([restore.status, restore.headers['blok-doc-sequence']]).toEqual([204, '4']);
+
+    const changes = JSON.parse((await send(base, 'GET', `/sync/${DOC}/history/${lineage}/4/changes?since=3`)).body) as
+      { changes: { blocks: { id: string; type: string | null; kind: string }[]; page?: string[] }[] };
+
+    expect(changes.changes).toHaveLength(1);
+    expect(changes.changes[0].blocks.map(({ id, type, kind }) => ({ id, type, kind }))).toEqual(preview.wouldUndo.blocks);
+    expect(changes.changes[0].page ?? []).toEqual(preview.wouldUndo.page);
+  });
+
+  it('answers the guards it would raise, enforced or not', async () => {
+    const seeded = await seedGuardedDoc(base);
+    const answer = await send(base, 'POST', `/sync/${GUARDED_DOC}/history/${seeded}/1/restore/preview`);
+
+    expect(answer.status).toBe(200);
+    expect((JSON.parse(answer.body) as Preview).guards).toEqual(UNLOCK_AND_SHARE);
+  });
+
+  it('answers 412 with the head when If-Match is stale', async () => {
+    const answer = await send(base, 'POST', `/sync/${DOC}/history/${lineage}/1/restore/preview`,
+      [['If-Match', `"${lineage}:1"`]]);
+
+    expect([answer.status, answer.headers['blok-doc-sequence']]).toEqual([412, '4']);
+  });
+
+  it('answers 404 for a point that is not there', async () => {
+    const answer = await send(base, 'POST', `/sync/${DOC}/history/${lineage}/99/restore/preview`);
+
+    expect([answer.status, answer.body]).toEqual([404, 'no such version\n']);
+  });
+
+  it('leaves the restore route as it was: a dryRun query is a real restore, which needs a key', async () => {
+    const answer = await send(base, 'POST', `/sync/${DOC}/history/${lineage}/1/restore?dryRun=1`);
+
+    expect([answer.status, answer.body]).toEqual([400, `a valid ${KEY} header is required\n`]);
   });
 });
 
@@ -652,7 +1272,37 @@ suite('collab history past its limits', () => {
 
     expect([answer.status, body.truncated, sequences.length, sequences[0], sequences.at(-1)])
       .toEqual([200, true, 200, 3, 202]);
-    expect(Object.keys(body)).toEqual(['changes', 'truncated']);
+    expect(Object.keys(body)).toEqual(['changes', 'truncated', 'olderEnd']);
+
+    const olderEnd = (body as unknown as { olderEnd: { lineage: string; sequence: number; committedAt: number } }).olderEnd;
+
+    expect([olderEnd.lineage, olderEnd.sequence, typeof olderEnd.committedAt]).toEqual([lineage, 3, 'number']);
+
+    // The rest of the shipped route's window is the point before olderEnd.
+    const rest = await send(base, 'GET', `/sync/doc-many/history/${lineage}/${olderEnd.sequence - 1}/changes`);
+    const restBody = JSON.parse(rest.body) as { changes: { sequence: number }[]; truncated?: boolean };
+
+    expect([restBody.truncated, restBody.changes.map((change) => change.sequence)]).toEqual([undefined, [1, 2]]);
+
+    // Following olderEnd on the range route until it is gone reads every record once.
+    const seen: number[] = [];
+    let query = '?from=2000-01-01T00:00:00Z';
+
+    for (let page = 0; page < 5; page++) {
+      const next = JSON.parse((await send(base, 'GET', `/sync/doc-many/history/changes${query}`)).body) as {
+        changes: { sequence: number }[];
+        olderEnd?: { lineage: string; sequence: number };
+      };
+
+      seen.push(...next.changes.map((change) => change.sequence));
+
+      if (next.olderEnd === undefined) {
+        break;
+      }
+      query = `?from=2000-01-01T00:00:00Z&before=${next.olderEnd.lineage}:${next.olderEnd.sequence}`;
+    }
+
+    expect(seen).toEqual(Array.from({ length: 202 }, (_, index) => 202 - index));
   }, 120_000);
 
   it('keeps the newest records that fit 4 MiB, and always at least one', async () => {
@@ -675,11 +1325,83 @@ suite('collab history past its limits', () => {
     expect([answer.status, body.truncated, sequences.at(-1)]).toEqual([200, true, 81]);
     expect(Buffer.byteLength(answer.body)).toBeLessThanOrEqual(4 << 20);
     expect(sequences).toEqual(Array.from({ length: 69 }, (_, index) => 13 + index));
+    expect((body as unknown as { olderEnd: { sequence: number } }).olderEnd.sequence).toBe(13);
 
     const one = await send(base, 'GET', `/sync/doc-wide/history/${lineage}/81/changes?since=80`);
 
     expect((JSON.parse(one.body) as { changes: { sequence: number }[] }).changes.map((change) => change.sequence))
       .toEqual([81]);
+  }, 120_000);
+
+  it('answers rows that fit 4 MiB whole, with no room kept for an olderEnd it does not need', async () => {
+    const MAX = 4 << 20;
+    const block = (record: number, index: number, length: number): Record<string, unknown> =>
+      ({ op: 'insert', id: `r${record}b${String(index).padStart(2, '0')}`, block: { type: 'paragraph', data: { text: 'x'.repeat(length) } } });
+    const insert = async (record: number, lengths: number[]): Promise<string> => {
+      const answer = await send(base, 'POST', '/sync/doc-edge/edit', [[KEY, `e${record}`]],
+        JSON.stringify({ ops: lengths.map((length, index) => block(record, index, length)) }));
+
+      expect(answer.status).toBe(204);
+
+      return String(answer.headers['blok-doc-lineage']);
+    };
+    const BLOCK = 20_000;
+    const full = Array.from({ length: 25 }, () => BLOCK);
+    let lineage = '';
+
+    for (let record = 1; record <= 7; record++) {
+      lineage = await insert(record, full);
+    }
+
+    const before = await send(base, 'GET', `/sync/doc-edge/history/${lineage}/7/changes`);
+    const rows = (JSON.parse(before.body) as { changes: { blocks: Record<string, unknown>[] }[]; truncated?: boolean });
+
+    expect(rows.truncated).toBeUndefined();
+
+    // Every row here is the same shape, so one block entry and one row overhead price the next row.
+    const entry = Buffer.byteLength(JSON.stringify(rows.changes[6].blocks[0]));
+    const overhead = Buffer.byteLength(JSON.stringify(rows.changes[6])) - 25 * entry - 24;
+    // The old cut fits a body of MAX - 19 bytes; aim 69 under it, well inside the 125-byte reserve.
+    const room = MAX - 69 - Buffer.byteLength(before.body) - 1 - overhead;
+    const fullBlocks = Math.ceil(Math.max(0, room - entry) / (entry + 1));
+    const last = room - fullBlocks * (entry + 1) - (entry - BLOCK);
+
+    expect([last >= 1, last <= 30_000]).toEqual([true, true]);
+    await insert(8, [...Array.from({ length: fullBlocks }, () => BLOCK), last]);
+
+    const answer = await send(base, 'GET', `/sync/doc-edge/history/${lineage}/8/changes`);
+    const body = JSON.parse(answer.body) as { changes: { sequence: number }[]; truncated?: boolean };
+
+    expect(Buffer.byteLength(answer.body)).toBe(MAX - 69);
+    expect([body.truncated, body.changes.map((change) => change.sequence)]).toEqual([undefined, [1, 2, 3, 4, 5, 6, 7, 8]]);
+  }, 120_000);
+
+  it('reads at most 8 lineages per range answer, and pages across lineages with no skips and no repeats', async () => {
+    const lineages: string[] = [];
+
+    for (let lineage = 0; lineage < 9; lineage++) {
+      if (lineage > 0) {
+        expect((await send(base, 'POST', '/sync/doc-lineages/reset')).status).toBe(204);
+      }
+
+      const answer = await send(base, 'POST', '/sync/doc-lineages/edit', [[KEY, `l${lineage}`]], insertBody(`b${lineage}`, `v${lineage}`));
+
+      expect(answer.status).toBe(204);
+      lineages.push(String(answer.headers['blok-doc-lineage']));
+    }
+
+    type Page = { changes: { lineage: string; sequence: number }[]; truncated?: boolean; olderEnd?: { lineage: string; sequence: number } };
+    const page = async (query: string): Promise<Page> =>
+      JSON.parse((await send(base, 'GET', `/sync/doc-lineages/history/changes?from=2000-01-01T00:00:00Z${query}`)).body) as Page;
+
+    const first = await page('');
+
+    expect([first.truncated, first.changes.length, first.olderEnd]).toEqual([true, 8, { ...first.olderEnd, lineage: lineages[1], sequence: 1 }]);
+
+    const second = await page(`&before=${first.olderEnd?.lineage}:${first.olderEnd?.sequence}`);
+
+    expect([second.truncated, second.olderEnd]).toEqual([undefined, undefined]);
+    expect([...first.changes, ...second.changes].map((change) => change.lineage)).toEqual([...lineages].reverse());
   }, 120_000);
 
   it('refuses to restore a point whose update would pass the message cap', async () => {
@@ -707,6 +1429,14 @@ suite('collab history past its limits', () => {
       JSON.stringify({ ops: ids.map((id) => ({ op: 'remove', id })) }));
 
     expect(removeAll.status).toBe(204);
+
+    const preview = await send(base, 'POST', `/sync/doc-huge/history/${lineage}/${sequence}/restore/preview`);
+    const planned = JSON.parse(preview.body) as { fits: boolean; frameBytes: number; limitBytes: number };
+
+    expect(preview.status).toBe(200);
+    expect(planned.fits).toBe(false);
+    expect(planned.limitBytes).toBe(MAX_MESSAGE_BYTES);
+    expect(planned.frameBytes).toBeGreaterThan(planned.limitBytes);
 
     const restore = await send(base, 'POST', `/sync/doc-huge/history/${lineage}/${sequence}/restore`, [[KEY, 'r1']]);
 
@@ -768,4 +1498,159 @@ suite('collab working set in S3', () => {
       await bucket.stop();
     }
   }, 60_000);
+});
+
+const ticketFixture = JSON.parse(readFileSync(
+  fileURLToPath(new URL('./fixtures/tickets.json', import.meta.url)),
+  'utf8',
+)) as { secret: string; compatible: string; userTwo: string };
+
+/** Every fixture ticket names this doc. */
+const TICKET_DOC = 'doc-42';
+
+/** A pass for any user, signed with the fixture secret as a host would. */
+const mintTicket = (user: string): string => {
+  const part = (value: Record<string, unknown>): string => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const unsigned = `${part({ alg: 'HS256', typ: 'JWT' })}.${part({ user, doc: TICKET_DOC, write: true, exp: 4102444800 })}`;
+
+  return `${unsigned}.${createHmac('sha256', ticketFixture.secret).update(unsigned).digest('base64url')}`;
+};
+
+suite('collab history attribution: record notes, by=actor, block and stamp authority', () => {
+  let endpoint: FixtureDocEndpoint | undefined;
+  let server: RunningServer | undefined;
+  let directory = '';
+  let base = '';
+  let lineage = '';
+  const spoofed = mintTicket('agent:alice:claude-code');
+
+  const as = (ticket: string): [string, string][] => [['Authorization', `Bearer ${ticket}`], ['Origin', ALLOWED_ORIGIN]];
+  const edit = async (ticket: string, key: string, body: string): Promise<Answer> =>
+    send(base, 'POST', `/sync/${TICKET_DOC}/edit`, [...as(ticket), [KEY, key]], body);
+  const read = async (path: string): Promise<Answer> => send(base, 'GET', `/sync/${TICKET_DOC}${path}`, as(ticketFixture.compatible));
+
+  beforeAll(async () => {
+    directory = await mkdtemp(join(tmpdir(), 'blok-collab-attribution-'));
+    endpoint = await startDocEndpoint();
+    server = await startServer({
+      args: [
+        '--listen', '127.0.0.1:0',
+        '--auth', 'ticket',
+        '--storage-dir', '',
+        '--rate-limit', '0',
+        '--allow-origin', ALLOWED_ORIGIN,
+        '--collab',
+        '--collab-dir', directory,
+        '--doc-endpoint', endpoint.url,
+        '--conformance-journal',
+        '--conformance-record-notes',
+        '--conformance-stamp-authority',
+      ],
+      env: { BLOK_SECRET: ticketFixture.secret },
+    });
+    base = server.baseUrl;
+
+    // 1 u1 inserts b with stamps of its own; 2 u1 edits a; 3 u2 edits a and b;
+    // 4 a person whose id looks like an agent's inserts c.
+    const first = await edit(ticketFixture.compatible, 'a1', JSON.stringify({ ops: [
+      { op: 'insert', id: 'a', block: { type: 'paragraph', data: { text: 'a' } } },
+      { op: 'insert', id: 'b', after: 'a', block: { type: 'paragraph', data: { text: 'b' }, createdAt: 1, createdBy: 'mallory', createdWith: 'agent:x:y', lastEditedAt: 2, lastEditedBy: 'mallory' } },
+    ] }));
+
+    expect(first.status).toBe(204);
+    lineage = String(first.headers['blok-doc-lineage']);
+    expect((await edit(ticketFixture.compatible, 'a2', updateBody('a', 'two'))).status).toBe(204);
+    expect((await edit(ticketFixture.userTwo, 'a3', JSON.stringify({ ops: [
+      { op: 'update', id: 'a', data: { text: 'three' } },
+      { op: 'update', id: 'b', data: { text: 'b2' } },
+    ] }))).status).toBe(204);
+    expect((await edit(spoofed, 'a4', insertBody('c', 'c'))).status).toBe(204);
+  }, 60_000);
+
+  afterAll(async () => {
+    await server?.stop();
+    await endpoint?.stop();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  interface Version { sequence: number; actors: string[]; actorKinds?: { id: string; kind: string; onBehalfOf?: string }[] }
+  interface Row { sequence: number; actor: string | null; actors?: unknown[]; blocks: { id: string }[]; page?: string[] }
+
+  const versions = async (query: string): Promise<Version[]> => {
+    const answer = await read(`/history${query}`);
+
+    expect(answer.status).toBe(200);
+
+    return (JSON.parse(answer.body) as { versions: Version[] }).versions;
+  };
+
+  it('starts a version where the actor changes with by=actor, and ignores any other by', async () => {
+    expect((await versions('?by=actor')).map((version) => [version.sequence, version.actors]))
+      .toEqual([[4, ['agent:alice:claude-code']], [3, ['u2']], [2, ['u1']], [0, []]]);
+
+    for (const ignored of ['', '?by=', '?by=time', '?by=actor&by=actor', '?by=Actor']) {
+      expect((await versions(ignored)).map((version) => version.sequence)).toEqual([4, 0]);
+    }
+  });
+
+  it('gives each version its actors\' kinds, and never reads an agent from the id\'s text', async () => {
+    const [newest] = await versions('');
+
+    expect(Object.keys(newest)).toEqual(['lineage', 'sequence', 'startedAt', 'savedAt', 'actors', 'actorKinds']);
+    expect(newest.actorKinds).toEqual([
+      { id: 'u1', kind: 'person' },
+      { id: 'u2', kind: 'person' },
+      { id: 'agent:alice:claude-code', kind: 'person' },
+    ]);
+  });
+
+  it('narrows both changes routes to one block and gives each row its actor', async () => {
+    const narrowed = JSON.parse((await read(`/history/${lineage}/4/changes?block=b`)).body) as { changes: Row[] };
+
+    expect(narrowed.changes.map((row) => [row.sequence, row.blocks.map((block) => block.id)])).toEqual([[1, ['b']], [3, ['b']]]);
+    expect(Object.keys(narrowed.changes[1])).toEqual(['sequence', 'committedAt', 'actor', 'actors', 'blocks']);
+    expect(narrowed.changes[1].actors).toEqual([{ id: 'u2', kind: 'person' }]);
+
+    const range = JSON.parse((await read('/history/changes?block=b')).body) as { changes: Row[] };
+
+    expect(range.changes.map((row) => row.sequence)).toEqual([3, 1]);
+
+    // Shipped route: a block it cannot read is ignored. New route: refused.
+    for (const query of ['?block=', '?block=b&block=a']) {
+      const all = JSON.parse((await read(`/history/${lineage}/4/changes${query}`)).body) as { changes: Row[] };
+
+      expect(all.changes.map((row) => row.sequence)).toEqual([1, 2, 3, 4]);
+
+      const refused = await read(`/history/changes${query}`);
+
+      expect([refused.status, refused.body]).toEqual([400, 'block must be one block id\n']);
+    }
+  });
+
+  it('stamps an insert and an update as the server sees them, and credits an agent-looking person as itself', async () => {
+    const blocks = (JSON.parse((await read('/state')).body) as { blocks: Record<string, unknown>[] }).blocks;
+    const [a, b, c] = ['a', 'b', 'c'].map((id) => blocks.find((block) => block.id === id) ?? {});
+
+    expect([b.createdBy, b.lastEditedBy, b.createdWith]).toEqual(['u1', 'u2', undefined]);
+    expect(b.createdAt).not.toBe(1);
+    expect([a.lastEditedBy, a.lastEditedWith]).toEqual(['u2', undefined]);
+    expect([c.createdBy, c.createdWith, c.lastEditedWith]).toEqual(['agent:alice:claude-code', undefined, undefined]);
+  });
+
+  it('keeps the stamps a restore brings back, with stamp authority on', async () => {
+    const stateBlocks = async (): Promise<Record<string, unknown>[]> =>
+      (JSON.parse((await read('/state')).body) as { blocks: Record<string, unknown>[] }).blocks;
+    const before = (await stateBlocks()).find((block) => block.id === 'b') ?? {};
+    // A restorer seen nowhere else: no stamp may name it.
+    const restore = await send(base, 'POST', `/sync/${TICKET_DOC}/history/${lineage}/1/restore`, [...as(mintTicket('u3')), [KEY, 'r1']]);
+
+    expect(restore.status).toBe(204);
+
+    const blocks = await stateBlocks();
+    const b = blocks.find((block) => block.id === 'b') ?? {};
+
+    expect(blocks.map((block) => block.id)).toEqual(['a', 'b']);
+    expect([b.createdBy, b.createdAt]).toEqual([before.createdBy, before.createdAt]);
+    expect(blocks.flatMap((block) => [block.createdBy, block.lastEditedBy])).not.toContain('u3');
+  });
 });

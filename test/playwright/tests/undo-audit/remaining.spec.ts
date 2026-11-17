@@ -6,7 +6,7 @@ import { expect, gotoTestPage, test } from '../helpers/shared-page';
 
 const UNDO = process.platform === 'darwin' ? 'Meta+z' : 'Control+z';
 const REDO = process.platform === 'darwin' ? 'Meta+Shift+z' : 'Control+Shift+z';
-const CAPTURE_GAP_MS = 700;
+const CAPTURE_GAP_MS = 800;
 const IMAGE_URL = 'http://localhost:4444/test/playwright/fixtures/image/shot.png';
 const IMAGE_FILE = join(process.cwd(), 'test/playwright/fixtures/image/shot.png');
 const VIDEO_URL = 'http://localhost:4444/public/samples/big-buck-bunny.mp4';
@@ -174,7 +174,7 @@ const media = (page: Page, tool: string): Locator => page.locator(`[data-blok-to
 const enterUrl = async (page: Page, tool: string, url: string): Promise<void> => {
   const block = media(page, tool);
 
-  await block.locator('[data-tab="embed"]').click();
+  await block.locator('[data-action="from-link"]').click();
   await block.getByRole('textbox').fill(url);
   await block.locator('[data-action="submit-url"]').click();
 };

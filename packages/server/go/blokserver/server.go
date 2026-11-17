@@ -33,6 +33,7 @@ type Server struct {
 	limiter   *rateLimiter
 	clock     func() time.Time
 	fetcher   *outbound.Fetcher
+	pdfChecks *pdfCheckCache
 
 	storeOnce sync.Once
 	store     blob.Store
@@ -99,6 +100,7 @@ func New(options Options) (*Server, error) {
 		}()
 	}
 	s.limiter = newRateLimiter(o.RateLimitPerMinute, func() time.Time { return s.clock() })
+	s.pdfChecks = newPDFCheckCache(func() time.Time { return s.clock() })
 	s.connections = synchttp.NewConnectionTable(o.CollabMaxConnections, o.CollabMaxConnectionsPerUserPerDoc)
 	if o.CollabEnabled {
 		s.collab = &collabRooms{server: s}
@@ -173,6 +175,9 @@ func (s *Server) handler(prefix string, protect func(http.Handler) http.Handler)
 		shell(prefix+"/unfurl", "GET", s.unfurl)
 		shell(prefix+"/frame-check", "GET", s.frameCheck)
 	}
+	if o.FileBytesEnabled {
+		shell(prefix+"/file-bytes", "GET", s.fileBytes)
+	}
 	if o.hasStorage() {
 		shell(prefix+"/upload", "POST", s.upload)
 		shell(prefix+"/delete", "POST", s.delete)
@@ -191,6 +196,10 @@ func (s *Server) handler(prefix string, protect func(http.Handler) http.Handler)
 			Rooms:           s.collab.get,
 			MaxMessageBytes: o.CollabMaxMessageBytes,
 			CorruptLog:      s.corruptLog,
+
+			EnforceRestoreGuards: o.CollabEnforceRestoreGuards,
+			StampAuthority:       o.CollabStampAuthority,
+			Now:                  s.clock,
 		})
 		shell(prefix+"/sync/{doc}/reset", "POST", routes.Reset)
 		shell(prefix+"/sync/{doc}/edit", "POST", routes.Edit)
@@ -199,7 +208,10 @@ func (s *Server) handler(prefix string, protect func(http.Handler) http.Handler)
 		shell(prefix+"/sync/{doc}/history/{lineage}/{sequence}", "GET", routes.HistoryRead)
 		shell(prefix+"/sync/{doc}/history/{lineage}", "DELETE", routes.HistoryDelete)
 		shell(prefix+"/sync/{doc}/history/{lineage}/{sequence}/restore", "POST", routes.HistoryRestore)
+		shell(prefix+"/sync/{doc}/history/{lineage}/{sequence}/restore/preview", "POST", routes.HistoryRestorePreview)
 		shell(prefix+"/sync/{doc}/history/{lineage}/{sequence}/changes", "GET", routes.HistoryChanges)
+		shell(prefix+"/sync/{doc}/history/at", "GET", routes.HistoryAt)
+		shell(prefix+"/sync/{doc}/history/changes", "GET", routes.HistoryChangesBetween)
 		if o.Auth == "none" && o.Authorization == nil {
 			s.warnOpenSyncRoutes(prefix)
 		}

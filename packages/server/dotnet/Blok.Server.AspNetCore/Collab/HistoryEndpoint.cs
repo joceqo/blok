@@ -16,14 +16,15 @@ namespace Blok.Server.AspNetCore.Collab;
 /// The version history kept by the operation journal:
 /// <c>GET /sync/{doc}/history</c>, <c>GET /sync/{doc}/history/{lineage}/{sequence}</c>,
 /// <c>DELETE /sync/{doc}/history/{lineage}</c>,
-/// <c>POST /sync/{doc}/history/{lineage}/{sequence}/restore</c> and
+/// <c>POST /sync/{doc}/history/{lineage}/{sequence}/restore</c>,
+/// <c>POST /sync/{doc}/history/{lineage}/{sequence}/restore/preview</c> and
 /// <c>GET /sync/{doc}/history/{lineage}/{sequence}/changes</c>.
 ///
 /// Same door as the edit endpoint: the HTTP guard checks origin, ticket and
 /// rate limit, and these handlers add the ticket's doc claim and the
 /// application's gates — read for the GETs, read and write for the rest.
 /// </summary>
-internal static class HistoryEndpoint
+internal static partial class HistoryEndpoint
 {
   private const string LineageHeader = "Blok-History-Lineage";
   private const string SequenceHeader = "Blok-History-Sequence";
@@ -43,7 +44,7 @@ internal static class HistoryEndpoint
 
   public static async Task ListAsync(HttpContext context)
   {
-    if (await AdmitAsync(context, requireWrite: false) is not { } admitted)
+    if (await AdmitAsync(context, requireWrite: false, readsHistory: true) is not { } admitted)
     {
       return;
     }
@@ -55,9 +56,19 @@ internal static class HistoryEndpoint
       return;
     }
 
+    if (await WindowAsync(context, admitted) is not (true, var window))
+    {
+      return;
+    }
+
+    // Shipped route: any other by is ignored, as unknown keys always were.
+    var byActor = context.Request.Query.TryGetValue("by", out var by) && by.Count == 1 && by[0] == "actor";
+
     var result = await admitted.Rooms.HistoryAsync(
         admitted.Doc,
-        minutes is { } window ? TimeSpan.FromMinutes(window) : null,
+        minutes is { } group ? TimeSpan.FromMinutes(group) : null,
+        byActor,
+        window?.Cut,
         context.RequestAborted);
 
     if (result.Status != CollabHistoryStatus.Ready)
@@ -77,13 +88,25 @@ internal static class HistoryEndpoint
         ["createdAt"] = UnixMilliseconds(lineage.CreatedAt),
         ["current"] = lineage.Current,
       })]),
-      ["versions"] = new JsonArray([.. result.Versions.Select(version => (JsonNode)new JsonObject
+      ["versions"] = new JsonArray([.. result.Versions
+        .Where(version => window is null || !window.Hides(version.Lineage, version.Sequence))
+        .Select(version =>
       {
-        ["lineage"] = version.Lineage,
-        ["sequence"] = version.Sequence,
-        ["startedAt"] = UnixMilliseconds(version.StartedAt),
-        ["savedAt"] = UnixMilliseconds(version.SavedAt),
-        ["actors"] = new JsonArray([.. version.Actors.Select(actor => (JsonNode)actor)]),
+        var entry = new JsonObject
+        {
+          ["lineage"] = version.Lineage,
+          ["sequence"] = version.Sequence,
+          ["startedAt"] = UnixMilliseconds(version.StartedAt),
+          ["savedAt"] = UnixMilliseconds(version.SavedAt),
+          ["actors"] = new JsonArray([.. version.Actors.Select(actor => (JsonNode)actor)]),
+        };
+
+        if (version.ActorKinds is { } kinds)
+        {
+          entry["actorKinds"] = new JsonArray([.. kinds.Select(kind => (JsonNode)ActorKindJson(kind.Id, kind.Note))]);
+        }
+
+        return (JsonNode)entry;
       })]),
     };
 
@@ -94,9 +117,17 @@ internal static class HistoryEndpoint
 
   public static async Task ReadAsync(HttpContext context)
   {
-    if (await AdmitAsync(context, requireWrite: false) is not { } admitted ||
-        await PointAsync(context) is not { } point)
+    if (await AdmitAsync(context, requireWrite: false, readsHistory: true) is not { } admitted ||
+        await PointAsync(context) is not { } point ||
+        await WindowAsync(context, admitted) is not (true, var window))
     {
+      return;
+    }
+
+    if (window is not null && window.Hides(point.Lineage, point.Sequence))
+    {
+      await RefuseRetentionAsync(context);
+
       return;
     }
 
@@ -125,7 +156,7 @@ internal static class HistoryEndpoint
   /// </summary>
   public static async Task ChangesAsync(HttpContext context)
   {
-    if (await AdmitAsync(context, requireWrite: false) is not { } admitted ||
+    if (await AdmitAsync(context, requireWrite: false, readsHistory: true) is not { } admitted ||
         await PointAsync(context) is not { } point)
     {
       return;
@@ -141,11 +172,34 @@ internal static class HistoryEndpoint
       return;
     }
 
+    // v2.1.0 ignored unknown keys here, so a bad detail or block is ignored, not refused.
+    var detail = TryQueryDetail(context, out var asked) && asked;
+    TryQueryBlock(context, out var block);
+
+    if (await WindowAsync(context, admitted) is not (true, var window))
+    {
+      return;
+    }
+
+    if (window is not null && window.Hides(point.Lineage, point.Sequence))
+    {
+      await RefuseRetentionAsync(context);
+
+      return;
+    }
+
+    var from = since ?? 0;
+
+    if (window is not null && window.Floors.TryGetValue(point.Lineage, out var floor))
+    {
+      from = CollabHistoryWindow.Since(floor, from);
+    }
+
     var result = await admitted.Rooms.ChangesAsync(
         admitted.Doc,
         point.Lineage,
         point.Sequence,
-        since ?? 0,
+        from,
         cancellationToken: context.RequestAborted);
 
     if (result.Status != CollabHistoryStatus.Ready)
@@ -155,26 +209,36 @@ internal static class HistoryEndpoint
       return;
     }
 
+    var notes = await admitted.Rooms.ReadNotesAsync(admitted.Doc, point.Lineage, context.RequestAborted);
+
     // Rows are measured newest first; the newest always goes out, so a reader can page.
     var rows = new List<byte[]>();
-    long size = ChangesEnvelopeBytes;
-    var truncated = result.Truncated;
+    var shown = new List<CollabRecordChanges>();
 
     for (var index = result.Changes.Count - 1; index >= 0; index--)
     {
-      var row = ChangeRow(result.Changes[index]);
-
-      if (rows.Count > 0 && size + row.Length + 1 > CollabRoomManager.MaxChangeBytes)
+      if (Narrowed(result.Changes[index], block) is { } record)
       {
-        truncated = true;
-
-        break;
+        rows.Add(ChangeRow(record, detail, notes));
+        shown.Add(record);
       }
-
-      rows.Add(row);
-      size += row.Length + 1;
     }
 
+    // Cut by the room with every row kept, the answer ends at the oldest
+    // record read, so a narrowed answer still moves its cursor.
+    // Counted before the cut below: after it, every index would look like the last row.
+    var rowCount = rows.Count;
+    CollabRecordChanges OlderEndOf(int oldest) =>
+        oldest == rowCount - 1 && result.Changes.Count > 0 ? result.Changes[0] : shown[oldest];
+
+    var (kept, truncated) = FitAnswer(rows, result.Truncated, oldest =>
+    {
+      var record = OlderEndOf(oldest);
+
+      return OlderEnd(point.Lineage, record.Sequence, record.CommittedAt).Length;
+    });
+
+    rows = rows[..kept];
     rows.Reverse();
 
     WriteHistoryHead(context, point.Lineage, point.Sequence);
@@ -196,7 +260,16 @@ internal static class HistoryEndpoint
       await body.WriteAsync(rows[index], cancel);
     }
 
-    await body.WriteAsync((truncated ? "],\"truncated\":true}"u8 : "]}"u8).ToArray(), cancel);
+    await body.WriteAsync("]"u8.ToArray(), cancel);
+
+    if (truncated)
+    {
+      var oldest = OlderEndOf(kept - 1);
+
+      await body.WriteAsync(OlderEnd(point.Lineage, oldest.Sequence, oldest.CommittedAt), cancel);
+    }
+
+    await body.WriteAsync("}"u8.ToArray(), cancel);
   }
 
   public static async Task DeleteAsync(HttpContext context)
@@ -207,9 +280,20 @@ internal static class HistoryEndpoint
       return;
     }
 
+    if (admitted.Authorization is { } authorization &&
+        await authorization.IsHistoryHeldAsync(admitted.Doc, lineage, context.RequestAborted))
+    {
+      context.Response.StatusCode = StatusCodes.Status409Conflict;
+      context.Response.ContentType = "application/json";
+      await context.Response.WriteAsync("{\"reason\":\"held\"}", context.RequestAborted);
+
+      return;
+    }
+
     var (status, outcome) = await admitted.Rooms.DeleteLineageAsync(
         admitted.Doc,
         lineage,
+        SyncHandshake.DeriveActor(admitted.TicketUser, admitted.User),
         context.RequestAborted);
 
     if (status != CollabHistoryStatus.Ready)
@@ -248,7 +332,7 @@ internal static class HistoryEndpoint
 
   public static async Task RestoreAsync(HttpContext context)
   {
-    if (await AdmitAsync(context, requireWrite: true) is not { } admitted ||
+    if (await AdmitAsync(context, requireWrite: true, readsHistory: true) is not { } admitted ||
         await PointAsync(context) is not { } point)
     {
       return;
@@ -281,6 +365,20 @@ internal static class HistoryEndpoint
       return;
     }
 
+    // The shipped route ignored unknown values: only one exact keep keeps databases.
+    var keepDatabases = context.Request.Query.TryGetValue("databases", out var databases) &&
+        databases.Count == 1 &&
+        databases[0] == "keep";
+
+    if (await WindowAsync(context, admitted) is not (true, var window))
+    {
+      return;
+    }
+
+    var options = context.RequestServices.GetRequiredService<BlokServerOptions>();
+    var confirmed = options.CollabEnforceRestoreGuards
+      ? await RestoreConfirmsAsync(context, options.CollabMaxMessageBytes)
+      : null;
     var result = await admitted.Rooms.RestoreAsync(
         admitted.Doc,
         point.Lineage,
@@ -288,11 +386,29 @@ internal static class HistoryEndpoint
         operationId,
         SyncHandshake.DeriveActor(admitted.TicketUser, admitted.User),
         expect,
+        confirmed,
+        new CollabRestoreOptions(
+            Hidden: window is not null && window.Hides(point.Lineage, point.Sequence),
+            KeepDatabases: keepDatabases),
         context.RequestAborted);
+
+    if (result.Hidden)
+    {
+      await RefuseRetentionAsync(context);
+
+      return;
+    }
 
     if (result.History != CollabHistoryStatus.Ready)
     {
       await RefuseAsync(context, admitted, result.History);
+
+      return;
+    }
+
+    if (result.Refused is { } refused)
+    {
+      await RefuseRestoreAsync(context, result.RefusedAs, refused);
 
       return;
     }
@@ -303,10 +419,172 @@ internal static class HistoryEndpoint
   }
 
   /// <summary>
+  /// <c>POST .../restore/preview</c>: the restore planned and measured, nothing written, no key needed.
+  /// It needs write access, as the restore does. If-Match is checked as the restore would.
+  /// </summary>
+  public static async Task PreviewRestoreAsync(HttpContext context)
+  {
+    if (await AdmitAsync(context, requireWrite: true, readsHistory: true) is not { } admitted ||
+        await PointAsync(context) is not { } point)
+    {
+      return;
+    }
+
+    var (lineage, sequence) = point;
+    CollabEditPrecondition? expect = null;
+
+    if (context.Request.Headers.ContainsKey(HeaderNames.IfMatch) &&
+        !EditEndpoint.TryParseEntityTag(context.Request.Headers.IfMatch, out expect))
+    {
+      await SyncEndpoint.RefuseAsync(
+          context,
+          StatusCodes.Status400BadRequest,
+          "If-Match must be one quoted \"<lineage>:<sequence>\" tag\n");
+
+      return;
+    }
+
+    if (!TryQueryDatabases(context, out var keepDatabases))
+    {
+      await SyncEndpoint.RefuseAsync(context, StatusCodes.Status400BadRequest, BadDatabases);
+
+      return;
+    }
+
+    if (await WindowAsync(context, admitted) is not (true, var window))
+    {
+      return;
+    }
+
+    if (window is not null && window.Hides(lineage, sequence))
+    {
+      await RefuseRetentionAsync(context);
+
+      return;
+    }
+
+    var result = await admitted.Rooms.PreviewRestoreAsync(
+        admitted.Doc,
+        lineage,
+        sequence,
+        expect,
+        SyncHandshake.DeriveActor(admitted.TicketUser, admitted.User),
+        new CollabRestoreOptions(KeepDatabases: keepDatabases),
+        context.RequestAborted);
+
+    if (result.History != CollabHistoryStatus.Ready)
+    {
+      await RefuseAsync(context, admitted, result.History);
+
+      return;
+    }
+
+    if (result.Preview is not { } preview)
+    {
+      var edit = result.Edit ?? throw new UnreachableException("a preview that did not run carries its edit");
+
+      await EditEndpoint.WriteResultAsync(context, edit, admitted.Rooms.RetryAfter);
+
+      return;
+    }
+
+    var body = preview.ToJson();
+
+    context.Response.StatusCode = StatusCodes.Status200OK;
+    context.Response.ContentType = "application/json";
+    await context.Response.WriteAsync(body.ToJsonString(), context.RequestAborted);
+  }
+
+  private static string KindName(CollabBlockChangeKind kind) => kind switch
+  {
+    CollabBlockChangeKind.Added => "added",
+    CollabBlockChangeKind.Removed => "removed",
+    CollabBlockChangeKind.Changed => "changed",
+    _ => "moved",
+  };
+
+  /// <summary>Lists the guard kinds a restore confirms; a body <c>{"confirm":[...]}</c> adds to it.</summary>
+  internal const string RestoreConfirmHeader = "X-Blok-Restore-Confirm";
+
+  /// <summary>Marks a guard's 409, which the key-reuse 409 lacks.</summary>
+  internal const string RestoreRefusalHeader = "X-Blok-Restore-Refusal";
+
+  /// <summary>
+  /// The kinds from every header line and comma item, then the body's confirm list. Unknown kinds and a
+  /// body that does not parse or is over the cap confirm nothing.
+  /// </summary>
+  private static async Task<IReadOnlySet<string>> RestoreConfirmsAsync(HttpContext context, int maxBytes)
+  {
+    var confirmed = new HashSet<string>(StringComparer.Ordinal);
+
+    void Add(string? kind)
+    {
+      if (kind is not null && CollabRestoreGuard.Confirmable.Contains(kind))
+      {
+        confirmed.Add(kind);
+      }
+    }
+
+    foreach (var line in context.Request.Headers[RestoreConfirmHeader])
+    {
+      foreach (var item in (line ?? "").Split(','))
+      {
+        Add(item.Trim(' ', '\t'));
+      }
+    }
+
+    using var buffer = new MemoryStream();
+    var chunk = new byte[8192];
+    int read;
+
+    while ((read = await context.Request.Body.ReadAsync(chunk, context.RequestAborted)) > 0)
+    {
+      if (buffer.Length + read > maxBytes)
+      {
+        return confirmed;
+      }
+
+      buffer.Write(chunk, 0, read);
+    }
+
+    try
+    {
+      if (buffer.Length > 0 && JsonNode.Parse(buffer.ToArray()) is JsonObject body && body["confirm"] is JsonArray list)
+      {
+        foreach (var item in list)
+        {
+          Add(item is JsonValue value && value.TryGetValue<string>(out var kind) ? kind : null);
+        }
+      }
+    }
+    catch (Exception error) when (error is JsonException or ArgumentException)
+    {
+      // Not JSON, or an object with a repeated key: it confirms nothing.
+    }
+
+    return confirmed;
+  }
+
+  /// <summary>The guard's 409: JSON with the refusal header, so a client never mistakes it for a reused key.</summary>
+  private static async Task RefuseRestoreAsync(HttpContext context, string reason, IReadOnlyList<CollabRestoreGuard> guards)
+  {
+    var body = new JsonObject
+    {
+      ["error"] = reason,
+      ["guards"] = new JsonArray([.. guards.Select(guard => (JsonNode)guard.ToJson())]),
+    };
+
+    context.Response.StatusCode = StatusCodes.Status409Conflict;
+    context.Response.ContentType = "application/json";
+    context.Response.Headers[RestoreRefusalHeader] = reason;
+    await context.Response.WriteAsync(body.ToJsonString(), context.RequestAborted);
+  }
+
+  /// <summary>
   /// The checks every route shares, in the edit endpoint's order. Answers
   /// null once it has refused.
   /// </summary>
-  private static async Task<Admitted?> AdmitAsync(HttpContext context, bool requireWrite)
+  private static async Task<Admitted?> AdmitAsync(HttpContext context, bool requireWrite, bool readsHistory = false)
   {
     // Versions are document content behind an access check: no shared cache may keep any answer.
     context.Response.Headers.CacheControl = "no-store";
@@ -349,11 +627,60 @@ internal static class HistoryEndpoint
       return null;
     }
 
+    // Asked only once the document gates said yes, so a host's read counts stay as they were.
+    if (readsHistory &&
+        authorization is not null &&
+        !await authorization.CanReadHistoryAsync(user, doc, context.RequestAborted))
+    {
+      await SyncEndpoint.RefuseAsync(context, StatusCodes.Status403Forbidden, "forbidden\n");
+
+      return null;
+    }
+
     return new Admitted(
         doc,
         user,
         claims is { } actorTicket ? actorTicket.User : "",
-        context.RequestServices.GetRequiredService<CollabRoomManager>());
+        context.RequestServices.GetRequiredService<CollabRoomManager>(),
+        authorization);
+  }
+
+  /// <summary>
+  /// The host's history window as each lineage's floor. Null window when the
+  /// host sets none. Answers false once it has refused.
+  /// </summary>
+  private static async Task<(bool Ok, HistoryWindow? Window)> WindowAsync(HttpContext context, Admitted admitted)
+  {
+    if (admitted.Authorization is not { } authorization ||
+        await authorization.HistoryWindowAsync(admitted.User, admitted.Doc, context.RequestAborted) is not { } span)
+    {
+      return (true, null);
+    }
+
+    var cut = CollabHistoryWindow.Cut(admitted.Rooms.Now, span);
+    var (status, floors) = await admitted.Rooms.HistoryFloorsAsync(admitted.Doc, cut, context.RequestAborted);
+
+    if (status != CollabHistoryStatus.Ready)
+    {
+      await RefuseAsync(context, admitted, status);
+
+      return (false, null);
+    }
+
+    return (true, new HistoryWindow(cut, floors));
+  }
+
+  /// <summary>A point the host's window hides: 404 as JSON, so a client can tell it from a missing one.</summary>
+  private static async Task RefuseRetentionAsync(HttpContext context)
+  {
+    context.Response.StatusCode = StatusCodes.Status404NotFound;
+    context.Response.ContentType = "application/json";
+    await context.Response.WriteAsync("{\"reason\":\"retention\"}", context.RequestAborted);
+  }
+
+  private sealed record HistoryWindow(DateTimeOffset Cut, IReadOnlyDictionary<string, ulong?> Floors)
+  {
+    internal bool Hides(string lineage, ulong sequence) => CollabHistoryWindow.Hides(Floors, lineage, sequence);
   }
 
   /// <summary>The route's lineage and sequence; a sequence that is not a plain ulong is refused.</summary>
@@ -378,6 +705,23 @@ internal static class HistoryEndpoint
     }
 
     return (lineage, sequence);
+  }
+
+  private const string BadDatabases = "databases must be keep or restore\n";
+
+  /// <summary>The preview's <c>databases=keep|restore</c>; absent is restore. A repeated or other value is refused.</summary>
+  private static bool TryQueryDatabases(HttpContext context, out bool keep)
+  {
+    keep = false;
+
+    if (!context.Request.Query.TryGetValue("databases", out var values))
+    {
+      return true;
+    }
+
+    keep = values.Count == 1 && values[0] == "keep";
+
+    return values.Count == 1 && values[0] is "keep" or "restore";
   }
 
   /// <summary>
@@ -428,8 +772,14 @@ internal static class HistoryEndpoint
     EditEndpoint.Expose(context, LineageHeader, SequenceHeader);
   }
 
-  /// <summary>One changes row as UTF-8 JSON.</summary>
-  private static byte[] ChangeRow(CollabRecordChanges record)
+  /// <summary>
+  /// One changes row as UTF-8 JSON. With <paramref name="detail"/>, a changed
+  /// database or row also carries what changed inside its data.
+  /// </summary>
+  private static byte[] ChangeRow(
+      CollabRecordChanges record,
+      bool detail,
+      IReadOnlyDictionary<ulong, CollabRecordNote>? notes)
   {
     var buffer = new ArrayBufferWriter<byte>();
 
@@ -439,6 +789,21 @@ internal static class HistoryEndpoint
       writer.WriteNumber("sequence", record.Sequence);
       writer.WriteNumber("committedAt", record.CommittedAt.ToUnixTimeMilliseconds());
       writer.WriteString("actor", record.ActorId);
+
+      // With a record notes store only; a record without a note has none.
+      if (notes is not null)
+      {
+        writer.WritePropertyName("actors");
+        writer.WriteStartArray();
+
+        if (record.ActorId is { } actor && notes.TryGetValue(record.Sequence, out var note))
+        {
+          ActorKindJson(actor, note).WriteTo(writer);
+        }
+
+        writer.WriteEndArray();
+      }
+
       writer.WriteStartArray("blocks");
 
       foreach (var change in record.Blocks)
@@ -446,13 +811,7 @@ internal static class HistoryEndpoint
         writer.WriteStartObject();
         writer.WriteString("id", change.Id);
         writer.WriteString("type", change.Type);
-        writer.WriteString("kind", change.Kind switch
-        {
-          CollabBlockChangeKind.Added => "added",
-          CollabBlockChangeKind.Removed => "removed",
-          CollabBlockChangeKind.Changed => "changed",
-          _ => "moved",
-        });
+        writer.WriteString("kind", KindName(change.Kind));
 
         if (change.Before is { } before)
         {
@@ -464,6 +823,23 @@ internal static class HistoryEndpoint
         {
           writer.WritePropertyName("after");
           after.WriteTo(writer);
+        }
+
+        if (detail && change.Kind == CollabBlockChangeKind.Changed)
+        {
+          foreach (var (name, value) in CollabDatabaseChanges.Describe(change.Type, change.Before, change.After))
+          {
+            writer.WritePropertyName(name);
+
+            if (value is null)
+            {
+              writer.WriteNullValue();
+            }
+            else
+            {
+              value.WriteTo(writer);
+            }
+          }
         }
 
         writer.WriteEndObject();
@@ -487,6 +863,42 @@ internal static class HistoryEndpoint
     }
 
     return buffer.WrittenSpan.ToArray();
+  }
+
+  /// <summary>{id, kind, onBehalfOf?}.</summary>
+  private static JsonObject ActorKindJson(string id, CollabRecordNote note)
+  {
+    var json = new JsonObject { ["id"] = id, ["kind"] = note.Kind };
+
+    if (note.OnBehalfOf is { } person)
+    {
+      json["onBehalfOf"] = person;
+    }
+
+    return json;
+  }
+
+  private static CollabRecordChanges? Narrowed(CollabRecordChanges record, string? block) =>
+      block is null ? record : CollabVersionChanges.ForBlock(record, block);
+
+  /// <summary>Absent is null; anything but one non-empty value is false.</summary>
+  private static bool TryQueryBlock(HttpContext context, out string? block)
+  {
+    block = null;
+
+    if (!context.Request.Query.TryGetValue("block", out var values))
+    {
+      return true;
+    }
+
+    if (values.Count != 1 || string.IsNullOrEmpty(values[0]))
+    {
+      return false;
+    }
+
+    block = values[0];
+
+    return true;
   }
 
   private static JsonValue? UnixMilliseconds(DateTimeOffset? at)
@@ -549,5 +961,6 @@ internal static class HistoryEndpoint
       string Doc,
       ClaimsPrincipal User,
       string TicketUser,
-      CollabRoomManager Rooms);
+      CollabRoomManager Rooms,
+      IBlokAuthorization? Authorization);
 }

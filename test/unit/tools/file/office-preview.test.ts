@@ -14,6 +14,7 @@ vi.mock('../../../../src/tools/file/office-loaders', () => ({
 import { fillOfficeBody, renderXlsxInto } from '../../../../src/tools/file/office-preview';
 import { loadBinaryPreview } from '../../../../src/tools/file/binary-preview';
 import { loadDocxRenderer, loadPptxRenderer, loadZipReader } from '../../../../src/tools/file/office-loaders';
+import { detachedChrome } from '../../../../src/tools/file/preview-chrome';
 
 const OPTS = { url: 'blob:x', fileName: 'a.docx', labels: { close: 'Close', error: 'Error', download: 'Download' } };
 
@@ -57,6 +58,28 @@ describe('fillOfficeBody', () => {
   });
 });
 
+describe('fillOfficeBody — docx controls', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('gives a rendered document its page counter', async () => {
+    vi.mocked(loadBinaryPreview).mockResolvedValue({ ok: true, buf: new ArrayBuffer(4) });
+    vi.mocked(loadDocxRenderer).mockResolvedValue(async (_buf, container) => {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'blok-docx-wrapper';
+      wrapper.innerHTML = '<section class="blok-docx"></section><section class="blok-docx"></section>';
+      container.appendChild(wrapper);
+
+      return () => undefined;
+    });
+    const body = document.createElement('div');
+
+    await fillOfficeBody(body, OPTS, 'docx', () => false, () => undefined, detachedChrome(body));
+
+    expect(body.querySelector('[data-role="file-preview-page"]')?.textContent).toMatch(/ \/ 2$/);
+  });
+});
+
 describe('fillOfficeBody pptx lifecycle', () => {
   beforeEach(() => { vi.clearAllMocks(); });
   afterEach(() => { vi.restoreAllMocks(); });
@@ -84,7 +107,7 @@ describe('fillOfficeBody pptx lifecycle', () => {
 
     await fillOfficeBody(document.createElement('div'), PPTX, 'pptx', isClosed, () => undefined);
 
-    expect(open).toHaveBeenCalledWith(expect.any(ArrayBuffer), expect.any(HTMLElement), isClosed);
+    expect(open).toHaveBeenCalledWith(expect.any(ArrayBuffer), expect.any(HTMLElement), isClosed, expect.any(Object));
   });
 
   it('destroys a deck that finished opening after the modal closed', async () => {

@@ -1,4 +1,5 @@
 import { PopoverDesktop } from '../../../components/utils/popover';
+import type { PopoverDesktopParams } from '../../../components/utils/popover/popover-desktop';
 import { PopoverItemType } from '../../../components/utils/popover/components/popover-item';
 import { PopoverEvent } from '../../../../types/utils/popover/popover-event';
 import type { PopoverParams } from '../../../../types/utils/popover/popover';
@@ -11,8 +12,35 @@ export interface CellPopoverOptions {
   cover?: boolean | 'value';
   /** With `cover: true`, open under the anchor instead of over it, still kept inside the window. */
   below?: boolean;
-  /** Dock at the window's end edge, top level with the anchor, like Notion's view settings (research/26 §1a). */
-  docked?: boolean;
+  /**
+   * Dock at the window's end edge, top level with the anchor, like Notion's view settings (research/26 §1a).
+   * `'page'`: a full-page database's side panel, from under `dockRow` to the window bottom (research/35 §2.3).
+   */
+  docked?: boolean | 'page';
+  /** With `docked: 'page'`: the toolbar row the panel starts under. */
+  dockRow?: HTMLElement;
+  /** A menu-like panel (DatabasePanel), not a cell editor: Notion's menu corner (database.css). */
+  panel?: boolean;
+  /** One more popover class, for CSS that sizes one surface. */
+  surfaceClass?: string;
+  /** Space under the anchor, PANEL_GAP when unset. */
+  gap?: number;
+  /** Opens beside the anchor instead: this far right of it, top level with it. */
+  beside?: number;
+  /** With `beside`: the element it sits beside, when not the anchor. */
+  besideOf?: HTMLElement;
+  /** With `beside`: the popover's width. It opens on the left, `beside` from it, when only the left has room. */
+  besideFlipWidth?: number;
+  /** Opens on this side of the anchor, `gap` from it, vertically centred on it. `flip`: the other side when this one has no room. */
+  aside?: { side: 'left' | 'right'; gap: number; flip?: boolean };
+  /** Opens above the anchor, `gap` over it, when it fits there and not below. */
+  flip?: boolean;
+  /** The gap to the window's top and bottom, when it is not the usual 12. */
+  verticalMargin?: number;
+  /** Under the anchor, its end edge on the anchor's end edge. */
+  alignEnd?: boolean;
+  /** Below the anchor: what the popover follows on scroll, when the anchor may be redrawn away while open. */
+  positionContext?: HTMLElement;
   /** Escape pressed while open. The owner decides: close, or step back a panel. */
   onEscape: () => void;
   /** The popover closed itself: an outside press, or focus moved away. */
@@ -56,6 +84,53 @@ const coverPlacement = (anchor: HTMLElement, value: boolean, below: boolean): Pi
   };
 };
 
+/** The usual gap under a trigger (PopoverDesktop's default offset). */
+const PANEL_GAP = 8;
+
+/**
+ * Under the anchor, as a trigger menu opens, but through the cover clamp: a
+ * panel that would run past the window slides up to stay inside it, as view
+ * settings does (side-by-side-v1.md "Filter / Sort popovers").
+ */
+const fitPlacement = (anchor: HTMLElement, gap = PANEL_GAP, flip = false, verticalMargin?: number, context = anchor): Pick<PopoverDesktopParams, 'cover' | 'viewportMargin' | 'coverFlipOffset' | 'coverVerticalMargin'> & { position: DOMRect; positionContext: HTMLElement } => {
+  const rect = anchor.getBoundingClientRect();
+
+  return {
+    cover: true,
+    viewportMargin: COVER_VIEWPORT_MARGIN,
+    position: new DOMRect(rect.x, rect.bottom + gap, rect.width, 0),
+    positionContext: context,
+    // Above, its bottom sits `gap` over the anchor's top (r21-cc-date-val.raw, r21-cc-add3.raw).
+    ...(flip ? { coverFlipOffset: rect.height + 2 * gap } : {}),
+    ...(verticalMargin !== undefined ? { coverVerticalMargin: verticalMargin } : {}),
+  };
+};
+
+/** Beside the anchor, top level with it, through the same clamp (notion-motion.md Round 18 §2, the rule ⋯ menu). */
+const besidePlacement = (anchor: HTMLElement, gap: number, flipWidth?: number): Pick<PopoverParams, 'cover' | 'viewportMargin'> & { position: DOMRect; positionContext: HTMLElement } => {
+  const rect = anchor.getBoundingClientRect();
+  const right = rect.right + gap;
+  const left = rect.left - gap - (flipWidth ?? 0);
+  // notion-motion.md Round 33 §1 (r33-form-move-w1000.raw): a form's Question options panel.
+  const flip = flipWidth !== undefined && right + flipWidth > window.innerWidth - COVER_VIEWPORT_MARGIN && left >= COVER_VIEWPORT_MARGIN;
+
+  return {
+    cover: true,
+    viewportMargin: COVER_VIEWPORT_MARGIN,
+    position: new DOMRect(flip ? left : right, rect.top, 0, 0),
+    positionContext: anchor,
+  };
+};
+
+/** Beside the anchor and centred on it, as a menu's submenu flyout (notion-motion.md Round 32 §1). */
+const asidePlacement = (aside: { side: 'left' | 'right'; gap: number; flip?: boolean }): Pick<PopoverDesktopParams, 'placeLeftOfAnchor' | 'asideSide' | 'offset' | 'viewportMargin' | 'asideFlip'> => ({
+  placeLeftOfAnchor: true,
+  asideSide: aside.side,
+  offset: aside.gap,
+  viewportMargin: COVER_VIEWPORT_MARGIN,
+  ...(aside.flip === true ? { asideFlip: true } : {}),
+});
+
 /**
  * An editor's min-width: the cell's width, never under `floor`. Over a row
  * page value the box starts 1px left and still ends on the value's right edge.
@@ -66,21 +141,29 @@ export const coverMinWidth = (anchor: HTMLElement, cover: boolean | 'value' | un
   return `${Math.max(width, floor)}px`;
 };
 
+/**
+ * notion-motion.md Round 35: a table cell editor reaches from 1px over the
+ * cell down to its bottom line (240x80 on a 79px row), so it is never shorter.
+ */
+export const coverMinHeight = (anchor: HTMLElement): string => `${anchor.getBoundingClientRect().height + COVER_OUTSET}px`;
+
 /** research/26 §1a: the panel ends at x 1500 of a 1512 window. */
 const DOCK_VIEWPORT_MARGIN = 12;
 const DOCKED_CLASS = 'blok-database-docked-panel';
+const DOCKED_PAGE_CLASS = 'blok-database-docked-page';
+const PANEL_CLASS = 'blok-database-panel';
 
 /**
  * Cover placement from a zero-size rect past the window's end: the clamp
  * pulls the box back in, so it hugs that edge and slides up only to fit.
  */
-const dockPlacement = (anchor: HTMLElement): Pick<PopoverParams, 'cover' | 'viewportMargin'> & { position: DOMRect; positionContext: HTMLElement } => {
+const dockPlacement = (anchor: HTMLElement, top: number, margin: number): Pick<PopoverParams, 'cover' | 'viewportMargin'> & { position: DOMRect; positionContext: HTMLElement } => {
   const rtl = getComputedStyle(anchor).direction === 'rtl';
 
   return {
     cover: true,
-    viewportMargin: DOCK_VIEWPORT_MARGIN,
-    position: new DOMRect(rtl ? 0 : window.innerWidth, anchor.getBoundingClientRect().top, 0, 0),
+    viewportMargin: margin,
+    position: new DOMRect(rtl ? 0 : window.innerWidth, top, 0, 0),
     positionContext: anchor,
   };
 };
@@ -106,21 +189,34 @@ export class CellPopover {
   }
 
   show(): void {
-    const { anchor, cover, docked } = this.options;
+    const { anchor, cover, docked, panel } = this.options;
     const base: PopoverParams = {
       items: [{ type: PopoverItemType.Html, element: this.options.content }],
       trigger: anchor,
       flippable: false,
       width: 'auto',
       autoFocusFirstItem: false,
-      class: [CELL_EDITOR_CLASS, ...(docked === true ? [DOCKED_CLASS] : []), ...(cover === 'value' ? [VALUE_EDITOR_CLASS] : []), ...(cover === true ? [TABLE_EDITOR_CLASS] : [])].join(' '),
+      // Fades out like the database menus; an editor with no motion (database.css) still goes at once.
+      animateClose: true,
+      class: [CELL_EDITOR_CLASS, ...(panel === true ? [PANEL_CLASS] : []), ...(docked !== undefined && docked !== false ? [DOCKED_CLASS] : []), ...(docked === 'page' ? [DOCKED_PAGE_CLASS] : []), ...(cover === 'value' ? [VALUE_EDITOR_CLASS] : []), ...(cover === true ? [TABLE_EDITOR_CLASS] : []), ...(this.options.surfaceClass !== undefined ? [this.options.surfaceClass] : [])].join(' '),
       ...(this.options.minWidth !== undefined ? { minWidth: this.options.minWidth } : {}),
     };
-    const coverOrNone = cover === true || cover === 'value' ? coverPlacement(anchor, cover === 'value', cover === true && this.options.below === true) : {};
-    const placement = docked === true ? dockPlacement(anchor) : coverOrNone;
+    const { aside, beside, besideOf, besideFlipWidth } = this.options;
+    const below = (): ReturnType<typeof fitPlacement> | ReturnType<typeof besidePlacement> => (beside !== undefined
+      ? besidePlacement(besideOf ?? anchor, beside, besideFlipWidth)
+      : fitPlacement(anchor, this.options.gap, this.options.flip, this.options.verticalMargin, this.options.positionContext));
+    const fit = aside !== undefined ? asidePlacement(aside) : below();
+    const coverOrFit = cover === true || cover === 'value' ? coverPlacement(anchor, cover === 'value', cover === true && this.options.below === true) : fit;
+    const docks = {
+      page: () => dockPlacement(anchor, (this.options.dockRow ?? anchor).getBoundingClientRect().bottom, 0),
+      card: () => dockPlacement(anchor, anchor.getBoundingClientRect().top, DOCK_VIEWPORT_MARGIN),
+    };
+    const dock = docked === 'page' ? docks.page : docks.card;
+    const placement = docked === undefined || docked === false ? coverOrFit : dock();
     const popover = new PopoverDesktop({ ...base, ...placement });
 
     this.popover = popover;
+    popover.alignEnd = this.options.alignEnd === true;
     popover.on(PopoverEvent.Closed, () => {
       if (this.popover === popover) {
         this.teardown();

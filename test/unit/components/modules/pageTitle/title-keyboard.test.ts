@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { bindTitleKeyboard, type TitleKeyboardHost } from '../../../../../src/components/modules/pageTitle/title-keyboard';
+import type * as BrowserModule from '../../../../../src/components/utils/browser';
+
+const macOS = vi.hoisted(() => ({ value: false }));
+
+vi.mock('../../../../../src/components/utils/browser', async (importOriginal) => {
+  const actual = await importOriginal<typeof BrowserModule>();
+
+  return { ...actual, getUserOS: () => ({ win: !macOS.value, mac: macOS.value, x11: false, linux: false }) };
+});
 
 type HostSpy = { [K in keyof TitleKeyboardHost]: ReturnType<typeof vi.fn> };
 
@@ -30,6 +39,7 @@ const press = (el: HTMLElement, init: KeyboardEventInit): KeyboardEvent => {
 describe('bindTitleKeyboard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    macOS.value = false;
   });
 
   afterEach(() => {
@@ -78,6 +88,40 @@ describe('bindTitleKeyboard', () => {
     expect(host.commit).toHaveBeenCalled();
   });
 
+  const pasteFlavors = (title: HTMLElement, flavors: Record<string, string>): void => {
+    const event = new Event('paste', { bubbles: true, cancelable: true });
+
+    Object.defineProperty(event, 'clipboardData', { value: { getData: (type: string) => flavors[type] ?? '' } });
+    title.dispatchEvent(event);
+  };
+
+  it('paste of copied Blok blocks inserts their text, not the Markdown in text/plain', () => {
+    const { title, host } = setup('T', 1);
+
+    pasteFlavors(title, {
+      'application/x-blok': JSON.stringify([
+        { id: 'h', tool: 'header', data: { text: 'Head', level: 2 }, tunes: {}, parentId: null, indent: 0 },
+        { id: 'd', tool: 'delimiter', data: {}, tunes: {}, parentId: null, indent: 0 },
+        { id: 'e', tool: 'paragraph', data: { text: '' }, tunes: {}, parentId: null, indent: 0 },
+        { id: 'p', tool: 'paragraph', data: { text: '<b>Pa</b>ra &amp; more' }, tunes: {}, parentId: null, indent: 0 },
+      ]),
+      'text/plain': '## Head\n\n---\n\n**Pa**ra & more',
+    });
+
+    expect(title.textContent).toBe('THead Para & more');
+    expect(host.commit).toHaveBeenCalled();
+  });
+
+  it('paste of external plain text that looks like Markdown goes in as is', () => {
+    const { title } = setup('', 0);
+
+    title.textContent = 'T';
+    window.getSelection()?.setPosition(title.firstChild, 1);
+    pasteFlavors(title, { 'text/plain': '## Head' });
+
+    expect(title.textContent).toBe('T## Head');
+  });
+
   it('read-only: Enter does not split', () => {
     const { title, host } = setup('Hello', 2);
 
@@ -92,5 +136,27 @@ describe('bindTitleKeyboard', () => {
 
     expect(press(title, { key, metaKey: true }).defaultPrevented).toBe(true);
     expect(press(title, { key, ctrlKey: true }).defaultPrevented).toBe(true);
+  });
+
+  it('on macOS, Cmd+Y redoes (Notion keys)', () => {
+    macOS.value = true;
+    const { title, host } = setup('Hi', 2);
+
+    expect(press(title, { key: 'y', metaKey: true }).defaultPrevented).toBe(true);
+    expect(host.redo).toHaveBeenCalledTimes(1);
+  });
+
+  // The default is cancelled so the browser's own undo cannot rewind the title behind Yjs.
+  it.each([
+    ['Ctrl+Z', { key: 'z', ctrlKey: true }],
+    ['Ctrl+Shift+Z', { key: 'z', ctrlKey: true, shiftKey: true }],
+    ['Ctrl+Y', { key: 'y', ctrlKey: true }],
+  ] as const)('on macOS, %s does not walk history and cancels its default', (_name, init) => {
+    macOS.value = true;
+    const { title, host } = setup('Hi', 2);
+
+    expect(press(title, init).defaultPrevented).toBe(true);
+    expect(host.undo).not.toHaveBeenCalled();
+    expect(host.redo).not.toHaveBeenCalled();
   });
 });

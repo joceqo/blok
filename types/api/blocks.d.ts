@@ -61,6 +61,11 @@ export interface InsertAtOptions {
   /** Make the new block the current block. Defaults to `false`. */
   focus?: boolean;
   /**
+   * Select the new block, alone, as a block menu action that swaps one block
+   * for another leaves it. Defaults to `false`.
+   */
+  select?: boolean;
+  /**
    * Id of a block to replace. The new block takes its slot and parent; the
    * old block's children follow the turn-into rules. Cannot be combined with
    * `parentId` or `position`.
@@ -499,4 +504,14 @@ export interface Blocks {
    * @param options - pass `select: false` to jump without selecting the block
    */
   scrollToBlock?(id: string, options?: { select?: boolean }): void;
+
+  /**
+   * Write blocks to a `copy` event's clipboard the way copying selected blocks
+   * does: Blok's own format with their child blocks, plus HTML and Markdown text.
+   * Call it from the `copy` event handler. Ids that name no block are skipped.
+   *
+   * @param event - the copy event
+   * @param ids - block ids, in the order to copy them
+   */
+  copy?(event: ClipboardEvent, ids: string[]): void;
 }

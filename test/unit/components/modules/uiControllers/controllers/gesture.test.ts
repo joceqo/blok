@@ -9,6 +9,10 @@ describe('GestureController', () => {
   let controller: GestureController;
   let yjs: { beginGesture: ReturnType<typeof vi.fn>; holdCapture: ReturnType<typeof vi.fn>; releaseCapture: ReturnType<typeof vi.fn> };
   let selectedBlocks: boolean;
+  let lineBreaks: boolean;
+  let blockMenu: HTMLElement | null;
+  let noteUserInput: ReturnType<typeof vi.fn>;
+  let landHeldUserEdits: ReturnType<typeof vi.fn>;
 
   const key = (init: KeyboardEventInit): void => {
     input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
@@ -26,6 +30,8 @@ describe('GestureController', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     selectedBlocks = false;
+    lineBreaks = false;
+    blockMenu = null;
     wrapper = document.createElement('div');
     wrapper.setAttribute('data-blok-editor', '');
     input = document.createElement('div');
@@ -35,13 +41,16 @@ describe('GestureController', () => {
     document.body.appendChild(wrapper);
 
     yjs = { beginGesture: vi.fn(), holdCapture: vi.fn(), releaseCapture: vi.fn() };
+    noteUserInput = vi.fn();
+    landHeldUserEdits = vi.fn();
     controller = new GestureController({ config: {}, eventsDispatcher: {} } as unknown as ModuleConfig);
     controller.state = {
       YjsManager: yjs,
       BlockSelection: { get anyBlockSelected() {
         return selectedBlocks;
       } },
-      BlockManager: { getBlockByChildNode: () => ({ inputs: [input] }) },
+      BlockManager: { getBlockByChildNode: () => ({ inputs: [input], tool: { isLineBreaksEnabled: lineBreaks } }), noteUserInput, landHeldUserEdits },
+      BlockSettings: { contains: (node: HTMLElement) => blockMenu?.contains(node) === true },
     } as unknown as BlokModules;
     controller.setWrapperElement(wrapper);
     controller.enable();
@@ -67,18 +76,103 @@ describe('GestureController', () => {
     expect(yjs.beginGesture).toHaveBeenCalledWith('discrete');
   });
 
+  describe('a key on the page body in navigation mode (focus left the editor)', () => {
+    const bodyKey = (init: KeyboardEventInit): void => {
+      window.getSelection()?.removeAllRanges();
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
+    };
+
+    it('starts a gesture when this editor has blocks selected', () => {
+      selectedBlocks = true;
+      bodyKey({ key: 'Backspace' });
+
+      expect(yjs.beginGesture).toHaveBeenCalledWith('discrete');
+    });
+
+    it('starts none when this editor has no blocks selected', () => {
+      bodyKey({ key: 'Backspace' });
+
+      expect(yjs.beginGesture).not.toHaveBeenCalled();
+    });
+
+    it('starts none for a key typed into a field mounted on the body (a menu search)', () => {
+      const field = document.createElement('input');
+
+      document.body.appendChild(field);
+      selectedBlocks = true;
+      window.getSelection()?.removeAllRanges();
+      field.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'a' }));
+      field.remove();
+
+      expect(yjs.beginGesture).not.toHaveBeenCalled();
+    });
+
+    it('leaves a key from another editor to that editor', () => {
+      const other = document.createElement('div');
+      const otherInput = document.createElement('div');
+
+      other.setAttribute('data-blok-editor', '');
+      other.appendChild(otherInput);
+      wrapper.appendChild(other);
+      selectedBlocks = true;
+      window.getSelection()?.removeAllRanges();
+      otherInput.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Backspace' }));
+
+      expect(yjs.beginGesture).not.toHaveBeenCalled();
+    });
+  });
+
+  // A tool that handles a key itself (Tab in code) fires no beforeinput. The
+  // mark must come before the tool's own listener edits the DOM.
+  it('marks an editing key as the user\'s own edit before any tool handles it', () => {
+    const seen: unknown[] = [];
+
+    input.addEventListener('keydown', () => seen.push(noteUserInput.mock.calls.length), { once: true });
+    key({ key: 'Tab' });
+
+    expect(seen).toEqual([1]);
+    for (const init of [{ key: 'Tab', shiftKey: true }, { key: 'Enter' }, { key: 'Backspace' }, { key: 'Delete' }, { key: 'x' }]) {
+      key(init);
+    }
+    expect(noteUserInput).toHaveBeenCalledTimes(6);
+    expect(noteUserInput).toHaveBeenCalledWith(input);
+  });
+
+  // The last key's edit is still held in the frame after an undo. It belongs
+  // to the step this gesture closes, so it must land first.
+  it('lands edits held from the last key before a gesture starts', () => {
+    const order: string[] = [];
+
+    landHeldUserEdits.mockImplementation(() => order.push('land'));
+    yjs.beginGesture.mockImplementation(() => order.push('begin'));
+    key({ key: 'Tab' });
+    input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'insertText' }));
+    input.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+
+    expect(order).toEqual(['land', 'begin', 'land', 'begin', 'land', 'begin']);
+  });
+
+  // Cmd+Z marked as an edit would make the undo's own rewrite a new step.
+  it('never marks a shortcut, Escape or a caret move as an edit', () => {
+    for (const init of [{ key: 'z', metaKey: true }, { key: 'z', ctrlKey: true }, { key: 'Tab', altKey: true }, { key: 'Escape' }, { key: 'ArrowLeft' }, { key: 'Shift' }]) {
+      key(init);
+    }
+
+    expect(noteUserInput).not.toHaveBeenCalled();
+  });
+
   it('treats a shortcut as discrete', () => {
     key({ key: 'b', metaKey: true });
 
     expect(yjs.beginGesture).toHaveBeenCalledWith('discrete');
   });
 
-  it('treats Backspace inside the text as typing and at its start as discrete', () => {
+  it('treats Backspace inside the text as typing and at its start as a merge', () => {
     key({ key: 'Backspace' });
     caretAt(0);
     key({ key: 'Backspace' });
 
-    expect(yjs.beginGesture.mock.calls).toEqual([['typing'], ['discrete']]);
+    expect(yjs.beginGesture.mock.calls).toEqual([['typing'], ['merge']]);
   });
 
   it('treats Delete inside the text as typing and at its end as discrete', () => {
@@ -87,6 +181,42 @@ describe('GestureController', () => {
     key({ key: 'Delete' });
 
     expect(yjs.beginGesture.mock.calls).toEqual([['typing'], ['discrete']]);
+  });
+
+  it('treats Enter in a block that takes line breaks (code) as typing', () => {
+    lineBreaks = true;
+    key({ key: 'Enter' });
+
+    expect(yjs.beginGesture).toHaveBeenCalledWith('typing');
+  });
+
+  it('treats Enter in a text block as a split and Shift+Enter there as typing (Notion U032, U044)', () => {
+    key({ key: 'Enter' });
+    key({ key: 'Enter', shiftKey: true });
+
+    expect(yjs.beginGesture.mock.calls).toEqual([['split'], ['typing']]);
+  });
+
+  it('keeps Shift+Enter in code as discrete', () => {
+    lineBreaks = true;
+    key({ key: 'Enter', shiftKey: true });
+
+    expect(yjs.beginGesture).toHaveBeenCalledWith('discrete');
+  });
+
+  it('keeps Enter and Backspace with a selection or a modifier discrete', () => {
+    key({ key: 'Enter', altKey: true });
+    window.getSelection()?.setBaseAndExtent(input.firstChild as Node, 0, input.firstChild as Node, 2);
+    key({ key: 'Enter' });
+    key({ key: 'Backspace' });
+
+    expect(yjs.beginGesture.mock.calls).toEqual([['discrete'], ['discrete'], ['discrete']]);
+  });
+
+  it('treats a soft line break the browser inserts as typing', () => {
+    input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'insertLineBreak' }));
+
+    expect(yjs.beginGesture).toHaveBeenCalledWith('typing');
   });
 
   it('ignores caret moves, modifiers and composition keys', () => {
@@ -179,6 +309,45 @@ describe('GestureController', () => {
     popover.remove();
   });
 
+  describe('in the block menu, mounted on the body while its block is selected', () => {
+    let search: HTMLInputElement;
+    let item: HTMLElement;
+
+    beforeEach(() => {
+      blockMenu = document.createElement('div');
+      search = document.createElement('input');
+      item = document.createElement('div');
+      blockMenu.append(search, item);
+      document.body.appendChild(blockMenu);
+      selectedBlocks = true;
+      window.getSelection()?.removeAllRanges();
+    });
+
+    afterEach(() => {
+      blockMenu?.remove();
+    });
+
+    it('starts a gesture when an item is pressed, so the step starts from the block selection', () => {
+      item.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+
+      expect(yjs.beginGesture).toHaveBeenCalledWith('discrete');
+      expect(yjs.holdCapture).not.toHaveBeenCalled();
+    });
+
+    it('starts a gesture when an item is picked with Enter', () => {
+      search.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
+
+      expect(yjs.beginGesture).toHaveBeenCalledWith('discrete');
+    });
+
+    it('starts none for a letter typed into its search field', () => {
+      search.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'a' }));
+      search.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'insertText', data: 'a' }));
+
+      expect(yjs.beginGesture).not.toHaveBeenCalled();
+    });
+  });
+
   describe('with another editor nested inside (a database card page)', () => {
     let nestedInput: HTMLElement;
 
@@ -240,6 +409,35 @@ describe('GestureController', () => {
     }
 
     expect(yjs.beginGesture.mock.calls).toEqual([['discrete'], ['discrete']]);
+  });
+
+  it('starts a gesture in its page title when the title is mounted outside the editor', () => {
+    const title = document.createElement('div');
+
+    title.contentEditable = 'true';
+    title.textContent = 'Lab';
+    document.body.appendChild(title);
+    controller.state = {
+      YjsManager: yjs,
+      BlockSelection: { anyBlockSelected: false },
+      BlockManager: { getBlockByChildNode: () => undefined, noteUserInput, landHeldUserEdits },
+      PageTitle: { titleElement: title },
+    } as unknown as BlokModules;
+
+    try {
+      const text = title.firstChild;
+
+      if (text === null) {
+        throw new Error('empty title');
+      }
+      window.getSelection()?.collapse(text, 1);
+      title.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'X' }));
+      title.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    } finally {
+      title.remove();
+    }
+
+    expect(yjs.beginGesture.mock.calls).toEqual([['typing'], ['discrete']]);
   });
 
   it('releases a hold when disabled mid-press', () => {

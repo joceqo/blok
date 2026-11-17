@@ -3840,7 +3840,7 @@
                     },
                     {
                       "name": "database.addView",
-                      "summary": "Add a view at the end and open it."
+                      "summary": "Add a view at the end and open it, or a widget to a dashboard view."
                     },
                     {
                       "name": "database.applyTemplate",
@@ -3864,7 +3864,11 @@
                     },
                     {
                       "name": "database.deleteProperty",
-                      "summary": "Remove a property from the schema. Row values stay in the rows."
+                      "summary": "Move a property from the schema to deletedProperties. Row values stay in the rows."
+                    },
+                    {
+                      "name": "database.deletePropertyPermanently",
+                      "summary": "Remove a deleted property for good: its deletedProperties entry and its value in every row and template."
                     },
                     {
                       "name": "database.deleteRow",
@@ -3872,7 +3876,7 @@
                     },
                     {
                       "name": "database.deleteView",
-                      "summary": "Delete a view. If it was open, its neighbour opens."
+                      "summary": "Delete a view. If it was open, its neighbour opens. A dashboard takes its widget views with it; a widget view leaves its dashboard."
                     },
                     {
                       "name": "database.duplicateProperty",
@@ -3884,7 +3888,7 @@
                     },
                     {
                       "name": "database.duplicateView",
-                      "summary": "Copy a view with all its settings to the end, and open the copy."
+                      "summary": "Copy a view with all its settings to the end, and open the copy. A dashboard is copied with its widgets; a copied widget goes next to it on its dashboard."
                     },
                     {
                       "name": "database.editComment",
@@ -3933,6 +3937,10 @@
                       "summary": "Resolve a thread, anyone's, as its resolve button does. Then it leaves reads and takes no reply, edit or delete: nothing reopens it."
                     },
                     {
+                      "name": "database.restoreProperty",
+                      "summary": "Move a deleted property back into the schema, at its old position. Its row values show again."
+                    },
+                    {
                       "name": "database.setDefaultTemplate",
                       "summary": "Set the template new rows start from, or null for none."
                     },
@@ -3975,6 +3983,10 @@
                       "summary": "Read the document as an outline, a subtree, or chosen blocks in full. A full read adds meta: when the block was last edited and by whom, as the block menu shows; a person has a name only when the host's user directory knows them."
                     },
                     {
+                      "name": "doc.setCover",
+                      "summary": "Set this document's cover, the wide image above the title. null removes it. A gallery cover is one of Blok's built-in fills: red, orange, yellow, green, blue, purple, pink, gray. position is the image's vertical position in percent, 0 (top) to 100 (bottom), default 50."
+                    },
+                    {
                       "name": "doc.setIcon",
                       "summary": "Set this document's icon. null clears it."
                     },
@@ -4003,6 +4015,12 @@
                     {
                       "name": "history.changes",
                       "summary": "What changed between two versions: added, removed, changed and moved blocks.",
+                      "available": false,
+                      "reason": "service"
+                    },
+                    {
+                      "name": "history.previewRestore",
+                      "summary": "Preview a restore of a saved version. Writes nothing.",
                       "available": false,
                       "reason": "service"
                     },
@@ -4191,7 +4209,7 @@
                       "reason": "host"
                     }
                   ],
-                  "guidance": "Rich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format."
+                  "guidance": "Rich text is a list of segments: { text, marks? } or { embed, marks? }. A plain string is plain text, HTML tags included.\nMarks: bold, italic, underline, strikethrough, code, sup, sub, highlight, color, background, link, annotation, and tag:<name> for a custom inline tool. sup and sub cannot share a run.\nhighlight alone is stored as background \"yellow\"; with a background, as that background. color and background take a preset: \"gray\", \"brown\", \"orange\", \"yellow\", \"green\", \"blue\", \"purple\", \"pink\", \"red\". Hex, rgb and hsl are stored as the nearest preset. A CSS colour name is lowercased and kept, and so is var(--name). Other syntaxes (oklch, lab, hwb, color()) are dropped, as are a transparent colour and a white or dark-grey page background.\nA link needs href. With no target or rel it gets target \"_blank\" and rel \"nofollow\"; an \"#anchor\" href gets target \"_self\". A target or rel you give is kept, but in the editor a host link config replaces both.\nEmbeds: { equation: { expression } } is inline LaTeX; { page: { id } } mentions a page: id is the pageId in a page block's data, not the block id.\ntext.format with unset [\"*\"] clears every mark; \"tag:*\" clears every custom mark.\nmarkdown.insert cannot write underline, sup, sub, highlight or colours: insert the text, then use text.format."
                 }
               },
               "isError": false
@@ -4470,6 +4488,22 @@
                                               "type": "string"
                                             }
                                           }
+                                        },
+                                        "annotation": {
+                                          "type": "object",
+                                          "description": "Plain-text hint card on hover.",
+                                          "required": [
+                                            "text"
+                                          ],
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "text": {
+                                              "type": "string"
+                                            },
+                                            "subtitle": {
+                                              "type": "string"
+                                            }
+                                          }
                                         }
                                       },
                                       "patternProperties": {
@@ -4603,6 +4637,22 @@
                                               "type": "string"
                                             },
                                             "rel": {
+                                              "type": "string"
+                                            }
+                                          }
+                                        },
+                                        "annotation": {
+                                          "type": "object",
+                                          "description": "Plain-text hint card on hover.",
+                                          "required": [
+                                            "text"
+                                          ],
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "text": {
+                                              "type": "string"
+                                            },
+                                            "subtitle": {
                                               "type": "string"
                                             }
                                           }

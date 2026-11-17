@@ -2,11 +2,13 @@ import type { Locator, Page } from '@playwright/test';
 import type { Blok } from '@/types';
 import type { BlokConfig, OutputData } from '@/types';
 import { ensureBlokBundleBuilt } from './helpers/ensure-build';
+import { historyKeys } from './helpers/history-keys';
 import { BLOK_INTERFACE_SELECTOR } from '../../../src/components/constants';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { expect, gotoTestPage, test } from './helpers/shared-page';
 import { savedAsHtml } from './helpers/saved-as-html';
+import { openFixtureToggles } from './helpers/toggle-open';
 
 const HOLDER_ID = 'blok';
 const BLOCK_SELECTOR = `${BLOK_INTERFACE_SELECTOR} [data-blok-testid="block-wrapper"]`;
@@ -35,7 +37,7 @@ type SerializableToolConfig = {
   config?: Record<string, unknown>;
 };
 
-type CreateBlokOptions = Pick<BlokConfig, 'data' | 'inlineToolbar' | 'placeholder' | 'readOnly'> & {
+type CreateBlokOptions = Pick<BlokConfig, 'data' | 'dataModel' | 'inlineToolbar' | 'placeholder' | 'readOnly' | 'tunes'> & {
   tools?: Record<string, SerializableToolConfig>;
 };
 
@@ -780,7 +782,7 @@ test.describe('copy and paste', () => {
 
       const clipboardData = await copyFromElement(paragraph);
 
-      expect(clipboardData).toStrictEqual({});
+      expect(clipboardData).toStrictEqual({ 'text/plain': 'Some text', 'text/html': 'Some text' });
     });
 
     test('should copy several blocks', async ({ page }) => {
@@ -821,6 +823,2555 @@ test.describe('copy and paste', () => {
     });
   });
 
+  test.describe('copying text inside one block', () => {
+    const selectIn = async (page: Page, selector: string, from?: string, to?: string): Promise<void> => {
+      await page.locator(selector).first().click();
+      await page.locator(selector).first().evaluate((host, bounds) => {
+        const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+        const nodes: Text[] = [];
+
+        for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+          nodes.push(node as Text);
+        }
+        const locate = (needle: string | undefined, atEnd: boolean): [Text, number] => {
+          let offset = 0;
+          const full = nodes.map((n) => n.data).join('');
+          const edge = atEnd ? full.length : 0;
+          const index = needle === undefined ? edge : full.indexOf(needle) + (atEnd ? needle.length : 0);
+
+          for (const n of nodes) {
+            if (index <= offset + n.data.length) {
+              return [n, index - offset];
+            }
+            offset += n.data.length;
+          }
+          throw new Error('offset out of range');
+        };
+        const [startNode, startOffset] = locate(bounds.from, false);
+        const [endNode, endOffset] = locate(bounds.to, true);
+        const range = document.createRange();
+
+        range.setStart(startNode, startOffset);
+        range.setEnd(endNode, endOffset);
+        window.getSelection()?.removeAllRanges();
+        window.getSelection()?.addRange(range);
+        document.dispatchEvent(new Event('selectionchange'));
+      }, { from, to });
+    };
+
+    const caretBefore = async (page: Page, id: string, needle: string): Promise<void> => {
+      const editable = page.locator(`[data-blok-id="${id}"] [contenteditable="true"]`);
+
+      await editable.click();
+      await editable.evaluate((host, text) => {
+        const node = host.firstChild;
+        const index = node?.textContent?.indexOf(text) ?? -1;
+
+        if (!(node instanceof Text) || index < 0) {
+          throw new Error(`no "${text}" to put the caret before`);
+        }
+        window.getSelection()?.collapse(node, index);
+      }, needle);
+    };
+
+    const outline = async (page: Page): Promise<string[]> => {
+      const { blocks } = await saveBlok(page);
+
+      return blocks.map((b) => `${b.type}:${String((b.data as { text?: unknown; code?: unknown }).text ?? (b.data as { code?: unknown }).code)}`);
+    };
+
+    test('a heading copies its inline text, without the heading or computed styles', async ({ page }) => {
+      await createBlokWithElements(page, [
+        { id: 'h', type: 'header', data: { text: 'Head <b>B</b> text', level: 2 } },
+        { id: 't', type: 'paragraph', data: { text: 'Target text here' } },
+      ]);
+      await selectIn(page, '[data-blok-id="h"] [contenteditable="true"]');
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="h"] [contenteditable="true"]'));
+
+      expect(clipboard).toStrictEqual({ 'text/plain': 'Head B text', 'text/html': 'Head <strong>B</strong> text' });
+
+      await caretBefore(page, 't', 'text here');
+      await paste(page, page.locator(':focus'), clipboard);
+
+      await expect.poll(() => outline(page)).toEqual(['header:Head <strong>B</strong> text', 'paragraph:Target Head <strong>B</strong> texttext here']);
+    });
+
+    test('a preset colour mark copies as its literal and pastes back as its token', async ({ page }) => {
+      await createBlokWithElements(page, [
+        { id: 's', type: 'paragraph', data: { text: 'aa <mark style="background-color: var(--blok-color-yellow-bg);">hl</mark> <mark style="color: var(--blok-color-red-text); background-color: transparent;">red</mark> zz' } },
+        { id: 't', type: 'paragraph', data: { text: 'Target text here' } },
+      ]);
+      await selectIn(page, '[data-blok-id="s"] [contenteditable="true"]', 'hl', 'red');
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="s"] [contenteditable="true"]'));
+
+      expect(clipboard['text/html']).toContain('#fbf3db');
+
+      await caretBefore(page, 't', 'text here');
+      await paste(page, page.locator(':focus'), clipboard);
+
+      // The pasted marks save exactly as the source's marks do.
+      await expect.poll(() => outline(page)).toEqual([
+        'paragraph:aa <mark style="background-color: var(--blok-color-yellow-bg);">hl</mark> <mark style="color: var(--blok-color-red-text);">red</mark> zz',
+        'paragraph:Target <mark style="background-color: var(--blok-color-yellow-bg);">hl</mark> <mark style="color: var(--blok-color-red-text);">red</mark>text here',
+      ]);
+    });
+
+    test('code lines copy with their line break and without highlight markup', async ({ page }) => {
+      await createBlokWithElements(page, [
+        { id: 'c', type: 'code', data: { code: 'const a = 1;\nconst b = 2;', language: 'javascript' } },
+        { id: 't', type: 'paragraph', data: { text: '' } },
+        { id: 'o', type: 'paragraph', data: { text: 'Other' } },
+      ]);
+      await selectIn(page, '[data-blok-id="c"] [contenteditable]', 'a =', 'b =');
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="c"] [contenteditable]').first());
+
+      expect(clipboard).toStrictEqual({ 'text/plain': 'a = 1;\nconst b =', 'text/html': 'a = 1;<br>const b =' });
+
+      await page.locator('[data-blok-id="t"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), clipboard);
+
+      await expect.poll(async () => (await outline(page)).join('|')).not.toContain('paragraph:|');
+      const saved = await outline(page);
+
+      expect(saved[0]).toBe('code:const a = 1;\nconst b = 2;');
+      expect(saved.filter((line) => line.startsWith('code:'))).toHaveLength(1);
+      expect(saved.slice(1, -1).join('\n').replace(/<br>/g, '\n').replace(/paragraph:/g, '')).toBe('a = 1;\nconst b =');
+    });
+
+    test('code lines copied with real keys and pasted into another code block stay in it', async ({ page, browserName }) => {
+      // eslint-disable-next-line playwright/no-skipped-test -- needs real clipboard permissions
+      test.skip(browserName !== 'chromium', 'Firefox and WebKit reject the clipboard-read/clipboard-write permissions a real paste needs');
+      await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+      await createBlokWithElements(page, [
+        { id: 'c', type: 'code', data: { code: 'const a = 1;\nconst b = 2;', language: 'javascript' } },
+        { id: 'd', type: 'code', data: { code: 'let x;', language: 'javascript' } },
+      ]);
+      await selectIn(page, '[data-blok-id="c"] [contenteditable]');
+
+      const modifier = await getCommandModifierKey(page);
+
+      await page.keyboard.press(`${modifier}+c`);
+      // The caret ends inside a highlight span, not on the code element itself.
+      await selectIn(page, '[data-blok-id="d"] [contenteditable]', 'let x;', 'let x;');
+      await page.evaluate(() => window.getSelection()?.collapseToEnd());
+      await page.keyboard.press(`${modifier}+v`);
+
+      await expect.poll(() => outline(page)).toEqual(['code:const a = 1;\nconst b = 2;', 'code:let x;const a = 1;\nconst b = 2;']);
+    });
+
+    test('a code block copied as a block and pasted with real keys into code text adds its code, not a Markdown fence', async ({ page, browserName }) => {
+      // eslint-disable-next-line playwright/no-skipped-test -- needs real clipboard permissions
+      test.skip(browserName !== 'chromium', 'Firefox and WebKit reject the clipboard-read/clipboard-write permissions a real paste needs');
+      await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+      await createBlokWithElements(page, [
+        { id: 'a', type: 'paragraph', data: { text: 'Anchor' } },
+        { id: 'c', type: 'code', data: { code: 'inner()\n\tx', language: 'javascript' } },
+        { id: 'd', type: 'code', data: { code: 'outer\nend', language: 'javascript' } },
+      ]);
+      await page.locator('[data-blok-id="a"] [contenteditable="true"]').click();
+      await page.keyboard.press('Escape');
+      await page.keyboard.press('ArrowDown');
+      await expect(page.locator('[data-blok-id="c"]')).toHaveAttribute('data-blok-selected', 'true');
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="c"]'));
+
+      expect(clipboard['text/plain']).toContain('```');
+
+      // A real copy puts the Blok flavours on the system clipboard, so a real paste runs the browser's default.
+      await page.evaluate((flavours) => {
+        const onCopy = (event: ClipboardEvent): void => {
+          Object.entries(flavours).forEach(([type, value]) => event.clipboardData?.setData(type, value));
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        };
+
+        window.addEventListener('copy', onCopy, { capture: true, once: true });
+      }, clipboard);
+      await page.keyboard.press('ControlOrMeta+C');
+
+      await selectIn(page, '[data-blok-id="d"] [contenteditable]', 'outer', 'outer');
+      await page.evaluate(() => window.getSelection()?.collapseToEnd());
+      await page.keyboard.press('ControlOrMeta+V');
+
+      await expect.poll(() => outline(page)).toEqual(['paragraph:Anchor', 'code:inner()\n\tx', 'code:outerinner()\n\tx\nend']);
+      await expect.poll(() => page.locator('[data-blok-id="d"]').getByTestId('code-gutter').evaluate((gutter) => gutter.childElementCount)).toBe(3);
+
+      await page.keyboard.press((await historyKeys(page)).undo);
+      await expect.poll(() => outline(page)).toEqual(['paragraph:Anchor', 'code:inner()\n\tx', 'code:outer\nend']);
+    });
+
+    test('the page title copies as its plain text and pastes inline', async ({ page }) => {
+      await createBlok(page, {
+        pageTitle: true,
+        data: { title: 'My page name', blocks: [{ id: 't', type: 'paragraph', data: { text: 'Target text here' } }] },
+      } as CreateBlokOptions);
+      await selectIn(page, '[data-blok-page-title]');
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-page-title]'));
+
+      expect(clipboard).toStrictEqual({ 'text/plain': 'My page name', 'text/html': 'My page name' });
+
+      await caretBefore(page, 't', 'text here');
+      await paste(page, page.locator(':focus'), clipboard);
+
+      await expect.poll(() => outline(page)).toEqual(['paragraph:Target My page nametext here']);
+    });
+
+    test('markdown-looking text pastes back literally, mid-paragraph and into an empty paragraph', async ({ page }) => {
+      const literal = '# not a heading **not bold** - not list';
+
+      await createBlokWithElements(page, [
+        { id: 's', type: 'paragraph', data: { text: literal } },
+        { id: 't', type: 'paragraph', data: { text: 'Target text here' } },
+        { id: 'e', type: 'paragraph', data: { text: '' } },
+      ]);
+      await selectIn(page, '[data-blok-id="s"] [contenteditable="true"]');
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="s"] [contenteditable="true"]'));
+
+      await caretBefore(page, 't', 'text here');
+      await paste(page, page.locator(':focus'), clipboard);
+      await expect.poll(() => outline(page)).toEqual([`paragraph:${literal}`, `paragraph:Target ${literal}text here`, 'paragraph:']);
+
+      await page.locator('[data-blok-id="e"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), clipboard);
+      await expect.poll(() => outline(page)).toEqual([`paragraph:${literal}`, `paragraph:Target ${literal}text here`, `paragraph:${literal}`]);
+    });
+
+    test('a span-only html copy keeps its non-breaking spaces when text/plain lost them', async ({ page }) => {
+      await createBlokWithElements(page, [{ id: 't', type: 'paragraph', data: { text: 'Target text here' } }]);
+      await caretBefore(page, 't', 'text here');
+      await paste(page, page.locator(':focus'), {
+        'text/html': '<meta charset="utf-8"><span style="color: rgb(0, 0, 0);">a&nbsp;b&nbsp;&nbsp;c d</span>',
+        'text/plain': 'a b  c d',
+      });
+
+      // Saved text holds U+00A0 itself, or as &nbsp;.
+      await expect.poll(async () => (await outline(page)).map((line) => line.replace(/&nbsp;/g, '\u00A0'))).toEqual(['paragraph:Target a\u00A0b\u00A0\u00A0c dtext here']);
+    });
+
+    test('the nbsp spans a browser writes at the edges of a copied range paste as spaces', async ({ page }) => {
+      await createBlokWithElements(page, [{ id: 't', type: 'paragraph', data: { text: 'Target text here' } }]);
+      await caretBefore(page, 't', 'text here');
+      await paste(page, page.locator(':focus'), {
+        'text/html': '<meta charset="utf-8"><span><span>&nbsp;</span></span><strong>bb</strong><span>&nbsp;</span>',
+        'text/plain': ' bb ',
+      });
+
+      await expect.poll(() => outline(page)).toEqual(['paragraph:Target  <strong>bb</strong> text here']);
+    });
+
+    test('cutting part of a heading removes it, pastes it inline, and undo brings it back', async ({ page }) => {
+      await createBlokWithElements(page, [
+        { id: 'h', type: 'header', data: { text: 'Head <b>B</b> text', level: 2 } },
+        { id: 't', type: 'paragraph', data: { text: 'Target text here' } },
+      ]);
+      await selectIn(page, '[data-blok-id="h"] [contenteditable="true"]', 'ad', 'B');
+
+      const clipboard = await cutFromElement(page.locator('[data-blok-id="h"] [contenteditable="true"]'));
+
+      expect(clipboard).toStrictEqual({ 'text/plain': 'ad B', 'text/html': 'ad <strong>B</strong>' });
+      await expect.poll(() => outline(page)).toEqual(['header:He text', 'paragraph:Target text here']);
+
+      await caretBefore(page, 't', 'text here');
+      await paste(page, page.locator(':focus'), clipboard);
+      await expect.poll(() => outline(page)).toEqual(['header:He text', 'paragraph:Target ad <strong>B</strong>text here']);
+
+      await page.locator('[data-blok-id="h"] [contenteditable="true"]').click();
+      const { undo } = await historyKeys(page);
+
+      await page.keyboard.press(undo);
+      await page.keyboard.press(undo);
+      await expect.poll(() => outline(page)).toEqual(['header:Head <strong>B</strong> text', 'paragraph:Target text here']);
+    });
+
+    const cutAndPasteBack: Array<[string, OutputData['blocks'][number], string, string, string]> = [
+      ['paragraph', { id: 's', type: 'paragraph', data: { text: 'Alpha <b>bold</b> <i>ital</i> <code>cod</code> <a href="https://example.com/">lnk</a> omega' } }, 'old', 'lnk', ' omega'],
+      ['heading', { id: 's', type: 'header', data: { text: 'Head <b>Bold</b> <a href="https://example.com/">L</a> end', level: 2 } }, 'ad', 'L', ' end'],
+    ];
+
+    for (const [label, block, from, to, before] of cutAndPasteBack) {
+      test(`a range cut with real keys from a ${label} and pasted back saves the original text`, async ({ page, browserName }) => {
+        // eslint-disable-next-line playwright/no-skipped-test -- needs real clipboard permissions
+        test.skip(browserName !== 'chromium', 'Firefox and WebKit reject the clipboard-read/clipboard-write permissions a real paste needs');
+        await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+        await createBlokWithElements(page, [block]);
+        const original = await outline(page);
+        const editable = '[data-blok-id="s"] [contenteditable="true"]';
+        const modifier = await getCommandModifierKey(page);
+
+        await selectIn(page, editable, from, to);
+        await page.keyboard.press(`${modifier}+x`);
+        await expect.poll(() => outline(page)).not.toEqual(original);
+
+        // Into the text node that holds `before`, not the end of the bold run before it.
+        await page.locator(editable).evaluate((host, needle) => {
+          const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            const index = (node as Text).data.indexOf(needle);
+
+            if (index >= 0) {
+              window.getSelection()?.collapse(node, index);
+
+              return;
+            }
+          }
+          throw new Error(`no "${needle}" to put the caret before`);
+        }, before);
+        await page.keyboard.press(`${modifier}+v`);
+
+        await expect.poll(() => outline(page)).toEqual(original);
+      });
+    }
+  });
+
+  test.describe('blok clipboard wins over tool patterns', () => {
+    // Blok's own text/plain is Markdown, so a block copy can read as exactly one tool pattern.
+    const cases: Array<{ name: string; blocks: OutputData['blocks'] }> = [
+      {
+        name: 'a URL paragraph next to an empty paragraph (bookmark pattern)',
+        blocks: [
+          { type: 'paragraph', data: { text: 'https://example.com/page' } },
+          { type: 'paragraph', data: { text: '' } },
+        ],
+      },
+      {
+        name: 'spacer, divider and an empty paragraph (divider pattern)',
+        blocks: [
+          { type: 'spacer', data: { height: 96 } },
+          { type: 'divider', data: {} },
+          { type: 'paragraph', data: { text: '' } },
+        ],
+      },
+      {
+        name: 'a bare codepen URL paragraph (embed pattern)',
+        blocks: [ { type: 'paragraph', data: { text: 'https://codepen.io/team/pen/abc123' } } ],
+      },
+      {
+        name: 'a bare png URL paragraph (image pattern)',
+        blocks: [ { type: 'paragraph', data: { text: 'https://example.com/picture.png' } } ],
+      },
+    ];
+
+    for (const { name, blocks } of cases) {
+      test(`pastes ${name} back as the same blocks`, async ({ page }) => {
+        await createBlokWithElements(page, blocks);
+
+        const source = await saveBlok(page);
+        const editable = page.locator(`${BLOCK_SELECTOR} [contenteditable="true"]`).first();
+        const commandModifier = await getCommandModifierKey(page);
+
+        const box = await editable.boundingBox();
+
+        if (box === null) {
+          throw new Error('The editable has no box');
+        }
+
+        // Firefox hangs on a click into URL text, so click past its end.
+        await editable.click({ position: { x: box.width - 4, y: box.height / 2 } });
+        await page.keyboard.press(`${commandModifier}+A`);
+        await page.keyboard.press(`${commandModifier}+A`);
+        await page.keyboard.press(`${commandModifier}+A`);
+
+        const clipboardData = await copyFromElement(editable);
+
+        expect(clipboardData['application/x-blok']).toBeDefined();
+
+        await createBlok(page);
+        await paste(page, getParagraphByIndex(page, 0), clipboardData);
+
+        const shape = (output: OutputData): Array<{ type: string; data: unknown }> =>
+          output.blocks.map(({ type, data }) => ({ type, data }));
+
+        await expect.poll(async () => shape(await saveBlok(page))).toEqual(shape(source));
+      });
+    }
+  });
+
+  test.describe('blocks copied out of a container', () => {
+    const doc: OutputData['blocks'] = [
+      { id: 'src', type: 'toggle', data: { text: 'Source', isOpen: true }, content: ['s1', 's2'] },
+      { id: 's1', type: 'paragraph', parent: 'src', data: { text: 'First child' } },
+      { id: 's2', type: 'paragraph', parent: 'src', data: { text: 'Second child' } },
+      { id: 'cal', type: 'callout', data: { emoji: '💡' }, content: ['cal-in'] },
+      { id: 'cal-in', type: 'paragraph', parent: 'cal', data: { text: '' } },
+      { id: 'tbl', type: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [['', 'B1'], ['A2', 'B2']] } },
+      { id: 'tail', type: 'paragraph', data: { text: 'Tail' } },
+    ];
+
+    const targets = [
+      {
+        name: 'a callout child',
+        parent: 'cal',
+        locate: (page: Page): Locator => page.locator('[data-blok-id="cal-in"] [contenteditable="true"]'),
+      },
+      {
+        name: 'a table cell',
+        parent: 'tbl',
+        locate: (page: Page): Locator => page.locator('[data-blok-id="tbl"] [data-blok-table-cell]').first().locator('[contenteditable="true"]').first(),
+      },
+    ];
+
+    for (const { name, parent, locate } of targets) {
+      test(`stay inside ${name} when pasted there`, async ({ page }) => {
+        await createBlok(page, { data: { blocks: doc }, dataModel: 'hierarchical' });
+        await openFixtureToggles(page, { blocks: doc });
+
+        await page.locator('[data-blok-id="s1"] [contenteditable="true"]').click();
+        await page.locator('[data-blok-id="s2"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+        await expect(page.locator('[data-blok-id="s2"][data-blok-selected="true"]')).toBeVisible();
+
+        const clipboardData = await copyFromElement(page.locator('[data-blok-id="s1"]'));
+
+        expect(clipboardData['application/x-blok']).toBeDefined();
+
+        const target = locate(page);
+
+        await target.click();
+        await paste(page, page.locator(':focus'), clipboardData);
+
+        const placed = async (): Promise<{ inTarget: unknown[]; roots: unknown[] }> => {
+          const { blocks } = await saveBlok(page);
+
+          return {
+            inTarget: blocks.filter((b) => b.parent === parent).map((b) => b.data.text),
+            roots: blocks.filter((b) => b.parent === undefined).map((b) => b.id),
+          };
+        };
+
+        await expect.poll(async () => (await placed()).inTarget.filter((text) => text === 'First child' || text === 'Second child'))
+          .toEqual(['First child', 'Second child']);
+        expect((await placed()).roots).toEqual(['src', 'cal', 'tbl', 'tail']);
+      });
+    }
+  });
+
+  test.describe('pasted toggles keep the open state they were copied with', () => {
+    const toggleDoc: OutputData['blocks'] = [
+      { id: 'tog', type: 'toggle', data: { text: 'Outer toggle' }, content: ['tc1', 'tin'] },
+      { id: 'tc1', type: 'paragraph', data: { text: 'Outer child' }, parent: 'tog' },
+      { id: 'tin', type: 'toggle', data: { text: 'Inner toggle' }, parent: 'tog', content: ['tg1'] },
+      { id: 'tg1', type: 'paragraph', data: { text: 'Inner child' }, parent: 'tin' },
+      { id: 'tgt', type: 'paragraph', data: { text: '' } },
+    ];
+    const headingDoc: OutputData['blocks'] = [
+      { id: 'th', type: 'header', data: { text: 'Toggle heading', level: 2, isToggleable: true }, content: ['thc'] },
+      { id: 'thc', type: 'paragraph', data: { text: 'Heading child' }, parent: 'th' },
+      { id: 'tgt', type: 'paragraph', data: { text: '' } },
+    ];
+
+    /** Copy or cut the block `id` with its subtree, then paste it into the empty `tgt`. */
+    const copyAndPaste = async (page: Page, id: string, kind: 'copy' | 'cut'): Promise<Set<string>> => {
+      const sourceIds = new Set((await saveBlok(page)).blocks.map((block) => block.id ?? ''));
+
+      await page.locator(`[data-blok-id="${id}"] [contenteditable="true"]`).first().click();
+      await page.keyboard.press('ControlOrMeta+a');
+      await page.keyboard.press('ControlOrMeta+a');
+      await expect(page.locator(`[data-blok-id="${id}"][data-blok-selected="true"]`)).toBeVisible();
+
+      const clipboardData = await withClipboardEvent(page.locator(`[data-blok-id="${id}"]`), kind);
+
+      expect(clipboardData['application/x-blok']).toBeDefined();
+      if (kind === 'cut') {
+        await expect(page.locator(`[data-blok-id="${id}"]`)).toHaveCount(0);
+      }
+
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), clipboardData);
+
+      return sourceIds;
+    };
+
+    /** Each pasted toggle-like block, in document order, with whether it shows open. */
+    const pastedOpen = async (page: Page, sourceIds: Set<string>): Promise<Array<[unknown, string | null]>> => {
+      const { blocks } = await saveBlok(page);
+      const pasted = blocks.filter((block) => block.id !== undefined && !sourceIds.has(block.id) && (block.type === 'toggle' || block.type === 'header'));
+
+      return Promise.all(pasted.map(async (block): Promise<[unknown, string | null]> => [
+        block.data.text,
+        await page.locator(`[data-blok-id="${block.id}"] [data-blok-toggle-open]`).first().getAttribute('data-blok-toggle-open'),
+      ]));
+    };
+
+    /** Whether any block with this text is shown. */
+    const shown = async (page: Page, text: string): Promise<boolean> =>
+      page.evaluate((needle) => Array.from(document.querySelectorAll('[data-blok-id] [contenteditable="true"]'))
+        .some((element) => element.textContent === needle && element.checkVisibility()), text);
+
+    for (const kind of ['copy', 'cut'] as const) {
+      test(`a collapsed toggle pasted after a ${kind} stays collapsed`, async ({ page }) => {
+        await createBlok(page, { data: { blocks: toggleDoc } });
+
+        const sourceIds = await copyAndPaste(page, 'tog', kind);
+
+        await expect.poll(async () => pastedOpen(page, sourceIds)).toEqual([['Outer toggle', 'false'], ['Inner toggle', 'false']]);
+        expect(await shown(page, 'Outer child')).toBe(false);
+        expect(await shown(page, 'Inner child')).toBe(false);
+      });
+
+      test(`typing after a collapsed toggle is pasted after a ${kind} goes to the end of its title`, async ({ page }) => {
+        await createBlok(page, { data: { blocks: toggleDoc } });
+
+        const sourceIds = await copyAndPaste(page, 'tog', kind);
+
+        await expect.poll(async () => pastedOpen(page, sourceIds)).toEqual([['Outer toggle', 'false'], ['Inner toggle', 'false']]);
+        await page.keyboard.type('Z');
+
+        await expect.poll(async () => pastedOpen(page, sourceIds)).toEqual([['Outer toggleZ', 'false'], ['Inner toggle', 'false']]);
+      });
+    }
+
+    test('an open toggle pasted after a copy stays open, and its collapsed child toggle stays collapsed', async ({ page }) => {
+      await createBlok(page, { data: { blocks: toggleDoc } });
+      await openFixtureToggles(page, { blocks: [{ ...toggleDoc[0], data: { ...toggleDoc[0].data, isOpen: true } }] });
+      await expect(page.locator('[data-blok-id="tc1"] [contenteditable="true"]')).toBeVisible();
+
+      const sourceIds = await copyAndPaste(page, 'tog', 'copy');
+
+      await expect.poll(async () => pastedOpen(page, sourceIds)).toEqual([['Outer toggle', 'true'], ['Inner toggle', 'false']]);
+      await expect(page.getByText('Outer child')).toHaveCount(2);
+      await expect(page.getByText('Outer child').nth(1)).toBeVisible();
+      expect(await shown(page, 'Inner child')).toBe(false);
+    });
+
+    test('a collapsed toggle heading pasted after a copy stays collapsed', async ({ page }) => {
+      await createBlok(page, { data: { blocks: headingDoc } });
+
+      const sourceIds = await copyAndPaste(page, 'th', 'copy');
+
+      await expect.poll(async () => pastedOpen(page, sourceIds)).toEqual([['Toggle heading', 'false']]);
+      expect(await shown(page, 'Heading child')).toBe(false);
+    });
+  });
+
+  test.describe('dividers and containers pasted from html only', () => {
+    type Blocks = OutputData['blocks'];
+    const around = (inner: Blocks): Blocks => [
+      { id: 'bef', type: 'paragraph', data: { text: 'Before' } },
+      ...inner,
+      { id: 'aft', type: 'paragraph', data: { text: 'After' } },
+    ];
+
+    /** Copy Before..After, then paste only the html and plain flavours into a fresh editor. */
+    const roundTrip = async (page: Page, inner: Blocks): Promise<void> => {
+      await createBlok(page, { data: { blocks: around(inner) } });
+      await page.locator('[data-blok-id="bef"] [contenteditable="true"]').click();
+      await page.locator('[data-blok-id="aft"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+      await expect(page.locator('[data-blok-id="aft"][data-blok-selected="true"]')).toBeVisible();
+
+      const clipboard = await withClipboardEvent(page.locator('[data-blok-id="bef"]'), 'copy');
+
+      await createBlok(page, { data: { blocks: [{ id: 'tgt', type: 'paragraph', data: { text: '' } }] } });
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/html': clipboard['text/html'] ?? '', 'text/plain': clipboard['text/plain'] ?? '' });
+    };
+
+    /** Each saved block as `type text < parent`. */
+    const shape = async (page: Page): Promise<string[]> => {
+      const { blocks } = await saveBlok(page);
+      const label = (id: string | undefined): string => {
+        const block = blocks.find((candidate) => candidate.id === id);
+
+        if (block === undefined) {
+          return '-';
+        }
+        const flag = block.data.isToggleable === true ? '(toggleable)' : '';
+        const text = typeof block.data.text === 'string' ? block.data.text : '';
+
+        return `${block.type}${flag} ${text}`.trim();
+      };
+
+      return blocks.map((block) => `${label(block.id)} < ${label(block.parent)}`);
+    };
+
+    test('a divider comes back as a divider', async ({ page }) => {
+      await roundTrip(page, [
+        { id: 'dv1', type: 'divider', data: {} },
+        { id: 'dv2', type: 'divider', data: {} },
+      ]);
+      await expect.poll(async () => shape(page)).toEqual(['paragraph Before < -', 'divider < -', 'divider < -', 'paragraph After < -']);
+    });
+
+    test('a toggle comes back with its child inside it', async ({ page }) => {
+      await roundTrip(page, [
+        { id: 'tog', type: 'toggle', data: { text: 'Toggle' }, content: ['tc'] },
+        { id: 'tc', type: 'paragraph', data: { text: 'Child' }, parent: 'tog' },
+      ]);
+      await expect.poll(async () => shape(page)).toEqual(['paragraph Before < -', 'toggle Toggle < -', 'paragraph Child < toggle Toggle', 'paragraph After < -']);
+    });
+
+    test('a toggle heading comes back toggleable with its child inside it', async ({ page }) => {
+      await roundTrip(page, [
+        { id: 'th', type: 'header', data: { text: 'Heading', level: 2, isToggleable: true }, content: ['thc'] },
+        { id: 'thc', type: 'paragraph', data: { text: 'Under' }, parent: 'th' },
+      ]);
+      await expect.poll(async () => shape(page)).toEqual([
+        'paragraph Before < -',
+        'header(toggleable) Heading < -',
+        'paragraph Under < header(toggleable) Heading',
+        'paragraph After < -',
+      ]);
+    });
+
+    test('a callout comes back with its child inside it and no emoji paragraph', async ({ page }) => {
+      await roundTrip(page, [
+        { id: 'cal', type: 'callout', data: { emoji: '💡' }, content: ['cc'] },
+        { id: 'cc', type: 'paragraph', data: { text: 'Inside' }, parent: 'cal' },
+      ]);
+      await expect.poll(async () => shape(page)).toEqual(['paragraph Before < -', 'callout < -', 'paragraph Inside < callout', 'paragraph After < -']);
+    });
+
+    test('a toggle in a callout keeps its own child', async ({ page }) => {
+      await roundTrip(page, [
+        { id: 'cal', type: 'callout', data: { emoji: '💡' }, content: ['tog'] },
+        { id: 'tog', type: 'toggle', data: { text: 'Toggle' }, parent: 'cal', content: ['tc'] },
+        { id: 'tc', type: 'paragraph', data: { text: 'Deep' }, parent: 'tog' },
+      ]);
+      await expect.poll(async () => shape(page)).toEqual([
+        'paragraph Before < -',
+        'callout < -',
+        'toggle Toggle < callout',
+        'paragraph Deep < toggle Toggle',
+        'paragraph After < -',
+      ]);
+    });
+
+    test('list items in a toggle and in a callout come back inside them, with their depth', async ({ page }) => {
+      await roundTrip(page, [
+        { id: 'tog', type: 'toggle', data: { text: 'Toggle' }, content: ['l1', 'l2'] },
+        { id: 'l1', type: 'list', data: { text: 'One', style: 'unordered' }, parent: 'tog' },
+        { id: 'l2', type: 'list', data: { text: 'Two', style: 'unordered', depth: 1 }, parent: 'tog' },
+        { id: 'cal', type: 'callout', data: { emoji: '💡' }, content: ['l3', 'l4'] },
+        { id: 'l3', type: 'list', data: { text: 'Three', style: 'ordered' }, parent: 'cal' },
+        { id: 'l4', type: 'list', data: { text: 'Four', style: 'ordered' }, parent: 'cal' },
+      ]);
+      await expect.poll(async () => (await saveBlok(page)).blocks
+        .filter((block) => block.type === 'list')
+        .map((block) => `${String(block.data.text)} ${String(block.data.style)} ${typeof block.data.depth === 'number' ? block.data.depth : 0}`)).toEqual([
+        'One unordered 0',
+        'Two unordered 1',
+        'Three ordered 0',
+        'Four ordered 0',
+      ]);
+      expect(await shape(page)).toEqual([
+        'paragraph Before < -',
+        'toggle Toggle < -',
+        'list One < toggle Toggle',
+        // html cannot tell a flat depth from nesting, so the item nests under One.
+        'list Two < list One',
+        'callout < -',
+        'list Three < callout',
+        'list Four < callout',
+        'paragraph After < -',
+      ]);
+    });
+
+    test('tab titles come back as text before their bodies', async ({ page }) => {
+      await roundTrip(page, [
+        { id: 'tb', type: 'tabs', data: {}, content: ['t1', 't2'] },
+        { id: 't1', type: 'tab', data: { title: 'Alpha' }, parent: 'tb', content: ['t1p'] },
+        { id: 't1p', type: 'paragraph', data: { text: 'Alpha body' }, parent: 't1' },
+        { id: 't2', type: 'tab', data: { title: 'Beta', icon: '🍎' }, parent: 'tb', content: ['t2p'] },
+        { id: 't2p', type: 'paragraph', data: { text: 'Beta body' }, parent: 't2' },
+      ]);
+      await expect.poll(async () => shape(page)).toEqual([
+        'paragraph Before < -',
+        'paragraph <strong>Alpha</strong> < -',
+        'paragraph Alpha body < -',
+        'paragraph <strong>🍎 Beta</strong> < -',
+        'paragraph Beta body < -',
+        'paragraph After < -',
+      ]);
+    });
+  });
+
+  test.describe('a divider pasted from plain text only', () => {
+    test('comes back as a divider between its paragraphs', async ({ page }) => {
+      await createBlok(page, { data: { blocks: [
+        { id: 'bef', type: 'paragraph', data: { text: 'Before' } },
+        { id: 'dv', type: 'divider', data: {} },
+        { id: 'aft', type: 'paragraph', data: { text: 'After' } },
+      ] } });
+      await page.locator('[data-blok-id="bef"] [contenteditable="true"]').click();
+      await page.locator('[data-blok-id="aft"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+      await expect(page.locator('[data-blok-id="aft"][data-blok-selected="true"]')).toBeVisible();
+
+      const clipboard = await withClipboardEvent(page.locator('[data-blok-id="bef"]'), 'copy');
+
+      await createBlok(page, { data: { blocks: [{ id: 'tgt', type: 'paragraph', data: { text: '' } }] } });
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/plain': clipboard['text/plain'] ?? '' });
+
+      const shape = async (): Promise<string[]> =>
+        (await saveBlok(page)).blocks.map((block) => `${block.type} ${typeof block.data.text === 'string' ? block.data.text : ''}`.trim());
+
+      await expect.poll(shape).toEqual(['paragraph Before', 'divider', 'paragraph After']);
+    });
+  });
+
+  test.describe('media blocks pasted from html only', () => {
+    const VIDEO = 'http://localhost:4444/public/samples/big-buck-bunny.mp4';
+    const FILE = 'http://localhost:4444/public/samples/release-notes.txt';
+    const ARTICLE = 'https://example.com/article';
+    const YOUTUBE = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+
+    // The shared page keeps routes across the tests of this file.
+    test.afterEach(async ({ page }) => {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+    });
+
+    test('come back as links, with no player, size or placeholder text', async ({ page }) => {
+      await page.route(/youtube\.com|ytimg|example\.com/, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<html></html>' }));
+      await createBlok(page, { data: { blocks: [
+        { id: 'bef', type: 'paragraph', data: { text: 'Before' } },
+        { id: 'vid', type: 'video', data: { url: VIDEO, fileName: 'bunny.mp4', caption: 'Video cap' } },
+        { id: 'fil', type: 'file', data: { url: FILE, fileName: 'release-notes.txt', size: 1234, mimeType: 'text/plain' } },
+        { id: 'bm', type: 'bookmark', data: { url: ARTICLE, title: 'Article title', image: 'http://127.0.0.1:4444/test/playwright/fixtures/image/shot.png', domain: 'example.com' } },
+        { id: 'emb', type: 'embed', data: { service: 'youtube', source: YOUTUBE, embed: 'https://www.youtube.com/embed/dQw4w9WgXcQ' } },
+        { id: 'sp', type: 'spacer', data: { height: 96 } },
+        { id: 'toc', type: 'table_of_contents', data: {} },
+        { id: 'aft', type: 'paragraph', data: { text: 'After' } },
+      ] } });
+      await page.locator('[data-blok-id="bef"] [contenteditable="true"]').click();
+      await page.locator('[data-blok-id="aft"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+      await expect(page.locator('[data-blok-id="aft"][data-blok-selected="true"]')).toBeVisible();
+
+      const clipboard = await withClipboardEvent(page.locator('[data-blok-id="bef"]'), 'copy');
+
+      await createBlok(page, { data: { blocks: [{ id: 'tgt', type: 'paragraph', data: { text: '' } }] } });
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/html': clipboard['text/html'] ?? '', 'text/plain': clipboard['text/plain'] ?? '' });
+
+      await expect.poll(async () => (await saveBlok(page)).blocks.map((block) => `${block.type} ${String(block.data.text)}`)).toEqual([
+        'paragraph Before',
+        `paragraph <a href="${VIDEO}">bunny.mp4</a>`,
+        'paragraph Video cap',
+        `paragraph <a href="${FILE}">release-notes.txt</a>`,
+        `paragraph <a href="${ARTICLE}">Article title</a>`,
+        `paragraph <a href="${YOUTUBE}">${YOUTUBE}</a>`,
+        'paragraph After',
+      ]);
+    });
+  });
+
+  test.describe('an image pasted from html only', () => {
+    const IMAGE = 'http://127.0.0.1:4444/test/playwright/fixtures/image/shot.png';
+
+    // An image tool whose uploader records each url it is asked to upload.
+    // With `answer`, the uploader also has shouldUploadUrl, which records what it was told.
+    const createUploadingBlok = async (page: Page, blocks: OutputData['blocks'], answer?: boolean): Promise<void> => {
+      await resetBlok(page);
+      await page.evaluate(async ({ holder, initial, decides }) => {
+        const uploads: string[] = [];
+        const asked: unknown[] = [];
+        const defaults = (window as unknown as { defaultBlockTools: Record<string, { class: unknown }> }).defaultBlockTools;
+        const blok = new window.Blok({
+          holder,
+          data: { blocks: initial },
+          tools: { image: { class: defaults.image.class, config: { uploader: {
+            uploadByUrl: (url: string) => {
+              uploads.push(url);
+
+              return Promise.resolve({ url: `${url}?rehosted` });
+            },
+            ...(decides === null ? {} : {
+              shouldUploadUrl: (url: string, ctx: unknown) => {
+                asked.push({ url, ctx });
+
+                return decides;
+              },
+            }),
+          } } } },
+        });
+
+        (window as unknown as { __imageUploads: string[] }).__imageUploads = uploads;
+        (window as unknown as { __imageAsked: unknown[] }).__imageAsked = asked;
+        window.blokInstance = blok;
+        await blok.isReady;
+      }, { holder: HOLDER_ID, initial: blocks, decides: answer ?? null });
+    };
+
+    test('keeps its url and is not uploaded again', async ({ page }) => {
+      await createUploadingBlok(page, [
+        { id: 'bef', type: 'paragraph', data: { text: 'Before' } },
+        { id: 'img', type: 'image', data: { url: IMAGE, caption: 'Cap' } },
+        { id: 'aft', type: 'paragraph', data: { text: 'After' } },
+      ]);
+      await page.locator('[data-blok-id="bef"] [contenteditable="true"]').click();
+      await page.locator('[data-blok-id="aft"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+      await expect(page.locator('[data-blok-id="aft"][data-blok-selected="true"]')).toBeVisible();
+
+      const clipboard = await withClipboardEvent(page.locator('[data-blok-id="bef"]'), 'copy');
+
+      await createUploadingBlok(page, [{ id: 'tgt', type: 'paragraph', data: { text: '' } }]);
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/html': clipboard['text/html'] ?? '', 'text/plain': clipboard['text/plain'] ?? '' });
+
+      await expect.poll(async () => (await saveBlok(page)).blocks.map((block) =>
+        block.type === 'image' ? `image ${String(block.data.url)}` : `${block.type} ${String(block.data.text)}`
+      )).toEqual(['paragraph Before', `image ${IMAGE}`, 'paragraph Cap', 'paragraph After']);
+      expect(await page.evaluate(() => (window as unknown as { __imageUploads: string[] }).__imageUploads)).toEqual([]);
+    });
+
+    test('keeps a relative url from a real Blok copy', async ({ page }) => {
+      const RELATIVE = '/test/playwright/fixtures/image/shot.png';
+
+      await createUploadingBlok(page, [
+        { id: 'bef', type: 'paragraph', data: { text: 'Before' } },
+        { id: 'img', type: 'image', data: { url: RELATIVE } },
+        { id: 'aft', type: 'paragraph', data: { text: 'After' } },
+      ]);
+      await page.locator('[data-blok-id="bef"] [contenteditable="true"]').click();
+      await page.locator('[data-blok-id="aft"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+      await expect(page.locator('[data-blok-id="aft"][data-blok-selected="true"]')).toBeVisible();
+
+      const clipboard = await withClipboardEvent(page.locator('[data-blok-id="bef"]'), 'copy');
+
+      expect(clipboard['text/html']).toContain(`src="${RELATIVE}"`);
+      await createUploadingBlok(page, [{ id: 'tgt', type: 'paragraph', data: { text: '' } }]);
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/html': clipboard['text/html'] ?? '', 'text/plain': clipboard['text/plain'] ?? '' });
+
+      await expect.poll(async () => (await saveBlok(page)).blocks.find((block) => block.type === 'image')?.data.url).toBe(RELATIVE);
+      expect(await page.evaluate(() => (window as unknown as { __imageUploads: string[] }).__imageUploads)).toEqual([]);
+    });
+
+    for (const forged of ['blob:http://127.0.0.1:4444/6f1c', 'ftp://evil.example/a.png']) {
+      test(`does not keep ${forged.split(':')[0]}: under a forged copy mark`, async ({ page }) => {
+        await createUploadingBlok(page, [{ id: 'tgt', type: 'paragraph', data: { text: '' } }]);
+        await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+        await paste(page, page.locator(':focus'), { 'text/html': `<p>Look</p><p><img src="${forged}" data-blok-hosted=""></p>`, 'text/plain': 'Look' });
+
+        await expect.poll(async () => (await saveBlok(page)).blocks.map((block) => block.type)).toContain('paragraph');
+        await expect.poll(async () => JSON.stringify((await saveBlok(page)).blocks)).not.toContain(forged);
+        expect(await page.evaluate(() => (window as unknown as { __imageUploads: string[] }).__imageUploads)).toEqual([]);
+      });
+    }
+
+    test('is uploaded when the host uploader says so, because the copy mark is only a hint', async ({ page }) => {
+      await createUploadingBlok(page, [{ id: 'tgt', type: 'paragraph', data: { text: '' } }], true);
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      // Any web page can write this mark into the clipboard.
+      await paste(page, page.locator(':focus'), { 'text/html': `<p>Look</p><p><img src="${IMAGE}" data-blok-hosted=""></p>`, 'text/plain': 'Look' });
+
+      await expect.poll(async () => (await saveBlok(page)).blocks.find((block) => block.type === 'image')?.data.url).toBe(`${IMAGE}?rehosted`);
+      expect(await page.evaluate(() => (window as unknown as { __imageAsked: unknown[] }).__imageAsked)).toEqual([
+        { url: IMAGE, ctx: { kind: 'image', tool: 'image', source: 'html', copiedFromBlok: true } },
+      ]);
+    });
+
+    test('sends a data: url to the host even when it carries the copy mark', async ({ page }) => {
+      const DATA = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+      await createUploadingBlok(page, [{ id: 'tgt', type: 'paragraph', data: { text: '' } }]);
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      // A forged mark: a data: url Blok keeps as it is would skip the host's file checks.
+      await paste(page, page.locator(':focus'), { 'text/html': `<p>Look</p><p><img src="${DATA}" data-blok-hosted=""></p>`, 'text/plain': 'Look' });
+
+      await expect.poll(async () => (await saveBlok(page)).blocks.find((block) => block.type === 'image')?.data.url).toBe(`${DATA}?rehosted`);
+      expect(await page.evaluate(() => (window as unknown as { __imageUploads: string[] }).__imageUploads)).toEqual([DATA]);
+    });
+
+    test('asks an editor-level uploader too', async ({ page }) => {
+      await resetBlok(page);
+      await page.evaluate(async ({ holder }) => {
+        const asked: unknown[] = [];
+        const blok = new window.Blok({
+          holder,
+          data: { blocks: [{ id: 'tgt', type: 'paragraph', data: { text: '' } }] },
+          uploader: {
+            uploadByUrl: (url: string) => Promise.resolve({ url: `${url}?rehosted` }),
+            shouldUploadUrl: (url: string, ctx: unknown) => {
+              asked.push({ url, ctx });
+
+              return Promise.resolve(true);
+            },
+          },
+        });
+
+        (window as unknown as { __imageAsked: unknown[] }).__imageAsked = asked;
+        window.blokInstance = blok;
+        await blok.isReady;
+      }, { holder: HOLDER_ID });
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/html': `<p>Look</p><p><img src="${IMAGE}"></p>`, 'text/plain': 'Look' });
+
+      await expect.poll(async () => (await saveBlok(page)).blocks.find((block) => block.type === 'image')?.data.url).toBe(`${IMAGE}?rehosted`);
+      expect(await page.evaluate(() => (window as unknown as { __imageAsked: unknown[] }).__imageAsked)).toEqual([
+        { url: IMAGE, ctx: { kind: 'image', tool: 'image', source: 'html', copiedFromBlok: false } },
+      ]);
+    });
+
+    test('keeps a bare pasted url embedded from the link menu when the host uploader says keep', async ({ page }) => {
+      await createUploadingBlok(page, [{ id: 'tgt', type: 'paragraph', data: { text: '' } }], false);
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/plain': IMAGE });
+      await page.locator('[data-blok-item-name="paste-menu-embed"]').click();
+
+      await expect.poll(async () => (await saveBlok(page)).blocks.find((block) => block.type === 'image')?.data.url).toBe(IMAGE);
+      expect(await page.evaluate(() => (window as unknown as { __imageAsked: unknown[] }).__imageAsked)).toEqual([
+        { url: IMAGE, ctx: { kind: 'image', tool: 'image', source: 'url', copiedFromBlok: false } },
+      ]);
+      expect(await page.evaluate(() => (window as unknown as { __imageUploads: string[] }).__imageUploads)).toEqual([]);
+    });
+  });
+
+  test.describe('a code block pasted from html only', () => {
+    test('keeps its language and filename', async ({ page }) => {
+      await createBlok(page, { data: { blocks: [
+        { id: 'bef', type: 'paragraph', data: { text: 'Before' } },
+        { id: 'cod', type: 'code', data: { code: 'const a = 1;', language: 'javascript', filename: 'x.js' } },
+        { id: 'aft', type: 'paragraph', data: { text: 'After' } },
+      ] } });
+      await page.locator('[data-blok-id="bef"] [contenteditable="true"]').click();
+      await page.locator('[data-blok-id="aft"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+      await expect(page.locator('[data-blok-id="aft"][data-blok-selected="true"]')).toBeVisible();
+
+      const clipboard = await withClipboardEvent(page.locator('[data-blok-id="bef"]'), 'copy');
+
+      await createBlok(page, { data: { blocks: [{ id: 'tgt', type: 'paragraph', data: { text: '' } }] } });
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/html': clipboard['text/html'] ?? '', 'text/plain': clipboard['text/plain'] ?? '' });
+
+      await expect.poll(async () => (await saveBlok(page)).blocks.find((block) => block.type === 'code')?.data).toEqual({
+        code: 'const a = 1;',
+        language: 'javascript',
+        filename: 'x.js',
+        lineNumbers: true,
+      });
+    });
+  });
+
+  test.describe('a whole table pasted from html only', () => {
+    test('keeps a list in a cell as list blocks', async ({ page }) => {
+      await createBlok(page, { data: { blocks: [
+        { id: 'bef', type: 'paragraph', data: { text: 'Before' } },
+        { id: 'tbl', type: 'table', data: { withHeadings: false, content: [
+          [{ blocks: ['l1', 'l2'] }, { blocks: ['p1'] }],
+        ] } },
+        { id: 'l1', type: 'list', data: { text: 'one', style: 'unordered' }, parent: 'tbl' },
+        { id: 'l2', type: 'list', data: { text: 'two', style: 'unordered' }, parent: 'tbl' },
+        { id: 'p1', type: 'paragraph', data: { text: 'plain' }, parent: 'tbl' },
+        { id: 'aft', type: 'paragraph', data: { text: 'After' } },
+      ] } });
+      await page.locator('[data-blok-id="bef"] [contenteditable="true"]').click();
+      await page.locator('[data-blok-id="aft"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+      await expect(page.locator('[data-blok-id="aft"][data-blok-selected="true"]')).toBeVisible();
+
+      const clipboard = await withClipboardEvent(page.locator('[data-blok-id="bef"]'), 'copy');
+
+      await createBlok(page, { data: { blocks: [{ id: 'tgt', type: 'paragraph', data: { text: '' } }] } });
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/html': clipboard['text/html'] ?? '', 'text/plain': clipboard['text/plain'] ?? '' });
+
+      await expect.poll(async () => {
+        const { blocks } = await saveBlok(page);
+        const table = blocks.find((block) => block.type === 'table');
+
+        return blocks
+          .filter((block) => block.parent === table?.id && table !== undefined)
+          .map((block) => `${block.type} ${String(block.data.text)}`);
+      }).toEqual(['list one', 'list two', 'paragraph plain']);
+    });
+
+    test('keeps its heading state and column widths', async ({ page }) => {
+      const source = { withHeadings: false, withHeadingColumn: false, colWidths: [120, 300], initialColWidth: 210, content: [['A', 'B'], ['C', 'D']] };
+
+      await createBlok(page, { data: { blocks: [
+        { id: 'bef', type: 'paragraph', data: { text: 'Before' } },
+        { id: 'tbl', type: 'table', data: source },
+        { id: 'aft', type: 'paragraph', data: { text: 'After' } },
+      ] } });
+      await page.locator('[data-blok-id="bef"] [contenteditable="true"]').click();
+      await page.locator('[data-blok-id="aft"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+      await expect(page.locator('[data-blok-id="aft"][data-blok-selected="true"]')).toBeVisible();
+
+      const clipboard = await withClipboardEvent(page.locator('[data-blok-id="bef"]'), 'copy');
+
+      await createBlok(page, { data: { blocks: [{ id: 'tgt', type: 'paragraph', data: { text: '' } }] } });
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/html': clipboard['text/html'] ?? '', 'text/plain': clipboard['text/plain'] ?? '' });
+
+      await expect.poll(async () => {
+        const { blocks } = await saveBlok(page);
+        const data = blocks.find((block) => block.type === 'table')?.data;
+
+        return data && {
+          withHeadings: data.withHeadings,
+          withHeadingColumn: data.withHeadingColumn,
+          colWidths: data.colWidths,
+          initialColWidth: data.initialColWidth,
+        };
+      }).toEqual({ withHeadings: false, withHeadingColumn: false, colWidths: [120, 300], initialColWidth: 210 });
+    });
+  });
+
+  test.describe('list items copied without their parent list item', () => {
+    const LI = (id: string, text: string, depth: number, extra: Partial<OutputData['blocks'][number]> = {}): OutputData['blocks'][number] =>
+      ({ id, type: 'list', data: { text, style: 'unordered', depth }, ...extra });
+    const doc: OutputData['blocks'] = [
+      LI('u1', 'Bullet one', 0, { content: ['u2'] }),
+      LI('u2', 'Bullet two', 1, { parent: 'u1', content: ['u3'] }),
+      LI('u3', 'Bullet three', 2, { parent: 'u2', content: ['u4'] }),
+      LI('u4', 'Bullet four', 3, { parent: 'u3' }),
+      { id: 'cal', type: 'callout', data: { emoji: '💡' }, content: ['cal-in'] },
+      { id: 'cal-in', type: 'paragraph', parent: 'cal', data: { text: '' } },
+      { id: 'tail', type: 'paragraph', data: { text: '' } },
+    ];
+
+    const targets = [
+      { name: 'at the top level', target: 'tail', parent: undefined },
+      { name: 'in a callout', target: 'cal-in', parent: 'cal' },
+    ];
+
+    for (const { name, target, parent } of targets) {
+      test(`paste with the first item at depth 0 ${name}`, async ({ page }) => {
+        await createBlok(page, { data: { blocks: doc }, dataModel: 'hierarchical' });
+
+        await page.locator('[data-blok-id="u2"] [contenteditable="true"]').first().click();
+        await page.keyboard.press('ControlOrMeta+a');
+        await page.keyboard.press('ControlOrMeta+a');
+        await expect(page.locator('[data-blok-id="u2"][data-blok-selected="true"]')).toBeVisible();
+
+        const clipboardData = await copyFromElement(page.locator('[data-blok-id="u2"]'));
+
+        expect(clipboardData['application/x-blok']).toBeDefined();
+
+        await page.locator(`[data-blok-id="${target}"] [contenteditable="true"]`).click();
+        await paste(page, page.locator(':focus'), clipboardData);
+
+        const pasted = async (): Promise<Array<{ text: unknown; depth: unknown; inPlace: boolean }>> => {
+          const { blocks } = await saveBlok(page);
+          const ids = new Set(['u1', 'u2', 'u3', 'u4']);
+
+          return blocks
+            .filter((b) => b.type === 'list' && b.id !== undefined && !ids.has(b.id))
+            .map((b) => ({
+              text: b.data.text,
+              depth: (b.data as { depth?: number }).depth ?? 0,
+              inPlace: b.data.text !== 'Bullet two' || b.parent === parent,
+            }));
+        };
+
+        await expect.poll(pasted).toEqual([
+          { text: 'Bullet two', depth: 0, inPlace: true },
+          { text: 'Bullet three', depth: 1, inPlace: true },
+          { text: 'Bullet four', depth: 2, inPlace: true },
+        ]);
+
+        const { blocks } = await saveBlok(page);
+        const rootId = blocks.find((b) => b.data.text === 'Bullet two' && b.id !== 'u2')?.id ?? '';
+        const indent = await page.locator(`[data-blok-id="${rootId}"]`).getByRole('listitem')
+          .first()
+          .evaluate((el) => (el instanceof HTMLElement ? el.style.marginInlineStart : ''));
+
+        expect(indent).toBe('');
+      });
+    }
+  });
+
+  test.describe('nested list items pasted without the Blok clipboard', () => {
+    const LI = (id: string, text: string, depth: number, extra: Partial<OutputData['blocks'][number]> = {}): OutputData['blocks'][number] =>
+      ({ id, type: 'list', data: { text, style: 'unordered', depth }, ...extra });
+    const doc: OutputData['blocks'] = [
+      LI('u1', 'Bullet one', 0, { content: ['u2'] }),
+      LI('u2', 'Bullet two', 1, { parent: 'u1', content: ['u3'] }),
+      LI('u3', 'Bullet three', 2, { parent: 'u2', content: ['u4'] }),
+      LI('u4', 'Bullet four', 3, { parent: 'u3' }),
+    ];
+
+    for (const keep of [['text/html', 'text/plain'], ['text/plain']]) {
+      test(`keep their nesting with only ${keep.join(' and ')}`, async ({ page }) => {
+        await createBlok(page, { data: { blocks: doc }, dataModel: 'hierarchical' });
+
+        await page.locator('[data-blok-id="u1"] [contenteditable="true"]').first().click();
+        await page.keyboard.press('ControlOrMeta+a');
+        await page.keyboard.press('ControlOrMeta+a');
+        await expect(page.locator('[data-blok-id="u1"][data-blok-selected="true"]')).toBeVisible();
+
+        const copied = await copyFromElement(page.locator('[data-blok-id="u1"]'));
+        const degraded = Object.fromEntries(Object.entries(copied).filter(([mime]) => keep.includes(mime)));
+
+        await createBlok(page, { data: { blocks: [{ id: 'target', type: 'paragraph', data: { text: '' } }] }, dataModel: 'hierarchical' });
+        await page.locator('[data-blok-id="target"] [contenteditable="true"]').click();
+        await paste(page, page.locator(':focus'), degraded);
+
+        const tree = async (): Promise<Array<{ text: unknown; parent: unknown; content: unknown }>> => {
+          const { blocks } = await saveBlok(page);
+          const textOf = (id: unknown): unknown => blocks.find((b) => b.id === id)?.data.text;
+
+          return blocks.map((b) => ({
+            text: b.data.text,
+            parent: textOf(b.parent),
+            content: b.content?.map(textOf),
+          }));
+        };
+
+        await expect.poll(tree).toEqual([
+          { text: 'Bullet one', parent: undefined, content: ['Bullet two'] },
+          { text: 'Bullet two', parent: 'Bullet one', content: ['Bullet three'] },
+          { text: 'Bullet three', parent: 'Bullet two', content: ['Bullet four'] },
+          { text: 'Bullet four', parent: 'Bullet three', content: undefined },
+        ]);
+
+        const { blocks } = await saveBlok(page);
+        const firstId = blocks[0].id ?? '';
+
+        await page.locator(`[data-blok-id="${firstId}"] [contenteditable="true"]`).first().click();
+        await page.keyboard.press('ControlOrMeta+a');
+        await page.keyboard.press('ControlOrMeta+a');
+        const recopied = await copyFromElement(page.locator(`[data-blok-id="${firstId}"]`));
+
+        expect((JSON.parse(recopied['application/x-blok']) as unknown[]).length).toBe(4);
+      });
+    }
+  });
+
+  test.describe('Markdown with blocks inside a list item', () => {
+    const tree = async (page: Page): Promise<Array<{ text: unknown; parent: unknown; content: unknown }>> => {
+      const { blocks } = await saveBlok(page);
+      const textOf = (id: unknown): unknown => {
+        const block = blocks.find((b) => b.id === id);
+
+        return block?.data.text ?? block?.data.code ?? block?.type;
+      };
+
+      return blocks.map((b) => ({ text: textOf(b.id), parent: textOf(b.parent), content: b.content?.map(textOf) }));
+    };
+
+    test('pasted at the top level hangs the code block and the nested item under the item', async ({ page }) => {
+      await createBlok(page, { data: { blocks: [{ id: 'target', type: 'paragraph', data: { text: '' } }] }, dataModel: 'hierarchical' });
+      await page.locator('[data-blok-id="target"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/plain': '- Item\n\n  ```\n  code\n  ```\n\n  - Child' });
+
+      await expect.poll(() => tree(page)).toEqual([
+        { text: 'Item', parent: undefined, content: ['code', 'Child'] },
+        { text: 'code', parent: 'Item', content: undefined },
+        { text: 'Child', parent: 'Item', content: undefined },
+      ]);
+    });
+
+    test('pasted into a table cell keeps the nested item under its item, inside the cell', async ({ page }) => {
+      await createBlok(page, {
+        data: { blocks: [
+          { id: 't', type: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [[{ blocks: ['c0'] }, { blocks: ['c1'] }]] }, content: ['c0', 'c1'] },
+          { id: 'c0', type: 'paragraph', parent: 't', data: { text: '' } },
+          { id: 'c1', type: 'paragraph', parent: 't', data: { text: '' } },
+        ] },
+        dataModel: 'hierarchical',
+      });
+      await page.locator('[data-blok-id="c0"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/plain': '- One\n  - Two' });
+
+      const shape = async (): Promise<{ two: unknown; outsideTable: string[] }> => {
+        const { blocks } = await saveBlok(page);
+        const one = blocks.find((b) => b.data.text === 'One');
+        const two = blocks.find((b) => b.data.text === 'Two');
+        const outsideTable = await page.evaluate((ids) => ids.filter((id) => {
+          const holder = document.querySelector(`[data-blok-id="${id}"]`);
+
+          return holder === null || holder.closest('[data-blok-id="t"]') === null;
+        }), [one?.id ?? 'missing', two?.id ?? 'missing']);
+
+        return { two: two === undefined ? undefined : { parentIsOne: two.parent === one?.id, depth: two.data.depth }, outsideTable };
+      };
+
+      await expect.poll(shape).toEqual({ two: { parentIsOne: true, depth: 1 }, outsideTable: [] });
+    });
+  });
+
+  test.describe('list items placed under a table or container', () => {
+    const LI = (id: string, text: string, depth: number, parent?: string): OutputData['blocks'][number] =>
+      ({ id, type: 'list', data: { text, style: 'unordered', depth }, ...(parent === undefined ? {} : { parent }) });
+    const table = (id: string, cellIds: string[]): OutputData['blocks'][number] =>
+      ({ id, type: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [[{ blocks: cellIds }]] }, content: cellIds });
+    const source: OutputData['blocks'] = [
+      table('t1', ['l1', 'l2', 'l3']),
+      LI('l1', 'one', 0, 't1'),
+      LI('l2', 'nested', 1, 't1'),
+      LI('l3', 'done', 0, 't1'),
+    ];
+
+    /** Text and depth of every list item the paste added. */
+    const pastedDepths = async (page: Page, before: Set<string | undefined>): Promise<string[]> => {
+      const { blocks } = await saveBlok(page);
+
+      return blocks
+        .filter((b) => b.type === 'list' && !before.has(b.id))
+        .map((b) => `${String(b.data.text)}:${String((b.data as { depth?: number }).depth ?? 0)}`);
+    };
+
+    /** Range-select the one cell of the first table and copy it. */
+    const copyFirstCell = async (page: Page): Promise<Record<string, string>> => {
+      const cell = page.locator('[data-blok-id="t1"] [data-blok-table-cell]').first();
+      const box = await cell.boundingBox();
+
+      if (box === null) {
+        throw new Error('The source cell has no box');
+      }
+
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width / 2 + 2, box.y + box.height / 2 + 2, { steps: 3 });
+      await page.mouse.up();
+      await expect(page.locator('[data-blok-table-cell-selected]')).toHaveCount(1);
+
+      return copyFromElement(cell);
+    };
+
+    test('a cell range pasted into another table keeps each item depth', async ({ page }) => {
+      await createBlokWithElements(page, [
+        ...source,
+        table('t2', ['t2a']),
+        { id: 't2a', type: 'paragraph', parent: 't2', data: { text: 'z' } },
+      ]);
+      const before = new Set((await saveBlok(page)).blocks.map((b) => b.id));
+      const clipboardData = await copyFirstCell(page);
+
+      await page.locator('[data-blok-id="t2a"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), clipboardData);
+
+      await expect.poll(() => pastedDepths(page, before)).toEqual(['one:0', 'nested:1', 'done:0']);
+    });
+
+    test('a cell range pasted into a toggle keeps each item depth', async ({ page }) => {
+      const doc: OutputData['blocks'] = [
+        ...source,
+        { id: 'tg', type: 'toggle', data: { text: 'Toggle', isOpen: true }, content: ['tgt'] },
+        { id: 'tgt', type: 'paragraph', parent: 'tg', data: { text: '' } },
+      ];
+
+      await createBlokWithElements(page, doc);
+      await openFixtureToggles(page, { blocks: doc });
+      const before = new Set((await saveBlok(page)).blocks.map((b) => b.id));
+      const clipboardData = await copyFirstCell(page);
+
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), clipboardData);
+
+      await expect.poll(() => pastedDepths(page, before)).toEqual(['one:0', 'nested:1', 'done:0']);
+    });
+
+    test('a whole table pasted as Blok blocks keeps each cell item depth', async ({ page }) => {
+      await createBlokWithElements(page, [{ id: 'tail', type: 'paragraph', data: { text: '' } }]);
+      const payload = [
+        { id: 'xt', tool: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [[{ blocks: ['x1', 'x2', 'x3'] }]] }, parentId: null, contentIds: ['x1', 'x2', 'x3'], tunes: {} },
+        { id: 'x1', tool: 'list', data: { text: 'one', style: 'unordered', depth: 0 }, parentId: 'xt', contentIds: [], tunes: {} },
+        { id: 'x2', tool: 'list', data: { text: 'nested', style: 'unordered', depth: 1 }, parentId: 'xt', contentIds: [], tunes: {} },
+        { id: 'x3', tool: 'list', data: { text: 'done', style: 'unordered', depth: 0 }, parentId: 'xt', contentIds: [], tunes: {} },
+      ];
+
+      await page.locator('[data-blok-id="tail"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'application/x-blok': JSON.stringify(payload), 'text/plain': 'one nested done' });
+
+      await expect.poll(() => pastedDepths(page, new Set())).toEqual(['one:0', 'nested:1', 'done:0']);
+    });
+
+    test('nested plain-text bullets pasted into a callout keep each depth', async ({ page }) => {
+      await createBlokWithElements(page, [
+        { id: 'cal', type: 'callout', data: { emoji: '💡' }, content: ['cal-in'] },
+        { id: 'cal-in', type: 'paragraph', parent: 'cal', data: { text: '' } },
+      ]);
+
+      await page.locator('[data-blok-id="cal-in"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), { 'text/plain': '- Bullet one\n  - Bullet two\n    - Bullet three\n      - Bullet four' });
+
+      await expect.poll(() => pastedDepths(page, new Set())).toEqual(['Bullet one:0', 'Bullet two:1', 'Bullet three:2', 'Bullet four:3']);
+    });
+  });
+
+  test.describe('a tabs block pasted into a tab', () => {
+    const doc: OutputData['blocks'] = [
+      { id: 'pre', type: 'paragraph', data: { text: 'Before' } },
+      { id: 'tb', type: 'tabs', data: {}, content: ['t1', 't2'] },
+      { id: 't1', type: 'tab', data: { title: 'Alpha' }, parent: 'tb', content: ['t1p'] },
+      { id: 't1p', type: 'paragraph', parent: 't1', data: { text: 'Alpha body' } },
+      { id: 't2', type: 'tab', data: { title: 'Beta' }, parent: 'tb', content: ['t2p'] },
+      { id: 't2p', type: 'paragraph', parent: 't2', data: { text: 'Beta body' } },
+      { id: 'post', type: 'paragraph', data: { text: 'After' } },
+      { id: 'dest', type: 'tabs', data: {}, content: ['dest-tab'] },
+      { id: 'dest-tab', type: 'tab', data: { title: 'Dest' }, parent: 'dest', content: ['dest-in'] },
+      { id: 'dest-in', type: 'paragraph', parent: 'dest-tab', data: { text: '' } },
+      { id: 'tail', type: 'paragraph', data: { text: 'Tail' } },
+    ];
+
+    test('lands after the tabs block that holds the caret, as real tabs', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc }, dataModel: 'hierarchical' });
+
+      await page.locator('[data-blok-id="pre"] [contenteditable="true"]').click();
+      await page.locator('[data-blok-id="post"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+      await expect(page.locator('[data-blok-id="post"][data-blok-selected="true"]')).toBeVisible();
+
+      const clipboardData = await copyFromElement(page.locator('[data-blok-id="pre"]'));
+
+      expect(clipboardData['application/x-blok']).toBeDefined();
+
+      await page.keyboard.press('Escape');
+      await page.locator('[data-blok-id="dest-in"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), clipboardData);
+
+      /** The saved tree as nested [type, text or title, children]. */
+      const tree = async (): Promise<unknown[]> => {
+        const { blocks } = await saveBlok(page);
+        const byId = new Map(blocks.map((b) => [b.id, b]));
+        const shape = (id: string): unknown[] => {
+          const block = byId.get(id);
+          const label: unknown = block?.data.text ?? block?.data.title ?? null;
+
+          return [block?.type, label, (block?.content ?? []).map(shape)];
+        };
+
+        return blocks.filter((b) => b.parent === undefined).map((b) => shape(b.id ?? ''));
+      };
+      const tabs = ['tabs', null, [
+        ['tab', 'Alpha', [['paragraph', 'Alpha body', []]]],
+        ['tab', 'Beta', [['paragraph', 'Beta body', []]]],
+      ]];
+
+      await expect.poll(tree).toEqual([
+        ['paragraph', 'Before', []],
+        tabs,
+        ['paragraph', 'After', []],
+        ['tabs', null, [['tab', 'Dest', [['paragraph', '', []]]]]],
+        ['paragraph', 'Before', []],
+        tabs,
+        ['paragraph', 'After', []],
+        ['paragraph', 'Tail', []],
+      ]);
+      await expect(page.getByRole('tab', { name: 'Alpha' })).toHaveCount(2);
+      await expect(page.getByRole('tab', { name: 'Beta' })).toHaveCount(2);
+    });
+  });
+
+  test('a copied toggle holding a table, pasted into a table cell, lands after that table whole', async ({ page }) => {
+    const doc: OutputData['blocks'] = [
+      { id: 'tog', type: 'toggle', data: { text: 'Toggle with table', isOpen: true }, content: ['ttable'] },
+      { id: 'ttable', type: 'table', parent: 'tog', data: { withHeadings: false, withHeadingColumn: false, content: [['Cell A', 'Cell B']] } },
+      { id: 'dest', type: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [['', 'B1'], ['A2', 'B2']] } },
+    ];
+
+    await createBlok(page, { data: { blocks: doc }, dataModel: 'hierarchical' });
+    await openFixtureToggles(page, { blocks: doc });
+
+    const modifier = await getCommandModifierKey(page);
+
+    await page.locator('[data-blok-id="tog"] [contenteditable="true"]').first().click();
+    await page.keyboard.press(`${modifier}+A`);
+    await page.keyboard.press(`${modifier}+A`);
+    await expect(page.locator('[data-blok-id="tog"][data-blok-selected="true"]')).toBeVisible();
+
+    const clipboardData = await copyFromElement(page.locator('[data-blok-id="tog"]'));
+
+    expect(clipboardData['application/x-blok']).toBeDefined();
+    expect(clipboardData['text/html']).toContain('<table');
+
+    await page.keyboard.press('Escape');
+    await page.locator('[data-blok-id="dest"] [data-blok-table-cell]').first().locator('[contenteditable="true"]').first().click();
+    await paste(page, page.locator(':focus'), clipboardData);
+
+    /** The saved roots as nested [type, text, children]; a table gives its child count and its cells' texts. */
+    const tree = async (): Promise<unknown[]> => {
+      const { blocks } = await saveBlok(page);
+      const byId = new Map(blocks.map((b) => [b.id, b]));
+      const shape = (id: string): unknown[] => {
+        const block = byId.get(id);
+
+        if (block?.type === 'table') {
+          const rows = (block.data as { content: Array<Array<{ blocks: string[] }>> }).content;
+
+          return ['table', (block.content ?? []).length, rows.map((row) => row.map((cell) => cell.blocks.map((cellId) => byId.get(cellId)?.parent === id ? byId.get(cellId)?.data.text : 'STRAY')))];
+        }
+
+        return [block?.type, block?.data.text ?? null, (block?.content ?? []).map(shape)];
+      };
+
+      return blocks.filter((b) => b.parent === undefined).map((b) => shape(b.id ?? ''));
+    };
+    const toggle = ['toggle', 'Toggle with table', [['table', 2, [[['Cell A'], ['Cell B']]]]]];
+
+    await expect.poll(tree).toEqual([
+      toggle,
+      ['table', 4, [[[''], ['B1']], [['A2'], ['B2']]]],
+      toggle,
+    ]);
+  });
+
+  test('the html of a copied toggle holding a table, pasted into a table cell, lands after that table whole', async ({ page }) => {
+    const doc: OutputData['blocks'] = [
+      { id: 'tog', type: 'toggle', data: { text: 'Toggle with table', isOpen: true }, content: ['ttable'] },
+      { id: 'ttable', type: 'table', parent: 'tog', data: { withHeadings: false, withHeadingColumn: false, content: [['Cell A', 'Cell B']] } },
+      { id: 'dest', type: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [['', 'B1'], ['A2', 'B2']] } },
+    ];
+
+    await createBlok(page, { data: { blocks: doc }, dataModel: 'hierarchical' });
+    await openFixtureToggles(page, { blocks: doc });
+
+    const modifier = await getCommandModifierKey(page);
+
+    await page.locator('[data-blok-id="tog"] [contenteditable="true"]').first().click();
+    await page.keyboard.press(`${modifier}+A`);
+    await page.keyboard.press(`${modifier}+A`);
+    await expect(page.locator('[data-blok-id="tog"][data-blok-selected="true"]')).toBeVisible();
+
+    const { 'application/x-blok': blokData, ...htmlOnly } = await copyFromElement(page.locator('[data-blok-id="tog"]'));
+
+    expect(blokData).toBeDefined();
+    expect(htmlOnly['text/html']).toContain('<table');
+
+    await page.keyboard.press('Escape');
+    await page.locator('[data-blok-id="dest"] [data-blok-table-cell]').first().locator('[contenteditable="true"]').first().click();
+    await paste(page, page.locator(':focus'), htmlOnly);
+
+    /** The saved roots as [type, text]; a table gives its cells' texts. */
+    const roots = async (): Promise<unknown[]> => {
+      const { blocks } = await saveBlok(page);
+      const byId = new Map(blocks.map((b) => [b.id, b]));
+      const shape = (id: string): unknown[] => {
+        const block = byId.get(id);
+
+        if (block?.type === 'table') {
+          const rows = (block.data as { content: Array<Array<{ blocks: string[] }>> }).content;
+
+          return ['table', rows.map((row) => row.map((cell) => cell.blocks.map((cellId) => byId.get(cellId)?.parent === id ? byId.get(cellId)?.data.text : 'STRAY')))];
+        }
+
+        return [block?.type, block?.data.text ?? null, (block?.content ?? []).map(shape)];
+      };
+
+      return blocks.filter((b) => b.parent === undefined).map((b) => shape(b.id ?? ''));
+    };
+    const toggle = ['toggle', 'Toggle with table', [['table', [[['Cell A'], ['Cell B']]]]]];
+
+    await expect.poll(roots).toEqual([
+      toggle,
+      ['table', [[[''], ['B1']], [['A2'], ['B2']]]],
+      toggle,
+    ]);
+  });
+
+  test('a page html table forging the whole-table mark, pasted into a table cell, only lands after that table, cleaned', async ({ page }) => {
+    await createBlok(page, { data: { blocks: [
+      { id: 'dest', type: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [['z00', 'z01'], ['z10', 'z11']] } },
+    ] } });
+
+    await page.locator('[data-blok-id="dest"] [data-blok-table-cell]').first().locator('[contenteditable="true"]').first().click();
+    await paste(page, page.locator(':focus'), {
+      'text/html': '<table data-blok-table-headings="none"><tr><td onclick="window.__forged = 1">X<img src="x" onerror="window.__forged = 1"></td><td>Y</td></tr></table>',
+      'text/plain': 'X\tY',
+    });
+
+    /** Each root table as [id or 'new', its cells' texts]. */
+    const tables = async (): Promise<unknown[]> => {
+      const { blocks } = await saveBlok(page);
+      const byId = new Map(blocks.map((b) => [b.id, b]));
+
+      return blocks.filter((b) => b.parent === undefined).map((b) => {
+        const rows = (b.data as { content: Array<Array<{ blocks: string[] }>> }).content;
+
+        return [
+          b.id === 'dest' ? b.id : `new ${b.type}`,
+          rows.map((row) => row.map((cell) => cell.blocks.map((cellId) => byId.get(cellId)?.data.text))),
+        ];
+      });
+    };
+
+    await expect.poll(tables).toEqual([
+      ['dest', [[['z00'], ['z01']], [['z10'], ['z11']]]],
+      ['new table', [[['X'], ['Y']]]],
+    ]);
+    await expect(page.locator('[onclick], [onerror]')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as { __forged?: number }).__forged)).toBeUndefined();
+  });
+
+  test('the html of a copied table block, pasted into a table cell inside a toggle, lands after that table whole', async ({ page }) => {
+    const doc: OutputData['blocks'] = [
+      { id: 'src', type: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [['One', 'Two'], ['Three', 'Four']] } },
+      { id: 'tog', type: 'toggle', data: { text: 'Holder', isOpen: true }, content: ['dest'] },
+      { id: 'dest', type: 'table', parent: 'tog', data: { withHeadings: false, withHeadingColumn: false, content: [['z00', 'z01'], ['z10', 'z11']] } },
+    ];
+
+    await createBlok(page, { data: { blocks: doc }, dataModel: 'hierarchical' });
+    await openFixtureToggles(page, { blocks: doc });
+
+    const editor = await page.locator(`#${HOLDER_ID}`).boundingBox();
+    const source = await page.locator('[data-blok-id="src"]').boundingBox();
+
+    if (editor === null || source === null) {
+      throw new Error('editor or table has no box');
+    }
+    const gutter = editor.x + editor.width - 40;
+
+    await page.mouse.move(gutter, source.y + 4);
+    await page.mouse.down();
+    await page.mouse.move(gutter, source.y + source.height - 4, { steps: 15 });
+    await page.mouse.up();
+    await expect(page.locator('[data-blok-id="src"][data-blok-selected="true"]')).toBeVisible();
+
+    const { 'application/x-blok': blokData, ...htmlOnly } = await copyFromElement(page.locator('[data-blok-id="src"]'));
+
+    expect(blokData).toBeDefined();
+    expect(htmlOnly['text/html']).toContain('<table');
+
+    await page.keyboard.press('Escape');
+    await page.locator('[data-blok-id="dest"] [data-blok-table-cell]').first().locator('[contenteditable="true"]').first().click();
+    await paste(page, page.locator(':focus'), htmlOnly);
+
+    /** Each table as [id or 'new', its parent, its cells' texts]; a cell block that is not the table's child shows as 'STRAY'. */
+    const tables = async (): Promise<unknown[]> => {
+      const { blocks } = await saveBlok(page);
+      const byId = new Map(blocks.map((b) => [b.id, b]));
+
+      return blocks.filter((b) => b.type === 'table').map((b) => {
+        const rows = (b.data as { content: Array<Array<{ blocks: string[] }>> }).content;
+
+        return [
+          b.id === 'src' || b.id === 'dest' ? b.id : 'new',
+          b.parent ?? null,
+          rows.map((row) => row.map((cell) => cell.blocks.map((cellId) => byId.get(cellId)?.parent === b.id ? byId.get(cellId)?.data.text : 'STRAY'))),
+        ];
+      });
+    };
+    const sourceCells = [[['One'], ['Two']], [['Three'], ['Four']]];
+
+    await expect.poll(tables).toEqual([
+      ['src', null, sourceCells],
+      ['dest', 'tog', [[['z00'], ['z01']], [['z10'], ['z11']]]],
+      ['new', 'tog', sourceCells],
+    ]);
+
+    const sameContainer = await page.evaluate(() => {
+      const holders = Array.from(document.querySelectorAll('[data-blok-tool="table"]'))
+        .map((tool) => tool.closest('[data-blok-element]'));
+      const dest = document.querySelector('[data-blok-id="dest"]');
+
+      return holders.length === 3 && holders[2] !== dest && holders[2]?.parentElement === dest?.parentElement && holders[2]?.previousElementSibling === dest;
+    });
+
+    expect(sameContainer).toBe(true);
+  });
+
+  test('a copied table block, pasted into another table cell, lands after that table whole', async ({ page }) => {
+    const doc: OutputData['blocks'] = [
+      { id: 'src', type: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [['One', 'Two'], ['Three', 'Four']] } },
+      { id: 'dest', type: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [['z00', 'z01'], ['z10', 'z11']] } },
+    ];
+
+    await createBlok(page, { data: { blocks: doc } });
+
+    const editor = await page.locator(`#${HOLDER_ID}`).boundingBox();
+    const source = await page.locator('[data-blok-id="src"]').boundingBox();
+
+    if (editor === null || source === null) {
+      throw new Error('editor or table has no box');
+    }
+    const gutter = editor.x + editor.width - 40;
+
+    await page.mouse.move(gutter, source.y + 4);
+    await page.mouse.down();
+    await page.mouse.move(gutter, source.y + source.height - 4, { steps: 15 });
+    await page.mouse.up();
+    await expect(page.locator('[data-blok-id="src"][data-blok-selected="true"]')).toBeVisible();
+
+    const clipboardData = await copyFromElement(page.locator('[data-blok-id="src"]'));
+
+    expect(clipboardData['application/x-blok']).toBeDefined();
+    expect(clipboardData['text/html']).toContain('<table');
+
+    await page.keyboard.press('Escape');
+    await page.locator('[data-blok-id="dest"] [data-blok-table-cell]').first().locator('[contenteditable="true"]').first().click();
+    await paste(page, page.locator(':focus'), clipboardData);
+
+    /** Each root table as [id or 'new', its cells' texts]; a cell block that is not the table's child shows as 'STRAY'. */
+    const tables = async (): Promise<unknown[]> => {
+      const { blocks } = await saveBlok(page);
+      const byId = new Map(blocks.map((b) => [b.id, b]));
+
+      return blocks.filter((b) => b.parent === undefined).map((b) => {
+        const rows = (b.data as { content: Array<Array<{ blocks: string[] }>> }).content;
+
+        return [
+          b.id === 'src' || b.id === 'dest' ? b.id : `new ${b.type}`,
+          rows.map((row) => row.map((cell) => cell.blocks.map((cellId) => byId.get(cellId)?.parent === b.id ? byId.get(cellId)?.data.text : 'STRAY'))),
+        ];
+      });
+    };
+    const sourceCells = [[['One'], ['Two']], [['Three'], ['Four']]];
+
+    await expect.poll(tables).toEqual([
+      ['src', sourceCells],
+      ['dest', [[['z00'], ['z01']], [['z10'], ['z11']]]],
+      ['new table', sourceCells],
+    ]);
+  });
+
+  test.describe('a table pasted into a container child', () => {
+    const table = { id: 'xt', tool: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [[{ blocks: ['xta'] }, { blocks: ['xtb'] }]] }, parentId: null, contentIds: ['xta', 'xtb'], tunes: {} };
+    const cells = [
+      { id: 'xta', tool: 'paragraph', data: { text: 'Cell A' }, parentId: 'xt', contentIds: [], tunes: {} },
+      { id: 'xtb', tool: 'paragraph', data: { text: 'Cell B' }, parentId: 'xt', contentIds: [], tunes: {} },
+    ];
+    const payloads = {
+      'a table': [table, ...cells],
+      'a toggle holding a table': [
+        { id: 'xg', tool: 'toggle', data: { text: 'Tog' }, parentId: null, contentIds: ['xt'], tunes: {} },
+        { ...table, parentId: 'xg' },
+        ...cells,
+      ],
+    };
+    const targets: Record<string, OutputData['blocks']> = {
+      toggle: [
+        { id: 'tg', type: 'toggle', data: { text: 'Toggle', isOpen: true }, content: ['tgt'] },
+        { id: 'tgt', type: 'paragraph', parent: 'tg', data: { text: '' } },
+      ],
+      callout: [
+        { id: 'co', type: 'callout', data: { emoji: '💡' }, content: ['tgt'] },
+        { id: 'tgt', type: 'paragraph', parent: 'co', data: { text: '' } },
+      ],
+      column: [
+        { id: 'cl', type: 'column_list', data: {}, content: ['c1', 'c2'] },
+        { id: 'c1', type: 'column', data: {}, parent: 'cl', content: ['tgt'] },
+        { id: 'tgt', type: 'paragraph', parent: 'c1', data: { text: '' } },
+        { id: 'c2', type: 'column', data: {}, parent: 'cl', content: ['p2'] },
+        { id: 'p2', type: 'paragraph', parent: 'c2', data: { text: 'Right' } },
+      ],
+    };
+
+    for (const [payloadName, payload] of Object.entries(payloads)) {
+      for (const [targetName, doc] of Object.entries(targets)) {
+        test(`${payloadName} keeps one block per cell when pasted into a ${targetName}`, async ({ page }) => {
+          await createBlokWithElements(page, doc);
+          await openFixtureToggles(page, { blocks: doc });
+          const before = new Set((await saveBlok(page)).blocks.map((b) => b.id));
+
+          await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+          await paste(page, page.locator(':focus'), { 'application/x-blok': JSON.stringify(payload), 'text/plain': 'Cell A Cell B' });
+
+          /** The pasted table as its child texts and its cells' texts. */
+          const pasted = async (): Promise<{ children: unknown[]; cells: unknown[]; added: number }> => {
+            const { blocks } = await saveBlok(page);
+            const byId = new Map(blocks.map((b) => [b.id, b]));
+            const fresh = blocks.filter((b) => !before.has(b.id));
+            const pastedTable = fresh.find((b) => b.type === 'table');
+            const content = (pastedTable?.data as { content?: Array<Array<{ blocks?: string[] }>> } | undefined)?.content ?? [];
+
+            return {
+              children: (pastedTable?.content ?? []).map((id) => byId.get(id)?.data.text),
+              cells: content.map((row) => row.map((cell) => (cell.blocks ?? []).map((id) => byId.get(id)?.data.text))),
+              added: fresh.length,
+            };
+          };
+
+          await expect.poll(pasted).toEqual({
+            children: ['Cell A', 'Cell B'],
+            cells: [[['Cell A'], ['Cell B']]],
+            added: payload.length,
+          });
+        });
+      }
+    }
+  });
+
+  test.describe('a table pasted into an empty paragraph', () => {
+    const payload = [
+      { id: 'xt', tool: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [[{ blocks: ['xta'] }, { blocks: ['xtb'] }]] }, parentId: null, contentIds: ['xta', 'xtb'], tunes: {} },
+      { id: 'xta', tool: 'paragraph', data: { text: 'Cell A' }, parentId: 'xt', contentIds: [], tunes: {} },
+      { id: 'xtb', tool: 'paragraph', data: { text: 'Cell B' }, parentId: 'xt', contentIds: [], tunes: {} },
+    ];
+    const targets: Record<string, { doc: OutputData['blocks']; parent: string | undefined }> = {
+      'the root': { doc: [{ id: 'tgt', type: 'paragraph', data: { text: '' } }], parent: undefined },
+      'a callout': {
+        doc: [
+          { id: 'co', type: 'callout', data: { emoji: '💡' }, content: ['tgt'] },
+          { id: 'tgt', type: 'paragraph', parent: 'co', data: { text: '' } },
+        ],
+        parent: 'co',
+      },
+      'a toggle': {
+        doc: [
+          { id: 'tg', type: 'toggle', data: { text: 'Toggle', isOpen: true }, content: ['tgt'] },
+          { id: 'tgt', type: 'paragraph', parent: 'tg', data: { text: '' } },
+        ],
+        parent: 'tg',
+      },
+    };
+
+    for (const [targetName, { doc, parent }] of Object.entries(targets)) {
+      test(`replaces the paragraph in ${targetName}`, async ({ page }) => {
+        await createBlokWithElements(page, doc);
+        await openFixtureToggles(page, { blocks: doc });
+
+        await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+        await paste(page, page.locator(':focus'), { 'application/x-blok': JSON.stringify(payload), 'text/plain': 'Cell A Cell B' });
+
+        const shape = async (): Promise<{ hasTarget: boolean; tableParent: string | undefined; containerHoldsOnlyTable: boolean }> => {
+          const { blocks } = await saveBlok(page);
+          const pastedTable = blocks.find((b) => b.type === 'table');
+
+          return {
+            hasTarget: blocks.some((b) => b.id === 'tgt'),
+            tableParent: pastedTable?.parent,
+            containerHoldsOnlyTable: parent === undefined || JSON.stringify(blocks.find((b) => b.id === parent)?.content) === JSON.stringify([pastedTable?.id]),
+          };
+        };
+
+        await expect.poll(shape).toEqual({
+          hasTarget: false,
+          tableParent: parent,
+          containerHoldsOnlyTable: true,
+        });
+      });
+    }
+  });
+
+  test.describe('a range across a column layout', () => {
+    const doc: OutputData['blocks'] = [
+      { id: 'pre', type: 'paragraph', data: { text: 'Before' } },
+      { id: 'cl', type: 'column_list', data: {}, content: ['c1', 'c2'] },
+      { id: 'c1', type: 'column', data: { widthRatio: 2 }, parent: 'cl', content: ['c1p'] },
+      { id: 'c1p', type: 'paragraph', parent: 'c1', data: { text: 'Left col' } },
+      { id: 'c2', type: 'column', data: { widthRatio: 1 }, parent: 'cl', content: ['c2p'] },
+      { id: 'c2p', type: 'paragraph', parent: 'c2', data: { text: 'Right col' } },
+      { id: 'post', type: 'paragraph', data: { text: 'After' } },
+      { id: 'tgt', type: 'paragraph', data: { text: '' } },
+    ];
+
+    /** The copied column_lists (any column_list but the source) as [columns' data, columns' texts]. */
+    const pastedLayouts = async (page: Page): Promise<unknown[]> => {
+      const { blocks } = await saveBlok(page);
+      const byId = new Map(blocks.map((b) => [b.id, b]));
+
+      return blocks
+        .filter((b) => b.type === 'column_list' && b.id !== 'cl')
+        .map((list) => (list.content ?? []).map((columnId) => {
+          const column = byId.get(columnId);
+
+          return [column?.type, column?.data, (column?.content ?? []).map((id) => byId.get(id)?.data.text)];
+        }));
+    };
+
+    const selectRange = async (page: Page): Promise<void> => {
+      await page.locator('[data-blok-id="pre"] [contenteditable="true"]').click();
+      await page.locator('[data-blok-id="post"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+      await expect(page.locator('[data-blok-id="post"][data-blok-selected="true"]')).toBeVisible();
+    };
+
+    const pasteIntoTarget = async (page: Page, clipboardData: Record<string, string>): Promise<void> => {
+      await page.keyboard.press('Escape');
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), clipboardData);
+    };
+
+    test('pastes the column_list and its columns when copied', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc } });
+      await selectRange(page);
+
+      const clipboardData = await copyFromElement(page.locator('[data-blok-id="pre"]'));
+
+      await pasteIntoTarget(page, clipboardData);
+
+      await expect.poll(() => pastedLayouts(page)).toEqual([[
+        ['column', { widthRatio: 2 }, ['Left col']],
+        ['column', {}, ['Right col']],
+      ]]);
+    });
+
+    test('leaves no empty layout behind when cut, and pastes it back whole', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc } });
+      await selectRange(page);
+
+      const clipboardData = await cutFromElement(page.locator('[data-blok-id="pre"]'));
+
+      // A lone empty paragraph saves as nothing, so read the live blocks.
+      await expect.poll(() => page.locator(BLOCK_SELECTOR).evaluateAll((holders) => holders.map((h) => h.getAttribute('data-blok-id'))))
+        .toEqual(['tgt']);
+
+      await pasteIntoTarget(page, clipboardData);
+
+      await expect.poll(() => pastedLayouts(page)).toEqual([[
+        ['column', { widthRatio: 2 }, ['Left col']],
+        ['column', {}, ['Right col']],
+      ]]);
+    });
+  });
+
+  test.describe('every child of a callout removed', () => {
+    const doc: OutputData['blocks'] = [
+      { id: 'pre', type: 'paragraph', data: { text: 'Before' } },
+      { id: 'cal', type: 'callout', data: { emoji: '💡', textColor: null, backgroundColor: null }, content: ['k1', 'k2'] },
+      { id: 'k1', type: 'paragraph', parent: 'cal', data: { text: 'Kid one' } },
+      { id: 'k2', type: 'header', parent: 'cal', data: { text: 'Kid two', level: 3 } },
+      { id: 'post', type: 'paragraph', data: { text: 'After' } },
+    ];
+
+    const selectChildren = async (page: Page): Promise<void> => {
+      await page.locator('[data-blok-id="k1"] [contenteditable="true"]').click();
+      await page.locator('[data-blok-id="k2"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+      await expect(page.locator('[data-blok-id="k2"][data-blok-selected="true"]')).toBeVisible();
+    };
+
+    /** Ids of the live holders inside the callout, and whether focus is in one of them. */
+    const calloutState = async (page: Page): Promise<{ children: number; focusInChild: boolean }> =>
+      await page.locator('[data-blok-id="cal"]').evaluate((callout) => {
+        const children = Array.from(callout.querySelectorAll('[data-blok-nested-blocks] [data-blok-id]'));
+
+        return {
+          children: children.length,
+          focusInChild: children.some((child) => child.contains(document.activeElement)),
+        };
+      });
+
+    const calloutChildren = async (page: Page): Promise<unknown[]> => {
+      const { blocks } = await saveBlok(page);
+
+      return blocks.filter((b) => b.parent === 'cal').map((b) => [b.type, b.data.text]);
+    };
+
+    test('a cut leaves one empty paragraph with the caret, and a paste puts the children back', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc } });
+      await selectChildren(page);
+
+      const clipboardData = await cutFromElement(page.locator('[data-blok-id="k1"]'));
+
+      await expect.poll(() => calloutState(page)).toEqual({ children: 1, focusInChild: true });
+
+      await paste(page, page.locator(':focus'), clipboardData);
+
+      await expect.poll(() => calloutChildren(page)).toEqual([
+        ['paragraph', 'Kid one'],
+        ['header', 'Kid two'],
+      ]);
+    });
+
+    test('backspace leaves one empty paragraph that takes typing', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc } });
+      await selectChildren(page);
+
+      await page.keyboard.press('Backspace');
+
+      await expect.poll(() => calloutState(page)).toEqual({ children: 1, focusInChild: true });
+
+      await page.keyboard.type('Typed');
+
+      await expect.poll(() => calloutChildren(page)).toEqual([['paragraph', 'Typed']]);
+    });
+
+    test('a toggle keeps no children, since its title takes the caret', async ({ page }) => {
+      const toggleDoc: OutputData['blocks'] = [
+        { id: 'tg', type: 'toggle', data: { text: 'Title', isOpen: true }, content: ['t1', 't2'] },
+        { id: 't1', type: 'paragraph', parent: 'tg', data: { text: 'one' } },
+        { id: 't2', type: 'paragraph', parent: 'tg', data: { text: 'two' } },
+        { id: 'post', type: 'paragraph', data: { text: 'After' } },
+      ];
+
+      await createBlok(page, { data: { blocks: toggleDoc } });
+      await openFixtureToggles(page, { blocks: toggleDoc });
+      await page.locator('[data-blok-id="t1"] [contenteditable="true"]').click();
+      await page.locator('[data-blok-id="t2"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+      await expect(page.locator('[data-blok-id="t2"][data-blok-selected="true"]')).toBeVisible();
+
+      await cutFromElement(page.locator('[data-blok-id="t1"]'));
+
+      await expect(page.locator('[data-blok-id="t1"]')).toHaveCount(0);
+      await expect.poll(() => page.locator('[data-blok-id="tg"] [data-blok-nested-blocks] [data-blok-id]').count()).toBe(0);
+    });
+  });
+
+  test.describe('blocks pasted at a caret inside text', () => {
+    const blokPayload = (blocks: Array<{ id: string; tool: string; data: Record<string, unknown>; parentId?: string | null; contentIds?: string[] }>): string =>
+      JSON.stringify(blocks.map((b) => ({ parentId: null, contentIds: [], tunes: {}, ...b })));
+    const twoParagraphs = blokPayload([
+      { id: 'pa', tool: 'paragraph', data: { text: 'First' } },
+      { id: 'pb', tool: 'paragraph', data: { text: 'Second' } },
+    ]);
+    const flavors: Record<string, Record<string, string>> = {
+      'a Blok block copy': { 'application/x-blok': twoParagraphs, 'text/html': '<p>First</p><p>Second</p>', 'text/plain': 'First\n\nSecond' },
+      'html only': { 'text/html': '<p>First</p><p>Second</p>', 'text/plain': 'First\n\nSecond' },
+    };
+
+    const placeCaret = async (page: Page, id: string, start: number, end = start): Promise<void> => {
+      await page.locator(`[data-blok-id="${id}"] [contenteditable="true"]`).click();
+      await page.evaluate(({ blockId, from, to }) => {
+        const editable = document.querySelector(`[data-blok-id="${blockId}"] [contenteditable="true"]`);
+        const text = editable?.firstChild;
+        const selection = window.getSelection();
+
+        if (!text || !selection) {
+          throw new Error('no text node to place the caret in');
+        }
+        const range = document.createRange();
+
+        range.setStart(text, from);
+        range.setEnd(text, to);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }, { blockId: id, from: start, to: end });
+    };
+
+    const texts = async (page: Page): Promise<string[]> => {
+      const { blocks } = await saveBlok(page);
+
+      return blocks.map((b) => `${b.type}:${String((b.data as { text?: unknown }).text)}${b.parent === undefined ? '' : ` in ${b.parent}`}`);
+    };
+
+    for (const [flavor, clipboard] of Object.entries(flavors)) {
+      test(`${flavor} splits the paragraph at the caret`, async ({ page }) => {
+        await createBlokWithElements(page, [{ id: 't', type: 'paragraph', data: { text: 'HelloWorld' } }]);
+        await placeCaret(page, 't', 5);
+        await paste(page, page.locator(':focus'), clipboard);
+
+        await expect.poll(() => texts(page)).toEqual(['paragraph:HelloFirst', 'paragraph:SecondWorld']);
+      });
+
+      test(`${flavor} at the start of a paragraph goes before its text`, async ({ page }) => {
+        await createBlokWithElements(page, [{ id: 't', type: 'paragraph', data: { text: 'Omega' } }]);
+        await placeCaret(page, 't', 0);
+        await paste(page, page.locator(':focus'), clipboard);
+
+        await expect.poll(() => texts(page)).toEqual(['paragraph:First', 'paragraph:SecondOmega']);
+      });
+
+      test(`${flavor} replaces the selected word`, async ({ page }) => {
+        await createBlokWithElements(page, [{ id: 't', type: 'paragraph', data: { text: 'Hello World' } }]);
+        await placeCaret(page, 't', 6, 11);
+        await paste(page, page.locator(':focus'), clipboard);
+
+        await expect.poll(() => texts(page)).toEqual(['paragraph:Hello First', 'paragraph:Second']);
+      });
+
+      test(`${flavor} split undoes in one step`, async ({ page }) => {
+        await createBlokWithElements(page, [{ id: 't', type: 'paragraph', data: { text: 'HelloWorld' } }]);
+        await placeCaret(page, 't', 5);
+        await paste(page, page.locator(':focus'), clipboard);
+        await expect.poll(() => texts(page)).toEqual(['paragraph:HelloFirst', 'paragraph:SecondWorld']);
+
+        await page.keyboard.press((await historyKeys(page)).undo);
+
+        await expect.poll(() => texts(page)).toEqual(['paragraph:HelloWorld']);
+      });
+    }
+
+    test('a Blok block copy ending in a header keeps the header level', async ({ page }) => {
+      await createBlokWithElements(page, [{ id: 't', type: 'paragraph', data: { text: 'HelloWorld' } }]);
+      await placeCaret(page, 't', 5);
+      await paste(page, page.locator(':focus'), {
+        'application/x-blok': blokPayload([
+          { id: 'pa', tool: 'paragraph', data: { text: 'First' } },
+          { id: 'ph', tool: 'header', data: { text: 'Second', level: 3 } },
+        ]),
+        'text/plain': 'First\n\n### Second',
+      });
+
+      await expect.poll(async () => (await saveBlok(page)).blocks.map((b) => [b.type, b.data])).toEqual([
+        ['paragraph', { text: 'HelloFirst' }],
+        ['header', { text: 'SecondWorld', level: 3 }],
+      ]);
+    });
+
+    test('a Blok block copy holding a toggle with a child lands after the paragraph whole', async ({ page }) => {
+      await createBlokWithElements(page, [{ id: 't', type: 'paragraph', data: { text: 'HelloWorld' } }]);
+      await placeCaret(page, 't', 5);
+      await paste(page, page.locator(':focus'), {
+        'application/x-blok': blokPayload([
+          { id: 'pa', tool: 'paragraph', data: { text: 'First' } },
+          { id: 'tg', tool: 'toggle', data: { text: 'Toggle' }, contentIds: ['tc'] },
+          { id: 'tc', tool: 'paragraph', data: { text: 'Child' }, parentId: 'tg' },
+        ]),
+        'text/plain': 'First\n\nToggle\n\nChild',
+      });
+
+      await expect.poll(async () => {
+        const { blocks } = await saveBlok(page);
+        const toggle = blocks.find((b) => b.type === 'toggle');
+
+        return blocks.map((b) => `${b.type}:${String((b.data as { text?: unknown }).text)}${b.parent === toggle?.id && b.parent !== undefined ? ' in toggle' : ''}`);
+      }).toEqual(['paragraph:HelloWorld', 'paragraph:First', 'toggle:Toggle', 'paragraph:Child in toggle']);
+    });
+
+    test('a text range cut across paragraphs pastes back as the original paragraphs', async ({ page }) => {
+      await createBlokWithElements(page, [
+        { id: 'a', type: 'paragraph', data: { text: 'Alpha start' } },
+        { id: 'm', type: 'paragraph', data: { text: 'Middle' } },
+        { id: 'z', type: 'paragraph', data: { text: 'Zeta end' } },
+      ]);
+      const firstBox = await page.locator('[data-blok-id="a"] [contenteditable="true"]').boundingBox();
+      // Drag ends on the right edge of "Ze", measured so the font does not matter.
+      const end = await page.evaluate(() => {
+        const text = document.querySelector('[data-blok-id="z"] [contenteditable="true"]')?.firstChild;
+
+        if (!text) {
+          throw new Error('no text node in the last paragraph');
+        }
+        const range = document.createRange();
+
+        range.setStart(text, 0);
+        range.setEnd(text, 2);
+        const rect = range.getBoundingClientRect();
+
+        return { x: rect.right, y: rect.top + rect.height / 2 };
+      });
+
+      if (firstBox === null) {
+        throw new Error('first paragraph has no box');
+      }
+      await page.mouse.move(firstBox.x + 1, firstBox.y + firstBox.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(end.x, end.y, { steps: 15 });
+      await page.mouse.up();
+
+      const clipboard = await cutFromElement(page.locator(':focus'));
+
+      await expect.poll(() => texts(page)).toEqual(['paragraph:ta end']);
+
+      await paste(page, page.locator(':focus'), clipboard);
+
+      await expect.poll(() => texts(page)).toEqual(['paragraph:Alpha start', 'paragraph:Middle', 'paragraph:Zeta end']);
+    });
+  });
+
+  test('block tune data survives a block copy and paste', async ({ page }) => {
+    const noteTuneSource = `class NoteTune {
+      static get isTune() { return true; }
+      constructor({ data }) { this.data = data ?? { note: '' }; }
+      render() { const el = document.createElement('div'); el.textContent = 'Note'; return el; }
+      save() { return this.data; }
+    }`;
+
+    await createBlok(page, {
+      tools: { noteTune: { classCode: noteTuneSource } },
+      tunes: ['noteTune'],
+      data: {
+        blocks: [
+          { id: 'a', type: 'paragraph', data: { text: 'Tuned' }, tunes: { noteTune: { note: 'keep me' } } },
+          { id: 'b', type: 'header', data: { text: 'Tuned head', level: 2 }, tunes: { noteTune: { note: 'head note' } } },
+          { id: 'tgt', type: 'paragraph', data: { text: '' } },
+        ],
+      },
+    });
+
+    await page.locator('[data-blok-id="a"] [contenteditable="true"]').click();
+    await page.locator('[data-blok-id="b"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+    await expect(page.locator('[data-blok-id="b"][data-blok-selected="true"]')).toBeVisible();
+
+    const clipboardData = await copyFromElement(page.locator('[data-blok-id="a"]'));
+
+    expect(clipboardData['application/x-blok']).toBeDefined();
+
+    await page.keyboard.press('Escape');
+    await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+    await paste(page, page.locator(':focus'), clipboardData);
+
+    await expect.poll(async () => {
+      const { blocks } = await saveBlok(page);
+
+      return blocks.filter((b) => b.id !== 'a' && b.id !== 'b').map((b) => [b.type, b.tunes]);
+    }).toEqual([
+      ['paragraph', { noteTune: { note: 'keep me' } }],
+      ['header', { noteTune: { note: 'head note' } }],
+    ]);
+  });
+
+  test.describe('a text range dragged across list items', () => {
+    test('copies them as lists and pastes them back from html with their depth and checked state', async ({ page }) => {
+      await createBlokWithElements(page, [
+        { id: 'one', type: 'list', data: { text: 'one', style: 'unordered', depth: 0 } },
+        { id: 'nested', type: 'list', data: { text: 'nested', style: 'unordered', depth: 1 } },
+        { id: 'done', type: 'list', data: { text: 'done', style: 'checklist', checked: true, depth: 0 } },
+        { id: 'tgt', type: 'paragraph', data: { text: '' } },
+      ]);
+
+      const one = await page.locator('[data-blok-id="one"]').getByText('one', { exact: true }).boundingBox();
+      const done = await page.locator('[data-blok-id="done"]').getByText('done', { exact: true }).boundingBox();
+
+      if (one === null || done === null) {
+        throw new Error('list items have no box');
+      }
+
+      await page.mouse.move(one.x + 1, one.y + one.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(done.x + done.width + 20, done.y + done.height / 2, { steps: 10 });
+      await page.mouse.up();
+
+      const clipboard = await copyFromElement(page.locator(':focus'));
+
+      expect(clipboard['text/html']).toBe(
+        '<ul><li>one<ul><li>nested</li></ul></li></ul><ul><li><label><input type="checkbox" checked=""><span>done</span></label></li></ul>'
+      );
+
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), {
+        'text/html': clipboard['text/html'],
+        'text/plain': clipboard['text/plain'],
+      });
+
+      await expect.poll(async () => {
+        const { blocks } = await saveBlok(page);
+
+        return blocks.slice(3).map((block) => [block.type, block.data.text, block.data.style, block.data.depth ?? 0, block.data.checked ?? false]);
+      }).toEqual([
+        ['list', 'one', 'unordered', 0, false],
+        ['list', 'nested', 'unordered', 1, false],
+        ['list', 'done', 'checklist', 0, true],
+      ]);
+    });
+
+    test('keeps partly selected first and last items as list items with only the selected text', async ({ page }) => {
+      await createBlokWithElements(page, [
+        { id: 'top', type: 'list', data: { text: 'top item', style: 'unordered', depth: 0 } },
+        { id: 'one', type: 'list', data: { text: 'first item', style: 'ordered', depth: 1 } },
+        { id: 'nested', type: 'list', data: { text: 'nested item', style: 'ordered', depth: 2 } },
+        { id: 'done', type: 'list', data: { text: 'done item', style: 'checklist', checked: true, depth: 1 } },
+        { id: 'tgt', type: 'paragraph', data: { text: '' } },
+      ]);
+
+      // The middle of one character, so the drag starts and ends inside the text.
+      const charCenter = (id: string, text: string, index: number): Promise<{ x: number; y: number }> => page.evaluate(({ blockId, needle, at }) => {
+        const holder = document.querySelector(`[data-blok-id="${blockId}"]`) as Node;
+        const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+
+        for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+          const offset = (node.textContent ?? '').indexOf(needle);
+
+          if (offset !== -1) {
+            const range = document.createRange();
+
+            range.setStart(node, offset + at);
+            range.setEnd(node, offset + at + 1);
+
+            const box = range.getBoundingClientRect();
+
+            return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+          }
+        }
+        throw new Error(`no "${needle}" in ${blockId}`);
+      }, { blockId: id, needle: text, at: index });
+
+      // From inside "first" in the first item to inside "done" in the last.
+      const from = await charCenter('one', 'first item', 2);
+      const to = await charCenter('done', 'done item', 2);
+
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move(to.x, to.y, { steps: 10 });
+      await page.mouse.up();
+
+      const clipboard = await copyFromElement(page.locator(':focus'));
+      const html = clipboard['text/html'];
+
+      expect(html).toMatch(/^<ol><li>r?st item<ol><li>nested item<\/li><\/ol><\/li><\/ol><ul><li><label><input type="checkbox" checked=""><span>don?<\/span><\/label><\/li><\/ul>$/);
+      expect(clipboard['text/plain']).toMatch(/^1\. r?st item\n {4}1\. nested item\n- \[x\] don?$/);
+
+      const entries = JSON.parse(clipboard['application/x-blok'] ?? '[]') as Array<{ tool: string; data: Record<string, unknown> }>;
+
+      expect(entries.map(({ tool, data }) => [tool, data.style, data.depth ?? 0])).toEqual([
+        ['list', 'ordered', 0],
+        ['list', 'ordered', 1],
+        ['list', 'checklist', 0],
+      ]);
+
+      for (const flavors of [['text/html', 'text/plain'], ['application/x-blok', 'text/html', 'text/plain']]) {
+        await createBlokWithElements(page, [{ id: 'tgt', type: 'paragraph', data: { text: '' } }]);
+        await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+        await paste(page, page.locator(':focus'), Object.fromEntries(flavors.map((flavor) => [flavor, clipboard[flavor]])));
+
+        await expect.poll(async () => {
+          const { blocks } = await saveBlok(page);
+
+          return blocks.map((block) => [block.type, block.data.style, block.data.depth ?? 0, block.data.checked ?? false]);
+        }, { message: flavors.join(' ') }).toEqual([
+          ['list', 'ordered', 0, false],
+          ['list', 'ordered', 1, false],
+          ['list', 'checklist', 0, true],
+        ]);
+      }
+    });
+
+    test('keeps a partly selected item as a list item right after typing into it', async ({ page }) => {
+      await createBlokWithElements(page, [
+        { id: 'one', type: 'list', data: { text: 'first item', style: 'unordered' } },
+        { id: 'two', type: 'list', data: { text: 'second item', style: 'unordered' } },
+      ]);
+
+      await page.locator('[data-blok-id="one"]').getByText('first item', { exact: true }).click();
+      await page.keyboard.press('End');
+      await page.keyboard.type('Z');
+
+      const point = (id: string, needle: string): Promise<{ x: number; y: number }> => page.evaluate(({ blockId, text }) => {
+        const holder = document.querySelector(`[data-blok-id="${blockId}"]`) as Node;
+        const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+
+        for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+          const offset = (node.textContent ?? '').indexOf(text);
+
+          if (offset !== -1) {
+            const range = document.createRange();
+
+            range.setStart(node, offset);
+            range.setEnd(node, offset + 1);
+
+            const box = range.getBoundingClientRect();
+
+            return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+          }
+        }
+        throw new Error(`no "${text}" in ${blockId}`);
+      }, { blockId: id, text: needle });
+
+      const from = await point('one', 'rst');
+      const to = await point('two', 'cond');
+
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move(to.x, to.y, { steps: 5 });
+      await page.mouse.up();
+
+      const clipboard = await copyFromElement(page.locator(':focus'));
+
+      expect(clipboard['text/html']).toMatch(/^<ul><li>r?st itemZ<\/li><li>s?e?<\/li><\/ul>$/);
+    });
+  });
+
+  test('selected list blocks paste back from html with their start number and checked state', async ({ page }) => {
+    await createBlokWithElements(page, [
+      { id: 'five', type: 'list', data: { text: 'Five', style: 'ordered', start: 5 } },
+      { id: 'six', type: 'list', data: { text: 'Six', style: 'ordered' } },
+      { id: 'done', type: 'list', data: { text: 'Done', style: 'checklist', checked: true } },
+      { id: 'open', type: 'list', data: { text: 'Open', style: 'checklist', checked: false } },
+      { id: 'tgt', type: 'paragraph', data: { text: '' } },
+    ]);
+
+    await page.locator('[data-blok-id="five"] [contenteditable="true"]').click();
+    await page.locator('[data-blok-id="open"] [contenteditable="true"]').click({ modifiers: ['Shift'] });
+    await expect(page.locator('[data-blok-id="open"][data-blok-selected="true"]')).toBeVisible();
+
+    const clipboard = await copyFromElement(page.locator('[data-blok-id="five"]'));
+
+    expect(clipboard['text/html']).toContain('<ol start="5"><li>Five</li><li>Six</li></ol>');
+    expect(clipboard['text/html']).toContain('<input type="checkbox" checked="">');
+
+    await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+    await paste(page, page.locator(':focus'), {
+      'text/html': clipboard['text/html'],
+      'text/plain': clipboard['text/plain'],
+    });
+
+    await expect.poll(async () => {
+      const { blocks } = await saveBlok(page);
+
+      return blocks
+        .filter((block) => !['five', 'six', 'done', 'open', 'tgt'].includes(block.id ?? ''))
+        .map((block) => [block.data.text, block.data.style, block.data.start ?? 1, block.data.checked ?? false]);
+    }).toEqual([
+      ['Five', 'ordered', 5, false],
+      ['Six', 'ordered', 1, false],
+      ['Done', 'checklist', 1, true],
+      ['Open', 'checklist', 1, false],
+    ]);
+  });
+
+  test.describe('pasting over a block selection', () => {
+    const doc: OutputData['blocks'] = [
+      { id: 'a', type: 'paragraph', data: { text: 'First' } },
+      { id: 'b', type: 'paragraph', data: { text: 'Second' } },
+      { id: 'x', type: 'paragraph', data: { text: 'Xray' } },
+      { id: 'y', type: 'paragraph', data: { text: 'Yankee' } },
+      { id: 'z', type: 'paragraph', data: { text: 'Zulu' } },
+    ];
+    const editable = (page: Page, id: string): Locator => page.locator(`[data-blok-id="${id}"] [contenteditable="true"]`);
+    const selectedIds = async (page: Page): Promise<string[]> => await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[data-blok-selected="true"]')).map((el) => el.getAttribute('data-blok-id') ?? ''));
+    const texts = async (page: Page): Promise<unknown[]> => (await saveBlok(page)).blocks.map((b) => b.data.text);
+
+    const copyFirstTwo = async (page: Page): Promise<Record<string, string>> => {
+      await editable(page, 'a').click();
+      await editable(page, 'b').click({ modifiers: ['Shift'] });
+      expect(await selectedIds(page)).toEqual(['a', 'b']);
+      const clipboardData = await copyFromElement(page.locator('[data-blok-id="a"]'));
+
+      expect(clipboardData['application/x-blok']).toBeDefined();
+      await page.keyboard.press('Escape');
+
+      return clipboardData;
+    };
+
+    // The browser fires paste at the focused element, which is body after a rubber band or keyboard selection.
+    const pasteAtFocus = async (page: Page, data: Record<string, string>): Promise<boolean> =>
+      await page.evaluate((pasteData) => {
+        const event = Object.assign(new Event('paste', { bubbles: true, cancelable: true }), {
+          clipboardData: {
+            getData: (type: string): string => pasteData[type] ?? '',
+            types: Object.keys(pasteData),
+          },
+        });
+
+        (document.activeElement ?? document.body).dispatchEvent(event);
+
+        return event.defaultPrevented;
+      }, data);
+
+    test('a shift-click selection is replaced by the paste', async ({ page }) => {
+      await createBlokWithElements(page, doc);
+      const clipboardData = await copyFirstTwo(page);
+
+      await editable(page, 'x').click();
+      await editable(page, 'y').click({ modifiers: ['Shift'] });
+      expect(await selectedIds(page)).toEqual(['x', 'y']);
+
+      const prevented = await pasteAtFocus(page, clipboardData);
+
+      await expect.poll(() => texts(page)).toEqual(['First', 'Second', 'First', 'Second', 'Zulu']);
+      expect(prevented).toBe(true);
+      expect(await selectedIds(page)).toEqual([]);
+    });
+
+    test('a select-all selection is replaced by the paste', async ({ page }) => {
+      await createBlokWithElements(page, doc.slice(0, 2));
+      const clipboardData = await copyFirstTwo(page);
+      const commandModifier = await getCommandModifierKey(page);
+
+      await editable(page, 'a').click();
+      for (let i = 0; i < 3; i++) {
+        await page.keyboard.press(`${commandModifier}+A`);
+      }
+      expect(await selectedIds(page)).toEqual(['a', 'b']);
+
+      const prevented = await pasteAtFocus(page, clipboardData);
+
+      await expect.poll(() => texts(page)).toEqual(['First', 'Second']);
+      expect(prevented).toBe(true);
+    });
+
+    test('a rubber-band selection is replaced by a paste fired at body', async ({ page }) => {
+      await createBlokWithElements(page, doc);
+      const clipboardData = await copyFirstTwo(page);
+      const from = await page.locator('[data-blok-id="x"]').boundingBox();
+      const to = await page.locator('[data-blok-id="y"]').boundingBox();
+
+      if (from === null || to === null) {
+        throw new Error('blocks have no box');
+      }
+      await page.mouse.move(10, from.y + from.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(10, to.y + to.height / 2, { steps: 12 });
+      await page.mouse.up();
+      expect(await selectedIds(page)).toEqual(['x', 'y']);
+      expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true);
+
+      const prevented = await pasteAtFocus(page, clipboardData);
+
+      await expect.poll(() => texts(page)).toEqual(['First', 'Second', 'First', 'Second', 'Zulu']);
+      expect(prevented).toBe(true);
+    });
+
+    test('a block selected by keyboard is replaced by a paste fired at body', async ({ page }) => {
+      await createBlok(page, {
+        tools: { image: { className: 'defaultBlockTools.image.class' } },
+        data: {
+          blocks: [
+            ...doc.slice(0, 2),
+            { id: 'img', type: 'image', data: { url: 'http://127.0.0.1:4444/test/playwright/fixtures/image/shot.png', caption: 'Cap' } },
+            { id: 'tail', type: 'paragraph', data: { text: 'Tail' } },
+          ],
+        },
+      });
+      const clipboardData = await copyFirstTwo(page);
+
+      await editable(page, 'b').click();
+      await page.keyboard.press('Escape');
+      await page.keyboard.press('ArrowDown');
+      expect(await selectedIds(page)).toEqual(['img']);
+
+      const prevented = await pasteAtFocus(page, clipboardData);
+
+      await expect.poll(() => texts(page)).toEqual(['First', 'Second', 'First', 'Second', 'Tail']);
+      expect(prevented).toBe(true);
+    });
+
+    test('a selection inside a toggle is replaced inside the toggle', async ({ page }) => {
+      const nested: OutputData['blocks'] = [
+        ...doc.slice(0, 2),
+        { id: 't', type: 'toggle', data: { text: 'Toggle', isOpen: true }, content: ['c1', 'c2', 'c3'] },
+        { id: 'c1', type: 'paragraph', parent: 't', data: { text: 'C1' } },
+        { id: 'c2', type: 'paragraph', parent: 't', data: { text: 'C2' } },
+        { id: 'c3', type: 'paragraph', parent: 't', data: { text: 'C3' } },
+        { id: 'z', type: 'paragraph', data: { text: 'Zulu' } },
+      ];
+
+      await createBlok(page, { data: { blocks: nested }, dataModel: 'hierarchical' });
+      await openFixtureToggles(page, { blocks: nested });
+      const clipboardData = await copyFirstTwo(page);
+
+      await editable(page, 'c1').click();
+      await editable(page, 'c2').click({ modifiers: ['Shift'] });
+      expect(await selectedIds(page)).toEqual(['c1', 'c2']);
+
+      await pasteAtFocus(page, clipboardData);
+
+      const childTexts = async (): Promise<unknown[]> => (await saveBlok(page)).blocks.filter((b) => b.parent === 't').map((b) => b.data.text);
+
+      await expect.poll(childTexts).toEqual(['First', 'Second', 'C3']);
+      expect((await saveBlok(page)).blocks.filter((b) => b.parent === undefined).map((b) => b.id)).toEqual(['a', 'b', 't', 'z']);
+    });
+
+    test('a selected line in a table cell is replaced inside the cell', async ({ page }) => {
+      await createBlokWithElements(page, [
+        ...doc.slice(0, 2),
+        { id: 'tbl', type: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [['A1', 'B1'], ['A2', 'B2']] } },
+        { id: 'z', type: 'paragraph', data: { text: 'Zulu' } },
+      ]);
+      const clipboardData = await copyFirstTwo(page);
+      const cell = page.locator('[data-blok-id="tbl"] [data-blok-table-cell]').first();
+
+      await cell.locator('[contenteditable="true"]').first().click();
+      await page.keyboard.press('End');
+      await page.keyboard.press('Enter');
+      await page.keyboard.type('A1b');
+      const commandModifier = await getCommandModifierKey(page);
+
+      // Cmd+A twice in a cell line selects that line as a block.
+      await page.keyboard.press(`${commandModifier}+A`);
+      await page.keyboard.press(`${commandModifier}+A`);
+      const cellIds = await cell.locator('[data-blok-id]').evaluateAll((els) => els.map((el) => el.getAttribute('data-blok-id') ?? ''));
+
+      expect(await selectedIds(page)).toEqual([cellIds[1]]);
+
+      await pasteAtFocus(page, clipboardData);
+
+      // An empty line left next to a paste in a cell is not this test's business.
+      await expect.poll(async () => (await cell.locator('[contenteditable="true"]').allInnerTexts()).filter((text) => text.trim() !== '')).toEqual(['A1', 'First', 'Second']);
+      expect((await saveBlok(page)).blocks.filter((b) => b.parent === undefined).map((b) => b.id)).toEqual(['a', 'b', 'tbl', 'z']);
+    });
+  });
+
+  test.describe('an image in a pasted table cell', () => {
+    const url = 'https://example.com/a.png';
+    const html = `<table><tr><td><img src="${url}" alt="cap"></td><td>B</td></tr></table>`;
+    const cases: Record<string, { doc: OutputData['blocks']; data: Record<string, string> }> = {
+      'HTML pasted into a table cell': {
+        doc: [
+          { id: 't', type: 'table', data: { withHeadings: false, withHeadingColumn: false, content: [[{ blocks: ['c0'] }, { blocks: ['c1'] }]] }, content: ['c0', 'c1'] },
+          { id: 'c0', type: 'paragraph', parent: 't', data: { text: '' } },
+          { id: 'c1', type: 'paragraph', parent: 't', data: { text: '' } },
+        ],
+        data: { 'text/html': html, 'text/plain': 'cap\tB' },
+      },
+      'HTML pasted at the top level': {
+        doc: [{ id: 'c0', type: 'paragraph', data: { text: '' } }],
+        data: { 'text/html': html, 'text/plain': 'cap\tB' },
+      },
+      'Markdown pasted at the top level': {
+        doc: [{ id: 'c0', type: 'paragraph', data: { text: '' } }],
+        data: { 'text/plain': `| H | B |\n| --- | --- |\n| ![](${url}) | B |` },
+      },
+    };
+
+    for (const [name, { doc, data }] of Object.entries(cases)) {
+      test(`${name} becomes a live image block alone in its cell`, async ({ page }) => {
+        await createBlokWithElements(page, doc);
+        await page.locator('[data-blok-id="c0"] [contenteditable="true"]').click();
+        await paste(page, page.locator(':focus'), data);
+
+        const shape = async (): Promise<{ holderless: string[]; imageCell: Array<string | undefined> }> => {
+          const { blocks } = await saveBlok(page);
+          const byId = new Map(blocks.map((b) => [b.id, b]));
+          const ids = blocks.map((b) => b.id ?? '');
+          const live = await page.evaluate((all) => all.filter((id) => document.querySelector(`[data-blok-id="${id}"]`) !== null), ids);
+          const cells = blocks
+            .filter((b) => b.type === 'table')
+            .flatMap((b) => (b.data as { content: Array<Array<{ blocks?: string[] }>> }).content.flat());
+          const imageCell = cells.find((cell) => (cell.blocks ?? []).some((id) => byId.get(id)?.type === 'image'));
+
+          return {
+            holderless: ids.filter((id) => !live.includes(id)),
+            imageCell: (imageCell?.blocks ?? []).map((id) => byId.get(id)?.type),
+          };
+        };
+
+        await expect.poll(shape).toEqual({ holderless: [], imageCell: ['image'] });
+      });
+    }
+  });
+
+  test.describe('blocks of a tool the pasting editor lacks', () => {
+    const doc: OutputData['blocks'] = [
+      { id: 'p1', type: 'paragraph', data: { text: 'Before toggle' } },
+      { id: 't', type: 'toggle', data: { text: 'Toggle title', isOpen: true }, content: ['tc'] },
+      { id: 'tc', type: 'paragraph', parent: 't', data: { text: 'Toggle child' } },
+      { id: 'p2', type: 'paragraph', data: { text: 'After toggle' } },
+    ];
+
+    const createParagraphOnlyBlok = async (page: Page): Promise<void> => {
+      await resetBlok(page);
+      await page.evaluate(async ({ holder }) => {
+        const blok = new window.BlokOriginal({ holder, tools: { paragraph: { class: window.BlokParagraph } } });
+
+        window.blokInstance = blok;
+        await blok.isReady;
+      }, { holder: HOLDER_ID });
+    };
+
+    const copyAllBlocks = async (page: Page, text: string): Promise<Record<string, string>> => {
+      const editable = page.getByText(text, { exact: true });
+      const commandModifier = await getCommandModifierKey(page);
+
+      await editable.click();
+      await page.keyboard.press(`${commandModifier}+A`);
+      await page.keyboard.press(`${commandModifier}+A`);
+      await page.keyboard.press(`${commandModifier}+A`);
+
+      const clipboardData = await copyFromElement(editable);
+
+      expect(clipboardData['application/x-blok']).toBeDefined();
+
+      return clipboardData;
+    };
+
+    /** Tree shape without ids: each block with its type, text and its parent's text. */
+    const tree = (output: OutputData): Array<{ type: string; text: unknown; under?: unknown }> => {
+      const textOf = new Map(output.blocks.map((block) => [block.id, block.data.text]));
+
+      return output.blocks.map((block) => ({
+        type: block.type,
+        text: block.data.text,
+        ...(block.parent !== undefined && { under: textOf.get(block.parent) }),
+      }));
+    };
+
+    test('arrive as a stub that keeps the rest of the paste, and come back whole', async ({ page }) => {
+      const errors: string[] = [];
+
+      page.on('pageerror', (error) => errors.push(error.message));
+
+      await createBlok(page, { data: { blocks: doc } });
+      const source = await saveBlok(page);
+      const fromDefault = await copyAllBlocks(page, 'Before toggle');
+
+      await createParagraphOnlyBlok(page);
+      await paste(page, getParagraphByIndex(page, 0), fromDefault);
+
+      // This editor does not know the toggle's rich fields, so the stub keeps the copied HTML.
+      const saveWithStub = async (): Promise<OutputData> => savedAsHtml(
+        await page.evaluate(async () => await window.blokInstance?.save()),
+        { allowHtml: true }
+      ) ?? { blocks: [] };
+
+      await expect.poll(async () => tree(await saveWithStub())).toEqual(tree(source));
+      await expect(page.locator('[data-blok-stub]')).toHaveCount(1);
+
+      const fromParagraphOnly = await copyAllBlocks(page, 'Before toggle');
+
+      await createBlok(page);
+      await paste(page, getParagraphByIndex(page, 0), fromParagraphOnly);
+
+      await expect.poll(async () => tree(await saveBlok(page))).toEqual(tree(source));
+      await expect(page.locator('[data-blok-stub]')).toHaveCount(0);
+      expect(errors).toEqual([]);
+    });
+  });
+
   test.describe('cutting', () => {
     test('should cut inline fragment', async ({ page }) => {
       await createBlok(page);
@@ -833,7 +3384,8 @@ test.describe('copy and paste', () => {
 
       const clipboardData = await cutFromElement(paragraph);
 
-      expect(clipboardData).toStrictEqual({});
+      expect(clipboardData).toStrictEqual({ 'text/plain': 'Some text', 'text/html': 'Some text' });
+      await expect(paragraph).toHaveText('');
     });
 
     test('should cut several blocks', async ({ page }) => {
@@ -1123,6 +3675,307 @@ test.describe('copy and paste', () => {
       const boldCount = await paragraph.evaluate((element) => element.querySelectorAll('strong, b').length);
 
       expect(boldCount).toBe(1);
+    });
+  });
+
+  test.describe('copying in read-only mode', () => {
+    const doc: OutputData['blocks'] = [
+      { id: 'h', type: 'header', data: { text: 'RO heading', level: 2 } },
+      { id: 'p', type: 'paragraph', data: { text: 'RO <b>bold</b> para' } },
+      { id: 'l1', type: 'list', data: { text: 'RO item', style: 'unordered', depth: 0 } },
+      { id: 't', type: 'toggle', data: { text: 'RO toggle', isOpen: true }, content: ['tc'] },
+      { id: 'tc', type: 'paragraph', data: { text: 'RO child' }, parent: 't' },
+      { id: 'last', type: 'paragraph', data: { text: 'RO-END' } },
+    ];
+
+    const blokBlocksOf = (clipboard: Record<string, string>): Array<{ id?: string; tool: string }> => {
+      return JSON.parse(clipboard['application/x-blok'] ?? '[]') as Array<{ id?: string; tool: string }>;
+    };
+
+    /** Select from the start of one block's text to the end of another's, as a mouse drag would. */
+    const selectTextAcross = async (page: Page, fromId: string, toId: string): Promise<void> => {
+      await page.evaluate(({ from, to }) => {
+        const textNodesOf = (id: string): Node[] => {
+          const holder = document.querySelector(`[data-blok-id="${id}"]`);
+          const walker = document.createTreeWalker(holder as Node, NodeFilter.SHOW_TEXT, {
+            acceptNode: (n) => ((n.textContent ?? '').trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT),
+          });
+          const nodes: Node[] = [];
+
+          for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            nodes.push(n);
+          }
+
+          return nodes;
+        };
+        const start = textNodesOf(from)[0];
+        const endNodes = textNodesOf(to);
+        const end = endNodes[endNodes.length - 1];
+        const range = document.createRange();
+
+        range.setStart(start, 0);
+        range.setEnd(end, (end.textContent ?? '').length);
+        window.getSelection()?.removeAllRanges();
+        window.getSelection()?.addRange(range);
+        document.dispatchEvent(new Event('selectionchange'));
+      }, { from: fromId, to: toId });
+    };
+
+    test('a text selection across blocks copies those blocks losslessly', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc }, readOnly: true });
+      await selectTextAcross(page, 'h', 'last');
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="h"]'));
+
+      expect(blokBlocksOf(clipboard).map((block) => block.tool)).toEqual(['header', 'paragraph', 'list', 'toggle', 'paragraph', 'paragraph']);
+      expect(clipboard['text/plain']).toMatch(/RO-END/);
+    });
+
+    /** Select from the start of `fromText` in one block to the end of `toText` in another. */
+    const selectTextBetween = async (page: Page, from: { id: string; text: string }, to: { id: string; text: string }): Promise<void> => {
+      await page.evaluate(({ start, end }) => {
+        const pointOf = (id: string, text: string, atEnd: boolean): [Node, number] => {
+          const holder = document.querySelector(`[data-blok-id="${id}"]`) as Node;
+          const walker = document.createTreeWalker(holder, NodeFilter.SHOW_TEXT);
+
+          for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+            const at = (n.textContent ?? '').indexOf(text);
+
+            if (at !== -1) {
+              return [n, atEnd ? at + text.length : at];
+            }
+          }
+          throw new Error(`no "${text}" in ${id}`);
+        };
+        const range = document.createRange();
+
+        range.setStart(...pointOf(start.id, start.text, false));
+        range.setEnd(...pointOf(end.id, end.text, true));
+        window.getSelection()?.removeAllRanges();
+        window.getSelection()?.addRange(range);
+        document.dispatchEvent(new Event('selectionchange'));
+      }, { start: from, end: to });
+    };
+
+    type Entry = { id: string; tool: string; data: Record<string, unknown>; parentId?: string | null; contentIds?: string[] };
+    const entriesOf = (clipboard: Record<string, string>): Entry[] => JSON.parse(clipboard['application/x-blok'] ?? '[]') as Entry[];
+
+    test('the first and last blocks keep only their selected text, with their type', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc }, readOnly: true });
+      await selectTextBetween(page, { id: 'h', text: 'heading' }, { id: 'last', text: 'RO-' });
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="h"]'));
+      const entries = entriesOf(clipboard);
+
+      expect(entries.map((entry) => [entry.tool, entry.data.text])).toEqual([
+        ['header', 'heading'],
+        ['paragraph', 'RO <strong>bold</strong> para'],
+        ['list', 'RO item'],
+        ['toggle', 'RO toggle'],
+        ['paragraph', 'RO child'],
+        ['paragraph', 'RO-'],
+      ]);
+      expect(entries[0].data.level).toBe(2);
+      expect(clipboard['text/html']).toMatch(/<h2[^>]*>heading<\/h2>/);
+      expect(clipboard['text/html']).not.toMatch(/RO heading|RO-END/);
+      expect(clipboard['text/plain']).toMatch(/^## heading\n/);
+      expect(clipboard['text/plain']).not.toMatch(/RO heading|RO-END/);
+    });
+
+    test('a partly selected block keeps the marks of its selected text', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc }, readOnly: true });
+      await selectTextBetween(page, { id: 'p', text: 'ld' }, { id: 'l1', text: 'RO it' });
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="p"]'));
+      const entries = entriesOf(clipboard);
+
+      expect(entries.map((entry) => [entry.tool, entry.data.text])).toEqual([
+        ['paragraph', '<strong>ld</strong> para'],
+        ['list', 'RO it'],
+      ]);
+      expect(entries[1].data.style).toBe('unordered');
+      expect(clipboard['text/html']).toMatch(/<strong>ld<\/strong> para/);
+      expect(clipboard['text/html']).toMatch(/<ul[^>]*>[\s\S]*RO it[\s\S]*<\/ul>/);
+      expect(clipboard['text/html']).not.toMatch(/bold|item/);
+      expect(clipboard['text/plain']).not.toMatch(/bold|item/);
+    });
+
+    test('a selection that ends in a toggle title leaves its children out', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc }, readOnly: true });
+      await selectTextBetween(page, { id: 'p', text: 'para' }, { id: 't', text: 'RO tog' });
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="p"]'));
+      const entries = entriesOf(clipboard);
+
+      expect(entries.map((entry) => [entry.tool, entry.data.text])).toEqual([
+        ['paragraph', 'para'],
+        ['list', 'RO item'],
+        ['toggle', 'RO tog'],
+      ]);
+      expect(entries[2].contentIds).toEqual([]);
+      for (const flavor of ['text/html', 'text/plain', 'application/x-blok']) {
+        expect(clipboard[flavor], flavor).not.toMatch(/RO child|RO toggle|bold/);
+      }
+    });
+
+    test('a selection that starts in a toggle child leaves the toggle title out', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc }, readOnly: true });
+      await selectTextBetween(page, { id: 'tc', text: 'child' }, { id: 'last', text: 'RO' });
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="tc"]'));
+
+      expect(entriesOf(clipboard).map((entry) => [entry.id, entry.data.text])).toEqual([
+        ['tc', 'child'],
+        ['last', 'RO'],
+      ]);
+      for (const flavor of ['text/html', 'text/plain']) {
+        expect(clipboard[flavor], flavor).not.toMatch(/RO toggle|RO child|RO-END/);
+      }
+
+      await createBlok(page, { data: { blocks: [{ id: 'tgt', type: 'paragraph', data: { text: '' } }] } });
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), clipboard);
+
+      await expect.poll(async () => (await saveBlok(page)).blocks.map((block) => [block.type, block.data.text, block.parent ?? null]))
+        .toEqual([
+          ['paragraph', 'child', null],
+          ['paragraph', 'RO', null],
+        ]);
+    });
+
+    test('a partly selected code block keeps only the selected code', async ({ page }) => {
+      await createBlok(page, { data: { blocks: [
+        { id: 'c', type: 'code', data: { code: 'const a = 1 < 2;\nskip()', language: 'javascript' } },
+        { id: 'e', type: 'paragraph', data: { text: 'after' } },
+      ] }, readOnly: true });
+      // The highlighter rewrites the code once it is ready, which would drop an earlier selection.
+      await expect(page.locator('[data-blok-id="c"] code span').first()).toBeAttached();
+      await selectTextBetween(page, { id: 'c', text: 'skip' }, { id: 'e', text: 'af' });
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="c"]'));
+
+      expect(entriesOf(clipboard).map((entry) => [entry.tool, entry.data.code ?? entry.data.text])).toEqual([
+        ['code', 'skip()'],
+        ['paragraph', 'af'],
+      ]);
+      for (const flavor of ['text/html', 'text/plain']) {
+        expect(clipboard[flavor], flavor).not.toMatch(/const|1 < 2|after/);
+      }
+    });
+
+    test('a partly selected table copies only the selected cell text', async ({ page }) => {
+      await createBlok(page, { data: { blocks: [
+        { id: 'b', type: 'paragraph', data: { text: 'before' } },
+        { id: 'tbl', type: 'table', data: { withHeadings: false, content: [['cell one', 'cell two'], ['cell three', 'cell four']] } },
+      ] }, readOnly: true });
+      await selectTextBetween(page, { id: 'b', text: 'fore' }, { id: 'tbl', text: 'cell one' });
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="b"]'));
+
+      for (const flavor of ['text/html', 'text/plain', 'application/x-blok']) {
+        expect(clipboard[flavor], flavor).toMatch(/cell one/);
+        expect(clipboard[flavor], flavor).not.toMatch(/before|cell two|cell three|cell four/);
+      }
+    });
+
+    test('the copied blocks paste back with their types', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc }, readOnly: true });
+      await selectTextAcross(page, 'h', 'last');
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="h"]'));
+
+      await createBlok(page, { data: { blocks: [{ id: 'tgt', type: 'paragraph', data: { text: '' } }] } });
+      await page.locator('[data-blok-id="tgt"] [contenteditable="true"]').click();
+      await paste(page, page.locator(':focus'), clipboard);
+
+      await expect.poll(async () => (await saveBlok(page)).blocks.map((block) => [block.type, block.parent ?? null]))
+        .toEqual([
+          ['header', null],
+          ['paragraph', null],
+          ['list', null],
+          ['toggle', null],
+          ['paragraph', expect.any(String)],
+          ['paragraph', null],
+        ]);
+    });
+
+    test('a text selection inside one block is left to the browser', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc }, readOnly: true });
+      await selectTextAcross(page, 'p', 'p');
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="p"]'));
+
+      expect(clipboard).toEqual({});
+    });
+
+    test('Cmd+A after clicking a block selects every block and copy carries them', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc }, readOnly: true });
+      await page.getByText('RO-END', { exact: true }).click();
+      await page.keyboard.press(`${await getCommandModifierKey(page)}+A`);
+
+      await expect(page.locator('[data-blok-id="last"][data-blok-selected="true"]')).toBeVisible();
+      await expect(page.locator('[data-blok-id="h"][data-blok-selected="true"]')).toBeVisible();
+
+      const clipboard = await copyFromElement(page.locator('[data-blok-id="h"]'));
+
+      expect(blokBlocksOf(clipboard).map((block) => block.id)).toEqual(['h', 'p', 'l1', 't', 'tc', 'last']);
+    });
+
+    test('blocks selected by Cmd+A stay read-only', async ({ page, browserName }) => {
+      await createBlok(page, { data: { blocks: doc }, readOnly: true });
+      // Read-only refuses save(). The toolbar mounts inside a holder, so read only the content.
+      const rendered = async (): Promise<string[]> => page.locator('[data-blok-id]').evaluateAll((holders) => {
+        return holders.map((holder) => `${holder.getAttribute('data-blok-id') ?? ''}:${holder.querySelector(':scope > [data-blok-element-content]')?.textContent ?? ''}`);
+      });
+      const before = await rendered();
+      const modifier = await getCommandModifierKey(page);
+      const selectAll = async (): Promise<void> => {
+        await page.getByText('RO-END', { exact: true }).click();
+        await page.keyboard.press(`${modifier}+A`);
+        await expect(page.locator('[data-blok-id="h"][data-blok-selected="true"]')).toBeVisible();
+      };
+
+      // WebKit treats Backspace on a page with no focused field as history back.
+      const keys = browserName === 'webkit' ? ['Delete', 'x', 'Enter', `${modifier}+X`] : ['Backspace', 'Delete', 'x', 'Enter', `${modifier}+X`];
+
+      for (const key of keys) {
+        await selectAll();
+        await page.keyboard.press(key);
+      }
+      await selectAll();
+      await cutFromElement(page.locator('[data-blok-id="h"]'));
+
+      expect(await rendered()).toEqual(before);
+    });
+
+    test('a click after Cmd+A clears the block selection', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc }, readOnly: true });
+      await page.getByText('RO-END', { exact: true }).click();
+      await page.keyboard.press(`${await getCommandModifierKey(page)}+A`);
+      await expect(page.locator('[data-blok-id="h"][data-blok-selected="true"]')).toBeVisible();
+
+      await page.getByText('RO heading', { exact: true }).click();
+
+      await expect(page.locator('[data-blok-selected="true"]')).toHaveCount(0);
+    });
+
+    test('Cmd+A in a text field outside the editor is not taken over', async ({ page }) => {
+      await createBlok(page, { data: { blocks: doc }, readOnly: true });
+      await page.getByText('RO-END', { exact: true }).click();
+      await page.evaluate(() => {
+        const input = document.createElement('input');
+
+        input.setAttribute('aria-label', 'outside field');
+        input.value = 'outside';
+        document.body.appendChild(input);
+      });
+      const outside = page.getByRole('textbox', { name: 'outside field' });
+
+      await outside.focus();
+      await page.keyboard.press(`${await getCommandModifierKey(page)}+A`);
+
+      await expect(page.locator('[data-blok-selected="true"]')).toHaveCount(0);
+      await outside.evaluate((element) => element.remove());
     });
   });
 
@@ -1518,6 +4371,8 @@ declare global {
   interface Window {
     blokInstance?: Blok;
     Blok: new (...args: unknown[]) => Blok;
+    BlokOriginal: new (...args: unknown[]) => Blok;
+    BlokParagraph: unknown;
     blockToolPasteEvents?: Array<{ defaultPrevented: boolean }>;
     __lastPastedFile?: { name: string; type: string; size: number } | null;
     __maliciousPasteExecuted?: boolean;

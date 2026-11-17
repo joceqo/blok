@@ -183,6 +183,20 @@ test.describe('code block chrome', () => {
     expect(text[2] - text[1]).toBeGreaterThan((text[1] - text[0]) * 1.5);
   });
 
+  test('keeps the header controls and filename slot shown while the language picker is open', async ({ page }) => {
+    await createBlok(page, [{ type: 'code', data: { code: 'x', language: 'latex' } }], 600);
+
+    await page.getByTestId('code-language-btn').click();
+    await expect(page.getByTestId('code-language-btn')).toHaveAttribute('aria-expanded', 'true');
+
+    // The picker lives on <body>: with the pointer and focus out of the block, only its open state can reveal them.
+    await page.mouse.move(1, 1);
+    await expect.poll(() => page.evaluate(() => document.activeElement?.closest('[data-blok-tool="code"]') ?? null)).toBeNull();
+
+    await expect.poll(() => page.getByTestId('code-controls').evaluate((element) => getComputedStyle(element).opacity)).toBe('1');
+    await expect(page.getByTestId('code-filename-slot')).toBeVisible();
+  });
+
   test('leaves no empty strip under the code of a block without a preview', async ({ page }) => {
     await createBlok(page, [{ type: 'code', data: { code: 'const a = 1;', language: 'javascript' } }], 600);
 
@@ -234,4 +248,89 @@ test.describe('code block chrome', () => {
     await page.getByTestId('code-content').hover();
     await expect(page.getByTestId('code-copy-label')).toBeVisible();
   });
+  test('sits the tab on the card: its open bottom covers the card border at the start corner', async ({ page }) => {
+    await createBlok(page, [{ type: 'code', data: { code: 'x', language: 'javascript', filename: 'a.js' } }], 600);
+
+    const tab = await page.getByTestId('code-tab').boundingBox();
+    const card = await page.getByTestId('code-card').boundingBox();
+
+    if (!tab || !card) {
+      throw new Error('tab or card not rendered');
+    }
+
+    expect(Math.round((tab.y + tab.height - card.y) * 10) / 10).toBe(1);
+    expect(Math.abs(tab.x - card.x)).toBeLessThan(0.5);
+
+    const onBorder = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-blok-testid="code-tab"]') !== null, { x: tab.x + tab.width / 2, y: card.y + 0.5 });
+
+    expect(onBorder).toBe(true);
+    await expect(page.getByTestId('code-card')).toHaveCSS('border-top-left-radius', '0px');
+  });
+
+  test('an empty filename takes no room in the tab until the block is hovered', async ({ page }) => {
+    await createBlok(page, [{ type: 'code', data: { code: 'x', language: 'javascript' } }], 600);
+    await page.mouse.move(0, 0);
+
+    const slot = page.getByTestId('code-filename-slot');
+    const restWidth = (await page.getByTestId('code-tab').boundingBox())?.width ?? 0;
+
+    await expect(slot).toBeHidden();
+
+    await page.getByTestId('code-card').hover();
+    await expect(slot).toBeVisible();
+
+    const hoverWidth = (await page.getByTestId('code-tab').boundingBox())?.width ?? 0;
+
+    expect(hoverWidth).toBeGreaterThan(restWidth);
+  });
+
+  test('the breadcrumb names the block around the caret and hides at the top level', async ({ page }) => {
+    await createBlok(page, [{ type: 'code', data: { code: 'function fib(n) {\n  return n;\n}\nfib(1);', language: 'javascript' } }], 600);
+
+    const crumb = page.getByTestId('code-breadcrumb');
+
+    await page.getByTestId('code-content').click({ position: { x: 4, y: 4 } });
+    await expect(crumb).toHaveText('fib()');
+
+    await page.keyboard.press('ArrowDown');
+    await expect(crumb).toHaveText('fib()');
+
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await expect(crumb).toBeHidden();
+  });
+
+  for (const filename of ['', 'src/app.js']) {
+    test(`clicking the filename ${filename === '' ? 'placeholder' : 'label'} edits it in place, with no jump`, async ({ page }) => {
+      await createBlok(page, [{ type: 'code', data: { code: 'x', language: 'javascript', ...(filename ? { filename } : {}) } }], 600);
+
+      await page.getByTestId('code-card').hover();
+
+      const label = page.getByTestId('code-filename');
+      const look = (selector: string): Promise<{ x: number; width: number; height: number; font: string }> =>
+        page.locator(selector).evaluate((el) => {
+          const box = el.getBoundingClientRect();
+          const style = getComputedStyle(el);
+
+          return { x: box.x, width: box.width, height: box.height, font: style.fontFamily };
+        });
+
+      await label.hover();
+
+      const atRest = await look('[data-blok-testid="code-filename"]');
+
+      await label.click();
+
+      const input = page.getByTestId('code-filename-input');
+
+      await expect(input).toBeFocused();
+
+      const editing = await look('[data-blok-testid="code-filename-input"]');
+
+      expect(editing.font).toBe(atRest.font);
+      expect(Math.abs(editing.x - atRest.x)).toBeLessThan(1);
+      expect(Math.abs(editing.height - atRest.height)).toBeLessThan(1);
+      expect(Math.abs(editing.width - atRest.width)).toBeLessThan(2);
+    });
+  }
 });

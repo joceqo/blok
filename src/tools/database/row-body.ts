@@ -10,6 +10,22 @@ export interface BodyBlock {
   data: unknown;
 }
 
+/** A legacy rich text body as plain text, one line per block. */
+export const bodyText = (value: PropertyValue | undefined): string => {
+  const blocks: unknown = isOutputData(value) ? value.blocks : undefined;
+
+  if (!Array.isArray(blocks)) return '';
+
+  return blocks
+    .map((block: BodyBlock) => {
+      const text = (block.data as { text?: unknown } | undefined)?.text;
+
+      return typeof text === 'string' ? htmlToPlainText(text).trim() : '';
+    })
+    .filter((line) => line !== '')
+    .join('\n');
+};
+
 const hasBody = (value: PropertyValue | undefined): value is OutputData =>
   isOutputData(value) && value.blocks.length > 0;
 
@@ -26,8 +42,9 @@ export const rowDescription = (
   const designatedValue = descriptionPropertyId === undefined ? undefined : row.properties[descriptionPropertyId];
 
   // An explicit empty body must not revive an older body column.
+  // The cell editor saves plain text here: that is no block body.
   if (designatedValue !== undefined) {
-    return designatedValue === null ? undefined : designatedValue as OutputData;
+    return isOutputData(designatedValue) ? designatedValue : undefined;
   }
 
   // Peers can create duplicate body columns with the same name.
@@ -47,7 +64,7 @@ export const rowDescription = (
     }
   }
 
-  return descriptionPropertyId === undefined ? undefined : row.properties[descriptionPropertyId] as OutputData | undefined;
+  return undefined;
 };
 
 const field = (data: unknown, key: string): unknown =>

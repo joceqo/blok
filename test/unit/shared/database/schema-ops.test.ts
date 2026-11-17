@@ -29,6 +29,8 @@ const KEYS: Record<keyof typeof DATABASE_DEFAULT_TEXT, string> = {
   viewTypeFeed: 'tools.database.viewTypeFeed',
   viewTypeForm: 'tools.database.viewTypeForm',
   viewTypeMap: 'tools.database.viewTypeMap',
+  viewTypeDashboard: 'tools.database.viewTypeDashboard',
+  viewTypeNumber: 'tools.database.chartTypeNumber',
   viewMapSeed: 'toolNames.mapView',
   placeProperty: 'tools.database.propertyTypePlace',
   viewBoardSeed: 'toolNames.board',
@@ -85,6 +87,33 @@ describe('shared database building blocks', () => {
 
     expect(schema).toEqual(model.getSchema());
     expect([createDefaultView('board', schema, mint)]).toEqual(model.getViews());
+  });
+});
+
+// notion-motion.md Round 32 §3 (Settings → Layout): a new Notion table starts with "Wrap all content" on.
+describe('a new table view', () => {
+  const schema = [{ id: 't', name: 'Name', type: 'title' as const, position: 'a0' }];
+
+  it('starts with wrap on', () => {
+    expect(newView({ id: 'v', name: 'Table', type: 'table', position: 'a0' }, schema).wrapCells).toBe(true);
+    expect(createDefaultView('table', schema, (name) => name).wrapCells).toBe(true);
+  });
+
+  it('keeps the wrap it is given', () => {
+    expect(newView({ id: 'v', name: 'Table', type: 'table', position: 'a0', wrapCells: false }, schema).wrapCells).toBe(false);
+  });
+
+  it('stores no wrap on a new board, list or gallery', () => {
+    for (const type of ['board', 'list', 'gallery'] as const) {
+      expect(newView({ id: 'v', name: 'V', type, position: 'a0' }, schema)).not.toHaveProperty('wrapCells');
+    }
+  });
+
+  it('leaves a saved table with no wrap unwrapped when the model loads it', () => {
+    const saved = { id: 'v', name: 'Table', type: 'table' as const, position: 'a0', sorts: [], filters: [], visibleProperties: [] };
+    const model = new DatabaseModel({ schema, views: [saved], activeViewId: 'v' });
+
+    expect(model.getView('v')).not.toHaveProperty('wrapCells');
   });
 });
 

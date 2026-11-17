@@ -1,4 +1,7 @@
 import { getCaretXPosition, isCaretAtLastLine } from '../../utils/caret';
+import { historyKeyOf } from '../../utils/history-keys';
+import { BLOK_MIME_TYPE } from '../paste/constants';
+import { blokClipboardText } from '../paste/blok-clipboard-text';
 
 export interface TitleKeyboardHost {
   isReadOnly(): boolean;
@@ -19,13 +22,14 @@ export const bindTitleKeyboard = (title: HTMLElement, host: TitleKeyboardHost): 
   const onKeydown = (event: KeyboardEvent): void => {
     const letter = event.key.toLowerCase();
     const mod = event.metaKey || event.ctrlKey;
-    const redo = (mod && event.shiftKey && letter === 'z') || (event.ctrlKey && !event.shiftKey && letter === 'y');
+    const history = historyKeyOf(event, letter);
 
-    if (redo || (mod && !event.shiftKey && letter === 'z')) {
+    if (history !== null) {
+      // A blocked key is cancelled too: the browser's own undo would rewind the title behind Yjs.
       event.preventDefault();
-      if (redo) {
+      if (history === 'redo') {
         host.redo();
-      } else {
+      } else if (history === 'undo') {
         host.undo();
       }
 
@@ -73,7 +77,9 @@ export const bindTitleKeyboard = (title: HTMLElement, host: TitleKeyboardHost): 
     if (range === undefined || !title.contains(range.commonAncestorContainer) || host.isReadOnly()) {
       return;
     }
-    const text = document.createTextNode((event.clipboardData?.getData('text/plain') ?? '').replace(/\s*\n\s*/g, ' '));
+    const blok = event.clipboardData?.getData(BLOK_MIME_TYPE) ?? '';
+    const pasted = (blok === '' ? null : blokClipboardText(blok)) ?? event.clipboardData?.getData('text/plain') ?? '';
+    const text = document.createTextNode(pasted.replace(/\s*\n\s*/g, ' '));
 
     range.deleteContents();
     range.insertNode(text);

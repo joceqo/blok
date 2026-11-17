@@ -5,7 +5,6 @@ import { Module } from '../../__module';
 import { Dom as $ } from '../../dom';
 import { keyCodes } from '../../utils';
 import { isInlineEmojiEnabled } from '../../utils/emoji/inline-emoji-config';
-import { YjsManager } from '../yjs';
 
 import { BlockSelectionKeys } from './composers/blockSelectionKeys';
 import { EmojiTrigger } from './composers/emojiTrigger';
@@ -15,6 +14,28 @@ import { NavigationMode } from './composers/navigationMode';
 import { PageReferenceTrigger } from './composers/pageReferenceTrigger';
 import { horizontalArrowIntent, isPrintableKeyEvent, isInsideKeyboardOwner, keyCodeFromEvent } from './utils/keyboard';
 import { isTextLikeBlock } from './utils/text-like-block';
+import { restoreDeletedBoundarySpace } from '../../utils/delete-boundary-nbsp';
+
+/**
+ * The text of `fragment`'s last line. A <br> is a line break, which
+ * Range.toString() drops.
+ * @param fragment - the content before the caret
+ */
+const textOnCaretLine = (fragment: DocumentFragment): string => {
+  const breaks = fragment.querySelectorAll('br');
+  const lastBreak = breaks.item(breaks.length - 1);
+
+  if (lastBreak === null) {
+    return fragment.textContent ?? '';
+  }
+
+  const line = document.createRange();
+
+  line.setStartAfter(lastBreak);
+  line.setEnd(fragment, fragment.childNodes.length);
+
+  return line.toString();
+};
 
 /**
  * All keydowns on Block
@@ -272,6 +293,8 @@ export class BlockEvents extends Module {
       this.Blok.Caret.resetGoalColumn();
     }
 
+    this.keyboardNavigation.handleShiftLineBoundary(event);
+
     /**
      * We check for "key" here since on different keyboard layouts "/" can be typed as "Shift + 7" etc
      * @todo probably using "beforeInput" event would be better here
@@ -346,14 +369,16 @@ export class BlockEvents extends Module {
       this.Blok.BlockManager.setCurrentBlockByChildNode(event.target);
     }
 
+    // Before the triggers below read the text.
+    if (event.target instanceof HTMLElement) {
+      restoreDeletedBoundarySpace(event, event.target);
+    }
+
     /**
      * Typing starts a fresh vertical-navigation column: the next ArrowUp/Down
      * should aim at the caret's new X, not a stale goal column from earlier.
      */
     this.Blok.Caret.resetGoalColumn();
-
-    // Handle smart grouping for undo
-    this.handleSmartGrouping(event);
 
     /**
      * Markdown shortcuts first: a markdown conversion rewrites the block, and
@@ -433,37 +458,6 @@ export class BlockEvents extends Module {
     }
 
     this.Blok.BlockSelection.clearSelection(event);
-  }
-
-  /**
-   * Handle smart grouping logic for undo based on boundary characters.
-   * Boundary characters (space, punctuation) followed by a pause create undo checkpoints.
-   * @param event - input event
-   */
-  private handleSmartGrouping(event: InputEvent): void {
-    const { YjsManager: yjsManager } = this.Blok;
-
-    // Only handle text input
-    if (event.inputType !== 'insertText' || event.data === null) {
-      return;
-    }
-
-    const char = event.data;
-
-    // A boundary that timed out was closed on beforeinput (keyboard controller).
-
-    // Access static method via constructor
-    if (YjsManager.isBoundaryCharacter(char)) {
-      // Mark boundary - will create checkpoint if followed by pause
-      yjsManager.markBoundary();
-
-      return;
-    }
-
-    if (yjsManager.hasPendingBoundary()) {
-      // Non-boundary character typed quickly after boundary - clear pending state
-      yjsManager.clearBoundary();
-    }
   }
 
   /**
@@ -557,13 +551,19 @@ export class BlockEvents extends Module {
       return;
     }
 
+    // Notion U060, U173: "/" right after a letter is plain text.
+    if (this.isCaretRightAfterLetter()) {
+      return;
+    }
+
     /**
      * @todo Handle case when slash pressed when several blocks are selected
      */
 
     /**
-     * Notion parity: "/" opens the toolbox regardless of caret position or
-     * block emptiness. On an empty (or slash-only) block the chosen tool
+     * Notion parity: "/" opens the toolbox in empty and non-empty blocks,
+     * unless it comes right after a letter (see above). On an empty (or
+     * slash-only) block the chosen tool
      * replaces the block in place; on a non-empty block it inserts a NEW block
      * after the current one and strips the typed "/query" (handled by the
      * Toolbox). Both flows just need the "/" inserted at the caret and the
@@ -589,6 +589,33 @@ export class BlockEvents extends Module {
     this.Blok.Toolbar.discardPlusContext();
 
     this.activateToolbox();
+  }
+
+  /**
+   * Whether the text just before the caret, in an editable inside this editor, ends with a letter.
+   */
+  private isCaretRightAfterLetter(): boolean {
+    const selection = window.getSelection();
+
+    if (selection === null || selection.rangeCount === 0) {
+      return false;
+    }
+
+    const range = selection.getRangeAt(0);
+    const node = range.startContainer;
+    const element = node instanceof Element ? node : node.parentElement;
+    const input = element?.closest('[contenteditable="true"]');
+
+    if (!input || !this.Blok.UI.nodes.wrapper.contains(input)) {
+      return false;
+    }
+
+    const before = document.createRange();
+
+    before.selectNodeContents(input);
+    before.setEnd(node, range.startOffset);
+
+    return /\p{L}$/u.test(textOnCaretLine(before.cloneContents()));
   }
 
   /**

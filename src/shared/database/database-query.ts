@@ -10,15 +10,15 @@ import type {
   SortConfig,
 } from './types';
 import { parseDateValue } from './date-value';
-import { filesOf, MIXED_FORMULA, orderedStatusOptions, personIdsOf, readPropertyValue, statusGroupsOf } from './value-helpers';
+import { filesOf, isNumberListRollup, MIXED_FORMULA, orderedStatusOptions, personIdsOf, readPropertyValue, statusGroupsOf } from './value-helpers';
 import { RELATIVE_DATE_OPERATORS, relativeWindow, resolveDay } from './relative-dates';
 import { scopeSubItems } from './sub-items';
 import { isEmptyObjectValue, isOutputData, placeText } from './tier3-values';
 import { comparePositions } from './positions';
-import { ME_FILTER_VALUE, THIS_PAGE_FILTER_VALUE } from './new-row-values';
+import { END_DATE_SIDE, ME_FILTER_VALUE, THIS_PAGE_FILTER_VALUE } from './new-row-values';
 import { rowOrderKey } from './row-order';
 
-export { ME_FILTER_VALUE, newRowValues, prefillFilters, THIS_PAGE_FILTER_VALUE } from './new-row-values';
+export { END_DATE_SIDE, ME_FILTER_VALUE, newRowValues, prefillFilters, THIS_PAGE_FILTER_VALUE } from './new-row-values';
 
 export { MIXED_FORMULA };
 
@@ -51,7 +51,7 @@ export const FILTER_OPERATORS: Readonly<Record<PropertyType, readonly string[]>>
   date: DATE_OPERATORS,
   createdTime: DATE_OPERATORS,
   lastEditedTime: DATE_OPERATORS,
-  uniqueId: COMPARE_OPERATORS,
+  uniqueId: NUMBER_OPERATORS,
   relation: LIST_OPERATORS,
   // Formula and rollup filter as their result type; the model queries with
   // that property (ComputedProperties.valueProperty), never with these.
@@ -251,34 +251,41 @@ const matchCheckbox = (value: PropertyValue | undefined, operator: string, targe
   return undefined;
 };
 
-/** A range matches when any of its days does; a single day is a range of one. */
-const matchDate = (value: PropertyValue | undefined, operator: string, target: PropertyValue, now: Date): boolean | undefined => {
+/** A range's first day (Notion's Start date); a single day is its own start. */
+const startDayOf = (value: PropertyValue | undefined): string | null => parseDateValue(value)?.start ?? null;
+
+/** A range's last day; a single day is its own end. What Notion's End date reads on a single day is unmeasured. */
+const endDayOf = (value: PropertyValue | undefined): string | null => {
   const parsed = parseDateValue(value);
 
-  if (operator === 'is_empty') return parsed === null;
-  if (operator === 'is_not_empty') return parsed !== null;
+  return parsed === null ? null : parsed.end ?? parsed.start;
+};
+
+/** Compares one day. A range is read by one side first: its start (Start date) or its end (End date). */
+const matchDate = (value: string | null, operator: string, target: PropertyValue, now: Date): boolean | undefined => {
+  if (operator === 'is_empty') return value === null;
+  if (operator === 'is_not_empty') return value !== null;
 
   const range = relativeWindow(operator, target, now);
   const t = range === undefined ? resolveDay(target, now) : undefined;
 
   if (range === undefined && t === undefined) return undefined;
-  if (parsed === null) return false;
+  if (value === null) return false;
 
-  const first = parsed.start.slice(0, 10);
-  const last = (parsed.end ?? parsed.start).slice(0, 10);
+  const day = value.slice(0, 10);
 
   if (range !== undefined) {
-    return first <= range.to && last >= range.from;
+    return range.from <= day && day <= range.to;
   }
   if (t === undefined) return undefined;
 
   switch (operator) {
-    case 'equals': return first <= t && t <= last;
-    case 'does_not_equal': return !(first <= t && t <= last);
-    case 'before': return first < t;
-    case 'after': return last > t;
-    case 'on_or_before': return first <= t;
-    case 'on_or_after': return last >= t;
+    case 'equals': return day === t;
+    case 'does_not_equal': return day !== t;
+    case 'before': return day < t;
+    case 'after': return day > t;
+    case 'on_or_before': return day <= t;
+    case 'on_or_after': return day >= t;
     default: return undefined;
   }
 };
@@ -326,7 +333,7 @@ const MATCHERS: Record<PropertyType, Matcher> = {
   lastEditedBy: matchMultiSelect,
   files: matchFiles,
   checkbox: matchCheckbox,
-  date: (value, operator, target, _property, now) => matchDate(value, operator, target, now),
+  date: (value, operator, target, _property, now) => matchDate(startDayOf(value), operator, target, now),
   createdTime: (value, operator, target, _property, now) => matchTimestamp(value, operator, target, now),
   lastEditedTime: (value, operator, target, _property, now) => matchTimestamp(value, operator, target, now),
   relation: matchMultiSelect,
@@ -379,6 +386,43 @@ const matchQuantified = (value: PropertyValue | undefined, operator: string, tar
 };
 
 
+/** `any:contains`: a quantifier over a Name rollup's titles, then a text operator (notion-motion.md Round 13). */
+const QUANTIFIED_TEXT = /^(any|none|every):(.+)$/;
+
+/**
+ * Each title is matched as text. Every on an empty list is false, as for the
+ * id quantifiers; Notion's answer there is unmeasured.
+ */
+const matchQuantifiedText = (value: PropertyValue | undefined, quantifier: string, operator: string, target: PropertyValue): boolean | undefined => {
+  if (!(TEXT_OPERATORS as readonly string[]).includes(operator)) return undefined;
+  if (operator !== 'is_empty' && operator !== 'is_not_empty' && (typeof target !== 'string' || target === '')) return undefined;
+  const titles = value === undefined || value === null || (Array.isArray(value) && value.length === 0) ? [] : pageTitles(value);
+
+  if (titles === undefined) return undefined;
+  const hits = titles.map((title) => matchText(title, operator, target) === true);
+
+  if (quantifier === 'any') return hits.some(Boolean);
+  if (quantifier === 'none') return !hits.some(Boolean);
+
+  return hits.length > 0 && hits.every(Boolean);
+};
+
+/**
+ * `any:equals` on a Number Show original rollup (notion-motion.md Round 22 §3): each number of its
+ * ", "-joined value is matched as a Number. Every on an empty list is false, as for the titles.
+ */
+const matchQuantifiedNumber = (value: PropertyValue | undefined, quantifier: string, operator: string, target: PropertyValue): boolean | undefined => {
+  if (!(NUMBER_OPERATORS as readonly string[]).includes(operator)) return undefined;
+  if (operator !== 'is_empty' && operator !== 'is_not_empty' && toNumber(target) === undefined) return undefined;
+  const items = typeof value === 'string' ? value.split(', ').filter((item) => item.trim() !== '') : [];
+  const hits = items.map((item) => matchNumber(item, operator, target) === true);
+
+  if (quantifier === 'any') return hits.some(Boolean);
+  if (quantifier === 'none') return !hits.some(Boolean);
+
+  return hits.length > 0 && hits.every(Boolean);
+};
+
 const PERSON_TYPES: readonly PropertyType[] = ['person', 'createdBy', 'lastEditedBy'];
 
 /** Stands in for "Me" when nobody is signed in: no person has this id. */
@@ -429,6 +473,11 @@ export const matchCondition = (
 
   if (property !== undefined && isRollupList(property)) {
     const value = readPropertyValue(row, property);
+    const quantified = QUANTIFIED_TEXT.exec(condition.operator);
+
+    if (quantified !== null) {
+      return property.type === 'relation' ? matchQuantifiedText(value, quantified[1], quantified[2], condition.value) : undefined;
+    }
 
     // A text filter from when a Name rollup read as text matches that text.
     if (property.type === 'relation' && TEXT_ONLY.includes(condition.operator)) {
@@ -439,9 +488,19 @@ export const matchCondition = (
       ? matchQuantified(value, condition.operator, condition.value)
       : undefined;
   }
+  const quantifiedNumber = property !== undefined && isNumberListRollup(property) ? QUANTIFIED_TEXT.exec(condition.operator) : null;
+
+  if (property !== undefined && quantifiedNumber !== null) {
+    return matchQuantifiedNumber(readPropertyValue(row, property), quantifiedNumber[1], quantifiedNumber[2], condition.value);
+  }
   // "This page" is a relation tab's only filter: with its property gone or no longer a relation it
   // must show no row, not every row.
   if (property?.type !== 'relation' && toIdList(condition.value).includes(THIS_PAGE_FILTER_VALUE)) return false;
+  if (property?.type === 'date' && condition.operator.startsWith(END_DATE_SIDE)) {
+    const operator = condition.operator.slice(END_DATE_SIDE.length);
+
+    return FILTER_OPERATORS.date.includes(operator) ? matchDate(endDayOf(readPropertyValue(row, property)), operator, condition.value, now) : undefined;
+  }
   // A type from a newer client has no entry here: let the row through.
   if (property === undefined || !(FILTER_OPERATORS[property.type]?.includes(condition.operator) ?? false)) return undefined;
   const target = property.type === 'relation' ? resolveThisPage(condition.value, page) : condition.value;

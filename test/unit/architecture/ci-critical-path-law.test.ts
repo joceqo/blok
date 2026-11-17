@@ -158,9 +158,10 @@ const e2eMatrix: MatrixEntry[] = [
   { project: 'webkit', browser: 'webkit', shard: '1/2' },
   { project: 'webkit', browser: 'webkit', shard: '2/2' },
   { project: 'chromium-logic', browser: 'chromium', shard: '1/1' },
-  { project: 'chromium-default', browser: 'chromium', shard: '1/3' },
-  { project: 'chromium-default', browser: 'chromium', shard: '2/3' },
-  { project: 'chromium-default', browser: 'chromium', shard: '3/3' },
+  { project: 'chromium-default', browser: 'chromium', shard: '1/4' },
+  { project: 'chromium-default', browser: 'chromium', shard: '2/4' },
+  { project: 'chromium-default', browser: 'chromium', shard: '3/4' },
+  { project: 'chromium-default', browser: 'chromium', shard: '4/4' },
   { project: 'chromium-undo', browser: 'chromium', shard: '1/2' },
   { project: 'chromium-undo', browser: 'chromium', shard: '2/2' },
 ];
@@ -443,14 +444,17 @@ describe('CI critical-path law', () => {
     expect(mcp.strategy?.['fail-fast']).toBe(false);
     expect(mcp.strategy?.matrix?.include).toEqual([
       { part: 'node', target: 'node', suites: '' },
-      { part: 'go 1/2', target: 'go', suites: '--suite live' },
-      { part: 'go 2/2', target: 'go', suites: '--suite protocol --suite tool-args --suite corpus --suite files-source --suite endpoint-source --suite cli --suite http --suite approvals --suite tickets --suite pages --suite handles --suite shutdown --suite timeouts' },
-      { part: 'rust 1/2', target: 'rust', suites: '--suite live' },
-      { part: 'rust 2/2', target: 'rust', suites: '--suite protocol --suite tool-args --suite corpus --suite files-source --suite endpoint-source --suite cli --suite http --suite approvals --suite tickets --suite pages --suite handles --suite shutdown --suite timeouts' },
-      { part: 'csharp 1/4', target: 'csharp', suites: '--suite live' },
-      { part: 'csharp 2/4', target: 'csharp', suites: '--suite corpus --suite tool-args --suite handles --suite pages' },
-      { part: 'csharp 3/4', target: 'csharp', suites: '--suite protocol --suite tickets --suite approvals --suite http' },
-      { part: 'csharp 4/4', target: 'csharp', suites: '--suite shutdown --suite cli --suite timeouts --suite files-source --suite endpoint-source' },
+      { part: 'go 1/3', target: 'go', suites: '--suite live' },
+      { part: 'go 2/3', target: 'go', suites: '--suite embed' },
+      { part: 'go 3/3', target: 'go', suites: '--suite protocol --suite tool-args --suite corpus --suite files-source --suite endpoint-source --suite cli --suite http --suite approvals --suite tickets --suite pages --suite handles --suite handles-shared --suite shutdown --suite timeouts' },
+      { part: 'rust 1/3', target: 'rust', suites: '--suite live' },
+      { part: 'rust 2/3', target: 'rust', suites: '--suite embed' },
+      { part: 'rust 3/3', target: 'rust', suites: '--suite protocol --suite tool-args --suite corpus --suite files-source --suite endpoint-source --suite cli --suite http --suite approvals --suite tickets --suite pages --suite handles --suite handles-shared --suite shutdown --suite timeouts' },
+      { part: 'csharp 1/5', target: 'csharp', suites: '--suite live' },
+      { part: 'csharp 2/5', target: 'csharp', suites: '--suite corpus --suite tool-args --suite handles --suite pages' },
+      { part: 'csharp 3/5', target: 'csharp', suites: '--suite protocol --suite tickets --suite approvals --suite http' },
+      { part: 'csharp 4/5', target: 'csharp', suites: '--suite embed --suite handles-shared' },
+      { part: 'csharp 5/5', target: 'csharp', suites: '--suite shutdown --suite cli --suite timeouts --suite files-source --suite endpoint-source' },
     ]);
     expectOrderedSteps('ci.mcp-conformance', mcp, [
       checkout,
@@ -489,10 +493,17 @@ describe('CI critical-path law', () => {
       },
       {
         name: 'Test packed MCP NuGets',
-        if: "matrix.part == 'csharp 3/4'",
+        if: "matrix.part == 'csharp 3/5'",
         run: 'node scripts/test-server-packages.mjs --packages mcp',
       },
     ]);
+    // A step gated on a part name that no longer exists is skipped without a word.
+    const parts = (mcp.strategy?.matrix?.include ?? []).map((entry) => (entry as Record<string, unknown>).part);
+    for (const step of mcp.steps ?? []) {
+      for (const [, part] of String(step.if ?? '').matchAll(/matrix\.part == '([^']+)'/g)) {
+        expect(parts, step.name).toContain(part);
+      }
+    }
   });
 
   // The Go gates ride in Server Security, so they take no extra job slot under
@@ -1067,7 +1078,9 @@ describe('Playwright OS-deps apt cache law', () => {
     const firstAptInstall = stepIndex(
       (step) =>
         step.run !== undefined &&
-        (step.run.includes('install-deps') || step.run.includes('--with-deps')),
+        (step.run.includes('install-deps') ||
+          step.run.includes('--with-deps') ||
+          step.run.includes('install-os-deps.sh')),
     );
 
     expect(restore).toBeGreaterThanOrEqual(0);
@@ -1090,6 +1103,25 @@ describe('Playwright OS-deps apt cache law', () => {
     expect(restore['restore-keys']).toBe(
       '${{ steps.apt-key.outputs.prefix }}\n${{ steps.apt-key.outputs.base }}\n',
     );
+  });
+
+  // install-deps always runs apt-get update, which waits about 20s per index
+  // when the mirror's DNS fails. The script skips update when it can.
+  it('installs OS deps through the no-update fast path, never install-deps or --with-deps', () => {
+    const osDeps = browserAction.runs.steps.find(
+      (step) => step.name === 'Install Browser OS Dependencies',
+    );
+    const browsers = browserAction.runs.steps.find(
+      (step) => step.name === 'Install Playwright Browsers',
+    );
+
+    expect(osDeps?.run).toBe(
+      'bash "${{ github.action_path }}/install-os-deps.sh" ${{ inputs.browsers }}',
+    );
+    expect(osDeps?.if).toBe("inputs.os-deps == 'true'");
+    expect(browsers?.run).toBe('npx playwright install ${{ inputs.browsers }}');
+    // An HTTP timeout does not bound a DNS failure.
+    expect(browserAction.runs.steps.some((step) => step.id === 'apt-timeouts')).toBe(false);
   });
 
   it('saves the cache only from the warming job, only after the warm step proved it', () => {

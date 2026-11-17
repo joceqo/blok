@@ -30,15 +30,17 @@ export function renderEmptyState(opts: EmptyStateOptions): EmptyStateElement {
     onUrl: opts.onUrl,
     labels: {
       add: i18n.t('tools.file.emptyAddFile'),
-      upload: i18n.t('tools.file.emptyUpload'),
+      hint: i18n.t('tools.file.emptyHint'),
+      hintUpload: i18n.t('tools.file.emptyHintUpload'),
+      hintLink: i18n.t('tools.image.emptyHintLink'),
+      dropAnywhere: i18n.t('tools.image.emptyDropAnywhere'),
+      cancelLink: i18n.t('notifier.cancel'),
       embed: i18n.t('tools.file.emptyLink'),
       chooseFile: i18n.t('tools.file.emptyChooseFile'),
-      orDropHere: i18n.t('tools.file.emptyDropHint'),
       dropToUpload: i18n.t('tools.file.emptyDropToUpload'),
       urlPlaceholder: i18n.t('tools.file.emptyUrlPlaceholder'),
       urlAria: i18n.t('tools.file.emptyUrlAria'),
       submit: i18n.t('tools.file.emptyInsert'),
-      sourceAria: i18n.t('tools.file.emptySourceAria'),
     },
   });
 }

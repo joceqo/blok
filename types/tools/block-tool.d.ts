@@ -45,6 +45,16 @@ export interface ChildToolRestrictions {
  * Describe Block Tool object
  * @see {@link docs/tools.md}
  */
+/** A button a block puts in the page header's row over the title, after "Add icon" and "Add cover". */
+export interface PageHeaderAction {
+  /** Stable name; the button carries it as `data-blok-page-header-action`. */
+  name: string;
+  label: string;
+  /** Trusted SVG markup from the tool's own code. */
+  icon?: string;
+  onActivate(): void;
+}
+
 export interface BlockTool extends BaseTool {
   /**
    * Sanitizer rules description
@@ -161,6 +171,13 @@ export interface BlockTool extends BaseTool {
    * fallback when read-only mode is toggled.
    */
   setReadOnly?(state: boolean): void;
+
+  /**
+   * Buttons for the page header's row over the title. Asked only of the
+   * page's first block, when `pageTitle` is on, each time the pointer or
+   * focus enters the header. Return [] for none.
+   */
+  pageHeaderActions?(): PageHeaderAction[];
 
   /**
    * True when this block and every block under it must act read-only while
@@ -369,6 +386,20 @@ export interface BlockToolConstructable extends BaseToolConstructable {
   copyAsLink?(data: BlockToolData, config: ToolConfig): { url: string; text: string } | null;
 
   /**
+   * The html a copy of this Tool's block writes to the clipboard for other
+   * apps, and for a paste where only text/html survives. Without it, core
+   * copies the rendered block, with every button and label in it.
+   *
+   * Return '' to write nothing, or null to copy the rendered block. Core
+   * cleans the html with the copy sanitizer, so only text tags, links,
+   * images, lists and tables survive. A `copyAsLink` link wins over it.
+   *
+   * @param data - the block's saved data
+   * @param config - the Tool's config
+   */
+  clipboardHtml?(data: BlockToolData, config: ToolConfig): string | null;
+
+  /**
    * The data Duplicate and Alt-drag insert for this Tool's block, instead of
    * a copy or the `copyAsLink` link. Return null to fall back. Copy and
    * paste never call it.
@@ -419,8 +450,10 @@ export interface BlockToolConstructable extends BaseToolConstructable {
    * before the Tool's own items, like Notion's page menu.
    * `trash` reads Delete as "Move to Trash", for a block that stands for
    * something the host keeps, like a page.
+   * `lead` names the Tool's own items (by `name`) that come before Turn into
+   * in a titled menu.
    */
-  blockMenu?: { titled?: boolean; trash?: boolean };
+  blockMenu?: { titled?: boolean; trash?: boolean; lead?: string[] };
 
   /**
    * Set to true when Enter on this container's empty LAST child must create the

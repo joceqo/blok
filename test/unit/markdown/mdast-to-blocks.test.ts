@@ -257,6 +257,56 @@ describe('mdastToBlocks', () => {
     });
   });
 
+  describe('table cell image', () => {
+    const tableOf = (cell: unknown[]): Root => ({
+      type: 'root',
+      children: [{
+        type: 'table',
+        align: [null],
+        children: [
+          { type: 'tableRow', children: [{ type: 'tableCell', children: [{ type: 'text', value: 'H' }] }] },
+          { type: 'tableRow', children: [{ type: 'tableCell', children: cell }] },
+        ],
+      }],
+    } as Root);
+
+    const cellBlocks = (tree: Root): Array<{ type: string; data: unknown; parent: unknown }> => {
+      const blocks = mdastToBlocks(tree);
+      const table = blocks.find(b => b.type === 'table');
+      const ids = (table?.data as { content: { blocks: string[] }[][] }).content[1][0].blocks;
+
+      return ids.map((id) => {
+        const block = blocks.find(b => b.id === id);
+
+        return { type: block?.type ?? '', data: block?.data, parent: block?.parent === table?.id };
+      });
+    };
+
+    it('turns a cell holding only an image into an image block', () => {
+      expect(cellBlocks(tableOf([{ type: 'image', url: 'https://example.com/a.png', title: null, alt: '' }]))).toEqual([
+        { type: 'image', data: { url: 'https://example.com/a.png' }, parent: true },
+      ]);
+    });
+
+    it('splits a cell with text and an image into paragraph, image, paragraph', () => {
+      expect(cellBlocks(tableOf([
+        { type: 'text', value: 'a ' },
+        { type: 'image', url: 'https://example.com/a.png', title: null, alt: 'cap' },
+        { type: 'text', value: ' b' },
+      ]))).toEqual([
+        { type: 'paragraph', data: { text: 'a ' }, parent: true },
+        { type: 'image', data: { url: 'https://example.com/a.png', alt: 'cap' }, parent: true },
+        { type: 'paragraph', data: { text: ' b' }, parent: true },
+      ]);
+    });
+
+    it('keeps an image with an unsafe URL out of an image block', () => {
+      const blocks = cellBlocks(tableOf([{ type: 'image', url: 'javascript:alert(1)', title: null, alt: '' }]));
+
+      expect(blocks.map(b => b.type)).toEqual(['paragraph']);
+    });
+  });
+
   describe('code block', () => {
     it('converts fenced code blocks to code tool blocks', () => {
       const tree: Root = {
@@ -342,10 +392,10 @@ describe('mdastToBlocks', () => {
 
       expect(blocks).toHaveLength(1);
       expect(blocks[0].type).toBe('image');
-      expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', caption: 'pic', alt: 'pic' });
+      expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', alt: 'pic' });
     });
 
-    it('stores the alt text verbatim — the caption field is plain text, not HTML', () => {
+    it('stores the alt text verbatim — the alt field is plain text, not HTML', () => {
       const tree: Root = {
         type: 'root',
         children: [{ type: 'paragraph', children: [{ type: 'image', url: 'https://img.com/pic.png', title: null, alt: 'a & b <c>' }] }],
@@ -353,10 +403,10 @@ describe('mdastToBlocks', () => {
 
       const blocks = mdastToBlocks(tree);
 
-      expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', caption: 'a & b <c>', alt: 'a & b <c>' });
+      expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', alt: 'a & b <c>' });
     });
 
-    it('omits caption and alt for an image with no alt text', () => {
+    it('omits alt for an image with no alt text', () => {
       const tree: Root = {
         type: 'root',
         children: [{ type: 'paragraph', children: [{ type: 'image', url: 'https://img.com/pic.png', title: null, alt: '' }] }],
@@ -436,7 +486,7 @@ describe('mdastToBlocks', () => {
 
       expect(blocks).toHaveLength(1);
       expect(blocks[0].type).toBe('image');
-      expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', caption: 'pic', alt: 'pic' });
+      expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', alt: 'pic' });
     });
 
     it('keeps a paragraph for a standalone imageReference with no definition', () => {
@@ -612,7 +662,7 @@ describe('mdastToBlocks', () => {
   });
 
   describe('list item with nested block content', () => {
-    it('emits a fenced code block nested in a list item as a sibling code block', () => {
+    it('hangs a fenced code block in a list item under the item', () => {
       const tree: Root = {
         type: 'root',
         children: [{
@@ -632,11 +682,13 @@ describe('mdastToBlocks', () => {
 
       const blocks = mdastToBlocks(tree);
 
+      expect(blocks[1].parent).toBe(blocks[0].id);
+      expect(blocks[0].content).toEqual([blocks[1].id]);
       expect(blocks.map(b => b.type)).toEqual(['list', 'code']);
       expect(blocks[1].data).toMatchObject({ code: 'npm i thing', language: 'bash' });
     });
 
-    it('emits a second paragraph in a list item as a sibling paragraph', () => {
+    it('hangs a second paragraph in a list item under the item', () => {
       const tree: Root = {
         type: 'root',
         children: [{
@@ -656,12 +708,14 @@ describe('mdastToBlocks', () => {
 
       const blocks = mdastToBlocks(tree);
 
+      expect(blocks[1].parent).toBe(blocks[0].id);
+      expect(blocks[0].content).toEqual([blocks[1].id]);
       expect(blocks.map(b => b.type)).toEqual(['list', 'paragraph']);
       expect(blocks[0].data.text).toBe('First');
       expect(blocks[1].data.text).toBe('Second');
     });
 
-    it('emits a blockquote nested in a list item as a sibling quote block', () => {
+    it('hangs a blockquote in a list item under the item', () => {
       const tree: Root = {
         type: 'root',
         children: [{
@@ -684,6 +738,8 @@ describe('mdastToBlocks', () => {
 
       const blocks = mdastToBlocks(tree);
 
+      expect(blocks[1].parent).toBe(blocks[0].id);
+      expect(blocks[0].content).toEqual([blocks[1].id]);
       expect(blocks.map(b => b.type)).toEqual(['list', 'quote']);
       expect(blocks[1].data.text).toBe('Careful');
     });

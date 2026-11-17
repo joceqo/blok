@@ -26,6 +26,8 @@ type ManagerOptions struct {
 	// Operations nil means no journal: v1 only, no history.
 	Operations OperationStore
 	Activity   ActivityObserver
+	// Notes nil keeps no record notes: history answers carry no actor kinds.
+	Notes RecordNotes
 }
 
 type cooldown struct {
@@ -44,6 +46,8 @@ type Manager struct {
 	log        func(string)
 	operations OperationStore
 	activity   ActivityObserver
+	notes      RecordNotes
+	signals    *signalHub
 
 	mu         sync.Mutex
 	rooms      map[string]*Room
@@ -57,7 +61,7 @@ type Manager struct {
 
 // NewManager builds the manager; nothing is loaded until a doc is used.
 func NewManager(o ManagerOptions) *Manager {
-	return &Manager{
+	m := &Manager{
 		store:      o.Store,
 		endpoint:   o.Endpoint,
 		converter:  o.Converter,
@@ -65,10 +69,13 @@ func NewManager(o ManagerOptions) *Manager {
 		log:        o.Log,
 		operations: o.Operations,
 		activity:   o.Activity,
+		notes:      o.Notes,
 		rooms:      map[string]*Room{},
 		purgeLanes: map[string]*lane{},
 		cooldowns:  map[string]cooldown{},
 	}
+	m.signals = newSignalHub(o.Activity, m)
+	return m
 }
 
 // OnDocumentReplaced registers a DocumentReplaced listener: it fires on a
@@ -107,6 +114,9 @@ func (m *Manager) logfOrError(message string) (err error) {
 
 // RetryAfter is how long an overloaded request should wait.
 func (m *Manager) RetryAfter() time.Duration { return m.options.RetryBackoff }
+
+// Now is the room clock: what a history window counts back from.
+func (m *Manager) Now() time.Time { return m.options.Now() }
 
 // HasJournal: an operation store is registered.
 func (m *Manager) HasJournal() bool { return m.operations != nil }
@@ -187,14 +197,15 @@ func (m *Manager) Edit(ctx context.Context, docID string, ops []convert.EditOp, 
 	}
 	return m.editInRoom(docID, func(r *Room) (*EditResult, error) {
 		return r.edit(ctx, func(context.Context, *yjs.Doc) ([]convert.EditOp, error) { return ops, nil },
-			false, operationID, digest, actorID, expect, nil)
+			false, operationID, digest, actorID, expect, nil, nil)
 	})
 }
 
 // AgentEdit is AgentEditAsync: a batch planned against the live doc inside
 // the lane, after the duplicate and precondition checks, gated to one frame.
+// note, when not nil, is the record note in place of one read from actorID.
 func (m *Manager) AgentEdit(ctx context.Context, docID string, plan PlanOps, operationID string, digest []byte,
-	actorID string, expect *Precondition, applied Applied) (EditResult, error) {
+	actorID string, expect *Precondition, applied Applied, note *RecordNote) (EditResult, error) {
 	if err := checkEditIDs(docID, operationID); err != nil {
 		return EditResult{}, err
 	}
@@ -202,7 +213,7 @@ func (m *Manager) AgentEdit(ctx context.Context, docID string, plan PlanOps, ope
 		return EditResult{Status: EditPreconditionRequired}, nil
 	}
 	return m.editInRoom(docID, func(r *Room) (*EditResult, error) {
-		return r.edit(ctx, plan, true, operationID, digest, actorID, expect, applied)
+		return r.edit(ctx, plan, true, operationID, digest, actorID, expect, applied, note)
 	})
 }
 
@@ -398,6 +409,8 @@ func (m *Manager) Purge(ctx context.Context, docID string, authorize func(contex
 	if err := m.store.Delete(ctx, docID); err != nil {
 		return 0, err
 	}
+	m.signals.forget(docID)
+	m.signals.event(AuditEvent{Type: AuditDocumentPurged, DocID: docID, At: m.options.Now()})
 	return journal.Purged, nil
 }
 
@@ -450,6 +463,7 @@ func (m *Manager) Settle() {
 	for _, r := range m.liveRooms() {
 		r.settle()
 	}
+	m.signals.settle()
 }
 
 func (m *Manager) liveRooms() []*Room {

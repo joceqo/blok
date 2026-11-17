@@ -20,7 +20,8 @@ import type { YjsManager } from '../yjs';
 import type { BlockChangeEvent, BlockReplayCapture, TransactionOrigin } from '../yjs/types';
 
 import type { BlockFactory } from './factory';
-import { isSelfPlacedParent } from './new-block-placement';
+import { findOwn } from '../../utils/own-element';
+import { hideUnderCollapsedParent, isSelfPlacedParent } from './new-block-placement';
 import { adjustCaretOffset, captureCaretAcrossRewrite } from './remote-edit-caret';
 import type { BlockOperations } from './operations';
 import type { BlockRepository } from './repository';
@@ -93,6 +94,8 @@ export interface SyncHandlers {
   placeBlock: (block: Block, placement: TreePlacement) => void;
   /** Called to replace a block at a specific index with a new block instance */
   replaceBlock: (index: number, newBlock: Block) => void;
+  /** Re-apply depth and indent to a block and its descendants, without moving them */
+  reindentSubtree?: (block: Block) => void;
   /** Called when a block is removed during undo/redo (before DOM removal) */
   onBlockRemoved: (block: Block, index: number, replaySource?: 'history' | 'remote') => void;
   /** Called when a block is added during undo/redo (after insertion) */
@@ -111,7 +114,7 @@ export interface SyncHandlers {
    * gate. Used to replay a mutation that was suppressed as a reconciler echo
    * but turned out to be the user's — see `noteSuppressedMutation`.
    */
-  resyncBlockData: (block: Block, options?: { untracked?: boolean }) => void;
+  resyncBlockData: (block: Block, options?: { untracked?: boolean; heldUserEdit?: boolean }) => void;
 }
 
 /**
@@ -527,6 +530,26 @@ export class BlockYjsSync {
   }
 
   /**
+   * Write now, as user edits, the mutations held because the user typed into a
+   * block inside an open window. The drain writes them only when the window
+   * closes, so two keys in one window became one step. The record stays: the
+   * drain's replay diffs to nothing once this write has landed.
+   */
+  public landHeldUserEdits(): void {
+    if (this.destroyed || this.activeOperationDepth > 0) {
+      return;
+    }
+
+    this.suppressedMutations.forEach((blockId) => {
+      const block = this.repository.getBlockById(blockId);
+
+      if (block !== undefined) {
+        this.handlers.resyncBlockData(block, { heldUserEdit: true });
+      }
+    });
+  }
+
+  /**
    * Re-save every block whose suppressed mutation has left ALL open windows.
    *
    * Driven by `isReconciling`, never by the id the closing window carried.
@@ -734,7 +757,7 @@ export class BlockYjsSync {
    * Close one block's settling window.
    *
    * When the last one closes, capture is stopped: that is the SEAL. Y.UndoManager
-   * merges anything that lands within its 500ms captureTimeout into the newest
+   * merges anything that lands within its captureTimeout into the newest
    * entry, and the measured gap between the last hydration write and the user's
    * first keystroke was 11ms — so without the boundary one Ctrl+Z reverted the
    * user's word AND the editor's materialisation together. The boundary makes
@@ -1398,6 +1421,10 @@ export class BlockYjsSync {
             replaySource: replaySourceOf(origin),
           });
         });
+        // The undo history set its caret in the old block before the await.
+        if (replaySource === 'history') {
+          this.dependencies.YjsManager.reapplyCaretAfterRebuild(blockId);
+        }
       }
     }, { extendThroughRAF: true, blockId });
   }
@@ -1554,9 +1581,15 @@ export class BlockYjsSync {
     });
 
     const oldHolder = target.holder;
+    // A closed toggle hid its children with a class the new tool knows nothing about.
+    const hidByClosedToggle = record.tool !== target.name && findOwn(oldHolder, '[data-blok-toggle-open="false"]') !== null;
 
     this.handlers.replaceBlock(blockIndex, newBlock);
     this.remountDescendantsLeftIn(oldHolder, target.id);
+
+    if (hidByClosedToggle) {
+      this.reshowChildren(newBlock);
+    }
     this.announceReplay(
       newBlock,
       record.data,
@@ -1570,6 +1603,25 @@ export class BlockYjsSync {
     if (this.reconcileOrphanedChildren(target.id)) {
       newBlock.call(BlockToolAPI.RENDERED);
     }
+
+    // A new tool brings a fresh holder with no depth, and may mount the
+    // children in its own slot after they were indented for the old one.
+    if (record.tool !== target.name) {
+      this.handlers.reindentSubtree?.(newBlock);
+    }
+  }
+
+  /**
+   * Show a rebuilt block's children again, then hide them only if the new
+   * block is collapsed too.
+   * @param parent - the rebuilt block
+   */
+  private reshowChildren(parent: Block): void {
+    const getBlock = (id: string): Block | undefined => this.repository.getBlockById(id);
+    const children = parent.contentIds.map(getBlock).filter((child): child is Block => child !== undefined);
+
+    children.forEach((child) => child.holder.classList.remove('hidden'));
+    children.forEach((child) => hideUnderCollapsedParent(child, getBlock));
   }
 
   /**

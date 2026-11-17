@@ -10,7 +10,7 @@ export interface RadiusToken {
 }
 
 export const RADIUS_PRIMITIVES: RadiusToken[] = [
-  '0', '2', '4', '6', '8', '10', '12', '16', 'full',
+  '0', '2', '4', '6', '8', '10', '12', '16', '20', 'full',
 ].map((step) => ({ token: `--blok-radius-${step}` }));
 
 type Specimen = 'dialog' | 'popover' | 'callout' | 'field' | 'button' | 'mark' | 'pill' | 'caret' | 'floor' | 'table';
@@ -25,11 +25,16 @@ export const RADIUS_ROLES: RadiusRole[] = [
   { token: '--blok-radius-dialog', specimen: 'dialog' },
   { token: '--blok-radius-surface', specimen: 'popover' },
   { token: '--blok-radius-block', specimen: 'callout' },
+  { token: '--blok-radius-player', specimen: 'callout' },
+  { token: '--blok-radius-glass', specimen: 'popover' },
+  { token: '--blok-radius-glass-row', specimen: 'button', height: 36 },
   { token: '--blok-radius-field', specimen: 'field' },
   { token: '--blok-radius-control-lg', specimen: 'button', height: 36 },
   { token: '--blok-radius-control', specimen: 'button', height: 28 },
   { token: '--blok-radius-control-sm', specimen: 'button', height: 20 },
   { token: '--blok-radius-mark', specimen: 'mark' },
+  { token: '--blok-radius-checkbox', specimen: 'button', height: 16 },
+  { token: '--blok-radius-selection-bar', specimen: 'button', height: 32 },
   { token: '--blok-radius-pill', specimen: 'pill' },
   { token: '--blok-radius-notch', specimen: 'caret' },
   { token: '--blok-radius-table', specimen: 'table' },

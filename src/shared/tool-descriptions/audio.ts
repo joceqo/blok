@@ -14,12 +14,14 @@ export const AUDIO_DATA = {
     artist: { type: 'string' },
     coverUrl: { type: 'string' },
     loop: { type: 'boolean' },
+    compact: { type: 'boolean', description: 'Hide the ridgeline drawing and show a smaller player.' },
     width: { type: 'number', minimum: 10, maximum: 100 },
     alignment: { type: 'string', enum: ALIGNMENT },
     fileName: { type: 'string' },
     mimeType: { type: 'string' },
     duration: { type: 'number', description: 'Seconds.' },
     peaks: { type: 'array', items: { type: 'number' }, description: 'Precomputed waveform samples.' },
+    motion: { type: 'string', description: 'Precomputed cover animation data, base64. Opaque: copy it, never write it.' },
   },
 };
 

@@ -93,13 +93,6 @@ function button(root: HTMLElement, native: string): HTMLButtonElement {
   return btn;
 }
 
-/** Text of the latest tooltip binding for `el`. */
-function lastTooltip(el: HTMLElement): unknown {
-  const calls = mockOnHover.mock.calls.filter(call => call[0] === el);
-
-  return calls.at(-1)?.[1];
-}
-
 describe('EmojiPicker progressive locale', () => {
   let container: HTMLElement;
   let anchor: HTMLElement;
@@ -135,7 +128,7 @@ describe('EmojiPicker progressive locale', () => {
     return picker;
   }
 
-  it('shows the grid before the locale file lands, then localizes labels and tooltips', async () => {
+  it('shows the grid before the locale file lands, then localizes labels and the stage', async () => {
     const locale = deferred<EmojiLocaleData | null>();
 
     mockLoadEmojiLocale.mockReturnValue(locale.promise);
@@ -157,7 +150,8 @@ describe('EmojiPicker progressive locale', () => {
     const bulb = button(root, '💡');
 
     expect(bulb.getAttribute('aria-label')).toBe('лампочка');
-    expect(lastTooltip(bulb)).toBe('лампочка');
+    bulb.dispatchEvent(new Event('pointerover', { bubbles: true }));
+    expect(root.querySelector('[data-emoji-picker-stage-name]')?.textContent).toBe('Лампочка');
     expect(button(root, '✅').getAttribute('aria-label')).toBe('check mark');
   });
 
@@ -200,7 +194,8 @@ describe('EmojiPicker progressive locale', () => {
     const bulb = button(picker.getElement(), '💡');
 
     expect(bulb.getAttribute('aria-label')).toBe('light bulb');
-    expect(lastTooltip(bulb)).toBe('light bulb');
+    bulb.dispatchEvent(new Event('pointerover', { bubbles: true }));
+    expect(picker.getElement().querySelector('[data-emoji-picker-stage-name]')?.textContent).toBe('Light bulb');
   });
 
   it('does not load a locale for English', async () => {
@@ -293,5 +288,36 @@ describe('EmojiPicker progressive locale', () => {
 
     expect(button(root, '💡')).toBe(highlighted);
     expect(highlighted.getAttribute('aria-label')).toBe('лампочка');
+  });
+
+  it('inline mode names an emoji in its hint like a title, and keeps the lowercase label', async () => {
+    const picker = await createPicker('en', true);
+
+    await picker.open(anchor);
+    await flush();
+
+    const bulb = button(picker.getElement(), '💡');
+
+    expect(mockOnHover).toHaveBeenCalledWith(bulb, 'Light bulb', { placement: 'bottom' });
+    expect(mockOnHover).not.toHaveBeenCalledWith(bulb, 'light bulb', { placement: 'bottom' });
+    expect(bulb.getAttribute('aria-label')).toBe('light bulb');
+  });
+
+  it('inline mode renames the hint like a title once the locale lands', async () => {
+    const locale = deferred<EmojiLocaleData | null>();
+
+    mockLoadEmojiLocale.mockReturnValue(locale.promise);
+
+    const picker = await createPicker('ru', true);
+
+    void picker.open(anchor);
+    await flush();
+
+    const bulb = button(picker.getElement(), '💡');
+
+    locale.resolve(RU);
+    await flush();
+
+    expect(mockOnHover).toHaveBeenCalledWith(bulb, 'Лампочка', { placement: 'bottom' });
   });
 });

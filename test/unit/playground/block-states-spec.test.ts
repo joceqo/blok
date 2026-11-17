@@ -199,6 +199,24 @@ describe('playground block states spec (index.html)', () => {
       expect(html).toContain('[data-blok-id="au-drive-error"] [data-blok-tool="audio"]');
       expect(html).toContain('renderAudioErrorState({');
     });
+
+    test('mounts the error card\'s element, not the handle that carries it', () => {
+      expect(html).toMatch(/audioDriveErrRoot\.replaceChildren\(renderAudioErrorState\(\{[\s\S]*?\}\)\.element\);/);
+    });
+
+    test('the Google Drive error demo gives the card a title and a detail', () => {
+      expect(html).toMatch(/renderAudioErrorState\(\{\s*title: 'Google Drive audio can’t play here',\s*detail: 'Download the file and upload it here instead\.',/);
+    });
+
+    test('the Google Drive error demo passes no badge: the card has none', () => {
+      expect(html).not.toContain("badge: 'Needle skipped'");
+    });
+
+    test('the "Too large" state is a live tool whose limit the demo file is over', () => {
+      expect(sectionFor('audio')).toMatch(
+        /label: 'Too large', demoPick: 'mp3', toolConfig: \{ audio: \{ maxSize: 50 \* 1024 \} \}, blocks: \[\{ id: 'au-too-large', type: 'audio'/
+      );
+    });
   });
 
   describe('restricted-source empty states are live tools', () => {
@@ -328,11 +346,11 @@ describe('playground block states spec (index.html)', () => {
   });
 
   describe('flattenStates', () => {
-    const loadFlatten = (): ((tool: string, label: string, states: unknown[]) => { wide?: boolean; segments: Array<Record<string, unknown>> }) => {
-      const start = html.indexOf('const WIDE_STATE_TOOLS');
+    const loadFlatten = (): ((tool: string, label: string, states: unknown[]) => { segments: Array<Record<string, unknown>> }) => {
+      const start = html.indexOf('function flattenStates');
       const end = html.indexOf('const BLOCK_STATES_RAW');
 
-      expect(start, 'WIDE_STATE_TOOLS precedes flattenStates').toBeGreaterThan(-1);
+      expect(start, 'flattenStates precedes BLOCK_STATES_RAW').toBeGreaterThan(-1);
 
       return runInNewContext(`${html.slice(start, end)}; flattenStates`) as ReturnType<typeof loadFlatten>;
     };
@@ -347,13 +365,8 @@ describe('playground block states spec (index.html)', () => {
       expect(result.segments.map((s) => s.label)).toEqual([ 'Empty', 'Wide' ]);
       expect(result.segments.map((s) => (s.blocks as Array<{ id: string }>).map((b) => b.id))).toEqual([ [ 'a' ], [ 'b' ] ]);
       expect(result.segments[1].width).toBe(320);
-      expect(result.wide).toBe(false);
     });
 
-    test.each([ 'table', 'column_list', 'tabs', 'database', 'code', 'image', 'video', 'embed' ])('lays %s states across the whole row', (tool) => {
-      expect(loadFlatten()('paragraph', 'p', []).wide).toBe(false);
-      expect(loadFlatten()(tool, tool, []).wide).toBe(true);
-    });
   });
 
   describe('callout entry', () => {
@@ -395,7 +408,7 @@ describe('block states gallery covers every state a block can show', () => {
     ['table_of_contents', [ 'Colored text', 'Deep outline' ]],
     ['image', [ 'Uploading', 'Too large', 'Right aligned', 'Size preset', 'Border frame', 'Shadow frame', 'Square corners', 'Caption hidden', 'Circle crop', 'Rotated', 'Filter', 'Markup', 'Read-only' ]],
     ['video', [ 'Uploading', 'Failed to load', 'Right aligned', 'No controls', 'Read-only', 'Read-only failed' ]],
-    ['audio', [ 'Uploading', 'Upload failed', 'With caption', 'Untitled · no waveform', 'Read-only' ]],
+    ['audio', [ 'Uploading', 'Upload failed', 'Too large', 'With caption', 'Compact', 'Untitled · no waveform', 'Read-only' ]],
     ['file', [ 'Upload failed', 'Too large', 'Image' ]],
     ['bookmark', [ 'Failed cover', 'Long text (clamped)' ]],
     ['embed', [ 'Right aligned', 'Caption (empty)', 'Google Docs (fixed height)', 'TikTok (fixed width)', 'Telegram (script)', 'Threads (script)', 'Read-only' ]],
@@ -497,6 +510,18 @@ describe('block states gallery covers every state a block can show', () => {
 
   test('the file uploading demo draws the file preview, like the real upload path', () => {
     expect(mountCode).toMatch(/renderFileUploadingState\(\{[\s\S]*?preview: 'file'/);
+  });
+});
+
+describe('block states layout', () => {
+  test('every tool stacks its states one under another', () => {
+    const html = readFileSync(resolve(__dirname, '../../../index.html'), 'utf-8');
+    const start = html.indexOf('    .block-states-grid {');
+    const rule = html.slice(start, html.indexOf('}', start));
+
+    expect(rule).toContain('grid-template-columns: minmax(0, 1fr)');
+    expect(html).not.toContain('data-wide');
+    expect(html).not.toContain('WIDE_STATE_TOOLS');
   });
 });
 

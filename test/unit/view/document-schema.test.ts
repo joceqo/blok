@@ -183,13 +183,15 @@ const savedData: Record<string, Record<string, unknown>> = {
     automations: { version: 1 as const, definitions: [] },
     source: { databaseId: 'db-source' },
     hideDataSourceTitles: true,
+    description: 'Sprint <b>goals</b>',
     icon: { glyph: 'check', color: 'green' },
     starter: 'tasks',
+    deletedProperties: { p2: { id: 'p2', name: 'Size', type: 'number', position: 'a1', deletedAt: 1000, deletedBy: 'u1' } },
   })).save(contentElement('')),
 
   // A row as the tool writes one today: a top-level `title` beside the
   // properties mirror. A row saved before that key existed still omits it.
-  'database-row': new DatabaseRow(options({ properties: { p1: 'Ship it' }, position: 'a0', title: 'Ship it', pageId: 'row-page', convertedValues: { p2: { type: 'text', value: '007' } }, bodyBlocks: true, icon: '🚀', cover: 'https://example.com/c.png', fullWidth: false, template: true, anonymous: true, repeat: { frequency: 'weekly', start: '2026-10-12T09:00:00.000Z' }, reminders: { p3: { remind: '1_day_before' } }, 'reactions:u1': { '😀': 1000 } }))
+  'database-row': new DatabaseRow(options({ properties: { p1: 'Ship it' }, position: 'a0', title: 'Ship it', pageId: 'row-page', convertedValues: { p2: { type: 'text', value: '007' } }, bodyBlocks: true, icon: '🚀', cover: 'https://example.com/c.png', coverPosition: 30.01, fullWidth: false, template: true, anonymous: true, repeat: { frequency: 'weekly', start: '2026-10-12T09:00:00.000Z' }, reminders: { p3: { remind: '1_day_before' } }, 'reactions:u1': { '😀': 1000 } }))
     .save(contentElement('')),
 
   'database-comment': new DatabaseComment(options({ text: 'Looks good', createdAt: 1000, authorId: 'u1', authorName: 'Ann', propertyId: 'p1', editedAt: 2000, resolved: true })).save(),
@@ -244,7 +246,8 @@ const savedData: Record<string, Record<string, unknown>> = {
     url: 'https://example.com/a.mp3', caption: 'Cap', captionVisible: true,
     title: 'Song', artist: 'Someone', coverUrl: 'https://example.com/c.png',
     loop: true, width: 50, alignment: 'left', fileName: 'a.mp3',
-    mimeType: 'audio/mpeg', duration: 120, peaks: [0.1, 0.9],
+    mimeType: 'audio/mpeg', duration: 120, peaks: [0.1, 0.9], compact: true,
+    motion: 'AQAAAAAAAA==',
   })).save(),
 
   video: new Video(options({
