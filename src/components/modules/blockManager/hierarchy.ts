@@ -1,3 +1,4 @@
+import { withBatchedMoves } from '../../utils/html';
 /**
  * @class BlockHierarchy
  * @classdesc Manages parent/child relationships and block depth
@@ -632,9 +633,13 @@ export class BlockHierarchy {
       return;
     }
 
-    // Last first: each mount anchors on the holders after it.
-    [...carried].reverse().forEach(member => {
-      store.mount(member, this.repository.getBlockIndex(member), firstSlot);
+    // Last first: each mount anchors on the holders after it. One reading of
+    // the selection for the whole run: each mount moves a holder and then read
+    // the live selection, forcing a full layout every time.
+    withBatchedMoves(() => {
+      [...carried].reverse().forEach(member => {
+        store.mount(member, this.repository.getBlockIndex(member), firstSlot);
+      });
     });
     carried.forEach(member => this.updateBlockIndentation(member));
   }
@@ -870,6 +875,7 @@ export class BlockHierarchy {
 
     // Last block first: each mount anchors on holders after it, which must
     // already be in place.
+    withBatchedMoves(() => {
     [...moving].reverse().forEach(member => {
       const home = resolveHomeSlot(member.parentId, getBlock);
       const ridesAlong = moving.some(other => other !== member && other.holder.contains(member.holder));
@@ -891,6 +897,7 @@ export class BlockHierarchy {
       if (cell !== undefined) {
         store.mount(member, this.repository.getBlockIndex(member), cell);
       }
+    });
     });
 
     if (options.reindent !== false) {

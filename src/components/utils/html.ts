@@ -121,7 +121,7 @@ const countSelectionExit = (exit: 'detached' | 'inert' | 'read' | 'batched'): vo
 
   if (exit === 'read' && callers !== undefined) {
     const stack = new Error().stack ?? '';
-    const key = stack.split('\n').slice(2, 6).map(line => line.trim()).join(' <- ').slice(0, 300);
+    const key = stack.split('\n').slice(2, 11).map(line => line.trim()).join(' <- ').slice(0, 700);
 
     callers[key] = (callers[key] ?? 0) + 1;
   }
