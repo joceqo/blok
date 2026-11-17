@@ -8,6 +8,7 @@ import { editorRoot, makeAnchor, makeEditorContext, makeProperty, press, pressOu
 import { IconSliders } from '../../../../../src/components/icons';
 import { DATA_ATTR, TOOLTIP_INTERFACE_VALUE } from '../../../../../src/components/constants';
 import { HINT_DELAY, destroy as destroyTooltip } from '../../../../../src/components/utils/tooltip';
+import { PopoverDesktop } from '../../../../../src/components/utils/popover';
 
 const OPTIONS: SelectOption[] = [
   { id: 'o2', label: 'Doing', color: 'blue', position: 'a1' },
@@ -359,70 +360,163 @@ describe('select cell editor', () => {
   });
 
   describe('option menu', () => {
+    // Close the prompt, the menu and the editor, so no held editor leaks into the next test.
+    afterEach(() => {
+      press(document.body, 'Escape');
+      press(document.body, 'Escape');
+      press(document.body, 'Escape');
+    });
+
     const openMenu = (id: string): void => {
       q(`[data-blok-database-select-option="${id}"] [data-blok-database-select-option-menu]`).click();
     };
+    /** notion-motion.md Round 55 §4: the ⋯ menu is its own popover over the editor. A closed one may still be fading out. */
+    const menuPopover = (): HTMLElement | null => document.querySelector<HTMLElement>("[data-blok-popover][data-blok-popover-opened='true'][data-blok-popover-custom-class~='blok-database-option-menu']");
+    const m = <T extends Element = HTMLElement>(selector: string): T => {
+      const el = menuPopover()?.querySelector<T>(selector);
+
+      if (el === null || el === undefined) {
+        throw new Error(`missing ${selector} in the option menu`);
+      }
+
+      return el;
+    };
+
+    it('opens a separate 220 panel menu while the editor and its list stay open', () => {
+      openSelect(null);
+
+      openMenu('o1');
+
+      const popover = menuPopover();
+
+      expect(popover).not.toBeNull();
+      expect(popover?.getAttribute('data-blok-popover-custom-class')).toContain('blok-database-panel');
+      expect(popover?.style.getPropertyValue('--width')).toBe('220px');
+      expect(editorRoot()?.contains(popover ?? null)).toBe(false);
+      expect(editorRoot()?.querySelector('[data-blok-database-option-panel]')).toBeNull();
+      expect(rowIds()).toEqual(['o1', 'o2', 'o3']);
+      expect(m('[data-blok-database-option-name]')).toHaveFocus();
+    });
+
+    // notion-motion.md Round 56 §5: a 220x418.9 menu from a 24x24 ⋯ at 1088,487.4 in a 717 window sits at 1088, 92.5:
+    // its left on the ⋯'s left, its bottom on the ⋯'s top, growing from its bottom-left corner.
+    it('lines its left up with the ⋯ and opens above it when there is no room below', () => {
+      vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1512);
+      vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(717);
+      vi.spyOn(PopoverDesktop.prototype, 'size', 'get').mockReturnValue({ width: 220, height: 418.9 });
+      openSelect(null);
+      const dots = q('[data-blok-database-select-option="o1"] [data-blok-database-select-option-menu]');
+
+      vi.spyOn(dots, 'getBoundingClientRect').mockReturnValue(new DOMRect(1088, 487.4, 24, 24));
+      openMenu('o1');
+
+      const popover = menuPopover();
+
+      expect(parseFloat(popover?.style.left ?? '')).toBeCloseTo(1088, 1);
+      expect(parseFloat(popover?.style.top ?? '')).toBeCloseTo(487.4 - 418.9, 1);
+      expect(popover?.getAttribute('data-blok-popover-open-top')).toBe('true');
+    });
+
+    // notion-motion.md Round 57 §3: with room below, a ⋯ at 1188,197.4 opens the 220x418.9 menu at 1188, 221.4:
+    // left on the ⋯'s left, top on the ⋯'s bottom. A ⋯ at 1470 clamps the menu to x 1280 (right edge 1500).
+    it.each([[1188, 1188], [1470, 1280]])('opens below a ⋯ at x %d with room below, left at %d', (dotsX, left) => {
+      vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1512);
+      vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(717);
+      vi.spyOn(PopoverDesktop.prototype, 'size', 'get').mockReturnValue({ width: 220, height: 418.9 });
+      openSelect(null);
+      const dots = q('[data-blok-database-select-option="o1"] [data-blok-database-select-option-menu]');
+
+      vi.spyOn(dots, 'getBoundingClientRect').mockReturnValue(new DOMRect(dotsX, 197.4, 24, 24));
+      openMenu('o1');
+
+      const popover = menuPopover();
+
+      expect(parseFloat(popover?.style.top ?? '')).toBeCloseTo(221.4, 1);
+      expect(parseFloat(popover?.style.left ?? '')).toBeCloseTo(left, 1);
+      expect(popover?.getAttribute('data-blok-popover-open-top')).not.toBe('true');
+    });
+
+    // notion-motion.md Round 59 §5: the ⋯ menu opens with the whole name selected (0/3 of "Red"), only on open.
+    it('selects the whole option name on open, and not again after a recolor', () => {
+      openSelect(null);
+
+      openMenu('o1');
+      const name = m<HTMLInputElement>('[data-blok-database-option-name]');
+
+      expect([name.selectionStart, name.selectionEnd]).toEqual([0, name.value.length]);
+      expect(name.value.length).toBeGreaterThan(0);
+
+      m('[data-blok-database-option-color="red"]').click();
+      const redrawn = m<HTMLInputElement>('[data-blok-database-option-name]');
+
+      expect([redrawn.selectionStart, redrawn.selectionEnd]).toEqual([redrawn.value.length, redrawn.value.length]);
+    });
 
     it('renames an option', () => {
       const ctx = openSelect(null);
 
       openMenu('o1');
-      const name = q<HTMLInputElement>('[data-blok-database-option-name]');
+      const name = m<HTMLInputElement>('[data-blok-database-option-name]');
 
       name.value = 'Backlog';
       press(name, 'Enter');
 
       expect(lastOptions(ctx).find((o) => o.id === 'o1')?.label).toBe('Backlog');
+      expect(row('o1').textContent).toContain('Backlog');
     });
 
-    it('lists the ten colors and recolors an option', () => {
+    it('lists the ten colors and recolors an option, and the pill under the menu follows', () => {
       const ctx = openSelect(null);
 
       openMenu('o1');
-      const colors = editorRoot()?.querySelectorAll('[data-blok-database-option-color]') ?? [];
+      const colors = menuPopover()?.querySelectorAll('[data-blok-database-option-color]') ?? [];
 
       expect(colors).toHaveLength(10);
-      expect(q('[data-blok-database-option-color="gray"]').getAttribute('aria-checked')).toBe('true');
-      q('[data-blok-database-option-color="red"]').click();
+      expect(m('[data-blok-database-option-color="gray"]').getAttribute('aria-checked')).toBe('true');
+      m('[data-blok-database-option-color="red"]').click();
 
       expect(lastOptions(ctx).find((o) => o.id === 'o1')?.color).toBe('red');
-      expect(q('[data-blok-database-option-color="red"]').getAttribute('aria-checked')).toBe('true');
+      expect(m('[data-blok-database-option-color="red"]').getAttribute('aria-checked')).toBe('true');
+      expect(row('o1').querySelector('[data-color]')?.getAttribute('data-color')).toBe('red');
+      expect(menuPopover()).not.toBeNull();
     });
 
-    it('deletes an option and drops it from the value', () => {
+    it('deletes an option, closes the menu and drops it from the value', () => {
       const ctx = openSelect(['o1', 'o2'], {}, true);
 
       openMenu('o1');
-      q('[data-blok-database-option-delete]').click();
+      m('[data-blok-database-option-delete]').click();
       expect(ctx.onOptionsChange).not.toHaveBeenCalled();
-      q('[data-blok-database-option-delete-confirm]').click();
+      m('[data-blok-database-option-delete-confirm]').click();
 
       expect(lastOptions(ctx).map((o) => o.id).sort()).toEqual(['o2', 'o3']);
       expect(ctx.onCommit).toHaveBeenLastCalledWith(['o2']);
       expect(rowIds()).toEqual(['o2', 'o3']);
+      expect(menuPopover()).toBeNull();
+      expect(search()).toHaveFocus();
     });
 
     it('asks before deleting, as Notion does, and Cancel keeps the option', () => {
       const ctx = openSelect(['o1']);
 
       openMenu('o1');
-      q('[data-blok-database-option-delete]').click();
-      expect(q('[data-blok-database-option-delete-prompt]').textContent).toContain('tools.database.optionDeleteConfirm');
-      q('[data-blok-database-option-delete-cancel]').click();
+      m('[data-blok-database-option-delete]').click();
+      expect(m('[data-blok-database-option-delete-prompt]').textContent).toContain('tools.database.optionDeleteConfirm');
+      m('[data-blok-database-option-delete-cancel]').click();
 
       expect(ctx.onOptionsChange).not.toHaveBeenCalled();
       expect(ctx.onCommit).not.toHaveBeenCalled();
-      expect(editorRoot()?.querySelector('[data-blok-database-option-name]')).not.toBeNull();
+      expect(m('[data-blok-database-option-name]')).not.toBeNull();
     });
 
     it('the delete prompt is a labelled modal that keeps focus on its two buttons', () => {
       openSelect(['o1']);
 
       openMenu('o1');
-      q('[data-blok-database-option-delete]').click();
-      const prompt = q('[data-blok-database-option-delete-prompt]');
-      const confirm = q('[data-blok-database-option-delete-confirm]');
-      const cancel = q('[data-blok-database-option-delete-cancel]');
+      m('[data-blok-database-option-delete]').click();
+      const prompt = m('[data-blok-database-option-delete-prompt]');
+      const confirm = m('[data-blok-database-option-delete-confirm]');
+      const cancel = m('[data-blok-database-option-delete-cancel]');
 
       expect(prompt.getAttribute('role')).toBe('alertdialog');
       expect(prompt.getAttribute('aria-modal')).toBe('true');
@@ -442,25 +536,51 @@ describe('select cell editor', () => {
       const ctx = openSelect(['o1']);
 
       openMenu('o1');
-      q('[data-blok-database-option-delete]').click();
-      press(q('[data-blok-database-option-delete-confirm]'), 'Escape');
+      m('[data-blok-database-option-delete]').click();
+      press(m('[data-blok-database-option-delete-confirm]'), 'Escape');
 
-      expect(editorRoot()?.querySelector('[data-blok-database-option-delete-prompt]')).toBeNull();
-      expect(editorRoot()?.querySelector('[data-blok-database-option-name]')).not.toBeNull();
+      expect(menuPopover()?.querySelector('[data-blok-database-option-delete-prompt]')).toBeNull();
+      expect(m('[data-blok-database-option-name]')).not.toBeNull();
       expect(q('[data-blok-database-select-chips]').hasAttribute('inert')).toBe(false);
       expect(ctx.onOptionsChange).not.toHaveBeenCalled();
       expect(ctx.onClose).not.toHaveBeenCalled();
     });
 
-    it('Escape in the menu steps back to the list and keeps the editor open', () => {
+    it('Escape closes only the menu: the editor stays open with focus back in its search', () => {
       const ctx = openSelect(null);
 
       openMenu('o1');
-      press(q('[data-blok-database-option-name]'), 'Escape');
+      press(m('[data-blok-database-option-name]'), 'Escape');
 
-      expect(editorRoot()?.querySelector('[data-blok-database-option-panel]')).toBeNull();
+      expect(menuPopover()).toBeNull();
       expect(rowIds()).toEqual(['o1', 'o2', 'o3']);
+      expect(search()).toHaveFocus();
       expect(ctx.onClose).not.toHaveBeenCalled();
+
+      press(search(), 'Escape');
+      expect(ctx.onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('a press outside both closes the menu and keeps the editor', () => {
+      const ctx = openSelect(null);
+
+      openMenu('o1');
+      pressOutside();
+
+      expect(menuPopover()).toBeNull();
+      expect(editorRoot()).not.toBeNull();
+      expect(ctx.onClose).not.toHaveBeenCalled();
+    });
+
+    it('closing the editor closes its option menu too', () => {
+      const ctx = makeEditorContext({ options: OPTIONS, onOptionsChange: vi.fn() });
+      const handle = openCellEditor(makeProperty('select'), null, makeAnchor(), ctx);
+
+      openMenu('o1');
+      handle.close();
+
+      expect(menuPopover()).toBeNull();
+      expect(editorRoot()).toBeNull();
     });
 
     it('hides create, menu and drag without onOptionsChange', () => {
@@ -527,6 +647,47 @@ describe('select cell editor', () => {
 
       expect(moved > 'a0' && moved < 'a1').toBe(true);
       expect(rowIds()).toEqual(['o1', 'o3', 'o2']);
+    });
+
+    // notion-motion.md Round 56 §7: the dragged row follows the pointer and stops at the list top; the rows it
+    // passes slide one row over; no drop line.
+    it('the dragged row follows the pointer and the rows it passes slide aside, with no drop line', () => {
+      openSelect(null);
+
+      stubRows();
+      const handle = q('[data-blok-database-select-option="o3"] [data-blok-database-select-option-handle]');
+
+      pointer(handle, 'pointerdown', 66);
+      pointer(document, 'pointermove', 40);
+
+      expect(row('o3').style.transform).toBe('translateY(-26px)');
+      expect(row('o1').style.transform).toBe('');
+      expect(row('o2').style.transform).toBe('translateY(28px)');
+
+      pointer(document, 'pointermove', -40);
+
+      expect(row('o3').style.transform).toBe('translateY(-56px)');
+      expect(row('o1').style.transform).toBe('translateY(28px)');
+      expect(row('o2').style.transform).toBe('translateY(28px)');
+      expect(editorRoot()?.querySelector('[data-drop-before], [data-drop-after]')).toBeNull();
+
+      pointer(document, 'pointerup', -40);
+
+      expect(rowIds()).toEqual(['o3', 'o1', 'o2']);
+      expect(['o1', 'o2', 'o3'].map((id) => row(id).style.transform)).toEqual(['', '', '']);
+    });
+
+    it('a cancelled drag puts every row back', () => {
+      openSelect(null);
+
+      stubRows();
+      pointer(q('[data-blok-database-select-option="o1"] [data-blok-database-select-option-handle]'), 'pointerdown', 10);
+      pointer(document, 'pointermove', 80);
+      pointer(document, 'pointercancel', 80);
+
+      expect(rowIds()).toEqual(['o1', 'o2', 'o3']);
+      expect(['o1', 'o2', 'o3'].map((id) => row(id).style.transform)).toEqual(['', '', '']);
+      expect(editorRoot()?.querySelector('[data-dragging]')).toBeNull();
     });
 
     it('a drop where it started changes nothing', () => {

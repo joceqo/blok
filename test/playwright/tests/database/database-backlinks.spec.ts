@@ -104,7 +104,8 @@ test('draws nothing when no page mentions the row', async ({ page }) => {
   expect(await page.locator('[data-blok-database-drawer]').innerHTML()).not.toMatch(/acklink/);
 });
 
-test('shows "2 backlinks" first in the hover row, hidden until the page is hovered', async ({ page }) => {
+// notion-motion.md Round 56 §1, §8: in a peek it shows only near the top (bar or head), not over the title.
+test('shows "2 backlinks" first in the hover row, hidden until the top of the peek is hovered', async ({ page }) => {
   await mount(page, blocks());
   await openRow(page, 'r1');
 
@@ -115,6 +116,8 @@ test('shows "2 backlinks" first in the hover row, hidden until the page is hover
   await page.mouse.move(5, 5);
   await expect(button).toHaveCSS('opacity', '0');
   await page.locator('[data-blok-database-drawer-title]').hover();
+  await expect(button).toHaveCSS('opacity', '0');
+  await page.locator('[data-blok-database-drawer-page-head]').hover();
   await expect(button).toHaveCSS('opacity', '1');
   const box = await button.boundingBox();
 
@@ -273,3 +276,26 @@ test('puts the breadcrumb at the right end of the row', async ({ page }) => {
   expect(row.x + row.width - (crumb.x + crumb.width)).toBeLessThanOrEqual(24);
   expect(crumb.x - (title.x + title.width)).toBeGreaterThan(100);
 });
+
+// Keyboard focus follows the drawn order: the icon, then "N backlinks" and the rest of its row.
+for (const mode of ['center', 'full'] as const) {
+  test(`${mode}: Tab reaches the page icon before "N backlinks"`, async ({ page }) => {
+    await mount(page, blocks().map((block) => {
+      if (block.id === 'r1') return { ...block, data: { ...block.data, icon: '🍎' } };
+      if (block.id !== 'db-1') return block;
+      const views = (block.data as { views: Array<Record<string, unknown>> }).views;
+
+      return { ...block, data: { ...block.data, views: views.map((view) => ({ ...view, openPagesIn: mode })) } };
+    }));
+    await openRow(page, 'r1');
+
+    const icon = page.locator('[data-blok-database-drawer-icon]');
+    const iconBox = await icon.boundingBox();
+    const linksBox = await backlinks(page).boundingBox();
+
+    expect(linksBox?.y ?? 0).toBeGreaterThan((iconBox?.y ?? 0) + (iconBox?.height ?? 0));
+    await icon.focus();
+    await page.keyboard.press('Tab');
+    await expect(backlinks(page)).toBeFocused();
+  });
+}

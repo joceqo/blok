@@ -223,6 +223,20 @@ describe('DatabaseViewControls', () => {
     ]);
   });
 
+  // notion-motion.md Round 52 §2: Notion's Map toolbar has no Sort.
+  it('hides Sort on a map view only', () => {
+    const { controls, saved } = setup();
+
+    saved.view = { ...saved.view, type: 'map' };
+    controls.refresh();
+    expect(q('database-toolbar-sort')?.hidden).toBe(true);
+    expect(q('database-toolbar-filter')?.hidden).toBe(false);
+
+    saved.view = { ...saved.view, type: 'list' };
+    controls.refresh();
+    expect(q('database-toolbar-sort')?.hidden).toBe(false);
+  });
+
   // research/23 §2e: the column header's Group follows the same rule as the settings picker.
   it('turns Hide empty groups on when a column header groups by a number', () => {
     const { controls, host } = setup();
@@ -2661,6 +2675,26 @@ describe('DatabaseViewControls', () => {
       click('database-search-clear');
 
       expect(registry.has('blok-database-search-match')).toBe(false);
+    });
+
+    it('never tints the OPEN pill inside a timeline panel title', () => {
+      const { controls } = setup();
+      const root = document.createElement('div');
+      const body = document.createElement('div');
+
+      body.innerHTML = '<div data-blok-database-timeline-table-title><span>Open day</span>'
+        + '<button data-blok-database-table-open><span></span><span>Open</span></button></div>';
+      root.append(controls.toolbar, controls.filterBar, body);
+      document.body.append(root);
+
+      click('database-toolbar-search');
+      const input = q('database-search-input') as HTMLInputElement;
+
+      input.value = 'open';
+      input.dispatchEvent(new Event('input'));
+
+      expect(registry.get('blok-database-search-match')?.ranges.map((range) => range.toString())).toEqual(['Open']);
+      expect(registry.get('blok-database-search-match')?.ranges[0]?.startContainer.parentElement?.closest('[data-blok-database-table-open]')).toBeNull();
     });
   });
   describe('Filter toggles the chip bar; » minimizes it (Notion)', () => {

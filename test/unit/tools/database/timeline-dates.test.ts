@@ -9,6 +9,7 @@ import {
   moveBarByMinutes,
   offscreenSide,
   resizeBar,
+  resizeAllDayByMinutes,
   resizeBarByMinutes,
   snapMinutes,
   timedEdges,
@@ -193,13 +194,17 @@ describe('timeline-dates', () => {
         .toEqual({ offset: 1110 * perMinute, width: 180 * perMinute });
     });
 
-    it('turns an all-day bar into a timed range from its first midnight to the midnight after its last day', () => {
+    it('turns a one-day bar into a timed range from its midnight to the next', () => {
       expect(moveBarByMinutes({ start: '2026-11-18', end: undefined }, 75)).toEqual({ start: '2026-11-18T01:15/2026-11-19T01:15' });
-      expect(moveBarByMinutes({ start: '2026-11-18/2026-11-20', end: undefined }, -30)).toEqual({ start: '2026-11-17T23:30/2026-11-20T23:30' });
+    });
+
+    // notion-motion.md Round 54 §1: Day zoom draws a range to its end date's 00:00, so a move keeps that length.
+    it('turns an all-day range into a timed range ending at its end date\'s midnight', () => {
+      expect(moveBarByMinutes({ start: '2026-11-18/2026-11-20', end: undefined }, -30)).toEqual({ start: '2026-11-17T23:30/2026-11-19T23:30' });
     });
 
     it('writes timed start and end values when the view has an end property', () => {
-      expect(moveBarByMinutes({ start: '2026-11-18', end: '2026-11-20' }, 75)).toEqual({ start: '2026-11-18T01:15', end: '2026-11-21T01:15' });
+      expect(moveBarByMinutes({ start: '2026-11-18', end: '2026-11-20' }, 75)).toEqual({ start: '2026-11-18T01:15', end: '2026-11-20T01:15' });
       expect(moveBarByMinutes({ start: '2026-11-18', end: null }, 75)).toEqual({ start: '2026-11-18T01:15', end: '2026-11-19T01:15' });
     });
 
@@ -210,6 +215,39 @@ describe('timeline-dates', () => {
 
     it('writes nothing for a zero move', () => {
       expect(moveBarByMinutes({ start: '2026-11-18', end: undefined }, 0)).toEqual({});
+    });
+  });
+
+  // notion-motion.md Round 50 §3: all day Nov 18, right edge +30px at Day zoom read "Nov 18, 12:00 AM → Nov 19, 12:30 AM".
+  describe('resizeAllDayByMinutes', () => {
+    it('turns an all-day range timed, midnight to midnight, then moves the dragged edge', () => {
+      expect(resizeAllDayByMinutes({ start: '2026-11-18', end: undefined }, 'end', 30)).toEqual({ start: '2026-11-18T00:00/2026-11-19T00:30' });
+    });
+
+    // notion-motion.md Round 51 §2: all day Nov 18, start edge -30px read "Nov 17 11:30 PM → Nov 18 11:59 PM".
+    it('ends a start-edge resize at 11:59 PM of the last day', () => {
+      expect(resizeAllDayByMinutes({ start: '2026-11-18', end: undefined }, 'start', -30)).toEqual({ start: '2026-11-17T23:30/2026-11-18T23:59' });
+    });
+
+    // notion-motion.md Round 56 §9: Delta, Nov 17 → 24, start edge +104px (2 h) read "Nov 17 2:00 AM → Nov 24 11:59 PM".
+    it('ends a range\'s start-edge resize at 11:59 PM of its end date', () => {
+      expect(resizeAllDayByMinutes({ start: '2026-11-17/2026-11-24', end: undefined }, 'start', 120)).toEqual({ start: '2026-11-17T02:00/2026-11-24T23:59' });
+      expect(resizeAllDayByMinutes({ start: '2026-11-18', end: '2026-11-20' }, 'start', 15)).toEqual({ start: '2026-11-18T00:15', end: '2026-11-20T23:59' });
+    });
+
+    // notion-motion.md Round 54 §1: Beta, Nov 18 → 19, end edge +30px read "Nov 19, 12:30 AM".
+    it('moves a range\'s end from its end date\'s midnight', () => {
+      expect(resizeAllDayByMinutes({ start: '2026-11-18/2026-11-19', end: undefined }, 'end', 30)).toEqual({ start: '2026-11-18T00:00/2026-11-19T00:30' });
+      expect(resizeAllDayByMinutes({ start: '2026-11-16', end: '2026-11-20' }, 'end', 30)).toEqual({ start: '2026-11-16T00:00', end: '2026-11-20T00:30' });
+    });
+
+    it('writes both timed edges when the view has an end property', () => {
+      expect(resizeAllDayByMinutes({ start: '2026-11-18', end: null }, 'end', 30)).toEqual({ start: '2026-11-18T00:00', end: '2026-11-19T00:30' });
+    });
+
+    it('writes nothing for a zero drag, so a press alone keeps the bar all day', () => {
+      expect(resizeAllDayByMinutes({ start: '2026-11-18', end: undefined }, 'end', 0)).toEqual({});
+      expect(resizeAllDayByMinutes({ start: null, end: undefined }, 'end', 30)).toEqual({});
     });
   });
 
@@ -314,6 +352,19 @@ describe('timeline-dates', () => {
       expect(units).toHaveLength(45);
       expect(units[0]).toMatchObject({ offset: 0, width: 40, day: '2026-10-01' });
       expect(units[0].label).toBe(new Intl.DateTimeFormat('en-US', { day: 'numeric' }).format(new Date(2026, 9, 1)));
+    });
+
+    // notion-motion.md Round 48 A4: Week and Bi-week write the weekday letter before the number ("S 15", "M 16").
+    it.each(['week', 'bi_week'] as const)('gives each %s day its narrow weekday letter', (zoom) => {
+      const { units } = headerUnits({ start: '2026-11-14', days: 4 }, zoom, 'en-US');
+
+      expect(units.map((unit) => [unit.weekday, unit.label])).toEqual([['S', '14'], ['S', '15'], ['M', '16'], ['T', '17']]);
+    });
+
+    it('gives Month zoom days no weekday letter', () => {
+      const { units } = headerUnits({ start: '2026-11-14', days: 2 }, 'month', 'en-US');
+
+      expect(units.map((unit) => unit.weekday)).toEqual([undefined, undefined]);
     });
 
     // notion-motion.md Round 47 A1b (r47-n-tl-year-today.raw): Year ticks are weeks from Monday, 35 wide, read "3", "10".

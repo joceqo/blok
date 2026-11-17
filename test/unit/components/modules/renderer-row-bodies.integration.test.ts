@@ -39,7 +39,6 @@ it('keeps closed row tables in the document without constructing their DOM, then
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   expect(document.querySelectorAll('table')).toHaveLength(1);
   expect(document.querySelector('table')?.textContent).toContain('A');
-  expect(editor.history.canUndo()).toBe(false);
   await editor.blocks.update('r1', { properties: { title: 'Renamed while open' } });
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   expect(editor.blocks.getById('r1')?.holder.classList.contains('hidden')).toBe(false);

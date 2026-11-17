@@ -326,6 +326,9 @@ export class PopoverDesktop extends PopoverAbstract {
   /** Opt-in, set before show(): the popover's end edge sits on the trigger's end edge. */
   public alignEnd = false;
 
+  /** Opt-in, set before show(): the popover is centred under (or over) the trigger. */
+  public alignCenter = false;
+
   /**
    * When true, places the popover to the left of the trigger, vertically
    * centered on the trigger and shifted only as needed to stay on screen.
@@ -354,6 +357,8 @@ export class PopoverDesktop extends PopoverAbstract {
 
   /** It opened above: it stays there while open, so a shrinking list keeps its bottom. */
   private coverAbove = false;
+  /** Open holds (holdOpen): while any is on, pointer moves never close the submenu. */
+  private holds = 0;
 
   private coverVerticalMargin: number | undefined;
 
@@ -927,6 +932,7 @@ export class PopoverDesktop extends PopoverAbstract {
       offset: this.offset,
       leftAlignRect,
       alignEnd: this.alignEnd,
+      alignCenter: this.alignCenter,
       direction: getElementDirection(this.nodes.popover),
       placeLeftOfAnchor: this.placeLeftOfAnchor,
       asideSide: this.asideSide,
@@ -1113,11 +1119,19 @@ export class PopoverDesktop extends PopoverAbstract {
    */
   public holdOpen(): (focusItemName?: string) => void {
     const trigger = this.params.trigger;
+    const hold = { on: true };
 
     PopoverRegistry.instance.unregister(this);
     this.flipper?.deactivate();
+    // The held surface sits outside the submenu too: the pointer leaving for it must not close the submenu.
+    this.holds += 1;
+    this.cancelNestedCloseIntent();
 
     return (focusItemName) => {
+      if (hold.on) {
+        hold.on = false;
+        this.holds -= 1;
+      }
       if (!this.nodes.popover.hasAttribute(DATA_ATTR.popoverOpened)) {
         return;
       }
@@ -1485,7 +1499,7 @@ export class PopoverDesktop extends PopoverAbstract {
    * submenu's own area, not from the last row it wandered onto.
    */
   private scheduleNestedClose(): void {
-    if (this.nestedPopover === undefined || this.nestedPopover === null) {
+    if (this.nestedPopover === undefined || this.nestedPopover === null || this.holds > 0) {
       return;
     }
 
@@ -2092,6 +2106,13 @@ export class PopoverDesktop extends PopoverAbstract {
 
     popoverClone.setAttribute(DATA_ATTR.popoverOpened, 'true');
     popoverClone.querySelector(`[${DATA_ATTR.nested}]`)?.remove();
+
+    // A shown thumb adds a gutter to the list (slash-search.css). Placement
+    // re-measures while it shows, but --width is set without it, so the
+    // gutter would push an end-aligned popover off its edge.
+    popoverClone.querySelectorAll(`[${DATA_ATTR.popoverScrollbar}]`).forEach((thumb) => {
+      thumb.setAttribute('hidden', '');
+    });
 
     const container = popoverClone.querySelector(`[${DATA_ATTR.popoverContainer}]`) as HTMLElement;
 

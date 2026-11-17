@@ -204,6 +204,19 @@ export const moveBar = (values: BarValues, deltaDays: number, deltaMinutes?: num
   return { ...(start !== null ? { start } : {}), ...(end !== null ? { end } : {}) };
 };
 
+/** An all-day part as its first midnight; a timed part as it is. */
+const midnightOf = (part: string): string => (TIMED_PART.test(part) ? part : `${part.slice(0, 10)}T00:00`);
+
+/** An all-day part as the midnight after it; a timed part as it is. */
+const midnightAfter = (part: string): string => (TIMED_PART.test(part) ? part : `${addDays(part.slice(0, 10), 1)}T00:00`);
+
+/**
+ * Day zoom: where a bar's last part ends. notion-motion.md Round 54 §1: an all-day range
+ * ends at its end date's 00:00 (Nov 16 → 20 is 4 days); one day keeps the whole day.
+ */
+const dayZoomEnd = (first: string, last: string): string =>
+  (!TIMED_PART.test(last) && last.slice(0, 10) > first.slice(0, 10) ? `${last.slice(0, 10)}T00:00` : midnightAfter(last));
+
 /**
  * Day zoom: moves a bar by minutes. An all-day bar becomes timed, from
  * midnight of its first day to midnight after its last (notion-motion.md
@@ -218,8 +231,8 @@ export const moveBarByMinutes = (values: BarValues, deltaMinutes: number): BarWr
   }
 
   const shift = (part: string): string => shiftPartByMinutes(part, deltaMinutes);
-  const startOf = (part: string): string => shift(TIMED_PART.test(part) ? part : `${part.slice(0, 10)}T00:00`);
-  const endOf = (part: string): string => shift(TIMED_PART.test(part) ? part : `${addDays(part.slice(0, 10), 1)}T00:00`);
+  const startOf = (part: string): string => shift(midnightOf(part));
+  const endOf = (part: string): string => shift(dayZoomEnd(startValue.start, part));
 
   if (values.end === undefined) {
     if (startValue.hasTime && startValue.end === undefined) {
@@ -289,6 +302,32 @@ export const resizeBarByMinutes = (values: BarValues, edge: 'start' | 'end', del
   return edge === 'start' ? { start } : { end };
 };
 
+/**
+ * Day zoom: drags one edge of an all-day bar by minutes. The bar turns timed
+ * and both edges are written (notion-motion.md Round 50 §3, Round 51 §2).
+ */
+export const resizeAllDayByMinutes = (values: BarValues, edge: 'start' | 'end', deltaMinutes: number): BarWrite => {
+  const span = timelineSpan(values.start, values.end);
+  const startValue = parseDateValue(values.start);
+
+  if (deltaMinutes === 0 || span === null || startValue === null) {
+    return {};
+  }
+
+  const start = midnightOf(startValue.start);
+  const last = values.end === undefined ? startValue.end ?? startValue.start : parseDateValue(values.end)?.start ?? span.end;
+  // notion-motion.md Round 51 §2 (one day), Round 56 §9 (a range): a start-edge drag ends at 11:59 PM of the last day.
+  const end = edge === 'start' && !TIMED_PART.test(last) ? `${last.slice(0, 10)}T23:59` : dayZoomEnd(start, last);
+  const timed: BarValues = values.end === undefined ? { start: `${start}/${end}`, end: undefined } : { start, end };
+  const write = resizeBarByMinutes(timed, edge, deltaMinutes);
+
+  if (write === null || Object.keys(write).length === 0) {
+    return {};
+  }
+
+  return values.end === undefined ? write : { start, end, ...write };
+};
+
 /** Drags one edge to `toDay`. The edge stops at the other edge. */
 export const resizeBar = (values: BarValues, edge: 'start' | 'end', toDay: string): BarWrite => {
   if (values.end === undefined) {
@@ -329,6 +368,8 @@ export interface HeaderUnit {
   day: string;
   /** Hours zoom: the "AM"/"PM" inside `label`, drawn in its own ink. */
   period?: string;
+  /** Week and Bi-week zooms: the day's narrow weekday letter, written before `label`. */
+  weekday?: string;
 }
 
 /** `monday-month`: a month counted from its first Monday. */
@@ -342,6 +383,8 @@ const GROUP_OF: Record<TimelineZoom, Unit> = {
 const UNIT_OF: Record<TimelineZoom, Unit> = {
   hours: 'hour', day: 'hour', week: 'day', bi_week: 'day', month: 'day', quarter: 'week', year: 'week', '5_years': 'month',
 };
+
+const WEEKDAY_LETTERS: ReadonlySet<TimelineZoom> = new Set(['week', 'bi_week']);
 
 /** Hour ticks a day: Hours zoom every 15 minutes, Day zoom every hour (notion-motion.md Round 34 §5, Round 47 A1b). */
 const TICKS_PER_DAY: Partial<Record<TimelineZoom, number>> = { hours: 96, day: 24 };
@@ -428,8 +471,12 @@ export const headerUnits = (window: TimelineWindow, zoom: TimelineZoom, locale: 
   const group = GROUP_OF[zoom];
   const unit = UNIT_OF[zoom];
 
+  const units = unitsOf(window, unit, width, new Intl.DateTimeFormat(locale, FORMAT[unit]), TICKS_PER_DAY[zoom]);
+  const weekday = new Intl.DateTimeFormat(locale, { weekday: 'narrow' });
+
   return {
     groups: unitsOf(window, group, width, new Intl.DateTimeFormat(locale, GROUP_FORMAT[group])),
-    units: unitsOf(window, unit, width, new Intl.DateTimeFormat(locale, FORMAT[unit]), TICKS_PER_DAY[zoom]),
+    // notion-motion.md Round 48 A4: "M 16".
+    units: WEEKDAY_LETTERS.has(zoom) ? units.map((item) => ({ ...item, weekday: weekday.format(toLocalDate(item.day)) })) : units,
   };
 };

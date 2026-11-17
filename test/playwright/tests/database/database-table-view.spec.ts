@@ -134,6 +134,25 @@ test.describe('layout', () => {
     expect((await row(page, 'r3').boundingBox())?.height).toBe(37);
     await expect(page.locator('[data-blok-database-table-grid]')).toHaveAttribute('data-blok-keyboard-owner', 'select-all');
   });
+  // notion-motion.md Round 59 §8: Notion's row page glyph inks 14x18. The glyph grows to 23 inside the same 22 box, so the name stays put.
+  test('draws the row page glyph at 23px in a 22px box, the name 3px after the box', async ({ page }) => {
+    await mount(page, blocks());
+    const glyph = cell(page, 'r3', 'p-title').locator('[data-blok-database-page-icon-placeholder]');
+    const glyphBox = await glyph.boundingBox();
+    const svgBox = await glyph.evaluate((el) => el.firstElementChild?.getBoundingClientRect().toJSON() as { width: number; height: number } | undefined);
+    const textX = await cell(page, 'r3', 'p-title').getByText('Charlie').evaluate((el) => {
+      const range = document.createRange();
+
+      range.selectNodeContents(el);
+
+      return range.getBoundingClientRect().x;
+    });
+
+    expect(glyphBox?.width).toBe(22);
+    expect(svgBox?.width).toBe(23);
+    expect(svgBox?.height).toBe(23);
+    expect(textX).toBeCloseTo((glyphBox?.x ?? 0) + 22 + 3, 0);
+  });
 });
 
 test.describe('cell keyboard model', () => {
@@ -636,6 +655,23 @@ test.describe('property and row menus', () => {
     await item.click();
   };
 
+  // notion-motion.md Round 59 §5: the cell editor's ⋯ menu has the whole name selected from 30ms on.
+  test('an option menu from the cell editor opens with the whole name selected', async ({ page }) => {
+    await mount(page, blocks());
+    await cell(page, 'r1', 'p-stage').click();
+    await expect(editor(page)).toBeVisible();
+    await editor(page).locator('[data-blok-database-select-option="o-idea"]').hover();
+    await editor(page).locator('[data-blok-database-select-option="o-idea"] [data-blok-database-select-option-menu]').click();
+    const name = page.locator('[data-blok-database-option-panel="o-idea"]').getByRole('textbox', { name: 'Option name' });
+    const selection = (): Promise<[number | null, number | null, number]> => name.evaluate((el: HTMLInputElement) => [el.selectionStart, el.selectionEnd, el.value.length]);
+
+    await expect(name).toBeFocused();
+    await expect.poll(selection).toEqual([0, 4, 4]);
+    // Still selected once the menu's entrance is over.
+    await name.evaluate((el) => Promise.all(el.closest('[data-blok-popover]')?.getAnimations({ subtree: true }).map((a) => a.finished.catch(() => undefined)) ?? []));
+    expect(await selection()).toEqual([0, 4, 4]);
+  });
+
   test('Edit property on a select recolours an option and the menu stays open', async ({ page }) => {
     await mount(page, blocks());
     await header(page, 'p-stage').click();
@@ -647,7 +683,8 @@ test.describe('property and row menus', () => {
     await expect(page.getByText('Changes apply to all views showing this property.')).toHaveCount(0);
     await list.locator('[data-blok-database-select-option="o-build"]').hover();
     await list.locator('[data-blok-database-select-option="o-build"] [data-blok-database-select-option-menu]').click();
-    await list.locator('[data-blok-database-option-color="red"]').click();
+    // notion-motion.md Round 57 §2: the option's menu is its own popover beside the list.
+    await page.locator('[data-blok-database-option-panel="o-build"] [data-blok-database-option-color="red"]').click();
 
     await expect.poll(async () => (await savedSchema(page)).find((p) => p.id === 'p-stage')?.config?.options.find((o) => o.id === 'o-build')?.color).toBe('red');
     await expect(list).toBeVisible();
@@ -662,19 +699,32 @@ test.describe('property and row menus', () => {
     const options = async (): Promise<SavedOption[]> => (await savedSchema(page)).find((p) => p.id === 'p-stage')?.config?.options ?? [];
 
     await list.getByRole('button', { name: 'Add an option' }).click();
-    await list.getByPlaceholder('Add an option').fill('Review');
+    const field = list.getByPlaceholder('Type a new option…');
+
+    // notion-motion.md Round 59 §5: a 276x28 field 12 in from the 300 flyout, typed in rgb(44,44,43).
+    const flyout = await list.evaluate((el) => el.closest('[data-blok-popover-container]')?.getBoundingClientRect().toJSON() as { x: number; width: number });
+    const fieldBox = await field.boundingBox();
+
+    expect(flyout.width).toBe(300);
+    expect(fieldBox?.width).toBe(276);
+    expect(fieldBox?.height).toBe(28);
+    expect(fieldBox?.x).toBe(flyout.x + 12);
+    await expect(field).toHaveCSS('color', 'rgb(44, 44, 43)');
+    await field.fill('Review');
     await page.keyboard.press('Enter');
     await expect.poll(async () => (await options()).map((o) => o.label)).toContain('Review');
     await expect(list).toBeVisible();
 
     await list.locator('[data-blok-database-select-option="o-idea"]').hover();
     await list.locator('[data-blok-database-select-option="o-idea"] [data-blok-database-select-option-menu]').click();
-    await list.getByRole('textbox', { name: 'Option name' }).fill('Spark');
+    await page.locator('[data-blok-database-option-panel="o-idea"]').getByRole('textbox', { name: 'Option name' }).fill('Spark');
     await page.keyboard.press('Enter');
     await expect.poll(async () => (await options()).find((o) => o.id === 'o-idea')?.label).toBe('Spark');
+    // The rename redraws the list under the menu; the menu stays.
+    await expect(page.locator('[data-blok-database-option-panel="o-idea"]')).toBeVisible();
 
     await page.keyboard.press('Escape');
-    await expect(list.locator('[data-blok-database-option-panel]')).toHaveCount(0);
+    await expect(page.locator('[data-blok-database-option-panel]')).toHaveCount(0);
     await expect(list.locator('[data-blok-database-select-option]')).toHaveCount(3);
     await expect(list).toBeVisible();
 

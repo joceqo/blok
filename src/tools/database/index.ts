@@ -76,7 +76,7 @@ import { groupCalculationHint, groupCalculationItems, groupCalculationText } fro
 import { optionColorOf, type OptionColor } from './cells/option-colors';
 import { DatabaseBoardView } from './database-board-view';
 import type { BoardLane } from './database-board-view';
-import { DatabaseListView, pointerAnchor } from './database-list-view';
+import { DatabaseListView, pointerAnchor, pointerMenuPlacement } from './database-list-view';
 import { DatabaseTableView, createTableState } from './database-table-view';
 import { DatabaseGalleryView } from './database-gallery-view';
 import type { GalleryGroup } from './database-gallery-view';
@@ -94,7 +94,7 @@ import type { PopoverItemParams } from '@/types/utils/popover/popover-item';
 import { legacyBodyInserts, pageContentSourceBlocks, rowDescription } from './row-body';
 import { applyDateDisplayChange, editorLocale, resolveWeekStart, toIsoDay } from './cells/date-format';
 import type { DateDisplayChange } from './cells/date-format';
-import type { TableAutofill, TableGroup, TableHandlers, TableNesting, TableState } from './database-table-view';
+import type { RowPeek, TableAutofill, TableGroup, TableHandlers, TableNesting, TableState } from './database-table-view';
 import type { CellChange } from './database-table-grid';
 import type { TableRowDropResult } from './database-table-row-drag';
 import { DatabasePropertyTypePopover } from './database-property-type-popover';
@@ -148,6 +148,7 @@ import { DatabaseTabBar, VIEW_ICONS } from './database-tab-bar';
 import { foldTitleRow } from './database-view-bar-fold';
 import { IconArrowDiagonal, IconCalendar, IconReplace, IconCreditCard, IconCurrency, IconDatabase, IconDatabaseInline, IconDatabaseLinked, IconFolderQuestion, IconFanDeck, IconPackage, IconPaintBrush, IconTicket, IconEmojiFlag, IconEmojiLightbulb, IconEmojiSmile, IconFileDoc, IconMap, IconMessage, IconTrash, IconCheck, IconChevronRight, IconDownload, IconImage, IconForm, IconViewForm, IconMergeCells, IconPageLayout, IconReturn, IconTable, IconTimeline, IconUpload, IconWand, IconInfo } from '../../components/icons';
 import { PopoverDesktop } from '../../components/utils/popover';
+import type { PopoverDesktopParams } from '../../components/utils/popover/popover-desktop';
 import { PopoverItemType } from '../../components/utils/popover/components/popover-item';
 import { PopoverEvent } from '@/types/utils/popover/popover-event';
 import { nanoid } from 'nanoid';
@@ -375,6 +376,24 @@ const seedWins = <T extends DatabaseData | undefined>(data: T): T => {
 
 /** Groups a board shows before "Load more groups" (research/08). */
 const BOARD_GROUP_PAGE = 10;
+
+/**
+ * Under the button with its start edge on the button's, as before, but through the cover clamp:
+ * near a window edge it slides in to `margin` from it instead of turning to end at the button.
+ * Above, its bottom sits `offset` over the button's top. The top and bottom keep no margin.
+ */
+const groupMenuCoverPlacement = (anchor: HTMLElement, margin: number, offset: number): Pick<PopoverDesktopParams, 'cover' | 'viewportMargin' | 'coverFlipOffset' | 'coverVerticalMargin'> & { position: DOMRect; positionContext: HTMLElement } => {
+  const rect = anchor.getBoundingClientRect();
+
+  return {
+    cover: true,
+    viewportMargin: margin,
+    coverVerticalMargin: 0,
+    position: new DOMRect(rect.x, rect.bottom + offset, rect.width, 0),
+    positionContext: anchor,
+    coverFlipOffset: rect.height + 2 * offset,
+  };
+};
 
 /** Layouts Blok draws; gallery is in the type but falls back to a board. */
 const RENDERED_LAYOUTS: readonly ViewType[] = ['table', 'board', 'gallery', 'list', 'chart', 'timeline', 'feed', 'calendar', 'form', 'map'];
@@ -829,7 +848,7 @@ export class DatabaseTool implements BlockTool {
   private bulkEditor: CellEditorHandle | null = null;
   /** The board/list selection bar, when shown. */
   private rowSelectionBar: HTMLElement | null = null;
-  /** The pick count last announced for barless board and gallery picks; paint also runs on redraws. */
+  /** The pick count last announced for barless picks; paint also runs on redraws. */
   private announcedPickCount = 0;
   /** A new board card left unnamed by Escape: selected alone, it shows no bar. Any other selection drops it. */
   private barlessRowId: string | null = null;
@@ -2943,6 +2962,7 @@ export class DatabaseTool implements BlockTool {
     this.hostLevers.destroy();
     document.removeEventListener('keydown', this.handleSelectionKeys, true);
     document.removeEventListener('copy', this.handleSelectionCopy, true);
+    document.removeEventListener('pointerdown', this.handleSelectionOutside, true);
     this.bulkEditor?.close();
     this.openCellEditors.clear();
     this.api.events.off('block changed', this.handleBlockChanged);
@@ -3182,6 +3202,7 @@ export class DatabaseTool implements BlockTool {
           ...(typeof rowData?.pageId === 'string' && rowData.pageId.length > 0 ? { pageId: rowData.pageId } : {}),
           ...(typeof rowData?.icon === 'string' && rowData.icon !== '' ? { icon: rowData.icon } : {}),
           ...(typeof rowData?.cover === 'string' && rowData.cover !== '' ? { cover: rowData.cover } : {}),
+          ...(typeof rowData?.coverPosition === 'number' ? { coverPosition: rowData.coverPosition } : {}),
           ...(typeof rowData?.fullWidth === 'boolean' ? { fullWidth: rowData.fullWidth } : {}),
           ...(rowData?.reminders !== undefined ? { reminders: rowData.reminders } : {}),
           ...(Object.keys(reactions).length > 0 ? { reactions } : {}),
@@ -5740,6 +5761,7 @@ export class DatabaseTool implements BlockTool {
         open: (rowId) => this.handleRowClick(rowId),
         writable: !this.readOnly,
         addPin: (lngLat) => this.addMapPin(viewConfig.id, lngLat),
+        rowHasBody: (rowId) => this.rowHasBody(rowId),
       });
     } else if (viewConfig.type === 'dashboard') {
       this.dashboardSources.clear();
@@ -6835,6 +6857,7 @@ export class DatabaseTool implements BlockTool {
       cellContext: this.cellContext(),
       ...this.commentBadgeLever(),
       ...this.calendarLever(this.dataId, viewConfig.id),
+      peek: this.sidePeek(),
       handlers: {
         openRow: (rowId) => this.handleRowClick(rowId),
         ...(this.readOnly ? {} : {
@@ -6902,6 +6925,7 @@ export class DatabaseTool implements BlockTool {
 
     this.insertNewRow(rowData);
     void this.sync.syncCreateRow({ id: rowData.id, properties: rowData.properties, position: rowData.position });
+    this.keepTimelinePlace();
     this.rerenderView({ keepDrawer: true });
 
     return rowData.id;
@@ -6934,7 +6958,15 @@ export class DatabaseTool implements BlockTool {
     if (this.cardDrawer?.openRowId === rowId) {
       this.cardDrawer.syncOpenRow(this.rowOrTemplate(rowId));
     }
+    this.keepTimelinePlace();
     this.rerenderView({ keepDrawer: true });
+  }
+
+  /** notion-motion.md Round 49 B5: the next draw keeps the chart's scroll. Only for writes: Today and zoom must re-centre. */
+  private keepTimelinePlace(): void {
+    if (this.view instanceof DatabaseTimelineView) {
+      this.timelineOrigins.set(this.view.viewId, this.view.origin);
+    }
   }
 
   private openTimelineZoomMenu(anchor: HTMLElement, viewConfig: DatabaseViewConfig): void {
@@ -8165,10 +8197,7 @@ export class DatabaseTool implements BlockTool {
       state,
       cellContext: this.cellContext(),
       selectionBarSlot: () => context === undefined ? this.selectionBarSlot() : null,
-      ...(context === undefined ? { peek: {
-        rowId: () => (this.cardDrawer?.isOpen === true && this.cardDrawer.openMode === 'side' ? this.cardDrawer.openRowId : null),
-        close: () => this.cardDrawer?.close(),
-      } } : {}),
+      ...(context === undefined ? { peek: this.sidePeek() } : {}),
       ...(readOnly ? { openRow: (rowId: string) => (context === undefined ? this.handleRowClick(rowId) : context.openRow(rowId)) } : {
         handlers: this.tableHandlers(context, () => renderer),
       }),
@@ -8751,6 +8780,7 @@ export class DatabaseTool implements BlockTool {
           title: typeof title === 'string' ? title : '',
           ...(source.icon !== undefined ? { icon: source.icon } : {}),
           ...(source.cover !== undefined ? { cover: source.cover } : {}),
+          ...(source.coverPosition !== undefined ? { coverPosition: source.coverPosition } : {}),
           ...(source.fullWidth !== undefined ? { fullWidth: source.fullWidth } : {}),
           ...(reminders !== undefined ? { reminders } : {}),
         },
@@ -9101,6 +9131,7 @@ export class DatabaseTool implements BlockTool {
         title: typeof title === 'string' ? title : '',
         ...(template?.icon !== undefined ? { icon: template.icon } : {}),
         ...(template?.cover !== undefined ? { cover: template.cover } : {}),
+        ...(template?.coverPosition !== undefined ? { coverPosition: template.coverPosition } : {}),
         ...(template?.fullWidth !== undefined ? { fullWidth: template.fullWidth } : {}),
         ...(reminders !== undefined ? { reminders } : {}),
       },
@@ -9211,7 +9242,11 @@ export class DatabaseTool implements BlockTool {
       if (typeof title === 'string') this.updateRowTitleBlock(param.rowId, titlePropId, title);
       this.updateRowBlock(param.rowId, values);
       if (row.icon === undefined && template.icon !== undefined) block.call('updateIcon', { icon: template.icon });
-      if (row.cover === undefined && template.cover !== undefined) block.call('updateCover', { cover: template.cover });
+      if (row.cover === undefined && template.cover !== undefined) {
+        block.call('updateCover', { cover: template.cover });
+        // After updateCover, which drops a position.
+        if (template.coverPosition !== undefined) block.call('updateCoverPosition', { position: template.coverPosition });
+      }
       if (row.fullWidth === undefined && template.fullWidth !== undefined) block.call('updateFullWidth', { fullWidth: template.fullWidth });
       if (Object.keys(reminders).length > 0) block.call('updateReminders', reminders);
       block.dispatchChange();
@@ -9309,6 +9344,7 @@ export class DatabaseTool implements BlockTool {
         template: true,
         ...(template.icon !== undefined ? { icon: template.icon } : {}),
         ...(template.cover !== undefined ? { cover: template.cover } : {}),
+        ...(template.coverPosition !== undefined ? { coverPosition: template.coverPosition } : {}),
         ...(template.fullWidth !== undefined ? { fullWidth: template.fullWidth } : {}),
         ...(reminders !== undefined ? { reminders } : {}),
       }, { parentId: this.dataId, position: 'end', id });
@@ -9947,12 +9983,20 @@ export class DatabaseTool implements BlockTool {
     }
   }
 
+  /** The row in the side peek, for a pill that reads CLOSE on it. */
+  private sidePeek(): RowPeek {
+    return {
+      rowId: () => (this.cardDrawer?.isOpen === true && this.cardDrawer.openMode === 'side' ? this.cardDrawer.openRowId : null),
+      close: () => this.cardDrawer?.close(),
+    };
+  }
+
   private attachReadListeners(boardEl: HTMLDivElement): void {
-    // Notion: a right-click on a card or list row opens its row menu.
+    // Notion: a right-click on a card or row opens its row menu. A writable table opens its own ⋮⋮ menu first.
     boardEl.addEventListener('contextmenu', (event) => {
       const target = event.target instanceof Element ? event.target : null;
       const rowEl = target?.closest<HTMLElement>('[data-blok-database-card], [data-blok-database-gallery-card], [data-blok-database-list-row], '
-        + '[data-blok-database-timeline-bar], [data-blok-database-timeline-table-row], [data-blok-database-calendar-event]');
+        + '[data-blok-database-timeline-bar], [data-blok-database-timeline-table-row], [data-blok-database-calendar-event], [data-blok-database-table-row]');
       const rowId = rowEl?.getAttribute('data-row-id');
 
       // A field being edited keeps the native menu, for copy and paste.
@@ -9963,10 +10007,10 @@ export class DatabaseTool implements BlockTool {
       event.stopPropagation();
       // notion-motion.md Round 13: a board card's right-click drops every pick and opens that card's own menu.
       if (rowEl.matches('[data-blok-database-board] [data-blok-database-card]')) this.clearRowSelection();
-      // findings-listgallery L16: a list row's menu opens at the pointer.
-      const anchor = rowEl.matches('[data-blok-database-list-row]') ? pointerAnchor(rowEl, event) : rowEl;
+      const placement = pointerMenuPlacement(rowEl, event);
+      const anchor = placement?.anchor ?? rowEl;
 
-      this.openCardMenu(anchor, rowEl, rowId);
+      this.openCardMenu(anchor, rowEl, rowId, undefined, 'card', placement?.coverFlipOffset);
       if (anchor !== rowEl) this.cardMenuPopover?.on(PopoverEvent.Closed, () => anchor.remove());
     });
     boardEl.addEventListener('click', (event) => {
@@ -10025,7 +10069,7 @@ export class DatabaseTool implements BlockTool {
    * Board and gallery carry Layout and Property visibility; a list row does not (research/12 §3).
    * A timeline bar has no Comment; its table panel row does (research/22 §11).
    */
-  private openCardMenu(anchor: HTMLElement, cardEl: HTMLElement, rowId: string, at?: OpenMenuOptions['at'], kind: 'card' | 'handle' = 'card'): void {
+  private openCardMenu(anchor: HTMLElement, cardEl: HTMLElement, rowId: string, at?: OpenMenuOptions['at'], kind: 'card' | 'handle' = 'card', coverFlipOffset?: number): void {
     const type = this.shownView()?.type;
 
     this.openRowMenu(rowId, anchor, cardEl, {
@@ -10033,6 +10077,7 @@ export class DatabaseTool implements BlockTool {
       comment: !cardEl.hasAttribute('data-blok-database-timeline-bar'),
       kind,
       ...(at !== undefined ? { at } : {}),
+      ...(coverFlipOffset !== undefined ? { coverFlipOffset } : {}),
     });
   }
 
@@ -10051,7 +10096,7 @@ export class DatabaseTool implements BlockTool {
    * `rowMenuItems` as the table's ⋮⋮ so they cannot drift. `card` keeps its
    * hover buttons while the menu is up.
    */
-  private openRowMenu(rowId: string, anchor: HTMLElement, card: HTMLElement, options: { viewSettings: boolean; comment?: boolean; at?: OpenMenuOptions['at']; kind?: 'card' | 'handle'; viewportMargin?: number }): void {
+  private openRowMenu(rowId: string, anchor: HTMLElement, card: HTMLElement, options: { viewSettings: boolean; comment?: boolean; at?: OpenMenuOptions['at']; kind?: 'card' | 'handle'; viewportMargin?: number; coverFlipOffset?: number }): void {
     const comment = options.comment === false ? undefined : this.commentLever().comment;
     const writable = (): boolean => !this.readOnly && !this.destroyed;
     const listTargets = (): Array<{ id: string; title: string }> => this.moveTargets();
@@ -10100,6 +10145,7 @@ export class DatabaseTool implements BlockTool {
       kind: options.kind ?? 'card',
       ...(options.at !== undefined ? { at: options.at } : {}),
       ...(options.viewportMargin !== undefined ? { viewportMargin: options.viewportMargin } : {}),
+      ...(options.coverFlipOffset !== undefined ? { coverFlipOffset: options.coverFlipOffset } : {}),
       searchPlaceholder: this.api.i18n.t('tools.database.searchActions'),
       onClose: () => {
         card.removeAttribute('data-popover-open');
@@ -10155,10 +10201,10 @@ export class DatabaseTool implements BlockTool {
   }
 
   /** `owner` keeps `data-popover-open` while the menu is up, so its hover-only buttons stay shown. */
-  private showGroupPopover(anchor: HTMLElement, items: ReturnType<typeof groupMenuItems>, owner?: HTMLElement, layout: { minWidth?: string; scopeElement?: HTMLElement; class?: string; offset?: number; highlight?: string } = {}): void {
+  private showGroupPopover(anchor: HTMLElement, items: ReturnType<typeof groupMenuItems>, owner?: HTMLElement, layout: { minWidth?: string; scopeElement?: HTMLElement; class?: string; offset?: number; highlight?: string; edgeMargin?: number } = {}): void {
     this.groupMenuPopover?.destroy();
 
-    const popover = new PopoverDesktop({
+    const params: PopoverDesktopParams = {
       class: layout.class ?? DATABASE_MENU_CLASS,
       animateClose: true,
       trigger: anchor,
@@ -10168,7 +10214,10 @@ export class DatabaseTool implements BlockTool {
       autoFocusFirstItem: false,
       items,
       ...(layout.scopeElement !== undefined ? { scopeElement: layout.scopeElement } : {}),
-    });
+    };
+    const popover = new PopoverDesktop(layout.edgeMargin === undefined
+      ? params
+      : { ...params, ...groupMenuCoverPlacement(anchor, layout.edgeMargin, layout.offset ?? 0) });
 
     // Escape closes only the open submenu, as measured on Notion's other menus (research/23:33, 26:78, 27:299, 35:418).
     popover.escapeClosesSubmenuFirst = true;
@@ -10233,6 +10282,8 @@ export class DatabaseTool implements BlockTool {
       class: DATABASE_GROUP_MENU_CLASS,
       // notion-motion.md Round 35 and Round 39 §4: the board's and the table's open with their first row filled.
       highlight: 'edit-groups',
+      // notion-motion.md Round 53 §9A: near the right edge it slides in to 12 from the window.
+      edgeMargin: 12,
     });
   }
 
@@ -10793,6 +10844,7 @@ export class DatabaseTool implements BlockTool {
           if (!writable()) return;
           if (this.model.getProperty(propertyId)?.type === 'relation') {
             this.commitRelation(rowId, propertyId, input);
+            this.keepTimelinePlace();
             this.rerenderView({ keepDrawer: true });
 
             return;
@@ -10803,6 +10855,7 @@ export class DatabaseTool implements BlockTool {
           // A template is no model row: read it too, or clearing its value is never saved.
           if (JSON.stringify(this.rowOrTemplate(rowId)?.properties[propertyId] ?? null) === JSON.stringify(value)) return;
           this.updateRowBlock(rowId, { [propertyId]: value });
+          this.keepTimelinePlace();
           this.rerenderView({ keepDrawer: true });
           this.sync.syncUpdateRow({ rowId, properties: { [propertyId]: value } });
         },
@@ -10848,8 +10901,17 @@ export class DatabaseTool implements BlockTool {
           this.cardDrawer?.syncOpenRow(this.rowOrTemplate(rowId));
           this.rerenderView({ keepDrawer: true });
         },
-        uploadCover: this.config.uploadCover ?? this.coverUploader(),
-        coverGallery: this.config.coverGallery,
+        onCoverPositionChange: (rowId, position) => {
+          if (!writable()) return;
+          const row = this.api.blocks.getChildren(this.dataId).find((child) => child.id === rowId);
+
+          row?.call('updateCoverPosition', { position });
+          row?.dispatchChange();
+          this.syncRowsFromBlocks();
+          this.cardDrawer?.syncOpenRow(this.rowOrTemplate(rowId));
+          this.rerenderView({ keepDrawer: true });
+        },
+        uploadCover: this.coverUploader(),
         onIconChange: (rowId, icon) => {
           if (!writable()) return;
           const row = this.api.blocks.getChildren(this.dataId).find((child) => child.id === rowId);
@@ -11662,10 +11724,12 @@ export class DatabaseTool implements BlockTool {
     slot.toggleAttribute('data-blok-database-selecting', slot.querySelector(':scope > [data-blok-database-table-selection-bar]') !== null);
     document.removeEventListener('keydown', this.handleSelectionKeys, true);
     document.removeEventListener('copy', this.handleSelectionCopy, true);
+    document.removeEventListener('pointerdown', this.handleSelectionOutside, true);
     const view = this.shownView();
-    const barless = view?.type === 'board' || view?.type === 'gallery';
+    // notion-motion.md Round 52 §5, Round 54 §3: timeline picks show no bar either, one bar or many.
+    const barless = view?.type === 'board' || view?.type === 'gallery' || view?.type === 'timeline';
 
-    // The bar's count was a polite live region; board and gallery picks have no bar, so say the count.
+    // The bar's count was a polite live region; barless picks have no bar, so say the count.
     if (barless && this.rowSelection.size > 0 && this.rowSelection.size !== this.announcedPickCount) {
       announce(this.api.i18n.t('tools.database.tableSelectedCount', { count: this.rowSelection.size }));
     }
@@ -11675,6 +11739,8 @@ export class DatabaseTool implements BlockTool {
     }
     document.addEventListener('keydown', this.handleSelectionKeys, true);
     document.addEventListener('copy', this.handleSelectionCopy, true);
+    // notion-motion.md Round 50 §2: a click outside clears a timeline pick. Other views are unmeasured.
+    if (view?.type === 'timeline') document.addEventListener('pointerdown', this.handleSelectionOutside, true);
 
     // research/22 §1: Notion shows no bulk bar for picked calendar events.
     // notion-motion.md, Round 9: nor for a new board card left unnamed by Escape.
@@ -11929,6 +11995,17 @@ export class DatabaseTool implements BlockTool {
    * Cmd/Ctrl+C on picked cards, list rows or events copies their row blocks,
    * page bodies included, in view order. Core sees no block selection here.
    */
+  /** Inside: this block, its view, its selection bar, the menus and editors it opens, and the side peek. */
+  private readonly handleSelectionOutside = (event: PointerEvent): void => {
+    const target = event.target instanceof Element ? event.target : null;
+
+    if (target === null) return;
+    const inside = [this.viewOwner().element, this.viewRoot(), this.selectionBarSlot()].some((el) => el?.contains(target) === true)
+      || target.closest(`[${DATA_ATTR.popover}], [data-blok-database-drawer]`) !== null;
+
+    if (!inside) this.clearRowSelection();
+  };
+
   private readonly handleSelectionCopy = (event: ClipboardEvent): void => {
     const target = event.target instanceof HTMLElement ? event.target : null;
     // A Shift-click leaves the caret where it was, so only selected text, a field or selected blocks keep the copy.
