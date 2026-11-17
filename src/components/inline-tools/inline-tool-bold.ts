@@ -335,6 +335,18 @@ export class BoldInlineTool implements InlineTool {
       return;
     }
 
+    // Nothing legacy in this batch: no conversion to make, and above all no
+    // reason to read the selection. A selection read right after a DOM write
+    // forces a full layout, and the boot inserts hundreds of subtrees that
+    // carry no <b> at all — 10.4 s of a 20.5 s load went here.
+    const carriesLegacyBold = [...roots].some(
+      (root) => root.isConnected && (root.tagName === 'B' || root.getElementsByTagName('b').length > 0)
+    );
+
+    if (!carriesLegacyBold) {
+      return;
+    }
+
     // Never convert the <b> holding the caret (see BoldNormalizationPass):
     // reparenting it mid-typing displaces the caret.
     const preserveNode = window.getSelection()?.anchorNode ?? null;

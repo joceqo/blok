@@ -177,3 +177,54 @@ describe('BoldNormalizationPass — coût du parcours', () => {
     expect(host.querySelector('strong')).toBeNull();
   });
 });
+
+it('does not read the selection for a batch that holds no legacy bold', () => {
+  // Reading the selection right after a DOM write forces a full layout. The
+  // boot inserts hundreds of subtrees, almost none of which carry a <b>:
+  // measured at 10.4 s of a 20.5 s load, charged to normalizeChanged itself.
+  const editor = document.createElement('div');
+
+  editor.setAttribute('data-blok-editor', '');
+  document.body.append(editor);
+  const observer = new MutationObserver(() => undefined);
+
+  observer.observe(editor, { childList: true, subtree: true });
+  for (let index = 0; index < 50; index++) {
+    const paragraph = document.createElement('p');
+
+    paragraph.innerHTML = `<em>ligne ${index}</em> sans gras`;
+    editor.append(paragraph);
+  }
+  const records = observer.takeRecords();
+
+  observer.disconnect();
+  const getSelection = vi.spyOn(window, 'getSelection');
+  const internals = BoldInlineTool as unknown as { normalizeChanged(records: MutationRecord[]): void };
+
+  internals.normalizeChanged(records);
+
+  expect(getSelection).not.toHaveBeenCalled();
+});
+
+it('still converts legacy bold when the batch holds one', () => {
+  const editor = document.createElement('div');
+
+  editor.setAttribute('data-blok-editor', '');
+  document.body.append(editor);
+  const observer = new MutationObserver(() => undefined);
+
+  observer.observe(editor, { childList: true, subtree: true });
+  const paragraph = document.createElement('p');
+
+  paragraph.innerHTML = 'avant <b>gras</b> après';
+  editor.append(paragraph);
+  const records = observer.takeRecords();
+
+  observer.disconnect();
+  const internals = BoldInlineTool as unknown as { normalizeChanged(records: MutationRecord[]): void };
+
+  internals.normalizeChanged(records);
+
+  expect(editor.querySelector('b')).toBeNull();
+  expect(editor.querySelector('strong')?.textContent).toBe('gras');
+});
