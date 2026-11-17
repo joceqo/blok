@@ -592,7 +592,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
     scroller.appendChild(gridEl);
     root.appendChild(scroller);
-    if (header !== null) this.stickyHeader = new DatabaseStickyHeader(scroller, gridEl, header, () => this.stickAt);
+    if (header !== null) this.stickyHeader = new DatabaseStickyHeader(scroller, gridEl, header);
 
     this.grid = new DatabaseTableGrid({
       root: gridEl,

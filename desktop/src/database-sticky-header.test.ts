@@ -35,7 +35,10 @@ it('keeps the real, clickable header visible while the page and table scroll', a
           <div data-blok-database-table-column-header data-frozen style="inset-inline-start:0">
             <button data-header-action>Column</button>
           </div><div data-blok-database-table-column-header>Other</div>
-        </div><div style="height:1000px"></div></div>
+        </div><div style="height:1000px;display:flex">
+          <div data-blok-database-table-cell data-frozen style="inset-inline-start:0;width:200px;flex:none">Frozen body</div>
+          <div data-body-column style="width:200px;flex:none">Other body</div>
+        </div></div>
       </div></div></div>`);
     await page.addScriptTag({ content: script });
     await page.evaluate(() => {
@@ -45,20 +48,33 @@ it('keeps the real, clickable header visible while the page and table scroll', a
       (window as unknown as { sticky: { destroy(): void }; DatabaseStickyHeader: new (...args: unknown[]) => { destroy(): void }; clicks: number }).clicks = 0;
       grid.addEventListener('click', () => { (window as unknown as { clicks: number }).clicks++; });
       (window as unknown as { sticky: { destroy(): void }; DatabaseStickyHeader: new (...args: unknown[]) => { destroy(): void } }).sticky =
-        new (window as unknown as { DatabaseStickyHeader: new (...args: unknown[]) => { destroy(): void } }).DatabaseStickyHeader(scroller, grid, header, () => 0);
+        new (window as unknown as { DatabaseStickyHeader: new (...args: unknown[]) => { destroy(): void } }).DatabaseStickyHeader(scroller, grid, header);
       document.querySelector<HTMLElement>('[data-desktop-page-canvas]')!.scrollTop = 220;
     });
     const header = page.locator('[data-blok-database-table-header]');
-    await expect.poll(() => header.evaluate(el => el.matches(':popover-open'))).toBe(true);
+    await expect.poll(() => header.evaluate(el => el.hasAttribute('data-blok-database-header-pinned'))).toBe(true);
     expect((await header.boundingBox())?.y).toBeCloseTo(44, 0);
     expect(await header.evaluate(el => getComputedStyle(el).overflowY)).toBe('visible');
     expect(await header.evaluate(el => el.clientHeight)).toBe(36);
+    // No event or animation frame is allowed between changing scrollLeft and
+    // checking alignment: the browser must move header and body together.
+    const offsets = await page.evaluate(() => {
+      const port = document.querySelector<HTMLElement>('[data-blok-database-table-scroller]')!;
+      const head = document.querySelector<HTMLElement>('[data-blok-database-table-header]')!;
+      const body = document.querySelector<HTMLElement>('[data-body-column]')!;
+
+      return [80, 340, 120, 0].map(x => {
+        port.scrollLeft = x;
+        return head.children[1].getBoundingClientRect().left - body.getBoundingClientRect().left;
+      });
+    });
+    expect(offsets).toEqual([0, 0, 0, 0]);
     await page.locator('[data-blok-database-table-scroller]').evaluate(el => { el.scrollLeft = 300; el.setAttribute('data-scrolled', ''); });
-    await expect.poll(() => page.locator('[data-frozen]').evaluate(el => el.getBoundingClientRect().left)).toBeCloseTo(0, 0);
+    await expect.poll(() => page.locator('[data-blok-database-table-column-header][data-frozen]').evaluate(el => el.getBoundingClientRect().left)).toBeCloseTo(0, 0);
     await page.locator('[data-header-action]').click();
     expect(await page.evaluate(() => (window as unknown as { clicks: number }).clicks)).toBe(1);
     await page.locator('[data-desktop-page-canvas]').evaluate(el => { el.scrollTop = 0; });
-    await expect.poll(() => header.evaluate(el => el.matches(':popover-open'))).toBe(false);
+    await expect.poll(() => header.evaluate(el => el.hasAttribute('data-blok-database-header-pinned'))).toBe(false);
     await page.evaluate(() => (window as unknown as { sticky: { destroy(): void } }).sticky.destroy());
   } finally {
     await page.close();

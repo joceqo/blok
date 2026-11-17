@@ -9952,8 +9952,7 @@ textarea[data-blok-database-cell-input] {
   initial-value: transparent;
 }
 
-/* The header is lifted into the top layer while the page scrolls past it.
-   A spacer keeps the rows at the same position in the grid. */
+/* Vertical compensation keeps the header in this native horizontal scrollport. */
 [data-blok-database-table-header] {
   position: sticky;
   inset-block-start: 0;
@@ -9964,31 +9963,8 @@ textarea[data-blok-database-cell-input] {
   box-shadow: inset 0 -1px 0 var(--blok-database-table-border);
 }
 
-[data-blok-database-table-grid]:has(> [data-blok-database-table-header]:popover-open)::before {
-  content: '';
-  flex: none;
-  height: 36px;
-}
-
-[data-blok-database-table-header]:popover-open {
-  position: fixed;
-  inset: auto;
-  box-sizing: border-box;
-  max-width: none;
-  max-height: none;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  /* The UA's overflow:auto otherwise adds a scrollbar inside this 36px row,
-     cutting the column labels in half. The scrollport supplies horizontal clipping. */
-  overflow: visible;
-}
-
-/* In the top layer sticky cells no longer see their scrollport. Recreate the
-   same inline offset as the body cells, including RTL. */
-[data-blok-database-table-header]:popover-open [data-frozen] {
-  position: relative;
-  inset-inline-start: var(--_blok-database-pinned-shift) !important;
+[data-blok-database-table-header][data-blok-database-header-pinned] {
+  will-change: transform;
 }
 
 [data-blok-database-table-column-header] {

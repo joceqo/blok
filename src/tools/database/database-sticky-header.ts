@@ -1,8 +1,8 @@
 /**
  * A horizontal scrollport also becomes a vertical scroll container in CSS.
- * Its header therefore cannot stick to the page. Move the real header into
- * the top layer while the table crosses the page's sticky edge; it keeps its
- * DOM identity, grid handlers and popover anchors.
+ * Its header therefore cannot stick to the page with CSS alone. Compensate
+ * only for page scroll on the vertical axis. Keep it inside the scrollport so
+ * horizontal movement and frozen columns stay native and in sync with rows.
  */
 export class DatabaseStickyHeader {
   private frame = 0;
@@ -14,7 +14,6 @@ export class DatabaseStickyHeader {
     private readonly scroller: HTMLElement,
     private readonly grid: HTMLElement,
     private readonly header: HTMLElement,
-    private readonly stickAt: () => number,
   ) {
     this.observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => this.schedule());
     this.observer?.observe(scroller);
@@ -26,7 +25,8 @@ export class DatabaseStickyHeader {
   private readonly onScroll = (event: Event): void => {
     const target = event.target;
 
-    if (target === document || target === this.scroller
+    if (target === this.scroller) return;
+    if (target === document
       || (target instanceof Element && target.contains(this.scroller))) this.schedule();
   };
 
@@ -56,7 +56,7 @@ export class DatabaseStickyHeader {
   }
 
   private update(): void {
-    if (this.destroyed || !this.scroller.isConnected || typeof this.header.showPopover !== 'function') return;
+    if (this.destroyed || !this.scroller.isConnected) return;
     const port = this.scroller.getBoundingClientRect();
     // Cached row editors remain connected under a hidden host. They must not
     // walk ancestors and recalculate sticky geometry on every page scroll.
@@ -67,7 +67,7 @@ export class DatabaseStickyHeader {
     }
     const grid = this.grid.getBoundingClientRect();
     const top = this.pageEdge();
-    const shouldPin = grid.top < top && port.bottom > top + this.header.offsetHeight
+    const shouldPin = grid.top < top && port.bottom > top
       && port.right > 0 && port.left < window.innerWidth;
 
     if (!shouldPin) {
@@ -76,30 +76,18 @@ export class DatabaseStickyHeader {
       return;
     }
     if (!this.pinned) {
-      this.header.setAttribute('popover', 'manual');
-      this.header.showPopover();
+      this.header.setAttribute('data-blok-database-header-pinned', '');
       this.pinned = true;
     }
+    const offset = Math.max(0, Math.min(top - grid.top, grid.height - this.header.offsetHeight));
 
-    const left = Math.max(0, port.left - grid.left);
-    const right = Math.max(0, grid.right - port.right);
-
-    this.header.style.top = `${top}px`;
-    this.header.style.left = `${grid.left}px`;
-    this.header.style.width = `${grid.width}px`;
-    this.header.style.clipPath = `inset(0 ${right}px 0 ${left}px)`;
-    this.header.style.setProperty('--_blok-database-pinned-shift', `${Math.max(0, Math.abs(this.scroller.scrollLeft) - this.stickAt())}px`);
+    this.header.style.transform = `translateY(${offset}px)`;
   }
 
   private unpin(): void {
     if (!this.pinned) return;
-    if (this.header.matches(':popover-open')) this.header.hidePopover();
-    this.header.removeAttribute('popover');
-    this.header.style.removeProperty('top');
-    this.header.style.removeProperty('left');
-    this.header.style.removeProperty('width');
-    this.header.style.removeProperty('clip-path');
-    this.header.style.removeProperty('--_blok-database-pinned-shift');
+    this.header.removeAttribute('data-blok-database-header-pinned');
+    this.header.style.removeProperty('transform');
     this.pinned = false;
   }
 
