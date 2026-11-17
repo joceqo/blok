@@ -2,7 +2,7 @@
  * Give paint and input a turn; scheduler.yield is optional in Safari/WebViews.
  * @returns promise resolved after the browser has had a scheduling opportunity
  */
-const yieldToBrowser = (): Promise<void> => {
+export const yieldToBrowser = (): Promise<void> => {
   const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield?: () => Promise<void> } }).scheduler;
 
   return typeof scheduler?.yield === 'function'

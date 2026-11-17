@@ -13,6 +13,13 @@ import { DATA_ATTR } from '../../constants/data-attributes';
 import { logLabeled } from '../../utils';
 import { acceptsChildren, isChildToolAllowed } from '../../utils/child-tools';
 import { moveElementAfter, moveElementBefore, withBatchedMoves } from '../../utils/html';
+import { yieldToBrowser } from '../../utils/render-slices';
+
+/**
+ * How many blocks one activation run handles before handing the thread back.
+ * Matches the renderer's own slice size (`forEachRenderSlice`).
+ */
+const ACTIVATION_SLICE = 25;
 import { equals } from '../../utils/object';
 import { sanitizeBlocks, stripUnsafeUrlsDeep } from '../../utils/sanitizer';
 import { dfsOrder, flatIndexForPlacement, subtreeEnd, type TreePlacement } from '../../utils/tree-order';
@@ -2262,22 +2269,83 @@ export class BlockYjsSync {
       // it, which forces a full layout right after a DOM write. On an 849-block
       // load that was 862 reads at ~31 ms each. Batching per placement does NOT
       // help — this is the loop that runs once per block.
-      withBatchedMoves(() => {
-        for (const { block, targetIndex, parentId, placement } of created) {
-          this.blocksStore.activateBlock(block, targetIndex);
-          this.handlers.onBlockAdded(block, targetIndex, replaySourceOf(origin));
+      // Filling an empty view, outside a remote batch, is the one case where
+      // the thread may be handed back mid-way: nothing else is expected to
+      // touch the document, and this loop is where the page freezes. A remote
+      // batch keeps the single synchronous pass, so peers never observe a
+      // half-applied change.
+      if (initialBatch && created.length > ACTIVATION_SLICE && origin !== 'remote') {
+        void this.withAtomicOperationAsync(
+          () => this.activateInSlices(created, origin),
+          { extendThroughRAF: true }
+        );
 
-          // Set parent relationship if needed — this moves the block into the toggle's
-          // DOM child container, updates parent's contentIds, and applies indentation.
-          if (parentId !== undefined) {
-            this.placeOrReparent(block, placement, parentId);
-            affectedParents.add(parentId);
-            this.warnIfChildToolDenied(block, parentId);
-          }
-        }
-      });
+        return;
+      }
+
+      this.activateSlice(created, origin, affectedParents);
       affectedParents.forEach(parentId => this.reconcileParentChildOrderFromDoc(parentId));
     }, { extendThroughRAF: true });
+  }
+
+  /**
+   * Activates one run of freshly created blocks: DOM insert, RENDERED, parent.
+   * @param slice - the blocks to activate, in document order
+   * @param origin - what produced the change
+   * @param affectedParents - collects the parents whose child order to settle
+   */
+  private activateSlice(
+    slice: Array<{ block: Block; targetIndex: number; parentId: string | undefined; placement: TreePlacement | undefined }>,
+    origin: BlockChangeEvent['origin'] | undefined,
+    affectedParents: Set<string>
+  ): void {
+    // One reading of the selection for the whole run: each placement moves a
+    // holder and then asked the live selection whether the caret was inside it,
+    // which forces a full layout right after a DOM write.
+    withBatchedMoves(() => {
+      for (const { block, targetIndex, parentId, placement } of slice) {
+        this.blocksStore.activateBlock(block, targetIndex);
+        this.handlers.onBlockAdded(block, targetIndex, replaySourceOf(origin));
+
+        // Set parent relationship if needed — this moves the block into the toggle's
+        // DOM child container, updates parent's contentIds, and applies indentation.
+        if (parentId !== undefined) {
+          this.placeOrReparent(block, placement, parentId);
+          affectedParents.add(parentId);
+          this.warnIfChildToolDenied(block, parentId);
+        }
+      }
+    });
+  }
+
+  /**
+   * Activates a first fill in runs, handing the thread back between them.
+   *
+   * Lowering the total time is not enough for the page to answer a click: the
+   * browser only handles an event BETWEEN tasks. Measured on 849 blocks, this
+   * loop held the thread for one unbroken stretch of several seconds.
+   *
+   * The atomic window stays open across the pauses — that is what
+   * `withAtomicOperationAsync` is for — so the DOM written here still does not
+   * write back to Yjs and still does not open undo entries.
+   * @param created - every block this batch created, in document order
+   * @param origin - what produced the change
+   */
+  private async activateInSlices(
+    created: Array<{ block: Block; targetIndex: number; parentId: string | undefined; placement: TreePlacement | undefined }>,
+    origin: BlockChangeEvent['origin'] | undefined
+  ): Promise<void> {
+    const affectedParents = new Set<string>();
+
+    for (let start = 0; start < created.length; start += ACTIVATION_SLICE) {
+      this.activateSlice(created.slice(start, start + ACTIVATION_SLICE), origin, affectedParents);
+
+      if (start + ACTIVATION_SLICE < created.length) {
+        await yieldToBrowser();
+      }
+    }
+
+    affectedParents.forEach(parentId => this.reconcileParentChildOrderFromDoc(parentId));
   }
 
   /**
