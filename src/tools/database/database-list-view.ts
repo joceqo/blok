@@ -1,4 +1,4 @@
-import { fileChipIcon, pageIconElement, pagePlaceholderIcon } from './page-icon';
+import { fileChipIcon, pagePlaceholderIcon, rowPageGlyph } from './page-icon';
 import { showAvatarsOnly } from './avatar-only';
 import type { I18n } from '../../../types';
 import type { DatabaseRow, OpenPagesIn, PropertyDefinition, PropertyValue, SelectOption } from './types';
@@ -8,7 +8,7 @@ import { safeImageSrc } from '../../components/utils/sanitize-url';
 import { createGroupPill, renderCellValue } from './cells';
 import { rowCellContext } from './reminders';
 import type { CellContext } from './cells';
-import { IconChevronDown, IconDotsHorizontal, IconExpandDiagonal, IconPeekCenter, IconPeekSide, IconPencilLine, IconPlus, IconRowGrip } from '../../components/icons';
+import { IconDotsHorizontal, IconExpandDiagonal, IconPeekCenter, IconPeekSide, IconPencilLine, IconPlayerPlay, IconPlus, IconRowGrip } from '../../components/icons';
 import { startInlineRename } from '../../components/utils/inline-rename';
 import { onHover } from '../../components/utils/tooltip';
 import { propertyHint } from './property-hint';
@@ -583,7 +583,7 @@ export class DatabaseListView implements DatabaseViewRenderer {
     toggle.setAttribute('data-blok-database-list-group-toggle', '');
     toggle.setAttribute('aria-expanded', 'true');
     toggle.setAttribute('aria-label', this.i18n.t('tools.database.tableCollapseGroup'));
-    toggle.innerHTML = IconChevronDown;
+    toggle.innerHTML = IconPlayerPlay;
     label.setAttribute('data-blok-database-list-group-label', '');
     label.appendChild(this.groupValue(option));
     header.append(toggle, label);
@@ -688,8 +688,7 @@ export class DatabaseListView implements DatabaseViewRenderer {
       rowEl.appendChild(this.createGutter(row.id));
     }
 
-    // notion-spec-2 §21.8: a row with no emoji shows the empty-page glyph.
-    const icon = this.showPageIcon ? pageIconElement(row) ?? pagePlaceholderIcon() : null;
+    const icon = this.showPageIcon ? rowPageGlyph(row, this.settings.cellContext?.rowHasBody?.(row.id) === true, true) : null;
 
     if (icon !== null) {
       rowEl.appendChild(icon);
@@ -903,6 +902,30 @@ export const pointerAnchor = (rowEl: HTMLElement, event: Pick<MouseEvent, 'clien
   point.style.top = `${event.clientY - origin.top}px`;
 
   return point;
+};
+
+// A feed card is not listed: Notion opens the database block's menu there, not the row menu (notion-motion.md Round 60 §4).
+const POINTER_MENU_ROWS = [
+  '[data-blok-database-list-row]',
+  '[data-blok-database-board] [data-blok-database-card]',
+  '[data-blok-database-gallery-card]',
+  '[data-blok-database-table-row]',
+  '[data-blok-database-timeline-bar]',
+  '[data-blok-database-timeline-table-row]',
+  '[data-blok-database-calendar-event]',
+].join(', ');
+
+/**
+ * A right-click menu at the pointer: below it with its top 1px under the pointer when it fits, else above
+ * with its bottom on the pointer when its top keeps the card menu's 12px margin, else clamped.
+ * Rows not listed keep the menu on the row.
+ * notion-motion.md Round 58 §6 (threshold 12: top 11.1 no, 12.1 yes), Round 59 §4 (table rows, gallery cards,
+ * timeline bars and panel rows, calendar events).
+ */
+export const pointerMenuPlacement = (rowEl: HTMLElement, event: Pick<MouseEvent, 'clientX' | 'clientY'>): { anchor: HTMLElement; coverFlipOffset: number } | undefined => {
+  if (!rowEl.matches(POINTER_MENU_ROWS)) return undefined;
+
+  return { anchor: pointerAnchor(rowEl, { clientX: event.clientX, clientY: event.clientY + 1 }), coverFlipOffset: 1 };
 };
 
 /** Image file names and data URLs; any other file keeps its chip. */

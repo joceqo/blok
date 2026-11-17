@@ -1,14 +1,21 @@
+import { nanoid } from 'nanoid';
 import type { I18n } from '../../../types';
 import { PopoverEvent } from '@/types/utils/popover/popover-event';
 import { IconArrowDiagonal, IconArrowUp, IconCross, IconDatabase, IconDotsHorizontal, IconFilter, IconSearch, IconSort } from '../../components/icons';
 import { PopoverDesktop } from '../../components/utils/popover';
 import { PopoverItemType } from '../../components/utils/popover/components/popover-item';
 import { DATABASE_HEADER_MENU_CLASS } from './database-table-menus';
-import { chipPart, filterChip } from './database-filter-chip';
+import { chipPart, filterChip, openFilterChip } from './database-filter-chip';
+import type { DatabasePanel } from './database-panel';
+import { sortEditor } from './database-sort-panel';
+import { openAdvancedFilter } from './database-view-settings-panel';
+import type { ViewSettingsContext } from './database-view-settings-panel';
 import { filterPillLabel, filterPillParts, sortDirectionLabelKey } from './database-filter-labels';
 import { propertyTypeMeta } from './database-property-types';
-import { countFilterRules, withEntryIds } from './filter-tree';
-import type { DatabaseViewConfig, PropertyDefinition } from './types';
+import { countFilterRules, isFilterGroup, MAX_FILTER_DEPTH, withEntryIds } from './filter-tree';
+import { NO_VALUE_GROUP_KEY } from './group-keys';
+import { orderedStatusOptions, statusGroupOf } from './property-values';
+import type { DatabaseViewConfig, FilterGroup, FilterNode, FilterRule, PersonalViewPatch, PropertyDefinition } from './types';
 import { openModalDialog } from '../../components/utils/modal-dialog';
 import type { ModalDialogHandle } from '../../components/utils/modal-dialog';
 
@@ -17,13 +24,27 @@ export interface PinnedGroupModalOptions {
   pill: HTMLElement;
   /** The group's name, for the dialog's label. */
   label: string;
-  /** The view's rules as read-only chips, from {@link pinnedGroupChips}. */
-  chips: HTMLElement[];
+  /** The view as the board shows it. The modal edits its own copy and never writes it back. */
+  view: DatabaseViewConfig;
+  /** Localized schema. */
+  schema: PropertyDefinition[];
+  /** Names for the filter chips and their editors. */
+  names?: PinnedGroupChipNames;
+  /** People and related rows the filter editors list. */
+  people?: () => Array<{ id: string; name: string }>;
+  relatedRows?: (property: PropertyDefinition) => Array<{ id: string; title: string }>;
+  thisPageDatabase?: () => string | null;
   /** "Open <database>" in the ⋯ menu. Without it there is no ⋯: Blok has no "Save as view in…". */
   openDatabase?: { name: string; open: () => void };
-  /** The group's rows as a read-only table, narrowed by `search`. */
-  table: (search: string) => { root: HTMLElement; destroy: () => void };
-  i18n: Pick<I18n, 't'>;
+  /**
+   * The group's own rule (pinnedGroupRule). With it the modal's copy of the view holds the rule, and the "N rules"
+   * chip opens the rule editor; the caller then queries without the group key. Without it the chip is read-only.
+   */
+  groupRule?: FilterRule;
+  /** The group's rows as a read-only table, narrowed by `search` and queried with the modal's copy of the view. */
+  /** `byKey`: the copy does not hold the group rule, so the rows must be narrowed by the group's key. */
+  table: (search: string, view: DatabaseViewConfig, byKey: boolean) => { root: HTMLElement; destroy: () => void };
+  i18n: Pick<I18n, 't'> & Partial<Pick<I18n, 'getLocale'>>;
   directionSource: Element | null;
   /** Runs after the dialog is gone, whatever closed it. */
   onClose: () => void;
@@ -40,13 +61,16 @@ export interface PinnedGroupChipNames {
  * notion-motion.md Round 25 §1 (r25-modal-inherit.raw): the view's sort chip, then one "N rules" chip. The modal adds
  * the group's own rule to the view's advanced rules ("1 rule" with none). Round 27 §2 (r27-pm-filtered.raw): a simple
  * filter keeps its own chip after the count, and a divider parts the sort chip from the filter chips (r27-pm-open.png).
- * Round 26 §1: Tab reaches the chips, so they stay buttons; the modal edits nothing, so they are aria-disabled.
+ * Round 26 §1: Tab reaches the chips. Round 38 §1: the sort and filter chips open their editors. With `ruleInTree` the
+ * view's tree already holds the group's rule, so the count is the tree's and the chip opens the rule editor; without
+ * it the chip adds the rule to its count and is aria-disabled.
  */
 export const pinnedGroupChips = (
   view: DatabaseViewConfig,
   schema: PropertyDefinition[],
   i18n: Pick<I18n, 't'>,
-  names: PinnedGroupChipNames = {}
+  names: PinnedGroupChipNames = {},
+  ruleInTree = false
 ): HTMLElement[] => {
   const chips: HTMLElement[] = [];
 
@@ -63,11 +87,17 @@ export const pinnedGroupChips = (
     chips.push(chip);
   }
   const advanced = countFilterRules(view.filterTree) > 0 ? view.filterTree?.filterRules.length ?? 0 : 0;
-  const rules = i18n.t('tools.database.filterRuleCount', { count: advanced + 1 });
-  const rulesChip = filterChip('database-group-modal-rules-chip', rules, { glyph: IconFilter, name: rules });
+  // Round 39 §1: without the rule in the tree, the view's rules count as one wrapped group beside it.
+  const count = ruleInTree ? advanced : Math.min(advanced, 1) + 1;
 
-  rulesChip.setAttribute('data-active', '');
-  chips.push(rulesChip);
+  if (count > 0) {
+    const rules = i18n.t('tools.database.filterRuleCount', { count });
+    const rulesChip = filterChip('database-group-modal-rules-chip', rules, { glyph: IconFilter, name: rules });
+
+    rulesChip.setAttribute('data-active', '');
+    if (!ruleInTree) rulesChip.setAttribute('aria-disabled', 'true');
+    chips.push(rulesChip);
+  }
   const t = (key: string, vars?: Record<string, string | number>): string => i18n.t(key, vars);
 
   for (const filter of withEntryIds(view.filters)) {
@@ -79,14 +109,55 @@ export const pinnedGroupChips = (
     const parts = filterPillParts(filter, property, t, names.personName, rowTitle, names.locale);
     const chip = filterChip(`database-group-modal-filter-chip-${filter.id}`, label, { glyph: propertyTypeMeta(property.type).icon, ...parts });
 
+    chip.setAttribute('data-filter-id', filter.id);
     chip.toggleAttribute('data-active', parts.value !== '');
     chips.push(chip);
   }
-  chips.forEach((chip) => chip.setAttribute('aria-disabled', 'true'));
   if (view.sorts.length > 0) chips.splice(1, 0, chipPart('data-blok-database-chip-divider', {}));
 
   return chips;
 };
+
+/**
+ * The group's key as a filter rule, so the rule editor can show and change it (notion-motion.md Round 27 §2,
+ * r27-pm-rulepop.raw: a Select group reads "Where Select Is Red"). Only option, status and people groups map onto a
+ * rule that matches exactly the group's rows. Date and number buckets and text letters have no such rule: null.
+ */
+export const pinnedGroupRule = (property: PropertyDefinition, key: string, statusBy: DatabaseViewConfig['groupByStatus']): FilterRule | null => {
+  const rule = (operator: string, value: FilterRule['value']): FilterRule => ({ id: nanoid(), propertyId: property.id, operator, value });
+
+  if (property.type === 'select' || property.type === 'status') {
+    if (key === NO_VALUE_GROUP_KEY) return rule('is_empty', null);
+    if (property.type === 'status' && statusBy === 'group') {
+      // The status editor lists options, so the group is written as its members.
+      return rule('equals', orderedStatusOptions(property).filter((option) => statusGroupOf(property, option.id)?.id === key).map((option) => option.id));
+    }
+
+    return rule('equals', [key]);
+  }
+  if (property.type === 'multiSelect' || property.type === 'person' || property.type === 'createdBy' || property.type === 'lastEditedBy') {
+    return key === NO_VALUE_GROUP_KEY ? rule('is_empty', null) : rule('contains', [key]);
+  }
+
+  return null;
+};
+
+const treeDepth = (group: FilterGroup): number =>
+  1 + Math.max(0, ...group.filterRules.filter((node): node is FilterGroup => isFilterGroup(node)).map(treeDepth));
+
+/**
+ * The modal's tree (notion-motion.md Round 39 §1, r39-pm-nrules.raw): the view's rules wrapped in one group, then the
+ * group rule last at the top level. Null when the wrap would pass the depth limit.
+ */
+const withGroupRule = (tree: FilterGroup | undefined, rule: FilterRule): FilterGroup | null => {
+  if (tree === undefined || countFilterRules(tree) === 0) return { id: nanoid(), conjunction: 'and', filterRules: [rule] };
+  const nodes: FilterNode[] = [tree, rule];
+
+  return treeDepth(tree) < MAX_FILTER_DEPTH ? { id: nanoid(), conjunction: 'and', filterRules: nodes } : null;
+};
+
+/** notion-motion.md Round 38 §1 (r38-pm-chips.raw): a chip's editor opens 4 under the chip. */
+const EDITOR_GAP = 4;
 
 /** notion-motion.md Round 26 §1 (r26-pm-more-menu.raw): the ⋯ menu is 201.1 wide, centred under its button, top on its bottom. */
 const MORE_MENU_WIDTH = 201.1;
@@ -159,10 +230,113 @@ export const openPinnedGroupModal = (options: PinnedGroupModalOptions): PinnedGr
   const close = document.createElement('button');
   const chipRow = document.createElement('div');
   const body = document.createElement('div');
-  const state: { handle: ModalDialogHandle | null; table: { destroy: () => void } | null } = { handle: null, table: null };
+  const seeded = options.groupRule === undefined ? null : withGroupRule(options.view.filterTree, options.groupRule);
+  const state: {
+    handle: ModalDialogHandle | null;
+    table: { destroy: () => void } | null;
+    /** Round 38 §1: the modal's own sorts and filters, dropped with it. Ids are fixed once, so chips and editors agree. */
+    view: DatabaseViewConfig;
+    editor: { panel: DatabasePanel; chip: string } | null;
+  } = {
+    handle: null,
+    table: null,
+    view: {
+      ...options.view,
+      sorts: withEntryIds(options.view.sorts),
+      filters: withEntryIds(options.view.filters),
+      ...(seeded === null ? {} : { filterTree: seeded }),
+    },
+    editor: null,
+  };
   const dismiss = (): void => state.handle?.close();
+  const chipById = (testId: string): HTMLElement | null => chipRow.querySelector<HTMLElement>(`[data-blok-testid="${CSS.escape(testId)}"]`);
+  const update = (patch: PersonalViewPatch): void => {
+    state.view = {
+      ...state.view,
+      ...patch,
+      ...(patch.sorts !== undefined ? { sorts: withEntryIds(patch.sorts) } : {}),
+      ...(patch.filters !== undefined ? { filters: withEntryIds(patch.filters) } : {}),
+    };
+    drawChips();
+    draw();
+    // "Delete filter" empties the tree and takes the rules chip with it.
+    if (state.editor !== null && chipById(state.editor.chip) === null) state.editor.panel.close();
+    state.editor?.panel.refresh();
+  };
+  const editorClosed = (chip: string, escape: boolean): void => {
+    if (state.editor?.chip === chip) state.editor = null;
+    const current = chipById(chip);
+
+    current?.removeAttribute('data-popover-open');
+    // A write redraws the chips, so focus goes back to the chip by its test id.
+    if (escape) current?.focus();
+  };
+  const showEditor = (chip: HTMLElement, open: (testId: string) => DatabasePanel): void => {
+    const testId = chip.getAttribute('data-blok-testid') ?? '';
+
+    state.editor?.panel.close();
+    chip.setAttribute('data-popover-open', '');
+    state.editor = { panel: open(testId), chip: testId };
+  };
+  const openSort = (chip: HTMLElement): void => showEditor(chip, (testId) => {
+    const panel = sortEditor({
+      anchor: chip,
+      i18n,
+      schema: () => options.schema,
+      sorts: () => state.view.sorts,
+      write: (sorts) => update({ sorts }),
+      // notion-motion.md Round 38 §1 (r38-pm-chips.raw): 290×107 at the chip's left, its bottom + 4.
+      gap: EDITOR_GAP,
+      compact: true,
+      onClose: (escape) => editorClosed(testId, escape),
+    });
+
+    panel.open();
+
+    return panel;
+  });
+  const filterContext = (): ViewSettingsContext => ({
+    i18n,
+    view: () => state.view,
+    schema: () => options.schema,
+    updatePersonal: update,
+    ...(options.people === undefined ? {} : { people: options.people }),
+    ...(options.relatedRows === undefined ? {} : { relatedRows: options.relatedRows }),
+    ...(options.thisPageDatabase === undefined ? {} : { thisPageDatabase: options.thisPageDatabase }),
+    // The filter editors read and write only the rules; nothing else here acts on the view.
+    locked: () => false,
+    layouts: [],
+    canDeleteView: () => false,
+    updateView: () => undefined,
+    setLayout: () => undefined,
+    setLocked: () => undefined,
+    duplicateView: () => undefined,
+    deleteView: () => undefined,
+    copyViewLink: () => undefined,
+    groups: () => [],
+  });
+  // Round 38 §1 (r38-pm-filter-edit.png): the Status rule editor, 260×244 at the chip's left, its bottom + 4.
+  const openFilter = (chip: HTMLElement, filterId: string): void => showEditor(chip, (testId) =>
+    openFilterChip(chip, filterContext(), filterId, (escape) => editorClosed(testId, escape)));
+  // notion-motion.md Round 27 §2 (r27-pm-rulepop.raw): the rules chip opens the rule editor at its left, 4 under it.
+  const openRules = (chip: HTMLElement): void => showEditor(chip, (testId) =>
+    openAdvancedFilter(chip, filterContext(), (escape) => editorClosed(testId, escape)));
+  const drawChips = (): void => {
+    const chips = pinnedGroupChips(state.view, options.schema, i18n, options.names, seeded !== null);
+
+    for (const chip of chips) {
+      const filterId = chip.getAttribute('data-filter-id');
+      const testId = chip.getAttribute('data-blok-testid');
+
+      if (testId !== null && testId === state.editor?.chip) chip.setAttribute('data-popover-open', '');
+      if (testId === 'database-group-modal-sort-chip') chip.addEventListener('click', () => openSort(chip));
+      if (filterId !== null) chip.addEventListener('click', () => openFilter(chip, filterId));
+      if (testId === 'database-group-modal-rules-chip' && seeded !== null) chip.addEventListener('click', () => openRules(chip));
+    }
+    chipRow.replaceChildren(...chips);
+  };
   const draw = (): void => {
-    const table = options.table(input.value);
+    const table = options.table(input.value, state.view, seeded === null);
 
     state.table?.destroy();
     state.table = table;
@@ -181,6 +355,8 @@ export const openPinnedGroupModal = (options: PinnedGroupModalOptions): PinnedGr
   // data-blok-popover gives the body-mounted dialog the database tokens and theme.
   backdrop.setAttribute('data-blok-popover', '');
   backdrop.setAttribute('data-blok-database-group-modal', '');
+  // Without it the editor's keydown takes Tab (block indent), and focus never leaves Search.
+  backdrop.setAttribute('data-blok-keyboard-owner', '');
   panel.setAttribute('data-blok-database-group-modal-panel', '');
   header.setAttribute('data-blok-database-group-modal-header', '');
   title.setAttribute('data-blok-database-group-modal-title', '');
@@ -214,7 +390,7 @@ export const openPinnedGroupModal = (options: PinnedGroupModalOptions): PinnedGr
   close.setAttribute('aria-label', i18n.t('tools.database.close'));
   close.innerHTML = IconCross;
   chipRow.setAttribute('data-blok-database-group-modal-chips', '');
-  chipRow.append(...options.chips);
+  drawChips();
   body.setAttribute('data-blok-database-group-modal-body', '');
   draw();
 
@@ -231,7 +407,10 @@ export const openPinnedGroupModal = (options: PinnedGroupModalOptions): PinnedGr
   // The grid's own presses select a cell and give it a tabindex again, so they never reach it.
   for (const type of ['pointerdown', 'click'] as const) {
     body.addEventListener(type, (event) => {
-      if (!acts(event.target)) event.stopPropagation();
+      if (acts(event.target)) return;
+      // The editor's outside-press close never sees the stopped event (Round 27 §2: a body click closes the editor).
+      if (type === 'pointerdown') state.editor?.panel.close();
+      event.stopPropagation();
     }, true);
   }
   // The table counts the extra rows in its state but redraws only through a write handler, so the modal redraws.
@@ -248,12 +427,17 @@ export const openPinnedGroupModal = (options: PinnedGroupModalOptions): PinnedGr
     role: 'dialog',
     label: options.label,
     directionSource: options.directionSource,
-    // The ⋯ menu lives on body, so a press on it reads as outside. While it is open, an outside press closes only the menu.
+    // A chip editor's lists open from the editor, not from the dialog.
+    ownsFocus: (target) => state.editor !== null && target instanceof Element && target.closest('[data-blok-database-panel]') !== null,
+    // The ⋯ menu and the chip editors live on body, so a press on them reads as outside. While one is open, an outside
+    // press closes only it.
     onDismiss: (reason) => {
-      if (reason === 'outside' && more?.getAttribute('aria-expanded') === 'true') return;
+      if (reason === 'outside' && (more?.getAttribute('aria-expanded') === 'true' || state.editor !== null)) return;
       dismiss();
     },
     onClose: () => {
+      state.editor?.panel.close();
+      state.editor = null;
       state.table?.destroy();
       state.table = null;
       options.onClose();

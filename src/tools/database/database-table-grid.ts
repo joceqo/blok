@@ -44,6 +44,8 @@ export interface TableState {
   freshRowId?: string;
   /** The grid had focus, so the redraw gives it back. */
   focused: boolean;
+  /** Row a drag just dropped. The redraw it asks for reads and clears it. */
+  droppedRowId?: string;
 }
 
 export const createTableState = (): TableState => ({
@@ -285,7 +287,7 @@ export class DatabaseTableGrid {
     window.addEventListener('keydown', this.recordKey, true);
 
     const reminder = row.reminders?.[property.id]?.remind;
-    const closed = { done: false };
+    const closed = { done: false, committed: false };
     const onDateDisplayChange = property.type === 'date' ? this.callbacks.dateDisplayChanger?.(property.id) : undefined;
     const handle = openCellEditor(property, readPropertyValue(row, property), anchor, {
       ...this.cellContext,
@@ -304,10 +306,13 @@ export class DatabaseTableGrid {
         ? { onOptionsChange: (next: SelectOption[]) => this.callbacks.optionsChange?.(ref.propertyId, next) }
         : {}),
       ...(this.callbacks.editProperty !== undefined ? { onEditProperty: () => this.callbacks.editProperty?.(ref.propertyId) } : {}),
-      onCommit: (value) => this.commit(ref, value),
+      onCommit: (value) => {
+        closed.committed = true;
+        this.commit(ref, value);
+      },
       onClose: () => {
         closed.done = true;
-        this.editorClosed(ref);
+        this.editorClosed(ref, closed.committed);
       },
     });
 
@@ -351,7 +356,7 @@ export class DatabaseTableGrid {
     this.repaintCell(ref);
   }
 
-  private editorClosed(ref: CellRef): void {
+  private editorClosed(ref: CellRef, committed: boolean): void {
     const key = this.keyInFlight;
 
     this.editor = null;
@@ -384,15 +389,23 @@ export class DatabaseTableGrid {
     const fresh = ref.rowId === this.state.freshRowId || ref.rowId === this.committedFreshRowId;
 
     this.committedFreshRowId = undefined;
-    // notion-spec-2 §19.4: Tab moves to the cell on the right. Shift+Tab is not measured; it mirrors Tab.
+    // notion-spec-2 §19.4: Tab moves to the cell on the right. Round 29 §3: Shift+Tab (Number) to the left.
     const tabStep: Record<string, number> = { Tab: 1, 'Shift+Tab': -1 };
     const step = key === null ? undefined : tabStep[key];
     const down = key === 'Enter' && !fresh ? this.offset(ref, 1, 0) : ref;
     const target = step === undefined ? down : this.offset(ref, 0, step);
+    // notion-motion.md Round 57 §1, Text editors only: Tab after a change and every Shift+Tab leave no cell selected.
+    const text = this.columns.find((p) => p.id === ref.propertyId)?.type === 'text';
+    const deselect = text && (key === 'Shift+Tab' || (key === 'Tab' && committed));
 
-    this.state.selection = { kind: 'cell', anchor: target, focus: target };
+    this.state.selection = deselect ? null : { kind: 'cell', anchor: target, focus: target };
     this.paint();
-    if (key === 'Enter' || key === 'Escape' || step !== undefined || this.root.contains(document.activeElement) || document.activeElement === document.body) {
+    if (deselect) {
+      // Notion's focus after this Tab is unmeasured; with no cell selected the grid lets it go, like Enter in Notion.
+      if (document.activeElement instanceof HTMLElement && this.root.contains(document.activeElement)) {
+        document.activeElement.blur();
+      }
+    } else if (key === 'Enter' || key === 'Escape' || step !== undefined || this.root.contains(document.activeElement) || document.activeElement === document.body) {
       this.root.focus({ preventScroll: true });
     }
     this.callbacks.editEnded();

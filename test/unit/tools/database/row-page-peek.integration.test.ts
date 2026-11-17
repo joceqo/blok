@@ -194,6 +194,36 @@ describe('row page peek modes', () => {
     });
   });
 
+  // notion-motion.md Round 58 §5: the timeline panel's pill reads CLOSE while its row is peeked, and a click closes the peek.
+  describe('the timeline panel\'s OPEN while the row is in the side peek', () => {
+    const timelineDoc = (): OutputBlockData[] => {
+      const blocks = doc({ type: 'timeline', timelineBy: 'due', showTimelineTable: true });
+      const data = blocks[0].data as { schema: Array<Record<string, unknown>> };
+
+      data.schema.push({ id: 'due', name: 'Due', type: 'date', position: 'a1' });
+
+      return blocks;
+    };
+    const button = (rowId: string): HTMLElement | null => q(`[data-blok-database-timeline-table-row][data-row-id="${rowId}"] [data-blok-database-table-open]`);
+    const label = (rowId: string): string | undefined => button(rowId)?.lastElementChild?.textContent ?? undefined;
+    const isOpen = (): boolean => q('[data-blok-database-drawer][data-open]') !== null;
+
+    it('reads CLOSE on that row only, closes the peek on a click, and reads OPEN again', async () => {
+      await make(timelineDoc());
+      await click(button('r1'));
+
+      expect(isOpen()).toBe(true);
+      expect(label('r1')).toBe('Close');
+      expect(button('r1')?.hasAttribute('data-peeked')).toBe(true);
+      expect(label('r2')).toBe('Open');
+
+      await click(button('r1'));
+      expect(isOpen()).toBe(false);
+      expect(label('r1')).toBe('Open');
+      expect(button('r1')?.hasAttribute('data-peeked')).toBe(false);
+    });
+  });
+
   it('opens a center peek as a modal over a backdrop, and Escape closes it', async () => {
     await make(doc({ openPagesIn: 'center' }));
     await openRow('r1');
@@ -618,15 +648,37 @@ describe('row page peek modes', () => {
       expect(shownTitle()).toBe('Two');
     });
 
-    it('Cmd/Ctrl-click on bars picks rows into the selection bar instead of opening them', async () => {
+    const picked = (): string[] => [...(holder?.querySelectorAll('[data-blok-database-timeline-row][data-blok-database-row-selected]') ?? [])]
+      .map((el) => el.getAttribute('data-row-id') ?? '');
+
+    // notion-motion.md Round 54 §3: Cmd+click on a bar picks nothing and opens no peek.
+    it('Cmd/Ctrl-click on a bar neither picks nor opens it', async () => {
       await make(timelineDoc());
       bar('r1')?.dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true }));
       await quiet();
       bar('r2')?.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
       await quiet();
 
+      expect(picked()).toEqual([]);
       expect(drawer()).toBeNull();
-      expect(q('[data-blok-database-table-selection-count]')?.textContent).toBe('2 selected');
+      expect(q('[data-blok-database-table-selection-bar]')).toBeNull();
+    });
+
+    // notion-motion.md Round 54 §3: Shift+click picks a range of bars and shows no "N selected" bar; Escape clears.
+    it('Shift-click picks a range of bars with no selection bar', async () => {
+      await make(timelineDoc());
+      bar('r1')?.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+      await quiet();
+      bar('r3')?.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+      await quiet();
+
+      expect(q('[data-blok-database-table-selection-bar]')).toBeNull();
+      expect(picked()).toEqual(['r1', 'r2', 'r3']);
+      expect(drawer()).toBeNull();
+
+      await key({ key: 'Escape' });
+
+      expect(picked()).toEqual([]);
     });
   });
 

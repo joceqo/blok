@@ -33,6 +33,12 @@ describe('status filter rows', () => {
     expect(declared('[data-blok-database-filter-status-group][data-color="gray"]', 'color')).toEqual(['var(--blok-database-option-gray-text)']);
   });
 
+  // notion-motion.md Round 38 §1 (r38-pm-chips.raw) and Round 20 §1: 260×244, rows from +30 with a pitch of 29.
+  it('starts the rows 30 down and spaces them 29 apart', () => {
+    expect(declared('[data-blok-database-chip-header] + [data-blok-database-filter-status-group]', 'margin-block-start')).toEqual(['calc(-1 * var(--blok-space-0-25))']);
+    expect(declared(':is([data-blok-database-filter-status-group], [data-blok-database-filter-status-option]) + :is([data-blok-database-filter-status-group], [data-blok-database-filter-status-option])', 'margin-block-start')).toEqual(['var(--blok-space-0-25)']);
+  });
+
   it('sets an option row 8px in from its group', () => {
     expect(declared('[data-blok-database-filter-status-option]', 'padding-inline-start')).toEqual(['var(--blok-space-4)']);
   });
@@ -229,6 +235,16 @@ describe('sort and rule control chevrons', () => {
     expect(declared(glyph, 'width')).toEqual(['8px']);
     expect(declared(glyph, 'height')).toEqual(['14px']);
   });
+
+  // notion-motion.md Round 39 §1: "2 sorts" 94 wide, "1 rule" 83.8. r35-sort2.raw: arrowUpDownSmall is 12.7×16;
+  // r26-pm-modal.raw: filterSmall is 12.6×16. Each sits 8 in and 6 before the text, as a 16 glyph does.
+  it('puts the sort-count and rule-count glyphs in Notion\'s narrow boxes', () => {
+    expect(declared('[data-blok-database-chip-glyph="sort"]', 'width')).toEqual(['12.7px']);
+    expect(declared('[data-blok-database-chip-glyph="filter"]', 'width')).toEqual(['12.6px']);
+    // The 16px drawing overflows the box evenly, so its ink stays centred.
+    expect(declared(':is([data-blok-database-chip-glyph="sort"], [data-blok-database-chip-glyph="filter"])', 'justify-content')).toEqual(['center']);
+    expect(declared(':is([data-blok-database-chip-glyph="sort"], [data-blok-database-chip-glyph="filter"]) svg', 'max-width')).toEqual(['none']);
+  });
 });
 
 // notion-motion.md Round 32 §3 Filter chip (r32-b-filterchip.raw, r32-b-filterchip.png): options at a 29px pitch
@@ -260,5 +276,13 @@ describe('select filter option rows', () => {
       .filter((rule) => rule[1].includes('aria-checked') && /chip-options|panel-row/.test(rule[1]));
 
     expect(ticked.filter((rule) => /(?:^|[;\s])(?:background(?:-color)?|color) ?:/.test(rule[2])).map((rule) => rule[1])).toEqual([]);
+  });
+});
+
+// notion-motion.md Round 39 §1 (r39-pm-rules.raw): "Not started" fills a 127.6 button, its chevron 110 in. Round 20 §2
+// (r20-adv-st-two-parts.raw): "In progress", "Done" fill 179.4. Both fit a 6px pad each side and 6 after each token.
+describe('option tokens on a rule value button', () => {
+  it('puts 6px after each token', () => {
+    expect(declared('[data-blok-database-filter-rule-button] [data-blok-database-option-pill]', 'margin-inline-end')).toEqual(['var(--blok-space-1-5)']);
   });
 });

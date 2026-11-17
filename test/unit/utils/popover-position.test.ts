@@ -446,6 +446,93 @@ describe('resolvePosition', () => {
       expect(result.top).toBe(0);
     });
 
+    // notion-motion.md Round 38 §6: the Add view card stays on the fold menu's right with no room there,
+    // slid in over its anchor until its right edge is 12.2 from the window.
+    describe('asideStayMargin', () => {
+      const input = (asideSide: 'left' | 'right', anchorLeft: number, anchorRight: number): Parameters<typeof resolvePosition>[0] => ({
+        anchor: rect({ top: 478.2, bottom: 506.2, left: anchorLeft, right: anchorRight }),
+        popoverSize: { width: 390, height: 233.9 },
+        scopeBounds: rect({ top: 0, bottom: 717, left: 0, right: 800 }),
+        viewportSize: { width: 800, height: 717 },
+        scrollOffset: { x: 0, y: 0 },
+        offset: 0,
+        placeLeftOfAnchor: true,
+        asideSide,
+        viewportMargin: 11.8,
+        asideStayMargin: 12.2,
+      });
+
+      it('keeps a right-side popover with no room on the right, its right edge the margin from the window', () => {
+        const result = resolvePosition(input('right', 280.8, 562.8));
+
+        expect(result.left).toBeCloseTo(397.8);
+        expect(result.top).toBeCloseTo(492.2 - 233.9 / 2);
+        expect(result.openLeft).toBe(false);
+      });
+
+      it('keeps a left-side popover with no room on the left, its left edge the margin from the window', () => {
+        const result = resolvePosition(input('left', 200, 482));
+
+        expect(result.left).toBeCloseTo(12.2);
+        expect(result.openLeft).toBe(true);
+      });
+
+      it('changes nothing when the popover fits on its side', () => {
+        const fits = { ...input('right', 100, 300) };
+        const { asideStayMargin: _unused, ...plain } = fits;
+
+        expect(resolvePosition(fits)).toEqual(resolvePosition(plain));
+        expect(resolvePosition(fits).left).toBe(300);
+      });
+    });
+
+    // notion-motion.md Round 33 §1 (r33-form-move-w1000.raw): the form's Move flyout opens left of
+    // the Question options row, and flips to its right when the left has no room.
+    describe('asideFlip', () => {
+      const input = (windowWidth: number, rowLeft: number, flip: boolean): Parameters<typeof resolvePosition>[0] => ({
+        anchor: rect({ top: 459.8, bottom: 487.8, left: rowLeft, right: rowLeft + 282 }),
+        popoverSize: { width: 280, height: 123 },
+        scopeBounds: rect({ top: 0, bottom: 717, left: 0, right: windowWidth }),
+        viewportSize: { width: windowWidth, height: 717 },
+        scrollOffset: { x: 0, y: 0 },
+        offset: 0,
+        placeLeftOfAnchor: true,
+        asideSide: 'left',
+        viewportMargin: 12,
+        ...(flip ? { asideFlip: true } : {}),
+      });
+
+      it('opens on the right of the row, centred on it, when the left has no room', () => {
+        const result = resolvePosition(input(1000, 96, true));
+
+        expect(result.left).toBeCloseTo(378);
+        expect(result.top).toBeCloseTo(412.3);
+        expect(result.openLeft).toBe(false);
+      });
+
+      it('stays on the left when it fits there', () => {
+        const result = resolvePosition(input(1512, 1213, true));
+
+        expect(result.left).toBeCloseTo(933);
+        expect(result.openLeft).toBe(true);
+      });
+
+      it('falls back below or above when neither side has room', () => {
+        expect(resolvePosition(input(520, 96, true))).toEqual(resolvePosition(input(520, 96, false)));
+      });
+
+      it('flips a right-side popover to the left when only the left has room', () => {
+        const result = resolvePosition({ ...input(1000, 600, true), asideSide: 'right' });
+
+        expect(result.left).toBeCloseTo(320);
+        expect(result.openLeft).toBe(true);
+      });
+
+      it('does not flip without the option', () => {
+        expect(resolvePosition(input(1000, 96, false)).left).not.toBeCloseTo(378);
+      });
+    });
+
     describe("asideSide: 'right' (toolbarPosition: 'right')", () => {
       it('places the popover to the right of the anchor, vertically centered', () => {
         const result = resolvePosition({
@@ -867,6 +954,28 @@ describe('resolvePosition', () => {
       expect(result.top).toBe(3581); // 408 + 8 + 3165 = viewport 416
     });
   });
+  // notion-motion.md Round 38 §4 (r38-manage-sources.raw): the data source ⋯ menu's right edge is on the button's.
+  describe('cover placement with alignEnd', () => {
+    const base = {
+      anchor: rect({ top: 404.1, bottom: 404.1, left: 1470, right: 1494, width: 24, height: 0 }),
+      scopeBounds: rect({ top: 0, bottom: 717, left: 0, right: 1512 }),
+      viewportSize: { width: 1512, height: 717 },
+      scrollOffset: { x: 0, y: 0 },
+      viewportMargin: 12,
+      cover: true,
+      alignEnd: true,
+      popoverSize: { width: 200, height: 65 },
+    };
+
+    it('puts its right edge on the anchor\'s right edge', () => {
+      expect(resolvePosition(base).left).toBe(1294);
+    });
+
+    it('puts its left edge on the anchor\'s left edge in RTL', () => {
+      expect(resolvePosition({ ...base, direction: 'rtl' as const, anchor: rect({ top: 404.1, bottom: 404.1, left: 18, right: 42, width: 24, height: 0 }) }).left).toBe(18);
+    });
+  });
+
   // notion-motion.md Round 21 §1: a database colour flyout that does not fit below opens above its button,
   // bottom = button top - 4 (r21-cc-date-val.raw, r21-cc-add3.raw).
   describe('cover placement that flips above', () => {
@@ -965,6 +1074,27 @@ describe('resolvePosition', () => {
 
     it('still keeps the popover inside the window', () => {
       expect(resolvePosition({ ...input, anchor: rect({ top: 300, bottom: 324, left: 20, right: 44 }), alignEnd: true }).left).toBe(0);
+    });
+  });
+
+  // notion-motion.md Round 55 §5: the peek mode menu sits centred under its button.
+  describe('alignCenter', () => {
+    const input = {
+      anchor: rect({ top: 10, bottom: 34, left: 827.5, right: 851.5 }),
+      popoverSize: { width: 220, height: 160 },
+      scopeBounds: rect({ top: 0, bottom: 717, left: 0, right: 1512 }),
+      viewportSize: { width: 1512, height: 717 },
+      scrollOffset: { x: 0, y: 0 },
+      offset: 0,
+    };
+
+    it('centres the popover under the anchor', () => {
+      expect(resolvePosition({ ...input, alignCenter: true })).toMatchObject({ left: 729.5, top: 34 });
+    });
+
+    it('still keeps the popover inside the window', () => {
+      expect(resolvePosition({ ...input, anchor: rect({ top: 10, bottom: 34, left: 1480, right: 1504 }), alignCenter: true }).left).toBe(1292);
+      expect(resolvePosition({ ...input, anchor: rect({ top: 10, bottom: 34, left: 8, right: 32 }), alignCenter: true }).left).toBe(0);
     });
   });
 });

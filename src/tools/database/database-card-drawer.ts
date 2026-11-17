@@ -9,7 +9,7 @@ import type { DateDisplayChange } from './cells/date-format';
 import { isReadOnlyType, readPropertyValue } from './property-values';
 import { cellText } from './database-table-clipboard';
 import { rowCellContext } from './reminders';
-import { IconArrowDiagonal, IconCheck, IconCopy, IconEmojiSmile, IconImage, IconMenu, IconMessage, IconPlus, IconChevronDown, IconChevronLeft, IconChevronRight, IconDotsHorizontal, IconEmojiStar, IconStarFilled, IconLink, IconPageEmpty, IconPageLayout, IconPlayerTheater, IconSidebarRight, IconSplitView, IconChevronDoubleRight, IconExpandDiagonal, IconPeekCenter, IconPeekFull, IconPeekSide, IconSliders } from '../../components/icons';
+import { IconArrowDiagonal, IconCheck, IconCopy, IconDownload, IconEmojiSmile, IconImage, IconMenu, IconMessage, IconPlus, IconChevronDown, IconChevronLeft, IconChevronRight, IconDotsHorizontal, IconEmojiStar, IconStarFilled, IconLink, IconPageEmpty, IconPageLayout, IconPlayerTheater, IconSidebarRight, IconSplitView, IconChevronDoubleRight, IconExpandDiagonal, IconPeekCenter, IconPeekFull, IconPeekSide, IconSliders } from '../../components/icons';
 import { PopoverDesktop } from '../../components/utils/popover';
 import { PopoverItemType } from '../../components/utils/popover/components/popover-item';
 import { PopoverEvent } from '@/types/utils/popover/popover-event';
@@ -26,7 +26,9 @@ import { EmojiPicker } from '../callout/emoji-picker';
 import { loadEmojiGrid } from '../../components/utils/emoji/emoji-data';
 import { fileChipIcon } from './page-icon';
 import { openCoverPicker, validateCoverFile } from '../audio/cover-picker';
+import { downloadImage } from '../image/download';
 import { loadSheet } from '../../components/utils/lazy-styles';
+import { trackCoverDrag } from '../../components/utils/cover-drag';
 import type { CoverPickerHandle } from '../audio/cover-picker';
 import { safeHref, safeImageSrc } from '../../components/utils/sanitize-url';
 import { isEscapeConsumed, markEscapeConsumed } from '../../components/utils/consumed-escape';
@@ -124,6 +126,35 @@ const afterSlide = (drawer: HTMLElement, done: () => void): void => {
     drawer.removeEventListener('transitionend', onEnd);
     finish();
   }, DRAWER_TRANSITION_FALLBACK_MS);
+};
+
+const PILL_FADE_FALLBACK_MS = 250;
+
+/** The height `object-fit: cover` draws the image at; the cover's own height until the image loads. */
+const shownImageHeight = (img: HTMLImageElement, cover: HTMLElement): number => {
+  const box = cover.getBoundingClientRect();
+
+  if (img.naturalWidth === 0 || img.naturalHeight === 0) {
+    return box.height;
+  }
+
+  return img.naturalHeight * Math.max(box.width / img.naturalWidth, box.height / img.naturalHeight);
+};
+
+/** The mode button joined with the margin box of the rule before it (after it in RTL: the union covers both). */
+const modeGroupRect = (button: HTMLElement): DOMRect => {
+  const box = button.getBoundingClientRect();
+  const rule = button.previousElementSibling;
+
+  if (!(rule instanceof HTMLElement) || !rule.hasAttribute('data-blok-database-peek-separator')) {
+    return DOMRect.fromRect(box);
+  }
+  const ruleBox = rule.getBoundingClientRect();
+  const style = getComputedStyle(rule);
+  const left = Math.min(box.left, ruleBox.left - (parseFloat(style.marginLeft) || 0));
+  const right = Math.max(box.right, ruleBox.right + (parseFloat(style.marginRight) || 0));
+
+  return DOMRect.fromRect({ x: left, y: box.top, width: right - left, height: box.height });
 };
 
 /**
@@ -307,6 +338,8 @@ export interface CardDrawerOptions {
   };
   /** A page cover set (an image URL) or removed (null). */
   onCoverChange?: (rowId: string, cover: string | null) => void;
+  /** Save position after a cover Reposition: the image's vertical position, 0–100 %. Without it, there is no Reposition. */
+  onCoverPositionChange?: (rowId: string, position: number) => void;
   /** Uploads a picked cover file and gives its URL. Without it, a cover comes from a link only. */
   uploadCover?: (file: File) => Promise<string>;
   /** Escape closed the page of this row. */
@@ -535,6 +568,7 @@ export class DatabaseCardDrawer {
   private readonly onFullWidthChange: CardDrawerOptions['onFullWidthChange'];
   private readonly onEscapeClose: CardDrawerOptions['onEscapeClose'];
   private readonly onCoverChange: CardDrawerOptions['onCoverChange'];
+  private readonly onCoverPositionChange: CardDrawerOptions['onCoverPositionChange'];
   private readonly uploadCover: CardDrawerOptions['uploadCover'];
   private readonly onPageLayoutChange: CardDrawerOptions['onPageLayoutChange'];
   private readonly onPageLayoutBirth: CardDrawerOptions['onPageLayoutBirth'];
@@ -561,6 +595,8 @@ export class DatabaseCardDrawer {
   /** The side peek's width, with the panel's 280px while it widens the peek. */
   private peekWidth = PEEK_WIDTH;
   private peekWidened = false;
+  /** Ends a page widening after the switch to a center peek (widenPeekHost). */
+  private hostWiden: (() => void) | null = null;
   /** Folds of this session. Local storage holds them across reloads when it can (plan Q3). */
   private readonly collapsedSections = new Set<string>();
   private readonly databaseId: string | undefined;
@@ -569,6 +605,8 @@ export class DatabaseCardDrawer {
   /** The tab drawn: `activeTab` while it exists, else Content. */
   private shownTab = 'content';
   private coverPicker: CoverPickerHandle | null = null;
+  /** The cover's Reposition mode while it is on. */
+  private coverReposition: { cancel(): void } | null = null;
   private emojiPicker: EmojiPicker | null = null;
   /** The properties section is folded away. Session only. */
   private propsCollapsed = false;
@@ -653,6 +691,7 @@ export class DatabaseCardDrawer {
     this.onFullWidthChange = options.onFullWidthChange;
     this.onEscapeClose = options.onEscapeClose;
     this.onCoverChange = options.onCoverChange;
+    this.onCoverPositionChange = options.onCoverPositionChange;
     this.uploadCover = options.uploadCover;
     this.onPageLayoutChange = options.onPageLayoutChange;
     this.onPageLayoutBirth = options.onPageLayoutBirth;
@@ -758,6 +797,8 @@ export class DatabaseCardDrawer {
     const toolbar = document.createElement('div');
 
     toolbar.setAttribute('data-blok-database-drawer-toolbar', '');
+    // The peek sits in the database's block holder, whose Tab would nest the database instead of moving focus.
+    toolbar.setAttribute('data-blok-keyboard-owner', '');
 
     const closeBtn = document.createElement('button');
 
@@ -878,6 +919,17 @@ export class DatabaseCardDrawer {
         this.step(step);
 
         return;
+      }
+      // Escape cancels Reposition and then closes the page as usual: one press (notion-motion.md Round 61 §3).
+      // A page this press does not close still claims it; the database holder would make it a block selection.
+      if (e.key === 'Escape' && this.coverReposition !== null && !isEscapeConsumed(e)) {
+        e.preventDefault();
+        this.coverReposition.cancel();
+        if (this.mode === 'full' || this.draft !== null) {
+          markEscapeConsumed(e);
+
+          return;
+        }
       }
       // A full page is left with its back button, not Escape. Customize layout is left with Cancel or Apply (research/10 §2).
       if (e.key !== 'Escape' || this.mode === 'full' || this.draft !== null) {
@@ -1036,6 +1088,8 @@ export class DatabaseCardDrawer {
     this.emojiPicker = null;
     this.coverPicker?.close();
     this.coverPicker = null;
+    // An unsaved Reposition is dropped; its press listener lives on the document.
+    this.coverReposition?.cancel();
     this.removeBackdrop();
     this.wrapper.removeAttribute('data-blok-database-full-page');
     this.takeover.leave();
@@ -1092,6 +1146,8 @@ export class DatabaseCardDrawer {
     this.emojiPicker = null;
     this.coverPicker?.close();
     this.coverPicker = null;
+    // An unsaved Reposition is dropped; its press listener lives on the document.
+    this.coverReposition?.cancel();
     this.removeBackdrop();
     this.wrapper.removeAttribute('data-blok-database-full-page');
     this.takeover.release();
@@ -1268,6 +1324,7 @@ export class DatabaseCardDrawer {
 
   /** Ends the page beside the side peek at the drawer's inner edge; database.css turns the inset into padding. */
   private narrowPeekHost(): void {
+    this.cancelHostWiden();
     const host = this.findPeekHost?.() ?? null;
 
     if (host === null) {
@@ -1286,7 +1343,45 @@ export class DatabaseCardDrawer {
     host.style.setProperty('--_blok-peek-gap', `${inset > 0 ? PEEK_TOOLBAR_GAP : 0}px`);
   }
 
+  /**
+   * notion-motion.md Round 56 §6: switched to a center peek, the page widens over the
+   * host's 200ms padding transition (database.css), so its marks stay until that ends.
+   */
+  private widenPeekHost(): void {
+    const host = this.peekHost;
+
+    if (host === null || peekHostOwners.get(host) !== this) {
+      this.releasePeekHost();
+
+      return;
+    }
+    this.cancelHostWiden();
+    // It turns the transition off.
+    host.removeAttribute('data-blok-database-peek-resizing');
+    host.style.setProperty('--_blok-peek-inset', '0px');
+    host.style.setProperty('--_blok-peek-gap', '0px');
+    const done = (): void => this.releasePeekHost();
+    const onEnd = (event: TransitionEvent): void => {
+      // Chromium reports the logical padding by its physical side.
+      if (event.target === host && /^padding-(inline-end|right|left)$/.test(event.propertyName)) done();
+    };
+    // No transitionend comes when the inset was already 0 or motion is reduced.
+    const timer = window.setTimeout(done, DRAWER_TRANSITION_FALLBACK_MS);
+
+    host.addEventListener('transitionend', onEnd);
+    this.hostWiden = () => {
+      host.removeEventListener('transitionend', onEnd);
+      window.clearTimeout(timer);
+    };
+  }
+
+  private cancelHostWiden(): void {
+    this.hostWiden?.();
+    this.hostWiden = null;
+  }
+
   private releasePeekHost(): void {
+    this.cancelHostWiden();
     if (this.peekHost !== null && peekHostOwners.get(this.peekHost) !== this) {
       this.peekHost = null;
 
@@ -1304,8 +1399,13 @@ export class DatabaseCardDrawer {
     const head = document.createElement('div');
 
     head.setAttribute('data-blok-database-drawer-page-head', '');
+    // Its buttons keep native Tab: the block's Tab handler would otherwise hold focus on the database block.
+    head.setAttribute('data-blok-keyboard-owner', '');
     const src = row.cover === undefined ? null : safeImageSrc(row.cover);
     const backlinks = this.buildBacklinks(row.id);
+
+    // A redrawn head drops the old cover, so an unsaved Reposition goes with it.
+    this.coverReposition?.cancel();
 
     if (!this.readOnly && this.onCoverChange !== undefined) {
       // The cover picker is styled by the media sheet; it waits for it, so fetch it now.
@@ -1318,15 +1418,33 @@ export class DatabaseCardDrawer {
       cover.setAttribute('data-blok-database-drawer-cover', '');
       img.alt = '';
       img.src = src;
+      img.draggable = false;
+      // No saved position keeps the stylesheet's centre.
+      if (row.coverPosition !== undefined) {
+        img.style.objectPosition = `50% ${row.coverPosition}%`;
+      }
       cover.appendChild(img);
       if (!this.readOnly && this.onCoverChange !== undefined) {
+        const controls = document.createElement('div');
         const change = document.createElement('button');
+        const download = document.createElement('button');
 
+        controls.setAttribute('data-blok-database-drawer-cover-controls', '');
+        controls.setAttribute('role', 'group');
         change.type = 'button';
         change.setAttribute('data-blok-database-drawer-change-cover', '');
-        change.textContent = this.label('tools.database.changeCover');
-        change.addEventListener('click', () => this.openCover(row.id, change));
-        cover.appendChild(change);
+        change.textContent = this.label('title.changeCover');
+        change.setAttribute('aria-label', this.label('title.changeCoverAria'));
+        change.addEventListener('click', () => this.openCover(row.id, controls, change));
+        download.type = 'button';
+        download.setAttribute('data-blok-database-drawer-download-cover', '');
+        download.setAttribute('aria-label', this.label('tools.database.downloadCover'));
+        onHover(download, this.label('tools.image.download'), { placement: 'top', gap: 6 });
+        // A trusted constant from the icon module.
+        download.innerHTML = IconDownload;
+        download.addEventListener('click', () => void downloadImage(src));
+        controls.append(change, ...(this.onCoverPositionChange === undefined ? [] : [this.repositionButton(row, cover, img, controls)]), download);
+        cover.appendChild(controls);
       }
       head.appendChild(cover);
     }
@@ -1370,8 +1488,30 @@ export class DatabaseCardDrawer {
       customize.insertAdjacentHTML('afterbegin', IconPageLayout);
       head.appendChild(customize);
     }
+    this.orderPageHead(head);
 
     return head;
+  }
+
+  /**
+   * Puts the icon where the mode draws it, so Tab follows what is seen (notion-motion.md Round 58 §1):
+   * under the Add icon / Add cover / Customize row in a side peek, right after the cover elsewhere.
+   */
+  private orderPageHead(head: Element | null | undefined = this.drawer?.querySelector('[data-blok-database-drawer-page-head]')): void {
+    const icon = head?.querySelector(':scope > [data-blok-database-drawer-icon]');
+
+    if (head === null || head === undefined || icon === null || icon === undefined) {
+      return;
+    }
+    const cover = head.querySelector(':scope > [data-blok-database-drawer-cover]');
+
+    if (this.mode === 'side') {
+      head.appendChild(icon);
+    } else if (cover === null) {
+      head.prepend(icon);
+    } else {
+      cover.after(icon);
+    }
   }
 
   /** "N backlinks", or null when no page mentions the row: Notion draws nothing then (research/17 §2a). */
@@ -1530,8 +1670,109 @@ export class DatabaseCardDrawer {
     return icon;
   }
 
+  /**
+   * Cover Reposition (notion-motion.md Round 60 §1): the group becomes Save position · Cancel, a pill
+   * asks for a drag, and the drag moves the image vertically by Δy ÷ its shown height. Only Save writes.
+   */
+  private repositionButton(row: DatabaseRow, cover: HTMLElement, img: HTMLImageElement, controls: HTMLElement): HTMLButtonElement {
+    const reposition = document.createElement('button');
+
+    reposition.type = 'button';
+    reposition.setAttribute('data-blok-database-drawer-reposition-cover', '');
+    reposition.textContent = this.label('title.repositionCover');
+    reposition.setAttribute('aria-label', this.label('title.repositionCoverAria'));
+    reposition.addEventListener('click', () => this.startCoverReposition(row, cover, img, controls));
+
+    return reposition;
+  }
+
+  private startCoverReposition(row: DatabaseRow, cover: HTMLElement, img: HTMLImageElement, controls: HTMLElement): void {
+    const write = this.onCoverPositionChange;
+
+    if (write === undefined || this.coverReposition !== null) {
+      return;
+    }
+    this.coverPicker?.close();
+    // A pill still fading from the last Reposition.
+    cover.querySelector('[data-blok-database-drawer-cover-hint]')?.remove();
+    const initial = row.coverPosition ?? 50;
+    const painted = img.style.objectPosition;
+    const idle = Array.from(controls.children);
+    const hadFocus = controls.contains(document.activeElement);
+    const state = { position: initial };
+    const save = document.createElement('button');
+    const cancel = document.createElement('button');
+    const hint = document.createElement('span');
+
+    const stopDragging = trackCoverDrag(cover, {
+      start: (event) => event.target instanceof Node && controls.contains(event.target)
+        ? null
+        : { position: state.position, height: shownImageHeight(img, cover) },
+      move: (position) => {
+        // Two decimals, as Notion's reads (30.01 %).
+        state.position = Math.round(position * 100) / 100;
+        img.style.setProperty('object-position', `50% ${state.position}%`);
+      },
+    });
+    const end = (): void => {
+      const refocus = controls.contains(document.activeElement);
+
+      stopDragging();
+      document.removeEventListener('pointerdown', saveOnPressAway, true);
+      this.coverReposition = null;
+      cover.removeAttribute('data-blok-database-drawer-cover-repositioning');
+      // The pill fades out over its 0.2s; the timer covers no transitionend (reduced motion, hidden page).
+      hint.style.setProperty('opacity', '0');
+      hint.addEventListener('transitionend', () => hint.remove(), { once: true });
+      window.setTimeout(() => hint.remove(), PILL_FADE_FALLBACK_MS);
+      controls.replaceChildren(...idle);
+      if (refocus) {
+        controls.querySelector<HTMLElement>('[data-blok-database-drawer-reposition-cover]')?.focus({ preventScroll: true });
+      }
+    };
+    const leave = (): void => {
+      end();
+      img.style.setProperty('object-position', painted);
+    };
+
+    const commit = (): void => {
+      end();
+      if (state.position !== initial) {
+        write(row.id, state.position);
+      }
+    };
+
+    // A press anywhere but the cover saves (notion-motion.md Round 61 §3); Save, Cancel and a drag are on the cover.
+    const saveOnPressAway = (event: PointerEvent): void => {
+      if (!(event.target instanceof Node && cover.contains(event.target))) {
+        commit();
+      }
+    };
+
+    save.type = 'button';
+    save.setAttribute('data-blok-database-drawer-save-cover-position', '');
+    save.textContent = this.label('title.saveCoverPosition');
+    save.addEventListener('click', commit);
+    cancel.type = 'button';
+    cancel.setAttribute('data-blok-database-drawer-cancel-cover-position', '');
+    cancel.textContent = this.label('title.cancelCoverPosition');
+    cancel.addEventListener('click', leave);
+    hint.setAttribute('data-blok-database-drawer-cover-hint', '');
+    hint.textContent = this.label('title.coverDragHint');
+
+    this.coverReposition = { cancel: leave };
+    // Capture runs before the peek's outside-press close, so a press outside saves and then closes.
+    document.addEventListener('pointerdown', saveOnPressAway, true);
+    cover.setAttribute('data-blok-database-drawer-cover-repositioning', '');
+    controls.replaceChildren(save, cancel);
+    cover.appendChild(hint);
+    if (hadFocus) {
+      save.focus({ preventScroll: true });
+    }
+  }
+
   /** The shared cover picker (upload or link), anchored on the cover button. */
-  private openCover(rowId: string, anchor: HTMLElement): void {
+  private openCover(rowId: string, anchor: HTMLElement, trigger: HTMLElement = anchor): void {
     const onCoverChange = this.onCoverChange;
 
     if (this.readOnly || onCoverChange === undefined) {
@@ -1540,6 +1781,7 @@ export class DatabaseCardDrawer {
     this.coverPicker?.close();
     const picker = openCoverPicker({
       anchor,
+      trigger,
       ...(this.i18n !== undefined ? { i18n: this.i18n } : {}),
       onUrl: (url) => {
         if (safeImageSrc(url) === null) {
@@ -1896,9 +2138,13 @@ export class DatabaseCardDrawer {
     }];
     const menu = new PopoverDesktop({
       // Notion's 28px rows.
-      class: DATABASE_HEADER_MENU_CLASS,
+      class: `${DATABASE_HEADER_MENU_CLASS} blok-database-peek-mode-menu`,
       animateClose: true,
       trigger: anchor,
+      // notion-motion.md Round 56 §2: centred on the rule before the button plus the button, touching its bottom.
+      position: modeGroupRect(anchor),
+      positionContext: anchor,
+      offset: 0,
       width: '220px',
       autoFocusFirstItem: false,
       items: editDefault === undefined || this.readOnly ? items : [
@@ -1924,6 +2170,7 @@ export class DatabaseCardDrawer {
       }
     });
     this.modeMenu = menu;
+    menu.alignCenter = true;
     menu.show();
     // The bar keeps its revealed controls while this is true (database.css).
     anchor.setAttribute('aria-expanded', 'true');
@@ -2106,6 +2353,7 @@ export class DatabaseCardDrawer {
       return;
     }
     drawer.setAttribute('data-peek-mode', mode);
+    this.orderPageHead();
     drawer.setAttribute('role', ({ side: 'complementary', center: 'dialog', full: 'region' } as const)[mode]);
     drawer.toggleAttribute('aria-modal', false);
     if (mode === 'center') {
@@ -2134,7 +2382,9 @@ export class DatabaseCardDrawer {
     if (mode === 'side' && drawer.hasAttribute('data-open')) {
       this.narrowPeekHost();
     }
-    if (mode !== 'side') {
+    if (mode === 'center') {
+      this.widenPeekHost();
+    } else if (mode !== 'side') {
       this.releasePeekHost();
     }
 
@@ -2856,6 +3106,7 @@ export class DatabaseCardDrawer {
     }
     this.syncPeekWidening(drawer);
     drawer.style.removeProperty('padding-inline-end');
+    drawer.style.removeProperty('--_blok-peek-details-covered');
     const toolbar = drawer.querySelector<HTMLElement>('[data-blok-database-drawer-toolbar]');
 
     drawer.style.setProperty('--_blok-peek-toolbar-size', `${toolbar?.offsetHeight ?? 0}px`);
@@ -2870,6 +3121,8 @@ export class DatabaseCardDrawer {
 
     if (covered > 0) {
       drawer.style.paddingInlineEnd = `${covered + DETAILS_DOCK_GAP}px`;
+      // The full page cover stops at the panel (database.css).
+      drawer.style.setProperty('--_blok-peek-details-covered', `${covered}px`);
     }
   }
 

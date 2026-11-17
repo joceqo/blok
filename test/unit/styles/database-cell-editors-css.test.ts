@@ -320,8 +320,95 @@ describe('cell editor CSS', () => {
       .some((rule) => rule[1].split(',').map((s) => s.trim()).includes(selector) && /transition: none/.test(rule[2])));
 
     ['[data-blok-database-checkbox]', '[data-blok-database-switch-track]', '[data-blok-database-switch-track] > span',
-      '[data-blok-database-select-option-handle]', '[data-blok-database-select-option-menu]']
+      '[data-blok-database-select-option-handle]', '[data-blok-database-select-option-menu]',
+      '[data-blok-database-options-editor] [data-blok-database-select-option-menu] svg', '[data-blok-database-option-group-chevron] svg',
+      '[data-blok-database-options-add-row]',
+      '[data-blok-database-option-reordering] [data-blok-database-select-option]']
       .forEach((selector) => expect(reduced(selector), selector).toBe(true));
+  });
+
+  // notion-motion.md Round 56 §5 "Status option menu", Round 57 §2 (select too): Group › is a menu row like Delete;
+  // the menu opened from an Edit property row grows from its top-right.
+  describe('Edit property option row menu', () => {
+    const MENU = "[data-blok-popover][data-blok-popover-custom-class~='blok-database-row-option-menu']";
+
+    it('grows from its top-right corner, top-left in right-to-left', () => {
+      expect(declared(`${MENU} [data-blok-popover-container]`, 'transform-origin')).toEqual(['top right']);
+      expect(declared(`${MENU}[data-blok-popover-open-left='true'] [data-blok-popover-container]`, 'transform-origin')).toEqual(['top left']);
+    });
+
+    it('draws Group and the group picks as menu rows, 28 tall', () => {
+      ['[data-blok-database-option-group]', '[data-blok-database-option-group-pick]'].forEach((row) => {
+        const rule = [...database.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find((m) => m[1].split(',').map((p) => p.trim()).includes(row) && /min-height/.test(m[2]));
+
+        expect(rule?.[2], row).toContain('min-height: 28px');
+      });
+      expect(declared('[data-blok-database-option-group-value]', 'margin-inline-start')).toEqual(['auto']);
+    });
+
+    // notion-motion.md Round 57 §4: the Group › menu is 250x94, rows 242x28 at +4 with pitch 29.
+    it('sets the Group › rows 4 in, 1 apart', () => {
+      const LIST = "[data-blok-popover-custom-class~='blok-database-option-group-menu'] [role='menu']";
+
+      expect(declared(LIST, 'padding')).toEqual(['var(--blok-space-1)']);
+      expect(declared(LIST, 'gap')).toEqual(['var(--blok-space-0-25)']);
+    });
+
+    // notion-motion.md Round 58 §4: the row › and Group › turn 90° over 200ms ease-in-out while their menu is open.
+    it('turns the row › and Group › 90° while their menu is open', () => {
+      const ROW = '[data-blok-database-options-editor] [data-blok-database-select-option-menu]';
+      const GROUP = '[data-blok-database-option-group-chevron] svg';
+
+      // The second is the reduced-motion none.
+      expect(declared(`${ROW} svg`, 'transition')).toEqual(['transform 0.2s ease-in-out', 'none']);
+      expect(declared(`${ROW}[aria-expanded='true'] svg`, 'transform')).toEqual(['rotate(90deg)']);
+      // The flip stays first, so the turn interpolates as a rotation in right-to-left too.
+      expect(declared(`[dir="rtl"] ${ROW}[aria-expanded='true'] svg`, 'transform')).toEqual(['scaleX(-1) rotate(90deg)']);
+      expect(declared(GROUP, 'transition')).toEqual(['transform 0.2s ease-in-out', 'none']);
+      expect(declared(`[data-blok-database-option-group][aria-expanded='true'] ${GROUP}`, 'transform')).toEqual(['rotate(90deg)']);
+    });
+  });
+
+  // notion-motion.md Round 58 §7: "+ Add an option" in an emptied status group, 284x28 at +8,
+  // a 20 plus at +8, the text at +36, 14/16.8 400 primary ink, hover fill 0.02s ease-in, radius 6.
+  describe('"Add an option" row', () => {
+    const ROW = '[data-blok-database-options-add-row]';
+
+    // The list is already 4 in from the 300 menu's edge.
+    it('sits 8 in, 28 tall, with a 20 plus 8 in and the text 8 after it', () => {
+      expect(declared(ROW, 'margin-inline')).toEqual(['var(--blok-space-1)']);
+      expect(declared(ROW, 'min-height')).toEqual(['28px']);
+      expect(declared(ROW, 'padding')).toEqual(['0 var(--blok-space-2)']);
+      expect(declared(ROW, 'gap')).toEqual(['var(--blok-space-2)']);
+      expect(declared(`${ROW} svg`, 'width')).toEqual(['20px']);
+      expect(declared(`${ROW} svg`, 'height')).toEqual(['20px']);
+    });
+
+    it('reads 14/16.8 weight 400 in primary ink, with a rounded hover fill', () => {
+      expect(declared(ROW, 'font-size')).toEqual(['14px']);
+      expect(declared(ROW, 'line-height')).toEqual(['16.8px']);
+      expect(declared(ROW, 'font-weight')).toEqual(['400']);
+      expect(declared(ROW, 'color')).toEqual(['var(--blok-database-ink)']);
+      expect(declared(ROW, 'border-radius')).toEqual(['var(--blok-radius-control)']);
+      expect(declared(ROW, 'transition')).toEqual(['background-color 0.02s ease-in', 'none']);
+      expect(database).toMatch(/@media \(hover: hover\) \{ \[data-blok-database-options-add-row\]:hover \{ background-color: var\(--blok-database-hover-bg\); \}/);
+    });
+  });
+
+  // notion-motion.md Round 56 §7: the rows slide ~190ms; the dragged row stays opaque, over them, with no drop line.
+  describe('option reorder', () => {
+    it('slides the passed rows 200ms ease and moves the dragged one with the pointer at full opacity', () => {
+      // The second is the reduced-motion none.
+      expect(declared('[data-blok-database-option-reordering] [data-blok-database-select-option]', 'transition')).toEqual(['transform 200ms ease', 'none']);
+      expect(declared('[data-blok-database-option-reordering] [data-blok-database-select-option][data-dragging]', 'transition')).toEqual(['none']);
+      expect(declared('[data-blok-database-option-reordering] [data-blok-database-select-option][data-dragging]', 'z-index')).toEqual(['1']);
+      expect(declared('[data-blok-database-select-option][data-dragging]', 'opacity')).toEqual([]);
+    });
+
+    it('draws no drop line', () => {
+      expect(database).not.toContain('[data-drop-before]');
+      expect(database).not.toContain('[data-drop-after]');
+    });
   });
   describe('editor box (research/22 §4)', () => {
     // research/08 Motion: Notion's table cell editors mount at their final size and opacity.
@@ -691,6 +778,16 @@ describe('cell editor CSS', () => {
     expect(declared("[data-blok-popover][data-blok-popover-custom-class~='blok-database-handle-menu'] > [data-blok-popover-container]", 'transform-origin')).toEqual(['center']);
   });
 
+  // notion-motion.md Round 55 §4: the date picker's Remind menu rows are 28 tall, 29 apart.
+  it('spaces the Remind menu rows 1px apart', () => {
+    expect(declared('[data-blok-database-date-remind-menu]', 'row-gap')).toEqual(['var(--blok-space-0-25)']);
+  });
+
+  // notion-motion.md Round 55 §5: the peek mode menu grows from the top centre (origin 110px 0 on 220 wide).
+  it('scales the peek mode menu from its top centre', () => {
+    expect(declared("[data-blok-popover][data-blok-popover-custom-class~='blok-database-peek-mode-menu'] > [data-blok-popover-container]", 'transform-origin')).toEqual(['top center']);
+  });
+
   // notion-spec-2 §18.3 (b4-rel-dlg.txt): head 33 tall, "Select a page" 16px in, rows 544x32 one pixel apart.
   describe('relation picker in a table cell', () => {
     const REL = '[data-blok-database-relation-editor]';
@@ -1008,6 +1105,32 @@ describe('cell editor CSS', () => {
       expect(declared(BOX, 'border-inline-start')).toEqual(['1px solid var(--blok-database-drawer-border)']);
       expect(declared(BOX, '--blok-popover-box-shadow')).toEqual(['none']);
       expect(declared(BOX, 'border-radius')).toEqual(['0']);
+    });
+  });
+  // notion-motion.md Round 26 "Option ⋯ menu", Round 55 §4: 220×418.9. Name field 196×28 at +12/+12, Delete at +52,
+  // a rule and "Colors", Default at +125.9, colour rows 212×28 at +4 with pitch 29, and 4 under the last row.
+  describe('option ⋯ menu', () => {
+    const MENU = "[data-blok-popover-custom-class~='blok-database-option-menu']";
+
+    it('is 220 wide', () => {
+      expect(declared(`${MENU} [data-blok-popover-container]`, 'inline-size')).toEqual(['220px']);
+    });
+
+    it('pads the rows 4 in and the field 12 in, with 1px between rows', () => {
+      expect(declared(`${MENU} [data-blok-database-option-panel]`, 'padding')).toEqual(['var(--blok-space-3) var(--blok-space-1) var(--blok-space-1)']);
+      expect(declared(`${MENU} [data-blok-database-option-panel]`, 'gap')).toEqual(['var(--blok-space-0-25)']);
+      expect(declared(`${MENU} [data-blok-database-option-panel] > [role='menu']`, 'gap')).toEqual(['var(--blok-space-0-25)']);
+      expect(declared(`${MENU} [data-blok-database-option-name]`, 'margin')).toEqual(['0 var(--blok-space-2) var(--blok-space-2-75)']);
+      expect(declared(`${MENU} [data-blok-database-option-name]`, 'block-size')).toEqual(['28px']);
+    });
+
+    it('puts the colours 45.9 under Delete: 1 + 43.9 + 1', () => {
+      expect(declared(`${MENU} [data-blok-database-option-colors-heading]`, 'block-size')).toEqual(['43.9px']);
+    });
+
+    // notion-motion.md Round 57 §3: "Colors" is 12px weight 500.
+    it('draws "Colors" at weight 500', () => {
+      expect(declared(`${MENU} [data-blok-database-option-colors-heading]`, 'font-weight')).toEqual(['500']);
     });
   });
 });

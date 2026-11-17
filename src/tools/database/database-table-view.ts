@@ -28,7 +28,7 @@ import { DatabaseTableGrid, createTableState } from './database-table-grid';
 import { SELECTION_BAR_SEGMENTS, bulkCloseClearsSelection, bulkStartValue, selectionPropertyButton, watchBulkCloseKey } from './database-selection-bar';
 import { cellText } from './database-table-clipboard';
 import type { CellChange, TableState } from './database-table-grid';
-import { fileChipIcon, pageIconElement, pagePlaceholderIcon, showsPageIcon } from './page-icon';
+import { fileChipIcon, rowPageGlyph, showsPageIcon } from './page-icon';
 
 import { CALCULATION_LABEL_KEYS, calcMenuAt, calculationItems, headerViewItems, loadLimitItems, moveTargetItems, openMenu, rowMenuFooter, rowMenuItems } from './database-table-menus';
 import type { CountCap, OpenMenuOptions, RowFavorite } from './database-table-menus';
@@ -45,6 +45,8 @@ import type { CommentBadges } from './database-comment-badge';
 import { propertyTypeMeta } from './database-property-types';
 import type { PopoverDesktop } from '../../components/utils/popover';
 import { PopoverItemType } from '../../components/utils/popover/components/popover-item';
+import { PopoverEvent } from '@/types/utils/popover/popover-event';
+import { pointerMenuPlacement } from './database-list-view';
 import {
   IconPlayerPlay,
   IconChevronRight,
@@ -60,6 +62,7 @@ import {
   IconWand,
   IconWarning,
   IconInfo,
+  IconFilter,
 } from '../../components/icons';
 
 export { createTableState };
@@ -73,7 +76,11 @@ export { MIN_COLUMN_WIDTH };
 /** notion-motion.md Round 28 §1: Notion's title column shows OPEN from 102 and the icon pill at 100. 101 is unread. */
 const OPEN_LABEL_MIN_WIDTH = 102;
 /** The OPEN button's inset from the title cell's end (database.css). */
-const OPEN_INSET = 6;
+const OPEN_INSET = 4;
+/** notion-motion.md Round 46 §A: the frozen block sticks this far in from the scroller's edge (x 300, scroller at 270). The scroller's clip-path in database.css uses the same 30px. */
+const FROZEN_STICK_INSET = 30;
+/** notion-motion.md Round 47 §B6: Notion's shadow comes on at 268, 29 after the stick (239). A fit to the measured numbers. */
+const FROZEN_SHADOW_AFTER_STICK = 29;
 
 /**
  * A narrow title column shows an icon-only OPEN (notion-motion.md Round 27 §2, Round 28 §1): below Notion's 102,
@@ -99,6 +106,50 @@ const fitOpen = (open: HTMLElement): void => {
 
   style.display = display;
   open.toggleAttribute('data-compact', width + OPEN_INSET > room);
+};
+
+/** The OPEN pill on a row's title: a peek glyph and an empty label, which the caller fills. */
+export const createOpenButton = (): HTMLButtonElement => {
+  const open = document.createElement('button');
+  const icon = document.createElement('span');
+
+  open.type = 'button';
+  open.setAttribute('data-blok-database-table-open', '');
+  open.tabIndex = -1;
+  icon.setAttribute('aria-hidden', 'true');
+  icon.setAttribute('data-blok-database-table-open-icon', '');
+  icon.innerHTML = IconPeekSide;
+  open.append(icon, document.createElement('span'));
+
+  return open;
+};
+
+/** The row shown in the side peek, if any, and how to close it. */
+export interface RowPeek {
+  rowId: () => string | null;
+  close: () => void;
+}
+
+/** OPEN reads CLOSE while its row is in the side peek (notion-spec-2 §25.3, notion-motion.md Round 58 §5). */
+export const paintOpenButton = (button: HTMLElement, peeked: boolean, i18n: Pick<I18n, 't'>): void => {
+  const label = button.lastElementChild;
+
+  button.toggleAttribute('data-peeked', peeked);
+  if (label !== null) label.textContent = i18n.t(peeked ? 'tools.database.close' : 'tools.database.tableOpen');
+  if (peeked) {
+    onHover(button, i18n.t('tools.database.closeSidePeek'), { placement: 'top' });
+  } else {
+    offHover(button);
+  }
+};
+
+/** CLOSE closes the peek; OPEN opens the row. */
+export const pressOpenButton = (button: Element, rowId: string, peek: RowPeek | undefined, open: (rowId: string) => void): void => {
+  if (button.hasAttribute('data-peeked') && peek !== undefined) {
+    peek.close();
+  } else {
+    open(rowId);
+  }
 };
 
 export interface TableGroup {
@@ -142,6 +193,8 @@ export interface TableHandlers {
   setLoadLimit?: (limit: LoadLimit) => void;
   openPropertyMenu: (propertyId: string, anchor: HTMLElement) => void;
   addProperty: (anchor: HTMLElement, placement?: { propertyId: string; side: 'left' | 'right' }) => void;
+  /** The header row's ⋯ after "+": Notion's "Show or hide properties". Left out when unset. */
+  propertyVisibility?: (anchor: HTMLElement) => void;
   viewAction: (action: 'filter' | 'sort' | 'group', propertyId: string, anchor: HTMLElement) => void;
   moveRow: (result: TableRowDropResult) => void;
   /** A drop in a sorted view. Notion asks to remove the sort (D7); the tool decides. */
@@ -188,7 +241,7 @@ export interface DatabaseTableViewOptions {
   /** Opens a row page without any write handler: what a read-only viewer gets. */
   openRow?: (rowId: string) => void;
   /** The row shown in the side peek, if any, and how to close it: its OPEN reads CLOSE (notion-spec-2 §25.3). */
-  peek?: { rowId: () => string | null; close: () => void };
+  peek?: RowPeek;
   readOnly: boolean;
   i18n: I18n;
   view: DatabaseViewConfig;
@@ -397,9 +450,15 @@ export class DatabaseTableView implements DatabaseViewRenderer {
   private rowDrag: DatabaseTableRowDrag | null = null;
   private root: HTMLDivElement | null = null;
   private gridEl: HTMLDivElement | null = null;
+  /** Reads the scroller's text-column padding, which sets where the frozen block sticks. */
+  private scrollerObserver: ResizeObserver | null = null;
+  /** The scrollLeft at which the frozen block sticks. */
+  private stickAt = 0;
   /** A pointer is down in the grid. */
   private pressing = false;
   private bar: HTMLElement | null = null;
+  /** This render follows a row drop: the bar shows without its entrance (notion-motion.md Round 40 §1). */
+  private afterDrop = false;
   /** The bar fading out after the selection cleared, and the timer that removes it. */
   private leavingBar: { el: HTMLElement; timer: number } | null = null;
   /** Unique per table, so two tables on a page never share a cell id. */
@@ -473,9 +532,28 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     const scroller = document.createElement('div');
 
     scroller.setAttribute('data-blok-database-table-scroller', '');
-    // notion-motion.md Round 29 §5: the frozen shadow shows once content slides under the frozen block.
-    // Here that is any offset: sticky insets count from the padded edge, so the block sticks at once. RTL scrolls negative.
-    scroller.addEventListener('scroll', () => scroller.toggleAttribute('data-scrolled', scroller.scrollLeft !== 0), { passive: true });
+    // `data-scrolled` clips the strip before the stuck block; `data-frozen-shadow` shows its shadow (database.css). RTL scrolls negative.
+    const frozen = this.columns.some((column) => column.frozenAt !== undefined);
+    const markStuck = (): void => {
+      const offset = Math.abs(scroller.scrollLeft);
+
+      scroller.toggleAttribute('data-scrolled', frozen && offset !== 0 && offset >= this.stickAt);
+      scroller.toggleAttribute('data-frozen-shadow', frozen && offset !== 0 && offset >= this.stickAt + FROZEN_SHADOW_AFTER_STICK);
+    };
+
+    scroller.addEventListener('scroll', markStuck, { passive: true });
+    // Sticky insets count from the padded edge (the text column), so the frozen cells subtract the padding.
+    this.scrollerObserver?.disconnect();
+    this.scrollerObserver = frozen && typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(() => {
+        const pad = parseFloat(getComputedStyle(scroller).paddingInlineStart) || 0;
+
+        this.stickAt = Math.max(0, pad - FROZEN_STICK_INSET);
+        scroller.style.setProperty('--_blok-database-frozen-shift', `${-this.stickAt}px`);
+        markStuck();
+      })
+      : null;
+    this.scrollerObserver?.observe(scroller);
 
     const gridEl = document.createElement('div');
 
@@ -546,10 +624,9 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     });
     gridEl.addEventListener('click', this.handleNestingClick, true);
     gridEl.addEventListener('click', this.handleClick);
-    if (this.options.comment !== undefined) {
-      gridEl.setAttribute(DATA_ATTR.contextMenuOwner, '');
-      gridEl.addEventListener('contextmenu', this.handleContextMenu);
-    }
+    // Rows stop their own right-click; the owner only turns core's block menu off elsewhere in the grid.
+    if (this.options.comment !== undefined) gridEl.setAttribute(DATA_ATTR.contextMenuOwner, '');
+    gridEl.addEventListener('contextmenu', this.handleContextMenu);
     // Bubble on the grid runs before the popover registry's document listener,
     // whose outside press closes the open editor and asks for a redraw.
     gridEl.addEventListener('pointerdown', this.handlePress);
@@ -586,6 +663,8 @@ export class DatabaseTableView implements DatabaseViewRenderer {
           if (this.options.view.sorts.length > 0) {
             this.handlers?.sortedRowDrop(result);
           } else {
+            // Only here: a sorted drop asks first, so no redraw may follow.
+            this.state.droppedRowId = result.rowId;
             this.handlers?.moveRow(result);
           }
         },
@@ -598,9 +677,32 @@ export class DatabaseTableView implements DatabaseViewRenderer {
         this.grid?.restore();
       }
     });
+    this.markDropped(gridEl);
     this.grid.paint();
+    this.afterDrop = false;
 
     return root;
+  }
+
+  /** notion-motion.md Round 40 §1: the dropped row's tint fades in (database.css, while data-landed is on). */
+  private markDropped(gridEl: HTMLElement): void {
+    const rowId = this.state.droppedRowId;
+
+    this.state.droppedRowId = undefined;
+    if (rowId === undefined) return;
+    this.afterDrop = true;
+    const rowEl = gridEl.querySelector<HTMLElement>(`[data-blok-database-table-row][data-row-id="${CSS.escape(rowId)}"]`);
+
+    if (rowEl === null) return;
+    rowEl.setAttribute('data-landed', '');
+    // Off when the fade ends, so a later select runs the usual transition. Cells bubble their own animationend.
+    const landed = (event: Event): void => {
+      if (event.target !== rowEl) return;
+      rowEl.removeAttribute('data-landed');
+      rowEl.removeEventListener('animationend', landed);
+    };
+
+    rowEl.addEventListener('animationend', landed);
   }
 
   appendRow(container: HTMLElement, row: DatabaseRow): void {
@@ -630,16 +732,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
   /** notion-spec-2 §25.3: OPEN reads CLOSE, with the hint "Close side peek" above it (62-close-hover.png), while its row is in the side peek. */
   private paintOpen(button: HTMLElement, rowId: string): void {
-    const peeked = this.options.peek?.rowId() === rowId;
-    const label = button.lastElementChild;
-
-    button.toggleAttribute('data-peeked', peeked);
-    if (label !== null) label.textContent = this.t(peeked ? 'tools.database.close' : 'tools.database.tableOpen');
-    if (peeked) {
-      onHover(button, this.t('tools.database.closeSidePeek'), { placement: 'top' });
-    } else {
-      offHover(button);
-    }
+    paintOpenButton(button, this.options.peek?.rowId() === rowId, this.options.i18n);
   }
 
   /** The tool calls it when a row page opens in a peek. */
@@ -685,11 +778,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
   /** CLOSE on the peeked row closes the peek; OPEN opens the row. */
   private pressOpen(button: Element, rowId: string, open: (rowId: string) => void): void {
-    if (button.hasAttribute('data-peeked') && this.options.peek !== undefined) {
-      this.options.peek.close();
-    } else {
-      open(rowId);
-    }
+    pressOpenButton(button, rowId, this.options.peek, open);
   }
 
   destroy(): void {
@@ -703,6 +792,8 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     this.menu?.destroy();
     this.menu = null;
     this.grid?.destroy();
+    this.scrollerObserver?.disconnect();
+    this.scrollerObserver = null;
     this.resize?.destroy();
     this.columnDrag?.destroy();
     this.rowDrag?.destroy();
@@ -774,10 +865,27 @@ export class DatabaseTableView implements DatabaseViewRenderer {
         add.setAttribute('aria-label', this.t('tools.database.tableAddProperty'));
       }
       header.appendChild(add);
+      if (!add.hasAttribute('data-labelled') && this.handlers?.propertyVisibility !== undefined) {
+        header.appendChild(this.createPropertyVisibilityButton());
+      }
     }
     header.appendChild(this.createFiller());
 
     return header;
+  }
+
+  /** notion-motion.md Round 41 Part A: a 28px ⋯ right after "+", in the "+"'s ink. */
+  private createPropertyVisibilityButton(): HTMLButtonElement {
+    const more = document.createElement('button');
+    const label = this.t('tools.database.tableShowHideProperties');
+
+    more.type = 'button';
+    more.setAttribute('data-blok-database-table-property-visibility', '');
+    more.setAttribute('aria-label', label);
+    more.innerHTML = IconDotsHorizontal;
+    onHover(more, label);
+
+    return more;
   }
 
   private createHeaderCell(column: Column, index: number): HTMLElement {
@@ -871,7 +979,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     style.width = `${column.width}px`;
     if (column.frozenAt !== undefined) {
       cell.setAttribute('data-frozen', '');
-      style.insetInlineStart = `${column.frozenAt}px`;
+      style.insetInlineStart = `calc(${column.frozenAt}px + var(--_blok-database-frozen-shift, 0px))`;
     }
     // A blank cell is not sticky: its line and shadow would scroll away.
     if (column.frozenEdge === true && !cell.hasAttribute('data-blok-database-table-blank-cell')) cell.setAttribute('data-frozen-edge', '');
@@ -1094,7 +1202,12 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
     edit.type = 'button';
     edit.setAttribute(searching ? 'data-blok-database-table-clear-search' : 'data-blok-database-table-edit-filters', '');
-    edit.textContent = this.t(searching ? 'tools.database.searchClear' : 'tools.database.tableEditFilters');
+    if (searching) {
+      edit.textContent = this.t('tools.database.searchClear');
+    } else {
+      edit.innerHTML = IconFilter;
+      edit.append(this.t('tools.database.tableEditFilters'));
+    }
     empty.appendChild(edit);
     if (this.editable) {
       empty.appendChild(this.createAddRow(''));
@@ -1197,7 +1310,9 @@ export class DatabaseTableView implements DatabaseViewRenderer {
       });
     }
 
-    const icon = column.property.type === 'title' && showsPageIcon(this.options.view) ? pageIconElement(row) ?? pagePlaceholderIcon() : null;
+    const icon = column.property.type === 'title' && showsPageIcon(this.options.view)
+      ? rowPageGlyph(row, this.options.cellContext?.rowHasBody?.(row.id) === true, true)
+      : null;
 
     if (icon !== null) {
       cell.insertBefore(icon, value);
@@ -1212,19 +1327,10 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     }
 
     if (column.property.type === 'title' && (this.handlers !== undefined || this.options.openRow !== undefined)) {
-      const open = document.createElement('button');
+      const open = createOpenButton();
 
-      open.type = 'button';
-      open.setAttribute('data-blok-database-table-open', '');
-      open.tabIndex = -1;
       // The grid points the selected cell's aria-describedby here; a repaint must keep the id.
       open.id = `${cell.id}-open`;
-      const icon = document.createElement('span');
-
-      icon.setAttribute('aria-hidden', 'true');
-      icon.setAttribute('data-blok-database-table-open-icon', '');
-      icon.innerHTML = IconPeekSide;
-      open.append(icon, document.createElement('span'));
       this.paintOpen(open, rowId);
       cell.appendChild(open);
     }
@@ -1591,6 +1697,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
       const slot = this.options.selectionBarSlot?.() ?? null;
 
       this.bar = this.createSelectionBar();
+      this.bar.toggleAttribute('data-still', this.afterDrop);
       if (slot === null) {
         root.insertBefore(this.bar, root.firstChild);
       } else {
@@ -1858,15 +1965,20 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
   // ─── Clicks ───
 
-  /** A right-click on a cell opens its comments. It stops here so core's block menu does not replace it. */
+  /**
+   * research/23 §157: a right-click on a row opens its ⋮⋮ menu, at the pointer (notion-motion.md Round 59 §4).
+   * Read-only has no handlers: the event goes on to the tool's own row menu.
+   */
   private readonly handleContextMenu = (event: MouseEvent): void => {
     const target = event.target instanceof Element ? event.target : null;
-    const cell = target?.closest<HTMLElement>('[data-blok-database-table-cell]');
-    const rowId = cell?.closest('[data-row-id]')?.getAttribute('data-row-id');
+    const rowId = target?.closest('[data-blok-database-table-row]')?.getAttribute('data-row-id');
 
-    if (cell === null || cell === undefined || rowId === null || rowId === undefined || this.options.comment === undefined) return;
+    // A field being edited keeps the native menu, for copy and paste.
+    if (target === null || target.closest('input, textarea, [contenteditable="true"]') !== null) return;
+    if (rowId === null || rowId === undefined || this.handlers === undefined) return;
     event.preventDefault();
-    this.options.comment(rowId, cell.getAttribute('data-property-id') ?? undefined, cell);
+    event.stopPropagation();
+    this.openRowMenu(null, rowId, { clientX: event.clientX, clientY: event.clientY });
   };
 
   private readonly handleClick = (event: MouseEvent): void => {
@@ -1982,6 +2094,13 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
       return;
     }
+    const visibility = closest('[data-blok-database-table-property-visibility]');
+
+    if (visibility !== null) {
+      handlers.propertyVisibility?.(visibility);
+
+      return;
+    }
     if (closest('[data-blok-database-table-add-property]') !== null) {
       handlers.addProperty(closest('[data-blok-database-table-add-property]') as HTMLElement);
 
@@ -2034,7 +2153,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
       return;
     }
     if (closest('[data-blok-database-table-row-handle]') !== null) {
-      this.openRowMenu(closest('[data-blok-database-table-row-handle]') as HTMLElement, rowId);
+      this.openRowMenu(closest('[data-blok-database-table-row-handle]'), rowId);
 
       return;
     }
@@ -2143,13 +2262,22 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     return true;
   }
 
-  private openRowMenu(anchor: HTMLElement, rowId: string): void {
+  /** From the ⋮⋮ `handle`, or at the `pointer` of a right-click. */
+  private openRowMenu(handle: HTMLElement | null, rowId: string, pointer?: Pick<MouseEvent, 'clientX' | 'clientY'>): void {
     const handlers = this.handlers;
 
     if (handlers === undefined) {
       return;
     }
     this.grid?.selectRows([rowId]);
+    // After the pick: the point lives in the row, so it must be the row as painted now.
+    const rowEl = pointer === undefined ? null : this.root?.querySelector<HTMLElement>(`[data-blok-database-table-row][data-row-id="${CSS.escape(rowId)}"]`) ?? null;
+    const placement = rowEl === null || pointer === undefined ? undefined : pointerMenuPlacement(rowEl, pointer);
+    const anchor = placement?.anchor ?? handle ?? rowEl;
+    // The point is gone once the menu closes; the composer sits on the row, as a card's does.
+    const commentAnchor = rowEl ?? anchor;
+
+    if (anchor === null || commentAnchor === null) return;
     const favorite = this.options.favorite?.(rowId);
 
     this.showMenu(anchor, rowMenuItems({
@@ -2178,13 +2306,18 @@ export class DatabaseTableView implements DatabaseViewRenderer {
         ...(this.options.cellContext?.hourCycle !== undefined ? { hourCycle: this.options.cellContext.hourCycle } : {}),
         i18n: this.options.i18n,
       }),
-      ...(this.options.comment !== undefined ? { onComment: () => this.options.comment?.(rowId, undefined, anchor) } : {}),
+      ...(this.options.comment !== undefined ? { onComment: () => this.options.comment?.(rowId, undefined, commentAnchor) } : {}),
       // research/36 §6: Notion's row handle › Move to Trash shows the toast.
       onDelete: () => {
         this.state.selection = null;
         handlers.deleteRows([rowId], true);
       },
-    }), { searchable: true, searchPlaceholder: this.t('tools.database.searchActions'), kind: 'row' });
+    }), {
+      searchable: true,
+      searchPlaceholder: this.t('tools.database.searchActions'),
+      ...(placement === undefined ? { kind: 'row' } : { kind: 'card', coverFlipOffset: placement.coverFlipOffset }),
+    });
+    if (placement !== undefined) this.menu?.on(PopoverEvent.Closed, () => placement.anchor.remove());
   }
 
   // ─── Columns ───

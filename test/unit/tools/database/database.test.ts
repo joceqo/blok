@@ -73,7 +73,10 @@ const addGroup = (element: HTMLElement, name = 'New'): void => {
 // mock appends a container with clickable action items so tests can trigger
 // onActivate callbacks.
 // ---------------------------------------------------------------------------
-vi.mock('../../../../src/components/utils/popover', () => {
+vi.mock('../../../../src/components/utils/popover', async (importOriginal) => {
+  const real = await importOriginal<{ PopoverDesktop: abstract new (...args: never[]) => unknown }>();
+  const { stubMissingMethods } = await import('../../helpers/stub-missing-methods');
+
   const PopoverItemType = { Default: 'default', Separator: 'separator', Html: 'html' };
 
   class MockPopoverDesktop {
@@ -146,7 +149,14 @@ vi.mock('../../../../src/components/utils/popover', () => {
 
       return this.container !== null;
     }
+
+    /** A surface opened over this one (the option ⋯ menu) holds it open until the release. */
+    holdOpen(): () => void {
+      return () => undefined;
+    }
   }
+
+  stubMissingMethods(MockPopoverDesktop, real.PopoverDesktop);
 
   return { PopoverDesktop: MockPopoverDesktop, PopoverMobile: MockPopoverDesktop, PopoverItemType };
 });
@@ -1284,6 +1294,46 @@ describe('DatabaseTool', () => {
       expect(drawerDestroySpy).toHaveBeenCalled();
       // After rerender, the old drawer element should be gone from the DOM
       expect(queryByData(element, 'data-blok-database-drawer')).toBeNull();
+
+      tool.destroy();
+    });
+  });
+
+  // notion-motion.md Round 40 §2: the dropped card is selected, and its halo fades in.
+  describe('a dropped board card', () => {
+    const dropOnBoard = (): { tool: DatabaseTool; element: HTMLElement } => {
+      const childBlocks = [
+        createMockRowBlock({ id: 'row-1', properties: { 'prop-title': 'Task 1', 'prop-status': 'opt-todo' }, position: 'a0' }),
+        createMockRowBlock({ id: 'row-2', properties: { 'prop-title': 'Task 2', 'prop-status': 'opt-todo' }, position: 'a1' }),
+      ];
+      const options = createDatabaseOptions({}, {}, { childBlocks });
+      const tool = new DatabaseTool(options);
+      const element = tool.render();
+
+      tool.rendered();
+      (tool as unknown as { cardDrag: { onDrop: (r: CardDragResult) => void } }).cardDrag
+        .onDrop({ rowId: 'row-1', toOptionId: 'opt-doing', beforeRowId: null, afterRowId: null });
+
+      return { tool, element };
+    };
+
+    it('is the only selected card, marked as just landed', () => {
+      const { tool, element } = dropOnBoard();
+      const picked = Array.from(element.querySelectorAll('[data-blok-database-row-selected]'));
+
+      expect(picked.map((el) => el.getAttribute('data-row-id'))).toEqual(['row-1']);
+      expect(picked[0].hasAttribute('data-blok-database-row-landed')).toBe(true);
+
+      tool.destroy();
+    });
+
+    it('loses the landed mark at the next paint, so its fade never replays', () => {
+      const { tool, element } = dropOnBoard();
+
+      (tool as unknown as { paintRowSelection: () => void }).paintRowSelection();
+
+      expect(element.querySelector('[data-blok-database-row-landed]')).toBeNull();
+      expect(element.querySelector('[data-blok-database-row-selected]')?.getAttribute('data-row-id')).toBe('row-1');
 
       tool.destroy();
     });
@@ -4418,6 +4468,41 @@ describe('DatabaseTool', () => {
         tool.destroy();
       });
 
+      // notion-motion.md Round 38 §1 (r38-pm-chips.raw): a sort edit in the modal re-sorts only its rows. The board and
+      // the saved view keep their sort, and closing the modal drops the edit.
+      it('keeps a sort edit in the pinned group modal out of the view, and drops it on close', () => {
+        const { tool, element, transact } = board(false, boardView({
+          pinnedGroups: [{ id: 'opt-todo' }],
+          sorts: [{ id: 's', propertyId: 'prop-title', direction: 'desc' }],
+        }));
+        const saved = structuredClone(tool.save(element));
+        const modalRows = (): Array<string | null> => [...new Set([...document.querySelectorAll('[data-blok-database-group-modal-panel] [role="row"][data-row-id]')]
+          .map((row) => row.getAttribute('data-row-id')))];
+        const sortChip = (): HTMLElement | null => document.querySelector('[data-blok-database-group-modal-panel] [data-blok-testid="database-group-modal-sort-chip"]');
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        expect(modalRows()).toEqual(['row-2', 'row-1']);
+
+        sortChip()?.click();
+        // r27-pm-sortpop.raw: the modal's sort editor has no × on a rule, only "Delete sort".
+        document.querySelector<HTMLElement>('[data-blok-testid="database-sort-delete-all"]')?.click();
+
+        expect(modalRows()).toEqual(['row-1', 'row-2']);
+        expect(sortChip()).toBeNull();
+        expect(tool.save(element)).toEqual(saved);
+        expect(element.querySelector('[data-blok-testid="database-sort-pill"]')).not.toBeNull();
+        expect(transact).not.toHaveBeenCalled();
+
+        document.querySelector<HTMLElement>('[data-blok-database-group-modal-close]')?.click();
+        expect(tool.save(element)).toEqual(saved);
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        expect(sortChip()?.getAttribute('data-direction')).toBe('desc');
+        expect(modalRows()).toEqual(['row-2', 'row-1']);
+
+        tool.destroy();
+      });
+
       // Round 26 §1 (r26-pm-more-leaf.raw): the board's cards show no property, yet every property is a modal column.
       it('shows the properties the board hides as modal columns', () => {
         const schema = makeDefaultData().schema;
@@ -4483,6 +4568,31 @@ describe('DatabaseTool', () => {
         expect(openFullPage).toHaveBeenCalledWith(expect.objectContaining({ viewId: 'view-1' }));
         expect(document.querySelector('[data-blok-database-group-modal-panel]')).toBeNull();
 
+        tool.destroy();
+      });
+
+      // notion-motion.md Round 27 §2 (r27-pm-rulepop.raw): the "1 rule" chip opens the rule editor on the group's own
+      // rule. Round 38 §1: the edit changes only the modal's rows and never the saved view.
+      it('edits the group\'s rule from the pinned group modal\'s rules chip, in the modal only', () => {
+        const { tool, element, transact } = board(false, boardView({ pinnedGroups: [{ id: 'opt-todo' }] }));
+        const saved = structuredClone(tool.save(element));
+        const modalRows = (): Array<string | null> => [...new Set([...document.querySelectorAll('[data-blok-database-group-modal-panel] [role="row"][data-row-id]')]
+          .map((row) => row.getAttribute('data-row-id')))];
+
+        queryByData(element, 'data-blok-database-pinned-group-open')?.click();
+        const chip = document.querySelector<HTMLElement>('[data-blok-testid="database-group-modal-rules-chip"]');
+
+        expect(modalRows()).toEqual(['row-1', 'row-2']);
+        expect(chip?.hasAttribute('aria-disabled')).toBe(false);
+        chip?.click();
+        expect(document.querySelector('[data-blok-testid="database-advanced-filter"]')).not.toBeNull();
+        document.querySelector<HTMLElement>('[data-blok-testid="database-filter-delete-advanced"]')?.click();
+
+        expect(modalRows()).toEqual(['row-1', 'row-2', 'row-3']);
+        expect(tool.save(element)).toEqual(saved);
+        expect(transact).not.toHaveBeenCalled();
+
+        document.querySelector<HTMLElement>('[data-blok-database-group-modal-close]')?.click();
         tool.destroy();
       });
 
@@ -7370,6 +7480,17 @@ describe('DatabaseTool — board sub-group lanes', () => {
       openLaneMenu(element, 'team-a');
       pick('tools.database.groupHideAggregation');
       expect(count()).toBeUndefined();
+
+      tool.destroy();
+    });
+
+    // notion-motion.md Round 39 §4 (r39-subgroup-menu.raw): the band's ⋯ menu opens with Edit groups filled, like a column's.
+    it('opens the group menu with its first row highlighted', () => {
+      const { tool, element } = mount();
+
+      openLaneMenu(element, 'team-a');
+
+      expect(queryByData(document.body, 'data-mock-popover-focused', 'edit-groups')).not.toBeNull();
 
       tool.destroy();
     });

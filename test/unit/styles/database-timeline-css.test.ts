@@ -135,7 +135,7 @@ describe('database timeline styles', () => {
   // findings C19/C20 (r26 §4d, r33 §4.6): no line under the toolbar; a near-white canvas with a bottom line.
   it('draws no line under the toolbar, and fills the canvas with a line under it', () => {
     expect(ruleBody('[data-blok-database-timeline-body]')).not.toContain('border-block-start');
-    expect(ruleBody('[data-blok-database-timeline-scroller]')).toContain('background-color: var(--blok-database-timeline-canvas-bg)');
+    expect(ruleBody('[data-blok-database-timeline-scroller]')).toContain('var(--blok-database-timeline-canvas-bg) 0)');
     expect(ruleBody('[data-blok-database-timeline-scroller]')).toContain('border-block-end: 1px solid var(--blok-database-calendar-border)');
     expect(css).toContain('--blok-database-timeline-canvas-bg: rgb(253, 253, 253);');
     expect(darkValues('--blok-database-timeline-canvas-bg')).toEqual(['rgb(25, 25, 25)', 'rgb(25, 25, 25)']);
@@ -169,17 +169,52 @@ describe('database timeline styles', () => {
   });
 
   // notion-motion.md Round 6 "Timeline left table panel": 376 wide with 96 of it padding before the Name column, at 1512 and 1100.
+  // Round 48 A7: Notion's first 6px sit under its sidebar, so it shows 370, from the page edge to 640, rows at 90.
   // Its « sits at the panel's end, beside the month.
-  it('draws the table panel 376px wide, 96 of it padding, and turns the toggle into « at its end while it shows', () => {
-    expect(ruleBody('[data-blok-database-timeline]')).toContain('--blok-database-timeline-table-width: 376px');
-    expect(ruleBody('[data-blok-database-timeline-table]')).toContain('inline-size: var(--blok-database-timeline-table-width)');
-    expect(ruleBody('[data-blok-database-timeline-table]')).toContain('padding-inline-start: 96px');
+  it('draws the table panel 370px wide, 90 of it padding, and turns the toggle into « at its end while it shows', () => {
+    expect(ruleBody('[data-blok-database-timeline]')).toContain('--blok-database-timeline-table-width: 370px');
+    expect(ruleBody('[data-blok-database-timeline]')).toContain('--blok-database-timeline-table-more: 0');
+    // Round 53 §3: the panel grows 200 per shown column (Notion 480 with Date, 1880 with 8 more), cut at the view's edge.
+    expect(ruleBody('[data-blok-database-timeline-table]')).toMatch(/[;\s]inline-size: max-content/);
+    expect(ruleBody('[data-blok-database-timeline-table]')).toContain('min-inline-size: var(--blok-database-timeline-table-width)');
+    expect(ruleBody('[data-blok-database-timeline-table]')).toContain('max-inline-size: 100%');
+    expect(ruleBody('[data-blok-database-timeline-table]')).toContain('padding-inline-start: 90px');
     const shown = '[data-blok-database-timeline-toolbar] [data-blok-database-timeline-table-toggle][aria-pressed="true"]';
 
-    expect(ruleBody(shown)).toContain('margin-inline-start: calc(var(--blok-database-timeline-table-width) - 38px)');
-    expect(ruleBody(shown)).toContain('margin-inline-end: 22px');
+    // notion-motion.md Round 50 item 6: open, « is 28x24 with 6px sides, starts 37 before the panel's end, its glyph 2.5 above centre (Notion 12 into the card).
+    // Round 54 §4: it follows the panel's end, 200 per column past Name (603 → 1003). The gap before it is a
+    // shrinkable box, so a panel wider than the view does not push Today and the zoom off the toolbar.
+    const before = ruleBody('[data-blok-database-timeline-toolbar]:has(> [data-blok-database-timeline-table-toggle][aria-pressed="true"])::before');
+
+    expect(before).toContain('flex: 0 1 calc(var(--blok-database-timeline-table-width) + var(--blok-database-timeline-table-more) * 200px - 41px)');
+    expect(before).toContain('min-inline-size: 0');
+    expect(ruleBody('[data-blok-database-timeline-toolbar]:has(> [data-blok-database-timeline-table-toggle][aria-pressed="true"]) > *')).toContain('flex-shrink: 0');
+    expect(ruleBody(shown)).not.toContain('margin-inline-start');
+    expect(ruleBody(shown)).toContain('margin-inline-end: 21px');
+    expect(ruleBody(shown)).toContain('inline-size: 28px');
+    expect(ruleBody(shown)).toContain('block-size: 24px');
+    expect(ruleBody(shown)).toContain('padding: 0 var(--blok-space-1-5)');
+    expect(ruleBody(shown)).toContain('inset-block-start: -2.5px');
     expect(ruleBody('[data-blok-database-timeline-toolbar]:has(> [data-blok-database-timeline-table-toggle][aria-pressed="true"])')).toContain('padding-inline-start: 0');
     expect(ruleBody(`${shown} svg`)).toContain('transform: scaleX(-1)');
+  });
+
+  // notion-motion.md Round 51 §3: with Name, Date and Status shown Notion's panel row is 679 wide, the Name
+  // editor 280 at 359. Name keeps the 279 of a Name-only row; 2 × 200 is a fit to the total, not a per-cell read.
+  it('keeps the Name column 279 wide and gives each other column 200, so the row grows past the panel', () => {
+    for (const part of ['header', 'row', 'footer']) {
+      const body = ruleBody(`[data-blok-database-timeline-table-${part}]`);
+
+      expect(body).toContain('grid-template-columns: 279px');
+      expect(body).toContain('grid-auto-columns: 200px');
+      expect(body).toContain('inline-size: max-content');
+      expect(body).toMatch(/padding-inline: 0[;\s]/);
+    }
+    expect(ruleBody('[data-blok-database-timeline-table-row] > *')).toContain('padding-inline: var(--blok-space-2)');
+    expect(ruleBody('[data-blok-database-timeline-table-header] > *')).toContain('padding-inline: var(--blok-space-2)');
+    expect(ruleBody('[data-blok-database-timeline-table-title]')).toContain('margin-inline-end: -1px');
+    expect(ruleBody('[data-blok-database-timeline-table-footer] > :first-child')).toBe('');
+    expect(ruleBody('[data-blok-database-timeline-table]')).toContain('overflow: clip');
   });
 
   // notion-motion.md Timeline: the chevrons crossfade with a scale, 0.3 to 1, over 160ms ease-in-out.
@@ -239,13 +274,26 @@ describe('database timeline styles', () => {
     const picked = '[data-blok-database-timeline-row][data-blok-database-row-selected]';
 
     expect(ruleBody(picked)).toContain('background-image: none');
-    const halo = ruleBody(`${picked} [data-blok-database-timeline-bar]::after`);
+    const halo = ruleBody('[data-blok-database-timeline-bar]::after');
 
+    expect(ruleBody(`${picked} [data-blok-database-timeline-bar]::after`)).toContain('opacity: 1');
     expect(halo).toContain('inset: 2px');
     expect(halo).toContain('border-start-start-radius: inherit');
     expect(halo).toContain('border-end-end-radius: inherit');
     expect(halo).toContain('pointer-events: none');
     expect(halo).toContain('background-color: var(--blok-icon-active-bg)');
+  });
+
+  // notion-motion.md Round 50 §2, Round 51 §5: a cleared pick fades its halo out over 200ms ease (Escape or a click outside).
+  it('fades a picked bar halo out over 200ms ease and shows it at once', () => {
+    const halo = ruleBody('[data-blok-database-timeline-bar]::after');
+    const picked = ruleBody('[data-blok-database-timeline-row][data-blok-database-row-selected] [data-blok-database-timeline-bar]::after');
+
+    expect(halo).toContain('opacity: 0');
+    expect(halo).toMatch(/transition:\s*opacity 200ms ease/);
+    expect(picked).toContain('opacity: 1');
+    expect(picked).toMatch(/transition:\s*none/);
+    expect(timelineCss.slice(timelineCss.lastIndexOf('@media (prefers-reduced-motion: reduce)'))).toContain('[data-blok-database-timeline-bar]::after');
   });
 
   // research/35 §1.5: hover ≈ rgba(33, 27, 23, 0.051) light, rgba(255, 255, 255, 0.055) dark, over the bar fill.
@@ -312,13 +360,67 @@ describe('timeline in dark (research/21 §1i)', () => {
 
 describe('content inset (side-by-side-4 #2)', () => {
   it('starts the toolbar at the text column, like the table, while the grid stays as wide as the view', () => {
-    expect(ruleBody('[data-blok-database-timeline-toolbar]')).toContain('padding-inline-start: max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2))');
+    // Round 46 B: less the 6 the « sits before the column.
+    expect(ruleBody('[data-blok-database-timeline-toolbar]')).toContain('padding-inline-start: max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2 - var(--blok-space-1-5)))');
     expect(ruleBody('[data-blok-database-timeline-scroller]')).not.toMatch(/padding-inline|padding-left/);
   });
 
   it('keeps "+ New" at the text column while the canvas scrolls, measured against the view\'s width', () => {
     expect(ruleBody('[data-blok-database-timeline]')).toMatch(/container(-type)?: [^;]*inline-size/);
     expect(ruleBody('[data-blok-database-timeline-new-lane] [data-blok-database-timeline-new]')).toContain('inset-inline-start: max(0px, calc((100cqi - var(--blok-content-max-width, var(--max-width-content))) / 2))');
+  });
+});
+
+// notion-motion.md Round 41 Part B Timeline (r41-n-empty-tl.png): in a page-wide editor the grid spans x 531-1238.5,
+// the text column plus 8 each side, and › ends with the column. Round 6: with the table panel open the view is full-bleed.
+describe('page-wide editor: the timeline keeps to the text column', () => {
+  const inset = 'max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2))';
+  const closed = '[data-blok-database-timeline]:not(:has(> [data-blok-database-timeline-toolbar] > [data-blok-database-timeline-table-toggle][aria-pressed="true"]))';
+  const open = '[data-blok-database-timeline-toolbar]:has(> [data-blok-database-timeline-table-toggle][aria-pressed="true"])';
+
+  it('narrows the closed-panel view to the column plus 8px each side', () => {
+    expect(ruleBody(closed)).toContain(`margin-inline: max(0px, calc(${inset} - var(--blok-space-2)))`);
+  });
+
+  it('ends the toolbar at the column', () => {
+    expect(ruleBody('[data-blok-database-timeline-toolbar]')).toContain(`padding-inline-end: ${inset}`);
+  });
+
+  it('keeps the open-panel toolbar full-bleed on both sides', () => {
+    expect(ruleBody(open)).toContain('padding-inline-start: 0');
+    expect(ruleBody(open)).toContain('padding-inline-end: 0');
+  });
+});
+
+// notion-motion.md Round 49 B9 (and R48 A3): the edge readout sits 10 outside the bar.
+describe('edge readout offset (Round 49 B9)', () => {
+  it('sits 10px outside either edge', () => {
+    expect(ruleBody('[data-blok-database-timeline-edge-readout="end"]')).toContain('inset-inline-start: calc(100% + 10px)');
+    expect(ruleBody('[data-blok-database-timeline-edge-readout="start"]')).toContain('inset-inline-end: calc(100% + 10px)');
+  });
+
+  // notion-motion.md Round 50 item 1: a 22-tall box on the canvas fill, 4 padding, radius 6, no border or shadow, top at bar top + 7.
+  it('draws the readout as a light 22-tall box, 7 below the bar top', () => {
+    const body = ruleBody('[data-blok-database-timeline-edge-readout]');
+
+    expect(body).toContain('background-color: var(--blok-database-timeline-canvas-bg)');
+    expect(body).toContain('padding: var(--blok-space-1)');
+    expect(body).toContain('line-height: 14px');
+    expect(body).toContain('border-radius: var(--blok-radius-control)');
+    expect(body).toContain('inset-block-start: 7px');
+    expect(body).not.toContain('translate');
+    expect(body).not.toContain('box-shadow');
+  });
+});
+
+// notion-motion.md Round 50 item 6: the header glyph is 16 centred in an 18 box at the row icon's x; "Name" 6 after it, at the titles' x.
+describe('panel header icon (Round 50)', () => {
+  it('centres the 16 glyph in an 18 box, the label 6 after', () => {
+    const icon = ruleBody('[data-blok-database-timeline-table-header-icon]');
+
+    expect(icon).toContain('inline-size: 18px');
+    expect(icon).toContain('justify-content: center');
+    expect(ruleBody('[data-blok-database-timeline-table-header] > *')).toContain('gap: var(--blok-space-1-5)');
   });
 });
 
@@ -353,15 +455,20 @@ describe('"+ New" lane (Round 24)', () => {
   });
 });
 
-// notion-motion.md Round 32 §3 Timeline (r32-b-timeline-geom.raw): Today at y 319.7 and the month at 320.7 sit 5.7px lower
-// than Blok's (314, 315.5). The grid below stays where it is, so the 42px toolbar keeps its height and pads its top.
-describe('timeline toolbar row (Round 32)', () => {
-  it('centres its controls 11px lower in the same 42px', () => {
+// notion-motion.md Round 32 §3 Timeline: Today at y 319.7 and the month at 320.7. Round 47 A4: the toolbar block is 40
+// (Notion 4 + 36), so the tick row starts at 345.2. The controls keep their place: 2 off the height, 2 onto the top.
+describe('timeline toolbar row (Round 32, Round 47 A4)', () => {
+  it('is 40 tall with the controls where they were', () => {
     const body = ruleBody('[data-blok-database-timeline-toolbar]');
 
-    expect(body).toContain('min-block-size: 42px');
+    expect(body).toContain('min-block-size: 40px');
     expect(body).toContain('box-sizing: border-box');
-    expect(body).toContain('padding-block-start: var(--blok-space-2-75)');
+    expect(body).toContain('padding-block-start: var(--blok-space-3-25)');
+  });
+
+  // notion-motion.md Round 47 A4: Notion's content starts 4 under the view top; r46-n-tltable.png: the card's border starts there.
+  it('starts the table card 4px under the toolbar top', () => {
+    expect(ruleBody('[data-blok-database-timeline-table]')).toContain('--blok-database-timeline-panel-reach: 36px');
   });
 });
 
@@ -416,5 +523,223 @@ describe('Hours zoom 15-minute lines and day period (Round 35)', () => {
     expect(ruleBody('[data-blok-database-timeline-day-period]')).toContain('color: var(--blok-database-timeline-period-text)');
     expect(css).toContain('--blok-database-timeline-period-text: var(--blok-database-timeline-muted-text);');
     expect(colors).not.toContain('--blok-database-timeline-period-text:');
+  });
+
+  describe('notion-motion.md Round 46 B', () => {
+    it('draws the table panel row glyph 18 in an 18 box, so the title starts 32 in', () => {
+      const at = css.indexOf('[data-blok-database-timeline-table-title] > :is([data-blok-database-page-icon], [data-blok-database-page-icon-placeholder]) {');
+      const box = css.slice(at, css.indexOf('}', at));
+
+      expect(box).toMatch(/inline-size:\s*18px/);
+      expect(box).toMatch(/block-size:\s*18px/);
+      expect(ruleBody('[data-blok-database-timeline-table-title] > [data-blok-database-page-icon-placeholder] svg')).toMatch(/inline-size:\s*18px;\s*block-size:\s*18px/);
+    });
+
+    it('draws the No date row glyph 18', () => {
+      expect(ruleBody('[data-blok-database-no-date-row] > [data-blok-database-page-icon-placeholder] svg')).toMatch(/inline-size:\s*18px;\s*block-size:\s*18px/);
+    });
+
+    // Round 47 A2: the day row is 32 in every zoom.
+    it('makes the day row 32 tall in every zoom, the day line staying 28', () => {
+      expect(ruleBody('[data-blok-database-timeline]')).toContain('--blok-database-timeline-header-under: 4px');
+      expect(ruleBody('[data-blok-database-timeline][data-zoom="month"]')).toBe('');
+      expect(ruleBody('[data-blok-database-timeline-header]')).toContain('var(--blok-database-timeline-header-block)');
+      expect(ruleBody('[data-blok-database-timeline-units]')).toContain('block-size: var(--blok-database-timeline-line)');
+    });
+
+    it('keeps the range pill on the day line when the row grows', () => {
+      const pill = ruleBody('[data-blok-database-timeline-range]');
+
+      expect(pill).toContain('inset-block-start: calc(var(--blok-database-timeline-header-band) + var(--blok-space-0-75))');
+      expect(pill).not.toContain('inset-block-end');
+    });
+
+    it('sizes the « toggle 24x22 with 4px sides', () => {
+      const toggle = ruleBody('[data-blok-database-timeline-toolbar] [data-blok-database-timeline-table-toggle]');
+
+      expect(toggle).toContain('inline-size: var(--blok-space-6)');
+      expect(toggle).toMatch(/block-size:\s*22px/);
+      expect(toggle).toMatch(/padding:\s*0 var\(--blok-space-1\)/);
+      expect(toggle).not.toContain('margin-inline-start');
+      // 6 before the text column, never outside a narrow view.
+      expect(ruleBody('[data-blok-database-timeline-toolbar]')).toContain('padding-inline-start: max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2 - var(--blok-space-1-5)))');
+    });
+
+    it('packs ‹, Today and › with no gap', () => {
+      const at = css.indexOf('[data-blok-database-timeline-toolbar] > :is([data-blok-database-timeline-today], [data-blok-database-timeline-next]) {');
+
+      expect(at).toBeGreaterThan(-1);
+      expect(css.slice(at, css.indexOf('}', at))).toContain('margin-inline-start: calc(-1 * var(--blok-space-1))');
+    });
+
+    it('gives the zoom chevron a 10 wide box 6 after the label', () => {
+      expect(ruleBody('[data-blok-database-timeline-toolbar] [data-blok-database-timeline-zoom]')).toContain('gap: var(--blok-space-1-5)');
+      expect(ruleBody('[data-blok-database-timeline-zoom] svg')).toContain('margin-inline: calc(-1 * var(--blok-space-0-75))');
+    });
+
+    it('sets the zoom menu items 14px regular', () => {
+      const title = ruleBody('[data-blok-item-name^="database-timeline-zoom-"] [data-blok-popover-item-title]');
+
+      expect(title).toContain('font-size: 14px');
+      expect(title).toContain('font-weight: 400');
+    });
+
+    it('hides the link handle while a bar moves', () => {
+      const at = css.indexOf('[data-blok-database-timeline]:is([data-dragging="move"], [data-dragging="start"], [data-dragging="end"]) [data-blok-database-timeline-link-handle] {');
+
+      expect(at).toBeGreaterThan(-1);
+      expect(css.slice(at, css.indexOf('}', at))).toContain('opacity: 0');
+    });
+  });
+});
+
+// notion-motion.md Round 47 A2: Quarter, Year and 5 Years put their month or year labels in the 36 toolbar row
+// (box at its top, 13 padding, 14/21), so the first bar is at 378.2 in every zoom, not under a second header row.
+describe('timeline group labels share the toolbar row (Round 47 A2)', () => {
+  it('makes the band 36 for each header row past the first', () => {
+    expect(ruleBody('[data-blok-database-timeline]')).toContain('--blok-database-timeline-header-block: calc(var(--blok-database-timeline-line) + var(--blok-database-timeline-header-under))');
+    expect(ruleBody('[data-blok-database-timeline]')).toContain('--blok-database-timeline-header-band: calc((var(--blok-database-timeline-header-rows) - 1) * 36px)');
+  });
+
+  // notion-motion.md Round 48 A4: the tick row is white (255), not the canvas tint.
+  it('pulls the chart up under the toolbar by the band, painting no fill there or in the tick row', () => {
+    const scroller = ruleBody('[data-blok-database-timeline-scroller]');
+
+    expect(scroller).toContain('margin-block-start: calc(-1 * var(--blok-database-timeline-header-band))');
+    expect(scroller).toContain('background: linear-gradient(transparent calc(var(--blok-database-timeline-header-band) + var(--blok-database-timeline-header-block)), var(--blok-database-timeline-canvas-bg) 0)');
+  });
+
+  it('puts the group row in the band, over the day row', () => {
+    expect(ruleBody('[data-blok-database-timeline-header]')).toContain('block-size: calc(var(--blok-database-timeline-header-band) + var(--blok-database-timeline-header-block))');
+    expect(ruleBody('[data-blok-database-timeline-groups]')).toContain('block-size: var(--blok-database-timeline-header-band)');
+    expect(ruleBody('[data-blok-database-timeline-groups] > *')).toContain('padding-block-start: var(--blok-space-3-25)');
+    expect(ruleBody('[data-blok-database-timeline-background]')).toContain('inset-block: calc(var(--blok-database-timeline-header-band) + var(--blok-database-timeline-header-block)) 0');
+  });
+
+  it('keeps the table panel header to the day row alone', () => {
+    expect(ruleBody('[data-blok-database-timeline-table-header]')).toContain('block-size: var(--blok-database-timeline-header-block)');
+  });
+
+  // notion-motion.md Round 48 A1, A2: a group label starts on its line with no inset, and the header draws no divider.
+  it('starts each group label on its line, with no divider in the band', () => {
+    const group = ruleBody('[data-blok-database-timeline-groups] > *');
+
+    expect(group).not.toMatch(/padding-inline-start/);
+    expect(group).not.toMatch(/border-inline-end/);
+  });
+
+  // notion-motion.md Round 48 A2, A3: month lines in the body only, 1px rgba(42, 28, 0, 0.07).
+  it('draws each month line 1px wide, full body height, in the grid-line token', () => {
+    const body = ruleBody('[data-blok-database-timeline-month-line]');
+
+    expect(body).toContain('position: absolute');
+    expect(body).toContain('inset-block: 0');
+    expect(body).toContain('inline-size: 1px');
+    expect(body).toContain('background-color: var(--blok-database-timeline-grid-line)');
+  });
+
+  it('puts the today dot on the day line under the band', () => {
+    expect(ruleBody('[data-blok-database-timeline-today-dot]')).toContain('inset-block-start: calc(var(--blok-database-timeline-header-band) + 3px)');
+  });
+});
+
+// Blok choice, pending a Notion measurement: a group label in the toolbar band slides under the controls, not over them.
+describe('timeline toolbar controls hide the group labels under them', () => {
+  const control = '[data-blok-database-timeline-toolbar] > :not([data-blok-database-timeline-toolbar-spacer])';
+
+  it('stacks the toolbar over the chart', () => {
+    expect(ruleBody('[data-blok-database-timeline-toolbar]')).toMatch(/position:\s*relative;[\s\S]*z-index:\s*2/);
+    expect(ruleBody('[data-blok-database-timeline-scroller]')).not.toContain('z-index');
+  });
+
+  // notion-motion.md Round 48 A2 (r48-n-quarter-hdr.raw): two white boxes, « and the month (531..653.6) and the controls (876.1..1239).
+  // Flush with the controls inside; out to the chart's edge outside; one box per group.
+  it('puts a page-coloured backing under each control, flush with its edges', () => {
+    expect(ruleBody(control)).toContain('position: relative');
+    expect(ruleBody(control)).toContain('isolation: isolate');
+    const backing = ruleBody(`${control}::before`);
+
+    expect(backing).toContain('position: absolute');
+    expect(backing).toContain('inset: 0');
+    expect(backing).not.toContain('--blok-space-0-5');
+    expect(backing).toContain('z-index: -1');
+    expect(backing).toContain('background-color: var(--blok-bg-primary)');
+  });
+
+  it('covers the 4px gap after a control, so each group is one box', () => {
+    const gap = ruleBody('[data-blok-database-timeline-toolbar] > :not([data-blok-database-timeline-toolbar-spacer]):not(:last-child):not(:has(+ [data-blok-database-timeline-toolbar-spacer]))::before');
+
+    expect(ruleBody('[data-blok-database-timeline-toolbar]')).toContain('gap: var(--blok-space-1)');
+    expect(gap).toContain('inset-inline-end: calc(-1 * var(--blok-space-1))');
+  });
+
+  // r48-n-quarter-phdr.raw: with the panel open the label box runs on to the month's end (264..748.6),
+  // but the panel's border and shadow still show over it (r48-pair-quarter-p.png, 240 at x 639 in the toolbar row).
+  it('backs the chart from its start to the month while the panel is open, clear of the panel', () => {
+    const open = '[data-blok-database-timeline-toolbar]:has(> [data-blok-database-timeline-table-toggle][aria-pressed="true"]) > [data-blok-database-timeline-month]::before';
+
+    expect(ruleBody(open)).toContain('inset-inline-start: calc(-1 * var(--blok-space-4))');
+    expect(ruleBody('[data-blok-database-timeline-toolbar] > [data-blok-database-timeline-table-toggle][aria-pressed="true"]::before')).toBe('');
+  });
+
+  it('runs the outer boxes to the chart edges while the panel is shut', () => {
+    const shut = '[data-blok-database-timeline-toolbar]:not(:has(> [data-blok-database-timeline-table-toggle][aria-pressed="true"]))';
+
+    expect(ruleBody(`${shut} > :first-child::before`)).toContain('inset-inline-start: calc(-1 * max(0px, calc((100cqi - var(--blok-content-max-width, var(--max-width-content))) / 2 - var(--blok-space-1-5))))');
+    expect(ruleBody(`${shut} > :last-child::before`)).toContain('inset-inline-end: calc(-1 * max(0px, calc((100cqi - var(--blok-content-max-width, var(--max-width-content))) / 2)))');
+  });
+});
+
+// notion-motion.md Round 48 A5 (r48-n-hours-body.raw): chips sit 8 in from the chart's edges.
+// Off-screen right 1215 and cut start 539 in a chart 531..1239; the cut bar's title at 558.
+describe('timeline off-screen chips sit 8px in from the chart edges (Round 48 A5)', () => {
+  it('ends the off-screen "→" chip 8px before the chart end', () => {
+    expect(ruleBody('[data-blok-database-timeline-row-end] > [data-blok-database-timeline-offscreen]')).toContain('margin-inline-end: var(--blok-space-1)');
+  });
+
+  it('holds a cut bar\'s start chip 8px in, and its title 3px after the chip', () => {
+    const chip = ruleBody('[data-blok-database-timeline-bar][data-clipped-start] > [data-blok-database-timeline-bar-chip="start"]');
+
+    expect(chip).toContain('inset-inline-start: var(--blok-space-2)');
+    expect(ruleBody('[data-blok-database-timeline-bar][data-clipped-start] > [data-blok-database-timeline-bar-title]'))
+      .toContain('inset-inline-start: calc(var(--blok-space-2) + 16px + var(--blok-space-0-75))');
+  });
+});
+
+// notion-motion.md Round 48 A5: a far-zoom bar can be 11 wide. The bar's 6px sides would hold it at 12.
+describe('timeline far-zoom bars can be 11px wide (Round 48 A5)', () => {
+  it.each(['quarter', 'year', '5_years'])('drops the end padding of a %s bar', (zoom) => {
+    expect(ruleBody(`[data-blok-database-timeline][data-zoom="${zoom}"] [data-blok-database-timeline-bar]`)).toContain('padding-inline-end: 0');
+  });
+});
+
+// notion-motion.md Round 48 A4 (r48-n-week-hdr.raw): "M 16". Spans are the glyphs plus 3 after the letter
+// (M 13.5, S 10.6) and 7 each side of the number (16 27.2, 20 28.8); the circle is centred on the number.
+describe('timeline Week and Bi-week weekday letters (Round 48 A4)', () => {
+  it('spaces the letter and the number like Notion', () => {
+    expect(ruleBody('[data-blok-database-timeline-weekday]')).toContain('padding-inline-end: var(--blok-space-0-75)');
+    const number = ruleBody('[data-blok-database-timeline-day-number]');
+
+    expect(number).toContain('padding-inline: var(--blok-space-1-75)');
+    expect(number).toContain('display: inline-block');
+    expect(number).toContain('position: relative');
+  });
+
+  it('centres today\'s circle on its number and sets today\'s letter in 500', () => {
+    expect(ruleBody('[data-blok-database-timeline-day-number] > [data-blok-database-timeline-today-dot]')).toContain('inset-inline-start: 50%');
+    expect(ruleBody('[data-blok-database-timeline-units] > [data-day]:has([data-blok-database-timeline-today-dot])')).toContain('font-weight: 500');
+  });
+
+  // notion-motion.md Round 57 §5: the panel row's OPEN frame (69x24) sits 6px under the row top and 5px in from
+  // its end, shows on row hover, and keeps its shadow unclipped.
+  it('shows the OPEN pill on a panel row hover, 6px down and 5px in from the row end', () => {
+    expect(ruleBody('[data-blok-database-timeline-table-row]:hover [data-blok-database-table-open]')).toContain('display: inline-flex');
+    expect(ruleBody('[data-blok-database-timeline-table-title]')).toMatch(/position:\s*relative/);
+    expect(ruleBody('[data-blok-database-timeline-table-title]')).toMatch(/align-self:\s*stretch/);
+    expect(ruleBody('[data-blok-database-timeline-table-row] > [data-blok-database-timeline-table-title]')).toMatch(/overflow:\s*visible/);
+    expect(ruleBody('[data-blok-database-timeline-table-title] > [data-blok-database-table-open]')).toMatch(/inset-block-start:\s*6px/);
+    expect(ruleBody('[data-blok-database-timeline-table-title] > [data-blok-database-table-open]')).toMatch(/inset-inline-end:\s*5px/);
+    // The table's 18px glyph, not the timeline's 16px svg rule.
+    expect(ruleBody('[data-blok-database-timeline-table-title] > [data-blok-database-table-open] svg')).toMatch(/inline-size:\s*18px;\s*block-size:\s*18px/);
   });
 });

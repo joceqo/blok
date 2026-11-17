@@ -1,4 +1,4 @@
-import { IconBolt, IconCalendar, IconCheck, IconChevronDown, IconChevronRight, IconChevronUpDown, IconCopy, IconCross, IconDatabase, IconDotsHorizontal, IconEyeSlash, IconFilter, IconGallery, IconLink, IconListBulleted, IconLock, IconPaintRoller, IconPin, IconPinFilled, IconPlus, IconPreview, IconReplace, IconSort, IconTable, IconTrash, IconWand } from '../../components/icons';
+import { IconArrowDiagonal, IconBolt, IconCalendar, IconCheck, IconChevronDown, IconChevronRight, IconChevronUpDown, IconCopy, IconCross, IconDatabase, IconDotsHorizontal, IconEyeSlash, IconFilter, IconGallery, IconLink, IconListBulleted, IconLock, IconPaintRoller, IconPin, IconPinFilled, IconPlus, IconPreview, IconReplace, IconSort, IconTable, IconTrash, IconWand } from '../../components/icons';
 import type { I18n } from '../../../types';
 import { onHover } from '../../components/utils/tooltip';
 import {
@@ -14,7 +14,8 @@ import {
 } from './database-panel';
 import type { PanelPage } from './database-panel';
 import { editorLocale } from './cells/date-format';
-import { propertyTypeMeta } from './database-property-types';
+import { newViewPage } from './database-linked-picker';
+import { propertyGlyph } from './database-property-types';
 import {
   FILTERABLE_TYPES,
   WITHIN_OPERATORS,
@@ -95,7 +96,7 @@ import { CARD_LAYOUTS, resolveSubItemsDisplay, resolveSubItemsFilter } from './s
 import type { PopoverItemParams } from '@/types/utils/popover/popover-item';
 import { automationListPage } from './database-automations-panel';
 import { PROPERTY_FLYOUT_WIDTH, openFlyout, openSortDirectionFlyout, openSortPropertyFlyout, sortChevron } from './database-sort-flyouts';
-import { OPERATOR_FLYOUT_WIDTH, dateRuleControls, filterChip, openFilterChip, openRuleValueFlyout, operatorPick } from './database-filter-chip';
+import { OPERATOR_FLYOUT_WIDTH, dateRuleControls, filterChip, openFilterChip, openRuleValueFlyout, operatorPick, optionPill } from './database-filter-chip';
 import { VIEW_ICONS } from './database-tab-bar';
 import type { AutomationSettings } from './database-automations-panel';
 import { offersAutofill } from './property-values';
@@ -194,6 +195,31 @@ export interface DataSourceSettings {
   pick: (id: string) => void;
   /** Other databases of the document, under "Existing data sources". They do not make Source active. */
   existing?: () => DataSourceChoice[];
+  /** "Manage data sources" (notion-motion.md Round 38 §4). Without it there is no such row. */
+  manage?: ManageDataSources;
+}
+
+export interface ManageDataSources {
+  /** How many of this block's views show the source. */
+  viewCount: (id: string) => number;
+  /** Other databases a view of this block shows, under "Linked". */
+  linked: () => DataSourceChoice[];
+  /** "New data source", as the view menu runs it. The panel is closed first. */
+  add: () => void;
+  /** A new Table view of that database, selected. Returns what the "New view" page lists, or undefined when refused. */
+  link: (id: string) => LinkedSourceViews | undefined;
+  /** Removes every view that shows that database, in one undo step. */
+  unlink: (id: string) => void;
+  /** Opens that database's own page. The panel is closed first. */
+  open: (id: string) => void;
+  /** `name` is what the row shows: the screen reader hears "<name> ID copied". */
+  copyId: (id: string, name: string) => void;
+}
+
+/** The "New view" page after a link: the database's views, which the new view may copy. */
+export interface LinkedSourceViews {
+  views: DatabaseViewConfig[];
+  copy: (view: DatabaseViewConfig) => void;
 }
 
 export interface AutofillPanelSettings {
@@ -586,8 +612,18 @@ export class ViewSettingsPages {
         if (rows.length > sourceGroupAt) rows.splice(sourceGroupAt, 0, panelSeparator(), panelLabel(this.t('settingsDataSourceSettings')));
         const manageInCalendar = this.ctx.manageInCalendar;
 
+        const manage = sources?.manage;
+
         rows.push(
           panelSeparator(),
+          // r10-vs-root-r10.raw: Manage data sources sits right above Lock database.
+          ...(sources === undefined || manage === undefined ? [] : [panelRow({
+            label: this.t('settingsManageSources'),
+            testId: 'database-settings-manage-sources',
+            icon: IconDatabase,
+            opensPage: true,
+            onClick: () => panel.push(this.manageSources(sources, manage)),
+          })]),
           panelSwitch({
             label: this.t(this.ctx.linked?.() === true ? 'settingsLockViews' : 'settingsLockDatabase'),
             testId: 'database-settings-lock',
@@ -767,6 +803,179 @@ export class ViewSettingsPages {
           label: this.t('layoutLinkDataSourceSearch'),
           testId: 'database-source-search',
           // Only the list redraws, so the field keeps its caret.
+          onInput: (value) => {
+            state.query = value;
+            fill(panel);
+          },
+        });
+
+        fill(panel);
+
+        return [search, list];
+      },
+    };
+  }
+
+  // ─── Manage data sources (notion-motion.md Round 38 §4, r38-manage-sources.raw) ───
+
+  /**
+   * Source: this block's sources, then Add data source; Linked: other databases its views show,
+   * then Link existing data source. Notion's help row is a host link, so there is none.
+   */
+  private manageSources(sources: DataSourceSettings, manage: ManageDataSources): PanelPage {
+    return {
+      title: this.t('settingsManageSources'),
+      name: 'manage-sources',
+      returnFocus: 'database-settings-manage-sources',
+      build: (panel) => {
+        const act = (run: () => void): void => {
+          panel.close();
+          run();
+        };
+
+        return [
+          panelLabel(this.t('settingsSource')),
+          ...sources.list().map((choice) => this.manageSourceRow(panel, choice, manage)),
+          panelRow({
+            label: this.t('manageSourcesAdd'),
+            testId: 'database-manage-sources-add',
+            icon: IconPlus,
+            muted: true,
+            disabled: !this.shared,
+            onClick: () => act(manage.add),
+          }),
+          panelSeparator(),
+          panelLabel(this.t('manageSourcesLinked')),
+          ...manage.linked().map((choice) => this.linkedSourceRow(panel, choice, manage)),
+          panelRow({
+            label: this.t('manageSourcesLink'),
+            testId: 'database-manage-sources-link',
+            icon: IconPlus,
+            muted: true,
+            disabled: !this.shared || (sources.existing?.() ?? []).length === 0,
+            onClick: () => panel.push(this.linkSourcePage(sources, manage)),
+          }),
+        ];
+      },
+    };
+  }
+
+  /** A source with its view count and a ⋯. A click on the row does nothing, as in Notion (r39-mds-sourceclick.raw). */
+  private manageSourceRow(panel: DatabasePanel, choice: DataSourceChoice, manage: ManageDataSources): HTMLElement {
+    const wrap = document.createElement('div');
+    const more = document.createElement('button');
+
+    wrap.setAttribute('data-blok-database-manage-source', '');
+    more.type = 'button';
+    more.setAttribute('data-blok-database-manage-source-more', '');
+    more.setAttribute('data-blok-testid', `database-manage-source-more-${choice.id}`);
+    more.setAttribute('aria-label', this.t('manageSourcesActions'));
+    more.innerHTML = IconDotsHorizontal;
+    more.addEventListener('click', () => {
+      const menu = openFlyout(more, panel, 'database-manage-source-menu', MANAGE_SOURCE_MENU_WIDTH, (pick) => [
+        panelRow({
+          label: this.t('manageSourcesCopyId'),
+          testId: 'database-manage-source-copy-id',
+          icon: IconCopy,
+          onClick: () => pick(() => manage.copyId(choice.id, this.sourceName(choice))),
+        }),
+      ], { alignEnd: true });
+
+      // database.css: Notion's 20px primary-ink glyphs, text at +40.
+      menu.root.setAttribute('data-blok-database-manage-source-menu', '');
+    });
+    wrap.append(panelRow({
+      label: this.sourceName(choice),
+      testId: `database-manage-source-${choice.id}`,
+      icon: IconDatabase,
+      value: this.t('manageSourcesViews', { count: manage.viewCount(choice.id) }),
+      onClick: () => undefined,
+    }), more);
+
+    return wrap;
+  }
+
+  /**
+   * Another database a view shows (r39-mds-linked.raw): the icon takes a ↗ badge, an × removes those
+   * views, and there is no ⋯. A click opens that database's own page.
+   */
+  private linkedSourceRow(panel: DatabasePanel, choice: DataSourceChoice, manage: ManageDataSources): HTMLElement {
+    const wrap = document.createElement('div');
+    const unlink = document.createElement('button');
+    const row = panelRow({
+      label: this.sourceName(choice),
+      testId: `database-manage-source-${choice.id}`,
+      icon: IconDatabase,
+      value: this.t('manageSourcesViews', { count: manage.viewCount(choice.id) }),
+      onClick: () => {
+        panel.close();
+        manage.open(choice.id);
+      },
+    });
+    const badge = document.createElement('span');
+
+    badge.setAttribute('data-blok-database-manage-source-badge', '');
+    badge.innerHTML = IconArrowDiagonal;
+    row.querySelector('[data-blok-database-panel-icon]')?.append(badge);
+    wrap.setAttribute('data-blok-database-manage-source', '');
+    unlink.type = 'button';
+    unlink.setAttribute('data-blok-database-manage-source-unlink', '');
+    unlink.setAttribute('data-blok-testid', `database-manage-source-unlink-${choice.id}`);
+    unlink.setAttribute('aria-label', this.t('manageSourcesDeleteLinked'));
+    unlink.disabled = !this.shared;
+    unlink.innerHTML = IconCross;
+    unlink.addEventListener('click', () => {
+      manage.unlink(choice.id);
+      panel.refresh();
+    });
+    wrap.append(row, unlink);
+
+    return wrap;
+  }
+
+  /** The page's other databases, searchable, as the Source picker lists them. */
+  private linkSourcePage(sources: DataSourceSettings, manage: ManageDataSources): PanelPage {
+    const state = { query: '' };
+    const list = document.createElement('div');
+    const fill = (panel: DatabasePanel): void => {
+      const query = state.query.trim().toLowerCase();
+
+      list.replaceChildren(...(sources.existing?.() ?? [])
+        .filter((choice) => this.sourceName(choice).toLowerCase().includes(query))
+        .map((choice) => panelRow({
+          label: this.sourceName(choice),
+          ...(choice.parent === undefined ? {} : { description: choice.parent }),
+          testId: `database-manage-link-option-${choice.id}`,
+          icon: IconDatabase,
+          onClick: () => {
+            const made = manage.link(choice.id);
+
+            // r39-mds-after-link.raw: the panel turns into "New view"; its Back comes here.
+            if (made === undefined) {
+              panel.close();
+
+              return;
+            }
+            panel.push(newViewPage(
+              (key, vars) => this.ctx.i18n.t(key, vars),
+              { id: choice.id, title: this.sourceName(choice), parent: choice.parent ?? '' },
+              { label: this.t('linkedNewTableView'), testId: 'database-manage-new-table-view', onClick: () => undefined },
+              made.views,
+              made.copy
+            ));
+          },
+        })));
+    };
+
+    return {
+      title: this.t('manageSourcesLink'),
+      returnFocus: 'database-manage-sources-link',
+      build: (panel) => {
+        const search = panelInput({
+          value: state.query,
+          placeholder: this.t('layoutLinkDataSourceSearch'),
+          label: this.t('layoutLinkDataSourceSearch'),
+          testId: 'database-manage-link-search',
           onInput: (value) => {
             state.query = value;
             fill(panel);
@@ -1389,7 +1598,7 @@ export class ViewSettingsPages {
         .map((property) => panelRow({
           label: property.name,
           testId: `database-edit-property-${property.id}`,
-          icon: propertyTypeMeta(property.type).icon,
+          icon: propertyGlyph(property, this.ctx.storedType),
           opensPage: true,
           onClick: () => {
             panel.close();
@@ -1529,7 +1738,7 @@ export class ViewSettingsPages {
 
     row.setAttribute('data-blok-database-property-visibility-row', '');
     icon.setAttribute('data-blok-database-panel-icon', '');
-    icon.innerHTML = propertyTypeMeta(property.type).icon;
+    icon.innerHTML = propertyGlyph(property, this.ctx.storedType);
     name.setAttribute('data-blok-database-panel-label', '');
     name.textContent = property.name;
     eye.type = 'button';
@@ -1622,12 +1831,22 @@ export class ViewSettingsPages {
     toggle.setAttribute('data-blok-testid', show ? 'database-property-show-all' : 'database-property-hide-all');
     toggle.textContent = this.t(show ? 'groupShowAll' : 'groupHideAll');
     toggle.disabled = !this.shared;
+    const search = (root: Element | null): HTMLElement | null =>
+      root?.querySelector<HTMLElement>('[data-blok-testid="database-property-search"]') ?? null;
+
+    // notion-motion.md Round 39 §5: a press from the search leaves focus there.
+    toggle.addEventListener('mousedown', (event) => {
+      if (document.activeElement !== null && document.activeElement === search(toggle.closest('[data-blok-database-panel]'))) event.preventDefault();
+    });
     toggle.addEventListener('click', () => {
       if (targets.length === 0) return;
+      // Read before refresh: it replaces this button.
+      const root = toggle.closest('[data-blok-database-panel]');
+
       this.ctx.updateView({ properties: withPropertyVisibility(this.ctx.view(), this.ctx.schema(), targets.map((entry) => entry.id), show) });
       panel.refresh();
       // notion-motion.md Round 36 §1: focus goes to the search.
-      document.querySelector<HTMLElement>('[data-blok-testid="database-property-search"]')?.focus();
+      search(root)?.focus();
     });
     header.append(toggle);
 
@@ -1678,7 +1897,7 @@ export class ViewSettingsPages {
       const rows = choices.map((property) => panelRow({
         label: property.name,
         testId: `database-pick-property-${property.id}`,
-        icon: propertyTypeMeta(property.type).icon,
+        icon: propertyGlyph(property, this.ctx.storedType),
         disabled: options.disabled === true,
         onClick: () => onPick(property),
       }));
@@ -1755,7 +1974,7 @@ export class ViewSettingsPages {
           const parts = filterPillParts(filter, property, translate, (id) => this.personName(id), rowTitle, locale);
           // notion-motion.md Round 18 §2: each filter is its chip; a click opens its rule popover under it, the page stays.
           const chip = filterChip(`database-filter-row-${filter.id}`, filterPillLabel(filter, property, translate, (id) => this.personName(id), rowTitle, locale), {
-            glyph: propertyTypeMeta(property.type).icon,
+            glyph: propertyGlyph(property, this.ctx.storedType),
             ...parts,
           });
 
@@ -2335,7 +2554,7 @@ export class ViewSettingsPages {
     const propertyButton = button(`database-filter-rule-property-${id}`, property.name, (self) => {
       openFlyout(self, panel, 'database-filter-rule-property-picker', PROPERTY_FLYOUT_WIDTH, (pick) => ordered.map((p) => panelRow({
         label: p.name,
-        icon: propertyTypeMeta(p.type).icon,
+        icon: propertyGlyph(p, this.ctx.storedType),
         testId: `database-pick-property-${p.id}`,
         onClick: () => pick(() => {
           const { id: _fresh, ...condition } = defaultFilterFor(p);
@@ -2343,7 +2562,7 @@ export class ViewSettingsPages {
           save(condition);
         }),
       })));
-    }, propertyTypeMeta(property.type).icon);
+    }, propertyGlyph(property, this.ctx.storedType));
     const operatorButton = button(`database-filter-rule-operator-${id}`, opKey === undefined ? node.operator : this.ctx.i18n.t(opKey), (self) => {
       openFlyout(self, panel, 'database-filter-operator-picker', OPERATOR_FLYOUT_WIDTH, (pick) => operatorChoicesFor(property, node.operator).map((choice) => panelRow({
         label: this.ctx.i18n.t(choice.labelKey),
@@ -2396,22 +2615,31 @@ export class ViewSettingsPages {
       // Not a relative span or a range: the flyout holds the day field and calendar (openRuleValueFlyout).
       const dayEditor = DATE_LIKE_TYPES.includes(property.type) && dateRuleControls(this.ctx, node, () => undefined) === undefined;
       const preset = RELATIVE_DATE_VALUES.find((relative) => relative === node.value);
+      // notion-motion.md Round 20 §2 (r20-adv-st-val.raw), Round 39 §1 (r39-pm-nrules.png): picked options show as tokens.
+      const paint = (self: HTMLElement, rule: Pick<FilterConfig, 'value'>, text: string): void => {
+        const options = OPTION_TYPES.has(property.type) ? property.config?.options ?? [] : [];
+        const tokens = idList(rule.value).flatMap((value) => options.filter((o) => o.id === value)).map((o) => optionPill(o, property.type));
+        const label = self.querySelector('[data-blok-database-panel-label]');
+
+        if (tokens.length > 0) label?.replaceChildren(...tokens);
+        else if (label !== null) label.textContent = text || placeholder;
+        if (tokens.length > 0) self.setAttribute('aria-label', text);
+        else self.removeAttribute('aria-label');
+        self.toggleAttribute('data-blok-database-filter-placeholder', text === '');
+      };
       const valueButton = button(`database-filter-rule-value-${id}`, shown || placeholder, (self) => {
         openRuleValueFlyout(self, panel, this.ctx, () => findRule(tree(), id), (patch) => {
           write(updateFilterRule(tree(), id, patch.operator === undefined ? patch : { ...patch, operator: keepLead(findRule(tree(), id)?.operator ?? node.operator, patch.operator) }));
           // r23-adv-tab-btns.raw: the fixed-width day button reads a typed day at once, under the open flyout.
+          // An option pick shows its token at once too: the flyout stays open (r20-adv-st-two.png).
           const rule = findRule(tree(), id);
 
-          if (!dayEditor || rule === undefined || RELATIVE_DATE_VALUES.some((relative) => relative === rule.value)) return;
-          const text = valueText(rule);
-          const label = self.querySelector('[data-blok-database-panel-label]');
-
-          if (label !== null) label.textContent = text || placeholder;
-          self.toggleAttribute('data-blok-database-filter-placeholder', text === '');
+          if (rule === undefined || !(dayEditor || OPTION_TYPES.has(property.type)) || RELATIVE_DATE_VALUES.some((relative) => relative === rule.value)) return;
+          paint(self, rule, valueText(rule));
         });
       });
 
-      if (shown === '') valueButton.setAttribute('data-blok-database-filter-placeholder', '');
+      paint(valueButton, node, shown);
       if (dayEditor) line.append(this.datePresetButton(panel, id, preset, save));
       // r22-adv-wk.raw: a preset leaves only the first button.
       if (!dayEditor || preset === undefined) line.append(valueButton);
@@ -2608,12 +2836,13 @@ export class ViewSettingsPages {
           const propertyButton: HTMLElement = sortChevron(panelRow({
             label: property.name,
             testId: `database-sort-property-${sort.id}`,
-            icon: propertyTypeMeta(property.type).icon,
+            icon: propertyGlyph(property, this.ctx.storedType),
             onClick: () => openSortPropertyFlyout(
               propertyButton,
               panel,
               schema.filter((p) => GROUPABLE_TYPES.includes(p.type)),
-              (picked) => write(withEntryIds(this.ctx.view().sorts).map((s) => (s.id === sort.id ? { ...s, propertyId: picked.id } : s)))
+              (picked) => write(withEntryIds(this.ctx.view().sorts).map((s) => (s.id === sort.id ? { ...s, propertyId: picked.id } : s))),
+              this.ctx.storedType
             ),
           }));
           const directionButton: HTMLElement = sortChevron(panelRow({
@@ -3340,6 +3569,9 @@ const VALUE_PLACEHOLDER_KEYS: Partial<Record<PropertyType, string>> = {
   lastEditedTime: 'tools.database.filterSelectDate',
 };
 
+/** Types whose rule value button draws its picks as option tokens. */
+const OPTION_TYPES: ReadonlySet<PropertyType> = new Set(['select', 'multiSelect', 'status']);
+
 const ISO_DAY_VALUE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?$/;
 
 const rulesOf = (group: FilterGroup): FilterRule[] =>
@@ -3585,6 +3817,8 @@ export const openFilterList = (anchor: HTMLElement, ctx: ViewSettingsContext, te
   return panel;
 };
 
+/** notion-motion.md Round 38 §4 (r38-manage-sources.raw): the data source ⋯ menu. */
+const MANAGE_SOURCE_MENU_WIDTH = 200;
 /** notion-motion.md Round 19 §1 (r19-adv-rulemore.raw, r19-adv-groupmore.raw): the rule and group ⋯ menus. */
 const RULE_MORE_WIDTH = 150.8;
 /** notion-motion.md Round 19 §1 (r19-adv-andor.raw). */

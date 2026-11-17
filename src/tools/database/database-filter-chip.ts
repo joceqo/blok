@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid';
-import { IconChevronDown, IconCross, IconDotsHorizontal, IconTrash } from '../../components/icons';
+import { IconChevronDown, IconCross, IconDotsHorizontal, IconFilter, IconSort, IconTrash } from '../../components/icons';
 import { DatabasePanel, panelInput, panelRow, panelSeparator, panelText } from './database-panel';
 import type { PanelPage } from './database-panel';
 import type { ViewSettingsContext } from './database-view-settings-panel';
@@ -89,7 +89,8 @@ const capital = (word: string): string => `${word.charAt(0).toUpperCase()}${word
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-const optionPill = (option: SelectOption, type: PropertyDefinition['type']): HTMLElement => {
+/** An option token; a status option takes its shown colour and no dot. */
+export const optionPill = (option: SelectOption, type: PropertyDefinition['type']): HTMLElement => {
   const pill = document.createElement('span');
 
   pill.setAttribute('data-blok-database-option-pill', '');
@@ -126,7 +127,12 @@ export const filterChip = (testId: string, label: string, parts: { glyph: string
   el.setAttribute('data-blok-testid', testId);
   el.setAttribute('aria-label', label);
   el.setAttribute('data-blok-database-filter-pill', '');
-  el.append(chipPart('data-blok-database-chip-glyph', { icon: parts.glyph }));
+  const glyph = chipPart('data-blok-database-chip-glyph', { icon: parts.glyph });
+
+  // database.css gives these two Notion's narrow glyph boxes (filterSmall, arrowUpDownSmall).
+  if (parts.glyph === IconFilter) glyph.setAttribute('data-blok-database-chip-glyph', 'filter');
+  if (parts.glyph === IconSort) glyph.setAttribute('data-blok-database-chip-glyph', 'sort');
+  el.append(glyph);
   text.append(chipPart('data-blok-database-chip-name', { text: parts.name }));
   if (parts.value !== undefined && parts.value !== '') {
     text.append(`${parts.colon === true ? ':' : ''} `, chipPart('data-blok-database-chip-value', { text: parts.value }));
@@ -1079,7 +1085,7 @@ const CHIP_POPOVER_WINDOW_MARGIN = 8;
  * Opens a filter chip's popover under the chip. With `host` it is a flyout
  * over that panel, which stays open under it (the settings Filters page).
  */
-export const openFilterChip = (anchor: HTMLElement, ctx: ViewSettingsContext, filterId: string, onClose?: () => void, host?: DatabasePanel): DatabasePanel => {
+export const openFilterChip = (anchor: HTMLElement, ctx: ViewSettingsContext, filterId: string, onClose?: (escape: boolean) => void, host?: DatabasePanel): DatabasePanel => {
   const filter = withEntryIds(ctx.view().filters).find((f) => f.id === filterId);
   const property = ctx.schema().find((p) => p.id === filter?.propertyId);
   // A rollup of the Name has a text field, as Notion's 220-wide popover shows (r13-filter-ops-rollup.png).
@@ -1100,7 +1106,7 @@ export const openFilterChip = (anchor: HTMLElement, ctx: ViewSettingsContext, fi
     onClose: (escape) => {
       pages.dispose(escape);
       release?.();
-      onClose?.();
+      onClose?.(escape);
     },
   });
   const release = host?.hold();

@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { constructed } = vi.hoisted(() => ({ constructed: [] as Array<Record<string, unknown>> }));
 
-vi.mock('../../../../src/components/utils/popover', () => {
+vi.mock('../../../../src/components/utils/popover', async (importOriginal) => {
+  const real = await importOriginal<{ PopoverDesktop: abstract new (...args: never[]) => unknown }>();
+  const { stubMissingMethods } = await import('../../helpers/stub-missing-methods');
+
   class MockPopoverDesktop {
     constructor(params: Record<string, unknown>) {
       constructed.push(params);
@@ -14,6 +17,8 @@ vi.mock('../../../../src/components/utils/popover', () => {
 
     destroy(): void { /* no-op */ }
   }
+
+  stubMissingMethods(MockPopoverDesktop, real.PopoverDesktop);
 
   return { PopoverDesktop: MockPopoverDesktop };
 });
@@ -117,6 +122,25 @@ describe('table view menus', () => {
 
     openMenu(handle(84), [], { kind: 'handle' });
     openMenu(handle(519), [], { kind: 'handle' });
+
+    expect(constructed[0]?.asideSide).toBe('right');
+    expect(constructed[0]?.placeLeftOfAnchor).toBe(true);
+    expect(constructed[0]?.offset).toBe(5);
+    expect(constructed[1]?.asideSide).toBe('left');
+  });
+
+  // notion-motion.md Round 38 §3: near the window's left edge the table ⋮⋮ menu flips to the right, 5px past the handle.
+  it('opens the table row menu on the right of its handle when the 265px menu has no room on the left', () => {
+    const handle = (left: number): HTMLButtonElement => {
+      const button = document.createElement('button');
+
+      button.getBoundingClientRect = () => new DOMRect(left, 87, 18, 24);
+
+      return button;
+    };
+
+    openMenu(handle(42), [], { kind: 'row' });
+    openMenu(handle(477), [], { kind: 'row' });
 
     expect(constructed[0]?.asideSide).toBe('right');
     expect(constructed[0]?.placeLeftOfAnchor).toBe(true);

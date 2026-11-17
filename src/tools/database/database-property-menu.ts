@@ -216,6 +216,8 @@ interface RowPageExtras { onComment?: () => void; edit?: boolean }
 const VALUE_LIST = { clickOnly: true, placement: 'under', width: '250px', class: PANEL_LIST_CLASS } as const;
 /** notion-spec-2 §17: a ✓ on the current choice. isActive keeps aria-checked; the panel list class drops its fill. */
 const checkedIf = (current: boolean): { isActive: boolean; trailingIcon?: string } => ({ isActive: current, ...(current ? { trailingIcon: IconCheck } : {}) });
+/** The column menu's Change type list; database.css gives its glyphs Notion's ink. */
+const CHANGE_TYPE_LIST_CLASS = 'blok-database-change-type';
 /** notion-spec-2 §17.2: a rollup's Relation and Target property lists are 280 wide and check nothing. */
 const TARGET_LIST = { clickOnly: true, placement: 'under', width: '280px', class: PANEL_LIST_CLASS } as const;
 /** notion-spec-2 §17.2: Target property's own search field size, in database.css. */
@@ -270,6 +272,8 @@ export class DatabasePropertyMenu {
   private popover: PopoverDesktop | null = null;
   /** The open property with localized option and group names, for display only. Patches come from the saved one. */
   private shown: PropertyDefinition | null = null;
+  /** Menus opened over this one, such as a status option's; they close with it. */
+  private readonly overClosers = new Set<() => void>();
   private emojiPicker: EmojiPicker | null = null;
   /** Holds the picker in the top layer. Outside the menu popover, so a pick still lands after the menu closes. */
   private pickerLayer: HTMLElement | null = null;
@@ -402,6 +406,7 @@ export class DatabasePropertyMenu {
   private swap(): void {
     const previous = this.popover;
 
+    this.closeOver();
     this.popover = null;
     this.flushDescription();
     previous?.destroy();
@@ -607,15 +612,18 @@ export class DatabasePropertyMenu {
     };
   }
 
+  /** notion-motion.md Round 44 §3: the current type stays, with a check; picking it changes nothing. */
   private typeChoices(property: PropertyDefinition): PopoverItemParams[] {
     return addablePropertyTypes(this.options.hasPeople)
-      .filter((type) => type !== property.type)
       .map((type) => ({
         name: `type-${type}`,
         title: this.t(propertyTypeMeta(type).labelKey),
         icon: propertyTypeMeta(type).icon,
         closeOnActivate: true,
-        onActivate: () => this.options.onChangeType(property.id, type),
+        ...(type === property.type ? { trailingIcon: IconCheck } : {}),
+        onActivate: (): void => {
+          if (type !== property.type) this.options.onChangeType(property.id, type);
+        },
       }));
   }
 
@@ -707,12 +715,20 @@ export class DatabasePropertyMenu {
   close(): void {
     const popover = this.popover;
 
+    this.closeOver();
     this.popover = null;
     if (popover !== null) this.flushDescription();
     this.saveMirrorName?.();
     this.saveMirrorName = null;
     popover?.destroy();
     if (popover !== null) this.options.onClose?.();
+  }
+
+  private closeOver(): void {
+    const closers = [...this.overClosers];
+
+    this.overClosers.clear();
+    closers.forEach((close) => close());
   }
 
   private flushDescription(): void {
@@ -936,7 +952,8 @@ export class DatabasePropertyMenu {
           name: entry,
           title: this.t('tools.database.changeType'),
           icon: IconChangeType,
-          children: { items: this.typeChoices(property) },
+          // notion-motion.md Round 44 §3 (r44-tp-change.raw): a plain 200-wide list.
+          children: { items: this.typeChoices(property), width: '200px', class: CHANGE_TYPE_LIST_CLASS },
         };
       case 'duplicate':
         return { name: entry, title: this.t('tools.database.duplicateProperty'), icon: IconCopy, closeOnActivate: true, onActivate: () => this.options.onDuplicate(id) };
@@ -1407,6 +1424,8 @@ export class DatabasePropertyMenu {
       ...(property.type === 'status'
         ? { onSetDefault: (defaultOptionId: string) => update({ status: { groups: status?.groups ?? [], ...status, defaultOptionId } }) }
         : {}),
+      hold: () => this.popover?.holdOpen() ?? ((): void => undefined),
+      onHostClose: (close) => this.overClosers.add(close),
     });
 
     return { type: PopoverItemType.Html, element, name: 'options' };

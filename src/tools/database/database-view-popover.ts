@@ -3,6 +3,7 @@ import { VIEW_ICONS } from './database-tab-bar';
 import { DATABASE_MENU_CLASS, DATABASE_SUBMENU_OPEN_DELAY_MS } from './database-group-menu';
 import { PopoverDesktop } from '../../components/utils/popover';
 import { PopoverItemType } from '../../components/utils/popover/components/popover-item';
+import type { ArrowTarget } from '../../components/flipper';
 import { PopoverEvent } from '@/types/utils/popover/popover-event';
 import type { API } from '../../../types';
 import type { ViewType } from './types';
@@ -31,13 +32,39 @@ const VIEW_TYPES: ViewTypeOption[] = [
   { type: 'form', labelKey: 'tools.database.viewTypeForm' },
 ];
 
+const VIEW_TILE = 'database-view-tile';
+
+/** The tiles' columns (feel/findings-toolbar V04). */
+const GRID_COLUMNS = 4;
+
+/**
+ * notion-motion.md Round 42 §5: Right and Left go in reading order and wrap; Down goes down the
+ * column, from the last row to "New data source"; Up from it goes to the last row's first tile.
+ * Up from the top row and Down from "New data source" were not measured: the cursor stays.
+ */
+const gridArrowTarget = (tiles: number): ArrowTarget => (arrow, index, count) => {
+  if (index < 0) return undefined;
+  if (arrow === 'right') return (index + 1) % count;
+  if (arrow === 'left') return (index - 1 + count) % count;
+  const newSource = count > tiles ? tiles : -1;
+
+  if (index === newSource) return arrow === 'up' ? Math.floor((tiles - 1) / GRID_COLUMNS) * GRID_COLUMNS : index;
+  if (arrow === 'up') return index >= GRID_COLUMNS ? index - GRID_COLUMNS : index;
+  if (index + GRID_COLUMNS < tiles) return index + GRID_COLUMNS;
+
+  return newSource >= 0 ? newSource : index;
+};
+
 /** Notion's card of view layouts is 390 wide (feel/findings-toolbar V04). */
 export const ADD_VIEW_MENU_WIDTH = 390;
 
 /** notion-motion.md Round 32 §1 (r32-a-more-newview-narrow.*): the flyout stops 11.8 above the window bottom. */
 const ASIDE_WINDOW_MARGIN = 11.8;
 
-export type ViewPopoverPlacement = 'below' | 'aside' | 'aside-left';
+/** notion-motion.md Round 38 §6 (r38-fold-card.raw): with room on neither side, the card's right edge is 12.2 from the window. */
+const ASIDE_OVER_WINDOW_MARGIN = 12.2;
+
+export type ViewPopoverPlacement = 'below' | 'aside' | 'aside-left' | 'aside-over';
 
 export interface ViewPopoverOptions {
   onSelect: (type: ViewType) => void;
@@ -73,6 +100,7 @@ export class DatabaseViewPopover {
    * `aside`: beside a menu row, vertically centred on it, its left on the row's
    * right (notion-motion.md Round 31 §3: the fold menu's right − 4, its padding).
    * `aside-left`: the mirror, its right on the row's left (Round 32 §1).
+   * `aside-over`: `aside` with no room on either side, slid in over the menu (Round 38 §6).
    * Beside the fold menu it has no "New data source": the menu has its own (Round 31 §3).
    */
   open(anchor: HTMLElement, placement: ViewPopoverPlacement = 'below', focusFirst = false): void {
@@ -89,14 +117,15 @@ export class DatabaseViewPopover {
       element: headingEl,
     };
 
+    const shown = VIEW_TYPES.filter((option) => !this.hidden.includes(option.type));
     const items = [
       headingItem,
-      ...VIEW_TYPES.filter((option) => !this.hidden.includes(option.type)).map((option) => {
+      ...shown.map((option) => {
         const el = this.createViewItem(option);
 
         return {
           type: PopoverItemType.Html as const,
-          name: 'database-view-tile',
+          name: VIEW_TILE,
           element: el,
           closeOnActivate: true,
         };
@@ -116,7 +145,8 @@ export class DatabaseViewPopover {
       trigger: anchor,
       // motion-addview.json: Notion's card starts 4px under the "+".
       offset: aside ? 0 : 4,
-      ...(aside ? { placeLeftOfAnchor: true, asideSide: placement === 'aside' ? 'right' as const : 'left' as const, viewportMargin: ASIDE_WINDOW_MARGIN } : {}),
+      ...(aside ? { placeLeftOfAnchor: true, asideSide: placement === 'aside-left' ? 'left' as const : 'right' as const, viewportMargin: ASIDE_WINDOW_MARGIN } : {}),
+      ...(placement === 'aside-over' ? { asideStayMargin: ASIDE_OVER_WINDOW_MARGIN } : {}),
       width: `${ADD_VIEW_MENU_WIDTH}px`,
       // A keyboard user lands on the first tile.
       autoFocusFirstItem: focusFirst,
@@ -133,6 +163,9 @@ export class DatabaseViewPopover {
 
     this.popover.nestedOpenDelay = DATABASE_SUBMENU_OPEN_DELAY_MS;
     this.popover.show();
+    this.popover.setArrowTarget(gridArrowTarget(shown.length));
+    // notion-motion.md Round 15 §A: Table is filled on open, and stays filled while another tile is hovered: the keyboard cursor.
+    if (!focusFirst) this.popover.focusItemByName(VIEW_TILE);
   }
 
   /** A button, so the menu's arrow keys reach it and Enter picks it. */

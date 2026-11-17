@@ -43,7 +43,7 @@ describe('database row page layout css', () => {
   // feel/findings-rowpage R10: the header row shows on hover of the page head or title, not the whole page.
   it('shows Customize layout on page head hover, like Add icon', () => {
     expect(database).toMatch(/\[data-blok-database-drawer-customize\] \{[^}]*opacity: 0;/);
-    expect(database).toMatch(/\[data-blok-database-drawer-page-head\]:is\(:hover, [^{]*\[data-blok-database-drawer-customize\][^{]*\{ opacity: 1; \}/);
+    expect(database).toMatch(/\[data-blok-database-drawer-page-head\]:hover [^{]*\[data-blok-database-drawer-customize\][^{]*\{\s*opacity: 1;\s*\}/);
   });
 
   it('turns the section caret and the details panel motion off for reduced motion', () => {
@@ -572,6 +572,14 @@ describe('database row page layout css', () => {
     // feel/findings-rowpage R04: 20px glyphs, Notion's 22px ellipsis.
     expect(ruleBody('[data-blok-database-peek-expand] svg, [data-blok-database-peek-mode] svg, [data-blok-database-peek-prev] svg, [data-blok-database-peek-next] svg, [data-blok-database-peek-copy-link] svg, [data-blok-database-peek-page-info] svg, [data-blok-database-peek-favorite] svg')).toContain('width: 20px');
     expect(ruleBody('[data-blok-database-peek-actions] svg')).toContain('width: 22px');
+  });
+
+  // notion-motion.md Round 44 §5: the center peek's ⤢ is 11 x 11 of ink; Keyline's at 22px is 11.3.
+  it('draws the center peek\'s expand glyph at Notion\'s ink size', () => {
+    const body = ruleBody('[data-peek-mode="center"] [data-blok-database-peek-expand] svg');
+
+    expect(body).toContain('width: 22px');
+    expect(body).toContain('height: 22px');
   });
 
   // research/22 §14: favorited is a yellow star, not a selected state, so it gets ink but no button fill.

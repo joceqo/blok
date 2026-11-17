@@ -21,6 +21,8 @@ export interface PositionInput {
   leftAlignRect?: DOMRect;
   /** Below or above the anchor, with the popover's end edge on the anchor's end edge, kept inside the boundary. */
   alignEnd?: boolean;
+  /** Below or above the anchor, centred on it, kept inside the boundary. Wins over `alignEnd`. */
+  alignCenter?: boolean;
   /**
    * Reading direction of the popover. In RTL the below/above placement aligns
    * to the anchor's right edge and flips rightward. Defaults to `ltr`.
@@ -48,6 +50,17 @@ export interface PositionInput {
    * overflow either edge. Has no effect when 0. Also applies to `cover`.
    */
   viewportMargin?: number;
+  /**
+   * With `placeLeftOfAnchor`: when the popover does not fit on `asideSide`, it
+   * stays there anyway, slid in over the anchor until it is this far from the
+   * boundary, instead of falling back to below/above. Unset: it falls back.
+   */
+  asideStayMargin?: number;
+  /**
+   * With `placeLeftOfAnchor`: when the popover does not fit on `asideSide` but
+   * fits on the other side, it opens there instead.
+   */
+  asideFlip?: boolean;
   /**
    * When true, the popover's start corner sits on the anchor's start corner
    * and slides only as far as needed to stay inside the viewport/scope.
@@ -108,9 +121,12 @@ export function resolvePosition(input: PositionInput): ResolvedPosition {
     offset = 8,
     leftAlignRect,
     alignEnd = false,
+    alignCenter = false,
     placeLeftOfAnchor = false,
     asideSide = 'left',
     viewportMargin = 0,
+    asideStayMargin,
+    asideFlip = false,
     direction = 'ltr',
     cover = false,
     coverFlipOffset,
@@ -133,12 +149,15 @@ export function resolvePosition(input: PositionInput): ResolvedPosition {
   // block content. When it does not fit, fall through to the standard
   // below/above placement — the handle stays clear and the menu covers only
   // content below, matching the context-menu behavior.
-  const asideOnRight = asideSide === 'right';
-  const asideSpace = asideOnRight
-    ? boundaryRight - anchor.right - offset
-    : anchor.left - offset - boundaryLeft;
+  const spaceOnRight = boundaryRight - anchor.right - offset;
+  const spaceOnLeft = anchor.left - offset - boundaryLeft;
+  const flipAside = asideFlip && (asideSide === 'right'
+    ? shouldFlip(popoverSize.width, spaceOnRight, spaceOnLeft)
+    : shouldFlip(popoverSize.width, spaceOnLeft, spaceOnRight));
+  const asideOnRight = (asideSide === 'right') !== flipAside;
+  const asideSpace = asideOnRight ? spaceOnRight : spaceOnLeft;
 
-  if (placeLeftOfAnchor && popoverSize.width <= asideSpace) {
+  if (placeLeftOfAnchor && (popoverSize.width <= asideSpace || asideStayMargin !== undefined)) {
     const anchorCenterInDocCoords = (anchor.top + anchor.bottom) / 2 + scrollOffset.y;
     const scopeBottomInDocCoords = scopeBounds.bottom + scrollOffset.y;
     // The viewport margin is an unconditional aesthetic gap: the menu must
@@ -164,20 +183,22 @@ export function resolvePosition(input: PositionInput): ResolvedPosition {
     // it does not fully fit. Never flip to the opposite side: the block content
     // always lies there, so flipping would cover the very content the menu
     // belongs to, while clamping merely compresses the gap between menu and
-    // anchor.
+    // anchor. Only `asideFlip` opts in, for a submenu whose other side is free.
     const rawLeft = asideOnRight
       ? anchor.right + offset + scrollOffset.x
       : anchor.left - offset - popoverSize.width + scrollOffset.x;
+    const edgeGap = asideStayMargin ?? 0;
     const left = asideOnRight
-      ? Math.min(boundaryRight + scrollOffset.x - popoverSize.width, rawLeft)
-      : Math.max(boundaryLeft + scrollOffset.x, rawLeft);
+      ? Math.min(boundaryRight - edgeGap + scrollOffset.x - popoverSize.width, rawLeft)
+      : Math.max(boundaryLeft + edgeGap + scrollOffset.x, rawLeft);
 
     return { top, left, openTop: false, openLeft: !asideOnRight };
   }
 
   if (cover) {
     const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(value, max));
-    const start = direction === 'rtl' ? anchor.right - popoverSize.width : anchor.left;
+    // `alignEnd` puts the end edge on the anchor's end edge instead of the start edges together.
+    const start = (direction === 'rtl') !== alignEnd ? anchor.right - popoverSize.width : anchor.left;
     const left = clamp(start, boundaryLeft + viewportMargin, boundaryRight - viewportMargin - popoverSize.width);
     const aboveBottom = coverFlipOffset === undefined ? undefined : anchor.top - coverFlipOffset;
     const fitsBelow = anchor.top + popoverSize.height <= boundaryBottom - coverVerticalMargin;
@@ -215,6 +236,12 @@ export function resolvePosition(input: PositionInput): ResolvedPosition {
   // --- Horizontal ---
   const minLeft = boundaryLeft + scrollOffset.x;
   const maxRight = boundaryRight + scrollOffset.x;
+
+  if (alignCenter) {
+    const centred = (anchor.left + anchor.right) / 2 - popoverSize.width / 2 + scrollOffset.x;
+
+    return { top, left: Math.max(minLeft, Math.min(centred, maxRight - popoverSize.width)), openTop, openLeft: false };
+  }
 
   if (alignEnd) {
     const end = direction === 'rtl' ? anchor.left : anchor.right - popoverSize.width;

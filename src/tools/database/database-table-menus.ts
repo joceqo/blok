@@ -223,6 +223,8 @@ export interface OpenMenuOptions {
   offset?: number;
   /** The menu's end edge on the anchor's end edge. */
   alignEnd?: boolean;
+  /** A card menu that does not fit below opens above, its bottom this far over the anchor's top, when it fits there. */
+  coverFlipOffset?: number;
 }
 
 const MENU_CLASS = {
@@ -257,7 +259,8 @@ export const openMenu = (
     class: menuClass,
     // notion-motion.md Round 35: the table's ⋮⋮ menu ends 5px before the handle, as the list's does.
     // Round 36 §4: pushed up to ~12px over the window bottom. The margin is top and bottom only here.
-    ...(options.kind === 'row' ? { placeLeftOfAnchor: true, offset: HANDLE_MENU_GAP, viewportMargin: 12 } : {}),
+    // Round 38 §3: with no room on the left it flips to the right, 5px past the handle.
+    ...(options.kind === 'row' ? { placeLeftOfAnchor: true, asideSide: handleMenuSide(anchor), offset: HANDLE_MENU_GAP, viewportMargin: 12 } : {}),
     // notion-motion.md Round 10: the right edge 5px before the handle, centred on it; pushed up to ~12px over the window bottom.
     // Round 16 §7: with no room on the left it flips to the right, 5px past the handle.
     ...(options.kind === 'handle' ? { placeLeftOfAnchor: true, asideSide: handleMenuSide(anchor), offset: HANDLE_MENU_GAP, viewportMargin: 12 } : {}),
@@ -277,6 +280,7 @@ export const openMenu = (
     ...(options.searchPlaceholder !== undefined ? { messages: { search: options.searchPlaceholder } } : {}),
     ...(options.viewportMargin !== undefined ? { viewportMargin: options.viewportMargin } : {}),
     ...(options.offset !== undefined ? { offset: options.offset } : {}),
+    ...(options.coverFlipOffset !== undefined ? { coverFlipOffset: options.coverFlipOffset } : {}),
   };
   const at = options.at;
   const popover = new PopoverDesktop(at === undefined ? params : { ...params, position: at.position, positionContext: at.positionContext });
