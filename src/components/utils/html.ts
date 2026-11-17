@@ -108,8 +108,22 @@ const moveNode = (parent: StatefulMoveParent, node: Node, reference: Node | null
 const countSelectionExit = (exit: 'detached' | 'inert' | 'read' | 'batched'): void => {
   const probe = (globalThis as { __blokSelectionProbe?: Record<string, number> }).__blokSelectionProbe;
 
-  if (probe !== undefined) {
-    probe[exit] = (probe[exit] ?? 0) + 1;
+  if (probe === undefined) {
+    return;
+  }
+
+  probe[exit] = (probe[exit] ?? 0) + 1;
+
+  // A sampling profile names selectionInside but not who called it, and the
+  // first fix aimed at the wrong caller: the counts did not move at all.
+  // Record where the costly exit is reached from, the first time each.
+  const callers = (globalThis as { __blokSelectionCallers?: Record<string, number> }).__blokSelectionCallers;
+
+  if (exit === 'read' && callers !== undefined) {
+    const stack = new Error().stack ?? '';
+    const key = stack.split('\n').slice(2, 6).map(line => line.trim()).join(' <- ').slice(0, 300);
+
+    callers[key] = (callers[key] ?? 0) + 1;
   }
 };
 

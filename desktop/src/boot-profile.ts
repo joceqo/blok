@@ -295,6 +295,7 @@ export function startBootProfile(): void {
       inert: 0,
       read: 0,
     };
+    (globalThis as { __blokSelectionCallers?: Record<string, number> }).__blokSelectionCallers = {};
     console.info('[blok] profil du démarrage en cours…');
     watchUntilQuiet();
   } catch (error) {
@@ -321,6 +322,7 @@ export async function stopBootProfile(label = 'démarrage'): Promise<ProfileSumm
 
   const trace = await profiler.stop();
   const selectionExits = (globalThis as { __blokSelectionProbe?: Record<string, number> }).__blokSelectionProbe;
+  const callers = (globalThis as { __blokSelectionCallers?: Record<string, number> }).__blokSelectionCallers;
   const summary = { ...summarizeProfile(trace), ...(selectionExits !== undefined && { selectionExits }) };
 
   (globalThis as { __blokBootProfile?: ProfileSummary }).__blokBootProfile = summary;
@@ -328,6 +330,9 @@ export async function stopBootProfile(label = 'démarrage'): Promise<ProfileSumm
   console.table(summary.top);
   if (summary.selectionExits !== undefined) {
     console.info('Sorties de selectionInside :', summary.selectionExits);
+  }
+  if (callers !== undefined) {
+    console.info('Appelants de la lecture :', Object.entries(callers).sort((a, b) => b[1] - a[1]).slice(0, 8));
   }
   console.info('Détail complet : window.__blokBootProfile');
   console.groupEnd();
