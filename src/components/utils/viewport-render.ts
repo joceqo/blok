@@ -13,6 +13,15 @@
  * only decides WHO sleeps; it does not render anything itself.
  */
 
+/**
+ * Marks a holder standing in for a block nobody has scrolled to.
+ *
+ * A placeholder is nearly flat, so without a reserved height the whole page
+ * would collapse into one screen and every sleeper would read as visible at
+ * once — the stylesheet gives this attribute a height to stand on.
+ */
+export const OFFSCREEN_ATTRIBUTE = 'data-blok-offscreen';
+
 /** How many roots are still owed an eager mount in this pass; null outside one. */
 let eagerLeft: number | null = null;
 
@@ -72,4 +81,67 @@ export const sleepingBlocks = (): Iterable<string> => [...asleep];
 export const resetViewportRender = (): void => {
   eagerLeft = null;
   asleep.clear();
+};
+
+/**
+ * How far beyond the screen a sleeper is woken.
+ *
+ * Generous on purpose: waking costs real work, so it must start well before
+ * the block is needed, or the person scrolls into a blank space and waits.
+ */
+const WAKE_MARGIN_PX = 1200;
+
+/**
+ * Wakes each sleeper when it comes near the screen, and not before.
+ *
+ * This is what makes the saving real rather than merely deferred: a first
+ * version woke every sleeper in a loop straight after the mount, which moved
+ * the work without removing any of it — the load measured exactly the same
+ * 9 s. A block nobody scrolls to is never drawn at all.
+ *
+ * Without IntersectionObserver every sleeper is woken at once: a browser that
+ * cannot tell us what is visible must not be left with invisible content.
+ * @param sleepers - the blocks to watch, with the holders that stand in for them
+ * @param wake - what to run when one of them comes into view
+ */
+export const observeSleepers = (
+  sleepers: Array<{ id: string; holder: HTMLElement }>,
+  wake: (id: string) => void
+): void => {
+  const Observer = (globalThis as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver;
+
+  if (typeof Observer !== 'function') {
+    for (const sleeper of sleepers) {
+      wakeBlock(sleeper.id);
+      wake(sleeper.id);
+    }
+
+    return;
+  }
+
+  const byHolder = new Map<Element, string>(sleepers.map(sleeper => [sleeper.holder, sleeper.id]));
+  const observer = new Observer((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) {
+        continue;
+      }
+
+      const id = byHolder.get(entry.target);
+
+      if (id === undefined) {
+        continue;
+      }
+
+      // Unobserved and forgotten before waking: the render changes the
+      // holder's size, which would otherwise report it as intersecting again.
+      byHolder.delete(entry.target);
+      observer.unobserve(entry.target);
+      wakeBlock(id);
+      wake(id);
+    }
+  }, { rootMargin: `${WAKE_MARGIN_PX}px 0px ${WAKE_MARGIN_PX}px 0px` });
+
+  for (const sleeper of sleepers) {
+    observer.observe(sleeper.holder);
+  }
 };

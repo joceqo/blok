@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { beginViewportPass, claimEagerRoot, isAsleep, resetViewportRender, sleepBlock, sleepingBlocks, wakeBlock } from '../../../../src/components/utils/viewport-render';
+import { beginViewportPass, claimEagerRoot, isAsleep, observeSleepers, resetViewportRender, sleepBlock, sleepingBlocks, wakeBlock } from '../../../../src/components/utils/viewport-render';
 
 afterEach(() => {
   resetViewportRender();
@@ -69,5 +69,98 @@ describe('rendu au viewport', () => {
     sleepBlock('b1');
 
     expect([...sleepingBlocks()]).toEqual(['b1']);
+  });
+});
+
+describe('réveil à l’approche de l’écran', () => {
+  class FakeObserver {
+    public static last: FakeObserver | undefined;
+    public readonly observed: Element[] = [];
+    public readonly unobserved: Element[] = [];
+    public disconnected = false;
+    public constructor(private readonly handler: (entries: Array<{ target: Element; isIntersecting: boolean }>) => void, public readonly options?: unknown) {
+      FakeObserver.last = this;
+    }
+    public observe(element: Element): void { this.observed.push(element); }
+    public unobserve(element: Element): void { this.unobserved.push(element); }
+    public disconnect(): void { this.disconnected = true; }
+    public fire(target: Element, isIntersecting = true): void { this.handler([{ target, isIntersecting }]); }
+  }
+
+  const holderFor = (id: string): HTMLElement => {
+    const holder = document.createElement('div');
+
+    holder.setAttribute('data-blok-id', id);
+    document.body.append(holder);
+
+    return holder;
+  };
+
+  afterEach(() => {
+    document.body.replaceChildren();
+    FakeObserver.last = undefined;
+  });
+
+  it('ne réveille un dormeur que lorsqu’il approche de l’écran', () => {
+    vi.stubGlobal('IntersectionObserver', FakeObserver);
+    const woken: string[] = [];
+    const holder = holderFor('b1');
+
+    sleepBlock('b1');
+    observeSleepers([{ id: 'b1', holder }], id => woken.push(id));
+
+    expect(woken).toEqual([]);
+
+    FakeObserver.last?.fire(holder);
+
+    expect(woken).toEqual(['b1']);
+    expect(isAsleep('b1')).toBe(false);
+  });
+
+  it('ignore une entrée qui sort de l’écran', () => {
+    vi.stubGlobal('IntersectionObserver', FakeObserver);
+    const woken: string[] = [];
+    const holder = holderFor('b1');
+
+    sleepBlock('b1');
+    observeSleepers([{ id: 'b1', holder }], id => woken.push(id));
+    FakeObserver.last?.fire(holder, false);
+
+    expect(woken).toEqual([]);
+    expect(isAsleep('b1')).toBe(true);
+  });
+
+  it('cesse d’observer un dormeur réveillé', () => {
+    vi.stubGlobal('IntersectionObserver', FakeObserver);
+    const holder = holderFor('b1');
+
+    sleepBlock('b1');
+    observeSleepers([{ id: 'b1', holder }], () => undefined);
+    FakeObserver.last?.fire(holder);
+    FakeObserver.last?.fire(holder);
+
+    expect(FakeObserver.last?.unobserved).toHaveLength(1);
+  });
+
+  it('réveille tout de suite quand le navigateur n’observe pas', () => {
+    // Sans IntersectionObserver, rien ne doit rester invisible pour toujours.
+    vi.stubGlobal('IntersectionObserver', undefined);
+    const woken: string[] = [];
+
+    sleepBlock('b1');
+    observeSleepers([{ id: 'b1', holder: holderFor('b1') }], id => woken.push(id));
+
+    expect(woken).toEqual(['b1']);
+  });
+
+  it('regarde loin devant l’écran, pour que rien n’apparaisse en retard', () => {
+    vi.stubGlobal('IntersectionObserver', FakeObserver);
+
+    sleepBlock('b1');
+    observeSleepers([{ id: 'b1', holder: holderFor('b1') }], () => undefined);
+
+    const margin = (FakeObserver.last?.options as { rootMargin?: string } | undefined)?.rootMargin ?? '';
+
+    expect(margin).toMatch(/\d+px/);
   });
 });

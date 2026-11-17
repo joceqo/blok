@@ -18,7 +18,7 @@ import type { API } from '../api';
 
 import type { BlockOrigin } from '../../../../types';
 import type { ComposeBlockOptions } from './types';
-import { claimEagerRoot, isAsleep, sleepBlock } from '../../utils/viewport-render';
+import { claimEagerRoot, isAsleep, OFFSCREEN_ATTRIBUTE, sleepBlock } from '../../utils/viewport-render';
 
 /**
  * Dependencies needed by BlockFactory
@@ -249,6 +249,9 @@ export class BlockFactory {
       }),
       renderedBarrier,
     }, this.dependencies.eventsDispatcher);
+
+    // Stands in for the block's height until something scrolls near it.
+    if (viewportSleep) block.holder.setAttribute(OFFSCREEN_ATTRIBUTE, '');
 
     // Closed until its database explicitly opens it. This must already hold
     // while a large load is between composition and the database's hooks.

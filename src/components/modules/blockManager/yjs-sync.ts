@@ -15,7 +15,7 @@ import { acceptsChildren, isChildToolAllowed } from '../../utils/child-tools';
 import { moveElementAfter, moveElementBefore, withBatchedMoves } from '../../utils/html';
 import { yieldToBrowser } from '../../utils/render-slices';
 import { beginDocumentMount, endDocumentMount } from '../../utils/document-mount';
-import { beginViewportPass, endViewportPass, sleepingBlocks, wakeBlock } from '../../utils/viewport-render';
+import { beginViewportPass, endViewportPass, observeSleepers, OFFSCREEN_ATTRIBUTE, sleepingBlocks } from '../../utils/viewport-render';
 
 /**
  * How long one activation run may hold the thread before handing it back.
@@ -2343,9 +2343,9 @@ export class BlockYjsSync {
       } finally {
         endDocumentMount();
       }
-      // Sleepers are drawn on this path too, or a load small enough to skip
+      // Sleepers are watched on this path too, or a load small enough to skip
       // slicing would leave its later roots blank for ever.
-      void this.wakeSleepers();
+      this.watchSleepers();
     }, { extendThroughRAF: true });
   }
 
@@ -2446,26 +2446,35 @@ export class BlockYjsSync {
       // A slice that throws must not leave the editor mounting for ever.
       endDocumentMount();
     }
-    await this.wakeSleepers();
+    this.watchSleepers();
   }
 
   /**
-   * Draws the roots the load skipped, one at a time, yielding between each.
+   * Watches the roots the load skipped, and draws each one as it nears the
+   * screen.
    *
-   * The page is usable before this finishes — that is the whole point. Waking
-   * a root also wakes what is under it, because `shouldDeferRender` asks
+   * NOT a loop that draws them all straight after the mount — that was the
+   * first version, and it moved the work without removing any: the load
+   * measured the same 9 s to the millisecond. A root nobody scrolls to is now
+   * never drawn.
+   *
+   * Waking a root wakes what is under it too, because `shouldDeferRender` asks
    * whether an ancestor sleeps and this one no longer does.
    */
-  private async wakeSleepers(): Promise<void> {
-    for (const id of sleepingBlocks()) {
+  private watchSleepers(): void {
+    const sleepers = [...sleepingBlocks()].flatMap((id) => {
       const block = this.repository.getBlockById(id);
 
-      // Forgotten BEFORE the render is asked for: `renderIfVisible` refuses to
-      // draw a block that still reads as asleep.
-      wakeBlock(id);
+      return block === undefined ? [] : [{ id, holder: block.holder }];
+    });
+
+    observeSleepers(sleepers, (id) => {
+      const block = this.repository.getBlockById(id);
+
+      // The reserved height goes with the placeholder it was standing in for.
+      block?.holder.removeAttribute(OFFSCREEN_ATTRIBUTE);
       block?.renderIfVisible();
-      await yieldToBrowser();
-    }
+    });
   }
 
   /**
