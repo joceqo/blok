@@ -12,7 +12,7 @@ import { modificationsObserverBatchTimeout } from '../../constants';
 import { DATA_ATTR } from '../../constants/data-attributes';
 import { logLabeled } from '../../utils';
 import { acceptsChildren, isChildToolAllowed } from '../../utils/child-tools';
-import { moveElementAfter, moveElementBefore } from '../../utils/html';
+import { moveElementAfter, moveElementBefore, withBatchedMoves } from '../../utils/html';
 import { equals } from '../../utils/object';
 import { sanitizeBlocks, stripUnsafeUrlsDeep } from '../../utils/sanitizer';
 import { dfsOrder, flatIndexForPlacement, subtreeEnd, type TreePlacement } from '../../utils/tree-order';
@@ -2256,19 +2256,26 @@ export class BlockYjsSync {
       // synchronous batch has landed, rather than rescanning it per child.
       const affectedParents = new Set<string>();
 
-      // Pass 2 — activate blocks (DOM insert + RENDERED), then emit events
-      for (const { block, targetIndex, parentId, placement } of created) {
-        this.blocksStore.activateBlock(block, targetIndex);
-        this.handlers.onBlockAdded(block, targetIndex, replaySourceOf(origin));
+      // Pass 2 — activate blocks (DOM insert + RENDERED), then emit events.
+      // One reading of the selection for the whole pass: each placement moves a
+      // holder and then asked the live selection whether the caret was inside
+      // it, which forces a full layout right after a DOM write. On an 849-block
+      // load that was 862 reads at ~31 ms each. Batching per placement does NOT
+      // help — this is the loop that runs once per block.
+      withBatchedMoves(() => {
+        for (const { block, targetIndex, parentId, placement } of created) {
+          this.blocksStore.activateBlock(block, targetIndex);
+          this.handlers.onBlockAdded(block, targetIndex, replaySourceOf(origin));
 
-        // Set parent relationship if needed — this moves the block into the toggle's
-        // DOM child container, updates parent's contentIds, and applies indentation.
-        if (parentId !== undefined) {
-          this.placeOrReparent(block, placement, parentId);
-          affectedParents.add(parentId);
-          this.warnIfChildToolDenied(block, parentId);
+          // Set parent relationship if needed — this moves the block into the toggle's
+          // DOM child container, updates parent's contentIds, and applies indentation.
+          if (parentId !== undefined) {
+            this.placeOrReparent(block, placement, parentId);
+            affectedParents.add(parentId);
+            this.warnIfChildToolDenied(block, parentId);
+          }
         }
-      }
+      });
       affectedParents.forEach(parentId => this.reconcileParentChildOrderFromDoc(parentId));
     }, { extendThroughRAF: true });
   }

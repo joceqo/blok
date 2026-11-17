@@ -158,6 +158,9 @@ const batchAnchor = (): SelectionAnchor | null => {
     return batchedAnchor ?? null;
   }
   batchPending = false;
+  // Counted HERE, where the live read actually happens. Counting the exit of
+  // selectionInside instead reported read: 0 while every batch still read once.
+  countSelectionExit('read');
 
   const selection = typeof window === 'undefined' ? null : window.getSelection();
   const anchorNode = selection?.anchorNode ?? null;

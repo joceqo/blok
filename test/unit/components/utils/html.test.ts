@@ -336,6 +336,27 @@ describe('html', () => {
         expect([selection?.anchorNode, selection?.anchorOffset, selection?.focusOffset]).toEqual([text, 1, 3]);
       });
 
+      it('counts one selection read per batch, not one per move', () => {
+        const { parent, a, b, c } = setup();
+        const counters = { detached: 0, inert: 0, read: 0, batched: 0 };
+
+        (globalThis as { __blokSelectionProbe?: unknown }).__blokSelectionProbe = counters;
+
+        withBatchedMoves(() => {
+          moveElementToEnd(parent, a);
+          moveElementToEnd(parent, b);
+          moveElementToEnd(parent, c);
+        });
+
+        delete (globalThis as { __blokSelectionProbe?: unknown }).__blokSelectionProbe;
+
+        // `read` must track the live reads, wherever they happen. Counting the
+        // exit of selectionInside instead reported read: 0 while every batch
+        // still read once — a counter that measured beside the thing it named.
+        expect(counters.read).toBe(1);
+        expect(counters.batched).toBe(3);
+      });
+
       it('returns what the batch returned', () => {
         expect(withBatchedMoves(() => 'fini')).toBe('fini');
       });
