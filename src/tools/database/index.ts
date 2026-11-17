@@ -323,6 +323,9 @@ const formatPreview = (value: PropertyValue): string => {
 };
 
 /** Emitted on the editor's own event bus when a database block has rendered. */
+/** How long a burst of source renders may defer its rebuild. */
+const SOURCE_REDRAW_DEADLINE_MS = 500;
+
 const DATABASE_RENDERED_EVENT = 'database rendered';
 
 /** Events that can end an inline edit or a drag. */
@@ -809,8 +812,12 @@ export class DatabaseTool implements BlockTool {
   /** This copy is leaving for another document that holds the same rows. */
   private movingOut = false;
   /** Set while a full redraw waits for an inline edit or drag to end. */
-  /** A source-render redraw is already queued for this microtask. */
+  /** A source-render redraw is already queued. */
   private sourceRedrawQueued = false;
+  /** Another source render landed since the last frame: keep waiting. */
+  private sourceRedrawPending = false;
+  /** When waiting must stop, however many renders keep arriving. */
+  private sourceRedrawDeadline: number | null = null;
   private redrawWhenIdleRetry: (() => void) | null = null;
   /** Whether each row the views drew had a body when they read it. Cleared on every redraw. */
   private readonly bodyRows = new Map<string, boolean>();
@@ -4189,6 +4196,7 @@ export class DatabaseTool implements BlockTool {
     }
     if (this.source?.databaseId === databaseId) {
       // A source back from undo makes the view writable again.
+      this.sourceRedrawPending = true;
       this.queueSourceRedraw();
 
       return;
@@ -4210,19 +4218,43 @@ export class DatabaseTool implements BlockTool {
    * thread is busy, so the frame lands once the work is done.
    */
   private queueSourceRedraw(): void {
+    // Each new render pushes the rebuild back a frame, instead of running one
+    // per frame. Throttling by frame assumed the thread stays busy for the
+    // whole load — true until the mount started yielding, after which frames
+    // land mid-burst and 25 rebuilds ran where one was meant to. The deadline
+    // keeps a steady stream of renders from deferring the rebuild forever.
+    this.sourceRedrawDeadline ??= performance.now() + SOURCE_REDRAW_DEADLINE_MS;
+
     if (this.sourceRedrawQueued) {
       return;
     }
     this.sourceRedrawQueued = true;
 
-    requestAnimationFrame(() => {
-      this.sourceRedrawQueued = false;
+    const attempt = (): void => {
       if (this.destroyed) {
+        this.sourceRedrawQueued = false;
+        this.sourceRedrawDeadline = null;
+
         return;
       }
+
+      const pending = this.sourceRedrawPending;
+
+      this.sourceRedrawPending = false;
+
+      if (pending && performance.now() < (this.sourceRedrawDeadline ?? 0)) {
+        requestAnimationFrame(attempt);
+
+        return;
+      }
+
+      this.sourceRedrawQueued = false;
+      this.sourceRedrawDeadline = null;
       this.rebuildTabBar();
       this.rerenderView({ keepDrawer: true });
-    });
+    };
+
+    requestAnimationFrame(attempt);
   }
 
   /**

@@ -20,6 +20,8 @@ describe('redraw d’une vue liée', () => {
     rerenderView(options?: { keepDrawer?: boolean }): void;
     destroyed: boolean;
     sourceRedrawQueued: boolean;
+    sourceRedrawPending: boolean;
+    sourceRedrawDeadline: number | null;
   } => tool as never;
 
   it('ne reconstruit qu’une fois pour une rafale de rendus', async () => {
@@ -28,6 +30,8 @@ describe('redraw d’une vue liée', () => {
 
     internals.destroyed = false;
     internals.sourceRedrawQueued = false;
+    internals.sourceRedrawPending = false;
+    internals.sourceRedrawDeadline = null;
     const rerender = vi.fn();
     const rebuildTabs = vi.fn();
 
@@ -43,12 +47,39 @@ describe('redraw d’une vue liée', () => {
     expect(rerender).toHaveBeenCalledWith({ keepDrawer: true });
   });
 
+  it('ne reconstruit qu’une fois pour une rafale étalée sur plusieurs frames', async () => {
+    // Le découpage du montage rend la main, donc des frames tombent AU MILIEU
+    // de la rafale : un throttle par frame reconstruisait alors une fois par
+    // frame — 25 reconstructions là où une suffisait.
+    const tool = Object.create(DatabaseTool.prototype) as DatabaseTool;
+    const internals = internalsOf(tool);
+
+    internals.destroyed = false;
+    internals.sourceRedrawQueued = false;
+    internals.sourceRedrawPending = false;
+    internals.sourceRedrawDeadline = null;
+    const rerender = vi.fn();
+
+    Object.assign(internals, { rerenderView: rerender, rebuildTabBar: vi.fn() });
+
+    for (let burst = 0; burst < 4; burst++) {
+      internals.sourceRedrawPending = true;
+      internals.queueSourceRedraw();
+      await frame();
+    }
+    await frame();
+
+    expect(rerender).toHaveBeenCalledTimes(1);
+  });
+
   it('reconstruit de nouveau pour une rafale suivante', async () => {
     const tool = Object.create(DatabaseTool.prototype) as DatabaseTool;
     const internals = internalsOf(tool);
 
     internals.destroyed = false;
     internals.sourceRedrawQueued = false;
+    internals.sourceRedrawPending = false;
+    internals.sourceRedrawDeadline = null;
     const rerender = vi.fn();
 
     Object.assign(internals, { rerenderView: rerender, rebuildTabBar: vi.fn() });
@@ -67,6 +98,8 @@ describe('redraw d’une vue liée', () => {
 
     internals.destroyed = false;
     internals.sourceRedrawQueued = false;
+    internals.sourceRedrawPending = false;
+    internals.sourceRedrawDeadline = null;
     const rerender = vi.fn();
 
     Object.assign(internals, { rerenderView: rerender, rebuildTabBar: vi.fn() });
