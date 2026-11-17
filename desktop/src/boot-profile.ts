@@ -297,6 +297,8 @@ export function startBootProfile(): void {
     };
     (globalThis as { __blokSelectionCallers?: Record<string, number> }).__blokSelectionCallers = {};
     (globalThis as { __blokDatabaseProbe?: { count: number; stacks: Record<string, number> } }).__blokDatabaseProbe = { count: 0, stacks: {} };
+    (globalThis as { __blokRenderProbe?: Record<string, unknown> }).__blokRenderProbe = {};
+    (globalThis as { __blokLoaderProbe?: Record<string, unknown> }).__blokLoaderProbe = {};
     console.info('[blok] profil du démarrage en cours…');
     watchUntilQuiet();
   } catch (error) {
@@ -334,6 +336,15 @@ export async function stopBootProfile(label = 'démarrage'): Promise<ProfileSumm
   }
   const database = (globalThis as { __blokDatabaseProbe?: { count: number; stacks: Record<string, number> } }).__blokDatabaseProbe;
 
+  const render = (globalThis as { __blokRenderProbe?: Record<string, unknown> }).__blokRenderProbe;
+  const loader = (globalThis as { __blokLoaderProbe?: Record<string, unknown> }).__blokLoaderProbe;
+
+  if (render !== undefined) {
+    console.info('Rendu :', render);
+  }
+  if (loader !== undefined) {
+    console.info('Squelette :', loader);
+  }
   if (database !== undefined) {
     console.info('Reconstructions de vue database :', database.count, Object.entries(database.stacks).sort((a, b) => b[1] - a[1]).slice(0, 5));
   }

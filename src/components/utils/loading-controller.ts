@@ -34,6 +34,19 @@ export class LoadingController {
   }
 
   public show(): void {
+    // Temporary boot diagnostic: the skeleton never appeared and the reason
+    // could be the config, a second call, or a hide that already ran.
+    const probe = (globalThis as { __blokLoaderProbe?: Record<string, unknown> }).__blokLoaderProbe;
+
+    if (probe !== undefined) {
+      probe.showCalled = ((probe.showCalled as number) ?? 0) + 1;
+      probe.enabled = this.args.config.enabled;
+      probe.alreadyStarted = this.started;
+      probe.hiding = this.hiding !== null;
+      probe.destroyed = this.destroyed;
+      probe.delay = this.args.config.delay;
+    }
+
     // Blok boots once per controller, so showing again during or after a hide is not supported.
     if (!this.args.config.enabled || this.started || this.hiding !== null || this.destroyed) {
       return;

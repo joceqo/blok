@@ -395,9 +395,23 @@ export class Renderer extends Module {
     // and that render is exactly the one that freezes the tab, since a shared
     // document always has collaboration on. Without this, `sliced` is false on
     // every collaborative page and the whole document lands in one task.
-    const firstRender = this.Blok.BlockManager.blocks.length === 0;
+    // `<= 1`, not `=== 0`: a fresh editor already holds its empty paragraph, so
+    // the stricter test never fired and every collaborative page stayed unsliced.
+    const existing = this.Blok.BlockManager.blocks.length;
+    const firstRender = existing <= 1;
     const sliced = processedBlocks.length > 80
       && (firstRender || !(this.Blok.Collaboration?.isEnabled ?? false));
+
+    // Temporary boot diagnostic: says whether this render was actually sliced,
+    // so a failed attempt is not read as "the slicing did not help".
+    const renderProbe = (globalThis as { __blokRenderProbe?: Record<string, unknown> }).__blokRenderProbe;
+
+    if (renderProbe !== undefined) {
+      renderProbe.blocksBefore = existing;
+      renderProbe.toRender = processedBlocks.length;
+      renderProbe.sliced = sliced;
+      renderProbe.collaboration = this.Blok.Collaboration?.isEnabled ?? false;
+    }
     const renderState: { releaseBarrier?: () => void; registered: boolean } = { registered: false };
     const renderedBarrier = sliced ? new Promise<void>(resolve => {
       renderState.releaseBarrier = resolve;
