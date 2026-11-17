@@ -323,9 +323,6 @@ const formatPreview = (value: PropertyValue): string => {
 };
 
 /** Emitted on the editor's own event bus when a database block has rendered. */
-/** How long a burst of source renders may defer its rebuild. */
-const SOURCE_REDRAW_DEADLINE_MS = 500;
-
 const DATABASE_RENDERED_EVENT = 'database rendered';
 
 /** Events that can end an inline edit or a drag. */
@@ -811,13 +808,9 @@ export class DatabaseTool implements BlockTool {
   private destroyed = false;
   /** This copy is leaving for another document that holds the same rows. */
   private movingOut = false;
+  /** Everything of the source the view currently on screen was drawn from. */
+  private sourceDigest: string | null = null;
   /** Set while a full redraw waits for an inline edit or drag to end. */
-  /** A source-render redraw is already queued. */
-  private sourceRedrawQueued = false;
-  /** Another source render landed since the last frame: keep waiting. */
-  private sourceRedrawPending = false;
-  /** When waiting must stop, however many renders keep arriving. */
-  private sourceRedrawDeadline: number | null = null;
   private redrawWhenIdleRetry: (() => void) | null = null;
   /** Whether each row the views drew had a body when they read it. Cleared on every redraw. */
   private readonly bodyRows = new Map<string, boolean>();
@@ -4196,8 +4189,7 @@ export class DatabaseTool implements BlockTool {
     }
     if (this.source?.databaseId === databaseId) {
       // A source back from undo makes the view writable again.
-      this.sourceRedrawPending = true;
-      this.queueSourceRedraw();
+      this.redrawFromSource();
 
       return;
     }
@@ -4205,56 +4197,68 @@ export class DatabaseTool implements BlockTool {
   };
 
   /**
-   * Rebuild the view once for a burst of source renders, not once per render.
+   * Everything of the source this view draws, as one comparable string — null
+   * when it cannot be read, which must never be taken for "nothing changed".
+   *
+   * Reading the source is plain JS over the row blocks; the rebuild it saves
+   * writes DOM and forces layout, so the comparison is worth its own cost many
+   * times over on a load that emits dozens of identical renders.
+   */
+  private sourceProjection(): string | null {
+    const source = this.source;
+
+    // A source in another document is read asynchronously elsewhere; this
+    // handler cannot see whether it moved.
+    if (source === undefined || source.documentId !== undefined) {
+      return null;
+    }
+
+    const read = this.readDatabaseSource(source.databaseId);
+
+    if (read === undefined) {
+      return null;
+    }
+
+    // The tab bar is rebuilt from the source's views and title, so a change to
+    // either has to count as a change even when no row moved.
+    return JSON.stringify({
+      title: this.databaseTitleOf(source.databaseId) ?? null,
+      views: this.sourceViews(source.databaseId),
+      schema: read.schema,
+      rows: read.rows,
+    });
+  }
+
+  /**
+   * Redraw this view from its source — unless the source reads exactly as it
+   * did when the view on screen was drawn.
    *
    * Loading a page emits DATABASE_RENDERED for every database that comes up,
-   * and each one rebuilt this view from scratch: measured at 48 full rebuilds
-   * on one load, 37 of them from here, ~51 ms each. The rebuild is the same
-   * whichever render triggered it, so the burst collapses into one.
+   * and the mount re-emits one for the source as each block inside it
+   * activates: measured at 48 full rebuilds on one load, 37 of them here, at
+   * ~51 ms each. Nearly all of them would redraw the very same thing.
    *
-   * On a frame rather than a microtask: those renders land in dozens of
-   * separate tasks, so a microtask only folded each task's own events and left
-   * 27 rebuilds standing. A frame spans the whole burst — and during a load the
-   * thread is busy, so the frame lands once the work is done.
+   * Folding the burst was tried first and measured — it made things WORSE,
+   * 25 rebuilds to 47. Those renders are spread over seconds, not packed into
+   * a frame, so each one opened its own window instead of joining one, and
+   * deferring the redraw past the frame left a deleted source's banner on
+   * screen after the source came back. Dropping the redundant renders costs
+   * nothing and keeps the redraw where it was: synchronous.
    */
-  private queueSourceRedraw(): void {
-    // Each new render pushes the rebuild back a frame, instead of running one
-    // per frame. Throttling by frame assumed the thread stays busy for the
-    // whole load — true until the mount started yielding, after which frames
-    // land mid-burst and 25 rebuilds ran where one was meant to. The deadline
-    // keeps a steady stream of renders from deferring the rebuild forever.
-    this.sourceRedrawDeadline ??= performance.now() + SOURCE_REDRAW_DEADLINE_MS;
+  private redrawFromSource(): void {
+    // The reading describes what was DRAWN. A redraw that could draw nothing —
+    // no element, no tab bar yet — must not leave one behind, or the redraw
+    // that finally can draw is dropped against a view that was never built.
+    const drawable = this.element !== null && this.tabBar !== null;
+    const projection = drawable ? this.sourceProjection() : null;
 
-    if (this.sourceRedrawQueued) {
+    if (projection !== null && projection === this.sourceDigest) {
       return;
     }
-    this.sourceRedrawQueued = true;
-
-    const attempt = (): void => {
-      if (this.destroyed) {
-        this.sourceRedrawQueued = false;
-        this.sourceRedrawDeadline = null;
-
-        return;
-      }
-
-      const pending = this.sourceRedrawPending;
-
-      this.sourceRedrawPending = false;
-
-      if (pending && performance.now() < (this.sourceRedrawDeadline ?? 0)) {
-        requestAnimationFrame(attempt);
-
-        return;
-      }
-
-      this.sourceRedrawQueued = false;
-      this.sourceRedrawDeadline = null;
-      this.rebuildTabBar();
-      this.rerenderView({ keepDrawer: true });
-    };
-
-    requestAnimationFrame(attempt);
+    this.rebuildTabBar();
+    this.rerenderView({ keepDrawer: true });
+    // After the redraw, which clears it: what is on screen is this reading.
+    this.sourceDigest = projection;
   }
 
   /**
@@ -13579,6 +13583,10 @@ export class DatabaseTool implements BlockTool {
 
 
   private rerenderView(options: { keepDrawer?: boolean } = {}): void {
+    // Any redraw, from any path, leaves the view describing something this
+    // handler never read. Forget the reading rather than eliminate against it.
+    this.sourceDigest = null;
+
     // Temporary boot diagnostic: a full view rebuild costs 2.75 s of a 10.5 s
     // load, and the profile cannot say whether that is one rebuild or many.
     // Installed by the boot profiler (`?profile=1`), absent otherwise.
