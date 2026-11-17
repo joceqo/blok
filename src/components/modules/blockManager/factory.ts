@@ -59,6 +59,7 @@ export class BlockFactory {
 
   /** Row metadata stays live; only content below a closed row defers its tool DOM. */
   private isClosedRowBody(parentId: string | null | undefined): boolean {
+    countViewport('closedRowAsked');
     const modules = this.dependencies.moduleInstances;
     const seen = new Set<string>();
     const cursor = { id: parentId };
@@ -70,11 +71,22 @@ export class BlockFactory {
       const record = live === undefined ? modules.YjsManager?.getBlockById?.(id) : undefined;
       const name = live?.name ?? record?.get('type');
 
-      if (name === 'database-row' && (live === undefined || live.holder.classList.contains('hidden'))) return true;
+      if (name === 'database-row') {
+        // Temporary boot diagnostic: in production only 10 of the 657 blocks
+        // under a closed row defer, while the same check passes its unit test.
+        // That test mounts through the Renderer; a load goes through the Yjs
+        // replay instead. These counters say which branch the replay takes.
+        const hidden = live !== undefined && live.holder.classList.contains('hidden');
+
+        countViewport(live === undefined ? 'rowParentMissing' : (hidden ? 'rowParentHidden' : 'rowParentVisible'));
+        if (live === undefined || hidden) return true;
+      }
       const parent: unknown = live?.parentId ?? record?.get('parentId');
 
       cursor.id = typeof parent === 'string' ? parent : undefined;
     }
+
+    countViewport('closedRowNo');
 
     return false;
   }
