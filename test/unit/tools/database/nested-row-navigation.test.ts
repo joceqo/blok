@@ -113,3 +113,26 @@ it('mounts only the latest row after paint and never saves a cancelled empty bod
   expect(attach).toHaveBeenCalledTimes(1);
   expect(save).not.toHaveBeenCalled();
 });
+
+it('paints the row shell before mounting a host page body', async () => {
+  vi.useFakeTimers();
+  const editor = document.createElement('div'); editor.setAttribute('data-blok-editor', '');
+  const wrapper = document.createElement('div'); editor.append(wrapper); document.body.append(editor);
+  const mount = vi.fn(() => ({ destroy: vi.fn() }));
+  const rowPages: CardDrawerOptions['rowPages'] = {
+    lookup: async () => null,
+    copyFromLegacy: async () => { throw new Error('unused'); },
+    reconcileLegacy: async () => { throw new Error('unused'); },
+    mount,
+  };
+  const drawer = new DatabaseCardDrawer({ wrapper, readOnly: false, titlePropertyId: 'title', schema: [], onTitleChange: vi.fn(), onDescriptionChange: vi.fn(), onClose: vi.fn(), rowPages });
+  drawers.push(drawer);
+  drawer.open({ id: 'sprint', position: 'a0', pageId: 'body-1', properties: { title: 'Sprint #14' } }, 'side');
+  // Building a page editor in the click's own tick freezes the list behind the peek.
+  expect(mount).not.toHaveBeenCalled();
+  expect(wrapper.querySelector('[data-blok-database-drawer-title]')).not.toBeNull();
+  expect(wrapper.querySelector('[aria-busy="true"]')).not.toBeNull();
+  await vi.advanceTimersByTimeAsync(40);
+  expect(mount).toHaveBeenCalledWith('body-1', expect.any(HTMLElement));
+  expect(wrapper.querySelector('[aria-busy="true"]')).toBeNull();
+});

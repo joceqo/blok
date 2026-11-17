@@ -1937,6 +1937,9 @@ describe('DatabaseCardDrawer', () => {
       }),
     };
     const options = createOptions({ rowPages });
+
+    document.body.appendChild(options.wrapper);
+
     const drawer = new DrawerWithMock(options);
 
     try {
@@ -1949,7 +1952,7 @@ describe('DatabaseCardDrawer', () => {
 
       const holder = options.wrapper.querySelector('[data-blok-database-drawer-editor]');
 
-      expect(holder?.textContent).toBe('Page B');
+      await vi.waitFor(() => { expect(holder?.textContent).toBe('Page B'); });
       expect(drawer.openRowId).toBe('row-b');
     } finally {
       gate.release();
@@ -2056,7 +2059,7 @@ describe('DatabaseCardDrawer', () => {
 
       const activeHolder = options.wrapper.querySelector('[data-blok-database-drawer-editor]');
 
-      expect(activeHolder?.textContent).toBe('Page B');
+      await vi.waitFor(() => { expect(activeHolder?.textContent).toBe('Page B'); });
 
       gate.release(savedBody);
       await pendingSave;

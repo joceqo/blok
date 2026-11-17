@@ -4450,7 +4450,10 @@ export class DatabaseCardDrawer {
   /** Give the title and properties a paint before composing a lazy block body. */
   private mountRowBodyAfterPaint(holder: HTMLElement, row: DatabaseRow): void {
     this.cancelPendingBodyMount();
-    if (this.rowBody === undefined || this.rowPages !== undefined) {
+    // A host page body is the expensive one: it builds a whole editor with its
+    // collaboration provider. Composing it in the click's own tick freezes the
+    // view behind the peek, and the peek never gets a frame to open in.
+    if (this.rowBody === undefined && this.rowPages === undefined) {
       this.initNestedEditor(holder, row);
 
       return;
@@ -4459,6 +4462,9 @@ export class DatabaseCardDrawer {
 
     placeholder.setAttribute('data-blok-database-body-loading', '');
     placeholder.setAttribute('aria-hidden', 'true');
+    // A row whose copy is still pending stays suspended from the first frame,
+    // not only once the deferred body mounts.
+    holder.toggleAttribute('inert', this.pendingBodyRows.has(row.id));
     holder.setAttribute('aria-busy', 'true');
     holder.append(placeholder);
     const pending: NonNullable<DatabaseCardDrawer['pendingBodyMount']> = { frame: null, timer: null, holder, placeholder };

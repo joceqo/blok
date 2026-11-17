@@ -192,6 +192,8 @@ const openLegacyRowWithBody = async (
   const tool = new DatabaseTool(options);
   const element = tool.render();
 
+  // A peek lives in the document; a detached drawer never mounts its deferred body.
+  document.body.append(element);
   tool.rendered();
   const card = queryAllByAttribute('data-row-id', element, 'row-1')[0];
 
@@ -255,6 +257,7 @@ describe('database row page migration', () => {
   });
 
   afterEach(() => {
+    document.body.replaceChildren();
     vi.restoreAllMocks();
   });
 
@@ -1149,6 +1152,7 @@ describe('database row page migration with older clients', () => {
   });
 
   afterEach(() => {
+    document.body.replaceChildren();
     vi.restoreAllMocks();
   });
 
@@ -1435,7 +1439,7 @@ describe('database row page migration with older clients', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(harness.notifier.show).not.toHaveBeenCalled();
-      expect(host.rowPages.mount).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => { expect(host.rowPages.mount).toHaveBeenCalledTimes(1); });
       expect(within(harness.editorHolder).queryByRole('alert')).toBeNull();
     } finally {
       harness.tool.destroy();
