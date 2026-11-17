@@ -2274,7 +2274,18 @@ export class BlockYjsSync {
       // touch the document, and this loop is where the page freezes. A remote
       // batch keeps the single synchronous pass, so peers never observe a
       // half-applied change.
-      if (initialBatch && created.length > ACTIVATION_SLICE && origin !== 'remote') {
+      const canSlice = initialBatch && created.length > ACTIVATION_SLICE && origin !== 'remote';
+      const batchProbe = (globalThis as { __blokBatchProbe?: Record<string, unknown> }).__blokBatchProbe;
+
+      if (batchProbe !== undefined) {
+        batchProbe.calls = ((batchProbe.calls as number) ?? 0) + 1;
+        batchProbe.lastCreated = created.length;
+        batchProbe.lastInitial = initialBatch;
+        batchProbe.lastOrigin = String(origin);
+        batchProbe.sliced = ((batchProbe.sliced as number) ?? 0) + (canSlice ? 1 : 0);
+      }
+
+      if (canSlice) {
         void this.withAtomicOperationAsync(
           () => this.activateInSlices(created, origin),
           { extendThroughRAF: true }

@@ -18,6 +18,7 @@ import {
 } from './presence';
 import { createPresenceRenderer } from './presence-renderer';
 import { normalizeUserId } from '../userDirectory';
+import { yieldToBrowser } from '../../utils/render-slices';
 import { createOperationStore, type OperationStore, type OperationStoreStats } from './operation-store';
 import { createCollabProvider, RELINEAGE_REASON, STALE_LINEAGE_REASON, STALE_FORMAT_REASON } from './provider';
 import type {
@@ -892,6 +893,13 @@ export class Collaboration extends Module {
     // It costs nothing on a small page: the controller only paints once the
     // wait outlasts `loader.delay`.
     this.Blok.UI.showLoading();
+
+    // Hand the thread back so the browser can actually PAINT the skeleton.
+    // Without this it is inserted and then buried: the cache read starts in the
+    // same task and holds the thread for seconds, so the first frame the user
+    // ever sees is the finished document — the skeleton existed but was never
+    // drawn.
+    await yieldToBrowser();
 
     // Awaited, unlike the network: this is a local-disk read, and the blocks
     // it restores have to be on screen before the first frame can race them.
