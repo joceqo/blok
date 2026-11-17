@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DatabaseCardDrawer, type CardDrawerOptions } from '../../../../src/tools/database/database-card-drawer';
+import type { PeekProfileRecord } from '../../../../src/components/utils/peek-profile';
 
 const drawers: DatabaseCardDrawer[] = [];
 const make = (wrapper: HTMLElement): DatabaseCardDrawer => {
@@ -184,4 +185,22 @@ it.each([false, true])('cancels geometry reads when a peek closes (frame already
   await vi.advanceTimersByTimeAsync(40);
 
   expect(measure).not.toHaveBeenCalled();
+});
+
+it('profiles a real drawer opening only on opted-in loads', async () => {
+  vi.useFakeTimers();
+  history.replaceState(null, '', '/?profile=1');
+  const wrapper = document.createElement('div');
+  document.body.append(wrapper);
+  const drawer = make(wrapper);
+  drawer.open({ id: 'private-row-id', position: 'a0', properties: { title: 'Private title' } }, 'side');
+  const records = (globalThis as { __blokPeekProfiles?: PeekProfileRecord[] }).__blokPeekProfiles;
+  const record = records?.at(-1);
+  expect(record?.spans.map(span => span.name)).toEqual(expect.arrayContaining(['openSync', 'focusTitle', 'backdrop', 'promoteDrawer']));
+  await vi.advanceTimersByTimeAsync(40);
+  expect(record?.milestones.shellPaintOpportunity).toBeDefined();
+  expect(JSON.stringify(record)).not.toContain('Private title');
+  expect(JSON.stringify(record)).not.toContain('private-row-id');
+  drawer.close();
+  expect(record?.status).toBe('closed');
 });

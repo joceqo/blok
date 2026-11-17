@@ -1,4 +1,5 @@
 import { createCoverDownloadButton } from '../../components/utils/cover-download';
+import { bindPeekProfile, measurePeek, startPeekProfile, type PeekProfile } from '../../components/utils/peek-profile';
 import type { I18n, OutputData } from '../../../types';
 import type { Events } from '../../../types/api/events';
 import type { ToolsConfig } from '../../../types/api/tools';
@@ -563,6 +564,7 @@ export class DatabaseCardDrawer {
   /** Pending frame for the measures applyMode defers; see scheduleModeMeasures. */
   private modeMeasureFrame: number | null = null;
   private modeMeasureTimer: number | null = null;
+  private peekProfile: PeekProfile | undefined;
   private readonly onEditViewDefault: CardDrawerOptions['onEditViewDefault'];
   private readonly rowLink: CardDrawerOptions['rowLink'];
   private readonly onExpand: CardDrawerOptions['onExpand'];
@@ -816,8 +818,17 @@ export class DatabaseCardDrawer {
   }
 
   open(row: DatabaseRow, mode: OpenPagesIn = this.drawer === null ? 'side' : this.mode): void {
-    this.show(row, mode);
-    this.onShown?.();
+    this.peekProfile?.finish('superseded');
+    this.peekProfile = startPeekProfile(mode);
+    measurePeek(this.peekProfile, 'openSync', () => {
+      this.show(row, mode);
+      if (this.peekProfile !== undefined) {
+        const holder = this.drawer?.querySelector<HTMLElement>('[data-blok-database-drawer-editor]');
+
+        if (holder) bindPeekProfile(holder, this.peekProfile);
+      }
+      this.onShown?.();
+    });
   }
 
   private show(row: DatabaseRow, mode: OpenPagesIn): void {
@@ -979,16 +990,18 @@ export class DatabaseCardDrawer {
     this.setPeekWidth(this.peekWidth);
     const deferDetails = this.rowBody !== undefined || this.rowPages !== undefined;
 
-    if (!deferDetails) this.renderRegions(row);
-    this.applyMode(mode);
+    if (!deferDetails) measurePeek(this.peekProfile, 'renderRegions', () => this.renderRegions(row));
+    measurePeek(this.peekProfile, 'applyMode', () => this.applyMode(mode));
+    const profile = this.peekProfile;
 
     requestAnimationFrame(() => {
       if (this.drawer !== drawer) return;
       drawer.setAttribute('data-open', '');
       if (this.drawer === drawer && this.mode === 'side') {
-        this.narrowPeekHost();
+        measurePeek(profile, 'narrowHost', () => this.narrowPeekHost());
       }
       afterSlide(drawer, () => {
+        profile?.mark('shellTransitionEnd');
         this.autoResizeTitle(titleInput);
 
         if (!title) {
@@ -1093,7 +1106,7 @@ export class DatabaseCardDrawer {
     };
     document.addEventListener('mousedown', this.outsideClickHandler);
 
-    titleInput.focus({ preventScroll: true });
+    measurePeek(this.peekProfile, 'focusTitle', () => titleInput.focus({ preventScroll: true }));
   }
 
   /**
@@ -1147,6 +1160,7 @@ export class DatabaseCardDrawer {
   }
 
   close(): void {
+    this.peekProfile?.finish('closed');
     this.childPeek?.close();
     const wasOpen = this.drawer !== null;
     // The side peek slides out with its body still in it; the body goes back
@@ -1217,6 +1231,7 @@ export class DatabaseCardDrawer {
   }
 
   destroy(): void {
+    this.peekProfile?.finish('closed');
     this.childPeek?.destroy();
     this.events?.off('i18n:changed', this.followOuterDirection);
     this.pageScroll.unlock();
@@ -2467,7 +2482,7 @@ export class DatabaseCardDrawer {
     this.syncTakeover();
 
     if (mode !== 'full') {
-      this.ensureBackdrop(drawer);
+      measurePeek(this.peekProfile, 'backdrop', () => this.ensureBackdrop(drawer));
       this.backdrop?.setAttribute('data-peek-mode', mode);
     } else {
       this.removeBackdrop();
@@ -2476,9 +2491,9 @@ export class DatabaseCardDrawer {
     if (mode === 'full') {
       removeFromTopLayer(drawer);
     } else if (!isPromotedToTopLayer(drawer)) {
-      promoteToTopLayer(drawer);
+      measurePeek(this.peekProfile, 'promoteDrawer', () => promoteToTopLayer(drawer));
     }
-    this.isolatePeek();
+    measurePeek(this.peekProfile, 'isolateBackground', () => this.isolatePeek());
     // Before narrowPeekHost: it measures the page without its scrollbar.
     if (mode === 'full') {
       this.pageScroll.unlock();
@@ -2544,8 +2559,8 @@ export class DatabaseCardDrawer {
         // The title is 40px on a full page and in the center peek, 32px in the side peek.
         const titleInput = drawer.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]');
 
-        if (titleInput !== null) this.autoResizeTitle(titleInput);
-        this.syncDetailsDock();
+        if (titleInput !== null) measurePeek(this.peekProfile, 'measureTitle', () => this.autoResizeTitle(titleInput));
+        measurePeek(this.peekProfile, 'measureDock', () => this.syncDetailsDock());
       }, 0);
     });
   }
@@ -4485,14 +4500,15 @@ export class DatabaseCardDrawer {
 
   /** Give the title and properties a paint before composing a lazy block body. */
   private mountRowBodyAfterPaint(holder: HTMLElement, row: DatabaseRow, renderDetails = false): void {
+    bindPeekProfile(holder, this.peekProfile);
     this.cancelPendingBodyMount();
     // A host page body is the expensive one: it builds a whole editor with its
     // collaboration provider. Composing it in the click's own tick freezes the
     // view behind the peek, and the peek never gets a frame to open in.
     if ((this.rowBody === undefined && this.rowPages === undefined)
       || (!renderDetails && row.pageId !== undefined && this.rowPages?.isReady?.(row.pageId) === true)) {
-      if (renderDetails) this.renderRegions(row);
-      this.initNestedEditor(holder, row);
+      if (renderDetails) measurePeek(this.peekProfile, 'renderRegions', () => this.renderRegions(row));
+      measurePeek(this.peekProfile, 'mountBody', () => this.initNestedEditor(holder, row));
 
       return;
     }
@@ -4518,8 +4534,8 @@ export class DatabaseCardDrawer {
         if (this.pendingBodyMount !== pending) return;
         this.cancelPendingBodyMount();
         if (this.currentRowId !== row.id || !holder.isConnected || !this.drawer?.contains(holder)) return;
-        if (renderDetails) this.renderRegions(this.currentRow ?? row);
-        this.initNestedEditor(holder, this.currentRow ?? row);
+        if (renderDetails) measurePeek(this.peekProfile, 'renderRegions', () => this.renderRegions(this.currentRow ?? row));
+        measurePeek(this.peekProfile, 'mountBody', () => this.initNestedEditor(holder, this.currentRow ?? row));
       }, 0);
     });
   }
@@ -4562,6 +4578,7 @@ export class DatabaseCardDrawer {
       || row.bodyBlocks === true || this.rowBody.has?.(row.id) === true)) {
       this.attachedBodyRowId = row.id;
       if (this.rowBody.attach(row.id, editorHolder)) {
+        this.peekProfile?.mark('inlineBodyAttached');
         return;
       }
       this.attachedBodyRowId = null;
@@ -4588,7 +4605,8 @@ export class DatabaseCardDrawer {
         inFlight: number;
         best: { order: number; data: OutputData } | null;
       } = { started: 0, inFlight: 0, best: null };
-      const blok = new Blok({
+      const profile = this.peekProfile;
+      const blok = measurePeek(profile, 'legacyEditorCreate', () => new Blok({
         ...this.toolsConfig,
         holder: editorHolder,
         data: description,
@@ -4622,12 +4640,15 @@ export class DatabaseCardDrawer {
             }
           }
         },
-      });
+      }));
 
       const instance = blok as unknown as BlokInstance;
 
       this.blokInstance = instance;
       this.isBodyChanged = isBodyChanged;
+      if (profile !== undefined) {
+        void instance.isReady.then(() => profile.mark('editorReady'), () => profile.mark('editorFailed'));
+      }
     }).catch((error: unknown) => {
       // The title still works either way. A missing editor is worth a warning: with
       // tools and core from two Blok versions the body would just stay empty.

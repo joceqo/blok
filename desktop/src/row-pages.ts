@@ -1,5 +1,6 @@
 import type { BlokConfig } from '../../types/configs';
 import type { DatabaseRowPages } from '../../types/tools/database';
+import { measurePeek, peekProfileFor } from '../../src/components/utils/peek-profile';
 
 /** Only the editor surface needed by a mounted row body. */
 export interface RowPageEditor {
@@ -91,11 +92,11 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
     let editor: RowPageEditor;
 
     try {
-      editor = options.createEditor({
+      editor = measurePeek(peekProfileFor(holder), 'hostEditorCreate', () => options.createEditor({
         ...options.editorConfig(pageId),
         holder: surface,
         readOnly: options.readOnly(pageId),
-      });
+      }));
     } catch (error) {
       if (retain > 0) surface.remove();
       throw error;
@@ -132,6 +133,7 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
     }
     void editor.isReady.then(() => {
       if (entry.disposed) return;
+      peekProfileFor(entry.surface)?.mark('editorReady');
       entry.ready = true;
       entry.refreshPermissions();
     }).catch(fail);
@@ -161,6 +163,8 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
       const cached = idle.get(pageId);
 
       if (cached !== undefined) {
+        peekProfileFor(holder)?.mark('cacheHit');
+        if (cached.ready) peekProfileFor(holder)?.mark('cachedEditorReady');
         idle.delete(pageId);
         cached.surface.hidden = false;
         holder.append(cached.surface);
@@ -170,6 +174,7 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
 
         return { destroy: () => release(cached) };
       }
+      peekProfileFor(holder)?.mark('cacheMiss');
       const entry = createEntry(pageId, holder, true);
 
       return { destroy: () => release(entry) };

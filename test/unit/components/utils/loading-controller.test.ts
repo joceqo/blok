@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LoadingController, MIN_VISIBLE } from '../../../../src/components/utils/loading-controller';
 import { DATA_ATTR } from '../../../../src/components/constants/data-attributes';
+import { bindPeekProfile, startPeekProfile } from '../../../../src/components/utils/peek-profile';
 import { HANDOFF_DURATION, HANDOFF_STAGGER } from '../../../../src/components/utils/skeleton-handoff';
 import type * as SkeletonHandoff from '../../../../src/components/utils/skeleton-handoff';
 
@@ -255,6 +256,32 @@ describe('LoadingController', () => {
     expect(mockRunSkeletonHandoff).toHaveBeenCalledTimes(1);
     expect(skeleton(wrapper)).toBeNull();
     expect(wrapper.hasAttribute('aria-busy')).toBe(false);
+  });
+
+  it('records content availability after the loader handoff, never on destruction', async () => {
+    history.replaceState(null, '', '/?profile=1');
+    const profile = startPeekProfile('side');
+    const first = setup(0, 0);
+    bindPeekProfile(first.wrapper, profile);
+    try {
+      first.controller.show();
+      expect(profile?.record.milestones.contentLoading).toBeDefined();
+      expect(profile?.record.milestones.contentInteractive).toBeUndefined();
+      await first.controller.hide([]);
+      expect(profile?.record.milestones.loaderHandoffStart).toBeDefined();
+      expect(profile?.record.milestones.contentInteractive).toBeDefined();
+      const second = setup(0, 0);
+      const cancelled = startPeekProfile('side');
+      bindPeekProfile(second.wrapper, cancelled);
+      second.controller.show();
+      second.controller.destroy();
+      expect(cancelled?.record.milestones.contentInteractive).toBeUndefined();
+      cancelled?.finish('closed');
+    } finally {
+      first.controller.destroy();
+      profile?.finish('closed');
+      history.replaceState(null, '', '/');
+    }
   });
 
   it('counts the time already shown toward MIN_VISIBLE', async () => {

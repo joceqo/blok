@@ -3,6 +3,7 @@ import { announce } from './announcer';
 import type { ResolvedLoaderConfig } from './loader-config';
 import { buildLoadingSkeleton } from './loading-skeleton';
 import { logLabeled } from './logger';
+import { peekProfileFor } from './peek-profile';
 import { HANDOFF_DURATION, HANDOFF_STAGGER, runSkeletonHandoff } from './skeleton-handoff';
 
 /** Once shown, shorter than this reads as a flicker. */
@@ -54,6 +55,7 @@ export class LoadingController {
 
     this.started = true;
     this.busy = true;
+    peekProfileFor(this.args.wrapper)?.mark('contentLoading');
     this.args.wrapper.setAttribute('aria-busy', 'true');
     // onChange is wired only after the handoff, so an edit made under the skeleton would never reach the host.
     this.args.content.setAttribute('inert', '');
@@ -84,6 +86,7 @@ export class LoadingController {
     }
 
     this.started = false;
+    peekProfileFor(this.args.wrapper)?.mark('loaderHandoffStart');
     this.hiding = this.runHide(targets);
 
     return this.hiding;
@@ -168,6 +171,7 @@ export class LoadingController {
   }
 
   private teardown(): void {
+    if (this.busy && !this.destroyed) peekProfileFor(this.args.wrapper)?.mark('contentInteractive');
     this.skeleton?.root.remove();
     this.skeleton = null;
     this.args.wrapper.removeAttribute(DATA_ATTR.loading);

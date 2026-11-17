@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { createDesktopRowPages, type RowPageEditor } from './row-pages';
+import { bindPeekProfile, startPeekProfile } from '../../src/components/utils/peek-profile';
 
 function deferred() {
   let resolve!: () => void;
@@ -7,6 +8,44 @@ function deferred() {
   const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
+
+it('reports cold construction separately from cached editor reuse', async () => {
+  vi.clearAllMocks();
+  vi.useFakeTimers();
+  history.replaceState(null, '', '/?profile=1');
+  const h = harness(2);
+  const holder = document.createElement('div');
+  const cold = startPeekProfile('side');
+  let warm: ReturnType<typeof startPeekProfile>;
+  bindPeekProfile(holder, cold);
+  try {
+    const mount = h.pages.mount('body', holder);
+    expect(cold?.record.milestones.cacheMiss).toBeDefined();
+    expect(cold?.record.spans.map(span => span.name)).toContain('hostEditorCreate');
+    expect(cold?.record.milestones.editorReady).toBeUndefined();
+    h.ready.resolve();
+    await Promise.resolve();
+    expect(cold?.record.milestones.editorReady).toBeDefined();
+    expect(cold?.record.milestones.contentInteractive).toBeUndefined();
+    mount.destroy();
+    cold?.finish('closed');
+    warm = startPeekProfile('side');
+    bindPeekProfile(holder, warm);
+    h.pages.mount('body', holder);
+    expect(warm?.record.milestones.cacheHit).toBeDefined();
+    expect(warm?.record.milestones.cachedEditorReady).toBeDefined();
+    expect(warm?.record.spans).toEqual([]);
+    expect(h.createEditor).toHaveBeenCalledTimes(1);
+  } finally {
+    h.pages.destroy();
+    cold?.finish('closed');
+    warm?.finish('closed');
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    history.replaceState(null, '', '/');
+  }
+});
 
 function harness(retainEditors = 0) {
   const ready = deferred();
