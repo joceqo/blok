@@ -741,7 +741,7 @@ describe('DatabaseCardDrawer shell', () => {
     });
 
     // The full page and center peek title is 40px, the side peek's 32px: its box must grow with the mode.
-    it('fits the title box again when the mode changes its size', () => {
+    it('fits the title box again when the mode changes its size', async () => {
       const drawer = new DatabaseCardDrawer(createOptions());
 
       drawer.open(ROW, 'side');
@@ -751,7 +751,7 @@ describe('DatabaseCardDrawer shell', () => {
       Object.defineProperty(title, 'scrollHeight', { configurable: true, get: () => 48 });
       drawer.open(ROW, 'full');
 
-      expect(title.style.height).toBe('48px');
+      await vi.waitFor(() => expect(title.style.height).toBe('48px'));
       drawer.destroy();
     });
   });

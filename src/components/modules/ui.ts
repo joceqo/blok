@@ -1806,7 +1806,13 @@ export class UI extends Module<UINodes> {
      * @param event - input or focus event
      */
     const handleInputOrFocusChange = (event: Event): void => {
-      const input = event.target as HTMLElement;
+      const input = event.target;
+
+      // Focus also bubbles from tool buttons and large focusable containers
+      // (notably databases). Only text inputs need placeholder bookkeeping.
+      if (!(input instanceof HTMLElement) || !input.matches(`${$.allInputsSelector}, [contenteditable=""]`)) {
+        return;
+      }
 
       toggleEmptyMark(input);
     };

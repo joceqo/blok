@@ -1572,6 +1572,7 @@ describe('UI module — mutants', () => {
 
       const input = document.createElement('div');
 
+      input.setAttribute('contenteditable', 'true');
       input.textContent = '';
       harness.wrapper.appendChild(input);
 

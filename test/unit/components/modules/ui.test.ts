@@ -1049,6 +1049,42 @@ describe("UI module", () => {
   });
 
   describe("hover and placeholder helpers", () => {
+    it("does not scan a database container when focus moves into a peek title", () => {
+      const { ui, wrapper } = createUI();
+      ui.toggleReadOnly(false);
+      const database = document.createElement("div");
+      database.tabIndex = 0;
+      database.innerHTML = "<div><button>Open row</button></div>";
+      const title = document.createElement("textarea");
+      title.value = "Sprint #14";
+      database.append(title);
+      wrapper.append(database);
+      const emptySpy = vi.spyOn(Dom.Dom, "isEmpty");
+
+      database.focus();
+      title.focus();
+
+      expect(emptySpy).not.toHaveBeenCalledWith(database);
+      expect(document.activeElement).toBe(title);
+      expect(title.getAttribute("data-blok-empty")).toBe("false");
+      ui.destroy();
+    });
+
+    it.each(["true", "plaintext-only", ""])("keeps placeholders updated in contenteditable=%s", (mode) => {
+      const { ui, wrapper } = createUI();
+      ui.toggleReadOnly(false);
+      const input = document.createElement("div");
+      input.setAttribute("contenteditable", mode);
+      input.innerHTML = "<br>";
+      wrapper.append(input);
+      input.dispatchEvent(new Event("focusin", { bubbles: true }));
+      expect(input.getAttribute("data-blok-empty")).toBe("true");
+      input.textContent = "Text";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      expect(input.getAttribute("data-blok-empty")).toBe("false");
+      ui.destroy();
+    });
+
     it("marks inputs as empty on focus and input events", () => {
       const { ui, wrapper } = createUI();
       const toggleSpy = vi.spyOn(Dom, "toggleEmptyMark");
@@ -1058,6 +1094,8 @@ describe("UI module", () => {
       ).enableInputsEmptyMark();
 
       const input = document.createElement("div");
+
+      input.setAttribute("contenteditable", "true");
 
       wrapper.appendChild(input);
 

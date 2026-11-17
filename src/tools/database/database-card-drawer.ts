@@ -562,6 +562,7 @@ export class DatabaseCardDrawer {
 
   /** Pending frame for the measures applyMode defers; see scheduleModeMeasures. */
   private modeMeasureFrame: number | null = null;
+  private modeMeasureTimer: number | null = null;
   private readonly onEditViewDefault: CardDrawerOptions['onEditViewDefault'];
   private readonly rowLink: CardDrawerOptions['rowLink'];
   private readonly onExpand: CardDrawerOptions['onExpand'];
@@ -2532,22 +2533,28 @@ export class DatabaseCardDrawer {
     this.cancelModeMeasures();
     this.modeMeasureFrame = requestAnimationFrame(() => {
       this.modeMeasureFrame = null;
+      // rAF itself runs before paint. Yield to a task so the shell can paint
+      // before these geometry reads, just like mountRowBodyAfterPaint does.
+      this.modeMeasureTimer = window.setTimeout(() => {
+        this.modeMeasureTimer = null;
 
-      const drawer = this.drawer;
+        const drawer = this.drawer;
 
-      if (drawer === null) return;
-      // The title is 40px on a full page and in the center peek, 32px in the side peek.
-      const titleInput = drawer.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]');
+        if (drawer === null) return;
+        // The title is 40px on a full page and in the center peek, 32px in the side peek.
+        const titleInput = drawer.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]');
 
-      if (titleInput !== null) this.autoResizeTitle(titleInput);
-      this.syncDetailsDock();
+        if (titleInput !== null) this.autoResizeTitle(titleInput);
+        this.syncDetailsDock();
+      }, 0);
     });
   }
 
   private cancelModeMeasures(): void {
-    if (this.modeMeasureFrame === null) return;
-    cancelAnimationFrame(this.modeMeasureFrame);
+    if (this.modeMeasureFrame !== null) cancelAnimationFrame(this.modeMeasureFrame);
+    if (this.modeMeasureTimer !== null) window.clearTimeout(this.modeMeasureTimer);
     this.modeMeasureFrame = null;
+    this.modeMeasureTimer = null;
   }
 
   /** A full page takes over its editor and the URL (row-page-takeover.ts); a peek gives both back. */

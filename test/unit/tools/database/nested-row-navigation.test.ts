@@ -157,7 +157,31 @@ it('paints the peek before measuring its toolbar and its title', async () => {
   // Reading offsetHeight/scrollHeight here forces a full layout of the page behind the peek.
   expect(panel?.style.getPropertyValue('--_blok-peek-toolbar-size')).toBe('');
   expect(title?.style.height).toBe('');
+  vi.advanceTimersToNextFrame();
+  // Animation-frame callbacks run before paint. Geometry must wait for the
+  // subsequent task, after the shell has had an opportunity to paint.
+  expect(panel?.hasAttribute('data-open')).toBe(true);
+  expect(panel?.style.getPropertyValue('--_blok-peek-toolbar-size')).toBe('');
+  expect(title?.style.height).toBe('');
   await vi.advanceTimersByTimeAsync(40);
   expect(panel?.style.getPropertyValue('--_blok-peek-toolbar-size')).not.toBe('');
   expect(title?.style.height).not.toBe('');
+});
+
+it.each([false, true])('cancels geometry reads when a peek closes (frame already run: %s)', async (afterFrame) => {
+  vi.useFakeTimers();
+  const wrapper = document.createElement('div');
+  document.body.append(wrapper);
+  const drawer = make(wrapper);
+  drawer.open({ id: 'sprint', position: 'a0', properties: { title: 'Sprint' } }, 'side');
+  const title = wrapper.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]');
+  if (title === null) throw new Error('missing title');
+  const measure = vi.fn(() => 48);
+  Object.defineProperty(title, 'scrollHeight', { configurable: true, get: measure });
+
+  if (afterFrame) vi.advanceTimersToNextFrame();
+  drawer.close();
+  await vi.advanceTimersByTimeAsync(40);
+
+  expect(measure).not.toHaveBeenCalled();
 });
