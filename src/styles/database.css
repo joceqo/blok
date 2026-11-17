@@ -9952,8 +9952,8 @@ textarea[data-blok-database-cell-input] {
   initial-value: transparent;
 }
 
-/* Sticky inside its scroller. Unverified against page scroll: the scroller
-   clips on both axes. */
+/* The header is lifted into the top layer while the page scrolls past it.
+   A spacer keeps the rows at the same position in the grid. */
 [data-blok-database-table-header] {
   position: sticky;
   inset-block-start: 0;
@@ -9962,6 +9962,30 @@ textarea[data-blok-database-cell-input] {
   height: 36px;
   background-color: var(--blok-database-table-bg);
   box-shadow: inset 0 -1px 0 var(--blok-database-table-border);
+}
+
+[data-blok-database-table-grid]:has(> [data-blok-database-table-header]:popover-open)::before {
+  content: '';
+  flex: none;
+  height: 36px;
+}
+
+[data-blok-database-table-header]:popover-open {
+  position: fixed;
+  inset: auto;
+  box-sizing: border-box;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* In the top layer sticky cells no longer see their scrollport. Recreate the
+   same inline offset as the body cells, including RTL. */
+[data-blok-database-table-header]:popover-open [data-frozen] {
+  position: relative;
+  inset-inline-start: var(--_blok-database-pinned-shift) !important;
 }
 
 [data-blok-database-table-column-header] {

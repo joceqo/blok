@@ -34,6 +34,7 @@ import { CALCULATION_LABEL_KEYS, calcMenuAt, calculationItems, headerViewItems, 
 import type { CountCap, OpenMenuOptions, RowFavorite } from './database-table-menus';
 import type { PopoverItemParams } from '@/types/utils/popover/popover-item';
 import { DatabaseTableColumnResize, MIN_COLUMN_WIDTH } from './database-table-resize';
+import { DatabaseStickyHeader } from './database-sticky-header';
 import { DatabaseTableColumnDrag } from './database-table-column-drag';
 import { DatabaseTableRowDrag } from './database-table-row-drag';
 import type { TableRowDropResult } from './database-table-row-drag';
@@ -452,6 +453,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
   private gridEl: HTMLDivElement | null = null;
   /** Reads the scroller's text-column padding, which sets where the frozen block sticks. */
   private scrollerObserver: ResizeObserver | null = null;
+  private stickyHeader: DatabaseStickyHeader | null = null;
   /** The scrollLeft at which the frozen block sticks. */
   private stickAt = 0;
   /** A pointer is down in the grid. */
@@ -574,9 +576,9 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
     // Notion repeats the header row under each group (research/shots-08/59-table-grouped.png).
     // With no group drawn, one header stays so properties, resize and "+" remain reachable.
-    if (!this.grouped()) {
-      gridEl.appendChild(this.createHeader());
-    }
+    const header = this.grouped() ? null : this.createHeader();
+
+    if (header !== null) gridEl.appendChild(header);
     if (this.options.groups !== undefined) {
       for (const group of this.options.groups) {
         gridEl.appendChild(this.createGroup(group));
@@ -587,6 +589,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
     scroller.appendChild(gridEl);
     root.appendChild(scroller);
+    if (header !== null) this.stickyHeader = new DatabaseStickyHeader(scroller, gridEl, header, () => this.stickAt);
 
     this.grid = new DatabaseTableGrid({
       root: gridEl,
@@ -797,6 +800,8 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     this.grid?.destroy();
     this.scrollerObserver?.disconnect();
     this.scrollerObserver = null;
+    this.stickyHeader?.destroy();
+    this.stickyHeader = null;
     this.resize?.destroy();
     this.columnDrag?.destroy();
     this.rowDrag?.destroy();
