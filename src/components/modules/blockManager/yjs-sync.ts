@@ -15,12 +15,22 @@ import { acceptsChildren, isChildToolAllowed } from '../../utils/child-tools';
 import { moveElementAfter, moveElementBefore, withBatchedMoves } from '../../utils/html';
 import { yieldToBrowser } from '../../utils/render-slices';
 import { beginDocumentMount, endDocumentMount } from '../../utils/document-mount';
+import { beginViewportPass, endViewportPass, sleepingBlocks, wakeBlock } from '../../utils/viewport-render';
 
 /**
  * How long one activation run may hold the thread before handing it back.
  * Matches the renderer's own slice budget (`forEachRenderSlice`).
  */
 const ACTIVATION_BUDGET_MS = 8;
+
+/**
+ * How many root blocks a load draws before the rest sleep.
+ *
+ * Measured on an 870-block page: 24 roots carry the other 846, and only the
+ * first starts inside the first screen. Three covers the first screen on any
+ * reasonable display without drawing what nobody is looking at.
+ */
+const EAGER_ROOTS = 3;
 
 /** Below this, a batch is too small for slicing to be worth a yield. */
 const ACTIVATION_SLICE = 25;
@@ -2393,6 +2403,9 @@ export class BlockYjsSync {
     // Held across every slice AND the yields between them: the document is
     // part-built for the whole run, not just inside one slice.
     beginDocumentMount();
+    // Only the first roots are drawn now. The rest keep their holders and
+    // sleep; `wakeSleepers` draws them once the screen is usable.
+    beginViewportPass(EAGER_ROOTS);
     try {
       // A time budget, not a fixed count: a block's cost swings wildly — a
       // paragraph is nothing, a database row is not — so 25 of them measured
@@ -2419,7 +2432,28 @@ export class BlockYjsSync {
       affectedParents.forEach(parentId => this.reconcileParentChildOrderFromDoc(parentId));
     } finally {
       // A slice that throws must not leave the editor mounting for ever.
+      endViewportPass();
       endDocumentMount();
+    }
+    await this.wakeSleepers();
+  }
+
+  /**
+   * Draws the roots the load skipped, one at a time, yielding between each.
+   *
+   * The page is usable before this finishes — that is the whole point. Waking
+   * a root also wakes what is under it, because `shouldDeferRender` asks
+   * whether an ancestor sleeps and this one no longer does.
+   */
+  private async wakeSleepers(): Promise<void> {
+    for (const id of sleepingBlocks()) {
+      const block = this.repository.getBlockById(id);
+
+      // Forgotten BEFORE the render is asked for: `renderIfVisible` refuses to
+      // draw a block that still reads as asleep.
+      wakeBlock(id);
+      block?.renderIfVisible();
+      await yieldToBrowser();
     }
   }
 

@@ -18,6 +18,7 @@ import type { API } from '../api';
 
 import type { BlockOrigin } from '../../../../types';
 import type { ComposeBlockOptions } from './types';
+import { claimEagerRoot, isAsleep, sleepBlock } from '../../utils/viewport-render';
 
 /**
  * Dependencies needed by BlockFactory
@@ -76,6 +77,57 @@ export class BlockFactory {
     }
 
     return false;
+  }
+
+  /**
+   * A block whose ancestor has no DOM yet must not draw either: its holder
+   * would be moved into the sleeping parent's placeholder and rendered for
+   * nobody. Walks parents exactly like `isClosedRowBody`, through live blocks
+   * first and the Yjs record when the block is not built yet.
+   * @param parentId - the block's parent, if it has one
+   * @returns whether some ancestor is still asleep
+   */
+  private hasSleepingAncestor(parentId: string | null | undefined): boolean {
+    const modules = this.dependencies.moduleInstances;
+    const seen = new Set<string>();
+    const cursor = { id: parentId };
+
+    while (typeof cursor.id === 'string' && !seen.has(cursor.id)) {
+      const id = cursor.id;
+
+      seen.add(id);
+      if (isAsleep(id)) return true;
+      const live = this.dependencies.getBlockById?.(id) ?? modules.BlockManager?.getBlockById?.(id);
+      const record = live === undefined ? modules.YjsManager?.getBlockById?.(id) : undefined;
+      const parent: unknown = live?.parentId ?? record?.get('parentId');
+
+      cursor.id = typeof parent === 'string' ? parent : undefined;
+    }
+
+    return false;
+  }
+
+  /**
+   * Whether this block may skip its first render because nobody can see it.
+   *
+   * A root past the first few screens sleeps; so does anything under a
+   * sleeper. A database row never does — its metadata stays live — and neither
+   * does pasted content, which the person is waiting to see.
+   * @param name - the tool's name
+   * @param parentId - the block's parent, if it has one
+   * @param origin - what produced the block
+   * @returns whether to leave the tool without DOM for now
+   */
+  private sleepsForViewport(name: string, parentId: string | null | undefined, origin: BlockOrigin | undefined): boolean {
+    if (name === 'database-row' || origin === 'paste') {
+      return false;
+    }
+
+    // Asked for EVERY block, and `claimEagerRoot` spends the budget, so it is
+    // asked once per root and never for a child.
+    return parentId === undefined || parentId === null
+      ? !claimEagerRoot()
+      : this.hasSleepingAncestor(parentId);
   }
 
   /**
@@ -157,6 +209,14 @@ export class BlockFactory {
       (migratedType, error) => log(`Migration for block «${migratedType}» threw; loading the block with its stored data instead.`, 'warn', error)
     ), resolveTool);
 
+    // Spends the eager-root budget, so it must run once per block, before the
+    // block exists — `shouldDeferRender` re-reads the answer from the set.
+    const viewportSleep = deferRender === undefined && this.sleepsForViewport(name, parentId, origin);
+
+    if (viewportSleep) {
+      sleepBlock(id);
+    }
+
     const block: Block = new Block({
       id,
       // Wire DTOs (e.g. Editor.js backends) may carry `data: null`; the
@@ -179,8 +239,10 @@ export class BlockFactory {
       replaySource,
       // Paste waits for ready before onPaste can import its DOM; it must not
       // wait indefinitely behind a closed row.
-      deferRender: name !== 'database-row' && origin !== 'paste' && (deferRender ?? this.isClosedRowBody(parentId)),
-      shouldDeferRender: () => this.isClosedRowBody(block.parentId),
+      deferRender: name !== 'database-row' && origin !== 'paste'
+        && (deferRender ?? (this.isClosedRowBody(parentId) || viewportSleep)),
+      shouldDeferRender: () => this.isClosedRowBody(block.parentId)
+        || isAsleep(block.id) || this.hasSleepingAncestor(block.parentId),
       renderDeferredWithoutCapture: (render) => this.dependencies.moduleInstances.YjsManager.transactWithoutCapture(() => {
         render();
         this.dependencies.moduleInstances.Renderer?.normalizeRenderedDom?.(block.holder);
