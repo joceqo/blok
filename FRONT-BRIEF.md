@@ -3,6 +3,16 @@
 > Brief autonome. Tous les chiffres sont **mesurés** en production (Chrome,
 > profil CPU échantillonné via la JS Self-Profiling API), jamais estimés.
 
+## Où travailler
+
+Dépôt : `/Users/joce/.codex/worktrees/blok-notes-comments/blok`
+Branche : `perf/split-mount-task`
+
+Tests (wrapper mémoire obligatoire, un seul à la fois) :
+`python3 /Users/joce/.codex/worktrees/blok-notes-comments/blok/scripts/low-memory.py core-test <fichiers>`
+
+Page de mesure : `https://blok.tousamba.cloud/p/sprints-b954ae7a-be9f-49fe-a547-a4cebf2fb19c?profile=1`
+
 ## Le produit
 
 Blok : éditeur de blocs headless type Notion, « everything is a block »
@@ -82,11 +92,11 @@ Objectif : ne plus monter 870 blocs quand un seul écran est visible.
 L'infrastructure de rendu différé **existe déjà** et fonctionne (elle sert
 aujourd'hui aux corps de lignes de database fermées) :
 
-- `deferRender` / `shouldDeferRender` (`src/components/modules/blockManager/factory.ts`)
+- `deferRender` / `shouldDeferRender` (`/Users/joce/.codex/worktrees/blok-notes-comments/blok/src/components/modules/blockManager/factory.ts`)
   — le DOM de l'outil n'est jamais construit ;
-- placeholder + attribut `data-blok-deferred-render` (`src/components/block/tool-renderer.ts`) ;
+- placeholder + attribut `data-blok-deferred-render` (`/Users/joce/.codex/worktrees/blok-notes-comments/blok/src/components/block/tool-renderer.ts`) ;
 - réveil par `DEFERRED_RENDER_EVENT` sur le holder → `renderIfVisible()`, qui
-  re-interroge `shouldDeferRender` (`src/components/block/index.ts:437,649`) ;
+  re-interroge `shouldDeferRender` (`/Users/joce/.codex/worktrees/blok-notes-comments/blok/src/components/block/index.ts:437,649`) ;
 - dormance des données : `extractToolData` renvoie `lastSavedData`, donc
   `save()`, l'undo et le replay distant traversent un sous-arbre jamais rendu
   **sans perte**.
@@ -96,7 +106,7 @@ de database fermée ». **Il n'existe aucune notion d'écran.**
 
 ### La tentative en cours, qui ne s'active pas
 
-Ajouté : `src/components/utils/viewport-render.ts` — une passe de chargement qui
+Ajouté : `/Users/joce/.codex/worktrees/blok-notes-comments/blok/src/components/utils/viewport-render.ts` — une passe de chargement qui
 laisse les `EAGER_ROOTS = 3` premières racines se dessiner et endort les
 suivantes, un `IntersectionObserver` (marge 1200 px) qui les réveille à
 l'approche, et `data-blok-offscreen { min-height: 320px }` pour qu'un document
@@ -104,7 +114,7 @@ entier de dormeurs ne s'écrase pas sur un écran (sans quoi tous se déclarent
 visibles et se réveillent ensemble).
 
 Câblage : `beginViewportPass(EAGER_ROOTS)` au début de la passe 1 de
-`handleYjsBatchAdd` (`src/components/modules/blockManager/yjs-sync.ts`), gardé
+`handleYjsBatchAdd` (`/Users/joce/.codex/worktrees/blok-notes-comments/blok/src/components/modules/blockManager/yjs-sync.ts`), gardé
 par `initialBatch` ; `endViewportPass()` après la boucle de composition ;
 prédicat dans `composeBlock` (`factory.ts`) :
 
@@ -150,7 +160,7 @@ ouverte ? budget jamais interrogé ? tous les blocs arrivent avec un parent ?).
 - Les Web Workers sont hors jeu : le travail est du DOM.
 - Tests d'abord (le projet l'impose) : écrire le test, le voir échouer, puis
   corriger.
-- `eslint` et `tsc` épuisent la mémoire sur `src/tools/database/index.ts`
+- `eslint` et `tsc` épuisent la mémoire sur `/Users/joce/.codex/worktrees/blok-notes-comments/blok/src/tools/database/index.ts`
   (13 000 lignes) sur la machine de développement ; le typage des derniers
   changements n'est pas prouvé.
 
