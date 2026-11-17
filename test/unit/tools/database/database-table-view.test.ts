@@ -898,8 +898,8 @@ describe('DatabaseTableView', () => {
       expect(root.querySelector('[data-blok-database-table-selection-bar]')).toBeNull();
     });
 
-    // notion-spec-2 §19.4: Tab saves, closes and selects the cell to the right, no editor open.
-    it('Tab in a cell editor saves, closes and selects the cell to the right', () => {
+    // notion-motion.md Round 57 §1: Tab after a change in a Text editor saves and closes, and no cell is selected.
+    it('Tab in a Text cell editor after a change saves and closes, and leaves no cell selected', () => {
       const { root, handlers } = mount();
 
       cell(root, 'r1', 'p-notes').click();
@@ -907,11 +907,12 @@ describe('DatabaseTableView', () => {
       editorField().dispatchEvent(new Event('input', { bubbles: true }));
       const event = press(editorField(), 'Tab');
 
-      expect(selectedCells(root)).toEqual(['r1/p-amount']);
+      expect(selectedCells(root)).toEqual([]);
+      expect(anchorCell(root)).toBeNull();
       expect(event.defaultPrevented).toBe(true);
       expect(editor()).toBeNull();
       expect(handlers.commitCell).toHaveBeenCalledWith('r1', 'p-notes', 'typed');
-      expect(grid(root)).toHaveFocus();
+      expect(document.body).toHaveFocus();
     });
 
     it('Tab in a Number cell editor saves and selects the cell to the right', () => {
@@ -926,15 +927,52 @@ describe('DatabaseTableView', () => {
       expect(handlers.commitCell).toHaveBeenCalledWith('r2', 'p-amount', 42);
     });
 
-    // notion-motion.md Round 29 §3: in an editor, Shift+Tab commits and selects the cell to the left.
-    it('Shift+Tab in a cell editor saves and selects the cell to the left', () => {
+    // notion-motion.md Round 57 §1: Tab with the value unchanged closes the editor and selects the next cell.
+    it('Tab in a Text cell editor with the value unchanged selects the cell to the right', () => {
+      const { root, handlers } = mount();
+
+      cell(root, 'r1', 'p-notes').click();
+      editorField().value = 'shortx';
+      editorField().dispatchEvent(new Event('input', { bubbles: true }));
+      editorField().value = 'short';
+      editorField().dispatchEvent(new Event('input', { bubbles: true }));
+      press(editorField(), 'Tab');
+
+      expect(selectedCells(root)).toEqual(['r1/p-amount']);
+      expect(editor()).toBeNull();
+      expect(handlers.commitCell).not.toHaveBeenCalled();
+      expect(grid(root)).toHaveFocus();
+    });
+
+    // notion-motion.md Round 29 §3: in a Number editor, Shift+Tab commits and selects the cell to the left.
+    it('Shift+Tab in a Number cell editor saves and selects the cell to the left', () => {
+      const { root, handlers } = mount();
+
+      cell(root, 'r2', 'p-amount').click();
+      editorField().value = '42';
+      press(editorField(), 'Tab', { shiftKey: true });
+
+      expect(selectedCells(root)).toEqual(['r2/p-notes']);
+      expect(editor()).toBeNull();
+      expect(handlers.commitCell).toHaveBeenCalledWith('r2', 'p-amount', 42);
+    });
+
+    // notion-motion.md Round 57 §1: Shift+Tab out of a Text editor leaves no cell selected, changed or not.
+    it.each([
+      ['unchanged', 'short'],
+      ['changed', 'typed'],
+    ])('Shift+Tab in a Text cell editor with the value %s leaves no cell selected', (_case, value) => {
       const { root } = mount();
 
       cell(root, 'r1', 'p-notes').click();
+      editorField().value = value;
+      editorField().dispatchEvent(new Event('input', { bubbles: true }));
       press(editorField(), 'Tab', { shiftKey: true });
 
-      expect(selectedCells(root)).toEqual(['r1/p-title']);
+      expect(selectedCells(root)).toEqual([]);
+      expect(anchorCell(root)).toBeNull();
       expect(editor()).toBeNull();
+      expect(document.body).toHaveFocus();
     });
 
     // feel/findings-table T13: Notion's bar shows the first 4 properties; the rest wait under "…".

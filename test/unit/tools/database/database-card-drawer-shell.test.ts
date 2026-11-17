@@ -490,6 +490,29 @@ describe('DatabaseCardDrawer shell', () => {
       expect(mode?.getAttribute('aria-expanded')).toBe('false');
     });
 
+    // notion-motion.md Round 56 §2: the mode menu is centred on the rule before the button plus the button, at the button's bottom.
+    it('opens the mode menu centred on the mode button and the rule before it, touching its bottom', () => {
+      const drawer = new DatabaseCardDrawer(createOptions());
+
+      drawer.open(ROW, 'side');
+      const mode = q('[data-blok-database-peek-mode]');
+      const rule = mode?.previousElementSibling;
+
+      if (mode === null || !(rule instanceof HTMLElement)) throw new Error('no mode button');
+      const rect = (left: number, width: number, top: number, height: number): DOMRect => DOMRect.fromRect({ x: left, y: top, width, height });
+
+      Object.defineProperty(mode, 'getBoundingClientRect', { configurable: true, value: () => rect(837, 24, 10, 24) });
+      Object.defineProperty(rule, 'getBoundingClientRect', { configurable: true, value: () => rect(827, 1, 15, 14) });
+      rule.style.margin = '0 7px';
+      mode.click();
+      const menu = document.querySelector<HTMLElement>('[data-blok-popover-custom-class~="blok-database-peek-mode-menu"]');
+
+      // jsdom measures the menu as 0 wide, so centred means its left edge is the group's centre: (820 + 861) / 2.
+      expect(menu?.style.left).toBe('840.5px');
+      expect(menu?.style.top).toBe('34px');
+      drawer.destroy();
+    });
+
     // notion-spec-2 §12 (S2:160): Switch peek mode lists Side peek, Center peek, Full page, New tab.
     it('opens the row\'s link in a new tab from the mode menu, and has no such row for a row with no link', () => {
       const open = vi.spyOn(window, 'open').mockReturnValue(null);
@@ -541,12 +564,11 @@ describe('DatabaseCardDrawer shell', () => {
       bare.destroy();
     });
 
-    // notion-motion.md "Side peek top bar": Notion shows these while the pointer is anywhere over the peek.
-    // notion-motion.md Round 44 §5: a center peek reveals them only while the pointer is on its header.
-    it('reveals the mode switcher, the separators and the row steps only while the peek (center: its header) is hovered or the bar holds keyboard focus', () => {
+    // notion-motion.md Round 56 §1, §6: in both peeks Notion shows these only while the pointer is on the bar or the page head under it.
+    it('reveals the mode switcher, the separators and the row steps only while the bar or page head is hovered or the bar holds keyboard focus', () => {
       const css = readFileSync(resolve(__dirname, '../../../../src/styles/database.css'), 'utf8');
       // An open mode menu keeps them shown, as in Notion, while the pointer is in the menu.
-      const rule = /:is\(\[data-blok-database-drawer\]:not\(:hover\), \[data-peek-mode="center"\]\) \[data-blok-database-drawer-toolbar\]:not\(:hover\):not\(:has\(:focus-visible\)\):not\(:has\(\[data-blok-database-peek-mode\]\[aria-expanded="true"\]\)\) :is\(([^)]*)\)\s*\{\s*opacity:\s*0;/.exec(css);
+      const rule = /\[data-blok-database-drawer\]:not\(:has\(> \[data-blok-database-drawer-toolbar\]:hover, > \[data-blok-database-drawer-content\] > \[data-blok-database-drawer-page-head\]:hover\)\) > \[data-blok-database-drawer-toolbar\]:not\(:has\(:focus-visible\)\):not\(:has\(\[data-blok-database-peek-mode\]\[aria-expanded="true"\]\)\) :is\(([^)]*)\)\s*\{\s*opacity:\s*0;/.exec(css);
 
       expect(rule?.[1].split(',').map((x) => x.trim()).sort()).toStrictEqual([
         '[data-blok-database-peek-mode]',

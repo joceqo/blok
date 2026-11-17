@@ -1785,6 +1785,60 @@ describe('main.css split — cascade-preserving equivalence', () => {
     const DATABASE_R108_BYTES = 1647;
     // Lane r106: Round 48 timeline header (labels on start lines, month lines in the body only, white tick row). Net database.css growth against origin/main.
     const DATABASE_R106_BYTES = 57;
+    // Lane r109: Round 48 timeline smalls (flush toolbar boxes, chips, panel edge, far-zoom bars, weekday letters). Net database.css growth against origin/main.
+    const DATABASE_R109_BYTES = 3137;
+    // Lane r111: Round 49 feed preview (See more fade, 600 column, chip ring). Net database.css growth against origin/main.
+    const DATABASE_R111_BYTES = 1308;
+    // Lane r113: Round 50 feed preview with no byline and the card ⋯ menu's 70vh cap. Net database.css growth against origin/main.
+    const DATABASE_R113_BYTES = 381;
+    // Lane r115: Round 50 timeline edge readout box, open « 28x24, panel header icon box. Net database.css growth against origin/main.
+    const DATABASE_R115_BYTES = 221;
+    // Lane r118: Round 51 timeline panel columns (Name 279, others 200, the row grows; clipped panel). Net database.css growth against origin/main.
+    const DATABASE_R118_BYTES = 220;
+    // Lane r120: Round 52 map in the text column, "No place" rows stacked with a page icon. Net database.css growth against origin/main.
+    const DATABASE_R120_BYTES = 873;
+    // Lane r121: Round 52 form round "+" Add question, card drag gap lines, ⋯ place. Net database.css growth against origin/main.
+    const DATABASE_R121_BYTES = 937;
+    // Lane r124: Round 53 "No place" search as a 296x28 field. Net database.css growth against origin/main.
+    const DATABASE_R124_BYTES = 184;
+    // Lane r123: Round 53 timeline panel widens 200 per shown column. Net database.css growth against origin/main.
+    const DATABASE_R123_BYTES = 174;
+    // Lane r126: Round 54 gallery ghost hover state, form drag copy ring, line fade and "+" gap. Net database.css growth against origin/main.
+    const DATABASE_R126_BYTES = 948;
+    // Lane r125: Round 54 timeline « and month follow the panel's end. Net database.css growth against origin/main.
+    const DATABASE_R125_BYTES = 381;
+    // Lane r127: Round 55 select option ⋯ menu as its own 220 popover. Net database.css growth against origin/main.
+    const DATABASE_R127_BYTES = 909;
+    // Lane r128: Round 55 peek mode menu origin, form drop lines fade in, Remind rows 29 apart. Net database.css growth against origin/main.
+    const DATABASE_R128_BYTES = 565;
+    // Lane r131: Round 56 peek controls show only near the top (bar or page head). Net database.css growth against origin/main.
+    const DATABASE_R131_BYTES = 1640;
+    // Lane r129: Round 56 option rows slide aside while one is dragged; status option menu with Group ›. Net database.css growth against origin/main.
+    const DATABASE_R129_BYTES = 1125;
+    // Lane r134: Round 57 side peek cover spans the peek, 143.4 tall, square; 36 icon. Net database.css growth against origin/main.
+    const DATABASE_R134_BYTES = 1193;
+    // Lane r135: Round 58 row page covers 20vh / 30vh across the page, square; 78 icon over the cover in centre and full page. Net database.css growth against origin/main.
+    const DATABASE_R135_BYTES = 2370;
+    // Lane r133: Round 57 OPEN pill on a timeline panel row. Net database.css growth against origin/main.
+    const DATABASE_R133_BYTES = 804;
+    // Lane r132: Round 57 "Colors" weight 500, Group › menu padding; the option row menu class is shared by select and status. Net database.css growth against origin/main.
+    const DATABASE_R132_BYTES = 209;
+    // Lane r136: Round 58 option › turns, "+ Add an option" in an empty status group, the Set as default body. Net database.css growth against origin/main.
+    const DATABASE_R136_BYTES = 2328;
+    // Lane r141: Round 59 peek head with no icon or cover, Edit property's add field, the table row page glyph. Net database.css growth against origin/main.
+    const DATABASE_R141_BYTES = 1598;
+    // Lane r140: Round 59 row page cover group (Change, Download, fade) and the cover stopping at the details panel. Net database.css growth against origin/main.
+    const DATABASE_R140_BYTES = 2159;
+    // Lane r144: Round 60 gallery card glyphs, calendar nav spacing, the cover divider ink. Net database.css growth against origin/main.
+    const DATABASE_R144_BYTES = 394;
+    // Lane r143: Round 60 row comment box (470x44, avatar 12 from the left). Net database.css growth against origin/main.
+    const DATABASE_R143_BYTES = 299;
+    // Lane r145: Round 61 comment box grows from its top or bottom centre. Net database.css growth against origin/main.
+    const DATABASE_R145_BYTES = 551;
+    // Lane r142: Round 60 cover Reposition (Save position · Cancel, the drag pill, ns-resize). Net database.css growth against origin/main.
+    const DATABASE_R142_BYTES = 1180;
+    // Lane r146: Round 61 feed card top, form access "Change", Preview spacing, form header glyphs. Net database.css growth against origin/main.
+    const DATABASE_R146_BYTES = 973;
     // colors.css: --blok-block-control, the neutral grey of "+" and the drag handle, in three themes.
     const BLOCK_CONTROL_GREY_BYTES = 186;
     // tables.css: the open size card covers a column grip held on the full-screen header line.
@@ -1819,6 +1873,8 @@ describe('main.css split — cascade-preserving equivalence', () => {
     const EMBED_BRAND_APP_ICON_BYTES = 1_141;
     // embed.css: the idle deck (card slots, shuffle and tone keyframes, hover fan), less the old idle drawing's parts (measured embed.css growth).
     const EMBED_IDLE_DECK_BYTES = 4_153;
+    // video.css: the capsule a player below 400px swaps the bar for, with its three size tiers (measured video.css growth).
+    const VIDEO_CAPSULE_BYTES = 10_820;
     // file.css: the object on a file card — pages, editor tab, filmstrip, record, folder, punch card (measured file.css growth).
     const FILE_CARD_OBJECT_BYTES = 27_626;
     // Fork additions against ffe3c76d3: custom emojis, cover gallery, date mentions
@@ -2352,6 +2408,33 @@ describe('main.css split — cascade-preserving equivalence', () => {
       + DATABASE_R102_BYTES
       + DATABASE_R108_BYTES
       + DATABASE_R106_BYTES
+      + DATABASE_R109_BYTES
+      + DATABASE_R111_BYTES
+      + DATABASE_R113_BYTES
+      + DATABASE_R115_BYTES
+      + DATABASE_R118_BYTES
+      + DATABASE_R120_BYTES
+      + DATABASE_R121_BYTES
+      + DATABASE_R124_BYTES
+      + DATABASE_R123_BYTES
+      + DATABASE_R126_BYTES
+      + DATABASE_R125_BYTES
+      + DATABASE_R127_BYTES
+      + DATABASE_R128_BYTES
+      + DATABASE_R131_BYTES
+      + DATABASE_R129_BYTES
+      + DATABASE_R134_BYTES
+      + DATABASE_R135_BYTES
+      + DATABASE_R133_BYTES
+      + DATABASE_R132_BYTES
+      + DATABASE_R136_BYTES
+      + DATABASE_R141_BYTES
+      + DATABASE_R140_BYTES
+      + DATABASE_R144_BYTES
+      + DATABASE_R143_BYTES
+      + DATABASE_R145_BYTES
+      + DATABASE_R142_BYTES
+      + DATABASE_R146_BYTES
       + CODE_PREVIEW_TAB_BYTES
       + POPOVER_THUMB_GUTTER_BYTES
       + ANNOTATION_UNDERLINE_BYTES
@@ -2363,7 +2446,7 @@ describe('main.css split — cascade-preserving equivalence', () => {
       + MEDIA_SPEED_ENTRY_BYTES
       + EMBED_BRAND_APP_ICON_BYTES
       + EMBED_IDLE_DECK_BYTES
-      + DESKTOP_INTEGRATION_BYTES;
+      + VIDEO_CAPSULE_BYTES;
     const counted = new Set<string>();
     // A lazy entry holds no rules of its own, only the import of the sheet it loads.
     const actual = lazyEntries().reduce(

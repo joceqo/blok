@@ -23,7 +23,7 @@ interface CapturedItem {
   children?: { items: CapturedItem[]; align?: string; searchable?: boolean; width?: string; minWidth?: string; placement?: string; clickOnly?: boolean; class?: string };
 }
 
-interface CapturedPopover { items: CapturedItem[]; destroyed: boolean; params: Record<string, unknown>; activated: string[]; focused: string[]; hidden: Record<string, boolean>; closed?: () => void; hide: () => void; transitionAtShow?: string; moves: Array<{ position: DOMRect; positionContext?: HTMLElement }> }
+interface CapturedPopover { items: CapturedItem[]; destroyed: boolean; holds?: number; released?: number; params: Record<string, unknown>; activated: string[]; focused: string[]; hidden: Record<string, boolean>; closed?: () => void; hide: () => void; transitionAtShow?: string; moves: Array<{ position: DOMRect; positionContext?: HTMLElement }> }
 
 const captured = vi.hoisted((): { popovers: CapturedPopover[]; instances: Array<{ closeSubmenuOnEscape: () => boolean }> } => ({ popovers: [], instances: [] }));
 
@@ -45,6 +45,14 @@ vi.mock('../../../../src/components/utils/popover', () => ({
 
     closeSubmenuOnEscape(): boolean {
       return false;
+    }
+
+    holdOpen(): () => void {
+      this.record.holds = (this.record.holds ?? 0) + 1;
+
+      return () => {
+        this.record.released = (this.record.released ?? 0) + 1;
+      };
     }
 
     activateItemByName(name: string): void {
@@ -1329,7 +1337,8 @@ describe('DatabasePropertyMenu', () => {
 
       expect([...(list?.querySelectorAll('[data-blok-database-select-option]') ?? [])].map((row) => row.textContent?.trim())).toEqual(['Idea', 'Build']);
       list?.querySelector<HTMLElement>('[data-blok-database-select-option="o2"] [data-blok-database-select-option-menu]')?.click();
-      list?.querySelector<HTMLElement>('[data-blok-database-option-color="red"]')?.click();
+      // notion-motion.md Round 57 §2: the option's menu is its own popover.
+      document.querySelector<HTMLElement>('[data-blok-database-option-panel="o2"] [data-blok-database-option-color="red"]')?.click();
 
       expect(cb.onOptionsChange).toHaveBeenCalledWith('p', [options[0], { ...options[1], color: 'red' }]);
     });
@@ -1352,16 +1361,19 @@ describe('DatabasePropertyMenu', () => {
       const list = byName(byName(lastItems(), 'editProperty').children?.items ?? [], 'options').element;
 
       list?.querySelector<HTMLElement>('[data-blok-database-select-option="o2"] [data-blok-database-select-option-menu]')?.click();
-      list?.querySelector<HTMLElement>('[data-blok-database-option-color="red"]')?.click();
+      // notion-motion.md Round 57 §2: the option's menu is its own popover.
+      document.querySelector<HTMLElement>('[data-blok-database-option-panel="o2"] [data-blok-database-option-color="red"]')?.click();
 
       expect(onOptionsChange).toHaveBeenCalled();
       expect(popover?.moves.map((move) => [move.positionContext, move.position.x, move.position.y, move.position.width])).toEqual([[live, 34, 133, 200]]);
-      expect(captured.popovers[captured.popovers.length - 1]).toBe(popover);
+      // The menu is moved, not drawn again: the only new popover is the option's own menu.
+      expect(captured.popovers.slice(captured.popovers.indexOf(popover) + 1).map((p) => String(p.params.class).includes('blok-database-option-menu'))).toEqual([true]);
+      expect(popover?.destroyed).toBe(false);
       menu.destroy();
       live.remove();
     });
 
-    it('a status option\'s "Set as default" saves the default with the status settings (research/30 §10f)', () => {
+    it('a status option\'s "Set as default" saves the default with the status settings (research/30 §10f)', async () => {
       const status = { ...createDefaultStatusSettings(), showAs: 'checkbox' as const };
       const statusOptions = [
         { id: 'n', label: 'Not started', position: 'a0', groupId: 'todo' },
@@ -1371,9 +1383,34 @@ describe('DatabasePropertyMenu', () => {
       const list = byName(byName(lastItems(), 'editProperty').children?.items ?? [], 'options').element;
 
       list?.querySelector<HTMLElement>('[data-blok-database-select-option="i"] [data-blok-database-select-option-menu]')?.click();
-      list?.querySelector<HTMLElement>('[data-blok-database-option-set-default]')?.click();
+      document.querySelector<HTMLElement>('[data-blok-database-option-set-default]')?.click();
+      // notion-motion.md Round 57 §4: it asks first.
+      expect(cb.onUpdate).not.toHaveBeenCalled();
+      document.querySelector<HTMLElement>('[data-blok-database-confirm-action="confirm"]')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
 
       expect(cb.onUpdate).toHaveBeenCalledWith('p', { status: { ...status, defaultOptionId: 'i' } });
+    });
+
+    // notion-motion.md Round 56 §5: a status option's own menu opens over Edit property, which stays open under it.
+    it('a status option\'s menu holds Edit property open and closes with it', () => {
+      const statusOptions = [{ id: 'n', label: 'Not started', position: 'a0', groupId: 'todo' }];
+      const menu = new DatabasePropertyMenu({ i18n: { t: (key: string) => key, getLocale: () => 'en' } as never, hasPeople: false, ...callbacks() });
+      const anchor = document.body.appendChild(document.createElement('div'));
+
+      menu.open(prop('status', { status: createDefaultStatusSettings(), config: { options: statusOptions } }), anchor);
+      const host = captured.popovers[captured.popovers.length - 1];
+      const list = byName(byName(lastItems(), 'editProperty').children?.items ?? [], 'options').element;
+
+      list?.querySelector<HTMLElement>('[data-blok-database-select-option="n"]')?.click();
+      const flyout = captured.popovers[captured.popovers.length - 1];
+
+      expect(flyout).not.toBe(host);
+      expect(host?.holds).toBe(1);
+      menu.close();
+      expect(flyout?.destroyed).toBe(true);
+      expect(host?.released).toBe(1);
     });
 
     // notion-spec-2 §17.3: "Sort Manual" heads a select's Edit property, a click-only 250 wide list under it.

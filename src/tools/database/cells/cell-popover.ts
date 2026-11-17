@@ -21,6 +21,8 @@ export interface CellPopoverOptions {
   dockRow?: HTMLElement;
   /** A menu-like panel (DatabasePanel), not a cell editor: Notion's menu corner (database.css). */
   panel?: boolean;
+  /** One more popover class, for CSS that sizes one surface. */
+  surfaceClass?: string;
   /** Space under the anchor, PANEL_GAP when unset. */
   gap?: number;
   /** Opens beside the anchor instead: this far right of it, top level with it. */
@@ -37,6 +39,8 @@ export interface CellPopoverOptions {
   verticalMargin?: number;
   /** Under the anchor, its end edge on the anchor's end edge. */
   alignEnd?: boolean;
+  /** Below the anchor: what the popover follows on scroll, when the anchor may be redrawn away while open. */
+  positionContext?: HTMLElement;
   /** Escape pressed while open. The owner decides: close, or step back a panel. */
   onEscape: () => void;
   /** The popover closed itself: an outside press, or focus moved away. */
@@ -88,14 +92,14 @@ const PANEL_GAP = 8;
  * panel that would run past the window slides up to stay inside it, as view
  * settings does (side-by-side-v1.md "Filter / Sort popovers").
  */
-const fitPlacement = (anchor: HTMLElement, gap = PANEL_GAP, flip = false, verticalMargin?: number): Pick<PopoverDesktopParams, 'cover' | 'viewportMargin' | 'coverFlipOffset' | 'coverVerticalMargin'> & { position: DOMRect; positionContext: HTMLElement } => {
+const fitPlacement = (anchor: HTMLElement, gap = PANEL_GAP, flip = false, verticalMargin?: number, context = anchor): Pick<PopoverDesktopParams, 'cover' | 'viewportMargin' | 'coverFlipOffset' | 'coverVerticalMargin'> & { position: DOMRect; positionContext: HTMLElement } => {
   const rect = anchor.getBoundingClientRect();
 
   return {
     cover: true,
     viewportMargin: COVER_VIEWPORT_MARGIN,
     position: new DOMRect(rect.x, rect.bottom + gap, rect.width, 0),
-    positionContext: anchor,
+    positionContext: context,
     // Above, its bottom sits `gap` over the anchor's top (r21-cc-date-val.raw, r21-cc-add3.raw).
     ...(flip ? { coverFlipOffset: rect.height + 2 * gap } : {}),
     ...(verticalMargin !== undefined ? { coverVerticalMargin: verticalMargin } : {}),
@@ -194,13 +198,13 @@ export class CellPopover {
       autoFocusFirstItem: false,
       // Fades out like the database menus; an editor with no motion (database.css) still goes at once.
       animateClose: true,
-      class: [CELL_EDITOR_CLASS, ...(panel === true ? [PANEL_CLASS] : []), ...(docked !== undefined && docked !== false ? [DOCKED_CLASS] : []), ...(docked === 'page' ? [DOCKED_PAGE_CLASS] : []), ...(cover === 'value' ? [VALUE_EDITOR_CLASS] : []), ...(cover === true ? [TABLE_EDITOR_CLASS] : [])].join(' '),
+      class: [CELL_EDITOR_CLASS, ...(panel === true ? [PANEL_CLASS] : []), ...(docked !== undefined && docked !== false ? [DOCKED_CLASS] : []), ...(docked === 'page' ? [DOCKED_PAGE_CLASS] : []), ...(cover === 'value' ? [VALUE_EDITOR_CLASS] : []), ...(cover === true ? [TABLE_EDITOR_CLASS] : []), ...(this.options.surfaceClass !== undefined ? [this.options.surfaceClass] : [])].join(' '),
       ...(this.options.minWidth !== undefined ? { minWidth: this.options.minWidth } : {}),
     };
     const { aside, beside, besideOf, besideFlipWidth } = this.options;
     const below = (): ReturnType<typeof fitPlacement> | ReturnType<typeof besidePlacement> => (beside !== undefined
       ? besidePlacement(besideOf ?? anchor, beside, besideFlipWidth)
-      : fitPlacement(anchor, this.options.gap, this.options.flip, this.options.verticalMargin));
+      : fitPlacement(anchor, this.options.gap, this.options.flip, this.options.verticalMargin, this.options.positionContext));
     const fit = aside !== undefined ? asidePlacement(aside) : below();
     const coverOrFit = cover === true || cover === 'value' ? coverPlacement(anchor, cover === 'value', cover === true && this.options.below === true) : fit;
     const docks = {

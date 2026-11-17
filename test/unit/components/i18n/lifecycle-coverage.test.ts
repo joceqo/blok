@@ -299,7 +299,7 @@ const getLifecycle = (): ReturnType<typeof deriveLifecycle> => {
 };
 
 describe('current English catalog lifecycle coverage', () => {
-  it('rebuilds a disjoint 2236 + 146 + 599 + 11 closure for all 2992 keys', () => {
+  it('rebuilds a disjoint 2241 + 146 + 599 + 11 closure for all 2997 keys', () => {
     const { lifecycle } = getLifecycle();
     const counts = Object.fromEntries(
       ([
@@ -313,7 +313,7 @@ describe('current English catalog lifecycle coverage', () => {
       ])
     );
 
-    expect(lifecycle.size).toBe(2992);
+    expect(lifecycle.size).toBe(2997);
     expect(counts).toEqual({
       // tools.callout.editIcon moved finite-dynamic -> executable-literal when
       // the callout emoji button stopped being named by the emoji glyph and
@@ -573,7 +573,13 @@ describe('current English catalog lifecycle coverage', () => {
       // -2 / +1: the row menu footer's rowLastEditedBy and rowWordCount went catalog-only; rowCounts joins its plurals.
       // +1: the view tab menu's Source row calls tools.database.settingsSource by literal.
       // +1: the table header row's ⋯ calls tools.database.tableShowHideProperties by literal.
-      'executable-literal': 2236,
+      // +1: the status option menu's Group row calls tools.database.groupStatusGroup by literal.
+      // +2: Edit property's Set as default confirm calls statusDefaultConfirm and its description by literal.
+      // +1: the same confirm calls statusDefaultConfirmEmphasis by literal for its bold phrase.
+      // +1: Edit property's add field calls addOptionPlaceholder by literal.
+      // +1 / -1: the row page cover calls tools.database.downloadCover by literal; its Change
+      // button now reads title.changeCover, so tools.database.changeCover left (see below).
+      'executable-literal': 2241,
       // +10: the tabs block calls its 9 tools.tabs.* keys and toolbox.preview.tabs by literal.
       // toolNames.page moved here from finite-dynamic when the page-reference picker called it directly.
       // -5: tools.video.back/on/off/speedDecrease/speedIncrease left i18nLabel
@@ -689,6 +695,8 @@ describe('current English catalog lifecycle coverage', () => {
       // +4: the row menu footer's tools.database.rowWords_one/_other and rowCharacters_one/_other, via a count.
       // -1: tools.database.settingsSource is now called by literal (see executable-literal).
       // +8: View settings "Manage data sources" (settingsManageSources, manageSources*, manageSourcesViews_one/_other), through the panel's t().
+      // -1: tools.database.groupStatusGroup is now called by literal (see executable-literal).
+      // +1: tools.database.changeCover lost its literal caller; it shipped in 2.1.0, so it stays.
       'registered-namespace-compatible': 599,
       // +1: Settings › Group's pin button names itself with groupPin through the panel's tools.database. prefix.
       // +1: tools.database.galleryFitImage, above. +1: tools.database.timelineEndBy, above.
