@@ -567,6 +567,41 @@ describe('mark-engine mutants', () => {
     });
   });
 
+  describe('a backward selection inside one host', () => {
+    it('stays backward after marking', () => {
+      const host = mount('abcdef');
+      const text = firstText(host);
+
+      liveSelection().setBaseAndExtent(text, 4, text, 1);
+
+      applyMark(colorSpec, 'blue', liveSelection().getRangeAt(0));
+
+      const selection = liveSelection();
+      const range = selection.getRangeAt(0);
+
+      expect(selection.toString()).toBe('bcd');
+      expect([selection.anchorNode, selection.anchorOffset]).toStrictEqual([range.endContainer, range.endOffset]);
+    });
+
+    it('stays backward after unmarking', () => {
+      const host = mount('a<mark style="color: blue">bcd</mark>ef');
+      const marked = host.querySelector('mark');
+
+      if (marked === null) {
+        throw new Error('no mark');
+      }
+      liveSelection().setBaseAndExtent(firstText(marked), 3, firstText(marked), 0);
+
+      removeMark(colorSpec, liveSelection().getRangeAt(0));
+
+      const selection = liveSelection();
+      const range = selection.getRangeAt(0);
+
+      expect(selection.toString()).toBe('bcd');
+      expect([selection.anchorNode, selection.anchorOffset]).toStrictEqual([range.endContainer, range.endOffset]);
+    });
+  });
+
   describe('ranges spanning two editing hosts', () => {
     const markedPair = (): HTMLElement => {
       return mount(
@@ -620,6 +655,21 @@ describe('mark-engine mutants', () => {
       expect(selection.anchorOffset).toBe(1);
       expect(selection.focusNode).toBe(hosts[1]);
       expect(selection.focusOffset).toBe(1);
+    });
+
+    it('keeps a backward selection backward after marking across hosts', () => {
+      const wrap = mount('<div contenteditable="true">abc</div>GAP<div contenteditable="true">def</div>', false);
+      const hosts = wrap.querySelectorAll('div');
+
+      liveSelection().setBaseAndExtent(firstText(hosts[1]), 2, firstText(hosts[0]), 1);
+
+      applyMark(colorSpec, 'blue', liveSelection().getRangeAt(0));
+
+      const selection = liveSelection();
+
+      expect([selection.anchorNode, selection.anchorOffset, selection.focusNode, selection.focusOffset])
+        .toStrictEqual([hosts[1], 1, hosts[0], 1]);
+      expect(selection.toString()).toBe('bcGAPde');
     });
 
     it('unmarks each host share and re-selects from the live slices', () => {

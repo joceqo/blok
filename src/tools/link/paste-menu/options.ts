@@ -1,11 +1,17 @@
-import { matchesHostPattern } from '../host-pattern';
+import { canFrameGeneric } from '../generic-embed-policy';
+import { matchesDenyHostPattern } from '../host-pattern';
 import { isHttpUrl, matchEmbedService } from '../registry';
 
 /** The four outputs Notion offers for a pasted URL. */
 export type PasteMenuActionType = 'embed' | 'bookmark' | 'mention' | 'plain';
 
+/** A media block a pasted URL can become, named by the media tool's paste pattern key. */
+export type PasteMenuMedia = 'image' | 'video' | 'audio';
+
 export interface PasteMenuOption {
   type: PasteMenuActionType;
+  /** On `embed`: the media block it inserts in place of a frame. */
+  media?: PasteMenuMedia;
 }
 
 export interface PasteMenuContext {
@@ -13,6 +19,10 @@ export interface PasteMenuContext {
   hasSelection: boolean;
   /** When true, an unmatched http(s) URL also offers a generic iframe embed. */
   allowGenericEmbed?: boolean;
+  /** Hosts (`linkPaste.allowedEmbedOrigins`) whose https URLs may get a generic embed. */
+  allowedEmbedOrigins?: readonly string[];
+  /** Hosts (`linkPaste.blockedEmbedOrigins`) never offered a generic embed. */
+  blockedEmbedOrigins?: readonly string[];
   /**
    * Hostnames (or `*.` wildcards) that count as the editor's own site. A
    * bookmark of the site the reader is already on adds nothing.
@@ -20,6 +30,8 @@ export interface PasteMenuContext {
   ownHosts?: readonly string[];
   /** The page the URL links to, when the page tool recognizes it. */
   pageId?: string;
+  /** The media block the URL can become, when a media tool's pattern matches it. */
+  media?: PasteMenuMedia;
 }
 
 /** Whether `url` points at one of `ownHosts`. The port is ignored. */
@@ -29,18 +41,27 @@ export function isOwnHostLink(url: string, ownHosts: readonly string[] | undefin
   }
 
   try {
-    return matchesHostPattern(new URL(url).hostname, ownHosts);
+    return matchesDenyHostPattern(new URL(url).hostname, ownHosts);
   } catch {
     return false;
   }
 }
 
+/** The embed tool's own rule, so the menu never offers a frame that render refuses. */
+const canEmbedGeneric = (url: string, context: PasteMenuContext): boolean =>
+  canFrameGeneric(url, {
+    allowGeneric: context.allowGenericEmbed === true,
+    allowedOrigins: context.allowedEmbedOrigins ?? [],
+    blockedOrigins: context.blockedEmbedOrigins ?? [],
+    ownHosts: context.ownHosts ?? [],
+  });
+
 /**
  * Decides which paste-menu options apply to a pasted URL.
  *
  * - With a text selection, Notion simply hyperlinks it — only `plain`.
- * - `embed` for a registered provider, or any safe http(s) URL when generic
- *   embeds are enabled (most specific, listed first).
+ * - `embed` for a media URL (inserts the media block), a registered provider,
+ *   or a URL that passes `canEmbedGeneric` (most specific, listed first).
  * - `bookmark` for any safe http(s) URL outside `ownHosts`.
  * - `mention` for any safe http(s) URL.
  * - `plain` is always available (dismiss / keep as link).
@@ -61,7 +82,9 @@ export function buildPasteMenuOptions(
 
   const options: PasteMenuOption[] = [];
 
-  if (matchEmbedService(url) || context.allowGenericEmbed === true) {
+  if (context.media !== undefined) {
+    options.push({ type: 'embed', media: context.media });
+  } else if (matchEmbedService(url) || canEmbedGeneric(url, context)) {
     options.push({ type: 'embed' });
   }
 

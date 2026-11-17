@@ -65,6 +65,31 @@ public static class BlokServerBuilderExtensions
   }
 
   /// <summary>
+  /// Refuses, with 421 "host not allowed", a guarded request whose
+  /// <c>Host</c> is not <c>localhost</c>, a 127.x.x.x address, <c>[::1]</c>,
+  /// or the host of an <see cref="BlokServerOptions.AllowedOrigins"/> entry
+  /// or of <see cref="BlokServerOptions.PublicUrl"/>, when
+  /// <see cref="BlokServerOptions.Auth"/> is "none" or "proxy". The port is
+  /// not checked, and a request with no <c>Host</c> passes.
+  /// </summary>
+  /// <remarks>
+  /// This stops DNS rebinding: a page whose name now points at 127.0.0.1
+  /// sends its own name as <c>Host</c>. The standalone host turns it on. Turn
+  /// it on in your app when it listens on loopback only; leave it off when
+  /// the app serves the routes under its own public name.
+  /// </remarks>
+  /// <param name="builder">The server being built.</param>
+  /// <returns>The same builder, so hooks chain.</returns>
+  public static BlokServerBuilder UseLoopbackHostCheck(this BlokServerBuilder builder)
+  {
+    ArgumentNullException.ThrowIfNull(builder);
+
+    builder.Services.TryAddSingleton<LoopbackHostCheck>();
+
+    return builder;
+  }
+
+  /// <summary>
   /// Registers <typeparamref name="T"/> as this server's collaboration
   /// activity observer, replacing one registered earlier. It is resolved as a
   /// singleton.
@@ -85,6 +110,30 @@ public static class BlokServerBuilderExtensions
 
     builder.Services.RemoveAll<ICollabActivityObserver>();
     builder.Services.AddSingleton<ICollabActivityObserver, T>();
+
+    return builder;
+  }
+
+  /// <summary>
+  /// Keeps a note of who wrote each journal record: an agent of Blok's
+  /// in-process executor and the person it acted for, or a person. The
+  /// history routes then return actor kinds. Registered as a singleton.
+  /// </summary>
+  /// <remarks>
+  /// The note is written right after its record, but not atomically with it:
+  /// a crash in between loses that one note. Blok never deletes notes; delete
+  /// a document's notes when you purge it.
+  /// </remarks>
+  /// <typeparam name="T">The application's notes store, or <see cref="InMemoryCollabRecordNotes"/>.</typeparam>
+  /// <param name="builder">The server being built.</param>
+  /// <returns>The same builder, so hooks chain.</returns>
+  public static BlokServerBuilder UseCollabRecordNotes<T>(this BlokServerBuilder builder)
+      where T : class, ICollabRecordNotes
+  {
+    ArgumentNullException.ThrowIfNull(builder);
+
+    builder.Services.RemoveAll<ICollabRecordNotes>();
+    builder.Services.AddSingleton<ICollabRecordNotes, T>();
 
     return builder;
   }

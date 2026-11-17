@@ -1,6 +1,8 @@
 package outbound
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -11,15 +13,24 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
-	"github.com/JackUait/blok/packages/server/go/internal/mediatype"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/mediatype"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/sectrust"
 )
 
-// UserAgent is sent with every fetch, and no other header but Host.
+// UserAgent is sent with every fetch, and no other header but Host and a
+// Range the caller set.
 const UserAgent = "blok-server (+https://blokeditor.com)"
 
 const connectAttemptTimeout = time.Second
+
+// maxResponseHeaderBytes is .NET's default MaxResponseHeadersLength, 64 KiB;
+// C# sets the same value explicitly.
+const maxResponseHeaderBytes = 64 << 10
 
 var errMappedAddress = errors.New("address family not supported by protocol family")
 
@@ -28,6 +39,33 @@ type Limits struct {
 	Timeout      time.Duration
 	MaxBytes     int64
 	MaxRedirects int
+	// Hop, when set, is asked before every redirect hop. A false answer
+	// fails the fetch as RateLimited, so one request cannot fan out.
+	Hop func() bool
+	// Truncate keeps the first MaxBytes of the body instead of failing past
+	// them. Content-Length is not checked.
+	Truncate bool
+	// Upload takes a slot from the upload pool, so long downloads never
+	// starve the short checks.
+	Upload bool
+	// Caller is the rate-limit key. A caller runs at most two fetches at
+	// once in each pool; more wait for one of its own slots. Empty is no cap.
+	Caller string
+	// Range, when set, is sent on every hop. The only request header besides
+	// Host and User-Agent.
+	Range *ByteRange
+}
+
+// ByteRange is bytes=Start-End, or bytes=Start- when End is negative.
+// Typed, so no caller text reaches the request line.
+type ByteRange struct{ Start, End int64 }
+
+func (b ByteRange) header() string {
+	value := "bytes=" + strconv.FormatInt(b.Start, 10) + "-"
+	if b.End >= 0 {
+		value += strconv.FormatInt(b.End, 10)
+	}
+	return value
 }
 
 // Response is GuardedResponse. Release frees the concurrency slot; callers
@@ -37,7 +75,10 @@ type Response struct {
 	Body        []byte
 	ContentType string
 	FinalURL    string
-	release     func()
+	// Header is the final response's header lines as received.
+	Header    http.Header
+	Redirects int
+	release   func()
 }
 
 // Release frees the fetch slot. It is safe to call twice.
@@ -51,20 +92,79 @@ func (r *Response) Release() {
 // Resolver looks a host up. Tests replace it.
 type Resolver func(ctx context.Context, host string) ([]netip.Addr, error)
 
-// Fetcher is GuardedOutboundFetcher: at most four fetches at once across the
-// whole server, each pinned to addresses the policy vetted.
+// Fetcher is GuardedOutboundFetcher: at most four checks and four uploads
+// at once across the whole server, at most two of each per caller, each
+// pinned to addresses the policy vetted.
 type Fetcher struct {
 	Policy  Policy
 	Resolve Resolver
-	// RootCAs replaces the system roots; tests set it.
-	RootCAs  *x509.CertPool
-	permits  chan struct{}
-	dialHook func(network, address string)
+	// Roots replace the system roots, as C#'s customTrustRoots; tests set
+	// them.
+	Roots   []*x509.Certificate
+	permits chan struct{}
+	uploads chan struct{}
+	// checkCallers and uploadCallers are each pool's per-caller lanes.
+	checkCallers  callerLanes
+	uploadCallers callerLanes
+	dialHook      func(network, address string)
 }
 
 // NewFetcher returns a fetcher over policy with the system resolver.
 func NewFetcher(policy Policy) *Fetcher {
-	return &Fetcher{Policy: policy, Resolve: systemResolve, permits: make(chan struct{}, 4)}
+	return &Fetcher{Policy: policy, Resolve: systemResolve,
+		permits: make(chan struct{}, 4), uploads: make(chan struct{}, 4)}
+}
+
+// fetchesPerCaller is each caller's share of a pool of four, so one caller
+// cannot fill a pool alone.
+const fetchesPerCaller = 2
+
+// callerLanes holds a lane of fetchesPerCaller slots per caller key, kept
+// while anyone holds or waits for one of its slots.
+type callerLanes struct {
+	mu    sync.Mutex
+	lanes map[string]*callerLane
+}
+
+type callerLane struct {
+	slots chan struct{}
+	users int
+}
+
+// enter takes one of key's slots, waiting until ctx ends. An empty key has
+// no lane.
+func (c *callerLanes) enter(ctx context.Context, key string) (func(), error) {
+	if key == "" {
+		return func() {}, nil
+	}
+	c.mu.Lock()
+	if c.lanes == nil {
+		c.lanes = map[string]*callerLane{}
+	}
+	lane := c.lanes[key]
+	if lane == nil {
+		lane = &callerLane{slots: make(chan struct{}, fetchesPerCaller)}
+		c.lanes[key] = lane
+	}
+	lane.users++
+	c.mu.Unlock()
+	done := func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if lane.users--; lane.users == 0 {
+			delete(c.lanes, key)
+		}
+	}
+	select {
+	case lane.slots <- struct{}{}:
+		return func() {
+			<-lane.slots
+			done()
+		}, nil
+	case <-ctx.Done():
+		done()
+		return nil, ctx.Err()
+	}
 }
 
 func systemResolve(ctx context.Context, host string) ([]netip.Addr, error) {
@@ -72,19 +172,13 @@ func systemResolve(ctx context.Context, host string) ([]netip.Addr, error) {
 }
 
 // Get fetches raw. The timeout covers the wait for a slot. Every failure
-// but the caller's own cancellation becomes an *Error.
+// but the caller's own cancellation and bad limits becomes an *Error.
 func (f *Fetcher) Get(ctx context.Context, raw string, limits Limits) (*Response, error) {
-	if err := ctx.Err(); err != nil {
+	deadline, cancel, release, err := f.acquire(ctx, limits)
+	if err != nil {
 		return nil, err
 	}
-	deadline, cancel := context.WithTimeout(ctx, limits.Timeout)
 	defer cancel()
-	select {
-	case f.permits <- struct{}{}:
-	case <-deadline.Done():
-		return nil, f.collapse(ctx, deadline, deadline.Err())
-	}
-	release := func() { <-f.permits }
 	response, err := f.get(deadline, raw, limits)
 	if err != nil {
 		release()
@@ -92,6 +186,54 @@ func (f *Fetcher) Get(ctx context.Context, raw string, limits Limits) (*Response
 	}
 	response.release = release
 	return response, nil
+}
+
+// acquire checks the limits and takes a slot. The deadline covers the wait.
+func (f *Fetcher) acquire(ctx context.Context, limits Limits) (context.Context, context.CancelFunc, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := validateLimits(limits); err != nil {
+		return nil, nil, nil, err
+	}
+	deadline, cancel := context.WithTimeout(ctx, limits.Timeout)
+	permits, callers := f.permits, &f.checkCallers
+	if limits.Upload {
+		permits, callers = f.uploads, &f.uploadCallers
+	}
+	// The caller's own lane comes first, so a waiting fetch never holds a
+	// pool slot others could use.
+	leave, err := callers.enter(deadline, limits.Caller)
+	if err != nil {
+		defer cancel()
+		return nil, nil, nil, f.collapse(ctx, deadline, err)
+	}
+	select {
+	case permits <- struct{}{}:
+	case <-deadline.Done():
+		leave()
+		defer cancel()
+		return nil, nil, nil, f.collapse(ctx, deadline, deadline.Err())
+	}
+	return deadline, cancel, func() {
+		<-permits
+		leave()
+	}, nil
+}
+
+// maxArrayLength is .NET's Array.MaxLength, C#'s byte cap ceiling.
+const maxArrayLength = 0x7FFFFFC7
+
+// validateLimits is C# ValidateLimits: ArgumentOutOfRangeException, so not
+// an *Error.
+func validateLimits(limits Limits) error {
+	if limits.MaxBytes < 0 || limits.MaxBytes > maxArrayLength {
+		return errors.New("The response byte limit is outside the supported range.")
+	}
+	if limits.MaxRedirects < 0 {
+		return errors.New("The redirect limit cannot be negative.")
+	}
+	return nil
 }
 
 func (f *Fetcher) collapse(ctx, deadline context.Context, err error) error {
@@ -108,58 +250,79 @@ func (f *Fetcher) collapse(ctx, deadline context.Context, err error) error {
 }
 
 func (f *Fetcher) get(ctx context.Context, raw string, limits Limits) (*Response, error) {
+	response, target, redirects, err := f.follow(ctx, raw, limits)
+	if err != nil {
+		return nil, err
+	}
+	body, err := readBounded(response, limits.MaxBytes, limits.Truncate)
+	_ = response.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	return &Response{
+		StatusCode:  response.StatusCode,
+		Body:        body,
+		ContentType: contentType(response.Header.Get("Content-Type")),
+		FinalURL:    target.URL.AbsoluteURI,
+		Header:      response.Header,
+		Redirects:   redirects,
+	}, nil
+}
+
+// follow sends the GET and follows redirects. The final response's body is
+// left unread.
+func (f *Fetcher) follow(ctx context.Context, raw string, limits Limits) (*http.Response, Target, int, error) {
 	redirects := 0
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, Target{}, 0, err
 		}
 		target, err := f.Policy.Validate(raw, nil)
 		if err != nil {
-			return nil, err
+			return nil, Target{}, 0, err
 		}
 		addresses := []netip.Addr{target.Literal}
 		if !target.Literal.IsValid() {
 			addresses, err = f.Resolve(ctx, target.Host)
 			if err != nil {
-				return nil, err
+				return nil, Target{}, 0, err
 			}
 		}
 		if len(addresses) == 0 {
-			return nil, fail(Blocked)
+			return nil, Target{}, 0, fail(Blocked)
 		}
 		for _, address := range addresses {
 			if !f.Policy.AddressAllowed(address) {
-				return nil, fail(Blocked)
+				return nil, Target{}, 0, fail(Blocked)
 			}
 		}
-		response, err := f.roundTrip(ctx, target, addresses)
+		response, err := f.roundTrip(ctx, target, addresses, limits.Range)
 		if err != nil {
-			return nil, err
+			return nil, Target{}, 0, err
 		}
-		if location := response.Header.Get("Location"); isRedirect(response.StatusCode) && location != "" {
+		// C# follows only a Location .NET parses as a Uri; else the 3xx is
+		// the answer.
+		if location := headerText(response.Header.Get("Location")); isRedirect(response.StatusCode) && location != "" &&
+			dotnet.ParsesAsURI(location) {
 			_ = response.Body.Close()
 			if redirects >= limits.MaxRedirects {
-				return nil, fail(TooManyRedirects)
+				return nil, Target{}, 0, fail(TooManyRedirects)
 			}
 			next, err := f.Policy.Validate(location, target.URL)
 			if err != nil {
-				return nil, err
+				return nil, Target{}, 0, err
+			}
+			if target.URL.Scheme == "https" && next.URL.Scheme != "https" {
+				return nil, Target{}, 0, fail(Blocked)
+			}
+			if limits.Hop != nil && !limits.Hop() {
+				return nil, Target{}, 0, fail(RateLimited)
 			}
 			raw = next.URL.AbsoluteURI
 			redirects++
 			continue
 		}
-		body, err := readBounded(response, limits.MaxBytes)
-		_ = response.Body.Close()
-		if err != nil {
-			return nil, err
-		}
-		return &Response{
-			StatusCode:  response.StatusCode,
-			Body:        body,
-			ContentType: contentType(response.Header.Get("Content-Type")),
-			FinalURL:    target.URL.AbsoluteURI,
-		}, nil
+		return response, target, redirects, nil
 	}
 }
 
@@ -171,71 +334,160 @@ func isRedirect(status int) bool {
 	return false
 }
 
-// roundTrip sends one GET through a transport that dials only the vetted
-// addresses, uses no proxy, sends no Accept-Encoding and follows nothing.
-func (f *Fetcher) roundTrip(ctx context.Context, target Target, addresses []netip.Addr) (*http.Response, error) {
+// roundTrip sends one GET on a fresh connection to a vetted address, with
+// no proxy, no Accept-Encoding, and nothing followed. The response is read
+// by wire.go, as .NET reads it.
+func (f *Fetcher) roundTrip(ctx context.Context, target Target, addresses []netip.Addr, byteRange *ByteRange) (*http.Response, error) {
 	if !target.Literal.IsValid() && !plainHostName(target.Host) {
 		return nil, fail(Blocked)
 	}
-	dialer := &net.Dialer{}
-	transport := &http.Transport{
-		Proxy:              nil,
-		DisableCompression: true,
-		// No pooling, and no "Connection: close" header, which
-		// DisableKeepAlives would add and .NET does not send.
-		MaxIdleConnsPerHost: -1,
-		ForceAttemptHTTP2:   false,
-		TLSClientConfig:     f.tlsConfig(target),
-		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			if f.dialHook != nil {
-				f.dialHook(network, address)
-			}
-			_, port, err := net.SplitHostPort(address)
-			if err != nil || port != strconv.Itoa(target.Port) {
-				return nil, fail(Blocked)
-			}
-			var last error
-			for i, ip := range addresses {
-				// .NET dials a mapped address on an IPv6-only socket, which
-				// fails at once; Go would reach the IPv4 address instead.
-				if ip.Is4In6() {
-					last = errMappedAddress
-					continue
-				}
-				attempt := ctx
-				cancel := context.CancelFunc(func() {})
-				if i < len(addresses)-1 {
-					attempt, cancel = context.WithTimeout(ctx, connectAttemptTimeout)
-				}
-				conn, err := dialer.DialContext(attempt, "tcp", netip.AddrPortFrom(ip, uint16(target.Port)).String())
-				cancel()
-				if err == nil {
-					return conn, nil
-				}
-				last = err
-			}
-			return nil, last
-		},
-	}
-	defer transport.CloseIdleConnections()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.URL.Scheme+"://"+hostHeader(target)+requestURI(target), nil)
+	raw, err := f.dial(ctx, target, addresses)
 	if err != nil {
-		return nil, fail(Blocked)
+		return nil, err
 	}
-	request.Header.Set("User-Agent", UserAgent)
-	return transport.RoundTrip(request)
+	// A cancel or the deadline ends any read or write in flight. It closes
+	// the socket, not conn, which this goroutine replaces after TLS.
+	stop := context.AfterFunc(ctx, func() { _ = raw.Close() })
+	conn := raw
+	closeConn := func() error {
+		stop()
+		return conn.Close()
+	}
+	if target.URL.Scheme == "https" {
+		config := f.tlsConfig(target)
+		if config.ServerName == "" {
+			config.ServerName = target.Host
+		}
+		secure := tls.Client(conn, config)
+		if err := secure.HandshakeContext(ctx); err != nil {
+			_ = closeConn()
+			return nil, err
+		}
+		conn = secure
+	}
+	request := "GET " + requestURI(target) + " HTTP/1.1\r\nHost: " + hostHeader(target) +
+		"\r\nUser-Agent: " + UserAgent + "\r\n"
+	if byteRange != nil {
+		request += "Range: " + byteRange.header() + "\r\n"
+	}
+	request += "\r\n"
+	if _, err := io.WriteString(conn, request); err != nil {
+		_ = closeConn()
+		return nil, err
+	}
+	response, err := readResponse(bufio.NewReader(conn), maxResponseHeaderBytes, closeConn)
+	if err != nil {
+		_ = closeConn()
+		return nil, err
+	}
+	return response, nil
+}
+
+// dial connects to the first vetted address that answers.
+func (f *Fetcher) dial(ctx context.Context, target Target, addresses []netip.Addr) (net.Conn, error) {
+	if f.dialHook != nil {
+		f.dialHook("tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
+	}
+	dialer := &net.Dialer{}
+	var last error
+	for i, ip := range addresses {
+		// .NET dials a mapped address on an IPv6-only socket, which fails
+		// at once; Go would reach the IPv4 address instead.
+		if ip.Is4In6() {
+			last = errMappedAddress
+			continue
+		}
+		attempt := ctx
+		cancel := context.CancelFunc(func() {})
+		if i < len(addresses)-1 {
+			attempt, cancel = context.WithTimeout(ctx, connectAttemptTimeout)
+		}
+		conn, err := dialer.DialContext(attempt, "tcp", netip.AddrPortFrom(ip, uint16(target.Port)).String())
+		cancel()
+		if err == nil {
+			return conn, nil
+		}
+		last = err
+	}
+	return nil, last
 }
 
 func (f *Fetcher) tlsConfig(target Target) *tls.Config {
 	config := &tls.Config{NextProtos: []string{"http/1.1"}}
-	config.RootCAs = f.RootCAs
-	if config.RootCAs == nil {
-		config.RootCAs = defaultRoots()
-	}
-	if !target.Literal.IsValid() {
+	literal := target.Literal.IsValid()
+	if !literal {
 		config.ServerName = target.Host
 	}
+	if !sectrust.Available {
+		if f.Roots != nil {
+			config.RootCAs = x509.NewCertPool()
+			for _, root := range f.Roots {
+				config.RootCAs.AddCert(root)
+			}
+		}
+	}
+	// On macOS trustd checks the chain in VerifyConnection, as C#'s
+	// MacOsCertificateTrust does; Go's own check is off then.
+	config.InsecureSkipVerify = sectrust.Available
+	config.VerifyConnection = func(state tls.ConnectionState) error {
+		// Go matches any exact name; .NET refuses these at the certificate
+		// check, after the handshake, as this does.
+		if !literal && !tlsHostName(target.Host) {
+			return errTLSHostName
+		}
+		if !sectrust.Available {
+			return nil
+		}
+		chain := make([][]byte, len(state.PeerCertificates))
+		for i, c := range state.PeerCertificates {
+			chain[i] = c.Raw
+		}
+		var anchors [][]byte
+		if f.Roots != nil {
+			anchors = make([][]byte, len(f.Roots))
+			for i, root := range f.Roots {
+				anchors[i] = root.Raw
+			}
+		}
+		if !sectrust.Guarded(chain, target.Host, anchors) {
+			return errUntrusted
+		}
+		return nil
+	}
 	return config
+}
+
+var errUntrusted = errors.New("outbound: trustd does not trust the certificate chain")
+
+var errTLSHostName = errors.New("outbound: the host is not a name TLS can check")
+
+// tlsHostName is the name rule .NET's TLS check applies (measured on
+// SecPolicyCreateSSL; rustls holds the same): labels of 1 to 63 letters,
+// digits, '_' or '-', no '-' at a label's ends, at most 253 bytes, and a
+// last label that is not all digits. A trailing dot is allowed.
+func tlsHostName(host string) bool {
+	// rustls counts a trailing dot in the 253.
+	if len(host) > 253 {
+		return false
+	}
+	host = strings.TrimSuffix(host, ".")
+	if host == "" {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	for _, label := range labels {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if !(c == '-' || c == '_' || '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z') {
+				return false
+			}
+		}
+	}
+	last := labels[len(labels)-1]
+	return strings.Trim(last, "0123456789") != ""
 }
 
 // plainHostName reports whether host holds only letters, digits, '-', '.'
@@ -286,23 +538,33 @@ func contentType(header string) string {
 	return b.String()
 }
 
-func readBounded(response *http.Response, max int64) ([]byte, error) {
-	if response.ContentLength > max {
+func readBounded(response *http.Response, max int64, truncate bool) ([]byte, error) {
+	if !truncate && response.ContentLength > max {
 		return nil, fail(TooLarge)
 	}
 	var encodings []string
 	for _, value := range response.Header.Values("Content-Encoding") {
-		for _, encoding := range strings.Split(value, ",") {
-			if encoding = strings.TrimSpace(encoding); encoding != "" {
-				encodings = append(encodings, encoding)
-			}
-		}
+		encodings = append(encodings, encodingTokens(value)...)
 	}
 	if len(encodings) > 1 {
 		return nil, fail(UnsupportedContentEncoding)
 	}
+	identity := len(encodings) == 0 || strings.EqualFold(encodings[0], "identity")
+	if truncate {
+		// The first max raw bytes decode as a truncated stream, which both
+		// decoders already accept; the output is cut at max too.
+		prefix, err := io.ReadAll(io.LimitReader(response.Body, max))
+		if err != nil || identity {
+			return prefix, err
+		}
+		decoded, ok := decoder(strings.ToLower(encodings[0]), bytes.NewReader(prefix))
+		if !ok {
+			return nil, fail(UnsupportedContentEncoding)
+		}
+		return io.ReadAll(io.LimitReader(decoded, max))
+	}
 	raw := &boundedReader{r: response.Body, remaining: max}
-	if len(encodings) == 0 || strings.EqualFold(encodings[0], "identity") {
+	if identity {
 		return readAll(raw, max)
 	}
 	decoded, ok := decoder(strings.ToLower(encodings[0]), raw)
@@ -317,6 +579,35 @@ func readBounded(response *http.Response, max int64) ([]byte, error) {
 		return nil, err
 	}
 	return body, nil
+}
+
+// encodingTokens is .NET's typed ContentEncoding for one header line: the
+// comma-separated tokens, or none when any item is not a token. C# then
+// reads the body as identity.
+func encodingTokens(line string) []string {
+	var tokens []string
+	for _, item := range strings.Split(line, ",") {
+		item = strings.Trim(item, " \t")
+		if item == "" {
+			continue
+		}
+		if !isToken(item) {
+			return nil
+		}
+		tokens = append(tokens, item)
+	}
+	return tokens
+}
+
+func isToken(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' ||
+			strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0) {
+			return false
+		}
+	}
+	return true
 }
 
 func readAll(r io.Reader, max int64) ([]byte, error) {
@@ -351,4 +642,18 @@ func (b *boundedReader) Read(p []byte) (int, error) {
 	n, err := b.r.Read(p)
 	b.remaining -= int64(n)
 	return n, err
+}
+
+// headerText reads a Location value as .NET does: UTF-8 when the bytes are
+// valid UTF-8, else one byte per character (Latin-1). So a raw 0xE9 is "é"
+// and a raw 0x85 is the C1 control the policy refuses.
+func headerText(value string) string {
+	if utf8.ValidString(value) {
+		return value
+	}
+	runes := make([]rune, len(value))
+	for i := 0; i < len(value); i++ {
+		runes[i] = rune(value[i])
+	}
+	return string(runes)
 }

@@ -14,6 +14,10 @@ export interface PanelPage {
   headerAction?: (panel: DatabasePanel) => HTMLElement;
   /** `data-blok-testid` of the control that opened this page; leaving the page focuses it again. */
   returnFocus?: string;
+  /** Set as the panel's `data-blok-database-panel-page`, for CSS that holds one page's measured offsets. */
+  name?: string;
+  /** The panel's width becomes a floor on this page: it grows to its widest row. */
+  fitContent?: boolean;
   build: (panel: DatabasePanel) => HTMLElement[];
 }
 
@@ -30,9 +34,37 @@ export interface DatabasePanelOptions {
   docked?: boolean;
   /** With `docked`: every sub-page header ends in a × with this name (findings V25). */
   closeLabel?: string;
+  /** Space under the anchor; the popover's usual gap when unset. */
+  gap?: number;
+  /** Opens beside the anchor, this far right of it, top level with it. */
+  beside?: number;
+  /** With `beside`: the element it sits beside, when not the anchor. */
+  besideOf?: HTMLElement;
+  /** With `beside`: opens on the left when only the left has room. */
+  besideFlip?: boolean;
+  /** Opens on this side of the anchor, `gap` from it, centred on it. `flip`: the other side when this one has no room. */
+  aside?: { side: 'left' | 'right'; gap: number; flip?: boolean };
+  /** Opens above the anchor, `gap` over it, when it does not fit below (notion-motion.md Round 21 §1). */
+  flip?: boolean;
+  /** The gap to the window's top and bottom, when it is not the usual 12. */
+  verticalMargin?: number;
+  /** Never taller than half the window. */
+  halfWindow?: boolean;
+  /** Under the anchor, its end edge on the anchor's end edge. */
+  alignEnd?: boolean;
   /** `escape` is true when Escape closed the first page. */
   onClose?: (escape: boolean) => void;
 }
+
+/** A full-page database docks as a side panel under its toolbar row (research/35 §2.3); any other as a floating card. */
+const dockOf = (anchor: HTMLElement): { docked: true } | { docked: 'page'; dockRow: HTMLElement } => {
+  const wrapper = anchor.closest('[data-blok-database-wrapper]');
+  // A column header or filter pill opens it too; the panel still starts under the toolbar's row.
+  const row = anchor.closest<HTMLElement>('[data-blok-database-title-row], [data-blok-database-view-bar]')
+    ?? wrapper?.querySelector('[data-blok-database-view-toolbar]')?.parentElement ?? null;
+
+  return wrapper?.hasAttribute('data-blok-database-page') === true && row !== null ? { docked: 'page', dockRow: row } : { docked: true };
+};
 
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex="0"]';
 
@@ -46,6 +78,8 @@ export class DatabasePanel {
   private readonly element: HTMLElement;
   private readonly popover: CellPopover;
   private readonly stack: PanelPage[];
+  /** Flyouts opened over this panel: they close with it. */
+  private readonly owned = new Set<DatabasePanel>();
   private closed = false;
 
   constructor(options: DatabasePanelOptions) {
@@ -56,11 +90,25 @@ export class DatabasePanel {
     this.element.setAttribute('data-blok-testid', options.testId);
     this.element.style.width = `${options.width}px`;
     if (options.docked === true) this.element.setAttribute('data-docked', '');
+    if (options.halfWindow === true) this.element.style.maxHeight = '50vh';
+    const dock = options.docked === true ? dockOf(options.anchor) : undefined;
+
+    // The page dock runs to the window bottom; database.css lifts the usual height cap.
+    if (dock?.docked === 'page') this.element.style.height = `calc(100dvh - ${dock.dockRow.getBoundingClientRect().bottom}px)`;
     this.element.addEventListener('keydown', this.handleKeydown);
     this.popover = new CellPopover({
       anchor: options.anchor,
       content: this.element,
-      ...(options.docked === true ? { docked: true } : {}),
+      panel: true,
+      ...(dock ?? {}),
+      ...(options.gap !== undefined ? { gap: options.gap } : {}),
+      ...(options.beside !== undefined ? { beside: options.beside } : {}),
+      ...(options.besideOf !== undefined ? { besideOf: options.besideOf } : {}),
+      ...(options.besideFlip === true ? { besideFlipWidth: options.width } : {}),
+      ...(options.aside !== undefined ? { aside: options.aside } : {}),
+      ...(options.flip === true ? { flip: true } : {}),
+      ...(options.verticalMargin !== undefined ? { verticalMargin: options.verticalMargin } : {}),
+      ...(options.alignEnd === true ? { alignEnd: true } : {}),
       onEscape: () => this.back(true),
       onDismiss: () => this.finish(),
     });
@@ -74,10 +122,24 @@ export class DatabasePanel {
     return this.element;
   }
 
+  get isOpen(): boolean {
+    return !this.closed;
+  }
+
   open(): void {
     this.render();
     this.popover.show();
     this.focusFirst();
+  }
+
+  /** Keeps this panel open under a panel it opens; outside presses, focus and Escape go there until the release. */
+  hold(): () => void {
+    return this.popover.hold();
+  }
+
+  /** Closes `child` when this panel closes. */
+  own(child: DatabasePanel): void {
+    this.owned.add(child);
   }
 
   push(page: PanelPage): void {
@@ -129,6 +191,7 @@ export class DatabasePanel {
   private finish(escape = false): void {
     if (this.closed) return;
     this.closed = true;
+    this.owned.forEach((child) => child.close());
     this.options.onClose?.(escape);
   }
 
@@ -143,6 +206,20 @@ export class DatabasePanel {
       children.push(this.header(page.title ?? '', page.headerAction?.(this), page.titleIsLabel === true));
     }
     children.push(...page.build(this));
+    if (page.name === undefined) {
+      this.element.removeAttribute('data-blok-database-panel-page');
+    } else {
+      this.element.setAttribute('data-blok-database-panel-page', page.name);
+    }
+    const fit = page.fitContent === true;
+
+    // Only on a change: an opener may have set its own width (the sort panel's max-content).
+    // database.css lets the popover box follow a fitted width when a refresh grows it.
+    if (fit !== this.element.hasAttribute('data-fit-content')) {
+      this.element.toggleAttribute('data-fit-content', fit);
+      this.element.style.width = fit ? 'max-content' : `${this.options.width}px`;
+      this.element.style.minWidth = fit ? `${this.options.width}px` : '';
+    }
     this.element.replaceChildren(...children);
   }
 
@@ -190,6 +267,8 @@ export class DatabasePanel {
 
   private readonly handleKeydown = (event: KeyboardEvent): void => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    // A control with its own arrow keys (a calendar grid) took the key.
+    if (event.defaultPrevented) return;
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
     const items = [...this.element.querySelectorAll<HTMLElement>(FOCUSABLE)];
     const index = items.indexOf(document.activeElement as HTMLElement);
@@ -233,6 +312,8 @@ export interface PanelRowOptions {
   external?: boolean;
   /** A checkmark marks the chosen option, never a fill (no-blue law). */
   checked?: boolean;
+  /** `checked` shows as a checkbox before the label instead of a trailing ✓ (Round 32 §3, the select filter). */
+  checkbox?: boolean;
   danger?: boolean;
   /** Secondary ink, as Notion's "Add sort" and "Delete sort" (research/21 §1c). */
   muted?: boolean;
@@ -252,6 +333,15 @@ export const panelRow = (options: PanelRowOptions): HTMLButtonElement => {
   if (options.checked !== undefined) {
     row.setAttribute('role', 'menuitemradio');
     row.setAttribute('aria-checked', String(options.checked));
+  }
+  if (options.checkbox === true) {
+    const box = document.createElement('span');
+
+    box.setAttribute('data-blok-database-checkbox', '');
+    box.setAttribute('data-state', options.checked === true ? 'checked' : 'unchecked');
+    box.setAttribute('aria-hidden', 'true');
+    if (options.checked === true) box.innerHTML = IconCheck;
+    row.appendChild(box);
   }
   if (options.icon !== undefined || options.iconText !== undefined) {
     const icon = document.createElement('span');
@@ -287,7 +377,7 @@ export const panelRow = (options: PanelRowOptions): HTMLButtonElement => {
     value.textContent = options.value;
     row.appendChild(value);
   }
-  if (options.checked === true) {
+  if (options.checked === true && options.checkbox !== true) {
     const check = document.createElement('span');
 
     check.setAttribute('data-blok-database-panel-check', '');

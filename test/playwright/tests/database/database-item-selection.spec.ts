@@ -120,13 +120,27 @@ test.describe('Shift-click picks an item, never the database block', () => {
 });
 
 test.describe('a lasso from the page margin', () => {
-  /** Days around the real today, as the calendar reads them. */
-  const isoDays = async (page: Page, offsets: number[]): Promise<string[]> => page.evaluate((list) => list.map((offset) => {
-    const now = new Date();
-    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
+  /**
+   * Today and a neighbour in the same rendered week row. The drag boxes below only reach
+   * both events when they share a row, and the row depends on the real date and the
+   * locale's week start, so read it from the grid instead of adding day offsets.
+   */
+  const sameRowDays = async (page: Page): Promise<[string, string]> => {
+    await mount(page, blocks({ type: 'calendar' }));
 
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  }), offsets);
+    const days = await page.locator('[data-blok-database-calendar-week]').filter({ has: page.locator('[data-blok-database-calendar-day][data-today]') })
+      .locator('[data-blok-database-calendar-day]').evaluateAll((cells) => cells.map((cell) => ({
+        day: cell.getAttribute('data-day') ?? '',
+        today: cell.hasAttribute('data-today'),
+      })));
+    const at = days.findIndex((cell) => cell.today);
+
+    if (at === -1) {
+      throw new Error('no today cell');
+    }
+
+    return at === days.length - 1 ? [days[at - 1].day, days[at].day] : [days[at].day, days[at + 1].day];
+  };
 
   const lasso = async (page: Page, from: { x: number; y: number }, to: { x: number; y: number }): Promise<void> => {
     await page.mouse.move(from.x, from.y);
@@ -136,10 +150,7 @@ test.describe('a lasso from the page margin', () => {
   };
 
   test('across the calendar picks every event it touches, across days, and not the block', async ({ page }) => {
-    // Today and the day after stay in today's month view only when today is not the month's last day.
-    const today = new Date();
-    const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate() === today.getDate();
-    const [first, second] = await isoDays(page, lastDay ? [-1, 0] : [0, 1]);
+    const [first, second] = await sameRowDays(page);
 
     await mount(page, blocks({ type: 'calendar' }, [first, second]));
     const events = page.locator('[data-blok-database-calendar-event]');
@@ -165,9 +176,7 @@ test.describe('a lasso from the page margin', () => {
 
   // research/30 B11: one Escape cleared the picks; a second changed nothing.
   test('one Escape clears a drag box made inside the calendar grid; a second Escape changes nothing', async ({ page }) => {
-    const today = new Date();
-    const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate() === today.getDate();
-    const [first, second] = await isoDays(page, lastDay ? [-1, 0] : [0, 1]);
+    const [first, second] = await sameRowDays(page);
 
     await mount(page, blocks({ type: 'calendar' }, [first, second]));
     const events = page.locator('[data-blok-database-calendar-event]');
@@ -199,9 +208,7 @@ test.describe('a lasso from the page margin', () => {
   });
 
   test('started on empty space inside the calendar grid, picks every event it touches, creates none, selects no text (research/23 §2c)', async ({ page }) => {
-    const today = new Date();
-    const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate() === today.getDate();
-    const [first, second] = await isoDays(page, lastDay ? [-1, 0] : [0, 1]);
+    const [first, second] = await sameRowDays(page);
 
     await mount(page, blocks({ type: 'calendar' }, [first, second]));
     const events = page.locator('[data-blok-database-calendar-event]');
@@ -240,9 +247,7 @@ test.describe('a lasso from the page margin', () => {
   // research/31 §6: with events selected, one click on an empty day cleared them; a double-click cleared them and made a page.
   for (const [name, clicks] of [['a single click', 1], ['a double-click', 2]] as const) {
     test(`${name} on an empty day clears a drag box selection${clicks === 2 ? ' and adds a row there' : ', adds nothing'}`, async ({ page }) => {
-      const today = new Date();
-      const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate() === today.getDate();
-      const [first, second] = await isoDays(page, lastDay ? [-1, 0] : [0, 1]);
+      const [first, second] = await sameRowDays(page);
 
       await mount(page, blocks({ type: 'calendar' }, [first, second]));
       const events = page.locator('[data-blok-database-calendar-event]');
@@ -369,4 +374,99 @@ test.describe('gallery: closing a peek (research/23 §8)', () => {
 
     expect(await picked(page)).toEqual([]);
   });
+});
+
+test.describe('Cmd/Ctrl+C on picked items', () => {
+  /** Records what each copy event writes; the real clipboard is not readable here. */
+  const recordCopies = async (page: Page): Promise<void> => {
+    await page.evaluate(() => {
+      const log: Array<Record<string, string>> = [];
+
+      (window as unknown as { copies: typeof log }).copies = log;
+      document.addEventListener('copy', (event) => {
+        const formats: Record<string, string> = {};
+        const data = event.clipboardData;
+
+        log.push(formats);
+        if (data !== null) {
+          const setData = data.setData.bind(data);
+
+          data.setData = (format: string, value: string): void => {
+            formats[format] = value;
+            setData(format, value);
+          };
+        }
+      }, true);
+    });
+  };
+
+  const pasteInto = async (target: Locator, data: Record<string, string>): Promise<void> => {
+    await target.evaluate((element: HTMLElement, pasteData: Record<string, string>) => {
+      element.dispatchEvent(Object.assign(new Event('paste', { bubbles: true, cancelable: true }), {
+        clipboardData: { getData: (type: string): string => pasteData[type] ?? '', types: Object.keys(pasteData) },
+      }));
+    }, data);
+  };
+
+  /** r1 gets a page body; the paragraph after the database is the paste target. */
+  const docWithBody = (view: Record<string, unknown>): OutputBlockData[] => [
+    ...blocks(view).map((block) => (block.id === 'r1' ? { ...block, content: ['b1'] } : block)),
+    { id: 'b1', type: 'paragraph', parent: 'r1', data: { text: 'Alpha body' } },
+    { id: 'target', type: 'paragraph', data: { text: '' } },
+  ];
+
+  test('a block selection made after a pick copies the selected blocks, not the picked row', async ({ page }) => {
+    await mount(page, docWithBody({ type: 'board', groupBy: 'p-stage' }));
+    await recordCopies(page);
+    await caretAbove(page);
+    await item(page, '[data-blok-database-card]', 'r1').click({ modifiers: ['Shift'] });
+    expect(await picked(page)).toEqual(['r1']);
+
+    await caretAbove(page);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[data-blok-id="p-1"]')).toHaveAttribute('data-blok-selected', 'true');
+    await page.keyboard.press('ControlOrMeta+c');
+
+    const copies = await page.evaluate(() => (window as unknown as { copies: Array<Record<string, string>> }).copies);
+    const payload = JSON.parse(copies.at(-1)?.['application/x-blok'] ?? '[]') as Array<{ id: string }>;
+
+    expect(payload.map((entry) => entry.id)).toEqual(['p-1']);
+  });
+
+  for (const { name, view, selector } of VIEWS.slice(0, 2)) {
+    test(`${name}: copies the picked row, and a paste outside the database brings back its title and body`, async ({ page }) => {
+      await mount(page, docWithBody(view));
+      await recordCopies(page);
+      await caretAbove(page);
+      await item(page, selector, 'r1').click({ modifiers: ['Shift'] });
+      expect(await picked(page)).toEqual(['r1']);
+
+      await page.keyboard.press('ControlOrMeta+c');
+
+      const copies = await page.evaluate(() => (window as unknown as { copies: Array<Record<string, string>> }).copies);
+      const formats = copies.at(-1) ?? {};
+      const payload = JSON.parse(formats['application/x-blok'] ?? '[]') as Array<{ id: string; tool: string; title?: string }>;
+
+      expect(payload.map((entry) => [entry.id, entry.tool, entry.title])).toEqual([['r1', 'database-row', 'Alpha'], ['b1', 'paragraph', undefined]]);
+      expect(formats['text/plain']).toBe('**Alpha**\n\nAlpha body');
+      expect(formats['text/html']).toContain('<p>Alpha</p>');
+
+      const target = page.locator('[data-blok-id="target"] [contenteditable="true"]');
+
+      await target.click();
+      await pasteInto(target, formats);
+
+      await expect(page.getByText('Alpha body', { exact: true }).filter({ visible: true })).toHaveCount(1);
+      const saved = await page.evaluate(async () => (await window.blokInstance?.save())?.blocks ?? []);
+      const roots = saved.filter((block) => (block.parent ?? null) === null);
+
+      expect(roots.slice(2).map((block) => [block.type, block.data.text])).toEqual([
+        ['paragraph', [{ text: 'Alpha' }]],
+        ['paragraph', [{ text: 'Alpha body' }]],
+      ]);
+
+      expect(saved.filter((block) => block.type === 'database-row' && (block.parent ?? null) === null)).toEqual([]);
+      expect(saved.filter((block) => block.type === 'database-row').map((block) => block.id)).toEqual(['r1', 'r2', 'r3']);
+    });
+  }
 });

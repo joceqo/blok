@@ -18,14 +18,24 @@ import { CELL_CODE_TAG } from '../../components/modules/paste/constants';
 import { isSafeCssColor } from '../../shared/css-color';
 import { clean, sanitizeBlocks } from '../../components/utils/sanitizer';
 import { INLINE_TEXT_SANITIZE } from '../../components/shared/inline-content-sanitize';
-import { PAGE_REFERENCE_ATTR, preservePageReferenceAnchor } from '../../shared/page-reference';
+import { PAGE_REFERENCE_ATTR, mayHoldPageReference, preservePageReferenceAnchor } from '../../shared/page-reference';
 import { resolvePresetColorVars, resolvePresetColors } from '../../components/shared/resolve-preset-colors';
 import { parseUntrustedDocument, parseUntrustedHtml } from '../../components/utils/inert-html';
 import { trimTrailingBreaks } from '../../components/utils/trailing-breaks';
 import type { TextDirection } from '../../components/utils/direction';
+import { isCellWithBlocks, type TableData } from '../../shared/table/types';
 
 /** Attribute name used to embed clipboard data on the HTML table element. */
 const DATA_ATTR = 'data-blok-table-cells';
+
+/**
+ * Marks on a whole-table copy, so a paste of the html alone keeps the layout.
+ * Each must be whitelisted on TABLE in the table's pasteConfig, or the paste
+ * sanitizer strips it before onPaste reads it.
+ */
+export const TABLE_HEADINGS_ATTR = 'data-blok-table-headings';
+export const TABLE_COL_WIDTHS_ATTR = 'data-blok-table-col-widths';
+export const TABLE_INITIAL_COL_WIDTH_ATTR = 'data-blok-table-initial-col-width';
 
 /**
  * Entry describing one cell to be serialized for the clipboard.
@@ -378,6 +388,123 @@ function resolveCellContentColors(html: string): string {
 }
 
 /**
+ * A cell block whose page references become plain links: a pasted copy must
+ * not claim the page again.
+ * @param block - a cell block as the clipboard carries it
+ */
+export const withPlainPageReferences = (block: ClipboardBlockData): ClipboardBlockData => {
+  const text = block.data.text;
+
+  return {
+    ...block,
+    data: typeof text === 'string' && mayHoldPageReference(text)
+      ? { ...block.data, text: clean(text, INLINE_TEXT_SANITIZE) }
+      : block.data,
+    ...(block.children === undefined ? {} : { children: block.children.map(withPlainPageReferences) }),
+  };
+};
+
+/**
+ * The html a copy of a whole table block writes: the same table a copy of
+ * all its cells writes, so cell lists and merges survive. It has no cell
+ * payload: a paste in a cell would then take the cells, not the block copy.
+ * @param data - the table block's saved data
+ * @param cellBlocks - a cell's blocks by id, each with its children inside it
+ * @param direction - the table's text direction
+ */
+export function tableClipboardHtml(
+  data: TableData,
+  cellBlocks: (ids: string[]) => ClipboardBlockData[],
+  direction: TextDirection = 'ltr'
+): string {
+  const entries = (Array.isArray(data.content) ? data.content : []).flatMap((row, rowIndex) =>
+    row.flatMap((cell, colIndex): CellEntry[] => {
+      if (!isCellWithBlocks(cell)) {
+        return [{ row: rowIndex, col: colIndex, blocks: [{ tool: 'paragraph', data: { text: cell } }] }];
+      }
+
+      if (cell.mergedInto !== undefined) {
+        return [];
+      }
+
+      return [{
+        row: rowIndex,
+        col: colIndex,
+        blocks: cellBlocks(cell.blocks).map(withPlainPageReferences),
+        ...(cell.color !== undefined ? { color: cell.color } : {}),
+        ...(cell.textColor !== undefined ? { textColor: cell.textColor } : {}),
+        ...(cell.placement !== undefined ? { placement: cell.placement } : {}),
+        ...((cell.colspan ?? 1) > 1 ? { colspan: cell.colspan } : {}),
+        ...((cell.rowspan ?? 1) > 1 ? { rowspan: cell.rowspan } : {}),
+      }];
+    })
+  );
+  const payload = serializeCellsToClipboard(entries);
+
+  if (data.withHeadings) {
+    payload.withHeadings = true;
+  }
+
+  if (data.withHeadingColumn) {
+    payload.withHeadingColumn = true;
+  }
+
+  if (data.colWidths?.length === payload.cols) {
+    payload.colWidths = [...data.colWidths];
+  }
+
+  const wrapper = parseUntrustedHtml(buildClipboardHtml(payload, direction));
+  const table = wrapper.querySelector('table');
+  const headings = `${data.withHeadings ? 'row ' : ''}${data.withHeadingColumn ? 'column' : ''}`.trim();
+
+  table?.removeAttribute(DATA_ATTR);
+  table?.setAttribute(TABLE_HEADINGS_ATTR, headings === '' ? 'none' : headings);
+
+  if (payload.colWidths !== undefined) {
+    table?.setAttribute(TABLE_COL_WIDTHS_ATTR, payload.colWidths.join(','));
+  }
+
+  if (typeof data.initialColWidth === 'number' && data.initialColWidth > 0) {
+    table?.setAttribute(TABLE_INITIAL_COL_WIDTH_ATTR, String(data.initialColWidth));
+  }
+
+  return wrapper.innerHTML;
+}
+
+/** The layout a whole-table copy marked on its html. */
+export interface CopiedTableLayout {
+  withHeadings: boolean;
+  withHeadingColumn: boolean;
+  colWidths?: number[];
+  initialColWidth?: number;
+}
+
+/**
+ * Read the marks {@link tableClipboardHtml} writes. Null when the table has
+ * none, so html from outside Blok keeps its own heading rules.
+ * @param table - the pasted table element
+ * @param cols - the column count of the pasted grid
+ */
+export function readCopiedTableLayout(table: Element, cols: number): CopiedTableLayout | null {
+  const headings = table.getAttribute(TABLE_HEADINGS_ATTR);
+
+  if (headings === null) {
+    return null;
+  }
+
+  const tokens = headings.split(/\s+/);
+  const colWidths = table.getAttribute(TABLE_COL_WIDTHS_ATTR)?.split(',').map(Number);
+  const initialColWidth = Number(table.getAttribute(TABLE_INITIAL_COL_WIDTH_ATTR));
+
+  return {
+    withHeadings: tokens.includes('row'),
+    withHeadingColumn: tokens.includes('column'),
+    ...(isValidColWidths(colWidths, cols) ? { colWidths } : {}),
+    ...(Number.isFinite(initialColWidth) && initialColWidth > 0 ? { initialColWidth } : {}),
+  };
+}
+
+/**
  * Build an HTML `<table>` string that carries the clipboard payload in a
  * `data-blok-table-cells` attribute.
  *
@@ -429,14 +556,16 @@ export function buildClipboardHtml(payload: TableCellsClipboard, direction: Text
  *
  * Cells are separated by tabs (`\t`), rows by newlines (`\n`).
  * Multiple blocks within a cell are joined with spaces.
- * Merge-covered positions are skipped — they are not cells.
+ * A merge-covered position writes an empty field: TSV has no spans, so
+ * dropping it would shift every later cell in the row one column left.
  */
 export function buildClipboardPlainText(payload: TableCellsClipboard): string {
   return payload.cells
     .map((row) =>
       row
-        .filter((cell) => cell.covered !== true)
-        .map((cell) => flattenClipboardBlocks(cell.blocks).map(extractBlockPlainText).join(' ')).join('\t')
+        .map((cell) => cell.covered === true
+          ? ''
+          : flattenClipboardBlocks(cell.blocks).map(extractBlockPlainText).join(' ')).join('\t')
     )
     .join('\n');
 }
@@ -872,7 +1001,20 @@ function sanitizeClipboardPayload(
     cell.blocks = cell.blocks.map(block => sanitizeClipboardBlock(block, toolSanitizeConfig));
   }
 
-  return payload;
+  if (payload.colWidths === undefined || isValidColWidths(payload.colWidths, payload.cols)) {
+    return payload;
+  }
+
+  const { colWidths: _invalid, ...rest } = payload;
+
+  return rest;
+}
+
+/** Pasted widths become the new table's pixel widths, so take only one positive number per column. */
+function isValidColWidths(colWidths: unknown, cols: number): colWidths is number[] {
+  return Array.isArray(colWidths)
+    && colWidths.length === cols
+    && colWidths.every(width => typeof width === 'number' && Number.isFinite(width) && width > 0);
 }
 
 /**

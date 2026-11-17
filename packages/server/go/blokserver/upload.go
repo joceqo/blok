@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/JackUait/blok/packages/server/go/internal/blob"
-	"github.com/JackUait/blok/packages/server/go/internal/mediatype"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/blob"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/mediatype"
 )
 
 const (
@@ -35,6 +35,7 @@ var (
 // counts the whole request body, framing included.
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	max := s.options.MaxUploadBytes
+	SetRequestBodyLimit(r.Context(), max)
 	if r.ContentLength > max {
 		writeText(w, http.StatusRequestEntityTooLarge, "file too large\n")
 		return
@@ -53,8 +54,14 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	switch {
-	case errors.Is(err, errTooLarge):
+	// tooLarge too: the multipart reader does not wrap a read error it
+	// meets between parts, and a chunked body's framing counts there.
+	case errors.Is(err, errTooLarge) || body.tooLarge:
 		writeText(w, http.StatusRequestEntityTooLarge, "file too large\n")
+		return
+	// Before the context check: the host's read deadline cancels it.
+	case body.tooSlow:
+		writeText(w, http.StatusBadRequest, "malformed upload\n")
 		return
 	case r.Context().Err() != nil:
 		return
@@ -150,6 +157,8 @@ type cappedReader struct {
 	r         io.Reader
 	remaining int64
 	tooLarge  bool
+	// tooSlow: the host ended a read under its minimum data rate.
+	tooSlow bool
 }
 
 func (c *cappedReader) Read(p []byte) (int, error) {
@@ -168,7 +177,7 @@ func (c *cappedReader) Read(p []byte) (int, error) {
 				return 0, errTooLarge
 			}
 			if err != nil {
-				return 0, err
+				return 0, c.hostError(err)
 			}
 		}
 	}
@@ -177,23 +186,49 @@ func (c *cappedReader) Read(p []byte) (int, error) {
 	}
 	n, err := c.r.Read(p)
 	c.remaining -= int64(n)
-	return n, err
+	if err != nil {
+		return n, c.hostError(err)
+	}
+	return n, nil
+}
+
+// hostError notes a host's refusal of the body. The host's cap is
+// MaxUploadBytes too, so its 413 is this one.
+func (c *cappedReader) hostError(err error) error {
+	switch {
+	case errors.Is(err, ErrRequestBodyTooLarge):
+		c.tooLarge = true
+		return errTooLarge
+	case errors.Is(err, ErrRequestBodyTooSlow):
+		c.tooSlow = true
+	}
+	return err
 }
 
 // countingReader records how far the store read, as CountingReadStream.
 type countingReader struct {
-	r   io.Reader
-	n   int64
+	r   io.ReadSeeker
+	pos int64
 	max int64
 }
 
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
-	c.n += int64(n)
-	if c.n > c.max {
-		c.max = c.n
+	c.pos += int64(n)
+	if c.pos > c.max {
+		c.max = c.pos
 	}
 	return n, err
+}
+
+// Seek keeps the spool seekable, so S3 hashes it in place. A seek is not a
+// read: only Read moves max.
+func (c *countingReader) Seek(offset int64, whence int) (int64, error) {
+	pos, err := c.r.Seek(offset, whence)
+	if err == nil {
+		c.pos = pos
+	}
+	return pos, err
 }
 
 // fileMetadata is TryGetFileMetadata: a form-data part named "file" with a

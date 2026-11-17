@@ -17,7 +17,14 @@ type routingFixture struct {
 		MethodNotAllowed []refusal  `json:"methodNotAllowed"`
 		NotFound         []request  `json:"notFound"`
 		EncodedNUL       []request  `json:"encodedNul"`
+		RawNonASCII      []string   `json:"rawNonAscii"`
 		NotRefused       []routedAs `json:"notRefused"`
+		RawNUL           []request  `json:"rawNul"`
+		UnparsedTargets  []struct {
+			Method string `json:"method"`
+			Path   string `json:"path"`
+			Status int    `json:"status"`
+		} `json:"unparsedTargets"`
 	} `json:"healthHost"`
 	CollabHost struct {
 		MethodNotAllowed []refusal `json:"methodNotAllowed"`
@@ -26,6 +33,14 @@ type routingFixture struct {
 			Path string `json:"path"`
 			Doc  string `json:"doc"`
 		} `json:"encodedSeparator"`
+		DecodedDoc []struct {
+			Path string `json:"path"`
+			Doc  string `json:"doc"`
+		} `json:"decodedDoc"`
+		UnparsedDoc []struct {
+			Path string `json:"path"`
+			Doc  string `json:"doc"`
+		} `json:"unparsedDoc"`
 	} `json:"collabHost"`
 }
 
@@ -55,7 +70,7 @@ func loadFixture(t *testing.T) routingFixture {
 	if err := json.Unmarshal(bytes, &fixture); err != nil {
 		t.Fatalf("shared routing fixture: %v", err)
 	}
-	if len(fixture.HealthHost.MatchesHealth) == 0 || len(fixture.CollabHost.EncodedSeparator) == 0 {
+	if len(fixture.HealthHost.MatchesHealth) == 0 || len(fixture.CollabHost.EncodedSeparator) == 0 || len(fixture.CollabHost.DecodedDoc) == 0 {
 		t.Fatal("shared routing fixture has empty lists")
 	}
 	return fixture
@@ -84,6 +99,8 @@ func testRouter() *Router {
 	router.Handle("/sync/{doc}/history/{lineage}", nil, MethodNotAllowed("DELETE, OPTIONS"))
 	router.Handle("/unfurl", []string{"GET", "OPTIONS"}, named("unfurl"))
 	router.Handle("/unfurl", nil, MethodNotAllowed("GET, HEAD, OPTIONS"))
+	router.Handle("/frame-check", []string{"GET", "OPTIONS"}, named("frame-check"))
+	router.Handle("/frame-check", nil, MethodNotAllowed("GET, HEAD, OPTIONS"))
 	return router
 }
 
@@ -91,6 +108,14 @@ type answer struct {
 	status int
 	header http.Header
 	body   string
+}
+
+func fixtureRequests(paths []string) []request {
+	requests := make([]request, len(paths))
+	for i, path := range paths {
+		requests[i] = request{"GET", path}
+	}
+	return requests
 }
 
 func serve(t *testing.T, router http.Handler, method, target string) answer {
@@ -118,6 +143,11 @@ func TestMatchesLikeKestrel(t *testing.T) {
 	for _, c := range fixture.CollabHost.EncodedSeparator {
 		cases = append(cases, struct{ method, target, body string }{"GET", c.Path, "state|" + c.Doc})
 	}
+	// An escape that is not valid UTF-8 stays as written, as in Kestrel.
+	// Decoded to raw bytes instead, the doc id hashes to another journal.
+	for _, c := range fixture.CollabHost.DecodedDoc {
+		cases = append(cases, struct{ method, target, body string }{"GET", c.Path, "state|" + c.Doc})
+	}
 	router := testRouter()
 	for _, c := range cases {
 		got := serve(t, router, c.method, c.target)
@@ -131,8 +161,8 @@ func TestUnmatchedPathsGetTheCatchAll(t *testing.T) {
 	fixture := loadFixture(t)
 	targets := fixture.CollabHost.NotFound
 	for _, r := range fixture.HealthHost.NotFound {
-		// testRouter serves /unfurl; the health-only host does not.
-		if r.Path != "/unfurl" {
+		// testRouter serves /unfurl and /frame-check; the health-only host does not.
+		if r.Path != "/unfurl" && r.Path != "/frame-check" {
 			targets = append(targets, r.Path)
 		}
 	}
@@ -242,9 +272,77 @@ func TestEncodedNULInThePathIsABadRequest(t *testing.T) {
 			t.Errorf("%s %s: %d %q %v", c.Method, c.Path, got.status, got.body, got.header)
 		}
 	}
+	// Kestrel refuses a raw byte of 0x80 or above anywhere in the target.
+	raw := append([]request{{"GET", "/sync/d\xff/state"}, {"GET", "/health?x=\x80"}}, fixtureRequests(fixture.HealthHost.RawNonASCII)...)
+	for _, c := range raw {
+		got := serve(t, router, c.Method, c.Path)
+		if got.status != 400 || got.body != "" || got.header.Get("Content-Length") != "0" || got.header.Get("Content-Type") != "" {
+			t.Errorf("%s %q: %d %q %v", c.Method, c.Path, got.status, got.body, got.header)
+		}
+	}
 	for _, c := range fixture.HealthHost.NotRefused {
 		if got := serve(t, router, "GET", c.Path); got.status != c.Status {
 			t.Errorf("GET %s: %d, want %d", c.Path, got.status, c.Status)
+		}
+	}
+}
+
+// serveRaw builds the request the host hands over for a target that Go's
+// url parser refuses: parsed from a stand-in, then given the target as sent.
+func serveRaw(t *testing.T, router http.Handler, method, target string) answer {
+	t.Helper()
+	request := httptest.NewRequest(method, "/stand-in", nil)
+	SetRawTarget(request, target)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	result := recorder.Result()
+	body, _ := io.ReadAll(result.Body)
+	return answer{result.StatusCode, result.Header, string(body)}
+}
+
+// A consumer may mount the handler under http.StripPrefix, which trims
+// URL.Path and URL.RawPath but leaves RequestURI as sent.
+func TestRoutesUnderStripPrefix(t *testing.T) {
+	router := http.StripPrefix("/api", testRouter())
+	for target, want := range map[string]string{
+		"/api/health":             "health|",
+		"/api/sync/u37%Ff|/state": "state|u37%Ff|",
+		"/api/sync/a%2Fb/state":   "state|a%2Fb",
+	} {
+		if got := serve(t, router, "GET", target); got.status != 200 || got.body != want {
+			t.Errorf("GET %s: %d %q, want %q", target, got.status, got.body, want)
+		}
+	}
+	for target, want := range map[string]string{
+		"/api/sync/u29%zz/state":   "state|u29%zz",
+		"/api/sync/u33\x01x/state": "state|u33\x01x",
+	} {
+		if got := serveRaw(t, router, "GET", target); got.status != 200 || got.body != want {
+			t.Errorf("GET %q: %d %q, want %q", target, got.status, got.body, want)
+		}
+	}
+}
+
+// The router reads the target as sent, so a malformed escape or a raw
+// control byte routes the way Kestrel routes it.
+func TestUnparsedTargetsRouteLikeKestrel(t *testing.T) {
+	fixture := loadFixture(t)
+	router := testRouter()
+	for _, c := range fixture.HealthHost.UnparsedTargets {
+		want := map[int]string{200: "health|", 404: "404 page not found\n"}[c.Status]
+		if got := serveRaw(t, router, c.Method, c.Path); got.status != c.Status || got.body != want {
+			t.Errorf("%s %q: %d %q, want %d %q", c.Method, c.Path, got.status, got.body, c.Status, want)
+		}
+	}
+	for _, c := range fixture.CollabHost.UnparsedDoc {
+		if got := serveRaw(t, router, "GET", c.Path); got.status != 200 || got.body != "state|"+c.Doc {
+			t.Errorf("GET %q: %d %q, want state|%q", c.Path, got.status, got.body, c.Doc)
+		}
+	}
+	for _, c := range fixture.HealthHost.RawNUL {
+		got := serveRaw(t, router, c.Method, c.Path)
+		if got.status != 400 || got.body != "" || got.header.Get("Content-Length") != "0" || got.header.Get("Connection") != "close" {
+			t.Errorf("%s %q: %d %q %v", c.Method, c.Path, got.status, got.body, got.header)
 		}
 	}
 }

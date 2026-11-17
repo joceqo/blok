@@ -9,11 +9,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/dop251/goja"
 )
 
 // Each engine counts its own calls, so a test can tell reuse from a rebuild.
 const countingScript = `
 let calls = 0;
+let open = 0;
 globalThis.blokServerInvoke = async function (operation, input) {
   calls += 1;
   switch (operation) {
@@ -29,6 +32,8 @@ globalThis.blokServerInvoke = async function (operation, input) {
     case 'awaitThenSpin': await null; for (;;) {}
     case 'recurse': { const r = (d) => d === 0 ? 0 : r(d - 1) + 1; return String(r(1000000)); }
     case 'catchRecursion': { try { const r = (d) => d === 0 ? 0 : r(d - 1) + 1; return String(r(1000000)); } catch (e) { return 'caught ' + e.name; } }
+    case 'guardedRecurse': { const r = (d) => { open += 1; try { return d === 0 ? 0 : r(d - 1) + 1; } finally { open -= 1; } }; return String(r(1000000)); }
+    case 'open': return String(open);
     case 'grow': { const kept = []; for (;;) { kept.push({ a: [1, 2, 3, 4, 5, 6, 7, 8] }); } }
     default: return 'ok';
   }
@@ -45,7 +50,7 @@ func newCountingPool(t *testing.T, size int, timeout time.Duration, budget int64
 
 func invoke(t *testing.T, p *Pool, op, input string) (string, error) {
 	t.Helper()
-	return p.Invoke(context.Background(), op, input, 0)
+	return p.Invoke(context.Background(), op, input, nil)
 }
 
 func wantKind(t *testing.T, err error, kind Kind) {
@@ -99,7 +104,7 @@ func TestKeepsServingAfterATimeoutAndReplacesTheEngine(t *testing.T) {
 
 func TestAPerCallTimeoutReplacesTheDefaultForThatCallOnly(t *testing.T) {
 	p := newCountingPool(t, 1, 200*time.Millisecond, 0)
-	got, err := p.Invoke(context.Background(), "spinFor", "600", 30*time.Second)
+	got, err := p.Invoke(context.Background(), "spinFor", "600", new(30*time.Second))
 	if err != nil || got != "ok" {
 		t.Fatalf("long call = %q, %v", got, err)
 	}
@@ -109,14 +114,14 @@ func TestAPerCallTimeoutReplacesTheDefaultForThatCallOnly(t *testing.T) {
 
 func TestAPerCallTimeoutCanBeShorterThanTheDefault(t *testing.T) {
 	p := newCountingPool(t, 1, 0, 0)
-	_, err := p.Invoke(context.Background(), "spinFor", "600", 200*time.Millisecond)
+	_, err := p.Invoke(context.Background(), "spinFor", "600", new(200*time.Millisecond))
 	wantKind(t, err, KindTimedOut)
 }
 
 func TestRefusesAPerCallTimeoutBelowTheFloor(t *testing.T) {
 	p := newCountingPool(t, 1, 0, 0)
-	for _, timeout := range []time.Duration{time.Millisecond, -time.Second} {
-		_, err := p.Invoke(context.Background(), "count", "", timeout)
+	for _, timeout := range []time.Duration{time.Millisecond, -time.Second, 0} {
+		_, err := p.Invoke(context.Background(), "count", "", &timeout)
 		var constraint *ConstraintError
 		if !errors.As(err, &constraint) || constraint.Param != "timeout" {
 			t.Fatalf("timeout %v: err = %v, want a timeout ConstraintError", timeout, err)
@@ -166,7 +171,7 @@ func TestClassifiesJavaScriptErrorsAndKeepsTheEngine(t *testing.T) {
 }
 
 func TestClassifiesTheBundlesOwnErrorsByName(t *testing.T) {
-	p, err := NewPool(Options{PoolSize: 1})
+	p, err := NewPool(Options{PoolSize: new(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,29 +183,60 @@ func TestClassifiesTheBundlesOwnErrorsByName(t *testing.T) {
 	wantKind(t, err, KindInvalidDocument)
 }
 
-// Unlike Jint's catchable RangeError, goja's overflow cannot be caught in JS.
-func TestSurvivesRunawayRecursionAndKeepsTheEngine(t *testing.T) {
+// Unlike Jint's catchable RangeError, goja's overflow cannot be caught in
+// JS, and it skips every finally on the way out, so the engine's own state
+// is left mid-call. The engine is replaced, where C# keeps its own.
+func TestSurvivesRunawayRecursionAndReplacesTheEngine(t *testing.T) {
 	p := newCountingPool(t, 1, 0, 0)
 	_, err := invoke(t, p, "recurse", "")
 	wantKind(t, err, KindUnknown)
 	_, err = invoke(t, p, "catchRecursion", "")
 	wantKind(t, err, KindUnknown)
-	wantCount(t, p, "3")
+	wantCount(t, p, "1")
 }
 
-// goja has no event loop, so a promise pending after the call never settles.
-func TestFailsAPendingPromiseAtOnceAndKeepsTheEngine(t *testing.T) {
+// The bundle's state left by an overflow shrank how deep the next document
+// could nest: 20 overflows took HTML from 1248 to 1244 levels (measured).
+func TestAnOverflowLeavesNoStateForTheNextCall(t *testing.T) {
 	p := newCountingPool(t, 1, 0, 0)
+	_, err := invoke(t, p, "guardedRecurse", "")
+	wantKind(t, err, KindUnknown)
+	open, err := invoke(t, p, "open", "")
+	if err != nil || open != "0" {
+		t.Fatalf("open = %s, %v", open, err)
+	}
+}
+
+// A promise that never settles: the caller's cancel ends the wait, as in C#
+// (JintBlokRuntimeTests.WaitsOnAPendingPromiseUntilTheCallerCancels), and the
+// engine is replaced.
+func TestWaitsOnAPendingPromiseUntilTheCallerCancels(t *testing.T) {
+	p := newCountingPool(t, 1, 5*time.Second, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := p.Invoke(ctx, "pending", "", nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the caller's context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed < 250*time.Millisecond || elapsed > 4*time.Second {
+		t.Fatalf("returned after %v, want the caller's 300ms", elapsed)
+	}
+	wantCount(t, p, "1")
+}
+
+// C# JintBlokRuntimeTests.EndsAPendingPromiseAtTheCallTimeout: with no
+// cancel the wait ends at the call timeout, and the engine is replaced, so
+// one request cannot hold an engine for good.
+func TestEndsAPendingPromiseAtTheCallTimeout(t *testing.T) {
+	p := newCountingPool(t, 1, 200*time.Millisecond, 0)
 	start := time.Now()
 	_, err := invoke(t, p, "pending", "")
-	wantKind(t, err, KindUnknown)
-	if !errors.Is(err, ErrPending) {
-		t.Fatalf("err = %v, want ErrPending inside", err)
+	wantKind(t, err, KindTimedOut)
+	if elapsed := time.Since(start); elapsed < 150*time.Millisecond || elapsed > 3*time.Second {
+		t.Fatalf("returned after %v, want the 200ms call timeout", elapsed)
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("took %v", elapsed)
-	}
-	wantCount(t, p, "2")
+	wantCount(t, p, "1")
 }
 
 func TestStopsACallThatOutgrowsItsMemoryBudget(t *testing.T) {
@@ -214,7 +250,7 @@ func TestReturnsTheCallersCancellationUnwrapped(t *testing.T) {
 	p := newCountingPool(t, 1, 30*time.Second, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	_, err := p.Invoke(ctx, "spin", "", 0)
+	_, err := p.Invoke(ctx, "spin", "", nil)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
@@ -230,7 +266,7 @@ func TestCancellationEndsTheWaitForAnEngine(t *testing.T) {
 	p := newCountingPool(t, 1, 30*time.Second, 0)
 	busy := make(chan error, 1)
 	go func() {
-		_, err := p.Invoke(context.Background(), "spinFor", "500", 0)
+		_, err := p.Invoke(context.Background(), "spinFor", "500", nil)
 		busy <- err
 	}()
 	time.Sleep(50 * time.Millisecond)
@@ -238,7 +274,7 @@ func TestCancellationEndsTheWaitForAnEngine(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
 	start := time.Now()
-	_, err := p.Invoke(ctx, "count", "", 0)
+	_, err := p.Invoke(ctx, "count", "", nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -254,7 +290,7 @@ func TestRefusesAnAlreadyCancelledContext(t *testing.T) {
 	p := newCountingPool(t, 1, 0, 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := p.Invoke(ctx, "count", "", 0); !errors.Is(err, context.Canceled) {
+	if _, err := p.Invoke(ctx, "count", "", nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	wantCount(t, p, "1")
@@ -273,7 +309,7 @@ func TestKeepsTheSlotWhenARebuildFails(t *testing.T) {
 }
 
 func TestHandlesConcurrentCallsWithoutSharingAnEngine(t *testing.T) {
-	p, err := NewPool(Options{PoolSize: 4})
+	p, err := NewPool(Options{PoolSize: new(4)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +320,7 @@ func TestHandlesConcurrentCallsWithoutSharingAnEngine(t *testing.T) {
 		wg.Go(func() {
 			text := fmt.Sprintf("paragraph number %d", i)
 			input := fmt.Sprintf(`{"blocks":[{"id":"p","type":"paragraph","data":{"text":%q}}]}`, text)
-			got, err := p.Invoke(context.Background(), "blocksToPlainText", input, 0)
+			got, err := p.Invoke(context.Background(), "blocksToPlainText", input, nil)
 			if err != nil || got != text {
 				errs <- fmt.Errorf("call %d = %q, %v", i, got, err)
 			}
@@ -303,7 +339,7 @@ func TestCallersWaitWhenEveryEngineIsBusy(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Go(func() {
-			if _, err := p.Invoke(context.Background(), "spinFor", "200", 0); err != nil {
+			if _, err := p.Invoke(context.Background(), "spinFor", "200", nil); err != nil {
 				t.Error(err)
 			}
 		})
@@ -315,25 +351,101 @@ func TestCallersWaitWhenEveryEngineIsBusy(t *testing.T) {
 	}
 }
 
-func TestConvertsADeeplyNestedOutline(t *testing.T) {
-	p, err := NewPool(Options{PoolSize: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
+func nestedOutline(levels int) string {
 	var blocks []string
-	for depth := range 120 {
+	for depth := range levels {
 		parent := "null"
 		if depth > 0 {
 			parent = fmt.Sprintf(`"n%d"`, depth-1)
 		}
 		blocks = append(blocks, fmt.Sprintf(`{"id":"n%d","parent":%s,"type":"list","data":{"style":"unordered","text":"level %d"}}`, depth, parent, depth))
 	}
-	input := `{"blocks":[` + strings.Join(blocks, ",") + `]}`
+	return `{"blocks":[` + strings.Join(blocks, ",") + `]}`
+}
+
+func TestConvertsADeeplyNestedOutline(t *testing.T) {
+	p, err := NewPool(Options{PoolSize: new(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := nestedOutline(120)
 	for _, op := range []string{"blocksToPlainText", "blocksToMarkdown", "blocksToHtml"} {
-		got, err := p.Invoke(context.Background(), op, input, time.Minute)
+		got, err := p.Invoke(context.Background(), op, input, new(time.Minute))
 		if err != nil || !strings.Contains(got, "level 119") {
 			t.Fatalf("%s: err = %v, has level 119 = %v", op, err, strings.Contains(got, "level 119"))
 		}
+	}
+}
+
+// C# JintBlokRuntimeTests.ConvertsTheSameDepthWhateverTheCallerHasSpentOfItsStack:
+// a 1000-level outline converts to HTML.
+func TestConvertsTheSameDepthWhateverTheCallerHasSpentOfItsStack(t *testing.T) {
+	p, err := NewPool(Options{PoolSize: new(1), Timeout: new(2 * time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Invoke(context.Background(), "blocksToHtml", nestedOutline(1000), nil)
+	if err != nil || !strings.Contains(got, "level 999") {
+		t.Fatalf("err = %v, has level 999 = %v", err, strings.Contains(got, "level 999"))
+	}
+}
+
+// C# converts 2380 outline levels to HTML and stops at 2400 on its
+// allocation budget (measured); Go's frame cap should reach as far.
+func TestConvertsAsManyOutlineLevelsToHTMLAsCSharp(t *testing.T) {
+	if testing.Short() || raceEnabled {
+		t.Skip("slow")
+	}
+	p, err := NewPool(Options{PoolSize: new(1), Timeout: new(2 * time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Invoke(context.Background(), "blocksToHtml", nestedOutline(2380), nil)
+	if err != nil || !strings.Contains(got, "level 2379") {
+		t.Fatalf("err = %v, has level 2379 = %v", err, strings.Contains(got, "level 2379"))
+	}
+}
+
+// C# converts 1454 levels to Markdown and, once its process is warm, 11049
+// to plain text at its default budget (6750 on a cold first call; measured). The readers spend different frames a level, so
+// Go sets its frame cap per reader.
+func TestConvertsAsManyOutlineLevelsAsCSharpForEachReader(t *testing.T) {
+	if testing.Short() || raceEnabled {
+		t.Skip("slow")
+	}
+	p, err := NewPool(Options{PoolSize: new(1), Timeout: new(2 * time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		op     string
+		levels int
+	}{{"blocksToMarkdown", 1454}, {"blocksToPlainText", 11049}, {"blocksToPlainTextWithReport", 11049}, {"blocksToHtml", 2380}} {
+		want := fmt.Sprintf("level %d", c.levels-1)
+		got, err := p.Invoke(context.Background(), c.op, nestedOutline(c.levels), nil)
+		if err != nil || !strings.Contains(got, want) {
+			t.Errorf("%s %d levels: err = %v, has %q = %v", c.op, c.levels, err, want, strings.Contains(got, want))
+		}
+	}
+}
+
+// Raising one reader's cap must not leave it raised for the next call on the
+// same engine: HTML still stops where its own cap is.
+func TestResetsTheFrameCapForEachCall(t *testing.T) {
+	if testing.Short() || raceEnabled {
+		t.Skip("slow")
+	}
+	p, err := NewPool(Options{PoolSize: new(1), Timeout: new(2 * time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Invoke(context.Background(), "blocksToPlainText", nestedOutline(100), nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Invoke(context.Background(), "blocksToHtml", nestedOutline(4000), nil)
+	var overflow *goja.StackOverflowError
+	if !errors.As(err, &overflow) {
+		t.Fatalf("err = %v, want the HTML frame cap", err)
 	}
 }
 
@@ -343,7 +455,7 @@ func TestReportsALoadThatRunsPastTheTimeout(t *testing.T) {
 	if !errors.As(err, &startup) || startup.Cause != StartupTimedOut {
 		t.Fatalf("err = %v, want a timed-out StartupError", err)
 	}
-	if !strings.Contains(startup.Error(), "200ms") {
+	if !strings.Contains(startup.Error(), "200ms") || !strings.Contains(startup.Error(), "timeout") {
 		t.Fatalf("message %q does not name the timeout", startup.Error())
 	}
 }
@@ -354,7 +466,9 @@ func TestReportsALoadThatOutgrowsTheBudget(t *testing.T) {
 	if !errors.As(err, &startup) || startup.Cause != StartupOverBudget {
 		t.Fatalf("err = %v, want an over-budget StartupError", err)
 	}
-	if !strings.Contains(startup.Error(), "1048576-byte") {
+	// C# says "allocation budget"; Go's budget is live heap, so it says so.
+	if !strings.Contains(startup.Error(), "grew the live heap past the 1048576-byte memory budget") ||
+		!strings.Contains(startup.Error(), "(1 GiB)") || strings.Contains(startup.Error(), "allocation") {
 		t.Fatalf("message %q does not name the budget", startup.Error())
 	}
 }
@@ -377,11 +491,14 @@ func TestRefusesLimitsBelowTheirFloors(t *testing.T) {
 		options Options
 		param   string
 	}{
-		{Options{MemoryBudget: 1024}, "MemoryBudget"},
-		{Options{MemoryBudget: -1}, "MemoryBudget"},
-		{Options{Timeout: time.Millisecond}, "Timeout"},
-		{Options{Timeout: -time.Second}, "Timeout"},
-		{Options{PoolSize: -1}, "PoolSize"},
+		{Options{MemoryBudget: new(int64(1024))}, "MemoryBudget"},
+		{Options{MemoryBudget: new(int64(-1))}, "MemoryBudget"},
+		{Options{MemoryBudget: new(int64(0))}, "MemoryBudget"},
+		{Options{Timeout: new(time.Millisecond)}, "Timeout"},
+		{Options{Timeout: new(-time.Second)}, "Timeout"},
+		{Options{Timeout: new(time.Duration(0))}, "Timeout"},
+		{Options{PoolSize: new(-1)}, "PoolSize"},
+		{Options{PoolSize: new(0)}, "PoolSize"},
 	}
 	for _, c := range cases {
 		_, err := NewPool(c.options)
@@ -393,7 +510,7 @@ func TestRefusesLimitsBelowTheirFloors(t *testing.T) {
 }
 
 func TestLoadsAtTheFloors(t *testing.T) {
-	if _, err := NewPool(Options{PoolSize: 1, MemoryBudget: MinimumMemoryBudget, Timeout: 30 * time.Second}); err != nil {
+	if _, err := NewPool(Options{PoolSize: new(1), MemoryBudget: new(int64(MinimumMemoryBudget)), Timeout: new(30 * time.Second)}); err != nil {
 		t.Fatalf("NewPool at the budget floor: %v", err)
 	}
 }
@@ -408,5 +525,69 @@ func TestTakesTheDefaultsForZeroOptions(t *testing.T) {
 	}
 	if want := max(1, min(runtime.NumCPU(), 4)); cap(p.engines) != want || len(p.engines) != want {
 		t.Fatalf("pool holds %d of %d engines, want %d", len(p.engines), cap(p.engines), want)
+	}
+}
+
+// C# JintBlokRuntimeTests.ReplacesAnEngineAfterCancellation: the call waits
+// on the pending promise until the caller cancels, and the next call is
+// served.
+func TestReplacesAnEngineAfterCancellation(t *testing.T) {
+	p, err := newPoolFromSource(`globalThis.blokServerInvoke = async (operation) => {
+  if (operation === 'wait') return await new Promise(() => {});
+  return 'ok';
+};`, 1, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err = p.Invoke(cancelled, "wait", "{}", nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the caller's context.DeadlineExceeded", err)
+	}
+	ready, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	if output, err := p.Invoke(ready, "ready", "{}", nil); err != nil || output != "ok" {
+		t.Fatalf("ready = %q, %v", output, err)
+	}
+}
+
+// C#'s ArgumentOutOfRangeException text, word for word, as
+// BlokRuntimeStartupTests.RefusesALimitUnderItsFloorWithThisText pins it.
+func TestRefusalsCarryDotnetsText(t *testing.T) {
+	ms := func(f float64) *time.Duration { d := time.Duration(f * float64(time.Millisecond)); return &d }
+	cases := []struct {
+		entry   string
+		options Options
+		call    *time.Duration
+		want    string
+	}{
+		{"create", Options{PoolSize: new(0)}, nil, "poolSize ('0') must be greater than or equal to '1'. (Parameter 'poolSize')\nActual value was 0."},
+		{"create", Options{PoolSize: new(-1)}, nil, "poolSize ('-1') must be greater than or equal to '1'. (Parameter 'poolSize')\nActual value was -1."},
+		{"create", Options{Timeout: ms(0)}, nil, "timeout ('00:00:00') must be greater than or equal to '00:00:00.1000000'. (Parameter 'timeout')\nActual value was 00:00:00."},
+		{"create", Options{Timeout: ms(50)}, nil, "timeout ('00:00:00.0500000') must be greater than or equal to '00:00:00.1000000'. (Parameter 'timeout')\nActual value was 00:00:00.0500000."},
+		{"create", Options{Timeout: ms(-1000)}, nil, "timeout ('-00:00:01') must be greater than or equal to '00:00:00.1000000'. (Parameter 'timeout')\nActual value was -00:00:01."},
+		{"create", Options{Timeout: ms(-90061001.5)}, nil, "timeout ('-1.01:01:01.0015000') must be greater than or equal to '00:00:00.1000000'. (Parameter 'timeout')\nActual value was -1.01:01:01.0015000."},
+		{"create", Options{MemoryBudget: new(int64(0))}, nil, "allocationBudgetBytes ('0') must be greater than or equal to '8388608'. (Parameter 'allocationBudgetBytes')\nActual value was 0."},
+		{"create", Options{MemoryBudget: new(int64(-1))}, nil, "allocationBudgetBytes ('-1') must be greater than or equal to '8388608'. (Parameter 'allocationBudgetBytes')\nActual value was -1."},
+		{"invoke", Options{}, ms(0), "timeout ('00:00:00') must be greater than or equal to '00:00:00.1000000'. (Parameter 'timeout')\nActual value was 00:00:00."},
+		{"invoke", Options{}, ms(99.9999), "timeout ('00:00:00.0999999') must be greater than or equal to '00:00:00.1000000'. (Parameter 'timeout')\nActual value was 00:00:00.0999999."},
+	}
+	var pool *Pool
+	for _, c := range cases {
+		var err error
+		if c.entry == "invoke" {
+			if pool == nil {
+				if pool, err = NewPool(Options{PoolSize: new(1)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err = pool.Invoke(context.Background(), "version", "{}", c.call)
+		} else {
+			_, err = NewPool(c.options)
+		}
+		var constraint *ConstraintError
+		if !errors.As(err, &constraint) || err.Error() != c.want {
+			t.Errorf("%s %+v %v:\n got %v\nwant %s", c.entry, c.options, c.call, err, c.want)
+		}
 	}
 }

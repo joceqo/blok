@@ -2,12 +2,14 @@ import type { CollabSocketFactory } from '../components/modules/collaboration/ty
 import type { AgentActor } from '../../types/agent';
 import type { AgentPorts } from '../shared/agent/types';
 import { createHeadlessPorts } from '../view/agent-runtime';
+import { mcpContractsFor } from '../view/mcp-contracts';
 
 import { agentPresenceName } from './actor';
+import { contractFlagsOf } from './contract-flags';
 import { createTicketProvider } from './auth/tickets';
-import { buildMcpContracts } from './contract';
 import { createToolDispatcher } from './dispatcher';
 import type { Caller, DispatcherDeps } from './dispatcher';
+import { prepareHandleStore } from './handle-store-files';
 import { HandleRegistry } from './handles';
 import { createOpenLive } from './live/open-live';
 import { createOpener, createSource } from './opener';
@@ -18,6 +20,7 @@ import { mcpInstructions } from './instructions';
 import type { Dispatch } from './sdk-server';
 import type { HandleSession } from './session';
 import { listMcpTools } from './tools';
+import { SharedHandles } from './shared-handles';
 import { createUploaderService } from './uploads';
 import type { McpTool } from './tools';
 
@@ -26,6 +29,7 @@ export interface AssembledMcp {
   /** Sent on initialize; built from the contract tools/list renders. */
   instructions: string;
   dispatch: Dispatch;
+  /** This process's handles: all of them, or with a handleStore only the live ones. */
   handles: HandleRegistry<HandleSession>;
   stop(): Promise<void>;
 }
@@ -40,7 +44,7 @@ export interface AssembleDeps {
 
 // Above the slowest bounded open: 10 s authorize webhook + 30 s endpoint load (live: 10 s + 10 s ticket
 // + 15 s sync). A user --authorize module has no timeout, so stop gives up waiting here.
-const STOP_DRAIN_MS = 45_000;
+export const STOP_DRAIN_MS = 45_000;
 
 // Work in flight can add more promises, so it looks again until nothing new is left.
 const drain = async (sets: Set<Promise<unknown>>[], seen = new Set<Promise<unknown>>()): Promise<void> => {
@@ -55,21 +59,13 @@ const drain = async (sets: Set<Promise<unknown>>[], seen = new Set<Promise<unkno
 };
 
 export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): AssembledMcp => {
+  // Callers check the options first, so a refused start makes no --handle-store directory.
+  prepareHandleStore(options.handleStore);
   const handleIdleMs = options.handleIdleMs ?? DEFAULTS.handleIdleMs;
   const pageMap = (options.pageTitles ?? DEFAULTS.pageTitles) === 'page-map';
   const source = createSource(options.source);
-  // Stored saves the new document through the source; live joins its room once (opener.createPage).
   const createsPages = pageMap && (options.sync !== undefined || source !== null);
-  const contracts = buildMcpContracts({
-    manifest: options.manifest,
-    overrides: options.overrides,
-    pageTitles: options.pageTitles ?? DEFAULTS.pageTitles,
-    createsPages,
-    richTextFields: options.richTextFields,
-    versionHistory: options.sync !== undefined,
-    uploadsFiles: options.uploads !== undefined,
-    comments: options.comments !== false,
-  });
+  const contracts = mcpContractsFor(contractFlagsOf(options));
   const uploader = options.uploads === undefined ? undefined : createUploaderService(options.uploads);
   // page.rename / page.setIcon close their page session without waiting, so stop waits for those closes.
   const pageCloses = new Set<Promise<unknown>>();
@@ -78,10 +74,16 @@ export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): A
     void closing.catch(() => undefined).finally(() => pageCloses.delete(closing));
   };
   // portsFor needs the opener and the opener needs portsFor: bind the open late.
-  const late: { open: DispatcherDeps['open'] | null; createPage: ((caller: Caller) => Promise<{ pageId: string }>) | null } = {
+  const late: { open: DispatcherDeps['open'] | null; createPage: ((caller: Caller, parentDocumentId: string) => Promise<{ pageId: string }>) | null } = {
     open: null, createPage: null,
   };
-  const portsFor = (caller: Caller, _actor?: AgentActor, isOpenDocument?: (pageId: string) => Promise<boolean>): AgentPorts => createHeadlessPorts({
+  const portsFor = (
+    caller: Caller,
+    _actor?: AgentActor,
+    isOpenDocument?: (pageId: string) => Promise<boolean>,
+    unconfirmed?: () => void,
+    documentId = '',
+  ): AgentPorts => createHeadlessPorts({
     sanitizeFor: (type) => contracts.runtimes.get(type)?.sanitize,
     richTextFieldsFor: contracts.richTextFieldsFor,
     ...(pageMap && {
@@ -96,6 +98,7 @@ export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): A
         caller,
         isOpenDocument,
         track: trackPageClose,
+        unconfirmed,
       }),
     }),
     ...(createsPages && {
@@ -104,7 +107,7 @@ export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): A
           throw new Error('blok-mcp: the opener is not ready');
         }
 
-        return late.createPage(caller);
+        return late.createPage(caller, documentId);
       },
     }),
   });
@@ -155,9 +158,17 @@ export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): A
 
   sweeper.unref();
 
+  const table = options.handleStore === undefined ? handles : new SharedHandles({
+    local: handles,
+    store: options.handleStore,
+    idleMs: handleIdleMs,
+    maxPerPrincipal: options.maxHandlesPerPrincipal ?? DEFAULTS.maxHandlesPerPrincipal,
+    contractRevision: contracts.stored.revision,
+    restore: opener.restore,
+  });
   const authorize = options.authorize;
   const dispatch = createToolDispatcher({
-    handles,
+    handles: table,
     open: deps.open ?? opener.open,
     list: deps.list ?? opener.list,
     stillAllowed: async (caller, documentId, write) =>
@@ -165,15 +176,14 @@ export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): A
     handleIdleMs,
   });
   const state: { stopping?: Promise<void> } = {};
-  // An open that lands after stop closes its session in the dispatcher, so stop must wait for it.
-  const opens = new Set<Promise<unknown>>();
+  // Stop waits for every call, so its answer goes out before the transport closes.
+  // An open that lands after stop also closes its session in the dispatcher.
+  const calls = new Set<Promise<unknown>>();
   const tracked: Dispatch = (name, args, caller, dispatchOptions) => {
     const outcome = dispatch(name, args, caller, dispatchOptions);
 
-    if (name === 'blok_open') {
-      opens.add(outcome);
-      void outcome.catch(() => undefined).finally(() => opens.delete(outcome));
-    }
+    calls.add(outcome);
+    void outcome.catch(() => undefined).finally(() => calls.delete(outcome));
 
     return outcome;
   };
@@ -192,14 +202,14 @@ export const assembleMcp = (options: BlokMcpOptions, deps: AssembleDeps = {}): A
         });
         const work = (async () => {
           await Promise.all([
-            handles.closeAll(async session => {
+            table.closeAll(async session => {
               await session.close('closed');
             }),
             Promise.allSettled([...sweeps]),
-            drain([opens, pageCloses]),
+            drain([calls, pageCloses]),
           ]);
           // An execute that closeAll waited for may have closed a page session after the first drain.
-          await drain([opens, pageCloses]);
+          await drain([calls, pageCloses]);
         })();
 
         try {

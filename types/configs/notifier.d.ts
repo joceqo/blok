@@ -61,9 +61,21 @@ export interface NotifierOptions {
   actions?: NotifierAction[];
 
   /**
+   * With `actions`: draws the toast as one line, the message then the actions,
+   * with no close button. It expires after `time` like a toast without actions.
+   * Hover or focus holds it; leaving starts the full time again.
+   */
+  compact?: boolean;
+
+  /**
    * Accessible label of the close button shown with `actions`.
    */
   dismissText?: string;
+
+  /**
+   * Label of the "close all" button that shows over a deck of three or more cards.
+   */
+  dismissAllText?: string;
 
   /**
    * A muted second line under the message. Plain text.

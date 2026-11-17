@@ -5,7 +5,7 @@ import { show as showTooltip, showReadout, hide as hideTooltip } from '../../com
 import { getElementDirection } from '../../components/utils/direction';
 
 import { inlineAxis, measureLastColumnWidth, measureLastRowHeight, scrollToInlineEnd } from './table-direction';
-import { AUTO_SCROLL_GAIN_PER_SECOND, AUTO_SCROLL_VIEWPORT_BAND, verticalPort } from './table-scroll-port';
+import { AUTO_SCROLL_GAIN_PER_SECOND, AUTO_SCROLL_VIEWPORT_BAND, COLUMN_HOLD_FIRST_STEP_MS, COLUMN_HOLD_STEP_MS, verticalPort } from './table-scroll-port';
 import type { InlineAxis } from './table-direction';
 
 const CORNER_DRAG_ATTR = 'data-blok-table-corner-drag';
@@ -100,8 +100,9 @@ interface DragState {
   autoScrollFrame: number | null;
   /** Timestamp of the previous auto-scroll frame; 0 before the first one. */
   autoScrollAt: number;
-  /** Growth earned from the pointer but not yet spent on a whole row/column. */
-  pendingX: number;
+  /** When a held column drag takes its next step; 0 while not held. */
+  nextColumnAt: number;
+  /** Growth earned from the pointer but not yet spent on a whole row. */
   pendingY: number;
   /**
    * Which way the page auto-scroll is running. Sticky on purpose: its own reveal
@@ -290,7 +291,7 @@ export class TableCornerDrag {
       pointerY: e.clientY,
       autoScrollFrame: null,
       autoScrollAt: 0,
-      pendingX: 0,
+      nextColumnAt: 0,
       pendingY: 0,
       verticalArm: 'none',
     };
@@ -389,7 +390,7 @@ export class TableCornerDrag {
       return;
     }
 
-    const edge = this.scrollContainer ? state.axis.end(this.scrollContainer.getBoundingClientRect()) : Infinity;
+    const edge = this.scrollContainer ? this.columnEdge(this.scrollContainer, state.axis) : Infinity;
 
     if (nextX <= edge) {
       state.retreatPeak = null;
@@ -436,7 +437,7 @@ export class TableCornerDrag {
       return state.targetWidth + nextX - previousX;
     }
 
-    const edge = state.axis.end(this.scrollContainer.getBoundingClientRect());
+    const edge = this.columnEdge(this.scrollContainer, state.axis);
     const outward = Math.max(nextX, edge) - Math.max(previousX, edge);
     const inward = Math.min(nextX, edge) - Math.min(previousX, edge);
 
@@ -490,7 +491,28 @@ export class TableCornerDrag {
   }
 
   private shouldAutoScroll(): boolean {
-    return this.shouldAutoScrollRight() || this.verticalAutoScroll() !== 'none';
+    return this.shouldAutoScrollRight() || this.overshootLeft() > 0 || this.verticalAutoScroll() !== 'none';
+  }
+
+  /**
+   * How far into the screen's inline-start band the pointer is held while the
+   * table still reaches past it. Held growth has no limit, so pulling back must
+   * not stop where the screen ends.
+   */
+  private overshootLeft(): number {
+    const state = this.dragState;
+
+    if (state === null || !state.didDrag) {
+      return 0;
+    }
+    const band = state.axis.start(verticalPort(this.gridEl)) + AUTO_SCROLL_VIEWPORT_BAND;
+
+    // Asked last: whether the last column may go costs a pass over its cells.
+    if (state.pointerX >= band || state.axis.end(this.gridEl.getBoundingClientRect()) <= band || !this.canRemoveLastColumn()) {
+      return 0;
+    }
+
+    return band - state.pointerX;
   }
 
   private shouldAutoScrollRight(): boolean {
@@ -504,22 +526,20 @@ export class TableCornerDrag {
       return false;
     }
 
-    return this.dragState.pointerX > this.dragState.axis.end(sc.getBoundingClientRect()) + AUTO_SCROLL_OVERSHOOT;
+    return this.dragState.pointerX > this.columnEdge(sc, this.dragState.axis) + AUTO_SCROLL_OVERSHOOT;
   }
 
   private shouldAutoScrollDown(): boolean {
     return this.verticalAutoScroll() === 'down';
   }
 
-  /** How far past each trigger edge the pointer is being held, in px. */
-  private overshootRight(): number {
-    const sc = this.scrollContainer;
-
-    if (sc === null || this.dragState === null) {
-      return 0;
-    }
-
-    return Math.max(0, this.dragState.pointerX - this.dragState.axis.end(sc.getBoundingClientRect()));
+  /**
+   * Where columns start auto-growing: the container's end, but never closer to
+   * the screen edge than the band. In full screen the container runs to the
+   * window edge, so without the band there is no room to hold the pointer past it.
+   */
+  private columnEdge(sc: HTMLElement, axis: InlineAxis): number {
+    return Math.min(axis.end(sc.getBoundingClientRect()), axis.end(verticalPort(this.gridEl)) - AUTO_SCROLL_VIEWPORT_BAND);
   }
 
   private overshootDown(): number {
@@ -620,9 +640,32 @@ export class TableCornerDrag {
     }
 
     state.autoScrollAt = 0;
-    state.pendingX = 0;
+    state.nextColumnAt = 0;
     state.pendingY = 0;
     state.verticalArm = 'none';
+  }
+
+  /** Held columns go at one fixed pace both ways, after a short first wait. */
+  private isColumnStepDue(timestamp: number): boolean {
+    const state = this.dragState;
+
+    if (state === null) {
+      return false;
+    }
+    // The first wait keeps a drag released just past the edge from adding.
+    if (state.nextColumnAt === 0) {
+      state.nextColumnAt = timestamp + COLUMN_HOLD_FIRST_STEP_MS;
+    }
+    if (timestamp < state.nextColumnAt) {
+      return false;
+    }
+    // From the due time, so frame lag does not slow the pace; after a stall, from now, so it does not burst.
+    state.nextColumnAt += COLUMN_HOLD_STEP_MS;
+    if (state.nextColumnAt <= timestamp) {
+      state.nextColumnAt = timestamp + COLUMN_HOLD_STEP_MS;
+    }
+
+    return true;
   }
 
   private autoScrollTick(timestamp: number): void {
@@ -635,10 +678,11 @@ export class TableCornerDrag {
     state.autoScrollFrame = null;
 
     const right = this.shouldAutoScrollRight();
+    const left = this.overshootLeft();
     const down = this.shouldAutoScrollDown();
     const up = this.shouldAutoScrollUp();
 
-    if (!right && !down && !up) {
+    if (!right && left === 0 && !down && !up) {
       return;
     }
 
@@ -651,19 +695,14 @@ export class TableCornerDrag {
 
     state.autoScrollAt = timestamp;
 
-    if (right) {
-      state.pendingX += this.overshootRight() * AUTO_SCROLL_GAIN_PER_SECOND * elapsed;
-
+    if ((right || left > 0) && this.isColumnStepDue(timestamp)) {
       const rect = this.gridEl.getBoundingClientRect();
-      const step = this.measureLastColumnWidth(rect, state.axis);
+      // Any target past the width appends exactly one column; one whole last column short drops exactly that one.
+      const width = right ? rect.width + 1 : rect.width - this.measureLastColumnWidth(rect, state.axis);
 
-      if (step > 0 && state.pendingX >= step) {
-        state.pendingX -= step;
-        // Any target past the width appends exactly one column, then settles.
-        this.resizeToCorner(rect.width + 1, rect.bottom);
-        // The pointer asked for the column the meter just laid down.
-        state.targetWidth += this.gridEl.getBoundingClientRect().width - rect.width;
-      }
+      this.resizeToCorner(width, rect.bottom);
+      // The pointer asked for the column the hold just laid down or took away.
+      state.targetWidth += this.gridEl.getBoundingClientRect().width - rect.width;
     }
 
     if (down || up) {

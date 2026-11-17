@@ -7,10 +7,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/JackUait/blok/packages/server/go/internal/collab/collabtest"
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
-	"github.com/JackUait/blok/packages/server/go/internal/jsruntime"
-	"github.com/JackUait/blok/packages/server/go/internal/yjs"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/collabtest"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsruntime"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/yjs"
 )
 
 var (
@@ -20,7 +20,7 @@ var (
 )
 
 func runtimeReader(t *testing.T) HTMLReader {
-	poolOnce.Do(func() { sharedPool, poolErr = jsruntime.NewPool(jsruntime.Options{PoolSize: 1}) })
+	poolOnce.Do(func() { sharedPool, poolErr = jsruntime.NewPool(jsruntime.Options{PoolSize: new(1)}) })
 	if poolErr != nil {
 		t.Fatal(poolErr)
 	}
@@ -45,7 +45,7 @@ func converting(t *testing.T, blocks []*jsjson.Node) *RichTextInput {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read, err := runtimeReader(t).Read(context.Background(), found, 0)
+	read, err := runtimeReader(t).Read(context.Background(), found, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestSeedingThePageExportsTheCanonicalPage(t *testing.T) {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, want)
 		}
 	}
-	if pages != 7 {
+	if pages != 13 {
 		t.Fatalf("%d page cases", pages)
 	}
 }

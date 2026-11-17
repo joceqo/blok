@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/ticket"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/ticket"
 )
 
 // Captured from TicketVerifier and BlokTicket by TicketFixtureTests.
@@ -41,7 +41,7 @@ type fixture struct {
 		User   string  `json:"user"`
 		Doc    *string `json:"doc"`
 		Write  bool    `json:"write"`
-		TTL    int64   `json:"ttl"`
+		TTL    *int64  `json:"ttl"`
 		Answer answer  `json:"answer"`
 	} `json:"mints"`
 }
@@ -94,11 +94,6 @@ func TestMintMatchesTheCSharpFixture(t *testing.T) {
 	f := load(t)
 	now := time.Unix(f.Now, 0)
 	for _, c := range f.Mints {
-		// Go has no unset field: a zero TTL means the 300-second default,
-		// where C# refuses an explicit 0.
-		if c.TTL == 0 {
-			continue
-		}
 		token, err := Mint(c.Secret, Claims{User: c.User, Doc: c.Doc, Write: c.Write, TTLSeconds: c.TTL}, now)
 		if (err != nil) != (c.Answer.Throws != "") || token != c.Answer.Token {
 			t.Errorf("%q: %q %v, want %+v", c.User, token, err, c.Answer)
@@ -106,7 +101,7 @@ func TestMintMatchesTheCSharpFixture(t *testing.T) {
 	}
 }
 
-func TestMintZeroTTLUsesTheDefault(t *testing.T) {
+func TestMintUnsetTTLUsesTheDefault(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	token, err := Mint("s3cret-value-at-least-32-chars-long!", Claims{User: "u"}, now)
 	if err != nil {
@@ -118,8 +113,21 @@ func TestMintZeroTTLUsesTheDefault(t *testing.T) {
 	}
 }
 
+// C# BlokTicket.Create throws ArgumentOutOfRangeException on an explicit 0.
+func TestMintRefusesAZeroTTL(t *testing.T) {
+	zero := int64(0)
+	if _, err := Mint("s3cret-value-at-least-32-chars-long!", Claims{User: "u", TTLSeconds: &zero}, time.Now()); err == nil {
+		t.Fatal("minted a pass that lives 0 seconds")
+	}
+}
+
+// C# refuses a lone surrogate with this text; Rust says the same.
 func TestMintRefusesInvalidUTF8(t *testing.T) {
-	if _, err := Mint("s3cret-value-at-least-32-chars-long!", Claims{User: "\xff"}, time.Now()); err == nil {
-		t.Fatal("minted a pass for invalid UTF-8")
+	doc := "\xed\xa0\x80"
+	for _, claims := range []Claims{{User: "\xff"}, {User: "u", Doc: &doc}} {
+		_, err := Mint("s3cret-value-at-least-32-chars-long!", claims, time.Now())
+		if err == nil || err.Error() != "user and doc must be well-formed UTF-16" {
+			t.Fatalf("%+v: %v", claims, err)
+		}
 	}
 }

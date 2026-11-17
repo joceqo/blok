@@ -13,13 +13,13 @@
  * the `src/components/utils` barrel, editor modules, or tool classes.
  */
 import { isSafeCssColor } from '../shared/css-color';
-import { IFRAME_SANDBOX } from '../shared/embed-frame';
+import { GENERIC_IFRAME_SANDBOX, registryIframeSandbox } from '../shared/embed-frame';
 import { EMBED_SERVICES, matchEmbedService } from '../shared/embed-registry';
 import { databaseRowTitle, inRowOrder, isTemplateRow, titlePropertyIdOf } from '../shared/database-rows';
 import { normalizeHeadingAnchor } from '../shared/heading-anchor';
 import { readVariants } from '../shared/read-variants';
 import { CALLOUT_CHILDREN_CLASSES } from '../shared/tool-classes/callout';
-import { CODE_AREA_CLASSES, CODE_CAPTIONED_AREA_CLASSES, CODE_FILENAME_CLASSES, CODE_HEADER_CLASSES } from '../shared/tool-classes/code';
+import { CODE_AREA_CLASSES, CODE_CAPTIONED_AREA_CLASSES, CODE_CARD_CLASSES, CODE_FILENAME_CLASSES, CODE_HEADER_CLASSES } from '../shared/tool-classes/code';
 import { DIVIDER_RULE_CLASSES } from '../shared/tool-classes/divider';
 import {
   LIST_CHECKBOX_CLASSES,
@@ -65,6 +65,14 @@ export interface EmitterEnv {
    * to an unsafe scheme.
    */
   url(name: 'href' | 'src', value: unknown, blockType: string): string;
+  /**
+   * Like {@link EmitterEnv.url} for an image's ` src`, but it also keeps
+   * data:image/svg+xml, which an <img> draws without running its script.
+   * Only for `<img>`: never a srcset, a frame, a video or a link.
+   */
+  imageSrc(value: unknown, blockType: string): string;
+  /** Like {@link EmitterEnv.url} for an iframe src, but empty unless the result is absolute https. */
+  frameSrc(value: unknown, blockType: string): string;
   /**
    * Build a page or page-link href from `pageHref`, gated like
    * {@link EmitterEnv.url}. Empty for an absent callback, invalid id or unsafe URL.
@@ -499,7 +507,7 @@ const emitPage = (block: ViewBlock, env: EmitterEnv): string => {
   const allowed = info !== null && info !== undefined && info.access !== 'none';
   const icon = allowed && isRecord(info.icon) ? info.icon : null;
   const emoji = icon?.type === 'emoji' ? str(icon, 'value') : '';
-  const src = icon?.type === 'image' ? env.url('src', icon.url, block.type) : '';
+  const src = icon?.type === 'image' ? env.imageSrc(icon.url, block.type) : '';
   const pageFallback = emoji === '' ? PAGE_FALLBACK_ICON.trim() : env.escape(emoji);
   const fallback = info?.access === 'none' ? PAGE_LOCK_ICON.trim() : pageFallback;
   const glyph = src === '' ? fallback : `<img${src} alt="">`;
@@ -605,10 +613,10 @@ export const builtinEmitters: Record<string, Emitter> = {
     const inner = `<code${languageAttr}>${env.escape(block.data.code)}</code>`;
 
     /**
-     * Under parity the block needs its own wrapper: the editor's box (border,
-     * radius, background, overflow clipping) lives on a container AROUND the
-     * code area, so collapsing both onto the `<pre>` would mix the box with the
-     * text padding.
+     * Under parity the block root holds a card, as in the editor: the box
+     * (border, radius, background, overflow clipping) is one level down because
+     * the editor's tab sits on the card from outside it. Collapsing the box onto
+     * the `<pre>` would mix it with the text padding.
      */
     const filename = str(block.data, 'filename');
     const hasFilename = filename.trim() !== '';
@@ -619,7 +627,7 @@ export const builtinEmitters: Record<string, Emitter> = {
         : '';
 
       return trail(
-        `<div${env.rootAttrs(block)}>${header}<pre${env.classList(hasFilename ? [...CODE_AREA_CLASSES, ...CODE_CAPTIONED_AREA_CLASSES] : CODE_AREA_CLASSES)}${env.ltrAttr}>${inner}</pre></div>`,
+        `<div${env.rootAttrs(block)}><div${env.classList(CODE_CARD_CLASSES)}>${header}<pre${env.classList(hasFilename ? [...CODE_AREA_CLASSES, ...CODE_CAPTIONED_AREA_CLASSES] : CODE_AREA_CLASSES)}${env.ltrAttr}>${inner}</pre></div></div>`,
         block,
         env
       );
@@ -678,10 +686,12 @@ export const builtinEmitters: Record<string, Emitter> = {
   },
 
   image: (block, env) => {
-    const img = `<img${env.url('src', block.data.url, block.type)} alt="${env.escape(str(block.data, 'alt'))}">`;
+    const img = `<img${env.imageSrc(block.data.url, block.type)} alt="${env.escape(str(block.data, 'alt'))}">`;
     const sources = (readVariants(block.data.variants, block.data.url) ?? [])
       .filter((variant) => variant.url !== block.data.url)
       .map((variant) => {
+        // Not imageSrc: a srcset splits at whitespace, which an SVG data: URL may hold,
+        // and readVariants drops SVG data variants anyway.
         const src = env.url('src', variant.url, block.type);
 
         // env.url only speaks src/href; a single-URL srcset takes the same value.
@@ -738,16 +748,17 @@ export const builtinEmitters: Record<string, Emitter> = {
   embed: (block, env) => {
     const service = str(block.data, 'service');
     const source = str(block.data, 'source');
-    const link = (): string => trail(`<a${env.url('href', source, block.type)}>${env.escape(service || source)}</a>`, block, env);
+    // `service` is free text in saved data: it is the link text only when the source matches it.
+    const link = (label: string): string => trail(`<a${env.url('href', source, block.type)}>${env.escape(label)}</a>`, block, env);
 
     if (!Object.hasOwn(EMBED_SERVICES, service)) {
-      return link();
+      return link(source);
     }
 
     const match = matchEmbedServiceOrLink(source);
 
     if (match === 'link') {
-      return link();
+      return link(source);
     }
 
     if (match?.service !== service) {
@@ -755,13 +766,24 @@ export const builtinEmitters: Record<string, Emitter> = {
     }
 
     // Script widgets (X, Telegram, Threads) need the provider's script; the view has none.
-    const srcAttr = match.kind === 'iframe' ? env.url('src', match.embedUrl, block.type) : '';
+    const srcAttr = match.kind === 'iframe' ? env.frameSrc(match.embedUrl, block.type) : '';
 
     if (srcAttr === '') {
-      return link();
+      return link(service);
     }
 
-    return trail(`<figure><iframe${srcAttr} sandbox="${IFRAME_SANDBOX}"></iframe>${figcaption(block, env)}</figure>`, block, env);
+    // The player sandbox trusts the provider's origin. A transformUrl that
+    // moves the frame elsewhere (maybe the page's own origin) gets the generic one.
+    // Jint has no URL, so the origin is compared as a string prefix.
+    const origin = /^https:\/\/[^/?#]+/.exec(match.embedUrl)?.[0] ?? '';
+    const prefix = ` src="${origin}`;
+    const sameOrigin = origin !== '' && srcAttr.startsWith(prefix) && '/?#"'.includes(srcAttr.charAt(prefix.length));
+    // Two literals, so iframe-sandbox-law can read each sandbox.
+    const frame = sameOrigin
+      ? `<iframe${srcAttr} sandbox="${registryIframeSandbox(EMBED_SERVICES[service])}" referrerpolicy="strict-origin-when-cross-origin"></iframe>`
+      : `<iframe${srcAttr} sandbox="${GENERIC_IFRAME_SANDBOX}" referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
+
+    return trail(`<figure>${frame}${figcaption(block, env)}</figure>`, block, env);
   },
 
   table: emitTable,

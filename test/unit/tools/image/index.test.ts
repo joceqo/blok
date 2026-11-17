@@ -177,6 +177,21 @@ describe('ImageTool — onPaste', () => {
     expect(tool.save().url).toBe('https://cdn/https%3A%2F%2Flh3.googleusercontent.com%2Fxyz');
   });
 
+  it('onPaste(tag) keeps the url of an img Blok copied, without uploading it again', async () => {
+    const uploadByUrl = vi.fn(async (src: string) => ({ url: `https://cdn/${encodeURIComponent(src)}` }));
+    const tool = new ImageTool(createOptions({}, { uploader: { uploadByUrl } }));
+    tool.render();
+    const img = document.createElement('img');
+    img.setAttribute('src', 'https://cdn/already-hosted.png');
+    img.setAttribute('data-blok-hosted', '');
+    const event = new CustomEvent('paste', { detail: { data: img } }) as HTMLPasteEvent;
+    Object.defineProperty(event, 'type', { value: 'tag' });
+    tool.onPaste(event);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(uploadByUrl).not.toHaveBeenCalled();
+    expect(tool.save().url).toBe('https://cdn/already-hosted.png');
+  });
+
   it('onPaste(file) updates the upload bar fill width when uploader reports progress', async () => {
     /**
      * Bug: when pasting an image (e.g. from Google Docs) through a real
@@ -219,6 +234,183 @@ describe('ImageTool — onPaste', () => {
     const img = root.querySelector('img');
     if (!img) throw new Error('img missing');
     expect(img.getAttribute('src')).toBe('blob:fake');
+  });
+});
+
+describe('ImageTool — the host uploader decides whether a pasted url is uploaded', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  const pasteImg = (tool: ImageTool, src: string, marked = false): void => {
+    const img = document.createElement('img');
+    img.setAttribute('src', src);
+    if (marked) img.setAttribute('data-blok-hosted', '');
+    const event = new CustomEvent('paste', { detail: { data: img } }) as HTMLPasteEvent;
+    Object.defineProperty(event, 'type', { value: 'tag' });
+    tool.onPaste(event);
+  };
+  const pasteUrl = (tool: ImageTool, url: string): void => {
+    const event = new CustomEvent('paste', { detail: { key: 'image', data: url } }) as PatternPasteEvent;
+    Object.defineProperty(event, 'type', { value: 'pattern' });
+    tool.onPaste(event);
+  };
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+  const rehost = () => vi.fn(async (src: string) => ({ url: `https://cdn/${encodeURIComponent(src)}` }));
+
+  it('uploads an img marked as a Blok copy when the host says upload, so a forged marker decides nothing', async () => {
+    const uploadByUrl = rehost();
+    const shouldUploadUrl = vi.fn(() => true);
+    const tool = new ImageTool(createOptions({}, { uploader: { uploadByUrl, shouldUploadUrl } }));
+    tool.render();
+    pasteImg(tool, 'https://evil.example/a.png', true);
+    await settle();
+    expect(tool.save().url).toBe('https://cdn/https%3A%2F%2Fevil.example%2Fa.png');
+    expect(shouldUploadUrl).toHaveBeenCalledWith('https://evil.example/a.png', { kind: 'image', tool: 'image', source: 'html', copiedFromBlok: true });
+  });
+
+  it('keeps an unmarked img as it is when the host says keep', async () => {
+    const uploadByUrl = rehost();
+    const tool = new ImageTool(createOptions({}, { uploader: { uploadByUrl, shouldUploadUrl: () => false } }));
+    tool.render();
+    pasteImg(tool, 'https://x/a.png');
+    await settle();
+    expect(uploadByUrl).not.toHaveBeenCalled();
+    expect(tool.save().url).toBe('https://x/a.png');
+  });
+
+  it('uploads a bare pasted url when the host says upload', async () => {
+    const uploadByUrl = rehost();
+    const shouldUploadUrl = vi.fn(async () => true);
+    const tool = new ImageTool(createOptions({}, { uploader: { uploadByUrl, shouldUploadUrl } }));
+    tool.render();
+    pasteUrl(tool, 'https://x/y.png');
+    await settle();
+    expect(tool.save().url).toBe('https://cdn/https%3A%2F%2Fx%2Fy.png');
+    expect(shouldUploadUrl).toHaveBeenCalledWith('https://x/y.png', { kind: 'image', tool: 'image', source: 'url', copiedFromBlok: false });
+  });
+
+  it('keeps a bare pasted url when the host says keep', async () => {
+    const uploadByUrl = rehost();
+    const tool = new ImageTool(createOptions({}, { uploader: { uploadByUrl, shouldUploadUrl: async () => false } }));
+    tool.render();
+    pasteUrl(tool, 'https://x/y.png');
+    await settle();
+    expect(uploadByUrl).not.toHaveBeenCalled();
+    expect(tool.save().url).toBe('https://x/y.png');
+  });
+
+  it('writes the pasted url at once, while the host is still deciding', () => {
+    const tool = new ImageTool(createOptions({}, { uploader: { uploadByUrl: rehost(), shouldUploadUrl: () => new Promise<boolean>(() => undefined) } }));
+    tool.render();
+    pasteImg(tool, 'https://x/a.png');
+    expect(tool.save().url).toBe('https://x/a.png');
+  });
+
+  it('still refuses a url that is not http or https when the host says keep', async () => {
+    const tool = new ImageTool(createOptions({}, { uploader: { uploadByUrl: rehost(), shouldUploadUrl: () => false } }));
+    tool.render();
+    pasteImg(tool, 'ftp://x/a.png');
+    await settle();
+    expect(tool.save().url).toBe('');
+  });
+
+  it('does not ask about a pasted data: url, which is not an outside link', async () => {
+    const shouldUploadUrl = vi.fn(() => false);
+    const tool = new ImageTool(createOptions({}, { uploader: { uploadByUrl: rehost(), shouldUploadUrl } }));
+    tool.render();
+    pasteImg(tool, 'data:image/png;base64,iVBORw0KGgo=');
+    await settle();
+    expect(shouldUploadUrl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['without a host decision', 'data:image/png;base64,iVBORw0KGgo=', {}],
+    ['with a host decision', 'data:image/png;base64,iVBORw0KGgo=', { shouldUploadUrl: () => false }],
+    ['after a leading space', ' data:image/png;base64,iVBORw0KGgo=', {}],
+  ])('checks a pasted data: url marked as a Blok copy like any other file, %s', async (_label, src, decides) => {
+    const uploadByFile = vi.fn(async () => ({ url: 'https://cdn/file.png' }));
+    const tool = new ImageTool(createOptions({}, { types: ['image/jpeg'], uploader: { uploadByFile, ...decides } }));
+    tool.render();
+    // Any page can write the mark, and a raster data: url survives the paste sanitizer.
+    pasteImg(tool, src, true);
+    await settle();
+    expect(tool.save().url).toBe('');
+    expect(uploadByFile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'blob:https://evil.example/6f1c',
+    'ftp://evil.example/a.png',
+    'javascript:alert(1)',
+    'java\nscript:alert(1)',
+    'file:///etc/passwd',
+  ])('refuses %s under a forged Blok mark when no host decides', async (src) => {
+    const tool = new ImageTool(createOptions());
+    tool.render();
+    pasteImg(tool, src, true);
+    await settle();
+    expect(tool.save().url).toBe('');
+  });
+
+  it.each([
+    'https://cdn.example/already-hosted.png',
+    '/uploads/a.png',
+    'images/a.png',
+  ])('keeps %s from a real Blok copy when no host decides', async (src) => {
+    const uploadByUrl = rehost();
+    const tool = new ImageTool(createOptions({}, { uploader: { uploadByUrl } }));
+    tool.render();
+    pasteImg(tool, src, true);
+    await settle();
+    expect(tool.save().url).toBe(src);
+    expect(uploadByUrl).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the marker when the host decision throws', async () => {
+    const uploadByUrl = rehost();
+    const shouldUploadUrl = (): boolean => {
+      throw new Error('boom');
+    };
+    const marked = new ImageTool(createOptions({}, { uploader: { uploadByUrl, shouldUploadUrl } }));
+    const plain = new ImageTool(createOptions({}, { uploader: { uploadByUrl, shouldUploadUrl } }));
+    marked.render();
+    plain.render();
+    pasteImg(marked, 'https://x/kept.png', true);
+    pasteImg(plain, 'https://x/sent.png');
+    await settle();
+    expect(marked.save().url).toBe('https://x/kept.png');
+    expect(plain.save().url).toBe('https://cdn/https%3A%2F%2Fx%2Fsent.png');
+  });
+
+  it('does not turn a GIF link the host keeps into a video', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) })));
+    mockConvert.mockResolvedValue(new Blob([new Uint8Array([1])], { type: 'video/webm' }));
+    const insert = vi.fn();
+    const api = createMockApi();
+    (api as unknown as { blocks: unknown }).blocks = { getBlockIndex: () => 0, insert };
+    (api as unknown as { tools: unknown }).tools = { getToolsConfig: () => ({ tools: {} }), getBlockTools: () => [{ name: 'video' }] };
+    const tool = new ImageTool({ ...createOptions({}, { uploader: { uploadByUrl: rehost(), shouldUploadUrl: () => false } }), api });
+    tool.render();
+    pasteUrl(tool, 'https://x/cat.gif');
+    await settle();
+    expect(mockConvert).not.toHaveBeenCalled();
+    expect(insert).not.toHaveBeenCalled();
+    expect(tool.save().url).toBe('https://x/cat.gif');
+    vi.unstubAllGlobals();
+  });
+
+  it('asks the editor-level uploader through api.uploader', async () => {
+    const uploadByUrl = vi.fn();
+    const shouldUploadUrl = vi.fn(async () => false);
+    const api = createMockApi();
+    (api as unknown as { uploader: unknown }).uploader = { isConfigured: () => true, uploadByUrl, shouldUploadUrl };
+    const tool = new ImageTool({ ...createOptions(), api });
+    tool.render();
+    pasteImg(tool, 'https://x/a.png');
+    await settle();
+    expect(shouldUploadUrl).toHaveBeenCalledWith('https://x/a.png', { kind: 'image', tool: 'image', source: 'html', copiedFromBlok: false });
+    expect(uploadByUrl).not.toHaveBeenCalled();
+    expect(tool.save().url).toBe('https://x/a.png');
   });
 });
 
@@ -272,13 +464,13 @@ describe('ImageTool — EMPTY state', () => {
     const tool = new ImageTool(createOptions());
     const root = tool.render();
     expect(root.querySelector('input[type="file"]')).not.toBeNull();
-    expect(root.querySelector('[data-tab="embed"]')).not.toBeNull();
+    expect(root.querySelector('[data-action="from-link"]')).not.toBeNull();
   });
 
   it('submitting URL via empty-state transitions to RENDERED', async () => {
     const tool = new ImageTool(createOptions());
     const root = tool.render();
-    const embedTab = root.querySelector<HTMLButtonElement>('[data-tab="embed"]');
+    const embedTab = root.querySelector<HTMLButtonElement>('[data-action="from-link"]');
     if (!embedTab) throw new Error('embed tab missing');
     embedTab.click();
     const input = root.querySelector<HTMLInputElement>('input[type="url"]');
@@ -1017,7 +1209,7 @@ describe('ImageTool — upload progression', () => {
       }),
     });
     const root = tool.render();
-    root.querySelector<HTMLButtonElement>('[data-tab="embed"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
     const input = root.querySelector<HTMLInputElement>('input[type="url"]');
     if (!input) throw new Error('url input missing');
     input.value = 'https://x/p.png';
@@ -1034,7 +1226,7 @@ describe('ImageTool — upload progression', () => {
     const uploadByUrl = (): Promise<{ url: string }> => new Promise(() => undefined);
     const tool = new ImageTool(createOptions({}, { uploader: { uploadByUrl } }));
     const root = tool.render();
-    root.querySelector<HTMLButtonElement>('[data-tab="embed"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
     const input = root.querySelector<HTMLInputElement>('input[type="url"]');
     if (!input) throw new Error('url input missing');
     input.value = 'https://x/p.png';
@@ -1179,7 +1371,7 @@ describe('ImageTool — error state', () => {
     const uploadByUrl = vi.fn().mockRejectedValue(new Error('404'));
     const tool = new ImageTool(createOptions({}, { uploader: { uploadByUrl } }));
     const root = tool.render();
-    const embed = root.querySelector<HTMLButtonElement>('[data-tab="embed"]');
+    const embed = root.querySelector<HTMLButtonElement>('[data-action="from-link"]');
     if (!embed) throw new Error('embed tab missing');
     embed.click();
     const input = root.querySelector<HTMLInputElement>('input[type="url"]');
@@ -1328,6 +1520,20 @@ describe('ImageTool — sending a failed upload again', () => {
 
     expect(bar?.getAttribute('aria-valuenow')).toBe('40');
     expect(bar?.hasAttribute('data-indeterminate')).toBe(false);
+  });
+
+  it('stays empty when a held resend failure lands after the user chose Replace', async () => {
+    const { tool, root, options } = await failedUpload(vi.fn().mockRejectedValue(new Error('still broken')));
+
+    retry(root);
+    await vi.advanceTimersByTimeAsync(0);
+    const items = tool.renderSettings() as unknown as Array<{ name?: string; onActivate?: () => void }>;
+    items.find((item) => item.name === 'image-replace')?.onActivate?.();
+    expect(root.getAttribute('data-state')).toBe('empty');
+    await vi.advanceTimersByTimeAsync(RESEND_STAGE_MS);
+
+    expect(root.getAttribute('data-state')).toBe('empty');
+    expect(options.api.media.reportFailure).toHaveBeenCalledOnce();
   });
 
   it('keeps the sending card up for the whole send even when the server fails at once', async () => {
@@ -2200,6 +2406,157 @@ describe('ImageTool — GIF auto-conversion', () => {
     expect(root.querySelector('img')?.getAttribute('src')).toBe('https://x/cat.gif');
   });
 
+  const videoApi = (insert: () => void): API => {
+    const api = createMockApi();
+    (api as unknown as { blocks: unknown }).blocks = { getBlockIndex: () => 0, insert };
+    (api as unknown as { tools: unknown }).tools = { getToolsConfig: () => ({ tools: {} }), getBlockTools: () => [{ name: 'video' }] };
+
+    return api;
+  };
+
+  const heldConversion = (): { resolve: (blob: Blob | null) => void } => {
+    const gate = { resolve: (_blob: Blob | null): void => undefined };
+
+    mockConvert.mockImplementation(() => new Promise<Blob | null>((r) => {
+      gate.resolve = r;
+    }));
+
+    return gate;
+  };
+
+  const cancel = (root: HTMLElement): void => {
+    const button = root.querySelector<HTMLButtonElement>('[data-action="cancel"]');
+    if (!button) throw new Error('cancel button missing');
+    button.click();
+  };
+
+  it('does not swap to a video when the GIF conversion was cancelled', async () => {
+    const conversion = heldConversion();
+    const insert = vi.fn();
+    const tool = new ImageTool({ ...createOptions(), api: videoApi(insert) });
+    const root = tool.render();
+    pasteGif(tool);
+    await vi.waitFor(() => expect(mockConvert).toHaveBeenCalledOnce());
+    cancel(root);
+
+    conversion.resolve(new Blob([new Uint8Array([1])], { type: 'video/webm' }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(insert).not.toHaveBeenCalled();
+    expect(root.getAttribute('data-state')).toBe('empty');
+  });
+
+  it('does not upload the GIF as an image when its cancelled conversion gives up', async () => {
+    const conversion = heldConversion();
+    const uploadByFile = vi.fn(async () => ({ url: 'https://cdn/cat.gif' }));
+    const tool = new ImageTool({ ...createOptions({}, { uploader: { uploadByFile } }), api: videoApi(vi.fn()) });
+    const root = tool.render();
+    pasteGif(tool);
+    await vi.waitFor(() => expect(mockConvert).toHaveBeenCalledOnce());
+    cancel(root);
+
+    conversion.resolve(null);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(uploadByFile).not.toHaveBeenCalled();
+    expect(root.getAttribute('data-state')).toBe('empty');
+  });
+
+  it('does not swap to a video when the GIF link conversion was cancelled', async () => {
+    const conversion = heldConversion();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) })));
+    const insert = vi.fn();
+    const tool = new ImageTool({ ...createOptions(), api: videoApi(insert) });
+    const root = tool.render();
+    const event = new CustomEvent('paste', { detail: { key: 'image', data: 'https://x/cat.gif' } }) as PatternPasteEvent;
+    Object.defineProperty(event, 'type', { value: 'pattern' });
+    tool.onPaste(event);
+    await vi.waitFor(() => expect(mockConvert).toHaveBeenCalledOnce());
+    cancel(root);
+
+    conversion.resolve(new Blob([new Uint8Array([1])], { type: 'video/webm' }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(insert).not.toHaveBeenCalled();
+    expect(root.getAttribute('data-state')).toBe('empty');
+  });
+
+  it('does not swap to a video when a newer image landed during the GIF conversion', async () => {
+    const conversion = heldConversion();
+    const insert = vi.fn();
+    const tool = new ImageTool({ ...createOptions(), api: videoApi(insert) });
+    const root = tool.render();
+    pasteGif(tool);
+    await vi.waitFor(() => expect(mockConvert).toHaveBeenCalledOnce());
+    const link = new CustomEvent('paste', { detail: { key: 'image', data: 'https://x/other.png' } }) as PatternPasteEvent;
+    Object.defineProperty(link, 'type', { value: 'pattern' });
+    tool.onPaste(link);
+
+    conversion.resolve(new Blob([new Uint8Array([1])], { type: 'video/webm' }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(insert).not.toHaveBeenCalled();
+    expect(root.querySelector('img')?.getAttribute('src')).toBe('https://x/other.png');
+  });
+
+  it('labels a later link upload as uploading after a newer image replaced the GIF conversion', async () => {
+    heldConversion();
+    const uploadByUrl = (): Promise<{ url: string }> => new Promise(() => undefined);
+    const tool = new ImageTool({ ...createOptions({}, { uploader: { uploadByUrl } }), api: videoApi(vi.fn()) });
+    const root = tool.render();
+    pasteGif(tool);
+    await vi.waitFor(() => expect(mockConvert).toHaveBeenCalledOnce());
+    const link = new CustomEvent('paste', { detail: { key: 'image', data: 'https://x/other.png' } }) as PatternPasteEvent;
+    Object.defineProperty(link, 'type', { value: 'pattern' });
+    tool.onPaste(link);
+
+    const img = document.createElement('img');
+    img.setAttribute('src', 'https://x/p.png');
+    const tag = new CustomEvent('paste', { detail: { data: img } }) as HTMLPasteEvent;
+    Object.defineProperty(tag, 'type', { value: 'tag' });
+    tool.onPaste(tag);
+    await Promise.resolve();
+
+    expect(root.querySelector('.blok-image-uploading__label')?.textContent).toBe('tools.image.uploading');
+  });
+
+  it('does not upload the GIF when its block was deleted during the conversion', async () => {
+    const conversion = heldConversion();
+    const uploadByFile = vi.fn(async () => ({ url: 'https://cdn/cat.gif' }));
+    const api = createMockApi();
+    (api as unknown as { blocks: unknown }).blocks = { getBlockIndex: () => undefined, insert: vi.fn() };
+    (api as unknown as { tools: unknown }).tools = { getToolsConfig: () => ({ tools: {} }), getBlockTools: () => [{ name: 'video' }] };
+    const tool = new ImageTool({ ...createOptions({}, { uploader: { uploadByFile } }), api });
+    tool.render();
+    pasteGif(tool);
+    await vi.waitFor(() => expect(mockConvert).toHaveBeenCalledOnce());
+    tool.removed();
+
+    conversion.resolve(new Blob([new Uint8Array([1])], { type: 'video/webm' }));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(uploadByFile).not.toHaveBeenCalled();
+  });
+
+  it('labels a link upload as uploading after a GIF conversion was cancelled', async () => {
+    heldConversion();
+    const uploadByUrl = (): Promise<{ url: string }> => new Promise(() => undefined);
+    const tool = new ImageTool({ ...createOptions({}, { uploader: { uploadByUrl } }), api: videoApi(vi.fn()) });
+    const root = tool.render();
+    pasteGif(tool);
+    await vi.waitFor(() => expect(mockConvert).toHaveBeenCalledOnce());
+    cancel(root);
+    root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
+    const input = root.querySelector<HTMLInputElement>('input[type="url"]');
+    if (!input) throw new Error('url input missing');
+    input.value = 'https://x/p.png';
+
+    root.querySelector<HTMLButtonElement>('[data-action="submit-url"]')?.click();
+    await Promise.resolve();
+
+    expect(root.querySelector('.blok-image-uploading__label')?.textContent).toBe('tools.image.uploading');
+  });
+
   it('shows the converting label in the loading UI while a remote GIF URL is being converted', async () => {
     // Keep conversion pending so we can inspect the loading UI before it resolves.
     mockConvert.mockImplementation(() => new Promise<Blob>(() => { /* never resolves */ }));
@@ -2300,6 +2657,50 @@ describe('ImageTool — an upload belongs to the pick that started it', () => {
 
     expect(tool.save().url).toBe('');
     expect(root.getAttribute('data-state')).toBe('empty');
+  });
+
+  it('stays empty and reports nothing when a cancelled upload fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const gate: { reject: (err: Error) => void } = { reject: () => undefined };
+    const uploadByFile = (): Promise<{ url: string }> => new Promise((_, reject) => {
+      gate.reject = reject;
+    });
+    const options = createOptions({}, { uploader: { uploadByFile } });
+    const tool = new ImageTool(options);
+    const root = tool.render();
+    pasteFile(tool);
+    await Promise.resolve();
+    root.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.click();
+
+    gate.reject(new Error('boom'));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(root.getAttribute('data-state')).toBe('empty');
+    expect(options.api.media.reportFailure).not.toHaveBeenCalled();
+  });
+
+  it('stays empty and reports nothing when a cancelled link upload fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const gate: { reject: (err: Error) => void } = { reject: () => undefined };
+    const uploadByUrl = (): Promise<{ url: string }> => new Promise((_, reject) => {
+      gate.reject = reject;
+    });
+    const options = createOptions({}, { uploader: { uploadByUrl } });
+    const tool = new ImageTool(options);
+    const root = tool.render();
+    const img = document.createElement('img');
+    img.setAttribute('src', 'https://x/p.png');
+    const event = new CustomEvent('paste', { detail: { data: img } }) as HTMLPasteEvent;
+    Object.defineProperty(event, 'type', { value: 'tag' });
+    tool.onPaste(event);
+    await Promise.resolve();
+    root.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.click();
+
+    gate.reject(new Error('boom'));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(root.getAttribute('data-state')).toBe('empty');
+    expect(options.api.media.reportFailure).not.toHaveBeenCalled();
   });
 
   it('keeps a pasted image link a tracked edit', () => {
@@ -2641,6 +3042,24 @@ describe('ImageTool — failure reporting', () => {
     expect(card?.getAttribute('data-variant')).toBe('upload');
     expect(card?.querySelector('.blok-image-error__icon img')?.getAttribute('src')).toBe('blob:preview');
     expect(card?.querySelector('.blok-image-error__title')?.textContent).toBe('p.png');
+  });
+
+  it('shows no thumbnail for a failed SVG upload, so no SVG blob opens as the host', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview');
+    const tool = new ImageTool(createOptions({}, { uploader: { uploadByFile: () => Promise.reject(new Error('boom')) } }));
+    const root = tool.render();
+    const file = new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'], 'logo.svg', { type: 'image/svg+xml' });
+    const event = new CustomEvent('paste', { detail: { file } }) as FilePasteEvent;
+
+    Object.defineProperty(event, 'type', { value: 'file' });
+    tool.onPaste(event);
+    await new Promise((r) => setTimeout(r, 0));
+    const card = root.querySelector('[data-role="error-state"]');
+
+    expect(card?.querySelector('.blok-image-error__title')?.textContent).toBe('logo.svg');
+    expect(card?.querySelector('.blok-image-error__icon img')).toBeNull();
+    expect(createObjectURL).not.toHaveBeenCalled();
   });
 
   it('keeps a broken image in the shape it was saved with', () => {

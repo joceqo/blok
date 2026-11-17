@@ -10,13 +10,12 @@ import type { I18nInstance } from '../../components/utils/tools';
 export interface EmptyStateOptions {
   onFile(file: File): void;
   onUrl(url: string): void;
-  /** MIME types to accept on file picker + show in the formats hint. */
+  /** MIME types to accept on file picker. */
   acceptTypes?: string[];
-  /** Max file size in bytes — surfaced in the formats hint when set. */
+  /** Max file size in bytes — shown under the button when set. */
   maxSize?: number;
   /** Which insert sources to expose. Default `'both'`. */
   sources?: MediaSource;
-  uploadLabel?: string;
   embedLabel?: string;
   embedPlaceholder?: string;
   submitLabel?: string;
@@ -36,15 +35,17 @@ export function renderEmptyState(opts: EmptyStateOptions): EmptyStateElement {
     onUrl: opts.onUrl,
     labels: {
       add: tr(i18n, 'tools.image.emptyAddImage'),
-      upload: opts.uploadLabel ?? tr(i18n, 'tools.image.emptyUpload'),
+      hint: tr(i18n, 'tools.image.emptyHint'),
+      hintUpload: tr(i18n, 'tools.image.emptyHintUpload'),
+      hintLink: tr(i18n, 'tools.image.emptyHintLink'),
+      dropAnywhere: tr(i18n, 'tools.image.emptyDropAnywhere'),
+      cancelLink: tr(i18n, 'notifier.cancel'),
       embed: opts.embedLabel ?? tr(i18n, 'tools.image.emptyLink'),
       chooseFile: tr(i18n, 'tools.image.emptyChooseFile'),
-      orDropHere: tr(i18n, 'tools.image.emptyOrDropHere'),
       dropToUpload: tr(i18n, 'tools.image.emptyDropToUpload'),
       urlPlaceholder: opts.embedPlaceholder ?? tr(i18n, 'tools.image.emptyUrlPlaceholder'),
       urlAria: tr(i18n, 'tools.image.emptyUrlAria'),
       submit: opts.submitLabel ?? tr(i18n, 'tools.image.emptyInsert'),
-      sourceAria: tr(i18n, 'tools.image.emptySourceAria'),
       maxSize: (size) =>
         i18n?.has('tools.image.emptyMaxSize')
           ? i18n.t('tools.image.emptyMaxSize', { size })

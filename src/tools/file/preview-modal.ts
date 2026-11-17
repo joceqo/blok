@@ -1,40 +1,49 @@
+import type { FileConfig } from '../../../types/tools/file';
 import { openModalDialog } from '../../components/utils/modal-dialog';
-import { safePreviewSrc } from './url';
+import { safeHttpHref, safePreviewSrc } from './url';
 import { extOf, getPreviewKind, type PreviewKind } from './preview';
 import { loadTextPreview } from './text-preview';
 import { extToPrismLang } from './code-languages';
-import { tokenizePrism, isHighlightable } from '../code/prism-loader';
+import { tokenizePrism } from '../code/prism-loader';
 import { applyPrismHighlight, ensurePrismStyles } from '../code/prism-applier';
-import { measureLineRows, rowHeight } from '../code/line-geometry';
-import { IconFile, IconCross, IconLinkExternal } from '../../components/icons';
-import { buildErrorInto } from './preview-error';
+import { IconCross, IconDownload, IconLinkExternal } from '../../components/icons';
+import { buildErrorInto, buildExternalNoticeInto, createTypedPdfUrl } from './preview-error';
+import { renderCode } from './code-view';
+import { renderCsv } from './csv-view';
+import { renderLog, renderPlainText } from './log-view';
+import { mountOutline } from './md-outline';
 import { fillOfficeBody, isOfficeKind } from './office-preview';
 import { ScrollHaze } from './preview-scroll-haze';
+import { resolvePreviewLabels, type PreviewLabels } from './preview-labels';
+import { supportsPdfJs } from './pdf/pdf-loader';
+import { fillPdfBody, fillRemotePdfBody } from './pdf/pdf-preview';
+import { describePreviewType, isCsv, isLog, mountViewToggle, OVERLAY_ATTR, type PreviewChrome } from './preview-chrome';
 
 export interface FilePreviewOptions {
   url: string;
   fileName?: string;
   mimeType?: string;
-  labels: {
-    close: string;
-    raw?: string;
-    render?: string;
-    loading?: string;
-    error?: string;
-    download?: string;
-    openInNewTab?: string;
-    backToContent?: string;
-  };
+  /** Bytes, when known. Shown in the code view's status bar. */
+  size?: number;
+  labels: Partial<PreviewLabels> & { close: string };
   /** Element whose direction the preview takes (it mounts outside the editor). */
   directionSource?: Element | null;
+  /** See FileConfig.fetchPreview. */
+  fetchPreview?: FileConfig['fetchPreview'];
+  /** See FileConfig.pdfAssetsUrl. */
+  pdfAssetsUrl?: string;
+  /** See FileConfig.previewEndpoint. */
+  previewEndpoint?: FileConfig['previewEndpoint'];
 }
 
 interface PreviewElements {
   backdrop: HTMLElement;
   dialog: HTMLElement;
   header: HTMLElement;
+  actions: HTMLElement;
   closeButton: HTMLButtonElement;
   body: HTMLElement;
+  typeName: string;
   kind: PreviewKind | null;
 }
 
@@ -45,21 +54,18 @@ function buildBody(opts: FilePreviewOptions, kind: PreviewKind): HTMLElement {
   if (kind === 'pdf') {
     const src = safePreviewSrc(opts.url);
     if (src === null) {
-      const error = document.createElement('div');
-      error.className = 'blok-file-preview-error';
-      error.setAttribute('data-role', 'file-preview-error');
-      body.appendChild(error);
+      buildErrorInto(body, opts);
 
       return body;
     }
-    const frame = document.createElement('iframe');
-    frame.className = 'blok-file-preview-frame';
-    frame.setAttribute('data-role', 'file-preview-frame');
-    frame.setAttribute('title', opts.fileName ?? opts.labels.close);
-    frame.src = src;
-    body.appendChild(frame);
+    // Chrome blocks its PDF viewer in any sandboxed frame, and an unsandboxed
+    // http(s) frame runs whatever HTML the server sends. So no http(s) frame:
+    // pdf.js reads the bytes, or the user gets a link.
+    if (!src.startsWith('blob:') && !supportsPdfJs()) {
+      buildExternalNoticeInto(body, opts, src);
 
-    return body;
+      return body;
+    }
   }
 
   const loading = document.createElement('div');
@@ -71,108 +77,90 @@ function buildBody(opts: FilePreviewOptions, kind: PreviewKind): HTMLElement {
   return body;
 }
 
-function renderPlainText(body: HTMLElement, text: string): void {
-  body.replaceChildren();
-  const pre = document.createElement('pre');
-  pre.className = 'blok-file-preview-pre';
-  pre.setAttribute('data-role', 'file-preview-text');
-  pre.textContent = text;
-  body.appendChild(pre);
+function buildOpenTabLink(opts: FilePreviewOptions): HTMLAnchorElement {
+  const open = document.createElement('a');
+  open.className = 'blok-file-preview-open';
+  open.setAttribute('data-action', 'preview-open-tab');
+  open.target = '_blank';
+  open.rel = 'noopener noreferrer';
+  if (opts.labels.openInNewTab) {
+    open.setAttribute('aria-label', opts.labels.openInNewTab);
+    open.title = opts.labels.openInNewTab;
+  }
+  open.innerHTML = IconLinkExternal;
+
+  return open;
 }
 
-async function renderCode(
-  body: HTMLElement,
-  text: string,
-  lang: string,
-  onRelease: (release: () => void) => void,
-): Promise<void> {
-  body.replaceChildren();
-  const pre = document.createElement('pre');
-  pre.className = 'blok-file-preview-pre';
-  pre.setAttribute('data-role', 'file-preview-code');
-  // Source reads LTR in any editor direction, so the gutter stays on the left.
-  pre.dir = 'ltr';
-
-  // A trailing newline ends the last line; it does not start a new one.
-  const lines = text.split('\n');
-  const lineCount = lines.length > 1 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
-  // A sibling of <code>, so the highlighter's innerHTML swap leaves it alone.
-  const gutter = document.createElement('div');
-  gutter.className = 'blok-file-preview-gutter';
-  gutter.setAttribute('data-role', 'file-preview-gutter');
-  gutter.setAttribute('aria-hidden', 'true');
-  Array.from({ length: lineCount }, (_, i) => {
-    const line = document.createElement('div');
-    line.textContent = String(i + 1);
-    gutter.appendChild(line);
-  });
-
-  const code = document.createElement('code');
-  code.textContent = text;
-  pre.append(gutter, code);
-  body.appendChild(pre);
-
-  // Long lines wrap, so a number must grow to cover every row of its line.
-  const syncRows = (): void => {
-    const rows = measureLineRows(code);
-    const row = rowHeight(code);
-    Array.from(gutter.children).forEach((line, index) => {
-      if (!(line instanceof HTMLElement)) {
-        return;
-      }
-      if ((rows[index] ?? 1) > 1) {
-        line.style.setProperty('height', `${rows[index] * row}px`);
-      } else {
-        line.style.removeProperty('height');
-      }
-    });
-  };
-
-  if (isHighlightable(lang)) {
-    const html = await tokenizePrism(text, lang);
-    if (html !== null) {
-      applyPrismHighlight(code, html, lang);
-    }
+/** The header's download link. A blob downloads in place, so it opens no tab. */
+function buildSaveLink(opts: FilePreviewOptions, href: string): HTMLAnchorElement {
+  const save = document.createElement('a');
+  save.className = 'blok-file-preview-save';
+  save.setAttribute('data-action', 'preview-save');
+  // Callers pass a gated url; the gate here keeps this sink safe on its own.
+  save.href = safePreviewSrc(href) ?? '';
+  save.setAttribute('download', opts.fileName ?? '');
+  save.rel = 'noopener noreferrer';
+  if (!href.startsWith('blob:')) {
+    save.target = '_blank';
   }
+  const label = opts.labels.download ?? 'Download';
+  save.setAttribute('aria-label', label);
+  save.title = label;
+  save.innerHTML = IconDownload;
 
-  syncRows();
-  if (typeof ResizeObserver !== 'undefined') {
-    const observer = new ResizeObserver(syncRows);
-    observer.observe(code);
-    onRelease(() => observer.disconnect());
-  }
+  return save;
 }
 
-async function renderMarkdown(
-  body: HTMLElement,
-  header: HTMLElement,
-  text: string,
+/**
+ * Shows a blob: pdf. A blob url has the editor's origin, so a text/html blob
+ * would run as the editor, framed or opened in a tab. The header links and
+ * the fallback frame use the bytes re-typed as application/pdf, which the
+ * browser parses only as a PDF. pdf.js gets the bytes themselves.
+ * No sandbox on the frame: Chrome blocks its PDF viewer in every sandboxed frame.
+ */
+async function fillPdfBlobBody(
+  chrome: PreviewChrome,
+  actions: HTMLElement,
   opts: FilePreviewOptions,
 ): Promise<void> {
-  body.replaceChildren();
+  const response = await fetch(opts.url);
+  if (!response.ok) {
+    throw new Error(`blob read failed: ${response.status}`);
+  }
+  const bytes = await response.blob();
+  if (chrome.isClosed()) {
+    return;
+  }
+  const { url: src, release } = createTypedPdfUrl(bytes);
+  chrome.onRelease(release);
+  const open = buildOpenTabLink(opts);
+  open.href = src;
+  actions.prepend(buildSaveLink(opts, src), open);
 
-  // The Preview/Source switch lives in the header (centre slot), not in a
-  // band of its own — see buildElements for the header grid.
-  const toolbar = document.createElement('div');
-  toolbar.className = 'blok-file-preview-toggle';
-  toolbar.setAttribute('role', 'group');
-  toolbar.setAttribute('aria-label', `${opts.labels.render ?? 'Preview'} / ${opts.labels.raw ?? 'Source'}`);
-  const renderBtn = document.createElement('button');
-  renderBtn.type = 'button';
-  renderBtn.setAttribute('data-action', 'preview-render');
-  renderBtn.textContent = opts.labels.render ?? 'Preview';
-  const rawBtn = document.createElement('button');
-  rawBtn.type = 'button';
-  rawBtn.setAttribute('data-action', 'preview-raw');
-  rawBtn.textContent = opts.labels.raw ?? 'Source';
-  // Sliding pill that glides under the active segment. Sits behind the labels
-  // (the buttons paint above it) and is measured/moved in JS because the two
-  // labels have different widths across locales — a fixed 50/50 split would
-  // misalign.
-  const indicator = document.createElement('span');
-  indicator.className = 'blok-file-preview-toggle-indicator';
-  indicator.setAttribute('aria-hidden', 'true');
-  toolbar.append(indicator, renderBtn, rawBtn);
+  if (supportsPdfJs()) {
+    const data = new Uint8Array(await bytes.arrayBuffer());
+    // Caught here, not by the caller, so the error card can link the re-typed bytes.
+    await fillPdfBody(opts, chrome, { kind: 'data', data }, src).catch(() => {
+      if (!chrome.isClosed()) {
+        buildErrorInto(chrome.body, opts, src);
+      }
+    });
+
+    return;
+  }
+  const frame = document.createElement('iframe');
+  frame.className = 'blok-file-preview-frame';
+  frame.setAttribute('data-role', 'file-preview-frame');
+  frame.setAttribute('title', opts.fileName ?? opts.labels.close);
+  frame.setAttribute('referrerpolicy', 'no-referrer');
+  frame.src = src;
+  chrome.body.replaceChildren(frame);
+}
+
+async function renderMarkdown(chrome: PreviewChrome, text: string, opts: FilePreviewOptions): Promise<void> {
+  const { body, labels } = chrome;
+  body.replaceChildren();
 
   const renderView = document.createElement('div');
   renderView.className = 'blok-file-preview-md';
@@ -185,33 +173,18 @@ async function renderMarkdown(
   rawCode.textContent = text;
   rawView.appendChild(rawCode);
   rawView.hidden = true;
-
-  header.appendChild(toolbar);
   body.append(renderView, rawView);
 
-  // Glide the pill to the active segment.
-  const moveIndicator = (raw: boolean): void => {
-    const target = raw ? rawBtn : renderBtn;
-    indicator.style.width = `${target.offsetWidth}px`;
-    indicator.style.transform = `translateX(${target.offsetLeft}px)`;
-  };
-
-  const show = (raw: boolean): void => {
+  // The Preview/Source switch lives in the header (centre slot), not in a
+  // band of its own — see buildElements for the header grid.
+  const views: { rail: HTMLElement | null } = { rail: null };
+  mountViewToggle(chrome.header, labels.render, labels.raw, (raw) => {
     rawView.hidden = !raw;
     renderView.hidden = raw;
-    renderBtn.setAttribute('aria-pressed', String(!raw));
-    rawBtn.setAttribute('aria-pressed', String(raw));
-    moveIndicator(raw);
-  };
-  renderBtn.addEventListener('click', () => show(false));
-  rawBtn.addEventListener('click', () => show(true));
-
-  // Position the pill without a transition so it doesn't slide in from the
-  // track's left edge on open, then restore the transition for later moves.
-  indicator.style.transition = 'none';
-  show(false);
-  indicator.offsetWidth;
-  indicator.style.transition = '';
+    if (views.rail !== null) {
+      views.rail.hidden = raw;
+    }
+  });
 
   ensurePrismStyles();
   const { markdownToHtml } = await import('../../markdown/markdownToHtml');
@@ -219,6 +192,12 @@ async function renderMarkdown(
     baseUrl: opts.url,
     backToContentLabel: opts.labels.backToContent,
   });
+  if (!chrome.isClosed()) {
+    views.rail = mountOutline(renderView, chrome);
+    if (views.rail !== null) {
+      views.rail.hidden = renderView.hidden;
+    }
+  }
 
   const mdRaw = await tokenizePrism(text, 'markdown');
   if (mdRaw !== null) {
@@ -228,30 +207,31 @@ async function renderMarkdown(
 
 /** Fetch and render a text/code/markdown body, unless the modal was torn down. */
 async function fillTextBody(
-  body: HTMLElement,
-  header: HTMLElement,
   opts: FilePreviewOptions,
   kind: Exclude<PreviewKind, 'pdf'>,
-  isClosed: () => boolean,
-  onRelease: (release: () => void) => void,
+  chrome: PreviewChrome,
 ): Promise<void> {
   const result = await loadTextPreview(opts.url);
-  if (isClosed()) {
+  if (chrome.isClosed()) {
     return;
   }
   if (!result.ok) {
-    buildErrorInto(body, opts);
+    buildErrorInto(chrome.body, opts);
 
     return;
   }
 
   if (kind === 'markdown') {
-    await renderMarkdown(body, header, result.text, opts);
+    await renderMarkdown(chrome, result.text, opts);
   } else if (kind === 'code') {
     const ext = extOf(opts.fileName ?? opts.url);
-    await renderCode(body, result.text, extToPrismLang(ext) ?? 'plain', onRelease);
+    await renderCode(chrome, result.text, extToPrismLang(ext) ?? 'plain');
+  } else if (isCsv(opts)) {
+    renderCsv(chrome, result.text);
+  } else if (isLog(opts)) {
+    renderLog(chrome, result.text);
   } else {
-    renderPlainText(body, result.text);
+    renderPlainText(chrome, result.text);
   }
 }
 
@@ -274,10 +254,17 @@ function buildElements(opts: FilePreviewOptions): PreviewElements {
   const title = document.createElement('span');
   title.className = 'blok-file-preview-title';
 
-  const titleIcon = document.createElement('span');
-  titleIcon.className = 'blok-file-preview-title-icon';
-  titleIcon.setAttribute('aria-hidden', 'true');
-  titleIcon.innerHTML = IconFile;
+  const kind = getPreviewKind({ url: opts.url, fileName: opts.fileName, mimeType: opts.mimeType });
+  const type = describePreviewType(opts, kind ?? 'text', resolvePreviewLabels(opts.labels));
+
+  dialog.setAttribute('data-preview-kind', kind ?? 'text');
+
+  const badge = document.createElement('span');
+  badge.className = 'blok-file-preview-badge';
+  badge.setAttribute('data-role', 'file-preview-badge');
+  badge.setAttribute('data-file-category', type.category);
+  badge.setAttribute('aria-hidden', 'true');
+  badge.textContent = type.badge;
 
   const titleText = document.createElement('span');
   titleText.className = 'blok-file-preview-title-text';
@@ -285,7 +272,7 @@ function buildElements(opts: FilePreviewOptions): PreviewElements {
     titleText.textContent = opts.fileName;
   }
 
-  title.append(titleIcon, titleText);
+  title.append(badge, titleText);
 
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
@@ -297,23 +284,17 @@ function buildElements(opts: FilePreviewOptions): PreviewElements {
   const actions = document.createElement('div');
   actions.className = 'blok-file-preview-actions';
 
-  const kind = getPreviewKind({ url: opts.url, fileName: opts.fileName, mimeType: opts.mimeType });
-
-  // The PDF iframe is not sandboxed and has no browser chrome of its own — give
-  // readers a one-click escape into a full browser tab with native zoom/print.
-  const openHref = kind === 'pdf' ? safePreviewSrc(opts.url) : null;
-  if (openHref !== null) {
-    const open = document.createElement('a');
-    open.className = 'blok-file-preview-open';
-    open.setAttribute('data-action', 'preview-open-tab');
-    open.href = openHref;
-    open.target = '_blank';
-    open.rel = 'noopener noreferrer';
-    if (opts.labels.openInNewTab) {
-      open.setAttribute('aria-label', opts.labels.openInNewTab);
-      open.title = opts.labels.openInNewTab;
-    }
-    open.innerHTML = IconLinkExternal;
+  // A blob opened in a tab has the editor's origin, so only http(s) gets the
+  // link here. A blob pdf gets both links once its bytes are re-typed.
+  const httpHref = safeHttpHref(opts.url);
+  const blobHref = kind === 'pdf' || httpHref !== null ? null : safePreviewSrc(opts.url);
+  const saveHref = httpHref ?? blobHref;
+  if (saveHref !== null) {
+    actions.appendChild(buildSaveLink(opts, saveHref));
+  }
+  if (httpHref !== null) {
+    const open = buildOpenTabLink(opts);
+    open.href = httpHref;
     actions.appendChild(open);
   }
   actions.appendChild(closeButton);
@@ -324,11 +305,11 @@ function buildElements(opts: FilePreviewOptions): PreviewElements {
   dialog.append(header, body);
   backdrop.appendChild(dialog);
 
-  return { backdrop, dialog, header, closeButton, body, kind };
+  return { backdrop, dialog, header, actions, closeButton, body, typeName: type.name, kind };
 }
 
 export function openFilePreview(opts: FilePreviewOptions): () => void {
-  const { backdrop, dialog, header, closeButton, body, kind } = buildElements(opts);
+  const { backdrop, dialog, header, actions, closeButton, body, typeName, kind } = buildElements(opts);
   const officeKind = isOfficeKind(kind) ? kind : null;
   const textualKind = kind === null || kind === 'pdf' || officeKind !== null ? null : kind;
 
@@ -337,11 +318,42 @@ export function openFilePreview(opts: FilePreviewOptions): () => void {
   const state = { closed: false };
   const releases: Array<() => void> = [];
 
-  // Edge haze that marks the previewable content as scrollable. PDFs render in
-  // an iframe with its own scrollbar, so they opt out.
+  // Edge haze that marks the previewable content as scrollable. A PDF in the
+  // browser's frame has its own scrollbar, so only the pdf.js view gets it.
   const haze = new ScrollHaze();
 
   const label = opts.fileName ?? opts.labels.close;
+
+  const overlays: HTMLElement[] = [];
+  const keyHandlers: Array<(event: KeyboardEvent) => void> = [];
+  const slots: { bar: HTMLElement | null } = { bar: null };
+  const chrome: PreviewChrome = {
+    labels: resolvePreviewLabels(opts.labels),
+    header,
+    body,
+    typeName,
+    size: opts.size,
+    setBar: (bar) => {
+      slots.bar?.remove();
+      slots.bar = bar;
+      if (bar !== null) {
+        dialog.appendChild(bar);
+      }
+    },
+    addOverlay: (overlay) => {
+      overlay.setAttribute(OVERLAY_ATTR, '');
+      overlays.push(overlay);
+      body.appendChild(overlay);
+    },
+    isClosed: () => state.closed,
+    onRelease: (release) => {
+      releases.push(release);
+    },
+    onKey: (handler) => {
+      keyHandlers.push(handler);
+    },
+  };
+  dialog.addEventListener('keydown', (event) => keyHandlers.forEach((handler) => handler(event)));
 
   // The shared modal primitive owns mounting, Top Layer promotion, background
   // `inert`, the focus trap, focus restore, Escape/outside dismissal and the
@@ -369,11 +381,17 @@ export function openFilePreview(opts: FilePreviewOptions): () => void {
   document.body.style.overflow = 'hidden';
 
   const startFill = (): Promise<void> => {
+    if (kind === 'pdf' && safePreviewSrc(opts.url)?.startsWith('blob:') === true) {
+      return fillPdfBlobBody(chrome, actions, opts);
+    }
+    if (kind === 'pdf' && safeHttpHref(opts.url) !== null && supportsPdfJs()) {
+      return fillRemotePdfBody(opts, chrome);
+    }
     if (officeKind !== null) {
-      return fillOfficeBody(body, opts, officeKind, () => state.closed, (release) => releases.push(release));
+      return fillOfficeBody(body, opts, officeKind, () => state.closed, (release) => releases.push(release), chrome);
     }
     if (textualKind !== null) {
-      return fillTextBody(body, header, opts, textualKind, () => state.closed, (release) => releases.push(release));
+      return fillTextBody(opts, textualKind, chrome);
     }
 
     return Promise.resolve();
@@ -382,10 +400,10 @@ export function openFilePreview(opts: FilePreviewOptions): () => void {
   // Mount the scroll haze only once the body holds its rendered view — the fill
   // helpers call body.replaceChildren(), which would otherwise wipe the strips.
   // The haze's own MutationObserver then tracks later changes (e.g. the markdown
-  // Preview ⇄ Source toggle). PDFs scroll inside their iframe, so they opt out.
+  // Preview ⇄ Source toggle). Other PDF bodies (frame, link, error) opt out.
   // A fill can fail late, e.g. when a lazy renderer chunk does not load.
   void startFill().then(() => {
-    if (!state.closed && kind !== 'pdf') {
+    if (!state.closed && (kind !== 'pdf' || body.querySelector('[data-role="file-preview-pdf"]') !== null)) {
       haze.init(body);
     }
   }, () => {

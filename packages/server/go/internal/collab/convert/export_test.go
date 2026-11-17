@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JackUait/blok/packages/server/go/internal/collab/collabtest"
-	"github.com/JackUait/blok/packages/server/go/internal/dotnet"
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
-	"github.com/JackUait/blok/packages/server/go/internal/yjs"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/collabtest"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/yjs"
 )
 
 // canonical is YDocConverterFixtures.Canonicalize: keys in ordinal order,
@@ -161,7 +161,7 @@ func TestExportingTheClientUpdateGivesTheCanonicalPage(t *testing.T) {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, want)
 		}
 	}
-	if pages != 7 {
-		t.Fatalf("%d page cases, want 7", pages)
+	if pages != 13 {
+		t.Fatalf("%d page cases, want 13", pages)
 	}
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planViewBarFold, type ViewBarParts } from '../../../../src/tools/database/database-view-bar-fold';
+import { planViewBarFold, foldMenuTop, type ViewBarParts } from '../../../../src/tools/database/database-view-bar-fold';
 
 /**
  * Notion's own parts (notion-spec-2 §26.1, tb-1512-closed.txt): six tabs with
@@ -65,6 +65,42 @@ describe('planViewBarFold: Notion order as the bar narrows (notion-spec-2 §26.1
     expect(fold.tabs).toEqual([0, 1, 5]);
   });
 
+  /*
+   * notion-motion.md Round 32 §3 (r32-b-*.raw), 8 views, same bar: the current view takes the last
+   * slot of the tabs that fit in view order; it never adds one. Table/Board/List and Board show
+   * Table, Board, List; Gallery shows Table, Board, Gallery; Feed shows Table, Board, Feed,
+   * though Feed is narrower than the List it replaces.
+   */
+  describe('the current view takes a slot, it does not add one (Round 32 §3)', () => {
+    const r32 = (current: number): ViewBarParts => ({
+      width: 340 + 77.7 + 243.3,
+      tabs: [86.4, 90.1, 74.9, 97.5, 110.3, 106.8, 83.6, 134.8],
+      current,
+      gap: 0,
+      add: 31,
+      more: 77.7,
+      toolbar: { full: 243.3, noIcons: 103.3 },
+    });
+
+    it('shows Table, Board, Feed with Feed active, not List as well', () => {
+      expect(planViewBarFold(r32(6)).tabs).toEqual([0, 1, 6]);
+    });
+
+    it('shows Table, Board, List with Table active', () => {
+      expect(planViewBarFold(r32(0)).tabs).toEqual([0, 1, 2]);
+    });
+
+    it('shows Table, Board, Gallery with Gallery active', () => {
+      expect(planViewBarFold(r32(3)).tabs).toEqual([0, 1, 3]);
+    });
+
+    // Unmeasured in Notion: only one leading tab fits and the current is past it. The current
+    // takes that slot, so one tab is left and the bar turns into "Table ⌄".
+    it('turns compact when the one slot that fits goes to the current view', () => {
+      expect(planViewBarFold({ ...r32(2), width: 170 + 77.7 + 243.3 }).tabs).toBe('compact');
+    });
+  });
+
   it('never leaves a single tab beside "N more…"', () => {
     const fold = planViewBarFold({ ...notion(1050), tabs: [300, 300], toolbar: { full: 0, noIcons: 0 }, width: 500 });
 
@@ -85,5 +121,19 @@ describe('planViewBarFold: Notion order as the bar narrows (notion-spec-2 §26.1
     expect(icons.icons).toBe(true);
     expect(withNew.newButton).toBe(true);
     expect(planViewBarFold({ ...notion(538), gap: 4 }).tabs).toEqual([0, 1]);
+  });
+});
+
+// notion-motion.md Round 38 §5 (r38-fold-flyout.raw): the "N more…" menu, 358.5 tall (50vh of 717), at five bar heights.
+describe('foldMenuTop', () => {
+  it.each([
+    // [button top, button bottom, menu top]
+    [269.2, 301.2, 305.2],
+    [389.2, 421.2, 26.7],
+    [369.2, 401.2, 350.2],
+    [342.2, 374.2, 350.2],
+    [323.2, 355.2, 350.2],
+  ])('puts the menu of a button at %f–%f at top %f', (top, bottom, menuTop) => {
+    expect(foldMenuTop({ top, bottom }, 358.5, 717)).toBeCloseTo(menuTop, 1);
   });
 });

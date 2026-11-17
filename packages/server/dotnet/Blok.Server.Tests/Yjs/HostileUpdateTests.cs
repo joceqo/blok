@@ -96,6 +96,79 @@ public sealed class HostileUpdateTests
     Assert.Equal("AegHAA==", Convert.ToBase64String(doc.EncodeStateVector()));
   }
 
+  public static TheoryData<string, int> EmptyStructProbes()
+  {
+    var data = new TheoryData<string, int>();
+
+    foreach (var golden in YjsEngineFixtures.Cases("empty-structs.json"))
+    {
+      var probes = golden!["probes"]?.AsArray();
+
+      for (var index = 0; probes is not null && index < probes.Count; index++)
+      {
+        data.Add(golden["name"]!.GetValue<string>(), index);
+      }
+    }
+
+    return data;
+  }
+
+  /// <summary>
+  /// Each probe runs on a fresh doc as yjs ran it. yjs throws when a step
+  /// deletes a length-0 item at clock 0, and then emits nothing.
+  /// </summary>
+  [Theory]
+  [MemberData(nameof(EmptyStructProbes))]
+  public void StepsAfterALengthZeroItemMatchYjs(string name, int index)
+  {
+    var golden = YjsEngineFixtures.Cases("empty-structs.json")
+        .First(node => node!["name"]!.GetValue<string>() == name)!;
+    var probe = golden["probes"]![index]!;
+    var step = probe["step"]!.GetValue<string>();
+    var own = step == "ownClient" ? probe["client"]!.GetValue<uint>() : 1001u;
+    var doc = new YDoc(own) { Gc = false };
+
+    foreach (var update in golden["updates"]!.AsArray())
+    {
+      doc.ApplyUpdate(Convert.FromBase64String(update!.GetValue<string>()));
+    }
+
+    if (step == "ownClient")
+    {
+      Assert.Equal(probe["clientIdChanged"]!.GetValue<bool>(), doc.ClientId != own);
+      return;
+    }
+
+    var emitted = new List<string>();
+    doc.UpdateEmitted += update => emitted.Add(Convert.ToBase64String(update.Update));
+    var map = doc.GetMap("m");
+    var key = probe["key"]?.GetValue<string>() ?? "";
+    var threw = false;
+
+    try
+    {
+      switch (step)
+      {
+        case "apply":
+          doc.ApplyUpdate(Convert.FromBase64String(probe["update"]!.GetValue<string>()));
+          break;
+        case "map.set":
+          doc.Transact(transaction => map.Set(transaction, key, ScenarioSupport.BuildValue(probe["value"])));
+          break;
+        default:
+          doc.Transact(transaction => map.Remove(transaction, key));
+          break;
+      }
+    }
+    catch (InvalidOperationException)
+    {
+      threw = true;
+    }
+
+    Assert.Equal(probe["throws"] is not null, threw);
+    Assert.Equal(probe["emitted"]!.AsArray().Select(node => node!.GetValue<string>()), emitted);
+  }
+
   public static TheoryData<string> EmptyStructCases()
   {
     return new TheoryData<string>(YjsEngineFixtures.Cases("empty-structs.json")
@@ -154,5 +227,53 @@ public sealed class HostileUpdateTests
     Assert.True(doc.GetMap("m").TryGet("good", out var good));
     Assert.Equal(true, good);
     Assert.True(doc.HasPending);
+  }
+
+  /// <summary>
+  /// A stacked struct whose own client integrates a later struct before the
+  /// park. 2:0 copies clocks the store holds, with an origin on 1:0, so it is
+  /// stacked; 1:0 waits on 2:10, so client 2's next struct, 2:3, integrates;
+  /// then 1:0 still waits and the stack parks. Park steps client 2 back ONE
+  /// struct from where it stood, so the parked tail is 2:3 — already
+  /// integrated — and the copy 2:0 is gone, as in yjs. yjs then parks an
+  /// encoded copy of 2:3, so a retry never rewires the live item.
+  /// </summary>
+  [Fact]
+  public void AParkAfterTheStackedClientIntegratedKeepsTheIntegratedStructInItsTail()
+  {
+    var doc = new YDoc(1000);
+
+    doc.ApplyUpdate(Convert.FromHexString("01010200040101740361626300"));
+    var result = doc.ApplyUpdate(Convert.FromHexString(
+        "020202008401000378797A840202016401010084020A017900"));
+
+    Assert.True(result.PendingRemains);
+    Assert.True(result.Changed);
+    Assert.Equal("abcd", doc.GetText("t").ToString());
+    Assert.Equal(
+        ["1:0+1", "2:3+1"],
+        (doc.Store.PendingStructs ?? []).Select(parked => $"{parked.Id.Client}:{parked.Id.Clock}+{parked.Length}"));
+    Assert.Equal("010204", Convert.ToHexString(doc.EncodeStateVector()));
+    Assert.Equal(
+        "020202000401017403616263840202016401010084020A017900",
+        Convert.ToHexString(doc.EncodeStateAsUpdate()));
+
+    // The clocks 1:0 waits for arrive; the retry drops the parked 2:3 as held.
+    var healed = doc.ApplyUpdate(Convert.FromHexString("010102048402030765666768696A6B00"));
+
+    var replay = NodeReplay.Run(
+        new Dictionary<string, string> { ["t"] = "text" },
+        [
+          Convert.FromHexString("01010200040101740361626300"),
+          Convert.FromHexString("020202008401000378797A840202016401010084020A017900"),
+          Convert.FromHexString("010102048402030765666768696A6B00"),
+        ],
+        null);
+
+    // The retry must not touch the live 2:3: yjs parks an encoded copy.
+    Assert.False(healed.PendingRemains);
+    Assert.Equal("""{"t":{"$text":[{"insert":"abcdefghijky"}]}}""", replay.Json.ToJsonString());
+    Assert.Equal("abcdefghijky", doc.GetText("t").ToString());
+    Assert.Equal(replay.StateVector, doc.EncodeStateVector());
   }
 }

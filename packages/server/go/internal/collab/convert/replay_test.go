@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/collab/operation"
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
-	"github.com/JackUait/blok/packages/server/go/internal/lib0"
-	"github.com/JackUait/blok/packages/server/go/internal/yjs"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/operation"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/lib0"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/yjs"
 )
 
 // Twins of CollabHistoryReplayTests.
@@ -156,6 +156,24 @@ func TestAFormatOneBaselineExportsItsLegacySlot(t *testing.T) {
 	_, slots, err := Export(replayed, BuiltInRichTextFields(), nil)
 	if err != nil || len(slots) != 1 || slots[0].HTML.HTML.String() != "<b>x</b>" {
 		t.Fatal(slots, err)
+	}
+}
+
+// C# CollabHistoryReplayTests.AFormatOneBaselineExportsAsSegments: the
+// legacy slot read through the runtime.
+func TestAFormatOneBaselineExportsAsSegments(t *testing.T) {
+	replayed, err := BuildReplay(context.Background(), [][]byte{mustState(t, legacyHTMLDoc())}, records())
+	if err != nil {
+		t.Fatal(err)
+	}
+	exported, err := (&DocConverter{Now: time.Now, HTML: runtimeReader(t)}).Export(context.Background(), replayed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := mustGet(exported, "blocks").([]any)[0].(*jsjson.Object)
+	text, err := jsjson.Stringify(mustGet(mustGet(block, "data").(*jsjson.Object), "text"))
+	if err != nil || text != `[{"text":"x","marks":{"bold":true}}]` {
+		t.Fatal(text, err)
 	}
 }
 

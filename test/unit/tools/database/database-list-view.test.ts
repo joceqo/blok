@@ -1,10 +1,11 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import { DatabaseListView } from '../../../../src/tools/database/database-list-view';
 import type { DatabaseRow, PropertyDefinition, SelectOption } from '../../../../src/tools/database/types';
 import type { I18n } from '../../../../types';
 import { createDefaultStatusSettings } from '../../../../src/tools/database/property-values';
 import { HINT_DELAY, destroy as destroyTooltip } from '../../../../src/components/utils/tooltip';
 import { hover, shownHint } from './hint-harness';
+import { IconExpandDiagonal, IconPeekCenter, IconPeekSide, IconPencilLine, IconPlayerPlay } from '../../../../src/components/icons';
 
 const makeRow = (overrides: Partial<DatabaseRow> = {}): DatabaseRow => ({
   id: 'row-1', position: 'a0', properties: { title: 'Fix bug' }, ...overrides,
@@ -858,6 +859,165 @@ describe('DatabaseListView', () => {
     });
   });
 
+  // notion-motion.md Round 25 §6: "Directly edit page name". Off, a title click opens the row; on, it edits in place
+  // and the button after the title is "Open in side peek".
+  describe('Directly edit page name', () => {
+    const make = (directTitleEdit: boolean): { list: HTMLElement; onOpenRow: ReturnType<typeof vi.fn>; opened: ReturnType<typeof vi.fn> } => {
+      const onOpenRow = vi.fn();
+      const opened = vi.fn();
+      const view = new DatabaseListView({
+        readOnly: false, i18n, rows: [makeRow({ properties: { title: 'Zed' } })], titlePropertyId: 'title', schema: makeSchema(), visiblePropertyIds: [],
+        onOpenRow, directTitleEdit,
+      });
+      const list = view.createView();
+
+      document.body.appendChild(list);
+      document.body.addEventListener('click', opened);
+      onTestFinished(() => document.body.removeEventListener('click', opened));
+
+      return { list, onOpenRow, opened };
+    };
+
+    it('off, a title click reaches the host, which opens the row, and the pencil stays', () => {
+      const { list, opened } = make(false);
+
+      list.querySelector<HTMLElement>('[data-blok-database-list-row-title]')?.click();
+
+      expect(opened).toHaveBeenCalledTimes(1);
+      expect(list.querySelector('[data-blok-database-list-title-input]')).toBeNull();
+      expect(list.hasAttribute('data-direct-edit')).toBe(false);
+      expect(list.querySelector('[data-blok-database-list-row-edit]')?.getAttribute('aria-label')).toBe('tools.database.editCardTitle');
+    });
+
+    it('on, a title click edits the title in place and opens nothing', () => {
+      const { list, opened, onOpenRow } = make(true);
+
+      list.querySelector<HTMLElement>('[data-blok-database-list-row-title]')?.click();
+
+      expect(list.hasAttribute('data-direct-edit')).toBe(true);
+      expect(opened).not.toHaveBeenCalled();
+      expect(onOpenRow).not.toHaveBeenCalled();
+      expect(list.querySelector<HTMLInputElement>('[data-blok-database-list-title-input]')?.value).toBe('Zed');
+      expect(list.querySelector('[data-blok-database-list-row]')?.hasAttribute('data-editing')).toBe(true);
+    });
+
+    it('on, the button after the title is "Open in side peek" and opens the row', () => {
+      const { list, opened, onOpenRow } = make(true);
+      const button = list.querySelector<HTMLElement>('[data-blok-database-list-row-edit]');
+
+      expect(button?.getAttribute('aria-label')).toBe('tools.page.openInSidePeek');
+      button?.click();
+
+      expect(onOpenRow).toHaveBeenCalledWith('row-1');
+      expect(opened).not.toHaveBeenCalled();
+      expect(list.querySelector('[data-blok-database-list-title-input]')).toBeNull();
+    });
+  });
+
+  // notion-motion.md Round 26 §4 (r26-list-edit-ghost.raw): with direct edit on, an empty Date shows "Add Date" while the title is edited.
+  describe('Add ghost while the title is edited', () => {
+    const make = (directTitleEdit: boolean, due?: string): { view: DatabaseListView; list: HTMLElement; onPropertyEdit: ReturnType<typeof vi.fn> } => {
+      const onPropertyEdit = vi.fn();
+      const view = new DatabaseListView({
+        readOnly: false, i18n, titlePropertyId: 'title', directTitleEdit, onPropertyEdit,
+        rows: [makeRow({ properties: { title: 'Gamma', ...(due !== undefined ? { 'prop-0': due } : {}) } })],
+        schema: makeSchema([{ name: 'Due', type: 'date' }, { name: 'Notes', type: 'text' }]),
+        visiblePropertyIds: ['prop-0', 'prop-1'],
+      });
+      const list = view.createView();
+
+      document.body.appendChild(list);
+      onTestFinished(() => list.remove());
+
+      return { view, list, onPropertyEdit };
+    };
+    const ghosts = (list: HTMLElement): HTMLElement[] => [...list.querySelectorAll<HTMLElement>('[data-blok-database-list-row-ghost]')];
+
+    it('shows one for the empty Date only, and drops it when the edit ends', () => {
+      const { view, list } = make(true);
+
+      expect(ghosts(list)).toEqual([]);
+      view.editTitle('row-1');
+      expect(ghosts(list).map((g) => [g.getAttribute('data-property-id'), g.textContent?.trim()])).toEqual([['prop-0', 'tools.database.cardAddProperty']]);
+      expect(i18n.t).toHaveBeenCalledWith('tools.database.cardAddProperty', { property: 'Due' });
+      expect(ghosts(list)[0].getAttribute('role')).toBe('button');
+
+      list.querySelector<HTMLInputElement>('[data-blok-database-list-title-input]')?.blur();
+      expect(ghosts(list)).toEqual([]);
+    });
+
+    it('shows none for a filled Date, or with direct edit off', () => {
+      const filled = make(true, '2026-11-14');
+
+      filled.view.editTitle('row-1');
+      expect(ghosts(filled.list)).toEqual([]);
+
+      const off = make(false);
+
+      off.view.editTitle('row-1');
+      expect(ghosts(off.list)).toEqual([]);
+    });
+
+    it('a click saves the title, then opens that Date\'s editor', () => {
+      const { view, list, onPropertyEdit } = make(true);
+
+      view.editTitle('row-1');
+      const ghost = ghosts(list)[0];
+      const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+
+      ghost.dispatchEvent(down);
+      expect(down.defaultPrevented).toBe(true);
+      ghost.click();
+
+      expect(onPropertyEdit).toHaveBeenCalledWith('row-1', 'prop-0', expect.any(HTMLElement));
+      expect(list.querySelector('[data-blok-database-list-title-input]')).toBeNull();
+    });
+  });
+
+  // notion-motion.md Round 26 §4 (r26-list-hover.raw, r26-list-chip-center.raw): the chip's label and icon follow
+  // Open pages in, and with the setting off the hover button is a 16px pencilLine "Edit".
+  describe('Open in chip follows Open pages in', () => {
+    const chip = (openPagesIn: 'side' | 'center' | 'full' | undefined, directTitleEdit = true): HTMLElement | null => {
+      const view = new DatabaseListView({
+        readOnly: false, i18n, rows: [makeRow({ properties: { title: 'Zed' } })], titlePropertyId: 'title', schema: makeSchema(), visiblePropertyIds: [],
+        directTitleEdit, openPagesIn,
+      });
+      const list = view.createView();
+
+      document.body.appendChild(list);
+      onTestFinished(() => list.remove());
+      if (!directTitleEdit) view.editTitle('row-1');
+
+      return list.querySelector<HTMLElement>('[data-blok-database-list-row-edit]');
+    };
+    const icon = (svg: string): string => Object.assign(document.createElement('span'), { innerHTML: svg }).innerHTML;
+
+    it.each([
+      ['side', 'tools.page.openInSidePeek', IconPeekSide],
+      [undefined, 'tools.page.openInSidePeek', IconPeekSide],
+      ['center', 'tools.database.openInCenterPeek', IconPeekCenter],
+      ['full', 'tools.database.openAsPage', IconExpandDiagonal],
+    ] as const)('with %s, reads %s', (mode, label, svg) => {
+      const button = chip(mode);
+
+      expect(button?.getAttribute('aria-label')).toBe(label);
+      expect(button?.innerHTML).toBe(icon(svg));
+    });
+
+    it('follows the mode while a title is edited with direct edit off', () => {
+      expect(chip('center', false)?.getAttribute('aria-label')).toBe('tools.database.openInCenterPeek');
+    });
+
+    it('draws the pencilLine for Edit with direct edit off', () => {
+      const view = new DatabaseListView({
+        readOnly: false, i18n, rows: [makeRow()], titlePropertyId: 'title', schema: makeSchema(), visiblePropertyIds: [],
+      });
+      const list = view.createView();
+
+      expect(list.querySelector('[data-blok-database-list-row-edit]')?.innerHTML).toBe(icon(IconPencilLine));
+    });
+  });
+
   // notion-spec-2 §21.8 (notion-live-4/list-row.png): with Show page icon on, a row with no emoji shows the empty-page glyph.
   describe('page icon', () => {
     const make = (showPageIcon?: boolean): { view: DatabaseListView; list: HTMLElement } => {
@@ -1246,7 +1406,7 @@ describe('DatabaseListView', () => {
       expect(rowsContainer.style.display).toBe('');
     });
 
-    it('draws the toggle as a chevron and marks the group collapsed, so only the caret turns', () => {
+    it('draws the toggle as an icon and marks the group collapsed, so only the caret turns', () => {
       const { options, getRows } = makeGroupedOptions();
       const view = new DatabaseListView({
         readOnly: false, i18n, rows: [], titlePropertyId: 'prop-title', schema: makeSchema(), visiblePropertyIds: [],
@@ -1267,6 +1427,19 @@ describe('DatabaseListView', () => {
 
       header.click();
       expect(firstGroup.hasAttribute('data-collapsed')).toBe(false);
+    });
+
+    // notion-motion.md Round 45 §1 List grouped: Notion's caret is the filled arrowCaretDownFillSmall.
+    it('draws the group toggle as the filled caret the table and board groups use', () => {
+      const { options, getRows } = makeGroupedOptions();
+      const view = new DatabaseListView({
+        readOnly: false, i18n, rows: [], titlePropertyId: 'prop-title', schema: makeSchema(), visiblePropertyIds: [],
+        options, getRows,
+      });
+      const toggle = view.createView().querySelector('[data-blok-database-list-group-toggle]') as HTMLElement;
+      const caret = Object.assign(document.createElement('span'), { innerHTML: IconPlayerPlay });
+
+      expect(toggle.innerHTML).toBe(caret.innerHTML);
     });
 
     it('starts a group collapsed when the view saved it collapsed', () => {

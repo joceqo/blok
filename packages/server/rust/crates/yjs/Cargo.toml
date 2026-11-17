@@ -1,0 +1,22 @@
+[package]
+name = "blok-yjs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal part of blok-mcp (Yjs document model). Not a stable API."
+publish = true
+
+[dependencies]
+blok-jsjson.workspace = true
+blok-lib0.workspace = true
+getrandom = "0.4"
+
+[dev-dependencies]
+base64 = "0.22"
+blok-yjs-yjstest = { path = "../yjs-yjstest" }
+sha2 = "0.10"
+
+[lints]
+workspace = true

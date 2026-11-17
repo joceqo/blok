@@ -115,11 +115,15 @@ internal sealed class RoomAgentHistory(TimeProvider time)
     }
   }
 
+  /// <summary>Called inside <see cref="Add"/> with the step, for tests.</summary>
+  internal Action<Step>? Added { get; set; }
+
   /// <summary>A new batch: drops the redo side and the oldest steps past the caps.</summary>
   internal void Add(string docId, BlokAgentActor actor, Step step)
   {
     lock (rooms)
     {
+      Added?.Invoke(step);
       Prune();
 
       if (!rooms.TryGetValue(Key(docId, actor), out var steps))
@@ -477,7 +481,11 @@ internal sealed class RoomAgentHistory(TimeProvider time)
     return values;
   }
 
-  /// <summary>A comparable spelling of a page map value; a shared type only says it is one.</summary>
+  /// <summary>
+  /// A comparable spelling of a page map value; a shared type only says it is
+  /// one. A value holding one JSON cannot (a peer's bigint) reads as absent,
+  /// as the version read leaves it out.
+  /// </summary>
   private static string Fingerprint(IReadOnlyDictionary<string, object?> map, string key)
   {
     if (!map.TryGetValue(key, out var value))
@@ -485,8 +493,18 @@ internal sealed class RoomAgentHistory(TimeProvider time)
       return "absent";
     }
 
-    return YDocConverter.IsPlainMapValue(value)
-        ? RichText.ToJsonNode(value)?.ToJsonString() ?? "null"
-        : $"shared:{value?.GetType().Name}";
+    if (!YDocConverter.IsPlainMapValue(value))
+    {
+      return $"shared:{value?.GetType().Name}";
+    }
+
+    try
+    {
+      return RichText.ToJsonNode(value)?.ToJsonString() ?? "null";
+    }
+    catch (InvalidDataException)
+    {
+      return "absent";
+    }
   }
 }

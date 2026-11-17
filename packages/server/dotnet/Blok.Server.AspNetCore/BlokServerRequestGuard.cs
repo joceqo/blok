@@ -8,21 +8,40 @@ internal sealed class BlokServerRequestGuard
   private readonly BlokServerOptions _options;
   private readonly FixedWindowRateLimiter _rateLimiter;
   private readonly TimeProvider _timeProvider;
+  private readonly bool _checkHost;
 
   public BlokServerRequestGuard(
       BlokServerOptions options,
       FixedWindowRateLimiter rateLimiter,
-      TimeProvider timeProvider)
+      TimeProvider timeProvider,
+      IEnumerable<LoopbackHostCheck> hostCheck)
   {
     _options = options;
     _rateLimiter = rateLimiter;
     _timeProvider = timeProvider;
+    _checkHost = hostCheck.Any();
   }
 
   public async Task<bool> AllowAsync(
       HttpContext context,
       bool requireWrite)
   {
+    // Ticket mode needs an allowed Origin and a pass already, and a proxy in
+    // front of it may forward the public Host.
+    if (_checkHost &&
+        _options.Auth != "ticket" &&
+        !RequestHost.IsAllowed(
+            context.Request.Headers.Host.FirstOrDefault() ?? "",
+            RequestHost.Names(_options.AllowedOrigins, _options.PublicUrl)))
+    {
+      await RejectAsync(
+          context,
+          StatusCodes.Status421MisdirectedRequest,
+          "host not allowed\n");
+
+      return false;
+    }
+
     var origin = BlokServerCors.RequestOrigin(context.Request);
     var originAllowed = BlokServerCors.IsAllowed(
         origin,
@@ -113,6 +132,10 @@ internal sealed class BlokServerRequestGuard
       return false;
     }
 
+    var key = rateLimitKey;
+    context.Features.Set(new HopBudgetFeature(() => _rateLimiter.Allow(key)));
+    context.Features.Set(new RateLimitKeyFeature(key));
+
     return true;
   }
 
@@ -131,6 +154,15 @@ internal sealed class BlokServerRequestGuard
     await context.Response.WriteAsync(body);
   }
 }
+
+/// <summary>Registered by <see cref="BlokServerBuilderExtensions.UseLoopbackHostCheck"/>.</summary>
+internal sealed class LoopbackHostCheck;
+
+/// <summary>Charges each outbound redirect hop to the key the guard charged for the request.</summary>
+internal sealed record HopBudgetFeature(Func<bool> AllowHop);
+
+/// <summary>The key the guard charged; outbound fetches share a lane per key.</summary>
+internal sealed record RateLimitKeyFeature(string Key);
 
 /// <summary>The verified ticket of the current request; set only in ticket mode, after the guard passed it.</summary>
 internal sealed record TicketClaimsFeature(TicketClaims Claims);

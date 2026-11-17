@@ -2,7 +2,7 @@
 
 package main
 
-import "github.com/JackUait/blok/packages/server/go/blokserver"
+import "github.com/JackUait/blok/packages/server/go/v2/blokserver"
 
 type conformanceArguments struct{}
 
@@ -10,5 +10,7 @@ type conformanceArguments struct{}
 func parseConformanceArguments(args []string) ([]string, conformanceArguments, string) {
 	return args, conformanceArguments{}, ""
 }
+
+func applyConformanceOptions(*blokserver.Options, conformanceArguments) {}
 
 func applyConformance(*blokserver.Server, conformanceArguments) {}

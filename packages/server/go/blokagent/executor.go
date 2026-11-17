@@ -5,40 +5,34 @@ import (
 	"errors"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
-	"github.com/JackUait/blok/packages/server/go/internal/jsruntime"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsruntime"
 )
 
 // invoker is the runtime seam; tests put a scripted runtime behind it.
 type invoker interface {
-	Invoke(ctx context.Context, op, input string, timeout time.Duration) (string, error)
-}
-
-// Rooms runs batches on live rooms. The collaboration server provides it;
-// without it ExecuteInRoom answers COMMAND_UNAVAILABLE.
-type Rooms interface {
-	// ExecuteInRoom runs one batch in the room; docID is never empty.
-	ExecuteInRoom(ctx context.Context, docID, batchJSON string, actor Actor, options *Options) (Execution, error)
-	// HasHistory reports whether the journal keeps version history, which
-	// adds the history reads and restore to the room contract.
-	HasHistory() bool
+	Invoke(ctx context.Context, op, input string, timeout *time.Duration) (string, error)
 }
 
 // Executor runs agent batches. It is safe for concurrent use; a Session is
 // not.
 type Executor struct {
 	runtime invoker
-	rooms   Rooms
+	rooms   *Rooms
+	history *roomHistory
+	// beforeHistoryLane runs between an undo's head read and its room lane,
+	// for tests.
+	beforeHistoryLane func()
 }
 
-// FactoryOptions configure New. Zero values take the defaults, as in
+// FactoryOptions configure New. A nil limit takes the default, as in
 // blokdocs.Options.
 type FactoryOptions struct {
-	PoolSize     int
-	Timeout      time.Duration
-	MemoryBudget int64
-	// Rooms, when set, runs ExecuteInRoom.
-	Rooms Rooms
+	PoolSize     *int
+	Timeout      *time.Duration
+	MemoryBudget *int64
+	// Rooms, when set, runs ExecuteInRoom on these live rooms.
+	Rooms *Rooms
 }
 
 // New builds an executor over a fresh engine pool, as C#
@@ -55,7 +49,9 @@ func New(options FactoryOptions) (*Executor, error) {
 		return nil, err
 	}
 	executor := newExecutor(pool)
-	executor.rooms = options.Rooms
+	if options.Rooms != nil {
+		executor.attach(options.Rooms)
+	}
 	return executor, nil
 }
 
@@ -66,7 +62,7 @@ func (e *Executor) invoke(ctx context.Context, op string, input *jsjson.Node) (s
 	if err != nil {
 		return "", err
 	}
-	output, err := e.runtime.Invoke(ctx, op, written, 0)
+	output, err := e.runtime.Invoke(ctx, op, written, nil)
 	if err != nil {
 		return "", fromRuntime(err)
 	}
@@ -126,7 +122,7 @@ func (e *Executor) run(ctx context.Context, documentJSON, batchJSON string, acto
 		}
 	}
 
-	made, refusal, err := e.createPages(ctx, input, options, actor)
+	made, refusal, err := e.createPages(ctx, input, options, actor, "")
 	if err != nil || refusal != nil {
 		if refusal != nil {
 			return *refusal, history, nil
@@ -256,16 +252,9 @@ func (e *Executor) Contract(ctx context.Context, options *Options) (string, erro
 // RoomContract is the command contract for ExecuteInRoom. With rooms whose
 // journal keeps history it adds the version history reads and restore.
 func (e *Executor) RoomContract(ctx context.Context, options *Options) (string, error) {
-	input, err := common(options)
+	input, err := e.roomCommon(options)
 	if err != nil {
 		return "", err
-	}
-	// A room keeps the agent's steps on the server, so its contract says so.
-	input.Members = append(input.Members, member("runtime", str("csharp-live")))
-	if e.rooms != nil && e.rooms.HasHistory() {
-		services := input.Members[0].Value
-		services.Items = append(services.Items, str("versionHistory"))
-		input.Members = append(input.Members, member("restores", jsjson.NewBool(true)))
 	}
 	return e.contract(ctx, input)
 }
@@ -287,16 +276,4 @@ func (e *Executor) contract(ctx context.Context, input *jsjson.Node) (string, er
 		return "", noAnswer("agent contract")
 	}
 	return write(contract)
-}
-
-// ExecuteInRoom runs a batch on a live room. Without Rooms it answers
-// COMMAND_UNAVAILABLE and never runs the bundle.
-func (e *Executor) ExecuteInRoom(ctx context.Context, docID, batchJSON string, actor Actor, options *Options) (Execution, error) {
-	if docID == "" {
-		return Execution{}, &ArgumentError{Param: "docId", Message: "The value cannot be an empty string."}
-	}
-	if e.rooms == nil {
-		return unavailable("Live rooms need collaboration on this server.")
-	}
-	return e.rooms.ExecuteInRoom(ctx, docID, batchJSON, actor, options)
 }

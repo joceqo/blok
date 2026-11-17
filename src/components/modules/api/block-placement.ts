@@ -1,6 +1,6 @@
-import type { BlockPosition } from '../../../../types/api';
+import type { BlockPosition, MoveToTarget } from '../../../../types/api';
 import { checkMove, type PlacementTree } from '../../../shared/agent/placement-rules';
-import { isRestrictedInTableCell } from '../../../tools/table/table-restrictions';
+import { isInsideTableCell, isRestrictedInTableCell } from '../../../tools/table/table-restrictions';
 import type { Block } from '../../block';
 import { acceptsChildren, getChildToolRestrictions } from '../../utils/child-tools';
 import { subtreeEnd } from '../../utils/tree-order';
@@ -194,4 +194,72 @@ export const assertCanMoveUnder = (
   if (refusal !== null) {
     throw new BlockPlacementError(refusal.message);
   }
+};
+
+/**
+ * Every check `blocks.moveTo` makes, without moving anything. Returns the
+ * resolved place, or throws a BlockPlacementError.
+ * @param tree - the blocks
+ * @param block - the block to move
+ * @param target - new parent and position
+ */
+export const resolveMoveTo = (tree: BlockTree, block: Block, target: MoveToTarget): ResolvedPlacement => {
+  const { position } = target;
+  const relative = typeof position === 'object' ? position : undefined;
+  const refId = relative !== undefined && 'before' in relative ? relative.before : relative?.after;
+
+  if (refId === block.id) {
+    throw new BlockPlacementError(`cannot place "${block.id}" relative to itself`);
+  }
+
+  const placement = resolvePlacement(tree, target.parentId, position);
+
+  assertCanMoveUnder(tree, block, placement.parentId, refId);
+
+  const from = tree.blocks.indexOf(block);
+  const end = from + tree.blocks.filter(candidate => isUnder(tree, candidate, block.id)).length;
+  // A slot inside or right after its own subtree needs no flat move.
+  const movesFlat = placement.index <= from || placement.index > end + 1;
+  const toIndex = from < placement.index ? placement.index - 1 : placement.index;
+
+  // move() silently refuses a restricted tool whose slot neighbour is a
+  // table cell block, even for the slot right after a table. Drop this when
+  // the pin "blocks.move puts a header right after a table" passes.
+  if (movesFlat && isRestrictedInTableCell(block.name) && isInsideTableCell(tree.blocks[toIndex])) {
+    throw new BlockPlacementError(`cannot move "${block.name}" to a slot next to a table cell block`);
+  }
+
+  return placement;
+};
+
+/**
+ * A dry run of `blocks.moveTo(id, target)` for each block in turn: each check
+ * sees the blocks before it already moved. Throws the first refusal.
+ * @param tree - the blocks
+ * @param blocks - the blocks to move, in move order, none inside another
+ * @param target - new parent and position, the same for each
+ */
+export const assertCanMoveAll = (tree: BlockTree, blocks: Block[], target: MoveToTarget): void => {
+  const byId = new Map(tree.blocks.map(block => [block.id, block]));
+  const state = { order: [...tree.blocks] };
+  const view: BlockTree = {
+    get blocks() {
+      return state.order;
+    },
+    getBlockById: id => byId.get(id),
+  };
+
+  blocks.forEach(original => {
+    const block = byId.get(original.id) ?? original;
+    const placement = resolveMoveTo(view, block, target);
+    const members = state.order.filter(candidate => candidate === block || isUnder(view, candidate, block.id));
+    // Only the parent changes. The holder stays where it is, which the table
+    // cell checks can bear: a moved block's cell blocks stay in its own table.
+    const moved = Object.create(block, { parentId: { value: placement.parentId } }) as Block;
+    const kept = state.order.filter(candidate => !members.includes(candidate));
+    const at = state.order.slice(0, placement.index).filter(candidate => !members.includes(candidate)).length;
+
+    byId.set(block.id, moved);
+    state.order = [...kept.slice(0, at), ...members.map(member => (member === block ? moved : member)), ...kept.slice(at)];
+  });
 };

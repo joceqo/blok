@@ -44,6 +44,23 @@ options.Version = Assembly.GetEntryAssembly()
     ?.GetCustomAttributes<AssemblyMetadataAttribute>()
     .SingleOrDefault(metadata => metadata.Key == "BlokServerVersion")
     ?.Value ?? "dev";
+#if BLOK_SERVER_CONFORMANCE
+if (conformance.KeepAliveMs is { } keepAliveMs)
+{
+  options.CollabKeepAliveInterval = TimeSpan.FromMilliseconds(keepAliveMs);
+}
+
+options.CollabEnforceRestoreGuards = conformance.RestoreGuards;
+options.CollabRestoreTrashesPages = conformance.RestoreTrashesPages;
+options.CollabStampAuthority = conformance.StampAuthority;
+// Only ever on: the host flags may have opened them already.
+options.FileBytesEnabled |= conformance.FileBytes;
+options.FilesCors |= conformance.FilesCors;
+if (conformance.FileBytesMaxBytes is { } fileBytesMaxBytes)
+{
+  options.FileBytesMaxBytes = fileBytesMaxBytes;
+}
+#endif
 
 try
 {
@@ -80,7 +97,7 @@ HostRequestTimeouts.Configure(
     HostRequestTimeouts.DefaultRequestTimeout,
     HostRequestTimeouts.DefaultKeepAliveTimeout);
 HostCollab.Configure(builder, options);
-var blokServer = builder.Services.AddBlokServer(options);
+var blokServer = builder.Services.AddBlokServer(options).UseLoopbackHostCheck();
 #if BLOK_SERVER_CONFORMANCE
 if (conformance.Origin is not null)
 {
@@ -92,6 +109,11 @@ if (conformance.Origin is not null)
 if (conformance.Journal)
 {
   blokServer.UseConformanceJournal(options.CollabDirectory);
+}
+
+if (conformance.RecordNotes)
+{
+  blokServer.UseCollabRecordNotes<Blok.Server.Collab.InMemoryCollabRecordNotes>();
 }
 #endif
 

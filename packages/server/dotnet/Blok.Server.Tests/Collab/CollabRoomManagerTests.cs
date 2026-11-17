@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json.Nodes;
 using Blok.Server.Collab;
 using Blok.Server.Yjs;
@@ -334,6 +335,49 @@ public sealed class CollabRoomManagerTests
     Assert.Equal("ab", YDocs.Text(replica));
   }
 
+  /// <summary>
+  /// The eviction's flush finds the debounced save failing and fails its
+  /// own. A member who comes back stops the eviction retry, so the export
+  /// needs its own timer, or the consumer's copy waits for the next edit.
+  /// </summary>
+  [Fact]
+  public async Task AFailedEvictionExportRetriesAfterAMemberRejoins()
+  {
+    endpoint.Holds(DocId, "hello");
+    endpoint.SaveGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    endpoint.NextSaveFailure = new DocEndpointException("collab: the doc endpoint PUT returned 502.", 502);
+    endpoint.MoreSaveFailures = 1;
+    var manager = CreateManager();
+    var member = new FakeMember();
+    var membership = (await manager.JoinAsync(DocId, member, CancellationToken.None)).Membership!;
+    var client = await SyncedAsync(membership, member);
+    await membership.ReceiveAsync(
+        SyncWire.Encode(new SyncUpdateFrame(YDocs.UpdateAppending(client, "!"))),
+        CancellationToken.None);
+    await Waits.UntilAsync(() => store.FramesOf(DocId).Count == 2, "the working set to catch up");
+    await membership.LeaveAsync();
+
+    time.Advance(TimeSpan.FromSeconds(2));
+    await Waits.UntilAsync(() => endpoint.Saves.Count == 1, "the debounced export to start");
+    // Past the linger: the eviction waits on the gated save.
+    time.Advance(TimeSpan.FromSeconds(28));
+    var gate = endpoint.SaveGate;
+    endpoint.SaveGate = null;
+    gate.SetResult();
+    await Waits.UntilAsync(() => endpoint.Saves.Count == 2, "the flush's own export");
+    await manager.SettleAsync();
+    var back = (await manager.JoinAsync(DocId, new FakeMember(), CancellationToken.None)).Membership!;
+
+    await Waits.UntilAdvancingAsync(
+        time,
+        TimeSpan.FromSeconds(1),
+        () => endpoint.Saves.Count == 3,
+        "the export retry");
+
+    Assert.Equal("hello!", endpoint.Saves[^1].Data["text"]?.GetValue<string>());
+    await back.LeaveAsync();
+  }
+
   [Fact]
   public async Task MembershipCallsStaySafeAfterLeavingAndAfterTheRoomClosed()
   {
@@ -478,6 +522,55 @@ public sealed class CollabRoomManagerTests
     Assert.Equal(1, manager.LiveRoomCount);
   }
 
+  /// <summary>
+  /// Join, state and reset have their own retry loops, so each is pinned the
+  /// way the edit above is: queued behind a mid-flush eviction, it lands on a
+  /// fresh room hydrated from the blob the eviction wrote.
+  /// </summary>
+  [Theory]
+  [InlineData("join")]
+  [InlineData("state")]
+  [InlineData("reset")]
+  public async Task ACallQueuedBehindAClosingRoomIsRetriedOnAFreshOne(string call)
+  {
+    endpoint.Holds(DocId, "a");
+    endpoint.SaveGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var manager = CreateManager(new CollabRoomOptions
+    {
+      ExportDebounce = TimeSpan.FromMinutes(5),
+      ExportMaxDelay = TimeSpan.FromMinutes(5),
+    });
+    var member = new FakeMember();
+    var membership = (await manager.JoinAsync(DocId, member, CancellationToken.None)).Membership!;
+    var client = await SyncedAsync(membership, member);
+    await membership.ReceiveAsync(
+        SyncWire.Encode(new SyncUpdateFrame(YDocs.UpdateAppending(client, "b"))),
+        CancellationToken.None);
+    await Waits.UntilAsync(() => store.FramesOf(DocId).Count == 2, "the working set to catch up");
+    await membership.LeaveAsync();
+    time.Advance(TimeSpan.FromSeconds(30));
+    await Waits.UntilAsync(() => endpoint.Saves.Count == 1, "the eviction's export to start");
+
+    Task<string> pending = call switch
+    {
+      "join" => manager.JoinAsync(DocId, new FakeMember(), CancellationToken.None).AsTask()
+          .ContinueWith(t => t.Result.Status.ToString(), TaskScheduler.Default),
+      "state" => manager.StateAsync(DocId, CancellationToken.None).AsTask()
+          .ContinueWith(t => t.Result.Status.ToString(), TaskScheduler.Default),
+      _ => manager.ResetForHttpAsync(DocId, CancellationToken.None).AsTask()
+          .ContinueWith(t => t.Result.Status.ToString(), TaskScheduler.Default),
+    };
+    endpoint.SaveGate.SetResult();
+    endpoint.SaveGate = null;
+    var status = await pending;
+
+    Assert.Equal(call switch { "join" => "Joined", "state" => "Ready", _ => "Reset" }, status);
+    Assert.Equal(1, endpoint.Loads);
+    Assert.Equal(2, store.Reads);
+    // A reset closes the room it ran on.
+    Assert.Equal(call == "reset" ? 0 : 1, manager.LiveRoomCount);
+  }
+
   [Fact]
   public async Task LegacyManagerCannotSilentlyIgnoreAnAccessRecheck()
   {
@@ -563,6 +656,32 @@ public sealed class CollabRoomManagerTests
     await Assert.ThrowsAnyAsync<OperationCanceledException>(() => recheck);
     Assert.Empty(member.Closes);
     Assert.Equal(1, manager.LiveRoomCount);
+  }
+
+  /// <summary>
+  /// Only a CANCELLATION aborts a cancelled recheck. A policy that fails any
+  /// other way is a denial, even after the caller cancelled.
+  /// </summary>
+  [Fact]
+  public async Task APolicyThatFailsAfterTheCallerCancelledStillExpels()
+  {
+    endpoint.Holds(DocId, "seeded");
+    var manager = CreateManager();
+    var member = new FakeMember();
+    Assert.Equal(CollabJoinStatus.Joined, (await manager.JoinAsync(DocId, member)).Status);
+    member.RecheckEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    member.RecheckGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    member.RecheckIgnoresCancellation = true;
+    using var cancellation = new CancellationTokenSource();
+    var recheck = ((ICollabRoomManager)manager).RecheckAccessAsync(DocId, cancellation.Token).AsTask();
+    await member.RecheckEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+    await cancellation.CancelAsync();
+    member.RecheckFailure = new InvalidOperationException("policy failed");
+    member.RecheckGate.SetResult();
+
+    Assert.Equal(1, await recheck.WaitAsync(TimeSpan.FromSeconds(3)));
+    Assert.Equal([CollabCloseReason.Forbidden], member.Closes);
   }
 
   [Fact]
@@ -912,9 +1031,7 @@ public sealed class CollabRoomManagerTests
     time.Advance(TimeSpan.FromSeconds(2));
     await Waits.UntilAsync(() => endpoint.Saves.Count == 1, "the export to start");
 
-    var reset = manager.ResetAsync(DocId, CancellationToken.None).AsTask();
-    var finished = await Task.WhenAny(reset, Task.Delay(TimeSpan.FromSeconds(10)));
-    Assert.Same(reset, finished);
+    await manager.ResetAsync(DocId, CancellationToken.None).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
     endpoint.SaveGate.SetResult();
     endpoint.SaveGate = null;
     time.Advance(TimeSpan.FromMinutes(1));
@@ -1227,6 +1344,158 @@ public sealed class CollabRoomManagerTests
         endpoint.Saves
             .OrderBy(save => save.DocId, StringComparer.Ordinal)
             .Select(save => save.Data["text"]?.GetValue<string>()));
+  }
+
+  /// <summary>
+  /// The "held off" log line prints its wait with TimeSpan's "c" format. Go
+  /// and Rust copy these rows.
+  /// </summary>
+  [Theory]
+  [InlineData(2_000_000_000L, "00:00:02")]
+  [InlineData(60_000_000_000L, "00:01:00")]
+  [InlineData(5_000_000L, "00:00:00.0050000")]
+  [InlineData(1_500_000_000L, "00:00:01.5000000")]
+  [InlineData(150L, "00:00:00.0000001")]
+  [InlineData(90_061_000_000_000L, "1.01:01:01")]
+  [InlineData(3_600_000_000_000L * 24 * 12 + 1_000_000_000L, "12.00:00:01")]
+  public void AHeldOffWaitPrintsAsATimeSpan(long nanoseconds, string printed)
+  {
+    Assert.Equal(printed, $"{TimeSpan.FromTicks(nanoseconds / 100)}");
+  }
+
+  /// <summary>
+  /// The shutdown deadline cancels the drain's token mid-flush. Every room
+  /// still closes, and the only lines are each room's own flush failure.
+  /// </summary>
+  [Fact]
+  public async Task ADrainCutShortByItsTokenStillClosesEveryRoom()
+  {
+    var log = new List<string>();
+    endpoint.Holds("doc-a", "a");
+    endpoint.Holds("doc-b", "b");
+    var manager = CreateManager(
+        new CollabRoomOptions
+        {
+          ExportDebounce = TimeSpan.FromMinutes(5),
+          ExportMaxDelay = TimeSpan.FromMinutes(5),
+        },
+        log: log);
+    var memberA = new FakeMember();
+    var memberB = new FakeMember();
+    var membershipA = (await manager.JoinAsync("doc-a", memberA, CancellationToken.None)).Membership!;
+    var membershipB = (await manager.JoinAsync("doc-b", memberB, CancellationToken.None)).Membership!;
+    var clientA = await SyncedAsync(membershipA, memberA);
+    var clientB = await SyncedAsync(membershipB, memberB);
+    await membershipA.ReceiveAsync(
+        SyncWire.Encode(new SyncUpdateFrame(YDocs.UpdateAppending(clientA, "!"))),
+        CancellationToken.None);
+    await membershipB.ReceiveAsync(
+        SyncWire.Encode(new SyncUpdateFrame(YDocs.UpdateAppending(clientB, "?"))),
+        CancellationToken.None);
+    await manager.SettleAsync();
+    await WritesSettledAsync(manager);
+    endpoint.SaveGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    using var shutdown = new CancellationTokenSource();
+
+    var drain = manager.DrainAsync(shutdown.Token).AsTask();
+    await Waits.UntilAsync(() => endpoint.Saves.Count == 2, "both drains to start their export");
+    await shutdown.CancelAsync();
+    await drain.WaitAsync(TimeSpan.FromSeconds(10));
+
+    Assert.Equal(0, manager.LiveRoomCount);
+    Assert.Equal([CollabCloseReason.Draining], memberA.Closes);
+    Assert.Equal([CollabCloseReason.Draining], memberB.Closes);
+    Assert.Equal(
+        [
+          "collab: room \"doc-a\" could not export during flush: The operation was canceled.",
+          "collab: room \"doc-b\" could not export during flush: The operation was canceled.",
+        ],
+        log.Order(StringComparer.Ordinal));
+  }
+
+  /// <summary>
+  /// A drain token already cancelled before the flush: the working-set write
+  /// and the save fail with the text a token cancelled before the call gets.
+  /// </summary>
+  [Fact]
+  public async Task ADrainWhoseTokenIsAlreadyCancelledPrintsTheTaskCancelText()
+  {
+    var log = new List<string>();
+    endpoint.Holds("doc-a", "a");
+    var manager = CreateManager(
+        new CollabRoomOptions
+        {
+          ExportDebounce = TimeSpan.FromMinutes(5),
+          ExportMaxDelay = TimeSpan.FromMinutes(5),
+        },
+        log: log);
+    var member = new FakeMember();
+    var membership = (await manager.JoinAsync("doc-a", member, CancellationToken.None)).Membership!;
+    var client = await SyncedAsync(membership, member);
+    // A slow store, as on a loaded CI runner: the edit's write is still in
+    // flight after the lane pass below.
+    store.BeforeWrite = () => Task.Delay(200);
+    await membership.ReceiveAsync(
+        SyncWire.Encode(new SyncUpdateFrame(YDocs.UpdateAppending(client, "!"))),
+        CancellationToken.None);
+    await manager.SettleAsync();
+    // The write's finish is posted to the lane. If it lands during the drain,
+    // the drain's settle waits behind it and the cancelled drain logs that.
+    await manager.SettleWritesAsync();
+    store.BeforeWrite = null;
+    endpoint.SaveGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    store.RefusesCancelledWrites = true;
+    using var shutdown = new CancellationTokenSource();
+    await shutdown.CancelAsync();
+
+    await manager.DrainAsync(shutdown.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+
+    Assert.Equal(0, manager.LiveRoomCount);
+    // The flush compacts, so it owes the store a write too.
+    Assert.Equal(
+        [
+          "collab: room \"doc-a\" could not flush the working set: A task was canceled.",
+          "collab: room \"doc-a\" could not export during flush: A task was canceled.",
+        ],
+        log);
+  }
+
+  /// <summary>
+  /// A logger that throws while the drain reports a room it could not drain:
+  /// the throw leaves DrainAsync, so the host says the drain did not complete.
+  /// </summary>
+  [Fact]
+  public async Task ALoggerThatThrowsDuringTheDrainFailsTheDrain()
+  {
+    endpoint.Holds("doc-a", "a");
+    var manager = new CollabRoomManager(
+        store,
+        endpoint,
+        converter,
+        new CollabRoomOptions
+        {
+          ExportDebounce = TimeSpan.FromMinutes(5),
+          ExportMaxDelay = TimeSpan.FromMinutes(5),
+        },
+        time,
+        message => throw new InvalidOperationException("logger failed"));
+    var member = new FakeMember();
+    var membership = (await manager.JoinAsync("doc-a", member, CancellationToken.None)).Membership!;
+    var client = await SyncedAsync(membership, member);
+    await membership.ReceiveAsync(
+        SyncWire.Encode(new SyncUpdateFrame(YDocs.UpdateAppending(client, "!"))),
+        CancellationToken.None);
+    await manager.SettleAsync();
+    store.RefusesCancelledWrites = true;
+    using var shutdown = new CancellationTokenSource();
+    await shutdown.CancelAsync();
+
+    var error = await Assert.ThrowsAsync<InvalidOperationException>(
+        () => manager.DrainAsync(shutdown.Token).AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
+
+    Assert.Equal("logger failed", error.Message);
+    // The throw skips Forget: the room stays loaded.
+    Assert.Equal(1, manager.LiveRoomCount);
   }
 
   [Theory]
@@ -1563,6 +1832,31 @@ public sealed class CollabRoomManagerTests
     {
       return ValueTask.CompletedTask;
     }
+  }
+
+  /// <summary>
+  /// The edits' working-set writes run beside the lane and post their finish
+  /// back later. A finish that lands during a drain queues the drain's settle
+  /// behind it, and a cancelled drain then logs one more line. No public
+  /// surface shows the write in flight, so the room's field is read.
+  /// </summary>
+  private static async Task WritesSettledAsync(CollabRoomManager manager)
+  {
+    var rooms = (Dictionary<string, CollabRoom>)typeof(CollabRoomManager)
+        .GetField("rooms", BindingFlags.NonPublic | BindingFlags.Instance)!
+        .GetValue(manager)!;
+    var inFlight = typeof(CollabRoom)
+        .GetField("inFlightPersist", BindingFlags.NonPublic | BindingFlags.Instance)!;
+    CollabRoom[] live;
+
+    lock (rooms)
+    {
+      live = [.. rooms.Values];
+    }
+
+    await Waits.UntilAsync(
+        () => live.All(room => inFlight.GetValue(room) is null),
+        "the working-set writes to settle");
   }
 
   private CollabRoomManager CreateManager(

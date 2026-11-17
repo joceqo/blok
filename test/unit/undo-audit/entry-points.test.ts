@@ -32,7 +32,7 @@ const mountEditor = (): Editor => {
   redactor.contentEditable = 'true';
   wrapper.appendChild(redactor);
 
-  const undo = vi.fn();
+  const undo = vi.fn(() => true);
   const blok = {
     BlockManager: {
       currentBlock: undefined,
@@ -42,9 +42,12 @@ const mountEditor = (): Editor => {
     BlockSelection: { navigationModeEnabled: false },
     BlockSettings: { contains: vi.fn(() => false) },
     BlockEvents: { keydown: vi.fn() },
-    Toolbar: { close: vi.fn() },
+    // An undo or redo press reads the slash menu's state first.
+    Toolbar: { close: vi.fn(), toolbox: { opened: false, close: vi.fn() } },
     DragManager: { isDragging: false },
-    YjsManager: { undo, redo: vi.fn(), markCaretBeforeChange: vi.fn() },
+    YjsManager: { undo, redo: vi.fn(() => true), markCaretBeforeChange: vi.fn() },
+    // Undo and redo key presses announce their result.
+    I18n: { t: (key: string) => key },
   } as unknown as BlokModules;
 
   const controller = new KeyboardController({

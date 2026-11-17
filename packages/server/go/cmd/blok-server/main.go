@@ -5,13 +5,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/blokserver"
+	"github.com/JackUait/blok/packages/server/go/v2/blokserver"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/synchttp"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
 )
 
 // version is stamped at build time: -ldflags "-X main.version=1.2.3".
@@ -38,6 +42,12 @@ const usage = `Usage of blok-server:
     requests a minute per caller (ticket mode defaults to 60; other modes default to 0)
   --no-unfurl
     close GET /unfurl and POST /upload-by-url
+  --file-bytes
+    serve GET /file-bytes, which hands the PDF preview a file's bytes (off by default)
+  --file-bytes-max-bytes value
+    largest file GET /file-bytes serves, in bytes (default 104857600)
+  --files-cors
+    let --allow-origin origins read stored files from another origin (off by default)
   --s3-endpoint value
     S3-compatible endpoint
   --s3-region value
@@ -66,8 +76,13 @@ const usage = `Usage of blok-server:
     list what each tool's richTextFields declares (or set BLOK_RICH_TEXT_FIELDS)
 `
 
-// shutdownGrace stays under the 2s the conformance harness waits before SIGKILL.
-const shutdownGrace = 1500 * time.Millisecond
+// newline is .NET's Environment.NewLine, which Console.Error.WriteLine ends
+// every C# record with: "\r\n" in the Windows CoreLib.
+var newline = map[bool]string{true: "\r\n", false: "\n"}[runtime.GOOS == "windows"]
+
+// shutdownGrace is C#'s HostCollab.ShutdownTimeout: a ceiling for the drain
+// and the graceful stop, not a wait.
+const shutdownGrace = 30 * time.Second
 
 const (
 	defaultRequestTimeout = 10 * time.Minute
@@ -76,42 +91,89 @@ const (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-	code := run(ctx, os.Args[1:], os.Getenv, os.Stderr)
-	stop()
+	armEarlyQuit()
+	// .NET decodes argv and the environment itself: bytes that are not
+	// UTF-8 become U+FFFD, not raw bytes in paths and error lines.
+	args := make([]string, 0, len(os.Args))
+	for _, arg := range os.Args[1:] {
+		args = append(args, dotnet.NativeText(arg))
+	}
+	getenv := func(name string) string { return dotnet.NativeText(os.Getenv(name)) }
+	code := run(context.Background(), args, getenv, os.Stderr)
 	os.Exit(code)
 }
+
+// notifyShutdown runs just before the bind, where C#'s StartAsync registers
+// its signal handlers: a SIGTERM, SIGINT or SIGQUIT before it takes the
+// default action, as in C# (SIGQUIT through armEarlyQuit).
+var notifyShutdown = func(ctx context.Context) (context.Context, context.CancelFunc) {
+	// Registered first: a SIGQUIT between the two reaches early, which
+	// still dies by it, rather than no one.
+	ctx, stop := notifyContext(ctx, syscall.SIGTERM, os.Interrupt, syscall.SIGQUIT)
+	quitBound.Store(true)
+	return ctx, stop
+}
+
+// notifyContext is signal.NotifyContext; a test checks the order above.
+var notifyContext = signal.NotifyContext
 
 // newHTTPServer is Kestrel's limits: 2 min idle, and every request cut off
 // with 504 at the request deadline. The 10 s header limit needs the
 // listener wrapped too: serve on a headerListener.
 func newHTTPServer(handler http.Handler, requestTimeout time.Duration) *http.Server {
 	server := &http.Server{
-		Handler:     withDeadline(handler, requestTimeout),
+		Handler:     withServerHeader(withDeadline(dotnet.RecoverLikeKestrel(handler), requestTimeout)),
 		IdleTimeout: keepAliveTimeout,
 		// Without this net/http answers "OPTIONS *" itself.
 		DisableGeneralOptionsHandler: true,
+		// The C# host clears Kestrel's loggers: a handler panic, an accept
+		// retry or a misused writer reaches no one, never raw on stderr.
+		ErrorLog: log.New(io.Discard, "", 0),
+		// The stream holds Kestrel's head limits; this caps heads only after
+		// it stops rewriting (a chunked trailer, an upgrade). net/http adds 4096.
+		MaxHeaderBytes: maxRequestLine + maxHeaderBlock - 4096,
 	}
+	restoreTargets(server)
 	limitRequestHeaders(server, headerTimeout, keepAliveTimeout)
 	return server
 }
 
+// withServerHeader is Kestrel's AddServerHeader default: every answer says
+// "Server: Kestrel". kestrelAnswer and ws.Upgrade carry it too.
+func withServerHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "Kestrel")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // maxUpgradedConnections is HostCollab.DefaultMaxUpgradedConnections: an
-// accept-and-hold flood cannot pin every socket the process can hold. Go has
-// no Kestrel backstop behind it; this count is the only cap.
+// accept-and-hold flood cannot pin every socket the process can hold. It is
+// both the service count (503) and the backstop in limitUpgrades (500).
 const maxUpgradedConnections = 1024
 
+// limitUpgrades is the Kestrel backstop HostCollab.Configure sets with
+// collab: it counts the sockets the sync door accepts only to close, which
+// the service count does not.
+func limitUpgrades(handler http.Handler, options blokserver.Options) http.Handler {
+	if !options.CollabEnabled {
+		return handler
+	}
+	return synchttp.LimitUpgrades(handler, maxUpgradedConnections)
+}
+
 // configureCollab is HostCollab.Configure.
-func configureCollab(options *blokserver.Options) {
+func configureCollab(options *blokserver.Options, stderr io.Writer) {
 	if options.CollabEnabled {
 		options.CollabMaxConnections = maxUpgradedConnections
+		options.Logger = newCollabLogger(stderr)
 	}
 }
 
 func run(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer) int {
 	hostArgs, conformance, conformanceErr := parseConformanceArguments(args)
 	if conformanceErr != "" {
-		fmt.Fprintln(stderr, conformanceErr)
+		fmt.Fprint(stderr, conformanceErr+newline)
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
@@ -121,43 +183,47 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 		return 0
 	}
 	if parsed.err != "" {
-		fmt.Fprintln(stderr, parsed.err)
+		fmt.Fprint(stderr, parsed.err+newline)
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
 	options := parsed.options
-	options.Version = version
-	configureCollab(&options)
+	options.Version = new(version)
+	options.LoopbackHostCheck = true
+	configureCollab(&options, stderr)
+	applyConformanceOptions(&options, conformance)
 	server, err := blokserver.New(options)
 	if err != nil {
-		fmt.Fprintf(stderr, "blok-server refused to start: %v\n", err)
+		fmt.Fprintf(stderr, "blok-server refused to start: %v%s", err, newline)
 		return 1
 	}
 	if parsed.secretFromFlag {
-		fmt.Fprintln(stderr, "warning: --secret puts the shared secret in this machine's process list; set BLOK_SECRET in the environment instead")
+		fmt.Fprint(stderr, "warning: --secret puts the shared secret in this machine's process list; set BLOK_SECRET in the environment instead"+newline)
 	}
 	if parsed.docEndpointAuthFromFlag {
-		fmt.Fprintln(stderr, "warning: --doc-endpoint-auth puts the credential in this machine's process list; set BLOK_DOC_ENDPOINT_AUTH in the environment instead")
+		fmt.Fprint(stderr, "warning: --doc-endpoint-auth puts the credential in this machine's process list; set BLOK_DOC_ENDPOINT_AUTH in the environment instead"+newline)
 	}
 	applyConformance(server, conformance)
 
-	listeners, err := listen(options.ListenAddress)
+	ctx, stopSignals := notifyShutdown(ctx)
+	defer stopSignals()
+	listeners, err := listen(*options.ListenAddress)
 	if err != nil {
-		fmt.Fprintf(stderr, "blok-server refused to start: %v\n", err)
+		fmt.Fprintf(stderr, "blok-server refused to start: %v%s", err, newline)
 		return 1
 	}
-	httpServer := newHTTPServer(server.Handler(""), defaultRequestTimeout)
+	httpServer := newHTTPServer(limitUpgrades(server.Handler(""), options), defaultRequestTimeout)
 	served := make(chan error, len(listeners))
 	for _, listener := range listeners {
 		go func() { served <- httpServer.Serve(headerListener{listener, headerTimeout, keepAliveTimeout}) }()
 	}
 
 	// The harness trusts /health only after this line, so it must follow the bind.
-	fmt.Fprintf(stderr, "blok-server %s listening on %s (--auth %s)\n", version, options.ListenAddress, options.Auth)
+	fmt.Fprintf(stderr, "blok-server %s listening on %s (--auth %s)%s", version, *options.ListenAddress, *options.Auth, newline)
 
 	select {
 	case err := <-served:
-		fmt.Fprintf(stderr, "blok-server stopped: %v\n", err)
+		fmt.Fprintf(stderr, "blok-server stopped: %v%s", err, newline)
 		return 1
 	case <-ctx.Done():
 	}
@@ -165,7 +231,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	shutdown, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	if err := server.Drain(shutdown); err != nil {
-		fmt.Fprintf(stderr, "warning: collab: the shutdown drain did not complete: %v\n", err)
+		_ = writeLogLine(stderr, "warning", "collab: the shutdown drain did not complete: "+err.Error())
 	}
 	_ = httpServer.Shutdown(shutdown)
 	return 0

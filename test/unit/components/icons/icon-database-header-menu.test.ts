@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { IconChangeType, IconColumnInsertLeft, IconColumnInsertRight, IconGroup } from '../../../../src/components/icons';
+import { IconArrowRightLine, IconChangeType, IconColumnInsertLeft, IconColumnInsertRight, IconGroup, IconInsertLeft } from '../../../../src/components/icons';
 
 const svgOf = (markup: string): Element => {
   const svg = new DOMParser().parseFromString(markup, 'image/svg+xml').documentElement;
@@ -45,10 +45,10 @@ describe('column insert glyphs', () => {
     expect(tip - (bar.x + bar.width) - STROKE).toBeGreaterThanOrEqual(STROKE);
   });
 
-  it('use the bar of the panel height (y 4 to 16)', () => {
+  it('use a bar as tall as the Keyline square frame (y 3.5 to 16.5)', () => {
     const [bar] = rects(IconColumnInsertLeft);
 
-    expect([bar.y, bar.y + bar.height]).toEqual([4, 16]);
+    expect([bar.y, bar.y + bar.height]).toEqual([3.5, 16.5]);
   });
 });
 
@@ -90,9 +90,21 @@ describe('group glyph', () => {
 
 describe('change type glyph', () => {
   it('draws two arrows whose tips sit on opposite sides of the loop', () => {
-    const heads = paths(IconChangeType).filter((d) => /^M[\d.]+ [\d.]+l/.test(d));
+    const heads = paths(IconChangeType)
+      .flatMap((d) => d.match(/M[^M]+/g) ?? [])
+      .filter((d) => /^M[\d.]+ [\d.]+l/.test(d));
 
     expect(heads).toHaveLength(2);
+    // A head is "M x y l dx1 dy1 dx2 dy2"; its tip is the middle point.
+    const tips = heads.map((d) => {
+      const [x = 0, y = 0, dx = 0, dy = 0] = (d.match(/-?(?:\d*\.)?\d+/g) ?? []).map(Number);
+
+      return [x + dx, y + dy];
+    });
+    const [first = [], second = []] = tips;
+
+    // Opposite sides: the tips are a half turn apart about the canvas centre.
+    expect([(first[0] ?? 0) + (second[0] ?? 0), (first[1] ?? 0) + (second[1] ?? 0)]).toEqual([20, 20]);
   });
 
   it('stays inside the 3 to 17 content box', () => {
@@ -108,3 +120,24 @@ describe('change type glyph', () => {
     }
   });
 });
+
+// notion-motion.md Round 29 §2, r29-wrapmenu.png: Unwrap is an arrow pointing right into a line (→|).
+describe('unwrap glyph', () => {
+  it('keeps IconInsertLeft\'s line and shaft span, with the head at the line end', () => {
+    const [shaft, line] = paths(IconArrowRightLine);
+    const [insertShaft, insertLine] = paths(IconInsertLeft);
+
+    expect(line).toBe(insertLine);
+    const ends = (d: string): number[] => (/M(\d+(?:\.\d+)?) 10h(-?\d+(?:\.\d+)?)/.exec(d) ?? []).slice(1).map(Number);
+    const [start, run] = ends(shaft);
+    const [insertStart, insertRun] = ends(insertShaft);
+
+    // An 8-unit short arrow over the same span.
+    expect(run).toBe(8);
+    expect([start, start + run].sort()).toEqual([insertStart + insertRun, insertStart].sort());
+    // The head points right, at the tip, one stroke and more clear of the line.
+    expect(shaft).toMatch(/M9 6\.5l3\.5 3\.5L9 13\.5/);
+    expect(15.5 - (start + run)).toBeGreaterThanOrEqual(2.25);
+  });
+});
+

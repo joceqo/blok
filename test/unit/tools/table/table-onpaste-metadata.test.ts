@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Table } from '../../../../src/tools/table';
 import { isCellWithBlocks } from '../../../../src/tools/table/types';
 import type { TableData, TableConfig } from '../../../../src/tools/table/types';
+import { SanitizerConfigBuilder } from '../../../../src/components/modules/paste/sanitizer-config';
+import type { BlockToolAdapter } from '../../../../src/components/tools/block';
+import type { ToolsCollection } from '../../../../src/components/tools/collection';
 import type { API, BlockToolConstructorOptions } from '../../../../types';
 
 const createMockAPI = (): API => {
@@ -483,13 +486,7 @@ describe('Table onPaste metadata reset', () => {
     pastedElement.parentNode?.removeChild(pastedElement);
   });
 
-  // ---------------------------------------------------------------------------
-  // Notion parity: a pasted multi-row table treats its first row as a header by
-  // default, even when the source markup carries no <thead> / <th>. A single-row
-  // paste has no body to head, so it stays headerless.
-  // ---------------------------------------------------------------------------
-
-  it('defaults the first row to a header for a multi-row plain-<td> paste', () => {
+  it('keeps a multi-row plain-<td> paste headerless', () => {
     const options = createTableOptions({
       withHeadings: false,
       content: [['A', 'B'], ['C', 'D']],
@@ -512,7 +509,7 @@ describe('Table onPaste metadata reset', () => {
 
     const saved = table.save(pastedElement);
 
-    expect(saved.withHeadings).toBe(true);
+    expect(saved.withHeadings).toBe(false);
 
     element.parentNode?.removeChild(element);
     pastedElement.parentNode?.removeChild(pastedElement);
@@ -581,5 +578,185 @@ describe('Table onPaste metadata reset', () => {
 
     element.parentNode?.removeChild(element);
     pastedElement.parentNode?.removeChild(pastedElement);
+  });
+});
+
+describe('Table onPaste of a table Blok copied', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // The real paste sanitizer, as the html handler runs it on a pasted table.
+  const sanitizedPasteTable = (attributes: string, rowsHtml: string): HTMLElement => {
+    const builder = new SanitizerConfigBuilder({} as unknown as ToolsCollection<BlockToolAdapter>, {});
+    const config = builder.buildToolConfig({ pasteConfig: Table.pasteConfig } as unknown as BlockToolAdapter);
+    const source = document.createElement('div');
+
+    source.innerHTML = `<table ${attributes}>${rowsHtml}</table>`;
+
+    const firstTable = source.querySelector('table');
+
+    if (firstTable === null) {
+      throw new Error('no table');
+    }
+
+    const sanitized = builder.sanitizeTable(firstTable, config);
+
+    if (sanitized === null) {
+      throw new Error('sanitizer dropped the table');
+    }
+
+    return sanitized;
+  };
+
+  const pasteAndSave = (element: HTMLElement): TableData => {
+    const table = new Table(createTableOptions({ content: [['', '', ''], ['', '', '']] }));
+    const before = table.render();
+
+    document.body.appendChild(before);
+    table.rendered();
+    firePasteEvent(table, element);
+
+    const after = table.render();
+
+    table.rendered();
+
+    const saved = table.save(after);
+
+    before.remove();
+    after.remove();
+
+    return saved;
+  };
+
+  const TWO_ROWS = '<tbody><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></tbody>';
+
+  it('keeps a two-row table without a heading row headerless', () => {
+    const saved = pasteAndSave(sanitizedPasteTable('data-blok-table-headings="none"', TWO_ROWS));
+
+    expect(saved.withHeadings).toBe(false);
+    expect(saved.withHeadingColumn).toBe(false);
+  });
+
+  it('keeps the heading row of a one-row table', () => {
+    const saved = pasteAndSave(sanitizedPasteTable('data-blok-table-headings="row"', '<tbody><tr><td>A</td><td>B</td></tr></tbody>'));
+
+    expect(saved.withHeadings).toBe(true);
+  });
+
+  it('keeps a heading column with no heading row', () => {
+    const saved = pasteAndSave(sanitizedPasteTable('data-blok-table-headings="column"', TWO_ROWS));
+
+    expect(saved.withHeadings).toBe(false);
+    expect(saved.withHeadingColumn).toBe(true);
+  });
+
+  it('keeps the column widths and the initial column width', () => {
+    const saved = pasteAndSave(sanitizedPasteTable(
+      'data-blok-table-headings="none" data-blok-table-col-widths="120,300" data-blok-table-initial-col-width="210"',
+      TWO_ROWS
+    ));
+
+    expect(saved.colWidths).toEqual([120, 300]);
+    expect(saved.initialColWidth).toBe(210);
+  });
+
+  it('drops widths that do not give one positive number per column', () => {
+    for (const widths of ['120', '120,300,40', '120,-3', '120,abc', '120,Infinity']) {
+      const saved = pasteAndSave(sanitizedPasteTable(
+        `data-blok-table-headings="none" data-blok-table-col-widths="${widths}"`,
+        TWO_ROWS
+      ));
+
+      expect(saved.colWidths, widths).toBeUndefined();
+    }
+  });
+
+  it('gives a multi-row table with no marker and no heading markup no heading row', () => {
+    const saved = pasteAndSave(sanitizedPasteTable('', TWO_ROWS));
+
+    expect(saved.withHeadings).toBe(false);
+  });
+});
+
+describe('Table onPaste heading row from html markup', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const pasteHtml = (attributes: string, rowsHtml: string): TableData => {
+    const builder = new SanitizerConfigBuilder({} as unknown as ToolsCollection<BlockToolAdapter>, {});
+    const config = builder.buildToolConfig({ pasteConfig: Table.pasteConfig } as unknown as BlockToolAdapter);
+    const source = document.createElement('div');
+
+    source.innerHTML = `<table ${attributes}>${rowsHtml}</table>`;
+
+    const firstTable = source.querySelector('table');
+    // The html handler adds the structural tags (thead, th…) it finds to the tool's tags.
+    const sanitized = firstTable === null
+      ? null
+      : builder.sanitizeTable(firstTable, { ...builder.getStructuralTagsConfig(firstTable), ...config });
+
+    if (sanitized === null) {
+      throw new Error('sanitizer dropped the table');
+    }
+
+    const table = new Table(createTableOptions({ content: [['', ''], ['', '']] }));
+    const before = table.render();
+
+    document.body.appendChild(before);
+    table.rendered();
+    firePasteEvent(table, sanitized);
+
+    const after = table.render();
+
+    table.rendered();
+
+    const saved = table.save(after);
+
+    before.remove();
+    after.remove();
+
+    return saved;
+  };
+
+  const BODY = '<tbody><tr><td>a</td><td>b</td></tr></tbody>';
+
+  it('gives a table with a thead of th a heading row', () => {
+    const saved = pasteHtml('', `<thead><tr><th>H1</th><th>H2</th></tr></thead>${BODY}`);
+
+    expect(saved.withHeadings).toBe(true);
+    expect(saved.withHeadingColumn).toBe(false);
+  });
+
+  it('gives a table with a thead of td a heading row', () => {
+    const saved = pasteHtml('', `<thead><tr><td>H1</td><td>H2</td></tr></thead>${BODY}`);
+
+    expect(saved.withHeadings).toBe(true);
+  });
+
+  it('gives a table whose first row is all th a heading row', () => {
+    const saved = pasteHtml('', `<tbody><tr><th>H1</th><th>H2</th></tr><tr><td>a</td><td>b</td></tr></tbody>`);
+
+    expect(saved.withHeadings).toBe(true);
+  });
+
+  it('gives a heading column but no heading row when only the first cell of each row is th', () => {
+    const saved = pasteHtml('', '<tbody><tr><th>R1</th><td>a</td></tr><tr><th>R2</th><td>b</td></tr></tbody>');
+
+    expect(saved.withHeadings).toBe(false);
+    expect(saved.withHeadingColumn).toBe(true);
+  });
+
+  it('gives no heading row when the first row mixes th and td', () => {
+    const saved = pasteHtml('', '<tbody><tr><td>a</td><th>H</th></tr><tr><td>b</td><td>c</td></tr></tbody>');
+
+    expect(saved.withHeadings).toBe(false);
+  });
+
+  it('lets the Blok mark win over thead markup', () => {
+    const saved = pasteHtml('data-blok-table-headings="none"', `<thead><tr><th>H1</th><th>H2</th></tr></thead>${BODY}`);
+
+    expect(saved.withHeadings).toBe(false);
   });
 });

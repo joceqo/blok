@@ -1,15 +1,18 @@
 import type { BlokConfig } from '../../../../../types/configs/blok-config';
-import { isHttpUrl, isSamePageLink } from '../../../../tools/link/registry';
+import { isHttpUrl, isSamePageLink, matchEmbedService } from '../../../../tools/link/registry';
+import { embedCheckRefuses } from '../../../../tools/link/check-embed';
 import {
   PasteMenuController,
   buildLivePasteMenuOptions,
   type LinkPasteMenu,
 } from '../../../../tools/link/paste-menu/controller';
-import { isOwnHostLink, type PasteMenuActionType } from '../../../../tools/link/paste-menu/options';
-import type { PageConfig } from '../../../../tools/page/types';
+import { isOwnHostLink, type PasteMenuActionType, type PasteMenuMedia } from '../../../../tools/link/paste-menu/options';
+import { genericEmbedPolicy } from '../../../../tools/link/generic-embed-policy';
 import { PAGE_REFERENCE_ATTR, PAGE_REFERENCE_FALLBACK } from '../../../../shared/page-reference';
 import type { BlokModules } from '../../../../types-internal/blok-modules';
+import { pastedPageId } from '../pasted-page-id';
 import { applyResolvedLinkAttributes, resolveLinkAttributes } from '../../../utils/resolve-link-attributes';
+import { ownClone } from '../../../utils/own-element';
 import type { SanitizerConfigBuilder } from '../sanitizer-config';
 import type { ToolRegistry } from '../tool-registry';
 import type { HandlerContext, PatternMatch } from '../types';
@@ -19,6 +22,14 @@ import { BasePasteHandler } from './base';
 
 /** The block a URL paste landed on, captured before the menu steals focus. */
 type TargetBlock = BlokModules['BlockManager']['currentBlock'] | null;
+
+/** A media tool whose paste pattern matches the URL: its registered name and pattern key. */
+interface MediaTarget {
+  tool: string;
+  key: PasteMenuMedia;
+}
+
+const MEDIA_KEYS: ReadonlySet<string> = new Set<PasteMenuMedia>(['image', 'video', 'audio']);
 
 /**
  * Pattern Handler Priority.
@@ -90,7 +101,7 @@ export class PatternHandler extends BasePasteHandler implements PasteHandler {
       }
 
       // Bookmark's catch-all pattern would claim it; let the text handler take it.
-      if (!pattern || (pattern.tool.name === 'bookmark' && isOwnHostLink(data, this.ownHosts()))) {
+      if (!pattern || (pattern.tool.name === 'bookmark' && isOwnHostLink(data, genericEmbedPolicy(this.config?.linkPaste).ownHosts))) {
         return false;
       }
     }
@@ -171,30 +182,8 @@ export class PatternHandler extends BasePasteHandler implements PasteHandler {
     return selection !== null && !selection.isCollapsed && selection.toString().length > 0;
   }
 
-  /** The page a pasted URL links to, asked of the page tool's `pageIdFromHref`. */
   private pageIdFor(text: string): string | undefined {
-    const page = this.Blok.Tools?.blockTools.get('page')?.settings as PageConfig | undefined;
-
-    if (page?.pageIdFromHref === undefined || !isHttpUrl(text)) {
-      return undefined;
-    }
-
-    try {
-      const pageId = page.pageIdFromHref(new URL(text.trim(), document.baseURI).href);
-
-      return typeof pageId === 'string' && pageId !== '' ? pageId : undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /** The page's hostname plus the configured `linkPaste.hostAliases`. */
-  private ownHosts(): string[] {
-    const aliases = this.config?.linkPaste?.hostAliases ?? [];
-    // Empty under file:// and about:blank; it must not count as a host.
-    const current = typeof window === 'undefined' ? '' : window.location.hostname;
-
-    return current === '' ? [...aliases] : [current, ...aliases];
+    return pastedPageId(this.Blok.Tools, text);
   }
 
   private getCaretRect(): DOMRect | null {
@@ -229,32 +218,56 @@ export class PatternHandler extends BasePasteHandler implements PasteHandler {
     }
 
     const hasSelection = this.hasSelection();
-    const allowGenericEmbed = this.config?.linkPaste?.allowGenericEmbed === true;
-    const ownHosts = this.ownHosts();
+    const policy = genericEmbedPolicy(this.config?.linkPaste);
+    const allowGenericEmbed = policy.allowGeneric;
+    const allowedEmbedOrigins = policy.allowedOrigins;
+    const blockedEmbedOrigins = policy.blockedOrigins;
+    const ownHosts = policy.ownHosts;
     const pageId = this.pageIdFor(url);
     const page = pageId === undefined ? {} : { pageId };
+    const mediaTarget = this.mediaTargetFor(url);
+    const media = mediaTarget === undefined ? {} : { media: mediaTarget.key };
+    const gate = { hasSelection, allowGenericEmbed, allowedEmbedOrigins, blockedEmbedOrigins, ownHosts, ...page, ...media };
 
     // The link is already in; a menu offering only "keep it" is noise.
-    if (buildLivePasteMenuOptions(url, { hasSelection, allowGenericEmbed, ownHosts, ...page }).every((o) => o.type === 'plain')) {
+    if (buildLivePasteMenuOptions(url, gate).every((o) => o.type === 'plain')) {
       return;
     }
 
     this.menu.open({
       url,
-      hasSelection,
-      allowGenericEmbed,
-      ownHosts,
-      ...page,
+      ...gate,
       position: this.getLinkEndRect(linkBlock, url) ?? this.getCaretRect(),
       ...(linkBlock?.holder ? { trigger: linkBlock.holder } : {}),
       ...(this.config?.i18n?.direction ? { direction: this.config.i18n.direction } : {}),
       onSelect: (type: PasteMenuActionType): void => {
-        void this.applyMenuAction(type, url, linkBlock, canReplace, pageId);
+        void this.applyMenuAction(type, url, linkBlock, canReplace, pageId, mediaTarget);
       },
       onDismiss: (): void => {
         // The link is already inserted; dismissing simply keeps it as-is.
       },
     });
+  }
+
+  /**
+   * The media tool that can take `url`, unless that tool takes uploads only:
+   * it would drop the URL and leave an empty block. A provider URL (a Giphy
+   * .gif) keeps its provider embed.
+   */
+  private mediaTargetFor(url: string): MediaTarget | undefined {
+    const pattern = this.toolRegistry.findToolForPattern(url);
+
+    if (pattern === undefined || !MEDIA_KEYS.has(pattern.key) || matchEmbedService(url) !== null) {
+      return undefined;
+    }
+
+    const settings = pattern.tool.settings as { sources?: unknown } | undefined;
+
+    if (settings?.sources === 'upload') {
+      return undefined;
+    }
+
+    return { tool: pattern.tool.name, key: pattern.key as PasteMenuMedia };
   }
 
   /**
@@ -316,8 +329,30 @@ export class PatternHandler extends BasePasteHandler implements PasteHandler {
     url: string,
     linkBlock: TargetBlock,
     canReplace: boolean,
-    pageId?: string
+    pageId?: string,
+    media?: MediaTarget
   ): Promise<void> {
+    // A media block is no frame, so the frame check does not apply to it.
+    if (type === 'embed' && media === undefined && matchEmbedService(url) === null && this.config?.linkPaste?.checkEmbed !== undefined) {
+      const refused = await embedCheckRefuses(this.config.linkPaste.checkEmbed, url);
+
+      // The wait can outlast the link: the user may have undone, deleted or
+      // edited it. Acting then would replace their text or drop another link.
+      if (!this.linkStillPasted(linkBlock, url, canReplace)) {
+        return;
+      }
+
+      if (refused) {
+        this.Blok.NotifierAPI.show({ message: this.Blok.I18n.t('tools.embed.checkBlocked') });
+        await this.applyMenuAction('bookmark', url, linkBlock, canReplace, pageId);
+
+        return;
+      }
+    }
+
+    // The embed pick inserts the media tool when the URL is a media file.
+    const target = type === 'embed' && media !== undefined ? media : { tool: type, key: type };
+
     switch (type) {
       case 'bookmark':
       case 'embed':
@@ -325,7 +360,7 @@ export class PatternHandler extends BasePasteHandler implements PasteHandler {
 
         if (canReplace) {
           // Empty block: the link IS the block — swap it for the rich view.
-          await this.insertForcedPatternBlock(type, url, true);
+          await this.insertForcedPatternBlock(target, url, true);
         } else {
           // Block has other content: drop the inline link and append the rich
           // view as a NEW block, leaving the surrounding text untouched. One
@@ -335,7 +370,7 @@ export class PatternHandler extends BasePasteHandler implements PasteHandler {
             // Reported now: its DOM record would land inside the insert's
             // structural window and be written as an untracked echo.
             linkBlock?.dispatchChange();
-            await this.insertForcedPatternBlock(type, url, false);
+            await this.insertForcedPatternBlock(target, url, false);
           });
         }
         break;
@@ -349,6 +384,28 @@ export class PatternHandler extends BasePasteHandler implements PasteHandler {
         }
         break;
     }
+  }
+
+  /**
+   * Whether the pasted link is still in its block as pasted: an anchor with
+   * exactly this href and, when the block is to be replaced, nothing else.
+   */
+  private linkStillPasted(block: TargetBlock, url: string, canReplace: boolean): boolean {
+    const holder = block?.holder;
+
+    if (holder === undefined) {
+      return true;
+    }
+
+    // Nested blocks and chrome are not the block's own content.
+    const own = ownClone(holder);
+    const anchor = Array.from(own.querySelectorAll('a')).find((link) => link.getAttribute('href') === url);
+
+    if (!holder.isConnected || anchor === undefined) {
+      return false;
+    }
+
+    return !canReplace || (own.textContent ?? '').trim() === (anchor.textContent ?? '').trim();
   }
 
   /**
@@ -390,10 +447,10 @@ export class PatternHandler extends BasePasteHandler implements PasteHandler {
     this.findInsertedAnchor(block, url)?.remove();
   }
 
-  private async insertForcedPatternBlock(tool: string, url: string, canReplace: boolean): Promise<void> {
-    const event = this.composePasteEvent('pattern', { key: tool, data: url });
+  private async insertForcedPatternBlock({ tool, key }: { tool: string; key: string }, url: string, canReplace: boolean): Promise<void> {
+    const event = this.composePasteEvent('pattern', { key, data: url });
 
-    await this.insertPatternBlock({ key: tool, data: url, tool, event }, canReplace);
+    await this.insertPatternBlock({ key, data: url, tool, event }, canReplace);
   }
 
   private insertPlainLink(url: string, targetBlock: TargetBlock): TargetBlock {

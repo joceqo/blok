@@ -289,6 +289,10 @@ describe('VideoTool — statics', () => {
     expect(VideoTool.isReadOnlySupported).toBe(true);
   });
 
+  it('the selection tint follows the player frame radius', () => {
+    expect(VideoTool.frameRadius).toBe('var(--blok-radius-player)');
+  });
+
   it('pasteConfig accepts video/* files and a URL pattern', () => {
     const { pasteConfig } = VideoTool;
     if (pasteConfig === false) throw new Error('pasteConfig is false');
@@ -323,7 +327,7 @@ describe('VideoTool — onPaste', () => {
       }),
     });
     const root = tool.render();
-    root.querySelector<HTMLButtonElement>('[data-tab="embed"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
     const input = root.querySelector<HTMLInputElement>('input[type="url"]');
     if (!input) throw new Error('url input missing');
     input.value = 'https://x/y.mp4';
@@ -341,7 +345,7 @@ describe('VideoTool — onPaste', () => {
     const uploadByUrl = (): Promise<{ url: string }> => new Promise(() => undefined);
     const tool = new VideoTool(createOptions({}, { uploader: { uploadByUrl } }));
     const root = tool.render();
-    root.querySelector<HTMLButtonElement>('[data-tab="embed"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
     const input = root.querySelector<HTMLInputElement>('input[type="url"]');
     if (!input) throw new Error('url input missing');
     input.value = 'https://x/y.mp4';
@@ -397,7 +401,7 @@ describe('VideoTool — onPaste', () => {
     tool.onPaste(event);
     await new Promise((r) => setTimeout(r, 0));
     const msg = root.querySelector('[data-role="video-error-message"]');
-    expect(msg?.textContent).toBe('tools.video.errorFileTooLarge');
+    expect(msg?.textContent).toBe('Video is too large');
     expect(msg?.textContent).not.toContain('FILE_TOO_LARGE');
   });
 });
@@ -411,13 +415,13 @@ describe('VideoTool — EMPTY state', () => {
     const root = tool.render();
     expect(root.getAttribute('data-state')).toBe('empty');
     expect(root.querySelector('input[type="file"]')).not.toBeNull();
-    expect(root.querySelector('[data-tab="embed"]')).not.toBeNull();
+    expect(root.querySelector('[data-action="from-link"]')).not.toBeNull();
   });
 
   it('submitting a URL via embed tab transitions to RENDERED', async () => {
     const tool = new VideoTool(createOptions());
     const root = tool.render();
-    root.querySelector<HTMLButtonElement>('[data-tab="embed"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
     const input = root.querySelector<HTMLInputElement>('input[type="url"]');
     if (!input) throw new Error('url input missing');
     input.value = 'https://x/y.mp4';
@@ -466,6 +470,18 @@ describe('VideoTool — editor actions (block settings)', () => {
     pick('left');
     expect(tool.save().alignment).toBe('left');
     expect(block.dispatchChange).toHaveBeenCalled();
+  });
+
+  it('leaving an empty caption that was never set records no change', () => {
+    const block = createMockBlock();
+    const tool = new VideoTool(createOptions({ url: 'u' }, {}, block));
+    const root = tool.render();
+    const caption = root.querySelector<HTMLElement>('[data-role="video-caption"]');
+
+    caption?.dispatchEvent(new FocusEvent('blur'));
+
+    expect(block.dispatchChange).not.toHaveBeenCalled();
+    expect(tool.save().caption).toBeUndefined();
   });
 
   it('block-settings caption item flips captionVisible and updates data-caption', () => {
@@ -1180,7 +1196,7 @@ describe('VideoTool — URL field validation', () => {
   afterEach(() => vi.restoreAllMocks());
 
   const submitUrl = async (tool: VideoTool, root: HTMLElement, url: string): Promise<void> => {
-    root.querySelector<HTMLButtonElement>('[data-tab="embed"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
     const input = root.querySelector<HTMLInputElement>('input[type="url"]');
     if (!input) throw new Error('url input missing');
     input.value = url;
@@ -1196,6 +1212,8 @@ describe('VideoTool — URL field validation', () => {
 
     expect(root.getAttribute('data-state')).toBe('error');
     expect(root.querySelector('[data-role="video-error-message"]')?.textContent)
+      .toBe('This link isn’t a video file');
+    expect(root.querySelector('[data-role="video-error-detail"]')?.textContent)
       .toBe('Link a video file (.mp4, .webm, .mov), or use an embed block');
     expect(root.querySelector('video')).toBeNull();
   });
@@ -1211,7 +1229,7 @@ describe('VideoTool — URL field validation', () => {
 
     await submitUrl(tool, root, 'https://example.com/watch/not-a-file');
 
-    expect(root.querySelector('[data-role="video-error-message"]')?.textContent)
+    expect(root.querySelector('[data-role="video-error-detail"]')?.textContent)
       .toBe('Verknüpfe eine Videodatei oder verwende einen Einbettungsblock');
   });
 
@@ -1222,7 +1240,7 @@ describe('VideoTool — URL field validation', () => {
     await submitUrl(tool, root, 'https://example.com/watch/some-video');
 
     expect(root.getAttribute('data-state')).toBe('error');
-    expect(root.querySelector('[data-role="video-error-message"]')?.textContent)
+    expect(root.querySelector('[data-role="video-error-detail"]')?.textContent)
       .toBe('Link a video file (.mp4, .webm, .mov), or use an embed block');
   });
 
@@ -1364,6 +1382,44 @@ describe('VideoTool — an upload belongs to the pick that started it', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(tool.save().url).toBe('');
+  });
+
+  it('stays empty when a cancelled upload fails', async () => {
+    const gate: { reject: (err: Error) => void } = { reject: () => undefined };
+    const uploadByFile = (): Promise<{ url: string }> => new Promise((_, reject) => {
+      gate.reject = reject;
+    });
+    const tool = new VideoTool(createOptions({}, { uploader: { uploadByFile } }));
+    const root = tool.render();
+    pasteClip(tool);
+    await Promise.resolve();
+    root.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.click();
+
+    gate.reject(new Error('boom'));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(root.getAttribute('data-state')).toBe('empty');
+  });
+
+  it('stays empty when a cancelled link upload fails', async () => {
+    const gate: { reject: (err: Error) => void } = { reject: () => undefined };
+    const uploadByUrl = (): Promise<{ url: string }> => new Promise((_, reject) => {
+      gate.reject = reject;
+    });
+    const tool = new VideoTool(createOptions({}, { uploader: { uploadByUrl } }));
+    const root = tool.render();
+    root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
+    const input = root.querySelector<HTMLInputElement>('input[type="url"]');
+    if (!input) throw new Error('url input missing');
+    input.value = 'https://x/y.mp4';
+    root.querySelector<HTMLButtonElement>('[data-action="submit-url"]')?.click();
+    await Promise.resolve();
+    root.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.click();
+
+    gate.reject(new Error('boom'));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(root.getAttribute('data-state')).toBe('empty');
   });
 
   it('keeps a pasted video link a tracked edit', () => {
@@ -1677,6 +1733,23 @@ describe('VideoTool — background formats', () => {
       }
     });
 
+    it('cancels the conversion when the user replaces the video', async () => {
+      const handle = blocking();
+      const tool = toolWith({ formats: { video: ['webm', 'av1'] }, mediabunny: loader });
+      const root = tool.render();
+
+      pasteFile(tool);
+      await vi.waitFor(() => expect(handle.calls).toHaveLength(1));
+      const items = tool.renderSettings() as unknown as Array<{ name?: string; onActivate?: () => void }>;
+      items.find((item) => item.name === 'video-replace')?.onActivate?.();
+      expect(root.getAttribute('data-state')).toBe('empty');
+
+      await vi.waitFor(() => expect(handle.calls[0].signal?.aborted).toBe(true));
+      handle.go();
+      await idle();
+      expect(handle.calls).toHaveLength(1);
+    });
+
     it('cancels when the tool is destroyed with the editor', async () => {
       const handle = blocking();
       const tool = toolWith({ formats: { video: ['webm', 'av1'] }, mediabunny: loader });
@@ -1752,5 +1825,106 @@ describe('VideoTool — the broken screen', () => {
     root.querySelector('video')?.dispatchEvent(new Event('error'));
     expect(root.querySelector('[data-role="video-error-message"]')?.textContent).toBe("This video can't be played");
     expect(root.querySelector('[data-role="video-error"] button')).toBeNull();
+  });
+});
+
+describe('VideoTool — error text', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  const pasteFile = async (tool: VideoTool, file: File): Promise<void> => {
+    const event = new CustomEvent('paste', { detail: { file } }) as FilePasteEvent;
+
+    Object.defineProperty(event, 'type', { value: 'file' });
+    tool.onPaste(event);
+    await new Promise((r) => setTimeout(r, 0));
+  };
+  const big = (): File => new File([new Uint8Array(50)], 'big.mp4', { type: 'video/mp4' });
+  const small = (type = 'video/mp4'): File => new File([new Uint8Array(2)], 'clip', { type });
+  const lines = (root: HTMLElement): { title: string | null; detail: string | null } => ({
+    title: root.querySelector('[data-role="video-error-message"]')?.textContent ?? null,
+    detail: root.querySelector('[data-role="video-error-detail"]')?.textContent ?? null,
+  });
+
+  it('splits a too-large file into a title and the two sizes', async () => {
+    const tool = new VideoTool(createOptions({}, { maxSize: 5 }));
+    const root = tool.render();
+
+    await pasteFile(tool, big());
+
+    expect(lines(root)).toEqual({ title: 'Video is too large', detail: '50 B exceeds the 5 B limit.' });
+  });
+
+  it('adds connection advice to an upload the server refused', async () => {
+    const tool = new VideoTool(createOptions({}, { uploader: { uploadByFile: () => Promise.reject(new Error('500')) } }));
+    const root = tool.render();
+
+    await pasteFile(tool, small());
+
+    expect(lines(root)).toEqual({ title: 'Upload failed', detail: 'Check your connection and try again.' });
+  });
+
+  it('tells a turned-away file type to pick another file, not to check the connection', async () => {
+    const tool = new VideoTool(createOptions({}, { types: ['video/webm'] }));
+    const root = tool.render();
+
+    await pasteFile(tool, small('video/mp4'));
+
+    expect(lines(root)).toEqual({ title: 'This file type isn’t supported', detail: 'Choose a different file.' });
+  });
+
+  it('says why a saved video may not play', () => {
+    const tool = new VideoTool(createOptions({ url: 'https://x/y.mp4' }));
+    const root = tool.render();
+
+    root.querySelector('video')?.dispatchEvent(new Event('error'));
+
+    expect(lines(root)).toEqual({
+      title: 'This video can\'t be played',
+      detail: 'The file may be damaged, or in a format this browser can’t play.',
+    });
+  });
+
+  it('puts the text from onUploadError under the Upload failed title', async () => {
+    const tool = new VideoTool(createOptions({}, { maxSize: 5, onUploadError: () => 'Ask an admin for more space' }));
+    const root = tool.render();
+
+    await pasteFile(tool, big());
+
+    expect(lines(root)).toEqual({ title: 'Upload failed', detail: 'Ask an admin for more space' });
+  });
+
+  it('keeps its own two lines when onUploadError returns nothing', async () => {
+    const tool = new VideoTool(createOptions({}, { maxSize: 5, onUploadError: () => undefined }));
+    const root = tool.render();
+
+    await pasteFile(tool, big());
+
+    expect(lines(root)).toEqual({ title: 'Video is too large', detail: '50 B exceeds the 5 B limit.' });
+  });
+
+  it('translates both lines', async () => {
+    const tool = new VideoTool({
+      ...createOptions({}, { maxSize: 5 }),
+      api: createMockApi({
+        'tools.video.errorFileTooLargeTitle': 'Видео слишком большое',
+        'tools.video.errorFileTooLargeDetail': '{size} больше лимита {max}.',
+      }),
+    });
+    const root = tool.render();
+
+    await pasteFile(tool, big());
+
+    expect(lines(root)).toEqual({ title: 'Видео слишком большое', detail: '50 B больше лимита 5 B.' });
+  });
+
+  it('swaps both lines when the next failure is a different one', async () => {
+    const tool = new VideoTool(createOptions({}, { maxSize: 5, types: ['video/mp4'] }));
+    const root = tool.render();
+
+    await pasteFile(tool, big());
+    await pasteFile(tool, small('video/webm'));
+
+    expect(lines(root)).toEqual({ title: 'This file type isn’t supported', detail: 'Choose a different file.' });
   });
 });

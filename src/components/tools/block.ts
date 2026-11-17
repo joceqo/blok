@@ -162,12 +162,16 @@ export class BlockToolAdapter extends BaseToolAdapter<ToolType.Block, IBlockTool
    * How the block menu is laid out: `titled` heads it with the tool's name
    * and puts Turn into first; `trash` reads Delete as "Move to Trash".
    */
-  public get blockMenu(): { titled: boolean; trash: boolean } {
+  public get blockMenu(): { titled: boolean; trash: boolean; lead: string[] } {
     const menu: unknown = (this.constructable as unknown as Record<string, unknown>)[InternalBlockToolSettings.BlockMenu];
-    const read = (key: 'titled' | 'trash'): boolean =>
-      typeof menu === 'object' && menu !== null && (menu as Record<string, unknown>)[key] === true;
+    const field = (key: string): unknown => (typeof menu === 'object' && menu !== null ? (menu as Record<string, unknown>)[key] : undefined);
+    const lead = field('lead');
 
-    return { titled: read('titled'), trash: read('trash') };
+    return {
+      titled: field('titled') === true,
+      trash: field('trash') === true,
+      lead: Array.isArray(lead) ? lead.filter((name): name is string => typeof name === 'string') : [],
+    };
   }
 
   /**
@@ -273,6 +277,29 @@ export class BlockToolAdapter extends BaseToolAdapter<ToolType.Block, IBlockTool
       return isLink(link) ? link : null;
     } catch (error) {
       log(`Tool «${this.name}» copyAsLink() threw; copying the block without a link.`, 'warn', error);
+
+      return undefined;
+    }
+  }
+
+  /**
+   * The html a copy writes for this block. Undefined means no hook or a
+   * throwing hook; null means the hook gave none.
+   * @param data - the block's saved data
+   */
+  public clipboardHtml(data: BlockToolData): string | null | undefined {
+    const clipboardHtml = (this.constructable as unknown as Record<string, unknown>)[InternalBlockToolSettings.ClipboardHtml];
+
+    if (typeof clipboardHtml !== 'function') {
+      return undefined;
+    }
+
+    try {
+      const html: unknown = clipboardHtml.call(this.constructable, data, this.settings);
+
+      return typeof html === 'string' ? html : null;
+    } catch (error) {
+      log(`Tool «${this.name}» clipboardHtml() threw; copying the rendered block.`, 'warn', error);
 
       return undefined;
     }

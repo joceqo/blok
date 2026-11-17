@@ -132,7 +132,26 @@ test.describe('layout', () => {
     await expect(page.getByRole('columnheader').first()).toHaveAttribute('data-property-id', 'p-title');
     expect((await page.locator('[data-blok-database-table-header]').boundingBox())?.height).toBe(36);
     expect((await row(page, 'r3').boundingBox())?.height).toBe(37);
-    await expect(page.locator('[data-blok-database-table-grid]')).toHaveAttribute('data-blok-keyboard-owner', '');
+    await expect(page.locator('[data-blok-database-table-grid]')).toHaveAttribute('data-blok-keyboard-owner', 'select-all');
+  });
+  // notion-motion.md Round 59 §8: Notion's row page glyph inks 14x18. The glyph grows to 23 inside the same 22 box, so the name stays put.
+  test('draws the row page glyph at 23px in a 22px box, the name 3px after the box', async ({ page }) => {
+    await mount(page, blocks());
+    const glyph = cell(page, 'r3', 'p-title').locator('[data-blok-database-page-icon-placeholder]');
+    const glyphBox = await glyph.boundingBox();
+    const svgBox = await glyph.evaluate((el) => el.firstElementChild?.getBoundingClientRect().toJSON() as { width: number; height: number } | undefined);
+    const textX = await cell(page, 'r3', 'p-title').getByText('Charlie').evaluate((el) => {
+      const range = document.createRange();
+
+      range.selectNodeContents(el);
+
+      return range.getBoundingClientRect().x;
+    });
+
+    expect(glyphBox?.width).toBe(22);
+    expect(svgBox?.width).toBe(23);
+    expect(svgBox?.height).toBe(23);
+    expect(textX).toBeCloseTo((glyphBox?.x ?? 0) + 22 + 3, 0);
   });
 });
 
@@ -401,6 +420,31 @@ test.describe('columns', () => {
     expect(after?.x).toBeGreaterThanOrEqual((before?.x ?? 0) - 300 + 1);
   });
 
+  // notion-motion.md Round 46 §A: Notion's frozen block sticks 30px in from the scroller's edge, nothing scrolled
+  // past it shows in that strip, and "+ New page" stays at the text column.
+  test('a frozen column sticks 30px in from the table edge and "+ New page" stays put on a sideways scroll', async ({ page }) => {
+    await mount(page, blocks({ frozenColumnCount: 1 }));
+    const scroller = page.locator('[data-blok-database-table-scroller]');
+    const addRow = page.locator('[data-blok-database-table-add-row]');
+    const addBefore = await addRow.boundingBox();
+    const { left, pad, max } = await scroller.evaluate((el) => ({
+      left: el.getBoundingClientRect().left,
+      pad: parseFloat(getComputedStyle(el).paddingInlineStart),
+      max: el.scrollWidth - el.clientWidth,
+    }));
+    const scrollLeft = Math.min(max, pad + 200);
+
+    expect(scrollLeft).toBeGreaterThan(pad - 30 + 40);
+    await scroller.evaluate((el, x) => el.scrollTo({ left: x, behavior: 'instant' }), scrollLeft);
+
+    await expect.poll(async () => (await cell(page, 'r1', 'p-title').boundingBox())?.x).toBeCloseTo(left + 30, 0);
+    expect((await addRow.boundingBox())?.x).toBeCloseTo(addBefore?.x ?? Number.NaN, 0);
+    const box = await row(page, 'r1').boundingBox();
+    const inStrip = await page.evaluate(({ x, y }) => (document.elementFromPoint(x, y)?.closest('[data-blok-database-table-grid]') ?? null) !== null, { x: left + 15, y: (box?.y ?? 0) + 10 });
+
+    expect(inStrip).toBe(false);
+  });
+
   // research/33 §1: Notion showed nothing on 4 undescribed headers within 3s.
   test('a header without a description shows no hint, and keeps its name', async ({ page }) => {
     await mount(page, blocks());
@@ -439,11 +483,14 @@ test.describe('columns', () => {
 });
 
 test.describe('calculations', () => {
-  test('Sum from the footer menu writes the calculation and shows the value', async ({ page }) => {
+  // notion-motion.md Round 10: no footer until a calculation is set, so the first one comes from the header menu.
+  test('Sum from the header menu writes the calculation and shows the value', async ({ page }) => {
     await mount(page, blocks());
     const footer = page.locator('[data-blok-database-table-calc][data-property-id="p-amount"]');
 
-    await footer.click();
+    await expect(page.locator('[data-blok-database-table-footer]')).toHaveCount(0);
+    await header(page, 'p-amount').click();
+    await page.getByRole('menuitem', { name: 'Calculate' }).click();
     // Calculation rows mark the current choice, so they are menuitemcheckbox.
     await page.getByRole('menuitemcheckbox', { name: 'More options' }).click();
     await page.getByRole('menuitemcheckbox', { name: 'Sum' }).click();
@@ -465,6 +512,35 @@ test.describe('load more and groups', () => {
     await expect(page.locator('[data-blok-database-table-row]')).toHaveCount(14);
   });
 
+  // notion-motion.md Round 29 §1: the ⋯ menu marks the current limit with a check only, no fill; keyboard users land in it.
+  test('the Load more ⋯ sets the load limit, its current row has no fill, and the keyboard reaches its rows', async ({ page }) => {
+    const many = Array.from({ length: 30 }, (_, i) => ({ id: `m${i}`, properties: { 'p-title': `Row ${i}` } }));
+
+    await mount(page, blocks({ loadLimit: 10 }, many));
+    const dots = page.getByRole('button', { name: 'Load limit' });
+
+    await dots.focus();
+    await page.keyboard.press('Enter');
+    const current = page.getByRole('menuitemcheckbox', { name: '10 pages' });
+    const other = page.getByRole('menuitemcheckbox', { name: '25 pages' });
+
+    await expect(current).toBeVisible();
+    await expect(current).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(current.getByTestId('popover-item-trailing-icon')).toBeVisible();
+    await expect(other.getByTestId('popover-item-trailing-icon')).toHaveCount(0);
+    expect(await current.evaluate((el) => getComputedStyle(el).color)).toBe(await other.evaluate((el) => getComputedStyle(el).color));
+
+    // The menu's keyboard cursor is data-blok-focused, not DOM focus.
+    await page.keyboard.press('ArrowDown');
+    await expect(current).toHaveAttribute('data-blok-focused', 'true');
+    await page.keyboard.press('ArrowDown');
+    await expect(other).toHaveAttribute('data-blok-focused', 'true');
+    await page.keyboard.press('Enter');
+
+    await expect(page.locator('[data-blok-database-table-row]')).toHaveCount(25);
+    expect((await savedView(page)).loadLimit).toBe(25);
+  });
+
   test('a grouped table collapses a group with its caret', async ({ page }) => {
     await mount(page, blocks({ groupBy: 'p-stage' }));
     const groups = page.locator('[data-blok-database-table-group]');
@@ -477,6 +553,86 @@ test.describe('load more and groups', () => {
     await idea.locator('[data-blok-database-table-group-toggle]').click();
     await expect(idea.locator('[data-blok-database-table-row]')).toHaveCount(0);
     await expect(idea.locator('[data-blok-database-table-group-toggle]')).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  const groupHeader = (page: Page, groupKey: string, propertyId: string): Locator =>
+    page.locator(`[data-blok-database-table-group][data-group-key="${groupKey}"] [role="columnheader"][data-property-id="${propertyId}"]`);
+
+  test('each group draws its own header row, like Notion', async ({ page }) => {
+    await mount(page, blocks({ groupBy: 'p-stage' }));
+    const groups = page.locator('[data-blok-database-table-group]');
+
+    await expect(groups).toHaveCount(3);
+    for (const index of [0, 1, 2]) {
+      await expect(groups.nth(index).locator('[role="columnheader"][data-property-id="p-notes"]')).toHaveCount(1);
+    }
+  });
+
+  test('resizing a column from the second group resizes it in every group and saves once', async ({ page }) => {
+    await mount(page, blocks({ groupBy: 'p-stage' }));
+    const handle = groupHeader(page, 'o-build', 'p-notes').locator('[data-blok-database-table-resize]');
+    const box = await handle.boundingBox();
+
+    if (box === null) {
+      throw new Error('no resize handle');
+    }
+    await page.mouse.move(box.x + 2, box.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 82, box.y + 10, { steps: 4 });
+    await expect.poll(async () => (await groupHeader(page, 'o-idea', 'p-notes').boundingBox())?.width).toBe(280);
+    await page.mouse.up();
+
+    await expect.poll(async () => (await page.locator('[data-row-id="r1"] [role="gridcell"][data-property-id="p-notes"]').boundingBox())?.width).toBe(280);
+    const notes = ((await savedView(page)).properties as Array<{ id: string; width?: number }>).find((p) => p.id === 'p-notes');
+
+    expect(notes?.width).toBe(280);
+  });
+
+  test('dragging a header in the second group reorders the columns of every group', async ({ page }) => {
+    await mount(page, blocks({ groupBy: 'p-stage' }));
+    const from = await groupHeader(page, 'o-build', 'p-stage').boundingBox();
+    const to = await groupHeader(page, 'o-build', 'p-notes').boundingBox();
+
+    if (from === null || to === null) {
+      throw new Error('no header');
+    }
+    await page.mouse.move(from.x + 20, from.y + 18);
+    await page.mouse.down();
+    await page.mouse.move(to.x + 10, to.y + 18, { steps: 8 });
+    // Only the dragged header's own row slides aside.
+    const transform = (key: string): Promise<string> => groupHeader(page, key, 'p-notes').evaluate((el) => el.style.transform);
+
+    await expect.poll(() => transform('o-build')).not.toBe('');
+    expect(await transform('o-idea')).toBe('');
+    await page.mouse.up();
+
+    for (const key of ['o-idea', 'o-build']) {
+      await expect(page.locator(`[data-blok-database-table-group][data-group-key="${key}"] [role="columnheader"]`).nth(1)).toHaveAttribute('data-property-id', 'p-stage');
+    }
+    const order = ((await savedView(page)).properties as Array<{ id: string }>).map((p) => p.id);
+
+    expect(order.indexOf('p-stage')).toBe(order.indexOf('p-title') + 1);
+  });
+
+  test('a property menu opened from a later group stays on that group when the table redraws', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 1600 });
+    await mount(page, blocks({ groupBy: 'p-stage' }));
+    const last = page.locator('[data-blok-database-table-group]').last();
+    const notes = last.locator('[role="columnheader"][data-property-id="p-notes"]');
+
+    await notes.click();
+    const menu = page.locator('[data-blok-popover-opened="true"] [data-blok-popover-container]').first();
+
+    await expect(menu).toBeVisible();
+    const gap = async (): Promise<number> => ((await menu.boundingBox())?.y ?? 0) - ((await notes.boundingBox())?.y ?? 0);
+    const before = await gap();
+
+    // A new row in the first group pushes the later groups down and redraws the table.
+    await page.evaluate(() => {
+      window.blokInstance?.blocks.insert('database-row', { position: 'a9', properties: { 'p-title': 'Delta', 'p-stage': 'o-idea' } }, undefined, undefined, false, false, undefined, undefined, 'api', 'db-1');
+    });
+    await expect(page.locator('[data-row-id]').filter({ hasText: 'Delta' })).toHaveCount(1);
+    await expect.poll(gap).toBeCloseTo(before, 0);
   });
 });
 
@@ -499,6 +655,23 @@ test.describe('property and row menus', () => {
     await item.click();
   };
 
+  // notion-motion.md Round 59 §5: the cell editor's ⋯ menu has the whole name selected from 30ms on.
+  test('an option menu from the cell editor opens with the whole name selected', async ({ page }) => {
+    await mount(page, blocks());
+    await cell(page, 'r1', 'p-stage').click();
+    await expect(editor(page)).toBeVisible();
+    await editor(page).locator('[data-blok-database-select-option="o-idea"]').hover();
+    await editor(page).locator('[data-blok-database-select-option="o-idea"] [data-blok-database-select-option-menu]').click();
+    const name = page.locator('[data-blok-database-option-panel="o-idea"]').getByRole('textbox', { name: 'Option name' });
+    const selection = (): Promise<[number | null, number | null, number]> => name.evaluate((el: HTMLInputElement) => [el.selectionStart, el.selectionEnd, el.value.length]);
+
+    await expect(name).toBeFocused();
+    await expect.poll(selection).toEqual([0, 4, 4]);
+    // Still selected once the menu's entrance is over.
+    await name.evaluate((el) => Promise.all(el.closest('[data-blok-popover]')?.getAnimations({ subtree: true }).map((a) => a.finished.catch(() => undefined)) ?? []));
+    expect(await selection()).toEqual([0, 4, 4]);
+  });
+
   test('Edit property on a select recolours an option and the menu stays open', async ({ page }) => {
     await mount(page, blocks());
     await header(page, 'p-stage').click();
@@ -510,7 +683,8 @@ test.describe('property and row menus', () => {
     await expect(page.getByText('Changes apply to all views showing this property.')).toHaveCount(0);
     await list.locator('[data-blok-database-select-option="o-build"]').hover();
     await list.locator('[data-blok-database-select-option="o-build"] [data-blok-database-select-option-menu]').click();
-    await list.locator('[data-blok-database-option-color="red"]').click();
+    // notion-motion.md Round 57 §2: the option's menu is its own popover beside the list.
+    await page.locator('[data-blok-database-option-panel="o-build"] [data-blok-database-option-color="red"]').click();
 
     await expect.poll(async () => (await savedSchema(page)).find((p) => p.id === 'p-stage')?.config?.options.find((o) => o.id === 'o-build')?.color).toBe('red');
     await expect(list).toBeVisible();
@@ -525,19 +699,32 @@ test.describe('property and row menus', () => {
     const options = async (): Promise<SavedOption[]> => (await savedSchema(page)).find((p) => p.id === 'p-stage')?.config?.options ?? [];
 
     await list.getByRole('button', { name: 'Add an option' }).click();
-    await list.getByPlaceholder('Add an option').fill('Review');
+    const field = list.getByPlaceholder('Type a new option…');
+
+    // notion-motion.md Round 59 §5: a 276x28 field 12 in from the 300 flyout, typed in rgb(44,44,43).
+    const flyout = await list.evaluate((el) => el.closest('[data-blok-popover-container]')?.getBoundingClientRect().toJSON() as { x: number; width: number });
+    const fieldBox = await field.boundingBox();
+
+    expect(flyout.width).toBe(300);
+    expect(fieldBox?.width).toBe(276);
+    expect(fieldBox?.height).toBe(28);
+    expect(fieldBox?.x).toBe(flyout.x + 12);
+    await expect(field).toHaveCSS('color', 'rgb(44, 44, 43)');
+    await field.fill('Review');
     await page.keyboard.press('Enter');
     await expect.poll(async () => (await options()).map((o) => o.label)).toContain('Review');
     await expect(list).toBeVisible();
 
     await list.locator('[data-blok-database-select-option="o-idea"]').hover();
     await list.locator('[data-blok-database-select-option="o-idea"] [data-blok-database-select-option-menu]').click();
-    await list.getByRole('textbox', { name: 'Option name' }).fill('Spark');
+    await page.locator('[data-blok-database-option-panel="o-idea"]').getByRole('textbox', { name: 'Option name' }).fill('Spark');
     await page.keyboard.press('Enter');
     await expect.poll(async () => (await options()).find((o) => o.id === 'o-idea')?.label).toBe('Spark');
+    // The rename redraws the list under the menu; the menu stays.
+    await expect(page.locator('[data-blok-database-option-panel="o-idea"]')).toBeVisible();
 
     await page.keyboard.press('Escape');
-    await expect(list.locator('[data-blok-database-option-panel]')).toHaveCount(0);
+    await expect(page.locator('[data-blok-database-option-panel]')).toHaveCount(0);
     await expect(list.locator('[data-blok-database-select-option]')).toHaveCount(3);
     await expect(list).toBeVisible();
 
@@ -621,5 +808,91 @@ test.describe('read-only', () => {
     await expect(page.locator('[data-blok-database-table-add-row]')).toHaveCount(0);
     await cell(page, 'r1', 'p-notes').click();
     await expect(editor(page)).toHaveCount(0);
+  });
+});
+
+test.describe('select all from a cell', () => {
+  test('⌘A on one selected cell selects every page block, not cells (notion-motion.md Round 13)', async ({ page }) => {
+    await mount(page, [
+      { id: 'p-before', type: 'paragraph', data: { text: 'Before' } },
+      ...blocks(),
+      { id: 'p-after', type: 'paragraph', data: { text: 'After' } },
+    ]);
+    await cell(page, 'r3', 'p-amount').click();
+    await page.keyboard.press('Escape');
+    await expect(anchor(page)).toHaveCount(1);
+
+    await page.keyboard.press('ControlOrMeta+a');
+
+    for (const id of ['p-before', 'db-1', 'p-after']) {
+      await expect(page.locator(`[data-blok-id="${id}"]`)).toHaveAttribute('data-blok-selected', 'true');
+    }
+    await expect(anchor(page)).toHaveCount(0);
+    await expect(page.locator('[data-blok-database-table-cell][aria-selected="true"]')).toHaveCount(0);
+    expect(await page.evaluate(() => String(window.getSelection()))).toBe('');
+
+    await page.keyboard.press('ControlOrMeta+a');
+    await expect(page.locator('[data-blok-id="p-after"]')).toHaveAttribute('data-blok-selected', 'true');
+  });
+
+  test('⌘A on selected rows hands over to the block selection and drops the rows', async ({ page }) => {
+    await mount(page, [
+      { id: 'p-before', type: 'paragraph', data: { text: 'Before' } },
+      ...blocks(),
+    ]);
+    await cell(page, 'r2', 'p-notes').click();
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await expect(row(page, 'r2')).toHaveAttribute('aria-selected', 'true');
+
+    await page.keyboard.press('ControlOrMeta+a');
+
+    await expect(page.locator('[data-blok-id="p-before"]')).toHaveAttribute('data-blok-selected', 'true');
+    await expect(page.locator('[data-blok-database-table-row][aria-selected="true"]')).toHaveCount(0);
+  });
+});
+
+test.describe('range drag', () => {
+  test('a drag across 2×2 cells selects them, a TSV paste fills them, and one undo takes it back (notion-motion.md Round 13)', async ({ page }) => {
+    await mount(page, blocks());
+    const from = await cell(page, 'r1', 'p-notes').boundingBox();
+    const to = await cell(page, 'r2', 'p-amount').boundingBox();
+
+    if (from === null || to === null) {
+      throw new Error('no cell box');
+    }
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 8 });
+    await page.mouse.up();
+
+    await expect(page.locator('[data-blok-database-table-cell][aria-selected="true"]')).toHaveCount(4);
+    for (const [rowId, propertyId] of [['r1', 'p-notes'], ['r1', 'p-amount'], ['r2', 'p-notes'], ['r2', 'p-amount']]) {
+      await expect(cell(page, rowId, propertyId)).toHaveAttribute('aria-selected', 'true');
+    }
+    await expect(anchor(page)).toHaveCount(1);
+    await expect(cell(page, 'r1', 'p-notes')).toHaveAttribute('data-blok-database-table-cell-anchor', '');
+    await expect(editor(page)).toHaveCount(0);
+    await expect(page.locator('[data-blok-selected="true"]')).toHaveCount(0);
+    expect(await page.evaluate(() => String(window.getSelection()))).toBe('');
+
+    await page.evaluate(() => {
+      const transfer = new DataTransfer();
+
+      transfer.setData('text/plain', 'Short note\t1234.5\nLong note\t-40');
+      document.querySelector('[role="grid"]')?.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }));
+    });
+
+    await expect.poll(async () => (await savedRow(page, 'r2'))['p-amount']).toBe(-40);
+    expect(await savedRow(page, 'r1')).toMatchObject({ 'p-notes': 'Short note', 'p-amount': 1234.5 });
+    expect((await savedRow(page, 'r2'))['p-notes']).toBe('Long note');
+    await expect(page.locator('[data-blok-database-table-cell][aria-selected="true"]')).toHaveCount(4);
+    await expect(cell(page, 'r1', 'p-notes')).toHaveAttribute('data-blok-database-table-cell-anchor', '');
+
+    await page.keyboard.press('ControlOrMeta+z');
+
+    await expect.poll(async () => (await savedRow(page, 'r2'))['p-amount']).toBe(35.5);
+    expect(await savedRow(page, 'r1')).toMatchObject({ 'p-notes': 'short', 'p-amount': 1200 });
+    expect((await savedRow(page, 'r2'))['p-notes'] ?? '').toBe('');
   });
 });

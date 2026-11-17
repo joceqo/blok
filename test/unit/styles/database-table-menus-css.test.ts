@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 const strip = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, ' ');
 const database = strip(readFileSync(resolve(__dirname, '../../../src/styles/database.css'), 'utf8'));
+const colors = strip(readFileSync(resolve(__dirname, '../../../src/styles/colors.css'), 'utf8'));
 
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -56,6 +57,56 @@ describe('column header menu dividers and name row', () => {
   });
 });
 
+// notion-motion.md Round 35 (r35-colmenu-top.raw): the icon box at x 1021 in a menu whose rows start at 1017,
+// the field 1057-1225 (168 wide), and the (i) inside the field, 6px from its end.
+describe('column header menu name row (Round 35)', () => {
+  const ROW = '[data-blok-database-property-menu-name]';
+  const INFO = '[data-blok-database-property-menu-description-button]';
+
+  it('puts the icon box 4px in and the field 8px after it', () => {
+    expect(declared(ROW, 'padding-inline').at(-1)).toBe('var(--blok-space-1)');
+    expect(declared(ROW, 'gap').at(-1)).toBe('var(--blok-space-2)');
+  });
+
+  it('draws the (i) inside the field end, so the field runs to the row end', () => {
+    expect(declared(INFO, 'margin-inline').at(-1)).toBe('-29px var(--blok-space-1-5)');
+    expect(declared(INFO, 'position').at(-1)).toBe('relative');
+    expect(declared(`${ROW} > [data-blok-database-property-menu-name-input]:has(+ ${INFO})`, 'padding-inline-end')).toEqual(['27px']);
+  });
+
+  it('keeps the taken-name error under the field', () => {
+    expect(declared('[data-blok-database-property-menu-name-error]', 'padding-inline-start')).toEqual(['calc(28px + var(--blok-space-2))']);
+  });
+});
+
+// notion-motion.md Round 35 (r35-tabmenu.raw): "Source" ends at 624.9, "New database" starts at 632.9 and ends at 725,
+// a 16 chevron at 731-747, the row ending at 755: the row fits the 220 menu.
+describe('view tab menu Source row (Round 35)', () => {
+  const ROW = "[data-blok-popover][data-blok-popover-custom-class~='blok-database-column-menu'] [data-blok-item-name='database-view-source']";
+
+  it('sets the source name 8px after "Source", then a 16px chevron 6px after it, 8px from the row end', () => {
+    expect(declared(ROW, 'padding-inline-end')).toEqual(['var(--blok-space-2)']);
+    expect(declared(`${ROW} [data-blok-popover-item-value]`, 'padding-inline-start')).toEqual(['var(--blok-space-2)']);
+    expect(declared(`${ROW} [data-blok-popover-item-icon-chevron-right]`, 'margin-inline')).toEqual(['var(--blok-space-1-5) 0']);
+    expect(declared(`${ROW} [data-blok-popover-item-icon-chevron-right]`, 'width')).toEqual(['16px']);
+    expect(declared(`${ROW} [data-blok-popover-item-icon-chevron-right] svg`, 'width')).toEqual(['16px']);
+    expect(declared(`${ROW} [data-blok-popover-item-icon-chevron-right] svg`, 'height')).toEqual(['16px']);
+  });
+});
+
+// notion-motion.md Round 35 (r35-tabmenu.raw): Display as ends in a 16x16 chevron at 731-747, the row ending at 755.
+describe('view tab menu Display as row (Round 35)', () => {
+  const ROW = "[data-blok-popover][data-blok-popover-custom-class~='blok-database-column-menu'] [data-blok-item-name='database-tab-display']";
+
+  it('ends in a 16px chevron 8px from the row end', () => {
+    expect(declared(ROW, 'padding-inline-end')).toEqual(['var(--blok-space-2)']);
+    expect(declared(`${ROW} [data-blok-popover-item-icon-chevron-right]`, 'width')).toEqual(['16px']);
+    expect(declared(`${ROW} [data-blok-popover-item-icon-chevron-right]`, 'margin-inline-end')).toEqual(['0']);
+    expect(declared(`${ROW} [data-blok-popover-item-icon-chevron-right] svg`, 'width')).toEqual(['16px']);
+    expect(declared(`${ROW} [data-blok-popover-item-icon-chevron-right] svg`, 'height')).toEqual(['16px']);
+  });
+});
+
 describe('add property menu (T12)', () => {
   // Notion 2026-10-25: 290 wide, one column of types.
   it('is 290 wide with one column of types', () => {
@@ -68,6 +119,37 @@ describe('add property menu (T12)', () => {
   it('stops at 80% of the window height and scrolls the types inside', () => {
     expect(declared('[data-blok-database-property-type-popover]', 'max-height')).toEqual(['80dvh']);
     expect(declared('[data-blok-database-property-type-body]', 'overflow-y')).toEqual(['auto']);
+  });
+
+  // notion-motion.md Round 26 §5: a 14px "?" in rgb(142, 139, 134) at the row's end, hidden until the row is hovered,
+  // then fading in over 200ms ease-in-out.
+  it('shows a type row\'s "?" at its end only on row hover', () => {
+    const help = '[data-blok-database-property-type-help]';
+
+    expect(declared(help, 'margin-inline-start')).toEqual(['auto']);
+    expect(declared(help, 'opacity')).toEqual(['0']);
+    expect(declared(help, 'transition')).toEqual(['opacity 200ms ease-in-out']);
+    expect(declared(help, 'color')).toEqual(['var(--blok-database-peek-label-icon)']);
+    expect(declared(`${help} svg`, 'width')).toEqual(['14px']);
+    expect(declared(`[data-blok-database-property-type-option]:hover > ${help}`, 'opacity')).toEqual(['1']);
+  });
+
+  // notion-motion.md Round 28 §3 (r28-addprop.raw, r28-idtip.png): across a rule the cell pitch is 48, not 34. The line is
+  // rgb(240,239,237) on white, 4 in from the cells, 7 under the row above and 8 over the next. The 2px row gap counts twice.
+  // notion-motion.md Round 28 §3: the box is 808–1207 (its ring at 807 and 1208, r28-idtip.png), the cells start at 816 and
+  // the "?" of both columns sit at 986 and 1178 (r28-addprop.raw): 8 in and 192-wide cells. The AI rows line up with them.
+  it('insets the grid\'s body 8 from the box, so its cells are 192 wide', () => {
+    expect(declared("[data-blok-database-property-type-layout='grid'] [data-blok-database-property-type-body]", 'padding-inline'))
+      .toEqual(['var(--blok-space-1)']);
+  });
+
+  it('draws the grid\'s rules full width, 1px, with the 16px break Notion has', () => {
+    const rule = '[data-blok-database-property-type-rule]';
+
+    expect(declared(rule, 'grid-column')).toEqual(['1 / -1']);
+    expect(declared(rule, 'height')).toEqual(['1px']);
+    expect(declared(rule, 'margin')).toEqual(['var(--blok-space-1-25) var(--blok-space-1) var(--blok-space-1-5)']);
+    expect(declared(rule, 'background-color')).toEqual(['var(--blok-database-table-border)']);
   });
 
   it('has 28px rows of 14px text with 20px glyphs and a sentence-case label', () => {
@@ -107,8 +189,6 @@ describe('add property menu (T12)', () => {
     expect(declared(`${OVER} > [data-blok-database-property-type-header]`, 'height')).toEqual(['28px']);
     expect(declared(`${OVER} > [data-blok-database-property-type-header]`, 'border-radius')).toEqual(['var(--blok-radius-control)']);
     expect(declared(`${OVER} > [data-blok-database-property-type-header]`, 'box-shadow')).toEqual(['none']);
-    expect(declared(`${OVER} [data-blok-database-property-type-glyph]`, 'width')).toEqual(['24px']);
-    expect(declared(`${OVER} [data-blok-database-property-type-glyph]`, 'height')).toEqual(['24px']);
     expect(declared(OVER, 'max-height')).toEqual(['50dvh']);
     expect(declared(`${OVER} [data-blok-database-property-type-body]`, 'mask-image')).toEqual(['linear-gradient(black 0%, black calc(100% - 34px), transparent 100%)']);
   });
@@ -161,6 +241,57 @@ describe('row menu (T15)', () => {
   });
 });
 
+// notion-motion.md Round 35 (r35-rowmenu.raw, r35-cardmenu.raw, r35-peekmenu.raw): the row and card menus and the
+// peek's ⋯ menu share one inner layout. Only their own list: a submenu is a popover of its own.
+describe('row, card and peek ⋯ menus (Round 35)', () => {
+  // notion-motion.md Round 36 §6 (r36-peekmenu-x.raw): every peek ⋯ row has its icon at +12 and its text at +40,
+  // as the card menu: a 20px icon box and 8 to the text, from the row at +4 and its 8px padding.
+  it('puts the peek ⋯ menu icon at +12 and its text at +40, as the card menu', () => {
+    const icon = "[data-blok-popover][data-blok-popover-custom-class~='blok-database-page-actions-menu'] [data-blok-popover-item-icon]";
+
+    expect(declared(icon, 'width')).toEqual(['20px']);
+    expect(declared(icon, 'margin-inline-end')).toEqual(['var(--blok-space-2)']);
+  });
+
+  const MENUS = ['blok-database-card-menu', 'blok-database-page-actions-menu'].map((name) => `[data-blok-popover][data-blok-popover-custom-class~='${name}'] > [data-blok-popover-container]`);
+
+  // Notion: the field 241 wide in a 265 box, 12 from its top and sides; the first row (peek) 12 under it.
+  // Blok's list pads 4 on each side and on top.
+  it('keeps 12px around the search field', () => {
+    for (const menu of MENUS) {
+      expect(declared(`${menu} > [data-blok-field='search']`, 'margin')).toEqual(['var(--blok-space-3) var(--blok-space-2) var(--blok-space-2)']);
+    }
+  });
+
+  // Notion: Edit property 275.3 to Open in 312.3, one 29px row plus 8; the line 4 under the row, 12 in from the sides.
+  it('takes 8px for a divider: 3 above, the 1px line, 4 below, inset 12 from the box', () => {
+    for (const menu of MENUS) {
+      expect(declared(`${menu} > [data-blok-popover-items] > [data-blok-popover-item-separator]`, 'padding-block')).toEqual(['var(--blok-space-0-75) var(--blok-space-1)']);
+      expect(declared(`${menu} > [data-blok-popover-items] > [data-blok-popover-item-separator]`, 'padding-inline')).toEqual(['var(--blok-space-2)']);
+    }
+  });
+
+  // Notion: "Page" (12px/14.4) starts 18.2 under the field, and the first row 41.9 under it.
+  it('sets the "Page" label 18px under the field and its first row 41px under it', () => {
+    const heading = "[data-blok-popover][data-blok-popover-custom-class~='blok-database-card-menu'] [data-blok-database-row-menu-heading]";
+
+    expect(declared(heading, 'padding-block')).toEqual(['var(--blok-space-1-5) var(--blok-space-2-25)']);
+    expect(declared(heading, 'line-height')).toEqual(['14.4px']);
+  });
+
+  // Notion: "Last edited" 12 under the line in 500, then the 16px avatar and name 4 under it, then the time and
+  // the count 2 apart; the box ends 12 under the last line.
+  it('lays out the footer as Notion: "Last edited", the person, the time, the count', () => {
+    expect(declared('[data-blok-database-row-menu-footer]', 'padding')).toEqual(['var(--blok-space-2)']);
+    expect(declared('[data-blok-database-row-menu-footer-label]', 'font-weight')).toEqual(['500']);
+    expect(declared('[data-blok-database-row-menu-footer-person]', 'margin-block-start')).toEqual(['var(--blok-space-1)']);
+    expect(declared('[data-blok-database-row-menu-footer-person]', 'gap')).toEqual(['var(--blok-space-1)']);
+    expect(declared('[data-blok-database-row-menu-footer-person] > :is([data-blok-database-person-avatar], [data-blok-database-person-initial])', 'width')).toEqual(['16px']);
+    expect(declared('[data-blok-database-row-menu-footer-time]', 'margin-block-start')).toEqual(['var(--blok-space-0-5)']);
+    expect(declared('[data-blok-database-row-menu-footer-counts]', 'margin-block-start')).toEqual(['var(--blok-space-0-5)']);
+  });
+});
+
 describe('status cell popover (T17)', () => {
   it('lets its search field shrink, so the input\'s default size does not push it past 240', () => {
     expect(declared('[data-blok-database-select-editor="status"] [data-blok-database-select-search]', 'width')).toEqual(['0']);
@@ -186,6 +317,21 @@ describe('selection bar (T13)', () => {
 
     expect(declared(rule, 'visibility')).toEqual(['hidden']);
     expect(declared('[data-blok-database-view-bar][data-blok-database-selecting] > :not([data-blok-database-table-selection-bar])', 'visibility')).toEqual([]);
+  });
+
+  // notion-motion.md Round 27 §3 "Row gutter and selection": gap 0, radius 5, Trash 28x32 with a 20 glyph, ⋯ 30x32.
+  it('draws the bar with abutting segments, a 5px radius, a 28-wide Trash with a 20px glyph and a 30-wide ⋯', () => {
+    for (const bar of ['[data-blok-database-table-selection-bar]', '[data-blok-database-table-selection-bar-leaving]']) {
+      expect(declared(bar, 'gap')).toEqual(['0']);
+      expect(declared(bar, 'border-radius')).toEqual(['var(--blok-radius-selection-bar)']);
+      expect(declared(`${bar} [data-blok-database-table-selection-delete]`, 'width')).toEqual(['28px']);
+      expect(declared(`${bar} [data-blok-database-table-selection-delete] svg`, 'width')).toEqual(['20px']);
+      expect(declared(`${bar} [data-blok-database-table-selection-delete] svg`, 'height')).toEqual(['20px']);
+      expect(declared(`${bar} [data-blok-database-table-selection-more]`, 'width')).toEqual(['30px']);
+      expect(declared(`${bar} [data-blok-database-table-selection-more]`, 'border-start-end-radius')).toEqual(['var(--blok-radius-selection-bar)']);
+      expect(declared(`${bar} [data-blok-database-table-selection-more]`, 'border-end-end-radius')).toEqual(['var(--blok-radius-selection-bar)']);
+    }
+    expect(colors).toMatch(/--blok-radius-selection-bar: 0\.3125rem;/);
   });
 
   it('still hides the whole toolbar under the uncapped board and list bar', () => {
@@ -404,5 +550,234 @@ describe('Color list (notion-spec-2 §12)', () => {
   // The button's swatch sits in a 20px slot too, so the list's swatches line up with it.
   it('gives the button\'s swatch the same 20px slot', () => {
     expect(declared(`${COLOR} [data-blok-popover-item-value] > [data-blok-database-option-swatch]`, 'margin-inline')).toEqual(['var(--blok-space-0-25)']);
+  });
+});
+
+// notion-motion.md Round 9 "Edit property from a column header" (r9-header-menu-select.raw, r9-editprop-flyout.raw):
+// in the column menu and its Edit property flyout the 20px icon sits 8px into the row, the text 36px in.
+describe('column menu row icon', () => {
+  it('draws the icon 20px wide with 8px after it', () => {
+    const COLUMN = "[data-blok-popover][data-blok-popover-custom-class~='blok-database-column-menu'] [data-blok-popover-item-icon]";
+
+    expect(declared(COLUMN, 'width')).toEqual(['20px']);
+    expect(declared(COLUMN, 'margin-inline-end')).toEqual(['var(--blok-space-2)']);
+  });
+});
+
+// notion-motion.md Round 11: every calculation menu is 200x123: four 28px rows on a 29 pitch, 4px padding.
+describe('calculation menu', () => {
+  it('drops the last row\'s 1px gap, so four rows make 123', () => {
+    expect(declared("[data-blok-popover][data-blok-popover-custom-class~='blok-database-calc-menu'] [data-blok-popover-item]:last-child", 'margin-block-end')).toEqual(['0']);
+  });
+});
+
+// r11-gap-nocalc.raw: the New page row is 37 tall, its 28px button 4.5 from the top.
+describe('"+ New page" row', () => {
+  it('keeps 4.5px above and below the 28px button', () => {
+    expect(declared('[data-blok-database-table-add-row]', 'height')).toEqual(['28px']);
+    expect(declared('[data-blok-database-table-add-row]', 'margin-block')).toEqual(['calc(var(--blok-space-2-25) / 2)']);
+  });
+});
+
+// research/22 §5: the board's 99+ row holds a hint line, so the calc menu's 28px row height must not clip it.
+describe('board count menu 99+ row', () => {
+  it('grows to fit its hint', () => {
+    expect(declared("[data-blok-popover][data-blok-popover-custom-class~='blok-database-calc-menu'] [data-blok-item-name='database-group-calc-cap-counts']", 'height')).toEqual(['auto']);
+  });
+});
+
+// notion-motion.md Round 12: the table's Count list has the board's 99+ row, 72.4 tall,
+// and Count all starts 9px under it (1px row gap + an 8px divider).
+describe('calculation Count list 99+ row', () => {
+  const CALC = "[data-blok-popover][data-blok-popover-custom-class~='blok-database-calc-menu']";
+
+  it('grows the table\'s 99+ row to 72.4 and drops the one-line cap', () => {
+    expect(declared(`${CALC} [data-blok-item-name='database-calc-cap-counts']`, 'height')).toEqual(['auto']);
+    expect(declared('[data-blok-item-name="database-calc-cap-counts"]', 'max-height')).toEqual(['none']);
+  });
+
+  // notion-motion.md Round 16 §9: 8px in on every side; title 14/16.8, the 12/16.8 hint 6px under it,
+  // and the 30x18 switch 8px from the row's right, top-aligned with the title.
+  it('lays the 99+ row out as Notion\'s: title, switch on its line, hint under', () => {
+    for (const name of ['database-calc-cap-counts', 'database-group-calc-cap-counts']) {
+      expect(declared(`${CALC} [data-blok-item-name='${name}']`, 'padding')).toEqual(['var(--blok-space-2)']);
+    }
+    expect(declared('[data-blok-database-calc-cap]', 'display')).toEqual(['grid']);
+    expect(declared('[data-blok-database-calc-cap]', 'grid-template-columns')).toEqual(['188px 30px']);
+    expect(declared('[data-blok-database-calc-cap]', 'column-gap')).toEqual(['var(--blok-space-2)']);
+    expect(declared('[data-blok-database-calc-cap]', 'row-gap')).toEqual(['var(--blok-space-1-5)']);
+    expect(declared('[data-blok-database-calc-cap-title]', 'line-height')).toEqual(['16.8px']);
+    expect(declared('[data-blok-database-calc-cap-title]', 'font-size')).toEqual(['14px']);
+    expect(declared('[data-blok-database-calc-hint]', 'grid-column')).toEqual(['1']);
+    expect(declared('[data-blok-database-calc-cap] > [data-blok-database-switch-track]', 'grid-row')).toEqual(['1 / span 2']);
+    expect(declared('[data-blok-database-calc-hint]', 'line-height')).toEqual(['16.8px']);
+    expect(declared('[data-blok-database-calc-cap] > [data-blok-database-switch-track]', 'align-self')).toEqual(['start']);
+  });
+
+  // The switch carries the state; the row keeps only its hover fill. On stays blue (user decision).
+  it('shows the on state on the switch, not as a fill', () => {
+    const ON = "[data-blok-item-name$='calc-cap-counts'][aria-checked='true']";
+
+    expect(declared(`${CALC} [data-blok-item-name$='calc-cap-counts'][data-blok-popover-item-active]:not(:hover, [data-blok-focused='true'])`, 'background-color')).toEqual(['transparent']);
+    // notion-motion.md Round 29 §1: the load limit's current row shows only its check, no fill.
+    expect(declared(`${CALC} [data-blok-item-name^='database-load-limit-'][data-blok-popover-item-active]:not(:hover, [data-blok-focused='true'])`, 'background-color')).toEqual(['transparent']);
+    expect(declared(`${ON} [data-blok-database-switch-track]`, 'background-color')).toEqual(['var(--blok-database-switch-on-bg)']);
+    expect(declared(`${ON} [data-blok-database-switch-track] > span`, 'transform')).toEqual(['translateX(12px)']);
+  });
+
+  it('makes the divider under it 8 tall, 12px in from the box sides', () => {
+    expect(declared(`${CALC} [data-blok-popover-item-separator]`, 'padding-block')).toEqual(['var(--blok-space-0-75) var(--blok-space-1)']);
+    expect(declared(`${CALC} [data-blok-popover-item-separator]`, 'padding-inline')).toEqual(['var(--blok-space-2)']);
+  });
+});
+
+// The empty grid's blank line is 37 with its border, so the button keeps 4px margins there.
+describe('"+ New page" in the empty grid', () => {
+  it('keeps the blank line 37 tall', () => {
+    expect(declared('[data-blok-database-table-blank-cell] > [data-blok-database-table-add-row]', 'margin-block')).toEqual(['var(--blok-space-1)']);
+  });
+});
+
+// research/08 "New row in a filtered view", shots-08/69-filter-pills.png: on a wide table Notion centres
+// "Edit filters" and "New page" in the visible column, not across the whole grid.
+describe('filtered-empty table', () => {
+  const SCROLLER = '[data-blok-database-table-scroller]:has(> [data-blok-database-table-grid] > [data-blok-database-table-empty])';
+  const EMPTY = '[data-blok-database-table-empty]';
+
+  it('makes the scroller a container only while the empty state shows', () => {
+    expect(declared(SCROLLER, 'container-type')).toEqual(['inline-size']);
+    expect(declared('[data-blok-database-table-scroller]', 'container-type')).toEqual([]);
+  });
+
+  it('keeps the pair in the visible column: as wide as the scroller content, stuck to its start', () => {
+    expect(declared(EMPTY, 'position')).toEqual(['sticky']);
+    expect(declared(EMPTY, 'inset-inline-start')).toEqual(['0']);
+    expect(declared(EMPTY, 'width')).toEqual(['100cqi']);
+    expect(declared(EMPTY, 'justify-content')).toEqual(['center']);
+  });
+});
+
+// notion-motion.md Round 16 §3: the "+ New group" popover is 300x36 with a 6px inset, a 21px field and a 24px Done.
+describe('"+ New group" name popover', () => {
+  const MENU = "[data-blok-popover][data-blok-popover-custom-class~='blok-database-new-group-menu']";
+
+  it('drops the menu padding so the row sets the 36px height', () => {
+    expect(declared(`${MENU} [data-blok-popover-container]`, 'padding')).toEqual(['0']);
+    expect(declared(`${MENU} [data-blok-popover-items]`, 'padding')).toEqual(['0']);
+    expect(declared('[data-blok-database-layout-section-rename][data-blok-database-new-group]', 'padding')).toEqual(['var(--blok-space-1-5)']);
+    expect(declared('[data-blok-database-layout-section-rename][data-blok-database-new-group]', 'gap')).toEqual(['0']);
+  });
+
+  it('draws Done 24px tall, 6px in, with a 12x16 return mark', () => {
+    const done = '[data-blok-database-layout-section-done][data-blok-database-new-group-done]';
+
+    expect(declared(done, 'block-size')).toEqual(['24px']);
+    expect(declared(done, 'padding-inline')).toEqual(['var(--blok-space-1-5)']);
+    expect(declared('[data-blok-database-new-group-enter] svg', 'width')).toEqual(['12px']);
+    expect(declared('[data-blok-database-new-group-enter] svg', 'height')).toEqual(['16px']);
+    expect(declared('[data-blok-database-new-group] input', 'line-height')).toEqual(['21px']);
+  });
+});
+
+// notion-motion.md Round 27 §2 "Narrow title column", Round 28 §1: the icon-only OPEN is a 30x24 frame with 2px padding
+// around a 26x20 button, and keeps its label as its name.
+describe('icon-only OPEN', () => {
+  it('is 30 wide with a 2px frame, and hides the label without removing it', () => {
+    const open = '[data-blok-database-table-open][data-compact]';
+
+    expect(declared(open, 'width')).toEqual(['30px']);
+    expect(declared(open, 'padding')).toEqual(['var(--blok-space-0-5)']);
+    // notion-motion.md Round 47 §B8: the frame sits 4 in from the cell end, as the wide pill does (Notion x 604).
+    expect(declared(open, 'inset-inline-end')).toEqual(['var(--blok-space-1)']);
+    expect(declared(`${open} > span[aria-hidden="true"]`, 'width')).toEqual(['26px']);
+    expect(declared(`${open} > span[aria-hidden="true"]`, 'height')).toEqual(['20px']);
+    expect(declared(`${open} > span:last-child`, 'clip-path')).toEqual(['inset(50%)']);
+    expect(declared(`${open} > span:last-child`, 'display')).toEqual([]);
+  });
+});
+
+// notion-motion.md Round 36 §4 (r36-rowmenu-*.raw, r36-cardmenu-*.raw).
+describe('row ⋮⋮ and card ⋯ menu motion (Round 36)', () => {
+  // Notion's card ⋯ menu fades in with transform none. The not-yet-opened selector must beat the
+  // database menus' 0.96 scale, which also carries :not([data-blok-popover-opened]).
+  it('fades the card ⋯ menu in with no scale', () => {
+    expect(declared("[data-blok-popover][data-blok-popover-custom-class~='blok-database-fade-menu']:not([data-blok-popover-opened='true']) > [data-blok-popover-container]", 'transform')).toEqual(['none']);
+  });
+});
+
+// notion-motion.md Round 44 §3 (r44-tp-add-head.raw, r44-tp-search.raw): the header "+" picker's labels and search.
+describe('header "+" type picker (Round 44)', () => {
+  const GRID = "[data-blok-database-property-type-layout='grid']";
+
+  // "AI Autofill" and "Select type" text at popover x + 19: the box pads 4, the body 4, the label 11.
+  it('starts its section labels 19 in from the box', () => {
+    expect(declared(`${GRID} [data-blok-database-property-type-heading]`, 'padding-inline')).toEqual(['var(--blok-space-2-75)']);
+  });
+
+  // The 20px search button ends at 130.9 and the first cell starts at 138.9.
+  it('leaves 8 under the "Select type" line before the first type', () => {
+    expect(declared(`${GRID} [data-blok-database-property-type-list-heading]`, 'padding-bottom')).toEqual(['var(--blok-space-2)']);
+  });
+
+  // magnifyingGlassSmall fill rgb(142, 139, 134), not the label's ink.
+  it('draws the search glyph in the type icon gray', () => {
+    expect(declared('[data-blok-database-property-type-search]', 'color')).toEqual(['var(--blok-database-type-icon)']);
+  });
+
+  // The field goes 2 under where the first cell was (138.9 → 140.9), and the cells 4 under it: a 34px shift.
+  it('puts the search field 2 under the label line', () => {
+    expect(declared(`${GRID} [data-blok-database-property-type-body] > [data-blok-database-property-type-search-input]`, 'margin-top')).toEqual(['var(--blok-space-0-5)']);
+  });
+});
+
+// notion-motion.md Round 44 §3 (r44-tp-change.raw, r44-tp-propmenu-head.raw).
+describe('Change type list and the property menu glyph (Round 44)', () => {
+  // The list's type masks are rgb(56, 56, 54).
+  it('draws the Change type glyphs in the strong glyph ink', () => {
+    expect(declared("[data-blok-popover][data-blok-popover-custom-class~='blok-database-change-type'] [data-blok-popover-item-icon]", 'color'))
+      .toEqual(['var(--blok-database-peek-glyph-strong)']);
+  });
+
+  // "Change icon" 28×28 holds a 16.8 type glyph.
+  it('draws the type glyph in the name row\'s icon box at 16.8', () => {
+    expect(declared('[data-blok-database-property-menu-icon] svg', 'width')).toEqual(['16.8px']);
+    expect(declared('[data-blok-database-property-menu-icon] svg', 'height')).toEqual(['16.8px']);
+  });
+});
+
+// notion-motion.md Round 44 §3 (r44-tp-add-head.raw): the header "+" name box is 378×28, padding 2/4; "Select icon" is a
+// 24 box at +4 holding a 19.2 gray emoji glyph, and the field starts at +32.
+describe('header "+" Select icon (Round 44)', () => {
+  const HEAD = '[data-blok-database-property-type-name-over-anchor] > [data-blok-database-property-type-header]';
+  const ICON = '[data-blok-database-property-type-icon-button]';
+
+  it('pads the name box 2/4 with 4 between the icon and the field', () => {
+    expect(declared(HEAD, 'padding')).toEqual(['var(--blok-space-0-5) var(--blok-space-1)']);
+    expect(declared(HEAD, 'gap')).toEqual(['var(--blok-space-1)']);
+  });
+
+  // The "+" is 378×28 with the hover fill while open, so the header ⋯ moves to the name box's right (x 1486).
+  it('widens the "+" into the new column\'s slot while its menu is open', () => {
+    const SLOT = '[data-blok-database-table-add-property][data-blok-database-property-type-slot]';
+
+    expect(declared(SLOT, 'width')).toEqual(['378px']);
+    expect(declared(SLOT, 'background-color')).toEqual(['var(--blok-database-table-header-hover-bg)']);
+  });
+
+  it('draws Select icon as a 24 borderless box with a 19.2 glyph in the type icon gray', () => {
+    expect(declared(ICON, 'width')).toEqual(['24px']);
+    expect(declared(ICON, 'height')).toEqual(['24px']);
+    expect(declared(ICON, 'border')).toEqual(['none']);
+    expect(declared(ICON, 'color')).toEqual(['var(--blok-database-type-icon)']);
+    expect(declared(`${ICON} svg`, 'width')).toEqual(['19.2px']);
+  });
+});
+
+// notion-motion.md Round 47 §D: the divider after the sort chip sits 12 from each chip (621.3 | 633.3 | 646.3):
+// the bar's 6 gap plus a 6 margin on each side.
+describe('toolbar chip divider', () => {
+  it('sits 12px clear of the chips on each side', () => {
+    expect(declared('[data-blok-database-filter-pills]', 'gap')).toEqual(['var(--blok-space-1-5)']);
+    expect(declared('[data-blok-database-filter-pills] > [data-blok-database-chip-divider]', 'margin-inline')).toEqual(['var(--blok-space-1-5)']);
   });
 });

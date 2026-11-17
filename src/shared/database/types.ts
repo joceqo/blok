@@ -1,3 +1,4 @@
+import type { PageCover, PageIcon } from '../../../types/tools/page';
 import type { BlockToolData, OutputData } from '../../../types';
 
 // ─── Property types ───
@@ -683,6 +684,8 @@ export interface DatabaseRow {
   icon?: string;
   /** The page cover, an image URL. */
   cover?: string;
+  /** The cover image's vertical position, 0–100 %. Absent: centred. */
+  coverPosition?: number;
   /** The page's own Full width. Absent: the database's page layout decides. Only a full page widens. */
   fullWidth?: boolean;
   /** Date reminders by date property id. */
@@ -725,6 +728,8 @@ export interface DatabaseRowData extends BlockToolData {
   icon?: string;
   /** The page cover, an image URL. A plain leaf, like the icon. */
   cover?: string;
+  /** The cover image's vertical position, 0–100 % (Reposition). Absent: centred. Goes when the cover changes. */
+  coverPosition?: number;
   /** The page's own Full width, overriding the layout's. Absent: the layout decides. */
   fullWidth?: boolean;
   /**
@@ -810,6 +815,8 @@ export interface GroupSettings {
   hideEmptyGroups?: boolean;
   /** Board only: tint each column with its option color. Default on. */
   colorColumns?: boolean;
+  /** A board's sub-groups only: each band shows its page count. Default off. */
+  showAggregation?: boolean;
 }
 
 /** A conditional color rule. The rule tints rows whose property matches it. */
@@ -818,7 +825,7 @@ export interface ColorRule {
   propertyId: string;
   operator: string;
   value: PropertyValue;
-  /** An option color name, such as `green`. */
+  /** An option color name, such as `green`, or `match`: a Select rule takes the row's option color. */
   color: string;
   /** Table only. Default `row`. */
   applyTo?: 'row' | 'property';
@@ -914,19 +921,26 @@ export interface DatabaseViewConfig {
   fitImage?: boolean;
   /** Board: `list` puts each card property on its own line, `compact` sets them side by side. Default 'list'. */
   cardLayout?: CardLayout;
+  /** List: a title click edits the title in place instead of opening the row. Default false. */
+  directTitleEdit?: boolean;
   /** Calendar: the date property that places each row. */
   calendarBy?: string;
   calendarRange?: CalendarRange;
   showWeekends?: boolean;
   /** Timeline: the date property that places each bar. */
   timelineBy?: string;
-  /** Timeline: a second date property that ends each bar. Absent means `timelineBy` holds the range. */
+  /**
+   * Timeline: the date property that ends each bar. Set, even to `timelineBy`, turns
+   * "Separate start and end dates" on. Absent, empty or equal to `timelineBy`: `timelineBy` holds the range.
+   */
   timelineEndBy?: string;
   timelineZoom?: TimelineZoom;
   /** Timeline: the shared centre day, `YYYY-MM-DD` (Notion's `center_timestamp`). A person's own last centre wins over it. */
   timelineCenter?: string;
   /** Timeline: show the table panel beside the bars. */
   showTimelineTable?: boolean;
+  /** Notion's » "Minimize": the toolbar shows only « and settings. Saved with the view. */
+  toolbarMinimized?: boolean;
   /** Timeline: the table panel's own columns, apart from the bar properties. */
   tableProperties?: ViewPropertySetting[];
   /** Timeline: the self-relation that draws dependency arrows. Absent means the "Blocked by" relation, when dependencies are on. */
@@ -943,14 +957,24 @@ export interface DatabaseViewConfig {
   hiddenGroups?: GroupRef[];
   /** Groups this view shows collapsed, by option id. */
   collapsedGroups?: GroupRef[];
-  /** Hides the row count beside each group's name. */
+  /** Board: groups listed under "Pinned groups", by option id. Pinning does not move a column. Shown in group order. */
+  pinnedGroups?: GroupRef[];
+  /**
+   * Hides the row count beside each group's name. A board shows it unless this is true;
+   * a table shows it only when this is false ("Show aggregation").
+   */
   hideGroupAggregation?: boolean;
   /**
-   * Board: the calculation beside each group's name, the same on every column.
+   * Board, and a table with "Show aggregation": the calculation beside each group's name, the same on every group.
    * Absent means Count all with large counts shown as "99+". Count all is
    * saved only to keep the cap off; its `id` is then the title property.
    */
   groupCalculation?: ViewCalculation;
+  /**
+   * A board's sub-group bands, while they show their aggregation: the calculation
+   * beside each band's name, the same on every band. Read like `groupCalculation`.
+   */
+  subGroupCalculation?: ViewCalculation;
   /**
    * The advanced filter. Rows must match it AND every entry of `filters`.
    * Clients older than this field ignore it and show more rows.
@@ -968,6 +992,8 @@ export interface DatabaseViewConfig {
   showPageIcon?: boolean;
   /** Linked views only: show the "↗ source" title. Default on. */
   showDataSourceTitle?: boolean;
+  /** Feed only: the author and post time above each post. Default on. */
+  showAuthorByline?: boolean;
   /**
    * How sub-items show. Table, list and timeline: `nested` (in a toggle,
    * the default) or `flattened`. Board, calendar and gallery: `card` (the
@@ -1037,10 +1063,11 @@ export interface GroupRef {
 /** View fields a caller may set when creating or changing a view. */
 export type DatabaseViewSettingKey =
   | 'properties' | 'wrapCells' | 'frozenColumnCount' | 'showVerticalLines' | 'loadLimit' | 'calculations' | 'openPagesIn'
-  | 'noValueGroupPosition' | 'groupOrder' | 'hiddenGroups' | 'collapsedGroups' | 'hideGroupAggregation' | 'groupCalculation'
+  | 'noValueGroupPosition' | 'groupOrder' | 'hiddenGroups' | 'collapsedGroups' | 'pinnedGroups' | 'hideGroupAggregation' | 'groupCalculation' | 'subGroupCalculation'
   | 'filterTree' | 'groupSettings' | 'subGroupBy' | 'subGroupSettings' | 'colorRules' | 'showPageIcon' | 'showDataSourceTitle' | 'groupByStatus'
-  | 'cardSize' | 'cardPreview' | 'fitImage' | 'cardLayout' | 'calendarBy' | 'calendarRange' | 'showWeekends'
+  | 'cardSize' | 'cardPreview' | 'fitImage' | 'cardLayout' | 'directTitleEdit' | 'calendarBy' | 'calendarRange' | 'showWeekends' | 'showAuthorByline'
   | 'timelineBy' | 'timelineEndBy' | 'timelineZoom' | 'timelineCenter' | 'showTimelineTable' | 'tableProperties' | 'arrowsBy'
+  | 'toolbarMinimized'
   | 'chartType' | 'chartMeasure' | 'chartSort' | 'chartOmitZero' | 'chartCumulative' | 'chartColor' | 'chartHeight'
   | 'chartGridLines' | 'chartAxisNames' | 'chartDataLabels' | 'chartSmooth' | 'chartGradient' | 'chartCenterValue' | 'chartLegend'
   | 'subItemsDisplay' | 'subItemsFilter'
@@ -1067,11 +1094,31 @@ export interface DatabaseData extends BlockToolData {
   hideDataSourceTitles?: boolean;
   /** The database is a whole page ("Database - Full page"): it hides its own title, since the page title is it. */
   fullPage?: boolean;
+  /**
+   * The description under the title, as inline HTML (the same marks as a paragraph).
+   * Shown and edited only on a full-page database; an inline database keeps it unshown.
+   */
+  description?: string;
   /** The icon before the title. */
   icon?: DatabaseIcon;
   /** The Suggested template this database was made from. Removed by "Undo … database". */
   starter?: DatabaseStarterId;
+  /**
+   * Deleted properties by id. Row values stay in the rows until a permanent
+   * delete, so a restore shows them again. A database made from the toolbox
+   * saves it empty from the start; an older one gains it on its first delete
+   * and keeps it, empty or not, from then on.
+   */
+  deletedProperties?: Record<string, DeletedPropertyDefinition>;
 }
+
+/** A deleted property: its definition as it was, plus when and by whom. */
+export type DeletedPropertyDefinition = PropertyDefinition & {
+  /** Epoch milliseconds. */
+  deletedAt: number;
+  /** The person id, when known. */
+  deletedBy?: string;
+};
 
 /** A database icon: one of Blok's glyphs on a tinted tile. */
 export interface DatabaseIcon {
@@ -1162,7 +1209,7 @@ export interface ViewPropertySetting {
   maxSelections?: number;
   /**
    * Form: how a choice question lists its options. Absent: `'list'` for
-   * multi-select, `'dropdown'` for select and status.
+   * select and multi-select, `'dropdown'` for status.
    */
   showOptionsAs?: 'list' | 'dropdown';
 }
@@ -1182,6 +1229,14 @@ export interface FormSettings {
   public?: boolean;
   /** Default `'none'`. The host enforces it. */
   submissionAccess?: FormSubmissionAccess;
+  /** The heading above the questions. */
+  title?: string;
+  /** The line under the title. */
+  description?: string;
+  /** The icon above the title. */
+  icon?: PageIcon;
+  /** The cover above the header. */
+  cover?: PageCover;
   submitLabel?: string;
   /** Text shown after a submit. */
   confirmation?: string;
@@ -1217,8 +1272,13 @@ export interface DatabaseViewConfig {
   mapBy?: string;
   /** Map: the map's height, 300 / 400 / 600 / 800 px. Default 'medium'. */
   mapHeight?: MapHeight;
-  /** Dashboard slot. Blok draws no dashboard yet. */
+  /** Dashboard layout: rows of widgets, each pointing at a view by id. */
   dashboard?: { rows: DashboardRow[] };
+  /**
+   * This view is a widget of the dashboard view with this id. It gets no tab.
+   * A widget view is deleted with its dashboard.
+   */
+  dashboardViewId?: string;
   /** Calendar sync slot, for the host. */
   calendarSync?: CalendarSyncSettings;
   /** Multi-source slot: the database block whose rows this view shows. Absent means this database. */
@@ -1227,7 +1287,7 @@ export interface DatabaseViewConfig {
 
 export type MapHeight = 'small' | 'medium' | 'large' | 'extraLarge';
 
-export type Tier3ViewSettingKey = 'form' | 'mapBy' | 'mapHeight' | 'dashboard' | 'calendarSync' | 'dataSourceId';
+export type Tier3ViewSettingKey = 'form' | 'mapBy' | 'mapHeight' | 'dashboard' | 'dashboardViewId' | 'calendarSync' | 'dataSourceId';
 
 export type DatabaseSavedAutomationTrigger =
   | { id: string; type: 'pageAdded' }
@@ -1618,4 +1678,10 @@ export interface DatabaseConfig {
   calendar?: DatabaseCalendar;
   /** "Learn about reminders" and "Learn about imports". */
   helpLinks?: DatabaseHelpLinks;
+  /**
+   * ⤢ "Open as full page" on an inline database: show it on the host's own
+   * page. Without it, the database takes over the editor and the URL gets
+   * `#<databaseId>?full`, so Back returns and a reload reopens it.
+   */
+  openFullPage?(input: { databaseId: string; viewId: string }): void;
 }

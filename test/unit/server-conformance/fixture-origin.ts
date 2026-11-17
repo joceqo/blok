@@ -24,9 +24,8 @@ export interface FixtureOrigin {
   readonly errorUrl: string;
   readonly mediaFinalUrl: string;
   readonly mediaRedirectUrl: string;
-  readonly metadataFaviconUrl: string;
+  readonly latin1RedirectUrl: string;
   readonly metadataFinalUrl: string;
-  readonly metadataImageUrl: string;
   readonly metadataRedirectUrl: string;
   readonly oversizedUrl: string;
   stop(): Promise<void>;
@@ -36,6 +35,45 @@ function send(response: ServerResponse, status: number, contentType: string, bod
   response.writeHead(status, { 'Content-Type': contentType });
   response.end(body);
 }
+
+// /frame/NAME serves PRECEDENCE_HTML under these header lines, one line per pair.
+const FRAMING: Record<string, Array<[string, string]>> = {
+  'plain': [],
+  'xfo-deny': [['X-Frame-Options', 'DENY']],
+  'xfo-sameorigin': [['X-Frame-Options', 'SAMEORIGIN']],
+  'xfo-allowall': [['X-Frame-Options', 'ALLOWALL']],
+  'xfo-allowall-and-invalid-lines': [['X-Frame-Options', 'ALLOWALL'], ['X-Frame-Options', 'INVALID']],
+  'xfo-invalid-and-invalid-lines': [['X-Frame-Options', 'INVALID'], ['X-Frame-Options', 'INVALID']],
+  'xfo-allow-from': [['X-Frame-Options', 'ALLOW-FROM http://editor.example']],
+  'csp-none': [['Content-Security-Policy', "frame-ancestors 'none'"]],
+  'csp-two-lines': [['Content-Security-Policy', 'frame-ancestors *'], ['Content-Security-Policy', "frame-ancestors 'none'"]],
+  'csp-comma-policies': [['Content-Security-Policy', "default-src *, frame-ancestors 'none'"]],
+  'csp-duplicate-directive': [['Content-Security-Policy', "frame-ancestors *; frame-ancestors 'none'"]],
+  'csp-report-only': [['Content-Security-Policy-Report-Only', "frame-ancestors 'none'"]],
+  'csp-overrides-xfo': [['Content-Security-Policy', 'frame-ancestors *'], ['X-Frame-Options', 'DENY']],
+  'csp-http-embedder': [['Content-Security-Policy', 'frame-ancestors http://editor.example']],
+  'csp-https-embedder': [['Content-Security-Policy', 'frame-ancestors https://editor.example']],
+  'csp-self': [['Content-Security-Policy', "frame-ancestors 'self'"]],
+};
+
+// /frame/oembed-NAME links to the oEmbed endpoint named here; /oembed/NAME answers it.
+const OEMBED: Record<string, { body: string; href?: string; status?: number }> = {
+  'full': {
+    body: JSON.stringify({
+      type: 'video', version: '1.0', title: 'A talk', author_name: 'Someone', provider_name: 'VideoSite',
+      thumbnail_url: 'https://img.example/t.jpg', thumbnail_width: 480, thumbnail_height: 360,
+      width: 9000, height: 360, html: '<iframe src="https://evil.example"></iframe><script>alert(1)</script>',
+    }),
+  },
+  'escaped': { body: JSON.stringify({ title: 'Caf\u00e9 <b>&amp;</b> \u2028', provider_name: 'P\u00e4ge' }) },
+  'http-thumbnail': { body: JSON.stringify({ title: 't', thumbnail_url: 'http://img.example/t.jpg', width: '640' }) },
+  'html-only': { body: JSON.stringify({ html: '<script>alert(1)</script>' }) },
+  'not-json': { body: '<html>not json</html>' },
+  'missing': { body: '{"title":"gone"}', status: 404 },
+  'redirect': { body: '', href: '/oembed/redirect' },
+  'blocked': { body: '', href: 'http://127.0.0.2/o.json' },
+  'oversized': { body: JSON.stringify({ title: 'big', padding: 'x'.repeat(70 * 1024) }) },
+};
 
 // Each body is PRECEDENCE_HTML under the Content-Encoding lines named here.
 const ENCODED: Record<string, { body: () => Buffer; encoding: string[] }> = {
@@ -92,7 +130,93 @@ const ENCODED: Record<string, { body: () => Buffer; encoding: string[] }> = {
   'empty-gzip-body': { body: () => Buffer.alloc(0), encoding: ['gzip'] },
   'empty-br-body': { body: () => Buffer.alloc(0), encoding: ['br'] },
   'empty-deflate-body': { body: () => Buffer.alloc(0), encoding: ['deflate'] },
+  // .NET drops a Content-Encoding line it cannot parse as tokens.
+  'param': { body: () => PRECEDENCE_HTML, encoding: ['gzip;q=1'] },
+  'quoted': { body: () => PRECEDENCE_HTML, encoding: ['"gzip"'] },
+  'two-words': { body: () => PRECEDENCE_HTML, encoding: ['gzip x'] },
+  'slash': { body: () => PRECEDENCE_HTML, encoding: ['gzip/1'] },
+  'parens': { body: () => PRECEDENCE_HTML, encoding: ['gzip(x)'] },
+  'good-then-bad-item': { body: () => gzipSync(PRECEDENCE_HTML), encoding: ['gzip, x y'] },
+  'bad-line-then-good-line': { body: () => gzipSync(PRECEDENCE_HTML), encoding: ['gzip;q=1', 'gzip'] },
+  'trailing-comma': { body: () => gzipSync(PRECEDENCE_HTML), encoding: ['gzip,'] },
+  'only-commas': { body: () => PRECEDENCE_HTML, encoding: [' , ,'] },
+  'tab-spaced': { body: () => gzipSync(PRECEDENCE_HTML), encoding: ['\tgzip\t'] },
+  // Go's compress/gzip refuses a header name or comment over 511 bytes.
+  'gzip-long-name': { body: () => withHeaderField(gzipSync(PRECEDENCE_HTML), 0x08, 600), encoding: ['gzip'] },
+  'gzip-long-comment': { body: () => withHeaderField(gzipSync(PRECEDENCE_HTML), 0x10, 600), encoding: ['gzip'] },
 };
+
+/**
+ * An ASCII stand-in for a PDF: `size` bytes with "%PDF-1.7" at `magicAt`.
+ * ASCII, so a golden can hold it as text.
+ */
+export function fixturePdf(size: number, magicAt = 0): string {
+  const filler = (length: number): string =>
+    Array.from({ length }, (_, index) => String.fromCharCode(97 + (index % 26))).join('');
+  const magic = '%PDF-1.7';
+
+  return (filler(magicAt) + magic + filler(size)).slice(0, size);
+}
+
+// /pdf/NAME. `ranges: false` ignores Range, as some hosts do.
+const PDFS: Record<string, { body: string; ranges: boolean; encoding?: string }> = {
+  'doc.pdf': { body: fixturePdf(1500), ranges: true },
+  // "%PDF-" ends at byte 1023, the last one the check reads.
+  'magic-1019.pdf': { body: fixturePdf(1500, 1019), ranges: true },
+  'magic-1020.pdf': { body: fixturePdf(1500, 1020), ranges: true },
+  'big.pdf': { body: fixturePdf(3000), ranges: true },
+  'no-ranges.pdf': { body: fixturePdf(1500), ranges: false },
+  'gzip.pdf': { body: fixturePdf(1500), ranges: true, encoding: 'gzip' },
+  // One byte over what one /file-bytes answer may carry.
+  'mib-plus-one.pdf': { body: fixturePdf(2 ** 20 + 1), ranges: true },
+};
+
+// One "bytes=a-b" or "bytes=a-" range, else the whole body. With a
+// Content-Length: writeHead fixes the head, so Node would send chunked.
+function sendPdf(range: string | undefined, response: ServerResponse, pdf: (typeof PDFS)[string]): void {
+  const headers: Record<string, string> = { 'Content-Type': 'application/pdf', 'Accept-Ranges': 'bytes' };
+  const match = pdf.ranges ? /^bytes=(\d+)-(\d*)$/.exec(range ?? '') : null;
+
+  if (pdf.encoding !== undefined) {
+    headers['Content-Encoding'] = pdf.encoding;
+  }
+  if (match === null) {
+    headers['Content-Length'] = String(pdf.body.length);
+    response.writeHead(200, headers);
+    response.end(pdf.body);
+
+    return;
+  }
+
+  const size = pdf.body.length;
+  const start = Number(match[1]);
+  const end = Math.min(match[2] === '' ? size - 1 : Number(match[2]), size - 1);
+
+  if (start >= size) {
+    response.writeHead(416, { 'Content-Range': `bytes */${size}` });
+    response.end();
+
+    return;
+  }
+  headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
+  headers['Content-Length'] = String(end - start + 1);
+  response.writeHead(206, headers);
+  response.end(pdf.body.slice(start, end + 1));
+}
+
+/** The Content-Encoding lines the origin sends for /encoded/{name}. */
+export function encodedContentEncoding(name: string): string[] | undefined {
+  return ENCODED[name]?.encoding;
+}
+
+/** Sets a gzip header flag (FNAME or FCOMMENT) and adds its zero-ended field. */
+function withHeaderField(bytes: Buffer, flag: number, length: number): Buffer {
+  const head = Buffer.from(bytes.subarray(0, 10));
+
+  head[3] |= flag;
+
+  return Buffer.concat([head, Buffer.alloc(length, 'a'), Buffer.alloc(1), bytes.subarray(10)]);
+}
 
 function cut(bytes: Buffer): Buffer {
   return bytes.subarray(0, Math.floor(bytes.length / 2));
@@ -156,6 +280,66 @@ export async function startFixtureOrigin(): Promise<FixtureOrigin> {
       return;
     }
 
+    if (path.startsWith('/frame/')) {
+      const name = path.slice('/frame/'.length);
+      const framing = FRAMING[name];
+
+      if (name.startsWith('oembed-') && OEMBED[name.slice('oembed-'.length)] !== undefined) {
+        const key = name.slice('oembed-'.length);
+        const href = OEMBED[key].href ?? `/oembed/${key}`;
+
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'X-Frame-Options': 'DENY' });
+        response.end(`<html><head><title>t</title><link rel="alternate" type="application/json+oembed" href="${href}"></head></html>`);
+
+        return;
+      }
+
+      if (name === 'redirect') {
+        // A refusal on a redirect hop must not count; only the final response does.
+        response.writeHead(302, { Location: '/frame/plain', 'X-Frame-Options': 'DENY' });
+        response.end();
+
+        return;
+      }
+
+      if (framing !== undefined) {
+        response.writeHead(200, [['Content-Type', 'text/html; charset=utf-8'], ...framing].flat());
+        response.end(PRECEDENCE_HTML);
+
+        return;
+      }
+    }
+
+    if (path === '/oembed/redirect') {
+      response.writeHead(302, { Location: '/oembed/full' });
+      response.end();
+
+      return;
+    }
+
+    if (path.startsWith('/oembed/')) {
+      const answer = OEMBED[path.slice('/oembed/'.length)];
+
+      if (answer !== undefined) {
+        send(response, answer.status ?? 200, 'application/json', answer.body);
+
+        return;
+      }
+    }
+
+    // /big-header/N pads the response head with an N KiB header.
+    const bigHeader = /^\/big-header\/(\d+)$/.exec(path);
+
+    if (bigHeader !== null) {
+      response.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'X-Padding': 'a'.repeat(Number(bigHeader[1]) * 1024),
+      });
+      response.end(PRECEDENCE_HTML);
+
+      return;
+    }
+
     if (path.startsWith('/hold/')) {
       held.current++;
       held.peak = Math.max(held.peak, held.current);
@@ -167,12 +351,36 @@ export async function startFixtureOrigin(): Promise<FixtureOrigin> {
       return;
     }
 
+    if (path === '/pdf/redirect') {
+      response.writeHead(302, { Location: '/pdf/doc.pdf' });
+      response.end();
+
+      return;
+    }
+
+    const pdf = path.startsWith('/pdf/') ? PDFS[path.slice('/pdf/'.length)] : undefined;
+
+    if (pdf !== undefined) {
+      sendPdf(request.headers.range, response, pdf);
+
+      return;
+    }
+
     switch (path) {
       case '/metadata/redirect':
         response.writeHead(302, { Location: '/metadata/final/page.html?from=redirect' });
         response.end();
         break;
       case '/metadata/final/page.html':
+        send(response, 200, 'text/html; charset=utf-8', PRECEDENCE_HTML);
+        break;
+      // Node writes header text as Latin-1, so the "é" goes out as one raw
+      // 0xE9 byte: not valid UTF-8.
+      case '/latin1/redirect':
+        response.writeHead(302, { Location: '/latin1/caf\u00e9' });
+        response.end();
+        break;
+      case '/latin1/caf%C3%A9':
         send(response, 200, 'text/html; charset=utf-8', PRECEDENCE_HTML);
         break;
       case '/media/redirect':
@@ -226,9 +434,8 @@ export async function startFixtureOrigin(): Promise<FixtureOrigin> {
     errorUrl: `${baseUrl}/error`,
     mediaFinalUrl: `${baseUrl}/media/final/photo.jpeg?download=1`,
     mediaRedirectUrl: `${baseUrl}/media/redirect`,
-    metadataFaviconUrl: `${baseUrl}/metadata/final/favicon.svg`,
+    latin1RedirectUrl: `${baseUrl}/latin1/redirect`,
     metadataFinalUrl: `${baseUrl}/metadata/final/page.html?from=redirect`,
-    metadataImageUrl: `${baseUrl}/metadata/images/cover.png?size=2`,
     metadataRedirectUrl: `${baseUrl}/metadata/redirect`,
     oversizedUrl: `${baseUrl}/oversized`,
     stop: () => new Promise<void>((resolve, reject) => {

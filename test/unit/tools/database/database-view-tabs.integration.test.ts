@@ -191,7 +191,8 @@ describe('view tabs (feel/findings-toolbar)', () => {
   });
 
   describe("V07: the view menu takes Notion's order and labels", () => {
-    it('lists Rename, Display as, Edit view · Copy link to view, Hide data source titles · Duplicate view, Delete view', async () => {
+    // notion-motion.md Round 14: "Open as full page" sits between Copy link to view and Hide data source titles.
+    it('lists Rename, Display as, Edit view, Source · Copy link to view, Open as full page, Hide data source titles · Duplicate view, Delete view', async () => {
       await make(doc());
 
       tab('v1').click();
@@ -201,7 +202,9 @@ describe('view tabs (feel/findings-toolbar)', () => {
         'database-view-rename',
         'database-tab-display',
         'database-view-edit',
+        'database-view-source',
         'database-view-copy-link',
+        'database-view-full-page',
         'database-view-data-source-titles',
         'database-view-duplicate',
         'database-view-delete',
@@ -253,18 +256,110 @@ describe('view tabs (feel/findings-toolbar)', () => {
 
       expect(await viewIds(api)).toEqual(['v1']);
     });
+
+    // notion-motion.md Round 27 §3 (r27-tab-delete-dlg.raw): "Delete view" has focus on open.
+    it('focuses Delete view when the confirm opens', async () => {
+      await make(doc());
+
+      tab('v2').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+      await quiet();
+      menuItem('database-view-delete').click();
+      await quiet();
+
+      expect(document.querySelector('[data-blok-database-confirm-action="confirm"]')).toHaveFocus();
+    });
+  });
+
+  // notion-motion.md Round 27 §3 (r27-tab-dup-after.raw): the copy of "Table" is "Table (1)", and View settings
+  // opens with "View name" focused and its text fully selected.
+  describe('Duplicate view', () => {
+    const duplicate = async (): Promise<void> => {
+      tab('v1').click();
+      await quiet();
+      menuItem('database-view-duplicate').click();
+      await quiet();
+    };
+
+    it('names the copy "<name> (1)"', async () => {
+      const api = await make(doc());
+
+      await duplicate();
+
+      const views = ((await api.save()).blocks.find((b) => b.id === 'db')?.data as DatabaseData | undefined)?.views ?? [];
+
+      expect(views.map((v) => v.name)).toEqual(['Table', 'Table', 'Table (1)']);
+    });
+
+    it('opens View settings with the name selected', async () => {
+      await make(doc());
+
+      await duplicate();
+
+      const name = settingsPanel()?.querySelector<HTMLInputElement>('[data-blok-testid="database-settings-view-name"]');
+
+      expect(name).toBeInstanceOf(HTMLInputElement);
+      expect(name).toHaveFocus();
+      expect([name?.selectionStart, name?.selectionEnd]).toEqual([0, 'Table (1)'.length]);
+    });
   });
   describe('V03: the title row "…" with one view', () => {
     const titleMore = (): HTMLElement | null => parentRoot().querySelector<HTMLElement>('[data-blok-database-title-row] [data-blok-database-title-more]');
 
-    it('sits after "+" and lists Copy link to view, Duplicate view, then Edit title', async () => {
+    const menuGroups = (): string[][] => [...document.querySelectorAll<HTMLElement>('[data-blok-popover-opened="true"] [data-blok-popover-items] > *')]
+      .reduce<string[][]>((groups, item) => {
+        const name = item.getAttribute('data-blok-item-name');
+
+        if (name !== null) groups[groups.length - 1].push(name);
+        else if (item.getAttribute('data-blok-testid') === 'popover-item-separator') groups.push([]);
+
+        return groups;
+      }, [[]]);
+
+    it('sits after "+" and lists Notion\'s groups: view, title and layout, then Hide title', async () => {
       await make(doc([table('v1', 'a0')]));
 
       expect(titleMore()?.previousElementSibling?.hasAttribute('data-blok-database-add-view')).toBe(true);
       titleMore()?.click();
       await quiet();
 
-      expect(menuItems()).toEqual(['database-title-copy-link', 'database-title-duplicate', 'database-title-edit']);
+      expect(menuGroups()).toEqual([
+        ['database-title-copy-link', 'database-title-duplicate'],
+        ['database-title-edit', 'database-title-edit-layout'],
+        ['database-title-hide'],
+      ]);
+    });
+
+    it('Hide title hides the title and saves it; the "…" stays and offers Show title', async () => {
+      const api = await make(doc([table('v1', 'a0')]));
+
+      titleMore()?.click();
+      await quiet();
+      menuItem('database-title-hide').click();
+      await quiet();
+
+      expect(own('[data-blok-database-title]').hidden).toBe(true);
+      expect(((await api.save()).blocks.find((b) => b.id === 'db')?.data as DatabaseData).hideDataSourceTitles).toBe(true);
+      titleMore()?.click();
+      await quiet();
+
+      expect(menuItem('database-title-hide').textContent).toContain('Show title');
+      expect(menuItems()).not.toContain('database-title-edit');
+      menuItem('database-title-hide').click();
+      await quiet();
+
+      expect(own('[data-blok-database-title]').hidden).toBe(false);
+      expect(((await api.save()).blocks.find((b) => b.id === 'db')?.data as DatabaseData).hideDataSourceTitles).toBeUndefined();
+    });
+
+    it('Edit layout opens the first row page in Customize layout', async () => {
+      await make(doc([table('v1', 'a0')]));
+
+      titleMore()?.click();
+      await quiet();
+      menuItem('database-title-edit-layout').click();
+      await quiet();
+
+      expect(document.querySelector('[data-blok-database-layout-apply]')).not.toBeNull();
     });
 
     it('Duplicate view adds a second view', async () => {

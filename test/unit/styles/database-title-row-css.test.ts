@@ -32,7 +32,8 @@ describe('one view: the toolbar shares the title row (V01)', () => {
   });
 
   it('the selection bar can take the title row', () => {
-    expect(rule('[data-blok-database-title-row][data-blok-database-selecting]')).toMatch(/position: relative/);
+    // The second selector holds the bar in place while it fades out (notion-motion.md Round 16 §2).
+    expect(rule('[data-blok-database-title-row][data-blok-database-selecting], [data-blok-database-title-row]:has(> [data-blok-database-table-selection-bar-leaving])')).toMatch(/position: relative/);
   });
 });
 
@@ -47,9 +48,54 @@ describe('the empty title keeps its placeholder width (V02)', () => {
   });
 });
 
+// notion-motion.md, Round 7 "Long database title" and Round 8b "Long title while editing".
+describe('a long title stays one line', () => {
+  const rest = (): string => rule('[data-blok-database-title-row] > [data-blok-database-title]:not([hidden])');
+  const editing = (): string => rule('[data-blok-database-title-row] > [data-blok-database-title]:focus:not([hidden])');
+
+  it('clamps to one line with an ellipsis, with one view or several', () => {
+    expect(rest()).toMatch(/display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1;/);
+    expect(rest()).toMatch(/overflow: hidden/);
+    expect(rest()).toMatch(/text-overflow: ellipsis/);
+    expect(rest()).toMatch(/white-space: break-spaces/);
+  });
+
+  it('stays one line while edited and scrolls sideways with no scrollbar', () => {
+    expect(editing()).toMatch(/display: block/);
+    expect(editing()).toMatch(/-webkit-line-clamp: none/);
+    expect(editing()).toMatch(/white-space: nowrap/);
+    expect(editing()).toMatch(/overflow-x: auto/);
+    expect(editing()).toMatch(/text-overflow: clip/);
+    expect(editing()).toMatch(/scrollbar-width: none/);
+  });
+
+  it('with several views the title spans its own row', () => {
+    expect(rule('[data-blok-database-title-row]:not([data-single-view]) > [data-blok-database-title]')).toMatch(/flex: 1 1 0%; min-width: 0/);
+  });
+
+  it('"+" and "…" keep their 24px while the title gives way', () => {
+    expect(rule('[data-blok-database-title-row][data-single-view] [data-blok-database-add-view]')).toMatch(/flex-shrink: 0/);
+    expect(rule('[data-blok-database-title-more]')).toMatch(/flex-shrink: 0/);
+  });
+});
+
 describe("Add view is Notion's tile grid (V04)", () => {
-  it('lays the tiles out in 4 columns', () => {
-    expect(rule("[data-blok-popover-custom-class~='blok-database-add-view-menu'] [data-blok-popover-items]")).toMatch(/grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
+  // notion-motion Round 9 (r9-addview-tiles.raw): 92x62 tiles at a 94 x 63 pitch, 8px from the menu's edge.
+  it('lays 92px tiles out in 4 columns at a 94 x 63 pitch', () => {
+    const grid = rule("[data-blok-popover-custom-class~='blok-database-add-view-menu'] [data-blok-popover-items]");
+
+    expect(grid).toMatch(/grid-template-columns: repeat\(4, 92px\)/);
+    expect(grid).toMatch(/column-gap: var\(--blok-space-0-5\)/);
+    expect(grid).toMatch(/row-gap: var\(--blok-space-0-25\)/);
+    // 4px container + 4px here = Notion's 8px inset; 8px under "New data source".
+    expect(grid).toMatch(/padding: var\(--blok-space-1\) var\(--blok-space-1\) var\(--blok-space-2\)/);
+  });
+
+  // r19:23 + r9-addview-menu.png: 390x279; first tile 37.9 under the menu top,
+  // the rule 7.9 under the last tile, "New data source" 28 tall, 8 to the bottom.
+  it('spaces the heading and the rule as Notion does, for a 279px menu', () => {
+    expect(rule('[data-blok-database-view-popover-heading]')).toMatch(/padding: var\(--blok-space-3\) var\(--blok-space-2\) 6\.5px/);
+    expect(rule("[data-blok-popover-custom-class~='blok-database-add-view-menu'] [data-blok-popover-item-separator]")).toMatch(/padding: var\(--blok-space-1-75\) 0/);
   });
 
   it('a tile is 62px tall, radius 8, a 22px glyph above a 14/20 label', () => {
@@ -60,6 +106,18 @@ describe("Add view is Notion's tile grid (V04)", () => {
     expect(tile).toMatch(/border-radius: var\(--blok-radius-control-lg\)/);
     expect(rule('[data-blok-database-view-option-icon] svg')).toMatch(/width: 22px/);
     expect(rule('[data-blok-database-view-option-label]')).toMatch(/font-size: 14px; line-height: 20px/);
+  });
+
+  it('a tile label is the lighter rgb(73,72,70) ink, 4px in from each side (notion-motion.md Round 9 and Round 15 §A)', () => {
+    const label = rule('[data-blok-database-view-option-label]');
+
+    expect(label).toMatch(/color: var\(--blok-database-option-gray-text\)/);
+    expect(label).toMatch(/padding: 0 var\(--blok-space-1\)/);
+  });
+
+  it('a tile fills over 20ms ease-in on hover and doubles the fill when pressed (notion-motion.md Round 15 §A)', () => {
+    expect(rule('[data-blok-database-view-option]')).toMatch(/transition: background-color 20ms ease-in;/);
+    expect(rule('[data-blok-database-view-option]:active')).toMatch(/background-color: var\(--blok-database-pressed-bg\)/);
   });
 
   it('the heading is 12/14.4 500 in sentence case', () => {
@@ -85,14 +143,48 @@ describe('title row "+" and "…" (V02, V03)', () => {
   });
 });
 
+// notion-motion.md Round 23 §4 "Title row": "+" shows and hides at once; "⋯" fades in 200ms ease and goes at once.
+describe('title row "+" and "…" fades (notion-motion.md Round 23 §4)', () => {
+  const shown = '[data-blok-database-title-row]:hover [data-blok-database-add-view], [data-blok-database-title-row] [data-blok-database-add-view][data-popover-open], [data-blok-database-title-row]:hover [data-blok-database-title-more], [data-blok-database-title-more][data-popover-open], [data-blok-database-title-more]:focus-visible';
+
+  it('"+" shows and hides with no fade, its fill over 100ms ease-in-out', () => {
+    expect(rule('[data-blok-database-title-row][data-single-view] [data-blok-database-add-view]')).toMatch(/transition: background-color 100ms ease-in-out;/);
+  });
+
+  it('"…" hides at once and fades in over 200ms ease', () => {
+    expect(rule('[data-blok-database-title-more]')).toMatch(/transition: background-color 100ms ease-in-out;/);
+    expect(rule(shown)).toMatch(/opacity: 1/);
+    expect(rule('[data-blok-database-title-row]:hover [data-blok-database-title-more], [data-blok-database-title-more][data-popover-open], [data-blok-database-title-more]:focus-visible')).toMatch(/transition: background-color 100ms ease-in-out, opacity 200ms ease;/);
+  });
+});
+
 describe('tab row sizes (V26, V32, V33)', () => {
   it('the tab-bar "+" is 28px with a 16px glyph, 1px after the last tab', () => {
     const plus = rule('[data-blok-database-add-view]');
 
     expect(plus).toMatch(/width: 28px/);
     expect(plus).toMatch(/height: 28px/);
-    expect(plus).toMatch(/margin-inline-start: var\(--blok-border-width-hairline\)/);
+    // The bar's 1px gap is the whole space after the last tab (notion-motion.md Round 9: x 831.6 after 830.6).
+    expect(plus).not.toMatch(/margin-inline-start/);
     expect(rule('[data-blok-database-add-view] svg')).toMatch(/width: 16px; height: 16px/);
+  });
+
+  // notion-motion.md Round 9 "View tab bar +": round, 142,139,134 glyph, fades in over 200ms ease.
+  it('the tab-bar "+" is round with the header icon ink and fades in over 200ms ease', () => {
+    const plus = rule('[data-blok-database-tab-bar] > [data-blok-database-add-view]');
+
+    expect(plus).toMatch(/border-radius: var\(--blok-radius-pill\)/);
+    expect(plus).toMatch(/color: var\(--blok-database-table-header-icon\)/);
+    expect(plus).toMatch(/transition: background-color 100ms ease-in-out, opacity 200ms ease/);
+  });
+
+  it('a keyboard user tabbing to the "+" sees it', () => {
+    expect(rule('[data-blok-database-tab-bar] > [data-blok-database-add-view]:focus-visible')).toMatch(/opacity: 1/);
+  });
+
+  // motion-addview.json: the "+" hover fill is Notion's icon-button 100ms ease-in-out.
+  it('the "+" hover fill eases in-out over 100ms', () => {
+    expect(rule('[data-blok-database-add-view]')).toMatch(/transition: background-color 100ms ease-in-out,/);
   });
 
   it('"N more…" is 14px', () => {
@@ -104,13 +196,31 @@ describe('tab row sizes (V26, V32, V33)', () => {
   });
 });
 
-describe('dragging a tab (V27)', () => {
-  it('the source tab leaves the row, so the others reflow live', () => {
-    expect(rule('[data-blok-database-tab][data-blok-database-tab-drag-source]')).toMatch(/display: none/);
+// side-by-side-v1 X2 and Board: pixels of listview.png, listgallery.png, caltimeline.png, board.png.
+describe('vertical offsets match Notion', () => {
+  it('keeps the title row 40px with tabs too, so the title does not move up', () => {
+    const body = rule('[data-blok-database-title-row]');
+
+    expect(body).toMatch(/min-height: 40px/);
+    // With the tab bar's 4px top padding, tab pills start 9px under the title row (Notion: pill drawn at 270, title baseline 248).
+    expect(body).toMatch(/margin-bottom: var\(--blok-space-1-25\)/);
   });
 
-  it('the ghost has no black shadow', () => {
-    expect(rule('[data-blok-database-tab-ghost]')).toMatch(/box-shadow: none/);
+  it('leaves 4px under the tab pills; the list adds Notion\'s 4px inner padding (research/07 "List")', () => {
+    expect(rule('[data-blok-database-tab-bar]')).toMatch(/padding: var\(--blok-space-1\) 0 var\(--blok-space-1\);/);
+    expect(rule('[data-blok-database-list]')).toMatch(/padding-block-start: var\(--blok-space-1\)/);
+  });
+
+  it('starts the board 8px under the title row (Notion columns at 269, title baseline 248)', () => {
+    expect(rule('[data-blok-database-board]')).toMatch(/padding-top: var\(--blok-space-2\)/);
+  });
+});
+
+// notion-motion.md Round 14: the dragged tab stays in the row and moves itself; there is no ghost.
+describe('dragging a tab', () => {
+  it('keeps the dragged tab in the row, drawn over the tabs it passes', () => {
+    expect(rule('[data-blok-database-tab-bar][data-dragging] [data-blok-database-tab][data-blok-database-tab-drag-source]')).toMatch(/z-index: 1/);
+    expect(database).not.toContain('[data-blok-database-tab-ghost]');
   });
 });
 
@@ -119,9 +229,28 @@ describe('a narrow view bar folds like Notion (notion-spec-2 §26.1)', () => {
     expect(rule('[data-blok-database-tab-bar][data-blok-database-tab-folded] > [data-blok-database-add-view]')).toMatch(/display: none/);
   });
 
-  it('the icon group hides together, and New hides on its own', () => {
-    expect(rule('[data-blok-database-view-bar][data-blok-database-fold-icons] > [data-blok-database-view-toolbar] > [data-blok-database-toolbar-foldable]')).toMatch(/display: none/);
-    expect(rule('[data-blok-database-view-bar][data-blok-database-fold-new] > [data-blok-database-view-toolbar] > [data-blok-database-new]')).toMatch(/display: none/);
+  it('the icon group hides together, and New hides on its own, in the view bar and in a one-view title row', () => {
+    expect(rule('[data-blok-database-view-bar][data-blok-database-fold-icons] > [data-blok-database-view-toolbar] > [data-blok-database-toolbar-foldable], [data-blok-database-title-row][data-single-view] > [data-blok-database-view-toolbar][data-blok-database-fold-icons] > [data-blok-database-toolbar-foldable]')).toMatch(/display: none/);
+    expect(rule('[data-blok-database-view-bar][data-blok-database-fold-new] > [data-blok-database-view-toolbar] > [data-blok-database-new], [data-blok-database-title-row][data-single-view] > [data-blok-database-view-toolbar][data-blok-database-fold-new] > [data-blok-database-new]')).toMatch(/display: none/);
+  });
+
+  // notion-motion.md, Round 7 "⤢ fold point": ⤢ goes with New ⌄, in the view bar and in a one-view title row.
+  it('folds ⤢ with New', () => {
+    expect(rule('[data-blok-database-view-bar][data-blok-database-fold-new] > [data-blok-database-view-toolbar] > [data-blok-database-toolbar-full-page], [data-blok-database-title-row][data-single-view] > [data-blok-database-view-toolbar][data-blok-database-fold-new] > [data-blok-database-toolbar-full-page]')).toMatch(/display: none/);
+  });
+
+  // notion-motion.md Round 15 B: the database opened full hides the blocks around it, and its title is 32px bold.
+  it('a database opened as a full page hides the blocks off its path and shows a 32px bold title', () => {
+    expect(rule('[data-blok-database-full-open] [data-blok-element]:not([data-blok-database-full-open-path], [data-blok-database-full-open-target] [data-blok-element]), [data-blok-database-full-open] > [data-blok-bottom-zone]')).toMatch(/display: none/);
+    const title = rule('[data-blok-database-full-open-target] [data-blok-database-title]:not([data-blok-database-drawer] *)');
+
+    expect(title).toMatch(/font-size: 32px !important/);
+    expect(title).toMatch(/font-weight: 700 !important/);
+  });
+
+  // notion-motion.md, Round 7 "⤢ fold point": » goes with New ⌄.
+  it('a one-view title row folds » with New', () => {
+    expect(rule('[data-blok-database-title-row][data-single-view] > [data-blok-database-view-toolbar][data-blok-database-fold-new] > [data-blok-database-toolbar-minimize]')).toMatch(/display: none/);
   });
 
   // notion-spec-2 §26.1 (`tb-1000-closed.txt`): "4 more…" is 76.7x32, as tall as a tab.
@@ -153,5 +282,65 @@ describe('a narrow view bar folds like Notion (notion-spec-2 §26.1)', () => {
     expect(body).toMatch(/background-color: var\(--blok-database-tab-bg-active\)/);
     expect(body).toMatch(/color: var\(--blok-database-tab-text-active\)/);
     expect(body).toMatch(/border-radius: var\(--blok-radius-pill\)/);
+  });
+});
+
+// notion-live/rowdrag-mid.png, research/08:28-31: the table bar replaces Filter, Sort and Automations,
+// in the view bar and in the title row of a one-view database.
+describe('the table selection bar hides Filter, Sort and Automations', () => {
+  it('hides them while rows are picked, and only then', () => {
+    expect(rule('[data-blok-database-selecting="table"] > [data-blok-database-view-toolbar] > [data-blok-database-toolbar-selection-hides]'))
+      .toMatch(/visibility: hidden/);
+  });
+});
+
+// replica-db-pages/research-live-notion.md:31: on a full-page database the toolbar shows only Settings and New
+// until the pointer is over the view. Keyboard focus and an open menu keep an icon shown.
+describe('full-page database: the toolbar icons show on hover', () => {
+  const hover = database.slice(database.indexOf('@media (hover: hover) { [data-blok-database-page]'));
+  const HIDE = '[data-blok-database-page]:not(:hover) > :is([data-blok-database-view-bar], [data-blok-database-title-row]) > [data-blok-database-view-toolbar]:not(:has(:focus-visible)) > [data-blok-database-toolbar-foldable]:not([data-popover-open])';
+
+  it('hides Filter, Sort, Automations, AI Autofill and search while the pointer is away, on pointer devices only', () => {
+    expect(hover.startsWith('@media (hover: hover)')).toBe(true);
+    expect(hover).toContain(`${HIDE} { opacity: 0; }`);
+  });
+
+  it('leaves inline databases alone', () => {
+    expect(database.match(/\[data-blok-database-toolbar-foldable\]:not\(\[data-popover-open\]\) \{ opacity: 0; \}/g)).toHaveLength(1);
+  });
+});
+
+// notion-motion.md Round 32 §3 Table and gap 0 (side-by-side-v1 X1): in a page-wide editor Notion's New ends at the text column.
+describe('the toolbar ends at the text column', () => {
+  const inset = 'max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2))';
+
+  it('stops the toolbar beside the tabs at the column end', () => {
+    expect(rule('[data-blok-database-view-bar] > [data-blok-database-view-toolbar]')).toContain(`margin-inline-end: ${inset}`);
+  });
+
+  it('stops the one-view title row at the column end', () => {
+    expect(rule('[data-blok-database-title-row][data-single-view]')).toContain(`padding-inline-end: ${inset}`);
+  });
+});
+
+// notion-motion.md Round 35 gap 5 (r35-sort2.raw, .png): in a page-wide editor the bar's line spans x 531-1238 (the column and 8 each side) at y 309, 4 under Blok's,
+// and the "2 sorts" chip sits at (539, 322.2), 13 under the line.
+describe('the sort and filter chip bar keeps to the text column', () => {
+  const inset = 'max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2))';
+
+  it('stops the line 8px outside the column on both sides', () => {
+    expect(rule('[data-blok-database-filter-bar]')).toContain(`margin-inline: max(0px, calc(${inset} - var(--blok-space-2)))`);
+  });
+
+  it('starts the first chip at the column', () => {
+    expect(rule('[data-blok-database-filter-bar]')).toContain(`padding-inline-start: min(var(--blok-space-2), ${inset})`);
+  });
+
+  it('puts the line 4px lower and the chips 13px under it, in the same 45px bar', () => {
+    const body = rule('[data-blok-database-filter-bar]');
+
+    expect(body).toContain('margin-block-start: var(--blok-space-1)');
+    expect(body).toContain('padding-block-start: var(--blok-space-1)');
+    expect(body).toContain('min-block-size: 45px');
   });
 });

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/collab"
-	"github.com/JackUait/blok/packages/server/go/internal/ws"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/ws"
 )
 
 func newTestMember(maxQueuedBytes int64) *SocketMember {
@@ -313,5 +313,82 @@ func TestRecheckWithNoHookAllows(t *testing.T) {
 	ok, err := newTestMember(1).RecheckAccess(context.Background())
 	if !ok || err != nil {
 		t.Fatalf("got %v, %v", ok, err)
+	}
+}
+
+// waitingMembership holds each frame as a busy room lane would, until the
+// receive is cancelled.
+type waitingMembership struct {
+	entered   chan struct{}
+	cancelled chan struct{}
+}
+
+func (m *waitingMembership) Receive(ctx context.Context, _ []byte) error {
+	close(m.entered)
+	<-ctx.Done()
+	close(m.cancelled)
+	return ctx.Err()
+}
+
+func (m *waitingMembership) Leave() {}
+
+// C# SyncSocketMember hands its receive token to the room: when the close
+// grace runs out, a frame still waiting for the room lane is dropped.
+func TestAFrameWaitingOnTheRoomIsCancelledWhenTheCloseGraceEnds(t *testing.T) {
+	server, client := wsPair(t)
+	membership := &waitingMembership{entered: make(chan struct{}), cancelled: make(chan struct{})}
+	member := NewSocketMember(MemberOptions{MaxQueuedBytes: 1 << 20, CloseGrace: 50 * time.Millisecond})
+	done := runMember(t, member, server, membership, nil)
+	if _, err := client.Write(clientFrame(0x82, []byte{1})); err != nil {
+		t.Fatal(err)
+	}
+	<-membership.entered
+
+	member.Close(collab.CloseReset)
+
+	select {
+	case <-membership.cancelled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the waiting frame was not cancelled after the close grace")
+	}
+	<-done
+}
+
+// C# links its receive token to RequestAborted: a peer whose connection
+// drops while its frame waits for the room lane has that frame dropped.
+func TestAFrameWaitingOnTheRoomIsCancelledWhenThePeerConnectionDrops(t *testing.T) {
+	for _, drop := range []string{"fin", "rst", ""} {
+		t.Run("drop="+drop, func(t *testing.T) {
+			server, client := wsPair(t)
+			membership := &waitingMembership{entered: make(chan struct{}), cancelled: make(chan struct{})}
+			member := NewSocketMember(MemberOptions{MaxQueuedBytes: 1 << 20})
+			done := runMember(t, member, server, membership, nil)
+			if _, err := client.Write(clientFrame(0x82, []byte{1})); err != nil {
+				t.Fatal(err)
+			}
+			<-membership.entered
+			tcp := client.(*net.TCPConn)
+			switch drop {
+			case "fin":
+				_ = tcp.CloseWrite()
+			case "rst":
+				_ = tcp.SetLinger(0)
+				_ = tcp.Close()
+			default:
+				select {
+				case <-membership.cancelled:
+					t.Fatal("cancelled with the peer still there")
+				case <-time.After(300 * time.Millisecond):
+				}
+				server.Abort()
+				return
+			}
+			select {
+			case <-membership.cancelled:
+			case <-time.After(3 * time.Second):
+				t.Fatal("the waiting frame was not cancelled after the peer dropped")
+			}
+			<-done
+		})
 	}
 }

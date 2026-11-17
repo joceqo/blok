@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { Mock } from 'vitest';
 import { Table } from '../../../../src/tools/table';
-import { buildClipboardHtml } from '../../../../src/tools/table/table-cell-clipboard';
+import { buildClipboardHtml, tableClipboardHtml } from '../../../../src/tools/table/table-cell-clipboard';
 import type { TableCellSelection } from '../../../../src/tools/table/table-cell-selection';
 import { updateHeadingStyles } from '../../../../src/tools/table/table-operations';
 import { clearAdditionalRestrictedTools, isRestrictedInTableCell } from '../../../../src/tools/table/table-restrictions';
@@ -63,6 +64,18 @@ const createMockAPI = (overrides: Partial<API> = {}): API => {
   // getById → block whose parentId matches this table) works for tests that go
   // through the render → initializeCells → insert flow.
   const blockStore = new Map<string, { id: string; holder: HTMLElement; parentId: string | null }>();
+  const addBlock = (parentId: string | null): { id: string; holder: HTMLElement; parentId: string | null } => {
+    const id = `mock-${Math.random().toString(36).slice(2, 8)}`;
+    const holder = document.createElement('div');
+
+    holder.setAttribute('data-blok-id', id);
+
+    const entry = { id, holder, parentId };
+
+    blockStore.set(id, entry);
+
+    return entry;
+  };
 
   return {
     styles: {
@@ -82,18 +95,8 @@ const createMockAPI = (overrides: Partial<API> = {}): API => {
     blocks: {
       delete: () => {},
       getChildren: () => [],
-      insert: () => {
-        const id = `mock-${Math.random().toString(36).slice(2, 8)}`;
-        const holder = document.createElement('div');
-
-        holder.setAttribute('data-blok-id', id);
-
-        const entry = { id, holder, parentId: null };
-
-        blockStore.set(id, entry);
-
-        return entry;
-      },
+      insert: () => addBlock(null),
+      insertMany: (specs: Array<{ parent?: string }>) => specs.map(spec => addBlock(spec.parent ?? null)),
       getCurrentBlockIndex: () => 0,
       getBlocksCount: () => blockStore.size,
       getBlockIndex: () => undefined,
@@ -165,8 +168,15 @@ describe('Table Tool', () => {
 
       if (config !== false) {
         // TABLE is declared as a config object so the columns-candidate stamp
-        // (data-blok-columns-candidate) and the grid's dir survive paste sanitization.
-        expect(config.tags).toContainEqual({ TABLE: { 'data-blok-columns-candidate': true, dir: true } });
+        // (data-blok-columns-candidate), the grid's dir and a Blok copy's
+        // layout marks survive paste sanitization.
+        expect(config.tags).toContainEqual({ TABLE: {
+          'data-blok-columns-candidate': true,
+          dir: true,
+          'data-blok-table-headings': true,
+          'data-blok-table-col-widths': true,
+          'data-blok-table-initial-col-width': true,
+        } });
       }
     });
   });
@@ -633,29 +643,33 @@ describe('Table Tool', () => {
         }
       });
 
+      const addBlock = (name: string, data: Record<string, unknown> | undefined, parentId: string | null): MockBlock => {
+        const id = `clone-${blockStore.size}`;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', id);
+        const entry: MockBlock = {
+          id,
+          holder,
+          parentId,
+          name,
+          preservedData: data ?? {},
+        };
+
+        blockStore.set(id, entry);
+
+        return entry;
+      };
+
       const sharedApi = {
         styles: {},
         i18n: { t: (k: string) => k },
         blocks: {
           delete: () => {},
           getChildren: () => [],
-          insert: (name: string, data: Record<string, unknown>) => {
-            const id = `clone-${blockStore.size}`;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', id);
-            const entry: MockBlock = {
-              id,
-              holder,
-              parentId: null,
-              name,
-              preservedData: data ?? {},
-            };
-
-            blockStore.set(id, entry);
-
-            return entry;
-          },
+          insert: (name: string, data: Record<string, unknown>) => addBlock(name, data, null),
+          insertMany: (specs: Array<{ type: string; data: Record<string, unknown>; parent?: string }>) =>
+            specs.map(spec => addBlock(spec.type, spec.data, spec.parent ?? null)),
           getCurrentBlockIndex: () => 0,
           getBlocksCount: () => blockStore.size,
           getBlockIndex: (id: string) => {
@@ -1378,19 +1392,22 @@ describe('Table Tool', () => {
         return blockIndexMap.get(id);
       });
 
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCounter++;
+        const blockId = `cell-block-${insertCounter}`;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', blockId);
+        blockIndexMap.set(blockId, insertCounter - 1);
+
+        return { id: blockId, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
           delete: mockDelete,
-          insert: vi.fn().mockImplementation(() => {
-            insertCounter++;
-            const blockId = `cell-block-${insertCounter}`;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', blockId);
-            blockIndexMap.set(blockId, insertCounter - 1);
-
-            return { id: blockId, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlocksCount: vi.fn().mockReturnValue(0),
           getBlockIndex: mockGetBlockIndex,
@@ -2072,17 +2089,20 @@ describe('Table Tool', () => {
         return undefined;
       });
       let insertCounter = 0;
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCounter++;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', `mock-block-${insertCounter}`);
+
+        return { id: `mock-block-${insertCounter}`, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
           delete: mockDelete,
-          insert: vi.fn().mockImplementation(() => {
-            insertCounter++;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', `mock-block-${insertCounter}`);
-
-            return { id: `mock-block-${insertCounter}`, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlockIndex: mockGetBlockIndex,
         },
@@ -2133,17 +2153,20 @@ describe('Table Tool', () => {
         return undefined;
       });
       let insertCounter = 0;
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCounter++;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', `mock-block-${insertCounter}`);
+
+        return { id: `mock-block-${insertCounter}`, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
           delete: mockDelete,
-          insert: vi.fn().mockImplementation(() => {
-            insertCounter++;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', `mock-block-${insertCounter}`);
-
-            return { id: `mock-block-${insertCounter}`, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlockIndex: mockGetBlockIndex,
         },
@@ -2183,17 +2206,20 @@ describe('Table Tool', () => {
       const mockDelete = vi.fn();
       const mockGetBlockIndex = vi.fn().mockReturnValue(undefined);
       let insertCounter = 0;
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCounter++;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', `mock-block-${insertCounter}`);
+
+        return { id: `mock-block-${insertCounter}`, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
           delete: mockDelete,
-          insert: vi.fn().mockImplementation(() => {
-            insertCounter++;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', `mock-block-${insertCounter}`);
-
-            return { id: `mock-block-${insertCounter}`, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlockIndex: mockGetBlockIndex,
         },
@@ -2228,19 +2254,38 @@ describe('Table Tool', () => {
   });
 
   describe('new rows and columns get paragraph blocks', () => {
-    it('should populate new row cells with paragraph blocks when clicking add-row', () => {
-      let insertCallCount = 0;
-      const mockInsert = vi.fn().mockImplementation(() => {
-        insertCallCount++;
+    const emptyCellSpec = { type: 'paragraph', data: { text: '' }, parent: 'table-1' };
+
+    const createBlockMocks = (): {
+      mockInsert: Mock<() => { id: string; holder: HTMLElement }>;
+      mockInsertMany: Mock<(specs: unknown[]) => Array<{ id: string; holder: HTMLElement }>>;
+    } => {
+      const counter = { value: 0 };
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        counter.value++;
         const holder = document.createElement('div');
 
-        holder.setAttribute('data-blok-id', `auto-p-${insertCallCount}`);
+        holder.setAttribute('data-blok-id', `auto-p-${counter.value}`);
 
-        return { id: `auto-p-${insertCallCount}`, holder };
-      });
+        return { id: `auto-p-${counter.value}`, holder };
+      };
+
+      return {
+        mockInsert: vi.fn(createBlock),
+        mockInsertMany: vi.fn((specs: unknown[]) => specs.map(createBlock)),
+      };
+    };
+
+    /** Specs handed to insertMany after its first `from` calls. */
+    const specsSince = (mockInsertMany: ReturnType<typeof createBlockMocks>['mockInsertMany'], from: number): unknown[] =>
+      mockInsertMany.mock.calls.slice(from).flatMap(([specs]) => specs);
+
+    it('should populate new row cells with paragraph blocks when clicking add-row', () => {
+      const { mockInsert, mockInsertMany } = createBlockMocks();
       const mockApi = createMockAPI({
         blocks: {
           insert: mockInsert,
+          insertMany: mockInsertMany,
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlockIndex: vi.fn().mockReturnValue(undefined),
         },
@@ -2259,17 +2304,17 @@ describe('Table Tool', () => {
       document.body.appendChild(element);
       table.rendered();
 
-      // Record insert calls before add-row (initializeCells calls insert for original cells)
+      // initializeCells already filled the original cells
       const insertCallsBefore = mockInsert.mock.calls.length;
+      const insertManyCallsBefore = mockInsertMany.mock.calls.length;
 
       const addRowBtn = element.querySelector('[data-blok-table-add-row]') as HTMLElement;
 
       pointerClick(addRowBtn);
 
       // New row should have 2 cells, each needing a paragraph block
-      const insertCallsAfter = mockInsert.mock.calls.length;
-
-      expect(insertCallsAfter - insertCallsBefore).toBe(2);
+      expect(specsSince(mockInsertMany, insertManyCallsBefore)).toEqual([emptyCellSpec, emptyCellSpec]);
+      expect(mockInsert.mock.calls.length).toBe(insertCallsBefore);
 
       // Verify the new row's cells have blocks in their containers
       const rows = element.querySelectorAll('[data-blok-table-row]');
@@ -2289,18 +2334,11 @@ describe('Table Tool', () => {
     });
 
     it('should populate new column cells with paragraph blocks when clicking add-column', () => {
-      let insertCallCount = 0;
-      const mockInsert = vi.fn().mockImplementation(() => {
-        insertCallCount++;
-        const holder = document.createElement('div');
-
-        holder.setAttribute('data-blok-id', `auto-p-${insertCallCount}`);
-
-        return { id: `auto-p-${insertCallCount}`, holder };
-      });
+      const { mockInsert, mockInsertMany } = createBlockMocks();
       const mockApi = createMockAPI({
         blocks: {
           insert: mockInsert,
+          insertMany: mockInsertMany,
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlockIndex: vi.fn().mockReturnValue(undefined),
         },
@@ -2320,15 +2358,15 @@ describe('Table Tool', () => {
       table.rendered();
 
       const insertCallsBefore = mockInsert.mock.calls.length;
+      const insertManyCallsBefore = mockInsertMany.mock.calls.length;
 
       const addColBtn = element.querySelector('[data-blok-table-add-col]') as HTMLElement;
 
       pointerClick(addColBtn);
 
       // New column adds one cell per row (2 rows), each needing a paragraph block
-      const insertCallsAfter = mockInsert.mock.calls.length;
-
-      expect(insertCallsAfter - insertCallsBefore).toBe(2);
+      expect(specsSince(mockInsertMany, insertManyCallsBefore)).toEqual([emptyCellSpec, emptyCellSpec]);
+      expect(mockInsert.mock.calls.length).toBe(insertCallsBefore);
 
       // Verify each row's last cell (the new column) has a block
       const rows = element.querySelectorAll('[data-blok-table-row]');
@@ -2346,18 +2384,11 @@ describe('Table Tool', () => {
     });
 
     it('should not insert paragraph blocks for cells that already have blocks', () => {
-      let insertCallCount = 0;
-      const mockInsert = vi.fn().mockImplementation(() => {
-        insertCallCount++;
-        const holder = document.createElement('div');
-
-        holder.setAttribute('data-blok-id', `auto-p-${insertCallCount}`);
-
-        return { id: `auto-p-${insertCallCount}`, holder };
-      });
+      const { mockInsert, mockInsertMany } = createBlockMocks();
       const mockApi = createMockAPI({
         blocks: {
           insert: mockInsert,
+          insertMany: mockInsertMany,
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlockIndex: vi.fn().mockReturnValue(undefined),
         },
@@ -2378,24 +2409,24 @@ describe('Table Tool', () => {
 
       // After initialization, all 2 cells should already have blocks
       const insertCallsBefore = mockInsert.mock.calls.length;
+      const insertManyCallsBefore = mockInsertMany.mock.calls.length;
 
       // Add a row — 2 new empty cells
       const addRowBtn = element.querySelector('[data-blok-table-add-row]') as HTMLElement;
 
       pointerClick(addRowBtn);
 
-      const insertCallsAfterFirstAdd = mockInsert.mock.calls.length;
+      const insertManyCallsAfterFirstAdd = mockInsertMany.mock.calls.length;
 
-      // 2 new inserts for the 2 new cells
-      expect(insertCallsAfterFirstAdd - insertCallsBefore).toBe(2);
+      // 2 new blocks for the 2 new cells
+      expect(specsSince(mockInsertMany, insertManyCallsBefore)).toEqual([emptyCellSpec, emptyCellSpec]);
 
-      // Add another row — 2 more new empty cells, but existing cells should NOT trigger inserts
+      // Add another row — 2 more new empty cells, but existing cells should NOT get blocks
       pointerClick(addRowBtn);
 
-      const insertCallsAfterSecondAdd = mockInsert.mock.calls.length;
-
-      // Only 2 more inserts (for the 2 new cells), not for the existing ones
-      expect(insertCallsAfterSecondAdd - insertCallsAfterFirstAdd).toBe(2);
+      // Only 2 more blocks (for the 2 new cells), not for the existing ones
+      expect(specsSince(mockInsertMany, insertManyCallsAfterFirstAdd)).toEqual([emptyCellSpec, emptyCellSpec]);
+      expect(mockInsert.mock.calls.length).toBe(insertCallsBefore);
 
       document.body.removeChild(element);
     });
@@ -2446,16 +2477,19 @@ describe('Table Tool', () => {
       content: string[][]
     ): { table: Table; element: HTMLElement } => {
       let insertCallCount = 0;
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCallCount++;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', `mock-block-${insertCallCount}`);
+
+        return { id: `mock-block-${insertCallCount}`, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
-          insert: vi.fn().mockImplementation(() => {
-            insertCallCount++;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', `mock-block-${insertCallCount}`);
-
-            return { id: `mock-block-${insertCallCount}`, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           delete: vi.fn(),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlockIndex: vi.fn().mockReturnValue(undefined),
@@ -2603,16 +2637,19 @@ describe('Table Tool', () => {
       colWidths: number[]
     ): { table: Table; element: HTMLElement } => {
       let insertCallCount = 0;
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCallCount++;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', `mock-block-${insertCallCount}`);
+
+        return { id: `mock-block-${insertCallCount}`, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
-          insert: vi.fn().mockImplementation(() => {
-            insertCallCount++;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', `mock-block-${insertCallCount}`);
-
-            return { id: `mock-block-${insertCallCount}`, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           delete: vi.fn(),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlockIndex: vi.fn().mockReturnValue(undefined),
@@ -2872,16 +2909,19 @@ describe('Table Tool', () => {
     it('closes toolbar when row/column grip drag starts', async () => {
       let insertCallCount = 0;
       const toolbarClose = vi.fn();
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCallCount++;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', `mock-block-${insertCallCount}`);
+
+        return { id: `mock-block-${insertCallCount}`, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
-          insert: vi.fn().mockImplementation(() => {
-            insertCallCount++;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', `mock-block-${insertCallCount}`);
-
-            return { id: `mock-block-${insertCallCount}`, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           delete: vi.fn(),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlockIndex: vi.fn().mockReturnValue(undefined),
@@ -3066,6 +3106,7 @@ describe('Table Tool', () => {
       const mockApi = createMockAPI({
         blocks: {
           insert: vi.fn(),
+          insertMany: vi.fn(),
           getBlockIndex: vi.fn().mockImplementation((id: string) => {
             const map: Record<string, number> = {
               [blockId1]: 0,
@@ -3152,6 +3193,7 @@ describe('Table Tool', () => {
       const mockApi = createMockAPI({
         blocks: {
           insert: vi.fn(),
+          insertMany: vi.fn(),
           getBlockIndex: vi.fn().mockImplementation((id: string) => {
             const map: Record<string, number> = {
               [blockId1]: 0,
@@ -3226,16 +3268,19 @@ describe('Table Tool', () => {
       colWidths?: number[]
     ): { table: Table; element: HTMLElement } => {
       let insertCallCount = 0;
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCallCount++;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', `mock-block-${insertCallCount}`);
+
+        return { id: `mock-block-${insertCallCount}`, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
-          insert: vi.fn().mockImplementation(() => {
-            insertCallCount++;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', `mock-block-${insertCallCount}`);
-
-            return { id: `mock-block-${insertCallCount}`, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           delete: vi.fn(),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlockIndex: vi.fn().mockReturnValue(undefined),
@@ -3529,16 +3574,19 @@ describe('Table Tool', () => {
       content: string[][]
     ): { table: Table; element: HTMLElement } => {
       let insertCallCount = 0;
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCallCount++;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', `mock-block-${insertCallCount}`);
+
+        return { id: `mock-block-${insertCallCount}`, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
-          insert: vi.fn().mockImplementation(() => {
-            insertCallCount++;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', `mock-block-${insertCallCount}`);
-
-            return { id: `mock-block-${insertCallCount}`, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           delete: vi.fn(),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlockIndex: vi.fn().mockReturnValue(undefined),
@@ -3666,19 +3714,22 @@ describe('Table Tool', () => {
   });
 
   describe('caret placement on new table', () => {
+    const createEditableBlock = (): { id: string | null; holder: HTMLElement } => {
+      const holder = document.createElement('div');
+      const editable = document.createElement('div');
+
+      editable.setAttribute('contenteditable', 'true');
+      holder.appendChild(editable);
+      holder.setAttribute('data-blok-id', `mock-${Math.random().toString(36).slice(2, 8)}`);
+
+      return { id: holder.getAttribute('data-blok-id'), holder };
+    };
+
     const createMockApiWithEditableBlocks = (): API => {
       return createMockAPI({
         blocks: {
-          insert: () => {
-            const holder = document.createElement('div');
-            const editable = document.createElement('div');
-
-            editable.setAttribute('contenteditable', 'true');
-            holder.appendChild(editable);
-            holder.setAttribute('data-blok-id', `mock-${Math.random().toString(36).slice(2, 8)}`);
-
-            return { id: holder.getAttribute('data-blok-id'), holder };
-          },
+          insert: createEditableBlock,
+          insertMany: (specs: unknown[]) => specs.map(createEditableBlock),
           getBlocksCount: vi.fn().mockReturnValue(0),
           getBlockIndex: () => undefined,
         },
@@ -3812,7 +3863,7 @@ describe('Table Tool', () => {
     } => {
       let insertCallCount = 0;
       const blockIndexMap = new Map<string, number>();
-      const mockInsert = vi.fn().mockImplementation((_type?: string, _data?: unknown) => {
+      const createBlock = (): { id: string; holder: HTMLElement } => {
         insertCallCount++;
         const blockId = `paste-block-${insertCallCount}`;
         const holder = document.createElement('div');
@@ -3821,12 +3872,15 @@ describe('Table Tool', () => {
         blockIndexMap.set(blockId, insertCallCount - 1);
 
         return { id: blockId, holder };
-      });
+      };
+      const mockInsert = vi.fn().mockImplementation(createBlock);
+      const mockInsertMany = vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock));
       const mockDelete = vi.fn();
       const mockSetBlockParent = vi.fn();
       const mockApi = createMockAPI({
         blocks: {
           insert: mockInsert,
+          insertMany: mockInsertMany,
           delete: mockDelete,
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlocksCount: vi.fn().mockReturnValue(0),
@@ -4144,6 +4198,49 @@ describe('Table Tool', () => {
       document.body.removeChild(element);
     });
 
+    it('leaves a Blok block copy that holds a table to the editor paste', () => {
+      const { element, mockInsert } = createPasteTable([['', 'B1'], ['A2', 'B2']]);
+
+      const sc = element.firstElementChild as HTMLElement;
+      const gridEl = sc.firstElementChild as HTMLElement;
+
+      focusCellAt(gridEl, 0, 0);
+      mockInsert.mockClear();
+
+      const pasteEvent = createPasteEvent('<p>Toggle with table</p><table><tr><td>Cell A</td><td>Cell B</td></tr></table>');
+
+      pasteEvent.clipboardData?.setData('application/x-blok', JSON.stringify([{ id: 'tog', tool: 'toggle', data: { text: 'Toggle with table' } }]));
+      gridEl.dispatchEvent(pasteEvent);
+
+      expect(pasteEvent.defaultPrevented).toBe(false);
+      expect(mockInsert).not.toHaveBeenCalled();
+
+      document.body.removeChild(element);
+    });
+
+    it('leaves the html of a whole Blok table copy to the editor paste', () => {
+      const { element, mockInsert } = createPasteTable([['', 'B1'], ['A2', 'B2']]);
+
+      const sc = element.firstElementChild as HTMLElement;
+      const gridEl = sc.firstElementChild as HTMLElement;
+
+      focusCellAt(gridEl, 0, 0);
+      mockInsert.mockClear();
+
+      const copied = tableClipboardHtml(
+        { withHeadings: false, withHeadingColumn: false, content: [['Cell A', 'Cell B']] },
+        () => []
+      );
+      const pasteEvent = createPasteEvent(`<p>Toggle with table</p>${copied}`);
+
+      gridEl.dispatchEvent(pasteEvent);
+
+      expect(pasteEvent.defaultPrevented).toBe(false);
+      expect(mockInsert).not.toHaveBeenCalled();
+
+      document.body.removeChild(element);
+    });
+
     it('distributes generic HTML table cells across the grid', () => {
       const { element, mockInsert } = createPasteTable([['A', 'B'], ['C', 'D']]);
 
@@ -4447,20 +4544,23 @@ describe('Table Tool', () => {
       let insertCounter = 0;
       const blockIndexMap = new Map<string, number>();
 
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCounter++;
+        const blockId = `cell-block-${insertCounter}`;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', blockId);
+        blockIndexMap.set(blockId, insertCounter - 1);
+
+        return { id: blockId, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
           delete: mockDelete,
           isSyncingFromYjs: false,
-          insert: vi.fn().mockImplementation(() => {
-            insertCounter++;
-            const blockId = `cell-block-${insertCounter}`;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', blockId);
-            blockIndexMap.set(blockId, insertCounter - 1);
-
-            return { id: blockId, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlocksCount: vi.fn().mockReturnValue(0),
           getBlockIndex: vi.fn().mockImplementation((id: string) => blockIndexMap.get(id)),
@@ -4498,20 +4598,23 @@ describe('Table Tool', () => {
       let insertCounter = 0;
       const blockIndexMap = new Map<string, number>();
 
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCounter++;
+        const blockId = `cell-block-${insertCounter}`;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', blockId);
+        blockIndexMap.set(blockId, insertCounter - 1);
+
+        return { id: blockId, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
           delete: mockDelete,
           isSyncingFromYjs: true,
-          insert: vi.fn().mockImplementation(() => {
-            insertCounter++;
-            const blockId = `cell-block-${insertCounter}`;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', blockId);
-            blockIndexMap.set(blockId, insertCounter - 1);
-
-            return { id: blockId, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlocksCount: vi.fn().mockReturnValue(0),
           getBlockIndex: vi.fn().mockImplementation((id: string) => blockIndexMap.get(id)),
@@ -4551,20 +4654,23 @@ describe('Table Tool', () => {
       let insertCounter = 0;
       const blockIndexMap = new Map<string, number>();
 
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCounter++;
+        const blockId = `cell-block-${insertCounter}`;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', blockId);
+        blockIndexMap.set(blockId, insertCounter - 1);
+
+        return { id: blockId, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
           delete: mockDelete,
           isSyncingFromYjs: false,
-          insert: vi.fn().mockImplementation(() => {
-            insertCounter++;
-            const blockId = `cell-block-${insertCounter}`;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', blockId);
-            blockIndexMap.set(blockId, insertCounter - 1);
-
-            return { id: blockId, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlocksCount: vi.fn().mockReturnValue(0),
           getBlockIndex: vi.fn().mockImplementation((id: string) => blockIndexMap.get(id)),
@@ -4600,20 +4706,23 @@ describe('Table Tool', () => {
       let insertCounter = 0;
       const blockIndexMap = new Map<string, number>();
 
+      const createBlock = (): { id: string; holder: HTMLElement } => {
+        insertCounter++;
+        const blockId = `cell-block-${insertCounter}`;
+        const holder = document.createElement('div');
+
+        holder.setAttribute('data-blok-id', blockId);
+        blockIndexMap.set(blockId, insertCounter - 1);
+
+        return { id: blockId, holder };
+      };
+
       const mockApi = createMockAPI({
         blocks: {
           delete: mockDelete,
           isSyncingFromYjs: true,
-          insert: vi.fn().mockImplementation(() => {
-            insertCounter++;
-            const blockId = `cell-block-${insertCounter}`;
-            const holder = document.createElement('div');
-
-            holder.setAttribute('data-blok-id', blockId);
-            blockIndexMap.set(blockId, insertCounter - 1);
-
-            return { id: blockId, holder };
-          }),
+          insert: vi.fn().mockImplementation(createBlock),
+          insertMany: vi.fn().mockImplementation((specs: unknown[]) => specs.map(createBlock)),
           getCurrentBlockIndex: vi.fn().mockReturnValue(0),
           getBlocksCount: vi.fn().mockReturnValue(0),
           getBlockIndex: vi.fn().mockImplementation((id: string) => blockIndexMap.get(id)),

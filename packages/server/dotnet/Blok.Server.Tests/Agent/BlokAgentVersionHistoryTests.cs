@@ -8,7 +8,7 @@ using Xunit;
 namespace Blok.Server.Tests.Agent;
 
 /// <summary>history.versions, history.read, history.changes and history.restore in a room, against the in-memory history journal.</summary>
-public sealed class BlokAgentVersionHistoryTests
+public sealed partial class BlokAgentVersionHistoryTests
 {
   private const string DocId = "history-room";
   private static readonly BlokAgentActor Actor = new("agent-cs", "Agent");
@@ -28,10 +28,10 @@ public sealed class BlokAgentVersionHistoryTests
       """)!.AsObject());
   }
 
-  private (BlokAgentExecutor Executor, CollabRoomManager Rooms) Create(ICollabOperationStore? journal)
+  private (BlokAgentExecutor Executor, CollabRoomManager Rooms) Create(ICollabOperationStore? journal, CollabRoomOptions? options = null)
   {
     var converter = new CollabDocConverter(time, RichTextRuntime.Reader);
-    var rooms = new CollabRoomManager(store, endpoint, converter, new CollabRoomOptions(), time, _ => { }, journal);
+    var rooms = new CollabRoomManager(store, endpoint, converter, options ?? new CollabRoomOptions(), time, _ => { }, journal);
 
     return (new BlokAgentExecutor(Runtime.Value, rooms, converter), rooms);
   }
@@ -170,6 +170,36 @@ public sealed class BlokAgentVersionHistoryTests
     Assert.Equal("service", Command(JsonNode.Parse(await plain.GetRoomContractAsync())!, "history.restore")["unavailableReason"]!.GetValue<string>());
   }
 
+  [Theory]
+  [InlineData(false)]
+  [InlineData(true)]
+  public async Task ARestoreHonoursTheHostsTrashOptionForALaterPagePointer(bool trash)
+  {
+    var (executor, rooms) = Create(operations, new CollabRoomOptions { RestoreTrashesPages = trash });
+    var edit = await executor.ExecuteInRoomAsync(DocId,
+        """{"commands":[{"name":"text.replace","args":{"id":"p","with":"Changed"}}]}""", Actor);
+    var lineage = edit.Revision[..edit.Revision.LastIndexOf(':')];
+    var page = new CollabEditOp.Insert(
+        "pg", new JsonObject { ["type"] = "page", ["data"] = new JsonObject { ["pageId"] = "sub" } }, "q", null);
+    Assert.Equal(CollabEditStatus.Applied, (await rooms.EditAsync(
+        DocId, [page], Guid.NewGuid().ToString("N"), CollabEditOps.CanonicalBodyDigest([page]), "u1")).Status);
+
+    var restored = JsonNode.Parse((await executor.ExecuteInRoomAsync(DocId,
+        $$$"""{"commands":[{"name":"history.restore","args":{"version":"{{{lineage}}}:0"}}]}""", Actor)).ResultJson)!;
+
+    Assert.True(restored["ok"]!.GetValue<bool>(), restored.ToJsonString());
+    var pointer = JsonNode.Parse((await rooms.StateAsync(DocId)).Json!)!["blocks"]!.AsArray()
+        .SingleOrDefault(block => block!["id"]!.GetValue<string>() == "pg");
+    if (trash)
+    {
+      Assert.Equal("agent-cs", pointer?["data"]?["trashed"]?["by"]?.GetValue<string>());
+    }
+    else
+    {
+      Assert.Null(pointer);
+    }
+  }
+
   [Fact]
   public async Task RestoresAVersionAsOneJournalledEditThatStampsNoBlock()
   {
@@ -247,6 +277,49 @@ public sealed class BlokAgentVersionHistoryTests
     Assert.Equal(committed, operations.Committed(DocId).Count);
     Assert.Equal("Hello world", JsonNode.Parse((await rooms.StateAsync(DocId)).Json!)!["blocks"]![0]!["data"]!["text"]![0]!["text"]!.GetValue<string>());
   }
+  /// <summary>
+  /// A peer's page-map value with no JSON form (a nested bigint) is left out,
+  /// as the version read leaves it out: no read, restore, compare or agent
+  /// write fails on it. "restore-before" restores the version before the peer
+  /// wrote it, which removes the key.
+  /// </summary>
+  [Theory]
+  [InlineData("history.read")]
+  [InlineData("history.restore")]
+  [InlineData("restore-before")]
+  [InlineData("history.changes")]
+  [InlineData("text.replace")]
+  public async Task APeerValueWithNoJsonFormFailsNoCommand(string name)
+  {
+    var (executor, rooms) = Create(operations);
+    var before = (await executor.ExecuteInRoomAsync(DocId,
+        """{"commands":[{"name":"doc.setTitle","args":{"title":"One"}}]}""", Actor)).Revision;
+    var big = new Blok.Server.Yjs.AnyObject();
+
+    big.Add("n", new System.Numerics.BigInteger(1));
+
+    var peer = await rooms.EditAsync(
+        DocId,
+        [new CollabEditOp.PatchMaps([new CollabMapPatch("values", "x", big, Remove: false)])],
+        Guid.NewGuid().ToString("N"),
+        new byte[32],
+        "human-2");
+    Assert.Equal(CollabEditStatus.Applied, peer.Status);
+    var head = $"{peer.Receipt!.Tag.Lineage}:{peer.Receipt.ServerSequence}";
+    var command = name switch
+    {
+      "history.changes" => $$$"""{"name":"history.changes","args":{"from":"{{{before}}}","to":"{{{head}}}"}}""",
+      "text.replace" => """{"name":"text.replace","args":{"id":"p","with":"Changed"}}""",
+      "restore-before" => $$$"""{"name":"history.restore","args":{"version":"{{{before}}}"}}""",
+      _ => $$$"""{"name":"{{{name}}}","args":{"version":"{{{head}}}"}}""",
+    };
+
+    var execution = await executor.ExecuteInRoomAsync(DocId, $$"""{"commands":[{{command}}]}""", Actor);
+
+    var result = JsonNode.Parse(execution.ResultJson)!;
+    Assert.True(result["ok"]!.GetValue<bool>(), result.ToJsonString());
+  }
+
   /// <summary>Runs a peer's write right after Jint answers a restore, before the room restores.</summary>
   private sealed class PeerWriteAfterRestoreCheck(IBlokRuntime inner) : IBlokRuntime
   {

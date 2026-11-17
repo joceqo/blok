@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
 )
 
 // anyLoopback lets the test reach its own TLS listener; the leak under test
@@ -33,14 +33,11 @@ func (p anyLoopback) Validate(raw string, base *dotnet.URI) (Target, error) {
 
 func (anyLoopback) AddressAllowed(netip.Addr) bool { return true }
 
-// The Go analogue of SslStreamStillLeaksAnIssuerFetchOnMacOs. On macOS the
-// platform verifier lets trustd fetch a certificate's caIssuers URL, which
-// would reach an address the guard never vetted. Measured on Go 1.27.1: with
-// RootCAs nil or x509.SystemCertPool() the issuer is fetched once; with a
-// pool built from PEM it never is. So the fetcher verifies with the macOS
-// PEM bundle.
-func TestTheFetcherNeverLetsTheVerifierFetchAnIssuer(t *testing.T) {
-	var hits atomic.Int32
+// aiaOrigin serves a leaf signed by an intermediate it does not send, whose
+// caIssuers URL points at a local listener that counts its hits.
+func aiaOrigin(t *testing.T) (int, *atomic.Int32) {
+	t.Helper()
+	hits := &atomic.Int32{}
 	issuer, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -76,8 +73,18 @@ func TestTheFetcherNeverLetsTheVerifierFetchAnIssuer(t *testing.T) {
 	t.Cleanup(func() { _ = originServer.Close() })
 
 	port := origin.Addr().(*net.TCPAddr).Port
+	return port, hits
+}
+
+// The Go analogue of SslStreamStillLeaksAnIssuerFetchOnMacOs. Go's own
+// platform verifier lets trustd fetch a certificate's caIssuers URL, which
+// would reach an address the guard never vetted. The fetcher asks trustd
+// with network fetch off, as C#'s MacOsCertificateTrust does, so the issuer
+// is never asked.
+func TestTheFetcherNeverLetsTheVerifierFetchAnIssuer(t *testing.T) {
+	port, hits := aiaOrigin(t)
 	fetcher := NewFetcher(anyLoopback{port})
-	_, err = fetcher.Get(context.Background(), "https://aia.example:"+strconv.Itoa(port)+"/", Limits{Timeout: 5 * time.Second, MaxBytes: 1 << 10})
+	_, err := fetcher.Get(context.Background(), "https://aia.example:"+strconv.Itoa(port)+"/", Limits{Timeout: 5 * time.Second, MaxBytes: 1 << 10})
 	if err == nil {
 		t.Fatal("an untrusted chain verified")
 	}

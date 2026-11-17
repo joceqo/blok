@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
-	"github.com/JackUait/blok/packages/server/go/blokdocs"
-	"github.com/JackUait/blok/packages/server/go/blokserver"
+	"github.com/JackUait/blok/packages/server/go/v2/blokdocs"
+	"github.com/JackUait/blok/packages/server/go/v2/blokserver"
+	"github.com/JackUait/blok/packages/server/go/v2/blokserver/collabstore"
 )
 
 const prefix = "/api/blok"
@@ -20,17 +22,20 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:4000", "address to listen on")
 	flag.Parse()
 
-	if err := convertOnce(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
 	options := blokserver.DefaultOptions()
 	options.AllowedOrigins = []string{"https://app.example.test"}
 	options.UnfurlEnabled = true
-	options.Version = "package-fixture"
+	options.Version = new("package-fixture")
+	options.CollabActivityObserver = lastSeen{}
+	options.CollabOperationStore = elsewhere{}
+	poolSize := 1
+	options.Documents.PoolSize = &poolSize
 	server, err := blokserver.New(options)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := convertOnce(server.DocumentConverter()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -43,12 +48,9 @@ func main() {
 	}
 }
 
-// convertOnce proves the embedded document runtime loads in a consumer build.
-func convertOnce() error {
-	converter, err := blokdocs.New(blokdocs.Options{PoolSize: 1})
-	if err != nil {
-		return err
-	}
+// convertOnce proves the embedded document runtime loads in a consumer build,
+// on the engine pool the server's rooms and agent share.
+func convertOnce(converter *blokdocs.Converter) error {
 	const document = `{"blocks":[{"id":"p1","type":"paragraph","data":{"text":"Ships <b>today</b>"}}]}`
 	converted, err := converter.ToMarkdown(context.Background(), document)
 	if err != nil {
@@ -72,4 +74,19 @@ func requireUser(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// lastSeen and elsewhere prove a consumer can name and fill the collab
+// seams, which live behind internal packages. Collab is off here, so the
+// server never calls them.
+type lastSeen struct{}
+
+func (lastSeen) Record(context.Context, string, string, time.Time, collabstore.ActivityKind) error {
+	return nil
+}
+
+type elsewhere struct{}
+
+func (elsewhere) Open(context.Context, string) (collabstore.OpenOutcome, collabstore.OperationSession, error) {
+	return collabstore.DocumentOpenElsewhere, nil, nil
 }

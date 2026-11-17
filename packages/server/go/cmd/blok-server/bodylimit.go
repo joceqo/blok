@@ -1,0 +1,146 @@
+package main
+
+import (
+	"io"
+	"net/http"
+	"sync/atomic"
+	"time"
+
+	"github.com/JackUait/blok/packages/server/go/v2/blokserver"
+)
+
+// maxRequestBodyBytes is Kestrel's MaxRequestBodySize default. A var so a
+// test can lower it.
+var maxRequestBodyBytes int64 = 30_000_000
+
+// dataRate is Kestrel's MinDataRate.
+type dataRate struct {
+	bytesPerSecond float64
+	grace          time.Duration
+}
+
+// minBodyRate is Kestrel's MinRequestBodyDataRate default. A var so a test
+// can shorten the grace.
+var minBodyRate = dataRate{bytesPerSecond: 240, grace: 5 * time.Second}
+
+// bodyDrainTimeout is how long Kestrel waits, after the answer, for what a
+// route left of a body, measured on the C# host: a body done at 5 s was
+// kept, and unfinished ones were cut at 6.0 to 7.0 s (its 1 s heartbeat). Atomic so a test can shorten it while an earlier
+// test's handler still reads it.
+var bodyDrainTimeout = func() *atomic.Int64 {
+	var d atomic.Int64
+	d.Store(int64(6 * time.Second))
+	return &d
+}()
+
+// limitedBody is Kestrel's body limits.
+//
+// The cap: checked on the first read against Content-Length, then against
+// the bytes read. Over it the handler gets blokserver.ErrRequestBodyTooLarge.
+//
+// The rate: only time spent waiting inside a read counts, as Kestrel times
+// only reads the app is waiting on. Past the grace, a body read slower than
+// the rate is ended through the read deadline.
+//
+// Either way, unless the route set the cap itself, Kestrel's bare answer
+// (413 or 408) goes out and the connection closes. Measured on the C# host:
+// /upload, which sets the cap, answers both with its own text.
+type limitedBody struct {
+	io.ReadCloser
+	writer        *trackingWriter
+	setDeadline   func(time.Time) error
+	limit, length int64
+	read          int64
+	waited        time.Duration
+	started       bool
+	// routeSet: the route set the cap, so it answers a refused read, as
+	// UploadEndpoint catches Kestrel's exceptions.
+	routeSet bool
+	failed   error
+	slow     atomic.Bool
+	// ended: a read returned io.EOF.
+	ended bool
+	// continueTo is the socket for Kestrel's 100 Continue, or nil.
+	continueTo io.Writer
+	// stream says when a read failed on a trailer Kestrel refuses.
+	stream *targetStream
+}
+
+// setLimit is IHttpMaxRequestBodySizeFeature: read-only once reading starts.
+func (b *limitedBody) setLimit(limit int64) {
+	if !b.started {
+		b.limit, b.routeSet = limit, true
+		if b.stream != nil {
+			b.stream.bodyLimit.Store(limit)
+		}
+	}
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.failed != nil {
+		return 0, b.failed
+	}
+	// Before the first read of the body under it: that read would send an
+	// Expect: 100-continue answer, which Kestrel never sends here.
+	if !b.started {
+		b.started = true
+		if b.length > b.limit {
+			return 0, b.refuse(413, blokserver.ErrRequestBodyTooLarge)
+		}
+		// Kestrel sends 100 Continue only when a read must wait for the
+		// socket, so the stream sends it just before it would block.
+		if b.continueTo != nil {
+			b.stream.armContinue(func() {
+				// Nothing of the answer is written yet, so it goes first.
+				if !b.writer.started() {
+					_, _ = io.WriteString(b.continueTo, "HTTP/1.1 100 Continue\r\n\r\n")
+				}
+			})
+		}
+	}
+	// The moment the rate fails if no byte comes: past the grace, and past
+	// the time the bytes so far are worth at the rate.
+	due := max(minBodyRate.grace, time.Duration(float64(b.read)/minBodyRate.bytesPerSecond*float64(time.Second)))
+	timer := time.AfterFunc(due-b.waited+time.Millisecond, func() {
+		b.slow.Store(true)
+		_ = b.setDeadline(time.Now())
+	})
+	started := time.Now()
+	n, err := b.ReadCloser.Read(p)
+	timer.Stop()
+	b.waited += time.Since(started)
+	if b.slow.Load() {
+		return 0, b.refuse(408, blokserver.ErrRequestBodyTooSlow)
+	}
+	if err != nil && err != io.EOF && b.stream != nil {
+		if status := b.stream.takeBodyRefusal(); status != 0 {
+			// The stream counts a chunked body's bytes against the cap, so
+			// the route sees the cap's error, as from Kestrel.
+			if status == http.StatusRequestEntityTooLarge {
+				err = blokserver.ErrRequestBodyTooLarge
+			}
+			return 0, b.refuse(status, err)
+		}
+	}
+	if b.read += int64(n); b.read > b.limit {
+		return 0, b.refuse(413, blokserver.ErrRequestBodyTooLarge)
+	}
+	// The stream may have counted a chunked body's bytes before the route
+	// set its cap.
+	if b.length < 0 && b.stream != nil && b.stream.chunked.Load() > b.limit {
+		return 0, b.refuse(413, blokserver.ErrRequestBodyTooLarge)
+	}
+	b.ended = err == io.EOF
+	if err != nil && b.continueTo != nil {
+		b.stream.armContinue(nil)
+	}
+	return n, err
+}
+
+func (b *limitedBody) refuse(status int, err error) error {
+	b.failed = err
+	if !b.routeSet {
+		b.writer.refuse(status)
+	}
+	return err
+}

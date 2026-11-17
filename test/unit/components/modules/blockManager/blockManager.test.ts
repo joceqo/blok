@@ -17,6 +17,7 @@ import { DocumentStore } from '../../../../../src/components/modules/yjs/documen
 import { YBlockSerializer } from '../../../../../src/components/modules/yjs/serializer';
 import { ToolsCollection } from '../../../../../src/components/tools/collection';
 import type { BlockToolAdapter } from '../../../../../src/components/tools/block';
+import { REPARENT_IN_PLACE } from '../../../../../src/components/utils/index-move-neighbours';
 
 /**
  * Create a minimal ModuleConfig for constructing BlockManager without calling prepare().
@@ -59,9 +60,20 @@ const createBlockManager = (): {
   blockManager.state = blokStub as unknown as BlokModules;
 
   // Patch the private `operations` field with a minimal stub.
-  // transactForTool reads/writes suppressStopCapturing and runs the body through withDevChecksAtEnd.
+  // transactForTool holds stopCapturing and runs the body through withDevChecksAtEnd.
+  const holds = { count: 0 };
+
   (blockManager as unknown as Record<string, unknown>).operations = {
-    suppressStopCapturing: false,
+    get suppressStopCapturing(): boolean {
+      return holds.count > 0;
+    },
+    holdStopCapturing: (): (() => void) => {
+      holds.count++;
+
+      return (): void => {
+        holds.count--;
+      };
+    },
     withDevChecksAtEnd: (fn: () => void): void => fn(),
   };
 
@@ -674,6 +686,20 @@ describe('BlockManager.setBlockParent applyPlacement delegation', () => {
     expect(child.call).toHaveBeenCalledWith('moved', expect.objectContaining({
       fromIndex: expect.any(Number),
       toIndex: expect.any(Number),
+    }));
+  });
+
+  it('marks the MOVED hook of a reparent as in place, so a list keeps its depth', () => {
+    const harness = createHarness([
+      { id: 'parent-a', parentId: null, contentIds: [] },
+      { id: 'child', parentId: null, contentIds: [] },
+    ]);
+    const child = getChild(harness);
+
+    harness.blockManager.setBlockParent(child, 'parent-a');
+
+    expect(child.call).toHaveBeenCalledWith('moved', expect.objectContaining({
+      [REPARENT_IN_PLACE]: true,
     }));
   });
 

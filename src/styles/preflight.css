@@ -134,6 +134,37 @@
     background-color: var(--blok-selection-inline);
   }
 
+  /* An annotated phrase ("Note"): dotted underline; its card opens on hover or click. */
+  :where([data-blok-interface]) span[data-blok-annotation] {
+    text-decoration: underline dotted var(--blok-text-secondary);
+    text-decoration-thickness: 1.5px;
+    /* MUST stay 2px or less, and equal to the ::highlight(blok-annotation-open) offset:
+       engines clip a highlight's underline to the text box, and a deeper one vanishes. */
+    text-underline-offset: 2px;
+    border-radius: var(--blok-radius-mark);
+    /* No fade on the fill: it hands over to ::highlight(blok-annotation-open), which
+       cannot fade, and a fading fill would stack with it for a moment. */
+    transition: text-decoration-color 120ms ease-out;
+    /* A click opens the hint. */
+    cursor: pointer;
+  }
+
+  :where([data-blok-interface]) span[data-blok-annotation]:hover {
+    background-color: var(--blok-item-hover-bg);
+    text-decoration-style: solid;
+    text-decoration-color: var(--blok-text-primary);
+  }
+
+  :where([data-blok-interface][data-blok-readonly]) span[data-blok-annotation] {
+    cursor: help;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :where([data-blok-interface]) span[data-blok-annotation] {
+      transition: none;
+    }
+  }
+
   :where([data-blok-interface], [data-blok-popover]) code:not(pre code),
   :where([data-blok-interface]) span[data-latex][data-blok-equation-editing] {
     border-radius: var(--blok-radius-mark);
@@ -364,8 +395,13 @@
 
   Reaches `outline` only. A box-shadow or border-color ring must carry the
   modality guard in its own selector. Text-entry fields are the law's exception.
+
+  The target lists focusable kinds instead of any element. A bare :focus-visible
+  target makes Chrome restyle every element below each time the modality or
+  [data-blok-top-layer] changes: hundreds of ms on a large table. The list misses
+  a scroll box reached by Tab, which has nothing to mark it.
 */
 :root[data-blok-modality="pointer"] :is([data-blok-interface], [data-blok-popover], [data-blok-top-layer])
-  :focus-visible:not(:is([contenteditable], input, textarea)) {
+  :is(a, area, button, select, summary, iframe, embed, object, audio, video, dialog, [tabindex]):focus-visible:not(:is([contenteditable], input, textarea)) {
   outline: none !important;
 }

@@ -127,6 +127,15 @@ describe('MarkdownHandler', () => {
     }
   });
 
+  it('nests each pasted list item under the item it was indented under', async () => {
+    await handler.handle('- a\n    - b\n        - c\n- d', { canReplaceCurrentBlock: false });
+
+    const composed = mockComposeBlock.mock.calls.map((args) => args[0] as { id: string; parentId?: string; data: { text: string } });
+
+    expect(composed.map(({ parentId }) => parentId)).toEqual([undefined, composed[0].id, composed[1].id, undefined]);
+    expect(composed.map(({ data }) => data.text)).toEqual(['a', 'b', 'c', 'd']);
+  });
+
   it('normalizes flat-array table children even if markdownToBlocks emits children without parent', async () => {
     // Defense-in-depth: if mdast-to-blocks ever regresses to emitting the
     // dodopizza shape (table cells reference children by id but the children
@@ -352,6 +361,16 @@ describe('hasMarkdownSignals', () => {
   it('detects inline math with single dollar signs', () => {
     expect(hasMarkdownSignals('The equation $E = mc^2$ is famous')).toBe(true);
     expect(hasMarkdownSignals('$x^2 + y^2 = z^2$')).toBe(true);
+  });
+
+  // A lone separator becomes a divider in the plain-text paste; it must not
+  // send the rest of the text through the Markdown parser.
+  it('does not read a lone separator line as a Markdown signal', () => {
+    expect(hasMarkdownSignals('---\n\nTAIL')).toBe(false);
+    expect(hasMarkdownSignals('***\n\nx')).toBe(false);
+    expect(hasMarkdownSignals('Before\n\n___\n\nAfter')).toBe(false);
+    expect(hasMarkdownSignals('Before\r\n\r\n---\r\n\r\nAfter')).toBe(false);
+    expect(hasMarkdownSignals('a *b* c\nsecond line\n\n---\n\nAfter')).toBe(false);
   });
 
   it('does not detect dollar amounts as math', () => {

@@ -218,7 +218,7 @@ interface CellSelectionOptions {
   onPointerDragActiveChange: (active: boolean) => void;
   onSelectionActiveChange: (hasSelection: boolean, isMultiCell: boolean) => void;
   onSelectionRangeChange: (range: SelectionRange) => void;
-  onClearContent: (cells: HTMLElement[]) => void;
+  onClearContent: (cells: HTMLElement[], options?: { keepRange: true }) => void;
   onCopy: (cells: HTMLElement[], clipboardData: DataTransfer) => void;
   onCut: (cells: HTMLElement[], clipboardData: DataTransfer) => void;
   onCopyViaButton: (cells: HTMLElement[]) => void;
@@ -339,6 +339,7 @@ interface Harness {
   insertCalls: InsertCall[];
   setBlockParent: Mock;
   ensureCellHasBlock: Mock;
+  fillEmptyCells: Mock;
   focusClearedCell: Mock;
   ensureScrollContainer: Mock;
   transactions: string[];
@@ -434,6 +435,9 @@ const createHarness = (options: HarnessOptions = {}): Harness => {
       dispatchChange: vi.fn(),
       preservedData: blockData,
       preservedTunes: tunes,
+      get isEmpty(): boolean {
+        return (editable.textContent ?? '') === '';
+      },
     } as unknown as BlockAPI;
 
     registry.set(id, block);
@@ -482,7 +486,7 @@ const createHarness = (options: HarnessOptions = {}): Harness => {
     caret: { setToBlock: vi.fn() },
   } as unknown as API;
 
-  const ensureCellHasBlock = vi.fn((cell: HTMLElement) => {
+  const seedEmptyCell = (cell: HTMLElement): void => {
     if (cell.querySelector('[data-blok-id]')) {
       return;
     }
@@ -490,7 +494,9 @@ const createHarness = (options: HarnessOptions = {}): Harness => {
     const container = cell.querySelector<HTMLElement>(`[${CELL_BLOCKS_ATTR}]`);
 
     container?.appendChild(makeBlock(`seed-${nextId++}`, 'paragraph', { text: '' }, {}).holder);
-  });
+  };
+  const ensureCellHasBlock = vi.fn(seedEmptyCell);
+  const fillEmptyCells = vi.fn((cells: readonly HTMLElement[]) => cells.forEach(seedEmptyCell));
   const focusClearedCell = vi.fn();
 
   const cellBlocks = {
@@ -513,8 +519,10 @@ const createHarness = (options: HarnessOptions = {}): Harness => {
       });
     },
     ensureCellHasBlock,
+    fillEmptyCells,
     focusClearedCell,
     indexAfterTableSubtree: (): number => order.length,
+    indexAfterSubtreeOf: (id: string): number => order.indexOf(id) + 1,
     insertClipboardBlock: (block: ClipboardBlockData): BlockAPI =>
       api.blocks.insert(block.tool, block.data, {}, order.length, false, false, undefined, block.tunes),
     insertClipboardChildren: vi.fn(),
@@ -610,6 +618,7 @@ const createHarness = (options: HarnessOptions = {}): Harness => {
     insertCalls,
     setBlockParent,
     ensureCellHasBlock,
+    fillEmptyCells,
     focusClearedCell,
     ensureScrollContainer: ensureScrollContainerSpy,
     transactions,
@@ -1006,7 +1015,7 @@ describe('grid paste — single cell', () => {
 
     expect(harness.insertCalls).toHaveLength(1);
     expect(harness.insertCalls[0].tool).toBe('image');
-    expect(harness.idsOf(0, 0)).toHaveLength(1);
+    expect(harness.idsOf(0, 0)).toStrictEqual(['b-0-0', 'ins-1']);
   });
 
   it('recreates a paragraph whose text is not a string as a real block', () => {
@@ -1973,7 +1982,12 @@ describe('add-controls wiring', () => {
 
     expect(harness.model.rows).toBe(3);
     expect(harness.grid.getRowCount(harness.gridEl)).toBe(3);
-    expect(harness.ensureCellHasBlock).toHaveBeenCalled();
+    expect(harness.fillEmptyCells).toHaveBeenCalledWith(
+      expect.arrayContaining([harness.cellOf(2, 0), harness.cellOf(2, 1)]),
+      { track: true }
+    );
+    expect(harness.idsOf(2, 0)).toHaveLength(1);
+    expect(harness.idsOf(2, 1)).toHaveLength(1);
     expect(harness.gridEl.querySelector(`[${ROW_ATTR}]`)?.hasAttribute('data-blok-table-heading')).toBe(true);
     expect(captured.resize).toHaveLength(1);
     expect(addControlsMock().syncRowButtonWidth).toHaveBeenCalledTimes(1);
@@ -2192,7 +2206,12 @@ describe('corner-drag wiring', () => {
 
     expect(harness.model.rows).toBe(3);
     expect(harness.grid.getRowCount(harness.gridEl)).toBe(3);
-    expect(harness.ensureCellHasBlock).toHaveBeenCalled();
+    expect(harness.fillEmptyCells).toHaveBeenCalledWith(
+      expect.arrayContaining([harness.cellOf(2, 0), harness.cellOf(2, 1)]),
+      { track: true }
+    );
+    expect(harness.idsOf(2, 0)).toHaveLength(1);
+    expect(harness.idsOf(2, 1)).toHaveLength(1);
   });
 
   it('lays down a FULL-width column, not the half-width the insert paths use', () => {
@@ -2718,6 +2737,56 @@ describe('cell-selection wiring', () => {
     expect(harness.focusClearedCell).toHaveBeenCalledWith(harness.cellOf(0, 0));
   });
 
+  // Notion U162: a Delete keeps the range selected, so no cell gets the caret.
+  it('puts no caret in the cells when the range stays selected', () => {
+    const harness = createHarness();
+
+    cellSelectionOptions().onClearContent([harness.cellOf(0, 0), harness.cellOf(1, 1)], { keepRange: true });
+
+    expect(harness.idsOf(0, 0)).toEqual([]);
+    expect(harness.focusClearedCell).not.toHaveBeenCalled();
+  });
+
+  // A second Delete on the emptied range would swap the empty paragraphs for
+  // new ones: an undo step that changes nothing, so the next undo looks dead.
+  it('leaves an already-empty range alone when the range stays selected', () => {
+    const harness = createHarness();
+    const cells = [harness.cellOf(0, 0), harness.cellOf(0, 1)];
+
+    cellSelectionOptions().onClearContent(cells, { keepRange: true });
+    cells.forEach((cell) => {
+      harness.ensureCellHasBlock(cell);
+    });
+    const emptied = [harness.idsOf(0, 0), harness.idsOf(0, 1)];
+    const transactions = harness.transactions.length;
+
+    cellSelectionOptions().onClearContent(cells, { keepRange: true });
+
+    expect([harness.idsOf(0, 0), harness.idsOf(0, 1)]).toEqual(emptied);
+    expect(harness.transactions).toHaveLength(transactions);
+  });
+
+  it('still empties a range that holds a non-paragraph block', () => {
+    const harness = createHarness();
+    const cells = [harness.cellOf(0, 0), harness.cellOf(0, 1)];
+
+    cellSelectionOptions().onClearContent(cells, { keepRange: true });
+    cells.forEach((cell) => {
+      harness.ensureCellHasBlock(cell);
+    });
+    const [first] = harness.idsOf(0, 0);
+    const block = harness.blockOf(first);
+
+    if (block === undefined) {
+      throw new Error('no seeded block');
+    }
+    Object.defineProperty(block, 'name', { value: 'header' });
+
+    cellSelectionOptions().onClearContent(cells, { keepRange: true });
+
+    expect(harness.idsOf(0, 0)).toEqual([]);
+  });
+
   it('reads cell metadata straight off the model', () => {
     const harness = createHarness();
 
@@ -3116,6 +3185,22 @@ describe('copy and cut', () => {
     expect(html).toContain('"textColor":"rgb(4, 5, 6)"');
     expect(html).toContain('"placement":"middle-center"');
     expect(html).toContain('"colspan":2');
+  });
+
+  it('carries the widths of the copied columns', () => {
+    const harness = createHarness({ rows: 2, cols: 3, colWidths: [140, 220, 180] });
+
+    cellSelectionOptions().onCopy([harness.cellOf(0, 1), harness.cellOf(1, 2)], clipboard());
+
+    expect(String(setData.mock.calls[0][1])).toContain('"colWidths":[220,180]');
+  });
+
+  it('carries no widths when the table has none', () => {
+    const harness = createHarness({ cols: 3 });
+
+    cellSelectionOptions().onCopy([harness.cellOf(0, 0)], clipboard());
+
+    expect(String(setData.mock.calls[0][1])).not.toContain('colWidths');
   });
 
   it('omits the metadata a plain cell does not have', () => {

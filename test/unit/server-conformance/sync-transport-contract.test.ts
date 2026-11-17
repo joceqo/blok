@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterAll, afterEach, beforeAll, describe, expect, it as baseIt } from 'vitest';
+import * as Y from 'yjs';
 
 import { startDocEndpoint, type FixtureDocEndpoint } from './doc-endpoint';
 import {
@@ -23,15 +24,15 @@ import {
   openRaw,
   type OpenOptions,
   type RawSocket,
+  type ServerFrame,
 } from './raw-websocket';
 import { startServer, type RunningServer } from './run-against';
 
 /**
  * The sync door and socket as raw bytes: what is answered before the
  * upgrade, and every close code and reason after it. Each case asserts only
- * the transport outcome, never the room's frames, so it holds for C#'s real
- * room and for the conformance build of the Go server, whose room is an
- * echo stand-in until the room lands.
+ * the transport outcome, never the room's frames. The last block pins the
+ * two closes the room itself decides on a frame's content.
  *
  * Message type 105 is unassigned, so a room ignores it: it is the payload
  * for every frame that must reach the room and do nothing there.
@@ -40,9 +41,6 @@ const unset = (name: string): boolean =>
   process.env[name] === undefined || process.env[name] === '';
 
 const it = baseIt.skipIf(unset('BLOK_CONFORMANCE_SERVER'));
-const onGo = process.env.BLOK_CONFORMANCE_TARGET === 'go';
-/** The Go room stand-in has no operation store, so it never selects v2. */
-const itNeedsAStore = baseIt.skipIf(unset('BLOK_CONFORMANCE_SERVER') || onGo);
 
 const ALLOWED_ORIGIN = 'https://app.example.com';
 const V1 = 'blok-sync.v1';
@@ -82,6 +80,8 @@ interface HarnessOptions {
   auth?: 'none' | 'ticket';
   rateLimit?: number;
   journal?: boolean;
+  /** CollabKeepAliveInterval, through a flag only the conformance build has. */
+  keepAliveMs?: number;
 }
 
 interface StartedHarness {
@@ -121,6 +121,7 @@ async function startHarness(options: HarnessOptions): Promise<StartedHarness> {
         '--collab-dir', collabDirectory,
         '--doc-endpoint', endpoint.url,
         ...(options.journal === true ? ['--conformance-journal'] : []),
+        ...(options.keepAliveMs === undefined ? [] : [`--conformance-keep-alive-ms=${options.keepAliveMs}`]),
         ...(auth === 'ticket' ? ['--allow-origin', ALLOWED_ORIGIN] : []),
       ],
       env: auth === 'ticket' ? { BLOK_SECRET: tickets.secret } : {},
@@ -299,6 +300,24 @@ describe('sync transport: before the upgrade', () => {
     });
   }, TEST_TIMEOUT_MS);
 
+  // One limiter serves the HTTP guard and the sync door, so a request spends
+  // what the upgrade would have had.
+  it('shares one rate limit between the HTTP routes and the sync upgrade', async () => {
+    await withServer({ auth: 'ticket', rateLimit: 1 }, async ({ open, server: running }) => {
+      const state = await fetch(`${running.baseUrl}/sync/${TICKET_DOC}/state`, {
+        headers: { Origin: ALLOWED_ORIGIN, Authorization: `Bearer ${tickets.compatible}` },
+      });
+
+      expect(state.status).not.toBe(429);
+      await state.arrayBuffer();
+
+      const limited = await open(`/sync/${TICKET_DOC}`, { headers: ticketHeaders(V1, tickets.compatible) });
+
+      expect(limited.response.status).toBe(429);
+      expect(limited.response.body).toBe('rate limit exceeded\n');
+    });
+  }, TEST_TIMEOUT_MS);
+
   it('caps one user at 8 sockets per document with 429, and frees the slot before answering a close', async () => {
     await withServer({ auth: 'ticket' }, async ({ open }) => {
       const sockets: RawSocket[] = [];
@@ -349,7 +368,26 @@ describe('sync transport: subprotocol', () => {
     });
   }, TEST_TIMEOUT_MS);
 
-  itNeedsAStore('selects blok-sync.v2 when the server keeps a journal', async () => {
+  // Kestrel decodes the head as UTF-8 and String.Trim drops what
+  // char.IsWhiteSpace calls space; U+001C and U+200B are not.
+  it('trims every Unicode space from an offer, and nothing else', async () => {
+    await useServer('none', async ({ open }) => {
+      for (const space of ['\v', '\f', '\u0085', ' ', ' ', ' ', ' ', '　']) {
+        const leading = await open('/sync/doc', { headers: [['Sec-WebSocket-Protocol', `${space}${V1}`]] });
+        const trailing = await open('/sync/doc', { headers: [['Sec-WebSocket-Protocol', `${V1}${space}`]] });
+
+        expect([space.codePointAt(0), leading.response.headers['sec-websocket-protocol']]).toEqual([space.codePointAt(0), V1]);
+        expect([space.codePointAt(0), trailing.response.headers['sec-websocket-protocol']]).toEqual([space.codePointAt(0), V1]);
+      }
+      for (const kept of ['\u001c', '​']) {
+        const offered = await open('/sync/doc', { headers: [['Sec-WebSocket-Protocol', `${kept}${V1}`]] });
+
+        expect([kept.codePointAt(0), offered.response.status, offered.response.headers['sec-websocket-protocol']]).toEqual([kept.codePointAt(0), 101, undefined]);
+      }
+    });
+  }, TEST_TIMEOUT_MS);
+
+  it('selects blok-sync.v2 when the server keeps a journal', async () => {
     await withServer({ journal: true }, async ({ open }) => {
       const both = await open('/sync/doc', { headers: [['Sec-WebSocket-Protocol', `${V1}, ${V2}`]] });
 
@@ -551,6 +589,140 @@ describe('sync transport: a served socket', () => {
       awareness[0] = 1;
       socket.sendFrame(FIN | OP_BINARY, awareness);
       expect(await socket.closed()).toMatchObject({ code: 1008, reason: 'inbound rate exceeded' });
+    });
+  }, TEST_TIMEOUT_MS);
+});
+
+describe('sync transport: keep-alive', () => {
+  const INTERVAL_MS = 400;
+
+  it('pings each keep-alive interval and aborts a peer that never answers after two more', async () => {
+    await withServer({ keepAliveMs: INTERVAL_MS }, async (harness) => {
+      const socket = await harness.open('/sync/doc-keep-alive');
+      const opened = Date.now();
+
+      expect(socket.response.status).toBe(101);
+      const ping = await socket.frame(OP_PING, 5 * INTERVAL_MS);
+      const pinged = Date.now() - opened;
+      const ended = await socket.ended(10 * INTERVAL_MS);
+
+      expect({ fin: ping.fin, bytes: ping.payload.length }).toEqual({ fin: true, bytes: 8 });
+      expect(pinged).toBeGreaterThanOrEqual(INTERVAL_MS * 0.8);
+      expect(pinged).toBeLessThan(2_000);
+      // Measured on C#: the ping at 400 ms, the abort at 1200 to 1300 ms.
+      // The upper bounds leave room for a loaded CI machine.
+      expect(ended - opened).toBeGreaterThanOrEqual(INTERVAL_MS * 2.75);
+      expect(ended - opened).toBeLessThan(4_000);
+      expect(socket.frames.filter((frame) => frame.opcode === OP_CLOSE)).toEqual([]);
+    });
+  }, TEST_TIMEOUT_MS);
+
+  it('keeps a peer that answers every ping', async () => {
+    await withServer({ keepAliveMs: INTERVAL_MS }, async (harness) => {
+      const socket = await harness.open('/sync/doc-keep-alive');
+      const answered = new Set<ServerFrame>();
+      const pong = setInterval(() => {
+        for (const frame of socket.frames) {
+          if (frame.opcode === OP_PING && !answered.has(frame)) {
+            answered.add(frame);
+            socket.sendFrame(FIN | OP_PONG, frame.payload);
+          }
+        }
+      }, 20);
+
+      try {
+        await new Promise((resolve) => setTimeout(resolve, INTERVAL_MS * 6));
+        expect(answered.size).toBeGreaterThanOrEqual(3);
+        await expectStillServed(socket);
+      } finally {
+        clearInterval(pong);
+      }
+    });
+  }, TEST_TIMEOUT_MS);
+});
+
+describe('sync transport: a peer that stops reading', () => {
+  /** A y-protocols sync update frame: messageSync, messageYjsUpdate, then the bytes. */
+  const updateFrame = (update: Uint8Array): Buffer => {
+    const length: number[] = [];
+
+    for (let rest = update.length; ; rest = Math.floor(rest / 128)) {
+      length.push(rest >= 128 ? (rest % 128) | 128 : rest);
+
+      if (rest < 128) {
+        break;
+      }
+    }
+
+    return Buffer.concat([Buffer.from([0, 2, ...length]), update]);
+  };
+
+  /** About 900 KB of new text from a fresh client each time. */
+  const bigUpdate = (): Uint8Array => {
+    const doc = new Y.Doc();
+
+    doc.getText('overflow').insert(0, 'x'.repeat(900_000));
+
+    return Y.encodeStateAsUpdate(doc);
+  };
+
+  it('closes it 1008 once its outbound queue passes 8 messages, and keeps serving the others', async () => {
+    await withServer({}, async (harness) => {
+      const stalled = await harness.open('/sync/doc-overflow');
+      const writer = await harness.open('/sync/doc-overflow');
+
+      stalled.pause();
+      for (let index = 0; index < 32; index++) {
+        writer.sendFrame(FIN | OP_BINARY, updateFrame(bigUpdate()));
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      stalled.resume();
+
+      expect(await stalled.closed(20_000)).toMatchObject({ code: 1008, reason: 'outbound queue overflow' });
+      await expectStillServed(writer);
+    });
+  }, 60_000);
+});
+
+describe('sync transport: closes the room decides', () => {
+  // [sync, SyncStep2, an empty Yjs update] and [sync, Update, the same].
+  const rawWrites = [Buffer.from([0, 1, 2, 0, 0]), Buffer.from([0, 2, 2, 0, 0])];
+
+  it('closes a v2 member that sends a raw write 1008, and serves the same frame from a v1 member', async () => {
+    await withServer({ journal: true }, async ({ open }) => {
+      for (const write of rawWrites) {
+        const v2 = await open('/sync/doc', { headers: [['Sec-WebSocket-Protocol', V2]] });
+
+        v2.sendFrame(FIN | OP_BINARY, write);
+        expect(await v2.closed()).toMatchObject({ code: 1008, reason: 'raw write on a v2 session' });
+
+        const v1 = await open('/sync/doc', { headers: [['Sec-WebSocket-Protocol', V1]] });
+
+        v1.sendFrame(FIN | OP_BINARY, write);
+        await expectStillServed(v1);
+      }
+    });
+  }, TEST_TIMEOUT_MS);
+
+  it('closes the third malformed awareness frame 1008, and never counts one over the client cap', async () => {
+    // [awareness, length 1, a count of 5 with no entries]; then a count of 257.
+    const malformed = Buffer.from([1, 1, 5]);
+    const overCap = Buffer.from([1, 2, 0x81, 0x02]);
+
+    await useServer('none', async ({ open }) => {
+      const two = await open('/sync/doc-awareness');
+
+      two.sendFrames([
+        ...Array.from({ length: 5 }, () => ({ first: FIN | OP_BINARY, payload: overCap })),
+        ...Array.from({ length: 2 }, () => ({ first: FIN | OP_BINARY, payload: malformed })),
+      ]);
+      await expectStillServed(two);
+
+      const three = await open('/sync/doc-awareness');
+
+      three.sendFrames(Array.from({ length: 3 }, () => ({ first: FIN | OP_BINARY, payload: malformed })));
+      expect(await three.closed()).toMatchObject({ code: 1008, reason: 'malformed awareness' });
     });
   }, TEST_TIMEOUT_MS);
 });

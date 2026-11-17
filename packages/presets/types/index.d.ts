@@ -49,6 +49,18 @@ interface UploadContext {
   variant?: { mimeType: string; role: 'original' | 'variant' };
 }
 
+/** What Blok tells the host when it asks whether to upload a pasted URL. */
+interface UrlUploadDecisionContext {
+  /** Kind of asset the URL points to. */
+  kind: AssetKind;
+  /** Name of the block tool that asks, when known. */
+  tool?: string;
+  /** How the URL came in: an `<img>` in pasted HTML, or a bare pasted URL. */
+  source: 'html' | 'url';
+  /** The pasted `<img>` carried Blok's copy mark. Any page can forge it, so it is a hint only. */
+  copiedFromBlok: boolean;
+}
+
 /**
  * Describes a single deletion request.
  *
@@ -71,6 +83,8 @@ interface BlokUploader {
   uploadByFile?(file: File, ctx: UploadContext): Promise<UploadedAsset>;
   /** Re-host an asset the user supplied by URL, and return the stored URL. */
   uploadByUrl?(url: string, ctx: UploadContext): Promise<UploadedAsset>;
+  /** Whether a pasted image URL is uploaded (`true`) or kept as it is (`false`). */
+  shouldUploadUrl?(url: string, ctx: UrlUploadDecisionContext): boolean | Promise<boolean>;
   /** Delete a stored asset by the URL this uploader returned for it. */
   delete?(url: string, ctx: DeleteContext): Promise<void>;
 }
@@ -191,5 +205,10 @@ export function indexedDBStorage(options?: IndexedDBStorageOptions): BlokUploade
  * anything else — is returned unchanged; validating that a URL is safe to
  * render remains the host's job. Resolves `null` when the reference is not
  * (or no longer) stored.
+ *
+ * The `blob:` URL gets a safe type, like Blok's own blob URLs. HTML, XML and
+ * other types that could run as a page become `text/plain`. The bytes stay the
+ * same. SVG keeps its type only when it was stored as an image. Read the real
+ * type from the block's `mimeType`.
  */
 export function resolveBlokObjectUrl(url: string, options?: IndexedDBStorageOptions): Promise<string | null>;

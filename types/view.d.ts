@@ -149,8 +149,10 @@ export interface BlocksToHtmlOptions {
    * src, file/bookmark/embed href) and every inline anchor href, sequenced
    * BEFORE the unsafe-scheme strip. See {@link ViewUrlTransform}.
    *
-   * An embed iframe is sandboxed but may run scripts, so a rewritten embed
-   * src must stay on another origin than the page.
+   * An embed iframe is sandboxed but may run scripts. Blok drops the frame
+   * unless the rewritten src is absolute https. A registry player keeps its
+   * looser sandbox only while the src stays on the provider's origin; any
+   * other origin gets the generic sandbox.
    */
   transformUrl?: ViewUrlTransform;
   /**
@@ -541,6 +543,67 @@ export declare function diffOutputData(
   after: OutputData | LooseOutputData | null | undefined,
   options?: DiffOutputDataOptions
 ): OutputDataDiff;
+
+/** How a block changed in one history record. */
+export type UpdateKind = 'added' | 'removed' | 'changed' | 'moved';
+
+/** One block of a `/history/changes` row. */
+export interface UpdateBlock {
+  id: string;
+  type: string | null;
+  kind: UpdateKind;
+  before?: LooseOutputBlockData;
+  after?: LooseOutputBlockData;
+}
+
+/** One `/history/changes` row. */
+export interface UpdateRecord {
+  sequence: number;
+  /** Unix milliseconds, or null when unknown. */
+  committedAt: number | null;
+  actor: string | null;
+  blocks: UpdateBlock[];
+  /** `title`, `icon`, or `values.<key>`. */
+  page?: string[];
+}
+
+/** One record and the version it was read from. */
+export interface UpdateRow {
+  lineage: string;
+  /** The version the record belongs to. Records of different versions never fold. */
+  sequence: number;
+  truncated?: boolean;
+  record: UpdateRecord;
+}
+
+/** One feed entry: a run of records folded into one. */
+export interface FoldedUpdate extends UpdateRow {
+  /** True when any folded record was truncated. */
+  truncated: boolean;
+  /** `<lineage>:<sequence of the newest folded record>`: the version after this update. */
+  key: string;
+  /** Every block the entry still touches, oldest first. A block added and removed in the run is gone. */
+  blockIds: string[];
+}
+
+export interface FoldUpdatesOptions {
+  /** Neighbouring records closer than this fold. Default 120000 (2 minutes). */
+  gapMs?: number;
+}
+
+/**
+ * Fold history change rows into feed entries, synchronously and DOM-free.
+ *
+ * - Records that change no block and no page field are dropped first.
+ * - Neighbours fold when they share the lineage, the version and a non-null
+ *   actor, both have a time, and they are less than `gapMs` apart.
+ * - A folded block keeps `before` from the oldest record and `after` from the
+ *   newest. Added then removed drops it.
+ *
+ * @param rows - newest first
+ * @param options - the gap
+ */
+export declare function foldUpdates(rows: UpdateRow[], options?: FoldUpdatesOptions): FoldedUpdate[];
 
 /** Why {@link restoreHeadingAnchors} left a referenced fragment as it was. */
 export type HeadingAnchorSkipReason = 'no-match' | 'ambiguous';

@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 import { expect, it as baseIt } from 'vitest';
 
-import { startFixtureOrigin } from './fixture-origin';
+import { encodedContentEncoding, startFixtureOrigin } from './fixture-origin';
 import { startServer, type RunningServer } from './run-against';
 import type { HttpResponse } from './http-client';
 
@@ -82,6 +82,8 @@ const FILES = {
   directory: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.txt',
   unreadable: 'cccccccccccccccccccccccccccccccc.txt',
   unknownType: 'dddddddddddddddddddddddddddddddd.blokunknown',
+  // ASP.NET's table holds this extension in upper case.
+  ivf: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.ivf',
   // Files in the storage directory that no upload named. Only generated
   // keys are served, so these must stay 404.
   dotFile: '.env',
@@ -123,6 +125,7 @@ function buildCases(): LocalFileCase[] {
     { name: 'missing key', method: 'GET', file: 'missing', headers: {} },
     { name: 'directory at a generated key', method: 'GET', file: 'directory', headers: {} },
     { name: 'unknown extension', method: 'GET', file: 'unknownType', headers: {} },
+    { name: 'extension in upper case in the table', method: 'GET', file: 'ivf', headers: {} },
     { name: 'empty file', method: 'GET', file: 'empty', headers: {} },
     { name: 'empty file, start past the end', method: 'GET', file: 'empty', headers: { Range: 'bytes=0-' } },
     { name: 'empty file, suffix', method: 'GET', file: 'empty', headers: { Range: 'bytes=-5' } },
@@ -226,9 +229,11 @@ async function seedStorage(directory: string): Promise<void> {
   const text = join(directory, FILES.text);
   const empty = join(directory, FILES.empty);
   const unknown = join(directory, FILES.unknownType);
+  const ivf = join(directory, FILES.ivf);
   const unreadable = join(directory, FILES.unreadable);
 
   await writeFile(text, TEXT);
+  await writeFile(ivf, TEXT);
   await writeFile(empty, '');
   await writeFile(unknown, TEXT);
   await writeFile(unreadable, TEXT);
@@ -238,7 +243,7 @@ async function seedStorage(directory: string): Promise<void> {
   await chmod(unreadable, 0o000);
   await mkdir(join(directory, FILES.directory));
 
-  for (const path of [text, empty, unknown]) {
+  for (const path of [text, empty, unknown, ivf]) {
     await utimes(path, MODIFIED_SECONDS, MODIFIED_SECONDS);
   }
 }
@@ -614,11 +619,14 @@ const ENCODINGS = [
   'truncated-gzip', 'truncated-deflate', 'truncated-br', 'two-gzip-members', 'gzip-zero-padding',
   'gzip-then-bad-member', 'gzip-then-one-magic-byte', 'gzip-bad-crc', 'deflate-bad-adler',
   'deflate-trailing-garbage', 'br-trailing-garbage', 'empty-gzip-body', 'empty-br-body', 'empty-deflate-body',
+  'param', 'quoted', 'two-words', 'slash', 'parens', 'good-then-bad-item', 'bad-line-then-good-line',
+  'trailing-comma', 'only-commas', 'tab-spaced', 'gzip-long-name', 'gzip-long-comment',
 ];
 
 it('decodes outbound bodies by the C# content-encoding rules', async () => {
   const origin = await startFixtureOrigin();
-  const actual: Array<{ name: string; response: GoldenResponse }> = [];
+  // Go's internal/outbound reads `encoding` from the golden.
+  const actual: Array<{ name: string; encoding: string[]; response: GoldenResponse }> = [];
 
   try {
     await withServer(['--storage-dir', '', '--conformance-origin', origin.baseUrl], async (server) => {
@@ -629,7 +637,7 @@ it('decodes outbound bodies by the C# content-encoding rules', async () => {
         recorded.body = recorded.body.split(origin.baseUrl).join('<origin>');
         // The body carries the origin's port, so its length is not stable.
         delete recorded.headers['content-length'];
-        actual.push({ name, response: recorded });
+        actual.push({ name, encoding: encodedContentEncoding(name) ?? [], response: recorded });
       }
     });
   } finally {
@@ -701,13 +709,172 @@ it('follows five outbound redirects and refuses the sixth', async () => {
   compareGolden('outbound-redirect-cap.json', actual);
 }, 60_000);
 
-it('shares four outbound fetches between unfurl and upload-by-url', async () => {
+// .NET's SocketsHttpHandler defaults to 64 KiB of response head; Go is set to match.
+it('refuses an outbound response head over 64 KiB', async () => {
+  const origin = await startFixtureOrigin();
+  const actual: Array<{ name: string; response: GoldenResponse }> = [];
+
+  try {
+    await withServer(['--storage-dir', '', '--conformance-origin', origin.baseUrl], async (server) => {
+      for (const kib of [16, 48, 80, 256]) {
+        const target = `${origin.baseUrl}/big-header/${kib}`;
+        const recorded = golden(await server.request('GET', `/unfurl?url=${encodeURIComponent(target)}`));
+
+        recorded.body = recorded.body.split(origin.baseUrl).join('<origin>');
+        delete recorded.headers['content-length'];
+        actual.push({ name: `a ${kib} KiB header`, response: recorded });
+      }
+    });
+  } finally {
+    await origin.stop();
+  }
+
+  compareGolden('outbound-header-size.json', actual);
+}, 60_000);
+
+// The guard counts the request; each redirect hop takes one more from the same budget.
+it('counts every outbound redirect hop against the rate limit', async () => {
+  const origin = await startFixtureOrigin();
+  const directory = await mkdtemp(join(tmpdir(), 'blok-http-host-hops-'));
+
+  try {
+    await withServer(['--storage-dir', directory, '--conformance-origin', origin.baseUrl, '--rate-limit', '3'], async (server) => {
+      const page = await server.request('GET', `/unfurl?url=${encodeURIComponent(`${origin.baseUrl}/chain/5/page.html`)}`);
+
+      expect(origin.received.map((request) => request.path)).toEqual([
+        '/chain/5/page.html', '/chain/4/page.html', '/chain/3/page.html',
+      ]);
+      expect([page.status, page.text]).toEqual([200, '{"success":0}\n']);
+
+      const refused = await server.request('GET', `/unfurl?url=${encodeURIComponent(`${origin.baseUrl}/chain/0/page.html`)}`);
+
+      expect([refused.status, refused.text]).toEqual([429, 'rate limit exceeded\n']);
+      expect(origin.received).toHaveLength(3);
+    });
+    await withServer(['--storage-dir', directory, '--conformance-origin', origin.baseUrl, '--rate-limit', '2'], async (server) => {
+      origin.received.length = 0;
+      const media = await server.request('POST', '/upload-by-url', {
+        body: JSON.stringify({ url: `${origin.baseUrl}/chain/5/photo.png` }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      expect(origin.received.map((request) => request.path)).toEqual(['/chain/5/photo.png', '/chain/4/photo.png']);
+      expect([media.status, media.text]).toEqual([400, 'the URL could not be fetched\n']);
+    });
+  } finally {
+    await origin.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60_000);
+
+const FRAME_PAGES = [
+  'plain', 'xfo-deny', 'xfo-sameorigin', 'xfo-allowall', 'xfo-allowall-and-invalid-lines',
+  'xfo-invalid-and-invalid-lines', 'xfo-allow-from', 'csp-none', 'csp-two-lines', 'csp-comma-policies',
+  'csp-duplicate-directive', 'csp-report-only', 'csp-overrides-xfo', 'csp-http-embedder',
+  'csp-https-embedder', 'csp-self', 'redirect', 'oembed-full', 'oembed-escaped', 'oembed-http-thumbnail',
+  'oembed-html-only', 'oembed-not-json', 'oembed-missing', 'oembed-redirect', 'oembed-blocked', 'oembed-oversized',
+];
+
+// Conformance pages are http, so an allowed page reads "insecure"; "blocked" wins over it.
+it('rates whether an outbound page lets the editor frame it', async () => {
+  const origin = await startFixtureOrigin();
+  const editor = 'http://editor.example';
+  const actual: Array<{ name: string; response: GoldenResponse }> = [];
+  const record = (name: string, response: HttpResponse): void => {
+    const recorded = golden(response);
+
+    recorded.body = recorded.body.split(origin.baseUrl).join('<origin>');
+    delete recorded.headers['content-length'];
+    actual.push({ name, response: recorded });
+  };
+
+  try {
+    await withServer(['--storage-dir', '', '--conformance-origin', origin.baseUrl, '--allow-origin', editor], async (server) => {
+      const check = (target: string, headers: Record<string, string> = { Origin: editor }): Promise<HttpResponse> =>
+        server.request('GET', `/frame-check?url=${encodeURIComponent(target)}`, { headers });
+
+      for (const page of FRAME_PAGES) {
+        record(`${page} for the editor`, await check(`${origin.baseUrl}/frame/${page}`));
+      }
+      // csp-self blocks every embedder but the page's own origin, so a used
+      // embedder reads "blocked" and none reads "insecure".
+      const claim = (embedder: string, headers: Record<string, string>): Promise<HttpResponse> =>
+        server.request('GET', `/frame-check?url=${encodeURIComponent(`${origin.baseUrl}/frame/csp-self`)}` +
+          `&embedder=${encodeURIComponent(embedder)}`, { headers });
+      const sameOrigin = { 'Sec-Fetch-Site': 'same-origin' };
+      const claims: Array<[string, Promise<HttpResponse>, string]> = [
+        ['same-origin with its own embedder', claim(server.baseUrl, sameOrigin), 'blocked'],
+        ['same-origin with another embedder', claim('http://other.example', sameOrigin), 'insecure'],
+        ['same-site with its own embedder', claim(server.baseUrl, { 'Sec-Fetch-Site': 'same-site' }), 'insecure'],
+        ['its own embedder with no Sec-Fetch-Site', claim(server.baseUrl, {}), 'insecure'],
+        ['an allowed embedder with no Origin', claim(editor, {}), 'blocked'],
+        ['a refused embedder with no Origin', claim('http://other.example', {}), 'insecure'],
+      ];
+
+      for (const [name, pending, verdict] of claims) {
+        const response = await pending;
+
+        expect([name, response.status, JSON.parse(response.text).verdict]).toEqual([name, 200, verdict]);
+        record(name, response);
+      }
+      record('xfo-deny with no Origin', await check(`${origin.baseUrl}/frame/xfo-deny`, {}));
+      record('plain with no Origin', await check(`${origin.baseUrl}/frame/plain`, {}));
+      record('a refused Origin', await check(`${origin.baseUrl}/frame/plain`, { Origin: 'http://other.example' }));
+      record('a 503 page', await check(origin.errorUrl));
+      record('a blocked destination', await check('http://127.0.0.2/'));
+      record('six redirects', await check(`${origin.baseUrl}/chain/6/page.html`));
+      record('no url', await server.request('GET', '/frame-check', { headers: { Origin: editor } }));
+      record('a preflight', await server.request('OPTIONS', '/frame-check', {
+        headers: { Origin: editor, 'Access-Control-Request-Method': 'GET' },
+      }));
+      record('a POST', await server.request('POST', '/frame-check', { headers: { Origin: editor } }));
+    });
+  } finally {
+    await origin.stop();
+  }
+
+  compareGolden('frame-check-responses.json', actual);
+}, 60_000);
+
+// The oEmbed fetch is one more outbound GET, so it takes one more from the rate limit.
+it('charges the oEmbed fetch to the rate limit', async () => {
+  const origin = await startFixtureOrigin();
+  const page = `${origin.baseUrl}/frame/oembed-full`;
+
+  try {
+    for (const [limit, oembed] of [['1', false], ['2', true]] as const) {
+      origin.received.length = 0;
+      await withServer(['--storage-dir', '', '--conformance-origin', origin.baseUrl, '--rate-limit', limit], async (server) => {
+        const response = await server.request('GET', `/frame-check?url=${encodeURIComponent(page)}`);
+
+        expect(response.status).toBe(200);
+        expect(response.text.includes('"oembed"')).toBe(oembed);
+        expect(origin.received.map((request) => request.path))
+          .toEqual(oembed ? ['/frame/oembed-full', '/oembed/full'] : ['/frame/oembed-full']);
+      });
+    }
+  } finally {
+    await origin.stop();
+  }
+}, 60_000);
+
+it('keeps frame-check closed when unfurl is off', async () => {
+  await withServer(['--storage-dir', '', '--no-unfurl'], async (server) => {
+    const response = await server.request('GET', '/frame-check?url=http%3A%2F%2Fexample.com%2F');
+
+    expect(response.status).toBe(404);
+  });
+}, 60_000);
+
+// Uploads have their own four fetches, so a long download never makes a
+// short check wait.
+it('gives unfurl and upload-by-url four outbound fetches each', async () => {
   const origin = await startFixtureOrigin();
   const directory = await mkdtemp(join(tmpdir(), 'blok-http-host-permits-'));
 
   try {
     await withServer(['--storage-dir', directory, '--conformance-origin', origin.baseUrl], async (server) => {
-      const requests = [0, 1, 2].flatMap((index) => [
+      const requests = [0, 1, 2, 3, 4].flatMap((index) => [
         server.request('GET', `/unfurl?url=${encodeURIComponent(`${origin.baseUrl}/hold/page-${index}`)}`),
         server.request('POST', '/upload-by-url', {
           body: JSON.stringify({ url: `${origin.baseUrl}/hold/photo-${index}.png` }),
@@ -715,18 +882,68 @@ it('shares four outbound fetches between unfurl and upload-by-url', async () => 
         }),
       ]);
 
-      await waitFor(async () => origin.held.current, (current) => current >= 4);
-      // Give a fifth fetch the time to arrive if the server would let it.
+      await waitFor(async () => origin.held.current, (current) => current >= 8);
+      // Give a ninth fetch the time to arrive if the server would let it.
       await new Promise((resolve) => setTimeout(resolve, 500));
-      expect(origin.held.peak).toBe(4);
+      expect(origin.held.peak).toBe(8);
+      expect(origin.received.filter((request) => request.path.endsWith('.png'))).toHaveLength(4);
 
-      while (origin.received.length < 6) {
+      while (origin.received.length < 10) {
         origin.held.release();
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       origin.held.release();
 
       const statuses = (await Promise.all(requests)).map((response) => response.status);
+
+      expect(statuses).toEqual(Array.from({ length: 10 }, () => 200));
+    });
+  } finally {
+    await origin.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60_000);
+
+// With the rate limit on, one caller runs at most two fetches at once in each
+// pool. A third waits for one of its own, within its own deadline, while the
+// pool's other slots stay free.
+it('makes a third concurrent outbound fetch from one caller wait for its own slot', async () => {
+  const origin = await startFixtureOrigin();
+  const directory = await mkdtemp(join(tmpdir(), 'blok-http-host-caller-lane-'));
+
+  try {
+    await withServer(['--storage-dir', directory, '--conformance-origin', origin.baseUrl, '--rate-limit', '60'], async (server) => {
+      const upload = (path: string): Promise<HttpResponse> => server.request('POST', '/upload-by-url', {
+        body: JSON.stringify({ url: `${origin.baseUrl}${path}` }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const held = [
+        upload('/hold/photo-0.png'),
+        upload('/hold/photo-1.png'),
+        server.request('GET', `/unfurl?url=${encodeURIComponent(`${origin.baseUrl}/hold/page-0`)}`),
+        server.request('GET', `/frame-check?url=${encodeURIComponent(`${origin.baseUrl}/hold/page-1`)}`),
+      ];
+
+      await waitFor(async () => origin.held.current, (current) => current >= 4);
+
+      const third = [
+        upload('/hold/photo-2.png'),
+        server.request('GET', `/unfurl?url=${encodeURIComponent(`${origin.baseUrl}/hold/page-2`)}`),
+      ];
+
+      // Give the third fetches the time to arrive if the server would let them.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(origin.received).toHaveLength(4);
+
+      const until = Date.now() + 10_000;
+
+      while (origin.received.length < 6 && Date.now() < until) {
+        origin.held.release();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      origin.held.release();
+
+      const statuses = (await Promise.all([...held, ...third])).map((response) => response.status);
 
       expect(statuses).toEqual([200, 200, 200, 200, 200, 200]);
     });
@@ -751,7 +968,9 @@ it('drops a connection whose request headers stall for 10 seconds', async () => 
     });
 
     const elapsed = Date.now() - started;
-    const answer = Buffer.concat(chunks).toString('latin1')
+    const raw = Buffer.concat(chunks).toString('latin1');
+    expect(raw).toMatch(/\r\nServer: Kestrel\r\n/);
+    const answer = raw
       .replace(/^Date: .*\r\n/m, 'Date: <date>\r\n')
       .replace(/^Server: .*\r\n/m, '');
 
@@ -760,6 +979,38 @@ it('drops a connection whose request headers stall for 10 seconds', async () => 
     compareGolden('header-timeout.json', [{ name: 'stalled headers', response: answer }]);
   });
 }, 30_000);
+
+// The goldens leave Server out; this pins it. Kestrel's AddServerHeader
+// default names it on handler answers and on its own bare refusals.
+it('names itself Server: Kestrel on every answer', async () => {
+  const requests: Record<string, string> = {
+    'health': 'GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
+    'catch-all 404': 'GET /missing HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
+    'method not allowed': 'PUT /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n',
+    'bad request line': 'GARBAGE\r\n\r\n',
+    'bad version': 'GET / HTTP/1.2\r\nHost: x\r\n\r\n',
+  };
+
+  await withServer(['--auth', 'none', '--storage-dir', ''], async (server) => {
+    const { hostname, port } = new URL(server.baseUrl);
+
+    for (const [name, request] of Object.entries(requests)) {
+      const socket = connect(Number(port), hostname);
+      const chunks: Buffer[] = [];
+
+      socket.on('data', (chunk: Buffer) => chunks.push(chunk));
+      socket.setTimeout(5_000, () => socket.destroy());
+      socket.write(request);
+      await new Promise<void>((resolve) => {
+        socket.once('close', () => resolve());
+      });
+      const head = Buffer.concat(chunks).toString('latin1').split('\r\n\r\n')[0] ?? '';
+
+      expect.soft(head.split('\r\n').filter((line) => /^server:/i.test(line)), name)
+        .toEqual(['Server: Kestrel']);
+    }
+  });
+});
 
 async function rawExchange(baseUrl: string, request: Buffer): Promise<string> {
   const { hostname, port } = new URL(baseUrl);
@@ -787,7 +1038,8 @@ async function rawExchange(baseUrl: string, request: Buffer): Promise<string> {
 
 // Origins compare with .NET OrdinalIgnoreCase: simple upper case per char,
 // but U+0131 and U+017F keep their case. Kestrel decodes header bytes as
-// UTF-8 and refuses invalid ones; an echoed non-ASCII origin is a 500.
+// UTF-8 and refuses invalid ones. A non-ASCII origin is never allowed, even
+// when listed: Kestrel could not echo it, and a browser sends punycode.
 const ORIGIN_SPELLINGS: Record<string, string> = {
   'ascii exact': 'http://k.example',
   'ascii upper': 'HTTP://K.EXAMPLE',
@@ -838,6 +1090,18 @@ it('matches request origins the way OrdinalIgnoreCase does', async () => {
         Buffer.from('\r\nConnection: close\r\n\r\n'),
       ])),
     });
+    // Control bytes and DEL pass the request parser but not the response's.
+    for (const [name, byte] of [['control byte', 0x01], ['DEL', 0x7f]] as const) {
+      actual.push({
+        name: `preflight with a ${name} in the requested headers`,
+        response: await rawExchange(server.baseUrl, Buffer.concat([
+          Buffer.from('OPTIONS /unfurl HTTP/1.1\r\nHost: x\r\nOrigin: http://k.example\r\n' +
+            'Access-Control-Request-Method: GET\r\nAccess-Control-Request-Headers: x-a'),
+          Buffer.from([byte]),
+          Buffer.from('b\r\nConnection: close\r\n\r\n'),
+        ])),
+      });
+    }
     for (const [name, origin] of [['e acute', 'http://\u00e9.example'], ['kelvin sign', 'http://\u212a.example']]) {
       actual.push({
         name: `guarded GET ${name}`,
@@ -857,7 +1121,7 @@ it('matches request origins the way OrdinalIgnoreCase does', async () => {
       actual.push({
         name: `Sec-Fetch-Site ${site}`,
         response: await rawExchange(server.baseUrl, Buffer.concat([
-          Buffer.from('POST /delete HTTP/1.1\r\nHost: x\r\nSec-Fetch-Site: '),
+          Buffer.from('POST /delete HTTP/1.1\r\nHost: 127.0.0.1\r\nSec-Fetch-Site: '),
           Buffer.from(site, 'utf8'),
           Buffer.from('\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'),
         ])),
@@ -866,6 +1130,35 @@ it('matches request origins the way OrdinalIgnoreCase does', async () => {
   }).finally(() => rm(directory, { recursive: true, force: true }));
 
   compareGolden('origin-case-fold.json', actual);
+}, 60_000);
+
+// A DNS-rebinding page sends a same-origin GET under its own name. The
+// standalone host answers only loopback names and its configured ones.
+it('refuses a guarded GET under a foreign Host on a loopback host', async () => {
+  const frameCheck = (host: string): Buffer => Buffer.from(
+    `GET /frame-check HTTP/1.1\r\nHost: ${host}\r\nSec-Fetch-Site: same-origin\r\nConnection: close\r\n\r\n`,
+  );
+  const statusAndBody = (answer: string): string => {
+    const lines = answer.split('\n');
+
+    return `${lines[0]} ${answer.includes('host not allowed') ? 'host not allowed' : ''}`.trim();
+  };
+  const actual: Record<string, string> = {};
+
+  await withServer(['--auth', 'none', '--storage-dir', '', '--allow-origin', 'https://app.example.com'], async (server) => {
+    for (const host of ['attacker.example:4000', 'localhost.attacker.example', 'localhost', '127.0.0.1:4000', '[::1]', 'app.example.com']) {
+      actual[host] = statusAndBody(await rawExchange(server.baseUrl, frameCheck(host)));
+    }
+  });
+
+  expect(actual).toEqual({
+    'attacker.example:4000': 'HTTP/1.1 421 Misdirected Request host not allowed',
+    'localhost.attacker.example': 'HTTP/1.1 421 Misdirected Request host not allowed',
+    'localhost': 'HTTP/1.1 400 Bad Request',
+    '127.0.0.1:4000': 'HTTP/1.1 400 Bad Request',
+    '[::1]': 'HTTP/1.1 400 Bad Request',
+    'app.example.com': 'HTTP/1.1 400 Bad Request',
+  });
 }, 60_000);
 
 const PROXY_VARIABLES = [
@@ -973,4 +1266,398 @@ it('sends S3 requests through the environment proxy the way .NET does', async ()
   }
 
   compareGolden('s3-proxy.json', actual);
+}, 120_000);
+
+// Kestrel's defaults (Program.cs sets neither): an 8192-byte request line
+// with its line end, 32768 header bytes plus the blank line, 100 headers.
+// Every case closes at once, so the 5 s exchange timeout never runs.
+const CLOSE = 'Connection: close\r\n';
+const headWith = (headers: string): string => `GET /health HTTP/1.1\r\nHost: x\r\n${headers}${CLOSE}\r\n`;
+const numbered = (count: number): string =>
+  Array.from({ length: count }, (_, index) => `X${index}: v\r\n`).join('');
+const bytes = (...parts: Array<string | number[]>): Buffer =>
+  Buffer.concat(parts.map((part) => (typeof part === 'string' ? Buffer.from(part, 'latin1') : Buffer.from(part))));
+
+const REQUEST_HEADS: Record<string, Buffer> = {
+  // Host: x, X: <n>, Connection: close and the blank line take n + 35 bytes.
+  'header block at the limit': bytes(headWith(`X: ${'a'.repeat(32_735)}\r\n`)),
+  'header block one byte over': bytes(headWith(`X: ${'a'.repeat(32_736)}\r\n`)),
+  'header block over with bare LF': bytes(`GET /health HTTP/1.1\nHost: x\nX: ${'a'.repeat(32_740)}\n${CLOSE}\n`),
+  'header block over before its line end': bytes(`GET /health HTTP/1.1\r\nHost: x\r\nX: ${'a'.repeat(33_000)}`),
+  'request line at the limit': bytes(`GET /health?${'a'.repeat(8_169)} HTTP/1.1\r\nHost: x\r\n${CLOSE}\r\n`),
+  'request line one byte over': bytes(`GET /health?${'a'.repeat(8_170)} HTTP/1.1\r\nHost: x\r\n${CLOSE}\r\n`),
+  'request line at the limit with bare LF': bytes(`GET /health?${'a'.repeat(8_170)} HTTP/1.1\nHost: x\n${CLOSE}\n`),
+  'request line over before its line end': bytes(`GET /health?${'a'.repeat(8_300)}`),
+  'long method': bytes(`${'G'.repeat(8_300)} / HTTP/1.1\r\nHost: x\r\n${CLOSE}\r\n`),
+  '100 headers': bytes(headWith(numbered(98))),
+  '101 headers': bytes(headWith(numbered(99))),
+  '101 headers after a kept-alive request': bytes(`GET /health HTTP/1.1\r\nHost: x\r\n\r\n${headWith(numbered(99))}`),
+  'invalid UTF-8 in a value': bytes('GET /health HTTP/1.1\r\nHost: x\r\nX-A: ', [0xe9], `\r\n${CLOSE}\r\n`),
+  'valid UTF-8 in a value': bytes('GET /health HTTP/1.1\r\nHost: x\r\nX-A: ', [0xc3, 0xa9], `\r\n${CLOSE}\r\n`),
+  'DEL in a value': bytes(headWith('X-A: a\x7fb\r\n')),
+  'control byte in a value': bytes(headWith('X-A: a\x01b\r\n')),
+  'tab in a value': bytes(headWith('X-A: a\tb\r\n')),
+  'NUL in a value': bytes(headWith('X-A: a\x00b\r\n')),
+  'CR in a value': bytes(headWith('X-A: a\rb\r\n')),
+  'folded line': bytes(headWith('X-A: a\r\n b\r\n')),
+  'first header line folded': bytes(`GET /health HTTP/1.1\r\n Host: x\r\n${CLOSE}\r\n`),
+  'quote in a name': bytes(headWith('X"A: a\r\n')),
+  'control byte in a name': bytes(headWith('X\x01A: a\r\n')),
+  'space before the colon': bytes(headWith('X-A : a\r\n')),
+  'no colon': bytes(headWith('NoColon\r\n')),
+  'empty name': bytes(headWith(': v\r\n')),
+  'no Host': bytes(`GET /health HTTP/1.1\r\n${CLOSE}\r\n`),
+  'two Host headers': bytes(`GET /health HTTP/1.1\r\nHost: a\r\nHost: b\r\n${CLOSE}\r\n`),
+  'malformed Host': bytes(`GET /health HTTP/1.1\r\nHost: a b\r\n${CLOSE}\r\n`),
+  'empty Host': bytes(`GET /health HTTP/1.1\r\nHost:\r\n${CLOSE}\r\n`),
+  'bare LF line ends': bytes(`GET /health HTTP/1.1\nHost: x\n${CLOSE}\n`),
+  'blank lines before the request line': bytes(`\r\n\r\n\n\r${headWith('')}`),
+  'HTTP/0.9 request line': bytes('GET /health\r\n\r\n'),
+  'HTTP/3 version': bytes(`GET /health HTTP/3\r\nHost: x\r\n${CLOSE}\r\n`),
+  'bad method byte': bytes(`G@T /health HTTP/1.1\r\nHost: x\r\n${CLOSE}\r\n`),
+  'two spaces after the method': bytes(`GET  /health HTTP/1.1\r\nHost: x\r\n${CLOSE}\r\n`),
+  'two Content-Length values': bytes(`POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1\r\nContent-Length: 2\r\n${CLOSE}\r\nxx`),
+  'HTTP/2 prior-knowledge preface': bytes('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'),
+  // The version is the rest of the line: 8 bytes, or 9 ending in CR, or 400.
+  // Kestrel answers it from the request line alone.
+  'HTTP/1.2 version': bytes(`GET /health HTTP/1.2\r\nHost: x\r\n${CLOSE}\r\n`),
+  'HTTP/2.0 version': bytes(`GET /health HTTP/2.0\r\nHost: x\r\n${CLOSE}\r\n`),
+  'HTTP/0.9 version': bytes(`GET /health HTTP/0.9\r\nHost: x\r\n${CLOSE}\r\n`),
+  'lower-case version': bytes(`GET /health http/1.1\r\nHost: x\r\n${CLOSE}\r\n`),
+  'seven-byte version': bytes(`GET /health HTTP/1.\r\nHost: x\r\n${CLOSE}\r\n`),
+  'HTTP/1.10 version': bytes(`GET /health HTTP/1.10\r\nHost: x\r\n${CLOSE}\r\n`),
+  'HTTP/1.2 with bare LF': bytes(`GET /health HTTP/1.2\nHost: x\n${CLOSE}\n`),
+  'HTTP/1.2 line alone': bytes('GET /health HTTP/1.2\r\n'),
+  'HTTP/1.2 with a bad method': bytes(`G@T /health HTTP/1.2\r\nHost: x\r\n${CLOSE}\r\n`),
+  'HTTP/1.2 after a kept-alive request': bytes(`GET /health HTTP/1.1\r\nHost: x\r\n\r\nGET /health HTTP/1.2\r\n`),
+  // Kestrel refuses a second Content-Length line, even an equal one.
+  'two equal Content-Length values': bytes(`POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 2\r\nContent-Length: 2\r\n${CLOSE}\r\n{}`),
+  'two Content-Length values beside chunked': bytes(`POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\nContent-Length: 1\r\n${CLOSE}\r\n0\r\n\r\n`),
+  // Kestrel takes any codings whose last is chunked, and refuses the rest
+  // with 400. A 415 here is /delete's answer to the type.
+  ...Object.fromEntries(Object.entries({
+    'identity': 'Transfer-Encoding: identity\r\n',
+    'gzip': 'Transfer-Encoding: gzip\r\n',
+    'gzip, chunked': 'Transfer-Encoding: gzip, chunked\r\n',
+    'chunked, gzip': 'Transfer-Encoding: chunked, gzip\r\n',
+    'upper-case chunked': 'Transfer-Encoding: CHUNKED\r\n',
+    'spaces and commas around chunked': 'Transfer-Encoding:  , chunked , \r\n',
+    'two lines, chunked last': 'Transfer-Encoding: gzip\r\ntransfer-encoding: chunked\r\n',
+    'two lines, chunked first': 'Transfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n',
+    'an empty line after chunked': 'Transfer-Encoding: chunked\r\nTransfer-Encoding:\r\n',
+    'a tab before chunked': 'Transfer-Encoding: gzip,\tchunked\r\n',
+    'chunked with a parameter': 'Transfer-Encoding: chunked;x\r\n',
+    'an empty value': 'Transfer-Encoding:\r\n',
+    'a control byte in an earlier coding': 'Transfer-Encoding: g\x01zip, chunked\r\n',
+    // A codings value follows the value grammar: NUL, CR and invalid
+    // UTF-8 are refused even before a chunked that would be taken.
+    'NUL in an earlier coding': 'Transfer-Encoding: g\x00zip, chunked\r\n',
+    'NUL in an earlier line': 'Transfer-Encoding: \x00\r\nTransfer-Encoding: chunked\r\n',
+    'CR in an earlier coding': 'Transfer-Encoding: g\rzip, chunked\r\n',
+    'CR in an earlier line': 'Transfer-Encoding: a\rb\r\nTransfer-Encoding: chunked\r\n',
+    'invalid UTF-8 in an earlier coding': 'Transfer-Encoding: g\xe9zip, chunked\r\n',
+    'valid UTF-8 in an earlier coding': 'Transfer-Encoding: g\xc3\xa9zip, chunked\r\n',
+    'DEL in an earlier coding': 'Transfer-Encoding: g\x7fzip, chunked\r\n',
+    'a control byte in an earlier line': 'Transfer-Encoding: \x01\r\nTransfer-Encoding: chunked\r\n',
+    'non-token bytes in an earlier coding': 'Transfer-Encoding: g"z(i)p, chunked\r\n',
+    'empty items': 'Transfer-Encoding: ,,gzip,,chunked,,\r\n',
+    'chunked, chunked': 'Transfer-Encoding: chunked, chunked\r\n',
+    'chunked;x=1': 'Transfer-Encoding: chunked;x=1\r\n',
+    'gzip;x=1, chunked': 'Transfer-Encoding: gzip;x=1, chunked\r\n',
+    'gzip, and chunked on the next line': 'Transfer-Encoding: gzip,\r\nTransfer-Encoding: chunked\r\n',
+    'folded onto a second line': 'Transfer-Encoding: gzip,\r\n chunked\r\n',
+    'with a space before the colon': 'Transfer-Encoding : chunked\r\n',
+  }).map(([name, te]) => [`Transfer-Encoding ${name}`,
+    bytes(`POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\n${te}${CLOSE}\r\n0\r\n\r\n`)])),
+  'Transfer-Encoding gzip on HTTP/1.0': bytes('POST /delete HTTP/1.0\r\nTransfer-Encoding: gzip\r\n\r\n'),
+  // Kestrel reads one sign before a Content-Length: "+" before digits, "-"
+  // only before zeros.
+  ...Object.fromEntries(['+47', '+047', '-0', '+0', '-00', '-47', '+', '++47', '+ 47', '9223372036854775808'].map(
+    (length) => [`Content-Length ${length}`, bytes(
+      `POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: ${length}\r\n${CLOSE}\r\n` +
+      '{"url":"/0123456789abcdef0123456789abcdef.txt"}',
+    )],
+  )),
+  // An absolute target's authority must be the Host, as System.Uri prints
+  // it: host in lower case, no userinfo, the default port optional.
+  ...Object.fromEntries(Object.entries({
+    'for another host': ['http://y/health', 'x'],
+    'for the Host': ['http://x/health', 'x'],
+    'in upper case': ['http://X/health', 'x'],
+    'with the default port': ['http://x:80/health', 'x'],
+    'and a Host with the default port': ['http://x/health', 'x:80'],
+    'with another port': ['http://x:81/health', 'x'],
+    'with a leading-zero port': ['http://x:080/health', 'x:080'],
+    'with an empty port': ['http://x:/health', 'x'],
+    'over https with a Host on 443': ['https://x/health', 'x:443'],
+    'over https with a Host on 80': ['https://x/health', 'x:80'],
+    'and a Host in upper case': ['http://x/health', 'X'],
+    'with userinfo': ['http://u:p@x/health', 'x'],
+    'and a Host with userinfo': ['http://u@x/health', 'u@x'],
+    'with IPv6 in upper case': ['http://[::A]/health', '[::A]'],
+    'with IPv6 and a port': ['http://[::1]:8080/health', '[::1]:8080'],
+    'with an upper-case scheme': ['Http://x/health', 'x'],
+    // Kestrel refuses any "#" in a target (since .NET 10.0.15). It routes a
+    // control byte or a bad escape in the path (no route), and a control
+    // byte in the query.
+    'with a fragment': ['http://x/health#f', 'x'],
+    'with a query and a fragment': ['http://x/health?a#f', 'x'],
+    'with a fragment and no path': ['http://x:80#f', 'x'],
+    'with a control byte in the fragment': ['http://x/health#\x01%zz', 'x'],
+    'with a control byte in the path': ['http://x/hea\x01lth', 'x'],
+    'with a bad escape in the path': ['http://x/health%zz', 'x'],
+    'with DEL in the query': ['http://x/health?\x7f', 'x'],
+    'with NUL in the fragment': ['http://x/health#\x00', 'x'],
+  }).map(([name, [target, host]]) => [`absolute target ${name}`,
+    bytes(`GET ${target} HTTP/1.1\r\nHost: ${host}\r\n${CLOSE}\r\n`)])),
+  'absolute target for another host on HTTP/1.0': bytes('GET http://y/health HTTP/1.0\r\nHost: x\r\n\r\n'),
+  // Kestrel refuses these from the request line alone.
+  'absolute target with a port over 65535': bytes('GET http://x:65536/health HTTP/1.1\r\n'),
+  'absolute target with no host': bytes('GET http:///health HTTP/1.1\r\n'),
+  'absolute target with a percent in the host': bytes('GET http://%78/health HTTP/1.1\r\n'),
+  'authority target': bytes('GET x:80 HTTP/1.1\r\n'),
+  'authority target with a slash': bytes('GET a/b HTTP/1.1\r\n'),
+  'authority target with an underscore': bytes('GET a_b HTTP/1.1\r\n'),
+  'asterisk target with GET': bytes('GET * HTTP/1.1\r\n'),
+  'asterisk and more': bytes('GET *x HTTP/1.1\r\n'),
+  // Kestrel 10.0.15 refuses a "#" in any target, after the line's length and version.
+  'target with a fragment': bytes('GET /health#f HTTP/1.1\r\n'),
+  'target with a fragment after the query': bytes('GET /health?a#f HTTP/1.1\r\n'),
+  'target with a fragment on HTTP/1.0': bytes('GET /health#f HTTP/1.0\r\n'),
+  'target with a fragment on CONNECT': bytes('CONNECT /health#f HTTP/1.1\r\n'),
+  'target with an escaped fragment mark': bytes(`GET /health?a=%23 HTTP/1.1\r\nHost: x\r\n${CLOSE}\r\n`),
+  'target with a fragment and an unknown version': bytes('GET /health#f HTTP/1.2\r\n'),
+  'target with a fragment past the line limit': bytes(`GET /#${'a'.repeat(8192)} HTTP/1.1\r\n`),
+  // Kestrel answers HTTP/1.0 with an HTTP/1.1 status line. It closes after
+  // an answer of unknown length, and says so.
+  'HTTP/1.0 request': bytes('GET /health HTTP/1.0\r\n\r\n'),
+  'HTTP/1.0 request with no route': bytes('GET /nope HTTP/1.0\r\n\r\n'),
+  'HTTP/1.0 keep-alive with an answer of unknown length': bytes('GET /health HTTP/1.0\r\nConnection: keep-alive\r\n\r\n'),
+  'HTTP/1.0 keep-alive HEAD, then a refused head': bytes('HEAD /health HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /health HTTP/1.2\r\n'),
+  'HTTP/1.0 POST': bytes('POST /delete HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}'),
+  'absolute target on HTTP/1.0 with no Host': bytes('GET http://y/health HTTP/1.0\r\n\r\n'),
+  // Kestrel reads a chunked body on HTTP/1.0 too, before Content-Length.
+  // Read any other way, the chunks would be the next request.
+  ...Object.fromEntries(Object.entries({
+    '': '',
+    ', kept alive': 'Connection: keep-alive\r\n',
+    ' and a Content-Length': 'Content-Length: 2\r\n',
+  }).map(([name, headers]) => [`HTTP/1.0 chunked body${name}`, bytes(
+    `POST /delete HTTP/1.0\r\nContent-Type: application/json\r\n${headers}Transfer-Encoding: chunked\r\n\r\n` +
+    `2f\r\n{"url":"/0123456789abcdef0123456789abcdef.txt"}\r\n0\r\n\r\nGET /health HTTP/1.2\r\n\r\n`,
+  )])),
+  // Kestrel answers before it reads a body the route left, so the answer
+  // never says Connection: close for it. Past the cap it then just closes.
+  'unread body, then a refused head': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nContent-Length: 10\r\n\r\n0123456789GET /health HTTP/1.2\r\n'),
+  'unread body over the cap, kept alive': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nContent-Length: 30000001\r\n\r\n'),
+  'POST /upload with an unread body, then a refused head': bytes('POST /upload HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nxxGET /health HTTP/1.2\r\n'),
+  // Kestrel sends 100 Continue only for a first Expect line of
+  // 100-continue, ignores any other expectation, and treats a body the
+  // route left as any unread body.
+  'Expect: 100-continue, unread body, then a refused head': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nExpect: 100-continue\r\nContent-Length: 2\r\n\r\nxxGET /health HTTP/1.2\r\n'),
+  ...Object.fromEntries(Object.entries({
+    'another expectation': 'Expect: foo\r\n',
+    '100-continue in a list': 'Expect: 100-continue, foo\r\n',
+    'an empty line before 100-continue': 'Expect:\r\nExpect: 100-continue\r\n',
+    // The body came with the head, so no read waits and no 100 goes out.
+    '100-continue with the body': 'Expect: 100-continue\r\n',
+  }).map(([name, expect]) => [`Expect: ${name}`, bytes(
+    `POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n${expect}Content-Length: 47\r\n${CLOSE}\r\n` +
+    '{"url":"/0123456789abcdef0123456789abcdef.txt"}',
+  )])),
+  'POST /upload over its cap, kept alive': bytes('POST /upload HTTP/1.1\r\nHost: localhost\r\nContent-Type: multipart/form-data; boundary=b\r\nContent-Length: 33554433\r\n\r\n'),
+  // Heads after a chunked body keep Kestrel's limits and grammar.
+  'chunked body, then 101 headers': bytes(`POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n${headWith(numbered(99))}`),
+  'chunked body with data and an extension, then a refused head': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n2;e=1\r\n{}\r\n0\r\n\r\nGET /health HTTP/1.2\r\n'),
+  'gzip, chunked body, then a refused head': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\nGET /health HTTP/1.2\r\n'),
+  // Trailer lines follow the head's grammar, and count with the head's
+  // lines and bytes (79 bytes and 3 lines here).
+  ...Object.fromEntries(Object.entries({
+    'then a refused head': 'X-T: 1\r\n\r\n',
+    'ended by a bare LF': 'X-T: 1\r\n\n',
+    'with a control byte and a quote': 'X"T: a\x01b\r\n\r\n',
+    'of 97 lines': `${numbered(97)}\r\n`,
+    'of 98 lines': `${numbered(98)}\r\n`,
+    'at the byte limit': `X: ${'a'.repeat(32_684)}\r\n\r\n`,
+    'one byte over': `X: ${'a'.repeat(32_685)}\r\n\r\n`,
+    'with no colon': 'XT\r\n\r\n',
+    'folded': 'X: a\r\n b\r\n\r\n',
+    'with a space before the colon': 'X : 1\r\n\r\n',
+    'with CR in a value': 'X: a\rb\r\n\r\n',
+    'with NUL in a value': 'X: a\x00b\r\n\r\n',
+    'with invalid UTF-8 in a value': 'X: a\xe9b\r\n\r\n',
+    // Kestrel takes a bare LF in a trailer: a front proxy that reads it
+    // otherwise can be desynced from this host.
+    'with a bare-LF line': 'X-T: 1\n\r\n',
+    'of only a bare LF': '\n',
+  }).map(([name, trailer]) => [`chunked trailer ${name}`, bytes(
+    `POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n${trailer}GET /health HTTP/1.2\r\n`,
+  )])),
+  // Chunk lines need CRLF.
+  'bare LF after chunk data': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\n0\r\n\r\nGET /health HTTP/1.2\r\n'),
+  'bare LF after a chunk size': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n2\n{}\r\n0\r\n\r\nGET /health HTTP/1.2\r\n'),
+  'bare LF after the last chunk size': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n0\n\r\nGET /health HTTP/1.2\r\n'),
+  'chunked trailer with no colon on a body the route left': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nXT\r\n\r\nGET /health HTTP/1.2\r\n'),
+  // After an upgrade the route did not take, the next head keeps
+  // Kestrel's limits and grammar.
+  'upgrade not taken, then a refused head': bytes('GET /health HTTP/1.1\r\nHost: x\r\nUpgrade: foo\r\nConnection: upgrade\r\n\r\nGET /health HTTP/1.2\r\n'),
+  'upgrade not taken, then 101 headers': bytes(`GET /health HTTP/1.1\r\nHost: x\r\nUpgrade: foo\r\n\r\n${headWith(numbered(99))}`),
+  'upgrade with a body not taken, then a refused head': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nUpgrade: foo\r\nConnection: upgrade\r\nContent-Length: 2\r\n\r\n{}GET /health HTTP/1.2\r\n'),
+  // A head with both framings is read as chunked and the connection then
+  // closes, so bytes a Content-Length reader would take as a body are never
+  // read as a request.
+  'chunked with a Content-Length, then a pipelined head': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n0\r\n\r\nGET /health HTTP/1.1\r\nHost: localhost\r\n\r\n'),
+  'HTTP/1.0 keep-alive, chunked with a Content-Length, then a pipelined head': bytes('POST /delete HTTP/1.0\r\nHost: localhost\r\nConnection: keep-alive\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n0\r\n\r\nGET /health HTTP/1.1\r\nHost: localhost\r\n\r\n'),
+  'chunk extension that ends in a bare LF': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n' + CLOSE + '\r\n2;a\n{}\r\n0\r\n\r\n'),
+  'chunk extension with control bytes': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n' + CLOSE + '\r\n2;e=\x01\x7f\r\n{}\r\n0\r\n\r\n'),
+  'chunk data holding a semicolon': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n' + CLOSE + '\r\nd\r\n{"url":"a;b"}\r\n0\r\n\r\n'),
+  'chunk data starting with a semicolon': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n' + CLOSE + '\r\n4\r\n;abc\r\n0\r\n\r\n'),
+  'Host with an empty port': bytes(`GET /health HTTP/1.1\r\nHost: a:\r\n${CLOSE}\r\n`),
+  'Host with only a port': bytes(`GET /health HTTP/1.1\r\nHost: :80\r\n${CLOSE}\r\n`),
+  'Host with an unclosed bracket': bytes(`GET /health HTTP/1.1\r\nHost: [::1\r\n${CLOSE}\r\n`),
+  'Host with a percent escape': bytes(`GET /health HTTP/1.1\r\nHost: a%41\r\n${CLOSE}\r\n`),
+  'Host with a word port': bytes(`GET /health HTTP/1.1\r\nHost: a:b\r\n${CLOSE}\r\n`),
+  'Host with text after the bracket': bytes(`GET /health HTTP/1.1\r\nHost: [::1]x\r\n${CLOSE}\r\n`),
+  'Host with two ports': bytes(`GET /health HTTP/1.1\r\nHost: a:80:80\r\n${CLOSE}\r\n`),
+  'Host with a port past 65535': bytes(`GET /health HTTP/1.1\r\nHost: a:65536\r\n${CLOSE}\r\n`),
+  'Expect with an unknown token': bytes(`POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nExpect: foo\r\nContent-Length: 2\r\n${CLOSE}\r\n{}`),
+  'chunk size not hex': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n' + CLOSE + '\r\nzz\r\n'),
+  'chunk shorter than its size': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n' + CLOSE + '\r\n5\r\nab\r\n0\r\n\r\n'),
+  'chunk size past 64 bits': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n' + CLOSE + '\r\nfffffffffffffffffff\r\n'),
+  'chunk data with no line end': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n' + CLOSE + '\r\n2\r\n{}0\r\n\r\n'),
+  'chunk lines with bare LF': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n' + CLOSE + '\r\n2\n{}\n0\n\n'),
+  'chunk size with a space': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n' + CLOSE + '\r\n2 \r\n{}\r\n0\r\n\r\n'),
+  'negative chunk size': bytes('POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n' + CLOSE + '\r\n-2\r\n{}\r\n0\r\n\r\n'),
+};
+
+it('refuses request heads at Kestrel\'s limits and grammar', async () => {
+  const actual: Array<{ name: string; response: string }> = [];
+  const directory = await mkdtemp(join(tmpdir(), 'blok-http-host-heads-'));
+
+  await withServer(['--auth', 'none', '--storage-dir', directory], async (server) => {
+    for (const [name, request] of Object.entries(REQUEST_HEADS)) {
+      // rawExchange drops Date and Server only from the first answer.
+      const response = (await rawExchange(server.baseUrl, request)).replace(/^(date|server): [^\r\n]*\r?\n/gim, '');
+
+      actual.push({ name, response });
+    }
+    // Kestrel's reason phrase for 416, which net/http words differently.
+    const upload = await server.request('POST', '/upload', {
+      body: multipart([filePart('a.txt', 'hello')]),
+      headers: { 'Content-Type': `multipart/form-data; boundary=${BOUNDARY}` },
+    });
+    const { pathname } = new URL((JSON.parse(upload.text) as { url: string }).url);
+
+    actual.push({
+      name: 'range past the end of a file',
+      response: await rawExchange(server.baseUrl, bytes(`GET ${pathname} HTTP/1.1\r\nHost: x\r\nRange: bytes=99-\r\n${CLOSE}\r\n`)),
+    });
+  }).finally(() => rm(directory, { recursive: true, force: true }));
+
+  compareGolden('request-heads.json', actual);
+}, 120_000);
+
+// Kestrel's MaxRequestBodySize is 30,000,000 bytes on every route but
+// /upload, and it answers when the handler first reads the body. A
+// Content-Length exactly at the cap only waits for the body, so it is a
+// unit test in Go, not a case here.
+const OVER_CAP = 'Content-Length: 30000001\r\n';
+const JSON_TYPE = 'Content-Type: application/json\r\n';
+
+// Kestrel counts every byte of a chunked body against the cap: size lines,
+// extensions and CRLFs, and the last CRLF unless a trailer comes first.
+// The trailer's lines are not counted. Each pair is at the cap and one
+// byte over (a 1000-byte /upload cap).
+function chunkedUpload(size: number, chunks: number, extension = '', trailer = ''): Buffer {
+  const head = '--b\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\n\r\n';
+  const tail = '\r\n--b--\r\n';
+  const body = head + 'x'.repeat(size - head.length - tail.length) + tail;
+  const step = Math.ceil(body.length / chunks);
+  let framed = '';
+
+  for (let at = 0; at < body.length; at += step) {
+    const part = body.slice(at, at + step);
+
+    framed += `${part.length.toString(16)}${at === 0 ? extension : ''}\r\n${part}\r\n`;
+  }
+
+  return bytes(
+    'POST /upload HTTP/1.1\r\nHost: localhost\r\nContent-Type: multipart/form-data; boundary=b\r\n' +
+    `Transfer-Encoding: chunked\r\n${CLOSE}\r\n${framed}0\r\n${trailer}\r\n`,
+  );
+}
+
+it('counts a chunked body\'s framing against the body cap', async () => {
+  const actual: Array<{ name: string; response: string }> = [];
+  const directory = await mkdtemp(join(tmpdir(), 'blok-http-host-chunk-cap-'));
+  const cases: Record<string, [number, number, string?, string?]> = {
+    'one chunk': [988, 1],
+    'a one-byte extension': [987, 1, ';'],
+    'a 101-byte extension': [887, 1, `;${'e'.repeat(100)}`],
+    'ten chunks': [935, 10],
+    'a trailer': [990, 1, '', 'X-T: 1\r\n'],
+  };
+
+  await withServer(['--auth', 'none', '--storage-dir', directory, '--max-upload', '1000'], async (server) => {
+    for (const [name, [size, chunks, extension, trailer]] of Object.entries(cases)) {
+      for (const [label, data] of [['at the cap', size], ['one byte over', size + 1]] as const) {
+        const response = await rawExchange(server.baseUrl, chunkedUpload(data, chunks, extension, trailer));
+
+        // The stored name is random, and the port changes.
+        actual.push({
+          name: `${name}, ${label}`,
+          response: response.split(server.baseUrl).join('<origin>').replace(/[0-9a-f]{32}/g, '<key>'),
+        });
+      }
+    }
+  }).finally(() => rm(directory, { recursive: true, force: true }));
+
+  compareGolden('chunked-body-cap.json', actual);
+}, 60_000);
+
+it('caps a request body at 30,000,000 bytes off /upload', async () => {
+  const actual: Array<{ name: string; response: string }> = [];
+  const directory = await mkdtemp(join(tmpdir(), 'blok-http-host-body-'));
+  const endpoint = createServer((_request, response) => {
+    response.writeHead(500);
+    response.end();
+  });
+
+  await new Promise<void>((resolve) => endpoint.listen(0, '127.0.0.1', resolve));
+  const address = endpoint.address();
+
+  if (address === null || typeof address === 'string') {
+    throw new Error('Could not allocate a doc-endpoint port');
+  }
+
+  const cases: Record<string, string> = {
+    'POST /delete': `POST /delete HTTP/1.1\r\nHost: localhost\r\n${JSON_TYPE}${OVER_CAP}${CLOSE}\r\n`,
+    'POST /delete with Expect: 100-continue': `POST /delete HTTP/1.1\r\nHost: localhost\r\n${JSON_TYPE}Expect: 100-continue\r\n${OVER_CAP}${CLOSE}\r\n`,
+    'POST /delete with some of the body': `POST /delete HTTP/1.1\r\nHost: localhost\r\n${JSON_TYPE}${OVER_CAP}${CLOSE}\r\n{"url":"x"}${' '.repeat(9_000)}`,
+    'POST /delete with the wrong type': `POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: text/plain\r\n${OVER_CAP}${CLOSE}\r\n`,
+    'POST /upload-by-url': `POST /upload-by-url HTTP/1.1\r\nHost: localhost\r\n${JSON_TYPE}${OVER_CAP}${CLOSE}\r\n`,
+    'GET /health never reads the body': `GET /health HTTP/1.1\r\nHost: x\r\n${OVER_CAP}${CLOSE}\r\n`,
+    'POST to no route': `POST /nope HTTP/1.1\r\nHost: localhost\r\n${OVER_CAP}${CLOSE}\r\n`,
+    'POST /sync/{doc}/edit': `POST /sync/d/edit HTTP/1.1\r\nHost: localhost\r\n${JSON_TYPE}Blok-Idempotency-Key: k\r\n${OVER_CAP}${CLOSE}\r\n`,
+    'POST /sync/{doc}/reset': `POST /sync/d/reset HTTP/1.1\r\nHost: localhost\r\n${JSON_TYPE}${OVER_CAP}${CLOSE}\r\n`,
+    // /upload answers its own cap (32 MiB here) with Kestrel's reason phrase.
+    'POST /upload over its cap': `POST /upload HTTP/1.1\r\nHost: localhost\r\nContent-Type: multipart/form-data; boundary=b\r\nContent-Length: 33554433\r\n${CLOSE}\r\n`,
+  };
+
+  try {
+    await withServer([
+      '--auth', 'none', '--storage-dir', join(directory, 'files'), '--rate-limit', '0',
+      '--collab', '--collab-dir', join(directory, 'collab'),
+      '--doc-endpoint', `http://127.0.0.1:${address.port}/docs`,
+    ], async (server) => {
+      for (const [name, request] of Object.entries(cases)) {
+        actual.push({ name, response: await rawExchange(server.baseUrl, Buffer.from(request, 'latin1')) });
+      }
+    });
+  } finally {
+    await new Promise<void>((resolve) => endpoint.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
+
+  compareGolden('request-body-cap.json', actual);
 }, 120_000);

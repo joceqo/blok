@@ -68,6 +68,13 @@ const click = async (el: Element | null): Promise<void> => {
   await quiet();
 };
 
+/** Open in full page waits for the side peek's close slide to end. */
+const expand = async (): Promise<void> => {
+  await click(q('[data-blok-database-peek-expand]'));
+  q('[data-blok-database-drawer]')?.dispatchEvent(Object.assign(new Event('transitionend'), { propertyName: 'transform' }));
+  await quiet();
+};
+
 const openRow = (rowId: string): Promise<void> =>
   click(q(`[data-row-id="${rowId}"] [data-blok-database-table-open]`));
 
@@ -162,6 +169,18 @@ describe('row page peek modes', () => {
       expect(label('r2')).toBe('Open');
     });
 
+    // notion-motion.md Round 6: a step paints the new row like a first open, so both ring fades start together.
+    it('marks the row the peek moves to the same way as the row it first opens on', async () => {
+      await make(doc());
+      await openRow('r1');
+
+      expect(button('r1')?.getAttribute('data-peeked')).toBe('');
+      await click(q('[data-blok-database-peek-next]'));
+
+      expect(button('r2')?.getAttribute('data-peeked')).toBe('');
+      expect(button('r1')?.hasAttribute('data-peeked')).toBe(false);
+    });
+
     it('follows a step with the header arrow and with Ctrl+J', async () => {
       await make(doc());
       await openRow('r1');
@@ -172,6 +191,36 @@ describe('row page peek modes', () => {
       await key({ key: 'j', code: 'KeyJ', ctrlKey: true });
       expect(label('r2')).toBe('Open');
       expect(label('r3')).toBe('Close');
+    });
+  });
+
+  // notion-motion.md Round 58 §5: the timeline panel's pill reads CLOSE while its row is peeked, and a click closes the peek.
+  describe('the timeline panel\'s OPEN while the row is in the side peek', () => {
+    const timelineDoc = (): OutputBlockData[] => {
+      const blocks = doc({ type: 'timeline', timelineBy: 'due', showTimelineTable: true });
+      const data = blocks[0].data as { schema: Array<Record<string, unknown>> };
+
+      data.schema.push({ id: 'due', name: 'Due', type: 'date', position: 'a1' });
+
+      return blocks;
+    };
+    const button = (rowId: string): HTMLElement | null => q(`[data-blok-database-timeline-table-row][data-row-id="${rowId}"] [data-blok-database-table-open]`);
+    const label = (rowId: string): string | undefined => button(rowId)?.lastElementChild?.textContent ?? undefined;
+    const isOpen = (): boolean => q('[data-blok-database-drawer][data-open]') !== null;
+
+    it('reads CLOSE on that row only, closes the peek on a click, and reads OPEN again', async () => {
+      await make(timelineDoc());
+      await click(button('r1'));
+
+      expect(isOpen()).toBe(true);
+      expect(label('r1')).toBe('Close');
+      expect(button('r1')?.hasAttribute('data-peeked')).toBe(true);
+      expect(label('r2')).toBe('Open');
+
+      await click(button('r1'));
+      expect(isOpen()).toBe(false);
+      expect(label('r1')).toBe('Open');
+      expect(button('r1')?.hasAttribute('data-peeked')).toBe(false);
     });
   });
 
@@ -211,7 +260,7 @@ describe('row page peek modes', () => {
     it('hides the rest of the editor and names the row in the URL; its Back undoes both', async () => {
       await make([{ id: 'p', type: 'paragraph', data: { text: 'Above' } }, ...doc()]);
       await openRow('r2');
-      await click(q('[data-blok-database-peek-expand]'));
+      await expand();
 
       expect(drawer()?.getAttribute('data-peek-mode')).toBe('full');
       expect(q('[data-blok-editor]')?.hasAttribute('data-blok-database-row-page')).toBe(true);
@@ -346,7 +395,7 @@ describe('row page peek modes', () => {
   it('expands a peek to a full page with the expand button', async () => {
     await make(doc());
     await openRow('r1');
-    await click(q('[data-blok-database-peek-expand]'));
+    await expand();
 
     expect(drawer()?.getAttribute('data-peek-mode')).toBe('full');
     expect(q('[data-blok-database-wrapper]')?.hasAttribute('data-blok-database-full-page')).toBe(true);
@@ -528,6 +577,18 @@ describe('row page peek modes', () => {
     expect(document.querySelector('[data-blok-database-property-type-popover]')).toBeNull();
   });
 
+  // S2:644: the page's add-property menu heads with AI Autofill when the host has it.
+  it('"+ Add a property" on the page lists AI Autofill above the types when the host has autofill', async () => {
+    await make(doc(), { ai: { autofill: vi.fn(() => Promise.resolve(undefined)) } });
+    await openRow('r1');
+    await click(q('[data-blok-database-drawer-add-prop]'));
+    const menu = document.querySelector('[data-blok-database-property-type-popover]');
+    const options = [...(menu?.querySelectorAll('[data-blok-database-property-autofill-option]') ?? [])];
+
+    expect(options.map((option) => option.getAttribute('data-blok-database-property-autofill-option'))).toStrictEqual(['summary', 'translate']);
+    expect(menu?.querySelector('[data-blok-database-property-type-grid]')?.compareDocumentPosition(options[0])).toBe(Node.DOCUMENT_POSITION_PRECEDING);
+  });
+
   it.each([
     ['table', {}, '[data-row-id="r1"] [role="gridcell"]'],
     ['board', { type: 'board', groupBy: 's' }, '[data-blok-database-card][data-row-id="r1"]'],
@@ -587,15 +648,37 @@ describe('row page peek modes', () => {
       expect(shownTitle()).toBe('Two');
     });
 
-    it('Cmd/Ctrl-click on bars picks rows into the selection bar instead of opening them', async () => {
+    const picked = (): string[] => [...(holder?.querySelectorAll('[data-blok-database-timeline-row][data-blok-database-row-selected]') ?? [])]
+      .map((el) => el.getAttribute('data-row-id') ?? '');
+
+    // notion-motion.md Round 54 §3: Cmd+click on a bar picks nothing and opens no peek.
+    it('Cmd/Ctrl-click on a bar neither picks nor opens it', async () => {
       await make(timelineDoc());
       bar('r1')?.dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true }));
       await quiet();
       bar('r2')?.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
       await quiet();
 
+      expect(picked()).toEqual([]);
       expect(drawer()).toBeNull();
-      expect(q('[data-blok-database-table-selection-count]')?.textContent).toBe('2 selected');
+      expect(q('[data-blok-database-table-selection-bar]')).toBeNull();
+    });
+
+    // notion-motion.md Round 54 §3: Shift+click picks a range of bars and shows no "N selected" bar; Escape clears.
+    it('Shift-click picks a range of bars with no selection bar', async () => {
+      await make(timelineDoc());
+      bar('r1')?.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+      await quiet();
+      bar('r3')?.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }));
+      await quiet();
+
+      expect(q('[data-blok-database-table-selection-bar]')).toBeNull();
+      expect(picked()).toEqual(['r1', 'r2', 'r3']);
+      expect(drawer()).toBeNull();
+
+      await key({ key: 'Escape' });
+
+      expect(picked()).toEqual([]);
     });
   });
 
@@ -627,26 +710,30 @@ describe('row page peek modes', () => {
         .filter((block) => block.type === 'database-row')
         .map((block) => ({ id: block.id, data: { properties: (block.data.properties ?? {}) as Record<string, unknown> } }));
 
-    it.each(['board', 'list'] as const)('in a %s, Cmd/Ctrl-click and Shift-click select rows gray, with the bar, and never open them', async (type) => {
+    // notion-motion.md Round 12: a board pick shows no bar; a list pick keeps "N selected".
+    it.each(['board', 'list'] as const)('in a %s, Cmd/Ctrl-click and Shift-click select rows gray, and never open them', async (type) => {
       await make(boardDoc(type));
       await modClick('r1', { metaKey: true });
       await modClick('r3', { shiftKey: true });
 
       expect(drawer()).toBeNull();
       expect(['r1', 'r2', 'r3'].map((id) => rowEl(id)?.getAttribute('aria-selected'))).toEqual(['true', 'true', 'true']);
-      expect(q('[data-blok-database-table-selection-count]')?.textContent).toBe('3 selected');
+      expect(q('[data-blok-database-table-selection-count]')?.textContent ?? null).toBe(type === 'list' ? '3 selected' : null);
 
       await key({ key: 'Escape' });
 
-      expect(rowEl('r1')?.getAttribute('aria-selected')).not.toBe('true');
+      expect(['r1', 'r2', 'r3'].map((id) => rowEl(id)?.getAttribute('aria-selected') ?? null)).toEqual([null, null, null]);
       expect(q('[data-blok-database-table-selection-bar]')).toBeNull();
     });
 
-    it('a bar property button edits every selected card', async () => {
+    it('⌘/ › Edit property edits every selected card', async () => {
       await make(boardDoc('board'));
       await modClick('r1', { metaKey: true });
       await modClick('r2', { ctrlKey: true });
-      await click(q('[data-blok-database-table-selection-property][data-property-id="d"]'));
+      await key({ key: '/', metaKey: true });
+      await click([...document.querySelectorAll('[data-blok-popover-opened] [data-blok-testid="popover-item-title"]')]
+        .find((node) => node.textContent === 'Edit property')?.closest('[data-blok-popover-item]') ?? null);
+      await click(document.querySelector('[data-blok-item-name="database-bulk-edit-d"]'));
 
       expect((await savedRows()).map((row) => row.data.properties.d)).toEqual([true, true, undefined]);
     });
@@ -686,19 +773,50 @@ describe('row page peek modes', () => {
     expect(drawer()?.getAttribute('data-peek-mode')).toBe('side');
   });
 
-  it('lists the three modes by title only, then "Edit view default", which opens the view\'s Layout settings', async () => {
+  // notion-spec-2 §12: Side peek, Center peek, Full page, New tab, Edit view default.
+  it('lists the three modes and "New tab" by title only, then "Edit view default", which opens the view\'s Layout settings', async () => {
     await make(doc());
     await openRow('r1');
     await click(q('[data-blok-database-peek-mode]'));
     const menu = document.querySelector<HTMLElement>('[data-blok-popover-opened]');
     const items = [...(menu?.querySelectorAll<HTMLElement>('[data-blok-popover-item]') ?? [])];
 
-    expect(items.map((item) => item.textContent?.trim())).toStrictEqual(['Side peek', 'Center peek', 'Full page', 'Edit view default']);
+    expect(items.map((item) => item.textContent?.trim())).toStrictEqual(['Side peek', 'Center peek', 'Full page', 'New tab', 'Edit view default']);
     expect(menu?.querySelector('[data-blok-database-peek-mode-description]')).toBeNull();
 
-    await click(items[3] ?? null);
+    await click(items[4] ?? null);
 
     expect(document.querySelector('[data-blok-popover-opened]')?.textContent).toContain('Open pages in');
+  });
+
+  // notion-motion.md "Round 5": with a cell editor open, Esc 1 keeps the cell, Esc 2 the row, Esc 3 closes the peek.
+  it('steps Escape from a cell editor to the cell, then the row, then closes the side peek with nothing selected', async () => {
+    const blocks = doc({ visibleProperties: ['n'] });
+    const db = blocks[0].data as { schema: unknown[] };
+
+    db.schema.push({ id: 'n', name: 'Notes', type: 'text', position: 'a1' });
+    await make(blocks);
+    await openRow('r1');
+    await click(q('[data-row-id="r2"] [role="gridcell"][data-property-id="n"]'));
+    const field = document.querySelector('[data-blok-database-cell-editor] [data-blok-database-cell-input]');
+    const grid = (): HTMLElement | null => q('[role="grid"]');
+    const press = async (target: Element | null): Promise<void> => {
+      target?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await quiet();
+    };
+    const isOpen = (): boolean => q('[data-blok-database-drawer][data-open]') !== null;
+
+    await press(field);
+    expect(q('[data-row-id="r2"] [role="gridcell"][data-property-id="n"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(isOpen()).toBe(true);
+
+    await press(grid());
+    expect(q('[data-row-id="r2"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(isOpen()).toBe(true);
+
+    await press(grid());
+    expect(isOpen()).toBe(false);
+    expect(q('[data-row-id="r2"]')?.getAttribute('aria-selected')).toBe('false');
   });
 
   // One Escape = one layer: the menu first, the peek on the next press.

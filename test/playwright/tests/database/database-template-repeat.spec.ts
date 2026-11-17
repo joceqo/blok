@@ -32,8 +32,8 @@ const blocks = (repeat?: Record<string, unknown>): OutputBlockData[] => [
   { id: 'tpl', type: 'database-row', parent: 'db-1', data: { position: 'a0', properties: { 'p-title': 'Standup' }, template: true, ...(repeat === undefined ? {} : { repeat }) } },
 ];
 
-const mount = async (page: Page, repeat?: Record<string, unknown>, width?: string): Promise<void> => {
-  await page.evaluate(async ({ input, width: holderWidth }) => {
+const mount = async (page: Page, repeat?: Record<string, unknown>, holderCss?: string): Promise<void> => {
+  await page.evaluate(async ({ input, css }) => {
     if (window.blokInstance) {
       await window.blokInstance.destroy?.();
       window.blokInstance = undefined;
@@ -42,7 +42,7 @@ const mount = async (page: Page, repeat?: Record<string, unknown>, width?: strin
     const holder = document.createElement('div');
 
     holder.id = 'blok';
-    if (holderWidth !== undefined) holder.style.width = holderWidth;
+    if (css !== undefined) holder.style.cssText = css;
     document.body.appendChild(holder);
     window.blokInstance = new window.Blok({
       holder,
@@ -50,7 +50,7 @@ const mount = async (page: Page, repeat?: Record<string, unknown>, width?: strin
       tools: { database: { class: (window as unknown as Record<string, unknown>).BlokDatabase } },
     });
     await window.blokInstance.isReady;
-  }, { input: blocks(repeat), width });
+  }, { input: blocks(repeat), css: holderCss });
 };
 
 const repeatOf = async (page: Page): Promise<Record<string, unknown> | undefined> => page.evaluate(async () => {
@@ -136,7 +136,7 @@ test('sets the interval and the start date and time of a schedule', async ({ pag
 
 test('the ↻ hint in the templates list names the unit only, after the hint delay', async ({ page }) => {
   // Narrow: the submenu opens on the right here. The right-edge case is the next test.
-  await mount(page, { frequency: 'weekly', interval: 2, start: '2026-10-05T07:30:00.000Z', timeZone: 'Europe/Berlin' }, '900px');
+  await mount(page, { frequency: 'weekly', interval: 2, start: '2026-10-05T07:30:00.000Z', timeZone: 'Europe/Berlin' }, 'width:900px');
   await page.getByTestId('database-toolbar-new-menu').click();
   await page.getByRole('img', { name: 'Duplicate weekly' }).hover();
 
@@ -147,15 +147,16 @@ test('the ↻ hint in the templates list names the unit only, after the hint del
 // research/30 X1: the template's submenu opens on a click of its "…", never on
 // hover, so ↻ keeps its hint. At the window's right edge it opens over the list.
 test('at the window\'s right edge the ↻ hint shows, and "…" opens the submenu over the list', async ({ page }) => {
-  await mount(page, { frequency: 'weekly', interval: 2, start: '2026-10-05T07:30:00.000Z', timeZone: 'Europe/Berlin' });
+  // The toolbar ends at the text column, so the editor sits at the window's right edge.
+  await mount(page, { frequency: 'weekly', interval: 2, start: '2026-10-05T07:30:00.000Z', timeZone: 'Europe/Berlin' }, 'width:760px;margin-left:auto');
   await page.getByTestId('database-toolbar-new-menu').click();
 
-  const containerRect = (name: string) => page.getByRole('menuitem', { name, exact: true }).evaluate((item) => {
+  const containerRect = (name: RegExp) => page.getByRole('menuitem', { name }).evaluate((item) => {
     const rect = item.closest('[data-blok-popover-container]')?.getBoundingClientRect();
 
     return { left: rect?.left ?? Number.NaN, right: rect?.right ?? Number.NaN };
   });
-  const list = await containerRect('Empty page');
+  const list = await containerRect(/^Empty/);
 
   // No room for a submenu on the right.
   expect(1400 - list.right).toBeLessThan(250);
@@ -176,8 +177,8 @@ test('at the window\'s right edge the ↻ hint shows, and "…" opens the submen
 
   // Over the list, ending 12px before the "…". Polled: the first frames of
   // the open motion can read a few px off the resting spot.
-  await expect.poll(async () => Math.abs((await containerRect('Edit')).right - (more - 12))).toBeLessThanOrEqual(1);
-  const submenu = await containerRect('Edit');
+  await expect.poll(async () => Math.abs((await containerRect(/^Edit$/)).right - (more - 12))).toBeLessThanOrEqual(1);
+  const submenu = await containerRect(/^Edit$/);
 
   expect(submenu.left).toBeGreaterThan(list.left);
 
@@ -300,8 +301,8 @@ test('the Timezone submenu has the date editor\'s search and groups', async ({ p
   await expect(page.getByText('Select a timezone', { exact: true })).toBeVisible();
 });
 
-// research/35 §1.8 (r35:150): template rows are 28px with the "…" 2px below the row top; other rows keep their height.
-test('the templates menu rows are 28px, and the "…" submenu rows are not', async ({ page }) => {
+// research/35 §1.8 (r35:150-161): template rows are 28px with the "…" 2px below the row top; the 250x152 "…" submenu has 28px rows too.
+test('the templates menu rows and its "…" submenu rows are 28px', async ({ page }) => {
   await mount(page);
   await page.getByTestId('database-toolbar-new-menu').click();
 
@@ -317,7 +318,7 @@ test('the templates menu rows are 28px, and the "…" submenu rows are not', asy
   await row.getByTestId('popover-item-more').click();
   const edit = await page.getByRole('menuitem', { name: 'Edit', exact: true }).evaluate((el) => (el instanceof HTMLElement ? el.offsetHeight : 0));
 
-  expect(edit).toBe(36);
+  expect(edit).toBe(28);
 });
 
 // A submenu is open when Escape is pressed: the question still draws above it.

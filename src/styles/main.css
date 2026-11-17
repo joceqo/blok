@@ -98,8 +98,11 @@
   Replaces the built-in focus-visible: a click must never paint a ring, and
   Blink still matches :focus-visible after some clicks. The attribute comes
   from src/components/utils/input-modality.ts. :where() adds no specificity.
+  The gate leads the selector: inside the element's own :where() it makes Chrome
+  restyle the whole page on every keyboard/mouse switch. group-* and peer-* wrap
+  it back inside :is(), so use in-* or a plain variant instead.
 */
-@custom-variant focus-visible (&:focus-visible:where(:root:not([data-blok-modality="pointer"]) *));
+@custom-variant focus-visible (:where(:root:not([data-blok-modality="pointer"])) &:focus-visible);
 
 @import './tokens.css';
 @import './colors.css';
@@ -401,6 +404,31 @@
   margin-right: auto;
 }
 
+/*
+ * A nested holder's depth margin makes it narrower. Centred in that holder, the
+ * column would move only half a step; right-aligned, not at all. So the column
+ * is sized from the un-indented width: one full step, same end edge.
+ * The indent repeats the holder margin terms in [data-blok-element] below.
+ * Only nested holders match, so a top-level block keeps the layered utilities.
+ * Full width and stretched blocks fill the holder, so the margin already shows.
+ */
+[data-blok-content-align="center"]:not([data-blok-width="full"]) [data-blok-element][data-blok-depth]:not([data-blok-depth="0"]):not([data-blok-stretched="true"]) > [data-blok-element-content],
+[data-blok-content-align="right"]:not([data-blok-width="full"]) [data-blok-element][data-blok-depth]:not([data-blok-depth="0"]):not([data-blok-stretched="true"]) > [data-blok-element-content] {
+  --_blok-indent: calc(var(--_blok-block-depth, 0) * var(--blok-block-indent-step, 24px) + var(--_blok-slot-depth, 0) * var(--_blok-slot-indent-step, 0px));
+  max-width: calc(min(var(--blok-content-max-width, var(--max-width-content)), 100% + var(--_blok-indent)) - var(--_blok-indent));
+}
+
+[data-blok-content-align="center"]:not([data-blok-width="full"]) [data-blok-element][data-blok-depth]:not([data-blok-depth="0"]):not([data-blok-stretched="true"]) > [data-blok-element-content] {
+  margin-left: max(0px, (100% + var(--_blok-indent) - var(--blok-content-max-width, var(--max-width-content))) / 2);
+  margin-right: auto;
+}
+
+/* Physical sides, keyed on the editor: a block's content may carry its own dir. */
+[data-blok-rtl="true"][data-blok-content-align="center"]:not([data-blok-width="full"]) [data-blok-element][data-blok-depth]:not([data-blok-depth="0"]):not([data-blok-stretched="true"]) > [data-blok-element-content] {
+  margin-left: auto;
+  margin-right: max(0px, (100% + var(--_blok-indent) - var(--blok-content-max-width, var(--max-width-content))) / 2);
+}
+
 /**
  * Cross-block TEXT selection paint. A range spanning two blocks crosses two
  * contenteditable hosts; WebKit paints only the anchor host's part of it, and so
@@ -418,13 +446,31 @@
   background-color: transparent;
 }
 
-[data-blok-interface] ::highlight(blok-cross-block-selection) {
+/* Roots only; descendants inherit it. highlight-fallback.css covers engines
+   without highlight inheritance. */
+[data-blok-interface]::highlight(blok-cross-block-selection) {
   background-color: var(--blok-selection-inline);
 }
 
 /* The selection Ask AI works on; selection-tint.ts registers it. */
-[data-blok-interface] ::highlight(blok-assistant-selection) {
+[data-blok-interface]::highlight(blok-assistant-selection) {
   background-color: var(--blok-selection-inactive);
+}
+
+/* The phrase whose hint card is open; annotation-card.ts registers it. */
+[data-blok-interface]::highlight(blok-annotation-open) {
+  background-color: var(--blok-item-hover-bg);
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-color: var(--blok-text-primary);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+}
+
+/* Under the pointer the phrase's own :hover fill (preflight.css) is the gray.
+   Both fills are translucent, so painting the two would stack into a darker one. */
+span[data-blok-annotation]:hover::highlight(blok-annotation-open) {
+  background-color: transparent;
 }
 
 /**

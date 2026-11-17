@@ -11,13 +11,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/blokserver"
+	"github.com/JackUait/blok/packages/server/go/v2/blokserver"
 )
 
 // syncBuffer lets the test read stderr while run writes it.
@@ -38,6 +39,9 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// freePort gives a port that was free a moment ago. Another process can take
+// it before the host binds, so start a host through listeningHost or
+// listeningBinary, which retry on a taken port.
 func freePort(t *testing.T) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -51,14 +55,77 @@ func freePort(t *testing.T) string {
 	return address
 }
 
-func waitFor(t *testing.T, condition func() bool) {
+// pickPort lets a test hand the host a taken port first.
+var pickPort = freePort
+
+type host struct {
+	address string
+	stderr  *syncBuffer
+	done    chan int
+	cancel  context.CancelFunc
+}
+
+// listened waits for the listening line. False when the port was taken and
+// another attempt may pick a free one; any other refusal fails the test.
+func listened(t *testing.T, stderr *syncBuffer, attempt int) bool {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for !condition() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition not met within 5s")
+	for {
+		seen := stderr.String()
+		if strings.Contains(seen, " listening on ") {
+			return true
+		}
+		refused := strings.Contains(seen, "refused to start")
+		if refused && strings.Contains(seen, "address already in use") && attempt < 5 {
+			return false
+		}
+		if refused || time.Now().After(deadline) {
+			t.Fatalf("the host did not listen (attempt %d): %q", attempt, seen)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func listeningHost(t *testing.T, args []string, getenv func(string) string) host {
+	t.Helper()
+	for attempt := 1; ; attempt++ {
+		address := pickPort(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		stderr := &syncBuffer{}
+		done := make(chan int, 1)
+		go func() { done <- run(ctx, append([]string{"--listen", address}, args...), getenv, stderr) }()
+		if listened(t, stderr, attempt) {
+			return host{address, stderr, done, cancel}
+		}
+		cancel()
+		<-done
+	}
+}
+
+func TestListeningHostRetriesATakenPort(t *testing.T) {
+	owner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	picks := 0
+	pickPort = func(t *testing.T) string {
+		picks++
+		if picks == 1 {
+			return owner.Addr().String()
+		}
+		return freePort(t)
+	}
+	defer func() { pickPort = freePort }()
+
+	started := listeningHost(t, nil, noEnv)
+	defer func() { started.cancel(); <-started.done }()
+
+	if picks != 2 || started.address == owner.Addr().String() {
+		t.Fatalf("picks %d, address %s", picks, started.address)
+	}
+	if !strings.Contains(started.stderr.String(), " listening on "+started.address+" ") {
+		t.Fatalf("stderr %q", started.stderr.String())
 	}
 }
 
@@ -129,7 +196,7 @@ func noEnv(string) string { return "" }
 func TestListenDefault(t *testing.T) {
 	parsed := parseHostArguments([]string{}, noEnv)
 
-	if parsed.err != "" || parsed.options.ListenAddress != "127.0.0.1:4000" || parsed.options.Auth != "none" {
+	if parsed.err != "" || *parsed.options.ListenAddress != "127.0.0.1:4000" || *parsed.options.Auth != "none" {
 		t.Fatalf("%+v", parsed)
 	}
 }
@@ -142,7 +209,7 @@ func TestListenAcceptsEveryFlagSpelling(t *testing.T) {
 		{"-listen=127.0.0.1:5000"},
 	} {
 		parsed := parseHostArguments(args, noEnv)
-		if parsed.err != "" || parsed.options.ListenAddress != "127.0.0.1:5000" {
+		if parsed.err != "" || *parsed.options.ListenAddress != "127.0.0.1:5000" {
 			t.Fatalf("%v: %+v", args, parsed)
 		}
 	}
@@ -192,14 +259,8 @@ func TestLostBindRefusesToStart(t *testing.T) {
 }
 
 func TestListeningLineComesAfterBindAndHealthAnswers(t *testing.T) {
-	address := freePort(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	stderr := &syncBuffer{}
-	done := make(chan int, 1)
-
-	go func() { done <- run(ctx, []string{"--listen", address}, noEnv, stderr) }()
-
-	waitFor(t, func() bool { return strings.Contains(stderr.String(), " listening on ") })
+	started := listeningHost(t, nil, noEnv)
+	address, stderr, done, cancel := started.address, started.stderr, started.done, started.cancel
 
 	// The line is written only after bind, so the port answers at once.
 	response, err := http.Get("http://" + address + "/health")
@@ -230,7 +291,7 @@ func TestListeningLineComesAfterBindAndHealthAnswers(t *testing.T) {
 
 func newHandler() http.Handler {
 	options := blokserver.DefaultOptions()
-	options.Version = version
+	options.Version = new(version)
 	server, err := blokserver.New(options)
 	if err != nil {
 		panic(err)
@@ -352,24 +413,29 @@ func buildBinary(t *testing.T, args ...string) string {
 	return binary
 }
 
-func startBinary(t *testing.T, binary, address string) (*exec.Cmd, *syncBuffer) {
+func listeningBinary(t *testing.T, binary string) (*exec.Cmd, *syncBuffer, string) {
 	t.Helper()
-	stderr := &syncBuffer{}
-	command := exec.Command(binary, "--listen", address)
-	command.Stderr = stderr
-	if err := command.Start(); err != nil {
-		t.Fatal(err)
+	for attempt := 1; ; attempt++ {
+		address := pickPort(t)
+		stderr := &syncBuffer{}
+		command := exec.Command(binary, "--listen", address)
+		command.Stderr = stderr
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = command.Process.Kill() })
+		if listened(t, stderr, attempt) {
+			return command, stderr, address
+		}
+		_ = command.Wait()
 	}
-	t.Cleanup(func() { _ = command.Process.Kill() })
-	waitFor(t, func() bool { return strings.Contains(stderr.String(), " listening on ") })
-	return command, stderr
 }
 
 func TestBinaryExitsWithinTwoSecondsOfSIGTERM(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the binary")
 	}
-	command, _ := startBinary(t, buildBinary(t), freePort(t))
+	command, _, _ := listeningBinary(t, buildBinary(t))
 
 	if err := command.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -395,8 +461,7 @@ func TestBinaryVersionComesFromLdflags(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the binary")
 	}
-	address := freePort(t)
-	_, stderr := startBinary(t, buildBinary(t, "-ldflags", "-X main.version=9.8.7"), address)
+	_, stderr, address := listeningBinary(t, buildBinary(t, "-ldflags", "-X main.version=9.8.7"))
 
 	if !strings.HasPrefix(stderr.String(), "blok-server 9.8.7 listening on ") {
 		t.Fatalf("stderr %q", stderr.String())
@@ -474,13 +539,96 @@ func TestAnswersAreFramedLikeKestrel(t *testing.T) {
 // service refuses 503 before a room is seeded.
 func TestTheHostCapsSyncConnectionsOnlyWhenCollaborating(t *testing.T) {
 	options := blokserver.DefaultOptions()
-	configureCollab(&options)
+	configureCollab(&options, io.Discard)
 	if options.CollabMaxConnections != 0 {
 		t.Fatalf("without --collab: %d", options.CollabMaxConnections)
 	}
 	options.CollabEnabled = true
-	configureCollab(&options)
+	configureCollab(&options, io.Discard)
 	if options.CollabMaxConnections != 1024 {
 		t.Fatalf("with --collab: %d", options.CollabMaxConnections)
 	}
+}
+
+// C#'s generic host registers its signal handlers in StartAsync, before the
+// bind: a signal earlier kills the process, one from the bind on stops it
+// gracefully, even before the ready line.
+func TestSignalHandlersAreInstalledBeforeTheBindAndAfterValidation(t *testing.T) {
+	defer func(saved func(context.Context) (context.Context, context.CancelFunc)) { notifyShutdown = saved }(notifyShutdown)
+	var marks *syncBuffer
+	notifyShutdown = func(ctx context.Context) (context.Context, context.CancelFunc) {
+		_, _ = marks.Write([]byte("<signals>\n"))
+		stopped, stop := context.WithCancel(ctx)
+		stop()
+		return stopped, stop
+	}
+
+	marks = &syncBuffer{}
+	code := run(context.Background(), []string{"--listen", freePort(t)}, noEnv, marks)
+	if code != 0 || !strings.HasPrefix(marks.String(), "<signals>\nblok-server dev listening on ") {
+		t.Fatalf("exit %d, stderr %q", code, marks.String())
+	}
+
+	marks = &syncBuffer{}
+	code = run(context.Background(), []string{"--auth", "ticket"}, noEnv, marks)
+	if code != 1 || strings.Contains(marks.String(), "<signals>") {
+		t.Fatalf("exit %d, stderr %q", code, marks.String())
+	}
+}
+
+// Measured on the C# host: argv and environment bytes that are not UTF-8
+// are decoded with U+FFFD (native-text.json), never passed on raw.
+func TestTheBinaryDecodesNonUTF8ArgumentsAndEnvironmentAsCSharpDoes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the binary")
+	}
+	binary := buildBinary(t)
+
+	var stderr bytes.Buffer
+	command := exec.Command(binary, "--\x01\xe0\x80A\x01")
+	command.Stderr = &stderr
+	_ = command.Run()
+	if line, _, _ := strings.Cut(stderr.String(), "\n"); line != "flag provided but not defined: -\x01�A\x01" {
+		t.Fatalf("argv: %q", line)
+	}
+
+	stderr.Reset()
+	command = exec.Command(binary, "--listen", "127.0.0.1:0", "--auth", "ticket", "--allow-origin", "http://a.example")
+	command.Env = append(os.Environ(), "BLOK_SECRET="+strings.Repeat("\xed\xa0\x80", 11))
+	command.Stderr = &stderr
+	_ = command.Run()
+	if want := "blok-server refused to start: --secret must be at least 32 characters (got 22)\n"; stderr.String() != want {
+		t.Fatalf("environment: %q", stderr.String())
+	}
+}
+
+// Console.Error.WriteLine ends each C# record with Environment.NewLine:
+// "\r\n" in the Windows CoreLib, "\n" elsewhere. The usage text is a raw
+// literal, so it keeps "\n".
+func TestStderrRecordsEndWithDotNetsNewLine(t *testing.T) {
+	want := "\n"
+	if runtime.GOOS == "windows" {
+		want = "\r\n"
+	}
+	if newline != want {
+		t.Fatalf("newline %q", newline)
+	}
+	var stderr bytes.Buffer
+	run(context.Background(), []string{"--not-a-real-flag"}, noEnv, &stderr)
+	if !strings.HasPrefix(stderr.String(), "flag provided but not defined: -not-a-real-flag"+want+usage[:10]) {
+		t.Fatalf("stderr %q", stderr.String())
+	}
+	line := writeLogLineTo(t, "warning", "x")
+	if line != "warning: x"+want {
+		t.Fatalf("log line %q", line)
+	}
+}
+
+func writeLogLineTo(t *testing.T, kind, message string) string {
+	t.Helper()
+	var out bytes.Buffer
+	if err := writeLogLine(&out, kind, message); err != nil {
+		t.Fatal(err)
+	}
+	return out.String()
 }

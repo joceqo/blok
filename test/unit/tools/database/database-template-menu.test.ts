@@ -7,7 +7,7 @@ import { LightweightI18n } from '../../../../src/components/i18n/lightweight-i18
 
 vi.mock('../../../../src/components/utils/tooltip', () => ({ onHover: vi.fn() }));
 
-interface Item { name?: string; title?: string; titleEl?: HTMLElement; isActive?: boolean | (() => boolean); element?: HTMLElement; onActivate?: () => void; closeOnActivate?: boolean; children?: { items?: Item[]; searchable?: boolean; moreButton?: { label: string }; onOpen?: () => void; width?: string } }
+interface Item { name?: string; title?: string; titleEl?: HTMLElement; isActive?: boolean | (() => boolean); element?: HTMLElement; onActivate?: () => void; closeOnActivate?: boolean; valueLabel?: string; children?: { items?: Item[]; searchable?: boolean; moreButton?: { label: string }; onOpen?: () => void; width?: string; class?: string; placement?: string } }
 
 const host = (patch: Partial<TemplateMenuHost> = {}): TemplateMenuHost => ({
   i18n: { t: (key: string) => key },
@@ -48,23 +48,29 @@ describe('template menu', () => {
     vi.restoreAllMocks();
   });
 
-  it('heads the menu with "Templates for <database>" and a description, then the templates, an empty page and "New template"', () => {
+  // research/33 §3.8, research/30 X1 (31-tpl-list.png): with templates, no description line and no rule under the header.
+  it('heads the menu with "Templates for <database>", then the templates, "Empty" and "New template"', () => {
     const items = templateMenuItems(host({ databaseName: () => 'Tasks' })) as Item[];
 
     expect(items.map((item) => item.name ?? '—')).toEqual([
-      'template-header', 'template-description', '—', 'template-t1', 'template-t2', 'template-empty', '—', 'template-add',
+      'template-header', 'template-t1', 'template-t2', 'template-empty', '—', 'template-add',
     ]);
     expect(find(items, 'template-header')?.element?.textContent).toBe('tools.database.templatesFor');
-    expect(find(items, 'template-description')?.element?.textContent).toBe('tools.database.templatesDescription');
     expect(find(items, 'template-t2')?.title).toBe('tools.database.templateUntitled');
   });
 
-  it('makes a row from the template it is picked from', () => {
-    const h = host();
+  it('names the empty row "Empty", as Notion does (research/33 §3.8)', () => {
+    expect(find(templateMenuItems(host({ i18n: english })) as Item[], 'template-empty')?.title).toBe('Empty');
+  });
 
-    find(templateMenuItems(h) as Item[], 'template-t1', 'template-t1-use')?.onActivate?.();
+  // research/30 X1: with no default template, "Empty" carries the grey "Default" tag.
+  it('tags "Empty" "Default" when no template is the default', () => {
+    const tag = (items: Item[]): string | null | undefined =>
+      find(items, 'template-empty')?.titleEl?.querySelector('[data-blok-database-template-default]')?.textContent;
 
-    expect(h.newFromTemplate).toHaveBeenCalledWith('t1');
+    expect(tag(templateMenuItems(host({ i18n: english, defaultTemplateId: () => undefined })) as Item[])).toBe('Default');
+    expect(find(templateMenuItems(host({ i18n: english, defaultTemplateId: () => undefined })) as Item[], 'template-empty')?.titleEl?.textContent).toBe('Empty Default');
+    expect(tag(templateMenuItems(host({ i18n: english })) as Item[])).toBeUndefined();
   });
 
   // research/33 §3.8: a click on a template row makes a row; research/30 X1: "…" opens the rest.
@@ -97,11 +103,48 @@ describe('template menu', () => {
     expect(h.setDefault).toHaveBeenCalledWith(null);
   });
 
-  it('has no Repeat in a template\'s submenu: the template banner holds it', () => {
-    const items = templateMenuItems(host({ repeatOf: () => ({ frequency: 'weekly', start: '2026-10-01T09:00:00.000Z' }) })) as Item[];
+  // research/35 §1.8, research/36:55: Notion's "…" submenu is 250 wide with 28px rows:
+  // Duplicate every… Off | Set as default | Edit | Duplicate | Delete. No New page row: the row itself makes one.
+  it('lists Notion\'s rows in a template\'s submenu, 250 wide with the 28px header-menu rows', () => {
+    const repeatHost = vi.fn((): TemplateRepeatHost => ({ i18n: english, repeat: () => undefined, setRepeat: vi.fn(), editCadence: vi.fn(), close: vi.fn() }));
+    const row = find(templateMenuItems(host({ i18n: english, repeatHost })) as Item[], 'template-t1');
 
-    expect(find(items, 'template-t1')?.children?.items?.map((item) => item.name))
-      .toEqual(['template-t1-use', 'template-t1-edit', 'template-t1-default', 'template-t1-duplicate', 'template-t1-delete']);
+    expect(row?.children?.items?.map((item) => item.name))
+      .toEqual(['template-t1-repeat', 'template-t1-default', 'template-t1-edit', 'template-t1-duplicate', 'template-t1-delete']);
+    expect(row?.children?.width).toBe('250px');
+    expect(row?.children?.class).toBe('blok-database-header-menu');
+  });
+
+  // research/35 §13: "Duplicate every… Off" drops Notion's presets; a pick opens Edit cadence.
+  it('a template that does not repeat reads "Duplicate every… Off", and its list opens Edit cadence', () => {
+    const editCadence = vi.fn();
+    const repeatHost = (): TemplateRepeatHost => ({ i18n: english, repeat: () => undefined, setRepeat: vi.fn(), editCadence, close: vi.fn() });
+    const repeat = find(templateMenuItems(host({ i18n: english, repeatHost })) as Item[], 'template-t1', 'template-t1-repeat');
+
+    expect(repeat?.title).toBe('Duplicate every…');
+    expect(repeat?.valueLabel).toBe('Off');
+    expect(repeat?.children?.placement).toBe('dropdown');
+    expect(repeat?.children?.width).toBe('180px');
+    expect(repeat?.children?.items?.map((item) => item.title)).toEqual(['Day', 'Weekday', 'Week', '2 Weeks', 'Month', '3 Months', '6 Months', 'Year']);
+    find(repeat?.children?.items, 'template-repeat-month')?.onActivate?.();
+    expect(editCadence).toHaveBeenCalledWith(expect.objectContaining({ frequency: 'monthly' }));
+  });
+
+  // research/30:420: a weekly template reads "Duplicate every… Week".
+  it('a repeating template reads its preset, and the row opens its schedule', () => {
+    const openRepeat = vi.fn();
+    const repeatHost = (): TemplateRepeatHost => ({ i18n: english, repeat: () => ({ frequency: 'weekly', start: '2026-10-01T09:00:00.000Z' }), setRepeat: vi.fn(), editCadence: vi.fn(), close: vi.fn() });
+    const items = templateMenuItems(host({ i18n: english, repeatOf: () => ({ frequency: 'weekly', start: '2026-10-01T09:00:00.000Z' }), repeatHost, openRepeat })) as Item[];
+    const repeat = find(items, 'template-t1', 'template-t1-repeat');
+
+    expect(repeat?.valueLabel).toBe('Week');
+    expect(repeat?.children).toBeUndefined();
+    repeat?.onActivate?.();
+    expect(openRepeat).toHaveBeenCalledWith('t1');
+  });
+
+  it('leaves the repeat row out when the host cannot repeat templates', () => {
+    expect(find(templateMenuItems(host()) as Item[], 'template-t1', 'template-t1-repeat')).toBeUndefined();
   });
 
   it('marks a repeating template with ↻ and a hint that names the unit only', () => {
@@ -743,9 +786,11 @@ describe('template menu', () => {
     expect(find(items, 'template-header')?.element?.textContent).toBe('Templates for Tasks');
   });
 
-  it('offers no "Empty page" row when there are no templates (Notion, findings V23)', () => {
+  // research/27:118: with no template, the description shows.
+  it('offers no "Empty" row but the description when there are no templates (Notion, findings V23)', () => {
     const items = templateMenuItems(host({ templates: () => [] })) as Item[];
 
     expect(items.map((item) => item.name ?? '—')).toEqual(['template-header', 'template-description', '—', 'template-add']);
+    expect(find(items, 'template-description')?.element?.textContent).toBe('tools.database.templatesDescription');
   });
 });

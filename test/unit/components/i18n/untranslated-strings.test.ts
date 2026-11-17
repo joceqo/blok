@@ -104,6 +104,8 @@ const UNIVERSAL_EXACT_VALUES: Readonly<Record<string, string>> = {
   'tools.database.starterOptionAccount': '@Account{number}',
   'tools.database.starterOptionEffortRed': 'red',
   'tools.database.starterEventRow1': 'Make with Notion',
+  // Two placeholders and a comma: the row menu footer's "1 word, 5 characters".
+  'tools.database.rowCounts': '{words}, {characters}',
 };
 
 /**
@@ -128,6 +130,8 @@ const COGNATE_RETENTIONS: Record<string, Set<string>> = {
   bg: new Set(['notifier.ok']),
   // "Text" is a direct cognate of the English word in Czech.
   cs: new Set([
+    // "Web" is a dictionary-listed noun; see the ledger's retention row.
+    'tools.code.familyWeb',
     'tools.database.propertyTypeText',
     'tools.link.linkText',
     'notifier.ok',
@@ -148,6 +152,8 @@ const COGNATE_RETENTIONS: Record<string, Set<string>> = {
     'tools.colorPicker.colorSwatchLabel',
   ]),
   de: new Set([
+    // "Web" is a dictionary-listed noun; see the ledger's retention row.
+    'tools.code.familyWeb',
     // "Option" is the German UI word (groupStatusOption).
     'tools.database.seedOption',
     'tools.colorPicker.color.orange',
@@ -251,6 +257,10 @@ const COGNATE_RETENTIONS: Record<string, Set<string>> = {
     'notifier.ok',
   ]),
   fr: new Set([
+    // "Note" is the native French noun for a written remark.
+    'toolNames.annotation',
+    // "Web" is a dictionary-listed noun; see the ledger's retention row.
+    'tools.code.familyWeb',
     // "Suggestions" is the native French plural noun.
     'assistant.actions',
     // "Question" and "Option" are native French words.
@@ -276,7 +286,7 @@ const COGNATE_RETENTIONS: Record<string, Set<string>> = {
     'tools.database.settingsSource',
   ]),
   // "Oval" is the standard Croatian geometric noun, identical to English.
-  hr: new Set(['tools.image.cropRatioOval']),
+  hr: new Set(['tools.image.cropRatioOval', 'tools.code.familyWeb']),
   // Placeholder-only swatch templates contain no English lexical material;
   // Hungarian independently requires the same modifier-before-noun order.
   hu: new Set([
@@ -297,7 +307,10 @@ const COGNATE_RETENTIONS: Record<string, Set<string>> = {
     'toolbox.sectionMedia',
   ]),
   it: new Set([
+    // "Web" is a dictionary-listed noun; see the ledger's retention row.
+    'tools.code.familyWeb',
     'tools.database.filesLimitOne',
+    'tools.file.cardFiles_one',
     // Established Italian product and computing loanwords.
     'searchTerms.layout',
     'toolNames.file',
@@ -369,8 +382,6 @@ const COGNATE_RETENTIONS: Record<string, Set<string>> = {
     'toolbox.sectionDatabase',
     'tools.image.sizeFull',
     'tools.database.defaultStatusProperty',
-    // "Artist" is the established Bokmål music-metadata noun.
-    'tools.audio.artistPlaceholder',
     // Placeholder-only swatch labels follow Bokmål modifier-before-noun order.
     'tools.colorPicker.defaultSwatchLabel',
     'tools.colorPicker.colorSwatchLabel',
@@ -391,6 +402,8 @@ const COGNATE_RETENTIONS: Record<string, Set<string>> = {
     'notifier.ok',
   ]),
   pt: new Set([
+    // "Web" is a dictionary-listed noun; see the ledger's retention row.
+    'tools.code.familyWeb',
     'toolNames.link',
     'tools.image.cropRatioOval',
     'tools.database.defaultStatusProperty',
@@ -401,6 +414,8 @@ const COGNATE_RETENTIONS: Record<string, Set<string>> = {
     'notifier.ok',
   ]),
   ro: new Set([
+    // "Web" is a dictionary-listed noun; see the ledger's retention row.
+    'tools.code.familyWeb',
     'toolNames.text',
     'toolNames.link',
     // "Media" is the standard Romanian term for media content.
@@ -441,8 +456,6 @@ const COGNATE_RETENTIONS: Record<string, Set<string>> = {
     'searchTerms.layout',
     // "Text" is a direct cognate of the English word in Swedish.
     'tools.link.linkText',
-    // "Artist" is the established Swedish media noun and Apple Music field label.
-    'tools.audio.artistPlaceholder',
     'notifier.ok',
   ]),
   tr: new Set(['searchTerms.program', 'tools.image.cropRatioOval']),
@@ -541,6 +554,19 @@ const FILES_TAB_COGNATE_RETENTIONS: Record<string, string[]> = {
   ro: ['tools.database.filesTabLink'],
 };
 
+/** The page cover picker's Upload / Link tabs reuse the audio cover tabs' words. */
+const PAGE_COVER_TAB_COGNATE_RETENTIONS: Record<string, string[]> = {
+  da: ['title.coverUpload', 'title.coverLink'],
+  de: ['title.coverLink'],
+  et: ['title.coverLink'],
+  fil: ['title.coverLink'],
+  it: ['title.coverLink'],
+  nl: ['title.coverLink'],
+  pl: ['title.coverLink'],
+  pt: ['title.coverLink'],
+  ro: ['title.coverLink'],
+};
+
 /** The formula editor's "Type: {type}" uses the native noun spelled as in English. */
 const FORMULA_TYPE_COGNATE_RETENTIONS: Record<string, string[]> = {
   da: ['tools.database.formulaType'],
@@ -551,6 +577,7 @@ const FORMULA_TYPE_COGNATE_RETENTIONS: Record<string, string[]> = {
 for (const [locale, keys] of [
   ...Object.entries(AUDIO_COGNATE_RETENTIONS),
   ...Object.entries(FILES_TAB_COGNATE_RETENTIONS),
+  ...Object.entries(PAGE_COVER_TAB_COGNATE_RETENTIONS),
   ...Object.entries(FORMULA_TYPE_COGNATE_RETENTIONS),
 ]) {
   const set = COGNATE_RETENTIONS[locale] ?? (COGNATE_RETENTIONS[locale] = new Set<string>());
@@ -572,6 +599,23 @@ const DATABASE_TABLE_COGNATE_RETENTIONS: Record<string, string[]> = {
 };
 
 for (const [locale, keys] of Object.entries(DATABASE_TABLE_COGNATE_RETENTIONS)) {
+  const set = COGNATE_RETENTIONS[locale] ?? (COGNATE_RETENTIONS[locale] = new Set<string>());
+  for (const key of keys) set.add(key);
+}
+
+/**
+ * Emoji picker chip cognates: the short chip label is the native loanword
+ * spelled as in English. Each entry needs a matching ledger retention row.
+ */
+const EMOJI_CHIP_COGNATE_RETENTIONS: Record<string, string[]> = {
+  da: ['tools.callout.emojiChipPeople'],
+  de: ['tools.callout.emojiChipPeople'],
+  fr: ['tools.callout.emojiChipPeople', 'tools.callout.emojiChipNature'],
+  nl: ['tools.callout.emojiChipPeople'],
+  sv: ['tools.callout.emojiChipPeople'],
+};
+
+for (const [locale, keys] of Object.entries(EMOJI_CHIP_COGNATE_RETENTIONS)) {
   const set = COGNATE_RETENTIONS[locale] ?? (COGNATE_RETENTIONS[locale] = new Set<string>());
   for (const key of keys) set.add(key);
 }
@@ -924,6 +968,48 @@ for (const [locale, keys] of Object.entries(DATABASE_GALLERY_COGNATE_RETENTIONS)
 }
 
 for (const [locale, keys] of Object.entries(DATABASE_STARTER_COGNATE_RETENTIONS)) {
+  const set = COGNATE_RETENTIONS[locale] ?? (COGNATE_RETENTIONS[locale] = new Set<string>());
+  for (const key of keys) set.add(key);
+}
+
+/** The Dashboard view name where the locale uses the loanword. Each has a ledger retention row. */
+const DASHBOARD_COGNATE_RETENTIONS: Record<string, string[]> = {
+  da: ['tools.database.viewTypeDashboard'],
+  de: ['tools.database.viewTypeDashboard'],
+  fil: ['tools.database.viewTypeDashboard'],
+  it: ['tools.database.viewTypeDashboard'],
+  nl: ['tools.database.viewTypeDashboard'],
+};
+
+for (const [locale, keys] of Object.entries(DASHBOARD_COGNATE_RETENTIONS)) {
+  const set = COGNATE_RETENTIONS[locale] ?? (COGNATE_RETENTIONS[locale] = new Set<string>());
+  for (const key of keys) set.add(key);
+}
+
+/** File preview labels where the locale's own word is spelled as in English. Each has a ledger retention row. */
+const FILE_PREVIEW_COGNATE_RETENTIONS: Record<string, string[]> = {
+  cs: ['tools.file.previewTypeText'],
+  da: ['tools.file.previewSum'],
+  de: ['tools.file.previewTypeText'],
+  fil: ['tools.file.cardSheets_one', 'tools.file.cardSlides_one', 'tools.file.cardFiles_one'],
+  fr: [
+    'tools.file.previewPdfPageN',
+    'tools.file.cardPages_one',
+    'tools.file.cardPages_other',
+  ],
+  id: ['tools.file.previewSlideN', 'tools.file.cardSlides_one'],
+  no: ['tools.file.previewSum'],
+  pt: [
+    'tools.file.previewSlideN',
+    'tools.file.cardSlides_one',
+    'tools.file.cardSlides_other',
+  ],
+  ro: ['tools.file.previewTypeText'],
+  sk: ['tools.file.previewTypeText'],
+  sv: ['tools.file.previewTypeText'],
+};
+
+for (const [locale, keys] of Object.entries(FILE_PREVIEW_COGNATE_RETENTIONS)) {
   const set = COGNATE_RETENTIONS[locale] ?? (COGNATE_RETENTIONS[locale] = new Set<string>());
   for (const key of keys) set.add(key);
 }

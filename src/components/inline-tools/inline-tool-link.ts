@@ -436,7 +436,7 @@ export class LinkInlineTool implements InlineTool {
 
     const iconEl = document.createElement('span');
 
-    iconEl.className = 'shrink-0 flex text-gray-text transition-colors can-hover:group-hover/remove:text-red-500 group-focus-visible/remove:text-red-500 [&>svg]:size-5';
+    iconEl.className = 'shrink-0 flex text-gray-text transition-colors can-hover:group-hover/remove:text-red-500 in-focus-visible:text-red-500 [&>svg]:size-5';
     iconEl.innerHTML = IconTrash;
 
     const label = document.createElement('span');
@@ -1225,7 +1225,7 @@ export class LinkInlineTool implements InlineTool {
     this.selection.restore();
     this.insertLink(preparedValue);
     this.rememberLink(preparedValue);
-    this.selection.collapseToEnd();
+    // The linked text stays selected, as in Notion (U070).
     this.inlineToolbar.close();
   }
 
@@ -1535,7 +1535,7 @@ export class LinkInlineTool implements InlineTool {
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-    this.selection.collapseToEnd();
+    // The linked text stays selected, as in Notion (U070).
     this.inlineToolbar.close();
   }
 

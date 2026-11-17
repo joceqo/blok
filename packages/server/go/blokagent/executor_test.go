@@ -8,19 +8,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/blokdocs"
+	"github.com/JackUait/blok/packages/server/go/v2/blokdocs"
 )
 
-// C# BlokAgentExecutorTests.FactoryForwardsPoolAndStartupConstraints. Go's
-// zero means the default, so a pool below its floor is a negative size.
+// C# BlokAgentExecutorTests.FactoryForwardsPoolAndStartupConstraints. A nil
+// limit means the default; an explicit 0 is below the floor, as in C#.
 func TestNewRefusesLimitsBelowTheirFloorsBeforeLoading(t *testing.T) {
 	for _, row := range []struct {
 		param   string
 		options FactoryOptions
 	}{
-		{"PoolSize", FactoryOptions{PoolSize: -1}},
-		{"Timeout", FactoryOptions{PoolSize: 1, Timeout: time.Millisecond}},
-		{"MemoryBudget", FactoryOptions{PoolSize: 1, MemoryBudget: 1024}},
+		{"PoolSize", FactoryOptions{PoolSize: new(-1)}},
+		{"PoolSize", FactoryOptions{PoolSize: new(0)}},
+		{"Timeout", FactoryOptions{PoolSize: new(1), Timeout: new(time.Millisecond)}},
+		{"Timeout", FactoryOptions{PoolSize: new(1), Timeout: new(time.Duration(0))}},
+		{"MemoryBudget", FactoryOptions{PoolSize: new(1), MemoryBudget: new(int64(1024))}},
+		{"MemoryBudget", FactoryOptions{PoolSize: new(1), MemoryBudget: new(int64(0))}},
 	} {
 		var constraint *blokdocs.ConstraintError
 		if _, err := New(row.options); !errors.As(err, &constraint) || constraint.Param != row.param {
@@ -29,38 +32,26 @@ func TestNewRefusesLimitsBelowTheirFloorsBeforeLoading(t *testing.T) {
 	}
 }
 
-type fakeRooms struct {
-	history bool
-	calls   []string
-}
-
-func (f *fakeRooms) ExecuteInRoom(_ context.Context, docID, batchJSON string, _ Actor, _ *Options) (Execution, error) {
-	f.calls = append(f.calls, docID+" "+batchJSON)
-	return Execution{ResultJSON: `{"ok":true}`, Revision: "lin:1"}, nil
-}
-
-func (f *fakeRooms) HasHistory() bool { return f.history }
-
-// The room seam: a Rooms runner takes ExecuteInRoom, and its history adds
-// versionHistory and restores to the room contract, as C# RoomCommon does
-// (BlokAgentExecutor.cs:1205-1219: services gets versionHistory last, then
-// restores after runtime).
-func TestRoomsPlugIntoExecuteInRoomAndTheRoomContract(t *testing.T) {
+// RoomCommon (BlokAgentExecutor.cs:1205-1219): rooms whose journal keeps
+// history add versionHistory last to services, then restores after
+// runtime. Rooms with no journal add neither.
+func TestARoomContractOffersTheHistoryOnlyWithAHistoryJournal(t *testing.T) {
 	ctx := context.Background()
-	runtime := &recordingRuntime{answer: `{"contract":{}}`}
-	rooms := &fakeRooms{history: true}
-	executor := newExecutor(runtime)
-	executor.rooms = rooms
-
-	execution, err := executor.ExecuteInRoom(ctx, "doc", `{"commands":[]}`, Actor{ID: "a", Name: "A"}, nil)
-	if err != nil || execution.Revision != "lin:1" || len(rooms.calls) != 1 || rooms.calls[0] != `doc {"commands":[]}` {
-		t.Fatalf("execution %+v, err %v, calls %v", execution, err, rooms.calls)
-	}
-	if _, err := executor.RoomContract(ctx, nil); err != nil {
-		t.Fatal(err)
-	}
-	if want := `{"services":["versionHistory"],"runtime":"csharp-live","restores":true}`; runtime.input != want {
-		t.Fatalf("room contract input %s, want %s", runtime.input, want)
+	for _, row := range []struct {
+		noJournal bool
+		want      string
+	}{
+		{false, `{"services":["versionHistory"],"runtime":"csharp-live","restores":true}`},
+		{true, `{"services":[],"runtime":"csharp-live"}`},
+	} {
+		runtime := &recordingRuntime{answer: `{"contract":{}}`}
+		rooms := newTestRoom(t, row.noJournal, func(invoker) invoker { return runtime })
+		if _, err := rooms.executor.RoomContract(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		if runtime.input != row.want {
+			t.Fatalf("room contract input %s, want %s", runtime.input, row.want)
+		}
 	}
 }
 
@@ -69,7 +60,7 @@ type recordingRuntime struct {
 	input  string
 }
 
-func (r *recordingRuntime) Invoke(_ context.Context, _, input string, _ time.Duration) (string, error) {
+func (r *recordingRuntime) Invoke(_ context.Context, _, input string, _ *time.Duration) (string, error) {
 	r.input = input
 	return r.answer, nil
 }
@@ -77,7 +68,7 @@ func (r *recordingRuntime) Invoke(_ context.Context, _, input string, _ time.Dur
 // An Executor is shared by every request, so calls on it may overlap; each
 // one must answer as if it ran alone. Run with -race.
 func TestConcurrentCallsAnswerAsTheyDoAlone(t *testing.T) {
-	executor, err := New(FactoryOptions{PoolSize: 2})
+	executor, err := New(FactoryOptions{PoolSize: new(2)})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -57,9 +57,10 @@ export const formatDatePart = (part: string, locale: string, hourCycle?: 'h12' |
   return `${day} ${time}`;
 };
 
-/** A stored part as short text: "Oct 20, 2:45 AM", or "Oct 20" when it has no time. */
-export const formatShortDatePart = (part: string, locale: string, hourCycle?: 'h12' | 'h23'): string =>
+/** A stored part as short text: "Oct 20, 2:45 AM", or "Oct 20" when it has no time; "Mar 5, 2025" with the year. */
+export const formatShortDatePart = (part: string, locale: string, hourCycle?: 'h12' | 'h23', withYear = false): string =>
   new Intl.DateTimeFormat(locale, {
+    ...(withYear ? { year: 'numeric' } : {}),
     month: 'short',
     day: 'numeric',
     ...(part.includes('T') ? { hour: 'numeric', minute: '2-digit', ...(hourCycle !== undefined ? { hourCycle } : {}) } : {}),
@@ -298,6 +299,28 @@ export const parseDayField = (text: string, locale: string, display: DateDisplay
   const ms = Date.parse(withYear);
 
   return Number.isFinite(ms) ? toIsoDay(new Date(ms)) : null;
+};
+
+/** How far back a yearless day may sit and still stay this year. */
+const YEARLESS_DAYS_BACK = 30;
+
+/**
+ * A filter's typed day. notion-motion.md Round 23 §1 (r23-y*-ds.raw): a day with no year stays this year when it is
+ * at most 30 days back, else next year ("Oct 14" on 2026-11-13 is 2026, "Oct 13" is 2027). Read only inside one year.
+ */
+export const parseFilterDay = (text: string, locale: string, now: Date = new Date()): string | null => {
+  const day = parseDayField(text, locale, {}, now.getFullYear(), now);
+
+  if (day === null || /\d{4}|\d\s*[/.-]\s*\d+\s*[/.-]\s*\d/.test(text)) return day;
+  const ms = Date.parse(`${text.trim()} ${now.getFullYear()}`);
+
+  if (!Number.isFinite(ms)) return day;
+  const thisYear = new Date(ms);
+  const ahead = thisYear >= new Date(now.getFullYear(), now.getMonth(), now.getDate() - YEARLESS_DAYS_BACK)
+    ? thisYear
+    : new Date(thisYear.getFullYear() + 1, thisYear.getMonth(), thisYear.getDate());
+
+  return toIsoDay(ahead);
 };
 
 export const HOUR_CYCLES: Partial<Record<string, 'h12' | 'h23'>> = { '12_hour': 'h12', '24_hour': 'h23' };

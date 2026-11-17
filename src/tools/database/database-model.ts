@@ -1,8 +1,10 @@
+import { tabViews } from '../../shared/database/dashboard';
 import { nanoid } from 'nanoid';
 import type {
   DatabaseData,
   DatabaseRow,
   DatabaseViewConfig,
+  DeletedPropertyDefinition,
   GroupSettings,
   PageLayoutFields,
   PropertyConfig,
@@ -73,6 +75,14 @@ export interface GroupOptions {
 
 export class DatabaseModel {
   private schema: PropertyDefinition[];
+  private deletedProperties: Record<string, DeletedPropertyDefinition>;
+  /**
+   * Whether the saved data carries the deletedProperties slot. A database
+   * saved without it keeps saving without it until its first delete: an
+   * unrelated save that wrote an empty slot could replace a peer's first
+   * delete made at the same time.
+   */
+  private deletedSlot: boolean;
   private rows: DatabaseRow[] = [];
   private views: DatabaseViewConfig[];
   private activeViewId: string;
@@ -103,6 +113,9 @@ export class DatabaseModel {
     } else {
       this.schema = seed?.schema ?? createDefaultSchema(DatabaseModel.idMinter(options.idSeed));
     }
+
+    this.deletedProperties = structuredClone(data?.deletedProperties ?? {});
+    this.deletedSlot = data?.deletedProperties !== undefined;
 
     if (data?.views !== undefined && data.views.length > 0) {
       this.views = structuredClone(data.views);
@@ -200,8 +213,65 @@ export class DatabaseModel {
     this.schema = this.schema.map((p) => (p.id === next.id ? structuredClone(next) : p));
   }
 
+  /** Drops a property with no trace: for undoing a property this session just made. */
   deleteProperty(propertyId: string): void {
     this.schema = this.schema.filter((p) => p.id !== propertyId);
+  }
+
+  /** Deleted properties a restore can bring back, oldest first. A live property wins over an entry with its id. */
+  getDeletedProperties(): DeletedPropertyDefinition[] {
+    const live = new Set(this.schema.map((p) => p.id));
+
+    return Object.values(this.deletedProperties)
+      .filter((p) => !live.has(p.id))
+      .sort((a, b) => a.deletedAt - b.deletedAt);
+  }
+
+  /** Moves a property to the deleted list. Row values are not the model's: they stay. The title cannot go. */
+  trashProperty(propertyId: string, deletedBy?: string): DeletedPropertyDefinition | undefined {
+    const property = this.getProperty(propertyId);
+
+    if (property === undefined || property.type === 'title') return undefined;
+    const deleted: DeletedPropertyDefinition = {
+      ...structuredClone(property),
+      deletedAt: this.now().getTime(),
+      ...(deletedBy !== undefined ? { deletedBy } : {}),
+    };
+
+    this.schema = this.schema.filter((p) => p.id !== propertyId);
+    this.deletedProperties = { ...this.deletedProperties, [propertyId]: deleted };
+    this.deletedSlot = true;
+
+    return deleted;
+  }
+
+  /** Puts a deleted property back where it was. A name a live property took meanwhile gets a free one. */
+  restoreProperty(propertyId: string): PropertyDefinition | undefined {
+    const deleted = this.getDeletedProperties().find((p) => p.id === propertyId);
+
+    if (deleted === undefined) return undefined;
+    const { deletedAt: _deletedAt, deletedBy: _deletedBy, ...property } = structuredClone(deleted);
+    const restored: PropertyDefinition = { ...property, name: freePropertyName(this.schema.map((p) => p.name), property.name) };
+
+    this.deletedProperties = this.withoutDeleted(propertyId);
+    this.schema = [...this.schema, restored].sort((a, b) => (a.position < b.position ? -1 : 1));
+
+    return restored;
+  }
+
+  /** Removes a deleted property from the list for good. The caller strips the row values. */
+  purgeProperty(propertyId: string): DeletedPropertyDefinition | undefined {
+    const deleted = this.getDeletedProperties().find((p) => p.id === propertyId);
+
+    if (deleted !== undefined) this.deletedProperties = this.withoutDeleted(propertyId);
+
+    return deleted;
+  }
+
+  private withoutDeleted(propertyId: string): Record<string, DeletedPropertyDefinition> {
+    const { [propertyId]: _gone, ...rest } = this.deletedProperties;
+
+    return rest;
   }
 
   /** The lock lives on the title property; see `PropertyDefinition.databaseLocked`. */
@@ -520,6 +590,11 @@ export class DatabaseModel {
     return [...this.views];
   }
 
+  /** The views that get a tab: all but the dashboard widgets. */
+  getTabViews(): DatabaseViewConfig[] {
+    return tabViews(this.views);
+  }
+
   getView(viewId: string): DatabaseViewConfig | undefined {
     return this.views.find((v) => v.id === viewId);
   }
@@ -584,9 +659,22 @@ export class DatabaseModel {
    * Takes schema and views from the document, as undo or a peer left them.
    * Rows stay: they are child blocks and re-sync on their own.
    */
-  replaceDefinition(data: Pick<DatabaseData, 'schema' | 'views'>): void {
+  replaceDefinition(data: Pick<DatabaseData, 'schema' | 'views' | 'deletedProperties'>): void {
     this.schema = structuredClone(data.schema);
     this.views = structuredClone(data.views);
+    // Absent means "not this caller's concern": most callers pass the schema and views only.
+    if (data.deletedProperties !== undefined) this.deletedProperties = structuredClone(data.deletedProperties);
+  }
+
+  /** Takes the slot from the document as undo or a peer left it: present, or absent. */
+  replaceDeletedProperties(deleted: Record<string, DeletedPropertyDefinition> | undefined): void {
+    this.deletedProperties = structuredClone(deleted ?? {});
+    this.deletedSlot = deleted !== undefined;
+  }
+
+  /** Writes the empty slot from now on: a new database is born with it, so peers' first deletes merge. */
+  bearDeletedProperties(): void {
+    this.deletedSlot = true;
     this.locallyAdded.clear();
   }
 
@@ -597,6 +685,7 @@ export class DatabaseModel {
       schema: structuredClone(this.schema),
       views: structuredClone(this.views),
       activeViewId: this.activeViewId,
+      ...(this.deletedSlot ? { deletedProperties: Object.fromEntries(this.getDeletedProperties().map((p) => [p.id, structuredClone(p)])) } : {}),
     };
   }
 

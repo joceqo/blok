@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { API, BlockToolConstructorOptions } from '../../../../types';
+import type { API, BlockTool, BlockToolConstructorOptions } from '../../../../types';
 import type { CodeData } from '../../../../types/tools/code';
 import { simulateInput, simulateKeydown } from '../../../helpers/simulate';
+import { leakedListeners } from '../../../helpers/listener-leaks';
 
 vi.mock('../../../../src/shared/katex', () => ({
   renderLatex: vi.fn().mockResolvedValue('<span class="katex">rendered</span>'),
@@ -92,6 +93,50 @@ describe('CodeTool', () => {
 
     // Clean up any popover elements left in document.body
     document.querySelectorAll('[data-blok-popover-opened]').forEach((el) => el.remove());
+  });
+
+  describe('editor teardown', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('leaves no listener, observer or timer behind when the editor is destroyed', async () => {
+      const disconnect = vi.fn();
+
+      vi.stubGlobal('ResizeObserver', class {
+        public observe = vi.fn();
+        public disconnect = disconnect;
+      });
+      const { CodeTool } = await import('../../../../src/tools/code');
+      const added = vi.spyOn(document, 'addEventListener');
+      const removed = vi.spyOn(document, 'removeEventListener');
+      const tool: BlockTool = new CodeTool(createOptions({ code: 'let a = 1' }));
+      const el = tool.render();
+      if (!(el instanceof HTMLElement)) throw new Error('render() must return an element');
+      document.body.appendChild(el);
+      tool.rendered?.();
+      const codeEl = el.querySelector<HTMLElement>('[data-blok-testid="code-content"]');
+      if (!codeEl) throw new Error('code element missing');
+
+      codeEl.dispatchEvent(new FocusEvent('focus'));
+      codeEl.dispatchEvent(new Event('paste', { bubbles: true }));
+      expect(added).toHaveBeenCalledWith('selectionchange', expect.any(Function));
+
+      // editor.destroy() reaches the tool only through destroy(), never removed().
+      tool.destroy?.();
+
+      expect(leakedListeners(added, removed)).toEqual([]);
+      expect(disconnect).toHaveBeenCalled();
+
+      // The paste refresh must not wake up and start a language detection.
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+      await new Promise((resolve) => setTimeout(resolve, 650));
+      expect(mockDetectLanguage).not.toHaveBeenCalled();
+
+      el.remove();
+    });
   });
 
   describe('render()', () => {
@@ -191,6 +236,62 @@ describe('CodeTool', () => {
 
       // Clean up
       tool.removed();
+    });
+
+    it('a language pick puts the caret back in the code where it was', async () => {
+      const { CodeTool } = await import('../../../../src/tools/code');
+      const tool = new CodeTool(createOptions({ code: 'print(1)', language: 'javascript' }));
+      const el = tool.render();
+
+      document.body.appendChild(el);
+      const codeEl = el.querySelector<HTMLElement>('[data-blok-testid="code-content"]');
+      const langBtn = el.querySelector<HTMLButtonElement>('[data-blok-testid="code-language-btn"]');
+      const text = codeEl?.firstChild;
+
+      if (!codeEl || !langBtn || !text) {
+        throw new Error('expected code element, language button and text');
+      }
+
+      codeEl.focus();
+      const range = document.createRange();
+
+      range.setStart(text, 5);
+      range.collapse(true);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+
+      langBtn.click();
+      document.querySelector<HTMLElement>('[data-blok-item-name="python"]')?.click();
+
+      const selection = window.getSelection();
+
+      expect(tool.save(el).language).toBe('python');
+      expect(codeEl).toHaveFocus();
+      expect(selection?.anchorNode).toBe(text);
+      expect(selection?.anchorOffset).toBe(5);
+
+      tool.removed();
+      el.remove();
+    });
+
+    it('a language pick leaves focus alone when the caret was not in the code', async () => {
+      const { CodeTool } = await import('../../../../src/tools/code');
+      const tool = new CodeTool(createOptions({ code: 'print(1)', language: 'javascript' }));
+      const el = tool.render();
+
+      document.body.appendChild(el);
+      const codeEl = el.querySelector<HTMLElement>('[data-blok-testid="code-content"]');
+      const langBtn = el.querySelector<HTMLButtonElement>('[data-blok-testid="code-language-btn"]');
+
+      window.getSelection()?.removeAllRanges();
+      langBtn?.click();
+      document.querySelector<HTMLElement>('[data-blok-item-name="python"]')?.click();
+
+      expect(tool.save(el).language).toBe('python');
+      expect(codeEl).not.toHaveFocus();
+
+      tool.removed();
+      el.remove();
     });
 
     it('removed() cleans up popover from document.body', async () => {
@@ -1487,7 +1588,7 @@ describe('CodeTool', () => {
       codeEl.dispatchEvent(event);
 
       expect(event.defaultPrevented).toBe(true);
-      expect(codeEl.textContent).toBe('x  ');
+      expect(codeEl.textContent).toBe('x\t');
       tool.removed();
     });
 
@@ -1505,7 +1606,7 @@ describe('CodeTool', () => {
       caretAtEnd(codeEl);
       simulateKeydown(codeEl, 'Tab', { cancelable: true });
 
-      expect(codeEl.textContent).toBe('x  ');
+      expect(codeEl.textContent).toBe('x\t');
       tool.removed();
     });
 

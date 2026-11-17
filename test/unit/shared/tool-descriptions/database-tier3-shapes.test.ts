@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { validateAgainst } from '../../../../src/shared/schema/validate';
 import { BUILT_IN_BLOCK_DESCRIPTIONS } from '../../../../src/shared/tool-descriptions';
+import { DATABASE_DATA } from '../../../../src/shared/tool-descriptions/database';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -104,7 +105,7 @@ describe('database schema: Tier 3 (D6) data slots', () => {
           id: 'form',
           type: 'form',
           properties: [{ id: 'where', visible: true, required: true, description: 'Your office' }],
-          form: { closed: false, anonymous: true, submitLabel: 'Send', confirmation: 'Thanks' },
+          form: { closed: false, anonymous: true, title: 'Signup', description: 'Tell us', submitLabel: 'Send', confirmation: 'Thanks' },
         }),
         view({ id: 'map', type: 'map', mapBy: 'where' }),
         view({
@@ -190,5 +191,30 @@ describe('database schema: AI Autofill page content trigger', () => {
     };
 
     expect(validate(data)).toEqual([]);
+  });
+});
+
+describe('database schema: conditional color rules', () => {
+  const data = (color: string): Record<string, unknown> => ({
+    activeViewId: 'v',
+    schema: [
+      { id: 'title', name: 'Name', type: 'title', position: 'a0' },
+      { id: 'stage', name: 'Stage', type: 'select', position: 'a1' },
+    ],
+    views: [view({ id: 'v', type: 'table', colorRules: [{ id: 'c', propertyId: 'stage', operator: 'is_not_empty', value: null, color }] })],
+  });
+
+  // A Select, Status or Multi-select rule saves color "match" and takes the row's option color.
+  it('documents the option colors and "match" as a rule color', () => {
+    expect(validate(data('match'))).toEqual([]);
+    expect(validate(data('green'))).toEqual([]);
+    expect(validate(data('teal'))).not.toEqual([]);
+  });
+
+  // notion-motion.md Round 21 §1: Status and Multi-select rules follow the option colour too.
+  it('tells an agent that "match" works on select, status and multi-select rules', () => {
+    const text = JSON.stringify(DATABASE_DATA);
+
+    expect(text).toContain('a select or status rule takes the row\'s option color, a multi-select rule its first option\'s');
   });
 });

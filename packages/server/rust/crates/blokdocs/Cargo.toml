@@ -1,0 +1,20 @@
+[package]
+name = "blok-blokdocs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal part of blok-mcp (document helpers). Not a stable API."
+publish = true
+
+[dependencies]
+blok-jsjson.workspace = true
+blok-jsruntime.workspace = true
+tokio = { version = "1", features = ["rt", "sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+
+[lints]
+workspace = true

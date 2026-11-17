@@ -12,7 +12,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/jsruntime"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsruntime"
 )
 
 // Floors a host may not go below, as C# BlokDocuments publishes them.
@@ -23,21 +23,23 @@ const (
 
 // Options configure New. Zero values take the defaults.
 type Options struct {
-	// PoolSize bounds concurrent conversions. 0 means max(1, min(NumCPU, 4)).
-	PoolSize int
-	// Timeout is the wall-clock budget of one conversion. 0 means 10 s.
+	// PoolSize bounds concurrent conversions. nil means
+	// max(1, min(NumCPU, 4)); under 1 is refused, as C#.
+	PoolSize *int
+	// Timeout is the wall-clock budget of one conversion. nil means 10 s;
+	// under MinimumTimeout, 0 too, is refused, as C#.
 	//
 	// It is not a hard bound: goja checks it between JavaScript
 	// instructions, so a long native builtin (a backtracking regex) overruns
 	// it by seconds.
-	Timeout time.Duration
-	// MemoryBudget is the live heap growth one conversion may cause. 0 means
-	// 1 GiB.
+	Timeout *time.Duration
+	// MemoryBudget is the live heap growth one conversion may cause. nil
+	// means 1 GiB; under MinimumMemoryBudget, 0 too, is refused, as C#.
 	//
 	// Approximate, unlike C#'s per-engine allocation count: it is the whole
 	// process's live heap as of the last GC, read every millisecond, so
 	// concurrent conversions add up.
-	MemoryBudget int64
+	MemoryBudget *int64
 	// WarmUp converts a long article in the background once the pool is
 	// built, so the first request does not pay for cold paths. New does not
 	// wait for it, and its failure is ignored.
@@ -59,7 +61,7 @@ const (
 
 // invoker is the runtime seam; tests put a fake behind it.
 type invoker interface {
-	Invoke(ctx context.Context, op, input string, timeout time.Duration) (string, error)
+	Invoke(ctx context.Context, op, input string, timeout *time.Duration) (string, error)
 }
 
 // New builds a converter over a fresh engine pool. Building one is
@@ -79,6 +81,15 @@ func New(options Options) (*Converter, error) {
 	}
 	return converter, nil
 }
+
+// Runtime runs one bundle operation; blokserver's shared engine pool is one.
+type Runtime interface {
+	Invoke(ctx context.Context, op, input string, timeout *time.Duration) (string, error)
+}
+
+// NewOnRuntime builds a converter over an engine pool the caller holds, as
+// C#'s BlokDocumentConverter takes the registered IBlokRuntime.
+func NewOnRuntime(runtime Runtime) *Converter { return newConverter(runtime) }
 
 func newConverter(runtime invoker) *Converter {
 	return &Converter{runtime: runtime}

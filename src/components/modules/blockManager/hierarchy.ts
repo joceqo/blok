@@ -15,6 +15,7 @@ import type { Blocks } from '../../blocks';
 
 import { hideUnderCollapsedParent, isHiddenByCollapsedParent } from './new-block-placement';
 import type { BlockRepository } from './repository';
+import { REPARENT_IN_PLACE } from '../../utils/index-move-neighbours';
 
 /**
  * Inline channel for a block's indentation multiplier. main.css renders the
@@ -41,6 +42,20 @@ const DEPTH_MULTIPLIER_PROPERTY = '--_blok-block-depth';
  */
 const SLOT_DEPTH_PROPERTY = '--_blok-slot-depth';
 
+// A same-value setAttribute still queues a mutation record. A table fill
+// indents each of its 10k new holders twice.
+const setDepthIfChanged = (holder: HTMLElement, depth: string): void => {
+  if (holder.getAttribute('data-blok-depth') !== depth) {
+    holder.setAttribute('data-blok-depth', depth);
+  }
+};
+
+const setStyleIfChanged = (holder: HTMLElement, property: string, value: string): void => {
+  if (holder.style.getPropertyValue(property) !== value) {
+    holder.style.setProperty(property, value);
+  }
+};
+
 /**
  * BlockHierarchy manages hierarchical relationships between blocks
  */
@@ -50,6 +65,8 @@ export class BlockHierarchy {
   private readonly getIsSyncingFromYjs?: () => boolean;
   private readonly blocksStore?: Pick<Blocks, 'mount'>;
   private readonly isApplyingRemoteChange?: () => boolean;
+  /** The subtree of the block setBlockParent is placing, while it places it. */
+  private subtreeMemo: { block: Block; members: Block[] } | null = null;
 
   /**
    * @param repository - BlockRepository for looking up blocks by id
@@ -177,7 +194,18 @@ export class BlockHierarchy {
    * @param block - the subtree root
    */
   private subtreeOf(block: Block): Block[] {
+    if (this.subtreeMemo?.block === block) {
+      return this.subtreeMemo.members;
+    }
+
     const blocks = this.repository.blocks;
+
+    // A new table cell has no children; mapping every block for it made each
+    // added cell cost the whole document three times over.
+    if (!blocks.some(candidate => candidate.parentId === block.id)) {
+      return [block];
+    }
+
     // One pass by parentId, then a walk down from `block`: a parent walk up
     // from every block cost the whole document per placement.
     const children = new Map<string, string[]>();
@@ -535,9 +563,28 @@ export class BlockHierarchy {
     const sanitizedParentId = parentExists ? newParentId : null;
 
     const oldParentId = block.parentId;
+    // The steps below each need the block's subtree, and none changes it: one
+    // scan of the document instead of one per step, per new table cell.
+    this.subtreeMemo = { block, members: this.subtreeOf(block) };
+
+    try {
+      this.placeUnderParent(block, sanitizedParentId);
+    } finally {
+      this.subtreeMemo = null;
+    }
+
+    this.syncVisibilityWithParent(block, oldParentId);
+    this.announceChildPlaced(sanitizedParentId);
+  }
+
+  /**
+   * The placement half of setBlockParent: model, flat array and DOM.
+   * @param block - the block to place
+   * @param sanitizedParentId - its new parent, already checked to exist
+   */
+  private placeUnderParent(block: Block, sanitizedParentId: string | null): void {
     const placement = this.placementForParent(block, sanitizedParentId);
 
-    const newParent = sanitizedParentId !== null ? this.repository.getBlockById(sanitizedParentId) : undefined;
     const withDom = this.mayMountHolder(block, sanitizedParentId);
 
     // Tables and databases too: they order children by their own model, but
@@ -549,36 +596,127 @@ export class BlockHierarchy {
       this.reindentSubtree(block);
     }
 
-    // Public API contract: a block given a table from outside its cells goes
-    // into the first cell, where the table adopts it into its grid. Left at
-    // root, save() rejects it as a child no cell references.
-    const firstSlot = newParent !== undefined && SELF_PLACING_PARENTS.has(newParent.name) && !newParent.holder.contains(block.holder)
-      ? this.findHomeSlot(newParent.id)
+    if (withDom) {
+      this.mountOutsidersInFirstSlot(block);
+    }
+  }
+
+  /**
+   * Public API contract: a block given a table or database from outside its
+   * cells goes into the first cell, where the tool adopts it into its grid.
+   * Left at root, save() rejects it as a child no cell references.
+   * @param block - a block just placed under its parent
+   */
+  public mountOutsidersInFirstSlot(block: Block): void {
+    const parent = block.parentId === null ? undefined : this.repository.getBlockById(block.parentId);
+    const firstSlot = parent !== undefined && SELF_PLACING_PARENTS.has(parent.name) && !parent.holder.contains(block.holder)
+      ? this.findHomeSlot(parent.id)
       : null;
 
-    if (withDom && firstSlot !== null && this.blocksStore !== undefined) {
-      const store = this.blocksStore;
-      // A slotless block's children sit flat after it, so they come along.
-      const subtree = this.subtreeOf(block);
-      const carried = subtree.filter(member =>
-        !subtree.some(other => other !== member && other.holder.contains(member.holder)));
-
-      // A peer's child: the cell it belongs to comes with the table's own
-      // data write, and the table mounts it then. Shown in the first cell
-      // meanwhile, it would take typing that no cell reference keeps.
-      if (this.isApplyingRemoteChange?.() === true) {
-        carried.forEach(member => member.holder.remove());
-      } else {
-        // Last first: each mount anchors on the holders after it.
-        [...carried].reverse().forEach(member => {
-          store.mount(member, this.repository.getBlockIndex(member), firstSlot);
-        });
-        carried.forEach(member => this.updateBlockIndentation(member));
-      }
+    if (firstSlot === null || this.blocksStore === undefined) {
+      return;
     }
 
-    this.syncVisibilityWithParent(block, oldParentId);
-    this.announceChildPlaced(sanitizedParentId);
+    const store = this.blocksStore;
+    // A slotless block's children sit flat after it, so they come along.
+    const subtree = this.subtreeOf(block);
+    const carried = subtree.filter(member =>
+      !subtree.some(other => other !== member && other.holder.contains(member.holder)));
+
+    // A peer's child: the cell it belongs to comes with the table's own
+    // data write, and the table mounts it then. Shown in the first cell
+    // meanwhile, it would take typing that no cell reference keeps.
+    if (this.isApplyingRemoteChange?.() === true) {
+      carried.forEach(member => member.holder.remove());
+
+      return;
+    }
+
+    // Last first: each mount anchors on the holders after it.
+    [...carried].reverse().forEach(member => {
+      store.mount(member, this.repository.getBlockIndex(member), firstSlot);
+    });
+    carried.forEach(member => this.updateBlockIndentation(member));
+  }
+
+  /**
+   * Puts a run of new childless blocks under a table or database in one
+   * write, when the flat array already holds them where `placement` puts
+   * them: right after `placement.afterId`'s subtree, each after the one
+   * before. Otherwise changes nothing and returns false.
+   * @param run - the blocks, in flat order
+   * @param placement - the parent and the sibling the first block follows
+   * @returns whether the run was placed
+   */
+  public placeRunInPlace(run: Block[], placement: TreePlacement): boolean {
+    const { parentId, afterId } = placement;
+    const parent = parentId === null ? undefined : this.repository.getBlockById(parentId);
+    const blocks = this.repository.blocks;
+    const start = run.length > 0 ? blocks.indexOf(run[0]) : -1;
+
+    if (parent === undefined || !SELF_PLACING_PARENTS.has(parent.name) || start === -1) {
+      return false;
+    }
+
+    const contiguousLeaves = run.every((block, i) =>
+      blocks[start + i] === block && block.contentIds.length === 0 && block.parentId === parentId);
+    const runIds = new Set(run.map(block => block.id));
+    const rest = [...blocks.slice(0, start), ...blocks.slice(start + run.length)];
+    const getById = (id: string): Block | undefined => runIds.has(id) ? undefined : this.repository.getBlockById(id);
+    const tree = { blocks: rest, getById };
+
+    if (!contiguousLeaves || (afterId !== null && runIds.has(afterId)) || flatIndexForPlacement(tree, placement) !== start) {
+      return false;
+    }
+
+    // A stale list that misses afterId is first completed in tree order (see placeBlock).
+    const listed = afterId === null || parent.contentIds.includes(afterId)
+      ? parent.contentIds
+      : childrenInTreeOrder(tree, parent).map(child => child.id);
+    const siblings = listed.filter(id => !runIds.has(id));
+    const slot = afterId === null ? 0 : siblings.indexOf(afterId) + 1;
+
+    parent.contentIds = [...siblings.slice(0, slot), ...run.map(block => block.id), ...siblings.slice(slot)];
+    this.mountRunInFirstSlot(parent, run);
+
+    return true;
+  }
+
+  /**
+   * {@link mountOutsidersInFirstSlot} for a run of childless blocks that sit
+   * next to each other in the flat array: one anchor lookup for the run.
+   * @param parent - the table or database
+   * @param run - its new children, in flat order
+   */
+  private mountRunInFirstSlot(parent: Block, run: Block[]): void {
+    const outside = run.filter(block => !parent.holder.contains(block.holder));
+
+    if (outside.length !== run.length) {
+      outside.forEach(block => this.mountOutsidersInFirstSlot(block));
+
+      return;
+    }
+
+    const slot = this.findHomeSlot(parent.id);
+    const last = run.at(-1);
+
+    if (slot === null || last === undefined || this.blocksStore === undefined) {
+      return;
+    }
+
+    // See mountOutsidersInFirstSlot.
+    if (this.isApplyingRemoteChange?.() === true) {
+      run.forEach(block => block.holder.remove());
+
+      return;
+    }
+
+    const before = document.createDocumentFragment();
+
+    this.blocksStore.mount(last, this.repository.getBlockIndex(last), slot);
+    run.slice(0, -1).forEach(block => before.appendChild(block.holder));
+    last.holder.before(before);
+    run.forEach(block => this.updateBlockIndentation(block));
   }
 
   /**
@@ -788,6 +926,7 @@ export class BlockHierarchy {
       block.call('moved', {
         fromIndex: this.repository.getBlockIndex(block),
         toIndex: this.repository.getBlockIndex(block),
+        [REPARENT_IN_PLACE]: true,
       });
     }
 
@@ -872,13 +1011,13 @@ export class BlockHierarchy {
     const { holder } = block;
 
     // Table cells, lists and column trees never take the slot indent.
-    holder.style.setProperty(SLOT_DEPTH_PROPERTY, '0');
+    setStyleIfChanged(holder, SLOT_DEPTH_PROPERTY, '0');
 
     // Blocks inside table cells should not receive visual indentation.
     // The parent-child relationship is semantic (data tracking), not visual.
     if (holder.closest('[data-blok-table-cell-blocks]')) {
-      holder.style.setProperty(DEPTH_MULTIPLIER_PROPERTY, '0');
-      holder.setAttribute('data-blok-depth', '0');
+      setStyleIfChanged(holder, DEPTH_MULTIPLIER_PROPERTY, '0');
+      setDepthIfChanged(holder, '0');
 
       return;
     }
@@ -889,8 +1028,8 @@ export class BlockHierarchy {
     // margin to the holder too would double the indent. Keep the holder flush
     // and still expose the structural depth via data-blok-depth.
     if (block.name === 'list') {
-      holder.style.setProperty(DEPTH_MULTIPLIER_PROPERTY, '0');
-      holder.setAttribute('data-blok-depth', String(this.getBlockDepth(block)));
+      setStyleIfChanged(holder, DEPTH_MULTIPLIER_PROPERTY, '0');
+      setDepthIfChanged(holder, String(this.getBlockDepth(block)));
 
       return;
     }
@@ -898,9 +1037,9 @@ export class BlockHierarchy {
     // Blocks inside toggle child containers should not receive parentId-depth
     // margin (the container indents them).
     if (holder.closest('[data-blok-toggle-children]')) {
-      holder.style.setProperty(DEPTH_MULTIPLIER_PROPERTY, '0');
-      holder.style.setProperty(SLOT_DEPTH_PROPERTY, String(this.getSlotDepth(block)));
-      holder.setAttribute('data-blok-depth', String(this.getBlockDepth(block)));
+      setStyleIfChanged(holder, DEPTH_MULTIPLIER_PROPERTY, '0');
+      setStyleIfChanged(holder, SLOT_DEPTH_PROPERTY, String(this.getSlotDepth(block)));
+      setDepthIfChanged(holder, String(this.getBlockDepth(block)));
 
       return;
     }
@@ -920,8 +1059,8 @@ export class BlockHierarchy {
       holder.closest('[data-blok-columns]') ||
       this.hasLayoutAncestor(block)
     ) {
-      holder.style.setProperty(DEPTH_MULTIPLIER_PROPERTY, '0');
-      holder.setAttribute('data-blok-depth', '0');
+      setStyleIfChanged(holder, DEPTH_MULTIPLIER_PROPERTY, '0');
+      setDepthIfChanged(holder, '0');
 
       return;
     }
@@ -931,8 +1070,8 @@ export class BlockHierarchy {
 
     // Inside a plain slot the indent is split between the two terms, so a slot
     // that opts the step back in still gets depth x step, not more.
-    holder.style.setProperty(SLOT_DEPTH_PROPERTY, String(slotDepth));
-    holder.style.setProperty(DEPTH_MULTIPLIER_PROPERTY, String(depth - slotDepth));
-    holder.setAttribute('data-blok-depth', depth.toString());
+    setStyleIfChanged(holder, SLOT_DEPTH_PROPERTY, String(slotDepth));
+    setStyleIfChanged(holder, DEPTH_MULTIPLIER_PROPERTY, String(depth - slotDepth));
+    setDepthIfChanged(holder, depth.toString());
   }
 }

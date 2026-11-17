@@ -61,35 +61,20 @@ test.describe('code language picker', () => {
     await gotoTestPage(page);
   });
 
-  test('recolors the code as the hovered language without saving or reporting anything', async ({ page }) => {
+  test('hovering a language leaves the code as it is; only a pick recolors it', async ({ page }) => {
     await createBlok(page, [{ type: 'code', data: { code: CODE, language: 'plain text' } }]);
     await openPicker(page);
-    await page.evaluate(() => {
-      window.codeChanges = 0;
-    });
-
-    const layer = page.getByTestId('code-language-preview');
-
-    await expect(layer).toBeHidden();
 
     await page.getByRole('menuitemradio', { name: /Python/ }).hover();
+    await page.keyboard.press('ArrowDown');
 
-    await expect(layer).toBeVisible();
+    expect(await page.getByTestId('code-language-preview').count()).toBe(0);
     // Prism's own markup; there is no role or test id to read a token by.
-    await expect.poll(() => layer.evaluate((el) => el.querySelector('[class~="keyword"]')?.textContent)).toBe('def');
-    await expect(layer).toHaveText(CODE);
-    // The editable code stays plain: the preview is a layer, not an edit.
-    expect(await page.getByTestId('code-content').evaluate((el) => el.querySelectorAll('[class~="token"]').length)).toBe(0);
+    expect(await page.getByTestId('code-card').evaluate((el) => el.querySelectorAll('[class~="token"]').length)).toBe(0);
     expect(await savedCode(page)).toMatchObject({ language: 'plain text', code: CODE });
-    expect(await page.evaluate(() => window.codeChanges)).toBe(0);
-
-    await page.keyboard.press('Escape');
-
-    await expect(layer).toBeHidden();
-    expect(await savedCode(page)).toMatchObject({ language: 'plain text' });
   });
 
-  test('keeps the language picked with the keyboard and clears the preview', async ({ page }) => {
+  test('keeps the language picked with the keyboard', async ({ page }) => {
     await createBlok(page, [{ type: 'code', data: { code: CODE, language: 'plain text' } }]);
     await openPicker(page);
 
@@ -98,7 +83,6 @@ test.describe('code language picker', () => {
     await page.keyboard.press('Enter');
 
     await expect(page.getByTestId('code-language-name')).toHaveText('Python');
-    await expect(page.getByTestId('code-language-preview')).toBeHidden();
     expect(await savedCode(page)).toMatchObject({ language: 'python' });
   });
 
@@ -111,23 +95,39 @@ test.describe('code language picker', () => {
     await expect(page.getByRole('menuitemradio', { name: /Python/ })).toBeHidden();
   });
 
-  test('suggests the language of the filename and remembers recent picks', async ({ page }) => {
-    await createBlok(page, [
-      { type: 'code', data: { code: 'x', language: 'plain text', filename: 'main.rs' } },
-      { type: 'code', data: { code: 'y', language: 'plain text' } },
-    ]);
+  test('groups languages by family, Docs & diagrams first, with no Suggested section', async ({ page }) => {
+    await createBlok(page, [{ type: 'code', data: { code: 'x', language: 'plain text', filename: 'main.rs' } }]);
     await openPicker(page);
 
-    const sections = page.getByTestId('code-language-section').filter({ visible: true });
-    const options = page.getByRole('menuitemradio').filter({ visible: true });
+    const labels = page.getByTestId('code-language-section').locator('[data-label]');
 
-    await expect(sections).toHaveText(['Suggested']);
-    await expect(options.first()).toContainText('Rust');
+    await expect(labels).toHaveText(['Docs & diagrams', 'Web', 'Systems & apps', 'Scripting', 'Data & config']);
+    await expect(page.getByRole('menuitemradio').first()).toContainText('Markdown');
+  });
 
-    await page.getByRole('menuitemradio', { name: /Kotlin/ }).click();
-    await openPicker(page, 1);
+  test('scrolls flat: no row squashes at the edges, and the family label stays pinned on top', async ({ page }) => {
+    await createBlok(page, [{ type: 'code', data: { code: 'x', language: 'plain text' } }]);
+    await openPicker(page);
 
-    await expect(sections).toHaveText(['Suggested']);
-    await expect(options.first()).toContainText('Kotlin');
+    const list = page.locator('[data-blok-testid="code-language-section"]').first().locator('xpath=ancestor::*[contains(@class,"overflow-y-auto")][1]');
+
+    await list.evaluate((el) => el.scrollTo({ top: 150 }));
+
+    const readState = (): Promise<{ scrolled: number; transformed: number; pinned: number }> => list.evaluate((el) => {
+      const top = el.getBoundingClientRect().top;
+      const transformed = Array.from(el.children).filter((child) => child instanceof HTMLElement && child.style.transform !== '').length;
+      const pinned = Array.from(el.querySelectorAll('[data-blok-testid="code-language-section"]'))
+        .map((label) => label.getBoundingClientRect().top - top)
+        .filter((offset) => Math.abs(offset) < 1).length;
+
+      return { scrolled: el.scrollTop, transformed, pinned };
+    });
+
+    await expect.poll(async () => (await readState()).scrolled).toBe(150);
+
+    const state = await readState();
+
+    expect(state.transformed).toBe(0);
+    expect(state.pinned).toBeGreaterThanOrEqual(1);
   });
 });

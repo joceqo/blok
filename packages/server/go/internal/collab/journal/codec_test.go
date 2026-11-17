@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/JackUait/blok/packages/server/go/internal/collab/collabtest"
-	"github.com/JackUait/blok/packages/server/go/internal/collab/operation"
-	"github.com/JackUait/blok/packages/server/go/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/collabtest"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/operation"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
 )
 
 type codecs struct {
@@ -163,5 +163,21 @@ func TestRefusesToEncodeWhatCSharpRefuses(t *testing.T) {
 	record.Update = make([]byte, MaxUpdateLength)
 	if _, err := EncodeRecord(record); err != nil {
 		t.Errorf("4096-byte actor, 32 MiB update: %v", err)
+	}
+}
+
+// C# interpolates the enum, and an undefined enum prints as its number.
+func TestAnUnknownSourceIsNamedByItsNumberAsCSharpDoes(t *testing.T) {
+	record := operation.Record{
+		OperationID: "0123456789abcdef0123456789abcdef",
+		Sequence:    1,
+		CommittedAt: dotnet.TimeFromTicks(0),
+		Source:      3,
+		Update:      []byte{1},
+		Digest:      make([]byte, 32),
+	}
+	_, err := EncodeRecord(record)
+	if err == nil || err.Error() != "collab: 3 is not a known operation source." {
+		t.Fatalf("%v", err)
 	}
 }

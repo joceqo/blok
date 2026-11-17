@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/JackUait/blok/packages/server/go/blokserver"
-	"github.com/JackUait/blok/packages/server/go/internal/dotnet"
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/blokserver"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
 )
 
 const defaultTicketRateLimit = 60
@@ -47,7 +47,7 @@ func parseHostArguments(args []string, getenv func(string) string) hostArguments
 		switch name {
 		case "h", "help":
 			return hostArguments{help: true}
-		case "no-unfurl", "collab", "collab-journal":
+		case "no-unfurl", "collab", "collab-journal", "file-bytes", "files-cors":
 			value := true
 			if hasInline {
 				parsed, ok := parseBool(inline)
@@ -61,6 +61,10 @@ func parseHostArguments(args []string, getenv func(string) string) hostArguments
 				options.UnfurlEnabled = !value
 			case "collab":
 				options.CollabEnabled = value
+			case "file-bytes":
+				options.FileBytesEnabled = value
+			case "files-cors":
+				options.FilesCORS = value
 			default:
 				options.CollabJournal = value
 				journalFromFlag = true
@@ -83,9 +87,9 @@ func parseHostArguments(args []string, getenv func(string) string) hostArguments
 		}
 		switch name {
 		case "listen":
-			options.ListenAddress = value
+			options.ListenAddress = new(value)
 		case "auth":
-			options.Auth = value
+			options.Auth = new(value)
 		case "secret":
 			options.Secret = value
 			result.secretFromFlag = true
@@ -100,7 +104,13 @@ func parseHostArguments(args []string, getenv func(string) string) hostArguments
 			if !ok {
 				return invalid()
 			}
-			options.MaxUploadBytes = parsed
+			options.MaxUploadBytes = new(parsed)
+		case "file-bytes-max-bytes":
+			parsed, ok := parseBaseZeroInt64(value)
+			if !ok {
+				return invalid()
+			}
+			options.FileBytesMaxBytes = new(parsed)
 		case "rate-limit":
 			parsed, ok := parseBaseZeroInt64(value)
 			if !ok {
@@ -139,12 +149,12 @@ func parseHostArguments(args []string, getenv func(string) string) hostArguments
 	options.AllowedOrigins = splitOrigins(origins)
 	options.PublicURL = publicURL
 	if publicURL == "" {
-		options.PublicURL = defaultPublicURL(options.ListenAddress)
+		options.PublicURL = defaultPublicURL(*options.ListenAddress)
 	}
 	switch {
 	case rateLimit != nil:
 		options.RateLimitPerMinute = *rateLimit
-	case options.Auth == "ticket":
+	case *options.Auth == "ticket":
 		options.RateLimitPerMinute = defaultTicketRateLimit
 	}
 	if !result.secretFromFlag {
@@ -179,7 +189,7 @@ func csQuote(s string) string { return `"` + s + `"` }
 func isValueFlag(name string) bool {
 	switch name {
 	case "listen", "auth", "secret", "allow-origin", "storage-dir", "public-url",
-		"max-upload", "rate-limit", "s3-endpoint", "s3-region", "s3-bucket",
+		"max-upload", "file-bytes-max-bytes", "rate-limit", "s3-endpoint", "s3-region", "s3-bucket",
 		"s3-bucket-url", "s3-addressing", "doc-endpoint", "doc-endpoint-auth",
 		"collab-dir", "collab-s3-prefix", "rich-text-fields":
 		return true

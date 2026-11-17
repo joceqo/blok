@@ -1,6 +1,7 @@
 import type { AssetKind } from '@/types/tools/block-tool';
-import type { BlokUploader, UploadContext, UploadedAsset } from '@/types/configs/uploader';
+import type { BlokUploader, UploadContext, UploadedAsset, UrlUploadDecisionContext } from '@/types/configs/uploader';
 import type { OrphanSweep } from './orphan-sweep';
+import { createSafeObjectUrl, localImageUrl } from '../../shared/safe-object-url';
 
 /**
  * Where uploaders can come from, in the order they are consulted.
@@ -192,7 +193,8 @@ function recordForSweep(
  *
  * With no uploader configured the file becomes an in-memory `blob:` URL — the
  * same fallback the media tools have always used, kept so the editor stays
- * usable with zero configuration.
+ * usable with zero configuration. An SVG image becomes a data: URL instead
+ * (see localImageUrl).
  * @param file - the file to store
  * @param ctx - what is being uploaded and on whose behalf
  * @param sources - candidate uploaders
@@ -214,7 +216,7 @@ export async function uploadAssetFile(
   }
 
   return {
-    url: URL.createObjectURL(file),
+    url: ctx.kind === 'image' ? await localImageUrl(file) : createSafeObjectUrl(file),
     fileName: file.name,
   };
 }
@@ -250,4 +252,36 @@ export async function uploadAssetUrl(
   }
 
   return { url };
+}
+
+/**
+ * Ask the uploader that would upload a pasted URL whether to upload it.
+ *
+ * Only that uploader is asked: a decision from another one would rule over
+ * uploads it never makes.
+ * @param url - the pasted URL
+ * @param ctx - what kind of asset it is and how it came in
+ * @param sources - candidate uploaders
+ * @returns undefined at once when that uploader has no `shouldUploadUrl`;
+ * otherwise its answer, rejected when it throws or is not a boolean
+ */
+export function decideAssetUrl(
+  url: string,
+  ctx: UrlUploadDecisionContext,
+  sources: AssetUploaderSources
+): Promise<boolean> | undefined {
+  const from = sourceFor(ctx.kind, sources, 'uploadByUrl');
+  const decide = from?.shouldUploadUrl;
+
+  if (from === undefined || from.uploadByUrl === undefined || decide === undefined) {
+    return undefined;
+  }
+
+  return new Promise<unknown>((resolve) => resolve(decide.call(from, url, ctx))).then((answer) => {
+    if (typeof answer !== 'boolean') {
+      throw new TypeError('shouldUploadUrl must answer true or false');
+    }
+
+    return answer;
+  });
 }

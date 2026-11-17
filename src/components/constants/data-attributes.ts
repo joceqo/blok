@@ -162,6 +162,30 @@ export const DATA_ATTR = {
   pageIcon: 'data-blok-page-icon',
   /** "Add icon" button */
   pageAddIcon: 'data-blok-page-add-icon',
+  /** "Add cover" button, in the row over the title */
+  pageAddCover: 'data-blok-page-add-cover',
+  /** Page cover strip above the title (`TitleConfig.cover`) */
+  pageCover: 'data-blok-page-cover',
+  /** A gallery cover's fill inside the strip */
+  pageCoverFill: 'data-blok-page-cover-fill',
+  /** Gallery id on a cover fill or a gallery tile; page-title.css paints each id */
+  pageCoverId: 'data-blok-page-cover-id',
+  /** The Change / Reposition button group on the cover */
+  pageCoverControls: 'data-blok-page-cover-controls',
+  /** "Drag image to reposition" pill */
+  pageCoverHint: 'data-blok-page-cover-hint',
+  /** On the strip while the cover image is being repositioned */
+  pageCoverRepositioning: 'data-blok-page-cover-repositioning',
+  /** On the strip while its picker is open */
+  pageCoverOpen: 'data-blok-page-cover-open',
+  /** Cover picker card (Gallery, Upload, Link) */
+  pageCoverPicker: 'data-blok-page-cover-picker',
+  /** Gallery grid inside the cover picker */
+  pageCoverGallery: 'data-blok-page-cover-gallery',
+  /** Remove button in the cover picker */
+  pageCoverRemove: 'data-blok-page-cover-remove',
+  /** A button the page's first block puts in the row over the title; the value is its name */
+  pageHeaderAction: 'data-blok-page-header-action',
 
   // ============================================
   // Drag and Drop
@@ -429,11 +453,18 @@ export const DATA_ATTR = {
    *  keyboard semantics (Tab between sub-fields, Escape to cancel an edit, arrows
    *  to walk a suggestion list), which is exactly what this attribute is for.
    *
-   *  Undo and redo (Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z, Ctrl+Y) still reach the
+   *  Undo and redo (Cmd+Z, Cmd+Shift+Z, Cmd+Y on macOS; Ctrl+Z, Ctrl+Shift+Z,
+   *  Ctrl+Y elsewhere) still reach the
    *  editor's history after the event bubbles. Call preventDefault to keep
    *  them. Text inputs and contenteditables inside keep their native undo.
+   *  With the value "select-all", Cmd/Ctrl+A on a target that is
+   *  not a text field selects every block at once.
    *  Public authoring hook. */
   keyboardOwner: 'data-blok-keyboard-owner',
+  /** Marks an editable field that saves plain text, like an audio title.
+   *  The inline toolbar never opens inside it and format shortcuts do
+   *  nothing there. Public authoring hook. */
+  plainText: 'data-blok-plain-text',
   /** Marks a subtree whose right-click belongs to the tool: Blok's block
    *  menu stands down inside it, so a tool's own context menu (a database
    *  view tab's menu) is not replaced by the block menu. Public authoring hook. */
@@ -451,6 +482,10 @@ export const DATA_ATTR = {
    *  `detail.rect` is null once the band grows past the block again.
    *  Public authoring hook. */
   selectionOwner: 'data-blok-selection-owner',
+  /** On a tool's own element while it holds a selection of its own with no
+   *  caret (a table cell range). The value is that selection as JSON; undo
+   *  and redo hand it back to the tool's `restoreHistorySelection`. */
+  toolSelection: 'data-blok-tool-selection',
 
   // ============================================
   // Navigation
@@ -550,6 +585,9 @@ export const DATA_ATTR = {
 /**
  * Type for DATA_ATTR keys
  */
+/** `data-blok-keyboard-owner` value: Cmd/Ctrl+A there skips the text stage and selects every block. */
+export const KEYBOARD_OWNER_SELECT_ALL = 'select-all';
+
 export type DataAttrKey = keyof typeof DATA_ATTR;
 
 /**

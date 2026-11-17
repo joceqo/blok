@@ -41,16 +41,20 @@ describe('DatabaseTool — form, map and dashboard views', () => {
     document.body.innerHTML = '';
   });
 
-  it('a form submit adds the answers as a row and tells the host', async () => {
+  it('a form submit from the Preview adds the answers as a row and tells the host', async () => {
     const doc = makeDoc([]);
     const onSubmit = vi.fn();
     const onTrigger = vi.fn();
     const { el } = buildTool(doc, { forms: { onSubmit }, automations: { onTrigger } }, dataWith({ type: 'form' }));
-    const name = el.querySelector<HTMLInputElement>('[data-blok-database-form-question="title"] input');
 
-    if (name === null) throw new Error('no Name question');
+    // The builder has no Submit: the Preview dialog, on body, answers.
+    el.querySelector<HTMLButtonElement>('[data-blok-testid="database-toolbar-preview-form"]')?.click();
+    const preview = document.querySelector<HTMLElement>('[data-blok-database-form-preview]');
+    const name = preview?.querySelector<HTMLInputElement>('[data-blok-database-form-question="title"] input') ?? null;
+
+    if (preview === null || name === null) throw new Error('no Name question in the Preview');
     name.value = 'Ada';
-    el.querySelector<HTMLButtonElement>('[data-blok-database-form-submit]')?.click();
+    preview.querySelector<HTMLButtonElement>('[data-blok-database-form-submit]')?.click();
     await flush();
 
     const rowId = doc.order[0];
@@ -58,7 +62,7 @@ describe('DatabaseTool — form, map and dashboard views', () => {
     expect(doc.rows.get(rowId)?.data.properties.title).toBe('Ada');
     expect(onSubmit).toHaveBeenCalledWith({ databaseId: 'db', viewId: 'v', values: { title: 'Ada' }, rowId, sharing: { public: false, anonymous: false, submissionAccess: 'none' } });
     expect(onTrigger).toHaveBeenCalledWith(expect.objectContaining({ type: 'pageAdded', rowId }), expect.anything());
-    expect(el.querySelector('[data-blok-database-form-confirmation]')).not.toBeNull();
+    expect(preview.querySelector('[data-blok-database-form-confirmation]')).not.toBeNull();
   });
 
   it('a read-only form only hands the answers to the host', () => {
@@ -73,15 +77,6 @@ describe('DatabaseTool — form, map and dashboard views', () => {
 
     expect(doc.order).toEqual([]);
     expect(onSubmit).toHaveBeenCalledWith({ databaseId: 'db', viewId: 'v', values: { title: 'Ada' }, sharing: { public: false, anonymous: false, submissionAccess: 'none' } });
-  });
-
-  it('the form builder\'s Required toggle saves on the view property', () => {
-    const doc = makeDoc([]);
-    const { tool, el } = buildTool(doc, {}, dataWith({ type: 'form' }));
-
-    el.querySelector<HTMLInputElement>('[data-blok-database-form-required="where"]')?.click();
-
-    expect(tool.save(el).views[0].properties?.find((entry) => entry.id === 'where')?.required).toBe(true);
   });
 
   it('a map without a style or host map says a style is needed; with a host map the host draws the rows', async () => {
@@ -110,6 +105,6 @@ describe('DatabaseTool — form, map and dashboard views', () => {
     tool.addView('form');
     tool.addView('map');
 
-    expect(tool.save(el).views.map((view) => [view.type, view.name])).toEqual([['table', 'View'], ['form', 'Form'], ['map', 'Map']]);
+    expect(tool.save(el).views.map((view) => [view.type, view.name])).toEqual([['table', 'View'], ['form', 'Form builder'], ['map', 'Map']]);
   });
 });

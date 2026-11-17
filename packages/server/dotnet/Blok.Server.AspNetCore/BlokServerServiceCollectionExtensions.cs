@@ -89,6 +89,7 @@ public static class BlokServerServiceCollectionExtensions
             provider.GetRequiredService<IGuardedOutboundPolicy>()));
     services.TryAddSingleton<FixedWindowRateLimiter>();
     services.TryAddSingleton<BlokServerRequestGuard>();
+    services.TryAddSingleton<PdfCheckCache>();
 
     services.TryAddSingleton<IBlobStore>(provider =>
     {
@@ -122,12 +123,13 @@ public static class BlokServerServiceCollectionExtensions
             CreateS3BlobStore(
                 effectiveOptions,
                 provider.GetRequiredService<TimeProvider>()),
-            effectiveOptions.CollabS3Prefix);
+            effectiveOptions.CollabS3Prefix,
+            CollabLog(provider));
       }
 
       if (effectiveOptions.CollabDirectory != "")
       {
-        return new LocalCollabStore(effectiveOptions.CollabDirectory);
+        return new LocalCollabStore(effectiveOptions.CollabDirectory, CollabLog(provider));
       }
 
       throw new InvalidOperationException(
@@ -168,11 +170,14 @@ public static class BlokServerServiceCollectionExtensions
           {
             AnnouncedMaxMessageBytes = effectiveOptions.CollabMaxMessageBytes,
             MaxUpdateBytes = source.MaxUpdateBytes,
+            RestoreTrashesPages = effectiveOptions.CollabRestoreTrashesPages,
+            ChangeSignalWindow = effectiveOptions.CollabChangeSignalWindow,
           },
           timeProvider,
           CollabLog(provider),
           source.Store,
-          provider.GetService<ICollabActivityObserver>());
+          provider.GetService<ICollabActivityObserver>(),
+          provider.GetService<ICollabRecordNotes>());
     });
 
     // The endpoints need the concrete manager; the interface is the host's
@@ -185,7 +190,7 @@ public static class BlokServerServiceCollectionExtensions
     return new BlokServerBuilder(services);
   }
 
-  private static Action<string>? CollabLog(IServiceProvider provider)
+  internal static Action<string>? CollabLog(IServiceProvider provider)
   {
     var logger = provider.GetService<ILoggerFactory>()?.CreateLogger("Blok.Server.Collab");
 

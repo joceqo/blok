@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/dotnet"
-	"github.com/JackUait/blok/packages/server/go/internal/mediatype"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/mediatype"
 )
 
 const (
@@ -39,10 +38,13 @@ type S3 struct {
 	TempDir       string
 	Now           func() time.Time
 	client        *http.Client
-	dialer        *net.Dialer
+	transport     *dotnet.SocketsTransport
 	// S3BlobStoreOptions.RequestTimeout and ResponseHeaderTimeout; zero is
 	// the default. Only tests set them.
 	requestTimeout, headerTimeout time.Duration
+	// SocketsHttpHandler.ConnectTimeout; zero is the default. Only tests
+	// set it.
+	connectTimeout time.Duration
 }
 
 // NewS3 checks the target the way S3TargetResolver does and builds the client.
@@ -56,16 +58,18 @@ func NewS3(s *S3) (*S3, error) {
 	if s.headerTimeout <= 0 {
 		s.headerTimeout = s3ResponseHeaderTimeout
 	}
-	s.dialer = &net.Dialer{Timeout: s3ConnectTimeout}
+	if s.connectTimeout <= 0 {
+		s.connectTimeout = s3ConnectTimeout
+	}
+	// SocketsHttpHandler: the environment proxy, one connect budget for
+	// TCP, tunnel and TLS, a 1 minute idle pool, and no gzip, so a
+	// gzip-encoded object reads back as stored.
+	s.transport = dotnet.NewSocketsTransport(dotnet.SocketsOptions{ConnectTimeout: s.connectTimeout})
+	// Counts from the end of the body, like the PayloadContent callback in
+	// S3BlobStore.SendAsync.
+	s.transport.Transport.ResponseHeaderTimeout = s.headerTimeout
 	s.client = &http.Client{
-		Transport: &http.Transport{
-			// SocketsHttpHandler's default: the environment proxy.
-			Proxy:       osProxy(),
-			DialContext: s.dialer.DialContext,
-			// Counts from the end of the body, like the PayloadContent
-			// callback in S3BlobStore.SendAsync.
-			ResponseHeaderTimeout: s.headerTimeout,
-		},
+		Transport:     s.transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	return s, nil
@@ -108,6 +112,9 @@ func (s *S3) target(key string) (*dotnet.URI, string, error) {
 	if path := endpointPath(s.Endpoint, authorityStart); strings.Trim(dotnet.UnescapeDataString(path), "/") != "" {
 		return nil, "", fmt.Errorf("blobstore: s3 endpoint %q must have no path", s.Endpoint)
 	}
+	// UriBuilder.Path escapes these; joined raw they start a query or a
+	// fragment and address another object.
+	key = strings.NewReplacer("?", "%3F", "#", "%23").Replace(key)
 	host, path := endpoint.Host, "/"+s.Bucket+"/"+key
 	if s.virtual(endpoint.Host) {
 		host, path = s.Bucket+"."+endpoint.Host, "/"+key
@@ -169,12 +176,27 @@ func dnsCompatibleBucket(bucket string) bool {
 	return true
 }
 
-// Put spools content to learn its length and hash, then PUTs it.
+// Put learns content's length and hash, then PUTs it. Like C#'s
+// PreparedPayload, a seekable body is hashed in place, with no spool cap;
+// any other body is spooled.
 func (s *S3) Put(ctx context.Context, extension, mimeType string, content io.Reader) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	key := NewKey(extension)
+	if seeker, ok := content.(io.ReadSeeker); ok {
+		if start, err := seeker.Seek(0, io.SeekCurrent); err == nil {
+			length, hash, err := hashInPlace(ctx, seeker, start)
+			if err != nil {
+				return "", err
+			}
+			body := replayable{ReadSeeker: seeker, start: start}
+			if _, err := s.send(ctx, http.MethodPut, key, sanitizeS3MediaType(mimeType), body, length, hash, false, false); err != nil {
+				return "", err
+			}
+			return strings.TrimRight(s.PublicURL, "/") + "/" + key, nil
+		}
+	}
 	spool, length, hash, err := s.spool(ctx, content)
 	if err != nil {
 		return "", err
@@ -183,10 +205,32 @@ func (s *S3) Put(ctx context.Context, extension, mimeType string, content io.Rea
 		_ = spool.Close()
 		_ = os.Remove(spool.Name())
 	}()
-	if _, err := s.send(ctx, http.MethodPut, key, sanitizeS3MediaType(mimeType), spool, length, hash, false, false); err != nil {
+	if _, err := s.send(ctx, http.MethodPut, key, sanitizeS3MediaType(mimeType), replayable{ReadSeeker: spool}, length, hash, false, false); err != nil {
 		return "", err
 	}
 	return strings.TrimRight(s.PublicURL, "/") + "/" + key, nil
+}
+
+func hashInPlace(ctx context.Context, seeker io.ReadSeeker, start int64) (int64, string, error) {
+	end, err := seeker.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, "", err
+	}
+	if _, err := seeker.Seek(start, io.SeekStart); err != nil {
+		return 0, "", err
+	}
+	if end < start {
+		return 0, "", errors.New("blobstore: s3 payload ends before its current position")
+	}
+	hash := sha256.New()
+	_, err = io.Copy(hash, readerWithContext{ctx, seeker})
+	if _, seekErr := seeker.Seek(start, io.SeekStart); err == nil {
+		err = seekErr
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	return end - start, hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func (s *S3) spool(ctx context.Context, content io.Reader) (*os.File, int64, string, error) {
@@ -196,6 +240,9 @@ func (s *S3) spool(ctx context.Context, content io.Reader) (*os.File, int64, str
 	if dir == "" {
 		dir = os.TempDir()
 	}
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		return nil, 0, "", err
+	}
 	file, err := os.OpenFile(filepath.Join(dir, "blok-s3-"+hex.EncodeToString(random[:])+".tmp"), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, 0, "", err
@@ -204,7 +251,7 @@ func (s *S3) spool(ctx context.Context, content io.Reader) (*os.File, int64, str
 	limited := io.LimitReader(content, s.MaxSpoolBytes+1)
 	length, err := io.Copy(io.MultiWriter(file, hash), readerWithContext{ctx, limited})
 	if err == nil && length > s.MaxSpoolBytes {
-		err = errors.New("blobstore: s3 upload body is over the spool cap")
+		err = fmt.Errorf("The S3 payload exceeds the configured %d-byte limit.", s.MaxSpoolBytes)
 	}
 	if err == nil {
 		_, err = file.Seek(0, io.SeekStart)
@@ -259,6 +306,13 @@ func (s *S3) DeleteObject(ctx context.Context, key string) error {
 	return err
 }
 
+// replayable is a seekable body from start. It hides Close: net/http
+// would close a caller's file.
+type replayable struct {
+	io.ReadSeeker
+	start int64
+}
+
 var emptyHash = func() string { sum := sha256.Sum256(nil); return hex.EncodeToString(sum[:]) }()
 
 func (s *S3) send(ctx context.Context, method, key, mimeType string, body io.Reader, length int64, hash string, readBody, allowNotFound bool) ([]byte, error) {
@@ -268,7 +322,9 @@ func (s *S3) send(ctx context.Context, method, key, mimeType string, body io.Rea
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.requestTimeout)
 	defer cancel()
-	if body == nil {
+	// net/http reads length 0 with a real body as unknown and sends it
+	// chunked; C# sends Content-Length: 0.
+	if body == nil || length == 0 {
 		body = http.NoBody
 	}
 	request, err := http.NewRequestWithContext(ctx, method, url.AbsoluteURI, body)
@@ -276,6 +332,23 @@ func (s *S3) send(ctx context.Context, method, key, mimeType string, body io.Rea
 		return nil, err
 	}
 	request.ContentLength = length
+	if r, ok := body.(replayable); ok {
+		// A proxy's 407 sends the body again, as .NET resends its content.
+		request.GetBody = func() (io.ReadCloser, error) {
+			if _, err := r.Seek(r.start, io.SeekStart); err != nil {
+				return nil, err
+			}
+			return io.NopCloser(r), nil
+		}
+	}
+	if length == 0 && method != http.MethodPut {
+		// C# sends Content-Length: 0 on GET and DELETE too. net/http drops
+		// the canonical key and never writes a zero length for GET, so
+		// only a lower-case key reaches the wire.
+		request.Header["content-length"] = []string{"0"}
+	}
+	// C# sends no User-Agent; nil stops Go's default one.
+	request.Header["User-Agent"] = nil
 	if method == http.MethodPut {
 		request.Header.Set("Content-Disposition", "attachment")
 	}
@@ -301,7 +374,12 @@ func (s *S3) send(ctx context.Context, method, key, mimeType string, body io.Rea
 	if allowNotFound && response.StatusCode == http.StatusNotFound {
 		return nil, nil
 	}
-	prefix, _ := io.ReadAll(io.LimitReader(response.Body, s3ErrorBodyLimit))
+	// A failed read keeps what it read, unless the caller or the request
+	// timeout ended it: C# then throws the cancellation.
+	prefix, err := io.ReadAll(io.LimitReader(response.Body, s3ErrorBodyLimit))
+	if err != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	return nil, fmt.Errorf("blobstore: s3 %s returned %d: %s", method, response.StatusCode, strings.TrimSpace(string(prefix)))
 }
 

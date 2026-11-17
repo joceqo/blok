@@ -6,7 +6,8 @@ import type {
   SanitizerConfig,
   ToolConfig,
   ToolboxConfigEntry,
-  PopoverItemParams
+  PopoverItemParams,
+  PageHeaderAction,
 } from '../../../types';
 import type { BlockTuneData } from '../../../types/block-tunes/block-tune-data';
 import type { BlockTuneRenderContext } from '../../../types/block-tunes/block-tune';
@@ -21,6 +22,7 @@ import type { BlockToolAdapter } from '../tools/block';
 import type { ToolsCollection } from '../tools/collection';
 import type { BlockTuneAdapter } from '../tools/tune';
 import { generateBlockId, isFunction, log } from '../utils';
+import { syncAnnotationFocus } from '../utils/annotation-focus';
 import { isSameBlockData } from '../utils/blocks';
 import { EventsDispatcher } from '../utils/events';
 import { hasContentMatching, isContentEmpty } from '../utils/own-element';
@@ -34,6 +36,16 @@ import { SelectionManager } from './selection-manager';
 import { StyleManager } from './style-manager';
 import { ToolRenderer } from './tool-renderer';
 import { TunesManager } from './tunes-manager';
+
+const isPageHeaderAction = (value: unknown): value is PageHeaderAction => {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const action = value as Record<string, unknown>;
+
+  return typeof action.name === 'string' && typeof action.label === 'string' && typeof action.onActivate === 'function'
+    && (action.icon === undefined || typeof action.icon === 'string');
+};
 
 /** Tags that hold media content. */
 const MEDIA_SELECTOR = ['img', 'iframe', 'video', 'audio', 'source', 'input', 'textarea', 'twitterwidget'].join(',');
@@ -501,6 +513,8 @@ export class Block extends EventsDispatcher<BlockEvents> {
       return;
     }
 
+    syncAnnotationFocus(root, this.readOnly);
+
     for (const inlineTool of this.tool.inlineTools.values()) {
       const hydrate = inlineTool.hydrate;
 
@@ -567,6 +581,24 @@ export class Block extends EventsDispatcher<BlockEvents> {
       const errorMessage = e instanceof Error ? e.message : String(e);
 
       log(`Error during '${methodName}' call: ${errorMessage}`, 'error');
+    }
+  }
+
+  /** The tool's buttons for the page header row; [] when it has none or the call throws. */
+  public pageHeaderActions(): PageHeaderAction[] {
+    const method = (this.toolInstance as unknown as Record<string, unknown>).pageHeaderActions;
+
+    if (!isFunction(method)) {
+      return [];
+    }
+    try {
+      const actions: unknown = method.call(this.toolInstance);
+
+      return Array.isArray(actions) ? actions.filter(isPageHeaderAction) : [];
+    } catch (e) {
+      log(`Error during 'pageHeaderActions' call: ${e instanceof Error ? e.message : String(e)}`, 'error');
+
+      return [];
     }
   }
 
@@ -713,22 +745,28 @@ export class Block extends EventsDispatcher<BlockEvents> {
   /** While `isDerivedChange`: the data keys the change was worked out from. */
   public derivedFrom: readonly string[] = [];
 
+  /** True while a change dispatched with `edit: false` is being reported. */
+  public isNonEditChange = false;
+
   /**
    * Allows to say Blok that Block was changed. Used to manually trigger Blok's 'onChange' callback
    * Can be useful for block changes invisible for blok core.
    * @param options - change options
    * @param options.derived - the tool worked the data out itself; it is not an undo step
    * @param options.from - with `derived`: the data keys it was worked out from
+   * @param options.edit - false: an undo step, but not an edit (no lastEditedAt/By stamp)
    */
-  public dispatchChange(options?: { derived?: boolean; from?: readonly string[] }): void {
+  public dispatchChange(options?: { derived?: boolean; from?: readonly string[]; edit?: boolean }): void {
     this.isDerivedChange = options?.derived === true;
     this.derivedFrom = this.isDerivedChange ? options?.from ?? [] : [];
+    this.isNonEditChange = options?.edit === false;
 
     try {
       this.didMutated();
     } finally {
       this.isDerivedChange = false;
       this.derivedFrom = [];
+      this.isNonEditChange = false;
     }
   }
 
@@ -817,10 +855,19 @@ export class Block extends EventsDispatcher<BlockEvents> {
 
     this.readOnly = state;
 
+    const root = this.toolRenderer.toolRenderedElement;
+
     if (state) {
       this.inputManager.removeInputEvents();
       this.mutationHandler.unwatch();
-    } else {
+    }
+
+    // While nothing watches: the attribute writes must not read as an edit.
+    if (root !== null) {
+      syncAnnotationFocus(root, state);
+    }
+
+    if (!state) {
       this.inputManager.addInputEvents();
       this.mutationHandler.watch();
     }

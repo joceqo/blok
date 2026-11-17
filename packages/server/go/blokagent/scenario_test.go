@@ -2,6 +2,7 @@ package blokagent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
 )
 
 // The Go reader of test/fixtures/agent-server-scenarios. The runner
@@ -151,6 +152,10 @@ func checkPointers(t *testing.T, where string, root, pointers *jsjson.Node) {
 			if exists {
 				t.Errorf("%s: %s should be absent, got %s", where, path, stable(t, got))
 			}
+		case lookup(want, "present") != nil:
+			if !exists || !present(got) {
+				t.Errorf("%s: %s should be present", where, path)
+			}
 		case lookup(want, "length") != nil:
 			count, _ := strconv.Atoi(string(lookup(want, "length").Raw()))
 			if !exists || got.Kind != jsjson.KindArray || len(got.Items) != count {
@@ -241,8 +246,16 @@ func TestMatchesTheAgentServerScenarios(t *testing.T) {
 	}
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			ctx := context.Background()
 			scenario := mustParse(t, readRepoFile(t, filepath.Join(scenarioRoot, name+".json")))
+			executor := executor
+			var live *scenarioRoom
+			if spec := lookup(scenario, "room"); spec != nil {
+				live = openScenarioRoom(t, spec, lookup(scenario, "seed"))
+				executor = live.executor
+			}
+			revisions := map[int]string{}
 			host := newScenarioHost(t, scenario)
 			options := scenarioOptions(t, lookup(scenario, "options"), host)
 			seed, _ := write(lookup(scenario, "seed"))
@@ -265,6 +278,9 @@ func TestMatchesTheAgentServerScenarios(t *testing.T) {
 			for index, step := range lookup(scenario, "steps").Items {
 				run, _ := stringOf(lookup(step, "run"))
 				expect := lookup(step, "expect")
+				if expect == nil {
+					expect = jsjson.NewObject()
+				}
 				times := 1
 				if node := lookup(step, "times"); node != nil {
 					times, _ = strconv.Atoi(string(node.Raw()))
@@ -289,9 +305,32 @@ func TestMatchesTheAgentServerScenarios(t *testing.T) {
 						continue
 					}
 
+					current := ""
+					if live != nil {
+						current = live.head(t, live.doc)
+					}
+					fill := func(text string) string {
+						if live == nil {
+							return text
+						}
+						return fillScenario(text, revisions, current)
+					}
+					switch run {
+					case "peer", "reset", "purge", "restore", "drain", "failListings":
+						live.hostStep(t, where, run, step, fill)
+						continue
+					}
+					doc := live.stepDoc(step)
+					var beforeHead, beforeBlocks string
+					if live != nil {
+						beforeHead = live.head(t, doc)
+						beforeBlocks = live.blocks(t, doc)
+					}
+
 					spec := lookup(step, "document")
 					var document string
-					if ref, ok := stringOf(spec); ok {
+					if spec == nil {
+					} else if ref, ok := stringOf(spec); ok {
 						document = reference(ref)
 					} else {
 						base, _ := stringOf(lookup(spec, "from"))
@@ -308,9 +347,12 @@ func TestMatchesTheAgentServerScenarios(t *testing.T) {
 						document, _ = write(from)
 					}
 					batch, _ := write(indexed(lookup(step, "batch"), repeat))
+					batch = fill(batch)
 					var execution Execution
 					var err error
-					if run == "plain" {
+					if run == "room" {
+						execution, err = executor.ExecuteInRoom(ctx, doc, batch, stepActor(step), options)
+					} else if run == "plain" {
 						execution, err = executor.Execute(ctx, document, batch, scenarioActor, options)
 					} else {
 						session, ok := sessions[run]
@@ -320,10 +362,28 @@ func TestMatchesTheAgentServerScenarios(t *testing.T) {
 						}
 						execution, err = session.Execute(ctx, document, batch)
 					}
+					live.healListings()
+					// A step the executor throws on: only the error's kind and text are the answer.
+					if throws := lookup(expect, "throws"); throws != nil {
+						kind, _ := stringOf(lookup(throws, "type"))
+						message, _ := stringOf(lookup(throws, "message"))
+						var invalid *InvalidOperationError
+						if kind != "InvalidOperation" || !errors.As(err, &invalid) || invalid.Message != message {
+							t.Fatalf("%s: threw %v, want %s: %s", where, err, kind, message)
+						}
+						continue
+					}
 					if err != nil {
 						t.Fatalf("%s: %v", where, err)
 					}
 					result := mustParse(t, execution.ResultJSON)
+					revisions[index] = execution.Revision
+					head := ""
+					if live != nil {
+						head = live.head(t, doc)
+						written, _ := write(expect)
+						expect = headed(mustParse(t, fill(written)), head)
+					}
 					if want := lookup(expect, "ok"); want != nil {
 						if got, _ := isTrue(result, "ok"); got != (want.Kind == jsjson.KindTrue) {
 							t.Fatalf("%s: ok\n%s", where, execution.ResultJSON)
@@ -349,6 +409,9 @@ func TestMatchesTheAgentServerScenarios(t *testing.T) {
 						if err != nil || read.Revision != execution.Revision {
 							t.Errorf("%s: revision %q, a read gives %q (%v)", where, execution.Revision, read.Revision, err)
 						}
+					}
+					if live != nil {
+						live.check(t, where, doc, expect, execution, head, beforeHead, beforeBlocks, byStep, lookup(scenario, "seed"))
 					}
 					if execution.DocumentJSON != nil {
 						last = *execution.DocumentJSON

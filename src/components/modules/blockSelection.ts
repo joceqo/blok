@@ -8,11 +8,13 @@ import type { SanitizerConfig } from '../../../types/configs';
 import { Module } from '../__module';
 import type { Block } from '../block';
 import { DATA_ATTR } from '../constants';
+import { KEYBOARD_OWNER_SELECT_ALL } from '../constants/data-attributes';
 import { Dom as $ } from '../dom';
-import { blocksToMarkdown } from '../../markdown/blocks-to-markdown';
-import type { CrossBlockSubRange, CrossBlockTextSelection } from '../selection/cross-block-range';
+import { blocksToMarkdown, type MarkdownPageOptions } from '../../markdown/blocks-to-markdown';
+import { safeHref } from '../utils/sanitize-url';
+import type { PageConfig } from '../../tools/page/types';
+import type { CrossBlockTextSelection } from '../selection/cross-block-range';
 import { SelectionUtils } from '../selection/index';
-import { delay } from '../utils';
 import { clean, composeSanitizerConfig } from '../utils/sanitizer';
 import { prefersReducedMotion } from '../utils/reduced-motion';
 import { announce } from '../utils/announcer';
@@ -23,14 +25,24 @@ import { linkToBlock, linkToHtml, rememberCut, type CopyLink } from '../utils/co
 import { convertStringToBlockData } from '../utils/blocks';
 import { TOOL_NAME as LIST_TOOL_NAME } from '../../tools/list/constants';
 import { buildSemanticListHtml, type SemanticListItem } from '../../tools/list/dom-builder';
-import { TOOL_NAME as CODE_TOOL_NAME } from '../../tools/code/constants';
+import { TOOL_NAME as CODE_TOOL_NAME, HIGHLIGHTABLE_LANGUAGES } from '../../tools/code/constants';
+import { CODE_FILENAME_ATTR, CODE_LANGUAGE_ATTR } from './paste/constants';
+import { TOOL_NAME as TOGGLE_TOOL_NAME } from '../../tools/toggle/constants';
+import { TOOL_NAME as CALLOUT_TOOL_NAME } from '../../tools/callout/constants';
 import { INLINE_TEXT_SANITIZE } from '../shared/inline-content-sanitize';
 import { resolvePresetColors } from '../shared/resolve-preset-colors';
 import { parseUntrustedHtml } from '../utils/inert-html';
 import { PAGE_REFERENCE_ATTR, PAGE_REFERENCE_FALLBACK } from '../../shared/page-reference';
 import { isPagePointer } from '../../shared/page-pointer';
+import { BLOK_HOSTED_IMAGE_ATTR } from '../../shared/clipboard-html';
+import { databaseRowTitle, titlePropertyIdOf } from '../../shared/database-rows';
 import type { ListItemStyle } from '../../tools/list/types';
+import { tableClipboardHtml } from '../../tools/table/table-cell-clipboard';
+import type { ClipboardBlockData } from '../../tools/table/types';
+import type { TableData } from '../../shared/table/types';
+import { getElementDirection } from '../utils/direction';
 import { isInAnnotation } from './blockManager/new-block-placement';
+import { cutBlockToRange, sliceHtmlByText, type BlockCut } from '../utils/range-cut';
 
 /**
  * A run of consecutive selected blocks for clipboard serialization: either a
@@ -40,6 +52,20 @@ import { isInAnnotation } from './blockManager/new-block-placement';
 type ClipboardSegment =
   | { type: 'list'; items: Block[] }
   | { type: 'other'; block: Block };
+
+/**
+ * A block a text selection covers only in part: its data and html cut to the
+ * selected text. `tool` is set when the block could not be cut in place and
+ * goes out as a paragraph of the selected text.
+ */
+interface BlockPart {
+  data: Record<string, unknown>;
+  html: string;
+  tool?: string;
+}
+
+/** The partly covered blocks of a copy. Absent when whole blocks are copied. */
+type BlockParts = Map<Block, BlockPart>;
 
 /** One block in the `application/x-blok` payload. */
 interface ClipboardEntry {
@@ -53,6 +79,10 @@ interface ClipboardEntry {
   /** A cut token lets the first paste recreate a singleton block. */
   cut?: string;
   link?: CopyLink;
+  /** A row copied without its database: its title, which only the database's schema names. */
+  title?: string;
+  /** Whether this browser shows the block open. Personal state, so it is kept out of `data`. */
+  open?: boolean;
 }
 
 /**
@@ -64,6 +94,10 @@ interface ClipboardEntry {
 const NAVIGATION_ANNOUNCE_THROTTLE_MS = 300;
 
 const BLOCK_HOLDER_SELECTOR = `[${DATA_ATTR.element}]`;
+
+const HEADER_TOOL_NAME = 'header';
+const DIVIDER_TOOL_NAME = 'divider';
+const TAB_TOOL_NAME = 'tab';
 
 /** Top-level tags that already make their own block in the copied HTML. */
 const CLIPBOARD_BLOCK_TAGS = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'UL', 'OL', 'TABLE']);
@@ -80,7 +114,60 @@ const rangeToPlainText = (range: Range): string => {
 
   return fragment.textContent ?? '';
 };
+/**
+ * Put a text selection's copy at depth 0: each block whose parent was left
+ * out loses its parent's depth, and so does its subtree. A run of list items
+ * keeps the depths of its items relative to its shallowest item.
+ * @param entries - the copied blocks, parents first
+ */
+const rebaseToSelection = (entries: ClipboardEntry[]): ClipboardEntry[] => {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const rootOf = (entry: ClipboardEntry): ClipboardEntry => {
+    const parent = entry.parentId === null ? undefined : byId.get(entry.parentId);
+
+    return parent === undefined ? entry : rootOf(parent);
+  };
+  // A list item saved at depth 0 has no depth key.
+  const depthOf = (entry: ClipboardEntry): number | undefined => {
+    if (entry.tool !== LIST_TOOL_NAME) {
+      return undefined;
+    }
+
+    return typeof entry.data.depth === 'number' ? entry.data.depth : 0;
+  };
+  const runs: ClipboardEntry[][] = [];
+
+  for (const entry of entries.filter((candidate) => rootOf(candidate) === candidate)) {
+    const run = runs[runs.length - 1];
+    const last = run?.[run.length - 1];
+
+    if (last !== undefined && depthOf(last) !== undefined && depthOf(entry) !== undefined && last.parentId === entry.parentId) {
+      run.push(entry);
+    } else {
+      runs.push([entry]);
+    }
+  }
+
+  const baseOf = new Map(runs.flatMap((run) => {
+    const base = Math.min(...run.map((entry) => depthOf(entry) ?? 0));
+
+    return run.map((entry) => [entry, base] as const);
+  }));
+
+  return entries.map((entry) => {
+    const root = rootOf(entry);
+    const depth = entry.data.depth;
+
+    return {
+      ...entry,
+      indent: Math.max(entry.indent - root.indent, 0),
+      ...(depthOf(entry) === undefined || typeof depth !== 'number' ? {} : { data: { ...entry.data, depth: Math.max(depth - (baseOf.get(root) ?? 0), 0) } }),
+    };
+  });
+};
+
 const TABLE_CELL_BLOCKS_SELECTOR = '[data-blok-table-cell-blocks]';
+const TABLE_TOOL_NAME = 'table';
 
 /**
  *
@@ -162,6 +249,7 @@ export class BlockSelection extends Module {
         src: true,
         width: true,
         height: true,
+        [BLOK_HOSTED_IMAGE_ATTR]: true,
       },
       blockquote: {},
       pre: {},
@@ -351,6 +439,45 @@ export class BlockSelection extends Module {
       },
       on: this.Blok.UI.nodes.redactor,
     });
+
+    /**
+     * Read-only text takes no focus, so after a click Cmd+A lands on <body>
+     * and never reaches the redactor shortcut above.
+     */
+    this.listeners.on(document, 'keydown', (event: Event) => {
+      this.handleReadOnlyCommandA(event as KeyboardEvent);
+    });
+  }
+
+  /**
+   * Cmd+A in read-only when the keydown missed the redactor. Acts only when the
+   * page selection sits in this editor, so other editors and fields keep theirs.
+   * @param event - keydown on the document
+   */
+  private handleReadOnlyCommandA(event: KeyboardEvent): void {
+    const isCommandA = (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.code === 'KeyA';
+
+    if (!isCommandA || !this.Blok.ReadOnly.isEnabled) {
+      return;
+    }
+
+    const redactor = this.Blok.UI.nodes.redactor;
+    const target = event.target;
+    const targetIsField = target instanceof HTMLElement
+      && (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT');
+
+    if (target instanceof Node && redactor.contains(target)) {
+      return;
+    }
+
+    const anchor = SelectionUtils.get()?.anchorNode ?? null;
+
+    if (targetIsField || anchor === null || !redactor.contains(anchor)) {
+      return;
+    }
+
+    event.preventDefault();
+    this.selectAllBlocks();
   }
 
   /**
@@ -459,9 +586,11 @@ export class BlockSelection extends Module {
    * @param {ClipboardEvent} e - copy/cut event
    * @param options - `cut` when the blocks are about to be deleted
    * @param options.cut - a `copyAsLink` block may then come back once anywhere
+   * @param options.blocks - blocks to copy instead of the selected ones
+   * @param options.range - a text selection: blocks it covers in part keep only the selected text
    * @returns {Promise<void>}
    */
-  public async copySelectedBlocks(e: ClipboardEvent, options: { cut?: boolean } = {}): Promise<void> {
+  public async copySelectedBlocks(e: ClipboardEvent, options: { cut?: boolean; blocks?: Block[]; range?: Range } = {}): Promise<void> {
     /**
      * Prevent default copy
      */
@@ -487,17 +616,20 @@ export class BlockSelection extends Module {
      * (e.g. when a collapsed toggle is copied — its hidden children must travel with it
      * so paste can restore the full toggle with its children).
      */
-    const allBlocks = this.collectBlocksForClipboard(this.selectedBlocks);
+    const collected = this.collectBlocksForClipboard(options.blocks ?? this.selectedBlocks);
+    const { blocks: allBlocks, parts } = options.range === undefined
+      ? { blocks: collected, parts: undefined }
+      : this.cutToRange(collected, options.range);
     const links = this.copyLinksOf(allBlocks);
     // A linked block stands alone: its descendants are not part of the link.
     const copiedBlocks = this.withoutLinkedDescendants(allBlocks, links);
-    const linkedData = this.serializeBlocksForClipboard(copiedBlocks, links);
+    const linkedData = this.serializeBlocksForClipboard(copiedBlocks, links, undefined, parts);
     const cutToken = options.cut === true && (links.size > 0 || allBlocks.some((block) => isPagePointer(block.name, block.preservedData)))
       ? rememberCut()
       : null;
     // Blok's own flavor carries linked blocks as themselves; paste decides
     // whether each one may stay a block or must become its link.
-    const savedData = this.serializeBlocksForClipboard(allBlocks, links, cutToken);
+    const savedData = this.serializeBlocksForClipboard(allBlocks, links, cutToken, parts);
 
     /**
      * List blocks render as non-semantic `<div role="listitem">` with a marker
@@ -507,25 +639,46 @@ export class BlockSelection extends Module {
      * SEMANTIC `<ul>`/`<ol>` instead, grouping consecutive selected list blocks into
      * a single nested list per depth. Non-list blocks keep the sanitize path.
      */
-    const segments = this.groupBlocksForClipboard(this.withoutTableCellBlocks(copiedBlocks));
+    const htmlBlocks = this.withoutTableCellBlocks(copiedBlocks);
+    // Each copied toggle, toggle heading and callout writes its children inside its own element.
+    const containerOf = this.clipboardContainerResolver(htmlBlocks.filter((block) => !links.has(block)));
+    const segments = this.groupBlocksForClipboard(htmlBlocks, (a, b) => containerOf(a) === containerOf(b));
+    const bodies = new Map<string, HTMLElement>();
+    const targetOf = (block: Block): HTMLElement => bodies.get(containerOf(block) ?? '') ?? fakeClipboard;
+    // A row's holder renders nothing; its title stands for it, with or without its database.
+    const rowTitles = new Map(copiedBlocks.flatMap((block) => (block.name === 'database-row' ? [[block.id, this.rowTitle(block)] as const] : [])));
 
     segments.forEach((segment) => {
+      const target = targetOf(segment.type === 'list' ? segment.items[0] : segment.block);
       const link = segment.type === 'other' ? links.get(segment.block) : undefined;
 
       if (link !== undefined) {
         const paragraph = $.make('p');
 
         paragraph.innerHTML = linkToHtml(link);
-        fakeClipboard.appendChild(paragraph);
+        target.appendChild(paragraph);
+      } else if (segment.type === 'other' && parts?.get(segment.block)?.tool !== undefined) {
+        this.appendNonListBlock(segment.block, target, parts);
       } else if (segment.type === 'other' && isPagePointer(segment.block.name, segment.block.preservedData)) {
         const paragraph = $.make('p');
 
         paragraph.appendChild(this.pageReferenceAnchor(segment.block));
-        fakeClipboard.appendChild(paragraph);
+        target.appendChild(paragraph);
       } else if (segment.type === 'list') {
-        this.appendSemanticList(segment.items, fakeClipboard);
+        this.appendSemanticList(segment.items, target, parts);
+      } else if (rowTitles.has(segment.block.id)) {
+        const paragraph = $.make('p');
+
+        paragraph.textContent = rowTitles.get(segment.block.id) ?? '';
+        if (paragraph.textContent !== '') {
+          target.appendChild(paragraph);
+        }
+      } else if (this.isClipboardContainer(segment.block)) {
+        bodies.set(segment.block.id, this.appendClipboardContainer(segment.block, target, parts));
+      } else if (segment.block.name === TAB_TOOL_NAME) {
+        this.appendTabTitle(segment.block, target);
       } else {
-        this.appendNonListBlock(segment.block, fakeClipboard);
+        this.appendNonListBlock(segment.block, target, parts);
       }
     });
 
@@ -538,7 +691,10 @@ export class BlockSelection extends Module {
      * ({@link copySelectedBlocksAsMarkdown}, bound to Cmd/Ctrl+Shift+C) emits the
      * same Markdown but writes it via navigator.clipboard.writeText.
      */
-    const textPlain = blocksToMarkdown(linkedData);
+    const textPlain = blocksToMarkdown(
+      linkedData.map((entry) => (entry.title === undefined ? entry : { ...entry, data: { ...entry.data, title: entry.title } })),
+      this.shownPages(copiedBlocks)
+    );
 
     resolvePresetColors(fakeClipboard);
 
@@ -578,6 +734,26 @@ export class BlockSelection extends Module {
    * @param selection - the cross-block text selection to serialize
    */
   public copyCrossBlockTextSelection(event: ClipboardEvent, selection: CrossBlockTextSelection): void {
+    // A host the range only touches contributes no characters to copy.
+    const blocks = selection.subRanges
+      .filter((sub) => sub.range.toString().length > 0)
+      .map((sub) => sub.block)
+      .filter((block, index, all) => all.indexOf(block) === index);
+
+    // Each block keeps its type, cut to the selected text. handleCut deletes
+    // right after this call, so the copy must stay synchronous up to setData.
+    void this.copySelectedBlocks(event, { blocks, range: selection.range });
+  }
+
+  /**
+   * Copy a selection inside one editing host as its inline markup and text.
+   * The browser's own copy wraps it in the host element and adds computed
+   * styles: on paste the host becomes a new block and the styles become marks.
+   * @param event - the copy or cut event
+   * @param range - the selection, inside `host`
+   * @param host - the editing host that holds the whole range
+   */
+  public copyHostTextSelection(event: ClipboardEvent, range: Range, host: HTMLElement): void {
     event.preventDefault();
 
     const clipboardData = event.clipboardData;
@@ -586,89 +762,24 @@ export class BlockSelection extends Module {
       return;
     }
 
-    const fakeClipboard = $.make('div');
-
-    /** A host the range only touches contributes no characters to copy. */
-    const written = selection.subRanges.filter((sub) => sub.range.toString().length > 0);
+    const plainText = rangeToPlainText(range);
+    const markup = $.make('div');
 
     /**
-     * A block whose content is selected IN FULL is serialized as that block, so
-     * a fully-covered heading stays a heading and a run of fully-covered list
-     * items stays one semantic list (the same treatment whole-block copy gives
-     * them). Only the partially-covered ends fall back to a paragraph — there is
-     * no half a heading.
+     * A plain-text host (code) has no markup: its spans are syntax highlight.
+     * Its newlines become `<br>`, since a bare newline in html is a space.
      */
-    this.groupCrossBlockSegments(written).forEach((segment) => {
-      if (segment.type === 'partial') {
-        this.appendPartialRange(segment.range, fakeClipboard);
+    if (host.getAttribute('contenteditable') === 'plaintext-only') {
+      markup.textContent = plainText;
+      markup.innerHTML = markup.innerHTML.replace(/\n/g, '<br>');
+    } else {
+      markup.appendChild(range.cloneContents());
+      markup.innerHTML = clean(markup.innerHTML, this.sanitizerConfig);
+      resolvePresetColors(markup);
+    }
 
-        return;
-      }
-
-      this.groupBlocksForClipboard(segment.blocks).forEach((blockSegment) => {
-        if (blockSegment.type === 'list') {
-          this.appendSemanticList(blockSegment.items, fakeClipboard);
-        } else {
-          this.appendNonListBlock(blockSegment.block, fakeClipboard);
-        }
-      });
-    });
-
-    resolvePresetColors(fakeClipboard);
-
-    clipboardData.setData('text/plain', written.map((sub) => rangeToPlainText(sub.range)).join('\n\n'));
-    clipboardData.setData('text/html', fakeClipboard.innerHTML);
-  }
-
-  /**
-   * Fold per-host sub-ranges into clipboard segments, coalescing consecutive
-   * fully-covered blocks into one run so list grouping can see them together.
-   * @param subRanges - the selection's per-host sub-ranges, in DOM order
-   */
-  private groupCrossBlockSegments(
-    subRanges: CrossBlockSubRange[]
-  ): Array<{ type: 'whole'; blocks: Block[] } | { type: 'partial'; range: Range }> {
-    return subRanges.reduce<Array<{ type: 'whole'; blocks: Block[] } | { type: 'partial'; range: Range }>>(
-      (segments, sub) => {
-        /**
-         * A multi-input block (a table) is never "wholly" covered by one of its
-         * hosts, so it stays on the partial path.
-         */
-        if (!sub.coversWholeInput || sub.block.inputs.length > 1) {
-          return [...segments, { type: 'partial',
-            range: sub.range }];
-        }
-
-        const last = segments[segments.length - 1];
-
-        if (last?.type === 'whole') {
-          last.blocks.push(sub.block);
-
-          return segments;
-        }
-
-        return [...segments, { type: 'whole',
-          blocks: [sub.block] }];
-      },
-      []
-    );
-  }
-
-  /**
-   * Append a partially-selected block's content as a paragraph, preserving the
-   * inline markup inside the range.
-   * @param range - the sub-range covering part of one editing host
-   * @param fakeClipboard - the container receiving the paragraph
-   */
-  private appendPartialRange(range: Range, fakeClipboard: HTMLElement): void {
-    const holder = $.make('div');
-
-    holder.appendChild(range.cloneContents());
-
-    const paragraph = $.make('p');
-
-    paragraph.innerHTML = clean(holder.innerHTML, this.sanitizerConfig);
-    fakeClipboard.appendChild(paragraph);
+    clipboardData.setData('text/plain', plainText);
+    clipboardData.setData('text/html', markup.innerHTML);
   }
 
   /**
@@ -687,7 +798,8 @@ export class BlockSelection extends Module {
 
     const collected = this.collectBlocksForClipboard(blocks);
     const links = this.copyLinksOf(collected);
-    const markdown = blocksToMarkdown(this.serializeBlocksForClipboard(this.withoutLinkedDescendants(collected, links), links));
+    const copied = this.withoutLinkedDescendants(collected, links);
+    const markdown = blocksToMarkdown(this.serializeBlocksForClipboard(copied, links), this.shownPages(copied));
 
     const { clipboard } = navigator;
 
@@ -700,14 +812,15 @@ export class BlockSelection extends Module {
    * Partition selected blocks into runs of consecutive list blocks (grouped into
    * a single semantic list) and standalone non-list blocks.
    * @param blocks - the selected blocks in document order
+   * @param sameRun - whether two list blocks may share one list
    * @returns the ordered clipboard segments
    */
-  private groupBlocksForClipboard(blocks: Block[]): ClipboardSegment[] {
+  private groupBlocksForClipboard(blocks: Block[], sameRun: (a: Block, b: Block) => boolean = () => true): ClipboardSegment[] {
     return blocks.reduce<ClipboardSegment[]>((segments, block) => {
       const last = segments[segments.length - 1];
       const isList = block.name === LIST_TOOL_NAME;
 
-      if (isList && last?.type === 'list') {
+      if (isList && last?.type === 'list' && sameRun(last.items[0], block)) {
         last.items.push(block);
       } else if (isList) {
         segments.push({ type: 'list', items: [block] });
@@ -724,9 +837,10 @@ export class BlockSelection extends Module {
    * semantic `<ul>`/`<ol>` structure.
    * @param items - the consecutive list blocks
    * @param fakeClipboard - the container receiving the semantic list
+   * @param parts - blocks a text selection covers in part
    */
-  private appendSemanticList(items: Block[], fakeClipboard: HTMLElement): void {
-    const group: SemanticListItem[] = items.map((block) => this.toSemanticListItem(this.clipboardDataForBlock(block)));
+  private appendSemanticList(items: Block[], fakeClipboard: HTMLElement, parts?: BlockParts): void {
+    const group: SemanticListItem[] = items.map((block) => this.toSemanticListItem(this.clipboardDataForBlock(block, parts)));
     const listContainer = buildSemanticListHtml(group);
 
     while (listContainer.firstChild) {
@@ -740,17 +854,45 @@ export class BlockSelection extends Module {
    * never run together in the pasted document.
    * @param block - the non-list block
    * @param fakeClipboard - the container receiving the sanitized content
+   * @param parts - blocks a text selection covers in part
    */
-  private appendNonListBlock(block: Block, fakeClipboard: HTMLElement): void {
-    if (block.name === CODE_TOOL_NAME) {
-      this.appendCodeBlock(block, fakeClipboard);
+  private appendNonListBlock(block: Block, fakeClipboard: HTMLElement, parts?: BlockParts): void {
+    const part = parts?.get(block);
+
+    if (block.name === CODE_TOOL_NAME && part?.tool === undefined) {
+      this.appendCodeBlock(block, fakeClipboard, parts);
+
+      return;
+    }
+
+    // The sanitizer keeps no <hr>, and a run with no text is dropped.
+    if (block.name === DIVIDER_TOOL_NAME && part === undefined) {
+      fakeClipboard.appendChild($.make('hr'));
+
+      return;
+    }
+
+    // The table's own cell copy writes this html raw too. The copy sanitizer
+    // would drop its payload, cell colors and the block boundaries in a cell.
+    if (block.name === TABLE_TOOL_NAME && part === undefined) {
+      fakeClipboard.insertAdjacentHTML('beforeend', tableClipboardHtml(
+        block.preservedData as TableData,
+        (ids) => ids.flatMap((id) => {
+          const cellBlock = this.Blok.BlockManager.getBlockById(id);
+
+          // A block nested under another cell block travels in its children.
+          return cellBlock?.parentId === block.id ? [this.cellClipboardBlock(cellBlock)] : [];
+        }),
+        getElementDirection(block.holder)
+      ));
 
       return;
     }
 
     const wrapper = $.make('div');
+    const own = part?.html ?? (block.tool as Block['tool'] | undefined)?.clipboardHtml(block.preservedData);
 
-    wrapper.innerHTML = clean(ownClone(block.holder).innerHTML, this.sanitizerConfig);
+    wrapper.innerHTML = clean(typeof own === 'string' ? own : ownClone(block.holder).innerHTML, this.sanitizerConfig);
 
     const flushRun = (run: Node[]): void => {
       if (run.every((node) => (node.textContent ?? '').trim().length === 0 && !(node instanceof HTMLImageElement))) {
@@ -778,15 +920,129 @@ export class BlockSelection extends Module {
   }
 
   /**
+   * A table cell block with its children, as the table's clipboard carries it.
+   * @param block - a block in a table cell
+   */
+  private cellClipboardBlock(block: Block): ClipboardBlockData {
+    const children = block.contentIds.flatMap((id) => {
+      const child = this.Blok.BlockManager.getBlockById(id);
+
+      return child === undefined ? [] : [this.cellClipboardBlock(child)];
+    });
+
+    return {
+      tool: block.name,
+      data: block.preservedData,
+      ...(Object.keys(block.preservedTunes).length > 0 ? { tunes: block.preservedTunes } : {}),
+      ...(children.length > 0 ? { children } : {}),
+    };
+  }
+
+  /**
+   * Whether a block writes its children inside an element of its own in the copied html.
+   * @param block - a copied block
+   */
+  private isClipboardContainer(block: Block): boolean {
+    return block.name === TOGGLE_TOOL_NAME
+      || block.name === CALLOUT_TOOL_NAME
+      || (block.name === HEADER_TOOL_NAME && block.preservedData.isToggleable === true);
+  }
+
+  /**
+   * Map each copied block to the copied container that holds it in the html,
+   * or to `undefined` when it sits at the top. A copied block that is no
+   * container (a column, a list item) passes its children to its own container.
+   * @param blocks - the blocks written to the html, in document order
+   */
+  private clipboardContainerResolver(blocks: Block[]): (block: Block) => string | undefined {
+    const byId = new Map(blocks.map((block) => [block.id, block]));
+    const resolve = (block: Block): string | undefined => {
+      const parent = block.parentId === null ? undefined : byId.get(block.parentId);
+
+      if (parent === undefined) {
+        return undefined;
+      }
+
+      return this.isClipboardContainer(parent) ? parent.id : resolve(parent);
+    };
+
+    return resolve;
+  }
+
+  /**
+   * Write a toggle or toggle heading as `<details>` and a callout as `<aside>`.
+   * The callout's emoji is left out: the html has no place for it.
+   * @param block - the container block
+   * @param target - the element receiving it
+   * @param parts - blocks a text selection covers in part
+   * @returns the element its children go into
+   */
+  private appendClipboardContainer(block: Block, target: HTMLElement, parts?: BlockParts): HTMLElement {
+    if (block.name === CALLOUT_TOOL_NAME) {
+      return target.appendChild($.make('aside'));
+    }
+
+    const data = parts?.get(block)?.data ?? block.preservedData;
+    const details = $.make('details');
+    const summary = $.make('summary');
+    const text = clean(typeof data.text === 'string' ? data.text : '', this.sanitizerConfig);
+    const level = typeof data.level === 'number' && data.level >= 1 && data.level <= 6 ? data.level : 2;
+    const title = block.name === HEADER_TOOL_NAME ? $.make(`h${level}`) : summary;
+
+    if (this.Blok.ViewStateAPI.methods.get(block.id, 'open') === true) {
+      details.setAttribute('open', '');
+    }
+
+    title.innerHTML = text;
+    if (title !== summary) {
+      summary.appendChild(title);
+    }
+    details.appendChild(summary);
+
+    return target.appendChild(details);
+  }
+
+  /**
+   * A tab's title is drawn by its tabs block, outside the tab, so it is
+   * written from the tab's data. Same text as the Markdown flavour.
+   * @param block - the tab block
+   * @param target - the element receiving the title
+   */
+  private appendTabTitle(block: Block, target: HTMLElement): void {
+    const { icon, title } = block.preservedData;
+    const label = [icon, title].filter((part): part is string => typeof part === 'string' && part !== '').join(' ');
+
+    if (label === '') {
+      return;
+    }
+
+    const paragraph = $.make('p');
+    const strong = $.make('strong');
+
+    strong.textContent = label;
+    paragraph.appendChild(strong);
+    target.appendChild(paragraph);
+  }
+
+  /**
    * A code block keeps its line breaks and indentation only inside `<pre>`.
    * @param block - the code block
    * @param fakeClipboard - the container receiving the code
+   * @param parts - blocks a text selection covers in part
    */
-  private appendCodeBlock(block: Block, fakeClipboard: HTMLElement): void {
-    const code = block.preservedData.code;
+  private appendCodeBlock(block: Block, fakeClipboard: HTMLElement, parts?: BlockParts): void {
+    const { code, language, filename } = parts?.get(block)?.data ?? block.preservedData;
     const pre = $.make('pre');
     const codeElement = $.make('code');
 
+    // Blok's paste reads the language and filename from these attributes.
+    if (typeof language === 'string' && HIGHLIGHTABLE_LANGUAGES.has(language)) {
+      pre.setAttribute(CODE_LANGUAGE_ATTR, language);
+      codeElement.className = `language-${language}`;
+    }
+    if (typeof filename === 'string' && filename !== '') {
+      pre.setAttribute(CODE_FILENAME_ATTR, filename);
+    }
     codeElement.textContent = typeof code === 'string' ? code : '';
     pre.appendChild(codeElement);
     fakeClipboard.appendChild(pre);
@@ -807,11 +1063,12 @@ export class BlockSelection extends Module {
       style,
       checked: Boolean(data.checked),
       depth: typeof data.depth === 'number' ? data.depth : 0,
+      ...(typeof data.start === 'number' && data.start !== 1 ? { start: data.start } : {}),
     };
   }
 
-  private clipboardDataForBlock(block: Block): Record<string, unknown> {
-    const data = block.preservedData;
+  private clipboardDataForBlock(block: Block, parts?: BlockParts): Record<string, unknown> {
+    const data = parts?.get(block)?.data ?? block.preservedData;
     const text = data.text;
 
     if (typeof text !== 'string' || !text.includes(PAGE_REFERENCE_ATTR)) {
@@ -839,6 +1096,50 @@ export class BlockSelection extends Module {
     return changed ? { ...data, text: wrapper.innerHTML } : data;
   }
 
+  /**
+   * The page titles and links the copied blocks show now. Only what the host
+   * resolved and allows: saved data may hold a stale or restricted title.
+   * @param blocks - the copied blocks
+   */
+  private shownPages(blocks: Block[]): MarkdownPageOptions {
+    const shown = (pageId: string): { title?: string; href: string | null } | undefined => {
+      const titles: string[] = [];
+
+      // Answers only while the block shows a resolved, allowed title.
+      blocks.find((block) => block.name === 'page-link' && block.preservedData.pageId === pageId)
+        ?.call('readPageTitle', { pageId, receive: (title: string) => titles.push(title) });
+
+      if (titles.length === 0) {
+        return this.Blok.PageReferences.shownLink(pageId);
+      }
+
+      const href = (this.Blok.Tools.blockTools.get('page-link')?.settings as PageConfig | undefined)?.href;
+
+      return { title: titles[0], href: this.safePageHref(href, pageId) };
+    };
+
+    return {
+      pageInfo: (pageId) => {
+        const page = shown(pageId);
+
+        return page === undefined ? undefined : { title: page.title };
+      },
+      pageHref: (pageId) => {
+        const href = shown(pageId)?.href;
+
+        return href === null || href === undefined ? '' : new URL(href, document.baseURI).href;
+      },
+    };
+  }
+
+  private safePageHref(href: PageConfig['href'], pageId: string): string | null {
+    try {
+      return href === undefined ? null : safeHref(href(pageId));
+    } catch {
+      return null;
+    }
+  }
+
   private pageReferenceAnchor(block: Block): HTMLAnchorElement {
     const anchor = document.createElement('a');
     const pageId = block.preservedData.pageId;
@@ -858,10 +1159,13 @@ export class BlockSelection extends Module {
    * @param blocks - the blocks from {@link collectBlocksForClipboard}
    * @param links - the links from {@link copyLinksOf}
    * @param cut - a cut token, or null for a copy or a cut with no linked blocks
+   * @param parts - blocks a text selection covers in part; with it, children left out of the copy are left out of `contentIds`
    * @returns serialized block data in document order
    */
-  private serializeBlocksForClipboard(blocks: Block[], links: Map<Block, CopyLink>, cut?: string | null): ClipboardEntry[] {
-    return blocks.map((block): ClipboardEntry | null => {
+  private serializeBlocksForClipboard(blocks: Block[], links: Map<Block, CopyLink>, cut?: string | null, parts?: BlockParts): ClipboardEntry[] {
+    const copiedIds = new Set(blocks.map((block) => block.id));
+
+    const entries = blocks.map((block): ClipboardEntry | null => {
       const link = links.get(block);
       const isPage = isPagePointer(block.name, block.preservedData);
       const shape = {
@@ -904,14 +1208,43 @@ export class BlockSelection extends Module {
 
       return {
         ...shape,
-        tool: block.name,
-        data: this.clipboardDataForBlock(block),
+        tool: parts?.get(block)?.tool ?? block.name,
+        data: this.clipboardDataForBlock(block, parts),
         tunes: block.preservedTunes,
-        contentIds: block.contentIds,
+        contentIds: parts === undefined ? block.contentIds : block.contentIds.filter((id) => copiedIds.has(id)),
+        open: this.Blok.ViewStateAPI.methods.get(block.id, 'open') === true,
         ...(cut !== undefined && cut !== null && (link !== undefined || isPage) && { cut }),
         ...(link !== undefined && { link }),
+        ...this.loneRowTitle(block, copiedIds),
       };
     }).filter((entry): entry is ClipboardEntry => entry !== null);
+
+    return parts === undefined ? entries : rebaseToSelection(entries);
+  }
+
+  /**
+   * The title of a database row copied without its database. Paste needs it
+   * where no database takes the row, and so do the text formats.
+   * @param block - a copied block
+   * @param copiedIds - ids of every copied block
+   */
+  private loneRowTitle(block: Block, copiedIds: Set<string>): { title?: string } {
+    if (block.name !== 'database-row' || (block.parentId !== null && copiedIds.has(block.parentId))) {
+      return {};
+    }
+
+    return { title: this.rowTitle(block) };
+  }
+
+  /**
+   * A database row's title, read with its database's title property.
+   * @param block - a database row
+   */
+  private rowTitle(block: Block): string {
+    const database = block.parentId === null ? undefined : this.Blok.BlockManager.getBlockById(block.parentId);
+    const titleId = database === undefined ? undefined : titlePropertyIdOf(database.preservedData);
+
+    return databaseRowTitle({ data: block.preservedData }, titleId);
   }
 
   /**
@@ -985,11 +1318,91 @@ export class BlockSelection extends Module {
       }
     };
 
-    for (const block of blocks) {
+    for (const block of this.Blok.BlockManager.withCoveredLayouts(blocks)) {
       collect(block);
     }
 
     return collected;
+  }
+
+  /**
+   * Keep only what a text selection covers: a block it does not reach, or
+   * reaches only in its children, is left out, and a block it covers in part
+   * keeps only the selected text with its type.
+   * @param blocks - the blocks from {@link collectBlocksForClipboard}
+   * @param range - the page selection
+   */
+  private cutToRange(blocks: Block[], range: Range): { blocks: Block[]; parts: BlockParts } {
+    const parts: BlockParts = new Map();
+    const dropped = new Set<string>();
+    const kept = blocks.filter((block) => {
+      const cut = cutBlockToRange(block.holder, range);
+
+      if (cut.kind === 'none') {
+        return false;
+      }
+      if (cut.kind === 'part') {
+        const part = this.blockPart(block, cut);
+
+        parts.set(block, part);
+        // A block that became a paragraph carries its children's selected text already.
+        if (part.tool !== undefined) {
+          dropped.add(block.id);
+        }
+      }
+
+      return true;
+    });
+
+    return { blocks: kept.filter((block) => !this.hasAncestorIn(block, dropped)), parts };
+  }
+
+  /**
+   * Whether one of the block's ancestors is in `ids`.
+   * @param block - a block
+   * @param ids - block ids
+   */
+  private hasAncestorIn(block: Block, ids: Set<string>): boolean {
+    if (block.parentId === null) {
+      return false;
+    }
+
+    const parent = this.Blok.BlockManager.getBlockById(block.parentId);
+
+    return ids.has(block.parentId) || (parent !== undefined && this.hasAncestorIn(parent, ids));
+  }
+
+  /**
+   * A partly covered block cut to the selected text. Its text field is the
+   * one its conversion exports. When the saved text does not match what the
+   * block shows, it cannot be cut safely and becomes a paragraph of the
+   * selected text, so no unselected text is copied.
+   * @param block - a block the selection covers in part
+   * @param cut - what the selection covers of it
+   */
+  private blockPart(block: Block, cut: Extract<BlockCut, { kind: 'part' }>): BlockPart {
+    const data = block.preservedData;
+    const exportRule = (block.tool as Block['tool'] | undefined)?.conversionConfig?.export;
+    const key = typeof exportRule === 'string' ? exportRule : 'text';
+    const value = data[key];
+    const html = clean(cut.html, this.sanitizerConfig);
+
+    // Code is plain text: parsing it as html would read `<` and `&` as markup.
+    if (typeof value === 'string' && block.name === CODE_TOOL_NAME && value === cut.text) {
+      return { data: { ...data, [key]: value.slice(cut.from, cut.to) }, html };
+    }
+    if (typeof value === 'string' && block.name !== CODE_TOOL_NAME && parseUntrustedHtml(value).textContent === cut.text) {
+      return { data: { ...data, [key]: sliceHtmlByText(value, cut.from, cut.to) }, html };
+    }
+
+    const { defaultTool } = this.Blok.Tools;
+    const inline = clean(cut.html, { ...INLINE_TEXT_SANITIZE });
+
+    return {
+      tool: defaultTool.name,
+      data: convertStringToBlockData(inline, defaultTool.conversionConfig, defaultTool.settings),
+      html: `<p>${inline}</p>`,
+    };
   }
 
   /**
@@ -1143,8 +1556,9 @@ export class BlockSelection extends Module {
   /**
    * Disables navigation mode and optionally focuses the block for editing
    * @param {boolean} focusForEditing - if true, set caret to the focused block
+   * @param announceExit - false when the caller enters navigation mode again at once
    */
-  public disableNavigationMode(focusForEditing = false): void {
+  public disableNavigationMode(focusForEditing = false, announceExit = true): void {
     if (!this._navigationModeEnabled) {
       return;
     }
@@ -1154,7 +1568,9 @@ export class BlockSelection extends Module {
      * a future navigation session starts fresh, then announce the mode exit.
      */
     this.resetNavigationAnnounce();
-    announce(this.Blok.I18n.t('a11y.navigationModeExited'), { politeness: 'polite' });
+    if (announceExit) {
+      announce(this.Blok.I18n.t('a11y.navigationModeExited'), { politeness: 'polite' });
+    }
 
     const focusedBlock = this.navigationFocusedBlock;
 
@@ -1482,6 +1898,20 @@ export class BlockSelection extends Module {
   private handleCommandA(event: KeyboardEvent): void {
     this.Blok.RectangleSelection.clearSelection();
 
+    if (this.ownerWantsAllBlocks(event.target)) {
+      event.preventDefault();
+      if (this.allBlocksSelected) {
+        return;
+      }
+      this.selectAllBlocks();
+      this.needToSelectAll = false;
+      this.readyToBlockSelection = false;
+      this.containerBlocksSelected = false;
+      this.subtreeBlocksSelected = false;
+
+      return;
+    }
+
     /** allow default selection on native inputs */
     if ($.isNativeInput(event.target) && !this.readyToBlockSelection) {
       this.readyToBlockSelection = true;
@@ -1738,6 +2168,19 @@ export class BlockSelection extends Module {
     announce(this.Blok.I18n.t('a11y.blocksSelected', { count }), { politeness: 'polite' });
   }
 
+  /**
+   * A keyboard owner marked KEYBOARD_OWNER_SELECT_ALL (a database table with a
+   * cell picked) has no text for the first press to select.
+   * @param target - the keydown target
+   */
+  private ownerWantsAllBlocks(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement) || target.isContentEditable || $.isNativeInput(target)) {
+      return false;
+    }
+
+    return target.closest(`[${DATA_ATTR.keyboardOwner}="${KEYBOARD_OWNER_SELECT_ALL}"]`) !== null;
+  }
+
   private selectAllBlocks(): void {
     /**
      * Save selection
@@ -1783,7 +2226,7 @@ export class BlockSelection extends Module {
      * Prevent the browser from ALSO inserting this character natively. A
      * cross-block mouse drag can leave a collapsed caret inside a still-focused
      * block, so without preventing the default the character would be typed
-     * twice: once natively into that block and once by the deferred
+     * twice: once natively into that block and once by
      * `insertContentAtCaretPosition` below into the fresh replacement block.
      */
     event.preventDefault();
@@ -1805,16 +2248,8 @@ export class BlockSelection extends Module {
       Caret.setToBlock(insertedBlock);
     }
 
-    delay(() => {
-      const eventKey = event.key;
-
-      /**
-       * If event.key length >1 that means key is special (e.g. Enter or Dead or Unidentified).
-       * So we use empty string
-       * @see https://developer.mozilla.org/ru/docs/Web/API/KeyboardEvent/key
-       */
-      Caret.insertContentAtCaretPosition(eventKey.length > 1 ? '' : eventKey);
-
-    }, 20)();
+    // At once: a deferred insert lands after keys typed right after it.
+    // A key longer than one character (Enter, Dead, Unidentified) inserts nothing.
+    Caret.insertContentAtCaretPosition(event.key.length > 1 ? '' : event.key);
   }
 }

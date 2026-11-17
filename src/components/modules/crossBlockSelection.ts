@@ -351,6 +351,8 @@ export class CrossBlockSelection extends Module {
       return false;
     }
 
+    this.anchorOnSelection();
+
     const targetBlock = BlockManager.resolveToSelectableBlock(clickedBlock);
 
     const anchorCandidate = this.firstSelectedBlock ?? BlockManager.currentBlock ?? null;
@@ -408,6 +410,12 @@ export class CrossBlockSelection extends Module {
   private onShiftDragOver = (event: Event): void => {
     const mouseEvent = event as MouseEvent;
 
+    if ((mouseEvent.buttons & 1) === 0) {
+      this.endShiftDragReleasedOutside(mouseEvent);
+
+      return;
+    }
+
     this.updateShiftDrag(mouseEvent.clientY, mouseEvent.target);
   };
 
@@ -418,9 +426,8 @@ export class CrossBlockSelection extends Module {
   private onShiftDragMove = (event: Event): void => {
     const mouseEvent = event as MouseEvent;
 
-    /** Released outside the window: no mouseup came, the gesture is over. */
     if ((mouseEvent.buttons & 1) === 0) {
-      this.shiftDragPointer = null;
+      this.endShiftDragReleasedOutside(mouseEvent);
 
       return;
     }
@@ -429,6 +436,17 @@ export class CrossBlockSelection extends Module {
       y: mouseEvent.clientY };
     this.updateShiftDrag(mouseEvent.clientY, mouseEvent.target);
   };
+
+  /**
+   * The button came up outside the window, so no mouseup reached us. The
+   * pointer is dropped first: the mouseup handler would otherwise read this
+   * event's position as the release point and extend the range to it.
+   * @param event - the first move/over seen with no button held
+   */
+  private endShiftDragReleasedOutside(event: MouseEvent): void {
+    this.shiftDragPointer = null;
+    this.onShiftDragUp(event);
+  }
 
   /**
    * Content scrolled under a held Shift+drag. No mouse event fires for that, so
@@ -650,6 +668,23 @@ export class CrossBlockSelection extends Module {
   }
 
   /**
+   * A plain click sets the anchors, and a later menu selection leaves them.
+   * Growing a range from them would select blocks the user never picked, and
+   * the next Backspace would delete them. So the selection becomes the anchor.
+   */
+  private anchorOnSelection(): void {
+    const selected = this.Blok.BlockSelection.selectedBlocks;
+
+    const stale = this.firstSelectedBlock !== null && !this.firstSelectedBlock.selected
+      && (this.lastSelectedBlock === null || !this.lastSelectedBlock.selected);
+
+    if (selected.length > 0 && stale) {
+      this.firstSelectedBlock = selected[0];
+      this.lastSelectedBlock = selected[selected.length - 1];
+    }
+  }
+
+  /**
    * Return boolean is cross block selection started:
    * there should be at least 2 selected blocks
    */
@@ -664,6 +699,8 @@ export class CrossBlockSelection extends Module {
    */
   public toggleBlockSelectedState(next = true): void {
     const { BlockManager } = this.Blok;
+
+    this.anchorOnSelection();
 
     const anchorCandidate = this.lastSelectedBlock ?? BlockManager.currentBlock;
 
@@ -773,8 +810,16 @@ export class CrossBlockSelection extends Module {
       return;
     }
 
-    const fIndex = BlockManager.blocks.indexOf(this.firstSelectedBlock);
-    const lIndex = BlockManager.blocks.indexOf(this.lastSelectedBlock);
+    const anchorIndexes = [this.firstSelectedBlock, this.lastSelectedBlock].map((block) => BlockManager.blocks.indexOf(block));
+    const anchorRange = BlockManager.blocks.slice(Math.min(...anchorIndexes), Math.max(...anchorIndexes) + 1);
+    const selected = BlockSelection.selectedBlocks;
+
+    // A plain click also sets the anchors. When a later selection (block menu)
+    // holds none of their blocks, the selection is the range instead, and none
+    // after a delete: a caret in the clicked block would take the next key (Notion U109).
+    const [fIndex, lIndex] = anchorIndexes.includes(-1) || anchorRange.some((block) => block.selected)
+      ? anchorIndexes
+      : [selected[0], selected.at(-1)].map((block) => (block === undefined ? -1 : BlockManager.blocks.indexOf(block)));
 
     if (!BlockSelection.anyBlockSelected || fIndex === -1 || lIndex === -1) {
       this.firstSelectedBlock = this.lastSelectedBlock = null;
@@ -981,12 +1026,8 @@ export class CrossBlockSelection extends Module {
       return;
     }
 
-    /**
-     * The button was released outside the window: mouseup never arrived, so the
-     * gesture is over even though the listeners are still attached.
-     */
     if ((mouseEvent.buttons & 1) === 0) {
-      this.textDragPointer = null;
+      this.endDragReleasedOutside(mouseEvent);
 
       return;
     }
@@ -995,6 +1036,17 @@ export class CrossBlockSelection extends Module {
       y: mouseEvent.clientY };
     this.updateTextDrag(mouseEvent.clientX, mouseEvent.clientY, mouseEvent.target, true);
   };
+
+  /**
+   * The button came up outside the window, so no mouseup reached us. The
+   * pointer is dropped first: the mouseup handler would otherwise read this
+   * event's position as the release point and extend the range to it.
+   * @param event - the first move/over seen with no button held
+   */
+  private endDragReleasedOutside(event: MouseEvent): void {
+    this.textDragPointer = null;
+    this.onMouseUp(event);
+  }
 
   /**
    * Content scrolled under a held pointer (native autoscroll at an edge, the
@@ -1389,7 +1441,7 @@ export class CrossBlockSelection extends Module {
    * @param anchorBlock - block the gesture started in
    * @param targetBlock - block the pointer is over
    */
-  private canSelectTextAcross(anchorBlock: Block, targetBlock: Block): boolean {
+  public canSelectTextAcross(anchorBlock: Block, targetBlock: Block): boolean {
     const ownsKeyboard = (block: Block): boolean => {
       return block.holder.closest(`[${DATA_ATTR.keyboardOwner}]`) !== null;
     };
@@ -1420,6 +1472,12 @@ export class CrossBlockSelection extends Module {
   private onMouseOver = (event: Event): void => {
     const mouseEvent = event as MouseEvent;
     const { BlockManager, DragManager } = this.Blok;
+
+    if ((mouseEvent.buttons & 1) === 0) {
+      this.endDragReleasedOutside(mouseEvent);
+
+      return;
+    }
 
     /**
      * The gesture is already reading as a cross-block TEXT selection; the

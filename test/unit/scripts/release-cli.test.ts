@@ -43,11 +43,12 @@ describe('release.mjs Go module tag', () => {
     expect(() => releaseGitTags('1.17.0', 'go 1.27.1\n')).toThrow('packages/server/go/go.mod has no module line');
   });
 
-  it('accepts the family version with the go.mod on disk', () => {
-    const { version } = JSON.parse(readFileSync(resolve(repositoryRoot, 'package.json'), 'utf8')) as { version: string };
+  // The module path must carry the major of the next release before
+  // `yarn release` runs, so this names that major, not package.json's.
+  it('accepts the next major with the go.mod on disk', () => {
     const onDisk = readFileSync(resolve(repositoryRoot, 'packages/server/go/go.mod'), 'utf8');
 
-    expect(releaseGitTags(version, onDisk).goModuleTag).toBe(`packages/server/go/v${version}`);
+    expect(releaseGitTags('2.0.0', onDisk).goModuleTag).toBe('packages/server/go/v2.0.0');
   });
 
   it('checks the Go tag before publishing and pushes it before the family tag', () => {
@@ -66,6 +67,39 @@ describe('release.mjs Go module tag', () => {
     // The family tag starts the release workflows, so it goes last.
     expect(goPush).toBeGreaterThan(goTag);
     expect(familyPush).toBeGreaterThan(goPush);
+  });
+});
+
+describe('release.mjs version-stamped outputs', () => {
+  const releaseSource = (): string => readFileSync(resolve(repositoryRoot, 'scripts/release.mjs'), 'utf8');
+  const FIXTURE = 'test/unit/server-conformance/fixtures/documents/ops.json';
+
+  // The fixture records the runtime's VERSION, so a bump without it leaves
+  // the release commit failing the C#, Go and node conformance checks.
+  it('regenerates the documents ops fixture from the bumped runtime and commits it', () => {
+    const source = releaseSource();
+    const runtime = source.indexOf("run('node scripts/build-server-runtime.mjs')");
+    const fixture = source.indexOf("run('node scripts/generate-documents-ops-fixture.mjs')");
+    const commitAdd = source.indexOf('run(`git add ');
+
+    const lineAt = (index: number): string => source.slice(index, source.indexOf('\n', index));
+
+    expect(fixture).toBeGreaterThan(runtime);
+    expect(commitAdd).toBeGreaterThan(fixture);
+    expect(lineAt(commitAdd)).toContain(FIXTURE);
+    // A dry run restores what it bumped.
+    expect(lineAt(source.indexOf("run('git checkout -- "))).toContain(FIXTURE);
+  });
+
+  // Unit tests compare dist with the bumped manifests, so dist must be
+  // rebuilt before preflight runs them.
+  it('builds the family before preflight', () => {
+    const source = releaseSource();
+    const build = source.indexOf("run('node scripts/build-all.mjs --with-cli')");
+    const preflight = source.indexOf("run('yarn release:preflight')");
+
+    expect(build).toBeGreaterThan(-1);
+    expect(preflight).toBeGreaterThan(build);
   });
 });
 

@@ -1,22 +1,32 @@
 import type { HostService, ManifestOverrides } from '../../types';
 import type { LooseOutputBlockData, LooseOutputData, OutputBlockData, OutputData } from '../../types/data-formats/output-data';
-import type { AgentActor, AgentResult, AgentVersion, AgentVersionHistory } from '../../types/agent';
+import type { AgentActor, AgentApprovalRequest, AgentApprover, AgentBatch, AgentError, AgentRestorePreview, AgentResult, AgentVersion, AgentVersionHistory } from '../../types/agent';
 // Imported by file rather than through `src/components/utils`: the barrel
 // reaches the DOM, this module does not.
 import { getBlokVersion } from '../components/utils/version';
 import { markdownToBlocksWithReport } from '../markdown';
+import { pagesInsert } from '../agent/guidance';
+import { approvalKey } from '../shared/agent/approval';
 import { COMMANDS } from '../shared/agent/commands';
-import { createDocumentAgentSession, type CarriedHistory } from '../shared/agent/document-session';
-import { failure } from '../shared/agent/errors';
-import { contentRevision } from '../shared/agent/revision';
+import { createDocumentAgentSession } from '../shared/agent/document-session';
+import { carriedHistory } from '../shared/agent/carried-history';
+import { AgentFailure, failure } from '../shared/agent/errors';
+import { readOnlyPreview } from '../shared/agent/version-history';
 import type { AgentPorts } from '../shared/agent/types';
-import { DocSnapshot } from '../shared/agent/snapshot';
 import { buildBuiltInSnapshot } from '../shared/built-in-snapshot';
 import { readCustomToolsFile, snapshotWithCustomTools } from '../shared/custom-tools-file';
+import { approvalQuestion, canElicit, elicitationApprover, readInputResponse } from '../shared/mcp/approval';
+import { isWriteBatch, surfaceError } from '../shared/mcp/errors';
+import { errorOutcome, modelFixable } from '../shared/mcp/calls';
+import { savedFileText } from '../shared/mcp/files';
+import { tooDeepToSave } from '../shared/mcp/wire-json';
 import { buildAgentContract, buildToolManifest } from '../shared/tool-manifest';
-import { createHeadlessAgentSetup, loadStoredDocument } from './agent-runtime';
+import { UPLOAD_FAILED } from '../shared/tool-actions/upload';
+import { createHeadlessAgentSetup, createHeadlessPorts, loadStoredDocument } from './agent-runtime';
 import { blocksToHtml } from './blocks-to-html';
 import { htmlToBlocksWithReport } from './html-to-blocks';
+import { mcpContractFor } from './mcp-contracts';
+import { contractFlagsOf, hostError, MCP_OPERATIONS } from './mcp-runtime';
 import type { MarkdownDegradation } from './blocks-to-markdown';
 import { blocksToMarkdownWithReport } from './blocks-to-markdown';
 import type { BlocksToPlainTextOptions } from './blocks-to-plain-text';
@@ -458,19 +468,23 @@ const isBatchEnvelope = (value: unknown): boolean =>
  * Jint cannot call back into the host, so the host loads what one history
  * read needs before the call: `versions`, `documents` keyed by version (null:
  * no such version), or `failed` with why it could not and the HTTP `status`
- * the history routes would answer, which decides whether a retry can help.
+ * the history routes would answer, or `retryable` when no answer came (Node's
+ * fetch error says so), which decide whether a retry can help.
  * A restore needs both `versions` and its version in `documents`; with
  * `restores: true` Jint checks it and names it as `restore` in the output.
+ * A preview needs its version in `previews`: the route's answer, or null for a 404.
+ * The host asked the route with the command's own `databases`.
  */
-const loadedVersionHistory = (value: unknown, onRestore?: (version: string) => void): AgentVersionHistory | undefined => {
+const loadedVersionHistory = (value: unknown, onRestore?: (version: string) => void, readOnly = false): AgentVersionHistory | undefined => {
   if (!isRecord(value)) {
     return undefined;
   }
-  const { versions, documents, failed, status } = value;
+  const { versions, documents, previews, failed, status, retryable } = value;
   const loaded = (version: string): boolean => isRecord(documents) && Object.hasOwn(documents, version);
   const refuse = (what: string): Promise<never> => Promise.reject(Object.assign(
     new Error(typeof failed === 'string' ? failed : `The host did not load ${what}.`),
-    typeof status === 'number' ? { status } : {}
+    typeof status === 'number' ? { status } : {},
+    typeof retryable === 'boolean' ? { retryable } : {}
   ));
 
   return {
@@ -478,6 +492,16 @@ const loadedVersionHistory = (value: unknown, onRestore?: (version: string) => v
     read: version => isRecord(documents) && loaded(version)
       ? Promise.resolve(isStoredDocument(documents[version]) ? documents[version] : null)
       : refuse(`version "${version}"`),
+    previewRestore: version => {
+      if (readOnly) {
+        return Promise.reject(readOnlyPreview());
+      }
+
+      // Only null is no such version; any other body goes on, so the agent refuses it as Node's does.
+      return isRecord(previews) && Object.hasOwn(previews, version)
+        ? Promise.resolve(previews[version] === null ? null : previews[version] as AgentRestorePreview)
+        : refuse(`the restore preview of version "${version}"`);
+    },
     // Jint only checks the restore; the host restores the version named in the output.
     ...(onRestore !== undefined && {
       restore: (version: string) => {
@@ -489,9 +513,13 @@ const loadedVersionHistory = (value: unknown, onRestore?: (version: string) => v
   };
 };
 
-/** `prepares: ['page']`: the C# page target creates page documents, so a page block inserts. */
-const createsPages = (input: Record<string, unknown>): boolean =>
-  Array.isArray(input.prepares) && input.prepares.includes('page');
+/**
+ * `prepares: ['page']`: the C# page target creates page documents, so a page block inserts.
+ * An MCP call asks its own contract: blok-mcp's start options decide it.
+ */
+const createsPages = (input: Record<string, unknown>): boolean => (isRecord(input.mcp)
+  ? pagesInsert(mcpSetup(input.mcp).contract)
+  : Array.isArray(input.prepares) && input.prepares.includes('page'));
 
 /** A C# room keeps the agent's steps on the server; a stored call has them only when its session sends them. */
 const contractWhere = (input: Record<string, unknown>): { runtime: 'jint' | 'csharp-live'; carriesHistory?: true; prepares?: string[]; comments?: false } => ({
@@ -499,33 +527,6 @@ const contractWhere = (input: Record<string, unknown>): { runtime: 'jint' | 'csh
   ...(createsPages(input) && { prepares: ['page'] }),
   ...(input.comments === false && { comments: false as const }),
 });
-
-const isCarriedEntry = (value: unknown): value is OutputData | 'other' => value === 'other' || isStoredDocument(value);
-
-/**
- * The steps a C# session carries between calls. They hold only while the document is the one the
- * last call returned: a revision that differs means someone else saved it, so the steps are lost.
- */
-const carriedHistory = (
-  value: unknown,
-  document: OutputData,
-  load: (raw: OutputData) => OutputData
-): CarriedHistory | undefined => {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const past = Array.isArray(value.past) ? value.past.filter(isCarriedEntry) : [];
-  const future = Array.isArray(value.future) ? value.future.filter(isCarriedEntry) : [];
-
-  const lost = value.lost === true;
-
-  if (value.revision !== contentRevision(DocSnapshot.fromOutput(document).toOutput())) {
-    return { past: [], future: [], lost: lost || past.length + future.length > 0 };
-  }
-  const loaded = (entry: OutputData | 'other'): OutputData | 'other' => entry === 'other' ? entry : load(entry);
-
-  return { past: past.map(loaded), future: future.map(loaded), lost };
-};
 
 /**
  * Jint cannot wait on the host, so C# creates the pages first (agentPagesNeeded counts them)
@@ -541,10 +542,71 @@ const createdPagesPort = (input: Record<string, unknown>): { port: NonNullable<A
     port: () => {
       const pageId = unused.shift();
 
-      return pageId === undefined
-        ? Promise.reject(failure('STALE', 'The document changed while its new pages were created, so this batch needs more pages than were made. Read it again, then retry.'))
-        : Promise.resolve({ pageId });
+      if (pageId !== undefined) {
+        return Promise.resolve({ pageId });
+      }
+      // The page the host could not make, `{ helper, error }` as mcpErrorAnswer takes it: the executor
+      // fails its command with that error, as Node's port throws it.
+      if (isRecord(input.createPageFailure)) {
+        return Promise.reject(new AgentFailure(hostError(input.createPageFailure)));
+      }
+
+      return Promise.reject(failure('STALE', 'The document changed while its new pages were created, so this batch needs more pages than were made. Read it again, then retry.'));
     },
+  };
+};
+
+/** An AgentError a host sends back; anything else is no error. */
+const agentErrorOf = (value: unknown): AgentError | undefined => (
+  isRecord(value) && typeof value.code === 'string' && typeof value.message === 'string'
+    ? value as unknown as AgentError
+    : undefined
+);
+
+/** blok-mcp's page-map handle: page.rename and page.setIcon write the page's own document. */
+const writesPages = (input: Record<string, unknown>): boolean => isRecord(input.mcp) && input.mcp.pageTitles === 'page-map';
+
+type OpenPage = NonNullable<AgentPorts['openPageDocument']>;
+
+const pageSession = (pageId: string, actor: AgentActor, execute: (batch: unknown) => Promise<AgentResult>): Awaited<ReturnType<OpenPage>> => ({
+  id: `page:${pageId}`,
+  actor,
+  read: () => Promise.reject(new Error('A page target only writes.')),
+  describe: () => Promise.reject(new Error('A page target only writes.')),
+  execute,
+  log: () => [],
+  close: () => undefined,
+} as unknown as Awaited<ReturnType<OpenPage>>);
+
+/** Counting: each page write the batch asks for, answered as if it succeeded. */
+const recordedWritesPort = (writes: { pageId: string; batch: unknown }[]): OpenPage => (pageId, actor) =>
+  Promise.resolve(pageSession(pageId, actor, (batch) => {
+    writes.push({ pageId, batch });
+
+    return Promise.resolve({ ok: true, revision: '', results: [{}], warnings: [] } as unknown as AgentResult);
+  }));
+
+/**
+ * Jint cannot wait on the host, so blok-mcp writes the page first (agentPagesNeeded names it)
+ * and sends what happened as `pageWrites`: the inner result, or the error opening it raised.
+ */
+const pageWritesPort = (input: Record<string, unknown>): OpenPage => {
+  const outcomes = Array.isArray(input.pageWrites) ? input.pageWrites.filter(isRecord) : [];
+
+  return (pageId, actor) => {
+    const next = outcomes.shift();
+
+    if (next === undefined || next.pageId !== pageId) {
+      return Promise.reject(failure('STALE', 'The document changed while its page was written. Read it again, then retry.'));
+    }
+    const opened = agentErrorOf(next.error);
+
+    // As src/mcp/page-titles.ts: an open that failed names the page.
+    if (opened !== undefined) {
+      return Promise.reject(new AgentFailure({ ...opened, details: { ...opened.details, pageId } }));
+    }
+
+    return Promise.resolve(pageSession(pageId, actor, () => Promise.resolve(next.result as AgentResult)));
   };
 };
 
@@ -574,13 +636,111 @@ const withUnusedPages = (result: AgentResult, unused: readonly string[]): AgentR
   };
 };
 
-const createServerAgentSession = (
-  input: Record<string, unknown>,
-  document: OutputData,
-  actor: AgentActor,
-  onRestore?: (version: string) => void,
-  createPage?: AgentPorts['createPageDocument']
-): ReturnType<typeof createDocumentAgentSession> => {
+/** What a host upload answers stand for, in the order the batch asks them. */
+type HostUpload =
+  | { op: 'readLocal'; path: string; maxBytes: number }
+  | { op: 'uploadByFile'; fileName: string; type: string; size: number; kind: string; tool: string; data?: string; local?: number }
+  | { op: 'uploadByUrl'; url: string; kind: string; tool: string };
+
+/** Jint and goja have no File: the prepare step only builds one to hand it to the uploader. */
+class HostFile {
+  public readonly name: string;
+  public readonly type: string;
+  public readonly size: number;
+
+  constructor(parts: readonly unknown[], name: string, options?: { type?: string }) {
+    this.name = name;
+    this.type = options?.type ?? '';
+    this.size = parts.reduce((sum: number, part) => sum + (part instanceof Uint8Array ? part.byteLength : 0), 0);
+  }
+}
+
+/** Raised when the host must run the next upload call before this batch can go on. */
+class HostUploadNeeded extends Error {}
+
+const isAgentErrorRecord = (value: unknown): value is AgentError =>
+  isRecord(value) && typeof value.code === 'string' && typeof value.message === 'string' && typeof value.retryable === 'boolean';
+
+/**
+ * The host's uploader where the engine cannot wait on the host. Each call takes the next of
+ * `uploads.answers`, in call order; past the last one it is kept as the call the host runs next,
+ * and the batch stops. The host runs it and sends the batch again with one more answer.
+ *
+ * Bytes stay with the host: base64 data and local reads become stand-ins of the right length for
+ * the size checks, and the upload names its source. A prepare step reads its bytes just before it
+ * uploads them, and prepare steps run one at a time, so the last stand-in is the upload's.
+ */
+const replayUploader = (uploads: Record<string, unknown>): { service: Record<string, unknown>; next: () => HostUpload | undefined } => {
+  if (typeof Reflect.get(globalThis, 'File') !== 'function') {
+    Reflect.set(globalThis, 'File', HostFile);
+  }
+  const answers = Array.isArray(uploads.answers) ? uploads.answers : [];
+  const state: { at: number; next?: HostUpload; source?: { data: string } | { local: number } } = { at: 0 };
+  const limits = isRecord(uploads.limits) ? uploads.limits : {};
+  const ask = (call: HostUpload): Record<string, unknown> => {
+    if (state.at >= answers.length) {
+      state.next = call;
+      throw new HostUploadNeeded('blok: the host runs this upload first');
+    }
+    const answer: unknown = answers[state.at];
+
+    state.at += 1;
+    if (isRecord(answer) && isAgentErrorRecord(answer.failure)) {
+      throw new AgentFailure(answer.failure);
+    }
+    // The host logs its own error: the text may name its internals.
+    if (isRecord(answer) && typeof answer.error === 'string') {
+      throw failure('TOOL_ACTION_FAILED', UPLOAD_FAILED);
+    }
+
+    return isRecord(answer) ? answer : {};
+  };
+  const asked = (call: HostUpload): Promise<Record<string, unknown>> => Promise.resolve().then(() => ask(call));
+  const service: Record<string, unknown> = {
+    limits: (kind: string) => limits[kind],
+    decodeBase64: (data: string) => {
+      state.source = { data };
+
+      return new Uint8Array(Math.floor(data.replace(/=+$/, '').length * 3 / 4));
+    },
+    uploadByFile: (file: { name: string; type: string; size: number }, ctx: { kind: string; tool?: string }) => {
+      const source = state.source;
+
+      state.source = undefined;
+
+      return asked({ op: 'uploadByFile', fileName: file.name, type: file.type, size: file.size, kind: ctx.kind, tool: ctx.tool ?? ctx.kind, ...source });
+    },
+    ...(uploads.root === true && {
+      readLocal: (path: string, maxBytes: number) => {
+        const local = state.at;
+
+        return asked({ op: 'readLocal', path, maxBytes }).then((read) => {
+          const size = typeof read.size === 'number' && Number.isSafeInteger(read.size) && read.size >= 0 ? read.size : 0;
+
+          state.source = { local };
+
+          return { bytes: new Uint8Array(size), name: typeof read.name === 'string' ? read.name : '' };
+        });
+      },
+    }),
+    ...(uploads.byUrl === true && {
+      uploadByUrl: (url: string, ctx: { kind: string; tool?: string }) => asked({ op: 'uploadByUrl', url, kind: ctx.kind, tool: ctx.tool ?? ctx.kind }),
+    }),
+  };
+
+  return { service, next: () => state.next };
+};
+
+interface ServerSetup {
+  contract: ReturnType<typeof createHeadlessAgentSetup>['contract'];
+  tools: ReturnType<typeof createHeadlessAgentSetup>['tools'];
+  ports: AgentPorts;
+  richTextFieldsFor(type: string): string[];
+  restores: boolean;
+}
+
+/** The C# server's own call: its services, custom tools and runtime tag. */
+const serverSetup = (input: Record<string, unknown>): ServerSetup => {
   const customTools = input.customTools === undefined ? undefined : readCustomToolsFile(input.customTools);
   const services = Array.isArray(input.services)
     ? input.services.filter((service: unknown): service is HostService =>
@@ -600,20 +760,120 @@ const createServerAgentSession = (
       })
   );
   const restores = input.restores === true;
-  const setup = createHeadlessAgentSetup({ customTools, overrides, services, ...contractWhere(input), restores });
-  const versionHistory = loadedVersionHistory(input.versionHistory, restores ? onRestore : undefined);
+
+  return { ...createHeadlessAgentSetup({ customTools, overrides, services, ...contractWhere(input), restores }), restores };
+};
+
+/**
+ * An MCP handle's call: the contract blok-mcp serves for its start options (`mcp`, as mcpSurface
+ * takes them) and the handle's mode, so the contract revision and the commands match Node's.
+ */
+const mcpSetups = new WeakMap<Record<string, unknown>, ServerSetup>();
+
+// Memoized per input object: one call asks for it several times, and a contract costs a manifest build.
+const mcpSetup = (options: Record<string, unknown>): ServerSetup => {
+  const known = mcpSetups.get(options);
+
+  if (known !== undefined) {
+    return known;
+  }
+  const built = mcpContractFor(contractFlagsOf(options), options.mode === 'live' ? 'live' : 'stored');
+  const setup: ServerSetup = {
+    contract: built.contract,
+    tools: built.runtimes,
+    ports: createHeadlessPorts({
+      sanitizeFor: type => built.runtimes.get(type)?.sanitize,
+      richTextFieldsFor: built.richTextFieldsFor,
+    }),
+    richTextFieldsFor: built.richTextFieldsFor,
+    // buildMcpContracts lets a sync URL's history restore.
+    restores: options.sync === true,
+  };
+
+  mcpSetups.set(options, setup);
+
+  return setup;
+};
+
+/** A host revision: `now` until this call changes the document, then `afterWrite`. */
+const hostRevisionOf = (value: unknown): { now: string; afterWrite: string } | undefined =>
+  isRecord(value) && typeof value.now === 'string' && typeof value.afterWrite === 'string'
+    ? { now: value.now, afterWrite: value.afterWrite }
+    : undefined;
+
+const createServerAgentSession = (
+  input: Record<string, unknown>,
+  document: OutputData,
+  actor: AgentActor,
+  onRestore?: (version: string) => void,
+  createPage?: AgentPorts['createPageDocument'],
+  uploader?: Record<string, unknown>,
+  openPage?: OpenPage
+): ReturnType<typeof createDocumentAgentSession> => {
+  const setup = isRecord(input.mcp) ? mcpSetup(input.mcp) : serverSetup(input);
+  // The ticket of a read-only live handle cannot reach the preview route, so the host never asks it.
+  const readOnlyLive = isRecord(input.mcp) && input.mcp.mode === 'live' && input.mcp.write !== true;
+  const versionHistory = loadedVersionHistory(input.versionHistory, setup.restores ? onRestore : undefined, readOnlyLive);
   const load = (raw: OutputData): OutputData => loadStoredDocument(raw, setup.richTextFieldsFor);
   const loaded = load(document);
-  const history = carriedHistory(input.history, loaded, load);
+  const history = carriedHistory(input.history, loaded, load, isStoredDocument);
+  const hostRevision = hostRevisionOf(input.revision);
 
   return createDocumentAgentSession({
     document: loaded,
     tools: setup.tools, contract: setup.contract, actor, runtime: 'jint',
-    ports: createPage === undefined ? setup.ports : { ...setup.ports, createPageDocument: createPage },
-    ...(createPage !== undefined && { pageTitles: 'page-map' as const }),
-    ...(versionHistory !== undefined && { services: { versionHistory } }),
+    ports: {
+      ...setup.ports,
+      ...(createPage !== undefined && { createPageDocument: createPage }),
+      ...(openPage !== undefined && { openPageDocument: openPage }),
+    },
+    ...((createPage !== undefined || openPage !== undefined) && { pageTitles: 'page-map' as const }),
+    ...((versionHistory !== undefined || uploader !== undefined) && { services: {
+      ...(versionHistory !== undefined && { versionHistory }),
+      ...(uploader !== undefined && { uploader }),
+    } }),
     ...(history !== undefined && { history }),
+    ...(hostRevision !== undefined && { hostRevision }),
   });
+};
+
+/**
+ * MCP elicitation, from the replies the client sent with this request. Jint cannot wait on the
+ * host, so a first round records the question and refuses; the host asks and the client retries.
+ */
+const approvalOf = (value: unknown): { approve?: AgentApprover; asked: AgentApprovalRequest[]; clientName: string } | undefined => {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const asked: AgentApprovalRequest[] = [];
+
+  return {
+    asked,
+    clientName: typeof value.clientName === 'string' ? value.clientName : '',
+    ...(canElicit(value.capabilities) && { approve: elicitationApprover(bareReplies(value.replies), asked, readInputResponse) }),
+  };
+};
+
+/**
+ * The replies blok-mcp's handler sees: the SDK keeps only bare result objects and drops any other
+ * entry, and a wrapped `{ method, result }` one, before the handler runs (partitionInputResponses).
+ */
+const bareReplies = (replies: unknown): Record<string, unknown> | undefined => (isRecord(replies)
+  ? Object.fromEntries(Object.entries(replies).filter(([, entry]) => isRecord(entry) && !('method' in entry) && !('result' in entry)))
+  : undefined);
+
+const readOnlyRefusal = (mode: unknown): AgentResult => ({
+  ok: false,
+  error: surfaceError('READ_ONLY', mode === 'live' ? 'This handle cannot write to the room.' : 'This handle is read-only. Open the document with write: true.').agentError,
+  warnings: [],
+});
+
+const documentTextOf = (form: unknown, document: OutputData): string | undefined => {
+  if (form === 'file') {
+    return savedFileText(document);
+  }
+
+  return form === 'compact' ? JSON.stringify(document) : undefined;
 };
 
 const agentExecuteResult = async (inputJson: string): Promise<string> => {
@@ -626,31 +886,111 @@ const agentExecuteResult = async (inputJson: string): Promise<string> => {
   if (!isAgentActor(actor)) {
     throw new TypeError('agentExecute input requires an `actor` with string `id`, string `name` and kind `agent`.');
   }
-  if (!isBatchEnvelope(batch)) {
+  // An MCP call's batch is unchecked wire input, as in Node: core's checkEnvelope refuses a malformed one.
+  if (!isRecord(input.mcp) && !isBatchEnvelope(batch)) {
     throw new TypeError('agentExecute input requires a `batch` with a `commands` array of command objects.');
   }
 
   const restoring: { version?: string } = {};
   const pages = createsPages(input) ? createdPagesPort(input) : undefined;
+  const uploads = isRecord(input.uploads) ? replayUploader(input.uploads) : undefined;
   const session = createServerAgentSession(input, document, actor, (version) => {
     restoring.version = version;
-  }, pages?.port);
+  }, pages?.port, uploads?.service, writesPages(input) ? pageWritesPort(input) : undefined);
+  const mcp = isRecord(input.mcp) ? input.mcp : undefined;
+  const approval = approvalOf(input.approval);
 
   try {
-    const ran = await session.execute(batch);
-    const result = withUnusedPages(ran, pages?.unused ?? []);
+    /*
+     * Not in one declaration list with the await below: the minifier would join them, and Jint
+     * then gave `before` the hash after the batch (measured).
+     */
+    const before = session.contentRevision();
+    // MCP only: a write on a read-only handle never runs (src/mcp stored and live sessions).
+    const writes = mcp === undefined ? undefined : mcpWrites(mcp, batch);
 
-    // A batch failed for an unused page wrote nothing C# keeps: answer as if it never ran.
+    if (mcp !== undefined && writes === true && mcp.write !== true) {
+      return JSON.stringify({ result: readOnlyRefusal(mcp.mode), document, edits: [], writes, save: false });
+    }
+    // Unchecked on purpose, as Node's dispatcher passes it: core refuses a malformed batch.
+    const ran = await session.execute(batch as AgentBatch, approval?.approve === undefined ? {} : { approve: approval.approve });
+    const question = approval?.asked[0];
+
+    // The batch applied nothing; the host asks the person, and the client sends the call again with the reply.
+    if (question !== undefined) {
+      return JSON.stringify({ ask: { key: approvalKey(question), ...approvalQuestion(question, approval?.clientName ?? '') } });
+    }
+    const hostUpload = uploads?.next();
+
+    // Stopped in a prepare step, before anything was written: the host runs the call and sends the batch again.
+    if (hostUpload !== undefined) {
+      return JSON.stringify({ upload: hostUpload });
+    }
+    const unused = withUnusedPages(ran, pages?.unused ?? []);
+    // MCP only, as src/mcp/stored-session.ts: a file this deep is one no port could open again.
+    const tooDeep = mcp !== undefined && writes === true && unused.ok && session.contentRevision() !== before
+      ? tooDeepToSave(session.output())
+      : null;
+    const result: AgentResult = tooDeep === null ? unused : { ok: false, error: tooDeep.agentError, warnings: unused.warnings };
+
+    // A batch failed for an unused page, or refused as too deep, wrote nothing C# keeps: answer as if it never ran.
     if (ran.ok && !result.ok) {
-      return JSON.stringify({ result, document, edits: [], ...('history' in input && { history: input.history }) });
+      return JSON.stringify({
+        result, document, edits: [], ...('history' in input && { history: input.history }),
+        ...(writes !== undefined && { writes, save: false }),
+      });
     }
     // Only a C# session asks for its steps back; a plain call keeps none.
-    const history = 'history' in input ? { history: { ...session.history(), revision: session.revision() } } : {};
+    const history = 'history' in input ? { history: { ...session.history(), revision: session.contentRevision() } } : {};
+    // As src/mcp/stored-session.ts: a failed, reading or unchanged batch saves nothing.
+    const save = writes === true && result.ok && session.contentRevision() !== before;
+    const text = save ? documentTextOf(input.documentText, session.output()) : undefined;
 
     return JSON.stringify({
       result, document: session.output(), edits: session.lastEdits(), ...history,
       ...(result.ok && restoring.version !== undefined && { restore: restoring.version }),
+      ...(writes !== undefined && { writes, save }),
+      ...(text !== undefined && { documentText: text }),
     });
+  } finally {
+    session.close();
+  }
+};
+
+/** Whether the batch holds a writing command of the handle's contract (src/mcp isWriteBatch). */
+const mcpWrites = (mcp: Record<string, unknown>, batch: unknown): boolean => {
+  const contract = mcpSetup(mcp).contract;
+
+  return isWriteBatch(batch, new Map(contract.commands.map(entry => [entry.name, entry.readOnly])));
+};
+
+/**
+ * blok_read and blok_describe on an MCP handle's document: `{ answer }` as blok-mcp shapes it.
+ * A model-fixable refusal is an error answer; anything else throws, as it does in Node.
+ */
+const mcpSessionAnswer = async (inputJson: string, tool: 'blok_read' | 'blok_describe'): Promise<string> => {
+  const input = parseRecord(inputJson);
+  const { document, actor } = input;
+
+  if (!isStoredDocument(document) || !isAgentActor(actor) || !isRecord(input.mcp)) {
+    throw new TypeError(`${tool} input requires \`mcp\`, a \`document\` with a valid \`blocks\` array and an agent \`actor\`.`);
+  }
+  const session = createServerAgentSession(input, document, actor);
+
+  try {
+    const structuredContent = tool === 'blok_read'
+      ? { ...await session.read(isRecord(input.view) ? input.view : {}) }
+      : { ...session.describe(isRecord(input.query) ? input.query : {}) };
+
+    return JSON.stringify({ answer: { structuredContent, isError: false } });
+  } catch (thrown) {
+    const error = modelFixable(thrown);
+
+    if (error === null) {
+      throw thrown;
+    }
+
+    return JSON.stringify({ answer: errorOutcome(tool, error) });
   } finally {
     session.close();
   }
@@ -674,16 +1014,26 @@ const agentPagesNeededResult = async (inputJson: string): Promise<string> => {
     throw new TypeError('agentPagesNeeded input requires a `batch` with a `commands` array of command objects.');
   }
   const counted = { count: 0 };
+  const writes: { pageId: string; batch: unknown }[] = [];
   const session = createServerAgentSession(input, document, actor, undefined, () => {
     counted.count += 1;
 
     return Promise.resolve({ pageId: `planned-page-${counted.count}` });
-  });
+  }, undefined, writesPages(input) ? recordedWritesPort(writes) : undefined);
+
+  // The same approver as agentExecute: a retry that carries the yes counts its pages.
+  const approve = approvalOf(input.approval)?.approve;
 
   try {
-    const result = await session.execute(batch);
+    const result = await session.execute(batch, approve === undefined ? {} : { approve });
 
-    return JSON.stringify(result.ok ? { count: counted.count } : { count: 0, result });
+    // A refused batch may have prepared pages first, as Node makes them mid-batch: `prepared` says how many.
+    // page.rename is the only command in its batch, so a write is never mixed with page inserts.
+    if (result.ok && writes.length > 0) {
+      return JSON.stringify({ count: 0, writes });
+    }
+
+    return JSON.stringify(result.ok ? { count: counted.count } : { count: 0, result, ...(counted.count > 0 && { prepared: counted.count }) });
   } finally {
     session.close();
   }
@@ -871,8 +1221,19 @@ export const invoke = async (operation: string, inputJson: string): Promise<stri
       return agentPlanHostResult(inputJson);
     case 'agentPagesNeeded':
       return agentPagesNeededResult(inputJson);
-    default:
-      throw new TypeError(`Unsupported Blok runtime operation: ${operation}`);
+    case 'mcpRead':
+      return mcpSessionAnswer(inputJson, 'blok_read');
+    case 'mcpDescribe':
+      return mcpSessionAnswer(inputJson, 'blok_describe');
+    default: {
+      const mcp = Object.hasOwn(MCP_OPERATIONS, operation) ? MCP_OPERATIONS[operation] : undefined;
+
+      if (mcp === undefined) {
+        throw new TypeError(`Unsupported Blok runtime operation: ${operation}`);
+      }
+
+      return mcp(parseRecord(inputJson));
+    }
   }
 };
 

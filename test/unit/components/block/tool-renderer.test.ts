@@ -75,6 +75,18 @@ describe('ToolRenderer', () => {
       expect(contentElement?.contains(mockRenderedElement)).toBe(true);
     });
 
+    it('builds each block scaffold as a copy of the first, without re-parsing classes', () => {
+      const first = toolRenderer.compose();
+      const firstHtml = first.outerHTML;
+      const createSpy = vi.spyOn(document, 'createElement');
+      const second = new ToolRenderer(toolInstance, 'paragraph', 'second-id', tunesManager, {}).compose();
+
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(second.outerHTML).toBe(firstHtml.replace('test-block-id', 'second-id'));
+      expect(second.firstElementChild === first.firstElementChild).toBe(false);
+      createSpy.mockRestore();
+    });
+
     it('resolves ready promise for sync render', async () => {
       toolRenderer.compose();
 
@@ -115,6 +127,26 @@ describe('ToolRenderer', () => {
 
         expect(readyResolved).toBe(true);
         expect(wrapper.querySelector('[data-blok-element-content]')?.contains(asyncElement)).toBe(true);
+      });
+
+      it('leaves a block destroyed before its async render settles untouched, and still resolves ready', async () => {
+        const lateElement = document.createElement('div');
+        let finishRender: (element: HTMLElement) => void = () => undefined;
+
+        toolInstance.render = vi.fn(() => new Promise<HTMLElement>((resolve) => {
+          finishRender = resolve;
+        }));
+
+        const renderer = new ToolRenderer(toolInstance, 'paragraph', 'test-block-id', tunesManager, {});
+        const wrapper = renderer.compose();
+
+        renderer.destroy();
+        finishRender(lateElement);
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        expect(wrapper.querySelector('[data-blok-element-content]')?.contains(lateElement)).toBe(false);
+        expect(renderer.toolRenderedElement).not.toBe(lateElement);
+        await expect(renderer.ready).resolves.toBeUndefined();
       });
 
       it('handles render promise rejection', async () => {

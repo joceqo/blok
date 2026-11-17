@@ -52,6 +52,36 @@ func TestResolvesTheFrozenAddressingContract(t *testing.T) {
 	}
 }
 
+// An operator prefix with '?' or '#' must stay in the path. The rows and
+// paths are S3TargetResolverTests.EscapesTheKeyInThePath.
+func TestEscapesTheKeyInThePath(t *testing.T) {
+	for _, c := range []struct{ key, path string }{
+		{"a?b/c", "/bucket/a%3Fb/c"},
+		{"a#b/c", "/bucket/a%23b/c"},
+		{"a b/c", "/bucket/a%20b/c"},
+		{"é/c", "/bucket/%C3%A9/c"},
+		{"a%2Fb/c", "/bucket/a%2Fb/c"},
+		{"a%zz/c", "/bucket/a%25zz/c"},
+		{"../c", "/c"},
+		{`a\b/c`, "/bucket/a/b/c"},
+		{"a?b#c/d", "/bucket/a%3Fb%23c/d"},
+	} {
+		url, _, err := testS3("http://127.0.0.1:9000", "bucket", "").target(c.key)
+		if err != nil {
+			t.Errorf("%q: %v", c.key, err)
+			continue
+		}
+		request, err := http.NewRequest(http.MethodGet, url.AbsoluteURI, nil)
+		if err != nil {
+			t.Errorf("%q: %v", c.key, err)
+			continue
+		}
+		if url.AbsolutePath != c.path || request.URL.RequestURI() != c.path {
+			t.Errorf("%q: got %s, on the wire %s; want %s", c.key, url.AbsolutePath, request.URL.RequestURI(), c.path)
+		}
+	}
+}
+
 func TestRefusesAnUnusableTarget(t *testing.T) {
 	for _, c := range []struct{ endpoint, bucket, addressing string }{
 		{"", "media", ""},
@@ -258,7 +288,7 @@ func TestBoundsTheSpool(t *testing.T) {
 	s := bucketStore(t, bucket)
 	s.TempDir = t.TempDir()
 	_, err := s.Put(context.Background(), ".bin", "", io.LimitReader(neverEnding{}, s.MaxSpoolBytes+1))
-	if err == nil || len(bucket.requests) != 0 {
+	if err == nil || !strings.Contains(err.Error(), "exceeds the configured 1024-byte limit") || len(bucket.requests) != 0 {
 		t.Fatalf("got %v after %d requests", err, len(bucket.requests))
 	}
 	if left, _ := os.ReadDir(s.TempDir); len(left) != 0 {

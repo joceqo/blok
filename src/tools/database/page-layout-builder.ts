@@ -11,7 +11,7 @@ import { PopoverDesktop } from '../../components/utils/popover';
 import { PopoverItemType } from '../../components/utils/popover/components/popover-item';
 import type { PopoverItemParams } from '../../components/utils/popover/components/popover-item';
 import { PopoverEvent } from '@/types/utils/popover/popover-event';
-import { DATABASE_MENU_CLASS } from './database-group-menu';
+import { DATABASE_MENU_CLASS, DATABASE_SUBMENU_OPEN_DELAY_MS } from './database-group-menu';
 import { DatabaseDropLine } from './database-drop-line';
 import { openDatabaseConfirm } from './database-confirm-dialog';
 import { DatabasePanel, panelInput, panelLabel, panelRow, panelSeparator, panelSwitch } from './database-panel';
@@ -1566,6 +1566,7 @@ export class PageLayoutBuilder {
 
     this.showMenu(new PopoverDesktop({
       class: DATABASE_MENU_CLASS,
+      animateClose: true,
       trigger: anchor,
       width: 'auto',
       minWidth: '300px',
@@ -1582,6 +1583,7 @@ export class PageLayoutBuilder {
   private openMoreSave(anchor: HTMLElement): void {
     this.showMenu(new PopoverDesktop({
       class: `${DATABASE_MENU_CLASS} blok-database-layout-reset-menu`,
+      animateClose: true,
       trigger: anchor,
       width: 'auto',
       // notion-spec-2 §11: Notion's menu is 254 wide.
@@ -1609,6 +1611,7 @@ export class PageLayoutBuilder {
       }
     });
     this.menu = menu;
+    this.menu.nestedOpenDelay = DATABASE_SUBMENU_OPEN_DELAY_MS;
     menu.show();
   }
 

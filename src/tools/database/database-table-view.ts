@@ -1,7 +1,7 @@
 import type { I18n } from '../../../types';
-import { DATA_ATTR } from '../../components/constants/data-attributes';
+import { DATA_ATTR, KEYBOARD_OWNER_SELECT_ALL } from '../../components/constants/data-attributes';
 import type { DatabaseViewRenderer } from './database-view-renderer';
-import type { DatabaseRow, DatabaseViewConfig, DateReminderOffset, NumberDisplay, OpenPagesIn, PropertyDefinition, PropertyValue, SelectOption, CalculationFn } from './types';
+import type { DatabaseRow, DatabaseViewConfig, DateReminderOffset, LoadLimit, NumberDisplay, OpenPagesIn, PropertyDefinition, PropertyValue, SelectOption, CalculationFn } from './types';
 import type { ViewChanges } from './database-model';
 import { bindFileNameHint, renderCellValue, createOptionPill, openCellEditor } from './cells';
 import { rowCellContext } from './reminders';
@@ -28,36 +28,41 @@ import { DatabaseTableGrid, createTableState } from './database-table-grid';
 import { SELECTION_BAR_SEGMENTS, bulkCloseClearsSelection, bulkStartValue, selectionPropertyButton, watchBulkCloseKey } from './database-selection-bar';
 import { cellText } from './database-table-clipboard';
 import type { CellChange, TableState } from './database-table-grid';
-import { fileChipIcon, pageIconElement, pagePlaceholderIcon, showsPageIcon } from './page-icon';
+import { fileChipIcon, rowPageGlyph, showsPageIcon } from './page-icon';
 
-import { CALCULATION_LABEL_KEYS, calculationItems, headerViewItems, moveTargetItems, openMenu, rowMenuFooter, rowMenuItems } from './database-table-menus';
+import { CALCULATION_LABEL_KEYS, calcMenuAt, calculationItems, headerViewItems, loadLimitItems, moveTargetItems, openMenu, rowMenuFooter, rowMenuItems } from './database-table-menus';
 import type { CountCap, OpenMenuOptions, RowFavorite } from './database-table-menus';
 import type { PopoverItemParams } from '@/types/utils/popover/popover-item';
-import { DatabaseTableColumnResize } from './database-table-resize';
+import { DatabaseTableColumnResize, MIN_COLUMN_WIDTH } from './database-table-resize';
 import { DatabaseTableColumnDrag } from './database-table-column-drag';
 import { DatabaseTableRowDrag } from './database-table-row-drag';
 import type { TableRowDropResult } from './database-table-row-drag';
 import { offHover, onHover } from '../../components/utils/tooltip';
+import { prefersReducedMotion } from '../../components/utils/reduced-motion';
 import { propertyHint } from './property-hint';
 import { syncCommentBadge } from './database-comment-badge';
 import type { CommentBadges } from './database-comment-badge';
 import { propertyTypeMeta } from './database-property-types';
 import type { PopoverDesktop } from '../../components/utils/popover';
 import { PopoverItemType } from '../../components/utils/popover/components/popover-item';
+import { PopoverEvent } from '@/types/utils/popover/popover-event';
+import { pointerMenuPlacement } from './database-list-view';
 import {
-  IconChevronDown,
+  IconPlayerPlay,
   IconChevronRight,
-  IconMenu,
+  IconRowGrip,
   IconPlus,
   IconPeekSide,
   IconTrash,
   IconDotsHorizontal,
+  IconMoveDown,
   IconCopy,
   IconMessage,
   IconPencilLine,
   IconWand,
   IconWarning,
   IconInfo,
+  IconFilter,
 } from '../../components/icons';
 
 export { createTableState };
@@ -66,7 +71,86 @@ export type { TableState };
 /** Observed Notion widths (research/07): title 280, other columns 200. Unverified as defaults. */
 export const DEFAULT_TITLE_WIDTH = 280;
 export const DEFAULT_COLUMN_WIDTH = 200;
-export const MIN_COLUMN_WIDTH = 32;
+export { MIN_COLUMN_WIDTH };
+
+/** notion-motion.md Round 28 §1: Notion's title column shows OPEN from 102 and the icon pill at 100. 101 is unread. */
+const OPEN_LABEL_MIN_WIDTH = 102;
+/** The OPEN button's inset from the title cell's end (database.css). */
+const OPEN_INSET = 4;
+/** notion-motion.md Round 46 §A: the frozen block sticks this far in from the scroller's edge (x 300, scroller at 270). The scroller's clip-path in database.css uses the same 30px. */
+const FROZEN_STICK_INSET = 30;
+/** notion-motion.md Round 47 §B6: Notion's shadow comes on at 268, 29 after the stick (239). A fit to the measured numbers. */
+const FROZEN_SHADOW_AFTER_STICK = 29;
+
+/**
+ * A narrow title column shows an icon-only OPEN (notion-motion.md Round 27 §2, Round 28 §1): below Notion's 102,
+ * or where a long translated label would spill past the cell's start edge. The label stays in the DOM, hidden by
+ * CSS, as the button's name. No layout (a hidden table) leaves it as it is.
+ */
+const fitOpen = (open: HTMLElement): void => {
+  const room = open.parentElement?.getBoundingClientRect().width ?? 0;
+
+  if (room === 0) return;
+  if (room < OPEN_LABEL_MIN_WIDTH) {
+    open.setAttribute('data-compact', '');
+
+    return;
+  }
+  const { style } = open;
+  const display = style.display;
+
+  open.removeAttribute('data-compact');
+  // Measured shown: row hover may not apply yet when the pointer arrives.
+  style.display = 'inline-flex';
+  const width = open.getBoundingClientRect().width;
+
+  style.display = display;
+  open.toggleAttribute('data-compact', width + OPEN_INSET > room);
+};
+
+/** The OPEN pill on a row's title: a peek glyph and an empty label, which the caller fills. */
+export const createOpenButton = (): HTMLButtonElement => {
+  const open = document.createElement('button');
+  const icon = document.createElement('span');
+
+  open.type = 'button';
+  open.setAttribute('data-blok-database-table-open', '');
+  open.tabIndex = -1;
+  icon.setAttribute('aria-hidden', 'true');
+  icon.setAttribute('data-blok-database-table-open-icon', '');
+  icon.innerHTML = IconPeekSide;
+  open.append(icon, document.createElement('span'));
+
+  return open;
+};
+
+/** The row shown in the side peek, if any, and how to close it. */
+export interface RowPeek {
+  rowId: () => string | null;
+  close: () => void;
+}
+
+/** OPEN reads CLOSE while its row is in the side peek (notion-spec-2 §25.3, notion-motion.md Round 58 §5). */
+export const paintOpenButton = (button: HTMLElement, peeked: boolean, i18n: Pick<I18n, 't'>): void => {
+  const label = button.lastElementChild;
+
+  button.toggleAttribute('data-peeked', peeked);
+  if (label !== null) label.textContent = i18n.t(peeked ? 'tools.database.close' : 'tools.database.tableOpen');
+  if (peeked) {
+    onHover(button, i18n.t('tools.database.closeSidePeek'), { placement: 'top' });
+  } else {
+    offHover(button);
+  }
+};
+
+/** CLOSE closes the peek; OPEN opens the row. */
+export const pressOpenButton = (button: Element, rowId: string, peek: RowPeek | undefined, open: (rowId: string) => void): void => {
+  if (button.hasAttribute('data-peeked') && peek !== undefined) {
+    peek.close();
+  } else {
+    open(rowId);
+  }
+};
 
 export interface TableGroup {
   /** Group key; the model's no-value key for "No ⟨property⟩". */
@@ -93,7 +177,8 @@ export interface TableHandlers {
   /** Adds a row to a group ('' or null when ungrouped), after `afterRowId` when given. Returns its id. */
   addRow: (groupKey: string | null, afterRowId?: string) => string | null;
   /** `byKey`: Delete or Backspace on selected rows, which shows the Trash toast. */
-  deleteRows: (rowIds: string[], byKey?: boolean) => void;
+  /** `toast`: show "Moved to Trash" with Restore. */
+  deleteRows: (rowIds: string[], toast?: boolean) => void;
   duplicateRow: (rowId: string) => void;
   /** Opens a row page, in `mode` when the row menu's "Open in" names one. */
   openRow: (rowId: string, mode?: OpenPagesIn) => void;
@@ -104,8 +189,12 @@ export interface TableHandlers {
   moveRowTo?: (rowId: string, databaseId: string) => void;
   editRowIcon: (rowId: string) => void;
   updateView: (changes: ViewChanges) => void;
+  /** The Load more row's ⋯. The tool leaves it out when the view cannot change. */
+  setLoadLimit?: (limit: LoadLimit) => void;
   openPropertyMenu: (propertyId: string, anchor: HTMLElement) => void;
   addProperty: (anchor: HTMLElement, placement?: { propertyId: string; side: 'left' | 'right' }) => void;
+  /** The header row's ⋯ after "+": Notion's "Show or hide properties". Left out when unset. */
+  propertyVisibility?: (anchor: HTMLElement) => void;
   viewAction: (action: 'filter' | 'sort' | 'group', propertyId: string, anchor: HTMLElement) => void;
   moveRow: (result: TableRowDropResult) => void;
   /** A drop in a sorted view. Notion asks to remove the sort (D7); the tool decides. */
@@ -119,6 +208,12 @@ export interface TableHandlers {
   clearSearch?: () => void;
   /** A group was folded or opened. The tool saves it in the view. */
   groupToggled?: (key: string, collapsed: boolean) => void;
+  /** A group header's ⋯. `header` keeps its buttons shown while the menu is open. Without it no ⋯ is drawn. */
+  groupMenu?: (groupKey: string, anchor: HTMLElement, header: HTMLElement) => void;
+  /** A group header's +: a page at the end of that group. Without it no + is drawn. */
+  addGroupPage?: (groupKey: string) => void;
+  /** A group header's count: the view's group calculation menu. Without it the count is not a button. */
+  groupCalculationMenu?: (anchor: HTMLElement, header: HTMLElement) => void;
   /** Redraw from the model, keeping the table state. */
   rerender: () => void;
   optionsChange?: (propertyId: string, options: SelectOption[]) => void;
@@ -130,6 +225,8 @@ export interface TableHandlers {
   configureRollup?: (propertyId: string, cell: HTMLElement) => void;
   /** The date picker's format rows. Returns undefined where the property may not change. Drawn on editEnded. */
   dateDisplayChanger?: (propertyId: string) => ((change: DateDisplayChange) => void) | undefined;
+  /** Escape cleared selected rows: close the side peek. */
+  rowsEscaped?: () => void;
 }
 
 /** Sub-items "Nested in toggle": what the table asks about each shown row. */
@@ -144,7 +241,7 @@ export interface DatabaseTableViewOptions {
   /** Opens a row page without any write handler: what a read-only viewer gets. */
   openRow?: (rowId: string) => void;
   /** The row shown in the side peek, if any, and how to close it: its OPEN reads CLOSE (notion-spec-2 §25.3). */
-  peek?: { rowId: () => string | null; close: () => void };
+  peek?: RowPeek;
   readOnly: boolean;
   i18n: I18n;
   view: DatabaseViewConfig;
@@ -154,6 +251,10 @@ export interface DatabaseTableViewOptions {
   rows: DatabaseRow[];
   /** Groups of a grouped table, in order. Overrides `rows`. */
   groups?: TableGroup[];
+  /** "Show aggregation": the number after each group's name, by group key. Without it no count is drawn. */
+  groupAggregate?: (groupKey: string) => string;
+  /** The count's hover hint: the calculation's name, as in notion-motion.md Round 12. */
+  groupAggregateHint?: string;
   titlePropertyId: string;
   state?: TableState;
   handlers?: TableHandlers;
@@ -190,10 +291,28 @@ interface Column {
   wrap: boolean;
   /** Inline-start offset when frozen. */
   frozenAt?: number;
+  /** The last frozen column: the darker line and the scroll shadow go after it. */
+  frozenEdge?: boolean;
 }
 
+/** notion-motion.md Round 11 "Footer labels": footer labels that differ from the menu item name. A percent takes its count's label. */
+const FOOTER_LABEL_KEYS: Partial<Record<CalculationFn, string>> = {
+  count: 'tools.database.calcCount',
+  count_values: 'tools.database.calcFooterCountValues',
+  unique: 'tools.database.calcFooterUnique',
+  empty: 'tools.database.calcFooterEmpty',
+  not_empty: 'tools.database.calcFooterNotEmpty',
+  percent_empty: 'tools.database.calcFooterEmpty',
+  percent_not_empty: 'tools.database.calcFooterNotEmpty',
+  percent_checked: 'tools.database.calcChecked',
+  percent_unchecked: 'tools.database.calcUnchecked',
+  earliest_date: 'tools.database.calcFooterEarliest',
+  latest_date: 'tools.database.calcFooterLatest',
+  date_range: 'tools.database.calcRange',
+};
+
 /** A footer cell's content: "Calculate" when no function is set, else its label and result. The timeline's table panel shares it. */
-export const fillCalculationCell = (cell: HTMLElement, { fn, property, shown, rows, i18n, locale, capCounts = false }: {
+export const fillCalculationCell = (cell: HTMLElement, { fn, property, shown, rows, i18n, locale, capCounts = false, editable = true }: {
   fn: CalculationFn | undefined;
   property: PropertyDefinition;
   /** `property` as its result type (formula, rollup). */
@@ -203,18 +322,28 @@ export const fillCalculationCell = (cell: HTMLElement, { fn, property, shown, ro
   locale: string | undefined;
   /** "Show large counts as 99+". */
   capCounts?: boolean;
+  /** notion-motion.md Round 11: a read-only footer has no "Calculate". */
+  editable?: boolean;
 }): void => {
   // research/08: a button column has no Calculate.
   if (property.type === 'button') {
     return;
   }
+  if (fn === undefined && !editable) {
+    return;
+  }
+  // research/21 §1d: the hover fills this box, not the cell.
+  const box = document.createElement('span');
+
+  box.setAttribute('data-blok-database-table-calc-box', '');
+  cell.appendChild(box);
   if (fn === undefined) {
     const placeholder = document.createElement('span');
 
     cell.setAttribute('data-empty', '');
     placeholder.setAttribute('data-blok-database-table-calc-placeholder', '');
     placeholder.textContent = i18n.t('tools.database.tableCalculate');
-    cell.appendChild(placeholder);
+    box.appendChild(placeholder);
 
     return;
   }
@@ -223,10 +352,10 @@ export const fillCalculationCell = (cell: HTMLElement, { fn, property, shown, ro
   const value = document.createElement('span');
 
   label.setAttribute('data-blok-database-table-calc-label', '');
-  label.textContent = i18n.t(CALCULATION_LABEL_KEYS[fn]);
+  label.textContent = i18n.t(FOOTER_LABEL_KEYS[fn] ?? CALCULATION_LABEL_KEYS[fn]);
   value.setAttribute('data-blok-database-table-calc-value', '');
   value.textContent = calculationText(fn, rows, property, shown, locale, capCounts);
-  cell.append(label, value);
+  box.append(label, value);
 };
 
 /** One calculation over `rows`, formatted as the footer shows it. The board's group calculation shares it. */
@@ -249,6 +378,8 @@ const NUMBER_RESULT_FNS: ReadonlySet<CalculationFn> = new Set<CalculationFn>(['s
 const COUNT_RESULT_FNS: ReadonlySet<CalculationFn> = new Set<CalculationFn>(['count', 'count_values', 'unique', 'empty', 'not_empty', 'checked', 'unchecked']);
 
 const MAX_SHOWN_COUNT = 99;
+/** Matches the leaving bar's fade in database.css. */
+const SELECTION_BAR_FADE_MS = 200;
 
 /** Cells whose value is a link: a click on it follows it, and a hover shows the action pill. */
 const LINK_TYPES: ReadonlySet<string> = new Set(['url', 'email', 'phone']);
@@ -270,6 +401,8 @@ const tableIds = { next: 0 };
 const idPart = (value: string): string => value.replace(/[^A-Za-z0-9_-]/g, (ch) => `_${ch.charCodeAt(0).toString(16)}`);
 
 const CALC_NUMBER = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, useGrouping: false });
+/** notion-motion.md Round 11: "33.333%". */
+const CALC_PERCENT = new Intl.NumberFormat(undefined, { maximumFractionDigits: 3, useGrouping: false });
 
 export const formatCalculation = (
   result: CalculationResult,
@@ -284,7 +417,7 @@ export const formatCalculation = (
 
       return options.number === undefined ? CALC_NUMBER.format(result.value) : formatNumberValue(result.value, options.number, resolveLocale(locale));
     case 'percent':
-      return `${CALC_NUMBER.format(result.value)}%`;
+      return `${CALC_PERCENT.format(result.value)}%`;
     case 'date':
       return formatDateText(result.value, resolveLocale(locale)) ?? result.value;
     case 'dateRange': {
@@ -317,9 +450,17 @@ export class DatabaseTableView implements DatabaseViewRenderer {
   private rowDrag: DatabaseTableRowDrag | null = null;
   private root: HTMLDivElement | null = null;
   private gridEl: HTMLDivElement | null = null;
+  /** Reads the scroller's text-column padding, which sets where the frozen block sticks. */
+  private scrollerObserver: ResizeObserver | null = null;
+  /** The scrollLeft at which the frozen block sticks. */
+  private stickAt = 0;
   /** A pointer is down in the grid. */
   private pressing = false;
   private bar: HTMLElement | null = null;
+  /** This render follows a row drop: the bar shows without its entrance (notion-motion.md Round 40 §1). */
+  private afterDrop = false;
+  /** The bar fading out after the selection cleared, and the timer that removes it. */
+  private leavingBar: { el: HTMLElement; timer: number } | null = null;
   /** Unique per table, so two tables on a page never share a cell id. */
   private readonly idPrefix = `blok-database-table-${++tableIds.next}`;
   /** The menu this table opened. Its anchor dies with a redraw, so the menu must too. */
@@ -351,6 +492,10 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     return this.options.i18n.t(key, vars);
   }
 
+  private grouped(): boolean {
+    return this.options.groups !== undefined && this.options.groups.length > 0;
+  }
+
   private allRows(): DatabaseRow[] {
     return this.options.groups !== undefined ? this.options.groups.flatMap((group) => group.rows) : this.options.rows;
   }
@@ -363,13 +508,16 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     const sized = visible.map((setting) => {
       const property = byId.get(setting.id) as PropertyDefinition;
 
-      return { property, wrap: setting.wrap, width: setting.width ?? (property.type === 'title' ? DEFAULT_TITLE_WIDTH : DEFAULT_COLUMN_WIDTH) };
+      const width = setting.width ?? (property.type === 'title' ? DEFAULT_TITLE_WIDTH : DEFAULT_COLUMN_WIDTH);
+
+      // An older, narrower saved width draws at the minimum; the saved value stays until the user resizes.
+      return { property, wrap: setting.wrap, width: Math.max(MIN_COLUMN_WIDTH, width) };
     });
 
     return sized.map((column, index) => {
       const frozenAt = sized.slice(0, index).reduce((sum, c) => sum + c.width, 0);
 
-      return index < frozen ? { ...column, frozenAt } : column;
+      return index < frozen ? { ...column, frozenAt, frozenEdge: index === Math.min(frozen, sized.length) - 1 } : column;
     });
   }
 
@@ -384,14 +532,37 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     const scroller = document.createElement('div');
 
     scroller.setAttribute('data-blok-database-table-scroller', '');
+    // `data-scrolled` clips the strip before the stuck block; `data-frozen-shadow` shows its shadow (database.css). RTL scrolls negative.
+    const frozen = this.columns.some((column) => column.frozenAt !== undefined);
+    const markStuck = (): void => {
+      const offset = Math.abs(scroller.scrollLeft);
+
+      scroller.toggleAttribute('data-scrolled', frozen && offset !== 0 && offset >= this.stickAt);
+      scroller.toggleAttribute('data-frozen-shadow', frozen && offset !== 0 && offset >= this.stickAt + FROZEN_SHADOW_AFTER_STICK);
+    };
+
+    scroller.addEventListener('scroll', markStuck, { passive: true });
+    // Sticky insets count from the padded edge (the text column), so the frozen cells subtract the padding.
+    this.scrollerObserver?.disconnect();
+    this.scrollerObserver = frozen && typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(() => {
+        const pad = parseFloat(getComputedStyle(scroller).paddingInlineStart) || 0;
+
+        this.stickAt = Math.max(0, pad - FROZEN_STICK_INSET);
+        scroller.style.setProperty('--_blok-database-frozen-shift', `${-this.stickAt}px`);
+        markStuck();
+      })
+      : null;
+    this.scrollerObserver?.observe(scroller);
 
     const gridEl = document.createElement('div');
 
     gridEl.setAttribute('role', 'grid');
     gridEl.setAttribute('data-blok-database-table-grid', '');
-    gridEl.setAttribute('data-blok-keyboard-owner', '');
+    // Cmd+A here goes to Blok's block selection (blockSelection.ts).
+    gridEl.setAttribute(DATA_ATTR.keyboardOwner, KEYBOARD_OWNER_SELECT_ALL);
     gridEl.setAttribute('aria-label', this.t('tools.database.tableLabel'));
-    gridEl.setAttribute('aria-rowcount', String(this.allRows().length + 1));
+    gridEl.setAttribute('aria-rowcount', String(this.allRows().length + Math.max(1, this.options.groups?.length ?? 0)));
     gridEl.setAttribute('aria-colcount', String(this.columns.length));
     gridEl.setAttribute('aria-multiselectable', 'true');
     gridEl.setAttribute('data-vertical-lines', String(resolveShowVerticalLines(this.options.view)));
@@ -401,7 +572,11 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     gridEl.tabIndex = 0;
     this.gridEl = gridEl;
 
-    gridEl.appendChild(this.createHeader());
+    // Notion repeats the header row under each group (research/shots-08/59-table-grouped.png).
+    // With no group drawn, one header stays so properties, resize and "+" remain reachable.
+    if (!this.grouped()) {
+      gridEl.appendChild(this.createHeader());
+    }
     if (this.options.groups !== undefined) {
       for (const group of this.options.groups) {
         gridEl.appendChild(this.createGroup(group));
@@ -434,6 +609,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
         commitCells: (changes, newRows) => this.handlers?.commitCells(changes, newRows),
         bulkEdit: (rowIds) => this.openBulkPicker(rowIds),
         rowCommand: (rowId, command) => this.rowCommand(rowId, command),
+        rowsEscaped: () => this.handlers?.rowsEscaped?.(),
         ...(this.handlers?.optionsChange !== undefined
           ? { optionsChange: (propertyId: string, next: SelectOption[]) => this.handlers?.optionsChange?.(propertyId, next) }
           : {}),
@@ -448,14 +624,17 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     });
     gridEl.addEventListener('click', this.handleNestingClick, true);
     gridEl.addEventListener('click', this.handleClick);
-    if (this.options.comment !== undefined) {
-      gridEl.setAttribute(DATA_ATTR.contextMenuOwner, '');
-      gridEl.addEventListener('contextmenu', this.handleContextMenu);
-    }
+    // Rows stop their own right-click; the owner only turns core's block menu off elsewhere in the grid.
+    if (this.options.comment !== undefined) gridEl.setAttribute(DATA_ATTR.contextMenuOwner, '');
+    gridEl.addEventListener('contextmenu', this.handleContextMenu);
     // Bubble on the grid runs before the popover registry's document listener,
     // whose outside press closes the open editor and asks for a redraw.
     gridEl.addEventListener('pointerdown', this.handlePress);
     gridEl.addEventListener('blok-database-table-repaint', this.handleRepaint);
+    gridEl.addEventListener('pointerover', this.handleOver);
+    gridEl.addEventListener('pointerleave', () => {
+      this.overRow = null;
+    });
 
     if (this.editable) {
       this.resize = new DatabaseTableColumnResize({
@@ -474,10 +653,18 @@ export class DatabaseTableView implements DatabaseViewRenderer {
       this.rowDrag = new DatabaseTableRowDrag({
         grid: gridEl,
         state: this.state,
+        // Notion selects the pressed row at once; a row already in a selection keeps it.
+        onPress: (rowId) => {
+          const selection = this.state.selection;
+
+          if (selection?.kind !== 'rows' || !selection.rowIds.includes(rowId)) this.grid?.selectRows([rowId]);
+        },
         onDrop: (result) => {
           if (this.options.view.sorts.length > 0) {
             this.handlers?.sortedRowDrop(result);
           } else {
+            // Only here: a sorted drop asks first, so no redraw may follow.
+            this.state.droppedRowId = result.rowId;
             this.handlers?.moveRow(result);
           }
         },
@@ -490,9 +677,32 @@ export class DatabaseTableView implements DatabaseViewRenderer {
         this.grid?.restore();
       }
     });
+    this.markDropped(gridEl);
     this.grid.paint();
+    this.afterDrop = false;
 
     return root;
+  }
+
+  /** notion-motion.md Round 40 §1: the dropped row's tint fades in (database.css, while data-landed is on). */
+  private markDropped(gridEl: HTMLElement): void {
+    const rowId = this.state.droppedRowId;
+
+    this.state.droppedRowId = undefined;
+    if (rowId === undefined) return;
+    this.afterDrop = true;
+    const rowEl = gridEl.querySelector<HTMLElement>(`[data-blok-database-table-row][data-row-id="${CSS.escape(rowId)}"]`);
+
+    if (rowEl === null) return;
+    rowEl.setAttribute('data-landed', '');
+    // Off when the fade ends, so a later select runs the usual transition. Cells bubble their own animationend.
+    const landed = (event: Event): void => {
+      if (event.target !== rowEl) return;
+      rowEl.removeAttribute('data-landed');
+      rowEl.removeEventListener('animationend', landed);
+    };
+
+    rowEl.addEventListener('animationend', landed);
   }
 
   appendRow(container: HTMLElement, row: DatabaseRow): void {
@@ -522,16 +732,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
   /** notion-spec-2 §25.3: OPEN reads CLOSE, with the hint "Close side peek" above it (62-close-hover.png), while its row is in the side peek. */
   private paintOpen(button: HTMLElement, rowId: string): void {
-    const peeked = this.options.peek?.rowId() === rowId;
-    const label = button.lastElementChild;
-
-    button.toggleAttribute('data-peeked', peeked);
-    if (label !== null) label.textContent = this.t(peeked ? 'tools.database.close' : 'tools.database.tableOpen');
-    if (peeked) {
-      onHover(button, this.t('tools.database.closeSidePeek'), { placement: 'top' });
-    } else {
-      offHover(button);
-    }
+    paintOpenButton(button, this.options.peek?.rowId() === rowId, this.options.i18n);
   }
 
   /** The tool calls it when a row page opens in a peek. */
@@ -550,15 +751,34 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
       if (typeof rowId === 'string') this.paintOpen(button, rowId);
     });
+    // OPEN and CLOSE differ in width; only the buttons on screen now need a new fit.
+    [this.overRow, this.gridEl?.querySelector('[data-blok-database-table-cell-anchor]')].forEach((holder) => {
+      const open = holder?.querySelector<HTMLElement>('[data-blok-database-table-open]');
+
+      if (open !== null && open !== undefined) fitOpen(open);
+    });
   }
+
+  /** The row the pointer is over: moving between its cells fires pointerover again. */
+  private overRow: Element | null = null;
+
+  /** The selected title cell's OPEN, last fitted. */
+  private anchorOpen: HTMLElement | null = null;
+
+  /** OPEN shows on row hover: fit it to its title cell as the pointer comes into the row. */
+  private readonly handleOver = (event: PointerEvent): void => {
+    const row = event.target instanceof Element ? event.target.closest('[data-blok-database-table-row]') : null;
+
+    if (row === this.overRow) return;
+    this.overRow = row;
+    const open = row?.querySelector<HTMLElement>('[data-blok-database-table-open]');
+
+    if (open !== null && open !== undefined) fitOpen(open);
+  };
 
   /** CLOSE on the peeked row closes the peek; OPEN opens the row. */
   private pressOpen(button: Element, rowId: string, open: (rowId: string) => void): void {
-    if (button.hasAttribute('data-peeked') && this.options.peek !== undefined) {
-      this.options.peek.close();
-    } else {
-      open(rowId);
-    }
+    pressOpenButton(button, rowId, this.options.peek, open);
   }
 
   destroy(): void {
@@ -572,6 +792,8 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     this.menu?.destroy();
     this.menu = null;
     this.grid?.destroy();
+    this.scrollerObserver?.disconnect();
+    this.scrollerObserver = null;
     this.resize?.destroy();
     this.columnDrag?.destroy();
     this.rowDrag?.destroy();
@@ -612,7 +834,10 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
     header.setAttribute('role', 'row');
     header.setAttribute('data-blok-database-table-header', '');
-    header.setAttribute('aria-rowindex', '1');
+    // Rows carry no index; one index per group header would repeat it.
+    if (!this.grouped()) {
+      header.setAttribute('aria-rowindex', '1');
+    }
 
     if (this.editable) {
       const gutter = this.createGutter();
@@ -640,10 +865,27 @@ export class DatabaseTableView implements DatabaseViewRenderer {
         add.setAttribute('aria-label', this.t('tools.database.tableAddProperty'));
       }
       header.appendChild(add);
+      if (!add.hasAttribute('data-labelled') && this.handlers?.propertyVisibility !== undefined) {
+        header.appendChild(this.createPropertyVisibilityButton());
+      }
     }
     header.appendChild(this.createFiller());
 
     return header;
+  }
+
+  /** notion-motion.md Round 41 Part A: a 28px ⋯ right after "+", in the "+"'s ink. */
+  private createPropertyVisibilityButton(): HTMLButtonElement {
+    const more = document.createElement('button');
+    const label = this.t('tools.database.tableShowHideProperties');
+
+    more.type = 'button';
+    more.setAttribute('data-blok-database-table-property-visibility', '');
+    more.setAttribute('aria-label', label);
+    more.innerHTML = IconDotsHorizontal;
+    onHover(more, label);
+
+    return more;
   }
 
   private createHeaderCell(column: Column, index: number): HTMLElement {
@@ -666,6 +908,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     const icon = document.createElement('span');
 
     icon.setAttribute('data-blok-database-table-column-icon', '');
+    icon.setAttribute('data-type', property.type);
     icon.setAttribute('aria-hidden', 'true');
     if (property.icon !== undefined && property.icon !== '') {
       icon.textContent = property.icon;
@@ -736,8 +979,10 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     style.width = `${column.width}px`;
     if (column.frozenAt !== undefined) {
       cell.setAttribute('data-frozen', '');
-      style.insetInlineStart = `${column.frozenAt}px`;
+      style.insetInlineStart = `calc(${column.frozenAt}px + var(--_blok-database-frozen-shift, 0px))`;
     }
+    // A blank cell is not sticky: its line and shadow would scroll away.
+    if (column.frozenEdge === true && !cell.hasAttribute('data-blok-database-table-blank-cell')) cell.setAttribute('data-frozen-edge', '');
   }
 
   private createFiller(): HTMLElement {
@@ -814,25 +1059,71 @@ export class DatabaseTableView implements DatabaseViewRenderer {
         fragment.appendChild(this.createBlankLine(this.createAddRow(groupKey)));
       }
       fragment.append(this.createBlankLine(null), this.createBlankLine(null));
-      fragment.appendChild(this.createFooter(rows));
+      if (this.hasShownCalculation()) {
+        fragment.appendChild(this.createFooter(rows));
+      }
 
       return fragment;
     }
     if (shown < rows.length) {
-      const more = document.createElement('button');
-
-      more.type = 'button';
-      more.setAttribute('data-blok-database-table-load-more', '');
-      more.setAttribute('data-group-key', groupKey);
-      more.textContent = this.t('tools.database.tableLoadMore');
-      fragment.appendChild(more);
+      fragment.appendChild(this.createLoadMore(groupKey));
     }
     if (this.editable) {
       fragment.appendChild(this.createAddRow(groupKey));
     }
-    fragment.appendChild(this.createFooter(rows));
+    // notion-motion.md Round 10: no footer row until a shown column is calculated; the header menu sets the first one.
+    if (this.hasShownCalculation()) {
+      fragment.appendChild(this.createFooter(rows));
+    }
 
     return fragment;
+  }
+
+  /**
+   * notion-motion.md Round 29 §1: a full-width row, the ↓ and "Load more", then a ⋯ for the load limit.
+   * The ⋯ sits beside the button, not in it, so a click on it loads nothing.
+   */
+  private createLoadMore(groupKey: string): HTMLElement {
+    const line = document.createElement('div');
+    const more = document.createElement('button');
+    const icon = document.createElement('span');
+
+    line.setAttribute('data-blok-database-table-load-more-row', '');
+    more.type = 'button';
+    more.setAttribute('data-blok-database-table-load-more', '');
+    more.setAttribute('data-group-key', groupKey);
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = IconMoveDown;
+    more.append(icon, this.t('tools.database.tableLoadMore'));
+    line.appendChild(more);
+    if (this.handlers?.setLoadLimit !== undefined && !this.options.readOnly) {
+      const dots = document.createElement('button');
+
+      dots.type = 'button';
+      dots.setAttribute('data-blok-database-table-load-limit-menu', '');
+      dots.setAttribute('aria-label', this.t('tools.database.settingsLoadLimit'));
+      dots.setAttribute('aria-haspopup', 'menu');
+      dots.innerHTML = IconDotsHorizontal;
+      line.appendChild(dots);
+    }
+
+    return line;
+  }
+
+  private openLoadLimitMenu(anchor: HTMLElement): void {
+    const setLoadLimit = this.handlers?.setLoadLimit;
+
+    if (setLoadLimit === undefined) {
+      return;
+    }
+    // notion-motion.md Round 30 §3: 8px below the ⋯, right edges aligned.
+    openMenu(anchor, loadLimitItems(this.options.i18n, resolveLoadLimit(this.options.view), setLoadLimit), { kind: 'calc', offset: 8, alignEnd: true });
+  }
+
+  private hasShownCalculation(): boolean {
+    const calculations = resolveCalculations(this.options.view, this.shownSchema());
+
+    return this.columns.some((column) => calculations.has(column.property.id));
   }
 
   private createAddRow(groupKey: string): HTMLElement {
@@ -911,7 +1202,12 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
     edit.type = 'button';
     edit.setAttribute(searching ? 'data-blok-database-table-clear-search' : 'data-blok-database-table-edit-filters', '');
-    edit.textContent = this.t(searching ? 'tools.database.searchClear' : 'tools.database.tableEditFilters');
+    if (searching) {
+      edit.textContent = this.t('tools.database.searchClear');
+    } else {
+      edit.innerHTML = IconFilter;
+      edit.append(this.t('tools.database.tableEditFilters'));
+    }
     empty.appendChild(edit);
     if (this.editable) {
       empty.appendChild(this.createAddRow(''));
@@ -951,7 +1247,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
       handle.setAttribute('data-blok-database-table-row-handle', '');
       handle.setAttribute('aria-label', this.t('tools.database.tableDragHandle'));
       handle.tabIndex = -1;
-      handle.innerHTML = IconMenu;
+      handle.innerHTML = IconRowGrip;
 
       gutter.append(add, handle, this.createCheckbox('data-blok-database-table-row-checkbox', this.t('tools.database.tableSelectRow')));
       rowEl.appendChild(gutter);
@@ -1014,7 +1310,9 @@ export class DatabaseTableView implements DatabaseViewRenderer {
       });
     }
 
-    const icon = column.property.type === 'title' && showsPageIcon(this.options.view) ? pageIconElement(row) ?? pagePlaceholderIcon() : null;
+    const icon = column.property.type === 'title' && showsPageIcon(this.options.view)
+      ? rowPageGlyph(row, this.options.cellContext?.rowHasBody?.(row.id) === true, true)
+      : null;
 
     if (icon !== null) {
       cell.insertBefore(icon, value);
@@ -1029,18 +1327,10 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     }
 
     if (column.property.type === 'title' && (this.handlers !== undefined || this.options.openRow !== undefined)) {
-      const open = document.createElement('button');
+      const open = createOpenButton();
 
-      open.type = 'button';
-      open.setAttribute('data-blok-database-table-open', '');
-      open.tabIndex = -1;
       // The grid points the selected cell's aria-describedby here; a repaint must keep the id.
       open.id = `${cell.id}-open`;
-      const icon = document.createElement('span');
-
-      icon.setAttribute('aria-hidden', 'true');
-      icon.innerHTML = IconPeekSide;
-      open.append(icon, document.createElement('span'));
       this.paintOpen(open, rowId);
       cell.appendChild(open);
     }
@@ -1229,7 +1519,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     caret.setAttribute('data-blok-database-table-group-toggle', '');
     caret.setAttribute('aria-expanded', String(!collapsed));
     caret.setAttribute('aria-label', this.t(collapsed ? 'tools.database.tableExpandGroup' : 'tools.database.tableCollapseGroup'));
-    caret.innerHTML = IconChevronDown;
+    caret.innerHTML = IconPlayerPlay;
 
     const label = document.createElement('span');
 
@@ -1239,11 +1529,13 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     } else {
       label.textContent = group.label;
     }
-    const count = document.createElement('span');
-
-    count.setAttribute('data-blok-database-table-group-count', '');
-    count.textContent = String(group.rows.length);
-    header.append(caret, label, count);
+    header.append(caret, label);
+    if (this.options.groupAggregate !== undefined) {
+      header.appendChild(this.createGroupCount(this.options.groupAggregate(group.key)));
+    }
+    if (!this.options.readOnly && this.handlers?.groupMenu !== undefined && this.handlers.addGroupPage !== undefined) {
+      header.appendChild(this.createGroupActions());
+    }
     section.appendChild(header);
 
     const content = document.createElement('div');
@@ -1251,11 +1543,58 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     content.setAttribute('data-blok-database-table-group-content', '');
     // Rows mount and unmount at once (research/08); only the caret turns.
     if (!collapsed) {
-      content.appendChild(this.createBody(group.rows, group.key, group));
+      content.appendChild(this.createGroupContent(group));
     }
     section.appendChild(content);
 
     return section;
+  }
+
+  /** Read-only cannot change the calculation, so there the number is not a button, as on the board. */
+  private createGroupCount(text: string): HTMLElement {
+    const clickable = !this.options.readOnly && this.handlers?.groupCalculationMenu !== undefined;
+    const count = document.createElement(clickable ? 'button' : 'span');
+
+    if (count instanceof HTMLButtonElement) {
+      count.type = 'button';
+      count.setAttribute('aria-haspopup', 'menu');
+    }
+    count.setAttribute('data-blok-database-table-group-count', '');
+    count.textContent = text;
+    if (this.options.groupAggregateHint !== undefined) {
+      onHover(count, this.options.groupAggregateHint, { placement: 'top', gap: 6 });
+    }
+
+    return count;
+  }
+
+  /** notion-motion.md Round 10: ⋯ then +, 24px each, shown while the header is hovered (database.css). */
+  private createGroupActions(): HTMLElement {
+    const actions = document.createElement('span');
+    const more = document.createElement('button');
+    const add = document.createElement('button');
+
+    actions.setAttribute('data-blok-database-table-group-actions', '');
+    more.type = 'button';
+    more.setAttribute('data-blok-database-table-group-menu', '');
+    more.setAttribute('aria-label', this.t('tools.database.groupMenuLabel'));
+    more.setAttribute('aria-haspopup', 'menu');
+    more.innerHTML = IconDotsHorizontal;
+    add.type = 'button';
+    add.setAttribute('data-blok-database-table-group-add', '');
+    add.setAttribute('aria-label', this.t('tools.database.newPage'));
+    add.innerHTML = IconPlus;
+    actions.append(more, add);
+
+    return actions;
+  }
+
+  private createGroupContent(group: TableGroup): DocumentFragment {
+    const fragment = this.createBody(group.rows, group.key, group);
+
+    fragment.prepend(this.createHeader());
+
+    return fragment;
   }
 
   private toggleGroup(section: HTMLElement): void {
@@ -1274,7 +1613,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
       content.replaceChildren();
     } else {
       this.state.collapsed.delete(key);
-      content.replaceChildren(this.createBody(group.rows, key, group));
+      content.replaceChildren(this.createGroupContent(group));
     }
     section.toggleAttribute('data-collapsed', collapse);
     caret?.setAttribute('aria-expanded', String(!collapse));
@@ -1316,7 +1655,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
       this.sizeCell(cell, column);
 
       fillCalculationCell(cell, {
-        fn, property: column.property, shown: this.shown(column.property), rows, i18n: this.options.i18n, locale: this.options.locale, capCounts: caps.has(column.property.id),
+        fn, property: column.property, shown: this.shown(column.property), rows, i18n: this.options.i18n, locale: this.options.locale, capCounts: caps.has(column.property.id), editable: this.editable,
       });
       footer.appendChild(cell);
     }
@@ -1334,23 +1673,31 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     if (gridEl === null || root === null) {
       return;
     }
+    const anchorOpen = gridEl.querySelector<HTMLElement>('[data-blok-database-table-cell-anchor] > [data-blok-database-table-open]');
+
+    // Paint runs on every selection change: measure only when the anchor's OPEN is a new one.
+    if (anchorOpen !== null && anchorOpen !== this.anchorOpen) fitOpen(anchorOpen);
+    this.anchorOpen = anchorOpen;
     const selection = this.state.selection;
     const rowIds = selection?.kind === 'rows' ? selection.rowIds : [];
     const total = gridEl.querySelectorAll('[data-blok-database-table-row]').length;
-    const all = gridEl.querySelector('[data-blok-database-table-select-all]');
     const someState = rowIds.length >= total ? 'true' : 'mixed';
 
-    all?.setAttribute('aria-checked', rowIds.length > 0 ? someState : 'false');
+    gridEl.querySelectorAll('[data-blok-database-table-select-all]').forEach((all) => {
+      all.setAttribute('aria-checked', rowIds.length > 0 ? someState : 'false');
+    });
 
     if (rowIds.length === 0) {
-      this.removeSelectionBar();
+      this.removeSelectionBar(true);
 
       return;
     }
     if (this.bar === null) {
+      this.dropLeavingBar();
       const slot = this.options.selectionBarSlot?.() ?? null;
 
       this.bar = this.createSelectionBar();
+      this.bar.toggleAttribute('data-still', this.afterDrop);
       if (slot === null) {
         root.insertBefore(this.bar, root.firstChild);
       } else {
@@ -1365,11 +1712,40 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     }
   }
 
-  /** The bar can live outside the table root, so it never leaves with it. */
-  private removeSelectionBar(): void {
-    this.bar?.parentElement?.removeAttribute('data-blok-database-selecting');
-    this.bar?.remove();
+  /**
+   * The bar can live outside the table root, so it never leaves with it.
+   * `fade`: notion-motion.md Round 16 §2, the property buttons drop at once and the
+   * rest fades out in place. It loses the bar attribute, so nothing counts it as a bar.
+   */
+  private removeSelectionBar(fade = false): void {
+    const bar = this.bar;
+
     this.bar = null;
+    this.dropLeavingBar();
+    if (bar === null) {
+      return;
+    }
+    bar.parentElement?.removeAttribute('data-blok-database-selecting');
+    if (!fade || prefersReducedMotion() || !bar.isConnected) {
+      bar.remove();
+
+      return;
+    }
+    bar.querySelectorAll('[data-blok-database-table-selection-property]').forEach((button) => button.remove());
+    bar.removeAttribute('data-blok-database-table-selection-bar');
+    bar.setAttribute('data-blok-database-table-selection-bar-leaving', '');
+    bar.setAttribute('aria-hidden', 'true');
+    bar.inert = true;
+    this.leavingBar = { el: bar, timer: window.setTimeout(() => this.dropLeavingBar(), SELECTION_BAR_FADE_MS) };
+  }
+
+  private dropLeavingBar(): void {
+    if (this.leavingBar === null) {
+      return;
+    }
+    window.clearTimeout(this.leavingBar.timer);
+    this.leavingBar.el.remove();
+    this.leavingBar = null;
   }
 
   private createSelectionBar(): HTMLElement {
@@ -1518,7 +1894,11 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     });
 
     this.bulkEditor = handle.isOpen ? handle : null;
-    if (!handle.isOpen) closeKey.stop();
+    if (!handle.isOpen) {
+      closeKey.stop();
+      // No picker opened (no people source, a type this client lacks): nothing will call onClose.
+      if (generation === this.bulkGeneration) this.bulkEditing = false;
+    }
   }
 
   /** Cmd/Ctrl+/: the properties to edit on every selected row. */
@@ -1585,15 +1965,20 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
   // ─── Clicks ───
 
-  /** A right-click on a cell opens its comments. It stops here so core's block menu does not replace it. */
+  /**
+   * research/23 §157: a right-click on a row opens its ⋮⋮ menu, at the pointer (notion-motion.md Round 59 §4).
+   * Read-only has no handlers: the event goes on to the tool's own row menu.
+   */
   private readonly handleContextMenu = (event: MouseEvent): void => {
     const target = event.target instanceof Element ? event.target : null;
-    const cell = target?.closest<HTMLElement>('[data-blok-database-table-cell]');
-    const rowId = cell?.closest('[data-row-id]')?.getAttribute('data-row-id');
+    const rowId = target?.closest('[data-blok-database-table-row]')?.getAttribute('data-row-id');
 
-    if (cell === null || cell === undefined || rowId === null || rowId === undefined || this.options.comment === undefined) return;
+    // A field being edited keeps the native menu, for copy and paste.
+    if (target === null || target.closest('input, textarea, [contenteditable="true"]') !== null) return;
+    if (rowId === null || rowId === undefined || this.handlers === undefined) return;
     event.preventDefault();
-    this.options.comment(rowId, cell.getAttribute('data-property-id') ?? undefined, cell);
+    event.stopPropagation();
+    this.openRowMenu(null, rowId, { clientX: event.clientX, clientY: event.clientY });
   };
 
   private readonly handleClick = (event: MouseEvent): void => {
@@ -1617,6 +2002,13 @@ export class DatabaseTableView implements DatabaseViewRenderer {
       if (section !== null) {
         this.toggleGroup(section);
       }
+
+      return;
+    }
+    const loadLimitMenu = closest('[data-blok-database-table-load-limit-menu]');
+
+    if (loadLimitMenu !== null) {
+      this.openLoadLimitMenu(loadLimitMenu);
 
       return;
     }
@@ -1682,6 +2074,33 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
       return;
     }
+    const groupMenu = closest('[data-blok-database-table-group-menu]');
+    const groupHeader = closest('[data-blok-database-table-group-header]');
+
+    if (groupMenu !== null && groupHeader !== null) {
+      handlers.groupMenu?.(groupKey, groupMenu, groupHeader);
+
+      return;
+    }
+    const groupCount = closest('button[data-blok-database-table-group-count]');
+
+    if (groupCount !== null && groupHeader !== null) {
+      handlers.groupCalculationMenu?.(groupCount, groupHeader);
+
+      return;
+    }
+    if (closest('[data-blok-database-table-group-add]') !== null) {
+      handlers.addGroupPage?.(groupKey);
+
+      return;
+    }
+    const visibility = closest('[data-blok-database-table-property-visibility]');
+
+    if (visibility !== null) {
+      handlers.propertyVisibility?.(visibility);
+
+      return;
+    }
     if (closest('[data-blok-database-table-add-property]') !== null) {
       handlers.addProperty(closest('[data-blok-database-table-add-property]') as HTMLElement);
 
@@ -1734,7 +2153,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
       return;
     }
     if (closest('[data-blok-database-table-row-handle]') !== null) {
-      this.openRowMenu(closest('[data-blok-database-table-row-handle]') as HTMLElement, rowId);
+      this.openRowMenu(closest('[data-blok-database-table-row-handle]'), rowId);
 
       return;
     }
@@ -1753,7 +2172,8 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     const cellEl = closest('[role="gridcell"]');
     const propertyId = cellEl?.getAttribute('data-property-id');
 
-    if (ROW_SELECT_TYPES.has(cellEl?.getAttribute('data-type') ?? '') && !event.shiftKey) {
+    // notion-motion.md Round 30 §4: Shift+click selects the row; Shift+Arrow still extends a range.
+    if (cellEl !== null && (event.shiftKey || ROW_SELECT_TYPES.has(cellEl.getAttribute('data-type') ?? ''))) {
       this.grid?.selectRows([rowId]);
 
       return;
@@ -1800,8 +2220,8 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     this.menu = menu;
   }
 
-  private openCalculationMenu(anchor: HTMLElement): void {
-    const propertyId = anchor.getAttribute('data-property-id') ?? '';
+  private openCalculationMenu(cell: HTMLElement): void {
+    const propertyId = cell.getAttribute('data-property-id') ?? '';
     const property = this.columns.find((c) => c.property.id === propertyId)?.property;
 
     if (property === undefined) {
@@ -1809,9 +2229,9 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     }
     const current = resolveCalculations(this.options.view, this.shownSchema()).get(propertyId);
 
-    this.showMenu(anchor, calculationItems(this.shown(property), current, this.options.i18n, (fn: CalculationFn | null) => {
+    this.showMenu(cell, calculationItems(this.shown(property), current, this.options.i18n, (fn: CalculationFn | null) => {
       this.handlers?.updateView({ calculations: withCalculation(this.options.view, propertyId, fn) });
-    }, this.countCap(propertyId)));
+    }, this.countCap(propertyId)), { kind: 'calc', at: calcMenuAt(cell) });
   }
 
   private countCap(propertyId: string): CountCap {
@@ -1842,13 +2262,22 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     return true;
   }
 
-  private openRowMenu(anchor: HTMLElement, rowId: string): void {
+  /** From the ⋮⋮ `handle`, or at the `pointer` of a right-click. */
+  private openRowMenu(handle: HTMLElement | null, rowId: string, pointer?: Pick<MouseEvent, 'clientX' | 'clientY'>): void {
     const handlers = this.handlers;
 
     if (handlers === undefined) {
       return;
     }
     this.grid?.selectRows([rowId]);
+    // After the pick: the point lives in the row, so it must be the row as painted now.
+    const rowEl = pointer === undefined ? null : this.root?.querySelector<HTMLElement>(`[data-blok-database-table-row][data-row-id="${CSS.escape(rowId)}"]`) ?? null;
+    const placement = rowEl === null || pointer === undefined ? undefined : pointerMenuPlacement(rowEl, pointer);
+    const anchor = placement?.anchor ?? handle ?? rowEl;
+    // The point is gone once the menu closes; the composer sits on the row, as a card's does.
+    const commentAnchor = rowEl ?? anchor;
+
+    if (anchor === null || commentAnchor === null) return;
     const favorite = this.options.favorite?.(rowId);
 
     this.showMenu(anchor, rowMenuItems({
@@ -1877,12 +2306,18 @@ export class DatabaseTableView implements DatabaseViewRenderer {
         ...(this.options.cellContext?.hourCycle !== undefined ? { hourCycle: this.options.cellContext.hourCycle } : {}),
         i18n: this.options.i18n,
       }),
-      ...(this.options.comment !== undefined ? { onComment: () => this.options.comment?.(rowId, undefined, anchor) } : {}),
+      ...(this.options.comment !== undefined ? { onComment: () => this.options.comment?.(rowId, undefined, commentAnchor) } : {}),
+      // research/36 §6: Notion's row handle › Move to Trash shows the toast.
       onDelete: () => {
         this.state.selection = null;
-        handlers.deleteRows([rowId]);
+        handlers.deleteRows([rowId], true);
       },
-    }), { searchable: true, searchPlaceholder: this.t('tools.database.searchActions'), kind: 'row' });
+    }), {
+      searchable: true,
+      searchPlaceholder: this.t('tools.database.searchActions'),
+      ...(placement === undefined ? { kind: 'row' } : { kind: 'card', coverFlipOffset: placement.coverFlipOffset }),
+    });
+    if (placement !== undefined) this.menu?.on(PopoverEvent.Closed, () => placement.anchor.remove());
   }
 
   // ─── Columns ───

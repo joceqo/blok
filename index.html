@@ -449,11 +449,10 @@
 
     .block-states-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: minmax(0, 1fr);
       gap: 20px;
       align-items: start;
     }
-    .block-states-panel[data-wide] .block-states-grid { grid-template-columns: minmax(0, 1fr); }
     .block-states-card {
       position: relative;
       min-width: 0;
@@ -507,7 +506,6 @@
       .block-states-tab[aria-selected="true"],
       .block-states-tab[aria-selected="true"]:hover,
       .block-states-tabs:not([data-ready]) .block-states-tab[aria-selected="true"] { background: var(--pg-ink); border-color: var(--pg-ink); }
-      .block-states-grid { grid-template-columns: minmax(0, 1fr); }
     }
     @media (max-width: 768px) {
       #block-states-gallery { padding-left: 20px; padding-right: 20px; }
@@ -1800,13 +1798,13 @@
     import './src/playground/playground.css';
     import DEFAULT_BLOCKS from './playground-document.json';
     import { Blok } from './src/blok.ts';
-    import { blocksToHtml, blocksToPlainText, diffOutputData } from './src/view/index.ts';
+    import { blocksToHtml, blocksToPlainText, diffOutputData, foldUpdates } from './src/view/index.ts';
     // Raw text of the published opt-in view stylesheet. We scope it under
     // #blokview-panel before injecting, because the live editor ALSO stamps
     // `data-blok-tool` on its blocks — an unscoped import would double-style the
     // editor. Scoping keeps the sheet affecting only the Blok View render.
     import viewCssText from './view.css?raw';
-    import { Paragraph, Header, List, Table, Toggle, Callout, Database, DatabaseRow, DatabaseComment, Divider, Spacer, TableOfContents, Quote, Code, Image, File as FileBlock, Video, Audio, ColumnList, Column, TabsTool, TabTool, Embed, Bookmark, Page, PageLink, Bold, Italic, Link, Marker, Underline, Strikethrough, InlineCode, Equation, ClearFormat, SupSub } from './src/tools/index.ts';
+    import { Paragraph, Header, List, Table, Toggle, Callout, Database, DatabaseRow, DatabaseComment, Divider, Spacer, TableOfContents, Quote, Code, Image, File as FileBlock, Video, Audio, ColumnList, Column, TabsTool, TabTool, Embed, Bookmark, Page, PageLink, Bold, Italic, Link, Marker, Underline, Strikethrough, InlineCode, Equation, ClearFormat, SupSub, Annotation } from './src/tools/index.ts';
     import * as Icons from './src/components/icons/index.ts';
     import { ALL_LOCALE_CODES, getDirection } from './src/components/i18n/locales/index.ts';
     import { renderIconGallery } from './src/playground/icon-gallery.ts';
@@ -1815,6 +1813,8 @@
     import enMessagesModule from './src/components/i18n/locales/en.json';
     import * as BuiltInTools from './src/tools/index.ts';
     import { slowImageRetries } from './src/playground/slow-image-retry.ts';
+    // Re-types HTML, SVG, XML and unknown files to text/plain, so the blob: URL never runs as this page.
+    import { createSafeObjectUrl } from './src/shared/safe-object-url.ts';
     import { BRAND_MARK_SLUGS, brandMarkSvg } from './src/components/utils/brand-marks.ts';
     const BRAND_MARK_GROUP = 'Brand marks';
     const BRAND_MARK_ICONS = Object.fromEntries(BRAND_MARK_SLUGS.map((slug) => [slug, brandMarkSvg(slug)]));
@@ -1831,7 +1831,7 @@
     import { mountPositionPicker } from './src/playground/position-picker.ts';
     import { mountHistoryDrawer, playgroundTicketUrl } from './src/playground/history-drawer.ts';
     import { scopeStylesheet } from './src/playground/scope-view-css.ts';
-    import { renderUploadingState as renderFileUploadingState } from './src/tools/file/uploading-state.ts';
+    import { renderUploadingState as renderFileUploadingState } from './src/tools/image/uploading-state.ts';
     import { renderErrorState as renderAudioErrorState } from './src/tools/audio/ui.ts';
     import { renderErrorState as renderVideoErrorState } from './src/tools/video/ui.ts';
     // Default import only — the json-as-string vite plugin rewrites JSON
@@ -1949,6 +1949,7 @@
         inlineCode: InlineCode,
         equation: Equation,
         supSub: SupSub,
+        annotation: Annotation,
       };
       if (state.tools.paragraph) tools.paragraph = { class: Paragraph, preserveBlank: true };
       if (state.tools.header) tools.header = { class: Header };
@@ -1972,7 +1973,7 @@
         config: {
           uploader: {
             uploadByFile: async (file) => ({
-              url: URL.createObjectURL(file),
+              url: createSafeObjectUrl(file),
               fileName: file.name,
               size: file.size,
               mimeType: file.type,
@@ -1985,7 +1986,7 @@
         config: {
           uploader: {
             uploadByFile: async (file) => ({
-              url: URL.createObjectURL(file),
+              url: createSafeObjectUrl(file),
               fileName: file.name,
             }),
           },
@@ -1996,7 +1997,7 @@
         config: {
           uploader: {
             uploadByFile: async (file) => ({
-              url: URL.createObjectURL(file),
+              url: createSafeObjectUrl(file),
               fileName: file.name,
             }),
           },
@@ -2018,7 +2019,7 @@
       // Captured now: callbacks of this editor must keep writing to ITS page
       // even after navigation has moved `currentPageId` on.
       const pageId = currentPageId;
-      const pointers = new PointerWatch(pages);
+      const pointers = new PointerWatch(pages, pageId);
       livePointers = pointers;
 
       if (state.tools.page) tools.page = {
@@ -2077,6 +2078,7 @@
         // The slot must exist before `new Blok`: core resolves the holder in prepare().
         pageTitle: { holder: '#page-title-slot', ...callbacks },
         tools,
+        linkPaste: { allowGenericEmbed: true, genericEmbedClickToLoad: false },
         autofocus: state.autofocus,
         notifierPosition: state.notifierPosition,
         i18n: { locale: state.locale, direction: state.rtl ? 'rtl' : 'ltr' },
@@ -2430,7 +2432,7 @@
         editorArea: document.getElementById('editor-col'),
         server: DEV_SERVER_URL,
         ticketUrl: playgroundTicketUrl(DEV_TICKET_URL, collaborationConfig().user?.name ?? null),
-        view: { blocksToHtml, blocksToPlainText, diffOutputData },
+        view: { blocksToHtml, blocksToPlainText, diffOutputData, foldUpdates },
         doc: () => collaborationConfig(editorPageId)?.doc ?? null,
         self: () => userConfig(),
         notify: (message) => blok.notifier.show({ message, style: 'success' }),
@@ -3210,17 +3212,18 @@
      */
     const iconGroups = {
       'Ask AI skills': ['IconAskAiSummarize', 'IconAskAiActionItems', 'IconAskAiProofread', 'IconAskAiContinue', 'IconAskAiImprove', 'IconAskAiShorter', 'IconAskAiLonger', 'IconAskAiSimplify', 'IconAskAiExplain'],
-      'UI & Navigation': ['IconCheck', 'IconWand', 'IconRose', 'IconCross', 'IconMenu', 'IconPlus', 'IconMinus', 'IconChevronLeft', 'IconChevronRight', 'IconChevronDoubleRight', 'IconChevronDown', 'IconChevronUpDown', 'IconSearch', 'IconFilter', 'IconSort', 'IconBolt', 'IconSigma', 'IconArrowUp', 'IconArrowDownLine', 'IconUndo', 'IconUTurnLeft'],
-      'Inline Formatting': ['IconBold', 'IconItalic', 'IconUnderline', 'IconStrikethrough', 'IconClearFormat', 'IconLink', 'IconBookmark', 'IconLinkExternal', 'IconEquation', 'IconSuperscript', 'IconSubscript', 'IconReplace', 'IconGlobe', 'IconMail', 'IconHash', 'IconReturn', 'IconCode'],
+      'UI & Navigation': ['IconCheck', 'IconWand', 'IconRose', 'IconCross', 'IconMenu', 'IconRowGrip', 'IconPlus', 'IconMinus', 'IconChevronLeft', 'IconChevronRight', 'IconChevronDoubleRight', 'IconChevronDown', 'IconChevronUpDown', 'IconSearch', 'IconFilter', 'IconSort', 'IconBolt', 'IconSigma', 'IconArrowUp', 'IconArrowDownLine', 'IconUndo', 'IconUTurnLeft'],
+      'Inline Formatting': ['IconBold', 'IconItalic', 'IconUnderline', 'IconStrikethrough', 'IconClearFormat', 'IconLink', 'IconBookmark', 'IconLinkExternal', 'IconEquation', 'IconSuperscript', 'IconSubscript', 'IconAnnotation', 'IconReplace', 'IconGlobe', 'IconMail', 'IconHash', 'IconReturn', 'IconCode'],
       'Headings': ['IconHeading', 'IconH1', 'IconH2', 'IconH3', 'IconH4', 'IconH5', 'IconH6'],
-      'Block Tools': ['IconText', 'IconListBulleted', 'IconListNumbered', 'IconListChecklist', 'IconTable', 'IconToggleList', 'IconCallout', 'IconDatabase', 'IconBoard', 'IconViewBoard', 'IconGallery', 'IconList', 'IconSelect', 'IconMultiSelect', 'IconSpacer', 'IconTableOfContents', 'IconQuote', 'IconCodeBlock', 'IconColumns', 'IconTabs', 'IconCalendar', 'IconTimeline', 'IconPage', 'IconPageEmpty', 'IconViewFeed', 'IconViewCalendar', 'IconViewTimeline', 'IconViewForm', 'IconDatabaseInline', 'IconDatabaseLinked', 'IconFolderQuestion', 'IconTemplates'],
+      'Block Tools': ['IconText', 'IconListBulleted', 'IconListNumbered', 'IconListChecklist', 'IconTable', 'IconToggleList', 'IconCallout', 'IconDatabase', 'IconBoard', 'IconViewBoard', 'IconGallery', 'IconViewDashboard', 'IconList', 'IconSelect', 'IconMultiSelect', 'IconSpacer', 'IconTableOfContents', 'IconQuote', 'IconCodeBlock', 'IconColumns', 'IconTabs', 'IconCalendar', 'IconTimeline', 'IconPage', 'IconPageEmpty', 'IconViewFeed', 'IconViewCalendar', 'IconViewTimeline', 'IconViewForm', 'IconForm', 'IconDatabaseInline', 'IconDatabaseLinked', 'IconFolderQuestion', 'IconTemplates'],
       'Database Properties': ['IconLetterCase', 'IconTextLines', 'IconHash', 'IconSelectCircle', 'IconListBulleted', 'IconStatusCircle', 'IconCalendar', 'IconPeople', 'IconPaperclip', 'IconCheckboxFilled', 'IconCheckbox', 'IconLink', 'IconPhone', 'IconAt', 'IconClock', 'IconUserCircle', 'IconCursorButton', 'IconNumero'],
       'Database Templates': ['IconTicket', 'IconCurrency', 'IconCreditCard', 'IconPaintBrush', 'IconPackage', 'IconFanDeck'],
       'Media': ['IconImage', 'IconImageBroken', 'IconUploadFailed', 'IconAlignLeft', 'IconAlignCenter', 'IconAlignRight', 'IconCaption', 'IconCrop', 'IconSliders', 'IconRotateLeft', 'IconFlipHorizontal', 'IconExpandFullscreen', 'IconCollapseFullscreen', 'IconPlayerPlay', 'IconPlayerPause', 'IconPlayerBackward', 'IconPlayerForward', 'IconPlayerVolume', 'IconPlayerVolumeMute', 'IconPlayerSettings', 'IconPlayerSpeed', 'IconPlayerLoop', 'IconPlayerPip', 'IconPlayerTheater', 'IconDownload', 'IconUpload'],
       'Toggle Headings': ['IconToggleH1', 'IconToggleH2', 'IconToggleH3', 'IconToggleH4', 'IconToggleH5', 'IconToggleH6'],
-      'Table Actions': ['IconHeaderRow', 'IconHeaderColumn', 'IconInsertAbove', 'IconInsertBelow', 'IconInsertLeft', 'IconInsertRight', 'IconColumnInsertLeft', 'IconColumnInsertRight', 'IconChangeType', 'IconGroup', 'IconArrowUp', 'IconMoveDown', 'IconMoveLeft', 'IconMoveRight', 'IconArrowLeftSmall', 'IconArrowRightSmall', 'IconMergeCells', 'IconSplitCell', 'IconPlacement', 'IconTextSizeSmall', 'IconTextSizeLarge'],
-      'Utility': ['IconCopy', 'IconTrash', 'IconPencil', 'IconPencilLine', 'IconWarning', 'IconInfo', 'IconHelp', 'IconAlarm', 'IconLock', 'IconPaintRoller', 'IconPreview', 'IconEyeSlash', 'IconEyeClosed', 'IconSplitView', 'IconPageLayout', 'IconSidebarRight', 'IconPeekSide', 'IconPeekCenter', 'IconPeekFull', 'IconExpandDiagonal', 'IconDotsHorizontal', 'IconPin', 'IconPinFilled', 'IconStarFilled'],
+      'Table Actions': ['IconHeaderRow', 'IconHeaderColumn', 'IconInsertAbove', 'IconInsertBelow', 'IconInsertLeft', 'IconInsertRight', 'IconArrowRightLine', 'IconColumnInsertLeft', 'IconColumnInsertRight', 'IconChangeType', 'IconGroup', 'IconArrowUp', 'IconMoveDown', 'IconMoveLeft', 'IconMoveRight', 'IconArrowLeftSmall', 'IconArrowRightSmall', 'IconMergeCells', 'IconSplitCell', 'IconPlacement', 'IconTextSizeSmall', 'IconTextSizeLarge'],
+      'Utility': ['IconCopy', 'IconTrash', 'IconPencil', 'IconPencilLine', 'IconWarning', 'IconInfo', 'IconHelp', 'IconAlarm', 'IconLock', 'IconPaintRoller', 'IconPreview', 'IconEyeSlash', 'IconEyeClosed', 'IconSplitView', 'IconPageLayout', 'IconSidebarRight', 'IconPeekSide', 'IconPeekCenter', 'IconPeekFull', 'IconExpandDiagonal', 'IconDotsHorizontal', 'IconPin', 'IconPinFilled', 'IconPinSlash', 'IconStarFilled'],
       'Emoji Picker': ['IconEmojiSparkles', 'IconEmojiWink', 'IconEmojiBowl', 'IconEmojiGamepad', 'IconEmojiMap', 'IconEmojiHearts', 'IconEmojiStar', 'IconEmojiSmile', 'IconEmojiSprout', 'IconEmojiUtensils', 'IconEmojiBall', 'IconEmojiGlobe', 'IconEmojiLightbulb', 'IconEmojiHeart', 'IconEmojiFlag', 'IconEmojiDice'],
+      'Emoji Picker Categories': ['IconEmojiNavSparkles', 'IconEmojiNavSmile', 'IconEmojiNavCat', 'IconEmojiNavBurger', 'IconEmojiNavBall', 'IconEmojiNavCar', 'IconEmojiNavBulb', 'IconEmojiNavHeart', 'IconEmojiNavFlag'],
       'Link Types': ['IconVideo', 'IconMusic', 'IconMap', 'IconChart', 'IconMessage', 'IconFile'],
       'File Types': ['IconFile', 'IconFileDoc', 'IconFileSheet', 'IconFileSlides', 'IconFileArchive'],
       'Markup': ['IconCursor', 'IconPencil', 'IconHighlighter', 'IconText', 'IconRectangle', 'IconRoundedRectangle', 'IconEllipse', 'IconHexagon', 'IconSpotlight', 'IconArrowDiagonal', 'IconLineDiagonal', 'IconEraser', 'IconFill'],
@@ -3257,9 +3260,6 @@
     // segment; a state with `toolConfig` gets its own segment (and thus its
     // own editor instance) so tool-level options like `sources` can vary
     // per state.
-    // Tools whose states need the full row: they lay out wide content.
-    const WIDE_STATE_TOOLS = ['table', 'column_list', 'tabs', 'database', 'code', 'image', 'video', 'embed'];
-
     function flattenStates(tool, label, states) {
       const segments = states.map((state) => ({
         label: state.label,
@@ -3272,7 +3272,7 @@
         // A typed draft is filled into the first block's URL field after mount.
         drafts: state.draft ? [{ id: state.blocks[0].id, ...state.draft }] : [],
       }));
-      return { tool, label, wide: WIDE_STATE_TOOLS.includes(tool), segments };
+      return { tool, label, segments };
     }
 
     const PLAYGROUND_PLACES = [
@@ -4793,6 +4793,38 @@
             width: 35,
             alignment: 'center',
           } }] },
+          { label: 'Tiny', blocks: [{ id: 'vd-tiny', type: 'video', data: {
+            url: '/samples/big-buck-bunny.mp4',
+            width: 20,
+            alignment: 'center',
+          } }] },
+          { label: 'In 2 columns', blocks: [
+            { id: 'vd-c2', type: 'column_list', data: {}, content: ['vd-c2-0', 'vd-c2-1'] },
+            { id: 'vd-c2-0', type: 'column', data: {}, content: ['vd-c2-0-v'], parent: 'vd-c2' },
+            { id: 'vd-c2-0-v', type: 'video', data: { url: '/samples/big-buck-bunny.mp4' }, parent: 'vd-c2-0' },
+            { id: 'vd-c2-1', type: 'column', data: {}, content: ['vd-c2-1-v'], parent: 'vd-c2' },
+            { id: 'vd-c2-1-v', type: 'video', data: { url: '/samples/sintel.mp4' }, parent: 'vd-c2-1' },
+          ] },
+          { label: 'In 3 columns', blocks: [
+            { id: 'vd-c3', type: 'column_list', data: {}, content: ['vd-c3-0', 'vd-c3-1', 'vd-c3-2'] },
+            { id: 'vd-c3-0', type: 'column', data: {}, content: ['vd-c3-0-v'], parent: 'vd-c3' },
+            { id: 'vd-c3-0-v', type: 'video', data: { url: '/samples/big-buck-bunny.mp4' }, parent: 'vd-c3-0' },
+            { id: 'vd-c3-1', type: 'column', data: {}, content: ['vd-c3-1-v'], parent: 'vd-c3' },
+            { id: 'vd-c3-1-v', type: 'video', data: { url: '/samples/sintel.mp4' }, parent: 'vd-c3-1' },
+            { id: 'vd-c3-2', type: 'column', data: {}, content: ['vd-c3-2-v'], parent: 'vd-c3' },
+            { id: 'vd-c3-2-v', type: 'video', data: { url: '/samples/big-buck-bunny.mp4' }, parent: 'vd-c3-2' },
+          ] },
+          { label: 'In 4 columns', blocks: [
+            { id: 'vd-c4', type: 'column_list', data: {}, content: ['vd-c4-0', 'vd-c4-1', 'vd-c4-2', 'vd-c4-3'] },
+            { id: 'vd-c4-0', type: 'column', data: {}, content: ['vd-c4-0-v'], parent: 'vd-c4' },
+            { id: 'vd-c4-0-v', type: 'video', data: { url: '/samples/big-buck-bunny.mp4' }, parent: 'vd-c4-0' },
+            { id: 'vd-c4-1', type: 'column', data: {}, content: ['vd-c4-1-v'], parent: 'vd-c4' },
+            { id: 'vd-c4-1-v', type: 'video', data: { url: '/samples/sintel.mp4' }, parent: 'vd-c4-1' },
+            { id: 'vd-c4-2', type: 'column', data: {}, content: ['vd-c4-2-v'], parent: 'vd-c4' },
+            { id: 'vd-c4-2-v', type: 'video', data: { url: '/samples/big-buck-bunny.mp4' }, parent: 'vd-c4-2' },
+            { id: 'vd-c4-3', type: 'column', data: {}, content: ['vd-c4-3-v'], parent: 'vd-c4' },
+            { id: 'vd-c4-3-v', type: 'video', data: { url: '/samples/sintel.mp4' }, parent: 'vd-c4-3' },
+          ] },
           { label: 'Left aligned', blocks: [{ id: 'vd-left', type: 'video', data: {
             url: '/samples/big-buck-bunny.mp4',
             width: 45,
@@ -4840,6 +4872,7 @@
           { label: 'Google Drive error', blocks: [{ id: 'au-drive-error', type: 'audio', data: { url: '' } }] },
           { label: 'Uploading', demoPick: 'mp3', toolConfig: { audio: { uploader: { uploadByFile: (file, ctx) => { ctx?.onProgress?.(64); return new Promise(() => {}); } } } }, blocks: [{ id: 'au-uploading', type: 'audio', data: { url: '' } }] },
           { label: 'Upload failed', demoPick: 'mp3', toolConfig: { audio: { uploader: { uploadByFile: () => Promise.reject(new Error('Playground: this upload always fails')) } } }, blocks: [{ id: 'au-upload-error', type: 'audio', data: { url: '' } }] },
+          { label: 'Too large', demoPick: 'mp3', toolConfig: { audio: { maxSize: 50 * 1024 } }, blocks: [{ id: 'au-too-large', type: 'audio', data: { url: '' } }] },
           { label: 'With caption', blocks: [{ id: 'au-caption', type: 'audio', data: {
             url: '/samples/soundhelix-song-1.mp3',
             title: 'SoundHelix Song 1',
@@ -4849,6 +4882,16 @@
             peaks: [0.03,0.06,0.11,0.14,0.17,0.19,0.22,0.21,0.2,0.25,0.28,0.29,0.24,0.23,0.25,0.25,0.34,0.33,0.29,0.24,0.26,0.35,0.32,0.34,0.3,0.27,0.29,0.3,0.26,0.25,0.27,0.27,0.27,0.25,0.25,0.21,0.2,0.19,0.22,0.19,0.17,0.18,0.2,0.17,0.2,0.2,0.18,0.81,0.84,0.75,0.82,0.82,0.84,0.8,0.78,0.83,0.83,0.83,0.78,0.77,0.81,0.78,0.82,0.8,0.79,0.82,0.8,0.85,0.84,0.78,0.83,0.79,0.77,0.83,0.76,0.85,0.81,0.75,0.78,0.77,0.84,0.78,0.81,0.78,0.84,0.84,0.87,0.8,0.82,0.83,0.79,0.82,0.82,0.86,0.94,0.97,0.86,0.97,0.93,0.8,0.96,0.91,0.83,0.9,0.74,0.95,0.93,0.68,0.9,0.89,0.88,0.82,0.96,0.84,0.96,0.93,0.82,0.96,0.97,0.8,0.97,0.88,0.84,0.93,0.97,0.84,0.97,0.83,0.85,0.97,0.92,0.9,0.99,0.88,0.93,0.85,0.93,0.84,0.92,0.83,0.93,0.92,0.94,0.92,0.96,0.92,0.94,0.89,0.94,0.98,0.94,0.85,0.93,0.93,0.93,0.88,0.93,0.93,0.96,0.95,0.93,0.9,0.97,0.86,0.89,0.98,0.89,0.85,0.91,0.83,0.83,0.9,0.9,0.86,0.88,0.78,0.85,0.91,0.87,0.86,0.96,0.97,0.87,0.96,0.85,0.85,0.94,0.83,0.88,0.99,0.92,0.99,0.95,0.95,0.77,0.91,0.95,0.92,0.92,0.85,0.93,0.98,0.81,0.92,0.9,0.96,0.91,0.95,0.91,0.96,0.93,0.91,0.96,0.91,0.76,0.99,0.84,0.88,0.92,0.92,0.85,0.9,0.96,0.84,0.94,0.95,0.91,0.93,0.94,0.95,0.9,0.96,0.88,0.97,0.93,0.89,0.95,0.98,0.84,0.9,0.89,0.95,0.87,0.96,0.88,0.93,0.79,0.86,0.91,0.97,0.88,0.98,0.94,0.93,0.91,0.97,0.92,0.94,0.91,0.92,1,0.97,0.94,0.95,0.92,0.91,0.96,0.88,0.85,0.92,0.92,0.94,0.96,0.88,0.95,0.97,0.99,1,0.92,0.95,0.88,0.97,0.93,0.94,0.96,0.81,0.95,0.86,0.96,0.95,0.93,0.92,0.98,0.84,0.92,0.97,0.64,0.38,0.27,0.14],
             caption: 'Live session take',
             captionVisible: true,
+          } }] },
+          { label: 'Compact', blocks: [{ id: 'au-compact', type: 'audio', data: {
+            url: '/samples/soundhelix-song-1.mp3',
+            title: 'SoundHelix Song 1',
+            artist: 'SoundHelix',
+            duration: 90,
+            peaks: [0.03,0.06,0.11,0.14,0.2,0.22,0.21,0.22,0.23,0.24,0.27,0.32,0.25,0.22,0.3,0.3,0.33,0.32,0.29,0.23,0.25,0.34,0.31,0.33,0.29,0.26,0.28,0.29,0.25,0.24,0.26,0.26,0.26,0.26,0.24,0.21,0.2,0.18,0.21,0.18,0.16,0.17,0.19,0.17,0.2,0.19,0.17,0.79,0.8,0.72,0.78,0.79,0.8,0.76,0.75,0.79,0.79,0.79,0.74,0.73,0.78,0.75,0.77,0.77,0.75,0.78,0.76,0.81,0.8,0.76,0.8,0.75,0.75,0.83,0.74,0.81,0.77,0.72,0.75,0.79,0.8,0.75,0.78,0.76,0.8,0.83,0.84,0.77,0.81,0.79,0.8,0.78,0.78,0.82,0.9,0.95,0.85,0.94,0.9,0.78,0.93,0.93,0.87,0.87,0.94,0.94,0.91,0.65,0.89,0.9,0.97,0.8,0.93,0.8,0.97,0.89,0.84,0.93,0.95,0.77,0.96,0.84,0.91,0.89,0.93,0.8,0.97,0.84,0.92,0.95,0.94,0.86,0.95,0.93,0.89,0.84,0.89,0.8,0.89,0.8,0.92,0.88,0.9,0.88,0.95,0.88,0.93,0.87,0.92,0.97,0.91,0.89,0.94,0.9,0.9,0.9,0.91,0.96,0.99,0.92,0.89,0.92,0.95,0.97,0.98,0.97,0.86,0.86,0.9,0.96,0.86,0.87,0.9,0.88,0.88,0.96,0.84,0.95,0.87,0.93,0.9,0.99,0.86,0.93,0.84,0.89,0.91,0.91,0.9,0.97,0.88,0.98,0.91,0.92,0.8,0.89,0.92,0.92,0.9,0.91,0.9,0.98,0.81,0.95,0.87,0.94,0.89,0.94,0.89,0.95,0.92,0.92,0.94,0.89,0.79,0.99,0.84,0.92,0.91,0.89,0.97,0.91,0.94,0.94,0.92,0.95,0.95,0.9,0.95,0.95,0.89,0.92,0.84,0.95,0.91,0.97,0.91,0.96,0.81,0.87,0.92,0.93,0.84,0.97,0.89,0.9,0.92,0.84,0.88,0.94,0.88,0.95,0.94,0.95,0.87,0.94,0.94,0.91,0.94,0.9,0.97,0.96,0.93,0.93,0.91,0.88,0.93,0.85,0.91,0.94,0.89,0.89,0.95,0.85,0.91,0.94,0.95,0.97,0.91,0.91,0.86,0.96,0.89,0.98,0.93,0.8,0.96,0.87,0.93,0.98,0.9,0.88,1,0.83,0.9,0.92,0.63,0.39,0.32,0.13],
+            // The track's real hits, as the block saves them after an upload. The wire and the ink drop follow these.
+            motion: 'AQgHAAYGAAAAAFJGNnR3WHWYaoape5e5e5e5fJjKjKjajajajajqjrnrnqnqnrnrn7nrnqnrnqn7n7n6nrn7nsn8n8n7n7n7n7n7r7n7n7n7n7n7n7n7n7n7n7n7n7r7n7n7n7n7r7n7n7n7r6r7r7r7n7n7n7r7n7r7r7r7n7r7r7n7n7n7r7n7r7n7n7n7n7r8n7r7n7r7n7r7r7n7n7n7r7r7r7n7n7n7r7r7r7r7r7r7n7r7n7r7n7r7r7r7r7n7n7n7r7n8r7r7r7r7r7r7n7r7n7r6r7r7r7n7r7n7r7r7r7r7r7n7r7r7n7r7n7r7r7r7n7n7n7r7r8n8r7r7r7n7r7n7n7n7n7r7nrr7nrnrnrn7n8n7r7n7n7nrn7n7n7nrnrnsn8n7jrnrjrn8nsn8n8n7nrnrn8jrnrjrnrnrnrjrjrjrjsnsjsnrjrnrjrnrjrjrjrjrnrjrnrjrjrjrjrjrjsjrjrjrjrnrjrjrjrjrjrjrjrjrjrjrjrjrjrjrjrjrjrnrjrjrjrjrjrnrnrjrjqjrnrjsnrjrnrnrjrn7jrjrjrnrnrnrjrjrjtjvn/j/n+j+n9j9n/n/j/j+j9n8j+n/n/n/j/n/n/j/n+n+n9j+n/n/n+j+j9n9n/n/j/n/n/n/n/n/n+j+n9j+n/n/n+j9j9j+n/n/n/n+j/n/n/n/n+n9n9j+n/n/n+j9j9n+n/n/j/n+j/n/n/n/n+n9n9n/n/n/j+j9n8n+n/n/n/n/n/n/n/n+n+n9n+n/n/n+j+j9n8n+n/j/j/j/n/n/n/n+n+n9j+n/n/n+j+j9n9n/n/j/j+j/n/j/n/n+n9n9j+n/j/j+j9n9n+n/n/j/j+j/n/n/n/n+n9n9j/n/n/n+j9n9n+n/n/n/j/j/n/n/n+n+n9n9n/n/n/n+j9n9n/n/n/n/n/n/n/n/n+n+n9n+n/n/n+n+j9n9n+n/n/n+n/n/n/n/n+n9n9n+n/n/n+n9n9n+n/n/n/n+n/n/n/n/n+n9n9n/n/n/n+n9n9n+n/n/n/n+n/n/n/n/n+n9n9n+n/n/n+n9n8n/n/n/n/n+n/n/n/n+n+n9n+n/n/n+n+n9n9n/r/n/n/n/n/n/n/n+n+n9n+n/n/n+n+n9n+n/n/n/n+n/n/n/n/n+n9r9n+n/n/r+r+r9r+r/r/n/n+n/n/n/r/r/r/r+r/r/r/r+r9r8r+n/n/n/n/n/n/n/n+n+r9n9n/n/r/r+r9r9n+r+n+n+n/n/n/n/n+n+r+r+r/r/r+r+r9r9n/n/n/n+n/n/n/n/n+n9n9n+n/n/r+r9r9n+n/n/n/n+n/n/n/n/n/r/r+r/r/n/r+r9r9n+n/n/j/n+n/n/n/n/n+n9n9n/n/n/r+r9r9n+n/n/n/n+n/n/n/n+n+r+r/r/r/r/r+r9r9n/n/n/n/n/n/n/n/n+n+r9n+n/n/r+r+r9r+n/n/n/n+n/n/n/n/r/r/r+r/r/n/r+r9r9r+n/n/n/n+n/r/n/n/n+r9r9n/n/r/r+r9r9r+r/n/n+n+n/r/n/n+n+r+r/r/r/r/r+r9r8n+r/n/n/n/n/r/n/r+n+r9n+n/n/r+r+r9r9r/r/n/n/n/r/r/n/r/r/r+r/r/n/r+r+r9r+r/r/n/n+n/r/n/r/r+r+r9n+r/r/v+r9r9r+r/r/n/n+n/r/n/r/r+r+r+r/r/r/r+r9r8r+r/r/n/r/r/r/r/r/r+r9r9r/r/v/v+v9v+r/r/r/r/r/r/r/r/r/r/v/v/r/r/v+v+r9r9r/r/r/r+r/r/r/r/r+r9r9r+r/r/v+r9r9r+r+r/r/r+r/r/r/r/r+r/v+r/r/r/v+r9r9r/r/r/r/r+r/r/r/r+r+r9r+r/r/v/v+v9r9r/r/r/r/r/r/r/r/r/r/v/v/v/v/v+v+v9v9r/v/v/r+r/v/v/r/r+r+v9r+v/r/v+v+v9v+v/v/r/r+r/r/r/r/r+v+v+v/v/v/v+v+v9v+v/r/r/r/r/r/r/r/r+v9v9r/r/v/v+v9v9v+v/v/r/r+r/r/r/v/v/v/v/v/v/v+v+v9r9r/v/r/r/r/r/r/r/r+r+r9r+r/r/v+v+v9r9v/v/r/r+r/r/r/r/v+v+v+v/v/v/v+v9r9v+v/v/v/r+r/r/r/v/v+v9v9v+v/v/v+v9v9v+v/v/v/r/r/r/v/v/v/v/v+v/v/v+v+v9v8v/v/v/r/r/r/v/v/v+v+v9v+r/r/v+v+v9v+v/v/v/v+r/r/v/r/v+v/v+v+v/v/v+v+v9v+v/v/v/r+r/v/r/r/v+v+v9r+v/r/v+v+v9v+v/r/r/r/r/r/r/r/r/v/v/v/v/v/v+v+r9v+v/v/r/r/r/r/r/r+r+v9r9r/r/v/v+v+r9r+r/r/r+r/r/r/r/r+r/v+v/v/v/v+v+r9r+r/r/r/r+r/r/r/r/r+r+r9r/r/r/v+v+v9r+r/r/r/r+r/r/r/r/r/v/v/v/v/v/v+v9r9r+r/r/r/r+r/r/r/r/r+r+r+r/r/v/v+v+v+r/r/r/r/r/r/r/r/r+r/v/v/v/v/v/v+r+r+r/r/r/r/r/r/r/r/r+r+r9r+r/r/v+v+r9r+v/r/r/r+r/r/r/r/r/v/v/v/r/r/v+r+r9r+r/r/r/r/r/r/r/r/r+r+r9r/r/v/v+v+r9v+r/r/r+r+r/r/r/r+r+v+v/v/v/v/v+r9v9r/r/r/r/r/r/r/r/r+r+r9r+r/r/v/v+r+v+v/r/r/r+r/r/r/r/r/v/v/v/v/r/v+v+v+r+r/r/r/r/r/r/r/r/r+r+r9r/r/v/v+v+v+r/v/r/r/r+r/r/r/r/r+v+v/v/r/v/v+r+r9r/r/r/r/r/r/r/r/r+r+r9r+r/r/v/v+r9r+r/r/r/r/r/r/r/r/r/r/v+r/r/r/v+r+r9r+r/r/r/r+r/r/r/r/r+r+r9r/r/r/v+r+r9r+r/r/n/n+n/r/r/r/n+r/r+r/r/r/r+r+r9r+r/n/n/n/n/r/n/n/n+r+n+n/r/r/r+r+r9r/r/n/n/n/r/r/n/r/r/r/r/r/r/r+r+r9r+n/n/n/n/n/r/r/n/n+n+n9n+n/n/r+r+r9r+r/r/n/n/n/r/r/r/n+r/r+r/r/r/r+r+r9r+r/r/n/n/n/r/n/n/n+r+n9n/n/r/v+r+r9r+r/r/r/r/r/r/r/r/r/r/r/r/r/v/r+r9r+r/r/n/n/n/r/r/n/n+r+r9r+r/n/v+r+r9r+r/r/r/r+n/r/r/r/r+r/r+r/r/r/v+r+r9r+r/r/n/r/r/r/r/r/r+r+r+r/r/r/v+r+r9r+r/r/r/r/r/r/r/r/r/r/r/r/r/r/r+r+r9r/r/r/r/r/r/r/r/r+r+r+r+r/r/v+v+r9r+r/r/r/r+r/r/r/r/r+r/v+r/r/r/v+r+r9r+r/r/r/r+r/r/r/r/r+r+r9r/r/v/z+v+v+v/r/r/r/r/r/r/r/r/r/r/r/r/r/v/z+v+v+r/r/r/r/r/r/r/r/r+r+r9r+n/r/v/z+v+v+v/r/r/r+n/r/r/r/r+r/r+r/r/r/v+v+v9r+r/r/n/n+n/n/n/n+n+n9n9n+n+n+r9r9n8n9n9j9j9fsfsbsbgUGBwMBIQQDASICEgQEAiIGAwEiBAMBIgITBAUBIwIUBAMCIwIUAwoAJAQEAyQBBAAUBAUBJAITBQgAIwITBSIBAwITAyMBAwMTAgQBJggEACYCEwIEASIDBAQlAQUBEwQhAxMDBAIkAhMEIgEEBiMDBAAUAyMBBAclAxMDBQAjBiIBAwIUBCMDEwQDACIDFAUiBSMDFAMiAQQHIQEDAhUDJAEEBgQAIwIUBCIDEwQiAQYCFAUhAhMDIQMEARMDIwEDByUCEwMEACQHBgAiAhMFIwIUBAMAIgMUBAMBJAIUBCMDFAMkAgQGAgAjAhQDAwEiAwQDIwITBQUAIgIUBAQBIgIVBxQEAwEiAhMDBAgiAhUIAwQFABMAIgUhAhUGAwAiARUHFAcVBgIGBQEWBAcDEwUDAhMDBAcFAhUHFQQDAxUEBAgEARYEAwMSBAMDFAwUBwMAFAcVBgMGAwEUBQYCEwQEAxULBQEUBxIBAwYVBQcIBQAUBQcCEwIEBRMGBAUFARMGBAESBxYNBgATBgUBEwUCAhMGBAcWBgQBEwYEARIGBAcTBQgEBAMTAQQGFAYGARUFAgITBxMFBAgEABUFBgcEARUHFAUEAhQGBAcWACEBBAQEACICEgYiBgYAEwYDARMGIgETBgQBFgAiBwMGBAATACIFIQITBxMAIgQLASIDBQUUACIBBAQiAhMGCAAjARIDBgMiBxIFCQAiBQQDIwUhAQsFBQEhARIGIQETBgcAIgETBAUJEwAiBQgAIwQFBAUAIwUEASIBEgIFBAQBEgAhBSIIBwATACMFBQgiBggAIgETBgQBIQQDASMDBAQEASMFIgchAQUAEgQEDwcAIwQFBAUAIwUjAQgEBQIhByIHAwAiBgQIIwUDACIEBQQjBQcBIgMEBCIGIgchAQkAEgQFCSMBEwULACMEBgQiBQcAIgESBiIHIQETBSECCAASDCICEgQFACIHBgEiBQMAIggjAQUFIQcHARMAIQQFAiMHEwAiBQsAIgQECgMAIgETAwQCIgciAhMGCgAjBAQJEgAkBgoAIgEUBAUDIgUHACIBEgQFAiIBEwUjAhMGBgAkBgUHIgETBQkAJAYFAiMFIgEIARMEBAEjAhIFIgcGACIBEgMFAyIGIgETBQYAIwIUAgUEIwYJACIBFAQEASECEwUjAhMGBAAjBAQCIgYiAhMECwAiBAYEIgEFARMEBQAkBwQAIgETBSMCEwYHACQBFAQEAiIFIQITBQoAJAISBAUCJAISAwQAIgQFAyMBEgYhARMGIgEJABMEBgIjBiEBEwULACQCEgQFAiQCFAQDASEEBQEjAhMFIwIUBgkAJAETAwUBIQciAhQEBAEiAhMEBAEiAhIECAAiBgQBIgETBSMCFAYkAQoAFAQFAiMFIgITBQkAIwITAgUEIwETBAUAJgQFAyIBBAESBCoDEgUiAQkBEwQGACsJEwQFACYDEgIFCCgBBAESAwQDJAEEABMFKAIDABMGBQETBCQOCQUFBBMEBgAkBAQEBAETBCoJCQASBCUCBAgSBAQAJgUECAgAKgUFBBIFKwEEARICIgQGBQQAFQAmDSMBCgUFBBIEBgAlBQQHIgMSBgUBEgMFASkNBwAiAhMFBQcIACsEBAMiARMBBAQkAgIAFAcFBAQBFgAnCRIFCQQEBBMEIgEGBAQEEwQnCQQAEwUFACoIEgUHACYCEgMFBBIEKAIHBAQDEwUqAgMGBQATBQQAJAgTBQYBJgESAgYFBQEUBAQAIwUEAxQFKgISBgcBEwQEACYJEwUGACUEBQQFARMEKgEHBAQDFQApAQUFKgETAQMGEwEEBAQAJggUBQkFBQQTBQUAJgQEBBQEIwkJABQFBQAqCBMFIwEEARMEBwQSAyUCCQcEABQFJgIDAyIDBgAUBQQAIwkUBQkAJQQFBRMEBwEmBQUCFQUpAhMHCQAUBCICBAETBxQEBgAlBAUEBQEUBCgBCAQEAxIAJQIFBCkBFQIDASIEEwEEBCQIEwYIARQDBQQSBQYAJAQFBBUFKwITBwgAFAQFACYDEwcSBAgAJgUEBBYEKwEHBAUDFAUkAhQBBAIiBBIBBQQEACYIEwUFACQEBQQFARQFBgAmBAUDFAYqARQHEwEJBAQAKQMUCggAIwISAwUEBAESAyEBCAYFASIBEgMEAiQCFAEDBgQAEwUnAhIHEgUJBAQEFAUGACcGBAIUBCgDEwYDARQDBQEqCRUECQAlAxMCBwUTAwIAJwQFBRMFKwEDARMCIgQEARQEBQAlAxMHFAQIACYEBQUEABMEIwEFAhICBAUTAykIBAAhARMDBAElAxMIEwMLACQFBQMkAhMDBwAoBAQAEgQoAQQCEwMpAwQFBAIUAyUEEgoJABMBIQMFBCEFBQAlAhICBAQjAhMDKAQTBAMAIwMTAQUBJg4EABQAJAQEBCIEBAEnDSQCAwISBQYEBQEmDQkAIgUFCAYBJAMEBAQAIQUlCQgAIgUmAQUMIgEJBQQDIgQlAQcEBAMjAQQFJQIDAhIEBQUiDBICCQAiBgUHBgEiBAUDIgUlCQgEIgEEABMHIQQTAgUAIwYEByUBCQQEBAQDEgImAQMFIgIGBRIAIg0CASIEBAkHACEFBQMiAhMDJwkJAhMCBAAlCxMDCgAjBgUHCAAnBBIBBAMnAQUCEwIjAwMBIgUEAhIDJQoSAwYAIg0GASQDFAIFASIEEwIjCQcAIgUEACcBEwkTAwUAIwYDByQBCAMSAQQEIgITAygCBAMiBAYBEgMiDgcAJAQGBQQEBgEkBAQDIwIVAycIIQEJARIDIwQTBxMDCQAjBQQDIgIUAwQAJwYFAigCFgEDAykDAwAUBQQCEwMnCRIFCAITBAUDEgQFACUDEwQEASECFAMqCCUBCAEUAycEFAQjAxQDBAAkBAQEIwIVAiYBBwQSAgUCJAMTAiQCAwIiBQYCEgMmCxMCBAAkBgQIBwAlBQMDIQQmBRMDBQEhBRQAKAEFDAQAIwUFBCIEJQEHBBMCBQEkBQMAEgEmBAMFBAQUACEOFgEIBQUHBAAiBwUGEgAnCAcFIwEFABINBAAjBQUIBgAnBgUIKAMDASIEBQASBSMBBAwDASIFBAMSBQUAIgUFCCcIBAUmARINBwAkBwUGJgEHBgQAIQUEASMEAwUEBRIAJA0HBQQIBgEiBAUIIgkIBRMAJA0DASIGBAYiAggFBAcSACYCBAMiAwYGEwAkDQkAIwUFAxIFBgEiBQUCEgUmCQgEBAAiARMIEwUGACMFBAMTBQUAJgYFAiUEAwIUACgIAwUUACMOBgATBAQJBAAkBQQDIgUnCQcEEwAmAQQNBQAjBAQIIgEDBQQBEgIiBSQDAwUEBRMBJgwSAQUAJAYFCAUAJQUTAQMBIQUTACQIBgEiBAQAEwEnDQkAIgUECCYBBgYFASQGJwMCBgQEFAAjDgUEBAkFACMFBAMiBSgIBgUlARMNBwAkBAQJKQEHBwUGKgIDBCIDBQQUACUOBwAlBQYEBAQEACUFBQgqCAkBEgQpCRMEIgEGBQQHIgEFBQUDKAESAwMBJgQDBQQAEgQiDggFBQgiAQQAFAYFBikJCAATBAQAIgMSCwgAEwAlBAQFBAQnAQYBEwwqARICBAMiAhMBBQQkDgcAJgYFBwYAEwAjDSoJCAATBAQAJQkTBQYAJQUECCkBBwASBQQCEwAoAwQDKQETAQMGBAASBSYNBgQEBAQGBQASACYMIwITBwYBEwQFACkJEwQjAQYGBQYkAQgHBQITBCUCAwMiBAUAEgQiDgUAJgUFCCIBBwETCBMDJwgEARMDBAEiCRQFJQEHBAQFEgMoAQcHJgITAgMCKAMDABMGBAESAyMKEwQEChIDBQAkCAQBEgQpAxMFIgEHARMDBAAjBBIKAwAlAhMCBQQEBSkBCAYFASIBEgQhAwMAEwIiAwQDEgMlChIDIgEEDQMAJQUEAyECEwMpCAgAIQQEARcAKAoSAyEBBgQECCIBBQYFAigEAwEkBAIFBAQTAScNBgcFBiIBBQUEBycIAwUEARcAKA0DACQEBAknAQgNKQIEAiIFBgQVACMNAwEjBAUJAwAiBQQIJgkFBRUAJQ==',
+            compact: true,
           } }] },
           { label: 'Untitled · no waveform', blocks: [{ id: 'au-bare', type: 'audio', data: { url: '/samples/soundhelix-song-1.mp3' } }] },
           { label: 'Read-only', readOnly: true, blocks: [{ id: 'au-readonly', type: 'audio', data: {
@@ -4882,15 +4925,15 @@
             mimeType: 'text/markdown',
           } }] },
           { label: 'Word document', blocks: [{ id: 'fl-docx', type: 'file', data: {
-            url: '/samples/service-agreement.docx',
+            url: '/samples/service-agreement-full.docx',
             fileName: 'service-agreement.docx',
-            size: 1603,
+            size: 2022,
             mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
           } }] },
           { label: 'Spreadsheet', blocks: [{ id: 'fl-xlsx', type: 'file', data: {
-            url: '/samples/quarterly-budget.xlsx',
+            url: '/samples/quarterly-budget-formatted.xlsx',
             fileName: 'quarterly-budget.xlsx',
-            size: 3408,
+            size: 4818,
             mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
           } }] },
           { label: 'Presentation', blocks: [{ id: 'fl-pptx', type: 'file', data: {
@@ -4906,7 +4949,7 @@
             mimeType: 'application/zip',
           } }] },
           { label: 'Audio', blocks: [{ id: 'fl-audio', type: 'file', data: {
-            url: 'https://example.com/podcast-ep-12.mp3',
+            url: '/samples/soundhelix-song-1.mp3',
             fileName: 'podcast-ep-12.mp3',
             size: 18400000,
             mimeType: 'audio/mpeg',
@@ -4927,6 +4970,18 @@
             url: '/samples/release-notes.txt',
             fileName: 'release-notes.txt',
             size: 1583,
+            mimeType: 'text/plain',
+          } }] },
+          { label: 'CSV table', blocks: [{ id: 'fl-csv', type: 'file', data: {
+            url: '/samples/customers.csv',
+            fileName: 'customers.csv',
+            size: 747,
+            mimeType: 'text/csv',
+          } }] },
+          { label: 'Log file', blocks: [{ id: 'fl-log', type: 'file', data: {
+            url: '/samples/server.log',
+            fileName: 'server.log',
+            size: 1231,
             mimeType: 'text/plain',
           } }] },
           { label: 'With caption', blocks: [{ id: 'fl-caption', type: 'file', data: {
@@ -4987,7 +5042,7 @@
           { label: 'Failed cover', blocks: [{ id: 'bm-broken-cover', type: 'bookmark', data: {
             url: 'https://github.com/jackuait/blok',
             title: 'Blok — headless block-based rich text editor',
-            description: 'The cover image failed to load, so a drawn page stands in.',
+            description: 'The cover image failed to load, so the card takes its colour from the favicon.',
             image: '/this-image-does-not-exist.png',
             favicon: 'https://github.com/favicon.ico',
             domain: 'github.com',
@@ -4997,6 +5052,82 @@
             title: 'A remarkably long bookmark title that runs well past the width of the card and has to be cut short',
             description: 'Blocks are the universal primitive in Blok. Every content entity, from a paragraph to a database row, is a block. Containers hold their children by id. The saver and renderer handle every block the same way. This description runs long on purpose, so the card has to clamp it.',
             image: 'https://images.unsplash.com/photo-1518770660439-4636190af475?w=800',
+          } }] },
+          { label: 'National Geographic', blocks: [{ id: 'bm-natgeo', type: 'bookmark', data: {
+            url: 'https://www.nationalgeographic.com/animals/mammals/facts/snow-leopard',
+            title: 'Snow leopard, facts and photos',
+            image: 'https://i.natgeofe.com/n/872b9b92-cd6e-4c3c-92c1-63455f6048b4/snow-leopard_thumb_16x9.JPG?w=1200',
+            favicon: 'https://assets-cdn.nationalgeographic.com/natgeo/static/icons/favicon.ico',
+            domain: 'www.nationalgeographic.com',
+          } }] },
+          { label: 'NASA', blocks: [{ id: 'bm-nasa', type: 'bookmark', data: {
+            url: 'https://science.nasa.gov/mission/webb/',
+            title: 'James Webb Space Telescope - NASA Science',
+            description: 'James Webb Space Telescope Home. Featured and Latest Images/Article, Latest News. Webb is the largest and most powerful observatory ever sent to space, serving thousands of astronomers worldwide.',
+            image: 'https://science.nasa.gov/wp-content/uploads/2024/05/jwst_artist_concept_0.png',
+            favicon: 'https://science.nasa.gov/wp-content/plugins/nasa-hds-core-setup/assets/favicons/apple-touch-icon-57x57.png',
+            domain: 'science.nasa.gov',
+          } }] },
+          { label: 'Stripe', blocks: [{ id: 'bm-stripe', type: 'bookmark', data: {
+            url: 'https://stripe.com/',
+            title: 'Stripe | Financial Infrastructure to Grow Your Revenue',
+            description: 'Stripe is a financial services platform that helps all types of businesses accept payments, build flexible billing models, and manage money movement.',
+            image: 'https://b.stripecdn.com/mkt-ssr-statics/assets/_next/static/media/stripe.37119086.jpg',
+            favicon: 'https://images.stripeassets.com/fzn2n1nzq965/1hgcBNd12BfT9VLgbId7By/01d91920114b124fb4cf6d448f9f06eb/favicon.svg',
+            domain: 'stripe.com',
+          } }] },
+          { label: 'Airbnb', blocks: [{ id: 'bm-airbnb', type: 'bookmark', data: {
+            url: 'https://www.airbnb.com/',
+            title: 'Airbnb | Vacation rentals, cabins, beach houses, & more',
+            description: 'Get an Airbnb for every kind of trip → 8 million vacation rentals → 2 million Guest Favorites → 220+ countries and regions worldwide',
+            image: 'https://a0.muscache.com/im/pictures/fe7217ff-0b24-438d-880d-b94722c75bf5.jpg?im_w=1200',
+            favicon: 'https://a0.muscache.com/airbnb/static/icons/apple-touch-icon-76x76-3b313d93b1b5823293524b9764352ac9.png',
+            domain: 'www.airbnb.com',
+          } }] },
+          { label: 'Apple', blocks: [{ id: 'bm-apple', type: 'bookmark', data: {
+            url: 'https://www.apple.com/macbook-pro/',
+            title: 'MacBook Pro',
+            description: 'Compare MacBook Pro and MacBook Pro with PROLED XDR Display side by side. Find the right one for you.',
+            image: 'https://www.apple.com/v/macbook-pro/b/images/meta/mbp_splitter__c9bpyxdvy6eu_og.png?202611121140',
+            favicon: 'https://www.apple.com/favicon.ico',
+            domain: 'www.apple.com',
+          } }] },
+          { label: 'Notion', blocks: [{ id: 'bm-notion', type: 'bookmark', data: {
+            url: 'https://www.notion.com/',
+            title: 'The AI workspace that works for you. | Notion',
+            description: 'Build Custom Agents, search across all your apps, and automate busywork. The AI workspace where teams get more done, faster.',
+            image: 'https://www.notion.com/front-static/meta/teams-and-agents.jpg',
+            favicon: 'https://www.notion.com/front-static/favicon.ico',
+            domain: 'www.notion.com',
+          } }] },
+          { label: 'Figma', blocks: [{ id: 'bm-figma', type: 'bookmark', data: {
+            url: 'https://www.figma.com/',
+            title: 'Figma: The collaborative canvas for design, code, and AI',
+            description: 'Figma is the canvas where design, code, and AI come together. From first idea to shipped product — go from concept to production with your whole team, in one place.',
+            image: 'https://cdn.sanity.io/images/599r6htc/regionalized/b08d37520f7d5ad8d6562975b5932dd2d9a862bb-1200x630.gif?w=1200&q=70&fit=max&auto=format',
+            favicon: 'https://static.figma.com/app/icon/2/icon-128.png',
+            domain: 'www.figma.com',
+          } }] },
+          { label: 'IKEA', blocks: [{ id: 'bm-ikea', type: 'bookmark', data: {
+            url: 'https://www.ikea.com/us/en/p/billy-bookcase-white-00263850/',
+            title: 'BILLY Bookcases & Bookshelves',
+            description: 'The BILLY bookcase is a timeless storage solution with adjustable shelves to fit books, decor and more. Shop BILLY bookshelves at IKEA.',
+            image: 'https://www.ikea.com/global/assets/range-categorisation/images/billy-bookcases-58288.jpeg',
+            favicon: 'https://www.ikea.com/global/assets/dwf/nav/favicon.ico',
+            domain: 'www.ikea.com',
+          } }] },
+          { label: 'Hacker News (no cover)', blocks: [{ id: 'bm-hn', type: 'bookmark', data: {
+            url: 'https://news.ycombinator.com/',
+            title: 'Hacker News',
+            favicon: 'https://news.ycombinator.com/y18.svg',
+            domain: 'news.ycombinator.com',
+          } }] },
+          { label: 'TypeScript (no cover)', blocks: [{ id: 'bm-ts', type: 'bookmark', data: {
+            url: 'https://www.typescriptlang.org/',
+            title: 'JavaScript With Syntax For Types.',
+            description: 'TypeScript extends JavaScript by adding types to the language. TypeScript speeds up your development experience by catching errors and providing fixes before you even run your code.',
+            favicon: 'https://www.typescriptlang.org/favicon-32x32.png?v=8944a05a8b601855de116c8a56d3b3ae',
+            domain: 'www.typescriptlang.org',
           } }] },
         ],
       },
@@ -5113,6 +5244,36 @@
         states: [
           // No tool is registered for this type, so core renders its Stub in its place.
           { label: 'Unknown block type', blocks: [{ id: 'stub-unknown', type: 'kanban', data: { columns: [] } }] },
+          { label: 'Long type name', blocks: [{ id: 'stub-long', type: 'acme-interactive-pricing-calculator-with-yearly-toggle', data: { currency: 'EUR' } }] },
+          { label: 'Long type name · narrow', width: 320, blocks: [{ id: 'stub-long-narrow', type: 'acme-interactive-pricing-calculator-with-yearly-toggle', data: { currency: 'EUR' } }] },
+          { label: 'Narrow', width: 240, blocks: [{ id: 'stub-narrow', type: 'kanban', data: { columns: [] } }] },
+          { label: 'Between paragraphs', blocks: [
+            { id: 'stub-flow-p1', type: 'paragraph', data: { text: 'The team board for this sprint:' } },
+            { id: 'stub-flow', type: 'kanban', data: { columns: [] } },
+            { id: 'stub-flow-p2', type: 'paragraph', data: { text: 'We update it every Monday.' } },
+          ] },
+          { label: 'Several in a row', blocks: [
+            { id: 'stub-row-1', type: 'kanban', data: { columns: [] } },
+            { id: 'stub-row-2', type: 'mermaid', data: { code: 'graph TD' } },
+            { id: 'stub-row-3', type: 'poll', data: { question: 'Lunch?' } },
+          ] },
+          { label: 'Inside a toggle', blocks: [
+            { id: 'stub-tg', type: 'toggle', data: { text: 'Sprint board', isOpen: true }, content: ['stub-tg-c'] },
+            { id: 'stub-tg-c', type: 'kanban', data: { columns: [] }, parent: 'stub-tg' },
+          ] },
+          { label: 'Inside a callout', blocks: [
+            { id: 'stub-co', type: 'callout', data: { emoji: '💡' }, content: ['stub-co-p', 'stub-co-c'] },
+            { id: 'stub-co-p', type: 'paragraph', data: { text: 'A callout with an unknown block in it.' }, parent: 'stub-co' },
+            { id: 'stub-co-c', type: 'kanban', data: { columns: [] }, parent: 'stub-co' },
+          ] },
+          { label: 'Inside columns', blocks: [
+            { id: 'stub-cols', type: 'column_list', data: {}, content: ['stub-col-a', 'stub-col-b'] },
+            { id: 'stub-col-a', type: 'column', data: {}, content: ['stub-col-a-c'], parent: 'stub-cols' },
+            { id: 'stub-col-a-c', type: 'kanban', data: { columns: [] }, parent: 'stub-col-a' },
+            { id: 'stub-col-b', type: 'column', data: {}, content: ['stub-col-b-c'], parent: 'stub-cols' },
+            { id: 'stub-col-b-c', type: 'acme-interactive-pricing-calculator', data: { currency: 'EUR' }, parent: 'stub-col-b' },
+          ] },
+          { label: 'Read-only', readOnly: true, blocks: [{ id: 'stub-ro', type: 'kanban', data: { columns: [] } }] },
         ],
       },
     ];
@@ -5168,7 +5329,7 @@
             config: {
               uploader: {
                 uploadByFile: async (file) => ({
-                  url: URL.createObjectURL(file),
+                  url: createSafeObjectUrl(file),
                   fileName: file.name,
                 }),
               },
@@ -5179,7 +5340,7 @@
             config: {
               uploader: {
                 uploadByFile: async (file) => ({
-                  url: URL.createObjectURL(file),
+                  url: createSafeObjectUrl(file),
                   fileName: file.name,
                 }),
               },
@@ -5190,7 +5351,7 @@
             config: {
               uploader: {
                 uploadByFile: async (file) => ({
-                  url: URL.createObjectURL(file),
+                  url: createSafeObjectUrl(file),
                   fileName: file.name,
                   size: file.size,
                   mimeType: file.type,
@@ -5312,13 +5473,13 @@
         if (audioDriveErrRoot) {
           audioDriveErrRoot.setAttribute('data-state', 'error');
           audioDriveErrRoot.replaceChildren(renderAudioErrorState({
-            message: 'Audio from Google Drive can’t be played directly. Download the file and upload it here instead.',
+            title: 'Google Drive audio can’t play here',
+            detail: 'Download the file and upload it here instead.',
             service: 'google-drive',
-            badge: 'Needle skipped',
             replaceLabel: 'Replace',
             onReplace: () => {},
             upload: { label: 'Choose audio', accept: 'audio/*', onFile: () => {} },
-          }));
+          }).element);
         }
 
         // Force the transient file-upload loading state. The uploader resolves
@@ -5328,7 +5489,6 @@
           fileUploadingRoot.replaceChildren();
           const uploadingEl = renderFileUploadingState({
             fileName: 'tracemonkey-paper.pdf',
-            labels: { uploading: 'Uploading', cancel: 'Cancel', progress: 'Upload progress' },
             onCancel: () => {},
             preview: 'file',
           });

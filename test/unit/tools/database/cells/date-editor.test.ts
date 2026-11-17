@@ -175,6 +175,31 @@ describe('date cell editor', () => {
     expect(ctx.onCommit).not.toHaveBeenCalled();
   });
 
+  describe('close() from code, as a host undo does', () => {
+    it('saves a typed date that was not applied yet', () => {
+      const ctx = makeEditorContext();
+      const handle = openCellEditor(makeProperty('date'), '2026-10-09', makeAnchor(), ctx);
+
+      typeInto(q<HTMLInputElement>('[data-blok-database-date-input="start"]'), 'Oct 25, 2026');
+      handle.close();
+
+      expect(ctx.onCommit).toHaveBeenCalledWith('2026-10-25');
+      expect(ctx.onClose).toHaveBeenCalledTimes(1);
+      expect(editorRoot()).toBeNull();
+    });
+
+    it('cancel() still drops it', () => {
+      const ctx = makeEditorContext();
+      const handle = openCellEditor(makeProperty('date'), '2026-10-09', makeAnchor(), ctx);
+
+      typeInto(q<HTMLInputElement>('[data-blok-database-date-input="start"]'), 'Oct 25, 2026');
+      handle.cancel();
+
+      expect(ctx.onCommit).not.toHaveBeenCalled();
+      expect(ctx.onClose).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('single cell Escape (research/35 §3)', () => {
     it('a typed date is saved on Escape, and one Escape closes', () => {
       const ctx = openDate('2026-10-09');
@@ -1063,6 +1088,35 @@ describe('date cell editor', () => {
           });
         }
       }
+    });
+
+    // notion-motion.md Round 55 §4 "Date picker": with no room on the right the Remind menu
+    // (250 wide) opens on the left, over the picker's edge by 4: x 772..1022 for a picker at 1018.
+    it('opens the Remind menu over the picker\'s edge by 4px', () => {
+      vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1512);
+      vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(717);
+      vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(250);
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(297);
+      openRows('2026-10-09T14:00');
+      vi.spyOn(document.querySelector<HTMLElement>('[data-blok-database-date-editor]') ?? document.body, 'getBoundingClientRect').mockReturnValue(new DOMRect(1018, 205, 248, 500));
+      q('[data-blok-database-date-remind]').click();
+
+      expect(document.querySelector<HTMLElement>('[data-blok-database-date-remind-menu]')?.style.left).toBe('772px');
+    });
+
+    // notion-motion.md Round 57 §8: a 152 tall Remind menu for a row at 599 sits at 553..705, 12px above a 717 window.
+    it('keeps the Remind menu 12px above the window bottom', () => {
+      vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1512);
+      vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(717);
+      vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(250);
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(152);
+      openRows('2026-10-09T14:00');
+      const remind = q('[data-blok-database-date-remind]');
+
+      vi.spyOn(remind, 'getBoundingClientRect').mockReturnValue(new DOMRect(1018, 599, 248, 28));
+      remind.click();
+
+      expect(document.querySelector<HTMLElement>('[data-blok-database-date-remind-menu]')?.style.top).toBe('553px');
     });
 
     describe('Time zone menu (research/23 §1)', () => {

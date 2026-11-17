@@ -47,7 +47,8 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { SanitizerConfigBuilder } from '../../../src/components/modules/paste/sanitizer-config';
-import { CODE_LANGUAGE_ATTR } from '../../../src/components/modules/paste/constants';
+import { CODE_FILENAME_ATTR, CODE_LANGUAGE_ATTR, STRUCTURAL_TAG_ATTRIBUTES } from '../../../src/components/modules/paste/constants';
+import { BLOK_HOSTED_IMAGE_ATTR } from '../../../src/shared/clipboard-html';
 import type { BlockToolAdapter } from '../../../src/components/tools/block';
 import type { ToolsCollection } from '../../../src/components/tools/collection';
 import { AudioTool } from '../../../src/tools/audio';
@@ -131,6 +132,7 @@ const PIPELINE_FILES: string[] = [
   'src/components/modules/paste/handlers/files-handler.ts',
   'src/components/modules/paste/handlers/html-handler.ts',
   'src/components/modules/paste/handlers/pattern-handler.ts',
+  'src/components/modules/paste/handlers/plain-grid-handler.ts',
   'src/components/modules/paste/handlers/table-cells-handler.ts',
   'src/components/modules/paste/handlers/text-handler.ts',
   'src/components/utils/apply-link-config.ts',
@@ -205,25 +207,36 @@ interface ExpectedDynamicReads {
 
 const EXPECTED_DYNAMIC_READS: ExpectedDynamicReads[] = [
   {
-    file: 'src/tools/code/index.ts',
+    file: 'src/tools/image/index.ts',
     count: 1,
-    pastedAttrs: [CODE_LANGUAGE_ATTR],
+    pastedAttrs: [BLOK_HOSTED_IMAGE_ATTR],
     reason:
-      'onPaste reads the language the AI-chat preprocessor stamps on a pasted ' +
-      '<pre> when the source prints it outside the element (Gemini renders it ' +
-      'in the code block header). Whitelisted on PRE by the tool pasteConfig.',
+      'onPaste checks a pasted <img> for the mark Blok\'s own HTML copy writes, ' +
+      'so it keeps the url instead of uploading it again. Whitelisted on IMG ' +
+      'by the tool pasteConfig.',
+  },
+  {
+    file: 'src/tools/code/index.ts',
+    count: 2,
+    pastedAttrs: [CODE_LANGUAGE_ATTR, CODE_FILENAME_ATTR],
+    reason:
+      'onPaste reads the language and filename from a pasted <pre>. Blok\'s own ' +
+      'HTML copy writes both; the AI-chat preprocessor stamps the language when ' +
+      'the source prints it outside the element (Gemini renders it in the code ' +
+      'block header). Both are whitelisted on PRE by the tool pasteConfig.',
   },
   {
     file: 'src/tools/table/table-operations.ts',
-    count: 5,
+    count: 6,
     pastedAttrs: ['colspan', 'rowspan'],
     reason:
       'getCellPosition reads CELL_COL_ATTR from the rendered grid (own DOM), ' +
       'and ownRowIndex checks ROW_ATTR on the grid\'s own rows; ' +
       'parseSpan reads colspan/rowspan from pasted cells via parsePastedTable; ' +
       'applyHeaderCellRoles reads HEADING_COL_ATTR/HEADING_ROW_ATTR to derive ' +
-      'columnheader/rowheader roles — both are stamped by the tool on its own ' +
-      'rendered grid, never read off pasted DOM',
+      'columnheader/rowheader roles, and updateHeadingColumnStyles finds each ' +
+      'row\'s logical column-0 cell by CELL_COL_ATTR — all stamped by the tool ' +
+      'on its own rendered grid, never read off pasted DOM',
   },
   {
     file: 'src/tools/table/index.ts',
@@ -343,9 +356,11 @@ const whitelistedAttrs = (pasteConfig: PasteConfig | false | undefined): Set<str
   );
 };
 
+// The whole-document pass keeps STRUCTURAL_TAG_ATTRIBUTES, so pipeline pre-passes may read them.
 const UNION_WHITELIST = new Set([
   ...TOOL_REGISTRY.flatMap((entry) => [...whitelistedAttrs(entry.pasteConfig)]),
   ...INLINE_LINK_ATTRS,
+  ...Object.values(STRUCTURAL_TAG_ATTRIBUTES).flatMap((attrs) => Object.keys(attrs)),
 ]);
 
 /* ------------------------------------------------------------------ */

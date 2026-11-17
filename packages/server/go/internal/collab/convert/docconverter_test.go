@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
-	"github.com/JackUait/blok/packages/server/go/internal/jsruntime"
-	"github.com/JackUait/blok/packages/server/go/internal/yjs"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsruntime"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/yjs"
 )
 
 var fixedNow = time.Date(2026, 11, 2, 3, 4, 5, 6_000_000, time.UTC)
@@ -61,6 +61,27 @@ func TestSeedsTheBlocksOfAnOutputDataObjectAndExportsThemBackWithATimestamp(t *t
 		t.Fatal(stringify(t, blocks))
 	}
 	if got := stringify(t, path(blocks, 0, "data", "text")); got != `[{"text":"hi "},{"text":"you","marks":{"bold":true}}]` {
+		t.Fatal(got)
+	}
+}
+
+// HTML that escapes markup characters reads as those characters, through the
+// live runtime.
+func TestEscapedMarkupCharactersReadAsText(t *testing.T) {
+	doc := yjs.NewDoc(yjs.Options{})
+	c := converter(t, nil)
+	if err := c.Seed(context.Background(), doc, parseNode(t, `{"blocks":[{"id":"a","type":"paragraph","data":{"text":"a &lt; b &amp;&amp; \"c\" &lt;b&gt;"}}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	exported, err := c.Export(context.Background(), doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segments := path(lookupValue(exported, "blocks"), 0, "data", "text").([]any)
+	if len(segments) != 1 {
+		t.Fatal(stringify(t, segments))
+	}
+	if got := path(segments, 0, "text").(jsjson.Str).String(); got != `a < b && "c" <b>` {
 		t.Fatal(got)
 	}
 }
@@ -145,7 +166,7 @@ func TestCustomRichFieldsComeFromTheConstructor(t *testing.T) {
 
 type failingReader struct{ err error }
 
-func (f failingReader) Read(context.Context, []RichTextHTML, time.Duration) ([][]any, error) {
+func (f failingReader) Read(context.Context, []RichTextHTML, *time.Duration) ([][]any, error) {
 	return nil, f.err
 }
 
@@ -199,8 +220,8 @@ func TestAnExportCancelledByItsTokenStaysACancel(t *testing.T) {
 
 type recordingReader struct{ timeouts []time.Duration }
 
-func (r *recordingReader) Read(_ context.Context, fields []RichTextHTML, timeout time.Duration) ([][]any, error) {
-	r.timeouts = append(r.timeouts, timeout)
+func (r *recordingReader) Read(_ context.Context, fields []RichTextHTML, timeout *time.Duration) ([][]any, error) {
+	r.timeouts = append(r.timeouts, orDefault(timeout))
 	read := make([][]any, len(fields))
 	for i := range read {
 		read[i] = []any{}
@@ -369,7 +390,7 @@ type countingReader struct {
 	fields int
 }
 
-func (c *countingReader) Read(ctx context.Context, fields []RichTextHTML, timeout time.Duration) ([][]any, error) {
+func (c *countingReader) Read(ctx context.Context, fields []RichTextHTML, timeout *time.Duration) ([][]any, error) {
 	c.fields += len(fields)
 	return c.inner.Read(ctx, fields, timeout)
 }

@@ -1,6 +1,7 @@
 import { WAVEFORM_BUCKETS } from './constants';
-import { liveAmplitude, headColorBlend, entranceEase } from './liveliness';
-import { findBeats, beatsCrossed, rippleLift, rippleInk, smoothLevel, kickAt, MAX_RIPPLES, RIPPLE_LIFE, type Ripple } from './ripples';
+import { analyseMotion, encodeMotion } from './motion';
+import { paintRidges } from './ridgeline';
+import { findBeats, beatsCrossed, smoothLevel, kickAt, MAX_RIPPLES, RIPPLE_LIFE, type Ripple } from './ripples';
 
 /**
  * Reduce raw mono samples to `buckets` peak values normalized to 0..1.
@@ -33,16 +34,31 @@ interface ChannelSource {
   getChannelData(ch: number): Float32Array;
 }
 
-/** Average all channels into one mono track, then reduce to peaks. */
-export function peaksFromAudioBuffer(buffer: ChannelSource, buckets = WAVEFORM_BUCKETS): number[] {
+/** Average all channels into one mono track. */
+function monoOf(buffer: ChannelSource): Float32Array {
   const { numberOfChannels, length } = buffer;
-  if (numberOfChannels <= 1) return computePeaks(buffer.getChannelData(0), buckets);
+  if (numberOfChannels <= 1) return buffer.getChannelData(0);
 
   const mono = new Float32Array(length);
   Array.from({ length: numberOfChannels }, (_, ch) => buffer.getChannelData(ch)).forEach((data) => {
     data.forEach((v, i) => { mono[i] += v / numberOfChannels; });
   });
-  return computePeaks(mono, buckets);
+  return mono;
+}
+
+/** Average all channels into one mono track, then reduce to peaks. */
+export function peaksFromAudioBuffer(buffer: ChannelSource, buckets = WAVEFORM_BUCKETS): number[] {
+  return computePeaks(monoOf(buffer), buckets);
+}
+
+/** The cover animation is a nice-to-have: a failure here must not cost the peaks. */
+function motionOf(mono: Float32Array, sampleRate: number): string | undefined {
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) return undefined;
+  try {
+    return encodeMotion(analyseMotion(mono, sampleRate));
+  } catch {
+    return undefined;
+  }
 }
 
 export function ratioFromPointer(clientX: number, rect: { left: number; width: number }): number {
@@ -64,6 +80,8 @@ function getAudioContextCtor(): AudioContextCtor | null {
 export interface DecodedAudio {
   peaks: number[];
   duration: number;
+  /** Packed hits and loudness for the cover animation. See motion.ts. */
+  motion?: string;
 }
 
 export async function decodePeaks(file: File): Promise<DecodedAudio | null> {
@@ -73,7 +91,9 @@ export async function decodePeaks(file: File): Promise<DecodedAudio | null> {
     const ctx = new Ctor();
     try {
       const buffer = await ctx.decodeAudioData(await file.arrayBuffer());
-      return { peaks: peaksFromAudioBuffer(buffer), duration: buffer.duration };
+      const mono = monoOf(buffer);
+
+      return { peaks: computePeaks(mono), duration: buffer.duration, motion: motionOf(mono, buffer.sampleRate) };
     } finally {
       void ctx.close();
     }
@@ -90,7 +110,7 @@ export function attachWaveform(opts: {
   mount: HTMLElement;
   media: HTMLAudioElement;
   peaks: number[];
-  /** Gets `--blok-audio-level` and `--blok-audio-kick` each frame; audio.css glows and pulses the cover from them. */
+  /** Gets `--blok-audio-level` and `--blok-audio-kick` each frame; audio.css pulses the cover from the kick. */
   stage?: HTMLElement;
 }): WaveformHandle {
   const { mount, media, peaks, stage } = opts;
@@ -104,13 +124,9 @@ export function attachWaveform(opts: {
 
   // Animation state. `playing` is true between play and pause/ended and pins the
   // boost energy at full. On pause we keep the loop alive briefly with `settling`
-  // so the bars glide back to their resting peaks (energy ramps 1→0) instead of
-  // snapping. `energy` reflects the current boost multiplier.
+  // so the ridges glide back to rest (energy ramps 1→0) instead of snapping.
   const SETTLE_MS = 420;
-  const HEAD_GLOW_PX = 10;
-  // The comet-head colour blooms in over ENTRANCE_MS each time playback starts.
-  const ENTRANCE_MS = 650;
-  const anim = { playing: false, settling: false, settleStart: 0, entranceStart: 0, rafId: 0 };
+  const anim = { playing: false, settling: false, settleStart: 0, rafId: 0 };
 
   const beats = findBeats(peaks);
   // `start` is a rAF timestamp; ages are measured against the frame being drawn.
@@ -159,8 +175,6 @@ export function attachWaveform(opts: {
     return Math.min(1, Math.max(0, 1 - (now - anim.settleStart) / SETTLE_MS));
   };
 
-  const entranceAt = (now: number): number => entranceEase((now - anim.entranceStart) / ENTRANCE_MS);
-
   const draw = (now: number): void => {
     const rect = canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
@@ -178,69 +192,20 @@ export function attachWaveform(opts: {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
 
-    const played = media.duration ? media.currentTime / media.duration : 0;
-    const playheadIndex = played * peaks.length;
-    const reduced = prefersReducedMotion();
-    const timeSeconds = now / 1000;
-    const energy = reduced ? 0 : energyAt(now);
-    const live = energy > 0;
-    const entrance = live ? entranceAt(now) : 0;
-
-    const slot = rect.width / peaks.length;
-    const gap = Math.min(2, slot * 0.34);
-    const barW = Math.max(1, slot - gap);
-    const radius = Math.min(barW / 2, 2);
+    const energy = prefersReducedMotion() ? 0 : energyAt(now);
     const styles = getComputedStyle(canvas);
-    const ripples = live ? ripplesAt(now) : [];
-    const playedColor = styles.getPropertyValue('--blok-audio-bar-played').trim() || '#222';
-    const baseColor = styles.getPropertyValue('--blok-audio-bar').trim() || '#ccc';
-    const headColor = styles.getPropertyValue('--blok-audio-bar-head').trim() || playedColor;
 
-    const paintBar = (x: number, y: number, h: number): void => {
-      if (typeof ctx.roundRect === 'function') {
-        ctx.beginPath();
-        ctx.roundRect(x, y, barW, h, radius);
-        ctx.fill();
-      } else {
-        ctx.fillRect(x, y, barW, h);
-      }
-    };
-
-    peaks.forEach((peak, i) => {
-      const wave = ripples.reduce((sum, r) => sum + rippleLift(i - r.origin, r.age, r.strength), 0);
-      const amp = live
-        ? Math.min(1, liveAmplitude({ basePeak: peak, index: i, playheadIndex, timeSeconds, reduced, energy }) + wave * energy)
-        : peak;
-      const h = Math.max(2, amp * rect.height * 0.92);
-      const x = i * slot;
-      const y = (rect.height - h) / 2;
-      ctx.fillStyle = i < playheadIndex ? playedColor : baseColor;
-      paintBar(x, y, h);
-
-      const ink = i < playheadIndex ? 0 : rippleInk(wave) * energy;
-      if (ink > 0.001) {
-        ctx.save();
-        ctx.globalAlpha = ink;
-        ctx.fillStyle = playedColor;
-        paintBar(x, y, h);
-        ctx.restore();
-      }
-
-      // Comet-head colour shift — overlay the head tint, its alpha ramping in
-      // with the entrance and fading out on the settle (energy).
-      if (live) {
-        const blend = headColorBlend({ distance: i - playheadIndex, energy, entrance });
-        if (blend > 0.001) {
-          ctx.save();
-          ctx.globalAlpha = Math.min(1, blend);
-          ctx.fillStyle = headColor;
-          // Ink, not the head tint: the glow must not spread the tint's accent blue.
-          ctx.shadowColor = playedColor;
-          ctx.shadowBlur = HEAD_GLOW_PX * blend;
-          paintBar(x, y, h);
-          ctx.restore();
-        }
-      }
+    paintRidges(ctx, {
+      width: rect.width,
+      height: rect.height,
+      peaks,
+      beats,
+      playhead: playheadNow(),
+      ink: styles.getPropertyValue('--blok-audio-bar-played').trim() || '#222',
+      fill: styles.getPropertyValue('--blok-audio-ridge-fill').trim() || '#fff',
+      energy,
+      kick: energy > 0 ? kickAt(ripplesAt(now)) : 0,
+      timeSeconds: now / 1000,
     });
   };
 
@@ -272,15 +237,13 @@ export function attachWaveform(opts: {
     setSeekVar();
     anim.playing = true;
     anim.settling = false;
-    // Restart the head-colour entrance so it blooms in on every play.
-    anim.entranceStart = globalThis.performance?.now?.() ?? 0;
     fx.lastPlayhead = playheadNow();
     // No continuous loop under reduced motion — timeupdate alone advances the
-    // played boundary, with no dancing bars.
+    // landscape, with no swaying ridges.
     if (!anim.rafId && !prefersReducedMotion()) anim.rafId = requestAnimationFrame(loop);
   };
   const onStop = (): void => {
-    // Hand off to the settle ramp so the bars glide down rather than snap. Under
+    // Hand off to the settle ramp so the ridges glide down rather than snap. Under
     // reduced motion there's no loop/boost to settle, so just stop.
     if (anim.playing && !prefersReducedMotion()) {
       anim.playing = false;
@@ -295,7 +258,7 @@ export function attachWaveform(opts: {
     }
   };
 
-  // Keeps the played boundary + seek var current while paused-seeking or when
+  // Keeps the landscape + seek var current while paused-seeking or when
   // the continuous loop is off (reduced motion). The loop owns drawing while it
   // runs, so skip the redundant paint then.
   const onTime = (): void => {
@@ -322,6 +285,7 @@ export function attachWaveform(opts: {
   canvas.addEventListener('pointerdown', onDown);
   globalThis.addEventListener('pointermove', onMove);
   globalThis.addEventListener('pointerup', onUp);
+  globalThis.addEventListener('pointercancel', onUp);
   media.addEventListener('play', onPlay);
   media.addEventListener('pause', onStop);
   media.addEventListener('ended', onStop);
@@ -331,7 +295,7 @@ export function attachWaveform(opts: {
 
   // The canvas is still detached when this runs (the figure is appended to the
   // block afterwards), so the paint above is always a no-op — and while paused
-  // no media event is guaranteed to follow. Watch the box instead: the bars are
+  // no media event is guaranteed to follow. Watch the box instead: the ridges are
   // painted the moment the canvas has one, and repainted whenever it changes
   // (editor resize, or a container going from display:none to visible).
   const resizeObserver = typeof ResizeObserver === 'undefined'
@@ -350,6 +314,7 @@ export function attachWaveform(opts: {
       canvas.removeEventListener('pointerdown', onDown);
       globalThis.removeEventListener('pointermove', onMove);
       globalThis.removeEventListener('pointerup', onUp);
+      globalThis.removeEventListener('pointercancel', onUp);
       media.removeEventListener('play', onPlay);
       media.removeEventListener('pause', onStop);
       media.removeEventListener('ended', onStop);

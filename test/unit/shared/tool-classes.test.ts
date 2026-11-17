@@ -14,6 +14,7 @@ import {
 } from '../../../src/shared/tool-classes/list';
 import {
   PAGE_FALLBACK_ICON,
+  PAGE_LOCK_ICON,
   PAGE_ICON_CLASSES,
   PAGE_LINK_CLASSES,
   PAGE_LINK_INK_CLASSES,
@@ -127,7 +128,7 @@ describe('shared tool classes', () => {
         import('../../../src/tools/code/constants'),
       ]);
 
-      expect(codeTool.WRAPPER_STYLES).toBe(['group/code', '@container/code', ...codeShared.CODE_WRAPPER_CLASSES].join(' '));
+      expect(codeTool.CARD_STYLES).toBe([...codeShared.CODE_CARD_CLASSES, 'rounded-ss-none'].join(' '));
 
       const [calloutShared, calloutTool] = await Promise.all([
         import('../../../src/shared/tool-classes/callout'),
@@ -243,6 +244,12 @@ describe('shared tool classes', () => {
       const { IconPage } = await import('../../../src/components/icons');
 
       expect(PAGE_FALLBACK_ICON).toBe(IconPage);
+    });
+
+    it('draws a locked page with the same lock as the editor\'s IconLock', async () => {
+      const { IconLock } = await import('../../../src/components/icons');
+
+      expect(PAGE_LOCK_ICON).toBe(IconLock);
     });
 
     it('keeps a missing page muted in the editor, not link blue', async () => {

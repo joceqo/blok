@@ -18,6 +18,7 @@
   /* Menu row label. Only dark sets it (popover-animation.css), so light follows --blok-text-primary. */
   --color-popover-item-label: var(--blok-popover-item-label-text, var(--blok-text-primary));
   --color-text-secondary: var(--blok-text-secondary);
+  --color-block-control: var(--blok-block-control);
   --color-popover-border: var(--blok-popover-border);
   --color-popover-shadow: var(--blok-popover-shadow);
   --color-popover-bg: var(--blok-popover-bg);
@@ -91,6 +92,8 @@
   --blok-selection-inactive: rgba(55, 53, 47, 0.16);
   --blok-selection-highlight: rgba(46, 170, 220, 0.2);
   --blok-bg-light: #eff2f5;
+  /* Diagonal lines on the unknown-block placeholder. */
+  --blok-stub-hatch: rgba(55, 53, 47, 0.07);
   /*
     Secondary text grey. The previous #707684 measured 4.55:1 on white — it
     cleared AA by 0.05 and therefore failed on every tinted light surface Blok
@@ -115,6 +118,8 @@
   --blok-text-primary: black;
   /* Tracks --blok-gray-text; see the contrast note there. */
   --blok-text-secondary: #646a79;
+  /* "+" and the drag handle. */
+  --blok-block-control: #8e8b86;
   --blok-popover-border: rgba(55, 53, 47, 0.09);
   --blok-popover-shadow: rgba(13, 20, 33, 0.1);
   --blok-popover-bg: #ffffff;
@@ -368,6 +373,7 @@
   --blok-radius-10: 0.625rem;
   --blok-radius-12: 0.75rem;
   --blok-radius-16: 1rem;
+  --blok-radius-20: 1.25rem;
   --blok-radius-full: 9999px;
 
   /* Radius roles. Controls follow height: up to 20px → sm, 24–32px → control,
@@ -377,11 +383,21 @@
   --blok-radius-dialog: var(--blok-radius-12);
   --blok-radius-surface: var(--blok-radius-10);
   --blok-radius-block: var(--blok-radius-10);
+  /* the video frame: a touch rounder than other media, to suit the floating island */
+  --blok-radius-player: var(--blok-radius-20);
+  /* The video settings card: rounder glass, and its rows. Off the scale on purpose:
+     14 and 9 are the corners picked in the design lab. */
+  --blok-radius-glass: 0.875rem;
+  --blok-radius-glass-row: 0.5625rem;
   --blok-radius-field: var(--blok-radius-8);
   --blok-radius-control-lg: var(--blok-radius-8);
   --blok-radius-control: var(--blok-radius-6);
   --blok-radius-control-sm: var(--blok-radius-4);
   --blok-radius-mark: var(--blok-radius-2);
+  /* Database checkbox: Notion's 3, off the scale. */
+  --blok-radius-checkbox: 0.1875rem;
+  /* Database selection bar: Notion's 5, off the scale. */
+  --blok-radius-selection-bar: 0.3125rem;
   --blok-radius-floor: var(--blok-radius-4);
   /* Below the scale on purpose: chevron and caret stroke ends, and the find lens. */
   --blok-radius-notch: 0.09375rem;
@@ -536,13 +552,10 @@
   --blok-video-burst-bg: rgba(0, 0, 0, 0.5);
   --blok-video-burst-fg: #ffffff;
 
-  /* Video error screen — a dead TV: scanlines, a rolling band, a dark
-     vignette, SMPTE colour bars for the tear and a red/cyan split on them. */
-  --blok-video-error-scanline: rgba(0, 0, 0, 0.22);
-  --blok-video-error-roll: rgba(255, 255, 255, 0.07);
+  /* Video error screen: a shade and vignette over the picture. The bars are
+     read by src/tools/video/error-screen.ts, which paints them on a canvas. */
+  --blok-video-error-shade: rgba(0, 0, 0, 0.42);
   --blok-video-error-vignette: rgba(0, 0, 0, 0.7);
-  --blok-video-error-split-red: rgba(255, 0, 64, 0.55);
-  --blok-video-error-split-cyan: rgba(0, 224, 255, 0.55);
   --blok-video-error-card-shadow: 0 18px 48px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.25);
   --blok-video-error-bar-1: #c0c0c0;
   --blok-video-error-bar-2: #c0c000;
@@ -553,11 +566,15 @@
   --blok-video-error-bar-7: #0000c0;
   --blok-video-burst-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.4);
   --blok-video-burst-ring: rgba(255, 255, 255, 0.4);
-  /* Settings popover — near-opaque dark so video never bleeds through the text. */
-  --blok-video-menu-bg: rgba(22, 22, 22, 0.94);
+  /* Settings popover — dark glass. The blur behind it keeps text readable over video. */
+  --blok-video-menu-bg: rgba(26, 26, 28, 0.78);
+  --blok-video-menu-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 16px 40px -12px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.25);
   --blok-video-menu-value-fg: rgba(255, 255, 255, 0.62);
   /* Frosted-glass edge + resting glyph tint + selected-row wash. */
-  --blok-video-menu-border: rgba(255, 255, 255, 0.08);
+  --blok-video-menu-border: rgba(255, 255, 255, 0.1);
+  /* Speed wire: the fill inside a peg ring, and the shadow under the bead. */
+  --blok-video-wire-peg: #1c1c1e;
+  --blok-video-wire-shadow: rgba(0, 0, 0, 0.45);
   --blok-video-menu-icon: rgba(255, 255, 255, 0.9);
   --blok-video-menu-row-active: color-mix(in srgb, var(--blok-video-accent) 14%, transparent);
   --blok-video-theater-scrim: rgba(0, 0, 0, 0.8);
@@ -566,6 +583,17 @@
   --blok-video-scrim-mid: rgba(0, 0, 0, 0.2);
   --blok-video-shadow-hover: 0 8px 24px -8px rgba(0, 0, 0, 0.18);
   --blok-video-focus-ring: var(--blok-focus-ring);
+  /* Island controls: one glass capsule floating over the frame. The fill stays
+     dark enough that white icons read over a bright frame. */
+  --blok-video-island-bg: rgba(18, 18, 18, 0.4);
+  --blok-video-island-play-bg: #ffffff;
+  --blok-video-island-play-fg: #111111;
+  --blok-video-island-play-bg-hover: #ececec;
+  --blok-video-island-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 18px 40px -16px rgba(0, 0, 0, 0.7);
+  --blok-ease-spring-island: cubic-bezier(0.34, 1.56, 0.64, 1);
 
   /* Find in page. The two match colours are ::highlight() fills, so they sit
      UNDER the text: keep them translucent or glyphs lose contrast. */
@@ -592,6 +620,7 @@
     --blok-selection-inactive: rgba(255, 255, 255, 0.16);
     --blok-selection-highlight: rgba(35, 131, 226, 0.25);
     --blok-bg-light: rgba(255, 255, 255, 0.08);
+    --blok-stub-hatch: rgba(255, 255, 255, 0.07);
     --blok-gray-text: #a39e98;
     --blok-menu-section-label: #9b9a97;
     --blok-dark: #191918;
@@ -604,6 +633,7 @@
     --blok-icon-active-text: var(--blok-text-primary);
     --blok-text-primary: #e2e0dc;
     --blok-text-secondary: #a39e98;
+    --blok-block-control: #a39e98;
     --blok-popover-border: rgba(255, 255, 255, 0.14);
     --blok-popover-shadow: rgba(0, 0, 0, 0.6);
     --blok-popover-bg: #252525;
@@ -797,6 +827,7 @@
   --blok-selection-inactive: rgba(255, 255, 255, 0.16);
   --blok-selection-highlight: rgba(35, 131, 226, 0.25);
   --blok-bg-light: rgba(255, 255, 255, 0.08);
+  --blok-stub-hatch: rgba(255, 255, 255, 0.07);
   --blok-gray-text: #a39e98;
   --blok-menu-section-label: #9b9a97;
   --blok-dark: #191918;
@@ -809,6 +840,7 @@
   --blok-icon-active-text: var(--blok-text-primary);
   --blok-text-primary: #e2e0dc;
   --blok-text-secondary: #a39e98;
+  --blok-block-control: #a39e98;
   --blok-popover-border: rgba(255, 255, 255, 0.14);
   --blok-popover-shadow: rgba(0, 0, 0, 0.6);
   --blok-popover-bg: #252525;

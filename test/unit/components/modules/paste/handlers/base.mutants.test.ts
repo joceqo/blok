@@ -115,16 +115,41 @@ const createMockBlock = (overrides: Partial<MockBlock> = {}): MockBlock => {
   };
 };
 
+interface StopCapturingHolds {
+  readonly suppressStopCapturing: boolean;
+  holdStopCapturing(): () => void;
+}
+
+/** Counts holds the way BlockOperations does. */
+const createStopCapturingHolds = (): StopCapturingHolds => {
+  const state = { holds: 0 };
+
+  return {
+    get suppressStopCapturing(): boolean {
+      return state.holds > 0;
+    },
+    holdStopCapturing: (): (() => void) => {
+      state.holds++;
+
+      return (): void => {
+        state.holds--;
+      };
+    },
+  };
+};
+
 interface HarnessConfig {
   currentBlock?: MockBlock;
   /** Drop the undo group API from the mock to exercise the legacy fallback. */
   withToolTransaction?: boolean;
   /** Drop update() to exercise the "no list restamp available" path. */
   withUpdate?: boolean;
-  /** Drop the undo-suppression bridge entirely. */
+  /** Drop the operations module, so nothing tracks undo suppression. */
   withOperations?: boolean;
   /** parentId every freshly pasted block reports. */
   pastedBlockParentId?: string | null;
+  /** Block tools the editor knows, by name. */
+  blockTools?: Record<string, { conversionConfig?: { export?: unknown; import?: unknown }; richTextFields: string[] }>;
 }
 
 const createHarness = (config: HarnessConfig = {}): {
@@ -135,7 +160,7 @@ const createHarness = (config: HarnessConfig = {}): {
   setToBlockCalls: SetToBlockRecord[];
   pastedBlocks: MockBlock[];
   updatedBlocks: MockBlock[];
-  operations: { suppressStopCapturing: boolean } | undefined;
+  operations: StopCapturingHolds | undefined;
   beginToolTransaction: ReturnType<typeof vi.fn>;
   endToolTransaction: ReturnType<typeof vi.fn>;
   /** Paste calls made so far each time the undo group opened or closed. */
@@ -155,7 +180,7 @@ const createHarness = (config: HarnessConfig = {}): {
 
   const operations = config.withOperations === false
     ? undefined
-    : { suppressStopCapturing: false };
+    : createStopCapturingHolds();
 
   const paste = vi.fn(async (
     tool: string,
@@ -170,11 +195,9 @@ const createHarness = (config: HarnessConfig = {}): {
       suppressed: operations?.suppressStopCapturing,
     });
 
-    // endToolTransaction's close-boundary microtask flips this back; modelling it
-    // is what makes a later `true` proof that suppression was re-asserted.
-    if (operations !== undefined) {
-      operations.suppressStopCapturing = false;
-    }
+    // A nested window opens and closes inside paste(); it must not end the
+    // suppression the paste's own group holds.
+    operations?.holdStopCapturing()();
 
     const block = createMockBlock({
       id: `pasted-${pastedBlocks.length + 1}`,
@@ -210,11 +233,17 @@ const createHarness = (config: HarnessConfig = {}): {
   });
 
   const groupEvents: string[] = [];
+  // Like BlockManager: the group holds stopCapturing until it closes.
+  const groupHolds: Array<() => void> = [];
   const beginToolTransaction = vi.fn((): void => {
     groupEvents.push(`begin after ${pasteCalls.length} pastes`);
+    if (operations !== undefined) {
+      groupHolds.push(operations.holdStopCapturing());
+    }
   });
   const endToolTransaction = vi.fn((): void => {
     groupEvents.push(`end after ${pasteCalls.length} pastes`);
+    groupHolds.pop()?.();
   });
 
   const setCurrentBlockByChildNode = vi.fn();
@@ -243,6 +272,7 @@ const createHarness = (config: HarnessConfig = {}): {
 
   const blok = {
     BlockManager: blockManager,
+    Tools: { blockTools: new Map(Object.entries(config.blockTools ?? {})) },
     Caret: {
       setToBlock,
       positions: { END: endPosition, START: Symbol('caret-start') },
@@ -616,7 +646,7 @@ describe('BasePasteHandler — insertPasteData dispatch', () => {
     expect(pasteCalls).toHaveLength(2);
   });
 
-  it('keeps undo suppression asserted on every loop iteration', async () => {
+  it('keeps undo suppression held through every paste of the group', async () => {
     const currentBlock = createMockBlock();
     const { handler, pasteCalls, operations } = createHarness({ currentBlock });
 
@@ -627,7 +657,7 @@ describe('BasePasteHandler — insertPasteData dispatch', () => {
     expect(pasteCalls.map((call) => call.suppressed)).toEqual([true, true]);
   });
 
-  it('inserts blocks even when BlockManager exposes no operations bridge', async () => {
+  it('inserts blocks even when BlockManager exposes no operations module', async () => {
     const currentBlock = createMockBlock();
     const { handler, pasteCalls } = createHarness({ currentBlock, withOperations: false });
 
@@ -836,7 +866,7 @@ describe('BasePasteHandler — inherited list style on pasted blocks', () => {
     expect(updateCalls).toHaveLength(0);
   });
 
-  it('asserts undo suppression again before restamping', async () => {
+  it('restamps while the group still holds undo suppression', async () => {
     const currentBlock = createMockBlock();
     const { handler, updateCalls } = createHarness({ currentBlock });
 
@@ -851,7 +881,7 @@ describe('BasePasteHandler — inherited list style on pasted blocks', () => {
     expect(updateCalls.map((call) => call.suppressed)).toEqual([true, true]);
   });
 
-  it('restamps without an operations bridge present', async () => {
+  it('restamps without an operations module present', async () => {
     const currentBlock = createMockBlock();
     const { handler, updateCalls } = createHarness({ currentBlock, withOperations: false });
 
@@ -994,6 +1024,125 @@ describe('BasePasteHandler — parent wiring of pasted blocks', () => {
   });
 });
 
+describe('BasePasteHandler — caret split of pasted text blocks', () => {
+  const textTool = { conversionConfig: { export: 'text', import: 'text' }, richTextFields: ['text'] };
+  const blockTools = { paragraph: textTool, header: textTool, image: { richTextFields: [] } };
+  const tailFragment = (): DocumentFragment => {
+    const fragment = document.createDocumentFragment();
+
+    fragment.append(document.createTextNode('Tail'));
+
+    return fragment;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A block in the document with the caret inside its input. */
+  const blockWithCaret = (): MockBlock => {
+    const block = createMockBlock();
+
+    block.currentInput?.append(document.createTextNode('HelloWorld'));
+    document.body.append(block.holder);
+    window.getSelection()?.collapse(block.currentInput?.firstChild ?? null, 5);
+
+    return block;
+  };
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  it('merges the first block at the caret and carries the post-caret text onto the last', async () => {
+    const { handler, pasteCalls, insertContentAtCaretPosition, extractFragmentFromCaretPosition } =
+      createHarness({ currentBlock: blockWithCaret(), blockTools });
+
+    extractFragmentFromCaretPosition.mockReturnValue(tailFragment());
+    const data = [blockItem('paragraph', 'First'), blockItem('header', 'Second')];
+
+    await handler.callInsertPasteData(data, false);
+
+    expect(data[1].content.textContent).toBe('SecondTail');
+    expect(insertContentAtCaretPosition).toHaveBeenCalledTimes(1);
+    expect(insertContentAtCaretPosition).toHaveBeenCalledWith('First');
+    expect(pasteCalls.map((call) => call.tool)).toEqual(['header']);
+  });
+
+  it('a leading empty block adds no empty block and no text at the caret', async () => {
+    const { handler, pasteCalls, insertContentAtCaretPosition, extractFragmentFromCaretPosition } =
+      createHarness({ currentBlock: blockWithCaret(), blockTools });
+
+    extractFragmentFromCaretPosition.mockReturnValue(tailFragment());
+    const data = [blockItem('paragraph', ''), blockItem('paragraph', 'Two')];
+
+    await handler.callInsertPasteData(data, false);
+
+    expect(pasteCalls).toHaveLength(1);
+    expect(data[1].content.textContent).toBe('TwoTail');
+    expect(insertContentAtCaretPosition.mock.calls.every(([html]) => html === '')).toBe(true);
+  });
+
+  it('does NOT caret-split when the caret is outside the current block', async () => {
+    const elsewhere = document.createElement('p');
+
+    elsewhere.textContent = 'Elsewhere';
+    document.body.append(elsewhere);
+    const { handler, pasteCalls, extractFragmentFromCaretPosition } = createHarness({ currentBlock: createMockBlock(), blockTools });
+
+    window.getSelection()?.collapse(elsewhere.firstChild, 2);
+    await handler.callInsertPasteData([blockItem('paragraph', 'First'), blockItem('paragraph', 'Second')], false);
+
+    expect(extractFragmentFromCaretPosition).not.toHaveBeenCalled();
+    expect(pasteCalls).toHaveLength(2);
+  });
+
+  it('does NOT caret-split when the last block is not a text block', async () => {
+    const { handler, pasteCalls, extractFragmentFromCaretPosition } = createHarness({ currentBlock: createMockBlock(), blockTools });
+
+    await handler.callInsertPasteData([blockItem('paragraph', 'First'), blockItem('image', '')], false);
+
+    expect(extractFragmentFromCaretPosition).not.toHaveBeenCalled();
+    expect(pasteCalls).toHaveLength(2);
+  });
+
+  it('does NOT caret-split when a pasted block nests under another', async () => {
+    const { handler, pasteCalls, extractFragmentFromCaretPosition } = createHarness({ currentBlock: createMockBlock(), blockTools });
+
+    await handler.callInsertPasteData([
+      blockItem('paragraph', 'Parent'),
+      createItem('paragraph', textContent('Child'), true, { parentPasteIndex: 0 }),
+    ], false);
+
+    expect(extractFragmentFromCaretPosition).not.toHaveBeenCalled();
+    expect(pasteCalls).toHaveLength(2);
+  });
+
+  it('splits a paragraph in a table cell at the caret, like one outside a table', async () => {
+    const currentBlock = blockWithCaret();
+    const cell = document.createElement('div');
+
+    cell.setAttribute('data-blok-table-cell-blocks', '');
+    document.body.append(cell);
+    cell.append(currentBlock.holder);
+    window.getSelection()?.collapse(currentBlock.currentInput?.firstChild ?? null, 5);
+    const { handler, pasteCalls, insertContentAtCaretPosition, extractFragmentFromCaretPosition } = createHarness({ currentBlock, blockTools });
+
+    extractFragmentFromCaretPosition.mockReturnValue(tailFragment());
+    const data = [blockItem('paragraph', 'First'), blockItem('paragraph', 'Second')];
+
+    await handler.callInsertPasteData(data, false);
+
+    expect(data[1].content.textContent).toBe('SecondTail');
+    expect(insertContentAtCaretPosition).toHaveBeenCalledWith('First');
+    expect(pasteCalls.map((call) => call.tool)).toEqual(['paragraph']);
+  });
+});
+
 describe('BasePasteHandler — caret split of a multi-line plain-text paste', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1037,7 +1186,7 @@ describe('BasePasteHandler — caret split of a multi-line plain-text paste', ()
     expect(data[1].content.textContent).toBe('Second');
   });
 
-  it('does NOT caret-split a multi-item paste of BLOCK content', async () => {
+  it('does NOT caret-split a multi-item paste of BLOCK content whose tool has no text field', async () => {
     const currentBlock = createMockBlock({ isEmpty: false });
     const { handler, pasteCalls, insertContentAtCaretPosition } = createHarness({ currentBlock });
 

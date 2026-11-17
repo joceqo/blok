@@ -1,22 +1,27 @@
 import type { PopoverItemParams } from '@/types/utils/popover/popover-item';
 import { nanoid } from 'nanoid';
-import { IconSearch, IconSliders, IconLock, IconPlus, IconChevronDown, IconFilter, IconSort, IconPreview, IconBolt, IconWand, IconArrowUp, IconCross, IconTrash, IconChevronDoubleRight } from '../../components/icons';
-import { propertyTypeMeta } from './database-property-types';
+import { IconSearch, IconSliders, IconLock, IconPlus, IconChevronDown, IconFilter, IconSort, IconPreview, IconBolt, IconWand, IconArrowUp, IconCross, IconChevronDoubleRight, IconPageLayout, IconExpandDiagonal } from '../../components/icons';
+import { openDatabaseConfirm } from './database-confirm-dialog';
+import { DATA_ATTR } from '../../components/constants/data-attributes';
+import { propertyGlyph } from './database-property-types';
 import type { I18n } from '../../../types';
-import { DatabasePanel, panelInput, panelReorderList, panelRow } from './database-panel';
-import type { PanelPage } from './database-panel';
+import { DatabasePanel, panelRow } from './database-panel';
 import { PersonalViewEdits } from './database-view-state';
 import type { ViewStateFallback } from './database-view-state';
-import { FILTERABLE_TYPES, defaultFilterFor, filterPillLabel, filterValueText, sortDirectionLabelKey } from './database-filter-labels';
-import { countFilterRules, withEntryIds } from './filter-tree';
-import { openViewSettings } from './database-view-settings-panel';
-import { openFilterChip } from './database-filter-chip';
+import { editorLocale } from './cells/date-format';
+import { FILTERABLE_TYPES, defaultFilterFor, filterPillLabel, filterPillParts, sortDirectionLabelKey } from './database-filter-labels';
+import { addFilterRule, countFilterRules, emptyFilterTree, withEntryIds } from './filter-tree';
+import { openAdvancedFilter, openViewSettings } from './database-view-settings-panel';
+import { chipPart, filterChip, openFilterChip } from './database-filter-chip';
+import { SORTABLE_TYPES, propertyPicker, sortEditor } from './database-sort-panel';
 import { clearSearchMatches, paintSearchMatches } from './database-search-highlight';
-import type { AutofillPanelSettings, DataSourceSettings, StarterRow, StructureSettings, ViewGroupEntry, ViewSettingsAction, ViewSettingsContext, ViewSettingsStart } from './database-view-settings-panel';
+import { onHover } from '../../components/utils/tooltip';
+import type { AutofillPanelSettings, DataSourceSettings, EditPropertiesSettings, StarterRow, StructureSettings, ViewGroupEntry, ViewSettingsAction, ViewSettingsContext, ViewSettingsStart } from './database-view-settings-panel';
 import { sortFromHeader } from './view-data';
 import type { ViewChanges } from './database-model';
-import { GROUPABLE_TYPES, groupByChange } from './group-keys';
+import { groupByChange } from './group-keys';
 import type { AutomationSettings } from './database-automations-panel';
+import type { NoDateControl } from './database-no-date';
 import type {
   DatabaseViewConfig,
   DatabaseViewStateStore,
@@ -27,21 +32,21 @@ import type {
   ViewType,
 } from './types';
 
-/** Notion's sort list adds files and ID to the groupable types (findings V20, shot 19). */
-const SORTABLE_TYPES: readonly PropertyType[] = [...GROUPABLE_TYPES, 'files', 'uniqueId'];
-
-/** Notion shows 🔍 once a database has at least three pages (research/05 §5). */
-export const SEARCH_MIN_ROWS = 3;
+const SORT_PANEL_GAP = 4;
+/** notion-motion.md Round 46 §C.5 and Round 47 §D: the filter and sort pickers open 4 under their toolbar button or the "+ Filter" chip. */
+const TOOLBAR_PICKER_GAP = 4;
 
 /** What the controls ask of the database tool. */
 export interface ViewControlsHost {
-  i18n: Pick<I18n, 't'>;
+  /** `getLocale` dates the filter chips in the editor's language. */
+  i18n: Pick<I18n, 't'> & Partial<Pick<I18n, 'getLocale'>>;
   store?: DatabaseViewStateStore;
   fallback: ViewStateFallback;
   savedView: () => DatabaseViewConfig | undefined;
   /** Localized schema. */
   schema: () => PropertyDefinition[];
-  rowCount: () => number;
+  /** A property's saved type: `schema` shows a formula or rollup as its result type. */
+  storedType?: (propertyId: string) => PropertyType | undefined;
   locked: () => boolean;
   readOnly: () => boolean;
   viewCount: () => number;
@@ -54,17 +59,21 @@ export interface ViewControlsHost {
   relatedRows?: (property: PropertyDefinition) => Array<{ id: string; title: string }>;
   /** The database whose row page shows this view, or null: a relation to it can name "This page". */
   thisPageDatabase?: () => string | null;
+  /** On a row page, the name of the database whose pages share this view; else null. */
+  rowPageDatabaseName?: () => string | null;
   /** A shared write to the active view. The tool refuses it while locked. */
   updateView: (changes: ViewChanges) => void;
   setLayout: (type: ViewType) => void;
   setLocked: (locked: boolean) => void;
   /** A linked view: its lock reads "Lock views". */
   linked?: () => boolean;
+  /** The block's "Show data source titles" (Layout page). */
+  dataSourceTitles?: { shown: () => boolean; toggle: () => void };
   duplicateView: () => void;
   deleteView: () => void;
   copyViewLink: () => void;
-  /** A calendar or timeline's "No date (N)": undefined hides it. */
-  noDate?: () => { count: number; label: string; open: (anchor: HTMLElement) => void } | undefined;
+  /** A calendar or timeline's "No date (N)", or a map's "No place (N)": undefined hides it. */
+  noDate?: () => NoDateControl | undefined;
   /** "Manage in Calendar": only when the host gave `config.calendar`. */
   manageInCalendar?: { label: string; onClick: () => void };
   groups: (sub: boolean) => ViewGroupEntry[];
@@ -79,6 +88,11 @@ export interface ViewControlsHost {
   automations?: AutomationSettings;
   /** AI Autofill: only when the host gave `config.ai.autofill`. */
   autofill?: AutofillPanelSettings;
+  /** View settings "Edit properties": each editor opens under `anchor`, the control that opened the panel. */
+  editProperties?: Omit<EditPropertiesSettings, 'edit' | 'add'> & {
+    edit: (propertyId: string, anchor: HTMLElement) => void;
+    add: (anchor: HTMLElement) => void;
+  };
   starterRow?: () => StarterRow | undefined;
   /** View settings "Source". */
   dataSources?: DataSourceSettings;
@@ -92,36 +106,9 @@ export interface ViewControlsHost {
   shareForm?: (anchor: HTMLElement) => void;
   /** A form view's "Preview": the form as a respondent sees it (research/36 §13). */
   previewForm?: () => void;
+  /** ⤢ "Open as full page": undefined hides it. */
+  openFullPage?: () => (() => void) | undefined;
 }
-
-const part = (attribute: string, content: { icon?: string; text?: string }): HTMLElement => {
-  const el = document.createElement('span');
-
-  el.setAttribute(attribute, '');
-  if (content.icon !== undefined) {
-    el.setAttribute('aria-hidden', 'true');
-    el.innerHTML = content.icon;
-  }
-  if (content.text !== undefined) el.textContent = content.text;
-
-  return el;
-};
-
-/** Notion's chip: a glyph, the name in 500, the value in 400, then a down chevron. */
-const chip = (testId: string, label: string, parts: { glyph: string; name: string; value?: string }): HTMLButtonElement => {
-  const el = button(testId, label, {});
-
-  el.setAttribute('data-blok-database-filter-pill', '');
-  el.append(part('data-blok-database-chip-glyph', { icon: parts.glyph }));
-  if (parts.value === undefined || parts.value === '') {
-    el.append(part('data-blok-database-chip-name', { text: parts.name }));
-  } else {
-    el.append(part('data-blok-database-chip-name', { text: `${parts.name}:` }), ' ', part('data-blok-database-chip-value', { text: parts.value }));
-  }
-  el.append(part('data-blok-database-chip-chevron', { icon: IconChevronDown }));
-
-  return el;
-};
 
 const button = (testId: string, label: string, content: { icon?: string; text?: string }): HTMLButtonElement => {
   const el = document.createElement('button');
@@ -135,11 +122,21 @@ const button = (testId: string, label: string, content: { icon?: string; text?: 
   return el;
 };
 
-/** A 28px toolbar button that holds only an icon; its aria-label names it. */
+/** Notion's controls fade back in over 200ms when « expands the toolbar; a little longer so the fade ends first. */
+const EXPAND_FADE_MS = 250;
+
+/** Longer than the 200ms shrink, so transitionend normally wins. */
+const SEARCH_CLOSE_FALLBACK_MS = 250;
+
+const hasTransition = (el: HTMLElement): boolean =>
+  getComputedStyle(el).transitionDuration.split(',').some((part) => parseFloat(part) > 0);
+
+/** A 28px toolbar button that holds only an icon; its aria-label names it, and so does its hover hint. */
 const iconButton = (testId: string, label: string, icon: string): HTMLButtonElement => {
   const el = button(testId, label, { icon });
 
   el.setAttribute('data-blok-database-toolbar-icon', '');
+  onHover(el, label);
 
   return el;
 };
@@ -156,7 +153,16 @@ export class DatabaseViewControls {
   private readonly personal: PersonalViewEdits;
   private readonly filterButton: HTMLButtonElement;
   private readonly noDateButton: HTMLButtonElement;
+  private noDateAttributes: Readonly<Record<string, string>> = {};
   private readonly minimizeButton: HTMLButtonElement;
+  /** « Expand: shown in place of » while the view's toolbar is minimized. */
+  private readonly expandButton: HTMLButtonElement;
+  /** The saved view keeps its toolbar minimized. */
+  private minimized = false;
+  private expandTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The filter bar shows a sort, so » can fold it. */
+  private barMinimizable = false;
+  private searchCloseTimer: ReturnType<typeof setTimeout> | null = null;
   /** The person's choice for the chip bar: shown, hidden, or `null` to follow its chips. Reset per view. */
   private barOpen: boolean | null = null;
   private barViewId: string | null = null;
@@ -170,9 +176,12 @@ export class DatabaseViewControls {
   /** Notion's clear ×: shown only while there is a query. */
   private readonly searchClear: HTMLButtonElement;
   private readonly settingsButton: HTMLButtonElement;
+  /** Notion's ⤢ is a link (notion-motion.md Round 15 B), with no href: it opens in place. */
+  private readonly fullPageLink: HTMLAnchorElement;
   private readonly lockBadge: HTMLElement;
   private readonly shareFormButton: HTMLButtonElement;
   private readonly previewFormButton: HTMLButtonElement;
+  private newSplit: HTMLElement | null = null;
   private panel: DatabasePanel | null = null;
   private query = '';
   /** Repaints the match tint when the rows redraw after a search (lazy rows, remote edits). */
@@ -193,6 +202,8 @@ export class DatabaseViewControls {
     this.toolbar.setAttribute('data-blok-database-view-toolbar', '');
     this.toolbar.setAttribute('role', 'toolbar');
     this.toolbar.setAttribute('aria-label', this.t('toolbarLabel'));
+    // The fold probes write here on every resize (database-view-bar-fold.ts); they are not edits.
+    this.toolbar.setAttribute(DATA_ATTR.mutationFree, 'true');
 
     this.lockBadge = document.createElement('span');
     this.lockBadge.setAttribute('data-blok-database-lock-badge', '');
@@ -207,14 +218,20 @@ export class DatabaseViewControls {
     this.noDateButton.removeAttribute('aria-label');
     this.noDateButton.addEventListener('click', () => this.host.noDate?.()?.open(this.noDateButton));
     this.minimizeButton = iconButton('database-toolbar-minimize', this.t('filterBarMinimize'), IconChevronDoubleRight);
+    this.minimizeButton.setAttribute('data-blok-database-toolbar-minimize', '');
     this.sortButton = iconButton('database-toolbar-sort', this.t('settingsSort'), IconSort);
     this.automationsButton = iconButton('database-toolbar-automations', this.t('automationTitle'), IconBolt);
     this.autofillButton = iconButton('database-toolbar-autofill', this.t('aiAutofill'), IconWand);
     this.searchButton = iconButton('database-toolbar-search', this.t('searchLabel'), IconSearch);
     this.settingsButton = iconButton('database-toolbar-settings', this.t('settingsTitle'), IconSliders);
+    this.settingsButton.setAttribute('data-blok-database-toolbar-settings', '');
+    this.fullPageLink = this.createFullPageLink();
     // A narrow view bar hides these together (notion-spec-2 §26.1, database-tab-bar.ts).
     for (const icon of [this.filterButton, this.sortButton, this.automationsButton, this.autofillButton, this.searchButton]) {
       icon.setAttribute('data-blok-database-toolbar-foldable', '');
+    }
+    for (const icon of [this.filterButton, this.sortButton, this.automationsButton]) {
+      icon.setAttribute('data-blok-database-toolbar-selection-hides', '');
     }
     this.searchInput = document.createElement('input');
     this.searchInput.type = 'search';
@@ -225,9 +242,33 @@ export class DatabaseViewControls {
     this.searchInput.setAttribute('data-blok-testid', 'database-search-input');
 
     this.filterButton.addEventListener('click', () => this.toggleFilterBar());
+    onHover(this.minimizeButton, this.t('filterBarMinimize'));
+    this.minimizeButton.addEventListener('pointerdown', (event) => {
+      if (this.searchShown()) event.preventDefault();
+    });
     this.minimizeButton.addEventListener('click', () => {
+      if (this.searchShown()) this.hideSearch();
       this.barOpen = false;
+      this.host.updateView({ toolbarMinimized: true });
       this.refresh();
+      this.settingsButton.focus();
+    });
+    this.expandButton = iconButton('database-toolbar-expand', this.host.i18n.t('tools.toggle.ariaLabelExpand'), IconChevronDoubleRight);
+    this.expandButton.setAttribute('data-blok-database-toolbar-expand', '');
+    this.expandButton.hidden = true;
+    onHover(this.expandButton, this.host.i18n.t('tools.toggle.ariaLabelExpand'));
+    this.expandButton.addEventListener('click', () => {
+      // The controls fade in once; a later show of one of them stays instant.
+      // Marked first: the host's redraw lays out, and the fade only starts if the mark is on then.
+      this.toolbar.setAttribute('data-expanding', '');
+      this.host.updateView({ toolbarMinimized: false });
+      this.refresh();
+      if (this.expandTimer !== null) clearTimeout(this.expandTimer);
+      this.expandTimer = setTimeout(() => {
+        this.expandTimer = null;
+        this.toolbar.removeAttribute('data-expanding');
+      }, EXPAND_FADE_MS);
+      this.settingsButton.focus();
     });
     this.sortButton.addEventListener('click', () => this.openSort());
     this.automationsButton.addEventListener('click', () => this.openSettings(this.automationsButton, 'automations'));
@@ -259,16 +300,46 @@ export class DatabaseViewControls {
     this.shareFormButton.setAttribute('data-blok-database-toolbar-share-form', '');
     this.shareFormButton.addEventListener('click', () => this.host.shareForm?.(this.shareFormButton));
     // "Preview" reuses the file tool's word: the same in every locale.
-    this.previewFormButton = iconButton('database-toolbar-preview-form', this.host.i18n.t('tools.file.preview'), IconPreview);
+    const previewLabel = this.host.i18n.t('tools.file.preview');
+
+    this.previewFormButton = button('database-toolbar-preview-form', previewLabel, { icon: IconPreview, text: previewLabel });
+    this.previewFormButton.setAttribute('data-blok-database-toolbar-preview-form', '');
     this.previewFormButton.addEventListener('click', () => this.host.previewForm?.());
-    this.toolbar.append(this.lockBadge, this.minimizeButton, this.noDateButton, this.filterButton, this.sortButton, this.automationsButton, this.autofillButton, this.searchButton, this.settingsButton, this.previewFormButton, this.shareFormButton);
+    this.toolbar.append(this.lockBadge, this.minimizeButton, this.noDateButton, this.filterButton, this.sortButton, this.automationsButton, this.autofillButton, this.searchButton, this.expandButton, this.fullPageLink, this.settingsButton, this.previewFormButton, this.shareFormButton);
     if (host.newRow !== undefined) {
-      this.toolbar.append(this.newSplitButton(host.newRow, host.openNewMenu));
+      this.newSplit = this.newSplitButton(host.newRow, host.openNewMenu);
+      this.toolbar.append(this.newSplit);
     }
 
     this.filterBar = document.createElement('div');
     this.filterBar.setAttribute('data-blok-database-filter-bar', '');
     this.refresh();
+  }
+
+  private createFullPageLink(): HTMLAnchorElement {
+    const link = document.createElement('a');
+    const label = this.host.i18n.t('tools.database.peekExpand');
+    const open = (): void => this.host.openFullPage?.()?.();
+
+    link.setAttribute('role', 'link');
+    link.tabIndex = 0;
+    link.setAttribute('data-blok-testid', 'database-toolbar-full-page');
+    link.setAttribute('data-blok-database-toolbar-icon', '');
+    link.setAttribute('data-blok-database-toolbar-full-page', '');
+    link.setAttribute('aria-label', label);
+    link.innerHTML = IconExpandDiagonal;
+    onHover(link, label);
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      open();
+    });
+    link.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      open();
+    });
+
+    return link;
   }
 
   /** Notion's "New" split button (research/08): the main part adds a row, the chevron lists templates. */
@@ -323,6 +394,11 @@ export class DatabaseViewControls {
     this.refresh();
   }
 
+  /** Shows ⤢ only where it can open. Touches the toolbar alone: a filter bar redraw is a block change. */
+  syncFullPage(): void {
+    this.fullPageLink.hidden = this.host.openFullPage?.() === undefined;
+  }
+
   /** Syncs the toolbar and filter bar to the active view, and the open panel. */
   refresh(): void {
     const saved = this.host.savedView();
@@ -338,6 +414,7 @@ export class DatabaseViewControls {
     const view = this.effective(saved);
 
     this.lockBadge.hidden = !this.host.locked();
+    this.syncFullPage();
     this.shareFormButton.hidden = this.host.shareForm === undefined || saved.type !== 'form' || this.host.locked();
     this.previewFormButton.hidden = this.host.previewForm === undefined || this.shareFormButton.hidden;
     this.filterButton.toggleAttribute('data-active', view.filters.length + countFilterRules(view.filterTree) > 0);
@@ -350,17 +427,71 @@ export class DatabaseViewControls {
 
     this.noDateButton.hidden = noDate === undefined;
     this.noDateButton.textContent = noDate?.label ?? '';
-    this.sortButton.hidden = titleOnly;
+    this.syncNoDateAttributes(noDate?.attributes ?? {});
+    // notion-motion.md Round 52 §2: Notion's Map toolbar has no Sort.
+    this.sortButton.hidden = titleOnly || saved.type === 'map';
     this.automationsButton.hidden = titleOnly || this.host.automations === undefined;
     this.automationsButton.disabled = this.host.automations?.writable() !== true;
     this.autofillButton.hidden = titleOnly || this.host.autofill === undefined;
     this.autofillButton.disabled = this.host.autofill?.writable() !== true;
-    this.searchButton.hidden = (titleOnly || this.host.rowCount() < SEARCH_MIN_ROWS) && this.query === '';
+    // notion-motion.md Round 41 Part B: 🔍 shows on a 0-row board; the help center's "three pages" is not the rule.
+    this.searchButton.hidden = titleOnly && this.query === '';
+    this.minimized = this.host.savedView()?.toolbarMinimized === true;
+    this.toolbar.toggleAttribute('data-minimized', this.minimized);
+    this.expandButton.hidden = !this.minimized;
+    if (this.newSplit !== null) this.newSplit.hidden = false;
+    if (saved.type === 'dashboard') {
+      this.trimForDashboard();
+      this.panel?.refresh();
+
+      return;
+    }
+    if (saved.type === 'form') {
+      this.trimForForm();
+      this.panel?.refresh();
+
+      return;
+    }
     this.renderFilterBar(view);
     this.panel?.refresh();
   }
 
+  /** Swaps the attributes the last control put on the "No date" button for this one's. */
+  private syncNoDateAttributes(next: Readonly<Record<string, string>>): void {
+    for (const name of Object.keys(this.noDateAttributes)) this.noDateButton.removeAttribute(name);
+    for (const [name, value] of Object.entries(next)) this.noDateButton.setAttribute(name, value);
+    this.noDateAttributes = next;
+  }
+
+  /** notion-motion Round 15 A: a dashboard's toolbar is only ⤢ and ⚙. Its widgets filter themselves. */
+  private trimForDashboard(): void {
+    const rowControls = [this.filterButton, this.sortButton, this.automationsButton, this.autofillButton, this.searchButton,
+      this.noDateButton, this.minimizeButton, this.expandButton, this.newSplit];
+
+    for (const control of rowControls) {
+      if (control !== null) control.hidden = true;
+    }
+    this.toolbar.removeAttribute('data-minimized');
+    this.filterBar.hidden = true;
+    this.filterBar.replaceChildren();
+  }
+
+  /** notion-motion.md Round 31 §1, Round 32 §4: a form takes answers, so it has no Filter, Sort, Search or New. */
+  private trimForForm(): void {
+    for (const control of [this.filterButton, this.sortButton, this.searchButton, this.newSplit]) {
+      if (control !== null) control.hidden = true;
+    }
+    this.filterBar.hidden = true;
+    this.filterBar.replaceChildren();
+    // notion-motion.md Round 41 Part B: a form has no filter bar, so » has nothing to fold.
+    this.barMinimizable = false;
+    this.syncMinimize();
+  }
+
   destroy(): void {
+    this.endSearchClose();
+    if (this.expandTimer !== null) clearTimeout(this.expandTimer);
+    this.expandTimer = null;
     this.panel?.close();
     this.panel = null;
     this.matchObserver?.disconnect();
@@ -420,7 +551,7 @@ export class DatabaseViewControls {
 
   openSettings(anchor: HTMLElement, start: ViewSettingsStart): void {
     this.panel?.close();
-    this.panel = openViewSettings(anchor, this.settingsContext(), start, (escape) => this.panelClosed(anchor, escape));
+    this.panel = openViewSettings(anchor, this.settingsContext(anchor), start, (escape) => this.panelClosed(anchor, escape));
     anchor.setAttribute('data-popover-open', '');
   }
 
@@ -451,9 +582,36 @@ export class DatabaseViewControls {
     const view = this.host.savedView();
 
     if (view === undefined || this.host.locked() || this.host.readOnly()) return;
-    const patch = this.personal.get(view.id);
+    const name = this.host.rowPageDatabaseName?.() ?? null;
 
-    this.personal.clear(view.id);
+    if (name === null) {
+      this.writeDraft(view.id);
+
+      return;
+    }
+    // research/11 §4 (35-filter-saved.png): every page of the database shares this view, so ask first.
+    void openDatabaseConfirm({
+      art: [IconPageLayout],
+      title: this.t('saveForAllTitle'),
+      description: this.t('saveForAllDescription', { name }),
+      emphasis: name,
+      confirmLabel: this.t('saveForAllConfirm'),
+      cancelLabel: this.t('layoutCancel'),
+      primary: true,
+      borderedCancel: true,
+      focusConfirm: true,
+      directionSource: this.toolbar,
+    }).then((save) => {
+      // A peer may have saved, reset or locked it while the dialog was open.
+      if (!save || this.host.savedView()?.id !== view.id || this.host.locked() || this.host.readOnly() || !this.hasPersonalEdits(view.id)) return;
+      this.writeDraft(view.id);
+    });
+  }
+
+  private writeDraft(viewId: string): void {
+    const patch = this.personal.get(viewId);
+
+    this.personal.clear(viewId);
     this.host.updateView(patch);
     this.refresh();
   }
@@ -467,11 +625,15 @@ export class DatabaseViewControls {
     this.refresh();
   }
 
-  private settingsContext(): ViewSettingsContext {
+  /** `anchor`: the control that opened view settings; editors the panel hands off to open under it. */
+  private settingsContext(anchor?: HTMLElement): ViewSettingsContext {
+    const editProperties = this.host.editProperties;
+
     return {
       i18n: this.host.i18n,
       view: () => this.view() ?? this.emptyView(),
       schema: () => this.host.schema(),
+      ...(this.host.storedType === undefined ? {} : { storedType: this.host.storedType }),
       locked: () => this.host.locked(),
       layouts: this.host.layouts,
       canDeleteView: () => this.host.viewCount() > 1,
@@ -483,6 +645,7 @@ export class DatabaseViewControls {
         this.refresh();
       },
       ...(this.host.linked !== undefined ? { linked: this.host.linked } : {}),
+      ...(this.host.dataSourceTitles !== undefined ? { dataSourceTitles: this.host.dataSourceTitles } : {}),
       duplicateView: () => this.host.duplicateView(),
       deleteView: () => this.host.deleteView(),
       copyViewLink: () => this.host.copyViewLink(),
@@ -496,6 +659,14 @@ export class DatabaseViewControls {
       ...(this.host.customizeLayout !== undefined ? { customizeLayout: this.host.customizeLayout } : {}),
       ...(this.host.automations !== undefined ? { automations: this.host.automations } : {}),
       ...(this.host.autofill !== undefined ? { autofill: this.host.autofill } : {}),
+      ...(editProperties !== undefined && anchor !== undefined ? {
+        editProperties: {
+          properties: editProperties.properties,
+          writable: editProperties.writable,
+          edit: (propertyId: string) => editProperties.edit(propertyId, anchor),
+          add: () => editProperties.add(anchor),
+        },
+      } : {}),
       ...(this.host.starterRow !== undefined ? { starterRow: this.host.starterRow } : {}),
       ...(this.host.dataSources !== undefined ? { dataSources: this.host.dataSources } : {}),
       ...(this.host.structure !== undefined ? { structure: this.host.structure } : {}),
@@ -544,93 +715,91 @@ export class DatabaseViewControls {
 
   /** "+ Filter": pick a property, then edit the new filter's value (research/21 §1c). */
   private openFilterPicker(anchor: HTMLElement): void {
-    this.openPropertyPicker(anchor, 'database-filter-picker', FILTERABLE_TYPES, (property) => this.filterBy(property.id, anchor));
+    this.openPropertyPicker(anchor, 'database-filter-picker', FILTERABLE_TYPES, (property) => this.filterBy(property.id, anchor), {
+      placeholder: this.t('filterByPlaceholder'),
+      kind: 'filter',
+      // notion-motion.md Round 10 "Add filter picker": a property already filtered is left out.
+      used: this.view()?.filters.map((filter) => filter.propertyId) ?? [],
+      footer: (close) => panelRow({
+        label: this.t('filterAddAdvanced'),
+        testId: 'database-filter-picker-advanced',
+        icon: IconPlus,
+        muted: true,
+        onClick: () => {
+          close();
+          this.openAdvanced(anchor);
+        },
+      }),
+    });
   }
 
   /**
-   * Notion's property list: 290 wide, a search on top, the first option
-   * highlighted, Name first and then A→Z, each with its type glyph.
+   * notion-motion.md Round 18 §2 (r18-adv-open.raw, r18-adv-bar.raw): "Add advanced filter" writes a first
+   * rule on the Name ("Where Name Contains"), so the "1 rule" chip shows at once and the popover opens under it.
    */
-  private openPropertyPicker(anchor: HTMLElement, testId: string, types: readonly PropertyType[], onPick: (property: PropertyDefinition) => void): void {
-    const state = { query: '', active: 0 };
-    const list = document.createElement('div');
-    const matches = (): PropertyDefinition[] => {
-      const needle = state.query.trim().toLowerCase();
-      const shown = this.host.schema()
-        .filter((p) => types.includes(p.type))
-        .filter((p) => needle === '' || p.name.toLowerCase().includes(needle));
+  private openAdvanced(fallback: HTMLElement): void {
+    const view = this.view();
+    const title = this.host.schema().find((p) => p.type === 'title');
 
-      return [
-        ...shown.filter((p) => p.type === 'title'),
-        ...shown.filter((p) => p.type !== 'title').sort((a, b) => a.name.localeCompare(b.name)),
-      ];
-    };
-    const pick = (property: PropertyDefinition): void => {
-      panel.close();
-      onPick(property);
-    };
-    const fill = (): void => {
-      list.replaceChildren(...matches().map((property, index) => {
-        const row = panelRow({
-          label: property.name,
-          icon: propertyTypeMeta(property.type).icon,
-          testId: `database-pick-property-${property.id}`,
-          onClick: () => pick(property),
-        });
+    if (view !== undefined && title !== undefined && countFilterRules(view.filterTree) === 0) {
+      const tree = view.filterTree ?? emptyFilterTree();
+      const { id, propertyId, operator, value } = defaultFilterFor(title);
 
-        row.toggleAttribute('data-active', index === state.active);
+      this.barOpen = true;
+      this.updatePersonal({ filterTree: addFilterRule(tree, tree.id, { id, propertyId, operator, value }) });
+    }
+    const chip = this.filterBar.querySelector<HTMLElement>('[data-blok-testid="database-advanced-pill"]');
+    const anchor = chip !== null && !this.filterBar.hidden ? chip : fallback;
 
-        return row;
-      }));
-    };
-    const panel = new DatabasePanel({
-      anchor,
-      root: {
-        build: () => {
-          const search = panelInput({
-            value: state.query,
-            placeholder: this.t('layoutSearchProperties'),
-            label: this.t('layoutSearchProperties'),
-            testId: `${testId}-search`,
-            // Only the list redraws, so the field keeps its caret.
-            onInput: (value) => {
-              state.query = value;
-              state.active = 0;
-              fill();
-            },
-          });
-
-          search.addEventListener('keydown', (event) => {
-            const shown = matches();
-
-            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-              event.preventDefault();
-              if (shown.length === 0) return;
-              state.active = (state.active + (event.key === 'ArrowDown' ? 1 : -1) + shown.length) % shown.length;
-              fill();
-            } else if (event.key === 'Enter' && !event.isComposing) {
-              event.preventDefault();
-              const property = shown[state.active];
-
-              if (property !== undefined) pick(property);
-            }
-          });
-          fill();
-
-          return [search, list];
-        },
+    this.panel?.close();
+    const ctx: ViewSettingsContext = {
+      ...this.settingsContext(),
+      updatePersonal: (patch) => {
+        this.barOpen = true;
+        this.updatePersonal(patch);
       },
+    };
+
+    this.panel = openAdvancedFilter(anchor, ctx, (escape) => this.panelClosed(anchor, escape));
+    anchor.setAttribute('data-popover-open', '');
+  }
+
+  /** The property list (see {@link propertyPicker}). */
+  private openPropertyPicker(
+    anchor: HTMLElement,
+    testId: string,
+    types: readonly PropertyType[],
+    onPick: (property: PropertyDefinition) => void,
+    options: {
+      placeholder: string;
+      footer?: (close: () => void) => HTMLElement;
+      used?: string[];
+      kind?: 'filter' | 'sort';
+    }
+  ): DatabasePanel {
+    const panel = propertyPicker({
+      anchor,
       testId,
-      width: 290,
-      backLabel: this.t('settingsBack'),
+      types,
+      schema: () => this.host.schema(),
+      storedType: this.host.storedType,
+      i18n: this.host.i18n,
+      onPick,
+      ...options,
+      gap: TOOLBAR_PICKER_GAP,
       onClose: (escape) => this.panelClosed(anchor, escape),
     });
 
     anchor.setAttribute('data-popover-open', '');
     this.showPanel(panel);
+
+    return panel;
   }
 
-  /** Sort: with no rule, the property picker; otherwise the sort panel under the chip. */
+  /**
+   * Sort: with no rule, the property picker. With one, notion-motion.md Round 17 §5:
+   * a shown bar hides; a hidden one shows and the sort panel opens under its chip.
+   */
   private openSort(): void {
     const view = this.view();
 
@@ -639,164 +808,99 @@ export class DatabaseViewControls {
       this.openPropertyPicker(this.sortButton, 'database-sort-picker', SORTABLE_TYPES, (property) => {
         this.barOpen = true;
         this.updatePersonal({ sorts: [{ id: nanoid(), propertyId: property.id, direction: 'asc' }] });
-      });
+        // notion-motion.md Round 47 §D: the new sort's panel opens under its chip.
+        const chip = this.filterBar.querySelector<HTMLElement>('[data-blok-testid="database-sort-pill"]');
+
+        if (chip !== null && !this.filterBar.hidden) this.openSortPanel(chip, this.sortButton);
+      }, { placeholder: this.t('sortByPlaceholder'), kind: 'sort' });
 
       return;
     }
+    if (this.barShown) {
+      this.barOpen = false;
+      this.refresh();
+
+      return;
+    }
+    this.barOpen = true;
+    this.refresh();
     const chip = this.filterBar.querySelector<HTMLElement>('[data-blok-testid="database-sort-pill"]');
 
     this.openSortPanel(chip !== null && chip.isConnected && !this.filterBar.hidden ? chip : this.sortButton, this.sortButton);
   }
 
-  /**
-   * Notion's sort panel (findings V19): no title, sized to its words. Each rule
-   * has a drag handle, a property button and a direction button that open
-   * lists, and a ×. Then "+ Add sort" and "Delete sort".
-   */
   private openSortPanel(anchor: HTMLElement, opener: HTMLElement = anchor): void {
-    const sorts = (): Array<SortConfig & { id: string }> => withEntryIds(this.view()?.sorts ?? []);
-    const write = (next: SortConfig[]): void => this.updatePersonal({ sorts: next });
-    const chevron = (row: HTMLElement): HTMLElement => {
-      row.append(part('data-blok-database-chip-chevron', { icon: IconChevronDown }));
-
-      return row;
-    };
-    const propertyPage = (title: string, onPick: (property: PropertyDefinition) => void): PanelPage => ({
-      title,
-      build: () => {
-        const shown = this.host.schema().filter((p) => SORTABLE_TYPES.includes(p.type));
-
-        return [...shown.filter((p) => p.type === 'title'), ...shown.filter((p) => p.type !== 'title').sort((a, b) => a.name.localeCompare(b.name))]
-          .map((property) => panelRow({
-            label: property.name,
-            icon: propertyTypeMeta(property.type).icon,
-            testId: `database-pick-property-${property.id}`,
-            onClick: () => onPick(property),
-          }));
-      },
-    });
-    const directionPage = (sort: SortConfig & { id: string }, property: PropertyDefinition): PanelPage => ({
-      title: property.name,
-      build: (panel) => (['asc', 'desc'] as const).map((direction) => panelRow({
-        label: this.host.i18n.t(sortDirectionLabelKey(property.type, direction)),
-        testId: `database-sort-direction-${direction}`,
-        checked: sort.direction === direction,
-        onClick: () => {
-          write(sorts().map((s) => (s.id === sort.id ? { ...s, direction } : s)));
-          panel.back();
-        },
-      })),
-    });
-    const panel = new DatabasePanel({
+    const panel = sortEditor({
       anchor,
-      root: {
-        build: (current) => {
-          const schema = this.host.schema();
-          const all = sorts();
-          const items = all.flatMap((sort) => {
-            const property = schema.find((p) => p.id === sort.propertyId);
-
-            if (property === undefined) return [];
-            const line = document.createElement('div');
-            const remove = panelRow({
-              label: this.t('sortRemove'),
-              testId: `database-sort-remove-${sort.id}`,
-              icon: IconCross,
-              onClick: () => write(all.filter((s) => s.id !== sort.id)),
-            });
-
-            remove.querySelector('[data-blok-database-panel-label]')?.remove();
-            remove.setAttribute('aria-label', this.t('sortRemove'));
-            remove.setAttribute('data-blok-database-sort-remove', '');
-            line.setAttribute('data-blok-database-sort-row', '');
-            line.setAttribute('data-blok-testid', `database-sort-row-${sort.id}`);
-            line.append(
-              chevron(panelRow({
-                label: property.name,
-                testId: `database-sort-property-${sort.id}`,
-                icon: propertyTypeMeta(property.type).icon,
-                onClick: () => current.push(propertyPage(this.t('settingsSort'), (picked) => {
-                  write(sorts().map((s) => (s.id === sort.id ? { ...s, propertyId: picked.id } : s)));
-                  current.back();
-                })),
-              })),
-              chevron(panelRow({
-                label: this.host.i18n.t(sortDirectionLabelKey(property.type, sort.direction)),
-                testId: `database-sort-direction-${sort.id}`,
-                onClick: () => current.push(directionPage(sort, property)),
-              })),
-              remove
-            );
-
-            return [{ id: sort.id, element: line }];
-          });
-
-          return [
-            panelReorderList({
-              testId: 'database-sorts-list',
-              handleLabel: this.t('settingsDragToReorder'),
-              items,
-              onMove: (id, beforeId) => {
-                const moving = all.find((s) => s.id === id);
-                const rest = all.filter((s) => s.id !== id);
-                const at = beforeId === null ? rest.length : rest.findIndex((s) => s.id === beforeId);
-
-                if (moving !== undefined) write([...rest.slice(0, at), moving, ...rest.slice(at)]);
-              },
-            }),
-            panelRow({
-              label: this.t('sortAdd'),
-              testId: 'database-sort-add',
-              muted: true,
-              icon: IconPlus,
-              onClick: () => current.push(propertyPage(this.t('sortAdd'), (property) => {
-                write([...sorts(), { id: nanoid(), propertyId: property.id, direction: 'asc' }]);
-                current.back();
-              })),
-            }),
-            panelRow({
-              label: this.t('sortDeleteAll'),
-              testId: 'database-sort-delete-all',
-              muted: true,
-              icon: IconTrash,
-              onClick: () => {
-                write([]);
-                current.close();
-              },
-            }),
-          ];
-        },
-      },
-      testId: 'database-sort-panel',
-      width: 290,
-      backLabel: this.t('settingsBack'),
+      i18n: this.host.i18n,
+      schema: () => this.host.schema(),
+      storedType: this.host.storedType,
+      sorts: () => this.view()?.sorts ?? [],
+      write: (next) => this.updatePersonal({ sorts: next }),
+      // notion-motion.md Round 17 §5: chip bottom 301, panel top 305.
+      ...(anchor === this.sortButton ? {} : { gap: SORT_PANEL_GAP }),
       onClose: (escape) => this.panelClosed(anchor, escape, opener),
     });
 
-    // Notion's panel sizes to its words, so no label is cut.
-    panel.root.style.width = 'max-content';
     anchor.setAttribute('data-popover-open', '');
     this.showPanel(panel);
   }
 
   private showSearch(): void {
+    this.endSearchClose();
     if (this.searchInput.isConnected) {
+      this.searchInput.removeAttribute('data-closing');
+      this.searchInput.after(this.searchClear);
       this.searchInput.focus();
+      this.syncMinimize();
 
       return;
     }
     this.searchInput.hidden = false;
     this.searchButton.after(this.searchInput, this.searchClear);
     this.searchInput.focus();
+    this.syncMinimize();
+  }
+
+  /** Open and not on its way out. */
+  private searchShown(): boolean {
+    return this.searchInput.isConnected && !this.searchInput.hasAttribute('data-closing');
   }
 
   private hideSearch(): void {
+    const input = this.searchInput;
+
+    this.searchClear.remove();
+    input.value = '';
+    this.setSearch('');
+    this.searchButton.hidden = this.host.schema().length <= 1;
+    if (input.isConnected && !input.hasAttribute('data-closing') && hasTransition(input)) {
+      // The field shrinks to nothing first; it leaves when that ends.
+      input.setAttribute('data-closing', '');
+      input.addEventListener('transitionend', this.finishSearchClose);
+      this.searchCloseTimer = setTimeout(this.finishSearchClose, SEARCH_CLOSE_FALLBACK_MS);
+    } else if (!input.hasAttribute('data-closing')) {
+      this.finishSearchClose();
+    }
+    this.syncMinimize();
+  }
+
+  private readonly finishSearchClose = (): void => {
+    this.endSearchClose();
+    this.searchInput.removeAttribute('data-closing');
     this.searchInput.hidden = true;
     this.searchInput.remove();
-    this.searchClear.remove();
-    this.searchInput.value = '';
-    this.setSearch('');
-    this.searchButton.hidden = this.host.rowCount() < SEARCH_MIN_ROWS;
+  };
+
+  private endSearchClose(): void {
+    this.searchInput.removeEventListener('transitionend', this.finishSearchClose);
+    if (this.searchCloseTimer !== null) clearTimeout(this.searchCloseTimer);
+    this.searchCloseTimer = null;
+  }
+
+  /** » shows for an open search or a filter bar with a sort. */
+  private syncMinimize(): void {
+    this.minimizeButton.hidden = this.minimized || (!this.searchShown() && !this.barMinimizable);
   }
 
   private setSearch(query: string): void {
@@ -839,39 +943,41 @@ export class DatabaseViewControls {
       const label = view.sorts.length === 1 && first !== undefined
         ? `${first.name}: ${t(sortDirectionLabelKey(first.type, view.sorts[0].direction))}`
         : name;
-      const pill = chip('database-sort-pill', label, { glyph: view.sorts.length === 1 ? IconArrowUp : IconSort, name });
+      const pill = filterChip('database-sort-pill', label, { glyph: view.sorts.length === 1 ? IconArrowUp : IconSort, name });
 
       pill.setAttribute('data-direction', view.sorts[0].direction);
+      pill.toggleAttribute('data-blok-database-sort-arrow', view.sorts.length === 1);
       pill.setAttribute('data-active', '');
       pill.addEventListener('click', () => this.openSortPanel(pill));
-      pills.push(pill, part('data-blok-database-chip-divider', {}));
+      pills.push(pill, chipPart('data-blok-database-chip-divider', {}));
     }
+    // notion-motion.md Round 18 §2 (r18-adv-bar.raw): the advanced chip goes before the simple ones.
+    // Round 19 §1 (r19-adv-group2-bar.raw): the chip counts top-level items; a group counts once.
+    if (countFilterRules(view.filterTree) > 0) {
+      const label = this.t('filterRuleCount', { count: view.filterTree?.filterRules.length ?? 0 });
+      const pill = filterChip('database-advanced-pill', label, { glyph: IconFilter, name: label });
+
+      pill.setAttribute('data-active', '');
+      pill.addEventListener('click', () => this.openAdvanced(pill));
+      pills.push(pill);
+    }
+    const locale = editorLocale(this.host.i18n);
+
     for (const filter of withEntryIds(view.filters)) {
       const property = schema.find((p) => p.id === filter.propertyId);
 
       if (property === undefined) continue;
       const personName = (id: string): string | undefined => this.host.people?.().find((person) => person.id === id)?.name;
       const rowTitle = (id: string): string | undefined => this.host.relatedRows?.(property).find((row) => row.id === id)?.title;
-      const label = filterPillLabel(filter, property, t, personName, rowTitle);
-      const value = filterValueText(filter, property, t, personName, rowTitle);
-      const pill = chip(`database-filter-pill-${filter.id}`, label, { glyph: propertyTypeMeta(property.type).icon, name: property.name, value });
+      const label = filterPillLabel(filter, property, t, personName, rowTitle, locale);
+      const { name, colon, value } = filterPillParts(filter, property, t, personName, rowTitle, locale);
+      const pill = filterChip(`database-filter-pill-${filter.id}`, label, { glyph: propertyGlyph(property, this.host.storedType), name, colon, value });
 
       pill.setAttribute('data-filter-id', filter.id);
       pill.toggleAttribute('data-active', value !== '');
       pill.addEventListener('click', () => this.openPill(filter.id, pill));
       pills.push(pill);
     }
-    const rules = countFilterRules(view.filterTree);
-
-    if (rules > 0) {
-      const label = this.t('filterRuleCount', { count: rules });
-      const pill = chip('database-advanced-pill', label, { glyph: IconFilter, name: label });
-
-      pill.setAttribute('data-active', '');
-      pill.addEventListener('click', () => this.openSettings(pill, 'filter'));
-      pills.push(pill);
-    }
-
     const personal = this.personal.has(view.id);
 
     if (this.barViewId !== view.id) {
@@ -883,7 +989,8 @@ export class DatabaseViewControls {
     if (pills.length === 0 && !personal && this.barShown && this.barOpen === null) this.barOpen = true;
     this.barShown = this.barOpen ?? (pills.length > 0 || personal);
     // Inferred from shots: Notion shows » with a sort (20, 22, 23), not with filters alone (15, 17) or no rule (41).
-    this.minimizeButton.hidden = !this.barShown || view.sorts.length === 0;
+    this.barMinimizable = this.barShown && view.sorts.length > 0;
+    this.syncMinimize();
     if (!this.barShown) {
       this.filterBar.replaceChildren();
       this.filterBar.hidden = true;

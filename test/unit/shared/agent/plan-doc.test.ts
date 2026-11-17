@@ -288,15 +288,53 @@ describe('document field planning', () => {
     ' JaVa\tScRiPt:alert(1)',
     'vbscript:msgbox(1)',
     'data:text/html,<script>alert(1)</script>',
-    'data:image/svg+xml,<svg onload=alert(1)>',
+    'data:application/xhtml+xml,<x/>',
   ])('refuses the unsafe image icon URL %j, as the icon renderer would blank it', url => {
     expect(failOf(() => planOn(doc, [{ name: 'doc.setIcon', args: { icon: { type: 'image', url } } }])))
       .toMatchObject({ code: 'INVALID_ARGS', commandIndex: 0, path: '/commands/0/args/icon/url' });
   });
 
-  it.each(['https://example.test/i.png', '/icons/i.png', 'data:image/png;base64,AAAA'])('keeps the image icon URL %j that the renderer shows', url => {
+  // An icon is only ever an <img>, which never runs an SVG's script.
+  it.each(['https://example.test/i.png', '/icons/i.png', 'data:image/png;base64,AAAA', 'data:image/svg+xml;base64,PHN2Zy8+'])('keeps the image icon URL %j that the renderer shows', url => {
     expect(planOn(doc, [{ name: 'doc.setIcon', args: { icon: { type: 'image', url } } }]).draft.toOutput().icon)
       .toEqual({ type: 'image', url });
+  });
+});
+
+describe('doc.setCover', () => {
+  it('sets an image cover, keeps title and icon, and emits one page-field edit', () => {
+    const cover = { type: 'image', url: 'https://example.test/c.png', position: 30 } as const;
+    const { plan, draft } = planOn(doc, [{ name: 'doc.setCover', args: { cover } }]);
+    const output = draft.toOutput();
+
+    expect(plan.edits).toEqual([{ op: 'setPageField', key: 'cover', value: cover }]);
+    expect(output.cover).toEqual(cover);
+    expect(output.title).toBe('Old');
+    expect(output.icon).toEqual({ type: 'emoji', value: 'A' });
+    expect(plan.results).toEqual([{}]);
+  });
+
+  it('sets a built-in gallery cover by id', () => {
+    const { draft } = planOn(doc, [{ name: 'doc.setCover', args: { cover: { type: 'gallery', id: 'blue' } } }]);
+
+    expect(draft.toOutput().cover).toEqual({ type: 'gallery', id: 'blue' });
+  });
+
+  it('clears the cover with null', () => {
+    const { plan, draft } = planOn({ ...doc, cover: { type: 'gallery', id: 'blue' } }, [{ name: 'doc.setCover', args: { cover: null } }]);
+
+    expect(draft.toOutput()).not.toHaveProperty('cover');
+    expect(plan.edits).toEqual([{ op: 'setPageField', key: 'cover', value: null }]);
+  });
+
+  it.each([
+    { label: 'an unknown gallery id', cover: { type: 'gallery', id: 'nope' }, path: '/commands/0/args/cover/id' },
+    { label: 'a fractional position', cover: { type: 'gallery', id: 'blue', position: 12.5 }, path: '/commands/0/args/cover' },
+    { label: 'a position past 100', cover: { type: 'image', url: 'https://example.test/c.png', position: 101 }, path: '/commands/0/args/cover' },
+    { label: 'an unsafe url', cover: { type: 'image', url: 'javascript:alert(1)' }, path: '/commands/0/args/cover/url' },
+  ])('refuses $label', ({ cover, path }) => {
+    expect(failOf(() => planOn(doc, [{ name: 'doc.setCover', args: { cover } }])))
+      .toMatchObject({ code: 'INVALID_ARGS', commandIndex: 0, path });
   });
 });
 

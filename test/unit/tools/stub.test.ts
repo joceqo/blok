@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { MockInstance } from 'vitest';
 import type { API, BlockAPI } from '@/types';
@@ -80,6 +82,55 @@ describe('Stub tool', () => {
     expect(subtitleEl?.textContent).toBe('t:tools.stub.blockCannotBeDisplayed');
     expect(translator).toHaveBeenCalledTimes(1);
     expect(translator).toHaveBeenCalledWith('tools.stub.blockCannotBeDisplayed');
+  });
+
+  it('shows the name on a chip in the text font, as it is given', () => {
+    const { stub } = createStub({ data: { title: 'Kanban board' } });
+    const titleEl = stub.render().querySelector('[data-blok-stub-title]');
+    const classes = titleEl?.className.split(/\s+/) ?? [];
+
+    expect(titleEl?.textContent).toBe('Kanban board');
+    expect(classes).not.toContain('font-mono');
+    expect(classes).not.toContain('capitalize');
+    expect(classes).toContain('truncate');
+    expect(classes).toContain('rounded-(--blok-radius-control)');
+  });
+
+  it('is one dashed, hatched row with no warning icon', () => {
+    const element = createStub().stub.render();
+    const classes = element.className.split(/\s+/);
+
+    expect(element.querySelector('svg')).toBeNull();
+    expect(classes).toContain('border-dashed');
+    expect(classes).toContain('border-(--blok-border-strong)');
+    expect(element.className).toContain('var(--blok-stub-hatch)');
+    expect(classes).toContain('items-center');
+  });
+
+  it('sets the chip on the top border, at the start side', () => {
+    const element = createStub().stub.render();
+    const chip = element.querySelector('[data-blok-stub-title]');
+    const chipClasses = chip?.className.split(/\s+/) ?? [];
+
+    expect(chipClasses).toEqual(expect.arrayContaining(['absolute', '-top-px', 'start-3', '-translate-y-1/2']));
+    expect(chipClasses).toContain('max-w-[calc(100%-1.5rem)]');
+    expect(element.className.split(/\s+/)).toContain('relative');
+  });
+
+  it('keeps the chip and the message as siblings on the row', () => {
+    const element = createStub().stub.render();
+    const titleEl = element.querySelector('[data-blok-stub-title]');
+    const infoEl = element.querySelector('[data-blok-stub-info]');
+
+    expect(titleEl?.parentElement).toBe(element);
+    expect(infoEl?.parentElement).toBe(element);
+    expect(infoEl?.querySelector('[data-blok-stub-subtitle]')).not.toBeNull();
+  });
+
+  it('declares the hatch colour for light and both dark palettes', () => {
+    const css = readFileSync(resolve(__dirname, '../../../src/styles/colors.css'), 'utf8');
+
+    expect(css.match(/--blok-stub-hatch:/g)).toHaveLength(3);
   });
 
   it('falls back to translated error title when data title is missing', () => {

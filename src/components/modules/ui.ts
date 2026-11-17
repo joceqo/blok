@@ -17,7 +17,9 @@ import { SelectionUtils as Selection } from '../selection/index';
 import { debounce, getBlokVersion, getValidUrl, isEmpty, openSameWindow, openTab, mobileScreenBreakpoint } from '../utils';
 import { destroyAnnouncer, registerAnnouncer } from '../utils/announcer';
 import { buildFontSizeVarLines } from '../utils/font-size-tokens';
+import { withHighlightFallback } from '../utils/highlight-inheritance';
 import { mountStyles } from '../utils/lazy-styles';
+import { AnnotationCard } from '../utils/annotation-card';
 import { LinkHoverCard } from '../utils/link-hover-card';
 import { resolveLoaderConfig } from '../utils/loader-config';
 import { LoadingController } from '../utils/loading-controller';
@@ -33,8 +35,10 @@ import { GestureController } from './uiControllers/controllers/gesture';
 import { KeyboardController } from './uiControllers/controllers/keyboard';
 import { SelectionController } from './uiControllers/controllers/selection';
 import { createDocumentClickedHandler } from './uiControllers/handlers/click';
+import { placeCaretBesideRow } from './uiControllers/handlers/row-click';
 import { createRedactorTouchHandler } from './uiControllers/handlers/touch';
 import { ToggleShortcuts } from '../../tools/toggle/toggle-shortcuts';
+import { ANNOTATION_ATTR } from '../../shared/annotation-mark';
 import { EQUATION_SOURCE_ATTR } from '../../shared/equation-mark';
 
 /**
@@ -116,6 +120,12 @@ export class UI extends Module<UINodes> {
    * {@link readOnlyMutableListeners}).
    */
   private linkHoverCard: LinkHoverCard | null = null;
+
+  /**
+   * The card a reader gets for an annotated phrase. Core, not part of the
+   * annotation tool: a hint can arrive in an editor that never registered it.
+   */
+  private annotationCard: AnnotationCard | null = null;
 
   private loading: LoadingController | null = null;
 
@@ -632,6 +642,8 @@ export class UI extends Module<UINodes> {
 
     this.linkHoverCard?.destroy();
     this.linkHoverCard = null;
+    this.annotationCard?.destroy();
+    this.annotationCard = null;
 
     // Remove the per-instance font style tag to prevent leaks in SPAs
     if (this.fontStyleTagId !== null) {
@@ -677,12 +689,14 @@ export class UI extends Module<UINodes> {
   private anchorMouseMoveListener = (event: Event): void => {
     if (event instanceof MouseEvent) {
       this.handleAnchorMouseMove(event);
+      this.handleAnnotationMouseMove(event);
     }
   };
 
   private anchorMouseOutListener = (event: Event): void => {
     if (event instanceof MouseEvent) {
       this.handleAnchorMouseOut(event);
+      this.handleAnnotationMouseOut(event);
     }
   };
 
@@ -696,6 +710,22 @@ export class UI extends Module<UINodes> {
     if (event instanceof MouseEvent) {
       this.redactorClicked(event);
     }
+  };
+
+  /** A reader opens a hint from the keyboard; in edit mode the keys type. */
+  private annotationKeydownListener = (event: Event): void => {
+    if (!(event instanceof KeyboardEvent) || !this.Blok.ReadOnly.isEnabled || (event.key !== 'Enter' && event.key !== ' ')) {
+      return;
+    }
+
+    const hint = this.annotationOf(event.target);
+
+    if (hint === null || event.target !== hint) {
+      return;
+    }
+
+    event.preventDefault();
+    this.ensureAnnotationCard().toggle(hint);
   };
 
   private redactorContextMenu = (event: Event): void => {
@@ -917,7 +947,7 @@ export class UI extends Module<UINodes> {
     /**
      * Append styles at the top of HEAD tag
      */
-    mountStyles(layerOrder + styles.toString(), nonce);
+    mountStyles(layerOrder + withHighlightFallback(styles.toString(), nonce), nonce);
   }
 
   /**
@@ -1200,6 +1230,7 @@ export class UI extends Module<UINodes> {
     this.listeners.on(this.nodes.redactor, 'mouseout', this.anchorMouseOutListener);
 
     this.listeners.on(this.nodes.redactor, 'click', this.redactorClickListener);
+    this.listeners.on(this.nodes.redactor, 'keydown', this.annotationKeydownListener);
   }
 
   /**
@@ -1213,6 +1244,7 @@ export class UI extends Module<UINodes> {
     this.listeners.off(this.nodes.redactor, 'mousemove', this.anchorMouseMoveListener);
     this.listeners.off(this.nodes.redactor, 'mouseout', this.anchorMouseOutListener);
     this.listeners.off(this.nodes.redactor, 'click', this.redactorClickListener);
+    this.listeners.off(this.nodes.redactor, 'keydown', this.annotationKeydownListener);
 
     /**
      * Disable selection controller
@@ -1294,6 +1326,7 @@ export class UI extends Module<UINodes> {
      * read-only-insensitive), so the card still appears in read-only mode.
      */
     this.linkHoverCard?.hide();
+    this.annotationCard?.hide();
 
     /**
      * Disable keyboard controller
@@ -1439,6 +1472,10 @@ export class UI extends Module<UINodes> {
    * link text) is left untouched so the link stays editable.
    */
   private redactorClicked(event: MouseEvent): void {
+    if (placeCaretBesideRow(this.Blok, this.nodes.redactor, event)) {
+      return;
+    }
+
     const target = event.target as Element | null;
     const chip = target?.closest?.(`span[${EQUATION_SOURCE_ATTR}]`);
 
@@ -1449,6 +1486,22 @@ export class UI extends Module<UINodes> {
     }
 
     const anchor = target?.closest?.('a');
+    const hint = this.annotationOf(target);
+
+    // A link inside a hint keeps its click; anywhere else on the hint pins the card.
+    if (hint !== null && event.button === 0 && Selection.isCollapsed && !(anchor instanceof HTMLAnchorElement && hint.contains(anchor))) {
+      // A writer with the tool edits the hint; everyone else reads it.
+      if (!this.Blok.ReadOnly.isEnabled && this.Blok.Tools.inlineTools.has('annotation')) {
+        this.annotationCard?.hide();
+        void this.Blok.InlineToolbar.editAnnotation(hint);
+
+        return;
+      }
+
+      this.ensureAnnotationCard().toggle(hint);
+
+      return;
+    }
 
     if (!(anchor instanceof HTMLAnchorElement) || !this.nodes.redactor.contains(anchor)) {
       return;
@@ -1620,6 +1673,63 @@ export class UI extends Module<UINodes> {
     return this.linkHoverCard;
   }
 
+  private ensureAnnotationCard(): AnnotationCard {
+    if (this.annotationCard === null) {
+      this.annotationCard = new AnnotationCard({ label: this.Blok.I18n.t('toolNames.annotation') });
+    }
+
+    return this.annotationCard;
+  }
+
+  /**
+   * The annotated phrase an event landed on, if it is inside this editor.
+   * @param target - the event target
+   */
+  private annotationOf(target: EventTarget | null): HTMLElement | null {
+    const hint = target instanceof Element ? target.closest(`span[${ANNOTATION_ATTR}]`) : null;
+
+    return hint instanceof HTMLElement && this.nodes.redactor.contains(hint) ? hint : null;
+  }
+
+  /**
+   * Hover a hint: show its card after the hint delay. mousemove, not mouseover,
+   * for the same reason as the link card.
+   * @param event - mousemove event delegated from the redactor
+   */
+  private handleAnnotationMouseMove(event: MouseEvent): void {
+    const hint = this.annotationOf(event.target);
+
+    // The hint editor lives in the inline toolbar. While it is open, the phrase is being written, not read.
+    if (hint === null || this.Blok.InlineToolbar.opened) {
+      return;
+    }
+
+    const card = this.ensureAnnotationCard();
+
+    if (card.anchor !== hint) {
+      card.show(hint);
+    }
+  }
+
+  /**
+   * @param event - mouseout event delegated from the redactor
+   */
+  private handleAnnotationMouseOut(event: MouseEvent): void {
+    const hint = this.annotationOf(event.target);
+    const related = event.relatedTarget;
+
+    if (hint === null) {
+      return;
+    }
+
+    // Onto a child of the phrase, or straight into the card: not a leave.
+    if (related instanceof Node && (hint.contains(related) || this.annotationCard?.contains(related) === true)) {
+      return;
+    }
+
+    this.annotationCard?.pointerLeft();
+  }
+
   /**
    * Copy a link's destination to the clipboard and notify the user.
    * @param href - the URL to copy
@@ -1662,7 +1772,10 @@ export class UI extends Module<UINodes> {
 
     const card = this.ensureLinkHoverCard();
 
+    /** Back on the shown link before the grace hide fired: keep the card. */
     if (card.anchor === anchor) {
+      card.cancelHide();
+
       return;
     }
 

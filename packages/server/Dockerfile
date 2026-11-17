@@ -6,6 +6,8 @@ FROM --platform=$BUILDPLATFORM node:26-bookworm-slim AS runtime-build
 WORKDIR /workspace
 
 COPY package.json yarn.lock .yarnrc.yml ./
+# yarn.lock names patch files that the install reads.
+COPY .yarn/patches/ .yarn/patches/
 COPY packages/angular/package.json packages/angular/package.json
 COPY packages/cli/package.json packages/cli/package.json
 COPY packages/mcp/package.json packages/mcp/package.json
@@ -52,6 +54,12 @@ RUN case "$TARGETARCH" in \
     && chown 65532:65532 /data
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0
+# The base image ships Ubuntu fixes days after they land, and the CI scan
+# fails on any fixable HIGH. This targets the final platform, so the arm64
+# push needs QEMU (release-server.yml).
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=publish --chown=65532:65532 /data /data
 COPY --from=publish --chown=65532:65532 /out/blok-server /blok-server
 

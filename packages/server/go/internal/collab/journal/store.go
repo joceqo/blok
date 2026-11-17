@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/collab/operation"
-	"github.com/JackUait/blok/packages/server/go/internal/collab/workingset"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/operation"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/workingset"
 )
 
 // syncJournal is the append's flush; tests swap it to stage a failed fsync.
@@ -191,8 +191,8 @@ func dirExists(path string) bool {
 }
 
 // globFiles is Directory.GetFiles(dir, stem + ".*"): files only, and .NET's
-// Win32 matching also takes a bare stem.
-func globFiles(dir, stem string) ([]string, error) {
+// Win32 matching also takes a bare stem. A variable so a test can fail it.
+var globFiles = func(dir, stem string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -1131,7 +1131,7 @@ func (s *Session) requireFence() error {
 		return ErrClosed
 	}
 	if s.faulted {
-		return fmt.Errorf("collab: the journal for \"%s\" could not be flushed and this session can no longer say what is durable; reopen the document", s.docID)
+		return fmt.Errorf("collab: the journal for \"%s\" could not be flushed and this session can no longer say what is durable; reopen the document.", s.docID)
 	}
 	return requireFence(s.docDir, s.docID, s.manifest)
 }
@@ -1307,7 +1307,9 @@ func (s *Session) WriteCheckpoint(ctx context.Context, checkpoint operation.Chec
 	mine := "." + strconv.FormatUint(s.manifest.Fence, 10)
 	stale, err := globFiles(s.docDir, "checkpoint."+strconv.FormatUint(s.manifest.Generation, 10))
 	if err != nil {
-		return nil
+		// C# lets this throw too: the publication stands, and the caller's
+		// retry at the same sequence is a no-op.
+		return err
 	}
 	for _, other := range stale {
 		if other != name && strings.HasSuffix(other, mine) {

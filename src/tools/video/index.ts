@@ -1,4 +1,5 @@
 import { describeVideo } from '../../shared/tool-descriptions/video';
+import { linkClipboardHtml } from '../../shared/clipboard-html';
 import { MEDIA_ACTION_HANDLERS } from '../../shared/tool-actions/media';
 import { videoSanitize } from '../../shared/tool-descriptions/sanitize/blocks';
 import type {
@@ -45,7 +46,8 @@ import { produceVideoVariant } from '../../components/media-variants/video-varia
 import { renderCaptionRow, renderErrorState, renderVideo } from './ui';
 import { attachControls, type ControlsHandle } from './controls';
 import { Uploader, VideoUploadError, type UploadResult } from './uploader';
-import { uploadErrorMessage } from '../../components/utils/upload-error-message';
+import { parseTooLargeDetail, uploadErrorMessage } from '../../components/utils/upload-error-message';
+import { formatBytes } from '../../components/utils/format-bytes';
 import { resolveUploadError } from '../../components/utils/media-upload-error';
 import { pickDisplayMaxSize } from '../../components/utils/max-size';
 import { safeDownloadHref } from '../../components/utils/sanitize-url';
@@ -97,7 +99,7 @@ export class VideoTool implements BlockTool {
   private state: ToolState;
   private uploadingEl: UploadingStateElement | null = null;
   private lastFileName: string | null = null;
-  private errorMessage: string | null = null;
+  private errorText: { title: string; detail?: string } | null = null;
   private lastSource: { kind: 'file'; file: File } | { kind: 'url'; url: string } | null = null;
   private resizeDetach: (() => void)[] = [];
   private controlsHandle: ControlsHandle | null = null;
@@ -156,6 +158,11 @@ export class VideoTool implements BlockTool {
     return typeof data.url === 'string' && data.url.length > 0;
   }
 
+  /** A link to the video, since the clipboard keeps no video tag. */
+  public static clipboardHtml(data: VideoData): string | null {
+    return linkClipboardHtml(data.url, [data.fileName], data);
+  }
+
   public static get toolbox(): ToolboxConfig {
     return {
       icon: IconVideo,
@@ -178,7 +185,7 @@ export class VideoTool implements BlockTool {
   }
 
   public static get frameRadius(): string {
-    return 'var(--blok-radius-block)';
+    return 'var(--blok-radius-player)';
   }
 
   public static get assetKind(): AssetKind {
@@ -386,8 +393,9 @@ export class VideoTool implements BlockTool {
 
       return;
     }
+    if (this.lastSource !== source) return;
     this.applyError(err, { file: source.file });
-    if (this.lastSource !== source || this.data.fileName !== source.file.name) return;
+    if (this.data.fileName !== source.file.name) return;
     this.data = { ...this.data, fileName: before };
     this.block.dispatchChange({ derived: true, from: ['fileName'] });
   }
@@ -424,8 +432,9 @@ export class VideoTool implements BlockTool {
 
       return;
     }
+    if (this.lastSource !== source) return;
     this.applyError(err, { url: source.url });
-    if (this.lastSource !== source || this.data.url !== source.url) return;
+    if (this.data.url !== source.url) return;
     this.data = { ...this.data, url: before, variants: variantsBefore };
     this.block.dispatchChange({ derived: true, from: ['url'] });
   }
@@ -628,25 +637,69 @@ export class VideoTool implements BlockTool {
       fileName: result.fileName ?? this.lastFileName ?? this.data.fileName,
       mimeType: mimeType || this.data.mimeType,
     };
-    this.errorMessage = null;
+    this.errorText = null;
     this.state = 'RENDERED';
     this.renderState();
   }
 
   private applyError(err: unknown, source: { file?: File; url?: string }): void {
     const own = err instanceof VideoUploadError ? err : null;
+    const message = this.uploadErrorText(own);
     const outcome = resolveUploadError({
       tool: 'video',
       error: own,
       cause: err,
-      message: this.uploadErrorText(own),
+      message,
       source,
       onUploadError: this.config.onUploadError,
     });
 
-    this.errorMessage = outcome.kind === 'message' ? outcome.message : null;
+    this.errorText = outcome.kind === 'message' ? this.errorLines(own, message, outcome.message) : null;
     this.state = outcome.kind === 'message' ? 'ERROR' : 'EMPTY';
     this.renderState();
+  }
+
+  /**
+   * The error card's two lines. `uploadErrorText` is the same failure as one
+   * sentence, which is what `onUploadError` receives.
+   */
+  private errorLines(err: VideoUploadError | null, own: string, shown: string): { title: string; detail: string } {
+    const i18n = this.api.i18n;
+    const title = tr(i18n, 'tools.video.errorUploadFailed', 'Upload failed');
+
+    if (shown !== own) return { title, detail: shown };
+
+    if (err?.code === 'NOT_MEDIA_URL') {
+      return { title: tr(i18n, 'tools.video.errorNotMediaUrlTitle', 'This link isn’t a video file'), detail: own };
+    }
+
+    const sizes = err?.code === 'FILE_TOO_LARGE' ? parseTooLargeDetail(err.detail) : null;
+
+    if (sizes) {
+      return {
+        title: tr(i18n, 'tools.video.errorFileTooLargeTitle', 'Video is too large'),
+        detail: tr(i18n, 'tools.video.errorFileTooLargeDetail', '{size} exceeds the {max} limit.', {
+          size: formatBytes(sizes.size),
+          max: formatBytes(sizes.max),
+        }),
+      };
+    }
+
+    // Our own refusals (wrong type, bad link) are not the network's fault.
+    if (err?.code === 'UNSUPPORTED_TYPE') {
+      return {
+        title: tr(i18n, 'tools.video.errorUnsupportedTitle', 'This file type isn’t supported'),
+        detail: tr(i18n, 'tools.video.errorUnsupportedDetail', 'Choose a different file.'),
+      };
+    }
+    if (err?.code === 'INVALID_URL') {
+      return {
+        title: tr(i18n, 'tools.video.errorInvalidUrlTitle', 'This link doesn’t work'),
+        detail: tr(i18n, 'tools.video.errorInvalidUrlDetail', 'Check the link and try again.'),
+      };
+    }
+
+    return { title, detail: tr(i18n, 'tools.video.errorUploadFailedDetail', 'Check your connection and try again.') };
   }
 
   private uploadErrorText(err: VideoUploadError | null): string {
@@ -674,7 +727,10 @@ export class VideoTool implements BlockTool {
    * stay recoverable rather than silently losing its content.
    */
   private applyMediaError(): void {
-    this.errorMessage = tr(this.api.i18n, 'tools.video.errorUnplayable', 'This video can\'t be played');
+    this.errorText = {
+      title: tr(this.api.i18n, 'tools.video.errorUnplayable', 'This video can\'t be played'),
+      detail: tr(this.api.i18n, 'tools.video.errorUnplayableDetail', 'The file may be damaged, or in a format this browser can’t play.'),
+    };
     this.state = 'ERROR';
     this.renderState();
   }
@@ -753,7 +809,8 @@ export class VideoTool implements BlockTool {
     // Viewers cannot replace the source — offering either button would only dead-end.
     const canUpload = !this.readOnly && this.config.sources !== 'url';
     this.root.appendChild(renderErrorState({
-      message: this.errorMessage ?? tr(this.api.i18n, 'tools.video.errorUploadFailed', 'Upload failed'),
+      title: this.errorText?.title ?? tr(this.api.i18n, 'tools.video.errorUploadFailed', 'Upload failed'),
+      ...(this.errorText?.detail ? { detail: this.errorText.detail } : {}),
       width: this.data.width,
       ...(this.readOnly
         ? {}
@@ -856,7 +913,8 @@ export class VideoTool implements BlockTool {
         placeholder,
         readOnly: this.readOnly,
         onChange: (next) => {
-          if (next !== this.data.caption) {
+          // A caption never set reads '' here; that is not a change.
+          if (next !== (this.data.caption ?? '')) {
             this.data.caption = next;
             this.block.dispatchChange();
           }
@@ -931,6 +989,7 @@ export class VideoTool implements BlockTool {
   }
 
   private transitionToEmpty(): void {
+    this.conversion?.abort();
     this.data = { ...this.data, url: '', variants: undefined };
     this.state = 'EMPTY';
     this.lastSource = null;

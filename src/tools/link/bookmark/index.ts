@@ -1,4 +1,5 @@
 import { describeBookmark } from '../../../shared/tool-descriptions/bookmark';
+import { linkClipboardHtml } from '../../../shared/clipboard-html';
 import { LINK_ACTION_HANDLERS } from '../../../shared/tool-actions/link';
 import { bookmarkSanitize } from '../../../shared/tool-descriptions/sanitize/blocks';
 import type {
@@ -26,6 +27,7 @@ import {
 import { renderBookmarkPreview } from './preview';
 import { overrideStatic } from '../../../components/utils/override-static';
 import type { LazySheet } from '../../../components/utils/lazy-styles';
+import { renderMediaEmptyState, type MediaEmptyStateElement } from '../../../components/utils/media-empty-state';
 
 export interface BookmarkData extends BookmarkMeta, BlockToolData {}
 
@@ -33,6 +35,30 @@ type ToolState = 'EMPTY' | 'LOADING' | 'RENDERED';
 
 /** Generic http(s) URL — bookmark is the fallback claim for any non-embed link. */
 const URL_PATTERN = /https?:\/\/\S+/;
+
+/** A domain with no scheme, as typed into a browser's address bar. */
+const BARE_DOMAIN = /^[\w-]+(\.[\w-]+)+([/?#].*)?$/;
+
+/** The http(s) link in typed or dropped text, or null. A bare domain gets https. */
+const linkFrom = (text: string): string | null => {
+  const value = text.trim();
+  const url = BARE_DOMAIN.test(value) ? `https://${value}` : value;
+
+  return isHttpUrl(url) ? url : null;
+};
+
+/** Glides the block from its old height to its new one, so the lines below it never jump. */
+const glideHeight = (element: HTMLElement, from: number): void => {
+  const to = element.getBoundingClientRect().height;
+  const still = from === 0 || to === 0 || Math.abs(from - to) < 1;
+  const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  if (still || reduced || typeof element.animate !== 'function') {
+    return;
+  }
+
+  element.animate([ { height: `${from}px` }, { height: `${to}px` } ], { duration: 320, easing: 'cubic-bezier(.2, .8, .2, 1)' });
+};
 
 /**
  * Bookmark tool.
@@ -78,6 +104,11 @@ export class Bookmark implements BlockTool {
   private detached = false;
   /** A replayed block (redo, undo of a delete) whose preview never landed. */
   private readonly refetchOnRender: boolean;
+  private readOnly: boolean;
+  /** The empty field takes the caret once, and only for a block the user just made. */
+  private focusField: boolean;
+  /** The next card follows the loading card, so it fades in. */
+  private arriving = false;
 
   constructor(options: BlockToolConstructorOptions<BookmarkData, BookmarkConfig>) {
     this.api = options.api;
@@ -85,11 +116,18 @@ export class Bookmark implements BlockTool {
     this.fetcher = new MetadataFetcher(options.config ?? { endpoint: '' });
     this.data = { ...options.data, url: options.data?.url ?? '' };
     this.state = this.data.url ? 'RENDERED' : 'EMPTY';
+    this.readOnly = options.readOnly;
+    this.focusField = options.origin === 'user' || options.origin === 'convert';
     // Only this client's undo/redo: the preview of a redone paste was dropped
     // with the undone block. A load must not refetch a link that has no
     // preview, and a peer's change must not make every client fetch.
     this.refetchOnRender = options.origin === 'replay' && options.replaySource !== 'remote' && !options.readOnly
       && this.data.url !== '' && Object.keys(this.data).length === 1;
+  }
+
+  /** One link. The cover and favicon are left out, or a paste makes them images. */
+  public static clipboardHtml(data: BookmarkData): string | null {
+    return linkClipboardHtml(data.url, [data.title]);
   }
 
   public static get toolbox(): ToolboxConfig {
@@ -203,13 +241,14 @@ export class Bookmark implements BlockTool {
     return typeof data.url === 'string' && data.url.length > 0;
   }
 
-  /**
-   * The bookmark card is a static, non-editable anchor in both modes, so the
-   * in-place read-only toggle needs no DOM changes. The method must still
-   * exist: the editor only takes the in-place toggle path (instead of a full
-   * save/clear/render) when EVERY registered tool implements setReadOnly.
-   */
-  public setReadOnly(_state: boolean): void {}
+  /** Only the empty state differs: the link field is for editing. */
+  public setReadOnly(state: boolean): void {
+    this.readOnly = state;
+
+    if (this.state === 'EMPTY') {
+      this.renderState();
+    }
+  }
 
   public removed(): void {
     this.detached = true;
@@ -231,6 +270,7 @@ export class Bookmark implements BlockTool {
         }
         this.data = { ...meta };
         this.state = 'RENDERED';
+        this.arriving = true;
         this.renderState();
         // The preview is not the user's edit: it joins the step that wrote the link.
         this.block.dispatchChange({ derived: true, from: ['url'] });
@@ -242,6 +282,7 @@ export class Bookmark implements BlockTool {
         // reload takes — save() never persisted a failure, so a reloaded block
         // carrying this exact data renders the card either way.
         this.state = 'RENDERED';
+        this.arriving = true;
         this.renderState();
       });
   }
@@ -251,7 +292,10 @@ export class Bookmark implements BlockTool {
       return;
     }
 
+    const before = this.root.getBoundingClientRect().height;
+
     this.root.replaceChildren(this.buildStateElement());
+    glideHeight(this.root, before);
   }
 
   private buildStateElement(): HTMLElement {
@@ -265,12 +309,97 @@ export class Bookmark implements BlockTool {
     }
   }
 
+  /** The shared link field of the media blocks: one sentence, one field. Read-only shows the sentence alone. */
   private buildEmpty(): HTMLElement {
-    return this.buildPlaceholder('bookmark-empty', 'tools.bookmark.empty');
+    if (this.readOnly) {
+      return this.buildPlaceholder('bookmark-empty', 'tools.bookmark.empty');
+    }
+
+    const t = (key: string): string => this.api.i18n.t(key);
+    const add = (text: string): boolean => {
+      const url = linkFrom(text);
+
+      if (url === null) {
+        return false;
+      }
+
+      this.startFetch(url);
+      // Typing the link is the user's edit. The preview joins it later as a derived change.
+      this.block.dispatchChange();
+
+      return true;
+    };
+    const empty: MediaEmptyStateElement = renderMediaEmptyState({
+      acceptTypes: [],
+      sources: 'url',
+      hideTitle: true,
+      autoFocus: this.focusField,
+      onFile: () => undefined,
+      onUrl: (text) => {
+        if (!add(text)) {
+          empty.setError(t('tools.link.invalidLink'));
+        }
+      },
+      labels: {
+        add: t('toolNames.bookmark'),
+        hint: t('tools.bookmark.empty'),
+        urlPlaceholder: 'https://',
+        urlAria: t('tools.link.webLink'),
+        submit: t('tools.image.emptyInsert'),
+        invalidLink: t('tools.link.invalidLink'),
+        // A link-only surface never shows these.
+        dropAnywhere: '',
+        cancelLink: '',
+        embed: '',
+        chooseFile: '',
+        dropToUpload: '',
+      },
+    });
+
+    this.focusField = false;
+    empty.setAttribute('data-blok-testid', 'bookmark-empty');
+    // A link dragged from a browser tab or another page.
+    empty.addEventListener('dragover', (event) => {
+      if (event.dataTransfer?.types.includes('text/uri-list')) {
+        event.preventDefault();
+      }
+    });
+    empty.addEventListener('drop', (event) => {
+      const dropped = event.dataTransfer?.getData('text/uri-list') || event.dataTransfer?.getData('text/plain') || '';
+
+      if (add(dropped.split('\n')[0])) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    });
+
+    return empty;
   }
 
+  /** The card's own shape with nothing in it yet but the address, so the card lands without a jump. */
   private buildLoading(): HTMLElement {
-    return this.buildPlaceholder('bookmark-loading', 'tools.bookmark.loading');
+    const card = document.createElement('div');
+
+    card.classList.add('blok-bookmark', 'blok-bookmark--loading');
+    card.setAttribute('data-blok-testid', 'bookmark-loading');
+    card.setAttribute('role', 'status');
+    card.setAttribute('aria-label', this.api.i18n.t('tools.bookmark.loading'));
+
+    const content = document.createElement('div');
+
+    content.classList.add('blok-bookmark__content');
+    content.append(...['title', 'line', 'line'].map((part) => {
+      const bone = document.createElement('span');
+
+      bone.classList.add('blok-bookmark__bone');
+      bone.setAttribute('data-part', part);
+      bone.setAttribute('aria-hidden', 'true');
+
+      return bone;
+    }), this.buildLinkRow());
+    card.appendChild(content);
+
+    return card;
   }
 
   private buildPlaceholder(testId: string, i18nKey: string): HTMLElement {
@@ -287,6 +416,8 @@ export class Bookmark implements BlockTool {
     const card = document.createElement('a');
 
     card.classList.add('blok-bookmark');
+    card.classList.toggle('blok-bookmark--arriving', this.arriving);
+    this.arriving = false;
     card.setAttribute('data-blok-testid', 'bookmark-card');
     card.setAttribute(DATA_ATTR.blockContextMenu, '');
     card.setAttribute(DATA_ATTR.linkOwner, '');
@@ -322,6 +453,36 @@ export class Bookmark implements BlockTool {
       content.appendChild(description);
     }
 
+    content.appendChild(this.buildLinkRow());
+
+    const layers = this.colourLayers(this.data.image || this.data.favicon);
+
+    if (this.data.image) {
+      const imageContainer = document.createElement('div');
+
+      imageContainer.classList.add('blok-bookmark__image');
+      imageContainer.setAttribute('data-role', 'bookmark-image');
+
+      const image = this.decorativeImage(this.data.image);
+
+      image.addEventListener('error', () => {
+        imageContainer.remove();
+        layers.forEach((layer) => layer.remove());
+        card.classList.add('blok-bookmark--bare');
+        card.prepend(...this.colourLayers(this.data.favicon));
+      }, { once: true });
+      imageContainer.appendChild(image);
+      card.append(...layers, imageContainer, content);
+    } else {
+      card.classList.add('blok-bookmark--bare');
+      card.append(...layers, content);
+    }
+
+    return card;
+  }
+
+  /** The address pill: the favicon when there is one, then host and path. */
+  private buildLinkRow(): HTMLElement {
     const linkRow = document.createElement('div');
 
     linkRow.classList.add('blok-bookmark__link-row');
@@ -350,81 +511,46 @@ export class Bookmark implements BlockTool {
     urlText.append(...this.addressParts());
     addressPill.appendChild(urlText);
     linkRow.appendChild(addressPill);
-    content.appendChild(linkRow);
 
-    card.appendChild(content);
-
-    if (this.data.image) {
-      const imageContainer = document.createElement('div');
-
-      imageContainer.classList.add('blok-bookmark__image');
-      imageContainer.setAttribute('data-role', 'bookmark-image');
-
-      const frame = document.createElement('div');
-
-      frame.classList.add('blok-bookmark__window');
-      frame.setAttribute('data-role', 'bookmark-window');
-
-      const bar = document.createElement('div');
-
-      bar.classList.add('blok-bookmark__window-bar');
-      bar.setAttribute('data-role', 'bookmark-window-bar');
-      bar.setAttribute('aria-hidden', 'true');
-
-      const address = this.splitAddress();
-      const barAddress = document.createElement('span');
-
-      barAddress.textContent = address === null ? this.data.url : address.host + address.path;
-      bar.appendChild(barAddress);
-
-      const image = document.createElement('img');
-
-      image.addEventListener('error', () => image.replaceWith(this.drawnCover(address?.host ?? this.data.url)), { once: true });
-      image.setAttribute('loading', 'lazy');
-      image.src = this.data.image;
-      image.alt = '';
-      frame.append(bar, image);
-      imageContainer.appendChild(frame);
-      card.appendChild(imageContainer);
-    }
-
-    return card;
+    return linkRow;
   }
 
   /**
-   * Stands in for a cover that won't load: a gray sketch of the page on a
-   * sheet whose corner is turned up, showing the site's initial beneath.
+   * The glow under the card and the blurred backdrop inside it, both drawn
+   * from one picture: the cover, or the favicon when there is no cover.
+   * CSS filters do the colouring, so a cross-origin picture needs no CORS.
    */
-  private drawnCover(host: string): HTMLElement {
-    const name = host.replace(/^www\./, '');
-    const scene = document.createElement('div');
+  private colourLayers(src: string | undefined): HTMLElement[] {
+    if (!src) {
+      return [];
+    }
 
-    scene.classList.add('blok-bookmark__scene');
-    scene.setAttribute('data-role', 'bookmark-scene');
-    scene.setAttribute('aria-hidden', 'true');
+    const layers = ['glow', 'wash'].map((name) => {
+      const layer = document.createElement('span');
 
-    const under = document.createElement('span');
+      layer.classList.add(`blok-bookmark__${name}`);
+      layer.setAttribute('data-role', `bookmark-${name}`);
+      layer.setAttribute('aria-hidden', 'true');
 
-    under.classList.add('blok-bookmark__peel-under');
-    under.textContent = name.charAt(0).toUpperCase();
+      const image = this.decorativeImage(src);
 
-    const sheet = document.createElement('span');
+      image.addEventListener('error', () => layers.forEach((each) => each.remove()), { once: true });
+      layer.appendChild(image);
 
-    sheet.classList.add('blok-bookmark__peel-sheet');
-    sheet.append(...['nav', 'picture', 'heading', 'subheading', 'line', 'line', 'line', 'line', 'line'].map((part) => {
-      const piece = document.createElement('span');
+      return layer;
+    });
 
-      piece.setAttribute('data-part', part);
+    return layers;
+  }
 
-      return piece;
-    }));
+  private decorativeImage(src: string): HTMLImageElement {
+    const image = document.createElement('img');
 
-    const flap = document.createElement('span');
+    image.setAttribute('loading', 'lazy');
+    image.src = src;
+    image.alt = '';
 
-    flap.classList.add('blok-bookmark__peel-flap');
-    scene.append(under, sheet, flap);
-
-    return scene;
+    return image;
   }
 
   /** Host in ink, path in gray; an unparseable url is shown as saved. */

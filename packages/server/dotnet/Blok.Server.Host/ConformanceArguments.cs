@@ -8,7 +8,15 @@ internal sealed record ConformanceParseResult(
     string? Origin,
     int Port,
     bool Journal,
-    string? Error);
+    string? Error,
+    int? KeepAliveMs = null,
+    bool RestoreGuards = false,
+    bool RestoreTrashesPages = false,
+    bool RecordNotes = false,
+    bool StampAuthority = false,
+    bool FileBytes = false,
+    long? FileBytesMaxBytes = null,
+    bool FilesCors = false);
 
 internal static class ConformanceArguments
 {
@@ -24,6 +32,14 @@ internal static class ConformanceArguments
     string? origin = null;
     var port = 0;
     var journal = false;
+    var restoreGuards = false;
+    var restoreTrashesPages = false;
+    var recordNotes = false;
+    var stampAuthority = false;
+    int? keepAliveMs = null;
+    var fileBytes = false;
+    long? fileBytesMaxBytes = null;
+    var filesCors = false;
 
     for (var index = 0; index < arguments.Length; index++)
     {
@@ -40,6 +56,66 @@ internal static class ConformanceArguments
       if (argument is "--conformance-journal" or "-conformance-journal")
       {
         journal = true;
+        continue;
+      }
+
+      if (argument == "--conformance-restore-guards")
+      {
+        restoreGuards = true;
+        continue;
+      }
+
+      if (argument == "--conformance-restore-trashes-pages")
+      {
+        restoreTrashesPages = true;
+        continue;
+      }
+
+      if (argument == "--conformance-record-notes")
+      {
+        recordNotes = true;
+        continue;
+      }
+
+      if (argument == "--conformance-stamp-authority")
+      {
+        stampAuthority = true;
+        continue;
+      }
+
+      if (argument == "--conformance-file-bytes")
+      {
+        fileBytes = true;
+        continue;
+      }
+
+      if (argument == "--conformance-files-cors")
+      {
+        filesCors = true;
+        continue;
+      }
+
+      if (argument.StartsWith("--conformance-file-bytes-max-bytes=", StringComparison.Ordinal))
+      {
+        var text = argument["--conformance-file-bytes-max-bytes=".Length..];
+        if (!long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var bytes))
+        {
+          return Error($"--conformance-file-bytes-max-bytes must be a whole number of bytes (got \"{text}\")");
+        }
+
+        fileBytesMaxBytes = bytes;
+        continue;
+      }
+
+      if (argument.StartsWith("--conformance-keep-alive-ms=", StringComparison.Ordinal))
+      {
+        var text = argument["--conformance-keep-alive-ms=".Length..];
+        if (!int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var milliseconds))
+        {
+          return Error($"--conformance-keep-alive-ms must be a whole number of milliseconds (got \"{text}\")");
+        }
+
+        keepAliveMs = milliseconds;
         continue;
       }
 
@@ -103,7 +179,15 @@ internal static class ConformanceArguments
         origin,
         port,
         journal,
-        null);
+        null,
+        keepAliveMs,
+        restoreGuards,
+        restoreTrashesPages,
+        recordNotes,
+        stampAuthority,
+        fileBytes,
+        fileBytesMaxBytes,
+        filesCors);
   }
 
   private static ConformanceParseResult Error(string error)

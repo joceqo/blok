@@ -1,0 +1,22 @@
+[package]
+name = "blok-dotnet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal part of blok-mcp (.NET-compatible helpers). Not a stable API."
+publish = true
+
+[dependencies]
+# The Unicode tables only. 1.1 is the unicode-rs back end; later ones pull
+# in ICU4X and proc macros.
+idna_adapter = { version = "~1.1", features = ["compiled_data"] }
+# Already in the tree through idna_adapter; Uri.Host is NFC.
+unicode-normalization = "0.1.26"
+
+[dev-dependencies]
+blok-jsjson = { path = "../jsjson" }
+
+[lints]
+workspace = true

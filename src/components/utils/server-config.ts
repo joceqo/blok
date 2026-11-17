@@ -2,6 +2,7 @@ import type { BlokConfig } from '../../../types';
 import type { InternalToolSettings } from '../../../types/tools';
 import { createPassSource } from './access-pass';
 import { createFetchUploader } from './fetch-uploader';
+import { createFrameCheck } from './frame-check-fetcher';
 
 type ToolEntry = NonNullable<BlokConfig['tools']>[string];
 
@@ -84,6 +85,13 @@ export function expandServerConfig(config: BlokConfig): BlokConfig {
     };
   }
 
+  if (config.linkPaste?.checkEmbed === undefined) {
+    expanded.linkPaste = {
+      ...config.linkPaste,
+      checkEmbed: createFrameCheck({ endpoint: `${base}/frame-check`, ...(headers === undefined ? {} : { headers }) }),
+    };
+  }
+
   const bookmark = config.tools?.bookmark;
   const bookmarkConfig = readToolConfig(bookmark);
   const missingEndpoint = bookmarkConfig?.endpoint === undefined;
@@ -95,6 +103,18 @@ export function expandServerConfig(config: BlokConfig): BlokConfig {
       bookmark: withConfig(bookmark, {
         ...(missingEndpoint ? { endpoint: `${base}/unfurl` } : {}),
         ...(missingHeaders ? { headers } : {}),
+      }),
+    };
+  }
+
+  // Only a file tool the consumer registered: an entry without a class fails validation.
+  const file = config.tools?.file;
+
+  if (file !== undefined && readToolConfig(file)?.previewEndpoint === undefined) {
+    expanded.tools = {
+      ...(expanded.tools ?? config.tools),
+      file: withConfig(file, {
+        previewEndpoint: { url: `${base}/file-bytes`, ...(headers === undefined ? {} : { headers }) },
       }),
     };
   }

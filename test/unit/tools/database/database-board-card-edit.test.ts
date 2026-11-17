@@ -102,6 +102,21 @@ describe('board card title, edited in place', () => {
     expect(button?.getAttribute('aria-label')).toBe('tools.database.editCardTitle');
   });
 
+  it('a card whose page has a body keeps its one lines glyph through the edit (notion-motion.md R45 gap 2)', () => {
+    const { view: boardView, board } = make({ cellContext: { rowHasBody: (rowId) => rowId === 'r1' } });
+
+    boardView.editTitle('r1');
+
+    const cardEl = card(board, 'r1');
+
+    expect(cardEl.querySelector('[data-blok-database-card-edit-glyph]')).toBeNull();
+    expect(cardEl.querySelector('[data-blok-database-page-icon-placeholder="content"]')?.nextElementSibling).toBe(input(board));
+
+    press(input(board), 'Enter');
+
+    expect(cardEl.querySelector('[data-blok-database-page-icon-placeholder="content"]')).not.toBeNull();
+  });
+
   it('Enter saves the name, then asks for the next new card (feel findings B09)', () => {
     const onTitleEdit = vi.fn();
     const onEnter = vi.fn();
@@ -131,6 +146,37 @@ describe('board card title, edited in place', () => {
 
     expect(onTitleEdit).toHaveBeenCalledWith('r2', 'Bravo');
     expect(onEnter).not.toHaveBeenCalled();
+  });
+
+  it('Escape on a card left unnamed asks for it to be selected (notion-motion.md, Round 8c)', () => {
+    const onEscapeEmpty = vi.fn();
+    const { view: boardView, board } = make();
+
+    boardView.editTitle('r2', { onEscapeEmpty });
+    press(input(board), 'Escape');
+
+    expect(onEscapeEmpty).toHaveBeenCalledTimes(1);
+  });
+
+  it('a named Escape, an empty Enter or a blur selects nothing (research/35:362)', () => {
+    const onEscapeEmpty = vi.fn();
+    const named = make();
+
+    named.view.editTitle('r2', { onEscapeEmpty });
+    type(input(named.board), 'Bravo');
+    press(input(named.board), 'Escape');
+    document.body.innerHTML = '';
+    const entered = make();
+
+    entered.view.editTitle('r2', { onEscapeEmpty });
+    press(input(entered.board), 'Enter');
+    document.body.innerHTML = '';
+    const blurred = make();
+
+    blurred.view.editTitle('r2', { onEscapeEmpty });
+    input(blurred.board).blur();
+
+    expect(onEscapeEmpty).not.toHaveBeenCalled();
   });
 
   it('keeps typed text across a redraw: the draft moves to the new board, unsaved', () => {

@@ -1,6 +1,8 @@
 import { nanoid } from 'nanoid';
 import { matchCondition } from './database-query';
+import { optionColorOf } from './cells/option-colors';
 import type {
+  ColorRule,
   DatabaseRow,
   DatabaseViewConfig,
   GroupRef,
@@ -10,13 +12,43 @@ import type {
   ViewType,
 } from './types';
 
-/** Notion's list (research/05 §6.2); formulas, relations and rollups since 2025-11-17. */
+/**
+ * Notion's list (research/05 §6.2); formulas, relations and rollups since 2025-11-17; Created by/time and
+ * Last edited by/time in notion-motion.md Round 20 §4. URL, Phone, Email, Files and ID stay out.
+ */
 export const COLOR_RULE_TYPES: readonly PropertyType[] = [
   'title', 'text', 'number', 'select', 'multiSelect', 'status', 'date', 'person', 'checkbox', 'formula', 'relation', 'rollup',
+  'createdBy', 'createdTime', 'lastEditedBy', 'lastEditedTime',
 ];
 
 /** Layouts Notion colors (research/05 §6.2; map measured in research/20 §1f). */
 export const COLOR_RULE_LAYOUTS: readonly ViewType[] = ['table', 'list', 'board', 'calendar', 'timeline', 'feed', 'map'];
+
+/**
+ * A rule's colour that follows the row's option: Notion's "Match option" on Select and Status,
+ * "Match first option" on Multi-select (notion-motion.md Round 20 §4, Round 21 §1).
+ * Saved in `color` so older clients keep it as is.
+ */
+export const MATCH_OPTION_COLOR = 'match';
+
+/** Types whose rules may follow the row's option colour. */
+export const MATCH_OPTION_TYPES: readonly PropertyType[] = ['select', 'status', 'multiSelect'];
+
+/**
+ * A rule's colour on one row. A "Match option" rule with no option paints nothing (unmeasured).
+ * Multi-select takes the first option in the cell's order, the one the cell shows first (an assumption:
+ * Round 21 does not say which order).
+ */
+const ruleColor = (rule: ColorRule, row: DatabaseRow, schema: PropertyDefinition[]): string | undefined => {
+  if (rule.color !== MATCH_OPTION_COLOR) return rule.color;
+  const property = schema.find((p) => p.id === rule.propertyId);
+  const value = row.properties[rule.propertyId];
+  const ids: unknown[] = Array.isArray(value) ? value : [value];
+  const options = property !== undefined && MATCH_OPTION_TYPES.includes(property.type) ? property.config?.options ?? [] : [];
+  const option = ids.map((id) => options.find((o) => o.id === id)).find((o) => o !== undefined);
+
+  return option === undefined ? undefined : optionColorOf(option);
+};
 
 export interface RowColor {
   row?: string;
@@ -25,8 +57,10 @@ export interface RowColor {
 }
 
 /**
- * Colors per row id. The first rule that matches a row paints it; a rule
- * the engine cannot read paints nothing. Only a table colors one cell.
+ * Colors per row id. The first matching rule in the list paints each cell,
+ * row rules included: a cell rule below a matching row rule paints nothing
+ * (notion-motion.md Round 20 §4). A rule the engine cannot read paints
+ * nothing. Only a table colors one cell.
  */
 export const resolveRowColors = (
   rows: DatabaseRow[],
@@ -47,11 +81,13 @@ export const resolveRowColors = (
 
     for (const rule of matching) {
       const isCell = rule.applyTo === 'property' && view.type === 'table';
+      const fill = ruleColor(rule, row, schema);
 
-      if (isCell) {
-        color.cells[rule.propertyId] ??= rule.color;
-      } else {
-        color.row ??= rule.color;
+      if (fill === undefined) continue;
+      if (!isCell) {
+        color.row ??= fill;
+      } else if (color.row === undefined) {
+        color.cells[rule.propertyId] ??= fill;
       }
     }
 
@@ -75,16 +111,18 @@ export const isGroupHidden = (view: DatabaseViewConfig, key: string): boolean =>
 
 export const isGroupCollapsed = (view: DatabaseViewConfig, key: string): boolean => hasRef(view.collapsedGroups, key);
 
+export const isGroupPinned = (view: DatabaseViewConfig, key: string): boolean => hasRef(view.pinnedGroups, key);
+
 /**
- * The `hiddenGroups` / `collapsedGroups` lists after showing, hiding,
- * folding or opening some groups. A key is in a list or not; entries are id
+ * The `hiddenGroups` / `collapsedGroups` / `pinnedGroups` lists after showing,
+ * hiding, folding, opening, pinning or unpinning some groups. A key is in a list or not; entries are id
  * objects, so two peers' adds merge. A sub-group's key starts with `sub:`.
  */
 export const withGroupFlags = (
   view: DatabaseViewConfig,
   keys: readonly string[],
-  patch: { hidden?: boolean; collapsed?: boolean }
-): Partial<Pick<DatabaseViewConfig, 'hiddenGroups' | 'collapsedGroups'>> => {
+  patch: { hidden?: boolean; collapsed?: boolean; pinned?: boolean }
+): Partial<Pick<DatabaseViewConfig, 'hiddenGroups' | 'collapsedGroups' | 'pinnedGroups'>> => {
   const apply = (list: GroupRef[] | undefined, on: boolean): GroupRef[] => {
     const current = (list ?? []).map((group) => ({ ...group }));
 
@@ -96,6 +134,7 @@ export const withGroupFlags = (
   return {
     ...(patch.hidden !== undefined ? { hiddenGroups: apply(view.hiddenGroups, patch.hidden) } : {}),
     ...(patch.collapsed !== undefined ? { collapsedGroups: apply(view.collapsedGroups, patch.collapsed) } : {}),
+    ...(patch.pinned !== undefined ? { pinnedGroups: apply(view.pinnedGroups, patch.pinned) } : {}),
   };
 };
 

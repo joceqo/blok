@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { CALLOUT_CHILDREN_CLASSES, CALLOUT_WRAPPER_CLASSES } from '../../../src/shared/tool-classes/callout';
-import { CODE_AREA_CLASSES, CODE_CAPTIONED_AREA_CLASSES, CODE_FILENAME_CLASSES, CODE_HEADER_CLASSES, CODE_WRAPPER_CLASSES } from '../../../src/shared/tool-classes/code';
+import { CODE_AREA_CLASSES, CODE_CAPTIONED_AREA_CLASSES, CODE_CARD_CLASSES, CODE_FILENAME_CLASSES, CODE_HEADER_CLASSES, CODE_WRAPPER_CLASSES } from '../../../src/shared/tool-classes/code';
 import { DIVIDER_WRAPPER_CLASSES, DIVIDER_RULE_CLASSES } from '../../../src/shared/tool-classes/divider';
 import { SPACER_WRAPPER_CLASSES } from '../../../src/shared/tool-classes/spacer';
 import {
@@ -87,13 +87,15 @@ describe('shared tool classes mutants', () => {
         'text-[length:var(--blok-code-font-size,0.875rem)]',
         'leading-relaxed',
         'whitespace-pre-wrap',
+        '[tab-size:2]',
         'overflow-x-auto',
         'min-h-[1.5em]',
       ]);
     });
 
-    it('gives the wrapper its full set', () => {
-      expect(CODE_WRAPPER_CLASSES).toStrictEqual([
+    it('gives the wrapper only the block layout, and the card the box', () => {
+      expect(CODE_WRAPPER_CLASSES).toStrictEqual(['flex', 'flex-col', 'my-2']);
+      expect(CODE_CARD_CLASSES).toStrictEqual([
         'flex',
         'flex-col',
         'rounded-(--blok-radius-block)',
@@ -101,7 +103,6 @@ describe('shared tool classes mutants', () => {
         'border-border-secondary',
         'bg-code-bg',
         'overflow-hidden',
-        'my-2',
       ]);
     });
 

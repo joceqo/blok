@@ -1,4 +1,5 @@
 import type { I18n } from '../../../types/api';
+import { isGridBusy } from './table-grid-busy';
 import { Dom } from '../../components/dom';
 import { IconCopy, IconCross, IconDotsHorizontal, IconPaintRoller, IconMergeCells, IconPlacement, IconSplitCell } from '../../components/icons';
 import { MODIFIER_KEY } from '../../components/constants';
@@ -167,11 +168,11 @@ const resolveFillShortcut = (e: KeyboardEvent): FillDirection | null => {
 const clamp = (value: number, min: number, max: number): number => Math.min(Math.max(value, min), max);
 
 /**
- * Check if a grip drag or resize is in progress by testing for known drag indicators.
- * Returns true if the grid has an active drag ghost or user-select is disabled.
+ * Whether a grip drag or column resize owns the grid. Cell selection's own
+ * cross-cell drag still disables user-select on it.
  */
 const isOtherInteractionActive = (grid: HTMLElement): boolean => {
-  return grid.style.userSelect === 'none';
+  return isGridBusy(grid) || grid.style.userSelect === 'none';
 };
 
 /**
@@ -190,7 +191,8 @@ interface CellSelectionOptions {
    */
   onSelectionActiveChange?: (hasSelection: boolean, isMultiCell: boolean) => void;
   onSelectionRangeChange?: (range: SelectionRange) => void;
-  onClearContent?: (cells: HTMLElement[]) => void;
+  /** `keepRange`: the range stays selected and no cell gets the caret (a Delete, Notion U162). */
+  onClearContent?: (cells: HTMLElement[], options?: { keepRange: true }) => void;
   onCopy?: (cells: HTMLElement[], clipboardData: DataTransfer) => void;
   onCut?: (cells: HTMLElement[], clipboardData: DataTransfer) => void;
   onCopyViaButton?: (cells: HTMLElement[]) => void;
@@ -226,7 +228,7 @@ export class TableCellSelection {
   private grid: HTMLElement;
   private rectangleSelection?: { cancelActiveSelection: () => void };
   private onSelectionActiveChange: ((hasSelection: boolean, isMultiCell: boolean) => void) | undefined;
-  private onClearContent: ((cells: HTMLElement[]) => void) | undefined;
+  private onClearContent: ((cells: HTMLElement[], options?: { keepRange: true }) => void) | undefined;
   private i18n: I18n;
   private anchorCell: CellCoord | null = null;
   private extentCell: CellCoord | null = null;
@@ -274,6 +276,7 @@ export class TableCellSelection {
   private boundPointerDown: (e: PointerEvent) => void;
   private boundPointerMove: (e: PointerEvent) => void;
   private boundPointerUp: () => void;
+  private boundPointerCancel: () => void;
   private boundClearSelection: (e: PointerEvent) => void;
   private boundCancelRectangle: (e: MouseEvent) => void;
   private boundKeyDown: (e: KeyboardEvent) => void;
@@ -313,6 +316,7 @@ export class TableCellSelection {
     this.boundPointerDown = this.handlePointerDown.bind(this);
     this.boundPointerMove = this.handlePointerMove.bind(this);
     this.boundPointerUp = this.handlePointerUp.bind(this);
+    this.boundPointerCancel = this.handlePointerCancel.bind(this);
     this.boundClearSelection = this.handleClearSelection.bind(this);
     this.boundCancelRectangle = this.handleCancelRectangle.bind(this);
     this.boundKeyDown = this.handleKeyDown.bind(this);
@@ -362,7 +366,7 @@ export class TableCellSelection {
     document.removeEventListener('focusin', this.boundFocusIn);
     document.removeEventListener('pointermove', this.boundPointerMove);
     document.removeEventListener('pointerup', this.boundPointerUp);
-    document.removeEventListener('pointercancel', this.boundPointerUp);
+    document.removeEventListener('pointercancel', this.boundPointerCancel);
     document.removeEventListener('pointerdown', this.boundClearSelection);
     document.removeEventListener('mousemove', this.boundCancelRectangle, true);
     document.removeEventListener('keydown', this.boundKeyDownCapture, true);
@@ -506,8 +510,7 @@ export class TableCellSelection {
     document.addEventListener('pointermove', this.boundPointerMove);
     document.addEventListener('pointerup', this.boundPointerUp);
     // pointercancel fires when the browser interrupts the pointer sequence (e.g. touch scroll).
-    // Treat it like pointerup so the drag-active flag is always cleared.
-    document.addEventListener('pointercancel', this.boundPointerUp);
+    document.addEventListener('pointercancel', this.boundPointerCancel);
   }
 
   private handlePointerMove(e: PointerEvent): void {
@@ -580,7 +583,7 @@ export class TableCellSelection {
     document.removeEventListener('mousemove', this.boundCancelRectangle, true);
     document.removeEventListener('pointermove', this.boundPointerMove);
     document.removeEventListener('pointerup', this.boundPointerUp);
-    document.removeEventListener('pointercancel', this.boundPointerUp);
+    document.removeEventListener('pointercancel', this.boundPointerCancel);
 
     // Re-enable Yjs sync suppression that was set in handlePointerDown.
     this.onPointerDragActiveChange?.(false);
@@ -631,6 +634,31 @@ export class TableCellSelection {
     this.isSelecting = false;
     this.anchorCell = null;
     this.extentCell = null;
+  }
+
+  /**
+   * A cancelled press (a touch scroll) selects nothing: it drops the box the
+   * press or drag drew. Pressing the already-selected cell keeps it.
+   */
+  private handlePointerCancel(): void {
+    const wasSelecting = this.isSelecting;
+    const keepsSelection = this.hasSelection && !wasSelecting;
+
+    this.isSelecting = false;
+    this.anchorCell = null;
+    this.extentCell = null;
+    this.grid.style.userSelect = '';
+    // With no anchor and no drag, this only removes listeners and ends the drag flag.
+    this.handlePointerUp();
+
+    if (keepsSelection) {
+      document.addEventListener('pointerdown', this.boundClearSelection);
+
+      return;
+    }
+    // A drag already reported itself as active; clearSelection reports the end only for a selection.
+    this.hasSelection = this.hasSelection || wasSelecting;
+    this.clearSelection();
   }
 
   /**
@@ -758,9 +786,18 @@ export class TableCellSelection {
     // Prevent default behavior
     e.preventDefault();
 
-    // Clear content and dismiss selection
-    this.onClearContent?.([...this.selectedCells]);
-    this.clearSelection();
+    const range = this.lastPaintedRange;
+
+    this.onClearContent?.([...this.selectedCells], { keepRange: true });
+
+    if (range === null) {
+      this.clearSelection();
+
+      return;
+    }
+
+    // Notion U162: the emptied range stays selected, with no caret.
+    this.selectRange(range);
   }
 
   /**
@@ -1095,6 +1132,7 @@ export class TableCellSelection {
   private restoreModifiedCells(): void {
     this.destroyPillPopover();
     this.disconnectResizeObserver();
+    this.grid.removeAttribute(DATA_ATTR.toolSelection);
 
     this.selectedCells.forEach(cell => {
       cell.removeAttribute(SELECTED_ATTR);
@@ -1239,6 +1277,12 @@ export class TableCellSelection {
     this.selectedCells.forEach(cell => {
       cell.setAttribute(SELECTED_ATTR, '');
     });
+
+    if (this.selectedCells.length > 1) {
+      this.grid.setAttribute(DATA_ATTR.toolSelection, JSON.stringify(this.lastPaintedRange));
+    } else {
+      this.grid.removeAttribute(DATA_ATTR.toolSelection);
+    }
 
     // Calculate overlay position from bounding rects of corner cells.
     // Try coordinate-based lookup first (works with merged cells),

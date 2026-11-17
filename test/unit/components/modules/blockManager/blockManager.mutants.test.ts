@@ -15,6 +15,7 @@ import { BlockAddedMutationType } from '../../../../../types/events/block/BlockA
 import { BlockChangedMutationType } from '../../../../../types/events/block/BlockChanged';
 import { BlockMovedMutationType } from '../../../../../types/events/block/BlockMoved';
 import { BlockShortcuts } from '../../../../../src/components/modules/blockManager/shortcuts';
+import { REPARENT_IN_PLACE } from '../../../../../src/components/utils/index-move-neighbours';
 
 type BlockStubOptions = {
   id: string;
@@ -96,6 +97,7 @@ type YjsStub = {
   removeBlock: Mock;
   addBlock: Mock;
   addBlockAt: Mock;
+  addBlocksAt: Mock;
   stopCapturing: Mock;
   holdCapture: Mock;
   releaseCapture: Mock;
@@ -184,6 +186,7 @@ const createHarness = (options: HarnessOptions): Harness => {
     removeBlock: vi.fn(),
     addBlock: vi.fn(),
     addBlockAt: vi.fn(),
+    addBlocksAt: vi.fn(),
     stopCapturing: vi.fn(),
     holdCapture: vi.fn(),
     releaseCapture: vi.fn(),
@@ -309,6 +312,7 @@ const createHarness = (options: HarnessOptions): Harness => {
     resolveToSelectableBlock: (block: Block): Block => block,
     isSelectionUnit: (): boolean => true,
     getSelectionSiblingRange: (): Block[] => [],
+    withCoveredLayouts: (selected: Block[]): Block[] => selected,
     isBlokEmpty: (): boolean => store.length === 0,
     ...options.repository,
   };
@@ -344,6 +348,15 @@ const createHarness = (options: HarnessOptions): Harness => {
       moveCurrentBlockDown: vi.fn(),
       insertInsideParent: vi.fn(() => createBlockStub({ id: 'inside-inserted' })),
       splitBlockWithData: vi.fn(() => createBlockStub({ id: 'split-data' })),
+      holdStopCapturing(this: { suppressStopCapturing: boolean }): () => void {
+        const before = this.suppressStopCapturing;
+
+        this.suppressStopCapturing = true;
+
+        return (): void => {
+          this.suppressStopCapturing = before;
+        };
+      },
       ...options.operations,
     };
   }
@@ -1597,8 +1610,8 @@ describe('BlockManager.insertMany serialization and side effects', () => {
     addHarness.blockManager.insertMany([added], 2, { yjsSync: 'add' });
 
     expect(addHarness.yjs.fromJSON).not.toHaveBeenCalled();
-    expect(addHarness.yjs.addBlockAt).toHaveBeenCalledWith(
-      { id: 'added', type: 'paragraph', data: {} },
+    expect(addHarness.yjs.addBlocksAt).toHaveBeenCalledWith(
+      [{ id: 'added', type: 'paragraph', data: {} }],
       { parentId: null, afterId: null }
     );
   });
@@ -1788,7 +1801,7 @@ describe('BlockManager.setBlockParent', () => {
     expect(harness.mutations[0]?.type).toBe(BlockMovedMutationType);
     expect(harness.mutations[0]?.fromIndex).toBe(0);
     expect(harness.mutations[0]?.toIndex).toBe(0);
-    expect(block.call).toHaveBeenCalledWith(expect.anything(), { fromIndex: 0, toIndex: 0 });
+    expect(block.call).toHaveBeenCalledWith(expect.anything(), { fromIndex: 0, toIndex: 0, [REPARENT_IN_PLACE]: true });
   });
 
   it('emits nothing when the parent did not actually change', () => {

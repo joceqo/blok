@@ -7,6 +7,7 @@ import type { BlokMcpOptions } from './options';
 import type { Dispatch } from './sdk-server';
 import { buildSdkServer } from './sdk-server';
 import type { McpTool } from './tools';
+import { wellFormedIdsInBody } from './wire-ids';
 
 export interface HttpServerInput {
   /** host:port; port 0 picks a free one. */
@@ -71,7 +72,7 @@ const toRequest = async (req: IncomingMessage, url: URL, headers: Headers, signa
   const hasBody = method !== 'GET' && method !== 'HEAD';
 
   // Uint8Array.from copies into a plain ArrayBuffer, which BodyInit accepts and Buffer is not typed as.
-  return new Request(url, { method, headers, signal, ...(hasBody && { body: Uint8Array.from(await readBody(req)) }) });
+  return new Request(url, { method, headers, signal, ...(hasBody && { body: Uint8Array.from(wellFormedIdsInBody(await readBody(req))) }) });
 };
 
 const send = async (res: ServerResponse, response: Response): Promise<void> => {
@@ -96,10 +97,30 @@ const send = async (res: ServerResponse, response: Response): Promise<void> => {
   res.end();
 };
 
+/** The address cannot be listened on. The CLI prints it and exits with code 1, as a failed bind always did. */
+export class McpListenError extends Error {
+  /** The bind error's code, such as EADDRINUSE; absent for a malformed address. */
+  public readonly code?: string;
+
+  constructor(message: string, cause?: Error & { code?: string }) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = 'McpListenError';
+    if (cause?.code !== undefined) {
+      this.code = cause.code;
+    }
+  }
+}
+
 const splitListen = (listen: string): { host: string; port: number } => {
   const at = listen.lastIndexOf(':');
+  const port = listen.slice(at + 1);
 
-  return { host: listen.slice(0, at).replace(/^\[|\]$/g, ''), port: Number(listen.slice(at + 1)) };
+  // Number() alone reads "0x10" as 16 and "1e3" as 1000. An empty port stays 0: any free port.
+  if (at === -1 || !/^\d{0,5}$/.test(port) || Number(port) > 65_535) {
+    throw new McpListenError(`--http needs a port from 0 to 65535 after the last ":", got "${listen}"`);
+  }
+
+  return { host: listen.slice(0, at).replace(/^\[|\]$/g, ''), port: Number(port) };
 };
 
 /**
@@ -107,7 +128,7 @@ const splitListen = (listen: string): { host: string; port: number } => {
  * caller's identity comes from the verified bearer token, or from `principal`
  * when auth is none.
  */
-export const startHttpServer = async (input: HttpServerInput): Promise<{ url: string; close(): Promise<void> }> => {
+export const startHttpServer = async (input: HttpServerInput): Promise<{ url: string; close(graceMs?: number): Promise<void> }> => {
   const path = input.path ?? '/mcp';
   const oauth = input.auth.kind === 'oauth' ? input.auth : null;
   const authenticate = oauth === null ? null : requireBearerAuth({
@@ -185,7 +206,15 @@ export const startHttpServer = async (input: HttpServerInput): Promise<{ url: st
     await send(res, await handler.fetch(request, { authInfo: verdict }));
   };
 
+  // Close lets these finish writing their answers before it drops the sockets.
+  const inFlight = new Set<Promise<void>>();
   const server = createServer((req, res) => {
+    const done = new Promise<void>((resolve) => {
+      res.once('close', resolve);
+    });
+
+    inFlight.add(done);
+    void done.then(() => inFlight.delete(done));
     serve(req, res).catch((error: unknown) => {
       if (res.headersSent || res.destroyed) {
         res.destroy();
@@ -204,9 +233,11 @@ export const startHttpServer = async (input: HttpServerInput): Promise<{ url: st
   const { host, port } = splitListen(input.listen);
 
   await new Promise<void>((done, fail) => {
-    server.once('error', fail);
+    const refused = (error: Error): void => fail(new McpListenError(`Cannot listen on ${input.listen}: ${error.message}`, error));
+
+    server.once('error', refused);
     server.listen(port, host, () => {
-      server.off('error', fail);
+      server.off('error', refused);
       done();
     });
   });
@@ -221,12 +252,22 @@ export const startHttpServer = async (input: HttpServerInput): Promise<{ url: st
 
   return {
     url: `http://${shownHost}:${address.port}`,
-    close: async () => {
-      await handler.close();
-      await new Promise<void>((done) => {
+    close: async (graceMs = 0) => {
+      const closed = new Promise<void>((done) => {
         server.close(() => done());
-        server.closeAllConnections();
       });
+      const grace: { timer?: ReturnType<typeof setTimeout> } = {};
+
+      await Promise.race([
+        Promise.allSettled([...inFlight]),
+        new Promise<void>((resolve) => {
+          grace.timer = setTimeout(resolve, graceMs);
+        }),
+      ]);
+      clearTimeout(grace.timer);
+      await handler.close();
+      server.closeAllConnections();
+      await closed;
     },
   };
 };

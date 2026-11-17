@@ -15,8 +15,14 @@ import type { HandlerContext, PasteData } from '../types';
 import type { PasteHandler } from './base';
 import { BasePasteHandler } from './base';
 import { parseUntrustedHtml } from '../../../utils/inert-html';
-import { PAGE_REFERENCE_ATTR, preservePageReferenceAnchor } from '../../../../shared/page-reference';
+import { PAGE_REFERENCE_ATTR, PAGE_REFERENCE_FALLBACK, preservePageReferenceAnchor } from '../../../../shared/page-reference';
+import { pastedPageMentions } from '../pasted-page-id';
+import { protectAnnotationSpan } from '../../../../shared/inline-text-sanitize';
+import { extractDepthFromPastedContent } from '../../../../tools/list/paste-handler';
+import { listParentIndices } from '../list-nesting';
 
+const HEADER_TOOL_NAME = 'header';
+const LIST_TOOL_NAME = 'list';
 
 /**
  * A node queued for block mapping, optionally expanded out of a container
@@ -63,12 +69,29 @@ export class HtmlHandler extends BasePasteHandler implements PasteHandler {
     return 40;
   }
 
+  /** Set when the editor goes; a paste still waiting on the host then drops. */
+  private destroyed = false;
+
+  destroy(): void {
+    this.destroyed = true;
+  }
+
   async handle(data: unknown, context: HandlerContext): Promise<boolean> {
     if (typeof data !== 'string') {
       return false;
     }
 
-    const dataToInsert = this.processHTML(data);
+    const wrapper = parseUntrustedHtml(data);
+
+    await this.mentionKnownPageLinks(wrapper);
+
+    // The host's resolve may be slow: the editor can be gone by now. Handled,
+    // so no later handler pastes it either.
+    if (this.destroyed) {
+      return true;
+    }
+
+    const dataToInsert = this.processHTML(wrapper);
 
     if (!dataToInsert.length) {
       return false;
@@ -80,12 +103,38 @@ export class HtmlHandler extends BasePasteHandler implements PasteHandler {
   }
 
   /**
+   * A link to a page this host knows, whose text is the page's title or the
+   * URL, comes back as that page's mention. The host's `pageIdFromHref` names
+   * the page, never the pasted markup.
+   * @param wrapper - the pasted html, detached
+   */
+  private async mentionKnownPageLinks(wrapper: HTMLElement): Promise<void> {
+    const links = Array.from(wrapper.querySelectorAll(`a[href]:not([${PAGE_REFERENCE_ATTR}])`));
+    const pageIds = await pastedPageMentions(
+      this.Blok.Tools,
+      links.map((link) => ({ href: link.getAttribute('href') ?? '', text: link.textContent ?? '' }))
+    );
+
+    links.forEach((link, index) => {
+      const pageId = pageIds[index];
+
+      if (pageId === undefined) {
+        return;
+      }
+
+      const mention = link.ownerDocument.createElement('a');
+
+      mention.setAttribute(PAGE_REFERENCE_ATTR, pageId);
+      mention.textContent = PAGE_REFERENCE_FALLBACK;
+      link.replaceWith(mention);
+    });
+  }
+
+  /**
    * Split HTML string to blocks and return it as array of Block data.
    */
-  private processHTML(innerHTML: string): PasteData[] {
+  private processHTML(wrapper: HTMLElement): PasteData[] {
     const { Tools } = this.Blok;
-
-    const wrapper = parseUntrustedHtml(innerHTML);
 
     // Empty references need their neutral text before the splitter drops empty nodes.
     wrapper.querySelectorAll(`a[${PAGE_REFERENCE_ATTR}]`).forEach(preservePageReferenceAnchor);
@@ -136,39 +185,7 @@ export class HtmlHandler extends BasePasteHandler implements PasteHandler {
         continue;
       }
 
-      const isDetailsElement =
-        node.nodeType === Node.ELEMENT_NODE &&
-        (node as HTMLElement).tagName === 'DETAILS';
-      const isAsideElement =
-        node.nodeType === Node.ELEMENT_NODE &&
-        (node as HTMLElement).tagName === 'ASIDE';
-
-      if (!isDetailsElement && !isAsideElement) {
-        expandedNodes.push({ node });
-        continue;
-      }
-
-      const parentExpandedIndex = expandedNodes.length;
-
-      expandedNodes.push({ node });
-
-      // ASIDE: loose inline runs become paragraphs (split at <br>), so text
-      // nodes and marks are not dropped or turned into blocks of their own.
-      if (isAsideElement) {
-        expandedNodes.push(...this.collectCellContentEntries(node as HTMLElement)
-          .map((entry) => ({ ...entry, parentExpandedIndex })));
-        continue;
-      }
-
-      // Only direct children are extracted (not deeply nested structures), which
-      // is correct for Google Docs DETAILS format where children are flat siblings.
-      const childElements = Array.from((node as HTMLElement).children).filter(
-        (child) => child.tagName !== 'SUMMARY'
-      );
-
-      for (const child of childElements) {
-        expandedNodes.push({ node: child, parentExpandedIndex });
-      }
+      this.expandContainer({ node }, expandedNodes);
     }
 
     // Map expanded nodes to intermediate results, preserving original index.
@@ -234,7 +251,7 @@ export class HtmlHandler extends BasePasteHandler implements PasteHandler {
       const toolTags = this.buildToolTags(tool);
 
       const structuralSanitizeConfig = this.sanitizerBuilder.getStructuralTagsConfig(content);
-      const customConfig: SanitizerConfig = { a: preservePageReferenceAnchor, ...structuralSanitizeConfig, ...toolTags, ...tool.baseSanitizeConfig, br: {} };
+      const customConfig: SanitizerConfig = { a: preservePageReferenceAnchor, ...structuralSanitizeConfig, ...toolTags, ...tool.baseSanitizeConfig, span: protectAnnotationSpan(tool.baseSanitizeConfig.span), br: {} };
       const sanitizedContent = this.sanitizeContent(content, customConfig);
 
       if (!sanitizedContent) {
@@ -252,6 +269,7 @@ export class HtmlHandler extends BasePasteHandler implements PasteHandler {
           tool: tool.name,
           event,
           parentPasteIndex: parentExpandedIndex,
+          ...(toolData !== undefined && { toolData }),
         },
         originalIndex,
       };
@@ -260,13 +278,17 @@ export class HtmlHandler extends BasePasteHandler implements PasteHandler {
     // Filter, tracking the mapping from original (expandedNodes) index → final index.
     const oldToNewIndex = new Map<number, number>();
     const filtered: PasteData[] = [];
+    const hasSeveralEntries = mapped.filter(Boolean).length > 1;
 
     for (const entry of mapped) {
       if (!entry) {
         continue;
       }
       const { data, originalIndex, keepEmpty } = entry;
-      const isContentEmpty = dom$.isEmpty(data.content);
+      // Whitespace between pasted blocks (`<p>a</p>&nbsp;<p>b</p>`) is not a
+      // line of its own. A lone whitespace run still pastes inline.
+      const isStrayWhitespace = hasSeveralEntries && !data.isBlock && dom$.isEmpty(data.content, '\\s');
+      const isContentEmpty = isStrayWhitespace || dom$.isEmpty(data.content);
       const isSingleTag = dom$.isSingleTag(data.content);
 
       if (!isContentEmpty || isSingleTag || keepEmpty === true) {
@@ -282,6 +304,19 @@ export class HtmlHandler extends BasePasteHandler implements PasteHandler {
         item.parentPasteIndex = oldToNewIndex.get(item.parentPasteIndex);
       }
     }
+
+    // preprocessNestedLists hoisted every nested list flat, so the nesting
+    // is left only in each item's aria-level.
+    const listParents = listParentIndices(filtered.map((item) => ({
+      depth: item.tool === LIST_TOOL_NAME && item.content.tagName === 'LI' ? extractDepthFromPastedContent(item.content) : null,
+      scope: item.parentPasteIndex,
+    })));
+
+    listParents.forEach((parentIndex, index) => {
+      if (parentIndex !== undefined) {
+        filtered[index].parentPasteIndex = parentIndex;
+      }
+    });
 
     return filtered;
   }
@@ -389,6 +424,82 @@ export class HtmlHandler extends BasePasteHandler implements PasteHandler {
         expandedNodes.push({ ...entry, parentExpandedIndex: columnIndex });
       }
     }
+  }
+
+  /**
+   * Queue an entry, and when it is a DETAILS or an ASIDE, queue its children
+   * after it as its children. A nested DETAILS or ASIDE is expanded the same
+   * way, so its own children are kept. Parents are queued before their
+   * children, so every parentExpandedIndex points backwards.
+   */
+  private expandContainer(entry: ExpandedNodeEntry, expandedNodes: ExpandedNodeEntry[]): void {
+    const { node } = entry;
+    const tag = node.nodeType === Node.ELEMENT_NODE ? (node as HTMLElement).tagName : '';
+
+    if (tag !== 'DETAILS' && tag !== 'ASIDE') {
+      expandedNodes.push(entry);
+
+      return;
+    }
+
+    const parentExpandedIndex = expandedNodes.length;
+    const heading = tag === 'DETAILS' ? this.toggleHeadingOf(node as HTMLElement) : null;
+
+    expandedNodes.push(heading === null
+      ? entry
+      // The header tool ignores data without `text`; onPaste fills it in.
+      : { node: heading, parentExpandedIndex: entry.parentExpandedIndex, toolData: { text: '', isToggleable: true } });
+
+    // ASIDE: loose inline runs become paragraphs (split at <br>), so text
+    // nodes and marks are not dropped or turned into blocks of their own.
+    const children: ExpandedNodeEntry[] = tag === 'ASIDE'
+      ? this.collectCellContentEntries(node as HTMLElement)
+      : Array.from((node as HTMLElement).children)
+        .filter((child) => child.tagName !== 'SUMMARY')
+        .map((child) => ({ node: child }));
+
+    children
+      .flatMap((child) => this.splitList(child))
+      .forEach((child) => this.expandContainer({ ...child, parentExpandedIndex }, expandedNodes));
+  }
+
+  /**
+   * A list in a container goes through the same split as a list at the top,
+   * so each item becomes its own block. Otherwise the whole list lands in one
+   * paragraph as raw `<li>` markup.
+   */
+  private splitList(entry: ExpandedNodeEntry): ExpandedNodeEntry[] {
+    const { node } = entry;
+
+    if (!dom$.isElement(node) || (node.tagName !== 'UL' && node.tagName !== 'OL')) {
+      return [entry];
+    }
+
+    const holder = dom$.make('div');
+
+    holder.appendChild(node.cloneNode(true));
+
+    return this.getNodes(holder).map((item) => ({ node: item }));
+  }
+
+  /**
+   * The heading of a `<details><summary><hN>` (Blok's copy of a toggle
+   * heading), when the header tool takes that tag. Otherwise null, and the
+   * DETAILS stays a toggle.
+   */
+  private toggleHeadingOf(details: HTMLElement): HTMLElement | null {
+    const summary = Array.from(details.children).find((child) => child.tagName === 'SUMMARY');
+    const heading = summary?.firstElementChild;
+
+    if (summary === undefined || !(heading instanceof HTMLElement) || summary.children.length !== 1) {
+      return null;
+    }
+
+    const isOnlyText = (summary.textContent ?? '').trim() === (heading.textContent ?? '').trim();
+    const takesHeading = /^H[1-6]$/.test(heading.tagName)
+      && this.toolRegistry.findToolForTag(heading.tagName)?.tool.name === HEADER_TOOL_NAME;
+
+    return isOnlyText && takesHeading ? heading : null;
   }
 
   /**
@@ -531,6 +642,13 @@ export class HtmlHandler extends BasePasteHandler implements PasteHandler {
 
       if (nearestList?.tagName === 'OL' && !li.hasAttribute('data-list-style') && !hasExplicitListStyleType) {
         li.setAttribute('data-list-style', 'ordered');
+      }
+
+      const start = Number(nearestList?.getAttribute('start'));
+
+      // Only the first item carries it: the list tool reads a group's start from its first item.
+      if (nearestList?.tagName === 'OL' && nearestList.querySelector(':scope > li') === li && Number.isInteger(start) && start > 1) {
+        li.setAttribute('data-list-start', String(start));
       }
     }
 
@@ -678,11 +796,21 @@ export class HtmlHandler extends BasePasteHandler implements PasteHandler {
     const children = Array.from(wrapper.childNodes);
 
     const reducer = (nodes: Node[], node: Node): Node[] => {
-      // U+00A0 counts as empty here: Word and Summernote write `<p>&nbsp;</p>`
-      // as a visual spacer, and without it every such spacer pastes as a blank
-      // block. Single tags (`<img>`, `<hr>`) are never empty, so media survives.
-      if (dom$.isEmpty(node, '\u00A0') && !dom$.isSingleTag(node as HTMLElement)) {
+      const isSingleTag = dom$.isSingleTag(node as HTMLElement);
+      const isNbspOnly = dom$.isEmpty(node, '\u00A0') && !isSingleTag;
+      const isInline = this.isInlineNode(node);
+
+      // U+00A0 counts as empty only for blocks: Word and Summernote write
+      // `<p>&nbsp;</p>` as a spacer. Inline nbsp stays, because Chrome writes
+      // the edge spaces of a copied range as `<span>&nbsp;</span>`.
+      // Single tags (`<img>`, `<hr>`) are never empty, so media survives.
+      if (isInline ? dom$.isEmpty(node) && !isSingleTag : isNbspOnly) {
         return nodes;
+      }
+
+      // An nbsp-only inline run held a plain space in the source.
+      if (isInline && isNbspOnly) {
+        this.nbspToSpace(node);
       }
 
       const lastNode = nodes[nodes.length - 1];
@@ -719,5 +847,36 @@ export class HtmlHandler extends BasePasteHandler implements PasteHandler {
     };
 
     return children.reduce(reducer, []);
+  }
+
+  /**
+   * A text node, or an element that is neither a block, a structural tag nor a tool's tag.
+   */
+  private isInlineNode(node: Node): boolean {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return true;
+    }
+
+    if (!dom$.isElement(node)) {
+      return false;
+    }
+
+    const tagName = node.tagName.toLowerCase();
+
+    return !dom$.blockElements.includes(tagName) &&
+      !SAFE_STRUCTURAL_TAGS.has(tagName) &&
+      !this.toolRegistry.findToolForTag(node.tagName);
+  }
+
+  private nbspToSpace(node: Node): void {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node as Text;
+
+      text.data = text.data.replace(/\u00A0/g, ' ');
+
+      return;
+    }
+
+    node.childNodes.forEach((child) => this.nbspToSpace(child));
   }
 }

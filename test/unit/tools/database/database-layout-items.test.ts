@@ -64,9 +64,9 @@ describe('database layout items', () => {
     });
 
     expect(named(galleryLayoutItems(view(), schema, i18n, vi.fn()))).toEqual([
-      'gallery-card-size', 'gallery-card-size-small', 'gallery-card-size-medium', 'gallery-card-size-large',
       'gallery-card-preview', 'gallery-card-preview-none', 'gallery-card-preview-cover', 'gallery-card-preview-content',
       'gallery-card-preview-p-link', 'gallery-card-preview-p-files',
+      'gallery-card-size', 'gallery-card-size-small', 'gallery-card-size-medium', 'gallery-card-size-large',
       'gallery-fit-image',
     ]);
     expect(named(calendarLayoutItems(view({ type: 'calendar' }), schema, i18n, vi.fn()))).toEqual([
@@ -107,13 +107,21 @@ describe('database layout items', () => {
       expect(update).toHaveBeenCalledWith({ cardPreview: 'property:p-link' });
     });
 
-    it('flips fit image', () => {
+    // notion-motion.md Round 24 §4 Gallery: the row reads "Fit media".
+    it('flips fit media', () => {
       const update = vi.fn();
-      const fit = find(flat(galleryLayoutItems(view({ fitImage: true }), schema, i18n, update)), 'tools.database.galleryFitImage');
+      const fit = find(flat(galleryLayoutItems(view({ fitImage: true }), schema, i18n, update)), 'tools.database.galleryFitMedia');
 
       expect(fit.isActive).toBe(true);
       fit.onActivate?.();
       expect(update).toHaveBeenCalledWith({ fitImage: false });
+    });
+
+    // notion-motion.md Round 26 §3: Card preview None drops the Fit media row, as on a board.
+    it('hides Fit media while the preview is None', () => {
+      const titles = flat(galleryLayoutItems(view({ cardPreview: 'none' }), schema, i18n, vi.fn())).map((item) => item.title);
+
+      expect(titles).toEqual(['tools.database.galleryCardPreview', 'tools.database.galleryCardSize']);
     });
   });
 
@@ -161,13 +169,47 @@ describe('database layout items', () => {
       expect(update).toHaveBeenCalledWith({ timelineBy: 'p-due' });
     });
 
-    it('picks a separate end property, or none', () => {
+    // notion-motion.md Round 24 §4 Timeline: a "Separate start and end dates" switch, off, after Show timeline by.
+    // Round 25 §4: on, Start date and End date replace Show timeline by, both on the same property at first.
+    it('turns separate start and end dates on with the start property as the end, and off again', () => {
       const update = vi.fn();
-      const endBy = find(flat(timelineLayoutItems(view({ type: 'timeline' }), schema, i18n, update)), 'tools.database.timelineEndBy');
+      const off = flat(timelineLayoutItems(view({ type: 'timeline' }), schema, i18n, update));
+      const toggle = find(off, 'tools.database.timelineSeparateDates');
 
-      expect(endBy.children?.map((c) => [c.title, c.isActive])).toEqual([['tools.database.timelineEndNone', true], ['Start', false]]);
-      find(endBy.children ?? [], 'Start').onActivate?.();
+      expect(off.map((item) => item.title).slice(0, 3)).toEqual([
+        'tools.database.timelineShowBy', 'tools.database.timelineSeparateDates', 'tools.database.timelineShowTable',
+      ]);
+      expect(toggle.isActive).toBe(false);
+      expect(toggle.children).toBeUndefined();
+      toggle.onActivate?.();
+      expect(update).toHaveBeenLastCalledWith({ timelineEndBy: 'p-due' });
+
+      const on = flat(timelineLayoutItems(view({ type: 'timeline', timelineEndBy: 'p-due' }), schema, i18n, update));
+
+      expect(find(on, 'tools.database.timelineSeparateDates').isActive).toBe(true);
+      find(on, 'tools.database.timelineSeparateDates').onActivate?.();
+      expect(update).toHaveBeenLastCalledWith({ timelineEndBy: '' });
+    });
+
+    it('puts Start date and End date in place of Show timeline by while the switch is on', () => {
+      const update = vi.fn();
+      const on = flat(timelineLayoutItems(view({ type: 'timeline', timelineBy: 'p-due', timelineEndBy: 'p-due' }), schema, i18n, update));
+
+      expect(on.map((item) => item.title).slice(0, 4)).toEqual([
+        'tools.database.dateStart', 'tools.database.dateEnd', 'tools.database.timelineSeparateDates', 'tools.database.timelineShowTable',
+      ]);
+      expect(find(on, 'tools.database.dateStart').children?.map((c) => [c.title, c.isActive])).toEqual([['Due', true], ['Start', false]]);
+      expect(find(on, 'tools.database.dateEnd').children?.map((c) => [c.title, c.isActive])).toEqual([['Due', true], ['Start', false]]);
+      find(find(on, 'tools.database.dateEnd').children ?? [], 'Start').onActivate?.();
       expect(update).toHaveBeenLastCalledWith({ timelineEndBy: 'p-start' });
+      find(find(on, 'tools.database.dateStart').children ?? [], 'Start').onActivate?.();
+      expect(update).toHaveBeenLastCalledWith({ timelineBy: 'p-start' });
+    });
+
+    it('offers the switch with only one date property', () => {
+      const oneDate = schema.filter((p) => p.id !== 'p-start');
+
+      expect(flat(timelineLayoutItems(view({ type: 'timeline' }), oneDate, i18n, vi.fn())).some((item) => item.title === 'tools.database.timelineSeparateDates')).toBe(true);
     });
 
     it('toggles the table panel', () => {
@@ -193,15 +235,26 @@ describe('database layout items', () => {
   });
 
   describe('board', () => {
-    it('offers card size, card preview and fit image, with no preview marked by default', () => {
+    // notion-motion.md Round 25 §7: Card preview, Card size, then "Fit media" only once a preview is set.
+    it('offers card preview then card size, and no Fit media while the preview is None', () => {
       const update = vi.fn();
       const items = flat(boardLayoutItems(view({ type: 'board' }), schema, i18n, update));
       const preview = find(items, 'tools.database.galleryCardPreview');
 
+      expect(items.map((item) => item.title)).toEqual(['tools.database.galleryCardPreview', 'tools.database.galleryCardSize']);
       expect(find(preview.children ?? [], 'tools.database.galleryCardPreviewNone').isActive).toBe(true);
       find(find(items, 'tools.database.galleryCardSize').children ?? [], 'tools.database.galleryCardSizeLarge').onActivate?.();
       expect(update).toHaveBeenCalledWith({ cardSize: 'large' });
-      find(items, 'tools.database.galleryFitImage').onActivate?.();
+    });
+
+    it('adds a "Fit media" switch after Card size once a preview is set', () => {
+      const update = vi.fn();
+      const items = flat(boardLayoutItems(view({ type: 'board', cardPreview: 'content' }), schema, i18n, update));
+
+      expect(items.map((item) => item.title)).toEqual([
+        'tools.database.galleryCardPreview', 'tools.database.galleryCardSize', 'tools.database.galleryFitMedia',
+      ]);
+      find(items, 'tools.database.galleryFitMedia').onActivate?.();
       expect(update).toHaveBeenLastCalledWith({ fitImage: true });
     });
 
@@ -211,7 +264,7 @@ describe('database layout items', () => {
 
         return [record.name ?? '', ...(record.children !== undefined ? names(record.children.items) : [])];
       });
-      const items = names(boardLayoutItems(view({ type: 'board' }), schema, i18n, vi.fn()));
+      const items = names(boardLayoutItems(view({ type: 'board', cardPreview: 'cover' }), schema, i18n, vi.fn()));
 
       expect(items).toContain('board-card-size');
       expect(items).toContain('board-card-preview-none');

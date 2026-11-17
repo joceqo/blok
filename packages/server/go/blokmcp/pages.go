@@ -1,0 +1,535 @@
+package blokmcp
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// pageIDAlphabet is src/shared/mint-id.ts's, so ids look the same.
+const pageIDAlphabet = "57X6y3wQZNzYjJB2L_10pxbackgroundhimselfUTF-8DEMOGRAPHICSVqvt4KW9"
+
+func mintPageID() string {
+	bytes := make([]byte, 10)
+	_, _ = rand.Read(bytes)
+	for index, b := range bytes {
+		bytes[index] = pageIDAlphabet[b&63]
+	}
+	return string(bytes)
+}
+
+// createsPages: page blocks get their own documents under page-map with a
+// sync service or a source (Node's createsPages).
+func (s *Server) createsPages() bool {
+	return s.options.PageTitles == "page-map" && (s.options.Sync != nil || s.source != nil)
+}
+
+// madePages is what createPages made for a batch.
+type madePages struct {
+	// created went to the bundle as createdPages.
+	created []string
+	// stranded may be stored, but no insert takes them: a create that
+	// broke after it may have saved its page.
+	stranded []string
+	// cancelled: a cancel stopped the creating. The bundle keeps a
+	// cancel's own code, so finishPages lists created.
+	cancelled bool
+}
+
+// createPages makes the page documents a batch will point at, before it
+// runs, and puts them in input as createdPages: the bundle cannot wait on
+// the host mid-batch, so agentPagesNeeded counts them first. A page that
+// could not be made stops there and goes in as createPageFailure, so the
+// bundle fails its insert as Node's port does, and reports the pages made
+// before it (with the command index and revision). The client's cancel is
+// not checked between pages, as Node does not check it inside a batch:
+// ctx is one a client cancel never reaches. parent is the open document.
+func (s *Server) createPages(ctx context.Context, input map[string]any, who *caller, source docSource, parent string) (*madePages, error) {
+	var needed struct {
+		Count  int `json:"count"`
+		Result *struct {
+			Error *struct {
+				Code    string `json:"code"`
+				Details struct {
+					Orphaned []struct {
+						Prepared struct {
+							PageID string `json:"pageId"`
+						} `json:"prepared"`
+					} `json:"orphaned"`
+				} `json:"details"`
+			} `json:"error"`
+		} `json:"result"`
+	}
+	if _, err := s.bundle.call(ctx, "agentPagesNeeded", input, &needed); err != nil {
+		return nil, err
+	}
+	count := needed.Count
+	// A batch that would be refused, or that waits on a person's answer,
+	// makes no page: Node plans the whole batch before it makes one. Only a
+	// batch refused after its page was prepared (ORPHANED_SIDE_EFFECT) made
+	// those pages in Node, so they are made here too.
+	if needed.Result != nil {
+		count = 0
+		if failure := needed.Result.Error; failure != nil && failure.Code == "ORPHANED_SIDE_EFFECT" {
+			for _, orphan := range failure.Details.Orphaned {
+				if strings.HasPrefix(orphan.Prepared.PageID, "planned-page-") {
+					count++
+				}
+			}
+		}
+	}
+	made := &madePages{created: make([]string, 0, count)}
+	for range count {
+		pageID, stop, err := s.nextPage(ctx, source, who, parent, made)
+		if err != nil {
+			return nil, err
+		}
+		if stop != nil {
+			input["createPageFailure"] = stop.failure
+			made.cancelled = stop.cancelled
+			break
+		}
+		made.created = append(made.created, pageID)
+	}
+	input["createdPages"] = made.created
+	return made, nil
+}
+
+// nextPage makes one page: through the host's CreatePage, or Blok's own
+// way. A stop is the failure the bundle fails the page's insert with. A
+// plain error before any page exists fails the call, as before.
+func (s *Server) nextPage(ctx context.Context, source docSource, who *caller, parent string, made *madePages) (string, *pageStop, error) {
+	if s.options.CreatePage != nil {
+		pageID, stop := s.hostPage(ctx, parent, who, len(made.created))
+		return pageID, stop, nil
+	}
+	var pageID string
+	var err error
+	if s.options.Sync != nil {
+		pageID, err = s.createLivePage(ctx, who)
+	} else {
+		pageID, err = s.createPage(ctx, source, who.principal)
+	}
+	if err == nil {
+		return pageID, nil, nil
+	}
+	if failure, ok := asSurface(err); ok {
+		return "", stopWith(failure), nil
+	}
+	var half *halfMadePage
+	if errors.As(err, &half) {
+		made.stranded = append(made.stranded, half.pageID)
+	}
+	if len(made.created)+len(made.stranded) == 0 {
+		return "", nil, err
+	}
+	// The error itself is only logged: its text may name the host's
+	// internals.
+	logf("a batch stopped after its pages were made: %v", err)
+	return "", stopAsIs(serverStop), nil
+}
+
+// agentError is an AgentError as the bundle takes it "as-is".
+type agentError struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable"`
+	Details   any    `json:"details,omitempty"`
+}
+
+// serverStop is blokagent's cause for a batch a server error stopped. The
+// error itself is only logged.
+var serverStop = agentError{Code: "APPLY_FAILED", Message: "The batch stopped on a server error. Nothing was written.", Retryable: true}
+
+type pageReceipt struct {
+	Command  string `json:"command"`
+	Type     string `json:"type"`
+	Prepared struct {
+		PageID string `json:"pageId"`
+	} `json:"prepared"`
+}
+
+// createdOf is the pages made, nil-safe.
+func createdOf(made *madePages) []string {
+	if made == nil {
+		return nil
+	}
+	return append(append([]string{}, made.created...), made.stranded...)
+}
+
+// halfMadePage is a page create that broke after the page may have been
+// stored: its id counts as made.
+type halfMadePage struct {
+	pageID string
+	err    error
+}
+
+func (h *halfMadePage) Error() string { return h.err.Error() }
+func (h *halfMadePage) Unwrap() error { return h.err }
+
+// unlinked is pages the parent does not link (a page block's
+// data.pageId). A parent that could not be read (nil) gives none: the host
+// must never be told to delete a page the parent may use.
+func unlinked(pages []string, parent json.RawMessage) []string {
+	if parent == nil {
+		return nil
+	}
+	linked := linkedPageIDs(parent)
+	left := []string{}
+	for _, page := range pages {
+		if !linked[page] {
+			left = append(left, page)
+		}
+	}
+	return left
+}
+
+// orphanedAnswer fails the batch with ORPHANED_SIDE_EFFECT for pages, in
+// the shape of the bundle's withUnusedPages. result keeps the batch's
+// warnings; nil has none.
+func (s *Server) orphanedAnswer(ctx context.Context, pages []string, result json.RawMessage, cause map[string]any) (json.RawMessage, error) {
+	orphaned := make([]pageReceipt, len(pages))
+	for index, page := range pages {
+		orphaned[index] = pageReceipt{Command: "block.insert", Type: "page"}
+		orphaned[index].Prepared.PageID = page
+	}
+	if result == nil {
+		result = json.RawMessage(`{"ok":false,"warnings":[]}`)
+	}
+	message, _ := cause["message"].(string)
+	return s.executeAnswer(ctx, map[string]any{"result": result, "failed": map[string]any{"helper": "as-is", "error": agentError{
+		Code:    "ORPHANED_SIDE_EFFECT",
+		Message: "The batch failed after the host did work for it (" + message + "). Clean up the listed items.",
+		Details: struct {
+			Orphaned []pageReceipt `json:"orphaned"`
+			Cause    any           `json:"cause"`
+		}{orphaned, cause},
+	}}})
+}
+
+// reportStopped answers a batch a server error stopped after pages were
+// made for it: the pages the parent does not name are orphaned, with
+// serverStop as the cause. With none, err passes on.
+func (s *Server) reportStopped(ctx context.Context, pages []string, parent json.RawMessage, result json.RawMessage, err error) (*executed, error) {
+	orphans := unlinked(pages, parent)
+	if len(orphans) == 0 {
+		return nil, err
+	}
+	logf("a batch stopped after its pages were made: %v", err)
+	answer, answerErr := s.orphanedAnswer(ctx, orphans, result, map[string]any{
+		"code": serverStop.Code, "message": serverStop.Message, "retryable": serverStop.Retryable,
+	})
+	if answerErr != nil {
+		return nil, err
+	}
+	return &executed{answer: answer}, nil
+}
+
+// createLivePage joins the new page's room once: the sync service seeds it,
+// and it must come up empty.
+func (s *Server) createLivePage(ctx context.Context, who *caller) (string, error) {
+	pageID := mintPageID()
+	withPage := func(err error) error {
+		failure, ok := asSurface(err)
+		if !ok {
+			return err
+		}
+		if failure.Raw == nil {
+			details := map[string]any{"pageId": pageID}
+			for key, value := range failure.Details {
+				details[key] = value
+			}
+			return &surfaceErr{Code: failure.Code, Message: failure.Message, Details: details, Helper: failure.Helper}
+		}
+		return failure
+	}
+	allowed, err := s.allowed(ctx, who.principal, pageID, true)
+	if err != nil {
+		return "", err
+	}
+	if !allowed {
+		return "", withPage(surfaceError("FORBIDDEN", "You may not create a page document here."))
+	}
+	opened, err := s.openLive(ctx, pageID, true, who)
+	if err != nil {
+		return "", withPage(err)
+	}
+	page := opened.(*liveSession)
+	defer page.close()
+	page.room.mu.Lock()
+	document, _, err := page.exportLocked(ctx)
+	page.room.mu.Unlock()
+	if err != nil {
+		// The room was joined, so the sync service may hold the page. A
+		// failed open is not counted: whether it made the room is unknown.
+		return "", &halfMadePage{pageID: pageID, err: err}
+	}
+	var view struct {
+		Blocks []json.RawMessage `json:"blocks"`
+		Title  *json.RawMessage  `json:"title"`
+		Icon   *json.RawMessage  `json:"icon"`
+	}
+	_ = json.Unmarshal(document, &view)
+	if len(view.Blocks) > 0 || view.Title != nil || view.Icon != nil {
+		return "", withPage(surfaceError("SOURCE_UNAVAILABLE", "The new page id is taken. Try again."))
+	}
+	return pageID, nil
+}
+
+// createPage is the opener's createPage for stored mode: a new id,
+// authorized like a write open, saved as an empty document.
+func (s *Server) createPage(ctx context.Context, source docSource, principal string) (string, error) {
+	pageID := mintPageID()
+	// Node names the page in the refusal, keeping the error's own flag.
+	withPage := func(err error) error {
+		failure, ok := asSurface(err)
+		if !ok {
+			return err
+		}
+		if failure.Raw == nil {
+			details := map[string]any{"pageId": pageID}
+			for key, value := range failure.Details {
+				details[key] = value
+			}
+			return &surfaceErr{Code: failure.Code, Message: failure.Message, Details: details, Helper: failure.Helper}
+		}
+		var raw map[string]json.RawMessage
+		_ = json.Unmarshal(failure.Raw, &raw)
+		var details map[string]json.RawMessage
+		_ = json.Unmarshal(raw["details"], &details)
+		if details == nil {
+			details = map[string]json.RawMessage{}
+		}
+		details["pageId"], _ = marshal(pageID)
+		raw["details"], _ = marshal(details)
+		written, _ := marshal(raw)
+		return rawError(written)
+	}
+	allowed, err := s.allowed(ctx, principal, pageID, true)
+	if err != nil {
+		return "", err
+	}
+	if !allowed {
+		return "", withPage(surfaceError("FORBIDDEN", "You may not create a page document here."))
+	}
+	loaded, err := source.load(ctx, pageID)
+	if err != nil {
+		return "", withPage(err)
+	}
+	// The endpoint source saves without a version check, so this is its
+	// only guard against an overwrite.
+	if !loaded.missing {
+		return "", withPage(surfaceError("SOURCE_UNAVAILABLE", "The new page id is taken. Try again."))
+	}
+	var text struct {
+		Text string `json:"text"`
+	}
+	if _, err := s.bundle.call(ctx, "mcpDocumentText", map[string]any{"document": emptyDocument, "form": source.documentForm()}, &text); err != nil {
+		return "", err
+	}
+	if _, err := source.save(ctx, pageID, []byte(text.Text), loaded.version); err != nil {
+		// A broken save may have stored the page. The steps before it
+		// wrote nothing.
+		if _, ok := asSurface(err); !ok {
+			return "", &halfMadePage{pageID: pageID, err: err}
+		}
+		return "", withPage(err)
+	}
+	return pageID, nil
+}
+
+// pageMap: page blocks point at their own documents (--page-titles page-map).
+func (s *Server) pageMap() bool { return s.options.PageTitles == "page-map" }
+
+// hasPageAction says whether a batch holds page.rename or page.setIcon. The
+// envelope check refuses one that is not alone, as Node's does.
+func hasPageAction(batch json.RawMessage) bool {
+	commands, _ := batchCommands(batch)
+	for _, command := range commands {
+		if command.name == "page.rename" || command.name == "page.setIcon" {
+			return true
+		}
+	}
+	return false
+}
+
+// pageWrite is how a page action ended: written, and whether its room had
+// not acknowledged the write yet.
+type pageWrite struct {
+	wrote   bool
+	pending bool
+}
+
+// runPageAction is Node's page-map pageBackend: the bundle checks the batch
+// on the open document (agentPlanHost), then a doc.setTitle or doc.setIcon
+// batch runs on the page's own document, opened as blok_open opens one.
+// It answers the agent result and how the page write ended.
+func (s *Server) runPageAction(ctx context.Context, call *callContext, input map[string]any, isOpen func(pageID string) bool) (json.RawMessage, pageWrite, error) {
+	var planned struct {
+		Result json.RawMessage `json:"result"`
+		Plan   json.RawMessage `json:"plan"`
+		Batch  struct {
+			Commands []struct {
+				Name string                     `json:"name"`
+				Args map[string]json.RawMessage `json:"args"`
+			} `json:"commands"`
+		} `json:"batch"`
+		View struct {
+			Blocks []struct {
+				Data map[string]json.RawMessage `json:"data"`
+			} `json:"blocks"`
+		} `json:"view"`
+	}
+	if _, err := s.bundle.call(ctx, "agentPlanHost", input, &planned); err != nil {
+		return nil, pageWrite{}, err
+	}
+	if len(planned.Plan) == 0 || len(planned.Batch.Commands) == 0 {
+		return planned.Result, pageWrite{}, nil
+	}
+	var source map[string]json.RawMessage
+	if err := json.Unmarshal(planned.Result, &source); err != nil {
+		return nil, pageWrite{}, err
+	}
+	// The executor's prepare step fails at the action's index.
+	fail := func(agentError map[string]any) (json.RawMessage, pageWrite, error) {
+		if _, ok := agentError["commandIndex"]; !ok {
+			agentError["commandIndex"] = 0
+		}
+		result, err := marshal(map[string]any{"ok": false, "revision": source["revision"], "error": agentError, "warnings": source["warnings"]})
+		return result, pageWrite{}, err
+	}
+	withPage := func(agentError map[string]any, pageID string) map[string]any {
+		details, _ := agentError["details"].(map[string]any)
+		if details == nil {
+			details = map[string]any{}
+		}
+		details["pageId"] = pageID
+		agentError["details"] = details
+		return agentError
+	}
+	command := planned.Batch.Commands[0]
+	var blockID string
+	_ = json.Unmarshal(command.Args["id"], &blockID)
+	var pageID string
+	if len(planned.View.Blocks) > 0 {
+		_ = json.Unmarshal(planned.View.Blocks[0].Data["pageId"], &pageID)
+	}
+	if pageID == "" {
+		return fail(map[string]any{
+			"code": "INVALID_ARGS", "message": fmt.Sprintf("Block %q is not a page block with a pageId.", blockID),
+			"retryable": false, "details": map[string]any{"blockId": blockID},
+		})
+	}
+	// A second save of the open document would make this handle's version stale.
+	if isOpen(pageID) {
+		return fail(map[string]any{
+			"code": "INVALID_ARGS", "message": "This page block points at the document you have open. Use doc.setTitle or doc.setIcon instead.",
+			"retryable": false, "details": map[string]any{"pageId": pageID},
+		})
+	}
+	target, err := s.open(ctx, pageID, "auto", true, call.who)
+	if err != nil {
+		agentError, err := s.agentErrorOf(ctx, err)
+		if err != nil {
+			return nil, pageWrite{}, err
+		}
+		return fail(withPage(agentError, pageID))
+	}
+	defer target.close()
+	field, name := "icon", "doc.setIcon"
+	if command.Name == "page.rename" {
+		field, name = "title", "doc.setTitle"
+	}
+	value := command.Args[field]
+	if len(value) == 0 {
+		value = json.RawMessage("null")
+	}
+	inner, err := marshal(map[string]any{"commands": []any{map[string]any{"name": name, "args": map[string]any{field: value}}}})
+	if err != nil {
+		return nil, pageWrite{}, err
+	}
+	// The target batch runs with no approval, as Node's pageBackend calls it.
+	done, err := target.execute(ctx, &callContext{who: call.who, principal: call.principal, actor: call.actor}, inner)
+	if err != nil {
+		return nil, pageWrite{}, err
+	}
+	if done.answer == nil {
+		return nil, pageWrite{}, fmt.Errorf("blok-mcp: the page write asked a question")
+	}
+	var answer struct {
+		StructuredContent struct {
+			OK       bool           `json:"ok"`
+			Error    map[string]any `json:"error"`
+			Delivery struct {
+				Pending bool `json:"pending"`
+			} `json:"delivery"`
+		} `json:"structuredContent"`
+	}
+	if err := json.Unmarshal(done.answer, &answer); err != nil {
+		return nil, pageWrite{}, err
+	}
+	written := answer.StructuredContent
+	if !written.OK {
+		if written.Error == nil {
+			return nil, pageWrite{}, fmt.Errorf("blok-mcp: the page write failed with no error")
+		}
+		return fail(withPage(written.Error, pageID))
+	}
+	source["results"], _ = marshal([]any{map[string]any{"pageId": pageID, "applied": true}})
+	result, err := marshal(source)
+	// An unacknowledged page write still went out: the batch is not durable.
+	return result, pageWrite{wrote: true, pending: written.Delivery.Pending}, err
+}
+
+// agentErrorOf is the agent error a host refusal makes, retryable set by its
+// helper as Node's surfaceError sets it. Anything else is passed on.
+func (s *Server) agentErrorOf(ctx context.Context, err error) (map[string]any, error) {
+	failure, ok := asSurface(err)
+	if !ok {
+		return nil, err
+	}
+	answer, err := s.errorAnswer(ctx, "blok_execute", failure)
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		StructuredContent struct {
+			Error map[string]any `json:"error"`
+		} `json:"structuredContent"`
+	}
+	if err := json.Unmarshal(answer, &parsed); err != nil {
+		return nil, err
+	}
+	if parsed.StructuredContent.Error == nil {
+		return nil, fmt.Errorf("blok-mcp: mcpErrorAnswer gave no error")
+	}
+	return parsed.StructuredContent.Error, nil
+}
+
+// withOtherStep marks a batch that wrote only another document in carried
+// history, so history.undo refuses it as Node's executor does. revision is
+// the document's content revision, which a fresh history lacks.
+func withOtherStep(history json.RawMessage, revision json.RawMessage) json.RawMessage {
+	var members map[string]json.RawMessage
+	if json.Unmarshal(history, &members) != nil || members == nil {
+		members = map[string]json.RawMessage{}
+	}
+	var past []json.RawMessage
+	_ = json.Unmarshal(members["past"], &past)
+	past = append(past, quoted("other"))
+	members["past"], _ = marshal(past)
+	if _, ok := members["future"]; !ok {
+		members["future"] = json.RawMessage("[]")
+	}
+	if _, ok := members["revision"]; !ok {
+		members["revision"] = revision
+	}
+	written, err := marshal(members)
+	if err != nil {
+		return history
+	}
+	return written
+}

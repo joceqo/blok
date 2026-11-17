@@ -12,6 +12,16 @@ export type PageCreateResult = void | { pageId: string };
  */
 export type PageIcon = { type: 'emoji'; value: string } | { type: 'image'; url: string };
 
+/**
+ * A page's cover, drawn above the title: an image at a URL, or one of Blok's
+ * built-in gallery covers by id. `position` is the image's vertical position
+ * in percent, a whole number from 0 (top) to 100 (bottom). Absent: 50.
+ * An unknown gallery id draws a plain fill.
+ */
+export type PageCover =
+  | { type: 'image'; url: string; position?: number }
+  | { type: 'gallery'; id: string; position?: number };
+
 /** Legacy input metadata, ignored by the page tool. */
 export interface PageCache {
   title?: string;
@@ -32,8 +42,29 @@ export interface PageData extends BlockToolData {
    * toolbox entry.
    */
   kind?: 'database';
+  /**
+   * Set when the page went to Trash. With the server option
+   * `CollabRestoreTrashesPages`, a version restore sets it on a sub-page
+   * created after the restored point, instead of deleting the block, so the
+   * page's own document is kept. The block keeps its place, or goes to the
+   * end of the document when the same restore removes its parent. The page
+   * tool keeps the field but does not hide the block.
+   */
+  trashed?: PageTrashed;
   /** @deprecated Written only by pre-release builds; ignored on input and never saved. */
   cache?: PageCache;
+}
+
+/** When, by whom and from where a page went to Trash. */
+export interface PageTrashed {
+  /** Time it went to Trash, in ms since the epoch. */
+  at: number;
+  /** Id of the user who sent it there. `null` when the server had no user. */
+  by: string | null;
+  /** Id of the block it sat under. `null` at the top level of the document. */
+  formerParentId: string | null;
+  /** Its position among that parent's children, from 0. */
+  formerIndex: number;
 }
 
 /** Authorized metadata from the host. Missing fields mean the page has none. */
@@ -80,7 +111,7 @@ export interface PageCreateInit {
   pageId: string;
   /** The page's starting content. */
   document?: OutputData;
-  /** The page's title, from the "@" menu's New page items. */
+  /** The page's title: the "@" menu's typed text, or the database's title from "Turn into page". */
   title?: string;
   /** The page to put it under. Missing means the page this editor shows. */
   parentId?: string;
@@ -94,6 +125,13 @@ export interface PageConfig {
    * Offers "Database - Full page" in the toolbox. Default false. Turn it on
    * only when `create` stores `document` as the new page's content and the
    * `database` tool is registered.
+   *
+   * It also offers "Turn into page" in an inline database's block menu: the
+   * database, its rows and their bodies go to a new page made by `create`
+   * (with `title` and `document`), and a link takes its place. With
+   * `loadDocument`, a database page link offers "Turn into inline database",
+   * the reverse. Both undo as one step here. The page's document is left as
+   * it is, so undo can bring the link back.
    */
   databasePages?: boolean;
   /**
@@ -129,6 +167,9 @@ export interface PageConfig {
    * Authorized metadata, asked on render and on each `subscribe` change.
    * `null` means missing; `undefined` means unresolved; `access: 'none'` means denied.
    * Old metadata is hidden while a new access check is pending. Metadata is never saved.
+   * Paste asks it too: a pasted page id stays a mention or page link only when
+   * the page is already in the document or `resolve` grants it. Otherwise it
+   * pastes as text.
    */
   resolve?(pageId: string): PageInfo | null | undefined | Promise<PageInfo | null | undefined>;
   /**
@@ -193,6 +234,16 @@ export interface PageConfig {
    */
   loadDocument?(pageId: string): OutputData | null | Promise<OutputData | null>;
   /**
+   * Asked before "Turn into inline database" reads the page's document and
+   * moves its database, rows and row bodies into this document. Answer `true`
+   * to allow it. Any other answer, or an error, changes nothing and skips
+   * `loadDocument`. A link's page id is block data any collaborator can set,
+   * so use it to refuse a page that people with access to this document must
+   * not see. Without it, any page `loadDocument` returns a full-page database for
+   * can move in.
+   */
+  canMoveInto?(pageId: string): boolean | Promise<boolean>;
+  /**
    * Saves the page's document after an agent changed it. Called once per
    * agent batch that changed something. A rejection fails that batch.
    */
@@ -237,8 +288,8 @@ export declare class Page implements BlockTool {
    */
   static copyAsLink(data: PageData, config: PageConfig): { url: string; text: string } | null;
 
-  /** A titled "Page" menu with Turn into first; Delete reads "Move to Trash". */
-  static blockMenu?: { titled: boolean; trash: boolean };
+  /** A titled "Page" menu with Turn into first; Delete reads "Move to Trash". "Turn into inline database" leads it. */
+  static blockMenu?: { titled: boolean; trash: boolean; lead: string[] };
 
   /** Hides "Database - Full page" unless `config.databasePages` is true. */
   static filterToolbox(entries: ToolboxConfigEntry[], config: PageConfig): ToolboxConfigEntry[];

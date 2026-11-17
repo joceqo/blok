@@ -1,0 +1,77 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "2.1.0"
+repository = "https://github.com/JackUait/blok"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+publish = false
+
+# The crates blok-mcp needs. The release moves every pin to its version.
+[workspace.dependencies]
+blok-blokagent = { path = "crates/blokagent", version = "=2.1.0" }
+blok-blokdocs = { path = "crates/blokdocs", version = "=2.1.0" }
+blok-blokserver-ticket = { path = "crates/blokserver-ticket", version = "=2.1.0" }
+blok-collab = { path = "crates/collab", version = "=2.1.0" }
+blok-collab-convert = { path = "crates/collab-convert", version = "=2.1.0" }
+blok-collab-docendpoint = { path = "crates/collab-docendpoint", version = "=2.1.0" }
+blok-collab-journal = { path = "crates/collab-journal", version = "=2.1.0" }
+blok-collab-operation = { path = "crates/collab-operation", version = "=2.1.0" }
+blok-collab-room = { path = "crates/collab-room", version = "=2.1.0" }
+blok-collab-wire = { path = "crates/collab-wire", version = "=2.1.0" }
+blok-collab-workingset = { path = "crates/collab-workingset", version = "=2.1.0" }
+blok-dotnet = { path = "crates/dotnet", version = "=2.1.0" }
+blok-http = { path = "crates/http", version = "=2.1.0" }
+blok-jsjson = { path = "crates/jsjson", version = "=2.1.0" }
+blok-jsruntime = { path = "crates/jsruntime", version = "=2.1.0" }
+blok-lib0 = { path = "crates/lib0", version = "=2.1.0" }
+blok-mcp = { path = "crates/mcp", version = "=2.1.0" }
+blok-mediatype = { path = "crates/mediatype", version = "=2.1.0" }
+blok-outbound = { path = "crates/outbound", version = "=2.1.0" }
+blok-ticket = { path = "crates/ticket", version = "=2.1.0" }
+blok-yjs = { path = "crates/yjs", version = "=2.1.0" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+codegen-units = 4
+
+# Unoptimized QuickJS uses about 9 KB of stack per JS frame against 1 KB
+# optimized, so a debug build stopped deep outlines near 500 levels.
+[profile.dev.package.rquickjs-sys]
+opt-level = 3
+
+# Tests hash and compress hundreds of MiB: the ops.json outputs and the
+# 1 GiB decompression bombs. Unoptimized, that alone took about 30s on CI.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.brotli]
+opt-level = 3
+
+[profile.dev.package.brotli-decompressor]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
+opt-level = 3
+
+[profile.dev.package.adler2]
+opt-level = 3
+
+# Tests push tens of MiB through the JS engine; unoptimized glue made the
+# ops fixture test 3x slower. Debug assertions and overflow checks stay on.
+[profile.dev.package.blok-jsruntime]
+opt-level = 3
+
+[profile.dev.package.rquickjs-core]
+opt-level = 3

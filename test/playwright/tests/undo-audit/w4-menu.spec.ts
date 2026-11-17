@@ -15,7 +15,7 @@ const HOLDER_ID = 'blok';
 const UNDO = process.platform === 'darwin' ? 'Meta+z' : 'Control+z';
 const REDO = process.platform === 'darwin' ? 'Meta+Shift+z' : 'Control+Shift+z';
 // Yjs capture window is 500ms; wait past it so gestures stay separate undo steps.
-const CAPTURE_GAP = 700;
+const CAPTURE_GAP = 800;
 const HANDLE = '[data-blok-interface=blok] [data-blok-testid="settings-toggler"]';
 const TUNES_POPOVER = '[data-blok-testid="block-tunes-popover"] [data-blok-testid="popover-container"]';
 const NESTED_POPOVER = '[data-blok-nested="true"] [data-blok-testid="popover-container"]';
@@ -319,9 +319,9 @@ test.describe('W4M defects', () => {
     expect(r.redone.data).toEqual(r.after.data);
   });
 
-  // Redo of a turn-into puts the caret where the turn-into left it. The next gesture start
-  // records that caret as the step's caret-after.
-  test('W4M-4: redo of "turn into quote" puts the caret back where the turn-into left it', async ({ page }) => {
+  // Turn into leaves the block selected (Notion U084-U089). Undo and redo keep it selected, with
+  // no caret: redo restores the selection live at the matching undo press (FR1), never offset 0.
+  test('W4M-4: turn into quote keeps the block selected through undo and redo', async ({ page }) => {
     await createBlok(page, wrap(P('x', 'Plain text')));
     await gap(page);
     await editable(page, 'x').click();
@@ -330,18 +330,22 @@ test.describe('W4M defects', () => {
     await page.keyboard.press('ArrowLeft');
     await convert(page, 'x', 'Quote');
     await gap(page);
-    const afterGesture = await caret(page);
+
+    expect(await caret(page), 'no caret after turn into').toEqual({ blockId: null, offset: null });
+    await expect(page.locator('[data-blok-id="x"]')).toHaveAttribute('data-blok-selected', 'true');
 
     await page.keyboard.press(UNDO);
     await gap(page, 500);
-    const afterUndo = await caret(page);
+
+    expect(await caret(page), 'no caret after undo').toEqual({ blockId: null, offset: null });
+    await expect(page.locator('[data-blok-id="x"]')).toHaveAttribute('data-blok-selected', 'true');
 
     await page.keyboard.press(REDO);
     await gap(page, 500);
 
-    expect(await caret(page), 'caret after redo').toEqual(afterGesture);
-    expect(afterGesture).toEqual({ blockId: 'x', offset: 8 });
-    expect(afterUndo).toEqual({ blockId: 'x', offset: 8 });
+    expect(await caret(page), 'no caret after redo').toEqual({ blockId: null, offset: null });
+    await expect(page.locator('[data-blok-id="x"]')).toHaveAttribute('data-blok-selected', 'true');
+    await expect(page.locator('[data-blok-id="x"]')).toHaveAttribute('data-blok-component', 'quote');
   });
 });
 
@@ -372,21 +376,35 @@ test.describe('W4M controls: duplicate from the block menu', () => {
     });
   }
 
-  test('W4M control: duplicate paragraph: undo and redo put the caret in the original and in the copy', async ({ page }) => {
+  // The copy is left selected; undo selects the original and redo the copy, with no caret (Notion U105).
+  test('W4M control: duplicate paragraph: undo selects the original, redo selects the copy', async ({ page }) => {
     await createBlok(page, wrap(P('x', 'Plain text')));
     await gap(page);
     await editable(page, 'x').click();
     await page.keyboard.press('End');
     await duplicate(page, 'x');
     await gap(page);
-    const afterGesture = await caret(page);
+
+    const selected = page.locator('[data-blok-testid="block-wrapper"][data-blok-selected="true"]');
+
+    expect(await caret(page)).toEqual({ blockId: null, offset: null });
+    await expect(selected).toHaveCount(1);
+    const copy = await page.evaluate(() =>
+      document.querySelector('[data-blok-testid="block-wrapper"][data-blok-selected="true"]')?.getAttribute('data-blok-id'));
+
+    expect(copy).not.toBe('x');
 
     await page.keyboard.press(UNDO);
     await gap(page, 500);
-    expect(await caret(page)).toEqual({ blockId: 'x', offset: 10 });
+    expect(await caret(page)).toEqual({ blockId: null, offset: null });
+    await expect(selected).toHaveCount(1);
+    await expect(page.locator('[data-blok-id="x"]')).toHaveAttribute('data-blok-selected', 'true');
+
     await page.keyboard.press(REDO);
     await gap(page, 500);
-    expect(await caret(page)).toEqual(afterGesture);
+    expect(await caret(page)).toEqual({ blockId: null, offset: null });
+    await expect(selected).toHaveCount(1);
+    await expect(page.locator(`[data-blok-id="${copy ?? ''}"]`)).toHaveAttribute('data-blok-selected', 'true');
   });
 });
 

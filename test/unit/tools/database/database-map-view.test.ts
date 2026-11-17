@@ -4,6 +4,7 @@ const draw = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../../src/tools/database/database-maplibre', () => ({ drawMapLibreMap: draw }));
 
+import { IconCross, IconEmojiMap } from '../../../../src/components/icons';
 import { DatabaseMapView } from '../../../../src/tools/database/database-map-view';
 import type { DatabaseMapViewOptions } from '../../../../src/tools/database/database-map-view';
 import type { DatabaseMapContext, DatabaseMapItem, DatabaseRow, DatabaseViewConfig, PropertyDefinition } from '../../../../src/tools/database/types';
@@ -42,6 +43,25 @@ const mount = (overrides: Partial<DatabaseMapViewOptions> = {}): { root: HTMLEle
 };
 
 const flush = (): Promise<void> => Promise.resolve();
+
+/** The toolbar button the host hangs the "No place" list from. */
+const anchor = (): HTMLButtonElement => {
+  const button = document.createElement('button');
+
+  document.body.appendChild(button);
+
+  return button;
+};
+
+
+/** An icon string as the DOM serializes it. */
+const asHtml = (svg: string): string => {
+  const box = document.createElement('div');
+
+  box.innerHTML = svg;
+
+  return box.innerHTML;
+};
 
 describe('DatabaseMapView', () => {
   beforeEach(() => {
@@ -184,9 +204,9 @@ describe('DatabaseMapView', () => {
     expect(render.mock.calls[0][1]).toHaveLength(10);
   });
 
-  it('shows a "No place (N)" chip whose list searches and opens the rows without a place (research/20 §1e)', async () => {
+  it('gives the toolbar a "No place (N)" control whose list searches and opens the rows without a place (research/20 §1e, notion-motion.md Round 31 §2)', async () => {
     const extra: DatabaseRow[] = [...rows, { id: 'r3', position: 'a2', properties: { title: 'Cid' } }];
-    const { root, open } = mount({
+    const { root, open, mapView } = mount({
       render: vi.fn(),
       rows: extra,
       writable: true,
@@ -194,16 +214,21 @@ describe('DatabaseMapView', () => {
     });
 
     await flush();
-    const chip = root.querySelector<HTMLButtonElement>('[data-blok-database-map-no-place]');
+    // Round 31 §2: the chip sits in the toolbar, not above the map.
+    expect(root.querySelector('[data-blok-database-map-no-place]')).toBeNull();
+    const control = mapView.noPlaceControl();
 
-    expect(chip?.textContent).toBe('tools.database.mapNoPlaceCount:2');
-    expect(chip?.getAttribute('aria-haspopup')).toBe('dialog');
-    chip?.click();
+    expect(control?.label).toBe('tools.database.mapNoPlaceCount:2');
+    expect(control?.count).toBe(2);
+    expect(control?.attributes).toEqual({ 'data-blok-database-map-no-place': '', 'aria-haspopup': 'dialog' });
+    control?.open(anchor());
 
     const search = document.querySelector<HTMLInputElement>('[data-blok-database-map-no-place-search]');
 
     expect(search?.placeholder).toBe('tools.database.relationSearchPlaceholder');
-    const listed = (): string[] => [...document.querySelectorAll('[data-blok-database-map-no-place-row]')].map((row) => row.textContent ?? '');
+    // notion-motion.md Round 53 §8a: a field box, not a bare input; it takes Blok's shared field look.
+    expect(search?.getAttribute('data-blok-field')).toBe('text');
+    const listed = (): string[] => [...document.querySelectorAll('[data-blok-database-map-no-place-row]')].map((row) => row.textContent?.trim() ?? '');
 
     expect(listed()).toEqual(['Bob', 'Cid']);
     if (search === null) throw new Error('no search');
@@ -215,14 +240,41 @@ describe('DatabaseMapView', () => {
     expect(open).toHaveBeenCalledWith('r3');
   });
 
+  // notion-motion.md Round 47 §D: Notion's "No place" popover opens 4 under its toolbar button.
+  it('opens the "No place" list 4px under its button', async () => {
+    const { mapView } = mount({ render: vi.fn(), writable: true });
+    const button = anchor();
+
+    await flush();
+    button.getBoundingClientRect = () => new DOMRect(1100, 275, 80, 24);
+    mapView.noPlaceControl()?.open(button);
+
+    expect(document.querySelector('[data-blok-database-map-no-place-search]')?.closest<HTMLElement>('[data-blok-popover]')?.style.top).toBe('303px');
+  });
+
+  // notion-motion.md Round 52 §2: each "No place" row is a page icon, then the title.
+  it('leads each "No place" row with its page glyph, then the title', async () => {
+    const extra: DatabaseRow[] = [...rows, { id: 'r3', position: 'a2', properties: { title: 'Cid' } }];
+    const { mapView } = mount({ render: vi.fn(), rows: extra, writable: true, rowHasBody: (rowId) => rowId === 'r3' });
+
+    await flush();
+    mapView.noPlaceControl()?.open(anchor());
+    const parts = [...document.querySelectorAll('[data-blok-database-map-no-place-row]')].map((row) => [
+      row.firstElementChild?.getAttribute('data-blok-database-page-icon-placeholder'),
+      row.querySelector('[data-blok-database-map-no-place-title]')?.textContent,
+    ]);
+
+    expect(parts).toEqual([['', 'Bob'], ['content', 'Cid']]);
+  });
+
   // research/23 §5c: the list stays open under the row page; Escape closes the page, then the list.
   it('keeps the "No place" list under an opened row page and shows it again, query kept, when the page closes', async () => {
     const extra: DatabaseRow[] = [...rows, { id: 'r3', position: 'a2', properties: { title: 'Cid' } }];
-    const { root, open, mapView } = mount({ render: vi.fn(), rows: extra, writable: true });
+    const { open, mapView } = mount({ render: vi.fn(), rows: extra, writable: true });
     const search = (): HTMLInputElement | null => document.querySelector<HTMLInputElement>('[data-blok-database-map-no-place-search]');
 
     await flush();
-    root.querySelector<HTMLButtonElement>('[data-blok-database-map-no-place]')?.click();
+    mapView.noPlaceControl()?.open(anchor());
     const field = search();
 
     if (field === null) throw new Error('no search');
@@ -239,7 +291,7 @@ describe('DatabaseMapView', () => {
 
     expect(search()?.value).toBe('ci');
     expect(search()).toHaveFocus();
-    expect([...document.querySelectorAll('[data-blok-database-map-no-place-row]')].map((row) => row.textContent)).toEqual(['Cid']);
+    expect([...document.querySelectorAll('[data-blok-database-map-no-place-row]')].map((row) => row.textContent?.trim())).toEqual(['Cid']);
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(search()).toBeNull();
@@ -250,10 +302,10 @@ describe('DatabaseMapView', () => {
 
   it('a pin opening another row drops the waiting list', async () => {
     const render = vi.fn();
-    const { root, mapView } = mount({ render, writable: true });
+    const { mapView } = mount({ render, writable: true });
 
     await flush();
-    root.querySelector<HTMLButtonElement>('[data-blok-database-map-no-place]')?.click();
+    mapView.noPlaceControl()?.open(anchor());
     document.querySelector<HTMLElement>('[data-blok-database-map-no-place-row]')?.click();
     (render.mock.calls[0][2] as DatabaseMapContext).open('r1');
     mapView.rowPageClosed();
@@ -279,26 +331,26 @@ describe('DatabaseMapView', () => {
       { id: 'new', position: 'a2', properties: { title: 'New' }, meta: { createdAt: 3 } },
       { id: 'mid', position: 'a3', properties: { title: 'Mid' }, meta: { createdAt: 2 } },
     ];
-    const { root } = mount({ render: vi.fn(), rows: unplaced, writable: true });
+    const { mapView } = mount({ render: vi.fn(), rows: unplaced, writable: true });
 
     await flush();
-    root.querySelector<HTMLButtonElement>('[data-blok-database-map-no-place]')?.click();
+    mapView.noPlaceControl()?.open(anchor());
 
-    expect([...document.querySelectorAll('[data-blok-database-map-no-place-row]')].map((row) => row.textContent)).toEqual(['New', 'Mid', 'Old']);
+    expect([...document.querySelectorAll('[data-blok-database-map-no-place-row]')].map((row) => row.textContent?.trim())).toEqual(['New', 'Mid', 'Old']);
   });
 
   it('every row placed: no chip', async () => {
-    const { root } = mount({ render: vi.fn(), rows: [rows[0]], writable: true });
+    const { mapView } = mount({ render: vi.fn(), rows: [rows[0]], writable: true });
 
     await flush();
-    expect(root.querySelector('[data-blok-database-map-no-place]')).toBeNull();
+    expect(mapView.noPlaceControl()).toBeUndefined();
   });
 
   it('read-only shows no "No place" chip and no Add pin button', async () => {
-    const { root } = mount({ render: vi.fn(), writable: false, addPin: vi.fn() });
+    const { root, mapView } = mount({ render: vi.fn(), writable: false, addPin: vi.fn() });
 
     await flush();
-    expect(root.querySelector('[data-blok-database-map-no-place]')).toBeNull();
+    expect(mapView.noPlaceControl()).toBeUndefined();
     expect(root.querySelector('[data-blok-database-map-add-pin]')).toBeNull();
   });
 
@@ -329,6 +381,20 @@ describe('DatabaseMapView', () => {
     expect(ctx.addingPin()).toBe(false);
     expect(button?.getAttribute('aria-label')).toBe('tools.database.mapEnableAddPin');
     expect(canvas?.hasAttribute('data-blok-database-map-adding-pin')).toBe(false);
+  });
+
+  // notion-motion.md Round 31 §2: a 28px white pill holds the 24px button; a pin glyph, × while adding.
+  it('draws Add pin as a button in a pill, with the place pin glyph and a × while adding', async () => {
+    const { root } = mount({ render: vi.fn(), writable: true, addPin: vi.fn() });
+
+    await flush();
+    const pill = root.querySelector<HTMLElement>('[data-blok-database-map-add-pin-pill]');
+    const button = pill?.querySelector<HTMLButtonElement>(':scope > [data-blok-database-map-add-pin]');
+
+    expect(pill?.parentElement?.hasAttribute('data-blok-database-map-frame')).toBe(true);
+    expect(button?.innerHTML).toBe(asHtml(IconEmojiMap));
+    button?.click();
+    expect(button?.innerHTML).toBe(asHtml(IconCross));
   });
 
   it('pressing the button again cancels Add pin mode', async () => {

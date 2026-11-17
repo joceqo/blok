@@ -98,12 +98,32 @@ test.describe('Generic embed + replace source', () => {
 
     await expect(embedItem).toBeVisible();
     await expect(embedItem).toContainText('Create embed');
+
+    const siteRequests: string[] = [];
+
+    page.on('request', (request) => {
+      if (new URL(request.url()).hostname === 'example.com') {
+        siteRequests.push(request.url());
+      }
+    });
+
     await embedItem.click();
+
+    // Click-to-load: nothing reaches the site until the reader asks for it.
+    const load = page.getByRole('button', { name: 'Load content from example.com' });
+
+    await expect(load).toBeVisible();
+    await expect(page.locator('[data-blok-testid="embed-frame"]')).toHaveCount(0);
+    expect(siteRequests).toEqual([]);
+
+    await load.click();
 
     const iframe = page.locator('[data-blok-testid="embed-frame"]');
 
     await expect(iframe).toBeVisible();
     await expect(iframe).toHaveAttribute('src', /example\.com\/page/);
+    // A loaded generic frame has no host line above it.
+    await expect(page.getByText('example.com', { exact: true })).toHaveCount(0);
 
     await expect(iframe).toHaveAttribute('sandbox', /.+/);
   });
@@ -119,6 +139,7 @@ test.describe('Generic embed + replace source', () => {
 
     await expect(embedItem).toBeVisible();
     await embedItem.click();
+    await page.getByRole('button', { name: 'Load content from example.com' }).click();
 
     const iframe = page.locator('[data-blok-testid="embed-frame"]');
 
@@ -169,6 +190,7 @@ test.describe('Generic embed + replace source', () => {
 
     await expect(embedItem).toBeVisible();
     await embedItem.click();
+    await page.getByRole('button', { name: 'Load content from example.com' }).click();
 
     await expect(page.locator('[data-blok-testid="embed-frame"]')).toBeVisible();
 
@@ -208,6 +230,7 @@ test.describe('Generic embed + replace source', () => {
     await target.click();
     await pasteText(target, 'https://example.com/page');
     await page.locator('[data-blok-item-name="paste-menu-embed"]').click();
+    await page.getByRole('button', { name: 'Load content from example.com' }).click();
     await expect(page.locator('[data-blok-testid="embed-frame"]')).toBeVisible();
 
     await page.getByText('Latte').click();
@@ -228,4 +251,59 @@ test.describe('Generic embed + replace source', () => {
     await expect(page.locator('[data-role="embed-figure"]')).toHaveCount(0);
     await expect(page.getByText('Latte')).toBeVisible();
   });
+
+  test('the load button works from the keyboard', async ({ page }) => {
+    await createBlok(page, {
+      blocks: [{ type: 'embed', data: { service: '', source: 'https://example.com/page', embed: 'https://example.com/page' } }],
+    }, EMBED_CONFIG);
+
+    const load = page.getByRole('button', { name: 'Load content from example.com' });
+
+    await load.focus();
+    await page.keyboard.press('Enter');
+
+    await expect(page.locator('[data-blok-testid="embed-frame"]')).toBeVisible();
+  });
+
+  test.describe('with a host frame check', () => {
+    const createBlokWithCheck = async (page: Page, verdict: string): Promise<void> => {
+      await resetBlok(page);
+      await page.waitForFunction(() => typeof window.Blok === 'function');
+      await page.evaluate(async ({ holder, answer }) => {
+        const blok = new window.Blok({
+          holder,
+          linkPaste: { allowGenericEmbed: true, checkEmbed: async () => ({ verdict: answer }) },
+        });
+
+        window.blokInstance = blok;
+        await blok.isReady;
+      }, { holder: HOLDER_ID, answer: verdict });
+    };
+
+    test('a blocked page becomes a bookmark with a notice instead of an embed', async ({ page }) => {
+      await createBlokWithCheck(page, 'blocked');
+      const editable = firstEditable(page);
+
+      await editable.click();
+      await pasteText(editable, 'https://example.com/page');
+      await page.locator('[data-blok-item-name="paste-menu-embed"]').click();
+
+      await expect(page.getByText('This site can’t be embedded safely. Added as a bookmark.')).toBeVisible();
+      await expect(page.locator('[data-blok-tool="bookmark"]')).toHaveCount(1);
+      await expect(page.locator('[data-blok-tool="embed"]')).toHaveCount(0);
+    });
+
+    test('an allowed page is embedded as usual', async ({ page }) => {
+      await createBlokWithCheck(page, 'allowed');
+      const editable = firstEditable(page);
+
+      await editable.click();
+      await pasteText(editable, 'https://example.com/page');
+      await page.locator('[data-blok-item-name="paste-menu-embed"]').click();
+
+      await expect(page.getByRole('button', { name: 'Load content from example.com' })).toBeVisible();
+      await expect(page.locator('[data-blok-tool="bookmark"]')).toHaveCount(0);
+    });
+  });
 });
+

@@ -4,6 +4,7 @@ import type { ModuleConfig } from '../../../../types-internal/module-config';
 import { Module } from '../../../__module';
 import { DATA_ATTR, INLINE_TOOLBAR_INTERFACE_VALUE } from '../../../constants';
 import { Dom as $ } from '../../../dom';
+import { IconDotsHorizontal } from '../../../icons';
 import { InlineToolEventManager } from '../../../inline-tools/services/inline-tool-event-manager';
 import { SelectionUtils } from '../../../selection/index';
 import type { InlineToolAdapter } from '../../../tools/inline';
@@ -20,6 +21,7 @@ import { isPromotedToTopLayer, promoteToTopLayer, removeFromTopLayer, TOP_LAYER_
  */
 import { InlineKeyboardHandler } from './keyboard-handler';
 import { InlineLifecycleManager } from './lifecycle-manager';
+import { groupIntoMoreMenu } from './more-menu';
 import { InlinePopoverBuilder } from './popover-builder';
 import { InlinePositioner } from './positioner';
 import { InlineSelectionValidator } from './selection-validator';
@@ -61,6 +63,8 @@ function destroyToolInstance(instance: IInlineTool): void {
   }
 }
 
+type RangePoints = Pick<Range, 'startContainer' | 'startOffset' | 'endContainer' | 'endOffset'>;
+
 /**
  * Inline toolbar with actions that modifies selected text fragment
  *
@@ -79,12 +83,10 @@ export class InlineToolbar extends Module<InlineToolbarNodes> {
    * Boundary points of the selection the user dismissed the toolbar for.
    * Cleared as soon as the selection becomes anything else.
    */
-  private dismissedRange: {
-    startContainer: Node;
-    startOffset: number;
-    endContainer: Node;
-    endOffset: number;
-  } | null = null;
+  private dismissedRange: RangePoints | null = null;
+
+  /** The range an undo or redo put back under the open toolbar. */
+  private restoredRange: RangePoints | null = null;
 
   /**
    * Returns true if a nested popover (like convert-to dropdown) is currently open
@@ -314,6 +316,33 @@ export class InlineToolbar extends Module<InlineToolbarNodes> {
   }
 
   /**
+   * Stay open over a range an undo or redo put back, with an open sub-menu,
+   * and read the pressed states again: the marks under them changed.
+   */
+  public followRestoredRange(): void {
+    const range = SelectionUtils.range;
+
+    this.restoredRange = range === null
+      ? null
+      : {
+        startContainer: range.startContainer,
+        startOffset: range.startOffset,
+        endContainer: range.endContainer,
+        endOffset: range.endOffset,
+      };
+    this.popover?.refreshActiveStates();
+  }
+
+  /**
+   * Whether `range` is the one {@link followRestoredRange} kept the toolbar
+   * open for. Its selectionchange must not close and rebuild the toolbar.
+   * @param range - the live range
+   */
+  public isRestoredRange(range: Range | null): boolean {
+    return range !== null && this.restoredRange !== null && InlineToolbar.samePoints(range, this.restoredRange);
+  }
+
+  /**
    * Open the Link tool's editing menu for a given anchor, prefilled with its
    * href. Selects the anchor contents first so the Link tool resolves the
    * existing <a> and mirrors the CMD+K shortcut path. Used by the link hover
@@ -340,6 +369,22 @@ export class InlineToolbar extends Module<InlineToolbarNodes> {
     new SelectionUtils().expandToTag(chip);
 
     await this.activateToolByShortcut('equation');
+  }
+
+  /**
+   * Open the Annotation tool's card for a hint: select the phrase so the tool
+   * edits it, then open its menu directly.
+   * @param hint - the annotated phrase that was clicked
+   */
+  public async editAnnotation(hint: HTMLElement): Promise<void> {
+    // Without the tool this would fall through to the plain inline toolbar.
+    if (!this.Blok.Tools.inlineTools.has('annotation')) {
+      return;
+    }
+
+    new SelectionUtils().expandToTag(hint);
+
+    await this.activateToolByShortcut('annotation');
   }
 
   /**
@@ -384,10 +429,14 @@ export class InlineToolbar extends Module<InlineToolbarNodes> {
       return false;
     }
 
-    return range.startContainer === dismissed.startContainer
-      && range.startOffset === dismissed.startOffset
-      && range.endContainer === dismissed.endContainer
-      && range.endOffset === dismissed.endOffset;
+    return InlineToolbar.samePoints(range, dismissed);
+  }
+
+  private static samePoints(range: RangePoints, other: RangePoints): boolean {
+    return range.startContainer === other.startContainer
+      && range.startOffset === other.startOffset
+      && range.endContainer === other.endContainer
+      && range.endOffset === other.endOffset;
   }
 
   /**
@@ -409,6 +458,7 @@ export class InlineToolbar extends Module<InlineToolbarNodes> {
       this.directMenuChildren = null;
     }
     this.directToolName = null;
+    this.restoredRange = null;
 
     this.destroyToolsInstances();
     this.opened = false;
@@ -628,8 +678,20 @@ export class InlineToolbar extends Module<InlineToolbarNodes> {
     }
 
     if (directName !== null) {
-      this.applyDirectMenuLook();
-      this.directMenuChildren?.onOpen?.();
+      const tethered = this.Blok.Tools.inlineTools.get(directName)?.tetheredMenu ?? false;
+      // Read before onOpen: the tool moves focus into its menu, and the selection goes with it.
+      const tetherTo = tethered ? SelectionUtils.rect : null;
+
+      // A tethered menu is centred on the text, so the tool fills it in first: its width must be final.
+      if (tethered) {
+        this.directMenuChildren?.onOpen?.();
+      }
+
+      this.applyDirectMenuLook(tetherTo);
+
+      if (!tethered) {
+        this.directMenuChildren?.onOpen?.();
+      }
     }
   }
 
@@ -639,7 +701,7 @@ export class InlineToolbar extends Module<InlineToolbarNodes> {
   private async buildPopoverItems(): Promise<PopoverItemParams[]> {
     const items = await this.popoverBuilder.build(this.tools);
 
-    return items.map((item) => {
+    const swapped = items.map((item): PopoverItemParams => {
       const name = 'name' in item ? item.name : undefined;
 
       if (name === undefined || !('children' in item) || !this.Blok.Tools.inlineTools.get(name)?.replacesToolbar) {
@@ -656,6 +718,8 @@ export class InlineToolbar extends Module<InlineToolbarNodes> {
         },
       };
     });
+
+    return groupIntoMoreMenu(swapped, { title: this.Blok.I18n.t('a11y.moreOptions'), icon: IconDotsHorizontal });
   }
 
   /**
@@ -926,7 +990,7 @@ export class InlineToolbar extends Module<InlineToolbarNodes> {
    * vertical menu box (matching the nested-popover look), so it reads as a
    * standalone menu rather than a one-item toolbar.
    */
-  private applyDirectMenuLook(): void {
+  private applyDirectMenuLook(tetherTo: DOMRect | null = null): void {
     const popoverEl = this.popover?.getElement?.();
 
     if (!popoverEl) {
@@ -964,6 +1028,10 @@ export class InlineToolbar extends Module<InlineToolbarNodes> {
         container.style.setProperty('--blok-direct-menu-origin-x', `${x}px`);
       }
 
+      if (tetherTo !== null) {
+        this.tetherDirectMenu(popoverEl, container, tetherTo);
+      }
+
       // Set last: the entrance animation starts the moment this matches.
       popoverEl.setAttribute('data-blok-inline-direct-menu', from);
     }
@@ -973,6 +1041,29 @@ export class InlineToolbar extends Module<InlineToolbarNodes> {
     if (items) {
       items.className = twMerge(items.className, 'block w-full pb-0');
     }
+  }
+
+  /**
+   * Hangs a tool's menu from the selected text: centred on it, a fixed gap
+   * away, with a stem drawn across the gap (popover-animation.css).
+   * @param popoverEl - the popover root, which draws the stem
+   * @param container - the menu box
+   * @param selection - the selected text's box
+   */
+  private tetherDirectMenu(popoverEl: HTMLElement, container: HTMLElement, selection: DOMRect): void {
+    const wrapper = this.nodes.wrapper;
+
+    if (!wrapper || selection.width === 0) {
+      return;
+    }
+
+    this.positioner.tether({
+      wrapper,
+      root: popoverEl,
+      selectionRect: selection,
+      wrapperRect: wrapper.getBoundingClientRect(),
+      menuHeight: container.offsetHeight,
+    });
   }
 
   /**

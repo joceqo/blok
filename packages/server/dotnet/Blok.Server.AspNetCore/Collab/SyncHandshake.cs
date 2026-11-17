@@ -225,7 +225,10 @@ internal sealed class SyncHandshake(
       return null;
     }
 
-    var name = identity.Name ?? context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+    // An empty Name falls back too: a null principal has no connection cap.
+    var name = string.IsNullOrEmpty(identity.Name)
+      ? context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+      : identity.Name;
 
     return string.IsNullOrEmpty(name) ? null : $"app:{name}";
   }
@@ -349,6 +352,22 @@ internal static class TicketPrincipal
 
     identity.AddClaim(new Claim(DocumentClaim, claims.Document));
     identity.AddClaim(new Claim(WriteClaim, claims.Write ? "true" : "false"));
+
+    return new ClaimsPrincipal(identity);
+  }
+}
+
+/// <summary>The principal the history hooks get for an agent call, which has no request.</summary>
+internal static class AgentPrincipal
+{
+  private const string AuthenticationType = "blok-agent";
+
+  internal static ClaimsPrincipal For(string user)
+  {
+    var identity = new ClaimsIdentity(AuthenticationType);
+
+    identity.AddClaim(new Claim(ClaimTypes.NameIdentifier, user));
+    identity.AddClaim(new Claim(ClaimTypes.Name, user));
 
     return new ClaimsPrincipal(identity);
   }

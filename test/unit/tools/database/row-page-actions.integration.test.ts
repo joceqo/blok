@@ -37,7 +37,8 @@ const doc = (options: { layoutFullWidth?: boolean; r1?: Record<string, unknown>;
     },
     content: ['r1', 'r2'],
   },
-  { id: 'r1', type: 'database-row', parent: 'db', data: { properties: { t: 'One' }, position: 'a0', ...options.r1 } },
+  // Edited once, so the ⋯ menu has its "Last edited" footer (the peek shows no word count, Round 35).
+  { id: 'r1', type: 'database-row', parent: 'db', lastEditedAt: Date.UTC(2026, 10, 15, 8, 5), data: { properties: { t: 'One' }, position: 'a0', ...options.r1 } },
   { id: 'r2', type: 'database-row', parent: 'db', data: { properties: { t: 'Two' }, position: 'a1' } },
 ];
 
@@ -171,6 +172,17 @@ describe('row page Actions menu', () => {
 
     expect(rows.size).toBe(3);
     expect(copy?.[1].fullWidth).toBe(true);
+  });
+
+  it('duplicates the page with its repositioned cover', async () => {
+    await make(doc({ r1: { cover: 'https://example.com/c.png', coverPosition: 30.01 } }));
+    await openRow('r1');
+    await openActions();
+    await click(menuItem('database-row-duplicate'));
+
+    const copy = [...(await rowData()).entries()].find(([id]) => id !== 'r1' && id !== 'r2');
+
+    expect(copy?.[1]).toMatchObject({ cover: 'https://example.com/c.png', coverPosition: 30.01 });
   });
 
   it('duplicates the page with its date reminder, ready to remind again', async () => {

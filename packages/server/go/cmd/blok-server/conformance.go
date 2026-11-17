@@ -5,8 +5,10 @@ package main
 import (
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/JackUait/blok/packages/server/go/blokserver"
+	"github.com/JackUait/blok/packages/server/go/v2/blokserver"
+	"github.com/JackUait/blok/packages/server/go/v2/blokserver/collabstore"
 )
 
 const conformanceOriginPrefix = "http://127.0.0.1:"
@@ -17,6 +19,21 @@ type conformanceArguments struct {
 	origin  string
 	port    int
 	journal bool
+	// restoreGuards is CollabEnforceRestoreGuards.
+	restoreGuards bool
+	// restoreTrashesPages is CollabRestoreTrashesPages.
+	restoreTrashesPages bool
+	// recordNotes keeps record notes in memory.
+	recordNotes bool
+	// stampAuthority is CollabStampAuthority.
+	stampAuthority bool
+	// keepAlive is CollabKeepAliveInterval, when set.
+	keepAlive *time.Duration
+	// fileBytes is FileBytesEnabled, and fileBytesMax FileBytesMaxBytes.
+	fileBytes    bool
+	fileBytesMax *int64
+	// filesCORS is FilesCORS.
+	filesCORS bool
 }
 
 // parseConformanceArguments is ConformanceArguments.Parse: it takes its two
@@ -32,6 +49,46 @@ func parseConformanceArguments(args []string) ([]string, conformanceArguments, s
 		}
 		if argument == "--conformance-journal" || argument == "-conformance-journal" {
 			parsed.journal = true
+			continue
+		}
+		if argument == "--conformance-restore-guards" {
+			parsed.restoreGuards = true
+			continue
+		}
+		if argument == "--conformance-restore-trashes-pages" {
+			parsed.restoreTrashesPages = true
+			continue
+		}
+		if argument == "--conformance-record-notes" {
+			parsed.recordNotes = true
+			continue
+		}
+		if argument == "--conformance-stamp-authority" {
+			parsed.stampAuthority = true
+			continue
+		}
+		if argument == "--conformance-file-bytes" {
+			parsed.fileBytes = true
+			continue
+		}
+		if argument == "--conformance-files-cors" {
+			parsed.filesCORS = true
+			continue
+		}
+		if text, ok := strings.CutPrefix(argument, "--conformance-file-bytes-max-bytes="); ok {
+			bytes, err := strconv.ParseInt(text, 10, 64)
+			if err != nil || !isDigits(text) {
+				return nil, parsed, "--conformance-file-bytes-max-bytes must be a whole number of bytes (got " + csQuote(text) + ")"
+			}
+			parsed.fileBytesMax = &bytes
+			continue
+		}
+		if text, ok := strings.CutPrefix(argument, "--conformance-keep-alive-ms="); ok {
+			milliseconds, err := strconv.Atoi(text)
+			if err != nil || !isDigits(text) {
+				return nil, parsed, "--conformance-keep-alive-ms must be a whole number of milliseconds (got " + csQuote(text) + ")"
+			}
+			parsed.keepAlive = new(time.Duration(milliseconds) * time.Millisecond)
 			continue
 		}
 		var value string
@@ -72,10 +129,31 @@ func isDigits(s string) bool {
 	return s != ""
 }
 
+// applyConformanceOptions sets what the flags change before New.
+func applyConformanceOptions(options *blokserver.Options, parsed conformanceArguments) {
+	if parsed.keepAlive != nil {
+		options.CollabKeepAliveInterval = parsed.keepAlive
+	}
+	options.CollabEnforceRestoreGuards = parsed.restoreGuards
+	options.CollabRestoreTrashesPages = parsed.restoreTrashesPages
+	options.CollabStampAuthority = parsed.stampAuthority
+	// Only ever on: the host flags may have opened them already.
+	options.FileBytesEnabled = options.FileBytesEnabled || parsed.fileBytes
+	options.FilesCORS = options.FilesCORS || parsed.filesCORS
+	if parsed.fileBytesMax != nil {
+		options.FileBytesMaxBytes = parsed.fileBytesMax
+	}
+	if parsed.recordNotes {
+		options.CollabRecordNotes = collabstore.NewMemoryRecordNotes()
+	}
+}
+
 // applyConformance wires the parsed flags into the server.
 func applyConformance(server *blokserver.Server, parsed conformanceArguments) {
 	if parsed.origin != "" {
 		server.UseConformanceOrigin(parsed.origin, parsed.port)
 	}
-	server.UseConformanceRooms(standInRooms{})
+	if parsed.journal {
+		server.UseConformanceJournal()
+	}
 }

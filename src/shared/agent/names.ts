@@ -4,16 +4,16 @@ import { RESERVED_NAMESPACES } from '../tool-manifest';
 export { RESERVED_NAMESPACES };
 
 export const CORE_COMMAND_NAMES: readonly CoreCommandName[] = [
-  'doc.read', 'doc.find', 'doc.setTitle', 'doc.setIcon',
+  'doc.read', 'doc.find', 'doc.setTitle', 'doc.setIcon', 'doc.setCover',
   'block.insert', 'block.update', 'block.delete', 'block.move', 'block.convert', 'block.duplicate',
   'text.insert', 'text.delete', 'text.replace', 'text.format',
   'markdown.insert', 'markdown.export', 'html.insert',
   'history.undo', 'history.redo',
-  'history.versions', 'history.read', 'history.changes', 'history.restore',
+  'history.versions', 'history.read', 'history.changes', 'history.restore', 'history.previewRestore',
 ];
 
 /** Calls on the host's version history; the executor runs them, not the planner. */
-export const VERSION_COMMANDS = ['history.versions', 'history.read', 'history.changes', 'history.restore'] as const;
+export const VERSION_COMMANDS = ['history.versions', 'history.read', 'history.changes', 'history.restore', 'history.previewRestore'] as const;
 
 export type VersionCommandName = typeof VERSION_COMMANDS[number];
 

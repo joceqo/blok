@@ -92,6 +92,32 @@ jobs:
             node_modules/.cache/blok-lint.tsbuildinfo
           key: ${{ steps.lint-cache.outputs.cache-primary-key }}
 
+      # The Rust conformance runs live here, not in a job of their own: a new
+      # job takes a slot of the 20-job cap, and Lint has the most room under
+      # the 7-minute budget. They come after TypeScript, whose include globs
+      # would otherwise sweep cargo's target directory.
+      - name: Cache Rust release build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/server/rust/target
+          key: rust-release-${{ runner.os }}-${{ hashFiles('packages/server/rust/Cargo.lock', 'packages/server/rust/rust-toolchain.toml') }}
+          restore-keys: rust-release-${{ runner.os }}-
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/server/go/go.mod
+          cache-dependency-path: packages/server/go/go.sum
+
+      - name: Test Rust conformance
+        run: node scripts/test-server-conformance.mjs --target rust
+
+      - name: Test journal interop between Go and Rust
+        run: node scripts/test-server-conformance.mjs --target interop-rust
+
   workflow-lint:
     name: Workflow Lint
     runs-on: ubuntu-latest
@@ -119,6 +145,23 @@ jobs:
       # needs the network.
       - name: Check nested action pins
         run: node scripts/check-action-pins.mjs
+
+      # Here, not in Server Security: this job is done in seconds, and Server
+      # Security's Go tests need the minutes. Still built and scanned on every
+      # push and pull request.
+      - name: Build server container image
+        run: docker build --tag blok-server:ci --file packages/server/Dockerfile .
+
+      - name: Scan server container image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
+        with:
+          scan-type: image
+          image-ref: blok-server:ci
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: 'false'
+          format: table
+          exit-code: '1'
 
   frontend-coverage:
     name: Frontend Coverage
@@ -276,22 +319,8 @@ jobs:
           format: table
           exit-code: '1'
 
-      - name: Build server container image
-        run: docker build --tag blok-server:ci --file packages/server/Dockerfile .
-
-      - name: Scan server container image
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
-        with:
-          scan-type: image
-          image-ref: blok-server:ci
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          ignore-unfixed: 'false'
-          format: table
-          exit-code: '1'
-
-      # The Go gates live here, not in a job of their own: this job has minutes
-      # to spare, and a new job would take the 20th slot at t=0 on main.
+      # The Go gates live here, not in a job of their own: a new job would take
+      # the 20th slot at t=0 on main.
       - name: Setup Node.js and Dependencies
         uses: ./.github/actions/setup-node-deps
 
@@ -323,11 +352,6 @@ jobs:
           go test -p 2 -covermode=atomic -coverprofile="$RUNNER_TEMP/go-coverage.out" ./...
           go tool cover -func="$RUNNER_TEMP/go-coverage.out" | tail -n 1
           node ../../../scripts/check-server-coverage.mjs --go "$RUNNER_TEMP/go-coverage.out"
-
-      # The suites the Go server passes whole so far. Add a suite as Go gains
-      # its features, and drop the list once Go passes them all.
-      - name: Test Go conformance
-        run: node scripts/test-server-conformance.mjs --target go --suite harness-contract --suite server-contract --suite routing-contract --suite host-cli-contract --suite http-host-contract --suite sync-transport-contract
 
       - name: Test Go module consumer and release build
         run: node scripts/test-server-go-module.mjs
@@ -390,11 +414,23 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # The MCP packages are checked in MCP Conformance, which has the minutes.
       - name: Test packed .NET packages
-        run: node scripts/test-server-packages.mjs
+        run: node scripts/test-server-packages.mjs --packages server
 
       - name: Test C# conformance
         run: node scripts/test-server-conformance.mjs --target csharp
+
+      # Here, not in Server Security: that job already carries the full Go
+      # suite, and this one has the minutes.
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/server/go/go.mod
+          cache-dependency-path: packages/server/go/go.sum
+
+      - name: Test journal interop between C# and Go
+        run: node scripts/test-server-conformance.mjs --target interop
 
       - name: Dry-run server artifacts
         run: |
@@ -415,6 +451,79 @@ jobs:
             test/unit/architecture/server-quality-gates.test.ts \
             test/unit/architecture/ci-critical-path-law.test.ts \
             test/unit/architecture/package-metadata-law.test.ts
+
+  # The MCP servers in Node, Go, Rust and C#, each driven by the same black-box
+  # suite. It waits for Server so it starts after the E2E shards took their
+  # slots: a job that starts at t=0 holds a slot of the 20-job cap while they
+  # queue. The live suite alone takes about three minutes, so it runs as a part
+  # of its own; C# starts each case's process slowly and runs its other suites in three parts.
+  # The embed suite builds a second program (each target's embed example), so
+  # it runs as a part of its own and a failed example build hides no other suite.
+  # All parts stay under seven minutes.
+  mcp-conformance:
+    name: MCP Conformance (${{ matrix.part }})
+    needs: [server]
+    # A red Server must not hide the MCP result.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { part: node, target: node, suites: '' }
+          - { part: 'go 1/3', target: go, suites: '--suite live' }
+          - { part: 'go 2/3', target: go, suites: '--suite embed' }
+          - { part: 'go 3/3', target: go, suites: '--suite protocol --suite tool-args --suite corpus --suite files-source --suite endpoint-source --suite cli --suite http --suite approvals --suite tickets --suite pages --suite handles --suite handles-shared --suite shutdown --suite timeouts' }
+          - { part: 'rust 1/3', target: rust, suites: '--suite live' }
+          - { part: 'rust 2/3', target: rust, suites: '--suite embed' }
+          - { part: 'rust 3/3', target: rust, suites: '--suite protocol --suite tool-args --suite corpus --suite files-source --suite endpoint-source --suite cli --suite http --suite approvals --suite tickets --suite pages --suite handles --suite handles-shared --suite shutdown --suite timeouts' }
+          - { part: 'csharp 1/5', target: csharp, suites: '--suite live' }
+          - { part: 'csharp 2/5', target: csharp, suites: '--suite corpus --suite tool-args --suite handles --suite pages' }
+          - { part: 'csharp 3/5', target: csharp, suites: '--suite protocol --suite tickets --suite approvals --suite http' }
+          - { part: 'csharp 4/5', target: csharp, suites: '--suite embed --suite handles-shared' }
+          - { part: 'csharp 5/5', target: csharp, suites: '--suite shutdown --suite cli --suite timeouts --suite files-source --suite endpoint-source' }
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js and Dependencies
+        uses: ./.github/actions/setup-node-deps
+
+      # The live suite's sync host is the Go conformance build, for every target.
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/server/go/go.mod
+          cache-dependency-path: packages/server/go/go.sum
+
+      - name: Setup .NET
+        if: matrix.target == 'csharp'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.x'
+
+      # Its own key: Lint's cache never built blok-mcp, and a cache saves only
+      # when its key missed. Falls back to Lint's for the shared crates.
+      - name: Cache Rust MCP release build
+        if: matrix.target == 'rust'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/server/rust/target
+          key: rust-mcp-release-${{ runner.os }}-${{ hashFiles('packages/server/rust/Cargo.lock', 'packages/server/rust/rust-toolchain.toml') }}
+          restore-keys: |
+            rust-mcp-release-${{ runner.os }}-
+            rust-release-${{ runner.os }}-
+
+      - name: Test MCP conformance
+        run: node scripts/test-mcp-conformance.mjs --target ${{ matrix.target }} ${{ matrix.suites }}
+
+      - name: Test packed MCP NuGets
+        if: matrix.part == 'csharp 3/5'
+        run: node scripts/test-server-packages.mjs --packages mcp
 
   # No `needs: build`: the tests that read build output run in
   # workspace-unit-tests instead (DIST_TESTS in vitest.config.ts).
@@ -467,6 +576,10 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Incremental data was most of the 2 GB Rust cache, which took 40-70s to
+    # restore and save. v2 in the cache key keeps the old cache from coming back.
+    env:
+      CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -499,16 +612,68 @@ jobs:
       - name: Run @bloklabs/server Unit Tests
         run: yarn workspace @bloklabs/server test
 
+
       # One path per vitest run: several paths in one run can silently drop one.
       - name: Run dist unit tests
         run: |
           yarn vitest run --project=unit test/unit/build/
           yarn vitest run --project=unit test/unit/architecture/react-fixture-import-map-law.test.ts
 
+      # The Rust gates live here, not in a job of their own: a new job takes a
+      # slot of the 20-job cap. They are this job's longest part.
+      # Cargo.toml is in the key: its test profile sets opt-levels, and a
+      # stale snapshot would rebuild those crates on every run.
+      - name: Cache Rust build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            packages/server/rust/target
+          key: rust-v3-${{ runner.os }}-${{ hashFiles('packages/server/rust/Cargo.lock', 'packages/server/rust/Cargo.toml', 'packages/server/rust/rust-toolchain.toml') }}
+          restore-keys: rust-v3-${{ runner.os }}-
+
+      - name: Check Rust formatting
+        working-directory: packages/server/rust
+        run: cargo fmt --check
+
+      # No incremental data: it was most of the cached target and CI never
+      # reuses it. Every Rust build step needs the same flags, or it rebuilds.
+      - name: Lint Rust server
+        working-directory: packages/server/rust
+        env:
+          CARGO_INCREMENTAL: '0'
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Install cargo-nextest
+        run: |
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/nextest.tar.gz" \
+            https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-x86_64-unknown-linux-gnu.tar.gz
+          echo "223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc  $RUNNER_TEMP/nextest.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/nextest.tar.gz" -C ~/.cargo/bin
+
+      # nextest runs every test binary at once. Line tables keep file:line in
+      # backtraces at a third of the target size.
+      - name: Test Rust server
+        working-directory: packages/server/rust
+        env:
+          CARGO_INCREMENTAL: '0'
+          CARGO_PROFILE_TEST_DEBUG: line-tables-only
+        run: cargo nextest run --locked --workspace
+
+      # nextest skips doc tests, so they run here.
+      - name: Test Rust doc examples
+        working-directory: packages/server/rust
+        env:
+          CARGO_INCREMENTAL: '0'
+          CARGO_PROFILE_TEST_DEBUG: line-tables-only
+        run: cargo test --locked --workspace --doc
+
   validate-spec-coverage:
     name: Validate Spec File Coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # About twice its longest green run since it gained Go conformance (159s).
+    timeout-minutes: 6
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -523,6 +688,19 @@ jobs:
 
       - name: Validate test categories
         run: yarn e2e:validate-categories
+
+      # Here, not in Server Security: this job is done in a minute, and the Go
+      # unit tests fill Server Security.
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/server/go/go.mod
+          cache-dependency-path: packages/server/go/go.sum
+
+      # Every suite, as the C# step runs them: server-go-parity-law fails if
+      # this step is narrowed again.
+      - name: Test Go conformance
+        run: node scripts/test-server-conformance.mjs --target go
 
   build:
     name: Build
@@ -614,13 +792,16 @@ jobs:
             shard: 1/1
           - project: chromium-default
             browser: chromium
-            shard: 1/3
+            shard: 1/4
           - project: chromium-default
             browser: chromium
-            shard: 2/3
+            shard: 2/4
           - project: chromium-default
             browser: chromium
-            shard: 3/3
+            shard: 3/4
+          - project: chromium-default
+            browser: chromium
+            shard: 4/4
           - project: chromium-undo
             browser: chromium
             shard: 1/2
@@ -736,6 +917,7 @@ jobs:
       - server-security
       - server
       - server-delivery
+      - mcp-conformance
       - unit-tests
       - workspace-unit-tests
       - validate-spec-coverage

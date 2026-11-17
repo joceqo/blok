@@ -97,7 +97,13 @@ const pick = async (option: string): Promise<void> => {
 };
 
 const pickDay = async (day: string): Promise<void> => {
-  await click(document.querySelector(`[data-blok-database-date-day="${day}"]`));
+  const cell = document.querySelector(`[data-blok-database-date-day="${day}"]`);
+
+  // A day off the shown month would be a silent no-op click.
+  if (cell === null) {
+    throw new Error(`Day ${day} is not on the picker grid.`);
+  }
+  await click(cell);
 };
 
 /** Any day on the grid the picker opens on (this month). */
@@ -116,7 +122,18 @@ const selectTableRows = async (...rowIds: string[]): Promise<void> => {
 };
 
 const openBulkDue = async (): Promise<void> => {
-  await click(q('[data-blok-database-table-selection-property][data-property-id="due"]'));
+  const button = q('[data-blok-database-table-selection-property][data-property-id="due"]');
+
+  if (button !== null) {
+    await click(button);
+  } else {
+    // A board has no bar: ⌘/, then Edit property › (notion-motion.md Round 12).
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '/', metaKey: true, bubbles: true, cancelable: true }));
+    await quiet();
+    await click([...document.querySelectorAll('[data-blok-popover-opened] [data-blok-testid="popover-item-title"]')]
+      .find((node) => node.textContent === 'Edit property')?.closest('[data-blok-popover-item]') ?? null);
+    await click(document.querySelector('[data-blok-item-name="database-bulk-edit-due"]'));
+  }
 };
 
 const zone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -402,6 +419,16 @@ describe('bulk edit of a date: Remind and the property default', () => {
     const toggleEnd = async (): Promise<void> => {
       await click(document.querySelector('[data-blok-database-date-end-toggle]'));
     };
+
+    // An empty first row opens the picker on today, so the October days must be on its grid.
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(2026, 9, 15, 12));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
 
     // research/35 §3: Notion gave every row today → today here, replacing their own dates. Not copied (data loss).
     it('bulk: an empty first row keeps every selected row\'s date', async () => {

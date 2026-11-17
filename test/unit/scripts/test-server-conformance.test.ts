@@ -75,16 +75,32 @@ describe('test-server-conformance', () => {
       .toContain('BLOK_CONFORMANCE_TARGET: options.target,');
   });
 
-  // Go has no Debug or Release build, so the flag would be silently ignored.
-  it('refuses --configuration for the Go target', () => {
-    const result = runWithoutDotnet(['--target', 'go', '--configuration', 'Release']);
+  // Go and Rust have no Debug or Release choice here, so the flag would be silently ignored.
+  it.each(['go', 'rust', 'interop-rust'])('refuses --configuration for the %s target', (target) => {
+    const result = runWithoutDotnet(['--target', target, '--configuration', 'Release']);
 
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');
     expect(result.stderr).toBe(
-      'Usage: node scripts/test-server-conformance.mjs [--target csharp|go] ' +
-      '[--suite NAME]... [--test-name-pattern PATTERN] [--configuration Debug|Release (csharp only)]\n',
+      'Usage: node scripts/test-server-conformance.mjs [--target csharp|go|interop|rust|interop-rust] ' +
+      '[--suite NAME]... [--test-name-pattern PATTERN] [--configuration Debug|Release (csharp and interop)]\n',
     );
+  });
+
+  // interop-rust builds Go first, then Rust, for the journal handover suite only.
+  it('runs only the interop suites for --target interop-rust', () => {
+    const result = runWithoutDotnet(['--target', 'interop-rust']);
+
+    expect(result.stdout).toContain('Conformance suites: all.');
+    expect(result.stderr).toContain('spawn go ENOENT');
+    expect(runWithoutDotnet(['--target', 'interop-rust', '--suite', 'server-contract']).status).toBe(1);
+  });
+
+  it('builds the Rust target with cargo', () => {
+    const result = runWithoutDotnet(['--target', 'rust']);
+
+    expect(result.stdout).toContain('Conformance suites: all.');
+    expect(result.stderr).toContain('spawn cargo ENOENT');
   });
 
   // CI runs Go on the suites it passes whole, so a name typo must not
@@ -111,10 +127,29 @@ describe('test-server-conformance', () => {
   });
 
   it('refuses an unknown target before any build', () => {
-    const result = runWithoutDotnet(['--target', 'rust']);
+    const result = runWithoutDotnet(['--target', 'ruby']);
 
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');
-    expect(result.stderr).toContain('[--target csharp|go]');
+    expect(result.stderr).toContain('[--target csharp|go|interop|rust|interop-rust]');
+  });
+
+  // interop builds both servers for the journal handover suite and nothing else.
+  it('runs only the interop suites for --target interop', () => {
+    const result = runWithoutDotnet(['--target', 'interop']);
+
+    expect(result.stdout).toContain('Conformance suites: all.');
+    expect(result.stderr).toContain('spawn dotnet ENOENT');
+    expect(runWithoutDotnet(['--target', 'interop', '--suite', 'journal-interop-contract']).stdout)
+      .toContain('Conformance suites: journal-interop-contract.');
+  });
+
+  it('refuses a single-server suite for --target interop, and the interop suite for one server', () => {
+    for (const args of [['--target', 'interop', '--suite', 'server-contract'], ['--target', 'go', '--suite', 'journal-interop-contract']]) {
+      const result = runWithoutDotnet(args);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('[--suite NAME]...');
+    }
   });
 });

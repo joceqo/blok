@@ -40,7 +40,7 @@ const innerOf = (file: string, selector: string): string[] =>
     .filter(rule => rule.selector === selector)
     .flatMap(rule => declarations(rule.body, '--blok-radius-inner'));
 
-const ROLES = 'dialog|surface|block|field|control-lg|control|control-sm|mark|pill|notch|table';
+const ROLES = 'dialog|surface|block|field|control-lg|control|control-sm|mark|pill|notch|table|checkbox|selection-bar';
 const ALLOWED = new RegExp(
   `^(?:0|50%|inherit|var\\(--blok-radius-(?:${ROLES})\\)|var\\(--blok-radius-inner, var\\(--blok-radius-(?:${ROLES})\\)\\))$`
 );
@@ -98,9 +98,8 @@ describe('database board', () => {
       .toEqual([inner('control')]);
   });
 
-  it('the column pill (4px, research/08) and the delete button are small controls', () => {
+  it('the column pill (4px, research/08) is a small control', () => {
     expect(radiusOf('database.css', '[data-blok-database-column-pill]')).toEqual([role('control-sm')]);
-    expect(radiusOf('database.css', '[data-blok-database-delete-column]')).toEqual([role('control-sm')]);
   });
 
   it('scrollbar thumbs are small controls', () => {
@@ -123,6 +122,8 @@ describe('database tabs and menus', () => {
 
   it('tab buttons are controls', () => {
     expect(radiusOf('database.css', '[data-blok-database-add-view]')).toEqual([role('control')]);
+    // notion-motion.md Round 9: the tab-bar "+" is round (radius 9999).
+    expect(radiusOf('database.css', '[data-blok-database-tab-bar] > [data-blok-database-add-view]')).toEqual([role('pill')]);
     expect(radiusOf('database.css', '[data-blok-database-tab-more]')).toEqual([role('control')]);
   });
 
@@ -154,8 +155,8 @@ describe('database tabs and menus', () => {
 describe('database list and drawer', () => {
   it('rows and row-like buttons are controls', () => {
     expect(radiusOf('database.css', '[data-blok-database-list-row]')).toEqual([role('control')]);
-    // A 30px property slot (research/07) is a control, not a small tag.
-    expect(radiusOf('database.css', '[data-blok-database-list-row-property]')).toEqual([role('control')]);
+    // A 30px property slot (research/07) is a control, not a small tag; so is the "Add Date" ghost (Notion 5, Round 26 §4).
+    expect(radiusOf('database.css', '[data-blok-database-list-row-property], [data-blok-database-list-row-ghost]')).toEqual([role('control')]);
     expect(radiusOf('database.css', '[data-blok-database-list-group-toggle], [data-blok-database-list-group-actions] button')).toEqual([role('control-sm')]);
     expect(radiusOf('database.css', '[data-blok-database-drawer-add-prop]')).toEqual([role('control')]);
     expect(radiusOf(

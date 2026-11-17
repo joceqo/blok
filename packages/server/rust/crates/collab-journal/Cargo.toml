@@ -1,0 +1,21 @@
+[package]
+name = "blok-collab-journal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal part of blok-mcp (collaboration journal). Not a stable API."
+publish = true
+
+[dependencies]
+blok-collab-operation.workspace = true
+blok-collab-workingset.workspace = true
+blok-dotnet.workspace = true
+sha2 = "0.10"
+
+[dev-dependencies]
+blok-jsjson = { path = "../jsjson" }
+
+[lints]
+workspace = true

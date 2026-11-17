@@ -60,6 +60,12 @@ export interface HandlerContext {
   plainData?: string;
   /** The DOM element that was the target of the paste event. */
   pasteTarget?: Element;
+  /** The block data came from `application/x-blok`, not a converted foreign flavour. */
+  fromBlokClipboard?: boolean;
+  /** The text came from an html flavour that says it is literal text, so no line is read as a separator. */
+  literalText?: boolean;
+  /** Set only by the editor's own html import, never by a clipboard: page ids are not checked. */
+  trustPageIds?: boolean;
 }
 
 /**

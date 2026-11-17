@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
-	"github.com/JackUait/blok/packages/server/go/internal/lib0"
-	"github.com/JackUait/blok/packages/server/go/internal/yjs/yjstest"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/lib0"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/yjs/yjstest"
 )
 
 const pinnedClient = 1000
@@ -293,8 +293,8 @@ func collabUpdates(t *testing.T) map[string][]byte {
 		}
 		updates[entry.Name()] = update
 	}
-	if len(updates) != 31 {
-		t.Fatalf("want 31 collab fixtures, got %d", len(updates))
+	if len(updates) != 37 {
+		t.Fatalf("want 37 collab fixtures, got %d", len(updates))
 	}
 	return updates
 }

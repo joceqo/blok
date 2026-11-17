@@ -53,6 +53,11 @@ public sealed class DocEndpointClientTests
   [Theory]
   [InlineData("Bearer secret\n")]
   [InlineData("Bearer\r\nsecret")]
+  [InlineData("Bearer a\u0000b")]
+  [InlineData("Bearer a\u0001b")]
+  [InlineData("Bearer a\u007fb")]
+  [InlineData("Bearer \u0100")]
+  [InlineData("Bearer \U0001F600")]
   public async Task RefusesAnAuthorizationValueTheHeaderCannotCarry(string authorization)
   {
     var recorder = new RequestRecorder(_ => Json("""{"blocks":[]}"""));
@@ -61,7 +66,108 @@ public sealed class DocEndpointClientTests
     var error = await Assert.ThrowsAsync<DocEndpointException>(
         () => client.LoadAsync("doc", CancellationToken.None));
 
-    Assert.Contains("Authorization", error.Message, StringComparison.Ordinal);
+    Assert.Equal("collab: the doc endpoint Authorization value cannot be sent as a header (a stray newline?).", error.Message);
+    Assert.Empty(recorder.Requests);
+  }
+
+  /// <summary>
+  /// U+0080..U+00FF go out as one Latin-1 byte each, as undici, Go and Rust
+  /// send them; .NET's default refuses any non-ASCII header value.
+  /// </summary>
+  [Fact]
+  public async Task SendsLatin1HeaderValuesAsOneByteEach()
+  {
+    using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+    listener.Start();
+    var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+    var heard = Task.Run(async () =>
+    {
+      using var socket = await listener.AcceptSocketAsync();
+      var head = new List<byte>();
+      var buffer = new byte[4096];
+
+      while (!Encoding.Latin1.GetString([.. head]).Contains("\r\n\r\n", StringComparison.Ordinal))
+      {
+        var read = await socket.ReceiveAsync(buffer);
+        if (read == 0)
+        {
+          break;
+        }
+        head.AddRange(buffer.AsSpan(0, read).ToArray());
+      }
+      await socket.SendAsync(Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"));
+
+      return head.ToArray();
+    });
+    using var client = new DocEndpointClient(new DocEndpointOptions(new Uri($"http://127.0.0.1:{port}/docs"), "Bearer caf\u00e9", Deadline));
+
+    await client.SaveAsync("doc", JsonNode.Parse("""{"blocks":[]}""")!, "v\u00ff", null, CancellationToken.None);
+    var head = await heard.WaitAsync(Deadline);
+
+    var text = Encoding.Latin1.GetString(head);
+
+    Assert.Contains("Authorization: Bearer caf\u00e9\r\n", text, StringComparison.Ordinal);
+    Assert.Contains("Blok-Doc-Version: v\u00ff\r\n", text, StringComparison.Ordinal);
+  }
+
+  /// <summary>
+  /// Spaces and tabs around a value are not part of it (RFC 9110 5.5): undici and Go's
+  /// net/http drop them, and TryAddWithoutValidation sent them.
+  /// </summary>
+  [Fact]
+  public async Task SendsHeaderValuesWithoutOuterSpacesAndTabs()
+  {
+    using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+    listener.Start();
+    var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+    var heard = Task.Run(async () =>
+    {
+      using var socket = await listener.AcceptSocketAsync();
+      var head = new List<byte>();
+      var buffer = new byte[4096];
+
+      while (!Encoding.Latin1.GetString([.. head]).Contains("\r\n\r\n", StringComparison.Ordinal))
+      {
+        var read = await socket.ReceiveAsync(buffer);
+        if (read == 0)
+        {
+          break;
+        }
+        head.AddRange(buffer.AsSpan(0, read).ToArray());
+      }
+      await socket.SendAsync(Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"));
+
+      return head.ToArray();
+    });
+    using var client = new DocEndpointClient(new DocEndpointOptions(new Uri($"http://127.0.0.1:{port}/docs"), " Bearer  x\t", Deadline));
+
+    await client.SaveAsync("doc", JsonNode.Parse("""{"blocks":[]}""")!, "\tv1 ", null, CancellationToken.None);
+    var text = Encoding.Latin1.GetString(await heard.WaitAsync(Deadline));
+
+    Assert.Contains("\r\nAuthorization: Bearer  x\r\n", text, StringComparison.Ordinal);
+    Assert.Contains("\r\nBlok-Doc-Version: v1\r\n", text, StringComparison.Ordinal);
+  }
+
+  /// <summary>
+  /// The version comes from the endpoint's own answer. On .NET 10
+  /// TryAddWithoutValidation sends a CR or LF in it as a new header line.
+  /// </summary>
+  [Theory]
+  [InlineData("v1\r\nX-Injected: 1")]
+  [InlineData("v1\nX-Injected: 1")]
+  [InlineData("v1\0")]
+  [InlineData("v1\u0001")]
+  [InlineData("v1\u007f")]
+  [InlineData("v\u0100")]
+  public async Task RefusesASaveVersionTheHeaderCannotCarry(string version)
+  {
+    var recorder = new RequestRecorder(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+    using var client = CreateClient(recorder);
+
+    var error = await Assert.ThrowsAsync<DocEndpointException>(
+        () => client.SaveAsync("doc", JsonNode.Parse("""{"blocks":[]}""")!, version, null, CancellationToken.None));
+
+    Assert.Equal("collab: the doc endpoint version cannot be sent as a header.", error.Message);
     Assert.Empty(recorder.Requests);
   }
 
@@ -346,10 +452,8 @@ public sealed class DocEndpointClientTests
     using var client = CreateClient(recorder, timeout: TimeSpan.FromMilliseconds(200));
 
     var load = client.LoadAsync("doc", CancellationToken.None);
-    var finished = await Task.WhenAny(load, Task.Delay(Deadline));
 
-    Assert.Same(load, finished);
-    var error = await Assert.ThrowsAsync<DocEndpointException>(() => load);
+    var error = await Assert.ThrowsAsync<DocEndpointException>(() => load.WaitAsync(Deadline));
     Assert.Contains("timed out", error.Message, StringComparison.Ordinal);
     Assert.Null(error.StatusCode);
   }
@@ -368,10 +472,8 @@ public sealed class DocEndpointClientTests
 
     var load = client.LoadAsync("doc", cancellation.Token);
     cancellation.Cancel();
-    var finished = await Task.WhenAny(load, Task.Delay(Deadline));
 
-    Assert.Same(load, finished);
-    await Assert.ThrowsAnyAsync<OperationCanceledException>(() => load);
+    await Assert.ThrowsAnyAsync<OperationCanceledException>(() => load.WaitAsync(Deadline));
   }
 
   /// <summary>
@@ -539,6 +641,43 @@ public sealed class DocEndpointClientTests
     return string.Concat(Enumerable.Repeat("""{"a":""", depth)) +
         "1" +
         new string('}', depth);
+  }
+
+  /// <summary>
+  /// The caller's cancel passes through as .NET's own text, and the text
+  /// depends on when it came: a token already cancelled as the call starts
+  /// reads "A task was canceled.", one cancelled while the request waits
+  /// "The operation was canceled.". Real sockets, so it is HttpClient's text.
+  /// Go and Rust print these at the room's log lines.
+  /// </summary>
+  [Theory]
+  [InlineData(true, "A task was canceled.")]
+  [InlineData(false, "The operation was canceled.")]
+  public async Task ACancelledSaveReadsAsDotNetsCancelText(bool before, string text)
+  {
+    using var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+    listener.Start();
+    // Accepted and never answered.
+    var accepted = listener.AcceptSocketAsync();
+    var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    using var client = new DocEndpointClient(new DocEndpointOptions(
+        new Uri($"http://127.0.0.1:{port}/docs"), "", TimeSpan.FromSeconds(30)));
+    using var source = new CancellationTokenSource();
+
+    if (before)
+    {
+      source.Cancel();
+    }
+    else
+    {
+      source.CancelAfter(TimeSpan.FromMilliseconds(200));
+    }
+
+    var error = await Assert.ThrowsAsync<TaskCanceledException>(
+        () => client.SaveAsync("doc", new JsonObject(), null, null, source.Token));
+
+    Assert.Equal(text, error.Message);
+    GC.KeepAlive(accepted);
   }
 
   private static DocEndpointClient CreateClient(

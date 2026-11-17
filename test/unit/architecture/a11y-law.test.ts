@@ -105,6 +105,9 @@ const FOCUSABLE_SEPARATOR_ATTRS = [
  * supplies the name, so a reviewer can re-verify it without re-deriving it.
  */
 const INDIRECTLY_NAMED: Record<string, string> = {
+  'components/utils/annotation-focus.ts » hint » button':
+    'DELIBERATE — the hint is an inline span the block already rendered; its name is the ' +
+    'annotated phrase it contains, which this helper never creates',
   'playground/history-drawer.ts » tab » tab':
     'DELIBERATE — tabPair() passes its label to element(), which sets node.textContent ' +
     'before returning the tab',
@@ -134,6 +137,9 @@ const EXEMPT_STATE_WITHOUT_ROLE: Record<string, string> = {};
  * quote the source's own justification — "we forgot" is not one.
  */
 const EXEMPT_NON_MODAL_DIALOGS: Record<string, string> = {
+  'components/modules/pageTitle/cover-control.ts » dialog':
+    'DELIBERATE — "Non-modal: anchored to Change, which carries aria-expanded; the page stays ' +
+    'reachable", as the audio cover picker it follows',
   'tools/audio/cover-picker.ts » dialog':
     'DELIBERATE — "The picker is an anchored, non-modal dialog, so it advertises its open ' +
     'state on the trigger button (mirrors the alt-text popover) rather than inert-ing" the ' +
@@ -517,7 +523,14 @@ describe('Accessibility Law', () => {
   });
 
   describe('a11y i18n ledger', () => {
-    const declared = new Set(Object.keys(parseLocale(EN_LOCALE_FILE)).filter((key) => key.startsWith('a11y.')));
+    // A call with { count } reads key_one / key_other, but only when key_other exists
+    // (lightweight-i18n.ts), so a plural set counts under its base key only then.
+    const a11yKeys = Object.keys(parseLocale(EN_LOCALE_FILE)).filter((key) => key.startsWith('a11y.'));
+    const declared = new Set(a11yKeys.map((key) => {
+      const base = key.replace(/_(zero|one|two|few|many|other)$/, '');
+
+      return a11yKeys.includes(`${base}_other`) ? base : key;
+    }));
     const referenced = referencedA11yKeys();
 
     it('has both sides of the ledger to compare (self-check)', () => {

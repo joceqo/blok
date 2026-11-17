@@ -32,6 +32,67 @@ public sealed class BlokAgentPageCreateTests
   }
 
   [Fact]
+  public async Task AStoredBatchAsksTheCreatorWithARequestThatNamesNoParentAndSuggestsAnId()
+  {
+    var pages = new RequestCreator();
+    var executor = new BlokAgentExecutor(Runtime.Value);
+
+    var execution = await executor.ExecuteAsync(Empty, InsertPage, Actor, Options(pages));
+
+    Assert.True(Ok(execution), execution.ResultJson);
+    var request = Assert.Single(pages.Requests);
+    Assert.Equal(Actor, request.Actor);
+    Assert.Null(request.ParentDocumentId);
+    Assert.Null(request.Principal);
+    Assert.Matches("^[A-Za-z0-9_-]{10}$", request.SuggestedPageId);
+    Assert.Equal("made-1", PageIdOf(execution.DocumentJson!, "np"));
+  }
+
+  [Fact]
+  public async Task EachPageGetsItsOwnSuggestedId()
+  {
+    var pages = new RequestCreator();
+    var executor = new BlokAgentExecutor(Runtime.Value);
+    const string Two = """{"commands":[{"name":"block.insert","args":{"type":"page","id":"a"}},{"name":"block.insert","args":{"type":"page","id":"b"}}]}""";
+
+    var execution = await executor.ExecuteAsync(Empty, Two, Actor, Options(pages));
+
+    Assert.True(Ok(execution), execution.ResultJson);
+    Assert.Equal(2, pages.Requests.Select(request => request.SuggestedPageId).Distinct().Count());
+  }
+
+  [Fact]
+  public async Task ACreatorWithOnlyTheActorOverloadIsStillAskedThroughTheRequest()
+  {
+    IBlokPageCreator pages = new Creator();
+
+    var pageId = await pages.CreateAsync(new BlokPageCreateRequest(Actor) { ParentDocumentId = "parent", Principal = "alice", SuggestedPageId = "suggested1" });
+
+    Assert.Equal("host-1", pageId);
+    Assert.Equal([Actor], ((Creator)pages).Actors);
+  }
+
+  [Fact]
+  public async Task InARoomTheCreatorIsToldTheRoomAsTheParent()
+  {
+    var endpoint = new FakeDocEndpoint();
+    endpoint.HoldsDocument(RoomId, JsonNode.Parse(Empty)!.AsObject());
+    var time = new ManualTimeProvider();
+    var converter = new CollabDocConverter(time, RichTextRuntime.Reader);
+    var rooms = new CollabRoomManager(new FakeWorkingSetStore(), endpoint, converter, new CollabRoomOptions(), time, _ => { }, new FakeCollabOperationStore());
+    var executor = new BlokAgentExecutor(Runtime.Value, rooms, converter);
+    var pages = new RequestCreator();
+
+    var inserted = await executor.ExecuteInRoomAsync(RoomId, InsertPage, Actor, Options(pages));
+
+    Assert.True(Ok(inserted), inserted.ResultJson);
+    var request = Assert.Single(pages.Requests);
+    Assert.Equal(RoomId, request.ParentDocumentId);
+    Assert.Equal(Actor, request.Actor);
+    Assert.Equal("made-1", PageIdOf((await rooms.StateAsync(RoomId)).Json, "np"));
+  }
+
+  [Fact]
   public async Task ThePageIdTheAgentWritesNeverWinsOverTheHostsPage()
   {
     var pages = new Creator();
@@ -255,6 +316,42 @@ public sealed class BlokAgentPageCreateTests
     Assert.Empty(JsonNode.Parse((await rooms.StateAsync(RoomId)).Json)!["blocks"]!.AsArray());
   }
 
+  // R11/T10: the room read that decides whether the made pages are orphans ignores the
+  // caller's cancel, so a cancelled call still lists them. The Go executor has the same test.
+  [Fact]
+  public async Task TheOrphanCheckReadsTheRoomAfterTheCallerCancels()
+  {
+    var endpoint = new FakeDocEndpoint();
+    endpoint.HoldsDocument(RoomId, JsonNode.Parse(Empty)!.AsObject());
+    var time = new ManualTimeProvider();
+    var converter = new CollabDocConverter(time, RichTextRuntime.Reader);
+    var rooms = new CollabRoomManager(new FakeWorkingSetStore(), endpoint, converter, new CollabRoomOptions(), time, _ => { }, new FakeCollabOperationStore());
+    using var caller = new CancellationTokenSource();
+    var executor = new BlokAgentExecutor(new CancelOnExecute(Runtime.Value, caller), rooms, converter);
+    var pages = new Creator();
+
+    var execution = await executor.ExecuteInRoomAsync(RoomId, InsertPage, Actor, Options(pages), caller.Token);
+
+    Assert.True(caller.IsCancellationRequested);
+    Assert.Equal(["host-1"], pages.Created);
+    AssertOrphaned(execution, "CANCELLED");
+  }
+
+  /// <summary>Lets the page count run, then cancels the caller's token when the batch runs.</summary>
+  private sealed class CancelOnExecute(IBlokRuntime inner, CancellationTokenSource caller) : IBlokRuntime
+  {
+    public ValueTask<string> InvokeAsync(string operation, string inputJson, TimeSpan? timeout = null, CancellationToken cancellationToken = default)
+    {
+      if (operation != "agentExecute")
+      {
+        return inner.InvokeAsync(operation, inputJson, timeout, cancellationToken);
+      }
+
+      caller.Cancel();
+      throw new OperationCanceledException(caller.Token);
+    }
+  }
+
   [Theory]
   [InlineData(true)]
   [InlineData(false)]
@@ -387,6 +484,25 @@ public sealed class BlokAgentPageCreateTests
 
   private sealed class ResolveOnly : IBlokPageTarget
   {
+    public ValueTask<BlokPageLocation?> ResolveAsync(string pageId, BlokAgentActor actor, CancellationToken cancellationToken = default) =>
+        ValueTask.FromResult<BlokPageLocation?>(null);
+  }
+
+  /// <summary>A creator that takes the request overload; the actor overload must not be called.</summary>
+  private sealed class RequestCreator : IBlokPageCreator
+  {
+    internal List<BlokPageCreateRequest> Requests { get; } = [];
+
+    public ValueTask<string?> CreateAsync(BlokAgentActor actor, CancellationToken cancellationToken = default) =>
+        throw new InvalidOperationException("The executor must ask through the request.");
+
+    public ValueTask<string?> CreateAsync(BlokPageCreateRequest request, CancellationToken cancellationToken = default)
+    {
+      Requests.Add(request);
+
+      return ValueTask.FromResult<string?>($"made-{Requests.Count}");
+    }
+
     public ValueTask<BlokPageLocation?> ResolveAsync(string pageId, BlokAgentActor actor, CancellationToken cancellationToken = default) =>
         ValueTask.FromResult<BlokPageLocation?>(null);
   }

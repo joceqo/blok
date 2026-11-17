@@ -4,9 +4,11 @@ import {
   isGroupCollapsed,
   isGroupHidden,
   COLOR_RULE_LAYOUTS,
+  MATCH_OPTION_COLOR,
   resolveRowColors,
   sortFromHeader,
   withGroupFlags,
+  isGroupPinned,
 } from '../../../../src/tools/database/view-data';
 import { resolveLoadLimit } from '../../../../src/tools/database/view-settings';
 import type { DatabaseRow, DatabaseViewConfig, PropertyDefinition } from '../../../../src/tools/database/types';
@@ -35,10 +37,27 @@ describe('view-data', () => {
   });
 
   describe('conditional color', () => {
-    it('allows the property types Notion lists (research/05 §6.2)', () => {
+    it('allows the property types Notion lists (research/05 §6.2, notion-motion.md Round 20 §4)', () => {
       expect(COLOR_RULE_TYPES).toEqual([
         'title', 'text', 'number', 'select', 'multiSelect', 'status', 'date', 'person', 'checkbox', 'formula', 'relation', 'rollup',
+        'createdBy', 'createdTime', 'lastEditedBy', 'lastEditedTime',
       ]);
+    });
+
+    it('colors by who made or last edited a row and when, read from the row meta', () => {
+      const typed: PropertyDefinition[] = [
+        ...schema,
+        { id: 'cb', name: 'Created by', type: 'createdBy', position: 'a2' },
+        { id: 'ct', name: 'Created time', type: 'createdTime', position: 'a3' },
+        { id: 'lb', name: 'Last edited by', type: 'lastEditedBy', position: 'a4' },
+        { id: 'lt', name: 'Last edited time', type: 'lastEditedTime', position: 'a5' },
+      ];
+      const row: DatabaseRow = { id: 'a', position: 'a0', properties: {}, meta: { createdBy: 'u1', createdAt: 1, lastEditedBy: 'u1', lastEditedAt: 1 } };
+      const rule = (propertyId: string): DatabaseViewConfig => view({ colorRules: [{ id: 'c', propertyId, operator: 'is_not_empty', value: null, color: 'red' }] });
+
+      for (const id of ['cb', 'ct', 'lb', 'lt']) {
+        expect(resolveRowColors([row], rule(id), typed).get('a'), id).toEqual({ row: 'red', cells: {} });
+      }
     });
 
     it('tints matching rows; the first matching rule wins', () => {
@@ -59,6 +78,68 @@ describe('view-data', () => {
 
       expect(resolveRowColors(rows, view({ colorRules: [rule] }), schema).get('a')).toEqual({ cells: { num: 'blue' } });
       expect(resolveRowColors(rows, view({ type: 'list', colorRules: [rule] }), schema).get('a')).toEqual({ row: 'blue', cells: {} });
+    });
+
+    it('paints each cell with the first matching rule in the list, row rules included (notion-motion.md Round 20 §4)', () => {
+      const typed: PropertyDefinition[] = [...schema, { id: 'sel', name: 'Select', type: 'select', position: 'a2', config: { options: [{ id: 'o1', label: 'One', position: 'a0' }] } }];
+      const row: DatabaseRow = { id: 'a', position: 'a0', properties: { num: 5, sel: 'o1' } };
+      const cellRule = { id: 'c1', propertyId: 'sel', operator: 'is_not_empty', value: null, color: 'blue', applyTo: 'property' as const };
+      const rowRule = { id: 'c2', propertyId: 'num', operator: 'is_not_empty', value: null, color: 'green' };
+
+      expect(resolveRowColors([row], view({ colorRules: [rowRule, cellRule] }), typed).get('a')).toEqual({ row: 'green', cells: {} });
+      expect(resolveRowColors([row], view({ colorRules: [cellRule, rowRule] }), typed).get('a')).toEqual({ row: 'green', cells: { sel: 'blue' } });
+    });
+
+    it('paints a "Match option" Select rule with the row\'s option colour (notion-motion.md Round 20 §4)', () => {
+      const typed: PropertyDefinition[] = [...schema, {
+        id: 'sel', name: 'Select', type: 'select', position: 'a2',
+        config: { options: [{ id: 'o1', label: 'Red', color: 'yellow', position: 'a0' }, { id: 'o2', label: 'Plain', position: 'a1' }] },
+      }];
+      const rule = { id: 'c', propertyId: 'sel', operator: 'is_not_empty', value: null, color: MATCH_OPTION_COLOR };
+      const one: DatabaseRow = { id: 'a', position: 'a0', properties: { sel: 'o1' } };
+      const two: DatabaseRow = { id: 'b', position: 'a1', properties: { sel: 'o2' } };
+      const colors = resolveRowColors([one, two], view({ colorRules: [rule] }), typed);
+
+      expect(colors.get('a')).toEqual({ row: 'yellow', cells: {} });
+      expect(colors.get('b')).toEqual({ row: 'default', cells: {} });
+      expect(resolveRowColors([one], view({ colorRules: [{ ...rule, applyTo: 'property' }] }), typed).get('a')).toEqual({ cells: { sel: 'yellow' } });
+    });
+
+    // notion-motion.md Round 21 §1: Status reads "Match option", Multi-select "Match first option".
+    it('paints a "Match option" Status rule and a Multi-select rule with the first picked option\'s colour', () => {
+      const typed: PropertyDefinition[] = [...schema,
+        { id: 'st', name: 'Stage', type: 'status', position: 'a2', config: { options: [{ id: 's1', label: 'Doing', color: 'blue', position: 'a0', groupId: 'inProgress' }] } },
+        { id: 'ms', name: 'Tags', type: 'multiSelect', position: 'a3', config: { options: [{ id: 'm1', label: 'One', color: 'red', position: 'a0' }, { id: 'm2', label: 'Two', color: 'green', position: 'a1' }] } },
+      ];
+      const row: DatabaseRow = { id: 'a', position: 'a0', properties: { st: 's1', ms: ['gone', 'm2', 'm1'] } };
+      const bare: DatabaseRow = { id: 'b', position: 'a1', properties: {} };
+      const rule = (propertyId: string): DatabaseViewConfig => view({ colorRules: [{ id: 'c', propertyId, operator: 'is_not_empty', value: null, color: MATCH_OPTION_COLOR }] });
+
+      expect(resolveRowColors([row, bare], rule('st'), typed).get('a')).toEqual({ row: 'blue', cells: {} });
+      expect(resolveRowColors([row, bare], rule('ms'), typed).get('a')).toEqual({ row: 'green', cells: {} });
+      expect(resolveRowColors([row, bare], rule('st'), typed).has('b')).toBe(false);
+      expect(resolveRowColors([row, bare], rule('ms'), typed).has('b')).toBe(false);
+    });
+
+    // notion-motion.md Round 21 §1: Status colour rules offer Is empty / Is not empty.
+    it('paints a Status emptiness rule only on rows that match it', () => {
+      const typed: PropertyDefinition[] = [...schema, { id: 'st', name: 'Stage', type: 'status', position: 'a2', config: { options: [{ id: 's1', label: 'Done', position: 'a0', groupId: 'complete' }] } }];
+      const set: DatabaseRow = { id: 'a', position: 'a0', properties: { st: 's1' } };
+      const bare: DatabaseRow = { id: 'b', position: 'a1', properties: {} };
+      const rule = (operator: string): DatabaseViewConfig => view({ colorRules: [{ id: 'c', propertyId: 'st', operator, value: null, color: 'green' }] });
+
+      expect([...resolveRowColors([set, bare], rule('is_not_empty'), typed).keys()]).toEqual(['a']);
+      expect([...resolveRowColors([set, bare], rule('is_empty'), typed).keys()]).toEqual(['b']);
+    });
+
+    // notion-motion.md Round 21 §1: a new Checkbox rule starts on "is" with no value; it must paint nothing until one is picked.
+    it('paints nothing for a Checkbox "is" rule with no value', () => {
+      const typed: PropertyDefinition[] = [...schema, { id: 'cb', name: 'Done', type: 'checkbox', position: 'a2' }];
+      const on: DatabaseRow = { id: 'a', position: 'a0', properties: { cb: true } };
+      const off: DatabaseRow = { id: 'b', position: 'a1', properties: { cb: false } };
+      const v = view({ colorRules: [{ id: 'c', propertyId: 'cb', operator: 'equals', value: null, color: 'green' }] });
+
+      expect(resolveRowColors([on, off], v, typed).size).toBe(0);
     });
 
     it('colors by status, person, relation, formula and rollup, as Notion does (research/05 §6.2)', () => {
@@ -118,6 +199,16 @@ describe('view-data', () => {
       expect(withGroupFlags(v, ['k2'], { hidden: true })).toEqual({ hiddenGroups: [{ id: 'k1' }, { id: 'k2' }] });
       expect(withGroupFlags(v, ['k1'], { hidden: false })).toEqual({ hiddenGroups: [] });
       expect(withGroupFlags(v, ['k3', 'k4'], { collapsed: true })).toEqual({ collapsedGroups: [{ id: 'k3' }, { id: 'k4' }] });
+    });
+
+    // notion-motion.md Round 24 §1: a view pins groups by key, as it hides them.
+    it('pins and unpins groups', () => {
+      const v = view({ pinnedGroups: [{ id: 'k1' }] });
+
+      expect(isGroupPinned(v, 'k1')).toBe(true);
+      expect(isGroupPinned(v, 'k2')).toBe(false);
+      expect(withGroupFlags(v, ['k2'], { pinned: true })).toEqual({ pinnedGroups: [{ id: 'k1' }, { id: 'k2' }] });
+      expect(withGroupFlags(v, ['k1'], { pinned: false })).toEqual({ pinnedGroups: [] });
     });
   });
 

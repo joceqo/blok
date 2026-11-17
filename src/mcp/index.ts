@@ -1,46 +1,51 @@
-import { readFile } from 'node:fs/promises';
+import { setImmediate as afterAnswers } from 'node:timers/promises';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
-
-import type { StdioServerHandle } from '@modelcontextprotocol/server/stdio';
 
 import { getBlokVersion } from '../components/utils/version';
 
 import { loadAuthorizeHook } from './auth/authorize';
 import { checkOptionSafety, McpConfigError, parseMcpArgs } from './config';
-import { parseCustomToolsFile, parseOverridesFile } from './custom-tools-file';
-import { startHttpServer } from './http';
+import { readManifestFiles } from './contract-flags';
+import { createPageWebhook } from './create-page';
+import { deferredFilesHandleStore } from './handle-store-files';
+import { McpListenError, startHttpServer } from './http';
 import { DEFAULTS } from './options';
 import type { BlokMcpOptions } from './options';
 import { buildSdkServer } from './sdk-server';
-import { assembleMcp } from './server';
+import { assembleMcp, STOP_DRAIN_MS } from './server';
+import { wellFormedIdsStdio } from './wire-ids';
 
-export type { BlokMcpOptions } from './options';
+export type {
+  BlokDocumentCaller, BlokMcpDocumentSource, BlokMcpHandleLease, BlokMcpHandleRecord, BlokMcpHandleStore, BlokMcpOptions, BlokPageCreateRequest,
+} from './options';
+export { BlokMcpSourceError } from './sources/custom';
+export type { BlokMcpSourceErrorKind } from './sources/custom';
+export { createBlok } from './embed';
+export type { BlokCallerIdentity, BlokEmbedOptions, BlokMcp, BlokMcpHandlers, BlokMcpHostNames, BlokMcpHostSurface, CreateBlokHooks } from './embed';
 
-const readJsonFile = async (path: string): Promise<unknown> => {
-  const text = await readFile(path, 'utf-8').catch((thrown: unknown) => {
-    if (thrown instanceof Error && 'code' in thrown && thrown.code === 'ENOENT') {
-      throw new McpConfigError(`Cannot read "${path}": no such file`);
-    }
-    throw thrown;
-  });
-
-  try {
-    const value: unknown = JSON.parse(text);
-
-    return value;
-  } catch (thrown) {
-    if (thrown instanceof SyntaxError) {
-      throw new McpConfigError(`Invalid JSON in "${path}": ${thrown.message}`);
-    }
-    throw thrown;
+// A pipe on macOS takes writes later, so process.exit would cut off an answer the client reads slowly.
+const flushStdout = async (graceMs: number): Promise<void> => {
+  if (process.stdout.writableLength === 0) {
+    return;
   }
+  const grace: { timer?: ReturnType<typeof setTimeout> } = {};
+
+  await Promise.race([
+    new Promise<void>((resolve) => {
+      process.stdout.write('', () => resolve());
+    }),
+    new Promise<void>((resolve) => {
+      grace.timer = setTimeout(resolve, graceMs);
+    }),
+  ]);
+  clearTimeout(grace.timer);
 };
 
 export const createBlokMcpServer = (options: BlokMcpOptions): { start(): Promise<void>; stop(): Promise<void> } => {
   checkOptionSafety(options);
 
   const assembled = assembleMcp(options);
-  const state: { serving?: StdioServerHandle; starting?: Promise<void>; stopping?: Promise<void> } = {};
+  const state: { serving?: { close(graceMs: number): Promise<void> }; starting?: Promise<void>; stopping?: Promise<void> } = {};
   const principal = options.principal ?? DEFAULTS.principal;
 
   const startHttp = async (listen: string): Promise<void> => {
@@ -76,21 +81,33 @@ export const createBlokMcpServer = (options: BlokMcpOptions): { start(): Promise
       if (options.auth.kind !== 'none') {
         throw new McpConfigError('OAuth authentication needs the HTTP transport (--http)');
       }
-      state.serving = serveStdio(() => buildSdkServer({
+      const stdio = serveStdio(() => buildSdkServer({
         tools: assembled.tools,
         instructions: assembled.instructions,
         dispatch: assembled.dispatch,
         caller: clientName => ({ principal, clientName, scopes: null }),
         version: getBlokVersion(),
-      }));
+      }), { transport: wellFormedIdsStdio() });
+
+      state.serving = {
+        close: async (graceMs) => {
+          await stdio.close();
+          await flushStdout(graceMs);
+        },
+      };
     },
     stop: () => {
       state.stopping ??= (async () => {
+        const begun = Date.now();
+
+        // Work first, then the transport: closing it first would drop the answers of calls in flight.
         try {
           await state.starting?.catch(() => undefined);
-          await state.serving?.close();
-        } finally {
           await assembled.stop();
+          // The SDK writes an answer a few microtasks after its call settles.
+          await afterAnswers();
+        } finally {
+          await state.serving?.close(Math.max(0, STOP_DRAIN_MS - (Date.now() - begun)));
         }
       })();
 
@@ -116,19 +133,26 @@ const stopOnShutdown = (server: { stop(): Promise<void> }, watchStdin: boolean):
   }
 };
 
+/** The blok-mcp flags and env as options, with the --authorize and --create-page hooks, the --handle-store and manifest files loaded. */
+export const parseBlokMcpArgs = async (argv: string[], env: NodeJS.ProcessEnv): Promise<BlokMcpOptions> => {
+  const { options, files } = parseMcpArgs(argv, env);
+  const authorize = files.authorize === undefined ? undefined : await loadAuthorizeHook(files.authorize);
+
+  return {
+    ...options,
+    ...(authorize !== undefined && { authorize }),
+    ...(files.createPage !== undefined && { createPage: createPageWebhook(files.createPage) }),
+    ...(files.handleStore !== undefined && { handleStore: deferredFilesHandleStore(files.handleStore) }),
+    ...await readManifestFiles(files),
+  };
+};
+
 export const runCli = async (argv: string[], env: NodeJS.ProcessEnv): Promise<void> => {
   const state: { server?: { stop(): Promise<void> } } = {};
 
   try {
-    const { options, files } = parseMcpArgs(argv, env);
-
-    const authorize = files.authorize === undefined ? undefined : await loadAuthorizeHook(files.authorize);
-    const server = createBlokMcpServer({
-      ...options,
-      ...(authorize !== undefined && { authorize }),
-      ...(files.manifest !== undefined && { manifest: parseCustomToolsFile(await readJsonFile(files.manifest)) }),
-      ...(files.overrides !== undefined && { overrides: parseOverridesFile(await readJsonFile(files.overrides)) }),
-    });
+    const options = await parseBlokMcpArgs(argv, env);
+    const server = createBlokMcpServer(options);
 
     state.server = server;
     await server.start();
@@ -138,6 +162,10 @@ export const runCli = async (argv: string[], env: NodeJS.ProcessEnv): Promise<vo
     if (thrown instanceof McpConfigError) {
       console.error(`blok-mcp: ${thrown.message}`);
       process.exit(2);
+    }
+    if (thrown instanceof McpListenError) {
+      console.error(`blok-mcp: ${thrown.message}`);
+      process.exit(1);
     }
     throw thrown;
   }

@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { buildServerRuntime } from '../../../scripts/build-server-runtime.mjs';
 import { isObject } from '../../../src/shared/type-guards';
+import { isInstrumented } from '../helpers/instrumented';
 
 /**
  * Go embeds the runtime bundle with `go:embed`, which cannot reach outside the
@@ -93,11 +94,18 @@ describe('Go runtime bundle', () => {
 
   it('commits a copy inside the Go module, not ignored by git', () => {
     expect(existsSync(GO_BUNDLE), FIX).toBe(true);
+    // Ask by repo path from the git top level: Stryker runs this from a sandbox
+    // under the ignored .stryker-tmp/ with no .git, so the absolute path is
+    // always ignored there. --no-index applies the rules to a tracked file too.
     // check-ignore exits 1 when the path is not ignored.
-    expect(() => execFileSync('git', ['check-ignore', '-q', GO_BUNDLE], { cwd: ROOT })).toThrow();
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: ROOT, encoding: 'utf8' }).trim();
+
+    expect(() => execFileSync('git', ['check-ignore', '-q', '--no-index', path.relative(ROOT, GO_BUNDLE)], { cwd: top })).toThrow();
   });
 
-  it('matches a fresh build byte for byte', () => {
+  // Stryker's sandbox adds `// @ts-nocheck` atop the committed copy, and the
+  // fresh build bundles any instrumented src file, so neither side is real there.
+  it.skipIf(isInstrumented())('matches a fresh build byte for byte', () => {
     expect(sha256(GO_BUNDLE), FIX).toBe(sha256(fresh));
   });
 

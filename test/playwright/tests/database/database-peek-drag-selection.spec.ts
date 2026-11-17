@@ -126,6 +126,7 @@ const savedSorts = async (page: Page): Promise<unknown> => page.evaluate(async (
 interface Box {
   fontFamily: string;
   backgroundColor: string;
+  backgroundImage: string;
   borderRadius: string;
   opacity: string;
   transform: string;
@@ -146,6 +147,7 @@ const boxOf = async (page: Page, selector: string, inner?: string): Promise<Box 
   return {
     fontFamily: style.fontFamily,
     backgroundColor: style.backgroundColor,
+    backgroundImage: style.backgroundImage,
     borderRadius: style.borderTopLeftRadius,
     opacity: style.opacity,
     transform: style.transform,
@@ -279,6 +281,23 @@ test.describe('drag ghosts look like their source', () => {
     await page.mouse.up();
   });
 
+  // notion-live/carddrag-mid.png: the ghost is the card's own 40px, in the drag fill (no white), with ✎⋯ riding along.
+  test('a card ghost is the card at its own height, in the drag fill, with its buttons', async ({ page }) => {
+    await mount(page, blocks(), 'v2');
+    const card = page.locator('[data-blok-database-card][data-row-id="r3"]');
+    const source = await card.boundingBox();
+
+    if (source === null) throw new Error('no card box');
+    await dragBy(page, card, -300, 0);
+    const ghost = page.locator('[data-blok-database-ghost]');
+
+    await expect(ghost).toBeVisible();
+    expect((await ghost.boundingBox())?.height).toBeCloseTo(source.height, 1);
+    await expect(ghost.locator('[data-blok-database-card]')).toHaveCSS('background-color', 'rgba(55, 53, 47, 0.06)');
+    await expect(ghost.locator('[data-blok-database-card-actions]')).toHaveCSS('opacity', '1');
+    await page.mouse.up();
+  });
+
   test('a colored card keeps its group ring in the drag ghost', async ({ page }) => {
     await mount(page, imageBoard('large'), 'v2');
     const card = page.locator('[data-blok-database-card][data-row-id="r1"]');
@@ -310,29 +329,6 @@ test.describe('drag ghosts look like their source', () => {
       await expect(clone).toHaveCSS('border-inline-end-style', source.style);
       await expect(clone).toHaveCSS('border-inline-end-color', source.color);
       expect(source.width).toBe(showVerticalLines ? '1px' : '0px');
-      await page.mouse.up();
-    });
-  }
-
-  for (const size of ['small', 'large'] as const) {
-    test(`a ${size} board column ghost keeps the card preview box and image fit`, async ({ page }) => {
-      await mount(page, imageBoard(size), 'v2');
-      const column = '[data-blok-database-column][data-option-id="o-idea"]';
-      const preview = page.locator(`${column} [data-blok-database-card][data-row-id="r1"] [data-blok-database-card-preview]`);
-
-      await expect(preview).toBeVisible();
-      const source = await preview.boundingBox();
-      const sourceFit = await preview.locator('[data-blok-database-card-image]').evaluate((el) => getComputedStyle(el).objectFit);
-
-      if (source === null) throw new Error('no preview box');
-      await dragBy(page, page.locator(`${column} [data-blok-database-column-header]`), 200, 0);
-      const ghost = page.locator('[data-blok-database-column-ghost]');
-      const clone = ghost.locator('[data-blok-database-card][data-row-id="r1"] [data-blok-database-card-preview]');
-
-      await expect(ghost).toBeVisible();
-      expect((await clone.boundingBox())?.height).toBeCloseTo(source.height, 1);
-      await expect(clone.locator('[data-blok-database-card-image]')).toHaveCSS('object-fit', sourceFit);
-      expect(sourceFit).toBe('contain');
       await page.mouse.up();
     });
   }
@@ -378,21 +374,30 @@ test.describe('drag ghosts look like their source', () => {
     await page.mouse.up();
   });
 
-  test('a board column ghost keeps the column box', async ({ page }) => {
+  // notion-motion.md "Board column (group) drag": only the header strip moves, opaque, on the column tint.
+  test('a board column ghost is the header strip, and the passed header slides into the freed slot', async ({ page }) => {
     await mount(page, blocks(), 'v2');
-    const header = page.locator('[data-blok-database-column][data-option-id="o-idea"] [data-blok-database-column-header]');
-    const source = await boxOf(page, '[data-blok-database-column][data-option-id="o-idea"]');
+    const column = '[data-blok-database-column][data-option-id="o-idea"]';
+    const header = page.locator(`${column} [data-blok-database-column-header]`);
+    const source = await boxOf(page, column);
+    const sourceHeader = await boxOf(page, `${column} [data-blok-database-column-header]`);
 
-    await dragBy(page, header, 200, 0);
+    await dragBy(page, header, 300, 0);
     const ghost = await boxOf(page, '[data-blok-database-column-ghost]');
-    const clone = await boxOf(page, '[data-blok-database-column-ghost]', '[data-blok-database-column]');
+    const clone = await boxOf(page, '[data-blok-database-column-ghost]', '[data-blok-database-column-header]');
 
-    expect(ghost?.opacity).toBe('0.4');
+    expect(ghost?.opacity).toBe('1');
     expect(ghost?.transform).toBe('none');
-    expect(clone?.fontFamily).toBe(source?.fontFamily);
-    expect(clone?.backgroundColor).toBe(source?.backgroundColor);
-    expect(clone?.width).toBe(source?.width);
+    expect(ghost?.width).toBe(source?.width);
+    expect(ghost?.height).toBe(sourceHeader?.height);
+    expect(ghost?.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(clone?.fontFamily).toBe(sourceHeader?.fontFamily);
+    await expect(page.locator('[data-blok-database-column-ghost] [data-blok-database-card]')).toHaveCount(0);
+    expect(await page.locator('[data-blok-database-drop-line]').evaluateAll((els) => els.filter((el) => getComputedStyle(el).opacity !== '0').length)).toBe(0);
+    await expect(header).toHaveCSS('visibility', 'hidden');
+    await expect(page.locator('[data-blok-database-column-header][data-blok-database-column-sliding]').first()).toHaveCSS('transform', /matrix\(1, 0, 0, 1, -\d+/);
     await page.mouse.up();
+    await expect(page.locator('[data-blok-database-column-header][data-blok-database-column-sliding]')).toHaveCount(0);
   });
 
   test('a list row ghost keeps the row font and height', async ({ page }) => {
@@ -421,9 +426,10 @@ test.describe('drag ghosts look like their source', () => {
     const ghost = await boxOf(page, '[data-blok-database-table-row-ghost]');
     const ghostCell = await boxOf(page, '[data-blok-database-table-row-ghost]', '[role="gridcell"][data-property-id="p-title"]');
 
+    // Notion's row ghost has no fill (notion-motion.md "Table row drag").
+    expect(ghost?.backgroundColor).toBe('rgba(0, 0, 0, 0)');
     expect(ghost?.opacity).toBe('0.4');
     expect(ghost?.transform).toBe('none');
-    expect(ghost?.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
     expect(ghostCell?.fontFamily).toBe(source?.fontFamily);
     expect(ghostCell?.paddingInlineStart).toBe(source?.paddingInlineStart);
     expect(ghostCell?.width).toBe(source?.width);
@@ -438,7 +444,10 @@ test.describe('drag ghosts look like their source', () => {
     await dragBy(page, header, 120, 0);
     const ghost = await boxOf(page, '[data-blok-database-table-column-ghost]');
 
-    expect(ghost?.opacity).toBe('0.4');
+    // Notion's column ghost is the header's see-through pressed fill: the next header shows through (coldrag-mid.png).
+    expect(ghost?.opacity).toBe('1');
+    expect(ghost?.backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(ghost?.backgroundImage).toMatch(/^linear-gradient\(/);
     expect(ghost?.fontFamily).toBe(source?.fontFamily);
     expect(ghost?.height).toBe(source?.height);
     await page.mouse.up();
@@ -497,6 +506,21 @@ test.describe('selection bar', () => {
     await expect(bar).toHaveCount(0);
     await expect(page.locator('[data-blok-database-tab-bar]')).toBeVisible();
   });
+  // With tabs the bar sat at the view bar's edge, 316px left of the table (sweep9a motion-rowdrag.json).
+  test('starts at the table content with tabs, as it does with one view', async ({ page }) => {
+    await mount(page, blocks());
+    // A wide holder gives the content a centring offset, so a bar at the view bar's edge shows.
+    await page.evaluate(() => document.getElementById('blok')?.style.setProperty('max-width', 'none'));
+    await tableRow(page, 'r1').hover();
+    await tableRow(page, 'r1').locator('[data-blok-database-table-row-checkbox]').click();
+
+    const bar = await page.locator('[data-blok-database-table-selection-bar]').boundingBox();
+    const firstHeader = await page.getByRole('columnheader', { name: 'Name' }).boundingBox();
+
+    if (bar === null || firstHeader === null) throw new Error('no layout');
+    expect(firstHeader.x).toBeGreaterThan(100);
+    expect(Math.abs(bar.x - firstHeader.x)).toBeLessThanOrEqual(1);
+  });
 });
 
 test.describe('fill handle', () => {
@@ -511,5 +535,57 @@ test.describe('fill handle', () => {
     const cellRing = await page.locator('[data-blok-database-table-cell-anchor]').evaluate((el) => getComputedStyle(el).boxShadow);
 
     expect(cellRing.startsWith(ring)).toBe(true);
+  });
+});
+
+// Notion shows no text selection during a drag (rowdrag-mid). A caret left in a
+// paragraph below must not become the anchor of a text drag into the database.
+test.describe('a drag with the caret in a paragraph below', () => {
+  const withParagraph = (): OutputBlockData[] => [...blocks(), { id: 'p-after', type: 'paragraph', data: { text: 'After the database' } }];
+
+  const cases: Array<{ name: string; viewId: string; handle: (page: Page) => Locator; hover?: (page: Page) => Locator; ghost: string; dx: number; dy: number }> = [
+    { name: 'table row', viewId: 'v1', handle: (page) => tableRow(page, 'r1').locator('[data-blok-database-table-row-handle]'), hover: (page) => tableRow(page, 'r1'), ghost: '[data-blok-database-table-row-ghost]', dx: 0, dy: 60 },
+    { name: 'table column', viewId: 'v1', handle: (page) => page.getByRole('columnheader', { name: 'Notes' }), ghost: '[data-blok-database-table-column-ghost]', dx: 200, dy: 0 },
+    { name: 'board card', viewId: 'v2', handle: (page) => page.locator('[data-blok-database-card][data-row-id="r1"]'), ghost: '[data-blok-database-ghost]', dx: 300, dy: 0 },
+    { name: 'list row', viewId: 'v3', handle: (page) => page.locator('[data-blok-database-list-row][data-row-id="r1"]'), ghost: '[data-blok-database-ghost]', dx: 0, dy: 50 },
+  ];
+
+  for (const item of cases) {
+    test(`a ${item.name} drag selects no text`, async ({ page }) => {
+      await mount(page, withParagraph(), item.viewId);
+      await page.getByText('After the database').click();
+      expect(await page.evaluate(() => window.getSelection()?.isCollapsed)).toBe(true);
+
+      await item.hover?.(page).hover();
+      await dragBy(page, item.handle(page), item.dx, item.dy);
+      await expect(page.locator(item.ghost)).toBeVisible();
+
+      expect(await page.evaluate(() => window.getSelection()?.isCollapsed)).toBe(true);
+      await page.mouse.up();
+    });
+  }
+});
+
+test.describe('a press on a row handle', () => {
+  test('closes the open add-property menu, as a press anywhere outside it does', async ({ page }) => {
+    await mount(page, blocks());
+    await page.locator('[data-blok-database-table-add-property]').click();
+    const menu = page.locator('[data-blok-database-property-type-popover]');
+
+    await expect(menu).toBeVisible();
+
+    // The menu covers the row's middle, so hover its left edge with the mouse.
+    const row = await tableRow(page, 'r1').boundingBox();
+
+    if (row === null) throw new Error('no row');
+    await page.mouse.move(row.x + 20, row.y + row.height / 2);
+    const handle = await tableRow(page, 'r1').locator('[data-blok-database-table-row-handle]').boundingBox();
+
+    if (handle === null) throw new Error('no handle');
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await page.mouse.down();
+
+    await expect(menu).toHaveCount(0);
+    await page.mouse.up();
   });
 });

@@ -1,0 +1,19 @@
+[package]
+name = "blok-blokserver-ticket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal part of blok-mcp (room tickets). Not a stable API."
+publish = true
+
+[dependencies]
+base64 = "0.22"
+blok-jsjson.workspace = true
+blok-ticket.workspace = true
+hmac = "0.12"
+sha2 = "0.10"
+
+[lints]
+workspace = true

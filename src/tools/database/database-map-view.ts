@@ -1,10 +1,12 @@
 import type { I18n } from '../../../types';
-import { IconCross, IconMap } from '../../components/icons';
+import { IconCross, IconEmojiMap } from '../../components/icons';
 import { onHover } from '../../components/utils/tooltip';
 import { CellPopover } from './cells/cell-popover';
+import type { NoDateControl } from './database-no-date';
 import { drawMapLibreMap } from './database-maplibre';
 import type { MapFailure } from './database-maplibre';
 import type { DatabaseViewRenderer } from './database-view-renderer';
+import { rowPageGlyph } from './page-icon';
 import { isPlaceValue, placeText } from './tier3-values';
 import { resolveLoadLimit } from './view-settings';
 import type { DatabaseMap, DatabaseMapContext, DatabaseMapItem, DatabaseMapLngLat, DatabaseRow, DatabaseViewConfig, MapHeight, PropertyDefinition } from './types';
@@ -29,6 +31,8 @@ export interface DatabaseMapViewOptions {
   writable?: boolean;
   /** Adds a row at a point. Called once per add-pin click. */
   addPin?: (lngLat: DatabaseMapLngLat) => void;
+  /** Whether a row's page has a body: it picks the row's page glyph in the "No place" list. */
+  rowHasBody?: (rowId: string) => boolean;
 }
 
 export const MAP_HEIGHTS: readonly MapHeight[] = ['small', 'medium', 'large', 'extraLarge'];
@@ -83,19 +87,13 @@ export class DatabaseMapView implements DatabaseViewRenderer {
     const frame = document.createElement('div');
     const canvas = document.createElement('div');
     const height = MAP_HEIGHT_PX[resolveMapHeight(this.options.view)];
-    // Newest first, not the view's order (research/23 §5c).
-    const unplaced = this.options.rows.filter((row) => !hasPlace(row.properties[placeBy.id]))
-      .sort((a, b) => (b.meta?.createdAt ?? 0) - (a.meta?.createdAt ?? 0));
 
-    if (this.options.writable === true && unplaced.length > 0) {
-      root.appendChild(this.noPlaceChip(unplaced));
-    }
     frame.setAttribute('data-blok-database-map-frame', '');
     canvas.setAttribute('data-blok-database-map-canvas', '');
     canvas.style.height = `${height}px`;
     frame.appendChild(canvas);
     if (this.options.writable === true && this.options.addPin !== undefined) {
-      frame.appendChild(this.addPinButton(canvas));
+      frame.appendChild(this.addPinPill(canvas));
     }
     root.appendChild(frame);
     const ctx: DatabaseMapContext = {
@@ -195,15 +193,17 @@ export class DatabaseMapView implements DatabaseViewRenderer {
     this.syncAddPin?.();
   }
 
-  /** Top-right of the map (research/20 §1b, §1e). */
-  private addPinButton(canvas: HTMLElement): HTMLButtonElement {
+  /** Top-right of the map: a white pill holding the button (notion-motion.md Round 31 §2). */
+  private addPinPill(canvas: HTMLElement): HTMLElement {
+    const pill = document.createElement('div');
     const button = document.createElement('button');
     const t = (key: string): string => this.options.i18n.t(key);
 
     button.type = 'button';
     button.setAttribute('data-blok-database-map-add-pin', '');
     this.syncAddPin = () => {
-      button.innerHTML = this.addingPin ? IconCross : IconMap;
+      // The Place property's pin glyph.
+      button.innerHTML = this.addingPin ? IconCross : IconEmojiMap;
       button.setAttribute('aria-label', this.addingPin ? t('tools.database.mapCancelAddPin') : t('tools.database.mapEnableAddPin'));
       button.toggleAttribute('data-active', this.addingPin);
       canvas.toggleAttribute('data-blok-database-map-adding-pin', this.addingPin);
@@ -211,21 +211,32 @@ export class DatabaseMapView implements DatabaseViewRenderer {
     };
     this.syncAddPin();
     button.addEventListener('click', () => this.setAddingPin(!this.addingPin));
+    pill.setAttribute('data-blok-database-map-add-pin-pill', '');
+    pill.appendChild(button);
 
-    return button;
+    return pill;
   }
 
-  /** Measured: a grey chip, a 320-wide list with "Search for a page..." (research/20 §1e). */
-  private noPlaceChip(unplaced: DatabaseRow[]): HTMLButtonElement {
-    const chip = document.createElement('button');
+  /**
+   * The toolbar's "No place (N)", before the filter icon (notion-motion.md Round 31 §2);
+   * its list is 320 wide with "Search for a page..." (research/20 §1e). Undefined hides it.
+   */
+  noPlaceControl(): NoDateControl | undefined {
+    const placeBy = resolveMapBy(this.options.view, this.options.schema);
 
-    chip.type = 'button';
-    chip.setAttribute('data-blok-database-map-no-place', '');
-    chip.setAttribute('aria-haspopup', 'dialog');
-    chip.textContent = this.options.i18n.t('tools.database.mapNoPlaceCount', { count: unplaced.length });
-    chip.addEventListener('click', () => this.openNoPlaceList(chip, unplaced));
+    if (this.options.writable !== true || placeBy === undefined || this.drawer() === undefined) return undefined;
+    // Newest first, not the view's order (research/23 §5c).
+    const unplaced = this.options.rows.filter((row) => !hasPlace(row.properties[placeBy.id]))
+      .sort((a, b) => (b.meta?.createdAt ?? 0) - (a.meta?.createdAt ?? 0));
 
-    return chip;
+    if (unplaced.length === 0) return undefined;
+
+    return {
+      count: unplaced.length,
+      label: this.options.i18n.t('tools.database.mapNoPlaceCount', { count: unplaced.length }),
+      open: (anchor) => this.openNoPlaceList(anchor, unplaced),
+      attributes: { 'data-blok-database-map-no-place': '', 'aria-haspopup': 'dialog' },
+    };
   }
 
   private openNoPlaceList(anchor: HTMLElement, unplaced: DatabaseRow[], query = ''): void {
@@ -244,6 +255,8 @@ export class DatabaseMapView implements DatabaseViewRenderer {
       anchor,
       content,
       minWidth: '320px',
+      // notion-motion.md Round 47 §D: 4 under the toolbar button, as the No date popover.
+      gap: 4,
       onEscape: () => {
         popover.close();
         this.noPlacePopover = null;
@@ -260,8 +273,12 @@ export class DatabaseMapView implements DatabaseViewRenderer {
         const item = document.createElement('button');
 
         item.type = 'button';
+        const title = document.createElement('span');
+
         item.setAttribute('data-blok-database-map-no-place-row', '');
-        item.textContent = titleOf(row);
+        title.setAttribute('data-blok-database-map-no-place-title', '');
+        title.textContent = titleOf(row);
+        item.append(rowPageGlyph(row, this.options.rowHasBody?.(row.id) === true, true) ?? '', title);
         item.addEventListener('click', () => {
           // A top-layer popover would draw over the page, so it waits under it closed.
           popover.close();
@@ -275,10 +292,12 @@ export class DatabaseMapView implements DatabaseViewRenderer {
     };
 
     content.setAttribute('data-blok-database-map-no-place-list', '');
+    list.setAttribute('data-blok-database-map-no-place-rows', '');
     search.type = 'text';
     search.placeholder = placeholder;
     search.setAttribute('aria-label', placeholder);
     search.setAttribute('data-blok-database-map-no-place-search', '');
+    search.setAttribute('data-blok-field', 'text');
     search.value = query;
     search.addEventListener('input', fill);
     content.append(search, list);

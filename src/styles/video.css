@@ -28,9 +28,8 @@
    soft resting shadow that lifts the player off the page */
 [data-blok-tool="video"] .blok-video-media {
   position: relative;
-  border-radius: var(--blok-radius-block);
+  border-radius: var(--blok-radius-player);
   overflow: hidden;
-  background: var(--blok-video-stage);
   box-shadow: var(--blok-image-shadow-resting);
   transition: box-shadow 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
@@ -42,12 +41,20 @@
     0 0 0 2px var(--blok-color-accent),
     0 0 0 4px color-mix(in srgb, var(--blok-color-accent) 20%, transparent);
 }
+/* the frame's clip and the video's own layer are drawn apart, so a stage fill
+   on the frame would leak a dark rim around the curve; the video carries it */
 [data-blok-tool="video"] .blok-video-media video {
   display: block;
   width: 100%;
   height: auto;
+  border-radius: inherit;
   background: var(--blok-video-stage);
   outline: none;
+}
+/* A video at rest says it can be clicked. While it plays the cursor stays plain,
+   so it does not sit on the picture as a hand. */
+[data-blok-tool="video"] .blok-video-inner:not([data-playing="true"]) .blok-video-media video {
+  cursor: pointer;
 }
 
 
@@ -186,12 +193,11 @@
   transition-duration: 0s;
 }
 
-/* ----- error state — the screen, no signal -----------------
+/* ----- error state — the stream that lost its keyframe -----
    Same frame as a working player, so the failure reads as "this video", not a
-   generic alert: a dead screen of static that a colour-bar tear rips across now
-   and then, with a glass card on top that holds the way out. The screen stays
-   dark in both themes, like a real one, and the card is the player's own
-   dark glass, like the gear menu. */
+   generic alert: colour bars that melt block by block, with a glass card on
+   top that holds the way out. The screen stays dark in both themes, like a
+   real one, and the card is the player's own dark glass, like the gear menu. */
 [data-blok-tool="video"] .blok-video-error-state {
   --blok-video-error-ink: var(--blok-color-danger);
   position: relative;
@@ -201,7 +207,7 @@
   width: 100%;
   max-width: 100%;
   vertical-align: top;
-  border-radius: var(--blok-radius-block);
+  border-radius: var(--blok-radius-player);
   background: var(--blok-video-stage);
   box-shadow: var(--blok-image-shadow-resting);
   font-family: var(--blok-font-family, var(--blok-font-sans));
@@ -224,45 +230,28 @@
   border-radius: inherit;
   pointer-events: none;
 }
-/* the static — a noise tile, oversized so the hard jumps never show an edge */
-[data-blok-tool="video"] .blok-video-error-state__screen::before {
-  content: "";
+/* the picture: error-screen.ts draws 16px blocks, so it must scale unsmoothed */
+[data-blok-tool="video"] .blok-video-error-state__picture {
   position: absolute;
-  inset: -50%;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='linear' slope='2.4' intercept='-0.7'/%3E%3CfeFuncG type='linear' slope='2.4' intercept='-0.7'/%3E%3CfeFuncB type='linear' slope='2.4' intercept='-0.7'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E") 0 0 / 160px 160px repeat;
-  opacity: 0.78;
-  animation: blok-video-static 0.5s steps(1) infinite;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  image-rendering: pixelated;
 }
-/* scanlines, a slow rolling band, and a vignette that darkens the corners */
+/* a shade over the picture, so the card and its text stay readable on the bright bars */
 [data-blok-tool="video"] .blok-video-error-state__screen::after {
   content: "";
   position: absolute;
   inset: 0;
-  background:
-    repeating-linear-gradient(0deg, var(--blok-video-error-scanline) 0 1px, transparent 1px 3px),
-    linear-gradient(180deg, transparent 0%, var(--blok-video-error-roll) 48%, transparent 56%) 0 0 / 100% 300% no-repeat,
-    radial-gradient(ellipse at center, transparent 35%, var(--blok-video-error-vignette) 100%);
-  animation: blok-video-roll 6s linear infinite;
+  background: radial-gradient(
+    ellipse at center,
+    var(--blok-video-error-shade) 0%,
+    color-mix(in srgb, var(--blok-video-error-shade) 50%, transparent) 60%,
+    var(--blok-video-error-vignette) 100%
+  );
 }
-/* the tear: SMPTE colour bars that flash across the static for a beat */
-[data-blok-tool="video"] .blok-video-error-state__tear {
-  position: absolute;
-  inset-inline: 0;
-  top: 30%;
-  height: 18%;
-  display: flex;
-  opacity: 0;
-  filter: drop-shadow(3px 0 var(--blok-video-error-split-red)) drop-shadow(-3px 0 var(--blok-video-error-split-cyan));
-  animation: blok-video-tear 3.4s steps(1) infinite;
-}
-[data-blok-tool="video"] .blok-video-error-state__tear span { flex: 1; }
-[data-blok-tool="video"] .blok-video-error-state__tear span:nth-child(1) { background: var(--blok-video-error-bar-1); }
-[data-blok-tool="video"] .blok-video-error-state__tear span:nth-child(2) { background: var(--blok-video-error-bar-2); }
-[data-blok-tool="video"] .blok-video-error-state__tear span:nth-child(3) { background: var(--blok-video-error-bar-3); }
-[data-blok-tool="video"] .blok-video-error-state__tear span:nth-child(4) { background: var(--blok-video-error-bar-4); }
-[data-blok-tool="video"] .blok-video-error-state__tear span:nth-child(5) { background: var(--blok-video-error-bar-5); }
-[data-blok-tool="video"] .blok-video-error-state__tear span:nth-child(6) { background: var(--blok-video-error-bar-6); }
-[data-blok-tool="video"] .blok-video-error-state__tear span:nth-child(7) { background: var(--blok-video-error-bar-7); }
 [data-blok-tool="video"] .blok-video-error-state__card {
   grid-area: 1 / 1;
   place-self: center;
@@ -294,11 +283,23 @@
   margin-block-start: calc(14px * 1.45 / 2 - 4px);
   animation: blok-video-ping 1.6s ease-out infinite;
 }
+[data-blok-tool="video"] .blok-video-error-state__text {
+  display: grid;
+  gap: var(--blok-space-0-5);
+  min-width: 0;
+}
 [data-blok-tool="video"] .blok-video-error-state__message {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
   line-height: 1.45;
+  text-wrap: pretty;
+}
+[data-blok-tool="video"] .blok-video-error-state__detail {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--blok-video-control-fg) 68%, transparent);
   text-wrap: pretty;
 }
 [data-blok-tool="video"] .blok-video-error-state__actions {
@@ -346,25 +347,6 @@
   outline: none;
   box-shadow: 0 0 0 2px var(--blok-focus-ring);
 }
-@keyframes blok-video-static {
-  0%   { transform: translate(0, 0); }
-  20%  { transform: translate(-7%, 4%); }
-  40%  { transform: translate(5%, -6%); }
-  60%  { transform: translate(-3%, -9%); }
-  80%  { transform: translate(8%, 3%); }
-}
-@keyframes blok-video-roll {
-  from { background-position: 0 0, 0 100%, 0 0; }
-  to   { background-position: 0 0, 0 0, 0 0; }
-}
-@keyframes blok-video-tear {
-  0%   { opacity: 0; }
-  84%  { opacity: 1; transform: translateX(-9%); clip-path: inset(0 0 58% 0); }
-  86%  { opacity: 1; transform: translateX(6%) scaleY(0.6); clip-path: inset(36% 0 0 0); }
-  88%  { opacity: 0.85; transform: translateX(-2%); clip-path: inset(0); }
-  90%  { opacity: 1; transform: translate(12%, 140%) scaleY(0.3); clip-path: inset(0 0 40% 0); }
-  92%  { opacity: 0; transform: none; clip-path: inset(0); }
-}
 @keyframes blok-video-rise {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }
   to   { opacity: 1; transform: none; }
@@ -374,9 +356,6 @@
   100% { box-shadow: 0 0 0 7px transparent; }
 }
 @media (prefers-reduced-motion: reduce) {
-  [data-blok-tool="video"] .blok-video-error-state__screen::before,
-  [data-blok-tool="video"] .blok-video-error-state__screen::after,
-  [data-blok-tool="video"] .blok-video-error-state__tear,
   [data-blok-tool="video"] .blok-video-error-state__card,
   [data-blok-tool="video"] .blok-video-error-state__signal {
     animation: none;
@@ -406,12 +385,9 @@
   font-family: var(--blok-font-family, var(--blok-font-sans));
 }
 
-/* the media reads as a play/pause surface */
-[data-blok-tool="video"] .blok-video-media video { cursor: pointer; }
-
 /* centre burst — a frosted disc that snaps the just-taken action's glyph into
-   the middle of the player and drifts out as a ring ripples past it, echoing the
-   tactile feedback of native players. Inert by default; the .is-active class
+   the middle of the player and drifts out, echoing the tactile feedback of
+   native players. Inert by default; the .is-active class
    (re-applied per toggle) drives the one-shot animation. */
 @keyframes blok-video-burst {
   0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.66); }
@@ -419,12 +395,6 @@
   36%  { transform: translate(-50%, -50%) scale(0.98); }
   70%  { opacity: 1; transform: translate(-50%, -50%) scale(1.02); }
   100% { opacity: 0; transform: translate(-50%, -50%) scale(1.16); }
-}
-/* the ripple: a hairline ring that radiates out from the disc and dissolves */
-@keyframes blok-video-burst-ring {
-  0%   { opacity: 0.7; transform: scale(0.85); }
-  60%  { opacity: 0.28; }
-  100% { opacity: 0; transform: scale(1.75); }
 }
 @keyframes blok-video-burst-glyph {
   0%   { transform: scale(0.6); }
@@ -447,14 +417,6 @@
   pointer-events: none;
   z-index: 1;
 }
-[data-blok-tool="video"] .blok-video-controls__burst::after {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: var(--blok-radius-pill);
-  border: 2px solid var(--blok-video-burst-ring);
-  opacity: 0;
-}
 [data-blok-tool="video"] .blok-video-controls__burst svg {
   width: 34px; height: 34px;
   /* keep the entrance pop crisp from the centre */
@@ -464,9 +426,6 @@
 [data-blok-tool="video"] .blok-video-controls__burst svg path:only-child { transform: translateX(1px); }
 [data-blok-tool="video"] .blok-video-controls__burst.is-active {
   animation: blok-video-burst 560ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-[data-blok-tool="video"] .blok-video-controls__burst.is-active::after {
-  animation: blok-video-burst-ring 540ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 [data-blok-tool="video"] .blok-video-controls__burst.is-active svg {
   animation: blok-video-burst-glyph 460ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
@@ -582,24 +541,56 @@
 }
 
 /* bottom scrim + bar */
+/* island — the bar floats as one glass capsule, so the picture stays clean edge
+   to edge. The fill and blur live on the bar itself: the gear menu is anchored
+   on the figure, not inside the bar, so this blur never clips it. */
 [data-blok-tool="video"] .blok-video-controls__bar {
   position: absolute;
-  left: 0; right: 0; bottom: 0;
+  left: var(--blok-space-3-5);
+  right: var(--blok-space-3-5);
+  bottom: var(--blok-space-3-5);
   display: flex;
   align-items: center;
-  gap: var(--blok-space-2-5);
-  padding: var(--blok-space-5) var(--blok-space-3) var(--blok-space-2-5);
-  background: linear-gradient(to top, var(--blok-video-scrim-strong) 0%, var(--blok-video-scrim-mid) 55%, transparent 100%);
+  gap: var(--blok-space-1-5);
+  padding: var(--blok-space-1-5) var(--blok-space-2);
+  border-radius: var(--blok-radius-pill);
+  background: var(--blok-video-island-bg);
+  -webkit-backdrop-filter: blur(22px) saturate(1.9);
+  backdrop-filter: blur(22px) saturate(1.9);
+  box-shadow: var(--blok-video-island-shadow);
   pointer-events: auto;
   opacity: 0;
-  transform: translateY(6px);
-  transition: opacity 160ms ease, transform 160ms ease;
+  /* 0 hidden, 1 shown. A capsule has no bar box, so its parts read this instead. */
+  --blok-video-bar-on: 0;
+  transform: translateY(18px) scale(0.94);
+  transform-origin: 50% 100%;
+  transition: opacity 180ms ease, transform 420ms var(--blok-ease-spring-island);
 }
-[data-blok-tool="video"] .blok-video-inner:hover .blok-video-controls__bar,
+[data-blok-tool="video"] .blok-video-controls__bar .blok-video-controls__seek-wrap { margin-inline: var(--blok-space-1-5); }
+[data-blok-tool="video"] .blok-video-controls__btn[data-action="play-toggle"] {
+  width: 36px; height: 36px;
+  background: var(--blok-video-island-play-bg);
+  color: var(--blok-video-island-play-fg);
+}
+[data-blok-tool="video"] .blok-video-controls__btn[data-action="play-toggle"]:hover { background: var(--blok-video-island-play-bg-hover); }
+/* a resting player shows only the picture; the island comes up on hover, on
+   keyboard focus, and stays while the gear menu is open. Before the first play,
+   hover shows only the centre play button, so the hidden island takes no clicks. */
+[data-blok-tool="video"] .blok-video-inner[data-played="false"] .blok-video-controls__bar:not(:has(:focus-visible)) {
+  pointer-events: none;
+}
+[data-blok-tool="video"] .blok-video-inner[data-played="true"]:hover .blok-video-controls__bar,
 [data-blok-tool="video"] .blok-video-controls:has(:focus-visible) .blok-video-controls__bar,
-[data-blok-tool="video"] .blok-video-inner:not([data-playing="true"]) .blok-video-controls__bar {
+[data-blok-tool="video"] .blok-video-controls__bar:has([aria-expanded="true"]) {
   opacity: 1;
-  transform: translateY(0);
+  --blok-video-bar-on: 1;
+  transform: none;
+}
+/* theater scales the whole card, island included; hide it until the card lands */
+[data-blok-tool="video"] .blok-video-inner[data-theater-morphing="true"] .blok-video-controls__bar {
+  opacity: 0;
+  --blok-video-bar-on: 0;
+  transition: none;
 }
 
 [data-blok-tool="video"] .blok-video-controls__btn {
@@ -733,8 +724,13 @@
   border-radius: var(--blok-radius-pill);
   background: var(--blok-video-thumb);
   box-shadow: var(--blok-video-thumb-shadow);
+  transform: scale(0);
   transition: transform 120ms ease;
 }
+/* the knob shows only while the scrubber is in use */
+[data-blok-tool="video"] .blok-video-controls__seek-wrap:hover .blok-video-controls__seek::-webkit-slider-thumb,
+[data-blok-tool="video"] .blok-video-controls__seek:focus-visible::-webkit-slider-thumb,
+[data-blok-tool="video"] .blok-video-controls__seek:active::-webkit-slider-thumb { transform: scale(1); }
 [data-blok-tool="video"] .blok-video-controls__seek:hover::-webkit-slider-thumb { transform: scale(1.2); }
 [data-blok-tool="video"] .blok-video-controls__seek::-moz-range-thumb {
   width: 13px; height: 13px;
@@ -801,32 +797,31 @@
   animation: blok-video-mute-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-/* gear settings card — speed / loop */
+/* gear settings card — one card, two panes: a main list and the speed submenu */
 [data-blok-tool="video"] .blok-video-controls__menu-wrap {
   position: relative;
   flex-shrink: 0;
 }
-/* Frosted-glass settings card: one pane. The hairline border + saturated blur give
-   it a floating-glass edge that lifts it off the video. */
+/* Frosted-glass settings card. The hairline border + saturated blur give it a
+   floating-glass edge that lifts it off the video. */
 [data-blok-tool="video"] .blok-video-controls__menu {
   position: absolute;
   /* right/bottom set from JS (anchored to the gear); sits on the figure, outside the
      media overflow clip, so it can spill out of a short player. */
-  display: flex;
-  flex-direction: column;
-  width: 264px;
+  /* 264px, or wider when a translated label needs it to stay on one line. */
+  width: max-content;
+  min-width: 264px;
   max-width: calc(100vw - 2 * var(--blok-space-3));
   box-sizing: border-box;
   overflow: hidden;
   isolation: isolate;
   padding: var(--blok-space-1-5);
   border: 1px solid var(--blok-video-menu-border);
-  border-radius: var(--blok-radius-surface);
-  --blok-radius-inner: max(var(--blok-radius-floor), calc(var(--blok-radius-surface) - var(--blok-border-width-hairline) - var(--blok-space-1-5)));
-  box-shadow: var(--blok-video-burst-shadow);
+  border-radius: var(--blok-radius-glass);
+  box-shadow: var(--blok-video-menu-shadow);
   color: var(--blok-video-control-fg);
-  /* The gear's corner: bottom right, bottom left in RTL. */
-  transform-origin: calc(50% + 50% * var(--_blok-inline-sign, 1)) bottom;
+  /* The gear's corner. controls.ts overrides it with the gear's real place under the card. */
+  transform-origin: calc(50% - 50% * var(--_blok-inline-sign, 1)) bottom;
   z-index: 3;
 }
 /* Frosted glass lives on a ::before so it is NOT on the same box as overflow: hidden —
@@ -838,8 +833,8 @@
   z-index: -1;
   border-radius: inherit;
   background: var(--blok-video-menu-bg);
-  -webkit-backdrop-filter: blur(22px) saturate(1.6);
-  backdrop-filter: blur(22px) saturate(1.6);
+  -webkit-backdrop-filter: blur(30px) saturate(1.8);
+  backdrop-filter: blur(30px) saturate(1.8);
 }
 /* A soft top sheen, so the card reads as lit glass rather than a flat slab. */
 [data-blok-tool="video"] .blok-video-controls__menu::after {
@@ -853,41 +848,54 @@
 }
 [data-blok-tool="video"] .blok-video-controls__menu[hidden] { display: none; }
 @keyframes blok-video-menu-in {
-  from { opacity: 0; transform: translateY(8px) scale(0.94); }
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  50%  { opacity: 1; }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
-/* each section lifts into place after the card pops — transform only, so the card's
-   own fade owns the opacity. */
-@keyframes blok-video-menu-rise {
-  from { transform: translateY(10px); }
-  to   { transform: translateY(0); }
+
+/* The pane on show is in flow, so the card is as tall as it. The other pane is lifted
+   out of flow and slid aside. controls.ts pins the height while it changes. */
+[data-blok-tool="video"] .blok-video-controls__menu[data-pane="main"] [data-role="menu-speed"],
+[data-blok-tool="video"] .blok-video-controls__menu[data-pane="speed"] [data-role="menu-main"] {
+  position: absolute;
+  top: var(--blok-space-1-5);
+  left: var(--blok-space-1-5);
+  right: var(--blok-space-1-5);
+  opacity: 0;
+  pointer-events: none;
+}
+/* The submenu never widens: the wire and the presets under it are sized for the 264px card. */
+[data-blok-tool="video"] .blok-video-controls__menu [data-role="menu-speed"] {
+  width: calc(264px - 2 * var(--blok-space-1-5) - 2 * var(--blok-border-width-hairline));
+  max-width: 100%;
+}
+/* The submenu waits at the inline end; the main list leaves toward the inline start. */
+[data-blok-tool="video"] .blok-video-controls__menu[data-pane="main"] [data-role="menu-speed"] {
+  transform: translateX(calc(28% * var(--_blok-inline-sign, 1)));
+}
+[data-blok-tool="video"] .blok-video-controls__menu[data-pane="speed"] [data-role="menu-main"] {
+  transform: translateX(calc(-28% * var(--_blok-inline-sign, 1)));
 }
 @media (prefers-reduced-motion: no-preference) {
   [data-blok-tool="video"] .blok-video-controls__menu {
-    animation: blok-video-menu-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    animation: blok-video-menu-in 320ms cubic-bezier(0.2, 0.9, 0.3, 1.12);
+    transition: height 300ms cubic-bezier(0.25, 0.9, 0.3, 1), width 300ms cubic-bezier(0.25, 0.9, 0.3, 1);
   }
-  /* `backwards` holds the lowered position through the delay, then frees the
-     transform so each row's press-scale still works. */
-  [data-blok-tool="video"] .blok-video-controls__speed-section > *,
-  [data-blok-tool="video"] .blok-video-controls__menu > .blok-video-controls__menu-row {
-    animation: blok-video-menu-rise 320ms cubic-bezier(0.2, 0.85, 0.25, 1) backwards;
+  [data-blok-tool="video"] .blok-video-controls__menu-pane {
+    transition: transform 300ms cubic-bezier(0.25, 0.9, 0.3, 1), opacity 180ms ease;
   }
-  [data-blok-tool="video"] .blok-video-controls__speed-section > :nth-child(2) { animation-delay: 30ms; }
-  [data-blok-tool="video"] .blok-video-controls__speed-section > :nth-child(3) { animation-delay: 60ms; }
-  [data-blok-tool="video"] .blok-video-controls__speed-section > :nth-child(4) { animation-delay: 90ms; }
-  [data-blok-tool="video"] .blok-video-controls__menu > .blok-video-controls__menu-row { animation-delay: 120ms; }
 }
 
-/* a single tappable row — leading glyph + label, trailing control */
+/* a single tappable row — leading glyph + label, trailing value or control */
 [data-blok-tool="video"] .blok-video-controls__menu-row {
   display: flex;
   align-items: center;
   gap: var(--blok-space-2-5);
   width: 100%;
   min-height: 36px;
-  padding: var(--blok-space-1-5) var(--blok-space-2-5);
+  padding: 0 var(--blok-space-2-5);
   border: 0;
-  border-radius: var(--blok-radius-inner, var(--blok-radius-control));
+  border-radius: var(--blok-radius-glass-row);
   background: transparent;
   color: inherit;
   font-size: 13px;
@@ -919,7 +927,37 @@
 [data-blok-tool="video"] .blok-video-controls__menu-label {
   flex: 1 1 auto;
   min-width: 0;
+  white-space: nowrap;
 }
+/* The back row sits in the fixed-width submenu, so a long label is cut, not wrapped. */
+[data-blok-tool="video"] .blok-video-controls__menu-back .blok-video-controls__menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+[data-blok-tool="video"] .blok-video-controls__menu-value {
+  flex-shrink: 0;
+  color: var(--blok-video-menu-value-fg);
+  font-variant-numeric: tabular-nums;
+}
+/* The chevron points the way the pane moves, so it mirrors in RTL. */
+[data-blok-tool="video"] .blok-video-controls__menu-chevron {
+  width: 16px;
+  height: 16px;
+  margin-inline-start: calc(-1 * var(--blok-space-1));
+  color: var(--blok-video-menu-value-fg);
+  transform: scaleX(var(--_blok-inline-sign, 1));
+}
+[data-blok-tool="video"] .blok-video-controls__menu-chevron svg { width: 16px; height: 16px; }
+[data-blok-tool="video"] .blok-video-controls__menu-back {
+  gap: var(--blok-space-1-5);
+  padding-inline-start: var(--blok-space-1-5);
+  font-weight: 600;
+}
+[data-blok-tool="video"] .blok-video-controls__menu-back .blok-video-controls__menu-chevron {
+  margin-inline-start: 0;
+  color: var(--blok-video-control-fg);
+}
+[data-blok-tool="video"] .blok-video-controls__menu-back .blok-video-controls__menu-value { font-weight: 500; }
 [data-blok-tool="video"] .blok-video-controls__menu-divider {
   height: 1px;
   margin: var(--blok-space-1-5) var(--blok-space-2-5);
@@ -930,8 +968,8 @@
 [data-blok-tool="video"] .blok-video-controls__switch {
   position: relative;
   flex-shrink: 0;
-  width: 30px;
-  height: 18px;
+  width: 32px;
+  height: 20px;
   border-radius: var(--blok-radius-pill);
   background: var(--blok-video-track);
   transition: background 200ms ease;
@@ -941,8 +979,8 @@
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   border-radius: inherit;
   background: var(--blok-video-thumb);
   box-shadow: var(--blok-video-thumb-shadow);
@@ -969,125 +1007,211 @@
   }
 }
 
-/* ===== speed: header, big readout, ruler tape, presets ===== */
-[data-blok-tool="video"] .blok-video-controls__speed-section {
-  display: flex;
-  flex-direction: column;
-  padding-top: var(--blok-space-1-5);
-}
-[data-blok-tool="video"] .blok-video-controls__speed-head {
+/* ===== speed submenu: step line, the wire, presets ===== */
+[data-blok-tool="video"] .blok-video-controls__speed-stepper {
   display: flex;
   align-items: center;
-  gap: var(--blok-space-2);
-  padding: 0 var(--blok-space-2-5);
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--blok-video-menu-value-fg);
+  justify-content: space-between;
+  padding: var(--blok-space-2) var(--blok-space-2-5) 0;
 }
-[data-blok-tool="video"] .blok-video-controls__speed-head .blok-video-controls__menu-icon,
-[data-blok-tool="video"] .blok-video-controls__speed-head .blok-video-controls__menu-icon svg {
-  width: 16px;
-  height: 16px;
-  color: inherit;
+[data-blok-tool="video"] .blok-video-controls__speed-step {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--blok-radius-pill);
+  background: var(--blok-video-control-bg-hover);
+  color: var(--blok-video-control-fg);
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease, opacity 160ms ease;
+}
+[data-blok-tool="video"] .blok-video-controls__speed-step svg { width: 18px; height: 18px; }
+[data-blok-tool="video"] .blok-video-controls__speed-step:hover { background: var(--blok-video-control-bg-active); }
+[data-blok-tool="video"] .blok-video-controls__speed-step:active { transform: scale(0.92); }
+[data-blok-tool="video"] .blok-video-controls__speed-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+:where(:root:not([data-blok-modality="pointer"])) [data-blok-tool="video"] .blok-video-controls__speed-step:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--blok-video-focus-ring);
 }
 /* The live value: large and tabular, so the digits don't jitter as they change. */
 [data-blok-tool="video"] .blok-video-controls__speed-readout {
-  display: flex;
+  display: inline-flex;
   align-items: baseline;
-  justify-content: center;
   gap: var(--blok-space-0-5);
-  margin: var(--blok-space-2-5) 0 var(--blok-space-1);
-  font-size: 38px;
+  font-size: 40px;
   font-weight: 600;
   line-height: 1;
   letter-spacing: -0.03em;
   font-variant-numeric: tabular-nums;
   color: var(--blok-video-control-fg);
 }
-[data-blok-tool="video"] .blok-video-controls__speed-readout-unit {
-  font-size: 20px;
+[data-blok-tool="video"] .blok-video-controls__speed-readout-digits { display: inline-flex; }
+/* Click the number to type a speed (the Well, from the Typed Speed Lab). The number and
+   the open field share one box: same padding, pulled back by the same amount, so opening
+   the field moves nothing. video.css and audio.css keep these rules alike; a test compares them. */
+[data-blok-tool="video"] .blok-video-controls__speed-readout[role="button"],
+[data-blok-tool="video"] .blok-video-controls__speed-entry {
+  padding: var(--blok-space-0-5) var(--blok-space-2);
+  margin: calc(-1 * var(--blok-space-0-5)) 0;
+  border-radius: var(--blok-radius-field);
+}
+[data-blok-tool="video"] .blok-video-controls__speed-readout[role="button"] {
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+[data-blok-tool="video"] .blok-video-controls__speed-readout[role="button"]:hover,
+[data-blok-tool="video"] .blok-video-controls__speed-entry {
+  background: var(--blok-video-control-bg-hover);
+}
+:where(:root:not([data-blok-modality="pointer"])) [data-blok-tool="video"] .blok-video-controls__speed-readout[role="button"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--blok-video-focus-ring);
+}
+/* A hidden copy of the text sets the field's width and baseline. The input lies over it, out
+   of flow, so the input's own minimum width never shows. */
+[data-blok-tool="video"] .blok-video-controls__speed-entry-sizer {
+  /* An input centres its text; this much off the bottom puts the digits on the number's own
+     pixels (measured at 40px: 1px lower without it). */
+  --blok-video-speed-entry-lift: 0.05em;
+  display: inline-block;
+  position: relative;
+}
+[data-blok-tool="video"] .blok-video-controls__speed-entry-sizer::after {
+  content: attr(data-value);
+  visibility: hidden;
+  white-space: pre;
+}
+[data-blok-tool="video"] .blok-video-controls__speed-entry-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0 0 var(--blok-video-speed-entry-lift);
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  font-variant-numeric: inherit;
+  outline: none;
+}
+/* While the field is open the presets give way to a line with the range, or what is wrong. */
+[data-blok-tool="video"] .blok-video-controls__speed-help {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 11.5px;
   font-weight: 500;
   color: var(--blok-video-menu-value-fg);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+[data-blok-tool="video"] .blok-video-controls__speed-help[data-strong="true"] {
+  color: var(--blok-video-control-fg);
+}
+[data-blok-tool="video"] [data-speed-entry="open"] .blok-video-controls__speed-preset {
+  opacity: 0;
+  pointer-events: none;
+}
+[data-blok-tool="video"] [data-speed-entry="open"] .blok-video-controls__speed-help {
+  opacity: 1;
+}
+[data-blok-tool="video"] .blok-video-controls__speed-digit { display: inline-block; }
+[data-blok-tool="video"] .blok-video-controls__speed-readout-unit {
+  font-size: 0.52em;
+  font-weight: 500;
+  color: var(--blok-video-menu-value-fg);
+}
+/* A changed digit rolls in from the side the value came from. */
+@keyframes blok-video-speed-roll-up {
+  from { opacity: 0; transform: translateY(0.45em); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes blok-video-speed-roll-down {
+  from { opacity: 0; transform: translateY(-0.45em); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-blok-tool="video"] .blok-video-controls__speed-digit[data-roll="up"] {
+    animation: blok-video-speed-roll-up 180ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  }
+  [data-blok-tool="video"] .blok-video-controls__speed-digit[data-roll="down"] {
+    animation: blok-video-speed-roll-down 180ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  }
 }
 
-/* The ruler: a tape that slides under a fixed needle. --blok-speed-pos (from JS)
-   is the number of 0.05× steps from the start; --blok-speed-step-px is the tick gap. */
-[data-blok-tool="video"] .blok-video-controls__speed-ruler {
+/* The wire: a bead on a line, with a peg at each preset. speed-wire.ts draws into a
+   240 × 62 viewBox; the box keeps that ratio so pegs and preset buttons stay aligned. */
+[data-blok-tool="video"] .blok-video-controls__speed-wire {
   position: relative;
-  height: 32px;
-  margin: 0 calc(-1 * var(--blok-space-1-5));
-  overflow: hidden;
-  cursor: grab;
+  aspect-ratio: 240 / 62;
+  margin: 0 var(--blok-space-1-5);
+  color: var(--blok-video-accent);
+  cursor: pointer;
   touch-action: none;
   user-select: none;
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent);
-  mask-image: linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent);
 }
-[data-blok-tool="video"] .blok-video-controls__speed-ruler[data-dragging="true"] { cursor: grabbing; }
-[data-blok-tool="video"] .blok-video-controls__speed-tape {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(calc(var(--blok-speed-pos, 15) * var(--blok-speed-step-px) * -1));
-  will-change: transform;
+[data-blok-tool="video"] .blok-video-controls__speed-wire-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  fill: none;
 }
-[data-blok-tool="video"] .blok-video-controls__speed-tick {
-  position: absolute;
-  bottom: 14px;
-  left: calc(var(--blok-speed-tick) * var(--blok-speed-step-px));
-  width: 1px;
-  height: 5px;
-  border-radius: var(--blok-radius-pill);
-  background: var(--blok-video-track);
-  transform: translateX(-50%);
+[data-blok-tool="video"] .blok-video-controls__wire-lit {
+  stroke: currentColor;
+  stroke-width: 2.25;
+  stroke-linecap: round;
 }
-[data-blok-tool="video"] .blok-video-controls__speed-tick.is-major {
-  height: 9px;
-  background: var(--blok-video-menu-value-fg);
+/* The lit wire's glow. A wide faint line: a filter on a flat line has no box to draw in. */
+[data-blok-tool="video"] .blok-video-controls__wire-glow {
+  stroke: currentColor;
+  stroke-width: 8;
+  stroke-linecap: round;
+  opacity: 0.14;
 }
-[data-blok-tool="video"] .blok-video-controls__speed-tick-label {
-  position: absolute;
-  top: 100%;
-  margin-top: var(--blok-space-0-5);
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 9.5px;
-  line-height: 1;
-  font-weight: 500;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-  color: var(--blok-video-menu-value-fg);
+[data-blok-tool="video"] .blok-video-controls__wire-dim {
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  opacity: 0.3;
 }
-[data-blok-tool="video"] .blok-video-controls__speed-needle {
-  position: absolute;
-  bottom: 12px;
-  left: 50%;
-  width: 2px;
-  height: 16px;
-  margin-left: -1px;
-  border-radius: var(--blok-radius-pill);
-  background: var(--blok-video-accent);
-  box-shadow: 0 0 10px var(--blok-video-buffered);
-  pointer-events: none;
-  transition: transform 160ms cubic-bezier(0.34, 1.56, 0.64, 1);
+[data-blok-tool="video"] .blok-video-controls__wire-tail-start { stroke-width: 2.25; }
+[data-blok-tool="video"] .blok-video-controls__wire-tail-end {
+  stroke-width: 1.5;
+  opacity: 0.3;
 }
-[data-blok-tool="video"] .blok-video-controls__speed-needle::before {
-  content: "";
-  position: absolute;
-  top: -3px;
-  left: 50%;
-  width: 4px;
-  height: 4px;
-  margin-left: -2px;
-  border-radius: var(--blok-radius-pill);
-  background: var(--blok-video-accent);
+[data-blok-tool="video"] .blok-video-controls__wire-ghost {
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
 }
-[data-blok-tool="video"] .blok-video-controls__speed-ruler[data-dragging="true"] .blok-video-controls__speed-needle {
-  transform: scaleY(1.12);
+[data-blok-tool="video"] .blok-video-controls__wire-ghost[data-active] { opacity: 0.14; }
+[data-blok-tool="video"] .blok-video-controls__wire-peg {
+  fill: var(--blok-video-wire-peg);
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-opacity: 0.45;
 }
-/* The real range: invisible, covering the ruler, keyboard-only. Pointer input goes
-   to the ruler (pointer-events: none here). The needle rings only after keyboard use. */
+[data-blok-tool="video"] .blok-video-controls__wire-peg[data-passed] { stroke-opacity: 1; }
+[data-blok-tool="video"] .blok-video-controls__wire-bead {
+  fill: currentColor;
+  filter: drop-shadow(0 2px 4px var(--blok-video-wire-shadow));
+}
+/* The real range: invisible, covering the wire, keyboard-only. Pointer input goes
+   to the wire (pointer-events: none here). The bead rings only after keyboard use. */
 [data-blok-tool="video"] .blok-video-controls__speed-slider {
   position: absolute;
   inset: 0;
@@ -1111,79 +1235,48 @@
   border: 0;
 }
 [data-blok-tool="video"] .blok-video-controls__speed-slider:focus-visible { outline: none; }
-:where(:root:not([data-blok-modality="pointer"])) [data-blok-tool="video"] .blok-video-controls__speed-ruler:not([data-pointer-focus]) .blok-video-controls__speed-slider:focus-visible ~ .blok-video-controls__speed-needle {
-  box-shadow: 0 0 0 2px var(--blok-video-focus-ring);
+:where(:root:not([data-blok-modality="pointer"])) [data-blok-tool="video"] .blok-video-controls__speed-wire:not([data-pointer-focus]) .blok-video-controls__speed-slider:focus-visible ~ .blok-video-controls__speed-wire-art .blok-video-controls__wire-bead {
+  stroke: var(--blok-video-focus-ring);
+  stroke-width: 2.5;
+  paint-order: stroke;
 }
 
-/* presets: a recessed well with one puck. The puck rides --blok-speed-puck (a preset
-   index from JS, fractional between presets). Off a preset it is a thin glowing line
-   under the labels; on one (data-snapped) it springs up into a gray glass tile. */
-[data-blok-tool="video"] .blok-video-controls__speed-chips {
+/* Presets: one button under each peg. They set a value and nothing else, so there is
+   no selected state to paint. Every button is the same pill whatever its label. */
+[data-blok-tool="video"] .blok-video-controls__speed-presets {
   position: relative;
-  isolation: isolate;
-  display: flex;
-  gap: var(--blok-space-0-5);
-  margin-top: var(--blok-space-2);
-  padding: var(--blok-space-0-5);
-  border-radius: var(--blok-radius-inner, var(--blok-radius-control));
-  --blok-radius-inner: max(var(--blok-radius-floor), calc(var(--blok-radius-surface) - var(--blok-border-width-hairline) - var(--blok-space-1-5) - var(--blok-space-0-5)));
-  /* One chip's width: four chips share the row minus padding and three gaps. */
-  --_blok-chip-w: calc((100% - 2 * var(--blok-space-0-5) - 3 * var(--blok-space-0-5)) / 4);
-  background: var(--blok-video-menu-row-active);
-  box-shadow: inset 0 1px 2px var(--blok-video-scrim-strong), inset 0 0 0 1px var(--blok-video-menu-border);
+  height: 30px;
+  margin: calc(-1 * var(--blok-space-1-5)) var(--blok-space-1-5) var(--blok-space-1-5);
+  /* Each button's share of the way along the wire. controls.ts sets it per button. */
+  --blok-speed-at: 0;
 }
-[data-blok-tool="video"] .blok-video-controls__speed-puck {
+[data-blok-tool="video"] .blok-video-controls__speed-preset {
   position: absolute;
-  z-index: -1;
-  top: calc(100% - var(--blok-space-1) - 2px);
-  bottom: var(--blok-space-1);
-  left: calc(var(--blok-space-0-5) + var(--blok-speed-puck, 1) * (var(--_blok-chip-w) + var(--blok-space-0-5)));
-  width: var(--_blok-chip-w);
-  border-radius: var(--blok-radius-inner, var(--blok-radius-control));
-  background: var(--blok-video-accent);
-  box-shadow: 0 0 8px var(--blok-video-buffered);
-  transform: scaleX(0.36);
-  pointer-events: none;
-  /* No transition on left: JS moves it every frame during a drag or a glide. */
-  transition: top 160ms ease, bottom 160ms ease, transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
-}
-/* Snapped: the line lifts into a full glass tile, with a small spring overshoot. */
-[data-blok-tool="video"] .blok-video-controls__speed-chips[data-snapped] .blok-video-controls__speed-puck {
-  top: var(--blok-space-0-5);
-  bottom: var(--blok-space-0-5);
-  background: var(--blok-video-control-bg-hover);
-  box-shadow: inset 0 1px 0 var(--blok-video-menu-border), inset 0 0 0 1px var(--blok-video-menu-border), var(--blok-video-thumb-shadow);
-  transform: scaleX(1);
-  transition: top 300ms cubic-bezier(0.34, 1.56, 0.64, 1), bottom 300ms cubic-bezier(0.34, 1.56, 0.64, 1), transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1), background 200ms ease, box-shadow 200ms ease;
-}
-[data-blok-tool="video"] .blok-video-controls__speed-chip {
-  flex: 1 1 0;
-  min-width: 0;
-  min-height: 28px;
-  padding: 0 var(--blok-space-1);
+  top: 3px;
+  /* 26 and 188 are the wire's pad and span in its 240-wide viewBox (speed-wire.ts). */
+  left: calc((26 + var(--blok-speed-at, 0) * 188) / 240 * 100%);
+  width: 42px;
+  height: 24px;
+  padding: 0;
   border: 0;
-  border-radius: var(--blok-radius-inner, var(--blok-radius-control));
+  border-radius: var(--blok-radius-pill);
   background: transparent;
   color: var(--blok-video-menu-value-fg);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
-  transition: color 160ms ease, transform 120ms ease;
+  transform: translateX(-50%);
+  transition: background 140ms ease, color 140ms ease, transform 160ms cubic-bezier(0.3, 1.35, 0.5, 1), opacity 160ms ease;
 }
-[data-blok-tool="video"] .blok-video-controls__speed-chip:hover {
+[data-blok-tool="video"] .blok-video-controls__speed-preset:hover {
+  background: var(--blok-video-control-bg-hover);
   color: var(--blok-video-control-fg);
 }
-[data-blok-tool="video"] .blok-video-controls__speed-chip[aria-pressed="true"] {
-  color: var(--blok-video-control-fg);
-  font-weight: 600;
-}
-[data-blok-tool="video"] .blok-video-controls__speed-chip:active { transform: scale(0.94); }
-@media (prefers-reduced-motion: reduce) {
-  [data-blok-tool="video"] .blok-video-controls__speed-puck { transition: none; }
-}
-:where(:root:not([data-blok-modality="pointer"])) [data-blok-tool="video"] .blok-video-controls__speed-chip:focus-visible {
+[data-blok-tool="video"] .blok-video-controls__speed-preset:active { transform: translateX(-50%) scale(0.92); }
+:where(:root:not([data-blok-modality="pointer"])) [data-blok-tool="video"] .blok-video-controls__speed-preset:focus-visible {
   outline: none;
+  color: var(--blok-video-control-fg);
   box-shadow: inset 0 0 0 1.5px var(--blok-video-focus-ring);
 }
 
@@ -1194,6 +1287,16 @@
   background: var(--blok-video-control-bg-active);
   color: var(--blok-video-accent);
 }
+/* The gear turns one tooth along while its menu is open. It has six teeth, so 60°
+   lands on the same drawing. */
+[data-blok-tool="video"] .blok-video-controls__btn[data-action="gear"][aria-expanded="true"] svg {
+  transform: rotate(60deg);
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-blok-tool="video"] .blok-video-controls__btn[data-action="gear"] svg {
+    transition: transform 420ms cubic-bezier(0.3, 1.35, 0.5, 1);
+  }
+}
 
 /* ambient glow — blurred frame sample bleeding out behind the player */
 [data-blok-tool="video"] .blok-video-controls__ambient {
@@ -1202,8 +1305,8 @@
   z-index: -1;
   width: 100%;
   height: 100%;
-  filter: blur(28px) saturate(1.5);
-  transform: scale(1.06);
+  filter: blur(24px) saturate(1.5);
+  transform: scale(1.03);
   /* glow is dark until the video plays; data-active fades it in, and dropping it
      on pause fades the bloom back out instead of freezing the last frame */
   opacity: 0;
@@ -1213,7 +1316,7 @@
 /* user-chosen glow intensity (block settings → Glow): more / less / minimal / none.
    minimal is the default — a barely-there bloom that lifts the player off the page
    without competing with the frame. */
-[data-blok-tool="video"] .blok-video-controls__ambient[data-glow="minimal"][data-active="true"] { opacity: 0.3; }
+[data-blok-tool="video"] .blok-video-controls__ambient[data-glow="minimal"][data-active="true"] { opacity: 0.15; }
 [data-blok-tool="video"] .blok-video-controls__ambient[data-glow="less"][data-active="true"] { opacity: 0.55; }
 [data-blok-tool="video"] .blok-video-controls__ambient[data-glow="more"][data-active="true"] { opacity: 0.85; }
 [data-blok-tool="video"] .blok-video-controls__ambient[data-glow="none"] { display: none; }
@@ -1302,7 +1405,7 @@
   transform: translateZ(0);
   /* the composited layer escapes the media's overflow:hidden rounding, so round
      the <video> itself to keep the theater frame's corners soft */
-  border-radius: var(--blok-radius-block);
+  border-radius: var(--blok-radius-player);
 }
 [data-blok-tool="video"] .blok-video-inner[data-theater="true"] [data-role="resize-handle"],
 [data-blok-tool="video"] .blok-video-inner[data-theater="true"] .blok-video-controls__ambient {
@@ -1324,13 +1427,21 @@
   place-items: center;
   border: 0;
   border-radius: var(--blok-radius-pill);
-  background: var(--blok-video-burst-bg);
+  background: var(--blok-video-island-bg);
   color: var(--blok-video-burst-fg);
-  box-shadow: var(--blok-video-burst-shadow);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  box-shadow: var(--blok-video-island-shadow);
+  -webkit-backdrop-filter: blur(18px) saturate(1.8);
+  backdrop-filter: blur(18px) saturate(1.8);
   cursor: pointer;
   pointer-events: auto;
+  transition: transform 320ms var(--blok-ease-spring-island), opacity 160ms ease;
+}
+[data-blok-tool="video"] .blok-video-controls__center:hover { transform: translate(-50%, -50%) scale(1.06); }
+/* It shows whenever the video is paused. Over a played video the bar comes up on
+   hover with its own play button, so this one steps aside and clears the frame. */
+[data-blok-tool="video"] .blok-video-inner[data-played="true"]:hover .blok-video-controls__center:not(:focus-visible) {
+  opacity: 0;
+  pointer-events: none;
 }
 [data-blok-tool="video"] .blok-video-controls__center[hidden] { display: none; }
 [data-blok-tool="video"] .blok-video-controls__center svg { width: 30px; height: 30px; }
@@ -1356,7 +1467,8 @@
 /* idle auto-hide — fade the bar + hide the cursor during playback */
 [data-blok-tool="video"] .blok-video-inner[data-controls-hidden="true"] .blok-video-controls__bar {
   opacity: 0;
-  transform: translateY(6px);
+  --blok-video-bar-on: 0;
+  transform: translateY(18px) scale(0.94);
   pointer-events: none;
 }
 [data-blok-tool="video"] .blok-video-inner[data-controls-hidden="true"] video { cursor: none; }
@@ -1423,28 +1535,13 @@
 }
 [data-blok-tool="video"] .blok-video-controls__stats[hidden] { display: none; }
 
-/* bottom mini progress — revealed by CSS only while the control bar is hidden
-   (the auto-hide bucket sets data-controls-hidden on the figure) */
-[data-blok-tool="video"] .blok-video-controls__mini {
-  position: absolute;
-  left: 0; bottom: 0;
-  height: 3px;
-  width: var(--blok-seek-pct, 0%);
-  background: var(--blok-video-accent);
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 160ms ease;
-}
-[data-blok-tool="video"] .blok-video-inner[data-controls-hidden="true"] .blok-video-controls__mini { opacity: 1; }
-/* In fullscreen the bottom edge-line is redundant — the full scrubber is one
-   mouse-move away — and reads as a stray hairline across the immersive frame. */
-[data-blok-tool="video"] .blok-video-inner[data-fullscreen="true"] .blok-video-controls__mini { display: none; }
+/* the hidden island leaves a clean picture; the element stays for markup compatibility */
+[data-blok-tool="video"] .blok-video-controls__mini { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   [data-blok-tool="video"] .blok-video-controls__bar,
   [data-blok-tool="video"] .blok-video-controls__title,
   [data-blok-tool="video"] .blok-video-controls__volume,
-  [data-blok-tool="video"] .blok-video-controls__mini,
   [data-blok-tool="video"] .blok-video-controls__seek-tooltip,
   [data-blok-tool="video"] .blok-video-controls__seek-wrap::before,
   [data-blok-tool="video"] .blok-video-controls__buffered,
@@ -1454,7 +1551,6 @@
   [data-blok-tool="video"] .blok-video-controls__seek-flash.is-active svg { animation: none; opacity: 0; }
   [data-blok-tool="video"] .blok-video-controls__spinner[data-active="true"] { animation: none; }
   [data-blok-tool="video"] .blok-video-controls__burst.is-active,
-  [data-blok-tool="video"] .blok-video-controls__burst.is-active::after,
   [data-blok-tool="video"] .blok-video-controls__burst.is-active svg { animation: none; opacity: 0; }
   [data-blok-tool="video"] .blok-video-controls__btn[data-action="mute-toggle"].is-bumped svg { animation: none; }
 }
@@ -1473,4 +1569,180 @@
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+}
+
+/* ---------- capsule: the player below 400px ----------
+   controls.ts stamps data-capsule and data-tier (compact, small, tiny) from the
+   player's width. The full bar needs about 370px, so a narrower player swaps it
+   for one glass capsule that is the scrubber, with the other buttons in the top
+   corner. Nothing here applies to a wider player. */
+[data-blok-tool="video"] .blok-video-controls__menu-row[data-action="menu-theater"],
+[data-blok-tool="video"] .blok-video-controls__menu-row[data-action="menu-pip"] { display: none; }
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__menu-row[data-action="menu-theater"],
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__menu-row[data-action="menu-pip"] { display: flex; }
+
+/* the bar keeps its states but gives up its box; each part is placed on the frame */
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__bar { display: contents; }
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__bar > * {
+  position: absolute;
+  margin: 0;
+  opacity: var(--blok-video-bar-on, 0);
+  translate: 0 calc((1 - var(--blok-video-bar-on, 0)) * 18px);
+  transition: opacity 180ms ease, translate 420ms var(--blok-ease-spring-island), background 120ms ease, transform 120ms ease;
+}
+
+/* the capsule is the scrubber: a fill grows across it and a drag anywhere on it seeks */
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__bar .blok-video-controls__seek-wrap {
+  inset-inline: var(--blok-space-2-5);
+  bottom: var(--blok-space-2-5);
+  height: 36px;
+  border-radius: var(--blok-radius-pill);
+  background: var(--blok-video-island-bg);
+  -webkit-backdrop-filter: blur(22px) saturate(1.9);
+  backdrop-filter: blur(22px) saturate(1.9);
+  box-shadow: var(--blok-video-island-shadow);
+  scale: calc(0.94 + 0.06 * var(--blok-video-bar-on, 0));
+  transform-origin: 50% 100%;
+  cursor: pointer;
+  transition:
+    opacity 180ms ease,
+    translate 420ms var(--blok-ease-spring-island),
+    scale 420ms var(--blok-ease-spring-island),
+    height 260ms var(--blok-ease-spring-island),
+    inset 260ms var(--blok-ease-spring-island);
+}
+/* it swells under the pointer while held */
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__bar .blok-video-controls__seek-wrap:active {
+  height: 44px;
+  inset-inline: var(--blok-space-1-5);
+  bottom: var(--blok-space-1-5);
+}
+/* The fill is the capsule's own shape, cut straight at the playhead. A clip here,
+   not overflow on the capsule: overflow beside backdrop-filter drops the clip. */
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__bar .blok-video-controls__seek-wrap::before {
+  inset: 0;
+  height: auto;
+  transform: none;
+  border-radius: inherit;
+  background: var(--blok-video-buffered);
+  clip-path: inset(0 calc(100% - var(--blok-seek-pct, 0%)) 0 0);
+  transition: none;
+}
+/* the range covers the whole capsule, unseen, so pointer and keyboard seeking stay native */
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__bar .blok-video-controls__seek-wrap .blok-video-controls__seek {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+}
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__seek::-webkit-slider-thumb { width: 1px; }
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__seek::-moz-range-thumb { width: 1px; }
+:where(:root:not([data-blok-modality="pointer"])) [data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__seek-wrap:has(.blok-video-controls__seek:focus-visible) {
+  box-shadow: var(--blok-video-island-shadow), 0 0 0 3px var(--blok-video-focus-ring);
+}
+
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__buffered,
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__seek-tooltip,
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__volume,
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="theater"],
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="picture-in-picture"],
+[data-blok-tool="video"] .blok-video-inner[data-capsule] [data-role="time-total"] { display: none; }
+
+/* play and the time ride on the capsule. The capsule comes later in the DOM, so they need the lift. */
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="play-toggle"] {
+  inset-inline-start: calc(var(--blok-space-2-5) + 3px);
+  bottom: calc(var(--blok-space-2-5) + 3px);
+  width: 30px; height: 30px;
+  background: transparent;
+  color: var(--blok-video-control-fg);
+  z-index: 1;
+}
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="play-toggle"]:hover {
+  background: var(--blok-video-control-bg-hover);
+}
+/* a drag that starts on the time still scrubs */
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__time {
+  inset-inline-end: calc(var(--blok-space-2-5) + var(--blok-space-3));
+  bottom: var(--blok-space-2-5);
+  height: 36px;
+  display: flex;
+  align-items: center;
+  color: var(--blok-video-control-fg);
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* the top corner: settings, mute, full screen. They come down, the capsule comes up. */
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="fullscreen"],
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__volume-wrap,
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__menu-wrap {
+  top: var(--blok-space-2);
+  translate: 0 calc((1 - var(--blok-video-bar-on, 0)) * -6px);
+}
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__bar > .blok-video-controls__btn[data-action="fullscreen"] { inset-inline-end: var(--blok-space-2); }
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__bar > .blok-video-controls__volume-wrap { inset-inline-end: calc(var(--blok-space-2) + 34px); }
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__bar > .blok-video-controls__menu-wrap { inset-inline-end: calc(var(--blok-space-2) + 68px); }
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="fullscreen"],
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="mute-toggle"],
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="gear"] {
+  width: 30px; height: 30px;
+  background: var(--blok-video-island-bg);
+  -webkit-backdrop-filter: blur(18px) saturate(1.8);
+  backdrop-filter: blur(18px) saturate(1.8);
+  box-shadow: var(--blok-video-island-shadow);
+}
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="fullscreen"]:hover,
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="mute-toggle"]:hover,
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="gear"]:hover {
+  background: var(--blok-video-burst-bg);
+}
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="fullscreen"] svg,
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="mute-toggle"] svg,
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="gear"] svg { width: 16px; height: 16px; }
+/* three dots stand in for the gear here, and dots do not turn */
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__btn[data-action="gear"][aria-expanded="true"] svg { transform: none; }
+/* the hold-to-speed badge clears the corner buttons */
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__speed { top: calc(2 * var(--blok-space-2) + 30px); }
+
+/* the centre play steps down by tier, and steps aside whenever the capsule is up */
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__center { width: 48px; height: 48px; }
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__center svg { width: 24px; height: 24px; }
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls:has(:focus-visible) .blok-video-controls__center:not(:focus-visible),
+[data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls:has([aria-expanded="true"]) .blok-video-controls__center {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* below 260px: no settings button */
+[data-blok-tool="video"] .blok-video-inner[data-tier="small"] .blok-video-controls__menu-wrap,
+[data-blok-tool="video"] .blok-video-inner[data-tier="tiny"] .blok-video-controls__menu-wrap { display: none; }
+[data-blok-tool="video"] .blok-video-inner[data-tier="small"] .blok-video-controls__center { width: 40px; height: 40px; }
+[data-blok-tool="video"] .blok-video-inner[data-tier="small"] .blok-video-controls__center svg { width: 20px; height: 20px; }
+
+/* below 180px: play, the capsule and full screen only */
+[data-blok-tool="video"] .blok-video-inner[data-tier="tiny"] .blok-video-controls__time,
+[data-blok-tool="video"] .blok-video-inner[data-tier="tiny"] .blok-video-controls__volume-wrap { display: none; }
+[data-blok-tool="video"] .blok-video-inner[data-tier="tiny"] .blok-video-controls__center { width: 32px; height: 32px; }
+[data-blok-tool="video"] .blok-video-inner[data-tier="tiny"] .blok-video-controls__center svg { width: 18px; height: 18px; }
+[data-blok-tool="video"] .blok-video-inner[data-tier="tiny"] .blok-video-controls__bar .blok-video-controls__seek-wrap {
+  height: 32px;
+  inset-inline: var(--blok-space-2);
+  bottom: var(--blok-space-2);
+}
+[data-blok-tool="video"] .blok-video-inner[data-tier="tiny"] .blok-video-controls__bar .blok-video-controls__seek-wrap:active {
+  height: 38px;
+  inset-inline: 5px;
+  bottom: 5px;
+}
+[data-blok-tool="video"] .blok-video-inner[data-tier="tiny"] .blok-video-controls__btn[data-action="play-toggle"] {
+  inset-inline-start: var(--blok-space-2-5);
+  bottom: var(--blok-space-2-5);
+  width: 28px; height: 28px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__bar > *,
+  [data-blok-tool="video"] .blok-video-inner[data-capsule] .blok-video-controls__bar .blok-video-controls__seek-wrap { transition: none; }
 }

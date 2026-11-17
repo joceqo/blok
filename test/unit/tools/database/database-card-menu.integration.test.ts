@@ -41,8 +41,9 @@ const viewData = (type: ViewType): DatabaseData =>
 
 const oneRow = (): Doc => makeDoc([fakeRow('a', 'db', { title: 'Alpha beta', status: 'o1' }, 'a0')]);
 
-const ROW_SELECTOR: Record<'board' | 'gallery' | 'list', string> = {
+const ROW_SELECTOR: Record<'board' | 'gallery' | 'list' | 'table', string> = {
   board: '[data-blok-database-card][data-row-id="a"]',
+  table: '[data-blok-database-table-row][data-row-id="a"]',
   gallery: '[data-blok-database-gallery-card][data-row-id="a"]',
   list: '[data-blok-database-list-row][data-row-id="a"]',
 };
@@ -164,7 +165,58 @@ describe('DatabaseTool — one row menu on every view (research/12 §3, research
     expect(document.querySelector('[data-blok-database-row-menu-footer]')?.textContent).toContain('tools.database.rowEditedTodayAt');
   });
 
-  it.each(['board', 'gallery', 'list'] as const)('a right-click on a %s row opens the menu without a comments lever', (type) => {
+  // research/23 §157 (Notion): a table row's right-click opens the same menu as its ⋮⋮.
+  it('a right-click on a table row opens its ⋮⋮ menu at the pointer, not the comments', () => {
+    const open = vi.fn();
+    const { el } = buildTool(oneRow(), { comments: { open } }, viewData('table'));
+    const cell = rowEl(el, 'table').querySelector<HTMLElement>('[data-blok-database-table-cell]');
+
+    if (cell === null) throw new Error('no cell');
+    const event = rightClick(cell);
+
+    expect(menuOutline()).toEqual(WITHOUT_VIEW_SETTINGS);
+    expect(open).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+    menuItem('database-row-comment')?.click();
+    expect(open).toHaveBeenCalledWith({ databaseId: 'db', rowId: 'a' }, rowEl(el, 'table'));
+  });
+
+  it('drops a table row\'s pointer anchor when its right-click menu closes', () => {
+    const { el } = buildTool(oneRow(), {}, viewData('table'));
+
+    rowEl(el, 'table').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 120 }));
+    const point = document.querySelector<HTMLElement>('[data-blok-database-menu-point]');
+
+    expect(point?.style.left).toBe('300px');
+    expect(point?.style.top).toBe('121px');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    menuItem('database-row-copy-link')?.click();
+    expect(document.querySelector('[data-blok-database-menu-point]')).toBeNull();
+  });
+
+  it('a read-only table row\'s right-click menu keeps Comment and Copy link, with no edits', () => {
+    const open = vi.fn();
+    const { el } = buildTool(oneRow(), { comments: { open } }, viewData('table'), true);
+
+    expect(rightClick(rowEl(el, 'table')).defaultPrevented).toBe(true);
+    expect(menuItem('database-row-duplicate')).toBeNull();
+    expect(menuItem('database-row-delete')).toBeNull();
+    expect(menuItem('database-row-copy-link')).not.toBeNull();
+    menuItem('database-row-comment')?.click();
+    expect(open).toHaveBeenCalledWith({ databaseId: 'db', rowId: 'a' }, expect.any(HTMLElement));
+  });
+
+  it('a right-click in a table cell being edited keeps the native menu', () => {
+    const { el } = buildTool(oneRow(), {}, viewData('table'));
+    const input = document.createElement('input');
+
+    rowEl(el, 'table').querySelector('[data-blok-database-table-cell]')?.appendChild(input);
+
+    expect(rightClick(input).defaultPrevented).toBe(false);
+    expect(document.querySelector('[data-blok-popover-opened]')).toBeNull();
+  });
+
+  it.each(['board', 'gallery', 'list', 'table'] as const)('a right-click on a %s row opens the menu without a comments lever', (type) => {
     const { el } = buildTool(oneRow(), {}, viewData(type));
 
     expect(rightClick(rowEl(el, type)).defaultPrevented).toBe(true);
@@ -181,19 +233,105 @@ describe('DatabaseTool — one row menu on every view (research/12 §3, research
 
     expect(point?.hasAttribute('data-popover-open')).toBe(true);
     expect(point?.style.left).toBe('300px');
-    expect(point?.style.top).toBe('120px');
+    // notion-motion.md Round 58 §6: below the pointer, the menu's top is y + 1.
+    expect(point?.style.top).toBe('121px');
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     menuItem('database-row-copy-link')?.click();
 
     expect(document.querySelector('[data-blok-database-menu-point]')).toBeNull();
   });
 
-  it('keeps a board card\'s right-click menu on the card', () => {
+  // notion-motion.md Round 23 §3: the card is picked while its ⋯ menu is open, stays picked after Escape, and a click outside clears it.
+  it('picks the board card while its ⋯ menu is open and after Escape, until the next press', () => {
+    const { el } = buildTool(oneRow(), {}, viewData('board'));
+
+    openMenu(el, 'board');
+    expect(rowEl(el, 'board').hasAttribute('data-blok-database-card-picked')).toBe(true);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(rowEl(el, 'board').hasAttribute('data-popover-open')).toBe(false);
+    expect(rowEl(el, 'board').hasAttribute('data-blok-database-card-picked')).toBe(true);
+
+    document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    expect(rowEl(el, 'board').hasAttribute('data-blok-database-card-picked')).toBe(false);
+  });
+
+  it('drops the card pick when the tool is destroyed', () => {
+    const { el, tool } = buildTool(oneRow(), {}, viewData('board'));
+
+    openMenu(el, 'board');
+    const card = rowEl(el, 'board');
+
+    tool.destroy();
+    expect(card.hasAttribute('data-blok-database-card-picked')).toBe(false);
+  });
+
+  // notion-motion.md Round 58 §6: a board card's menu opens at the pointer x, not the card's left.
+  it('anchors a board card\'s right-click menu at the pointer', () => {
     const { el } = buildTool(oneRow(), {}, viewData('board'));
 
     rowEl(el, 'board').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 120 }));
+    const point = document.querySelector<HTMLElement>('[data-blok-database-menu-point]');
 
+    expect(point?.style.left).toBe('300px');
+    expect(point?.style.top).toBe('121px');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    menuItem('database-row-copy-link')?.click();
     expect(document.querySelector('[data-blok-database-menu-point]')).toBeNull();
+  });
+
+  // notion-motion.md Round 58 §6 (list menu 458.9 tall, window 717): below at y + 1 when it fits,
+  // above with its bottom on y when its top keeps 12 (y 471 → 12.1, y 470 → 11.1 no), else clamped 12 over the bottom.
+  it.each([
+    ['list', 185, 186],
+    ['list', 471, 12],
+    ['list', 470, 246],
+    ['board', 185, 186],
+    ['board', 551, 92],
+    ['board', 349, 246],
+    // Round 59 §4: gallery cards and table rows follow the same rule.
+    ['gallery', 190, 191],
+    ['gallery', 471, 12],
+    ['gallery', 470, 246],
+    ['table', 185, 186],
+    ['table', 472, 13],
+    ['table', 469, 246],
+  ] as const)('opens a %s right-click menu for a pointer at y %i with its top at %i', (type, y, top) => {
+    const { el } = buildTool(oneRow(), {}, viewData(type));
+    const real = Element.prototype.getBoundingClientRect;
+
+    vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(717);
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(459);
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      return this instanceof HTMLElement && this.hasAttribute('data-blok-database-menu-point') ? new DOMRect(700, Number.parseFloat(this.style.top), 0, 0) : real.call(this);
+    });
+    rowEl(el, type).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 700, clientY: y }));
+    const menu = document.querySelector<HTMLElement>('.blok-database-card-menu');
+
+    expect(menu?.style.top).toBe(`${top}px`);
+  });
+
+  // notion-motion.md Round 13: a right-click opens the one-card menu and drops every pick.
+  it.each([{ picked: ['a', 'b'] }, { picked: ['a'] }])('a right-click on board card b with $picked picked opens b\'s own menu and drops the picks', ({ picked }) => {
+    const doc = makeDoc([fakeRow('a', 'db', { title: 'Alpha', status: 'o1' }, 'a0'), fakeRow('b', 'db', { title: 'Beta', status: 'o1' }, 'a1')]);
+    const { el } = buildTool(doc, { comments: { open: vi.fn() } }, viewData('board'));
+    const card = (id: string): HTMLElement => {
+      const found = el.querySelector<HTMLElement>(`[data-blok-database-card][data-row-id="${id}"]`);
+
+      if (found === null) throw new Error(`no card ${id}`);
+
+      return found;
+    };
+
+    picked.forEach((id) => card(id).dispatchEvent(new MouseEvent('click', { bubbles: true, metaKey: true })));
+    expect(el.querySelectorAll('[data-blok-database-row-selected]')).toHaveLength(picked.length);
+
+    const event = rightClick(card('b'));
+
+    expect(el.querySelectorAll('[data-blok-database-row-selected]')).toHaveLength(0);
+    expect(document.querySelector('[data-blok-database-table-selection-bar]')).toBeNull();
+    expect(menuOutline()).toEqual(WITH_VIEW_SETTINGS);
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it.each(['board', 'gallery', 'list'] as const)('read-only: a right-click on a %s row offers only what does not edit the row', (type) => {
@@ -284,7 +422,7 @@ describe('DatabaseTool — one row menu on every view (research/12 §3, research
 
     openMenu(el, 'board');
 
-    expect(document.querySelector('[data-blok-database-row-menu-footer]')?.textContent).toContain('tools.database.rowWordCount');
+    expect(document.querySelector('[data-blok-database-row-menu-footer-counts]')?.textContent).toBe('tools.database.rowCounts');
   });
 
   it.each(['board', 'gallery', 'list', 'feed'] as const)('the %s menu footer names who edited the row last, as the table menu does', async (type) => {
@@ -304,7 +442,7 @@ describe('DatabaseTool — one row menu on every view (research/12 §3, research
       // The people lever loads once, then the view redraws with the names.
       await vi.waitFor(() => {
         openMenu(el, view);
-        expect(document.querySelector('[data-blok-database-row-menu-footer]')?.textContent).toContain('tools.database.rowLastEditedBy');
+        expect(document.querySelector('[data-blok-database-row-menu-footer-person]')?.textContent).toBe('Jack Uait');
       });
       const text = document.querySelector('[data-blok-database-row-menu-footer]')?.textContent ?? '';
 
@@ -326,6 +464,8 @@ describe('DatabaseTool — one row menu on every view (research/12 §3, research
     handle.click();
 
     expect(menuOutline()).toEqual(WITHOUT_VIEW_SETTINGS);
+    // notion-motion.md Round 10: it opens beside the handle, not over it.
+    expect(document.querySelector('[data-blok-popover-custom-class~="blok-database-handle-menu"]')).not.toBeNull();
     expect(rowEl(el, 'list').hasAttribute('data-popover-open')).toBe(true);
     expect(openPage).not.toHaveBeenCalled();
     // A click on the row itself does open the page, so the check above can fail.
@@ -347,6 +487,26 @@ describe('DatabaseTool — one row menu on every view (research/12 §3, research
     expect(document.querySelector('[data-blok-database-cell-editor] textarea, [data-blok-database-cell-editor] input')).not.toBeNull();
   });
 
+  // notion-motion.md Round 42 §2: a card that shows only Name still has Edit property ›, and it lists every
+  // property, not the shown ones. Created time and ID were not in Notion's list.
+  it('Edit property › lists every property on a card that shows only Name', () => {
+    const schema = [
+      ...BOARD_SCHEMA,
+      { id: 'made', name: 'Created time', type: 'createdTime' as const, position: 'a4' },
+      { id: 'uid', name: 'ID', type: 'uniqueId' as const, position: 'a5' },
+    ];
+    const { el } = buildTool(oneRow(), {}, tableData(schema, { type: 'board', groupBy: 'status', visibleProperties: [] }));
+
+    openMenu(el, 'board');
+    itemByTitle('tools.database.tableEditProperty').click();
+
+    // Notion's list read A→Z (Checkbox, Date, Email, …, URL), not in column order.
+    expect([...document.querySelectorAll('[data-blok-item-name^="database-row-edit-property-"]')].map((item) => item.getAttribute('data-blok-item-name')))
+      .toEqual(['notes', 'status', 'where'].map((id) => `database-row-edit-property-${id}`));
+    expect(menuItem('database-row-edit-property-made')).toBeNull();
+    expect(menuItem('database-row-edit-property-uid')).toBeNull();
+  });
+
   it.each([
     ['tools.database.settingsLayout'],
     ['tools.database.settingsPropertyVisibility'],
@@ -366,7 +526,7 @@ describe('DatabaseTool — one row menu on every view (research/12 §3, research
     openMenu(el, 'board');
     menuItem('database-row-delete')?.click();
 
-    expect(doc.api.blocks.delete).toHaveBeenCalledWith(0);
+    expect(doc.api.blocks.delete).toHaveBeenCalledWith(0, false);
   });
 
   describe('Comment ⌘⇧M and Move to ⌘⇧P on one picked row', () => {
@@ -429,6 +589,75 @@ describe('DatabaseTool — one row menu on every view (research/12 §3, research
       press(document.body, 'm');
 
       expect(open).not.toHaveBeenCalled();
+    });
+  });
+
+  // notion-motion.md Round 16 §6 and Round 17 §2: the feed ⋯ menu's top-left is the click point, 1px down,
+  // and it stays 12px above the window bottom.
+  describe('feed card ⋯ menu placement', () => {
+    const openedAt = (x: number, detail: number): HTMLElement => {
+      const { el } = buildTool(oneRow(), {}, viewData('feed'));
+
+      document.body.appendChild(el);
+      const button = el.querySelector<HTMLElement>('[data-blok-database-feed-more-actions]');
+
+      if (button === null) throw new Error('no More actions');
+      button.getBoundingClientRect = () => new DOMRect(588, 338, 24, 24);
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: 350, detail }));
+      const popover = [...document.querySelectorAll<HTMLElement>('[data-blok-popover]')].at(-1);
+
+      if (popover === undefined) throw new Error('no menu');
+
+      return popover;
+    };
+
+    it('opens with its top 1px below the click y and its left edge on the click x', () => {
+      const popover = openedAt(595, 1);
+
+      expect(popover.style.top).toBe('351px');
+      expect(popover.style.left).toBe('595px');
+    });
+
+    it('opens from a key press on the button\'s left edge', () => {
+      const popover = openedAt(0, 0);
+
+      expect(popover.style.left).toBe('588px');
+    });
+
+    it('stays 12px above the window bottom', () => {
+      vi.stubGlobal('innerHeight', 340);
+      const popover = openedAt(595, 1);
+
+      expect(popover.style.top).toBe(`${340 - 12 - popover.getBoundingClientRect().height}px`);
+      vi.unstubAllGlobals();
+    });
+  });
+
+  // notion-motion.md Round 36 §4 (r36-cardmenu-*.raw): a board card's ⋯ menu opens at the click x, not the button's
+  // left; a key press has no pointer, so it keeps the button.
+  describe('board card ⋯ menu placement', () => {
+    const openedAt = (x: number, detail: number): HTMLElement => {
+      const { el } = buildTool(oneRow(), {}, viewData('board'));
+
+      document.body.appendChild(el);
+      const button = el.querySelector<HTMLElement>('[data-blok-database-card-menu]');
+
+      if (button === null) throw new Error('no card ⋯');
+      button.getBoundingClientRect = () => new DOMRect(588, 338, 28, 24);
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: 350, detail }));
+      const popover = [...document.querySelectorAll<HTMLElement>('[data-blok-popover]')].at(-1);
+
+      if (popover === undefined) throw new Error('no menu');
+
+      return popover;
+    };
+
+    it('opens with its left edge on the click x', () => {
+      expect(openedAt(604, 1).style.left).toBe('604px');
+    });
+
+    it('opens from a key press on the button\'s left edge', () => {
+      expect(openedAt(0, 0).style.left).toBe('588px');
     });
   });
 });

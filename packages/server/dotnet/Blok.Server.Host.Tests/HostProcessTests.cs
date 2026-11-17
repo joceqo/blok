@@ -52,6 +52,32 @@ public sealed class HostProcessTests
         await uploadByUrl.Content.ReadAsStringAsync());
   }
 
+  // Kestrel takes a bare LF in a chunked trailer by default though every
+  // other chunk line needs CRLF, so a front proxy that reads the trailer
+  // otherwise can be desynced from the host. The host turns on
+  // Microsoft.AspNetCore.Server.Kestrel.DisableHttp1LineFeedTerminators.
+  [Theory]
+  [InlineData("0\r\nX-T: 1\n\r\n")]
+  [InlineData("0\r\n\n")]
+  [InlineData("0\r\nX-T: 1\r\n\n")]
+  public async Task RefusesABareLineFeedInAChunkedTrailer(string trailer)
+  {
+    await using var host = await StartHostAsync(["--listen", HostProcess.AllocateListenAddress()]);
+    var authority = host.Client.BaseAddress!;
+    using var connection = new TcpClient();
+    await connection.ConnectAsync(IPAddress.Loopback, authority.Port);
+    await using var stream = connection.GetStream();
+    await stream.WriteAsync(Encoding.ASCII.GetBytes(
+        "POST /delete HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n" +
+        "Transfer-Encoding: chunked\r\n\r\n" + trailer +
+        "GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"));
+    using var reader = new StreamReader(stream, Encoding.ASCII);
+    var answer = await reader.ReadToEndAsync();
+
+    Assert.StartsWith("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n", answer, StringComparison.Ordinal);
+    Assert.DoesNotContain("HTTP/1.1 200", answer, StringComparison.Ordinal);
+  }
+
   [Fact]
   public async Task PublishedHostReportsTheSuppliedBuildVersion()
   {
@@ -117,6 +143,16 @@ public sealed class HostProcessTests
           $"dotnet publish exited with {publish.ExitCode}:{Environment.NewLine}" +
           $"{await standardOutput}{Environment.NewLine}{await standardError}");
 
+      // AssemblyName is a global property. A library built under it writes
+      // its obj/ref as blok-server.dll and deletes Blok.Server.dll, which a
+      // build running beside this publish still compiles against (CS0006).
+      Assert.DoesNotMatch(
+          @"Blok\.Server(\.AspNetCore)? -> \S*blok-server\.dll",
+          await standardOutput);
+      Assert.False(
+          File.Exists(Path.Combine(outputDirectory, "blok-server.xml")),
+          "the publish built a library under the host's assembly name");
+      Assert.True(File.Exists(Path.Combine(outputDirectory, "Blok.Server.dll")));
       await using var host = await StartHostAsync(
           ["--listen", HostProcess.AllocateListenAddress()],
           assemblyPath: Path.Combine(outputDirectory, "blok-server.dll"));

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EmojiPicker } from '../../../../../src/tools/callout/emoji-picker';
 import { loadEmojiData } from '../../../../../src/components/utils/emoji/emoji-data';
-import { IconEmojiHearts, IconHash } from '../../../../../src/components/icons';
+import { IconEmojiNavHeart, IconHash } from '../../../../../src/components/icons';
 
 vi.mock('../../../../../src/components/utils/tooltip', () => ({
   onHover: vi.fn(),
@@ -39,6 +39,11 @@ describe('EmojiPicker motion', () => {
     return element;
   };
 
+  /** With motion, the grid takes a tone when the dial's circle lands on the toggle. */
+  const land = async (): Promise<void> => {
+    await vi.advanceTimersByTimeAsync(1000);
+  };
+
   /** Lays the element out at `top` in the body's scrolled content; the body's rect sits at 0. */
   const placeAt = (element: HTMLElement, top: number, height: number): void => {
     const body = get('[data-emoji-picker-body]');
@@ -49,7 +54,7 @@ describe('EmojiPicker motion', () => {
     });
   };
 
-  // The reel only reads inside sections whose box meets the view, and jsdom
+  // Skin swaps only animate inside sections whose box meets the view, and jsdom
   // gives every box a zero height.
   const fillBodyWithFirstSection = (): void => {
     placeAt(get('[data-emoji-section]'), 0, 300);
@@ -75,7 +80,7 @@ describe('EmojiPicker motion', () => {
       value: function (this: HTMLElement) {
         animated.push(this);
 
-        return { cancel: vi.fn(), onfinish: null };
+        return { cancel: vi.fn(), onfinish: null, finished: Promise.resolve() };
       },
     });
     vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
@@ -114,7 +119,7 @@ describe('EmojiPicker motion', () => {
     // A hash is a letterform among pictograms: it is the only nav icon a
     // reader sees as text, so it reads as a foreign mark in the row.
     expect(symbols.querySelector('svg')?.innerHTML).not.toBe(drawing(IconHash));
-    expect(symbols.querySelector('svg')?.innerHTML).toBe(drawing(IconEmojiHearts));
+    expect(symbols.querySelector('svg')?.innerHTML).toBe(drawing(IconEmojiNavHeart));
     expect(symbols).toHaveAttribute('aria-label', 'tools.callout.emojiCategorySymbols');
   });
 
@@ -148,6 +153,7 @@ describe('EmojiPicker motion', () => {
     body.scrollTop = 40;
     get<HTMLButtonElement>('[data-emoji-picker-skin-toggle]').click();
     get('[data-emoji-picker-skin-tone]').querySelectorAll('button')[1]?.click();
+    await land();
 
     expect(animated.some(glyph => glyph.closest('[data-emoji-native]') === hand)).toBe(true);
     expect(animated).not.toContain(hand);
@@ -174,12 +180,13 @@ describe('EmojiPicker motion', () => {
     });
     get<HTMLButtonElement>('[data-emoji-picker-skin-toggle]').click();
     get('[data-emoji-picker-skin-tone]').querySelectorAll('button')[1]?.click();
+    await land();
 
     expect(hand.textContent).toBe('👋🏻');
     expect(animated.some(glyph => glyph.closest('[data-emoji-native]') === hand)).toBe(false);
   });
 
-  it('closes the picker on Escape while the skin-tone tray is animating closed', async () => {
+  it('closes the picker on Escape while the skin-tone dial is folding shut', async () => {
     await open();
     const toggle = get<HTMLButtonElement>('[data-emoji-picker-skin-toggle]');
     const tray = get('[data-emoji-picker-skin-tone]');
@@ -195,163 +202,39 @@ describe('EmojiPicker motion', () => {
     expect(root.hidden).toBe(true);
   });
 
-  it('curls section labels at the reel edge without transforming their layout boxes', async () => {
-    await open();
-    const body = get('[data-emoji-picker-body]');
-    const title = get('[data-emoji-section-title]');
-
-    Object.defineProperties(body, {
-      clientHeight: { configurable: true, value: 100 },
-      scrollHeight: { configurable: true, value: 300 },
-    });
-    fillBodyWithFirstSection();
-    placeAt(get('[data-emoji-section-title] > span'), 40, 40);
-    body.scrollTop = 50;
-    body.dispatchEvent(new Event('scroll'));
-    vi.advanceTimersByTime(20);
-
-    const label = title.firstElementChild instanceof HTMLElement ? title.firstElementChild : title;
-
-    expect(label.style.transform).toContain('rotateX(');
-    expect(label.style.opacity).not.toBe('');
-    expect(title.style.transform).toBe('');
-
-    body.scrollTop = 0;
-    body.dispatchEvent(new Event('scroll'));
-    vi.advanceTimersByTime(20);
-    expect(label.style.transform).toBe('');
-
-    body.scrollTop = 50;
-    body.dispatchEvent(new Event('scroll'));
-    vi.advanceTimersByTime(20);
-    picker.close();
-    expect(label.style.transform).toBe('');
-  });
-
-  it('measures the reel band on the section label, not on its padded heading box', async () => {
-    await open();
-    const body = get('[data-emoji-picker-body]');
-    const title = get('[data-emoji-section-title]');
-    const label = get('[data-emoji-section-title] > span');
-
-    Object.defineProperties(body, {
-      clientHeight: { configurable: true, value: 100 },
-      scrollHeight: { configurable: true, value: 300 },
-    });
-    fillBodyWithFirstSection();
-    // A heading box is mostly padding: 12 units of it sit above the label.
-    placeAt(title, 40, 35);
-    placeAt(label, 52, 18);
-
-    // Where scrollToSection lands: the heading box meets the top edge while
-    // the label still clears it.
-    body.scrollTop = 40;
-    body.dispatchEvent(new Event('scroll'));
-    vi.advanceTimersByTime(20);
-
-    expect(label.style.transform).toBe('');
-    expect(label.style.opacity).toBe('');
-
-    body.scrollTop = 52;
-    body.dispatchEvent(new Event('scroll'));
-    vi.advanceTimersByTime(20);
-
-    expect(label.style.transform).toContain('rotateX(');
-  });
-
-  it('measures a label from the body when its heading is its offsetParent', async () => {
-    // Inline mode makes the heading that carries the tone controls a
-    // positioned box, so the label's offsetTop counts from the heading.
-    await open(true);
-    const body = get('[data-emoji-picker-body]');
-    const title = get('[data-emoji-section-title]');
-    const label = get('[data-emoji-section-title] > span');
-
-    Object.defineProperties(body, {
-      clientHeight: { configurable: true, value: 100 },
-      scrollHeight: { configurable: true, value: 300 },
-    });
-    fillBodyWithFirstSection();
-    Object.defineProperties(title, {
-      offsetTop: { configurable: true, value: 40 },
-      offsetParent: { configurable: true, value: body },
-    });
-    Object.defineProperties(label, {
-      offsetTop: { configurable: true, value: 14 },
-      offsetParent: { configurable: true, value: title },
-    });
-    placeAt(label, 54, 18);
-
-    body.scrollTop = 54;
-    body.dispatchEvent(new Event('scroll'));
-    vi.advanceTimersByTime(20);
-
-    expect(label.style.transform).toContain('rotateX(');
-
-    body.scrollTop = 40;
-    body.dispatchEvent(new Event('scroll'));
-    vi.advanceTimersByTime(20);
-
-    expect(label.style.transform).toBe('');
-  });
-
-  it('resets curled section labels when reduced motion is enabled', async () => {
-    await open();
-    const body = get('[data-emoji-picker-body]');
-    const title = get('[data-emoji-section-title]');
-
-    Object.defineProperties(body, {
-      clientHeight: { configurable: true, value: 100 },
-      scrollHeight: { configurable: true, value: 300 },
-    });
-    fillBodyWithFirstSection();
-    placeAt(get('[data-emoji-section-title] > span'), 40, 40);
-    body.scrollTop = 50;
-    body.dispatchEvent(new Event('scroll'));
-    vi.advanceTimersByTime(20);
-    const label = title.firstElementChild instanceof HTMLElement ? title.firstElementChild : title;
-
-    expect(label.style.transform).toContain('rotateX(');
-    reducedMotion = true;
-    body.dispatchEvent(new Event('scroll'));
-    vi.advanceTimersByTime(20);
-    expect(label.style.transform).toBe('');
-    expect(label.style.opacity).toBe('');
-  });
-
-  it('keeps inline tone controls in the first scrolling section after filtering and reopening', async () => {
+  it('keeps the stored skin tone on the inline grid after filtering and reopening', async () => {
+    localStorage.setItem('blok-emoji-skin-tone', '1');
     await open(true);
     // "hello" is a keyword; the ":" trigger loads keywords before it searches.
     await loadEmojiData();
-    const toggle = get<HTMLButtonElement>('[data-emoji-picker-skin-toggle]');
 
-    expect(get('[data-emoji-section-title]')).toContainElement(toggle);
+    expect(root.querySelector('[data-emoji-picker-skin-toggle]')).toBeNull();
+    expect(get('[data-emoji-native]').textContent).toBe('👋🏻');
     picker.setQuery('hello');
-    expect(get('[data-emoji-section-title]')).toContainElement(toggle);
-    toggle.click();
-    expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    get('[data-emoji-picker-skin-tone]').querySelectorAll('button')[1]?.click();
+    expect(root.querySelectorAll('[data-emoji-native]')).toHaveLength(1);
     expect(get('[data-emoji-native]').textContent).toBe('👋🏻');
 
     picker.setQuery('no-such-emoji');
     picker.setQuery('');
-    expect(get('[data-emoji-section-title]')).toContainElement(toggle);
+    expect(get('[data-emoji-native]').textContent).toBe('👋🏻');
     picker.close();
     await picker.open(anchor);
-    expect(get('[data-emoji-section-title]')).toContainElement(toggle);
+    expect(get('[data-emoji-native]').textContent).toBe('👋🏻');
   });
 
-  it('keeps the document caret when opening and choosing a skin tone inline', async () => {
+  it.each(['[data-emoji-nav]', '[data-emoji-native]'])('keeps the document caret when %s is pressed with the mouse inline', async selector => {
     await open(true);
-    get<HTMLButtonElement>('[data-emoji-picker-skin-toggle]').click();
+    // jsdom has no scrollTo, and a category button scrolls the grid.
+    Object.defineProperty(get('[data-emoji-picker-body]'), 'scrollTo', { configurable: true, value: vi.fn() });
+    const button = get<HTMLButtonElement>(selector);
+    // jsdom does not move focus on mousedown; a browser does unless it is prevented.
+    const press = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
 
-    expect(anchor).toHaveFocus();
-    const tones = get('[data-emoji-picker-skin-tone]').querySelectorAll('button');
+    button.dispatchEvent(press);
 
-    tones[1]?.click();
+    expect(press.defaultPrevented).toBe(true);
+    button.click();
     expect(anchor).toHaveFocus();
-    expect(get('[data-emoji-native]').textContent).toBe('👋🏻');
-    expect(get('[data-emoji-picker-skin-toggle]').textContent).toBe('✋🏻');
   });
 
   it('does not offer a clear action that only clears the hidden field in inline mode', async () => {

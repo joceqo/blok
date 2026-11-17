@@ -20,12 +20,14 @@ const ruleBody = (css: string, selector: string): string =>
     .map((rule) => rule[2])
     .join(';');
 
-describe('list width (notion-spec-2 §21.8, side-by-side-3 #1)', () => {
-  it('starts rows at the text column and runs them to the view toolbar\'s end, so values reach the right edge', () => {
+// notion-motion.md Round 41 Part B List: in a page-wide editor Notion's "+ New page" row is 692 wide, the text column.
+describe('list width (notion-spec-2 §21.8, side-by-side-3 #1, Round 41)', () => {
+  it('starts rows at the text column and ends them with the view toolbar at the column\'s end', () => {
     const body = ruleBody(database, '[data-blok-database-list]');
+    const inset = 'max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2))';
 
-    expect(body).toContain('padding-inline-start: max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2))');
-    expect(body).toContain('padding-inline-end: 0');
+    expect(body).toContain(`padding-inline-start: ${inset}`);
+    expect(body).toContain(`padding-inline-end: ${inset}`);
     expect(body).not.toMatch(/padding-(left|right)/);
   });
 });
@@ -76,9 +78,9 @@ describe('list rows (research/07)', () => {
   });
 
   it('rings a focused row or property only after keyboard use', () => {
-    expect(ruleBody(database, '[data-blok-database-list-row]:focus-visible:where(:root:not([data-blok-modality="pointer"]) *)'))
+    expect(ruleBody(database, ':where(:root:not([data-blok-modality="pointer"])) [data-blok-database-list-row]:focus-visible'))
       .toContain('var(--blok-focus-ring)');
-    expect(ruleBody(database, '[data-blok-database-list-row-property][data-editable]:focus-visible:where(:root:not([data-blok-modality="pointer"]) *)'))
+    expect(ruleBody(database, ':where(:root:not([data-blok-modality="pointer"])) [data-blok-database-list-row-property][data-editable]:focus-visible'))
       .toContain('var(--blok-focus-ring)');
     expect(ruleBody(database, '[data-blok-database-list-row]:focus')).toBe('');
   });
@@ -91,10 +93,12 @@ describe('list rows (research/07)', () => {
 
 describe('list row widths (findings-listgallery L01)', () => {
   // The title box holds the title and the Edit pencil right after its text (L04).
-  it('keeps the title box at least 120px wide and lets it grow; the title hugs its text', () => {
+  // listview.png: a long title gives way to the properties and stops at about 117px ("Beta is a very l…").
+  // A zero basis means the title box only takes what the properties leave, never under 120px.
+  it('keeps the title box at least 120px wide and gives the properties first claim on the row; the title hugs its text', () => {
     const box = ruleBody(database, '[data-blok-database-list-row-main]');
 
-    expect(box).toContain('flex: 1 1 auto');
+    expect(box).toContain('flex: 1 1 0');
     expect(box).toContain('min-width: 120px');
     expect(ruleBody(database, '[data-blok-database-list-row-title]')).toContain('flex: 0 1 auto');
     expect(ruleBody(database, '[data-blok-database-list-row-title]')).toContain('min-width: 0');
@@ -183,21 +187,91 @@ describe('list row hover chrome (findings-listgallery L03, L04)', () => {
     expect(ruleBody(database, '[data-blok-database-list-row-add]')).toContain('height: 24px');
   });
 
-  it('shows the white 26x20 Edit pencil only while the row is hovered', () => {
+  // notion-motion.md Round 26 §4 (r26-list-off-hover.raw): "Edit" is 26x20, radius 6, a 16px pencilLine.
+  // notion-motion.md Round 45 §1 List row hover: a 30x24 white frame with 2px padding holds the 26x20 button,
+  // so the pencil sits at 621.9.
+  it('shows the white 30x24 Edit frame, padded 2px around the pencil, only while the row is hovered', () => {
     const body = ruleBody(database, '[data-blok-database-list-row-edit]');
 
     expect(body).toContain('display: none');
-    expect(body).toContain('width: 26px');
-    expect(body).toContain('height: 20px');
+    expect(body).toContain('width: 30px');
+    expect(body).toContain('height: 24px');
+    expect(body).toContain('padding: var(--blok-space-0-5)');
+    expect(ruleBody(database, '[data-blok-database-list-row-edit] svg')).toContain('width: 16px');
     expect(body).toContain('border-radius: var(--blok-radius-control)');
     expect(body).toContain('background: var(--blok-database-card-actions-bg)');
     expect(body).toContain('box-shadow: var(--blok-database-card-actions-shadow)');
     expect(ruleBody(database, '[data-blok-database-list-row]:hover [data-blok-database-list-row-edit]')).toContain('display: inline-flex');
   });
 
+  // notion-motion.md Round 46 §C.3: on hover only the inner 26x20 fills, radius 6, `background 0.1s ease-in-out`;
+  // the 2px white frame stays white.
+  it('fills only the inner 26x20 of the Edit frame on hover', () => {
+    const inner = ruleBody(database, '[data-blok-database-list-row-edit]::before');
+
+    expect(ruleBody(database, '[data-blok-database-list-row-edit]')).toContain('position: relative');
+    expect(inner).toContain('inset: var(--blok-space-0-5)');
+    expect(inner).toContain('border-radius: var(--blok-radius-control)');
+    expect(inner).toContain('transition: background-color 100ms ease-in-out');
+    expect(ruleBody(database, '[data-blok-database-list-row-edit]:hover::before')).toContain('background-color: var(--blok-database-card-menu-hover-bg)');
+    expect(ruleBody(database, '[data-blok-database-list-row-edit]:hover')).not.toContain('background');
+  });
+
+  // notion-live/listhover.png: "Alpha" ink ends at x 606 and the pencil box starts at 623.
+  // Blok's title box ends ~1px past its ink, so 7px on top of the 8px gap lands the box 16px after the ink.
+  it('sets the Edit pencil 16px after the title ink', () => {
+    expect(ruleBody(database, '[data-blok-database-list-row-edit]')).toContain('margin-inline-start: var(--blok-space-1-75)');
+  });
+
+  // notion-motion.md Round 25 §6: with "Directly edit page name" on, the button is a 26x20 "Open in side peek", radius 4,
+  // and the title takes a text cursor.
+  it('makes the button a 26x20 Open in side peek, and the title a text field, when direct edit is on', () => {
+    const body = ruleBody(database, '[data-blok-database-list][data-direct-edit] [data-blok-database-list-row-edit]');
+
+    expect(body).toContain('width: 26px');
+    expect(body).toContain('height: 20px');
+    expect(body).toContain('padding: 0');
+    expect(body).toContain('border-radius: var(--blok-radius-control-sm)');
+    expect(ruleBody(database, '[data-blok-database-list][data-direct-edit] [data-blok-database-list-row-edit] svg')).toContain('height: 20px');
+    expect(ruleBody(database, '[data-blok-database-list][data-direct-edit] [data-blok-database-list-row-title]')).toContain('cursor: text');
+  });
+
+  // notion-motion.md "View tabs, gallery, list": the gutter fades in over 200ms ease-out.
+  it('fades the hovered row\'s gutter in over 200ms ease-out, and not under reduced motion', () => {
+    expect(ruleBody(database, '[data-blok-database-list-row-gutter]')).toContain('transition: opacity 200ms ease-out');
+    expect(ruleBody(database, '[data-blok-database-list-row-gutter]')).toContain('transition: none');
+  });
+
   it('keeps no open or delete button styles for the list', () => {
     expect(database).not.toContain('[data-blok-database-list-row-open]');
     expect(database).not.toContain('[data-blok-database-list-row-properties] [data-blok-database-delete-row]');
+  });
+});
+
+// notion-motion.md Round 26 §4 (r26-list-edit-ghost.raw, r26-list-ghost-text.raw): the "Add Date" ghost is a 30-tall slot,
+// padding 0 8, no fill at rest or on hover, a 16.8 icon in rgb(142, 139, 134) and 14px text in the AA tertiary ink.
+describe('list Add ghost', () => {
+  const ghost = '[data-blok-database-list-row-ghost]';
+
+  it('takes the property slot\'s box', () => {
+    const body = ruleBody(database, '[data-blok-database-list-row-property]');
+    const own = ruleBody(database, ghost);
+
+    expect(body).toContain('height: 30px');
+    expect(own).toContain('height: 30px');
+    expect(own).toContain('padding: 0 var(--blok-space-2)');
+    expect(own).toContain('border-radius: var(--blok-radius-control)');
+    expect(own).toContain('color: var(--blok-database-ink-tertiary)');
+    expect(own).toContain('cursor: pointer');
+    expect(own).not.toContain('background');
+  });
+
+  it('draws a 16.8px icon in the label icon ink', () => {
+    const svg = ruleBody(database, `${ghost} svg`);
+
+    expect(svg).toContain('width: 16.8px');
+    expect(svg).toContain('height: 16.8px');
+    expect(svg).toContain('color: var(--blok-database-peek-label-icon)');
   });
 });
 
@@ -221,6 +295,11 @@ describe('list title edit (findings-listgallery L05)', () => {
   // notion-spec-2 §21.8 (list-row.png): a title after the page glyph starts where one after an emoji does.
   it('spaces the page glyph from the title as the emoji is', () => {
     expect(ruleBody(database, '[data-blok-database-list-row] > [data-blok-database-page-icon-placeholder]')).toContain('margin-inline-end: var(--blok-space-1)');
+  });
+
+  // sweep9a/pixel-scans.txt (LIST ROW): Notion's glyph ink starts 8px into the row and its title 31px; Blok's were 6 and 34.
+  it('moves the glyph or emoji 2px in and the title 3px back', () => {
+    expect(ruleBody(database, '[data-blok-database-list-row] > :is([data-blok-database-page-icon], [data-blok-database-page-icon-placeholder])')).toContain('margin-inline: var(--blok-space-0-5) -1px');
   });
 });
 
@@ -247,6 +326,29 @@ describe('grouped list (findings-listgallery L08, L10)', () => {
   });
 });
 
+// notion-motion.md Round 45 §1 List grouped (r45-n-listg-txt.raw, r45-n-listg-svg.raw).
+describe('grouped list (Round 45)', () => {
+  it('drops the first group 8px, so its header text sits at Notion\'s 320.7, not 312.5', () => {
+    expect(ruleBody(database, '[data-blok-database-list-group]:first-child')).toContain('margin-top: var(--blok-space-2)');
+  });
+
+  it('steps the rows in a group 31px, while the ungrouped list keeps 32', () => {
+    expect(ruleBody(database, '[data-blok-database-list-group] [data-blok-database-list-row] + [data-blok-database-list-row]')).toContain('margin-top: 0');
+    expect(ruleBody(database, '[data-blok-database-list-row] + [data-blok-database-list-row]')).toBe('');
+  });
+
+  it('draws the group caret as the table\'s filled caret, turned down', () => {
+    const body = ruleBody(database, '[data-blok-database-list-group-toggle] svg');
+
+    expect(body).toContain('width: 20px');
+    expect(body).toContain('rotate: 90deg');
+  });
+
+  it('puts the group\'s "+ New page" plus at x 546, in line with the row icons', () => {
+    expect(ruleBody(database, '[data-blok-database-list-group] > [data-blok-database-add-row] > span[aria-hidden="true"]')).toContain('margin-inline-start: var(--blok-space-0-25)');
+  });
+});
+
 describe('list "+ New page" (findings-listgallery L18)', () => {
   const rule = (suffix = ''): string => ruleBody(database, `[data-blok-database-list] > [data-blok-database-add-row]${suffix}`);
 
@@ -259,6 +361,12 @@ describe('list "+ New page" (findings-listgallery L18)', () => {
     expect(body).toContain('line-height: 21px');
     expect(body).toContain('color: var(--blok-database-table-muted-text)');
     expect(body).not.toContain('margin-top');
+  });
+
+  // notion-motion.md Round 24 §4 List (motion-r24-list-newhover.json): the hover fill comes in over 20ms ease-in.
+  // The ink stays Blok's AA muted text, not Notion's rgb(161,158,153).
+  it('fills over 20ms ease-in', () => {
+    expect(rule()).toContain('transition: background-color 20ms ease-in');
   });
 
   it('draws a 16px gray plus with a 1px 8px margin', () => {
@@ -293,5 +401,196 @@ describe('conditional color on calendar, timeline and feed (research/05 §6.2)',
     expect(ruleBody(database, PAINTED)).toContain('background-color: var(--_blok-database-rule-bg)');
     expect(database.lastIndexOf(PAINTED)).toBeGreaterThan(database.indexOf('[data-blok-database-feed-card] {'));
     expect(ruleBody(database, '[data-blok-database-color="green"]')).toContain('--_blok-database-rule-bg: var(--blok-database-option-green-bg)');
+  });
+});
+
+describe('conditional color fill on a table (notion-motion.md Round 20 §4)', () => {
+  /** The opaque swatch fills Notion paints on a row or cell, light theme. */
+  const LIGHT: Record<string, string> = {
+    brown: 'rgb(245, 237, 233)',
+    orange: 'rgb(251, 235, 222)',
+    yellow: 'rgb(249, 243, 220)',
+    purple: 'rgb(243, 235, 249)',
+    pink: 'rgb(250, 233, 241)',
+    red: 'rgb(252, 233, 231)',
+  };
+  /** These three match the measured starter tiles, light and dark (research/26 §6). */
+  const TILE = ['gray', 'green', 'blue'];
+  const COLORS = ['default', 'gray', 'brown', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'red'];
+  const lightRoot = ruleBody(database, ':where([data-blok-interface])');
+  const darkMedia = ruleBody(database, ':where(:root:not([data-blok-theme="light"]) [data-blok-interface])');
+  const darkTheme = ruleBody(database, ':where([data-blok-theme="dark"] [data-blok-interface])');
+
+  it('paints a table row or cell with the opaque swatch fill, not the option tag colour', () => {
+    for (const color of COLORS) {
+      expect(ruleBody(database, `[data-blok-database-table] [data-blok-database-color="${color}"]`), color)
+        .toContain(`--_blok-database-rule-bg: var(--blok-database-rule-${color}-bg)`);
+    }
+    for (const [color, fill] of Object.entries(LIGHT)) {
+      expect(lightRoot, color).toContain(`--blok-database-rule-${color}-bg: ${fill}`);
+    }
+    for (const color of TILE) {
+      expect(lightRoot, color).toContain(`--blok-database-rule-${color}-bg: var(--blok-database-starter-tile-${color}-bg)`);
+    }
+    expect(lightRoot).toContain('--blok-database-rule-default-bg: transparent');
+  });
+
+  // notion-motion.md Round 21 §2 (r21-board-cards.raw, r21-list-rows.raw): a board card and a list row take the
+  // same opaque fill, green rgb(232, 241, 236). Default stays as before: an unmatched card is white.
+  it('paints a board card and a list row with the opaque swatch fill too', () => {
+    for (const color of COLORS.filter((c) => c !== 'default')) {
+      for (const scope of ['[data-blok-database-board] [data-blok-database-card]', '[data-blok-database-list] [data-blok-database-list-row]']) {
+        expect(ruleBody(database, `${scope}[data-blok-database-color="${color}"]`), `${scope} ${color}`)
+          .toContain(`--_blok-database-rule-bg: var(--blok-database-rule-${color}-bg)`);
+      }
+    }
+  });
+
+  it('has a dark fill for every colour, in both dark blocks', () => {
+    for (const body of [darkMedia, darkTheme]) {
+      for (const color of Object.keys(LIGHT)) {
+        expect(body, color).toContain(`--blok-database-rule-${color}-bg: var(--blok-color-${color}-bg)`);
+      }
+    }
+  });
+});
+
+describe('conditional color card lines (notion-motion.md Round 20 §4)', () => {
+  it('sets the label in the ink and the value button in the value ink with a 16px chevron', () => {
+    expect(ruleBody(database, '[data-blok-database-color-setting]')).toContain('display: flex');
+    expect(ruleBody(database, '[data-blok-database-color-setting-label]')).toContain('color: var(--blok-database-ink)');
+    const value = ruleBody(database, '[data-blok-database-color-setting-value]');
+
+    expect(value).toContain('color: var(--blok-database-panel-value-text)');
+    expect(value).toContain('font-size: 14px');
+    expect(ruleBody(database, '[data-blok-database-color-setting-value] svg')).toContain('width: 16px');
+  });
+});
+
+describe('conditional color rule handle (notion-motion.md Round 20 §4)', () => {
+  const HANDLE = '[data-blok-database-color-rules] [data-blok-database-panel-handle]';
+
+  it('is a 12x22 hover handle straddling the card\'s left edge, in the icon ink', () => {
+    const body = ruleBody(database, HANDLE);
+
+    expect(body).toContain('position: absolute');
+    expect(body).toContain('inset-inline-start: -8px');
+    expect(body).toContain('width: 12px');
+    expect(body).toContain('height: 22px');
+    expect(body).toContain('opacity: 0');
+    expect(body).toContain('color: var(--blok-database-table-header-icon)');
+    expect(ruleBody(database, '[data-blok-database-color-rules] [data-blok-database-panel-list-item]:hover > [data-blok-database-panel-handle]')).toContain('opacity: 1');
+  });
+});
+
+describe('conditional color swatches (notion-motion.md Round 20 §4, r20-cc-swatches.raw)', () => {
+  const COLORS = ['default', 'gray', 'brown', 'orange', 'yellow', 'green', 'blue', 'purple', 'pink', 'red'];
+
+  it('lays 10 swatches in 2 rows of 5: 30x30 buttons holding 26x26 chips, radius 6', () => {
+    const grid = ruleBody(database, '[data-blok-database-color-swatches]');
+
+    expect(grid).toContain('grid-template-columns: repeat(5, 30px)');
+    expect(grid).toContain('gap: var(--blok-space-2) var(--blok-space-1)');
+    expect(grid).toContain('padding: var(--blok-space-2)');
+    const swatch = ruleBody(database, '[data-blok-database-color-swatch]');
+
+    expect(swatch).toContain('width: 30px');
+    expect(swatch).toContain('height: 30px');
+    expect(swatch).toContain('padding: var(--blok-space-0-5)');
+    expect(swatch).toContain('border-radius: var(--blok-radius-control)');
+    const chip = ruleBody(database, '[data-blok-database-color-swatch] > [data-blok-database-color-chip]');
+
+    expect(chip).toContain('width: 26px');
+    expect(chip).toContain('border-radius: var(--blok-radius-control)');
+  });
+
+  it('fills each chip with the row fill and rings it with the option colour; Default rings gray', () => {
+    for (const color of COLORS) {
+      const body = ruleBody(database, `[data-blok-database-color-chip][data-color="${color}"]`);
+
+      expect(body, color).toContain(`background-color: var(--blok-database-rule-${color}-bg)`);
+      expect(body, color).toContain(`--_blok-database-chip-ring: var(--blok-database-option-${color === 'default' ? 'gray' : color}-bg)`);
+    }
+  });
+
+  it('marks the current swatch with a neutral ring, never blue', () => {
+    expect(ruleBody(database, '[data-blok-database-color-swatch][aria-pressed="true"]')).toContain('box-shadow: inset 0 0 0 2px var(--blok-icon-active-text)');
+  });
+
+  it('shows a 16x16 chip, radius 4, before the picked colour name', () => {
+    const chip = ruleBody(database, '[data-blok-database-color-setting-value] > [data-blok-database-color-chip]');
+
+    expect(chip).toContain('width: 16px');
+    expect(chip).toContain('height: 16px');
+    expect(chip).toContain('border-radius: var(--blok-radius-control-sm)');
+  });
+});
+
+describe('conditional color page (notion-motion.md Round 20 §4, r20-cc-intro.raw, r20-cc-list-style.raw)', () => {
+  it('fills a rule card, borders it in the same colour, radius 10, 12px apart', () => {
+    const card = ruleBody(database, '[data-blok-database-color-rule]');
+
+    expect(card).toContain('background-color: var(--blok-database-color-rule-bg)');
+    expect(card).toContain('border: 1px solid var(--blok-database-color-rule-bg)');
+    expect(card).toContain('border-radius: var(--blok-radius-surface)');
+    expect(ruleBody(database, '[data-blok-database-color-rules]')).toContain('gap: var(--blok-space-3)');
+    expect(database).toContain('--blok-database-color-rule-bg: var(--blok-database-place-view-head-bg)');
+  });
+
+  it('gives the header a 24x24 trash with a 16px icon', () => {
+    const trash = ruleBody(database, '[data-blok-database-color-rule-delete]');
+
+    expect(trash).toContain('width: 24px');
+    expect(trash).toContain('height: 24px');
+    expect(trash).toContain('color: var(--blok-database-table-header-icon)');
+    expect(ruleBody(database, '[data-blok-database-color-rule-delete] svg')).toContain('width: 16px');
+  });
+
+  it('draws the value as a 30-tall field with a 1px ring', () => {
+    const field = ruleBody(database, '[data-blok-database-color-rule-field]');
+
+    expect(field).toContain('height: 30px');
+    expect(field).toContain('background-color: var(--blok-database-panel-input-bg)');
+    expect(field).toContain('box-shadow: inset 0 0 0 1px var(--blok-database-table-control-border)');
+  });
+
+  // notion-motion.md Round 21 §1: name outside the button, 4 from name text to operator text, 6 between two buttons.
+  it('pads the rule head\'s operator 0 2px and starts it 2px after the name', () => {
+    const op = ruleBody(database, '[data-blok-database-color-rule-header] [data-blok-database-chip-operator]');
+
+    expect(op).toContain('padding-inline: var(--blok-space-0-5)');
+    expect(op).toContain('margin-inline-start: var(--blok-space-0-5)');
+    expect(op).toContain('gap: var(--blok-space-1)');
+    expect(ruleBody(database, '[data-blok-database-color-rule-header] [data-blok-database-chip-operator] + [data-blok-database-chip-operator]')).toContain('margin-inline-start: var(--blok-space-1-5)');
+    expect(ruleBody(database, '[data-blok-database-color-rule-header][data-blok-database-color-rule-plain-date]')).toContain('padding-block-start: var(--blok-space-1)');
+    // Notion's name is lighter than the operator (400 rgb(161, 158, 153)); Blok keeps its AA step of that ink.
+    expect(ruleBody(database, '[data-blok-database-color-rule-name]')).toContain('color: var(--blok-database-ink-tertiary)');
+  });
+
+  // notion-motion.md Round 21 §1 (r21-cc-num-field.raw): a 232x28 box, padding 3px 6px; Number's "=" before the input.
+  it('types Text and Number values into a 28-tall box padded 3px 6px', () => {
+    const box = ruleBody(database, 'label[data-blok-database-color-rule-box]');
+
+    expect(box).toContain('height: 28px');
+    expect(box).toContain('padding: var(--blok-space-0-75) var(--blok-space-1-5)');
+    expect(box).toContain('gap: var(--blok-space-1-5)');
+    expect(ruleBody(database, 'label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-prefix])')).toContain('margin-block-end: calc(var(--blok-space-0-75) + var(--blok-space-1))');
+    expect(ruleBody(database, '[data-blok-database-color-rule-box] > [data-blok-database-panel-input]')).toContain('height: 20px');
+  });
+
+  it('makes "New color setting" a blue button and "Add another" a bordered one, both 28 tall', () => {
+    const fresh = ruleBody(database, '[data-blok-database-panel-row][data-blok-database-color-new]');
+
+    expect(fresh).toContain('background-color: var(--blok-database-new-bg)');
+    expect(fresh).toContain('color: var(--blok-database-new-text)');
+    expect(fresh).toContain('font-weight: 500');
+    expect(ruleBody(database, '[data-blok-database-panel-row][data-blok-database-color-add-another]')).toContain('border: 1px solid var(--blok-database-feed-actions-border)');
+  });
+});
+
+// notion-motion.md Round 32 §3 List: Notion's "+ New page" icon is at x 546 and its text at 570, 7px left of Blok's 553/577.
+describe('list "+ New page" in line with the row titles (Round 32)', () => {
+  it('starts the plus 1px into the row, so the text lines up with the titles', () => {
+    expect(ruleBody(database, '[data-blok-database-list] > [data-blok-database-add-row] > span[aria-hidden="true"]')).toContain('margin-inline-start: var(--blok-space-0-25)');
   });
 });

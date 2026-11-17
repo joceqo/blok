@@ -1,7 +1,7 @@
 import type { I18n } from '../../../types';
 import type { PopoverItemParams } from '@/types/utils/popover/popover-item';
 import { PopoverItemType } from '../../components/utils/popover/components/popover-item';
-import { IconCheck, IconEyeSlash, IconPreview, IconSliders, IconTrash } from '../../components/icons';
+import { IconCheck, IconEyeSlash, IconGroup, IconPreview, IconTrash } from '../../components/icons';
 import { OPTION_COLORS, optionColorLabelKey, optionSwatch, type OptionColor } from './cells/option-colors';
 
 /**
@@ -10,25 +10,36 @@ import { OPTION_COLORS, optionColorLabelKey, optionSwatch, type OptionColor } fr
  */
 export const DATABASE_MENU_CLASS = 'blok-database-menu';
 
+/**
+ * How long a database menu waits on a hovered row before it opens the row's
+ * submenu. Notion waits about 130ms (notion-spec-2 §17); Blok spends about 6ms
+ * between the hover and the timer. Editor menus keep their own 100ms.
+ */
+export const DATABASE_SUBMENU_OPEN_DELAY_MS = 125;
+
+/** The board column's group menu: the header menu's 28px rows plus its own icon and text offsets (database.css). */
+export const DATABASE_GROUP_MENU_CLASS = `${DATABASE_MENU_CLASS} blok-database-header-menu blok-database-group-menu`;
+
 export interface GroupMenuParams {
   i18n: I18n;
   /** The no-value group has no option, so it has no color. */
   isNoValue: boolean;
   color: OptionColor | undefined;
-  aggregationHidden: boolean;
+  aggregationHidden?: boolean;
   /** A status option's group: Notion lists no colours for it (findings-board B13). */
   isStatus: boolean;
   /** Opens the view settings Group page (findings-board B14). */
   onEditGroups: () => void;
-  onToggleAggregation: () => void;
+  /** Without it there is no aggregation row. */
+  onToggleAggregation?: () => void;
   onHide: () => void;
   onTrash: () => void;
   onRecolor: (color: OptionColor) => void;
 }
 
 /**
- * The board column's "More group options" menu (research/08): Edit groups,
- * Hide aggregation, Hide group, Move to Trash, then the ten colors. The current
+ * The board column and table group "More group options" menu (research/08): Edit groups,
+ * Hide aggregation, Hide group, Move to Trash, then "Colors" and the ten colors. The current
  * color carries a check mark, never a blue fill.
  */
 export const groupMenuItems = (params: GroupMenuParams): PopoverItemParams[] => {
@@ -37,17 +48,17 @@ export const groupMenuItems = (params: GroupMenuParams): PopoverItemParams[] => 
     {
       name: 'edit-groups',
       title: t('tools.database.groupEditGroups'),
-      icon: IconSliders,
+      icon: IconGroup,
       closeOnActivate: true,
       onActivate: params.onEditGroups,
     },
-    {
+    ...(params.onToggleAggregation === undefined ? [] : [{
       name: 'toggle-aggregation',
-      title: t(params.aggregationHidden ? 'tools.database.groupShowAggregation' : 'tools.database.groupHideAggregation'),
-      icon: params.aggregationHidden ? IconPreview : IconEyeSlash,
+      title: t(params.aggregationHidden === true ? 'tools.database.groupShowAggregation' : 'tools.database.groupHideAggregation'),
+      icon: params.aggregationHidden === true ? IconPreview : IconEyeSlash,
       closeOnActivate: true,
       onActivate: params.onToggleAggregation,
-    },
+    }]),
     {
       name: 'hide-group',
       title: t('tools.database.groupHide'),
@@ -69,9 +80,15 @@ export const groupMenuItems = (params: GroupMenuParams): PopoverItemParams[] => 
     return items;
   }
 
+  const heading = document.createElement('div');
+
+  heading.setAttribute('data-blok-database-group-menu-heading', '');
+  heading.textContent = t('tools.database.optionColors');
+
   return [
     ...items,
     { type: PopoverItemType.Separator },
+    { type: PopoverItemType.Html, element: heading, name: 'colors-heading' },
     ...OPTION_COLORS.map((color): PopoverItemParams => ({
       name: `color-${color}`,
       title: t(optionColorLabelKey(color)),

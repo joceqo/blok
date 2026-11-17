@@ -1,0 +1,42 @@
+[package]
+name = "blok-outbound"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal part of blok-mcp (outbound HTTP). Not a stable API."
+publish = true
+
+[dependencies]
+base64 = "0.22"
+blok-dotnet.workspace = true
+blok-jsjson.workspace = true
+blok-mediatype.workspace = true
+brotli = "8"
+dns-lookup = "=4.0.2"
+flate2 = "1"
+ring = "0.17"
+sha2 = "0.10"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { version = "1", features = ["net", "io-util", "time", "rt", "sync", "macros"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+
+[target.'cfg(not(windows))'.dependencies]
+gethostname = "=1.1.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+security-framework = "3"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+rustls-native-certs = "0.8"
+
+[dev-dependencies]
+sha1 = "0.10"
+# The test reads the host name itself, on every target.
+gethostname = "=1.1.0"
+tokio = { version = "1", features = ["net", "io-util", "time", "rt", "rt-multi-thread", "sync", "macros"] }
+
+[lints]
+workspace = true

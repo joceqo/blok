@@ -1,0 +1,429 @@
+using System.IO.Pipelines;
+using System.Text;
+using System.Text.Json.Nodes;
+using Blok.Server.Mcp.Core;
+using Blok.Server.Mcp.Outbound;
+using Blok.Server.Mcp.Protocol;
+using Xunit;
+
+namespace Blok.Server.Mcp.Tests;
+
+/// <summary>Node's stdin end (index.ts stopOnShutdown): the same stop as SIGTERM.</summary>
+public sealed class McpStdioSessionTests : IClassFixture<BundleFixture>, IDisposable
+{
+  private const string Wire =
+      "{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"1\"}}}\n"
+      + "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"
+      + "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"blok_list_documents\",\"arguments\":{}}}\n"
+      + "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n";
+
+  private readonly string dir = Directory.CreateTempSubdirectory("blok-mcp-stdio-").FullName;
+  private readonly BundleFixture fixture;
+
+  // How long the last RunWireAsync session ran, without the server setup before it.
+  private TimeSpan sessionTime;
+
+  public McpStdioSessionTests(BundleFixture fixture)
+  {
+    this.fixture = fixture;
+    File.WriteAllText(Path.Combine(dir, "doc.json"), """{"blocks":[]}""");
+  }
+
+  public void Dispose()
+  {
+    Directory.Delete(dir, recursive: true);
+  }
+
+  private async Task<List<string>> AnsweredIdsAsync(Action<McpServerCore>? before = null)
+  {
+    return [.. (await RunWireAsync(Wire, before)).Select(line => JsonNode.Parse(line)!["id"]!.ToJsonString())];
+  }
+
+  // The lines blok-mcp wrote for this stdin, which ends after the wire.
+  private async Task<List<string>> RunWireAsync(string wire, Action<McpServerCore>? before = null)
+  {
+    var core = new McpServerCore(fixture.Host.Bundle, new McpConfig { Source = new McpSourceConfig.Files(dir) }, new McpHttpCaller());
+    var options = await McpSdkServer.OptionsAsync(core, _ => new McpCallerIdentity("local", null), CancellationToken.None);
+    using var output = new MemoryStream();
+
+    before?.Invoke(core);
+    var started = DateTime.UtcNow;
+
+    await McpStdioSession.RunAsync(core, options, new MemoryStream(Encoding.UTF8.GetBytes(wire)), output, new TaskCompletionSource().Task)
+        .WaitAsync(TimeSpan.FromSeconds(60));
+    sessionTime = DateTime.UtcNow - started;
+
+    return [.. Encoding.UTF8.GetString(output.ToArray()).Split('\n', StringSplitOptions.RemoveEmptyEntries)];
+  }
+
+  private static string Init => Wire.Split('\n')[0] + "\n" + Wire.Split('\n')[1] + "\n";
+
+  // JSON.stringify writes everything raw but " and \\ and controls; the SDK's encoder escapes far more.
+  [Fact]
+  public async Task WritesAnAnswerWithNodesRawBytes()
+  {
+    File.WriteAllText(Path.Combine(dir, "doc.json"), "{\"title\":\"a\u2028b<&>\\\"\u00e9'\ud83d\ude00\",\"blocks\":[]}");
+    var (live, _, _) = await OpenForWriteAsync();
+
+    await live.SendAsync("""{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"blok_list_documents","arguments":{}}}""");
+    await live.AnswerAsync("2");
+    await live.DisposeAsync();
+
+    // Node's bytes for the same call (blok-mcp.mjs, 2025-11-25).
+    Assert.Contains(
+        "\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"documents\\\":[{\\\"id\\\":\\\"doc\\\",\\\"title\\\":\\\"a\u2028b<&>\\\\\\\"\u00e9'\ud83d\ude00\\\",\\\"live\\\":false}],\\\"nextCursor\\\":null,\\\"supported\\\":true}\"}],"
+        + "\"structuredContent\":{\"documents\":[{\"id\":\"doc\",\"title\":\"a\u2028b<&>\\\"\u00e9'\ud83d\ude00\",\"live\":false}],\"nextCursor\":null,\"supported\":true},\"isError\":false}",
+        live.Lines.Single(line => JsonNode.Parse(line)!["id"]!.ToJsonString() == "2"));
+  }
+
+  // Node's ReadBuffer drops a line that fails JSONRPCMessageSchema: no answer, and stdin's end stops at once.
+  [Theory]
+  [InlineData("""{"id":13,"method":"ping"}""")]
+  [InlineData("""{"jsonrpc":"1.0","id":14,"method":"ping"}""")]
+  [InlineData("""{"jsonrpc":2,"id":15,"method":"ping"}""")]
+  [InlineData("""{"jsonrpc":"2.0","id":25,"method":5}""")]
+  [InlineData("""{"jsonrpc":"2.0","id":26}""")]
+  [InlineData("""{"jsonrpc":"2.0","id":1.5,"method":"ping"}""")]
+  [InlineData("""{"jsonrpc":"2.0","id":9007199254740993,"method":"ping"}""")]
+  [InlineData("""{"jsonrpc":"2.0","id":3,"method":"ping","extra":1}""")]
+  [InlineData("""{"jsonrpc":"2.0","id":10,"method":"ping","params":{"_meta":{"progressToken":1.5}}}""")]
+  [InlineData("""{"jsonrpc":"2.0","id":11,"method":"ping","params":null}""")]
+  [InlineData("""{"jsonrpc":"2.0","id":12,"method":"ping","result":{}}""")]
+  [InlineData("""{"jsonrpc":"2.0","id":16,"error":{"code":1.5,"message":"x"}}""")]
+  public async Task DropsALineNodesSchemaRefuses(string line)
+  {
+    var lines = await RunWireAsync(Init + line + "\n");
+
+    Assert.Single(lines);
+    // Setup is not timed: the first case pays the cold start, which a loaded runner stretches past 10 s.
+    Assert.True(sessionTime < TimeSpan.FromSeconds(10));
+  }
+
+  [Theory]
+  [InlineData("""{"jsonrpc":"2.0","id":9007199254740991,"method":"ping"}""", "9007199254740991")]
+  [InlineData("""{"jsonrpc":"2.0","id":7e0,"method":"ping"}""", "7")]
+  [InlineData("{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"ping\"}\r", "4")]
+  public async Task AnswersALineNodesSchemaTakes(string line, string id)
+  {
+    var lines = await RunWireAsync(Init + line + "\n");
+
+    Assert.Equal(2, lines.Count);
+    Assert.Contains(lines, answer => JsonNode.Parse(answer)!["id"]!.ToJsonString() == id);
+  }
+
+  // A lone surrogate in an argument reads as U+FFFD, never as -32603.
+  [Fact]
+  public async Task ALoneSurrogateInAnArgumentIsNoInternalError()
+  {
+    var (live, _, _) = await OpenForWriteAsync();
+
+    await live.SendAsync("""{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"blok_open","arguments":{"documentId":"a\ud800"}}}""");
+    await live.SendAsync("""{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"blok_list_documents","arguments":{"query":"\udc00"}}}""");
+    var opened = await live.AnswerAsync("7");
+    var listed = await live.AnswerAsync("8");
+    await live.DisposeAsync();
+
+    Assert.Null(opened["error"]);
+    Assert.Null(listed["error"]);
+  }
+
+  // The policy: a lone surrogate in an id reads as U+FFFD, and the answer carries that id.
+  [Fact]
+  public async Task EchoesAnIdWithALoneSurrogateAsTheReplacementCharacter()
+  {
+    var (live, _, _) = await OpenForWriteAsync();
+
+    await live.SendAsync("""{"jsonrpc":"2.0","id":"x\udc00","method":"ping"}""");
+    var answer = await live.AnswerAsync("\"x\\uFFFD\"");
+    await live.DisposeAsync();
+
+    Assert.Equal("x\uFFFD", answer["id"]!.GetValue<string>());
+    Assert.NotNull(answer["result"]);
+  }
+
+  private static JsonObject Toggles(int levels, int at = 0)
+  {
+    var block = new JsonObject { ["type"] = "toggle", ["id"] = $"t{at}", ["data"] = new JsonObject { ["text"] = $"L{at}" } };
+
+    if (levels > 1)
+    {
+      block["children"] = new JsonArray(Toggles(levels - 1, at + 1));
+    }
+
+    return block;
+  }
+
+  internal const string TooDeepArguments = "The arguments nest deeper than 48 levels of objects and arrays. Send flatter data.";
+
+  // A tools/call whose arguments nest depth levels (the arguments object is level 1).
+  internal static string DeepCall(int id, int depth, string tail = "")
+  {
+    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"method\":\"tools/call\",\"params\":{\"name\":\"blok_list_documents\",\"arguments\":{\"zz\":"
+        + new string('[', depth - 1) + tail + new string(']', depth - 1) + "}}}";
+  }
+
+  // Node answers INVALID_ARGS at every depth past 48.
+  [Theory]
+  [InlineData(49)]
+  [InlineData(64)]
+  [InlineData(129)]
+  [InlineData(1001)]
+  [InlineData(100001)]
+  public async Task DeepArgumentsGetNodesRefusal(int depth)
+  {
+    var (live, _, _) = await OpenForWriteAsync();
+
+    await live.SendAsync(DeepCall(5, depth));
+    var answer = await live.AnswerAsync("5");
+    await live.DisposeAsync();
+
+    Assert.Contains(TooDeepArguments, answer.ToJsonString(), StringComparison.Ordinal);
+  }
+
+  // Deep invalid JSON stays invalid: Node drops the line and answers the next.
+  [Fact]
+  public async Task DropsADeepInvalidLine()
+  {
+    var (live, _, _) = await OpenForWriteAsync();
+
+    await live.SendAsync(DeepCall(5, 2000, "1,"));
+    await live.SendAsync("""{"jsonrpc":"2.0","id":6,"method":"ping"}""");
+    var answer = await live.AnswerAsync("6");
+    await live.DisposeAsync();
+
+    Assert.Equal(6, (int?)answer["id"]);
+  }
+
+  // The SDK reads a message at most 64 deep. As in Node, 22 nested toggles fit in 48 levels and 23 do not.
+  [Theory]
+  [InlineData(22)]
+  [InlineData(30)]
+  [InlineData(40)]
+  public async Task ADeepWriteIsNoParseError(int levels)
+  {
+    var (live, handle, _) = await OpenForWriteAsync();
+    var call = new JsonObject
+    {
+      ["jsonrpc"] = "2.0",
+      ["id"] = 20,
+      ["method"] = "tools/call",
+      ["params"] = new JsonObject
+      {
+        ["name"] = "blok_execute",
+        ["arguments"] = new JsonObject
+        {
+          ["handle"] = handle,
+          ["commands"] = new JsonArray(new JsonObject { ["name"] = "block.insert", ["args"] = Toggles(levels) }),
+        },
+      },
+    };
+
+    await live.SendAsync(McpJson.Write(call));
+    var answer = await live.AnswerAsync("20");
+    await live.DisposeAsync();
+
+    Assert.Null(answer["error"]);
+    if (levels == 22)
+    {
+      Assert.Equal(true, (bool?)answer["result"]?["structuredContent"]?["ok"]);
+    }
+    else
+    {
+      Assert.Equal(TooDeepArguments, (string?)answer["result"]?["structuredContent"]?["error"]?["message"]);
+    }
+  }
+
+  // Node registers no logging capability, so logging/setLevel is an unknown method.
+  [Fact]
+  public async Task LoggingSetLevelIsAnUnknownMethod()
+  {
+    var lines = await RunWireAsync(Init + """{"jsonrpc":"2.0","id":5,"method":"logging/setLevel","params":{"level":"info"}}""" + "\n");
+
+    var answer = lines.Select(line => JsonNode.Parse(line)!).Single(line => line["id"]!.ToJsonString() == "5");
+
+    Assert.Equal("""{"code":-32601,"message":"Method not found"}""", answer["error"]!.ToJsonString());
+  }
+
+  [Fact]
+  public async Task AnswersWhatItReadBeforeStdinEnded()
+  {
+    // Far past the 60s wait: a session that sat out the drain limit fails, however slow the machine.
+    var ids = await AnsweredIdsAsync(core => core.StopDrain = TimeSpan.FromMinutes(10));
+
+    Assert.Contains("0", ids);
+    Assert.Contains("2", ids);
+  }
+
+  // Node's transport is closed at stdin's end: a tools/call answer due after it is never written.
+  [Fact]
+  public async Task NeverAnswersAToolCallTakenAfterStdinEnded()
+  {
+    var ids = await AnsweredIdsAsync(core => core.InputEnded = true);
+
+    // The SDK answers at once, so their order is not fixed.
+    Assert.Equal(["0", "2"], ids.Order(StringComparer.Ordinal));
+  }
+
+  // Node answers a ping before it handles the next line, so a second ping 7 is on the wire
+  // before ping 8's answer however late the SDK runs it. The hold forces that late start; it is
+  // far below the reader's wait cap, so the fix cannot pass by timing out.
+  [Fact]
+  public async Task AnswersAPingBeforeAnyLaterLineEvenWhenItRunsLate()
+  {
+    var core = new McpServerCore(fixture.Host.Bundle, new McpConfig { Source = new McpSourceConfig.Files(dir) }, new McpHttpCaller());
+    var options = await McpSdkServer.OptionsAsync(core, _ => new McpCallerIdentity("local", null), CancellationToken.None);
+    var pingsSeven = 0;
+    Live? session = null;
+
+    options.Filters.Message.IncomingFilters.Add(next => async (context, cancellationToken) =>
+    {
+      if (context.JsonRpcMessage is ModelContextProtocol.Protocol.JsonRpcRequest { Method: "ping" } ping && ping.Id.ToString() == "7"
+          && Interlocked.Increment(ref pingsSeven) == 2)
+      {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+
+        while (session!.Answer("8") is null && DateTime.UtcNow < deadline)
+        {
+          await Task.Delay(10, CancellationToken.None);
+        }
+      }
+      await next(context, cancellationToken);
+    });
+    var live = session = new Live(core, options, new TaskCompletionSource().Task);
+
+    await live.SendAsync(Init.TrimEnd('\n').Split('\n')[0]);
+    await live.SendAsync(Init.TrimEnd('\n').Split('\n')[1]);
+    await live.AnswerAsync("0");
+    await live.SendAsync("""{"jsonrpc":"2.0","id":7,"method":"ping"}""");
+    await live.AnswerAsync("7");
+    // One write, so both lines come in one read, as a slow reader gets them.
+    await live.SendAsync("""{"jsonrpc":"2.0","id":7,"method":"ping"}""" + "\n" + """{"jsonrpc":"2.0","id":8,"method":"ping"}""");
+    await live.AnswerAsync("8");
+    await live.DisposeAsync();
+
+    Assert.Equal(["0", "7", "7", "8"], live.Lines.Select(line => JsonNode.Parse(line)!["id"]!.ToJsonString()));
+  }
+
+  // A session over pipes, so a test can read answers before stdin ends.
+  private sealed class Live : IAsyncDisposable
+  {
+    private readonly Pipe input = new();
+    private readonly Pipe output = new();
+    private readonly List<JsonNode> answers = [];
+    private readonly Task reading;
+
+    // The lines as written, for byte checks.
+    internal List<string> Lines { get; } = [];
+
+    internal Task Session { get; }
+
+    internal Live(McpServerCore core, ModelContextProtocol.Server.McpServerOptions options, Task stop)
+    {
+      Session = McpStdioSession.RunAsync(core, options, input.Reader.AsStream(), output.Writer.AsStream(), stop);
+      reading = Task.Run(async () =>
+      {
+        using var lines = new StreamReader(output.Reader.AsStream());
+
+        while (await lines.ReadLineAsync() is string line)
+        {
+          lock (answers)
+          {
+            answers.Add(JsonNode.Parse(line)!);
+            Lines.Add(line);
+          }
+        }
+      });
+    }
+
+    internal async Task SendAsync(string json)
+    {
+      await input.Writer.WriteAsync(Encoding.UTF8.GetBytes(json + "\n"));
+    }
+
+    internal async Task EndAsync()
+    {
+      await input.Writer.CompleteAsync();
+    }
+
+    internal JsonNode? Answer(string id)
+    {
+      lock (answers)
+      {
+        return answers.FirstOrDefault(answer => answer["id"]?.ToJsonString() == id);
+      }
+    }
+
+    internal async Task<JsonNode> AnswerAsync(string id)
+    {
+      // The test classes share one engine, so a busy run can be slow.
+      var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(60);
+
+      JsonNode? answer;
+
+      while ((answer = Answer(id)) is null)
+      {
+        Assert.True(DateTime.UtcNow < deadline, $"no answer for {id}");
+        await Task.Delay(10);
+      }
+
+      return answer;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+      await input.Writer.CompleteAsync();
+      await Session.WaitAsync(TimeSpan.FromSeconds(60));
+      await output.Writer.CompleteAsync();
+      await reading.WaitAsync(TimeSpan.FromSeconds(60));
+    }
+  }
+
+  private async Task<(Live Live, string Handle, McpServerCore Core)> OpenForWriteAsync(TaskCompletionSource? stop = null)
+  {
+    var core = new McpServerCore(fixture.Host.Bundle, new McpConfig { Source = new McpSourceConfig.Files(dir) }, new McpHttpCaller());
+    var options = await McpSdkServer.OptionsAsync(core, _ => new McpCallerIdentity("local", null), CancellationToken.None);
+    var live = new Live(core, options, (stop ?? new TaskCompletionSource()).Task);
+
+    await live.SendAsync(Init.TrimEnd('\n').Split('\n')[0]);
+    await live.SendAsync(Init.TrimEnd('\n').Split('\n')[1]);
+    await live.SendAsync("""{"jsonrpc":"2.0","id":"open","method":"tools/call","params":{"name":"blok_open","arguments":{"documentId":"doc","write":true}}}""");
+
+    return (live, McpJson.String((await live.AnswerAsync("\"open\""))["result"]!["structuredContent"]!["handle"])!, core);
+  }
+
+  private static string SetTitle(string id, string handle) =>
+      $$$$"""{"jsonrpc":"2.0","id":{{{{id}}}},"method":"tools/call","params":{"name":"blok_execute","arguments":{"handle":"{{{{handle}}}}","commands":[{"name":"doc.setTitle","args":{"title":"Changed"}}]}}}""";
+
+  // Node closes its transport at stdin's end but still runs what it read: the write is saved, unanswered.
+  // Here the SDK can take the line after the reader saw the end, which InputEnded stands for.
+  [Fact]
+  public async Task SavesAWriteSentRightBeforeStdinEnds()
+  {
+    var (live, handle, core) = await OpenForWriteAsync();
+
+    core.InputEnded = true;
+    await live.SendAsync(SetTitle("10", handle));
+    await live.EndAsync();
+    await live.DisposeAsync();
+
+    Assert.Contains("Changed", File.ReadAllText(Path.Combine(dir, "doc.json")));
+    Assert.Null(live.Answer("10"));
+  }
+
+  // Node passes the cancel signal to opens only: an execute already read still runs, with no answer.
+  [Fact]
+  public async Task ACancelledExecuteStillRunsAndIsNotAnswered()
+  {
+    var (live, handle, _) = await OpenForWriteAsync();
+
+    await live.SendAsync(SetTitle("10", handle));
+    await live.SendAsync("""{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":10}}""");
+    await live.SendAsync("""{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"blok_read","arguments":{"handle":"HANDLE"}}}""".Replace("HANDLE", handle, StringComparison.Ordinal));
+    await live.AnswerAsync("11");
+    await Task.Delay(300);
+
+    Assert.Null(live.Answer("10"));
+    await live.DisposeAsync();
+    Assert.Contains("Changed", File.ReadAllText(Path.Combine(dir, "doc.json")));
+  }
+}

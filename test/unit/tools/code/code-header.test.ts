@@ -245,6 +245,32 @@ describe('code block header', () => {
       expect(tool.save(el)).not.toHaveProperty('filename');
     });
 
+    it('ends the edit and shows the typed filename as text when read-only turns on mid-edit', async () => {
+      const CodeTool = await loadTool();
+      const tool = new CodeTool(createOptions({ code: 'x', filename: 'a.ts' }));
+      const el = tool.render();
+
+      document.body.appendChild(el);
+      query<HTMLButtonElement>(el, 'code-filename')?.click();
+
+      const input = query<HTMLInputElement>(el, 'code-filename-input');
+
+      if (!input) throw new Error('no input');
+
+      input.value = 'b.ts';
+      tool.setReadOnly(true);
+
+      expect(query(el, 'code-filename-input')).toBeNull();
+      expect(query(el, 'code-filename')?.tagName).toBe('SPAN');
+      expect(query(el, 'code-filename')?.textContent).toBe('b.ts');
+
+      input.dispatchEvent(new FocusEvent('blur'));
+
+      expect(query(el, 'code-filename')?.tagName).toBe('SPAN');
+      expect(query(el, 'code-filename')?.textContent).toBe('b.ts');
+      expect(tool.save(el)).toMatchObject({ filename: 'b.ts' });
+    });
+
     it('applies a filename from setData (undo/redo)', async () => {
       const CodeTool = await loadTool();
       const tool = new CodeTool(createOptions({ code: 'x' }));
@@ -307,6 +333,15 @@ describe('code block header', () => {
       expect(controls?.className).toContain('group-focus-within/code:opacity-100');
       expect(controls?.className).toContain('group-hover/code:opacity-100');
     });
+
+    // The picker mounts on <body>, so opening it ends both hover and focus-within.
+    it('stay shown while the language picker is open', async () => {
+      const CodeTool = await loadTool();
+      const el = new CodeTool(createOptions({ code: 'x' })).render();
+
+      expect(query(el, 'code-controls')?.className).toContain('group-has-[[aria-expanded=true]]/code:opacity-100');
+      expect(query(el, 'code-filename-slot')?.className).toContain('group-has-[[aria-expanded=true]]/code:data-[empty=true]:flex');
+    });
   });
 
   describe('preview area', () => {
@@ -322,6 +357,74 @@ describe('code block header', () => {
       const el = new CodeTool(createOptions({ language: 'mermaid', code: 'graph TD' })).render();
 
       expect(query(el, 'code-preview')?.hidden).toBe(false);
+    });
+  });
+
+  describe('breadcrumb', () => {
+    const CODE = 'function fib(n) {\n  if (n < 2) {\n    return n;\n  }\n}';
+
+    const placeCaret = (code: HTMLElement, offset: number): void => {
+      const range = document.createRange();
+      const text = code.firstChild ?? code;
+
+      range.setStart(text, offset);
+      range.collapse(true);
+      document.getSelection()?.removeAllRanges();
+      document.getSelection()?.addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+    };
+
+    it('shows the blocks around the caret while the code is focused', async () => {
+      const CodeTool = await loadTool();
+      const el = new CodeTool(createOptions({ code: CODE })).render();
+
+      document.body.appendChild(el);
+      const code = query(el, 'code-content')!;
+
+      code.focus();
+      placeCaret(code, CODE.indexOf('return'));
+
+      const crumb = query(el, 'code-breadcrumb');
+
+      expect(crumb?.hidden).toBe(false);
+      expect(crumb?.textContent).toBe('fib()›if (n < 2)');
+    });
+
+    it('hides on a top-level line and after the code loses focus', async () => {
+      const CodeTool = await loadTool();
+      const el = new CodeTool(createOptions({ code: `${CODE}\nrun();` })).render();
+
+      document.body.appendChild(el);
+      const code = query(el, 'code-content')!;
+      const crumb = query(el, 'code-breadcrumb');
+
+      code.focus();
+      placeCaret(code, CODE.indexOf('return'));
+      expect(crumb?.hidden).toBe(false);
+
+      placeCaret(code, CODE.length + 2);
+      expect(crumb?.hidden).toBe(true);
+
+      placeCaret(code, CODE.indexOf('return'));
+      code.blur();
+      expect(crumb?.hidden).toBe(true);
+    });
+
+    it('treats code text as text, never markup', async () => {
+      const CodeTool = await loadTool();
+      const tricky = 'if (a <img src=x onerror=alert(1)>) {\n  b();\n}';
+      const el = new CodeTool(createOptions({ code: tricky })).render();
+
+      document.body.appendChild(el);
+      const code = query(el, 'code-content')!;
+
+      code.focus();
+      placeCaret(code, tricky.indexOf('b()'));
+
+      const crumb = query(el, 'code-breadcrumb');
+
+      expect(crumb?.querySelector('img')).toBeNull();
+      expect(crumb?.textContent).toContain('<img');
     });
   });
 

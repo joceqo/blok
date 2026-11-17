@@ -76,6 +76,7 @@ type Options struct {
 type Conn struct {
 	raw    net.Conn
 	reader *bufio.Reader
+	ahead  *readAhead
 
 	sendMu sync.Mutex
 	// stateMu guards the close flags and the keep-alive state.
@@ -177,6 +178,10 @@ func acceptKey(key string) (string, bool) {
 // ErrAcceptKey is a valid key too long for CreateResponseKey's buffer.
 var ErrAcceptKey = errors.New("ws: the Sec-WebSocket-Key does not fit")
 
+// ErrNotHijacked is a failed hijack: nothing was written, so the caller
+// still owns the response.
+var ErrNotHijacked = errors.New("ws: the connection was not hijacked")
+
 // Upgrade hijacks the connection and writes the 101. The caller checked
 // IsWebSocketRequest. Hijack clears the conn's deadlines (net/http's
 // hijackLocked), so the socket outlives the request deadline.
@@ -187,9 +192,15 @@ func Upgrade(w http.ResponseWriter, r *http.Request, options Options) (*Conn, er
 	}
 	raw, buffered, err := http.NewResponseController(w).Hijack()
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(ErrNotHijacked, err)
 	}
-	response := "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: " + accept + "\r\n"
+	// Kestrel's order. Server only when the host set one, as Kestrel's
+	// default does.
+	response := "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nDate: " + time.Now().UTC().Format(http.TimeFormat) + "\r\n"
+	if server := w.Header().Get("Server"); server != "" && !strings.ContainsAny(server, "\r\n") {
+		response += "Server: " + server + "\r\n"
+	}
+	response += "Upgrade: websocket\r\nSec-WebSocket-Accept: " + accept + "\r\n"
 	if strings.TrimSpace(options.SubProtocol) != "" {
 		response += "Sec-WebSocket-Protocol: " + options.SubProtocol + "\r\n"
 	}
@@ -219,7 +230,10 @@ func newConn(raw net.Conn, reader *bufio.Reader, options Options) *Conn {
 		done: make(chan struct{}),
 		last: frameHeader{fin: true, opcode: opText, processed: true},
 	}
-	c.reader = bufio.NewReader(dataReader{c, reader})
+	c.ahead = newReadAhead(reader, c.done)
+	// Below dataReader: keep-alive counts bytes when framing reads them,
+	// not when they arrive.
+	c.reader = bufio.NewReader(dataReader{c, c.ahead})
 	if options.KeepAliveInterval > 0 {
 		c.startKeepAlive(options.KeepAliveInterval, options.KeepAliveTimeout)
 	}
@@ -259,6 +273,11 @@ func (c *Conn) Abort() {
 
 // Done is closed once the socket is disposed.
 func (c *Conn) Done() <-chan struct{} { return c.done }
+
+// PeerGone is closed once the peer ended the connection (FIN or RST), even
+// while nobody calls Receive. Kestrel's RequestAborted. Our own Abort does
+// not close it.
+func (c *Conn) PeerGone() <-chan struct{} { return c.ahead.gone }
 
 func (c *Conn) writeFrame(opcode byte, payload []byte) error {
 	header := make([]byte, 0, 10+len(payload))
@@ -420,6 +439,17 @@ func (h *frameHeader) unmask(b []byte) {
 // the frame); an empty frame is one receive of 0. Pings, pongs and the
 // peer's close are handled inside.
 func (c *Conn) Receive(buf []byte) (n int, messageType MessageType, endOfMessage bool, err error) {
+	// An aborted socket serves no frame, not even one framing has buffered.
+	select {
+	case <-c.done:
+		c.stateMu.Lock()
+		aborted := c.aborted
+		c.stateMu.Unlock()
+		if aborted {
+			return 0, 0, false, c.gone(net.ErrClosed)
+		}
+	default:
+	}
 	for {
 		header := c.last
 		if header.processed {

@@ -12,7 +12,7 @@ import {
   isCaretAtLastLine,
   focus,
 } from '../../components/utils/caret';
-import { PAGE_REFERENCE_ATTR, PAGE_REFERENCE_FALLBACK } from '../../shared/page-reference';
+import { PAGE_REFERENCE_ATTR, PAGE_REFERENCE_FALLBACK, mayHoldPageReference } from '../../shared/page-reference';
 
 import { CELL_ATTR, ROW_ATTR, CELL_COL_ATTR, ownCells, ownRows } from './table-core';
 import { cellBlockFallbackText, parseCellContentToBlocks } from './table-cell-paste';
@@ -42,7 +42,7 @@ const previousWith = (from: Element | null, attr: string): Element | null =>
 const neutralizeCopiedPageReferences = (data: Record<string, unknown>): Record<string, unknown> => {
   const text = data?.text;
 
-  if (typeof text !== 'string' || !text.includes(PAGE_REFERENCE_ATTR)) {
+  if (typeof text !== 'string' || !mayHoldPageReference(text)) {
     return data;
   }
 
@@ -672,7 +672,7 @@ export class TableCellBlocks {
    * The flat index right after `blockId` and its descendants.
    * @param blockId - the block
    */
-  private indexAfterSubtreeOf(blockId: string): number {
+  public indexAfterSubtreeOf(blockId: string): number {
     const count = this.api.blocks.getBlocksCount();
     const rootIndex = this.api.blocks.getBlockIndex(blockId);
 
@@ -680,20 +680,21 @@ export class TableCellBlocks {
       return count;
     }
 
+    // Walked, not listed: a list of every later index cost the whole document per new cell.
     const inside = new Set<string>([blockId]);
-    const firstOutside = Array.from({ length: count - rootIndex - 1 }, (_, i) => rootIndex + 1 + i)
-      .find(index => {
-        const block = this.api.blocks.getBlockByIndex(index);
+    const cursor = { index: rootIndex + 1 };
 
-        if (block?.parentId == null || !inside.has(block.parentId)) {
-          return true;
-        }
-        inside.add(block.id);
+    while (cursor.index < count) {
+      const block = this.api.blocks.getBlockByIndex(cursor.index);
 
-        return false;
-      });
+      if (block?.parentId == null || !inside.has(block.parentId)) {
+        return cursor.index;
+      }
+      inside.add(block.id);
+      cursor.index++;
+    }
 
-    return firstOutside ?? count;
+    return count;
   }
 
   /**
@@ -1851,6 +1852,92 @@ export class TableCellBlocks {
   }
 
   /**
+   * {@link ensureCellHasBlock} for many cells at once. Empty cells that follow
+   * each other in grid order get their blocks from one insertMany, placed
+   * right after the blocks of the last earlier cell that has any, so the
+   * table's children stay in grid order.
+   * @param cells - this table's own cells, in grid order
+   * @param options - as for {@link ensureCellHasBlock}
+   * @param options.track - the fill joins the current undo step
+   */
+  public fillEmptyCells(cells: readonly HTMLElement[], options: { track?: boolean } = {}): void {
+    const runs: Array<{ after: string | undefined; cells: Array<{ cell: HTMLElement; container: HTMLElement }> }> = [];
+    const scan = { after: undefined as string | undefined, open: false };
+
+    for (const cell of cells) {
+      const container = Array.from(cell.children).find((child): child is HTMLElement =>
+        child instanceof HTMLElement && child.hasAttribute(CELL_BLOCKS_ATTR));
+
+      if (container === undefined) {
+        continue;
+      }
+
+      const ids = Array.from(container.children).flatMap(child => child.getAttribute('data-blok-id') ?? []);
+
+      if (ids.length > 0) {
+        scan.after = ids.at(-1);
+        scan.open = false;
+        continue;
+      }
+
+      if (!scan.open) {
+        runs.push({ after: scan.after, cells: [] });
+        scan.open = true;
+      }
+      runs.at(-1)?.cells.push({ cell, container });
+    }
+
+    if (runs.length === 0) {
+      return;
+    }
+
+    // getCellPosition counts the rows before a cell's row; once here, not per new cell.
+    const rowIndex = new Map(ownRows(this.gridElement).map((row, index) => [row, index]));
+    const positionOf = (cell: HTMLElement): CellPosition | null => {
+      const row = cell.parentElement === null ? undefined : rowIndex.get(cell.parentElement);
+      const col = parseInt(cell.getAttribute(CELL_COL_ATTR) ?? '', 10);
+
+      return row === undefined || Number.isNaN(col) ? null : { row, col };
+    };
+    const firstIndex = (): number => {
+      const tableIndex = this.api.blocks.getBlockIndex(this.tableBlockId);
+
+      return tableIndex === undefined ? this.api.blocks.getBlocksCount() : tableIndex + 1;
+    };
+    const fill = (): void => runs.forEach(run => {
+      const index = run.after !== undefined ? this.indexAfterSubtreeOf(run.after) : firstIndex();
+      const blocks = this.api.blocks.insertMany(
+        run.cells.map(() => ({ type: 'paragraph', data: { text: '' }, parent: this.tableBlockId })),
+        index
+      );
+
+      blocks.forEach((block, i) => {
+        const { cell, container } = run.cells[i];
+
+        if (options.track !== true) {
+          this.repairIds.add(block.id);
+        }
+        container.appendChild(block.holder);
+        this.syncBlockToModelAt(cell, positionOf(cell), block.id);
+        this.stripPlaceholders(container);
+      });
+    });
+
+    // The blocks are placed here; see ensureCellHasBlock for why claiming stays off.
+    this.isRepairingCell = true;
+
+    try {
+      if (options.track === true) {
+        fill();
+      } else {
+        this.api.blocks.transactWithoutCapture?.(fill);
+      }
+    } finally {
+      this.isRepairingCell = false;
+    }
+  }
+
+  /**
    * Place the caret inside a cell after its content has been cleared.
    *
    * Clearing a multi-cell selection deletes every block those cells owned via
@@ -2218,8 +2305,16 @@ export class TableCellBlocks {
    * from DOM order for any non-tail insert, and save() persists model order.
    */
   private syncBlockToModel(cell: HTMLElement, blockId: string): void {
-    const pos = this.getCellPosition(cell);
+    this.syncBlockToModelAt(cell, this.getCellPosition(cell), blockId);
+  }
 
+  /**
+   * {@link syncBlockToModel} with the cell's position already known.
+   * @param cell - the cell holding the block
+   * @param pos - its position, as getCellPosition gives it
+   * @param blockId - the block
+   */
+  private syncBlockToModelAt(cell: HTMLElement, pos: CellPosition | null, blockId: string): void {
     if (pos) {
       this.model.addBlockToCell(pos.row, pos.col, blockId, this.getModelInsertIndex(cell, pos, blockId));
     }
@@ -2542,7 +2637,8 @@ export class TableCellBlocks {
     const allCells = this.gridElement.querySelectorAll(`[${CELL_ATTR}]`);
     const blockIds = this.getBlockIdsFromCells(allCells);
 
-    this.deleteBlocks(blockIds);
+    // The table is going, so no cell is left to put a caret in (Notion U163).
+    this.deleteBlocks(blockIds, false);
   }
 
   /**

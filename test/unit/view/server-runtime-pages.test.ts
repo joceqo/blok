@@ -31,6 +31,11 @@ const pageOf = (output: Record<string, unknown>, id: string): unknown => {
   return isObject(block) && isObject(block.data) ? block.data.pageId : undefined;
 };
 
+// blok-mcp's stored handle under --page-titles page-map.
+const pageMap = { pageTitles: 'page-map', source: true, mode: 'stored', write: true };
+const withPageBlock: OutputData = { blocks: [{ id: 'pb', type: 'page', data: { pageId: 'child' } }] };
+const renamePb: AgentBatch = { commands: [{ name: 'page.rename', args: { id: 'pb', title: 'New' } }] };
+
 // What C# sends when its page target can create pages.
 const creating = { services: ['pageBackend'], prepares: ['page'] };
 
@@ -64,6 +69,21 @@ describe('server runtime page creation', () => {
       .toMatchObject({ count: 0, result: { ok: false, error: { code: 'BLOCK_NOT_FOUND' } } });
   });
 
+  it('names the pages a refused batch had already prepared, as Node makes them before the refusal', async () => {
+    const badPage = { commands: [{ name: 'block.insert', args: { type: 'page', id: 'np0', data: { title: 'x' } } }] };
+    const counted = await wire('agentPagesNeeded', { ...creating, document: empty, actor, batch: badPage });
+
+    expect(counted).toMatchObject({ count: 0, prepared: 1, result: { ok: false, error: { code: 'ORPHANED_SIDE_EFFECT' } } });
+    expect(await wire('agentPagesNeeded', { ...creating, document: empty, actor, batch: { commands: [{ name: 'block.delete', args: { id: 'x' } }] } }))
+      .not.toHaveProperty('prepared');
+    const ran = await wire('agentExecute', { ...creating, document: empty, actor, batch: badPage, createdPages: ['host-a'] });
+
+    expect(ran.result).toMatchObject({
+      ok: false,
+      error: { code: 'ORPHANED_SIDE_EFFECT', details: { orphaned: [{ command: 'block.insert', type: 'page', prepared: { pageId: 'host-a' } }] } },
+    });
+  });
+
   it('points each inserted page at the next page the host created', async () => {
     const output = await wire('agentExecute', { ...creating, document: empty, actor, batch: insertPage(2), createdPages: ['host-a', 'host-b'] });
 
@@ -89,6 +109,58 @@ describe('server runtime page creation', () => {
       error: { code: 'ORPHANED_SIDE_EFFECT', details: { cause: { code: 'STALE' } } },
     });
     expect(JSON.stringify(output.result)).toContain('host-b');
+  });
+
+  it('names the page write a page.rename needs without writing it', async () => {
+    const counted = await wire('agentPagesNeeded', { mcp: pageMap, document: withPageBlock, actor, batch: renamePb });
+
+    expect(counted).toEqual({ count: 0, writes: [{ pageId: 'child', batch: { commands: [{ name: 'doc.setTitle', args: { title: 'New' } }] } }] });
+    expect(await wire('agentPagesNeeded', { mcp: pageMap, document: empty, actor, batch: insertPage(1) })).toEqual({ count: 1 });
+  });
+
+  it('answers a page.rename from the outcome of the write the host made', async () => {
+    const done = await wire('agentExecute', {
+      mcp: pageMap, document: withPageBlock, actor, batch: renamePb,
+      pageWrites: [{ pageId: 'child', result: { ok: true, revision: 'r', results: [{}], warnings: [] } }],
+    });
+
+    expect(done.result).toMatchObject({ ok: true, results: [{ pageId: 'child', applied: true }] });
+    const refused = await wire('agentExecute', {
+      mcp: pageMap, document: withPageBlock, actor, batch: renamePb,
+      pageWrites: [{ pageId: 'child', error: { code: 'FORBIDDEN', message: 'No.', retryable: false } }],
+    });
+
+    expect(refused.result).toMatchObject({ ok: false, error: { code: 'FORBIDDEN', message: 'No.', details: { pageId: 'child' }, commandIndex: 0 } });
+  });
+
+  it('fails closed when the page written is not the page the batch writes', async () => {
+    const stale = await wire('agentExecute', {
+      mcp: pageMap, document: withPageBlock, actor, batch: renamePb,
+      pageWrites: [{ pageId: 'other', result: { ok: true, revision: 'r', results: [{}], warnings: [] } }],
+    });
+
+    expect(stale.result).toMatchObject({ ok: false, error: { code: 'STALE' } });
+  });
+
+  it('fails the page insert the host could not create with the host error, at its command', async () => {
+    const refused = { code: 'FORBIDDEN', message: 'You may not create a page document here.', details: { pageId: 'host-x' } };
+    const batch: AgentBatch = { commands: [{ name: 'doc.setTitle', args: { title: 'Parent' } }, ...insertPage(1).commands] };
+    const output = await wire('agentExecute', { ...creating, document: empty, actor, batch, createPageFailure: { helper: 'surface', error: refused } });
+
+    expect(output.result).toMatchObject({ ok: false, error: { ...refused, retryable: false, commandIndex: 1 } });
+    expect(output.document).toEqual(empty);
+  });
+
+  it('reports the pages made before the one the host could not create as orphaned', async () => {
+    const refused = { code: 'SOURCE_UNAVAILABLE', message: 'The new page id is taken. Try again.', retryable: true, details: { pageId: 'host-x' } };
+    const output = await wire('agentExecute', {
+      ...creating, document: empty, actor, batch: insertPage(2), createdPages: ['host-a'], createPageFailure: { helper: 'as-is', error: refused },
+    });
+
+    expect(output.result).toMatchObject({
+      ok: false,
+      error: { code: 'ORPHANED_SIDE_EFFECT', details: { cause: refused, orphaned: [{ prepared: { pageId: 'host-a' } }] } },
+    });
   });
 
   it('refuses a page insert where the host creates none, with reason host', async () => {

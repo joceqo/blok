@@ -173,6 +173,49 @@ describe('html', () => {
       expect(order(parent)).toBe('cab');
     });
 
+    // Notion U113: a redo moves a block after its caret is restored; the caret must survive the move.
+    it('keeps a selection that sits inside the moved node', () => {
+      const { parent, a, c } = setup();
+      const text = document.createTextNode('three');
+
+      c.appendChild(text);
+      window.getSelection()?.setBaseAndExtent(text, 5, text, 5);
+
+      moveElementBefore(c, a);
+
+      const selection = window.getSelection();
+
+      expect(order(parent)).toBe('cab');
+      expect([selection?.anchorNode, selection?.anchorOffset, selection?.focusOffset]).toEqual([text, 5, 5]);
+    });
+
+    it('leaves a selection outside the moved node alone', () => {
+      const { a, b, c } = setup();
+      const text = document.createTextNode('two');
+
+      b.appendChild(text);
+      window.getSelection()?.setBaseAndExtent(text, 1, text, 3);
+
+      moveElementBefore(c, a);
+
+      const selection = window.getSelection();
+
+      expect([selection?.anchorNode, selection?.anchorOffset, selection?.focusOffset]).toEqual([text, 1, 3]);
+    });
+
+    // Chrome forces a whole-page style and layout on every selection read while
+    // nothing is selected; a table mount moves 1200 detached cell holders.
+    it('does not read the selection when the moved node is detached', () => {
+      const parent = document.createElement('div');
+      const node = document.createElement('div');
+      const getSelection = vi.spyOn(window, 'getSelection');
+
+      moveElementToEnd(parent, node);
+
+      expect(getSelection).not.toHaveBeenCalled();
+      expect(node.parentNode).toBe(parent);
+    });
+
     it('is a no-op when the reference is the node itself', () => {
       const moveBefore = vi.fn();
 

@@ -414,6 +414,128 @@ describe('KeyboardNavigation', () => {
       expect(event.preventDefault).not.toHaveBeenCalled();
     });
 
+    describe('caret across the reparent', () => {
+      const textBlock = (id: string, text: string, overrides: Partial<Block> = {}): Block => {
+        const block = createBlock({ id, parentId: null, ...overrides });
+
+        block.inputs[0].textContent = text;
+        document.body.appendChild(block.holder);
+
+        return block;
+      };
+
+      const caretAt = (block: Block, offset: number): void => {
+        const text = block.inputs[0].firstChild;
+
+        if (text === null) {
+          throw new Error('block has no text');
+        }
+        window.getSelection()?.setPosition(text, offset);
+      };
+
+      const caretOffsetIn = (block: Block): number | null => {
+        const selection = window.getSelection();
+        const text = block.inputs[0].firstChild;
+
+        return selection?.anchorNode === text ? selection?.anchorOffset ?? null : null;
+      };
+
+      // A real reparent re-inserts the holder; the DOM collapses a selection inside a removed node.
+      const movingReparent = (parent: Block, current: Block) => vi.fn((block: Block, parentId: string | null) => {
+        Object.assign(block, { parentId });
+        current.holder.remove();
+        parent.holder.appendChild(current.holder);
+      });
+
+      afterEach(() => {
+        document.body.replaceChildren();
+        window.getSelection()?.removeAllRanges();
+      });
+
+      it('keeps the caret offset when Tab moves the holder', () => {
+        const previous = textBlock('prev', 'one', { name: 'list' });
+        const current = textBlock('cur', 'two', { name: 'list' });
+        const blok = tabModules([previous, current], current);
+
+        Object.assign(blok.BlockManager, { setBlockParent: movingReparent(previous, current) });
+        caretAt(current, 3);
+
+        new KeyboardNavigation(blok).handleTab(createKeyboardEvent({ key: 'Tab', shiftKey: false }));
+
+        expect(caretOffsetIn(current)).toBe(3);
+      });
+
+      it('keeps the caret offset when Shift+Tab moves the holder', () => {
+        const parent = textBlock('p', 'one', { name: 'list', contentIds: ['cur'] });
+        const current = textBlock('cur', 'two', { name: 'list', parentId: 'p' });
+        const blok = tabModules([parent, current], current);
+
+        Object.assign(blok.BlockManager, { setBlockParent: vi.fn((block: Block, parentId: string | null) => {
+          Object.assign(block, { parentId });
+          current.holder.remove();
+          document.body.appendChild(current.holder);
+        }) });
+        caretAt(current, 2);
+
+        new KeyboardNavigation(blok).handleTab(createKeyboardEvent({ key: 'Tab', shiftKey: true }));
+
+        expect(caretOffsetIn(current)).toBe(2);
+      });
+
+      it('opens a closed toggle it nests into, before the caret comes back', () => {
+        const toggle = textBlock('toggle', 'Tog', { name: 'toggle', contentIds: [] });
+        const marker = document.createElement('div');
+
+        marker.setAttribute('data-blok-toggle-open', 'false');
+        toggle.holder.prepend(marker);
+        const order: string[] = [];
+        const call = vi.fn((method: string) => {
+          order.push(`call:${method}`);
+          marker.setAttribute('data-blok-toggle-open', 'true');
+        });
+
+        Object.assign(toggle, { call });
+        const current = textBlock('cur', 'move me');
+        const blok = tabModules([toggle, current], current);
+
+        Object.assign(blok.BlockManager, { setBlockParent: movingReparent(toggle, current) });
+        caretAt(current, 7);
+        const setBaseAndExtent = Selection.prototype.setBaseAndExtent;
+
+        vi.spyOn(Selection.prototype, 'setBaseAndExtent').mockImplementation(function (this: Selection, ...args) {
+          order.push('selection');
+          setBaseAndExtent.apply(this, args);
+        });
+
+        new KeyboardNavigation(blok).handleTab(createKeyboardEvent({ key: 'Tab', shiftKey: false }));
+
+        expect(call).toHaveBeenCalledWith('expand');
+        expect(caretOffsetIn(current)).toBe(7);
+        expect(order).toEqual(['call:expand', 'selection']);
+      });
+
+      it('leaves an open parent alone', () => {
+        const toggle = textBlock('toggle', 'Tog', { name: 'toggle', contentIds: [] });
+        const marker = document.createElement('div');
+
+        marker.setAttribute('data-blok-toggle-open', 'true');
+        toggle.holder.prepend(marker);
+        const call = vi.fn();
+
+        Object.assign(toggle, { call });
+        const current = textBlock('cur', 'move me');
+        const blok = tabModules([toggle, current], current);
+
+        Object.assign(blok.BlockManager, { setBlockParent: movingReparent(toggle, current) });
+        caretAt(current, 4);
+
+        new KeyboardNavigation(blok).handleTab(createKeyboardEvent({ key: 'Tab', shiftKey: false }));
+
+        expect(call).not.toHaveBeenCalled();
+        expect(caretOffsetIn(current)).toBe(4);
+      });
+    });
+
     it('preventDefaults when indent is impossible so focus never tabs out of the editor', () => {
       const current = createBlock({ id: 'cur', parentId: null });
       const navigateNext = vi.fn(() => false);
@@ -1616,6 +1738,69 @@ describe('KeyboardNavigation', () => {
       isCaretAtStartOfInputSpy.mockRestore();
       isCaretAtEndOfInputSpy.mockRestore();
     });
+    describe('Enter in the middle of a styled block', () => {
+      const splitAt = (name: string, holderMarkup = ''): ReturnType<typeof vi.fn> => {
+        const input = document.createElement('div');
+
+        input.contentEditable = 'true';
+        input.textContent = 'Big title';
+        const holder = document.createElement('div');
+
+        holder.innerHTML = holderMarkup;
+        holder.appendChild(input);
+        const currentBlock = createBlock({
+          id: 'styled',
+          name,
+          holder,
+          currentInput: input,
+          tool: { isDefault: name === 'paragraph', isLineBreaksEnabled: false, name } as unknown as Block['tool'],
+        });
+        const split = vi.fn(() => createBlock({ id: 'tail' }));
+        const blok = createBlokModules({
+          BlockManager: {
+            currentBlock,
+            currentBlockIndex: 0,
+            split,
+            insertDefaultBlockAtIndex: vi.fn(),
+            transactForTool: vi.fn((fn: () => void) => fn()),
+          } as unknown as BlokModules['BlockManager'],
+          Tools: { defaultTool: { name: 'paragraph' } } as unknown as BlokModules['Tools'],
+          Caret: { setToBlock: vi.fn(), positions: { START: 'start', END: 'end', DEFAULT: 'default' } } as unknown as BlokModules['Caret'],
+          Toolbar: { moveAndOpen: vi.fn() } as unknown as BlokModules['Toolbar'],
+          YjsManager: { markCaretBeforeChange: vi.fn(), updateLastCaretAfterPosition: vi.fn() } as unknown as BlokModules['YjsManager'],
+        });
+        const startSpy = vi.spyOn(caretUtils, 'isCaretAtStartOfInput').mockReturnValue(false);
+        const endSpy = vi.spyOn(caretUtils, 'isCaretAtEndOfInput').mockReturnValue(false);
+
+        new KeyboardNavigation(blok).handleEnter(createKeyboardEvent({ key: 'Enter' }));
+        startSpy.mockRestore();
+        endSpy.mockRestore();
+
+        return split;
+      };
+
+      it('U093: splits a heading so the second half is a default text block', () => {
+        expect(splitAt('header')).toHaveBeenCalledWith('paragraph');
+      });
+
+      it('U145: splits a quote so the second half is a default text block', () => {
+        expect(splitAt('quote')).toHaveBeenCalledWith('paragraph');
+      });
+
+      it('keeps the kind when splitting a paragraph', () => {
+        const split = splitAt('paragraph');
+
+        expect(split).toHaveBeenCalledOnce();
+        expect(split.mock.calls[0][0]).toBeUndefined();
+      });
+
+      it('keeps the kind when splitting a toggle heading (no Notion entry)', () => {
+        const split = splitAt('header', '<div data-blok-toggle-open="true"></div>');
+
+        expect(split).toHaveBeenCalledOnce();
+        expect(split.mock.calls[0][0]).toBeUndefined();
+      });
+    });
   });
 
   describe('handleBackspace', () => {
@@ -1755,8 +1940,12 @@ describe('KeyboardNavigation', () => {
       isCaretAtStartOfInputSpy.mockRestore();
     });
 
-    it('resets a non-empty heading to a paragraph instead of merging on Backspace at start', () => {
-      const headingBlock = createHeadingBlock('Hello <b>world</b>', { isEmpty: false });
+    const headingBackspace = (previousBlock: Block | null): { replace: ReturnType<typeof vi.fn>; mergeBlocks: ReturnType<typeof vi.fn>; setToBlock: ReturnType<typeof vi.fn>; headingBlock: Block; paragraphBlock: Block } => {
+      const convertible = { export: 'text', import: 'text' };
+      const headingBlock = createHeadingBlock('Hello <b>world</b>', {
+        isEmpty: false,
+        tool: { isDefault: false, isLineBreaksEnabled: false, name: 'header', conversionConfig: convertible } as unknown as Block['tool'],
+      });
       const paragraphBlock = createBlock({ id: 'paragraph-block' });
       const replace = vi.fn(() => paragraphBlock);
       const mergeBlocks = vi.fn(() => Promise.resolve());
@@ -1764,7 +1953,7 @@ describe('KeyboardNavigation', () => {
       const blok = createBlokModules({
         BlockManager: {
           currentBlock: headingBlock,
-          previousBlock: createBlock({ id: 'prev-block', isEmpty: false }),
+          previousBlock,
           replace,
           mergeBlocks,
         } as unknown as BlokModules['BlockManager'],
@@ -1778,16 +1967,73 @@ describe('KeyboardNavigation', () => {
         Toolbar: { close: vi.fn() } as unknown as BlokModules['Toolbar'],
       });
       const keyboardNavigation = new KeyboardNavigation(blok);
-      const event = createKeyboardEvent({ key: 'Backspace' });
       const spy = vi.spyOn(caretUtils, 'isCaretAtStartOfInput').mockReturnValue(true);
 
-      keyboardNavigation.handleBackspace(event);
+      keyboardNavigation.handleBackspace(createKeyboardEvent({ key: 'Backspace' }));
+      spy.mockRestore();
+
+      return { replace, mergeBlocks, setToBlock, headingBlock, paragraphBlock };
+    };
+
+    it('U098: merges a heading straight into the text block above on Backspace at start', () => {
+      const previous = createBlock({
+        id: 'prev-block',
+        isEmpty: false,
+        parentId: null,
+        tool: { isDefault: true, isLineBreaksEnabled: false, name: 'paragraph', conversionConfig: { export: 'text', import: 'text' } } as unknown as Block['tool'],
+      });
+      const { replace, mergeBlocks, headingBlock } = headingBackspace(previous);
+
+      expect(mergeBlocks).toHaveBeenCalledWith(previous, headingBlock);
+      expect(replace).not.toHaveBeenCalled();
+    });
+
+    it('resets a first-block heading to a paragraph on Backspace at start (no Notion entry)', () => {
+      const { replace, mergeBlocks, setToBlock, headingBlock, paragraphBlock } = headingBackspace(null);
 
       expect(replace).toHaveBeenCalledWith(headingBlock, 'paragraph', { text: 'Hello <b>world</b>' });
       expect(mergeBlocks).not.toHaveBeenCalled();
       expect(setToBlock).toHaveBeenCalledWith(paragraphBlock, 'start');
+    });
 
-      spy.mockRestore();
+    it('resets a heading to a paragraph when the block above cannot take its text (no Notion entry)', () => {
+      const { replace, mergeBlocks } = headingBackspace(createBlock({ id: 'image-block', name: 'image', isEmpty: false, mergeable: false }));
+
+      expect(replace).toHaveBeenCalled();
+      expect(mergeBlocks).not.toHaveBeenCalled();
+    });
+
+    it('resets a heading to a paragraph when the block above is not text, e.g. code (no Notion entry)', () => {
+      const code = createBlock({
+        id: 'code-block',
+        name: 'code',
+        isEmpty: false,
+        tool: { isDefault: false, isLineBreaksEnabled: true, name: 'code', conversionConfig: { export: 'code', import: 'code' } } as unknown as Block['tool'],
+      });
+      const { replace, mergeBlocks } = headingBackspace(code);
+
+      expect(replace).toHaveBeenCalled();
+      expect(mergeBlocks).not.toHaveBeenCalled();
+    });
+
+    it('resets a heading to a paragraph when the text above sits in another parent (no Notion entry)', () => {
+      const toggleChild = createBlock({
+        id: 'toggle-child',
+        isEmpty: false,
+        parentId: 'toggle',
+        tool: { isDefault: true, isLineBreaksEnabled: false, name: 'paragraph', conversionConfig: { export: 'text', import: 'text' } } as unknown as Block['tool'],
+      });
+      const { replace, mergeBlocks } = headingBackspace(toggleChild);
+
+      expect(replace).toHaveBeenCalled();
+      expect(mergeBlocks).not.toHaveBeenCalled();
+    });
+
+    it('resets a heading to a paragraph when the block above is empty (no Notion entry)', () => {
+      const { replace, mergeBlocks } = headingBackspace(createBlock({ id: 'prev-block', isEmpty: true }));
+
+      expect(replace).toHaveBeenCalled();
+      expect(mergeBlocks).not.toHaveBeenCalled();
     });
 
     it('resets a quote to a paragraph instead of merging on Backspace at start, matching Notion', () => {

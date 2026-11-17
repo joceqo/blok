@@ -78,7 +78,14 @@ public sealed partial class DocumentOpsFixtureTests
 
     if (entry["output"] is JsonNode expectedOutput)
     {
-      Assert.Equal(expectedOutput.GetValue<string>(), output);
+      var expected = expectedOutput.GetValue<string>();
+
+      if (name.StartsWith("lone.", StringComparison.Ordinal))
+      {
+        expected = ReadLoneSurrogatesAsGoDoes(expected);
+      }
+
+      Assert.Equal(expected, output);
       return;
     }
 
@@ -87,7 +94,107 @@ public sealed partial class DocumentOpsFixtureTests
         Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(output))));
   }
 
-  /// <summary>Parts are strings or { repeat, join, items }, with {i} the index.</summary>
+  [GeneratedRegex("\\\\u[dD][89a-fA-F][0-9a-fA-F]{2}")]
+  private static partial Regex SurrogateEscape();
+
+  /// <summary>
+  /// Node keeps a lone-surrogate escape; goja reads it as U+FFFD, and the C#
+  /// runtime reads input the same way. A high escape right before a low escape
+  /// is a pair and stays. Mirrors gojaReadsLoneSurrogates in ops_fixture_test.go.
+  /// </summary>
+  private static string ReadLoneSurrogatesAsGoDoes(string expected)
+  {
+    var matches = SurrogateEscape().Matches(expected);
+    bool High(int i) => "89abAB".Contains(expected[matches[i].Index + 3], StringComparison.Ordinal);
+    var text = new StringBuilder();
+    var last = 0;
+
+    for (var i = 0; i < matches.Count; i++)
+    {
+      var paired = High(i) && i + 1 < matches.Count
+          && matches[i + 1].Index == matches[i].Index + matches[i].Length && !High(i + 1);
+
+      text.Append(expected, last, matches[i].Index - last);
+
+      if (paired)
+      {
+        text.Append(expected, matches[i].Index, matches[i].Length + matches[i + 1].Length);
+        last = matches[i + 1].Index + matches[i + 1].Length;
+        i++;
+        continue;
+      }
+
+      text.Append('\ufffd');
+      last = matches[i].Index + matches[i].Length;
+    }
+
+    return text.Append(expected, last, expected.Length - last).ToString();
+  }
+
+  private static readonly Lazy<JintBlokRuntime> SixtyFourMiBRuntime = new(
+      () => JintBlokRuntime.FromEmbeddedResource(
+          poolSize: 1,
+          timeout: TimeSpan.FromMinutes(5),
+          allocationBudgetBytes: 64L * 1024 * 1024));
+
+  /*
+   * C# only. Go and Rust count memory differently (live heap, QuickJS
+   * allocations), so their refusal points differ; at the default budget
+   * all three convert these: MatchesNodeOnTheSharedFixture.
+   */
+  [Theory]
+  [InlineData("big.plain.text", false)]
+  [InlineData("big.plain.markdown", true)]
+  [InlineData("big.plain.html", false)]
+  [InlineData("big.marked.text", true)]
+  [InlineData("big.marked.markdown", true)]
+  [InlineData("big.marked.html", true)]
+  [InlineData("big.marked.pageIndex", true)]
+  [InlineData("big.marked.extract", false)]
+  [InlineData("big.url.image.markdown", false)]
+  [InlineData("big.url.bookmark.markdown", false)]
+  [InlineData("big.fromMarkdown", true)]
+  public async Task StopsTheBigDocumentsOfTheSharedFixtureAt64MiB(string name, bool stopped)
+  {
+    var entry = Cases.Value.Single(entry => entry!["name"]!.GetValue<string>() == name)!;
+    var op = entry["op"]!.GetValue<string>();
+    var input = Expand(entry["inputRecipe"]!);
+
+    if (!stopped)
+    {
+      await SixtyFourMiBRuntime.Value.InvokeAsync(op, input);
+      return;
+    }
+
+    var failure = await Assert.ThrowsAsync<BlokDocumentConversionException>(
+        async () => await SixtyFourMiBRuntime.Value.InvokeAsync(op, input));
+    Assert.Equal(BlokConversionFailure.DocumentTooLarge, failure.Reason);
+  }
+
+  /*
+   * One 32 MiB base64 image at the default budget: every reader converts it.
+   */
+  [Theory]
+  [InlineData("blocksToMarkdown", false)]
+  [InlineData("blocksToPlainText", false)]
+  [InlineData("blocksToHtml", false)]
+  public async Task ConvertsA32MiBImageAtTheDefaultBudget(string op, bool stopped)
+  {
+    var input = "{\"blocks\":[{\"id\":\"u1\",\"type\":\"image\",\"data\":{\"url\":\"data:image/png;base64,"
+        + new string('A', 32 * 1024 * 1024) + "\"}}]}";
+
+    if (!stopped)
+    {
+      await Runtime.Value.InvokeAsync(op, input);
+      return;
+    }
+
+    var failure = await Assert.ThrowsAsync<BlokDocumentConversionException>(
+        async () => await Runtime.Value.InvokeAsync(op, input));
+    Assert.Equal(BlokConversionFailure.DocumentTooLarge, failure.Reason);
+  }
+
+  /// <summary>Parts are strings or { repeat, join, items }, with {i} the index and {i1} the index plus one.</summary>
   private static string Expand(JsonNode recipe)
   {
     var text = new StringBuilder();
@@ -111,7 +218,9 @@ public sealed partial class DocumentOpsFixtureTests
           text.Append(join);
         }
 
-        text.Append(items[index % items.Length].Replace("{i}", index.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal));
+        text.Append(items[index % items.Length]
+            .Replace("{i}", index.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("{i1}", (index + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal));
       }
     }
 

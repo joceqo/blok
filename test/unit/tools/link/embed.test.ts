@@ -11,7 +11,8 @@ const createMockAPI = (
   ({
     i18n: { t: (key: string) => key, has: () => false, getLocale: () => 'en' },
     blocks: { delete: blocksDelete ?? ((): void => undefined) },
-    config: { linkPaste: { allowGenericEmbed, allowedEmbedOrigins } },
+    // These tests are about which URLs frame; the click-to-load gate has its own tests.
+    config: { linkPaste: { allowGenericEmbed, allowedEmbedOrigins, genericEmbedClickToLoad: false } },
   }) as unknown as API;
 
 const createOptions = (
@@ -687,11 +688,31 @@ describe('Embed tool — empty state', () => {
   const brandOf = (root: HTMLElement): HTMLElement | null =>
     windowOf(root)?.querySelector<HTMLElement>('[data-role="embed-brand"]') ?? null;
 
-  it('draws the idle scene as a media preview drawing', () => {
+  const deckOf = (root: HTMLElement): HTMLElement | null =>
+    windowOf(root)?.querySelector<HTMLElement>('[data-role="embed-deck"]') ?? null;
+
+  it('draws the idle window as a deck of five embed drawings', () => {
+    const root = mount(new Embed(createOptions({})));
+    const cards = Array.from(deckOf(root)?.children ?? []);
+
+    expect(cards.map((card) => card.getAttribute('data-kind'))).toEqual(['video', 'social', 'design', 'audio', 'table']);
+    for (const card of cards) {
+      expect(card.querySelector('.blok-media-preview svg')).not.toBeNull();
+    }
+  });
+
+  it('takes the deck away when a provider is typed, and deals it again once the field is cleared', () => {
     const root = mount(new Embed(createOptions({})));
 
+    type(root, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+
+    expect(deckOf(root)).toBeNull();
     expect(stagesOf(root)).toHaveLength(1);
-    expect(stagesOf(root)[0]?.querySelector('svg')).not.toBeNull();
+
+    type(root, '');
+
+    expect(deckOf(root)?.children).toHaveLength(5);
+    expect(stagesOf(root)).toHaveLength(5);
   });
 
   it('replaces the drawing with the scene of the typed provider', () => {
@@ -1013,6 +1034,59 @@ describe('Embed sizing & resize', () => {
     expect(figure.getAttribute('data-resize-blocked')).toBe('true');
     handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientX: 0, bubbles: true }));
     expect(figure.getAttribute('data-resize-blocked')).not.toBe('true');
+  });
+});
+
+describe('Embed vertical resize (generic site embeds)', () => {
+  const genericData = (): Partial<EmbedData> => ({
+    service: '',
+    source: 'https://example.com/',
+    embed: 'https://example.com/',
+    kind: 'iframe',
+    width: 580,
+    height: 320,
+  });
+
+  const render = (dispatchChange = vi.fn()): { tool: Embed; root: HTMLElement; aspect: HTMLElement; handle: HTMLElement } => {
+    const tool = new Embed(createOptions(genericData(), { allowGenericEmbed: true, dispatchChange }));
+    const root = tool.render();
+    const aspect = root.querySelector<HTMLElement>('[data-role="embed-aspect"]');
+    const handle = root.querySelector<HTMLElement>('[data-role="resize-handle"][data-edge="bottom"]');
+
+    if (!aspect || !handle) {
+      throw new Error('aspect box or bottom handle missing');
+    }
+
+    return { tool, root, aspect, handle };
+  };
+
+  it('gives a generic embed a bottom resize handle', () => {
+    const { root } = render();
+
+    expect(root.querySelectorAll('[data-role="resize-handle"]')).toHaveLength(3);
+  });
+
+  it('keeps the shape tied to width while the bottom handle sets the height', () => {
+    const dispatchChange = vi.fn();
+    const { tool, aspect, handle } = render(dispatchChange);
+
+    // Shown at twice its saved width: 1160 x 640.
+    Object.defineProperty(aspect, 'getBoundingClientRect', {
+      value: () => ({ ...makeRect(1160), height: 640, bottom: 640 }),
+    });
+    Object.assign(handle, {
+      setPointerCapture: (): void => undefined,
+      releasePointerCapture: (): void => undefined,
+    });
+    handle.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, clientY: 300, bubbles: true }));
+    handle.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, clientY: 400, bubbles: true }));
+    handle.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, clientY: 400, bubbles: true }));
+
+    // 740 px shown at 1160 px wide is 370 at the saved 580 width.
+    expect(tool.save().height).toBe(370);
+    expect(aspect.style.aspectRatio).toBe('580 / 370');
+    expect(aspect.style.height).toBe('');
+    expect(dispatchChange).toHaveBeenCalled();
   });
 });
 
@@ -1439,7 +1513,7 @@ describe('Embed toolbar integration', () => {
 describe('Embed stored-data URL safety (stored XSS guard)', () => {
   // Saved documents are attacker-controllable in host apps: the embed target
   // must be re-derived and re-validated at RENDER time, not only when a URL is
-  // pasted. Registry blocks derive from `source`, generic ones from `embed`.
+  // pasted. Every embed derives from `source`; the stored `embed` is never framed.
   it.each([
     ['javascript:alert(1)'],
     ['data:text/html,<script>alert(1)</script>'],
@@ -1746,5 +1820,219 @@ describe('Embed tool — link-card fallback and origin allowlist', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('Embed — the render kind comes from the registry, never from saved data', () => {
+  it('frames a youtube block saved with a forged script kind, without any script', () => {
+    const root = new Embed(createOptions(iframeData({ kind: 'script' }))).render();
+
+    expect(root.querySelector('script')).toBeNull();
+    expect(root.querySelector('blockquote')).toBeNull();
+    expect(root.querySelector('iframe')?.getAttribute('src')).toBe('https://www.youtube.com/embed/dQw4w9WgXcQ');
+  });
+
+  it('never runs a widget script for a generic block saved with a script kind', () => {
+    const root = new Embed(createOptions(
+      { service: '', source: 'https://evil.example/x', embed: 'https://evil.example/x', kind: 'script' },
+      { allowGenericEmbed: true }
+    )).render();
+
+    expect(root.querySelector('script')).toBeNull();
+    expect(root.querySelector('blockquote')).toBeNull();
+  });
+
+  it('renders the X widget for a twitter block even when its saved kind says iframe', () => {
+    const root = new Embed(createOptions({
+      service: 'twitter',
+      source: 'https://x.com/user/status/1234567890',
+      embed: 'https://twitter.com/i/status/1234567890',
+      kind: 'iframe',
+    })).render();
+
+    expect(root.querySelector('iframe')).toBeNull();
+    expect(root.querySelector('blockquote.twitter-tweet a')?.getAttribute('href')).toBe('https://x.com/user/status/1234567890');
+  });
+
+  it('does not persist a forged kind', () => {
+    const youtube = new Embed(createOptions(iframeData({ kind: 'script' })));
+    const generic = new Embed(createOptions(
+      { service: '', source: 'https://evil.example/x', embed: 'https://evil.example/x', kind: 'script' },
+      { allowGenericEmbed: true }
+    ));
+
+    youtube.render();
+    generic.render();
+
+    expect(youtube.save().kind).toBe('iframe');
+    expect(generic.save().kind).toBe('iframe');
+  });
+});
+
+describe('Embed — a generic embed frames, checks and labels one URL', () => {
+  // Saved data can split the two fields: frame one host, label another.
+  const split = (): Partial<EmbedData> => ({
+    service: '',
+    source: 'https://trusted.bank.example/',
+    embed: 'https://dash.internal.example/',
+    kind: 'iframe',
+  });
+
+  it('checks the allowlist against the source, so a split block is not framed', () => {
+    const root = new Embed(createOptions(split(), { allowedEmbedOrigins: ['dash.internal.example'] })).render();
+
+    expect(root.querySelector('iframe')).toBeNull();
+    expect(root.innerHTML).not.toContain('dash.internal.example');
+    expect(root.querySelector('[data-role="embed-link-card-anchor"]')?.getAttribute('href')).toBe('https://trusted.bank.example/');
+  });
+
+  it('frames the same host its title names', () => {
+    const root = new Embed(createOptions(split(), { allowGenericEmbed: true })).render();
+    const frame = root.querySelector('iframe');
+
+    expect(frame?.getAttribute('src')).toBe('https://trusted.bank.example/');
+    expect(frame?.getAttribute('title')).toBe('toolNames.embed: trusted.bank.example');
+    expect(root.innerHTML).not.toContain('dash.internal.example');
+  });
+});
+
+describe('Embed — the URL input follows the same generic-embed rules as render', () => {
+  it('accepts a URL on an allowlisted origin without the generic flag', () => {
+    const tool = new Embed(createOptions({}, { allowedEmbedOrigins: ['dashboard.example.com'] }));
+    const root = tool.render();
+
+    tool.onPaste(patternEvent('embed', 'https://dashboard.example.com/widget/42'));
+
+    expect(tool.save()).toMatchObject({ service: '', source: 'https://dashboard.example.com/widget/42' });
+    expect(root.querySelector('iframe')?.getAttribute('src')).toBe('https://dashboard.example.com/widget/42');
+  });
+
+  // The paste menu offers "Embed" for an allowlisted origin; submit must keep the URL.
+  it('saves a pasted URL on an allowlisted origin in both fields', () => {
+    const tool = new Embed(createOptions({}, { allowedEmbedOrigins: ['dash.example.org'] }));
+    const root = tool.render();
+
+    tool.onPaste(patternEvent('embed', 'https://dash.example.org/x'));
+
+    expect(tool.save()).toMatchObject({ service: '', source: 'https://dash.example.org/x', embed: 'https://dash.example.org/x' });
+    expect(root.querySelector('iframe')?.getAttribute('src')).toBe('https://dash.example.org/x');
+  });
+
+  it.each([
+    ['an origin missing from the allowlist', 'https://other.example.com/x'],
+    ['an http URL on an allowlisted origin', 'http://dashboard.example.com/widget/42'],
+  ])('refuses %s', (_name, url) => {
+    const tool = new Embed(createOptions({}, { allowedEmbedOrigins: ['dashboard.example.com'] }));
+
+    tool.onPaste(patternEvent('embed', url));
+
+    expect(tool.save().source).toBe('');
+  });
+
+  it('refuses the page\'s own site even with the generic flag', () => {
+    const tool = new Embed(createOptions({}, { allowGenericEmbed: true }));
+
+    tool.onPaste(patternEvent('embed', `https://${window.location.hostname}/settings`));
+
+    expect(tool.save().source).toBe('');
+  });
+});
+
+describe('Embed — two frame profiles, picked by the registry', () => {
+  const REGISTRY_SANDBOX = 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-presentation';
+  const GENERIC_SANDBOX = 'allow-scripts allow-forms allow-popups';
+  const FORBIDDEN = [
+    'allow-same-origin',
+    'allow-top-navigation',
+    'allow-top-navigation-by-user-activation',
+    'allow-downloads',
+    'allow-modals',
+    'allow-popups-to-escape-sandbox',
+  ];
+
+  const genericFrame = (data: Partial<EmbedData>, overrides: { allowGenericEmbed?: boolean; allowedEmbedOrigins?: string[] }): HTMLIFrameElement | null =>
+    new Embed(createOptions(data, overrides)).render().querySelector('iframe');
+
+  it('keeps popups of a code provider inside the sandbox', () => {
+    const frame = new Embed(createOptions({
+      service: 'codepen',
+      source: 'https://codepen.io/team/pen/AbCdEf',
+      embed: 'https://codepen.io/team/embed/AbCdEf?default-tab=result',
+    })).render().querySelector('iframe');
+
+    expect(frame?.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin allow-popups allow-presentation');
+  });
+
+  it('keeps the provider profile for a registry embed', () => {
+    const frame = new Embed(createOptions(iframeData())).render().querySelector('iframe');
+
+    expect(frame?.getAttribute('sandbox')).toBe(REGISTRY_SANDBOX);
+    expect(frame?.getAttribute('allow')).toBe('encrypted-media; fullscreen; picture-in-picture');
+    expect(frame?.getAttribute('referrerpolicy')).toBe('strict-origin-when-cross-origin');
+    expect(frame?.hasAttribute('credentialless')).toBe(false);
+  });
+
+  it.each([
+    ['the generic flag', { allowGenericEmbed: true }],
+    ['the allowlist', { allowedEmbedOrigins: ['dash.example.org'] }],
+  ])('gives a generic embed allowed by %s the strict profile', (_name, overrides) => {
+    const frame = genericFrame(
+      { service: '', source: 'https://dash.example.org/x', embed: 'https://dash.example.org/x', kind: 'iframe' },
+      overrides
+    );
+    const tokens = (frame?.getAttribute('sandbox') ?? '').split(/\s+/);
+
+    expect(frame?.getAttribute('sandbox')).toBe(GENERIC_SANDBOX);
+    FORBIDDEN.forEach(token => expect(tokens).not.toContain(token));
+    expect(frame?.hasAttribute('allow')).toBe(false);
+    expect(frame?.getAttribute('referrerpolicy')).toBe('no-referrer');
+    expect(frame?.getAttribute('loading')).toBe('lazy');
+    expect(frame?.hasAttribute('credentialless')).toBe(true);
+  });
+
+  it('gives a pasted allowlisted URL the strict profile', () => {
+    const tool = new Embed(createOptions({}, { allowedEmbedOrigins: ['dash.example.org'] }));
+    const root = tool.render();
+
+    tool.onPaste(patternEvent('embed', 'https://dash.example.org/x'));
+
+    expect(root.querySelector('iframe')?.getAttribute('sandbox')).toBe(GENERIC_SANDBOX);
+  });
+
+  it('never gives a saved non-registry service the provider profile', () => {
+    const frame = genericFrame(
+      { service: 'not-a-provider', source: 'https://dash.example.org/x', embed: 'https://dash.example.org/x', kind: 'iframe' },
+      { allowGenericEmbed: true }
+    );
+
+    expect(frame?.getAttribute('sandbox')).toBe(GENERIC_SANDBOX);
+  });
+});
+
+describe('Embed — save() keeps a generic embed on one URL', () => {
+  it('writes the https source into embed, so a block with only source survives validate', () => {
+    const tool = new Embed(createOptions(
+      { service: '', source: 'https://dash.example.org/x', embed: '' },
+      { allowGenericEmbed: true }
+    ));
+
+    tool.render();
+    const saved = tool.save();
+
+    expect(saved.embed).toBe('https://dash.example.org/x');
+    expect(tool.validate(saved)).toBe(true);
+  });
+
+  it('heals a split block on save', () => {
+    const tool = new Embed(createOptions({
+      service: '',
+      source: 'https://trusted.bank.example/',
+      embed: 'https://dash.internal.example/',
+      kind: 'iframe',
+    }));
+
+    tool.render();
+
+    expect(tool.save().embed).toBe('https://trusted.bank.example/');
   });
 });

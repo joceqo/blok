@@ -10,6 +10,7 @@ import { BlokDataHandler } from '../../../../src/components/modules/paste/handle
 import { FilesHandler } from '../../../../src/components/modules/paste/handlers/files-handler';
 import { HtmlHandler } from '../../../../src/components/modules/paste/handlers/html-handler';
 import { PatternHandler } from '../../../../src/components/modules/paste/handlers/pattern-handler';
+import { PlainGridHandler } from '../../../../src/components/modules/paste/handlers/plain-grid-handler';
 import { TableCellsHandler } from '../../../../src/components/modules/paste/handlers/table-cells-handler';
 import { TextHandler } from '../../../../src/components/modules/paste/handlers/text-handler';
 import { MarkdownHandler } from '../../../../src/markdown/markdown-handler';
@@ -98,11 +99,25 @@ type BlockManagerMock = {
   insert: ReturnType<typeof vi.fn<(payload: { tool: string; data: unknown; replace: boolean }) => unknown>>;
   setCurrentBlockByChildNode: ReturnType<typeof vi.fn<(node: HTMLElement) => unknown>>;
   setBlockParent: ReturnType<typeof vi.fn<(block: unknown, parentId: string | null) => void>>;
+  deleteSelectedBlocksAndInsertReplacement: ReturnType<typeof vi.fn<(forceReplacement?: boolean) => unknown>>;
+  replace: ReturnType<typeof vi.fn<(block: unknown, tool: string, data: Record<string, unknown>) => unknown>>;
+  getBlockById: ReturnType<typeof vi.fn<(id: string) => unknown>>;
+  blocks: Array<{ id: string; selected: boolean; parentId: string | null }>;
+};
+
+type BlockSelectionMock = {
+  anyBlockSelected: boolean;
+  clearSelection: ReturnType<typeof vi.fn<() => void>>;
+};
+
+type CrossBlockSelectionMock = {
+  textSelection: unknown;
 };
 
 type CaretMock = {
   positions: {
     END: string;
+    START: string;
   };
   setToBlock: ReturnType<typeof vi.fn<(block: unknown, position: string) => void>>;
   insertContentAtCaretPosition: ReturnType<typeof vi.fn<(content: string) => void>>;
@@ -130,7 +145,18 @@ type PasteMocks = {
   Tools: ToolsMock;
   Toolbar: ToolbarMock;
   DragManager: DragManagerMock;
+  BlockSelection: BlockSelectionMock;
+  CrossBlockSelection: CrossBlockSelectionMock;
   holder: HTMLElement;
+};
+
+/** Pasted Blok blocks of a tool the editor lacks become stubs, so register the ones a test pastes. */
+const registerBlockTools = (tools: ToolsMock, names: string[]): void => {
+  names.forEach(name => {
+    if (!tools.blockTools.has(name)) {
+      tools.blockTools.set(name, { name } as unknown as BlockToolAdapter);
+    }
+  });
 };
 
 const createPaste = (options?: CreatePasteOptions): { paste: Paste; mocks: PasteMocks } => {
@@ -155,11 +181,25 @@ const createPaste = (options?: CreatePasteOptions): { paste: Paste; mocks: Paste
     insert: vi.fn<(payload: { tool: string; data: unknown; replace: boolean }) => unknown>(),
     setCurrentBlockByChildNode: vi.fn<(node: HTMLElement) => unknown>(),
     setBlockParent: vi.fn<(block: unknown, parentId: string | null) => void>(),
+    deleteSelectedBlocksAndInsertReplacement: vi.fn<(forceReplacement?: boolean) => unknown>(),
+    replace: vi.fn<(block: unknown, tool: string, data: Record<string, unknown>) => unknown>(),
+    getBlockById: vi.fn<(id: string) => unknown>(),
+    blocks: [],
+  };
+
+  const blockSelection: BlockSelectionMock = {
+    anyBlockSelected: false,
+    clearSelection: vi.fn<() => void>(),
+  };
+
+  const crossBlockSelection: CrossBlockSelectionMock = {
+    textSelection: null,
   };
 
   const caret: CaretMock = {
     positions: {
       END: 'end',
+      START: 'start',
     },
     setToBlock: vi.fn<(block: unknown, position: string) => void>(),
     insertContentAtCaretPosition: vi.fn<(content: string) => void>(),
@@ -208,6 +248,8 @@ const createPaste = (options?: CreatePasteOptions): { paste: Paste; mocks: Paste
   const blokState = {
     BlockEvents: blockEvents,
     BlockManager: blockManager,
+    BlockSelection: blockSelection,
+    CrossBlockSelection: crossBlockSelection,
     Caret: caret,
     Tools: tools,
     Toolbar: toolbar,
@@ -232,6 +274,8 @@ const createPaste = (options?: CreatePasteOptions): { paste: Paste; mocks: Paste
       Tools: tools,
       Toolbar: toolbar,
       DragManager: dragManager,
+      BlockSelection: blockSelection,
+      CrossBlockSelection: crossBlockSelection,
       holder,
     },
   };
@@ -711,6 +755,57 @@ describe('Paste module', () => {
       expect(blockHolder.hasAttribute('data-drop-indicator')).toBe(false);
     });
 
+    it('leaves a URL-only drop to the browser, so it never becomes an embed', async () => {
+      const { paste, mocks } = createPaste();
+      const patternCheck = vi.spyOn(PatternHandler.prototype, 'canHandle');
+
+      await paste.prepare();
+      paste.toggleReadOnly(false);
+
+      mocks.BlockManager.currentBlock = { tool: { isDefault: true }, isEmpty: true, name: 'paragraph' };
+      mocks.BlockManager.setCurrentBlockByChildNode.mockReturnValue(mocks.BlockManager.currentBlock);
+
+      const url = 'http://plain.example/';
+      const dropDt = new MockDataTransfer(
+        { 'text/uri-list': url, 'text/plain': url },
+        { length: 0 } as FileList,
+        ['text/uri-list', 'text/plain']
+      );
+      const drop = new Event('drop', { bubbles: true, cancelable: true });
+
+      Object.defineProperty(drop, 'dataTransfer', { value: dropDt });
+      mocks.holder.dispatchEvent(drop);
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(drop.defaultPrevented).toBe(false);
+      expect(patternCheck).not.toHaveBeenCalled();
+      expect(mocks.BlockManager.paste).not.toHaveBeenCalled();
+      expect(mocks.BlockManager.insert).not.toHaveBeenCalled();
+    });
+
+    it('routes a URL in a file drop through the same pattern handler as a paste', async () => {
+      const { paste, mocks } = createPaste();
+      const patternCheck = vi.spyOn(PatternHandler.prototype, 'canHandle');
+
+      await paste.prepare();
+      paste.toggleReadOnly(false);
+
+      mocks.BlockManager.currentBlock = { tool: { isDefault: true }, isEmpty: true, name: 'paragraph' };
+      mocks.BlockManager.setCurrentBlockByChildNode.mockReturnValue(mocks.BlockManager.currentBlock);
+
+      const url = 'http://plain.example/';
+      const dropDt = new MockDataTransfer({ 'text/plain': url }, { length: 0 } as FileList, ['Files', 'text/plain']);
+      const drop = new Event('drop', { bubbles: true, cancelable: true });
+
+      Object.defineProperty(drop, 'dataTransfer', { value: dropDt });
+      mocks.holder.dispatchEvent(drop);
+
+      await vi.waitFor(() => {
+        expect(patternCheck).toHaveBeenCalledWith(url);
+      });
+    });
+
     it('ignores drop during internal block drag', async () => {
       const { paste, mocks } = createPaste();
 
@@ -815,6 +910,17 @@ describe('Paste module', () => {
       expect((paste as unknown as { isNativeBehaviour(element: EventTarget): boolean }).isNativeBehaviour(codeEl)).toBe(true);
     });
 
+    it('treats a highlight span inside a plaintext-only host as native behaviour', () => {
+      const { paste } = createPaste();
+      const codeEl = document.createElement('code');
+      const token = document.createElement('span');
+
+      codeEl.setAttribute('contenteditable', 'plaintext-only');
+      codeEl.appendChild(token);
+
+      expect((paste as unknown as { isNativeBehaviour(element: EventTarget): boolean }).isNativeBehaviour(token)).toBe(true);
+    });
+
     it('does not intercept paste when target is a plaintext-only contenteditable element', async () => {
       const { paste, mocks } = createPaste();
 
@@ -863,6 +969,55 @@ describe('Paste module', () => {
       // Paste module should NOT have processed this — it should let the browser handle natively
       expect(mocks.BlockManager.paste).not.toHaveBeenCalled();
       expect(mocks.Caret.insertContentAtCaretPosition).not.toHaveBeenCalled();
+    });
+
+    it('pastes a Blok block copy into a plaintext-only host as the blocks\' text, not the Markdown fence', async () => {
+      const { paste, mocks } = createPaste();
+
+      mocks.Tools.blockTools.set('paragraph', mocks.Tools.defaultTool);
+      await paste.prepare();
+
+      const codeEl = document.createElement('code');
+
+      codeEl.setAttribute('contenteditable', 'plaintext-only');
+      codeEl.textContent = 'outer\nend';
+      mocks.holder.appendChild(codeEl);
+      // A selection only holds a range inside the document.
+      document.body.appendChild(mocks.holder);
+
+      const range = document.createRange();
+
+      range.setStart(codeEl.firstChild ?? codeEl, 5);
+      range.collapse(true);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+
+      mocks.BlockManager.setCurrentBlockByChildNode.mockReturnValue({ name: 'code', tool: { isDefault: false }, isEmpty: false });
+      paste.toggleReadOnly(false);
+
+      const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+      const blok = JSON.stringify([
+        { id: 'a', tool: 'code', data: { code: '  inner()\n\tx', language: 'javascript' } },
+        { id: 'b', tool: 'paragraph', data: { text: 'and <b>bold</b>' } },
+      ]);
+      const clipboardData = new MockDataTransfer(
+        { 'application/x-blok': blok, 'text/plain': '```javascript\n  inner()\n\tx\n```\n\nand **bold**' },
+        {} as FileList,
+        ['application/x-blok', 'text/plain']
+      );
+
+      Object.defineProperty(event, 'clipboardData', { value: clipboardData });
+
+      try {
+        codeEl.dispatchEvent(event);
+        await new Promise(resolve => setTimeout(resolve, 10));
+      } finally {
+        mocks.holder.remove();
+      }
+
+      expect(codeEl.textContent).toBe('outer  inner()\n\tx\nand bold\nend');
+      expect(event.defaultPrevented).toBe(true);
+      expect(mocks.BlockManager.paste).not.toHaveBeenCalled();
     });
 
     it('skips processing when event.defaultPrevented is true', async () => {
@@ -940,6 +1095,146 @@ describe('Paste module', () => {
       // the drag's feet and handleDrop operates on stale indices.
       expect(mocks.BlockManager.setCurrentBlockByChildNode).not.toHaveBeenCalled();
       expect(mocks.BlockManager.paste).not.toHaveBeenCalled();
+    });
+
+    describe('over a block selection', () => {
+      const setUp = async (): Promise<{ mocks: PasteMocks; replacementInput: HTMLElement; processSpy: MockInstance<Paste['processDataTransfer']> }> => {
+        const { paste, mocks } = createPaste();
+
+        await paste.prepare();
+
+        const replacementInput = document.createElement('div');
+        const replacement = { name: 'paragraph', tool: { isDefault: true }, isEmpty: true, currentInput: replacementInput };
+        const processSpy = vi.spyOn(paste, 'processDataTransfer').mockResolvedValue(undefined);
+
+        mocks.BlockSelection.anyBlockSelected = true;
+        mocks.BlockManager.deleteSelectedBlocksAndInsertReplacement.mockImplementation(() => {
+          mocks.BlockSelection.anyBlockSelected = false;
+
+          return replacement;
+        });
+        paste.toggleReadOnly(false);
+
+        return { mocks, replacementInput, processSpy };
+      };
+
+      const pasteEvent = (): ClipboardEvent => {
+        const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
+
+        Object.defineProperty(event, 'clipboardData', {
+          value: new MockDataTransfer({ 'text/plain': 'pasted' }, {} as FileList, ['text/plain']),
+        });
+
+        return event;
+      };
+
+      afterEach(() => {
+        document.body.innerHTML = '';
+      });
+
+      it('replaces the selected blocks and pastes into the block left in their place', async () => {
+        const { mocks, replacementInput, processSpy } = await setUp();
+        const selectedInput = document.createElement('div');
+
+        mocks.holder.appendChild(selectedInput);
+        document.body.appendChild(mocks.holder);
+
+        const event = pasteEvent();
+
+        selectedInput.dispatchEvent(event);
+
+        expect(event.defaultPrevented).toBe(true);
+        await vi.waitFor(() => expect(processSpy).toHaveBeenCalledWith(expect.anything(), replacementInput, expect.any(Boolean)));
+        expect(mocks.BlockManager.deleteSelectedBlocksAndInsertReplacement).toHaveBeenCalledTimes(1);
+        expect(mocks.BlockManager.deleteSelectedBlocksAndInsertReplacement).toHaveBeenCalledWith(true);
+        expect(mocks.BlockSelection.clearSelection).toHaveBeenCalled();
+        expect(mocks.BlockManager.setCurrentBlockByChildNode).not.toHaveBeenCalled();
+      });
+
+      it('swaps the first selected block in place when the selection is nested', async () => {
+        const { mocks, replacementInput, processSpy } = await setUp();
+        const child = { id: 'c1', selected: true, parentId: 'toggle' };
+        const swapped = { name: 'paragraph', tool: { isDefault: true }, isEmpty: true, currentInput: replacementInput };
+
+        mocks.BlockManager.blocks = [{ id: 'toggle', selected: false, parentId: null }, child];
+        mocks.BlockManager.replace.mockReturnValue(swapped);
+        document.body.appendChild(mocks.holder);
+
+        document.body.dispatchEvent(pasteEvent());
+
+        await vi.waitFor(() => expect(processSpy).toHaveBeenCalledWith(expect.anything(), replacementInput, expect.any(Boolean)));
+        expect(mocks.BlockManager.replace).toHaveBeenCalledWith(child, 'paragraph', {});
+        expect(mocks.BlockManager.deleteSelectedBlocksAndInsertReplacement).toHaveBeenCalledWith();
+      });
+
+      it('handles a paste fired at body while blocks are selected', async () => {
+        const { mocks, replacementInput, processSpy } = await setUp();
+
+        document.body.appendChild(mocks.holder);
+
+        const event = pasteEvent();
+
+        document.body.dispatchEvent(event);
+
+        expect(event.defaultPrevented).toBe(true);
+        await vi.waitFor(() => expect(processSpy).toHaveBeenCalledWith(expect.anything(), replacementInput, expect.any(Boolean)));
+        expect(mocks.BlockManager.deleteSelectedBlocksAndInsertReplacement).toHaveBeenCalledTimes(1);
+      });
+
+      it('leaves a paste fired at body alone when no block is selected', async () => {
+        const { mocks, processSpy } = await setUp();
+
+        mocks.BlockSelection.anyBlockSelected = false;
+        document.body.appendChild(mocks.holder);
+
+        const event = pasteEvent();
+
+        document.body.dispatchEvent(event);
+        await new Promise(resolve => setTimeout(resolve, 10));
+
+        expect(event.defaultPrevented).toBe(false);
+        expect(processSpy).not.toHaveBeenCalled();
+        expect(mocks.BlockManager.deleteSelectedBlocksAndInsertReplacement).not.toHaveBeenCalled();
+      });
+
+      it('leaves a paste into a host input outside the editor alone', async () => {
+        const { mocks, processSpy } = await setUp();
+        const hostInput = document.createElement('input');
+
+        document.body.append(mocks.holder, hostInput);
+
+        const event = pasteEvent();
+
+        hostInput.dispatchEvent(event);
+        await new Promise(resolve => setTimeout(resolve, 10));
+
+        expect(event.defaultPrevented).toBe(false);
+        expect(processSpy).not.toHaveBeenCalled();
+        expect(mocks.BlockManager.deleteSelectedBlocksAndInsertReplacement).not.toHaveBeenCalled();
+      });
+
+      it('keeps a cross-block text selection paste on its own path', async () => {
+        const { mocks } = await setUp();
+        const input = document.createElement('div');
+
+        mocks.CrossBlockSelection.textSelection = {};
+        mocks.holder.appendChild(input);
+        document.body.appendChild(mocks.holder);
+
+        input.dispatchEvent(pasteEvent());
+        await new Promise(resolve => setTimeout(resolve, 10));
+
+        expect(mocks.BlockManager.deleteSelectedBlocksAndInsertReplacement).not.toHaveBeenCalled();
+      });
+
+      it('stops listening on document in read-only mode', async () => {
+        const { paste, mocks } = createPaste();
+
+        paste.toggleReadOnly(false);
+        paste.toggleReadOnly(true);
+
+        expect(mocks.listeners.off).toHaveBeenCalledWith(document, 'paste', expect.any(Function));
+      });
     });
 
     it('inserts raw plain text and bypasses markdown conversion when Shift is held (paste-without-formatting)', async () => {
@@ -1192,6 +1487,7 @@ describe('Paste module', () => {
       const { paste, mocks } = createPaste();
 
       await paste.prepare();
+      registerBlockTools(mocks.Tools, ['image', 'paragraph']);
 
       const sanitizeBlocksSpy = vi.spyOn(sanitizer, 'sanitizeBlocks').mockReturnValue([
         {
@@ -1260,7 +1556,7 @@ describe('Paste module', () => {
       expect(mocks.Caret.setToBlock).toHaveBeenNthCalledWith(2, { id: 'paragraph-id' }, mocks.Caret.positions.END);
     });
 
-    it('checks patterns when pasting Blok data containing pattern-matching text', async () => {
+    it('inserts Blok data even when its plain text matches a tool pattern', async () => {
       const { paste, mocks } = createPaste();
 
       const patternTool = {
@@ -1277,6 +1573,7 @@ describe('Paste module', () => {
       mocks.Tools.blockTools.set('embed', patternTool);
 
       await paste.prepare();
+      registerBlockTools(mocks.Tools, ['paragraph']);
 
       mocks.BlockManager.currentBlock = {
         tool: {
@@ -1288,7 +1585,14 @@ describe('Paste module', () => {
         currentInput: document.createElement('div'),
       };
 
-      mocks.BlockManager.paste.mockReturnValue({ id: 'embed-block' });
+      vi.spyOn(sanitizer, 'sanitizeBlocks').mockReturnValue([
+        {
+          tool: 'paragraph',
+          data: { text: 'https://example.com' },
+        },
+      ]);
+
+      mocks.BlockManager.insert.mockReturnValue({ id: 'paragraph-id' });
 
       // Simulate pasting Blok data that contains a URL
       const dataTransfer = new MockDataTransfer(
@@ -1309,20 +1613,13 @@ describe('Paste module', () => {
 
       await paste.processDataTransfer(dataTransfer);
 
-      // Should trigger pattern paste
-      expect(mocks.BlockManager.paste).toHaveBeenCalledTimes(1);
-
-      const [tool, event] = mocks.BlockManager.paste.mock.calls[0];
-
-      expect(tool).toBe('embed');
-      expect(event).toBeInstanceOf(CustomEvent);
-      expect(event.type).toBe('pattern');
-      if (event instanceof CustomEvent && event.detail) {
-        const detail = event.detail as { data: unknown };
-        expect(detail.data).toBe('https://example.com');
-      } else {
-        throw new Error('Event.detail is not accessible');
-      }
+      expect(mocks.BlockManager.paste).not.toHaveBeenCalled();
+      expect(mocks.BlockManager.insert).toHaveBeenCalledWith({
+        tool: 'paragraph',
+        data: { text: 'https://example.com' },
+        replace: true,
+        origin: 'paste',
+      });
     });
 
     it('uses Blok data directly when no pattern matches', async () => {
@@ -1342,6 +1639,7 @@ describe('Paste module', () => {
       mocks.Tools.blockTools.set('embed', patternTool);
 
       await paste.prepare();
+      registerBlockTools(mocks.Tools, ['paragraph']);
 
       mocks.BlockManager.currentBlock = {
         tool: {
@@ -1403,6 +1701,7 @@ describe('Paste module', () => {
       mocks.Tools.blockTools.set('embed', patternTool);
 
       await paste.prepare();
+      registerBlockTools(mocks.Tools, ['paragraph']);
 
       mocks.BlockManager.currentBlock = {
         tool: {
@@ -2085,6 +2384,10 @@ describe('Paste module', () => {
       const htmlHandler = handlers.find((h): h is HtmlHandler => h instanceof HtmlHandler);
       expect(htmlHandler).toBeDefined();
 
+      // PlainGridHandler runs before Markdown, so a `#` in a cell stays text
+      const plainGridHandler = handlers.find((h): h is PlainGridHandler => h instanceof PlainGridHandler);
+      expect(plainGridHandler).toBeDefined();
+
       // TextHandler should have lowest priority (10)
       const textHandler = handlers.find((h): h is TextHandler => h instanceof TextHandler);
       expect(textHandler).toBeDefined();
@@ -2095,8 +2398,9 @@ describe('Paste module', () => {
       expect(handlers[2]).toBe(filesHandler);
       expect(handlers[3]).toBe(patternHandler);
       expect(handlers[4]).toBe(htmlHandler);
-      expect(handlers[5]).toBe(markdownHandler);
-      expect(handlers[6]).toBe(textHandler);
+      expect(handlers[5]).toBe(plainGridHandler);
+      expect(handlers[6]).toBe(markdownHandler);
+      expect(handlers[7]).toBe(textHandler);
     });
 
     it('prefers HtmlHandler over MarkdownHandler when paste carries both rich HTML and markdown-like text (Notion paste)', async () => {
@@ -2149,6 +2453,55 @@ describe('Paste module', () => {
       // HtmlHandler (priority 40) must win over MarkdownHandler (priority 30).
       expect(mocks.BlockManager.paste).toHaveBeenCalled();
       expect(insertMany).not.toHaveBeenCalled();
+    });
+
+    describe('html that cleans down to its plain text', () => {
+      const pasteWith = async (data: Record<string, string>): Promise<{ markdown: ReturnType<typeof vi.fn>; text: ReturnType<typeof vi.fn> }> => {
+        const { paste, mocks } = createPaste();
+
+        mocks.Tools.blockTools.set('paragraph', mocks.Tools.defaultTool);
+        await paste.prepare();
+
+        const markdown = vi.spyOn(MarkdownHandler.prototype, 'handle').mockResolvedValue(true);
+        const text = vi.spyOn(TextHandler.prototype, 'handle').mockResolvedValue(true);
+
+        await paste.processDataTransfer(new MockDataTransfer(data, {} as FileList, Object.keys(data)));
+
+        return { markdown, text };
+      };
+
+      it('pastes markdown-looking text literally when the html flavour is the same text', async () => {
+        const literal = '# not a heading **not bold** - not list';
+        const { markdown, text } = await pasteWith({ 'text/html': literal, 'text/plain': literal });
+
+        expect(markdown).not.toHaveBeenCalled();
+        expect(text).toHaveBeenCalledWith(literal, expect.anything());
+      });
+
+      it('pastes markdown-looking text literally when the html is one span the sanitizer unwraps', async () => {
+        const { markdown, text } = await pasteWith({
+          'text/html': '<meta charset="utf-8"><span style="color: rgb(0, 0, 0);"># not a heading **not bold**</span>',
+          'text/plain': '# not a heading **not bold**',
+        });
+
+        expect(markdown).not.toHaveBeenCalled();
+        expect(text).toHaveBeenCalledWith('# not a heading **not bold**', expect.anything());
+      });
+
+      it('keeps the non-breaking spaces the html carries and text/plain lost', async () => {
+        const { text } = await pasteWith({
+          'text/html': '<meta charset="utf-8"><span style="color: rgb(0, 0, 0);">a&nbsp;b&nbsp;&nbsp;c d</span>',
+          'text/plain': 'a b  c d',
+        });
+
+        expect(text).toHaveBeenCalledWith('a b  c d', expect.anything());
+      });
+
+      it('still converts markdown from a plain-only clipboard', async () => {
+        const { markdown } = await pasteWith({ 'text/plain': '# Heading' });
+
+        expect(markdown).toHaveBeenCalledWith('# Heading', expect.anything());
+      });
     });
 
     it('BlokDataHandler returns priority 100 for valid JSON', () => {
@@ -2508,8 +2861,8 @@ describe('Paste module', () => {
       // STRUCTURAL_TAG_ATTRIBUTES.
       expect(result).toEqual({
         'ul': {},
-        'li': { style: true, 'aria-level': true, 'data-list-style': true },
-        'ol': {},
+        'li': { style: true, 'aria-level': true, 'data-list-style': true, 'data-list-start': true },
+        'ol': { start: true },
       });
     });
 
@@ -2541,7 +2894,7 @@ describe('Paste module', () => {
         'tr': {},
         'td': {},
         'ul': {},
-        'li': { style: true, 'aria-level': true, 'data-list-style': true },
+        'li': { style: true, 'aria-level': true, 'data-list-style': true, 'data-list-start': true },
       });
     });
 
@@ -2834,6 +3187,7 @@ describe('Paste module', () => {
       it('handles Blok data with missing required fields gracefully', async () => {
         const { paste, mocks } = createPaste();
         await paste.prepare();
+        registerBlockTools(mocks.Tools, ['paragraph']);
 
         const malformedBlocks = [
           { id: '1', tool: 'paragraph', data: {} },
@@ -3157,6 +3511,7 @@ describe('Paste module', () => {
       const { paste, mocks } = createPaste();
 
       await paste.prepare();
+      registerBlockTools(mocks.Tools, ['paragraph']);
       mocks.BlockManager.insert.mockReturnValue({ id: 'new-a' });
 
       const dataTransfer = new MockDataTransfer({
@@ -3175,10 +3530,34 @@ describe('Paste module', () => {
       );
     });
 
+    it('keeps the tool pattern route for a Notion payload whose plain text matches it', async () => {
+      const { paste, mocks } = createPaste();
+
+      mocks.Tools.blockTools.set('embed', {
+        name: 'embed',
+        pasteConfig: { patterns: { url: /^https:\/\/example\.com$/ } },
+        baseSanitizeConfig: {},
+        hasOnPasteHandler: true,
+      } as unknown as BlockToolAdapter);
+
+      await paste.prepare();
+      mocks.BlockManager.paste.mockReturnValue({ id: 'embed-block' });
+
+      await paste.processDataTransfer(new MockDataTransfer({
+        'text/_notion-blocks-v3-production': notionV3,
+        'text/plain': 'https://example.com',
+      }));
+
+      expect(mocks.BlockManager.paste).toHaveBeenCalledTimes(1);
+      expect(mocks.BlockManager.paste.mock.calls[0][0]).toBe('embed');
+      expect(mocks.BlockManager.insert).not.toHaveBeenCalled();
+    });
+
     it('prefers native application/x-blok data over the Notion flavor', async () => {
       const { paste, mocks } = createPaste();
 
       await paste.prepare();
+      registerBlockTools(mocks.Tools, ['paragraph']);
       mocks.BlockManager.insert.mockReturnValue({ id: 'new-x' });
 
       const dataTransfer = new MockDataTransfer({

@@ -1,18 +1,21 @@
 package outbound
 
 import (
+	"compress/gzip"
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
 )
 
 // Hand ports of GuardedOutboundFetcherTests that need a resolver or a dial
@@ -30,7 +33,7 @@ type fixturePolicy struct {
 
 func (p *fixturePolicy) Validate(raw string, base *dotnet.URI) (Target, error) {
 	url, ok := resolve(raw, base)
-	if !ok || url.Host != p.host || url.Port != p.port {
+	if !ok || url.Host != p.host || url.Port != p.port || url.UserInfo != "" || !url.IsHTTP() {
 		return Target{}, fail(Blocked)
 	}
 	return Target{URL: url, Host: url.IdnHost, Port: url.Port}, nil
@@ -145,6 +148,21 @@ func TestRejectsSiteLocalDNSAnswersBeforeOpeningASocket(t *testing.T) {
 		}
 		if len(policy.decisions) != len(want) || policy.decisions[0] != want[0] || policy.decisions[len(want)-1] != want[len(want)-1] {
 			t.Fatalf("mixed=%v: decisions %v, want %v", mixed, policy.decisions, want)
+		}
+	}
+}
+
+func TestNeverResolvesAURLWithARawControlCharacter(t *testing.T) {
+	for _, raw := range []string{"\x00http://example.com/", "http://example.com/\x00", "\x85http://example.com/"} {
+		resolver := &countingResolver{answers: [][]netip.Addr{addrs("93.184.216.34")}}
+		f := newTestFetcher(DefaultPolicy{}, resolver)
+		f.dialHook = func(string, string) { t.Errorf("%q: dialed", raw) }
+
+		if _, err := f.Get(context.Background(), raw, testLimits); !IsFailure(err, Blocked) {
+			t.Fatalf("%q: got %v, want Blocked", raw, err)
+		}
+		if resolver.calls.Load() != 0 {
+			t.Fatalf("%q: resolved %d times", raw, resolver.calls.Load())
 		}
 	}
 }
@@ -314,6 +332,101 @@ func TestHoldsFourResponsesUntilOneIsReleased(t *testing.T) {
 	}
 }
 
+// Four held uploads fill only the upload pool: a short check still runs at
+// once, and a fifth upload waits.
+func TestHeldUploadsNeverTakeACheckSlot(t *testing.T) {
+	o := startOrigin(t, "tcp4", "127.0.0.1:0")
+	policy := &fixturePolicy{host: "bounded.example", port: o.port, allowed: addrs("127.0.0.1")}
+	f := newTestFetcher(policy, &countingResolver{answers: [][]netip.Addr{addrs("127.0.0.1")}})
+	url := "http://bounded.example:" + strconv.Itoa(o.port) + "/"
+	upload := testLimits
+	upload.Upload = true
+	var held []*Response
+	for i := 0; i < 4; i++ {
+		response, err := f.Get(context.Background(), url, upload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, response)
+	}
+	check := testLimits
+	check.Timeout = 300 * time.Millisecond
+	response, err := f.Get(context.Background(), url, check)
+	if err != nil {
+		t.Fatalf("a check waited behind four uploads: %v", err)
+	}
+	response.Release()
+	upload.Timeout = 300 * time.Millisecond
+	if response, err := f.Get(context.Background(), url, upload); err == nil {
+		response.Release()
+		t.Fatal("a fifth upload ran while four were held")
+	}
+	for _, response := range held {
+		response.Release()
+	}
+}
+
+// One caller holds at most two slots of a pool. Its third fetch waits for
+// one of its own, inside its own deadline, and never holds a pool slot while
+// it waits: other callers still get the two free slots.
+func TestACallersThirdFetchWaitsForItsOwnSlot(t *testing.T) {
+	o := startOrigin(t, "tcp4", "127.0.0.1:0")
+	policy := &fixturePolicy{host: "bounded.example", port: o.port, allowed: addrs("127.0.0.1")}
+	f := newTestFetcher(policy, &countingResolver{answers: [][]netip.Addr{addrs("127.0.0.1")}})
+	url := "http://bounded.example:" + strconv.Itoa(o.port) + "/"
+	caller := testLimits
+	caller.Caller = "addr:192.0.2.1"
+	var held []*Response
+	for i := 0; i < 2; i++ {
+		response, err := f.Get(context.Background(), url, caller)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, response)
+	}
+	short := caller
+	short.Timeout = 300 * time.Millisecond
+	if response, err := f.Get(context.Background(), url, short); !IsFailure(err, TimedOut) {
+		if err == nil {
+			response.Release()
+		}
+		t.Fatalf("a third fetch from one caller got %v, want TimedOut", err)
+	}
+	third := make(chan error, 1)
+	go func() {
+		response, err := f.Get(context.Background(), url, caller)
+		if err == nil {
+			response.Release()
+		}
+		third <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	for _, other := range []string{"addr:192.0.2.2", "addr:192.0.2.3"} {
+		limits := short
+		limits.Caller = other
+		response, err := f.Get(context.Background(), url, limits)
+		if err != nil {
+			t.Fatalf("%s waited behind one caller's queue: %v", other, err)
+		}
+		defer response.Release()
+	}
+	select {
+	case err := <-third:
+		t.Fatalf("the third fetch ran while its caller held two: %v", err)
+	default:
+	}
+	held[0].Release()
+	select {
+	case err := <-third:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the third fetch never ran after its caller freed a slot")
+	}
+	held[1].Release()
+}
+
 // GuardedOutboundFetcherTests.RejectsTheRedirectAfterTheConfiguredCap.
 func TestRejectsTheRedirectAfterTheConfiguredCap(t *testing.T) {
 	var requests atomic.Int32
@@ -420,6 +533,139 @@ func TestHostHeaderBracketsEveryIPv6Literal(t *testing.T) {
 		target := Target{URL: url, Host: url.IdnHost, Port: url.Port, Literal: literal}
 		if got := hostHeader(target); got != want {
 			t.Errorf("%s: got %q, want %q", raw, got, want)
+		}
+	}
+}
+
+// .NET's SocketsHttpHandler defaults MaxResponseHeadersLength to 64 KiB.
+func TestRefusesAResponseHeadOverSixtyFourKiB(t *testing.T) {
+	for _, tc := range []struct {
+		kib     int
+		allowed bool
+	}{{48, true}, {80, false}} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("X-Padding", strings.Repeat("a", tc.kib<<10))
+			_, _ = w.Write([]byte("ok"))
+		}))
+		port := server.Listener.Addr().(*net.TCPAddr).Port
+		f := newTestFetcher(&fixturePolicy{host: "head.example", port: port, allowed: addrs("127.0.0.1")},
+			&countingResolver{answers: [][]netip.Addr{addrs("127.0.0.1")}})
+		response, err := f.Get(context.Background(), "http://head.example:"+strconv.Itoa(port)+"/", testLimits)
+		server.Close()
+		if tc.allowed {
+			if err != nil {
+				t.Fatalf("%d KiB: %v", tc.kib, err)
+			}
+			response.Release()
+			continue
+		}
+		wantBlocked(t, err)
+	}
+}
+
+func TestAsksTheHopBudgetBeforeEveryRedirect(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "/"+strconv.Itoa(int(requests.Add(1))))
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+	f := newTestFetcher(&fixturePolicy{host: "hop.example", port: port, allowed: addrs("127.0.0.1")},
+		&countingResolver{answers: [][]netip.Addr{addrs("127.0.0.1")}})
+	asked := 0
+	limits := testLimits
+	limits.Hop = func() bool { asked++; return asked < 3 }
+
+	_, err := f.Get(context.Background(), "http://hop.example:"+strconv.Itoa(port)+"/0", limits)
+	if !IsFailure(err, RateLimited) {
+		t.Fatalf("got %v, want RateLimited", err)
+	}
+	if requests.Load() != 3 || asked != 3 {
+		t.Fatalf("%d requests and %d asks, want 3 and 3", requests.Load(), asked)
+	}
+}
+
+func TestTruncatesTheBodyAtTheCapWhenAskedAndKeepsTheFinalHeaders(t *testing.T) {
+	body := strings.Repeat("0123456789", 100)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+			w.Header().Set("Location", "/final")
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		w.Header().Add("Content-Security-Policy", "default-src 'self'")
+		w.Header().Add("Content-Security-Policy", "frame-ancestors https://a.example, img-src *")
+		w.Header().Set("X-Frame-Options", "DENY")
+		if r.URL.Path == "/final/gzip" {
+			w.Header().Set("Content-Encoding", "gzip")
+			zw := gzip.NewWriter(w)
+			_, _ = zw.Write([]byte(body))
+			_ = zw.Close()
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+	f := newTestFetcher(&fixturePolicy{host: "cut.example", port: port, allowed: addrs("127.0.0.1")},
+		&countingResolver{answers: [][]netip.Addr{addrs("127.0.0.1")}})
+	limits := Limits{Timeout: 5 * time.Second, MaxBytes: 25, MaxRedirects: 5, Truncate: true}
+	base := "http://cut.example:" + strconv.Itoa(port)
+
+	response, err := f.Get(context.Background(), base+"/start", limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Release()
+	if string(response.Body) != body[:25] || response.Redirects != 1 || response.FinalURL != base+"/final" {
+		t.Fatalf("body %q redirects %d final %q", response.Body, response.Redirects, response.FinalURL)
+	}
+	if got := response.Header.Values("Content-Security-Policy"); len(got) != 2 || got[1] != "frame-ancestors https://a.example, img-src *" {
+		t.Fatalf("csp %q", got)
+	}
+	if got := response.Header.Values("X-Frame-Options"); len(got) != 1 || got[0] != "DENY" {
+		t.Fatalf("xfo %q", got)
+	}
+
+	gzipLimits := limits
+	gzipLimits.MaxBytes = 100
+	response, err = f.Get(context.Background(), base+"/final/gzip", gzipLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Release()
+	if string(response.Body) != body[:100] || response.Redirects != 0 {
+		t.Fatalf("gzip body %q redirects %d", response.Body, response.Redirects)
+	}
+
+	limits.Truncate = false
+	if _, err = f.Get(context.Background(), base+"/final", limits); !IsFailure(err, TooLarge) {
+		t.Fatalf("without Truncate got %v, want TooLarge", err)
+	}
+}
+
+// C# ValidateLimits throws ArgumentOutOfRangeException, not a
+// GuardedFetchException, before it resolves or connects.
+func TestRefusesLimitsOutsideTheSupportedRangeBeforeFetching(t *testing.T) {
+	for _, c := range []struct {
+		limits  Limits
+		message string
+	}{
+		{Limits{Timeout: 2 * time.Second, MaxBytes: -1}, "The response byte limit is outside the supported range."},
+		{Limits{Timeout: 2 * time.Second, MaxBytes: 0x7FFFFFC8}, "The response byte limit is outside the supported range."},
+		{Limits{Timeout: 2 * time.Second, MaxBytes: 4, MaxRedirects: -1}, "The redirect limit cannot be negative."},
+	} {
+		resolver := &countingResolver{answers: [][]netip.Addr{addrs("127.0.0.1")}}
+		f := newTestFetcher(anyAddress{}, resolver)
+		_, err := f.Get(context.Background(), "http://limits.example/", c.limits)
+		var fetchErr *Error
+		if err == nil || errors.As(err, &fetchErr) || err.Error() != c.message {
+			t.Errorf("%+v: %v", c.limits, err)
+		}
+		if resolver.calls.Load() != 0 {
+			t.Errorf("%+v: resolved before refusing", c.limits)
 		}
 	}
 }

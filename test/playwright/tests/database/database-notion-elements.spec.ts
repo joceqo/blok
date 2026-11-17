@@ -99,11 +99,12 @@ const LIGHT: Look = {
   closeBg: 'rgba(42, 28, 0, 0.07)',
   closeHover: 'rgba(42, 28, 0, 0.106)',
   closeGlyph: 'rgb(142, 139, 134)',
-  // research/27 §6. A light row press was not read: it keeps the hover fill.
+  // research/27 §6; research/30 B5: a light row press doubles the hover alpha.
   // Chrome reads Notion's 0.102 and 0.051 alphas back as 0.1 and 0.05 (8-bit alpha).
+  // rowPressed must differ from rowHover: the row fades over 20ms, so an equal pin passes only on an early read.
   closePressed: 'rgba(33, 27, 23, 0.1)',
   rowHover: 'rgba(33, 27, 23, 0.05)',
-  rowPressed: 'rgba(33, 27, 23, 0.05)',
+  rowPressed: 'rgba(33, 27, 23, 0.1)',
   todayHover: 'rgba(33, 27, 23, 0.05)',
   // The database tertiary AA step: Notion's rgb(142, 139, 134) is 3.39:1 on white.
   todayInk: 'rgb(114, 111, 106)',
@@ -173,7 +174,7 @@ for (const path of paths) {
     });
 
     test('sort panel: 32px bordered property and direction buttons, hover fill, a 24px remove × (§3a)', async ({ page }) => {
-      await page.getByTestId('database-toolbar-sort').click();
+      await page.getByTestId('database-sort-pill').click();
       const property = page.getByTestId('database-sort-property-s1');
       const direction = page.getByTestId('database-sort-direction-s1');
       const remove = page.getByTestId('database-sort-remove-s1');
@@ -196,7 +197,8 @@ for (const path of paths) {
       expect(await size(remove)).toEqual({ width: 24, height: 24 });
     });
 
-    test('selection bar: a 1px divider shadow on every segment but the last (§3b)', async ({ page }) => {
+    // notion-motion.md Round 27 §3 "Row gutter and selection": the segments abut (gap 0).
+    test('selection bar: a 1px divider shadow on every segment but the last, segments abutting (§3b)', async ({ page }) => {
       const row = page.locator('[data-blok-database-table-row][data-row-id="r1"]');
 
       await row.hover();
@@ -221,7 +223,7 @@ for (const path of paths) {
       expect(last?.shadow).toBe('none');
       const gap = segments[1].gap;
 
-      expect(Math.round(gap)).toBe(1);
+      expect(Math.round(gap)).toBe(0);
     });
 
     test('property menu: a 28px bordered icon button with no fill and the measured hover (§3c)', async ({ page }) => {

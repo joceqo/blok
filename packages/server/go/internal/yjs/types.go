@@ -1,8 +1,8 @@
 package yjs
 
 import (
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
-	"github.com/JackUait/blok/packages/server/go/internal/lib0"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/lib0"
 )
 
 // AbstractType is a shared type: *Map, *Array, *Text, *XmlText,
@@ -279,6 +279,16 @@ func (m *Map) Keys() []jsjson.Str {
 		}
 	}
 	return keys
+}
+
+// HeadID is the id of the item holding key's value: C# YMap.Map[key].Id.
+// False for an absent or deleted key.
+func (m *Map) HeadID(key jsjson.Str) (ID, bool) {
+	head := m.mapGet(key)
+	if head == nil || head.deleted {
+		return ID{}, false
+	}
+	return head.id, true
 }
 
 // Len counts live keys.

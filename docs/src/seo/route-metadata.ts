@@ -317,6 +317,12 @@ const MODULE_COPY: Record<string, Copy> = {
       'Turn on the built-in Ask AI assistant with your own model, or run your own loop through editor.agent. The agent edits the open document visibly, stoppably and with undo.',
     h1: 'Agent API: an assistant that edits the open document',
   },
+  'embed-safety': {
+    title: 'Blok Embed Safety — Embedding Any URL Safely',
+    description:
+      'What Blok enforces when it frames a link, and the CSP, COOP and Permissions-Policy headers your app must send.',
+    h1: 'Embedding any URL safely',
+  },
   'dev-override-seam': {
     title: 'Blok Dev Override Seam — Threat Model & Opt-Out',
     description:
@@ -566,6 +572,12 @@ const TOOL_COPY: Record<string, Copy> = {
     description:
       'Write inline math with LaTeX syntax, and how equations are stored and sanitized inside a block.',
     h1: 'Equation tool: inline LaTeX math',
+  },
+  annotation: {
+    title: 'Note Inline Tool — A Remark on a Phrase',
+    description:
+      'Attach a note and an optional caption to a phrase, show them in a card on hover, and see the mark Blok stores in block text.',
+    h1: 'Note: a remark on a phrase',
   },
   clearFormat: {
     title: 'Clear Format Tool — Strip Inline Styling',

@@ -203,20 +203,20 @@ public sealed class BlokDocumentConverterTests
 
     var conversion = await converter.ToMarkdownAsync("""
         {"blocks":[
-          {"id":"c1","type":"callout","data":{"emoji":"💡"}},
+          {"id":"c1","type":"callout","data":{"emoji":"🔥"}},
           {"id":"p1","type":"paragraph","data":{"text":"Mind the gap"},"parent":"c1"},
           {"id":"s1","type":"spacer","data":{}}
         ]}
         """);
 
-    Assert.Equal("> 💡 Mind the gap", conversion.Markdown);
+    Assert.Equal("> [!CALLOUT]\n> \n> Mind the gap", conversion.Markdown);
     Assert.Collection(
         conversion.Warnings,
         warning =>
         {
           Assert.Equal("callout", warning.Construct);
           Assert.Equal("degraded", warning.Action);
-          Assert.Contains("blockquote", warning.Detail);
+          Assert.Contains("emoji", warning.Detail);
         },
         warning =>
         {
@@ -377,6 +377,50 @@ public sealed class BlokDocumentConverterTests
   }
 
   /// <summary>
+  /// JSON.parse keeps the last value of a repeated key, and so does the Go
+  /// server. Jint, once the bundle is loaded, kept the first.
+  /// </summary>
+  [Fact]
+  public async Task ReadsTheLastValueOfARepeatedKey()
+  {
+    var converter = BlokDocuments.Create(poolSize: 1);
+    const string repeated = """{"blocks":[{"id":"p","type":"paragraph","type":"header","data":{"text":"a","text":"b","level":2}}]}""";
+    const string repeatedRoot = """{"blocks":1,"blocks":[{"id":"p","type":"paragraph","data":{"text":"x"}}]}""";
+
+    Assert.Equal("<h2>b</h2>", await converter.ToHtmlAsync(repeated));
+    Assert.Equal("## b", (await converter.ToMarkdownAsync(repeated)).Markdown);
+    Assert.Equal("b", await converter.ToPlainTextAsync(repeated));
+    Assert.Equal("<p>x</p>", await converter.ToHtmlAsync(repeatedRoot));
+    Assert.Equal(
+        "y",
+        await converter.ToPlainTextAsync("""{"blocks":[],"blocks":[{"id":"p","type":"paragraph","data":{"text":"x","text":"y"}}]}"""));
+  }
+
+  /// <summary>
+  /// Go's JSON.parse reads a lone-surrogate escape as U+FFFD, so the bare
+  /// operations convert such a document. The envelope operations still refuse it.
+  /// </summary>
+  [Fact]
+  public async Task ReadsALoneSurrogateInABareDocumentAsAReplacementCharacter()
+  {
+    var converter = BlokDocuments.Create(poolSize: 1);
+    const string lone = """{"blocks":[{"id":"p","type":"paragraph","data":{"text":"a\ud800b"}}]}""";
+
+    Assert.Equal("a�b", (await converter.ToMarkdownAsync(lone)).Markdown);
+    Assert.Equal("<p>a�b</p>", await converter.ToHtmlAsync(lone));
+
+    var validation = await converter.ValidateAsync("""{"blocks":[{"type":"\udc00","data":{}}]}""");
+
+    Assert.Null(validation.Failure);
+    Assert.Equal(["�"], validation.UnrecognizedBlockTypes);
+
+    var envelope = await Assert.ThrowsAsync<BlokDocumentConversionException>(
+        async () => await converter.ToPlainTextAsync(lone));
+
+    Assert.Equal(BlokConversionFailure.InvalidDocument, envelope.Reason);
+  }
+
+  /// <summary>
   /// The editor builds the outline live and saves only its colours, so the
   /// server has to rebuild it from the headings — and give each heading the id
   /// its link points at.
@@ -451,6 +495,36 @@ public sealed class BlokDocumentConverterTests
   }
 
   /// <summary>
+  /// Jint's JSON.parse refuses a 65th nested array or object, and the bare
+  /// readers hand the document to it as is. The plain-text reader wraps the
+  /// document in a request, one level deeper. Go and Rust wrap JSON.parse to
+  /// match (documents/runtime-scripts.json).
+  /// </summary>
+  [Fact]
+  public async Task RefusesADocumentNestedPastTheParseDepth()
+  {
+    var converter = BlokDocuments.Create(poolSize: 1);
+    static string Nested(int depth) =>
+        "{\"blocks\":[],\"deep\":" + new string('[', depth - 1) + new string(']', depth - 1) + "}";
+
+    await converter.ToHtmlAsync(Nested(64));
+    await converter.ToMarkdownAsync(Nested(64));
+    var wrapped = await Assert.ThrowsAsync<BlokDocumentConversionException>(
+        async () => await converter.ToPlainTextAsync(Nested(64)));
+    Assert.Equal(BlokConversionFailure.InvalidDocument, wrapped.Reason);
+
+    foreach (var convert in new Func<Task>[]
+    {
+      () => converter.ToHtmlAsync(Nested(65)).AsTask(),
+      () => converter.ToMarkdownAsync(Nested(65)).AsTask(),
+    })
+    {
+      var failure = await Assert.ThrowsAsync<BlokDocumentConversionException>(convert);
+      Assert.Equal(BlokConversionFailure.InvalidDocument, failure.Reason);
+    }
+  }
+
+  /// <summary>
   /// The parity the readers and the translation path did not have: the same
   /// unreadable input arrived as two unrelated types — a JavaScript exception
   /// from the bundle's own parse for one, a <c>JsonException</c> from this
@@ -503,7 +577,7 @@ public sealed class BlokDocumentConverterTests
 
     var conversion = await converter.ToMarkdownAsync("""
         {"blocks":[
-          {"id":"c1","type":"callout","data":{"emoji":"💡"}},
+          {"id":"c1","type":"callout","data":{"emoji":"🔥"}},
           {"id":"p1","type":"paragraph","data":{"text":"Mind the gap"},"parent":"c1"},
           {"id":"s1","type":"spacer","data":{}}
         ]}

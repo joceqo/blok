@@ -33,6 +33,9 @@ type Execution struct {
 	DocumentJSON *string
 	// Revision is the stored content hash, or "" when the result has none.
 	Revision string
+	// askJSON is the question a person must answer before the batch runs;
+	// nothing was applied. Read through internal/agentbridge.
+	askJSON *string
 }
 
 // Options are the host's agent options. The zero value is C#'s
@@ -51,6 +54,10 @@ type Options struct {
 	// editors keep comments in their own system. C#'s BuiltInComments is
 	// true by default; this is its inverse, so the zero value matches.
 	DisableBuiltInComments bool
+	// mcpJSON and approvalJSON are the bundle's mcp and approval inputs,
+	// set only by blokmcp through internal/agentbridge.
+	mcpJSON      *string
+	approvalJSON *string
 }
 
 // PageTarget finds the document behind a page id, for an agent that renames
@@ -68,6 +75,26 @@ type PageCreator interface {
 	// Create returns the new page id, or "" when this actor may not create
 	// a page; the batch then fails with FORBIDDEN.
 	Create(ctx context.Context, actor Actor) (string, error)
+}
+
+// PageCreateRequest is what a PageCreatorFor learns about a new sub-page.
+type PageCreateRequest struct {
+	// Actor is the agent that inserts the page block.
+	Actor Actor
+	// ParentDocumentID is the document the page block goes into: the room's
+	// document id, or "" when the executor does not know it (Execute).
+	ParentDocumentID string
+	// Principal is the person the MCP server serves; "" outside MCP.
+	Principal string
+	// SuggestedPageID is an id Blok minted. Use it or answer your own.
+	SuggestedPageID string
+}
+
+// PageCreatorFor is an optional part of a PageCreator. When the page
+// target implements it, CreateFor is called instead of Create, with the
+// parent document. As Create: "" means this actor may not create a page.
+type PageCreatorFor interface {
+	CreateFor(ctx context.Context, request PageCreateRequest) (string, error)
 }
 
 // PageLocation is a StoredPage or a RoomPage.

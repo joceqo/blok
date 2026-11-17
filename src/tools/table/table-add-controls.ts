@@ -8,7 +8,7 @@ import { getElementDirection } from '../../components/utils/direction';
 import type { TextDirection } from '../../components/utils/direction';
 
 import { inlineAxis, measureLastColumnWidth, measureLastRowHeight, scrollToInlineEnd } from './table-direction';
-import { AUTO_SCROLL_GAIN_PER_SECOND, AUTO_SCROLL_VIEWPORT_BAND, revealBottom, verticalPort } from './table-scroll-port';
+import { AUTO_SCROLL_GAIN_PER_SECOND, AUTO_SCROLL_VIEWPORT_BAND, COLUMN_HOLD_FIRST_STEP_MS, COLUMN_HOLD_STEP_MS, revealBottom, verticalPort } from './table-scroll-port';
 
 const ADD_ROW_ATTR = 'data-blok-table-add-row';
 const ADD_COL_ATTR = 'data-blok-table-add-col';
@@ -62,8 +62,10 @@ interface DragState {
   autoScrollFrame: number | null;
   /** Timestamp of the previous auto-scroll frame; 0 before the first one. */
   autoScrollAt: number;
-  /** Growth earned from holding the pointer at the edge, not yet spent on a whole row/column. */
+  /** Growth earned from holding the pointer at the edge, not yet spent on a whole row. */
   pending: number;
+  /** When a held column drag takes its next step; 0 while not held. */
+  nextColumnAt: number;
 }
 
 /**
@@ -212,9 +214,9 @@ export class TableAddControls {
    * Pixel mode (colWidths set): clamp to the scroll container's visible
    * width so the button never overflows the table boundary.
    *
-   * Percent mode (no colWidths): clear `width` and use `left`/`right`
-   * constraints so the browser auto-sizes the button to the wrapper's
-   * content area, avoiding the wrapper's right padding.
+   * Percent mode (no colWidths): once laid out, size it to the grid's
+   * visible end, since full screen moves the end room from the wrapper into
+   * the scroller. Before layout, use `left`/`right` from the wrapper padding.
    */
   public syncRowButtonWidth(): void {
     const gridWidth = this.grid.style.width;
@@ -247,8 +249,20 @@ export class TableAddControls {
       const wrapperStyle = getComputedStyle(this.wrapper);
       const paddingEnd = parseFloat(isRtl ? wrapperStyle.paddingLeft : wrapperStyle.paddingRight) || 0;
 
-      setInlineInsets(this.addRowBtn, isRtl, '0px', `${paddingEnd}px`);
-      setInlineInsets(this.addColBtn, isRtl, '', `${paddingEnd - 36}px`);
+      const scrollContainer = this.grid.parentElement;
+      const isInsideScrollContainer = scrollContainer !== null && scrollContainer !== this.wrapper;
+
+      // From the grid's end, not the wrapper padding: full screen moves the bar's room into the scroller.
+      if (isInsideScrollContainer && this.wrapper.getBoundingClientRect().width > 0) {
+        const visibleWidth = this.computeVisibleWidth(this.grid.offsetWidth, true, scrollContainer, direction);
+
+        this.addRowBtn.style.width = `${visibleWidth}px`;
+        setInlineInsets(this.addRowBtn, isRtl, '0px', '');
+        setInlineInsets(this.addColBtn, isRtl, `${visibleWidth + 4}px`, '');
+      } else {
+        setInlineInsets(this.addRowBtn, isRtl, '0px', `${paddingEnd}px`);
+        setInlineInsets(this.addColBtn, isRtl, '', `${paddingEnd - 36}px`);
+      }
     }
 
     // Pin both buttons' positions to the grid's rendered rect to prevent
@@ -402,6 +416,7 @@ export class TableAddControls {
       autoScrollFrame: null,
       autoScrollAt: 0,
       pending: 0,
+      nextColumnAt: 0,
     };
 
     target.addEventListener('pointermove', this.boundPointerMove);
@@ -449,6 +464,10 @@ export class TableAddControls {
    * the full-screen modal) the pointer is held, in px: the pointer has run out
    * of screen to drag with. Mid-screen, the bar follows the pointer on its own,
    * and growing on top of that would move the table unasked.
+   *
+   * Negative when a column drag is held at the inline start while the table
+   * still reaches past the pointer: held growth has no limit, so pulling back
+   * must not stop where the screen ends.
    */
   private autoScrollOvershoot(): number {
     const state = this.dragState;
@@ -470,14 +489,25 @@ export class TableAddControls {
     }
     const sc = this.scrollContainer;
 
-    // Only a grid clipped by its scroll container has columns out of view.
-    if (sc === null || sc.scrollWidth <= sc.clientWidth + 1) {
+    if (sc === null) {
       return 0;
     }
     const axis = inlineAxis(state.direction);
-    const edge = axis.end(new DOMRect(port.left, port.top, port.right - port.left, port.bottom - port.top));
+    const band = axis.end(port) - AUTO_SCROLL_VIEWPORT_BAND;
+    const isClipped = sc.scrollWidth > sc.clientWidth + 1;
+    const startBand = axis.start(port) + AUTO_SCROLL_VIEWPORT_BAND;
 
-    return Math.max(0, state.pointerPos - (edge - AUTO_SCROLL_VIEWPORT_BAND));
+    if (state.pointerPos < startBand) {
+      return axis.end(this.grid.getBoundingClientRect()) > startBand ? state.pointerPos - startBand : 0;
+    }
+
+    // A grid that fits is armed once one more column and the bar would not fit
+    // before the band: in full screen the bar already sits by the window edge.
+    if (!isClipped && axis.end(this.grid.getBoundingClientRect()) + this.measureAddUnit('col') + this.addColBtn.offsetWidth < band) {
+      return 0;
+    }
+
+    return Math.max(0, state.pointerPos - band);
   }
 
   private syncAutoScroll(): void {
@@ -508,11 +538,12 @@ export class TableAddControls {
     }
     state.autoScrollAt = 0;
     state.pending = 0;
+    state.nextColumnAt = 0;
   }
 
   /**
-   * Same feel as the corner drag: growth follows how far past the edge the
-   * pointer is held and is spent in whole rows/columns, then the drag
+   * Same feel as the corner drag: rows grow with how far past the edge the
+   * pointer is held, columns at one fixed pace both ways. Then the drag
    * re-anchors so pulling back from the edge shrinks from where the table is.
    */
   private autoScrollTick(timestamp: number): void {
@@ -531,16 +562,11 @@ export class TableAddControls {
       return;
     }
 
-    // The first frame only starts the clock: a drag released just past the edge adds nothing.
-    const elapsed = state.autoScrollAt === 0 ? 0 : (timestamp - state.autoScrollAt) / 1000;
-    const unit = this.measureAddUnit(state.axis);
+    if (this.isStepDue(timestamp, overshoot)) {
+      const isShrinking = overshoot < 0;
+      const add = state.axis === 'row' ? this.onDragAddRow : this.onDragAddCol;
 
-    state.autoScrollAt = timestamp;
-    state.pending += overshoot * AUTO_SCROLL_GAIN_PER_SECOND * elapsed;
-
-    if (unit > 0 && state.pending >= unit) {
-      state.pending -= unit;
-      (state.axis === 'row' ? this.onDragAddRow : this.onDragAddCol)();
+      (isShrinking ? this.onDragRemoveCol : add)();
       this.syncRowButtonWidth();
       state.startSize = this.measureGridSize(state.axis) - (state.pointerPos - state.startPos);
       this.showDimensionTooltip();
@@ -548,6 +574,46 @@ export class TableAddControls {
 
     this.reveal(state.axis);
     state.autoScrollFrame = requestAnimationFrame(next => this.autoScrollTick(next));
+  }
+
+  /** Whether this frame of a held drag adds or removes a row/column. */
+  private isStepDue(timestamp: number, overshoot: number): boolean {
+    const state = this.dragState;
+
+    if (state === null) {
+      return false;
+    }
+
+    if (state.axis === 'col') {
+      // The wait before the first step keeps a drag released just past the edge from adding.
+      if (state.nextColumnAt === 0) {
+        state.nextColumnAt = timestamp + COLUMN_HOLD_FIRST_STEP_MS;
+      }
+      if (timestamp < state.nextColumnAt) {
+        return false;
+      }
+      // From the due time, so frame lag does not slow the pace; after a stall, from now, so it does not burst.
+      state.nextColumnAt += COLUMN_HOLD_STEP_MS;
+      if (state.nextColumnAt <= timestamp) {
+        state.nextColumnAt = timestamp + COLUMN_HOLD_STEP_MS;
+      }
+
+      return true;
+    }
+
+    // The first frame only starts the clock: a drag released just past the edge adds nothing.
+    const elapsed = state.autoScrollAt === 0 ? 0 : (timestamp - state.autoScrollAt) / 1000;
+    const unit = this.measureAddUnit('row');
+
+    state.autoScrollAt = timestamp;
+    state.pending += Math.abs(overshoot) * AUTO_SCROLL_GAIN_PER_SECOND * elapsed;
+
+    if (unit <= 0 || state.pending < unit) {
+      return false;
+    }
+    state.pending -= unit;
+
+    return true;
   }
 
   /**

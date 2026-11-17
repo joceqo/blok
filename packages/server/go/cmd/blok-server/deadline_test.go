@@ -6,11 +6,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/blokserver"
+	"github.com/JackUait/blok/packages/server/go/v2/blokserver"
 )
 
 func serveWithDeadline(t *testing.T, handler http.Handler, timeout time.Duration) string {
@@ -69,10 +71,12 @@ func TestDeadlineEndsAStalledBody(t *testing.T) {
 	}
 }
 
-// An answer already started is left alone.
+// An answer already started is left alone. A status set but not flushed
+// has not started: TestAStatusSetWithoutAWriteIsHeldUntilTheHeadGoesOut.
 func TestDeadlineKeepsAStartedAnswer(t *testing.T) {
 	address := serveWithDeadline(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+		_ = http.NewResponseController(w).Flush()
 		<-r.Context().Done()
 	}), 200*time.Millisecond)
 
@@ -108,5 +112,39 @@ func TestALiftedRequestOutlivesTheDeadline(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("status %d", response.StatusCode)
+	}
+}
+
+// Measured on the C# host: a download whose reader stalls from its first
+// byte is reset at the request deadline (600 s there).
+func TestDeadlineEndsAnAnswerAStalledReaderHolds(t *testing.T) {
+	const size = 64 << 20
+	address := serveWithDeadline(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(size))
+		chunk := make([]byte, 64<<10)
+		for written := 0; written < size; written += len(chunk) {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}), 500*time.Millisecond)
+
+	dialer := net.Dialer{Control: func(_, _ string, raw syscall.RawConn) error {
+		return raw.Control(func(fd uintptr) { _ = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 1024) })
+	}}
+	conn, err := dialer.Dial("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _ = io.WriteString(conn, "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+	time.Sleep(2 * time.Second)
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	read, err := io.Copy(io.Discard, conn)
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatalf("the connection was still open: %d bytes read", read)
+	}
+	if read >= size {
+		t.Fatalf("the whole body went out (%d bytes)", read)
 	}
 }

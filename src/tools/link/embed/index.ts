@@ -1,4 +1,5 @@
 import { describeEmbed } from '../../../shared/tool-descriptions/embed';
+import { linkClipboardHtml } from '../../../shared/clipboard-html';
 import { LINK_ACTION_HANDLERS } from '../../../shared/tool-actions/link';
 import { embedSanitize } from '../../../shared/tool-descriptions/sanitize/blocks';
 import type {
@@ -20,23 +21,28 @@ import { setFieldValidity } from '../../../components/utils/field-validity';
 import { attachResizeHandle, attachHeightResizeHandle, type ResizeEdge } from '../../image/resizer';
 import { figureInsets } from '../../image/figure-insets';
 import { renderEmbedOverlay, type EmbedAlignment } from './overlay';
-import { IFRAME_SANDBOX } from '../../../shared/embed-frame';
+import { GENERIC_IFRAME_SANDBOX, registryIframeSandbox } from '../../../shared/embed-frame';
 import {
   EMBED_SERVICES,
   matchEmbedService,
   isHttpUrl,
   isHttpsUrl,
+  toCanonicalHttpUrl,
+  toCanonicalHttpsUrl,
   resolveEmbedServiceTitle,
   setSafeLinkHref,
   type EmbedKind,
   type EmbedMatch,
+  type EmbedService,
 } from '../registry';
 import { brandMarkElement } from '../../../components/utils/brand-mark-services';
 import { embedTypeIcon } from '../paste-menu/items';
 import { createUrlMirror } from '../../../components/utils/url-mirror';
 import { createEmbedWindow } from './empty-window';
-import { isAllowedEmbedOrigin } from './allowed-origins';
+import { canFrameGeneric, genericEmbedPolicy, type GenericEmbedPolicy } from '../generic-embed-policy';
+import { embedCheckRefuses, type CheckEmbed } from '../check-embed';
 import { renderEmbedPreview } from './preview';
+import { DEFAULT_HEIGHT, DEFAULT_WIDTH, clampRatioHeight, embedFrameSize } from './frame-size';
 import { overrideStatic } from '../../../components/utils/override-static';
 import type { LazySheet } from '../../../components/utils/lazy-styles';
 
@@ -69,7 +75,15 @@ const THREADS_WIDGET_SRC = 'https://www.threads.com/embed.js';
  * allow-same-origin` inherit the embedder origin for javascript: URLs).
  */
 function toSafeEmbedSrc(value: string | undefined): string {
-  return value !== undefined && isHttpsUrl(value) ? value : '';
+  return value === undefined ? '' : toCanonicalHttpsUrl(value);
+}
+
+function hasHttpsScheme(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 /** Host of a stored URL, or '' when it cannot be parsed. */
@@ -81,6 +95,31 @@ function hostnameOf(url: string): string {
   }
 }
 
+/** The registry entry for a stored service name. Own keys only: `__proto__` is not a service. */
+function registryEntry(service: string | undefined): EmbedService | undefined {
+  return service !== undefined && Object.hasOwn(EMBED_SERVICES, service) ? EMBED_SERVICES[service] : undefined;
+}
+
+/** Saved JSON may hold any value; a non-string URL field reads as ''. */
+function stringField(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return typeof value === 'string' ? value : '';
+}
+
+type EmbedRenderMode = 'iframe' | 'script' | 'link' | 'empty';
+
+interface EmbedRenderDecision {
+  mode: EmbedRenderMode;
+  src: string;
+  /** The registry service the source matched; '' for a generic embed. */
+  service: string;
+  /** Where the link card points in 'link' mode; '' otherwise. */
+  href: string;
+}
+
 /**
  * Resolves the URL a STORED block may put into a live sink, re-establishing the
  * tool's invariant ("only registry-matched URLs are ever embedded") at render
@@ -90,53 +129,60 @@ function hostnameOf(url: string): string {
  * inside the trusted page), and a generic embed would render even for hosts
  * that never opted into `linkPaste.allowGenericEmbed`.
  *
- * For a registry service the src is DERIVED from the stored `source` — the
- * stored `embed` field is never trusted — so tampering with it cannot move the
- * frame off the provider. Anything else is a generic embed and needs the host
- * opt-in. Unresolvable data yields '' and renders the inert empty state.
+ * The src is always DERIVED from the stored `source` — the stored `embed`
+ * field is never trusted — so tampering with it cannot move the frame off the
+ * provider or away from the URL the block shows. Anything outside the registry
+ * is a generic embed and needs the host opt-in. Unresolvable data yields '' and
+ * renders the inert empty state.
  */
-type EmbedRenderMode = 'iframe' | 'link' | 'empty';
-
-interface EmbedRenderDecision {
-  mode: EmbedRenderMode;
-  src: string;
-}
-
 function resolveEmbedRender(
   data: Partial<EmbedData>,
-  opts: { allowGeneric: boolean; allowedOrigins?: readonly string[] }
+  opts: GenericEmbedPolicy
 ): EmbedRenderDecision {
   const service = data.service ?? '';
 
-  if (EMBED_SERVICES[service] !== undefined) {
+  if (registryEntry(service) !== undefined) {
     const match = data.source !== undefined ? matchEmbedService(data.source) : null;
     const src = match?.service === service ? toSafeEmbedSrc(match.embedUrl) : '';
 
     // A registry block whose source no longer matches its claimed service is
     // tampered data — it stays fully inert (no link card either): a clickable
     // card would lend the trusted service's framing to an arbitrary URL.
-    return { mode: src === '' ? 'empty' : 'iframe', src };
+    // The kind comes from the match: a saved `kind` must never pick the script path.
+    if (match === null || src === '') {
+      return { mode: 'empty', src: '', service: '', href: '' };
+    }
+
+    // widgets.js reads the post from the anchor, which carries `source`. A
+    // source with no scheme or http would give it an empty anchor, so it gets
+    // a card for the registry's https post URL instead.
+    if (service === 'twitter' && !isHttpsUrl(data.source ?? '')) {
+      return { mode: 'link', src: '', service: '', href: src };
+    }
+
+    return { mode: match.kind === 'script' ? 'script' : 'iframe', src, service, href: '' };
   }
 
-  if (opts.allowGeneric || isAllowedEmbedOrigin(data.embed ?? '', opts.allowedOrigins)) {
-    const src = toSafeEmbedSrc(data.embed);
+  // One field for a generic embed: the frame, the origin checks, the title and
+  // the link card all read `source`, so a block can't frame one host while
+  // labelled as another. The stored `embed` is never framed.
+  const src = toSafeEmbedSrc(data.source);
 
-    if (src !== '') {
-      return { mode: 'iframe', src };
-    }
+  if (src !== '' && canFrameGeneric(src, opts)) {
+    return { mode: 'iframe', src, service: '', href: '' };
   }
 
   // Not allowed to frame — degrade to a safe link card so the stored URL
   // stays visible instead of vanishing into the empty state.
-  if (data.source !== undefined && isHttpUrl(data.source)) {
-    return { mode: 'link', src: '' };
+  const href = toCanonicalHttpUrl(data.source ?? '');
+
+  if (href !== '') {
+    return { mode: 'link', src: '', service: '', href };
   }
 
-  return { mode: 'empty', src: '' };
+  return { mode: 'empty', src: '', service: '', href: '' };
 }
 
-const DEFAULT_WIDTH = 580;
-const DEFAULT_HEIGHT = 320;
 const FULL_WIDTH_PERCENT = 100;
 const IFRAME_ALLOW = 'encrypted-media; fullscreen; picture-in-picture';
 
@@ -179,6 +225,8 @@ export class Embed implements BlockTool {
   private data: Partial<EmbedData>;
   private root: HTMLElement | null = null;
   private resizeDetach: (() => void)[] = [];
+  /** Whether the reader clicked to load this generic embed. Lives only here, never in saved data. */
+  private genericLoaded = false;
   /** Stable id linking the URL input to its inline error via aria-describedby. */
   private readonly urlErrorId = `blok-embed-url-error-${Math.random().toString(36).slice(2, 9)}`;
 
@@ -186,7 +234,19 @@ export class Embed implements BlockTool {
     this.api = options.api;
     this.block = options.block;
     this.readOnly = options.readOnly;
-    this.data = { ...options.data };
+    const saved: Partial<EmbedData> = { ...options.data };
+
+    this.data = {
+      ...saved,
+      source: stringField(saved.source),
+      embed: stringField(saved.embed),
+      service: stringField(saved.service),
+    };
+  }
+
+  /** A link to the source, since the clipboard keeps no iframe. */
+  public static clipboardHtml(data: Partial<EmbedData>): string | null {
+    return linkClipboardHtml(data.source ?? data.embed, [], data);
   }
 
   public static get toolbox(): ToolboxConfig {
@@ -257,10 +317,12 @@ export class Embed implements BlockTool {
     }
 
     if (target) {
+      const href = toSafeEmbedSrc(url);
+
       this.data = {
         service: '',
-        source: url,
-        embed: url,
+        source: href,
+        embed: href,
         kind: 'iframe',
         width: DEFAULT_WIDTH,
         height: DEFAULT_HEIGHT,
@@ -285,32 +347,28 @@ export class Embed implements BlockTool {
       return { match };
     }
 
-    // Generic embeds must be https: the render path refuses anything else,
-    // so rejecting here surfaces the error at input time instead of silently
-    // rendering an empty block.
-    if (this.isGenericAllowed() && isHttpsUrl(url)) {
+    // Same rule as render, so the input never accepts a URL that then
+    // renders as a link card or an empty block.
+    if (canFrameGeneric(url, this.genericPolicy())) {
       return { match: null };
     }
 
     return null;
   }
 
-  private isGenericAllowed(): boolean {
-    return this.api.config?.linkPaste?.allowGenericEmbed === true;
+  private embedRender(): EmbedRenderDecision {
+    return resolveEmbedRender(this.data, this.genericPolicy());
   }
 
-  private embedRender(): EmbedRenderDecision {
-    return resolveEmbedRender(this.data, {
-      allowGeneric: this.isGenericAllowed(),
-      allowedOrigins: this.api.config?.linkPaste?.allowedEmbedOrigins,
-    });
+  private genericPolicy(): GenericEmbedPolicy {
+    return genericEmbedPolicy(this.api.config?.linkPaste);
   }
 
   /** The only URL this block is allowed to hand to a live frame/widget sink. */
   private embedSrc(): string {
     const render = this.embedRender();
 
-    return render.mode === 'iframe' ? render.src : '';
+    return render.mode === 'iframe' || render.mode === 'script' ? render.src : '';
   }
 
   public render(): HTMLElement {
@@ -325,11 +383,20 @@ export class Embed implements BlockTool {
   }
 
   public save(): EmbedData {
+    const service = this.data.service ?? '';
+    const generic = registryEntry(service) === undefined;
+    const genericSrc = generic ? toSafeEmbedSrc(this.data.source) : '';
+    const genericHref = generic ? toCanonicalHttpUrl(this.data.source ?? '') : '';
+
     return {
-      service: this.data.service ?? '',
-      source: this.data.source ?? '',
-      embed: this.data.embed ?? '',
-      kind: this.data.kind ?? 'iframe',
+      service,
+      // A generic source is stored in canonical form. A value that is not an
+      // absolute http(s):// URL is kept as it was; it renders inert.
+      source: genericHref !== '' ? genericHref : this.data.source ?? '',
+      // A generic embed frames `source`; keeping `embed` equal stops saved data
+      // from splitting the two, and lets validate() keep the block.
+      embed: genericSrc !== '' ? genericSrc : this.data.embed ?? '',
+      kind: this.embedRender().mode === 'script' ? 'script' : 'iframe',
       width: this.data.width ?? DEFAULT_WIDTH,
       height: this.data.height ?? DEFAULT_HEIGHT,
       ...(this.data.widthPercent !== undefined ? { widthPercent: this.data.widthPercent } : {}),
@@ -343,7 +410,9 @@ export class Embed implements BlockTool {
   public validate(data: EmbedData): boolean {
     // An unsafe embed URL is rejected outright so save() drops the block
     // instead of persisting a payload that every future render must dodge.
-    return Boolean(data.source) && isHttpsUrl(data.embed);
+    // Only the scheme is checked here, not the `//`: a block saved before
+    // sinks required `https://` stays in the document instead of being lost.
+    return Boolean(data.source) && hasHttpsScheme(data.embed);
   }
 
   /**
@@ -427,7 +496,7 @@ export class Embed implements BlockTool {
 
     this.detachResizers();
 
-    const { mode } = this.embedRender();
+    const { mode, service } = this.embedRender();
 
     // A generic embed the host hasn't allowed degrades to a safe link card —
     // the URL stays visible but is never framed.
@@ -445,8 +514,8 @@ export class Embed implements BlockTool {
       return;
     }
 
-    if (this.data.kind === 'script') {
-      this.root.replaceChildren(this.buildScript());
+    if (mode === 'script') {
+      this.root.replaceChildren(this.buildScript(service));
 
       return;
     }
@@ -473,14 +542,15 @@ export class Embed implements BlockTool {
     }
   }
 
-  private buildScript(): HTMLElement {
+  /** Only reached for a registry match whose kind is 'script'. */
+  private buildScript(service: string): HTMLElement {
     const container = document.createElement('div');
 
     container.setAttribute('data-blok-testid', 'embed-script');
 
     const remoteId = this.data.source ? matchEmbedService(this.data.source)?.remoteId ?? '' : '';
 
-    if (this.data.service === 'telegram') {
+    if (service === 'telegram') {
       const script = document.createElement('script');
 
       script.async = true;
@@ -492,7 +562,7 @@ export class Embed implements BlockTool {
       return container;
     }
 
-    if (this.data.service === 'threads') {
+    if (service === 'threads') {
       // Threads: text-post-media blockquote scanned and replaced by embed.js.
       // The permalink uses the canonical .com embed URL so pasted .net links
       // still produce the official markup.
@@ -518,7 +588,12 @@ export class Embed implements BlockTool {
       return container;
     }
 
-    // Twitter / X: blockquote scanned and replaced by widgets.js.
+    if (service !== 'twitter') {
+      return container;
+    }
+
+    // Twitter / X: blockquote scanned and replaced by widgets.js. The source
+    // matched the X registry pattern, which pins the host to x.com/twitter.com.
     const blockquote = document.createElement('blockquote');
 
     blockquote.className = 'twitter-tweet';
@@ -546,7 +621,7 @@ export class Embed implements BlockTool {
    * link is always visible and can never be silently lost or overwritten.
    */
   private buildLinkCard(): HTMLElement {
-    const source = this.data.source ?? '';
+    const source = this.embedRender().href;
     const el = document.createElement('div');
 
     el.setAttribute('data-blok-testid', 'embed-link-card');
@@ -811,7 +886,18 @@ export class Embed implements BlockTool {
     form.addEventListener('submit', (event) => {
       event.preventDefault();
 
-      if (!this.submitUrl(input.value.trim(), el)) {
+      const url = input.value.trim();
+      const check = this.api.config?.linkPaste?.checkEmbed;
+
+      // Only a URL the rules already accept as generic is checked; the
+      // answer can turn it into a bookmark, never let more through.
+      if (check !== undefined && url !== '' && this.resolveTarget(url)?.match === null) {
+        void this.submitAfterCheck(url, check, input, el);
+
+        return;
+      }
+
+      if (!this.submitUrl(url, el)) {
         embedWindow.play('rejected');
       }
     });
@@ -835,6 +921,34 @@ export class Embed implements BlockTool {
     }
 
     return isHttpUrl(value) || /^[\w-]+(\.[\w-]+)+([/?#].*)?$/i.test(value);
+  }
+
+  /** Submits a generic URL once the host's frame check answers. */
+  private async submitAfterCheck(url: string, check: CheckEmbed, input: HTMLInputElement, container: HTMLElement): Promise<void> {
+    const refused = await embedCheckRefuses(check, url);
+
+    // The answer is stale once the form is gone or holds another URL.
+    if (!container.isConnected || input.value.trim() !== url) {
+      return;
+    }
+
+    if (!refused) {
+      this.submitUrl(url, container);
+
+      return;
+    }
+
+    // Checked first: insert would stop this block's mutation watch before
+    // it finds out the tool is missing.
+    if (!this.api.tools.getBlockTools().some((tool) => tool.name === 'bookmark')) {
+      this.submitUrl('', container);
+
+      return;
+    }
+
+    // A replace keeps the block's parent, so a bookmark in a toggle stays there.
+    this.api.blocks.insert('bookmark', { url }, undefined, this.api.blocks.getBlockIndex(this.block.id), true, true);
+    this.api.notifier.show({ message: this.api.i18n.t('tools.embed.checkBlocked') });
   }
 
   /** Returns whether the URL was accepted. */
@@ -871,10 +985,8 @@ export class Embed implements BlockTool {
   private buildIframeFigure(): HTMLElement {
     const figure = document.createElement('figure');
 
-    const w = this.data.width && this.data.width > 0 ? this.data.width : DEFAULT_WIDTH;
-    const h = this.data.height && this.data.height > 0 ? this.data.height : DEFAULT_HEIGHT;
-    const fixedWidth = this.data.service !== undefined
-      && EMBED_SERVICES[this.data.service]?.fixedWidth === true;
+    const { width: w, height: h } = embedFrameSize(this.data.width, this.data.height, this.isHeightResizable());
+    const fixedWidth = registryEntry(this.data.service)?.fixedWidth === true;
 
     figure.setAttribute('data-role', 'embed-figure');
     figure.style.position = 'relative';
@@ -904,7 +1016,11 @@ export class Embed implements BlockTool {
       aspect.style.aspectRatio = `${w} / ${h}`;
     }
 
-    aspect.appendChild(this.buildIframe());
+    if (this.waitsForClick()) {
+      aspect.appendChild(this.buildLoadGate());
+    } else {
+      aspect.appendChild(this.buildIframe());
+    }
     figure.appendChild(aspect);
 
     return figure;
@@ -919,10 +1035,66 @@ export class Embed implements BlockTool {
   private frameTitle(): string {
     const label = this.api.i18n.t('toolNames.embed');
     const service = this.data.service ?? '';
-    const registered = EMBED_SERVICES[service];
-    const provider = registered !== undefined ? registered.title : hostnameOf(this.data.source ?? '');
+    const registered = registryEntry(service);
+    const provider = registered !== undefined ? registered.title : hostnameOf(this.embedSrc());
 
     return provider === '' ? label : `${label}: ${provider}`;
+  }
+
+  /**
+   * A generic embed loads only after the reader clicks, so no request (and no
+   * reader IP) reaches the site before that. Registry embeds load at once.
+   */
+  private waitsForClick(): boolean {
+    return this.embedRender().service === ''
+      && this.api.config?.linkPaste?.genericEmbedClickToLoad !== false
+      && !this.genericLoaded;
+  }
+
+  /** The framed URL's host as `new URL` gives it: punycode for IDN, port kept. */
+  private framedHost(): string {
+    try {
+      return new URL(this.embedSrc()).host;
+    } catch {
+      return '';
+    }
+  }
+
+  /** Stands in for a generic frame until the reader clicks. Holds no URL of the site. */
+  private buildLoadGate(): HTMLElement {
+    // Punycode for IDN, so a lookalike name shows as what it is.
+    const host = this.framedHost();
+    const gate = document.createElement('div');
+
+    gate.setAttribute('data-role', 'embed-load-gate');
+    gate.className = 'blok-embed-gate';
+
+    const glyph = document.createElement('span');
+
+    glyph.className = 'blok-embed-gate__glyph';
+    glyph.setAttribute('aria-hidden', 'true');
+    glyph.innerHTML = IconGlobe;
+
+    const hostLabel = document.createElement('span');
+
+    hostLabel.setAttribute('data-role', 'embed-load-host');
+    hostLabel.className = 'blok-embed-gate__host';
+    hostLabel.textContent = host;
+
+    const button = document.createElement('button');
+
+    button.type = 'button';
+    button.setAttribute('data-role', 'embed-load');
+    button.className = 'blok-embed-gate__button';
+    button.textContent = this.api.i18n.t('tools.embed.loadFrom', { host });
+    button.addEventListener('click', () => {
+      this.genericLoaded = true;
+      gate.replaceWith(this.buildIframe());
+    });
+
+    gate.append(glyph, hostLabel, button);
+
+    return gate;
   }
 
   private buildIframe(): HTMLIFrameElement {
@@ -934,8 +1106,21 @@ export class Embed implements BlockTool {
     iframe.style.width = '100%';
     iframe.style.height = '100%';
     iframe.style.border = '0';
-    iframe.setAttribute('sandbox', IFRAME_SANDBOX);
-    iframe.setAttribute('allow', IFRAME_ALLOW);
+
+    // The profile follows the registry decision, never saved data.
+    const { service } = this.embedRender();
+
+    if (service !== '') {
+      iframe.setAttribute('sandbox', registryIframeSandbox(registryEntry(service)));
+      iframe.setAttribute('allow', IFRAME_ALLOW);
+      iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+    } else {
+      // No `allow`: camera, mic, payment and the rest stay off. `credentialless`
+      // (Chrome only) loads the page without the reader's cookies.
+      iframe.setAttribute('sandbox', GENERIC_IFRAME_SANDBOX);
+      iframe.setAttribute('referrerpolicy', 'no-referrer');
+      iframe.setAttribute('credentialless', '');
+    }
     iframe.setAttribute('loading', 'lazy');
     iframe.setAttribute('frameborder', '0');
 
@@ -944,9 +1129,7 @@ export class Embed implements BlockTool {
 
   private attachResizeHandles(figure: HTMLElement): void {
     const edges: ResizeEdge[] = ['left', 'right'];
-    const minWidthPx = this.data.service !== undefined
-      ? EMBED_SERVICES[this.data.service]?.minWidth
-      : undefined;
+    const minWidthPx = registryEntry(this.data.service)?.minWidth;
 
     for (const edge of edges) {
       const handle = document.createElement('div');
@@ -974,14 +1157,13 @@ export class Embed implements BlockTool {
       this.resizeDetach.push(detach);
     }
 
-    if (this.isHeightResizable()) {
+    if (this.isHeightResizable() || this.embedRender().service === '') {
       this.attachBottomResizeHandle(figure);
     }
   }
 
   private isHeightResizable(): boolean {
-    return this.data.service !== undefined
-      && EMBED_SERVICES[this.data.service]?.resizableHeight === true;
+    return registryEntry(this.data.service)?.resizableHeight === true;
   }
 
   private attachBottomResizeHandle(figure: HTMLElement): void {
@@ -992,6 +1174,16 @@ export class Embed implements BlockTool {
     figure.appendChild(handle);
 
     const aspect = figure.querySelector<HTMLElement>('[data-role="embed-aspect"]');
+    const fixedHeight = this.isHeightResizable();
+    const { width } = embedFrameSize(this.data.width, this.data.height, fixedHeight);
+    // A generic embed keeps its width/height ratio box, so saved embeds look
+    // as before. The drag sets the shown height; this turns it into the
+    // height at the saved width.
+    const ratioHeight = (heightPx: number): number => {
+      const shownWidth = aspect?.getBoundingClientRect().width ?? 0;
+
+      return Math.round(clampRatioHeight(width, shownWidth > 0 ? heightPx * width / shownWidth : heightPx));
+    };
 
     const detach = attachHeightResizeHandle({
       handle,
@@ -999,10 +1191,14 @@ export class Embed implements BlockTool {
       startHeight: () =>
         aspect?.getBoundingClientRect().height || this.data.height || DEFAULT_HEIGHT,
       onPreview: (heightPx) => {
-        aspect?.style.setProperty('height', `${heightPx}px`);
+        if (fixedHeight) {
+          aspect?.style.setProperty('height', `${heightPx}px`);
+        } else {
+          aspect?.style.setProperty('aspect-ratio', `${width} / ${ratioHeight(heightPx)}`);
+        }
       },
       onCommit: (heightPx) => {
-        this.data.height = heightPx;
+        this.data.height = fixedHeight ? heightPx : ratioHeight(heightPx);
         this.block.dispatchChange();
       },
     });
@@ -1080,10 +1276,11 @@ export class Embed implements BlockTool {
 
   public renderSettings(): MenuConfig {
     const i18n = this.api.i18n;
-    const source = this.data.source ?? '';
+    const render = this.embedRender();
+    const source = render.href;
 
     return [
-      ...(this.embedRender().mode === 'link' ? [{
+      ...(render.mode === 'link' ? [{
         icon: IconLinkExternal,
         title: i18n.t('tools.embed.openOriginal'),
         name: 'embed-open-original',

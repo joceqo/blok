@@ -17,13 +17,11 @@ const unset = (name: string): boolean =>
   process.env[name] === undefined || process.env[name] === '';
 
 const noServer = unset('BLOK_CONFORMANCE_SERVER');
-const target = process.env.BLOK_CONFORMANCE_TARGET ?? 'csharp';
-
-// Each skip site says why Go cannot run it yet.
-const skipOnGo = noServer || target === 'go';
 
 interface RoutingFixture {
   collabHost: {
+    decodedDoc: { doc: string; path: string }[];
+    unparsedDoc: { doc: string; path: string }[];
     encodedSeparator: { doc: string; path: string }[];
     methodNotAllowed: { allow: string; method: string; path: string }[];
     notFound: string[];
@@ -34,6 +32,9 @@ interface RoutingFixture {
     methodNotAllowed: { allow: string; method: string; path: string }[];
     notFound: { method: string; path: string }[];
     notRefused: { path: string; status: number }[];
+    rawNonAscii: string[];
+    rawNul: { method: string; path: string }[];
+    unparsedTargets: { method: string; path: string; status: number }[];
   };
 }
 
@@ -223,6 +224,21 @@ describe('routing contract: health, unknown routes and ported routes', () => {
       expect(response.body).toBe('404 page not found\n');
     });
 
+    // Without --collab there is no sync route and no WebSocket accept.
+    it.each([
+      ['GET', '/sync/x', { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==' }],
+      ['GET', '/sync/x/state', {}],
+      ['POST', '/sync/x/edit', { 'Content-Length': '0' }],
+      ['GET', '/sync/x/history', {}],
+      ['POST', '/sync/x/history/l/1/restore/preview', { 'Content-Length': '0' }],
+    ])('answers %s %s with the 404 catch-all when collab is off', async (method, path, headers: Record<string, string>) => {
+      const response = await rawRequest(server.baseUrl, method, path, headers);
+
+      expectNotFound(response, method);
+      expect(response.headers.upgrade).toBeUndefined();
+      expect(response.body).toBe('404 page not found\n');
+    });
+
     it('answers HEAD on an unknown route with 404 and no body', async () => {
       const response = await rawRequest(server.baseUrl, 'HEAD', '/nope');
 
@@ -254,17 +270,71 @@ describe('routing contract: health, unknown routes and ported routes', () => {
       expect(response.body).toBe('');
     });
 
+    // Kestrel also refuses any raw byte of 0x80 or above in the request
+    // target, path or query. rawRequest sends the fixture's text as UTF-8.
+    it.each(routing.healthHost.rawNonAscii)('answers GET %s, sent unescaped, with an empty 400', async (path) => {
+      const response = await rawRequest(server.baseUrl, 'GET', path);
+
+      expect(response.status).toBe(400);
+      expect(response.headers['content-length']).toEqual(['0']);
+      expect(response.headers['content-type']).toBeUndefined();
+      expect(response.body).toBe('');
+    });
+
     it.each(routing.healthHost.notRefused)('does not refuse GET $path', async ({ path, status }) => {
       expect((await rawRequest(server.baseUrl, 'GET', path)).status).toBe(status);
     });
 
-    // Go's http.Server answers 400 for a bad escape before any handler runs,
-    // so no Go router can match Kestrel here.
-    it.skipIf(skipOnGo)('answers a malformed escape on an unknown route with the 404 catch-all', async () => {
-      const response = await rawRequest(server.baseUrl, 'GET', '/a%zzb');
+    // A raw NUL gets the same empty 400 as %00, in the query too.
+    it.each(routing.healthHost.rawNul)('answers $method $path, sent unescaped, with an empty 400', async ({ method, path }) => {
+      const response = await rawRequest(server.baseUrl, method, path);
 
-      expectNotFound(response);
-      expect(response.body).toBe('404 page not found\n');
+      expect(response.status).toBe(400);
+      expect(response.headers['content-length']).toEqual(['0']);
+      expect(response.headers['content-type']).toBeUndefined();
+      expect(response.body).toBe('');
+    });
+
+    // Kestrel routes a malformed escape and a raw control byte (other than
+    // NUL and LF) like any other target. Go's url parser refuses both.
+    it.each(routing.healthHost.unparsedTargets)(
+      'answers $method $path, sent unescaped, with $status',
+      async ({ method, path, status }) => {
+        const response = await rawRequest(server.baseUrl, method, path);
+        const expectedBody = status === 404 ? '404 page not found\n' : HEALTH_BODY;
+
+        expect(response.status).toBe(status);
+        if (status === 404) {
+          expectNotFound(response, method);
+        }
+        expect(response.body).toBe(method === 'HEAD' ? '' : expectedBody);
+      },
+    );
+
+    // A Content-Length body that looks like a request line stays a body, and
+    // each request on the connection is routed by its own target.
+    it('routes unparsed targets one by one on a kept-alive connection', async () => {
+      const { hostname, port } = new URL(server.baseUrl);
+      const host = `Host: ${hostname}:${port}\r\n`;
+      const body = `GET /a\u0001 HTTP/1.1\r\n${host}\r\n`;
+      const bytes = [
+        `POST /nope HTTP/1.1\r\n${host}Content-Length: ${body.length}\r\n\r\n${body}`,
+        `GET /x\u0001/../health HTTP/1.1\r\n${host}\r\n`,
+        `POST /a%zz HTTP/1.1\r\n${host}Content-Length: 3\r\n\r\nabc\r\n`,
+        `GET /%zz/../health?q=\u007f HTTP/1.1\r\n${host}Connection: close\r\n\r\n`,
+      ].join('');
+      const answer = await new Promise<string>((resolve, reject) => {
+        const socket = connect(Number(port), hostname);
+        const chunks: Buffer[] = [];
+
+        socket.once('error', reject);
+        socket.on('data', (chunk: Buffer) => chunks.push(chunk));
+        socket.once('end', () => resolve(Buffer.concat(chunks).toString('latin1')));
+        socket.write(bytes);
+      });
+      const statuses = [...answer.matchAll(/^HTTP\/1\.1 (\d{3}) /gm)].map((match) => Number(match[1]));
+
+      expect(statuses).toEqual([404, 200, 404, 200]);
     });
   });
 
@@ -309,8 +379,7 @@ describe('routing contract: health, unknown routes and ported routes', () => {
     });
   });
 
-  // The Go host does not serve these routes yet.
-  describe.skipIf(skipOnGo)('a host with unfurl and collab routes', () => {
+  describe.skipIf(noServer)('a host with unfurl and collab routes', () => {
     let server: RunningServer;
     let endpoint: FixtureDocEndpoint;
     let collabDirectory: string;
@@ -375,6 +444,24 @@ describe('routing contract: health, unknown routes and ported routes', () => {
       },
     );
 
+    // Kestrel keeps an escape that is not valid UTF-8 as written. The doc id
+    // names the journal directory, so a server that decodes it another way
+    // reads another document out of the same collab directory.
+    it.each(routing.collabHost.decodedDoc)('loads the document $doc for GET $path', async ({ path, doc }) => {
+      const response = await rawRequest(server.baseUrl, 'GET', path);
+
+      expect(endpoint.gets).toContain(doc);
+      expect(response.status).toBe(200);
+    });
+
+    // The same rule for a target Go's url parser refuses.
+    it.each(routing.collabHost.unparsedDoc)('loads the document $doc for GET $path, sent unescaped', async ({ path, doc }) => {
+      const response = await rawRequest(server.baseUrl, 'GET', path);
+
+      expect(endpoint.gets).toContain(doc);
+      expect(response.status).toBe(200);
+    });
+
     it('answers a preflight on /UNFURL/ with the exact CORS headers', async () => {
       const response = await rawRequest(server.baseUrl, 'OPTIONS', '/UNFURL/', {
         Origin: ALLOWED_ORIGIN,
@@ -394,6 +481,8 @@ describe('routing contract: health, unknown routes and ported routes', () => {
     it.each([
       ['/sync/x/state', 'GET, OPTIONS'],
       ['/sync/x/history/l', 'DELETE, OPTIONS'],
+      ['/sync/x/history/l/1/restore', 'POST, OPTIONS'],
+      ['/sync/x/history/l/1/restore/preview', 'POST, OPTIONS'],
     ])('answers a preflight on %s with Allow-Methods %s and the origin as sent', async (path, methods) => {
       const sentOrigin = 'https://APP.example.com';
       const response = await rawRequest(server.baseUrl, 'OPTIONS', path, { Origin: sentOrigin });

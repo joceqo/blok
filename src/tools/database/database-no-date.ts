@@ -1,13 +1,15 @@
 import type { I18n } from '../../../types';
 import { DatabasePanel, panelInput, panelText } from './database-panel';
-import { pageIconElement, pagePlaceholderIcon } from './page-icon';
+import { rowPageGlyph } from './page-icon';
 import type { DatabaseRow } from './types';
 
-/** What the database toolbar's "No date (N)" button needs from a calendar or timeline view. */
+/** What the database toolbar's "No date (N)" button needs from a calendar or timeline view, or a map's "No place (N)". */
 export interface NoDateControl {
   count: number;
   label: string;
   open: (anchor: HTMLElement) => void;
+  /** Extra attributes the button carries while this control owns it. */
+  attributes?: Readonly<Record<string, string>>;
 }
 
 export interface NoDatePanelOptions {
@@ -19,6 +21,8 @@ export interface NoDatePanelOptions {
   /** A row was clicked: give it a date. */
   pick: (rowId: string) => void;
   open: (rowId: string) => void;
+  /** Whether a row's page has a body: it picks the row's page glyph. */
+  rowHasBody?: (rowId: string) => boolean;
   /** A press on a row that may become a drag onto the view. */
   press?: (rowId: string, event: PointerEvent) => void;
 }
@@ -58,7 +62,7 @@ export const openNoDatePanel = (options: NoDatePanelOptions): DatabasePanel => {
         panel.close();
         options.open(row.id);
       });
-      item.append(pageIconElement(row) ?? pagePlaceholderIcon(), title, open);
+      item.append(rowPageGlyph(row, options.rowHasBody?.(row.id) === true, true) ?? '', title, open);
       item.addEventListener('click', () => {
         panel.close();
         options.pick(row.id);
@@ -84,6 +88,8 @@ export const openNoDatePanel = (options: NoDatePanelOptions): DatabasePanel => {
     anchor: options.anchor,
     testId: 'database-no-date',
     width: 320,
+    // notion-motion.md Round 46 §B: 4 under the toolbar button.
+    gap: 4,
     backLabel: t('tools.database.peekBack'),
     root: {
       build: (current) => {

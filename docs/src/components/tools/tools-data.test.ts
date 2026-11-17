@@ -104,6 +104,34 @@ describe('tools documentation coverage', () => {
     expect(audio!.default).toBe(video!.default);
   });
 
+  it('audio data listing names every saved field of AudioData', () => {
+    const typeSrc = readSource('types/tools/audio.d.ts');
+    const body = typeSrc.match(/export interface AudioData[^{]*\{([\s\S]*?)\n\}/)?.[1] ?? '';
+    const fields = Array.from(body.matchAll(/^ {2}(\w+)\??:/gm), (m) => m[1]);
+    const shape = TOOL_SECTIONS.find((s) => s.id === 'audio')?.saveDataShape ?? '';
+
+    expect(fields).toContain('compact');
+    for (const field of fields) {
+      expect(shape, `audio saveDataShape misses "${field}"`).toMatch(new RegExp(`\\b${field}\\??:`));
+    }
+  });
+
+  it('file lists every FileConfig option and describes the pdf.js viewer', () => {
+    const typeSrc = readSource('types/tools/file.d.ts');
+    const body = typeSrc.match(/export interface FileConfig \{([\s\S]*?)\n\}/)?.[1] ?? '';
+    const options = Array.from(body.matchAll(/^ {2}(\w+)\??:/gm), (m) => m[1]);
+    const file = TOOL_SECTIONS.find((s) => s.id === 'file');
+    const documented = file?.configOptions.map((o) => o.option) ?? [];
+
+    expect(options).toEqual(expect.arrayContaining(['fetchPreview', 'previewEndpoint', 'pdfAssetsUrl']));
+    for (const option of options) {
+      expect(documented, `file configOptions misses "${option}"`).toContain(option);
+    }
+    expect(file?.description).not.toMatch(/browser's own viewer/);
+    expect(file?.description).toMatch(/pdf\.js/);
+    expect(file?.description).toMatch(/worker-src/);
+  });
+
   const uploaderCases = [
     { toolId: 'audio', dts: 'types/tools/audio.d.ts' },
     { toolId: 'video', dts: 'types/tools/video.d.ts' },

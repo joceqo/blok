@@ -23,11 +23,16 @@ const (
 	// MinimumMemoryBudget is C#'s floor. Loading the bundle from a compiled
 	// program allocated 6 MiB (measured), so 8 MiB still loads.
 	MinimumMemoryBudget int64 = 8 << 20
-	// MaxCallStackSize stops runaway recursion before it eats the heap.
-	// Measured frames per nesting level of an outline: about 3 for plain text
-	// and Markdown, 8 for HTML, so 10000 converts about 1200 levels to HTML.
-	// Jint's native-stack guard stopped HTML between 800 and 1000 levels.
-	MaxCallStackSize = 10000
+	// MaxCallStackSize stops runaway recursion before it eats the heap. It is
+	// set for HTML, about 8 frames an outline level: 19500 converts 2436
+	// levels, where C# stops at 2400 on its allocation budget (both
+	// measured). Markdown, about 3 frames a level, reaches 6498 levels, past
+	// C#'s 1454.
+	MaxCallStackSize = 19500
+	// PlainTextCallStackSize is the cap of the plain-text readers, about 3
+	// frames a level: it converts 11164 levels, where C# converts 11049
+	// once warm and 6750 on a cold first call (all measured).
+	PlainTextCallStackSize = 33500
 )
 
 // Kind says why a call failed. The values match C# BlokConversionFailure.
@@ -79,35 +84,84 @@ func (e *StartupError) Error() string { return e.Message }
 func (e *StartupError) Unwrap() error { return e.Err }
 
 // ConstraintError is a limit below its floor, named by its Options field.
+// Error is C#'s ArgumentOutOfRangeException message, word for word: C#'s
+// parameter name and values in .NET's format.
 type ConstraintError struct {
 	Param string
 	Value string
 	Floor string
+	text  string
 }
 
-func (e *ConstraintError) Error() string {
-	return fmt.Sprintf("jsruntime: %s is %s, below the floor of %s", e.Param, e.Value, e.Floor)
+func (e *ConstraintError) Error() string { return e.text }
+
+// refusal is ThrowIfLessThan's message for name, value and floor as .NET
+// prints them.
+func refusal(param, name, value, floor string) *ConstraintError {
+	return &ConstraintError{Param: param, Value: value, Floor: floor,
+		text: fmt.Sprintf("%s ('%s') must be greater than or equal to '%s'. (Parameter '%s')\nActual value was %s.", name, value, floor, name, value)}
+}
+
+func durationRefusal(param string, value time.Duration) *ConstraintError {
+	return refusal(param, "timeout", timeSpan(value), timeSpan(MinimumTimeout))
+}
+
+// timeSpan is TimeSpan.ToString(), the "c" format: [-][d.]hh:mm:ss[.fffffff].
+// A TimeSpan counts 100 ns ticks, so the nanoseconds under a tick are cut.
+func timeSpan(d time.Duration) string {
+	ticks := int64(d / 100)
+	sign := ""
+	if ticks < 0 {
+		sign = "-"
+	}
+	// Negate as unsigned: the smallest int64 has no positive twin.
+	t := uint64(ticks)
+	if ticks < 0 {
+		t = -t
+	}
+	const second, day = 10_000_000, 864_000_000_000
+	days, rest := t/day, t%day
+	out := sign
+	if days > 0 {
+		out += fmt.Sprintf("%d.", days)
+	}
+	out += fmt.Sprintf("%02d:%02d:%02d", rest/(3600*second), rest/(60*second)%60, rest/second%60)
+	if fraction := rest % second; fraction != 0 {
+		out += fmt.Sprintf(".%07d", fraction)
+	}
+	return out
 }
 
 // Options configure a Pool. Zero values take the defaults.
 type Options struct {
 	// PoolSize bounds concurrent calls; callers wait for a free engine.
-	// 0 means max(1, min(NumCPU, 4)), as C#.
-	PoolSize int
+	// nil means max(1, min(NumCPU, 4)); under 1 is refused, as C#.
+	PoolSize *int
 	// Timeout is the default wall-clock budget of one call and of each load.
-	Timeout time.Duration
-	// MemoryBudget is the heap growth one call may cause. Approximate: see guard.go.
-	MemoryBudget int64
+	// nil means 10 s; under MinimumTimeout, 0 too, is refused, as C#.
+	Timeout *time.Duration
+	// MemoryBudget is the heap growth one call may cause. Approximate: see
+	// guard.go. nil means 1 GiB; under MinimumMemoryBudget, 0 too, is
+	// refused, as C#.
+	MemoryBudget *int64
 }
 
-// ValidateConstraints refuses a timeout or budget below its floor. Zero means
+// ValidateConstraints refuses a timeout or budget below its floor. nil means
 // the default and passes.
-func ValidateConstraints(timeout time.Duration, budget int64) error {
-	if budget != 0 && budget < MinimumMemoryBudget {
-		return &ConstraintError{Param: "MemoryBudget", Value: fmt.Sprint(budget), Floor: fmt.Sprint(MinimumMemoryBudget)}
+func ValidateConstraints(timeout *time.Duration, budget *int64) error {
+	if budget != nil && *budget < MinimumMemoryBudget {
+		return refusal("MemoryBudget", "allocationBudgetBytes", fmt.Sprint(*budget), fmt.Sprint(MinimumMemoryBudget))
 	}
-	if timeout != 0 && timeout < MinimumTimeout {
-		return &ConstraintError{Param: "Timeout", Value: timeout.String(), Floor: MinimumTimeout.String()}
+	if timeout != nil && *timeout < MinimumTimeout {
+		return durationRefusal("Timeout", *timeout)
+	}
+	return nil
+}
+
+// ValidatePoolSize refuses a pool size under 1. nil means the default.
+func ValidatePoolSize(size *int) error {
+	if size != nil && *size < 1 {
+		return refusal("PoolSize", "poolSize", fmt.Sprint(*size), "1")
 	}
 	return nil
 }
@@ -125,18 +179,27 @@ func NewPool(options Options) (*Pool, error) {
 	if err := ValidateConstraints(options.Timeout, options.MemoryBudget); err != nil {
 		return nil, err
 	}
-	if options.PoolSize < 0 {
-		return nil, &ConstraintError{Param: "PoolSize", Value: fmt.Sprint(options.PoolSize), Floor: "1"}
+	if err := ValidatePoolSize(options.PoolSize); err != nil {
+		return nil, err
 	}
-	size := options.PoolSize
-	if size == 0 {
-		size = max(1, min(runtime.NumCPU(), 4))
+	size := max(1, min(runtime.NumCPU(), 4))
+	if options.PoolSize != nil {
+		size = *options.PoolSize
 	}
 	program, err := compiled()
 	if err != nil {
 		return nil, &StartupError{Message: "Could not load Blok's runtime bundle into an engine.", Err: err}
 	}
-	return newPool(program, size, options.Timeout, options.MemoryBudget)
+	// newPool reads 0 as the default.
+	var timeout time.Duration
+	if options.Timeout != nil {
+		timeout = *options.Timeout
+	}
+	var budget int64
+	if options.MemoryBudget != nil {
+		budget = *options.MemoryBudget
+	}
+	return newPool(program, size, timeout, budget)
 }
 
 func newPoolFromSource(source string, size int, timeout time.Duration, budget int64) (*Pool, error) {
@@ -149,10 +212,11 @@ func newPoolFromSource(source string, size int, timeout time.Duration, budget in
 
 func newPool(program *goja.Program, size int, timeout time.Duration, budget int64) (*Pool, error) {
 	if size < 1 {
-		return nil, &ConstraintError{Param: "PoolSize", Value: fmt.Sprint(size), Floor: "1"}
+		return nil, refusal("PoolSize", "poolSize", fmt.Sprint(size), "1")
 	}
 	if budget < 0 {
-		return nil, &ConstraintError{Param: "MemoryBudget", Value: fmt.Sprint(budget), Floor: "1"}
+		// The constructor's own check, under C#'s name for it.
+		return nil, refusal("MemoryBudget", "budget", fmt.Sprint(budget), "1")
 	}
 	if timeout == 0 {
 		timeout = DefaultTimeout
@@ -186,8 +250,8 @@ func loadGuarded(program *goja.Program, timeout time.Duration, budget int64) (*R
 		case interruptBudget:
 			return nil, &StartupError{
 				Cause: StartupOverBudget,
-				Message: fmt.Sprintf("Loading Blok's runtime bundle into an engine grew the heap past the %d-byte "+
-					"memory budget this runtime was created with. Loading runs under the same budget as a "+
+				Message: fmt.Sprintf("Loading Blok's runtime bundle into an engine grew the live heap past the %d-byte "+
+					"memory budget this runtime was created with. Loading runs under the same memory budget as a "+
 					"conversion, so raise MemoryBudget: the default is %d bytes (1 GiB), and %d bytes is "+
 					"the floor this package accepts at all.", budget, DefaultMemoryBudget, MinimumMemoryBudget),
 				Err: err,
@@ -207,14 +271,16 @@ func loadGuarded(program *goja.Program, timeout time.Duration, budget int64) (*R
 }
 
 // Invoke runs one operation on a free engine, waiting for one if all are
-// busy. timeout 0 uses the pool's; any other value must be at least
-// MinimumTimeout. Errors are a *Failure, a *ConstraintError, or ctx.Err().
-func (p *Pool) Invoke(ctx context.Context, op, input string, timeout time.Duration) (string, error) {
-	if timeout < 0 || (timeout > 0 && timeout < MinimumTimeout) {
-		return "", &ConstraintError{Param: "timeout", Value: timeout.String(), Floor: MinimumTimeout.String()}
-	}
-	if timeout == 0 {
-		timeout = p.timeout
+// busy. A nil timeout uses the pool's; any other value, 0 too, must be at
+// least MinimumTimeout. Errors are a *Failure, a *ConstraintError, or
+// ctx.Err().
+func (p *Pool) Invoke(ctx context.Context, op, input string, timeout *time.Duration) (string, error) {
+	limit := p.timeout
+	if timeout != nil {
+		if *timeout < MinimumTimeout {
+			return "", durationRefusal("timeout", *timeout)
+		}
+		limit = *timeout
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -226,7 +292,7 @@ func (p *Pool) Invoke(ctx context.Context, op, input string, timeout time.Durati
 		return "", ctx.Err()
 	}
 
-	result, reusable, err := engine.guardedInvoke(ctx, op, input, timeout, p.budget)
+	result, reusable, err := engine.guardedInvoke(ctx, op, input, limit, p.budget)
 	if !reusable {
 		// A slot that is not refilled is lost for good, so a failed rebuild
 		// puts the spent engine back.
@@ -242,6 +308,9 @@ func (p *Pool) Invoke(ctx context.Context, op, input string, timeout time.Durati
 // guardedInvoke runs one call under the deadline, the memory watchdog and ctx.
 // reusable is false when the engine stopped mid-execution.
 func (r *Runtime) guardedInvoke(ctx context.Context, op, input string, timeout time.Duration, budget int64) (result string, reusable bool, err error) {
+	r.vm.SetMaxCallStackSize(callStackSize(op))
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
 	g := arm(r.vm, timeout, budget, ctx.Done())
 	result, err = r.safeInvoke(op, input)
 	g.disarm()
@@ -264,16 +333,25 @@ func (r *Runtime) guardedInvoke(ctx context.Context, op, input string, timeout t
 			return "", false, ctx.Err()
 		}
 		return "", false, &Failure{Kind: KindUnknown, Err: err}
-	// C#'s stack guard throws a JS RangeError and keeps the engine; goja's
-	// overflow unwinds cleanly too (measured: the next call runs).
+	// C#'s stack guard throws a JS RangeError that finally blocks see, and
+	// keeps the engine. goja's overflow skips every finally, so the bundle's
+	// state is left mid-call and the next document could nest less deep:
+	// the engine goes.
 	case errors.As(err, &overflow):
-		return "", true, &Failure{Kind: KindUnknown, Err: err}
+		return "", false, &Failure{Kind: KindUnknown, Err: err}
 	case errors.As(err, &jsErr):
 		return "", true, &Failure{Kind: classify(jsErr.Name), Err: err}
-	// No event loop: a promise pending now can never settle. The engine itself
-	// finished, so it is kept.
+	// No event loop: a promise pending now can never settle. As in C#, the
+	// wait ends at the caller's cancel or the call timeout, whichever comes
+	// first, so one request cannot hold an engine for good. Either way the
+	// engine is replaced.
 	case errors.Is(err, ErrPending):
-		return "", true, &Failure{Kind: KindUnknown, Err: err}
+		select {
+		case <-ctx.Done():
+			return "", false, ctx.Err()
+		case <-deadline.C:
+			return "", false, &Failure{Kind: KindTimedOut, Err: err}
+		}
 	// C# AsString throws and its catch-all replaces the engine.
 	case errors.Is(err, ErrNotAString):
 		return "", false, &Failure{Kind: KindUnknown, Err: err}
@@ -281,6 +359,15 @@ func (r *Runtime) guardedInvoke(ctx context.Context, op, input string, timeout t
 		return "", false, &Failure{Kind: KindUnknown, Err: err}
 	}
 	return "", false, &Failure{Kind: KindUnknown, Err: err}
+}
+
+// callStackSize is the frame cap of one call. An engine serves every op, so
+// it is set on each call.
+func callStackSize(op string) int {
+	if op == "blocksToPlainText" || op == "blocksToPlainTextWithReport" {
+		return PlainTextCallStackSize
+	}
+	return MaxCallStackSize
 }
 
 // classify reads a JS error's name as C# does: only SyntaxError (from

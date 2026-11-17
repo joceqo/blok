@@ -97,7 +97,7 @@ vi.mock('../../../../../src/components/i18n', () => ({
   },
 }));
 
-const createBlock = (blockMenu = { titled: false, trash: false }): Block => ({
+const createBlock = (blockMenu: { titled: boolean; trash: boolean; lead?: string[] } = { titled: false, trash: false }): Block => ({
   getTunes: vi.fn(() => ({ commonTunes: [] })),
   getActiveToolboxEntry: vi.fn(async () => undefined),
   name: 'page',
@@ -209,6 +209,16 @@ describe('BlockSettings — a tool that declares a titled block menu', () => {
     ]);
   });
 
+  it('puts the tool items named in lead before Turn into', async () => {
+    getConvertibleToolsForBlockMock.mockResolvedValueOnce([
+      { name: 'paragraph', toolbox: [{ icon: '<svg />', titleKey: 'text' }] },
+    ]);
+
+    const items = await tunesItems(createBlock({ titled: true, trash: true, lead: ['rename'] }));
+
+    expect(layout(items).slice(0, 5)).toEqual(['# toolNames.page', 'rename', 'convert-to', 'color', '---']);
+  });
+
   it('reads Delete as Move to Trash', async () => {
     getConvertibleToolsForBlockMock.mockResolvedValueOnce([]);
 
@@ -216,6 +226,32 @@ describe('BlockSettings — a tool that declares a titled block menu', () => {
     const remove = (items as Named[]).find((item) => item.name === 'delete');
 
     expect(remove?.title).toBe('blockSettings.moveToTrash');
+  });
+
+  it('shows the "Moved to Trash" toast once Move to Trash removed the block (Notion U108)', async () => {
+    getConvertibleToolsForBlockMock.mockResolvedValueOnce([]);
+    const block = createBlock({ titled: true, trash: true });
+    const show = vi.fn();
+    const steps: Array<Record<string, unknown> | undefined> = [undefined, {}];
+    const blok = createBlokMock();
+
+    Object.assign(blok, {
+      HistoryAPI: { latestStep: vi.fn(() => steps.shift()), undoStep: vi.fn() },
+      NotifierAPI: { show, dismiss: vi.fn(), isClosed: vi.fn(() => false) },
+      YjsManager: { onBeforeUserStep: vi.fn(() => () => undefined) },
+    });
+    Object.assign(blok.BlockManager as Record<string, unknown>, { getBlockById: vi.fn(() => undefined) });
+    blockSettings.state = blok as unknown as BlokModules;
+    const removeBlock = vi.fn(async () => undefined);
+    const tunes: MenuConfigItem[] = [{ name: 'delete', title: 'blockSettings.delete', onActivate: removeBlock }];
+    const items = await (blockSettings as unknown as {
+      getTunesItems: (b: Block, common: MenuConfigItem[], tool: MenuConfigItem[]) => Promise<PopoverItemParams[]>;
+    }).getTunesItems(block, tunes, toolTunes());
+    const remove = (items as Array<Named & { onActivate: (item: PopoverItemParams) => void }>).find((item) => item.name === 'delete');
+
+    remove?.onActivate(remove);
+    await vi.waitFor(() => expect(show).toHaveBeenCalledWith(expect.objectContaining({ message: 'tools.database.movedToTrash' })));
+    expect(removeBlock).toHaveBeenCalledTimes(1);
   });
 
   it('keeps one boundary when there is nothing to turn into', async () => {

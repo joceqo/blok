@@ -28,7 +28,14 @@ import { twMerge } from '../../components/utils/tw';
 
 import { TableCellBlocks, CELL_BLOCKS_ATTR } from './table-cell-blocks';
 import type { ConvertedBlock, InitCellContent } from './table-cell-blocks';
-import { pastedGridDirection, readPastedCell } from './table-cell-clipboard';
+import {
+  TABLE_COL_WIDTHS_ATTR,
+  TABLE_HEADINGS_ATTR,
+  TABLE_INITIAL_COL_WIDTH_ATTR,
+  pastedGridDirection,
+  readCopiedTableLayout,
+  readPastedCell,
+} from './table-cell-clipboard';
 import { TableGrid, ROW_ATTR, CELL_ATTR, CELL_ROW_ATTR, CELL_COL_ATTR, ownCells } from './table-core';
 import {
   applyCellColors,
@@ -576,7 +583,14 @@ export class Table implements BlockTool {
       // the HTML handler can expand the table into column blocks.
       tags: [
         // dir tells which side a pasted text-align: left/right means.
-        { TABLE: { 'data-blok-columns-candidate': true, dir: true } },
+        // The layout marks a whole-table copy writes (see tableClipboardHtml).
+        { TABLE: {
+          'data-blok-columns-candidate': true,
+          dir: true,
+          [TABLE_HEADINGS_ATTR]: true,
+          [TABLE_COL_WIDTHS_ATTR]: true,
+          [TABLE_INITIAL_COL_WIDTH_ATTR]: true,
+        } },
         'TR',
         { TH: { style: true, colspan: true, rowspan: true, align: true, valign: true, bgcolor: true } },
         { TD: { style: true, colspan: true, rowspan: true, align: true, valign: true, bgcolor: true } },
@@ -630,6 +644,8 @@ export class Table implements BlockTool {
 
     wrapper.className = twMerge(WRAPPER_CLASSES, !this.readOnly && WRAPPER_EDIT_CLASSES);
     wrapper.setAttribute(DATA_ATTR.tool, 'table');
+    // Full-screen CSS targets the root by this, see tables.css.
+    wrapper.setAttribute('data-blok-table-root', '');
 
     if (this.readOnly) {
       wrapper.setAttribute('data-blok-table-readonly', '');
@@ -676,7 +692,6 @@ export class Table implements BlockTool {
       overlay.style.position = 'absolute';
       overlay.style.inset = '0';
       overlay.style.pointerEvents = 'none';
-      overlay.style.zIndex = '3';
       wrapper.appendChild(overlay);
       this.gripOverlay = overlay;
     }
@@ -747,16 +762,16 @@ export class Table implements BlockTool {
         icon: IconHeaderRow,
         title: i18n.t('tools.table.headerRow'),
         name: 'table-heading-row',
-        isActive: this.model.withHeadings,
-        closeOnActivate: true,
+        // A switch: it toggles in place and the menu stays open (Notion U161).
+        isActive: (): boolean => this.model.withHeadings,
         onActivate: (): void => this.toggleHeadingRow(),
       },
       {
         icon: IconHeaderColumn,
         title: i18n.t('tools.table.headerColumn'),
         name: 'table-heading-column',
-        isActive: this.model.withHeadingColumn,
-        closeOnActivate: true,
+        // A switch: it toggles in place and the menu stays open (Notion U161).
+        isActive: (): boolean => this.model.withHeadingColumn,
         onActivate: (): void => this.toggleHeadingColumn(),
       },
       {
@@ -1008,7 +1023,6 @@ export class Table implements BlockTool {
       overlay.style.position = 'absolute';
       overlay.style.inset = '0';
       overlay.style.pointerEvents = 'none';
-      overlay.style.zIndex = '3';
       wrapper.appendChild(overlay);
       this.gripOverlay = overlay;
 
@@ -1513,19 +1527,23 @@ export class Table implements BlockTool {
 
     const isTh = (cell: Element | undefined): boolean => cell?.tagName === 'TH';
     const hasTheadHeadings = rows.some(row => row.parentElement?.tagName === 'THEAD');
-    const hasThHeadings = rows[0] !== undefined && ownPastedCells(rows[0]).some(isTh);
+    const firstRowCells = rows[0] === undefined ? [] : ownPastedCells(rows[0]);
     // A th opening every row is a heading column. One row is a header row instead.
     const withHeadingColumn = rows.length >= 2 && rows.every(row => isTh(ownPastedCells(row)[0]));
-    // Notion parity: pasted spreadsheet/HTML data treats its first row as the
-    // header by default. Explicit thead/th force it on; otherwise any multi-row
-    // paste heads its first row. A single-row paste has no body to head, so it
-    // stays plain (matches the "paste over a fully configured table" contract).
-    const withHeadings = hasTheadHeadings || hasThHeadings || rows.length >= 2;
+    // Only the markup heads a row, never the row count: a heading column alone
+    // puts a th in the first row too, so the whole row must be th.
+    const withHeadings = hasTheadHeadings || (firstRowCells.length > 0 && firstRowCells.every(isTh));
+    // A table Blok copied says its own layout, so nothing is guessed for it.
+    const copied = readCopiedTableLayout(content, tableContent[0]?.length ?? 0);
 
     this.initialContent = tableContent;
-    this.model.setWithHeadings(withHeadings);
-    this.model.setWithHeadingColumn(withHeadingColumn);
-    this.model.setColWidths(undefined);
+    this.model.setWithHeadings(copied?.withHeadings ?? withHeadings);
+    this.model.setWithHeadingColumn(copied?.withHeadingColumn ?? withHeadingColumn);
+    this.model.setColWidths(copied?.colWidths);
+
+    if (copied?.initialColWidth !== undefined) {
+      this.model.setInitialColWidth(copied.initialColWidth);
+    }
     // Push the parsed grid into the model BEFORE render() so the merge-aware
     // path (createGridFromModel) builds the DOM with colspan/rowspan.
     this.model.replaceAll({
@@ -1621,6 +1639,23 @@ export class Table implements BlockTool {
       this.cellBlocks?.deleteBlocks(blocksToDelete);
       this.grid.deleteColumn(gridEl, colIndex);
     });
+  }
+
+  /**
+   * Undo and redo hand back the cell range this table marked with
+   * `data-blok-tool-selection` (Notion U162).
+   * @param state - the recorded `{ minRow, maxRow, minCol, maxCol }`
+   */
+  public restoreHistorySelection(state: Record<string, unknown>): void {
+    const { minRow, maxRow, minCol, maxCol } = state;
+    const isIndex = (value: unknown, size: number): value is number =>
+      typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < size;
+
+    if (!isIndex(minRow, this.model.rows) || !isIndex(maxRow, this.model.rows) || !isIndex(minCol, this.model.cols) || !isIndex(maxCol, this.model.cols)) {
+      return;
+    }
+
+    this.subsystems.cellSelectionSubsystem?.selectRange({ minRow, maxRow, minCol, maxCol });
   }
 
   public getBlockIdsInRow(rowIndex: number): string[] {

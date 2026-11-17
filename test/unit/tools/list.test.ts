@@ -6,6 +6,7 @@ import type { I18nDictionary } from '../../../types/configs';
 import type { MenuConfig } from '../../../types/tools/menu-config';
 import { analyzeDataFormat, expandToHierarchical, collapseToLegacy } from '../../../src/components/utils/data-model-transform';
 import type { OutputBlockData } from '../../../types';
+import { REPARENT_IN_PLACE } from '../../../src/components/utils/index-move-neighbours';
 
 /**
  * Creates a mock API object for testing with custom dictionary
@@ -156,6 +157,84 @@ describe('List Tool - rAF timing fixes', () => {
     expect(list.save().style).toBe('ordered');
     // No marker update needed when style doesn't change
     expect(scheduleUpdateAllSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('List Tool - renumbering follows the style', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const pickStyle = (list: List, style: string): void => {
+    const item = toMenuArray(list.renderSettings()).find((entry) => entry.name === `list-style-${style}`);
+    const activate = item?.onActivate;
+
+    expect(typeof activate).toBe('function');
+    if (typeof activate === 'function') {
+      activate();
+    }
+  };
+
+  it('a bulleted item turned numbered listens for sibling adds and removes, and stops when removed', () => {
+    const options = createListOptions({ text: 'item', style: 'unordered' });
+    const onSpy = vi.spyOn(options.api.events, 'on');
+    const offSpy = vi.spyOn(options.api.events, 'off');
+    const list = new List(options);
+
+    list.render();
+    pickStyle(list, 'ordered');
+
+    expect(onSpy).toHaveBeenCalledWith('block changed', expect.any(Function));
+
+    list.removed();
+
+    expect(offSpy).toHaveBeenCalledWith('block changed', onSpy.mock.calls[0]?.[1]);
+  });
+
+  it('a numbered item turned bulleted stops listening for sibling changes', () => {
+    const options = createListOptions({ text: 'item', style: 'ordered' });
+    const onSpy = vi.spyOn(options.api.events, 'on');
+    const offSpy = vi.spyOn(options.api.events, 'off');
+    const list = new List(options);
+
+    list.render();
+    pickStyle(list, 'unordered');
+
+    expect(offSpy).toHaveBeenCalledWith('block changed', onSpy.mock.calls[0]?.[1]);
+  });
+
+  it('an item filled by pasting a numbered list listens for sibling adds and removes', () => {
+    const options = createListOptions({ text: '', style: 'unordered' });
+    const onSpy = vi.spyOn(options.api.events, 'on');
+    const list = new List(options);
+    const ol = document.createElement('ol');
+    const li = document.createElement('li');
+
+    li.textContent = 'pasted';
+    ol.appendChild(li);
+    list.render();
+    list.onPaste(new CustomEvent('tag', { detail: { data: li } }));
+
+    expect(list.save().style).toBe('ordered');
+    expect(onSpy).toHaveBeenCalledWith('block changed', expect.any(Function));
+  });
+
+  it('switching numbered → bulleted → numbered leaves exactly one listener', () => {
+    const options = createListOptions({ text: 'item', style: 'ordered' });
+    const onSpy = vi.spyOn(options.api.events, 'on');
+    const offSpy = vi.spyOn(options.api.events, 'off');
+    const list = new List(options);
+
+    list.render();
+    pickStyle(list, 'unordered');
+    pickStyle(list, 'ordered');
+
+    expect(onSpy.mock.calls.filter(([name]) => name === 'block changed').length
+      - offSpy.mock.calls.filter(([name]) => name === 'block changed').length).toBe(1);
   });
 });
 
@@ -990,5 +1069,31 @@ describe('List Tool - moved() marker refresh', () => {
     expect(marker.textContent).toBe('a.');
     // data.depth stays in sync so drag and serialization keep working.
     expect(list.save().depth).toBe(1);
+  });
+
+  it('keeps its depth on a reparent in place, even after a deeper flat item', () => {
+    // A paste into a table cell or a callout reparents each item without moving it.
+    const neighbors = [makeListBlock(0), makeListBlock(1)];
+    const api = createMockAPI();
+
+    api.blocks.getById = () => null;
+    api.blocks.getBlockByIndex = (index: number) => neighbors[index] as never;
+    api.blocks.getBlockIndex = () => 2;
+    api.blocks.getCurrentBlockIndex = () => 2;
+    api.blocks.getBlocksCount = () => 3;
+
+    const list = new List({
+      data: { text: 'done', style: 'unordered', depth: 0 },
+      config: {},
+      api,
+      readOnly: false,
+      block: { id: 'done' } as never,
+    });
+    const element = list.render();
+
+    list.moved({ fromIndex: 2, toIndex: 2, [REPARENT_IN_PLACE]: true });
+
+    expect(list.save().depth ?? 0).toBe(0);
+    expect(element.getAttribute('data-list-depth')).toBe('0');
   });
 });

@@ -28,14 +28,34 @@ var restricted = map[string]map[string]bool{
 	},
 	"net":        {"Dial": true, "DialTimeout": true, "Dialer": true, "DialTCP": true, "DialUDP": true, "DialIP": true, "DialUnix": true},
 	"crypto/tls": {"Dial": true, "DialWithDialer": true, "Client": true, "Dialer": true},
+	// C# bans ClientWebSocket everywhere, pinned owners too. NewConfig is
+	// listed because Config.DialContext is a method the scan cannot see.
+	"golang.org/x/net/websocket": {"Dial": true, "DialConfig": true, "NewConfig": true, "NewClient": true},
+	// An unguarded transport that honours the proxy environment.
+	socketsPackage: {"NewSocketsTransport": true, "SocketsTransport": true},
 }
+
+const (
+	socketsPackage = "github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
+	socketsOwner   = "internal/dotnet/sockets.go"
+)
 
 const guardOwner = "internal/outbound/fetcher.go"
 
 // pinned owners may make one of each, and nothing else restricted.
 var pinned = map[string]map[string]int{
-	"internal/blob/s3.go":                   {"http.Client": 1, "http.Transport": 1, "net.Dialer": 1},
-	"internal/collab/docendpoint/client.go": {"http.Client": 1, "http.Transport": 1, "net.Dialer": 1},
+	"internal/blob/s3.go":                   {"http.Client": 1, "dotnet.NewSocketsTransport": 1},
+	"internal/collab/docendpoint/client.go": {"http.Client": 1, "dotnet.NewSocketsTransport": 1},
+	// The MCP server's one client. It reaches only URLs the operator set at
+	// start: the doc endpoint and list route, the authorize webhook, the
+	// ticket route, the OAuth JWKS and the sync upgrade. The upgrade needs
+	// net/http's own transport: the sockets one hands back no writable body.
+	"blokmcp/outbound.go": {"http.Client": 1, "dotnet.NewSocketsTransport": 1, "http.Transport": 1},
+	// The embed example's document store: a host's own code, not Blok's. It
+	// reaches only the --example-source URL the operator set at start.
+	"examples/mcp-embed/source.go": {"http.DefaultClient": 1},
+	// SocketsHttpHandler's rules, shared by those two operator clients only.
+	socketsOwner: {"http.Transport": 1, "net.Dialer": 1, "tls.Client": 1},
 }
 
 type use struct {
@@ -67,12 +87,17 @@ func findUses(path string, source []byte) ([]use, error) {
 	}
 	var uses []use
 	var parents []ast.Node
+	// Inside package dotnet the transport needs no selector.
+	local := strings.HasPrefix(path, "internal/dotnet/") && path != socketsOwner
 	ast.Inspect(file, func(node ast.Node) bool {
 		if node == nil {
 			parents = parents[:len(parents)-1]
 			return true
 		}
 		parents = append(parents, node)
+		if ident, ok := node.(*ast.Ident); ok && local && restricted[socketsPackage][ident.Name] {
+			uses = append(uses, use{path, "dotnet." + ident.Name, fileSet.Position(ident.Pos()).Line})
+		}
 		selector, ok := node.(*ast.SelectorExpr)
 		if !ok {
 			return true
@@ -165,27 +190,37 @@ func TestOnlyTheGuardedFetcherOwnsOutboundClients(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(found) > 0 {
-		t.Fatalf("outbound networking may only be owned by the guarded fetcher, the pinned S3 store or the doc-endpoint client:\n%s",
+		t.Fatalf("outbound networking may only be owned by the guarded fetcher, the pinned S3 store, the doc-endpoint client or the MCP client:\n%s",
 			strings.Join(found, "\n"))
 	}
 }
 
 func TestTheLawCatchesPlantedViolations(t *testing.T) {
 	cases := map[string]string{
-		"a client literal":             "package p\nimport \"net/http\"\nvar c = &http.Client{}",
-		"an aliased transport":         "package p\nimport h \"net/http\"\nvar t = h.Transport{}",
-		"the default client":           "package p\nimport \"net/http\"\nfunc f() { http.Get(\"x\") }",
-		"a raw dial":                   "package p\nimport \"net\"\nfunc f() { net.Dial(\"tcp\", \"x\") }",
-		"a TLS dial":                   "package p\nimport \"crypto/tls\"\nfunc f() { tls.Dial(\"tcp\", \"x\", nil) }",
-		"a dot import":                 "package p\nimport . \"net/http\"\nvar c = Client{}",
-		"a second client in S3":        "package blob\nimport \"net/http\"\nvar a, b = &http.Client{}, &http.Client{}",
-		"a second doc endpoint client": "package docendpoint\nimport \"net/http\"\nvar a, b = &http.Client{}, &http.Client{}",
-		"a new restricted name":        "package p\nimport \"net/http\"\nvar c = new(http.Client)",
-		"a client in a new place":      "package p\nimport \"net/http\"\nvar c http.Client",
-		"a pointer then a call":        "package p\nimport \"net/http\"\nvar c *http.Client = http.DefaultClient",
+		"a client literal":                       "package p\nimport \"net/http\"\nvar c = &http.Client{}",
+		"an aliased transport":                   "package p\nimport h \"net/http\"\nvar t = h.Transport{}",
+		"the default client":                     "package p\nimport \"net/http\"\nfunc f() { http.Get(\"x\") }",
+		"a raw dial":                             "package p\nimport \"net\"\nfunc f() { net.Dial(\"tcp\", \"x\") }",
+		"a TLS dial":                             "package p\nimport \"crypto/tls\"\nfunc f() { tls.Dial(\"tcp\", \"x\", nil) }",
+		"a dot import":                           "package p\nimport . \"net/http\"\nvar c = Client{}",
+		"a second client in S3":                  "package blob\nimport \"net/http\"\nvar a, b = &http.Client{}, &http.Client{}",
+		"a second doc endpoint client":           "package docendpoint\nimport \"net/http\"\nvar a, b = &http.Client{}, &http.Client{}",
+		"a new restricted name":                  "package p\nimport \"net/http\"\nvar c = new(http.Client)",
+		"a client in a new place":                "package p\nimport \"net/http\"\nvar c http.Client",
+		"a pointer then a call":                  "package p\nimport \"net/http\"\nvar c *http.Client = http.DefaultClient",
+		"a websocket dial":                       "package p\nimport \"golang.org/x/net/websocket\"\nfunc f() { websocket.Dial(\"ws://x\", \"\", \"http://x\") }",
+		"a websocket config in S3":               "package blob\nimport \"golang.org/x/net/websocket\"\nfunc f() { websocket.NewConfig(\"ws://x\", \"http://x\") }",
+		"a websocket client in the doc endpoint": "package docendpoint\nimport ws \"golang.org/x/net/websocket\"\nfunc f() { ws.NewClient(nil, nil) }",
+		"a sockets transport in a new place":     "package p\nimport \"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet\"\nvar t = dotnet.NewSocketsTransport(dotnet.SocketsOptions{})",
+		"a sockets transport literal":            "package p\nimport d \"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet\"\nvar t = d.SocketsTransport{}",
+		"a second sockets transport in S3":       "package blob\nimport \"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet\"\nvar a, b = dotnet.NewSocketsTransport(dotnet.SocketsOptions{}), dotnet.NewSocketsTransport(dotnet.SocketsOptions{})",
+		"a sockets transport inside dotnet":      "package dotnet\nvar t = NewSocketsTransport(SocketsOptions{})",
 	}
 	for name, source := range cases {
 		path := "internal/somewhere/x.go"
+		if strings.Contains(name, "inside dotnet") {
+			path = "internal/dotnet/x.go"
+		}
 		if strings.Contains(name, "S3") {
 			path = "internal/blob/s3.go"
 		}

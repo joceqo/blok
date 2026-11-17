@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { getTranslation, translations } from '../../i18n';
-import { serverCoverageNote, serverLimits, serverPaths } from './server-data';
+import { serverCoverageNote, serverLimits, serverMcpBuilds, serverMcpDifferences, serverMcpIntro, serverPaths } from './server-data';
 
 /** Repo root — docs/src/components/server → up four levels. */
 const BLOK_ROOT = resolve(__dirname, '..', '..', '..', '..');
@@ -66,9 +66,117 @@ const overlayKeys = (): string[] => [
     `server.limits.${limit.id}.title`,
     `server.limits.${limit.id}.body`,
   ]),
+  'server.mcpHeading',
+  'server.mcpIntro',
+  'server.mcpDifferences',
+  ...serverMcpBuilds.flatMap((build) => {
+    const base = `server.mcp.${build.id}`;
+
+    return [
+      `${base}.title`,
+      `${base}.description`,
+      ...build.samples.map((_, index) => `${base}.samples.${index}.label`),
+    ];
+  }),
 ];
 
 describe('server docs data', () => {
+  describe('MCP facts read from the ports', () => {
+    const value = (locale: 'en' | 'ru', key: string): string => {
+      const found = key.split('.').reduce<unknown>(
+        (node, part) => (typeof node === 'object' && node !== null ? (node as Record<string, unknown>)[part] : undefined),
+        translations[locale],
+      );
+
+      return typeof found === 'string' ? found : '';
+    };
+
+    // BlokMcpOptions.Authorize: with neither hook, MapBlokMcp refuses to start (BlokMcpServiceCollectionExtensions.cs ConfigOf).
+    it.each([
+      ['en', serverMcpBuilds.find(build => build.id === 'csharp')?.description ?? ''],
+      ['ru', ''],
+    ] as const)('says the C# library refuses to start without a per-document check (%s)', (locale, source) => {
+      const csharp = value(locale, 'server.mcp.csharp.description');
+
+      if (locale === 'en') {
+        expect(csharp).toBe(source);
+      }
+      expect(csharp).toMatch(/MapBlokMcp[\s\S]*AllowEveryCallerEveryDocument/);
+      expect(csharp).not.toMatch(/every caller reaches every document|любой вызывающий получает любой документ/);
+    });
+
+    it.each([
+      ['en', serverMcpDifferences],
+      ['ru', ''],
+    ] as const)('lists the Host check, Rust hosts and in-process rooms of every port (%s)', (locale, source) => {
+      const differences = value(locale, 'server.mcpDifferences');
+
+      if (locale === 'en') {
+        expect(differences).toBe(source);
+      }
+      // BlokMcpOptions.AllowedHosts; rust http.rs `opted_in`; Go Options.Rooms, Rust Embedded::new `rooms`, C# LiveRooms + SyncUrl.
+      for (const fact of ['AllowedHosts', '`hosts`', 'LiveRooms', 'Options.Rooms', '`rooms`', 'SyncUrl']) {
+        expect(differences, fact).toContain(fact);
+      }
+      expect(differences).not.toMatch(/C# library opens live handles only|C# открывает живые хэндлы только/);
+    });
+
+    it.each([
+      ['en', serverMcpIntro],
+      ['ru', ''],
+    ] as const)('documents the 48-level nesting limit every build shares (%s)', (locale, source) => {
+      const intro = value(locale, 'server.mcpIntro');
+
+      if (locale === 'en') {
+        expect(intro).toBe(source);
+      }
+      expect(intro).toContain('48');
+      expect(intro).not.toMatch(/No release has shipped|не выходили ни в одном релизе/);
+    });
+  });
+
+  describe('MCP builds', () => {
+    const build = (id: string) => serverMcpBuilds.find((entry) => entry.id === id);
+    const code = (id: string): string => (build(id)?.samples ?? []).map((sample) => sample.code).join('\n');
+
+    it('lists Node, C#, Go and Rust, Node first', () => {
+      expect(serverMcpBuilds.map((entry) => entry.id)).toEqual(['node', 'csharp', 'go', 'rust']);
+    });
+
+    // Signatures read from Blok.Server.Mcp: AddBlokMcp(Action<BlokMcpOptions>), MapBlokMcp(string pattern = "/mcp").
+    it('installs the C# tool and maps the library the way its API reads', () => {
+      expect(code('csharp')).toContain('dotnet tool install -g Blok.Mcp');
+      expect(code('csharp')).toContain('dnx Blok.Mcp --yes -- --source files:./docs');
+      expect(code('csharp')).toContain('dotnet add package Blok.Server.Mcp');
+      expect(code('csharp')).toContain('builder.Services.AddBlokMcp(options =>');
+      expect(code('csharp')).toContain('options.FilesDirectory = ');
+      expect(code('csharp')).toContain('app.MapBlokMcp("/mcp");');
+    });
+
+    // Handler() refuses unless Transport.Kind is "http". The module path ends in /v2.
+    it('installs the Go command and embeds blokmcp.New with an HTTP transport', () => {
+      expect(code('go')).toContain('go install github.com/JackUait/blok/packages/server/go/v2/cmd/blok-mcp@latest');
+      expect(code('go')).toContain('blokmcp.New(blokmcp.Options{');
+      expect(code('go')).toContain('Transport: blokmcp.Transport{Kind: "http"');
+      expect(code('go')).toContain('server.Handler()');
+    });
+
+    it('installs the Rust command from crates.io and adds the crate to an app', () => {
+      expect(code('rust')).toContain('cargo install blok-mcp');
+      expect(code('rust')).toContain('cargo add blok-mcp');
+      expect(build('rust')?.description).toMatch(/crates\.io/);
+    });
+
+    it('flags package and tool installs, and only those, as install copies', () => {
+      const isInstall = (text: string) =>
+        /^(cargo add|cargo install|dotnet add package|dotnet tool install|go install|npm install)\b/.test(text);
+
+      for (const sample of serverMcpBuilds.flatMap((entry) => entry.samples)) {
+        expect(sample.install === true, sample.label).toBe(isInstall(sample.code));
+      }
+    });
+  });
+
   // The gap that let three separate corrections ship to nobody. `translateOr`
   // falls back to the TypeScript literal, so a key missing from BOTH bundles
   // renders English on /ru with no error; and `yarn i18n:check:docs` only diffs
@@ -376,6 +484,9 @@ describe('server docs data', () => {
       '--collab-s3-prefix',
       '--doc-endpoint',
       '--doc-endpoint-auth',
+      '--file-bytes',
+      '--file-bytes-max-bytes',
+      '--files-cors',
       '--listen',
       '--max-upload',
       '--no-unfurl',
@@ -451,7 +562,7 @@ describe('server docs data', () => {
     expect(prose).toMatch(inOrder('--rate-limit', 'ticket', '60', 'otherwise', '0'));
   });
 
-  it('states the thirty-three service limits the design refuses to bury', () => {
+  it('states the thirty-seven service limits the design refuses to bury', () => {
     expect(serverLimits.map((l) => l.id)).toEqual([
       'no-documents',
       'collab-replaces-persistence',
@@ -468,7 +579,11 @@ describe('server docs data', () => {
       'asset-cors',
       's3-untested',
       'cors-preflight',
+      'loopback-host',
       'upload-by-url-json',
+      'frame-check',
+      'file-bytes',
+      'outbound-redirects',
       'proxy-rate-limit',
       'ticket-not-scoped',
       'collab-pass-lifetime',
@@ -493,10 +608,54 @@ describe('server docs data', () => {
     }
   });
 
-  it('prices version history: points, the five routes, the journal and trimming', () => {
+  it('describes GET /frame-check: its verdicts, what counts, and that it is only a hint', () => {
+    const body = serverLimits.find((l) => l.id === 'frame-check')?.body ?? '';
+
+    expect(body).toMatch(inOrder('GET /frame-check', '/unfurl'));
+    expect(body).toMatch(inOrder('blocked', 'frame-ancestors', 'X-Frame-Options'));
+    expect(body).toMatch(/Report-only/);
+    expect(body).toMatch(inOrder('insecure', 'https'));
+    expect(body).toMatch(inOrder('unknown', 'Origin'));
+    expect(body).toMatch(/linkPaste\.checkEmbed/);
+    expect(body).toMatch(/not a security check/);
+  });
+
+  it('describes GET /file-bytes: off by default, PDF only, 1 MiB an answer, and its statuses', () => {
+    const body = serverLimits.find((l) => l.id === 'file-bytes')?.body ?? '';
+
+    expect(body).toMatch(inOrder('GET /file-bytes', 'off by default', '--file-bytes'));
+    expect(body).toMatch(/--no-unfurl/);
+    expect(body).toMatch(inOrder('--file-bytes-max-bytes', '100 MiB'));
+    expect(body).toMatch(inOrder('FileBytesEnabled', 'FileBytesMaxBytes', 'FilesCors'));
+    expect(body).toMatch(/FilesCORS/);
+    expect(body).toMatch(/%PDF-/);
+    expect(body).toMatch(/1 MiB/);
+    expect(body).toMatch(/write: false/);
+    for (const status of ['404', '413', '415', '416', '429', '502']) {
+      expect(body).toContain(status);
+    }
+    expect(body).toMatch(inOrder('--files-cors', '--allow-origin'));
+  });
+
+  it('prices the outbound fetch limits: five redirects, no https to http, each hop rate-limited', () => {
+    const body = serverLimits.find((l) => l.id === 'outbound-redirects')?.body ?? '';
+
+    expect(body).toMatch(/5 redirects/);
+    expect(body).toMatch(inOrder('https', 'http', 'refused'));
+    expect(body).toMatch(/64 KiB/);
+    expect(body).toMatch(inOrder('each redirect hop', 'rate'));
+    expect(body).toMatch(/--rate-limit/);
+  });
+
+  it('prices version history: points, the eight routes, the journal and trimming', () => {
     const body = serverLimits.find((l) => l.id === 'collab-version-history')?.body ?? '';
 
-    expect(body).toMatch(/Five routes/);
+    expect(body).toMatch(/Eight routes/);
+    expect(body).toMatch(inOrder('truncated', 'olderEnd', 'olderEnd.sequence'));
+    expect(body).toMatch(inOrder('detail=properties', 'database-row', 'properties', 'database', 'schema', 'created', 'views'));
+    expect(body).toMatch(inOrder('GET /sync/\\{doc\\}/history/at', 'offset', '%2B', '302', 'application/json', 'not_found'));
+    expect(body).toMatch(inOrder('GET /sync/\\{doc\\}/history/changes', 'from', 'to', '24 hours', 'before=', 'olderEnd'));
+    expect(body).toMatch(inOrder('POST /sync/\\{doc\\}/history/\\{lineage\\}/\\{sequence\\}/restore/preview', 'expectRevision', 'If-Match', '404'));
     expect(body).toMatch(inOrder('group', '1, 15 or 60', '400'));
     expect(body).toMatch(inOrder('GET /sync/\\{doc\\}/history/\\{lineage\\}/\\{sequence\\}/changes', 'since', 'truncated'));
     expect(body).toMatch(inOrder('added', 'removed', 'changed', 'moved'));

@@ -6,6 +6,8 @@
  */
 import type { History, HistoryStep, HistoryValue, HistoryValueChange, HistoryValueData } from '../../../../types/api';
 import { Module } from '../../__module';
+import { HistoryDraftsCommit } from '../../events/HistoryDraftsCommit';
+import { announceHistoryPress } from '../../utils/history-announcement';
 import type { CaretHistoryEntry } from '../yjs/types';
 
 /**
@@ -15,6 +17,8 @@ export class HistoryAPI extends Module {
   /** One handle per entry, so a step taken twice compares equal. */
   private readonly handles = new WeakMap<CaretHistoryEntry, HistoryStep>();
   private readonly entries = new WeakMap<HistoryStep, CaretHistoryEntry>();
+  /** Walks waiting for a committed draft's save to land, oldest first. */
+  private readonly waitingWalks: Array<'undo' | 'redo'> = [];
 
   /**
    * Available methods
@@ -54,23 +58,95 @@ export class HistoryAPI extends Module {
   }
 
   /**
-   * Undo the last operation. Does nothing while read-only, like Cmd+Z.
+   * A key press in the page title: one undo or redo, then say what it did.
+   * @param direction - which history to walk
    */
-  public undo(): void {
+  public press(direction: 'undo' | 'redo'): void {
     if (this.Blok.ReadOnly.isEnabled) {
       return;
     }
-    this.Blok.YjsManager.undo();
+
+    const { YjsManager, I18n } = this.Blok;
+    const applied = direction === 'undo' ? YjsManager.undo(true) : YjsManager.redo();
+
+    announceHistoryPress((key) => I18n.t(key), direction, applied);
+  }
+
+  /**
+   * Undo the last operation. Does nothing while read-only, like Cmd+Z.
+   */
+  public undo(): void {
+    this.walk('undo');
   }
 
   /**
    * Redo the last undone operation. Does nothing while read-only, like Cmd+Shift+Z.
    */
   public redo(): void {
+    this.walk('redo');
+  }
+
+  /**
+   * Open drafts are written first, as their own step. Their saves land
+   * later, so the walk waits for them; a call made meanwhile queues behind
+   * it, or it would walk past the draft before the draft is a step.
+   * @param direction - which history to walk
+   */
+  private walk(direction: 'undo' | 'redo'): void {
     if (this.Blok.ReadOnly.isEnabled) {
       return;
     }
-    this.Blok.YjsManager.redo();
+    if (this.waitingWalks.length > 0) {
+      this.waitingWalks.push(direction);
+
+      return;
+    }
+    const { YjsManager } = this.Blok;
+
+    if (!this.commitDrafts(direction)) {
+      this.step(direction);
+
+      return;
+    }
+    this.waitingWalks.push(direction);
+    YjsManager.onPendingBlockWritesSettled(() => {
+      this.waitingWalks.splice(0).forEach((waiting) => {
+        if (!this.Blok.ReadOnly.isEnabled && !YjsManager.isDestroying) {
+          this.step(waiting);
+        }
+      });
+    });
+  }
+
+  /**
+   * Asks open drafts to write themselves as one new step.
+   * @param direction - the walk that asks
+   * @returns true when a tool wrote, so a new step may now sit on top
+   */
+  private commitDrafts(direction: 'undo' | 'redo'): boolean {
+    const { YjsManager } = this.Blok;
+    const drafts = { written: false };
+
+    this.eventsDispatcher.emit(HistoryDraftsCommit, {
+      direction,
+      commit: (write) => {
+        if (!drafts.written) {
+          YjsManager.beginGesture('discrete');
+          drafts.written = true;
+        }
+        write();
+      },
+    });
+
+    return drafts.written;
+  }
+
+  private step(direction: 'undo' | 'redo'): void {
+    if (direction === 'undo') {
+      this.Blok.YjsManager.undo();
+    } else {
+      this.Blok.YjsManager.redo();
+    }
   }
 
   /**
@@ -124,18 +200,31 @@ export class HistoryAPI extends Module {
   }
 
   /**
+   * @param step - a handle from {@link latestStep}
+   * @returns true when the step is the next redo: it was just undone
+   */
+  public isStepUndone(step: HistoryStep): boolean {
+    const entry = this.entries.get(step);
+
+    return entry !== undefined && this.Blok.YjsManager.topRedoToken() === entry;
+  }
+
+  /**
    * Undo this step only while it is still the newest. Does nothing while read-only.
    * @param step - a handle from {@link latestStep}
+   * @param userPress - Blok's own undo control pressed it, like the undo key (the public method never passes it)
    * @returns true when the step was undone
    */
-  public undoStep(step: HistoryStep): boolean {
+  public undoStep(step: HistoryStep, userPress = false): boolean {
     const entry = this.entries.get(step);
 
     if (entry === undefined || this.Blok.ReadOnly.isEnabled) {
       return false;
     }
+    // A draft's save lands after this undo, as the newest step: the undo cannot drop it.
+    this.commitDrafts('undo');
     this.Blok.YjsManager.flushPendingBlockWrites();
 
-    return this.Blok.YjsManager.undoStep(entry);
+    return this.Blok.YjsManager.undoStep(entry, userPress);
   }
 }

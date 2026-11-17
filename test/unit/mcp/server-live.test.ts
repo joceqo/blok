@@ -370,6 +370,85 @@ describe('assembleMcp with a sync URL: history.undo on a live handle', () => {
     vi.restoreAllMocks();
   });
 
+  // The ports refuse this in the shared agentExecute; a room this deep is one no port could open.
+  it('refuses a write that would nest the room\'s document deeper than 48 levels, and sends it nowhere', async () => {
+    const opened = (await mcp.dispatch('blok_open', { documentId: 'doc', write: true }, caller)).structuredContent;
+
+    expect(await run(opened.handle, [{ name: 'database.create', args: { title: 'D', view: 'table' } }])).toMatchObject({ ok: true });
+    const read = (await mcp.dispatch('blok_read', { handle: opened.handle, detail: 'full' }, caller)).structuredContent;
+    const db = (read.blocks as Array<{ id: string; type: string; data: { views: Array<{ id: string }>; schema: Array<{ id: string }> } }>)
+      .find(block => block.type === 'database');
+
+    if (db === undefined) {
+      throw new Error('no database block');
+    }
+    const nested = (levels: number): unknown => Array.from({ length: levels }).reduce<unknown>((inner) => [inner], 'z');
+    // arguments(1) commands(2) command(3) args(4) changes(5) filters(6) rule(7) value(8...): 48 in the arguments, 49 in the document.
+    const filter = (levels: number): unknown[] => [{
+      name: 'database.updateView',
+      args: { id: db.id, viewId: db.data.views[0].id, changes: { filters: [{ propertyId: db.data.schema[0].id, operator: 'equals', value: nested(levels) }] } },
+    }];
+
+    // The ports' refusal, key for key: no revision.
+    expect(await run(opened.handle, filter(41))).toStrictEqual({
+      ok: false,
+      error: {
+        code: 'INVALID_ARGS',
+        message: 'This batch would nest the document deeper than 48 levels of objects and arrays, so nothing was saved. Send flatter data.',
+        retryable: false,
+      },
+      delivery: { durable: false, pending: false, serverSequence: null, savedVersion: null },
+    });
+    expect(JSON.stringify(room.toJSON())).not.toContain('['.repeat(41));
+    expect(await run(opened.handle, filter(40))).toMatchObject({ ok: true, delivery: { durable: true } });
+    expect(JSON.stringify(room.toJSON())).toContain('['.repeat(40));
+  }, 10_000);
+
+  // The ports preview the step on a copy and refuse it in agentExecute, as a too-deep write.
+  it('refuses an undo that would nest the room\'s document deeper than 48 levels, and sends it nowhere', async () => {
+    const sockets: RoomSocket[] = [];
+
+    mcp = assembleMcp(
+      { transport: { kind: 'stdio' }, auth: { kind: 'none' }, sync: { url: 'wss://sync.test/sync' } },
+      {
+        liveSocketFactory: (url, protocols) => {
+          const socket = factory(url, protocols);
+
+          sockets.push(socket as RoomSocket);
+
+          return socket;
+        },
+        liveSyncTimeoutMs: 1000,
+      },
+    );
+    const opened = (await mcp.dispatch('blok_open', { documentId: 'doc', write: true }, caller)).structuredContent;
+    const nested = (levels: number): unknown => Array.from({ length: levels }).reduce<unknown>((inner) => ({ a: inner }), 'end');
+    // A peer deepens p: document(1) blocks(2) block(3) data(4), then 45 objects: 49 levels.
+    const peer = (levels: number): void => {
+      const before = room.getStateVector();
+
+      room.updateBlockData('p', 'deep', nested(levels));
+      sockets[0].deliver({ type: 'update', update: room.encodeStateAsUpdate(before) });
+    };
+    const undo = [{ name: 'history.undo', args: {} }];
+
+    peer(45);
+    expect(await run(opened.handle, [{ name: 'block.delete', args: { id: 'p' } }])).toMatchObject({ ok: true, delivery: { durable: true } });
+    expect(room.orderedIds()).toEqual([]);
+
+    expect(await run(opened.handle, undo)).toStrictEqual({
+      ok: false,
+      error: {
+        code: 'INVALID_ARGS',
+        message: 'This batch would nest the document deeper than 48 levels of objects and arrays, so nothing was saved. Send flatter data.',
+        retryable: false,
+      },
+      delivery: { durable: false, pending: false, serverSequence: null, savedVersion: null },
+    });
+    expect(room.orderedIds()).toEqual([]);
+    expect((await mcp.dispatch('blok_read', { handle: opened.handle }, caller)).structuredContent).toMatchObject({ blocks: [] });
+  }, 10_000);
+
   it('lists no unavailable history command, and the room receives the undo and the redo', async () => {
     const opened = (await mcp.dispatch('blok_open', { documentId: 'doc', write: true }, caller)).structuredContent;
     const names = (Array.isArray(opened.unavailableCommands) ? opened.unavailableCommands : [])

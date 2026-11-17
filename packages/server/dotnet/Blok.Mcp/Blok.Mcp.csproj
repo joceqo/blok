@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>blok-mcp</ToolCommandName>
+    <PackageType>McpServer</PackageType>
+    <PackageId>Blok.Mcp</PackageId>
+    <Authors>JackUait</Authors>
+    <Description>The Blok MCP server as a .NET tool: blok-mcp over stdio or HTTP.</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://blokeditor.com</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://github.com/JackUait/blok.git</RepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Blok.Server.Mcp/Blok.Server.Mcp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <!-- .mcp/server.json keeps 0.0.0 in git. The packed copy carries the package
+       version in both of its version fields, so nuget.org lists the right one. -->
+  <Target Name="BlokStampMcpServerJson" BeforeTargets="_GetPackageFiles">
+    <PropertyGroup>
+      <BlokMcpServerJson>$(IntermediateOutputPath)mcp/server.json</BlokMcpServerJson>
+      <BlokMcpServerJsonText>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/.mcp/server.json').Replace('"version": "0.0.0"', '"version": "$(PackageVersion)"'))</BlokMcpServerJsonText>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(BlokMcpServerJson)" Lines="$(BlokMcpServerJsonText)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <None Include="$(BlokMcpServerJson)" Pack="true" PackagePath="/.mcp/" />
+    </ItemGroup>
+  </Target>
+</Project>

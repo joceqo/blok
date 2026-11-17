@@ -5,7 +5,10 @@ package route
 import (
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
 )
 
 // Router picks a route like ASP.NET endpoint routing does with the C# host's
@@ -23,6 +26,8 @@ import (
 // a parameter value. Method names compare case-insensitively too.
 type Router struct {
 	routes []entry
+	// Fallback answers a request no route matches; nil is NotFound.
+	Fallback http.Handler
 }
 
 type entry struct {
@@ -63,8 +68,10 @@ func (r *Router) Handle(pattern string, methods []string, h http.Handler) {
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	decoded := decodeKeepingSlash(req.URL.EscapedPath())
-	if strings.IndexByte(decoded, 0) >= 0 {
+	decoded := decodeKeepingSlash(rawPath(req))
+	// Kestrel refuses a decoded NUL in the path, and a raw NUL or any raw
+	// byte of 0x80 or above in the target (path or query), before routing.
+	if strings.IndexByte(decoded, 0) >= 0 || strings.IndexByte(req.RequestURI, 0) >= 0 || !isASCII(req.RequestURI) {
 		badRequest(w)
 		return
 	}
@@ -91,7 +98,31 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 	}
+	if r.Fallback != nil {
+		r.Fallback.ServeHTTP(w, req)
+		return
+	}
 	NotFound.ServeHTTP(w, req)
+}
+
+// InGroup is whether the request path is prefix itself or below it, as
+// MapGroup(prefix)'s "/{**path}" catch-all matches: by segment, ASCII case
+// folded. "" is the root group, which takes every path.
+func InGroup(req *http.Request, prefix string) bool {
+	parts, ok := pathSegments(decodeKeepingSlash(rawPath(req)))
+	if !ok {
+		return false
+	}
+	group, _ := pathSegments(prefix)
+	if len(parts) < len(group) {
+		return false
+	}
+	for i, literal := range group {
+		if !asciiEqualFold(parts[i], literal) {
+			return false
+		}
+	}
+	return true
 }
 
 func (e entry) allows(method string) bool {
@@ -158,38 +189,84 @@ func pathSegments(decoded string) ([]string, bool) {
 	return strings.Split(path[1:], "/"), true
 }
 
-// decodeKeepingSlash decodes every %XX except %2F, which stays as sent so a
-// decoded slash can never split a segment. A malformed escape stays literal.
+// decodeKeepingSlash decodes the path like Kestrel: %2F stays as sent, so a
+// decoded slash can never split a segment, and an escape that is not part of
+// valid UTF-8 (or is malformed) stays as written. The doc id names the
+// journal directory, so decoding "%FF" to a raw byte would split one
+// document into two across the C# and Go servers.
 func decodeKeepingSlash(s string) string {
 	if !strings.Contains(s, "%") {
 		return s
 	}
 	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] == '%' && i+2 < len(s) {
-			hi, okHi := unhex(s[i+1])
-			lo, okLo := unhex(s[i+2])
-			if okHi && okLo && hi<<4|lo != '/' {
-				b.WriteByte(hi<<4 | lo)
-				i += 2
-				continue
-			}
+	for {
+		i := indexEncodedSlash(s)
+		if i < 0 {
+			b.WriteString(dotnet.UnescapeDataString(s))
+			return b.String()
 		}
-		b.WriteByte(s[i])
+		b.WriteString(dotnet.UnescapeDataString(s[:i]))
+		b.WriteString(s[i : i+3])
+		s = s[i+3:]
 	}
-	return b.String()
 }
 
-func unhex(c byte) (byte, bool) {
-	switch {
-	case '0' <= c && c <= '9':
-		return c - '0', true
-	case 'a' <= c && c <= 'f':
-		return c - 'a' + 10, true
-	case 'A' <= c && c <= 'F':
-		return c - 'A' + 10, true
+// rawPath is the path as sent. net/url keeps it in RawPath whenever
+// re-escaping Path would change it; EscapedPath then re-escapes the whole
+// path for a byte like "|", which turns "%Ff" into "%FF", another doc id.
+// RawPath, not RequestURI, so a mount under http.StripPrefix still routes.
+// A RawPath that does not decode is one SetRawTarget wrote.
+func rawPath(req *http.Request) string {
+	if raw := req.URL.RawPath; raw != "" {
+		if decoded, err := url.PathUnescape(raw); err != nil || decoded == req.URL.Path {
+			return raw
+		}
 	}
-	return 0, false
+	return req.URL.EscapedPath()
+}
+
+// SetRawTarget gives req the target as sent, for one Go's url parser
+// refused: a bad escape in the path, or a raw control byte. Path gets a bad
+// escape as a literal '%', so http.StripPrefix still finds the prefix in it.
+// Path keeps dot segments and turns %2F into '/', as net/http's own parse
+// does, so it is not the path the router matches: never authorize on it.
+func SetRawTarget(req *http.Request, target string) {
+	path, query, hasQuery := strings.Cut(target, "?")
+	req.RequestURI = target
+	req.URL.RawPath = path
+	var kept strings.Builder
+	for i := 0; i < len(path); i++ {
+		kept.WriteByte(path[i])
+		if path[i] == '%' && (i+2 >= len(path) || !isHex(path[i+1]) || !isHex(path[i+2])) {
+			kept.WriteString("25")
+		}
+	}
+	req.URL.Path, _ = url.PathUnescape(kept.String())
+	if hasQuery {
+		req.URL.RawQuery = query
+	}
+}
+
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+func indexEncodedSlash(s string) int {
+	for i := 0; i+2 < len(s); i++ {
+		if s[i] == '%' && s[i+1] == '2' && (s[i+2] == 'F' || s[i+2] == 'f') {
+			return i
+		}
+	}
+	return -1
 }
 
 // removeDotSegments is RFC 3986 section 5.2.4 for a path that starts with

@@ -1,10 +1,10 @@
 import type { Root, Nodes, List, ListItem, PhrasingContent, Table, Blockquote, RootContent, Definition } from '../../types/data-formats/markdown-tree';
 import type { OutputBlockData } from '../../types/data-formats/output-data';
-import type { MarkdownImportConfig } from './types';
+import type { InternalMarkdownImportConfig, MarkdownImportConfig } from './types';
 import type { CellPlacement } from '../tools/table/types';
 import { safeImageSrc } from '../components/utils/sanitize-url';
 import { isBareBreak, phrasingToHtml } from './phrasing-to-html';
-import type { DefinitionMap } from './phrasing-to-html';
+import type { DefinitionMap, PageIdFor } from './phrasing-to-html';
 import { BREAK, literalTree, phrasingToTree } from './phrasing-to-tree';
 import type { InlineNode } from '../shared/rich-text/inline-tree';
 import { inlineTreeToSegments } from '../shared/rich-text/html-to-segments';
@@ -16,6 +16,8 @@ interface ConvertContext {
   config: MarkdownImportConfig;
   generateId: () => string;
   definitions: DefinitionMap;
+  /** Turns links to pages the host knows into mentions. HTML form only: the paste reads that form. */
+  pageIdFor?: PageIdFor;
   /** Writes a rich field in the shape the caller asked for. */
   write: (value: Rich) => unknown;
 }
@@ -31,8 +33,8 @@ interface Rich {
 
 const EMPTY: Rich = { html: '', tree: [] };
 
-function phrasing(nodes: PhrasingContent[], definitions: DefinitionMap): Rich {
-  return { html: phrasingToHtml(nodes, definitions), tree: phrasingToTree(nodes, definitions) };
+function phrasing(nodes: PhrasingContent[], { definitions, pageIdFor }: ConvertContext): Rich {
+  return { html: phrasingToHtml(nodes, definitions, pageIdFor), tree: phrasingToTree(nodes, definitions) };
 }
 
 function literal(text: string): Rich {
@@ -124,11 +126,12 @@ function collectDefinitions(tree: Root): DefinitionMap {
 /**
  * Convert an mdast tree to an array of Blok OutputBlockData.
  */
-export function mdastToBlocks(tree: Root, config: MarkdownImportConfig = {}, richText: 'html' | 'segments' = 'html'): OutputBlockData[] {
+export function mdastToBlocks(tree: Root, config: InternalMarkdownImportConfig = {}, richText: 'html' | 'segments' = 'html'): OutputBlockData[] {
   const ctx: ConvertContext = {
     config,
     generateId: createIdGenerator(),
     definitions: collectDefinitions(tree),
+    ...(config.pageIdFromHref === undefined ? {} : { pageIdFor: config.pageIdFromHref }),
     write: richText === 'html' ? value => value.html : value => inlineTreeToSegments(value.tree),
   };
 
@@ -221,7 +224,7 @@ function handleBuiltInNode(
   }
 
   if (node.type === 'heading') {
-    return [makeBlock('header', { text: ctx.write(phrasing(node.children, ctx.definitions)), level: node.depth }, ctx.generateId)];
+    return [makeBlock('header', { text: ctx.write(phrasing(node.children, ctx)), level: node.depth }, ctx.generateId)];
   }
 
   if (node.type === 'thematicBreak') {
@@ -233,7 +236,7 @@ function handleBuiltInNode(
   }
 
   if (node.type === 'blockquote') {
-    return handleBlockquote(node, ctx);
+    return handleBlockquote(node, ctx, listDepth);
   }
 
   if (node.type === 'table') {
@@ -302,8 +305,11 @@ function soleImage(children: PhrasingContent[], definitions: DefinitionMap): Sta
     return null;
   }
 
-  const [node] = meaningful;
+  return imageOf(meaningful[0], definitions);
+}
 
+/** The safe image a phrasing node shows, or null when it is not one. */
+function imageOf(node: PhrasingContent, definitions: DefinitionMap): StandaloneImage | null {
   if (node.type === 'image') {
     return safeStandaloneImage(node.url, node.alt);
   }
@@ -320,10 +326,10 @@ function soleImage(children: PhrasingContent[], definitions: DefinitionMap): Sta
 /**
  * Image block for a paragraph that holds nothing but an image.
  *
- * The alt text lands in `caption` because the export direction writes `caption`
- * into the Markdown alt slot, and in `alt` because that is the field the
- * rendered `<img alt>` reads. Both hold plain text — the caption editor writes
- * it via `textContent` and the view emitter escapes it on output.
+ * The `![…]` slot is alt text, so it lands in `alt` only. The export writes
+ * `data.alt` there, never the caption; copying it into `caption` would show
+ * the alt as a visible caption the author never wrote. Plain text: the view
+ * emitter escapes it on output.
  *
  * @param image - the resolved source and alt text
  * @param generateId - block id generator
@@ -332,7 +338,6 @@ function makeImage(image: StandaloneImage, generateId: () => string): OutputBloc
   const data: Record<string, unknown> = { url: image.url };
 
   if (image.alt !== '') {
-    data.caption = image.alt;
     data.alt = image.alt;
   }
 
@@ -354,7 +359,7 @@ function handleParagraph(children: PhrasingContent[], ctx: ConvertContext): Outp
   const hasInlineMath = children.some(c => c.type === 'inlineMath');
 
   if (!hasInlineMath) {
-    return [makeParagraph(phrasing(children, ctx.definitions), ctx)];
+    return [makeParagraph(phrasing(children, ctx), ctx)];
   }
 
   return splitOnInlineMath(children, ctx);
@@ -370,7 +375,7 @@ function splitOnInlineMath(children: PhrasingContent[], ctx: ConvertContext): Ou
       continue;
     }
 
-    const text = trim(phrasing(segment.nodes, ctx.definitions));
+    const text = trim(phrasing(segment.nodes, ctx));
 
     if (text.html !== '') {
       blocks.push(makeParagraph(text, ctx));
@@ -502,7 +507,7 @@ function handleListItem(
   const paragraphChild = item.children.find(
     (c): c is Extract<typeof c, { type: 'paragraph' }> => c.type === 'paragraph',
   );
-  const text = paragraphChild ? phrasing(paragraphChild.children, ctx.definitions) : EMPTY;
+  const text = paragraphChild ? phrasing(paragraphChild.children, ctx) : EMPTY;
 
   const data: Record<string, unknown> = { text: ctx.write(text), style, depth };
 
@@ -516,17 +521,29 @@ function handleListItem(
     data.start = startValue;
   }
 
-  blocks.push(makeBlock('list', data, ctx.generateId));
+  const listItem = makeBlock('list', data, ctx.generateId);
 
-  // Everything else in the item becomes sibling blocks in document order.
+  blocks.push(listItem);
+
+  // Everything else in the item hangs under it, in document order.
   // Skipped by identity, not by type: a SECOND paragraph is real content.
-  // listDepth is depth + 1 so a nested list keeps indenting.
+  // depth + 1 must match the parent chain, or the list tool moves the indent.
   for (const child of item.children) {
     if (child === paragraphChild) {
       continue;
     }
 
     pushAll(blocks, convertNode(child, ctx, depth + 1) ?? []);
+  }
+
+  // Blocks that already have a parent (a callout body, table cells) keep it.
+  const own = blocks.slice(1).filter((block) => block.parent === undefined);
+
+  if (own.length > 0) {
+    for (const block of own) {
+      block.parent = listItem.id;
+    }
+    listItem.content = own.map((block) => block.id).filter((id): id is string => id !== undefined);
   }
 
   return blocks;
@@ -538,7 +555,7 @@ function handleListItem(
  * other child (code, list, nested quote) becomes its own block in place,
  * splitting the quote around it, so nothing is dropped.
  */
-function handleBlockquote(bq: Blockquote, ctx: ConvertContext): OutputBlockData[] {
+function handleBlockquote(bq: Blockquote, ctx: ConvertContext, listDepth: number): OutputBlockData[] {
   const alert = matchAlert(bq);
 
   if (alert !== null) {
@@ -556,12 +573,13 @@ function handleBlockquote(bq: Blockquote, ctx: ConvertContext): OutputBlockData[
 
   for (const child of bq.children) {
     if (child.type === 'paragraph') {
-      parts.push(phrasing(child.children, ctx.definitions));
+      parts.push(phrasing(child.children, ctx));
       continue;
     }
 
     flush();
-    pushAll(blocks, convertNode(child, ctx, 0) ?? []);
+    // A list in a quote in a list item still hangs under that item.
+    pushAll(blocks, convertNode(child, ctx, listDepth) ?? []);
   }
 
   // An empty `>` still makes a quote.
@@ -648,24 +666,61 @@ function processTableRow(
   const rowContent: TableCell[] = [];
 
   for (const [index, cell] of cells.entries()) {
-    const text = phrasing(cell.children, ctx.definitions);
-    /** The exporter marks a blank heading row with a lone `<br>` (see `tableToMarkdown`). */
-    const cellText = ctx.write(text.html === '<br>' ? EMPTY : text);
-    const cellBlockId = ctx.generateId();
+    const cellBlocks = imageCellBlocks(cell.children, ctx) ?? [textCellBlock(cell.children, ctx)];
 
-    blocks.push({
-      id: cellBlockId,
-      type: 'paragraph',
-      data: { text: cellText },
-      parent: tableId,
-    });
+    cellBlocks.forEach(block => blocks.push({ ...block, parent: tableId }));
 
+    const cellBlockIds = cellBlocks.map(block => block.id ?? '');
     const placement = ALIGN_PLACEMENT[align?.[index] ?? ''];
 
-    rowContent.push(placement === undefined ? { blocks: [cellBlockId] } : { blocks: [cellBlockId], placement });
+    rowContent.push(placement === undefined ? { blocks: cellBlockIds } : { blocks: cellBlockIds, placement });
   }
 
   return rowContent;
+}
+
+function textCellBlock(children: PhrasingContent[], ctx: ConvertContext): OutputBlockData {
+  const text = phrasing(children, ctx);
+
+  /** The exporter marks a blank heading row with a lone `<br>` (see `tableToMarkdown`). */
+  return makeParagraph(text.html === '<br>' ? EMPTY : text, ctx);
+}
+
+/**
+ * A cell's blocks when it shows an image: the image as its own block, with the
+ * text around it as paragraphs. Null when the cell has no image. Kept inline,
+ * the image is split out at save time under an id no live block has.
+ */
+function imageCellBlocks(children: PhrasingContent[], ctx: ConvertContext): OutputBlockData[] | null {
+  if (!children.some(child => imageOf(child, ctx.definitions) !== null)) {
+    return null;
+  }
+
+  const result: OutputBlockData[] = [];
+  const run: PhrasingContent[] = [];
+
+  const flush = (): void => {
+    if (run.some(child => child.type !== 'text' || child.value.trim() !== '')) {
+      result.push(textCellBlock([...run], ctx));
+    }
+    run.length = 0;
+  };
+
+  for (const child of children) {
+    const image = imageOf(child, ctx.definitions);
+
+    if (image === null) {
+      run.push(child);
+      continue;
+    }
+
+    flush();
+    result.push(makeImage(image, ctx.generateId));
+  }
+
+  flush();
+
+  return result;
 }
 
 function handleFallback(

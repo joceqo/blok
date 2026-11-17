@@ -133,7 +133,7 @@ export { EmbedData, EmbedKind, EmbedAlignment, EmbedMatch, EmbedServiceType } fr
 // Embed-registry lookup for migrating stored links; the registry data stays private.
 export { matchEmbedService, buildEmbedUrl } from './tools/embed';
 export { BookmarkData, BookmarkConfig, BookmarkMeta } from './tools/bookmark';
-export { PageData, PageConfig, PageCreateInit, PageCreateResult, PageInfo, PageIcon, PageCache, PageSearchResult } from './tools/page';
+export { PageData, PageConfig, PageCreateInit, PageCreateResult, PageInfo, PageIcon, PageCover, PageCache, PageSearchResult, PageTrashed } from './tools/page';
 export { PageLinkData } from './tools/page-link';
 export { MediaSource } from './tools/media-source';
 export { MediaUploadError, MediaUploadErrorCode, UploadErrorHandler } from './tools/upload-error';
@@ -279,6 +279,18 @@ export const Strikethrough: InlineToolConstructable;
 export const Underline: InlineToolConstructable;
 export const InlineCode: InlineToolConstructable;
 export const Equation: InlineToolConstructable;
+/**
+ * The "Note" inline tool: attaches a plain-text note and an optional subtitle
+ * to a phrase. Opt-in — register it as `annotation`; it is not in
+ * `defaultInlineTools`.
+ */
+export const Annotation: InlineToolConstructable;
+
+/** Config of the {@link Annotation} tool. */
+export interface AnnotationConfig {
+  /** Pre-fills the subtitle line of a new hint. */
+  defaultSubtitle?: string;
+}
 export const ClearFormat: InlineToolConstructable;
 export const SupSub: InlineToolConstructable;
 

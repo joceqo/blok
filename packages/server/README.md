@@ -2,9 +2,11 @@
 
 Blok's shared server is written in C#. It handles file uploads, link previews and live collaboration, and it converts saved documents. Use it inside an ASP.NET Core app, or run the same routes as a standalone npm binary or Docker image.
 
-A Go version of the server is in progress in `packages/server/go`. It serves health, link previews (`/unfurl`), uploads (`/upload`, `/upload-by-url`), deletes and local files. Its `blokdocs` package converts saved documents. It has no live collaboration yet. It accepts `--collab` and the other collaboration flags, but serves no sync routes.
+A Go version of the server lives in `packages/server/go`. It serves the same routes as the C# server. Every conformance suite runs against both. It serves health, link previews (`/unfurl`), PDF bytes for the preview (`/file-bytes`), uploads (`/upload`, `/upload-by-url`), deletes and local files. Its `blokdocs` package converts saved documents. With `--collab` it also serves live collaboration: the sync socket, `/edit`, `/state`, `/reset` and the history routes. It reads and writes the same collaboration directory as the C# server.
 
 The npm binary, the Docker image and the NuGet packages all ship the C# server. See [Go module and archives](#go-module-and-archives) for how the Go server ships.
+
+A Rust build is in progress in `packages/server/rust`. It ships nothing yet. Its README is `packages/server/rust/README.md`.
 
 Your documents stay yours. Your own app saves and loads them through a small endpoint, and that endpoint stays the record. With live collaboration on, the service keeps only a working copy of each open document. The copy lives in storage you point it at. Every few seconds, the service writes what people type back to your endpoint.
 
@@ -39,6 +41,63 @@ app.Run();
 The mapped group uses your ASP.NET Core authorization policy for upload and unfurl routes. Health and validated CORS preflight remain anonymous.
 
 In-process defaults expose health only. Storage and outbound routes must be enabled explicitly, and local storage requires an explicit valid `PublicUrl`. `AddBlokServer(options => { ... })` also accepts the origin, upload-limit, and S3 settings used by the standalone host.
+
+### Refuse bare LF line ends
+
+By default Kestrel takes a bare LF (no CR) at the end of a chunked trailer line. Every other chunk line needs CRLF. A proxy in front of your app may read that trailer another way. The proxy and Kestrel then disagree on where the next request starts, and a request can be smuggled past the proxy.
+
+The standalone host turns this off. Your own app does not get that setting from `AddBlokServer` or `MapBlokServer`, because it is a Kestrel runtime switch. Set it in your app's project file:
+
+```xml
+<ItemGroup>
+  <RuntimeHostConfigurationOption Include="Microsoft.AspNetCore.Server.Kestrel.DisableHttp1LineFeedTerminators"
+                                  Value="true" />
+</ItemGroup>
+```
+
+The switch covers all of Kestrel's HTTP/1 parsing. The request line and the headers then need CRLF too. A request with a bare LF gets an empty 400, and the connection closes.
+
+The Go and Rust hosts refuse bare LF line ends as well.
+
+### An MCP endpoint in your app
+
+`Blok.Server.Mcp` serves Blok's MCP tools from your own app, like `blok-mcp --http`:
+
+```csharp
+using Blok.Server.Mcp;
+
+builder.Services.AddBlokMcp(options =>
+{
+  options.FilesDirectory = "./documents";
+  options.Authorize = (request, _) => ValueTask.FromResult(CanOpen(request.Principal, request.DocumentId, request.Write));
+});
+
+var app = builder.Build();
+
+app.MapBlokMcp("/mcp");
+app.Run();
+```
+
+It needs a per-document check, as `blok-mcp --http` needs `--authorize`:
+
+- Set `Authorize`, or register `IBlokAuthorization`.
+- With neither, `MapBlokMcp` throws at startup. OAuth alone is not enough: it says who calls, not which documents they may open.
+- `AllowEveryCallerEveryDocument = true` turns the check off. Use it only where nothing untrusted can reach the endpoint.
+
+Browsers and DNS rebinding:
+
+- A request with a foreign `Origin` gets 403. By default only loopback pages (`http://localhost`, `127.0.0.1`, `[::1]`) may call. List your own in `AllowedOrigins`.
+- `AllowedHosts` limits the `Host` header to the names you list. Without it, set ASP.NET Core's own `AllowedHosts` host filtering.
+- Without OAuth, a caller your own auth did not sign in is the default `Principal`. So only this machine may call: a request from a non-loopback address gets 403, whatever its `Host` header says. Set `TrustRemoteCallers` when a proxy or the network already decides who may connect.
+
+The other options follow `createBlokMcpServer` in `@bloklabs/mcp`: `PageTitles`, `Manifest`, `Overrides`, `SyncUrl` with `TicketSecret` or `TicketUrl`, `AgentActor`, `Uploads` and the rest. They are checked at startup with the same rules. Two of Node's options are not here:
+
+- `uploads.root` reads local files, and Node allows it over stdio only.
+- The stdio form: run the `blok-mcp` tool for that.
+
+When the `Uploads` uploader throws, the agent sees only "The upload failed." and the full exception goes to the app's log. To show the agent a message, throw `BlokMcpUploadException("…")`. Write that message for the agent: no paths, hosts or secrets.
+
+With `TicketUrl` and no document source, the host's ticket route decides who may open what, so no `Authorize` is needed.
 
 ## Convert documents
 
@@ -248,7 +307,7 @@ new Blok({
 });
 ```
 
-One key fills in the uploader and the link-preview endpoint. Anything you set yourself wins, so uploading into your own storage while keeping previews here needs no extra wiring.
+One key fills in the uploader, the link-preview endpoint and the file tool's `previewEndpoint`. Anything you set yourself wins, so uploading into your own storage while keeping previews here needs no extra wiring.
 
 The standalone host uses routes at the root. An ASP.NET Core app uses the prefix passed to `MapBlokServer`.
 
@@ -302,6 +361,8 @@ Passes are needed whenever the routes run with `Auth = "ticket"`, including rout
 | --- | --- |
 | `GET /health` | Reports liveness and the running version |
 | `GET /unfurl?url=…` | Reads title, description, and image metadata |
+| `GET /frame-check?url=…&embedder=…` | Says whether the page would let your editor show it in a frame, plus safe oEmbed details |
+| `GET /file-bytes?url=…` | Hands the editor's PDF preview a PDF's bytes, one range at a time (off by default) |
 | `POST /upload` | Stores an uploaded file |
 | `POST /upload-by-url` | Fetches and stores a remote file; the request media type must be `application/json` |
 | `GET /sync/{doc}` | WebSocket; the editor's live collaboration connection to one document (with `--collab`) |
@@ -345,11 +406,72 @@ An edit may also send `If-Match: "<lineage>:<sequence>"`. It is one quoted tag, 
 
 `edit`, `state` and the history `restore` add `Blok-Doc-Lineage`, `Blok-Doc-Sequence` and `ETag` to `Access-Control-Expose-Headers` for an allowed origin, so a browser page can read them. Headers your app already exposes are kept.
 
-Upload routes exist only when local or S3-compatible storage is configured. Consumer-supplied URLs pass through one guarded outbound client that blocks private and cloud-metadata addresses. Send `POST /upload-by-url` a `{"url":"..."}` body with an `application/json` media type; parameters such as `charset=utf-8` are allowed, but JSON suffix types are not.
+Upload routes exist only when local or S3-compatible storage is configured. Consumer-supplied URLs pass through one guarded outbound client that blocks private and cloud-metadata addresses. It also refuses a URL whose raw text holds a control character (C0, DEL or C1), anywhere and in every redirect `Location`. Spaces at the ends are trimmed. Send `POST /upload-by-url` a `{"url":"..."}` body with an `application/json` media type; parameters such as `charset=utf-8` are allowed, but JSON suffix types are not.
+
+Outbound fetches follow at most 5 redirects. A redirect from `https` to `http` is refused. A response head over 64 KiB is refused. When a rate limit is on, each redirect hop counts as one more request for the caller.
+
+At most four page fetches (`/unfurl`, `/frame-check`) and four downloads (`/upload-by-url`) run at once, in separate pools, so slow downloads never hold up link checks. When a rate limit is on, one caller (client address, or ticket user) may run at most two of each at once. A third waits for one of that caller's own slots within its own deadline, and fails as any slot wait does when the deadline runs out.
+
+`GET /unfurl?url=…` answers `{"success": 1, "link": …, "meta": {"title", "description", "image": {"url"}, "favicon", "domain"}}`. A field with no value is left out, and `image` is then `{}`.
+
+- `link` is the final URL after redirects.
+- `image.url` and `favicon` are URLs a reader's browser loads. They pass the same filter as the `/frame-check` `thumbnail_url` below:
+  - They must be `https`, with no user name or password, and at most 2048 characters.
+  - A control character, raw or escaped (`%00`–`%1F`, `%7F`, `%C2%80`–`%C2%9F`), drops the URL.
+  - A loopback, private or metadata address, `localhost`, a name with no dot, a name ending in a dot and a name whose last label starts with a digit are dropped. A Unicode host comes back as punycode.
+- When a candidate is dropped, the next one is tried: `og:image`, then `twitter:image`; `rel="icon"`, then `apple-touch-icon`, then `/favicon.ico` on the final page.
+- So a page served over `http` gets no favicon, unless it names an `https` one.
+
+`GET /frame-check?url=…&embedder=…` is open whenever `/unfurl` is. It answers `{"verdict": …, "link": …, "oembed": {…}}`.
+
+- `verdict` is `allowed`, `blocked`, `insecure` or `unknown`.
+- `blocked` means the final page's enforced `Content-Security-Policy: frame-ancestors`, or its `X-Frame-Options`, refuses your editor. Report-only policies and `<meta>` tags do not count. Redirect hops do not count.
+- `insecure` means the final page is not `https`. `blocked` wins over it.
+- `unknown` means the server could not tell who your editor is, or the page could not be fetched or did not answer 2xx.
+- `embedder` is your editor page's origin, such as `https://app.example`. The editor's default check sends it. A browser sends no `Origin` on a same-origin `GET`, so this is how a service mounted on your app's own origin (say `/api/blok`) learns who is asking.
+- The server picks your editor like this:
+  1. A request that sends `Origin` uses it, when it is an allowed origin. Any other `Origin` is refused with 403 before the check runs. `embedder` is ignored.
+  2. With no `Origin`, `embedder` is used when the request carries `Sec-Fetch-Site: same-origin` and `embedder` equals the service's own origin: the request's scheme and `Host` header.
+  3. Otherwise `embedder` is used only when it is an allowed origin.
+  4. Otherwise there is no editor, and the verdict is `unknown`.
+- A page cannot set `Sec-Fetch-Site`, so a page on an unlisted site cannot get a verdict through the service. Origins compare without case, and must match exactly: no path, no trailing `/`.
+- Behind a proxy that ends TLS, the service sees `http`, not `https`. Rule 2 then fails, so add your editor's origin to the allowed origins. The Go server reads the scheme from the connection and `Host` from the request. ASP.NET Core reads `Request.Scheme` and `Request.Host`, so it follows your app if your app rewrites them.
+- In `ticket` mode every request needs an allowed `Origin`, so a same-origin check gets 403 and the editor shows `unknown`. Rule 2 helps in `none` and `proxy` modes.
+- The answer sends `Vary: Origin`.
+- `link` is the final URL after redirects.
+- `oembed` appears when the page links a JSON oEmbed endpoint. It holds only `title`, `provider_name`, an `https` `thumbnail_url`, and `width` and `height` capped at 4096. The oEmbed `html` field is never returned.
+  - `thumbnail_url` is dropped when it holds a control character, raw or escaped (`%00`–`%1F`, `%7F`, `%C2%80`–`%C2%9F`).
+  - It is also dropped when its host is a loopback, private or metadata address, `localhost`, or a name with no dot. A Unicode host comes back as punycode.
+  - The server never fetches the thumbnail. Treat it as untrusted input.
+
+The verdict is a hint for your UI, not a security check. The server cannot see the reader's cookies, the full chain of frames above your editor, or scripts that break out of frames.
+
+`GET /file-bytes?url=…` is how the editor's PDF preview reads a PDF that neither the browser nor your `fetchPreview` hook can read. It is off by default and does not follow `--no-unfurl`, because it relays whole files.
+
+- Turn it on with `--file-bytes`. In-process, the option is `FileBytesEnabled` (C#, Go) or `file_bytes_enabled` (Rust).
+- It uses the same origin, pass and rate checks as `/unfurl`. A pass with `write: false` may call it.
+- It serves PDFs only. It looks for `%PDF-` in the first 1024 bytes and answers 415 otherwise. A URL that passed is trusted for 10 minutes. The check can cost one more request against the rate limit.
+- It forwards one `Range` (`bytes=a-b` or `bytes=a-`) and answers 200 or 206. One answer holds at most 1 MiB. A larger one gets 413, so ask for a range, as the editor does.
+- A file over `--file-bytes-max-bytes` gets 413. The default is 100 MiB (`FileBytesMaxBytes`, `file_bytes_max_bytes`).
+- A file this service stored on local disk is read from disk. Anything else goes through the guarded outbound client, with the redirect rules above.
+- Other answers: 404 when the route is off or a stored file is missing, 416 for a range past the end of a stored file, 429 for the rate limit, and 502 when the file could not be fetched or did not answer 2xx.
+- A 200 or 206 answer is `application/pdf` with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, so a browser never runs it as a page.
+
+`--files-cors` (`FilesCors` in C#, `FilesCORS` in Go, `files_cors` in Rust) sends CORS headers on stored local files to each `--allow-origin` origin. It is off by default. With it on, the editor can read a stored PDF straight from its URL.
 
 A request that carries `Origin` must match an allowed origin in every auth mode. In `none` and `proxy`, a genuinely originless backend request remains allowed, but an originless browser request carrying `Sec-Fetch-Site: cross-site` is rejected. `ticket` always requires an allowed `Origin`.
 
-A ticket with `write: false` may call `GET /unfurl`, `GET /sync/{doc}/state`, the three `GET` history routes and open `GET /sync/{doc}` read-only; both upload routes, `reset`, `edit`, the history `DELETE` and `restore` require `write: true`. The `doc` claim scopes the collaboration routes: `/sync/{doc}`, its `reset`, its `edit`, its `state` and its history routes are refused when the pass names no document or a different one. `state` and the three history reads ask your `IBlokAuthorization` for read access only. A collaboration pass must also name its `user`: `GET /sync/{doc}` closes one with an empty `user` as 4401 `pass names no user`, because the per-user connection cap and rate window key on that name. The upload and unfurl routes ignore it, so a pass minted for one page works for every upload and preview that page can make.
+With `--auth none` or `proxy`, the standalone host also checks `Host` on these routes. This stops DNS rebinding: a page whose name now points at 127.0.0.1 sends its own name as `Host`.
+
+- Allowed: `localhost`, a `127.x.x.x` address and `[::1]`, with any port, and a request with no `Host`.
+- Also allowed: the host of each `--allow-origin` entry and of `--public-url`.
+- Anything else gets `421` `host not allowed`.
+
+If a front proxy forwards your public `Host`, add that origin to `--allow-origin`, or make the proxy send a loopback `Host`. Ticket mode does not check `Host`; behind a proxy that is the proxy's job.
+
+In your own ASP.NET Core app the check is off. Turn it on with `AddBlokServer(...).UseLoopbackHostCheck()` when the app listens on loopback only. Leave it off when the app serves the routes under its own public name. The Go handler has the same switch: `Options.LoopbackHostCheck`.
+
+A ticket with `write: false` may call `GET /unfurl`, `GET /frame-check`, `GET /file-bytes`, `GET /sync/{doc}/state`, the three `GET` history routes and open `GET /sync/{doc}` read-only; both upload routes, `reset`, `edit`, the history `DELETE` and `restore` require `write: true`. The `doc` claim scopes the collaboration routes: `/sync/{doc}`, its `reset`, its `edit`, its `state` and its history routes are refused when the pass names no document or a different one. `state` and the three history reads ask your `IBlokAuthorization` for read access only. A collaboration pass must also name its `user`: `GET /sync/{doc}` closes one with an empty `user` as 4401 `pass names no user`, because the per-user connection cap and rate window key on that name. The upload and unfurl routes ignore it, so a pass minted for one page works for every upload and preview that page can make.
 
 ### Version history
 
@@ -540,7 +662,7 @@ What the service requires of it:
 - **Cancellation belongs to the caller.** A store-side timeout or abort surfaces as some other exception, because the caller reads a cancellation it did not ask for as its own shutdown.
 - **Disposal releases the fence, unless it is already gone.** `DisposeAsync` lets another process open the document, and never throws because the fence was already lost; every method throws `ObjectDisposedException` afterwards. A session that HAS lost the fence releases nothing. The fence it would release now belongs to somebody else, so a `DisposeAsync` that unconditionally drops its lock row hands a third writer the document while the second is mid-write.
 
-A backend that is not .NET implements the wire protocol instead of this interface. `packages/server/protocol/blok-sync-v2.md` is a normative spec written so a server outside this repository can be built from it alone, and the frame vectors it pins live in `test/unit/server-conformance/fixtures/sync-frames.json`. This repository's conformance runner builds and drives the C# host (`node scripts/test-server-conformance.mjs --target csharp`) and the Go host in progress (`--target go`). Another backend runs those vectors in its own harness, along with the same durability scenarios: restart the process, fail the next append, inspect history.
+A backend that is not .NET implements the wire protocol instead of this interface. `packages/server/protocol/blok-sync-v2.md` is a normative spec written so a server outside this repository can be built from it alone, and the frame vectors it pins live in `test/unit/server-conformance/fixtures/sync-frames.json`. This repository's conformance runner builds and drives the C# host (`node scripts/test-server-conformance.mjs --target csharp`) and the Go host (`--target go`). Another backend runs those vectors in its own harness, along with the same durability scenarios: restart the process, fail the next append, inspect history.
 
 Stock `y-websocket` never offers `blok-sync.v2`, so it negotiates v1 and is compatible with the working-copy profile alone: ordinary y-protocol sync, no acknowledgement, no durability claim. On a journal-backed document a v1 write is still journaled before it is relayed; it earns no receipt. The same holds for any client that offers only v1.
 
@@ -672,8 +794,8 @@ The Go server in `packages/server/go` has its own CI checks:
 - `go vet` must pass.
 - `govulncheck` (pinned to v1.9.0) must find no reachable vulnerability.
 - `go test` must cover at least 80% of statements. Go measures statements only, so there is no Go branch floor.
-- The conformance suites Go passes so far run with `--target go`.
-- `node scripts/test-server-go-module.mjs` builds `test/fixtures/go-server-consumer` from the files git tracks in the module. The fixture mounts Blok under `/api/blok` behind its own auth and converts a document.
+- Every conformance suite runs with `--target go`. `--target interop` checks that each server serves a collaboration directory the other wrote.
+- `node scripts/test-server-go-module.mjs` builds `test/fixtures/go-server-consumer` from the files git tracks in the module. The fixture mounts Blok under `/api/blok` behind its own auth, converts a document, and fills the collab seams.
 
 CodeQL analyzes the Go code in the weekly scan, not on every push.
 
@@ -686,14 +808,27 @@ go test -p 2 ./...
 
 ## Go module and archives
 
-The release workflow ships the Go server in two forms. No release has shipped them yet.
+The release workflow ships the Go server in two forms, starting with release 2.0.0.
 
-- **Module.** `yarn release X.Y.Z` also tags `packages/server/go/vX.Y.Z` on the release commit. Go reads a module in a subdirectory only from tags with that prefix. The module path is `github.com/JackUait/blok/packages/server/go`. Import `blokserver` for the routes and `blokdocs` for the converter.
+- **Module.** `yarn release X.Y.Z` also tags `packages/server/go/vX.Y.Z` on the release commit. Go reads a module in a subdirectory only from tags with that prefix. The module path is `github.com/JackUait/blok/packages/server/go/v2`. Import `blokserver` for the routes and `blokdocs` for the converter. Your own operation store and activity observer go in `Options.CollabOperationStore` and `Options.CollabActivityObserver`. Their types are in `blokserver/collabstore`. To put your own auth in front of the routes, use `Server.HandlerWithAuth(prefix, auth)`. It works like `RequireAuthorization()` on the C# group: health and CORS preflights stay open.
+- **MCP server.** Import `blokmcp` to run blok-mcp inside your own Go program. `Server.Handler()` serves it on a listener you own, so `New` cannot check that the listener is loopback. Without `Transport.Public`, the handler answers only callers whose address is loopback, and 403 to everyone else. Behind a reverse proxy every caller looks loopback, so set `Transport.Public` and `Auth.Kind: "oauth"` there.
 - **Archives.** The GitHub release gets `blok-server-go_<os>_<arch>` for macOS, Linux and Windows, on amd64 and arm64, with `checksums-go.txt`. They are built with cgo off, so they are static. The release starts the Linux amd64 one on Alpine before it uploads.
 
 The binary reports its release version on `/health`. A local `go build` reports `dev`.
 
 These names never overlap the C# archives or `checksums.txt`. The npm wrapper downloads only the C# archives, and a test fails if it ever names a Go one.
+
+## MCP server
+
+Blok's MCP server lets an MCP client read and edit Blok documents. Besides the Node package, `@bloklabs/mcp`, it comes in three builds next to the servers here. Each ships with every release. All four take the same flags, and one shared suite checks each of them against Node: `node scripts/test-mcp-conformance.mjs --target node|csharp|go|rust`.
+
+All four refuse JSON nested more than 48 levels of objects and arrays: in a call's arguments, in a document they open, and in a document a call would save. The C#, Go and Rust engines read JSON only 64 levels deep, and the margin covers the levels they add when they pass a document on.
+
+- **C#.** Two NuGet packages. `Blok.Mcp` is a .NET tool: `dotnet tool install -g Blok.Mcp`, or `dnx Blok.Mcp`. `Blok.Server.Mcp` adds it to an ASP.NET Core app with `builder.Services.AddBlokMcp(...)` and `app.MapBlokMcp("/mcp")`. See `dotnet/Blok.Mcp/README.md` and `dotnet/Blok.Server.Mcp/README.md`.
+- **Go.** `go install github.com/JackUait/blok/packages/server/go/v2/cmd/blok-mcp@latest`, or embed it with `blokmcp.New`. The release also ships `blok-mcp-go_<os>_<arch>` archives beside the Go server's. See `go/blokmcp/README.md`.
+- **Rust.** `cargo install blok-mcp`, or `cargo add blok-mcp` to embed it. See `rust/crates/mcp/README.md`.
+
+The release packs both NuGets with the release version, and writes that version into `Blok.Mcp`'s `.mcp/server.json`.
 
 ## Docs
 

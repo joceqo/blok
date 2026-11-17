@@ -30,6 +30,11 @@ describe('board column header actions', () => {
     expect(body).toContain('border-radius: var(--blok-radius-control)');
   });
 
+  // notion-motion.md Round 35 (r35-groupmenu.raw): ⋯ at x 1047 and + at 1071 touch, so the ⋯ menu opens at 1047.
+  it('sets the "⋯" and "+" side by side with no gap', () => {
+    expect(ruleBody(database, '[data-blok-database-column-actions]')).toContain('gap: 0');
+  });
+
   // research/36 §1.1: a hover anywhere in the column shows them. Sub-grouped heads sit outside the column, so they keep header hover.
   it('shows them while the column or its header is hovered, or holds focus or an open menu', () => {
     expect(ruleBody(database, '[data-blok-database-column-actions]')).toContain('opacity: 0');
@@ -39,10 +44,36 @@ describe('board column header actions', () => {
     expect(ruleBody(database, '[data-blok-database-column-header][data-popover-open] [data-blok-database-column-actions]')).toContain('opacity: 1');
   });
 
-  // research/36 §1.1, §11: the glyph takes the column's count ink; the hover is the neutral tint in every column.
-  it('draws them in the column\'s count ink with the neutral hover', () => {
-    expect(ruleBody(database, '[data-blok-database-column-actions] button')).toContain('color: var(--_blok-group-accent, var(--blok-database-column-accent))');
+  // motion-carddrag.json: Notion fades visibility with opacity, so a hidden button takes no clicks.
+  // Blok keeps opacity so Tab still reaches them, and drops only the pointer while hidden.
+  it('takes no pointer while hidden and takes it back whenever shown', () => {
+    expect(ruleBody(database, '[data-blok-database-column-actions]')).toContain('pointer-events: none');
+    for (const shown of [
+      '[data-blok-database-column]:hover [data-blok-database-column-actions]',
+      '[data-blok-database-column-header]:hover [data-blok-database-column-actions]',
+      '[data-blok-database-column-header][data-popover-open] [data-blok-database-column-actions]',
+      '[data-blok-database-column-actions]:has(:focus-visible)',
+    ]) {
+      expect(ruleBody(database, shown)).toContain('pointer-events: auto');
+    }
+  });
+
+  // notion-motion.md Round 42 §1: the glyph takes the group colour while Color columns is on (set per column), and
+  // rgb(161,158,153) in every group while it is off. The hover is the neutral tint in every column.
+  it('draws them in the group colour, or gray with Color columns off, with the neutral hover', () => {
+    expect(ruleBody(database, '[data-blok-database-column-actions] button')).toContain('color: var(--_blok-group-glyph, var(--blok-database-column-glyph-off))');
+    expect(database).toMatch(/--blok-database-column-glyph-off: var\(--blok-popover-search-suffix-text\)/);
+    // notion-motion.md Round 44 §7: Gray falls to its status dot, rgb(142,139,134); Default stays rgb(95,94,89).
+    expect(database).not.toMatch(/--blok-database-column-gray-glyph:/);
+    expect(database).toMatch(/--blok-database-status-dot-gray: rgb\(142, 139, 134\)/);
+    expect(database).toMatch(/--blok-database-column-default-glyph: var\(--blok-database-column-accent\)/);
+    expect(database).toMatch(/--blok-database-column-accent: rgb\(95, 94, 89\)/);
     expect(ruleBody(database, '[data-blok-database-column-actions] button:hover')).toContain('background-color: var(--blok-database-hover-bg)');
+  });
+
+  // notion-motion.md Round 42 §1: a Status board follows the same rule as a Select board.
+  it('has no Status-board override', () => {
+    expect(database).not.toContain('[data-blok-database-column-actions][data-status]');
   });
 
   // research/36 §1.1, §11: the column fill never changes on hover.
@@ -71,11 +102,9 @@ describe('board column, card and header look (research/08)', () => {
     expect(body).toContain('padding: 0 var(--blok-space-2) var(--blok-space-2)');
   });
 
-  it('rounds only the bottom of a column body below the shared heads, as Notion measured 0 0 10px 10px', () => {
-    const body = ruleBody(database, '[data-blok-database-column][data-sub-group]');
-
-    expect(body).toContain('border-start-start-radius: 0');
-    expect(body).toContain('border-start-end-radius: 0');
+  // notion-motion.md Round 30 §2: each band cell is its own box, radius 10 on all four corners, apart from the heads.
+  it('keeps all four corners on a sub-grouped column body', () => {
+    expect(database).not.toMatch(/\[data-blok-database-column\]\[data-sub-group\][^{]*\{[^}]*border-start-(start|end)-radius/);
   });
 
   it('uses the measured tints, rings and accents, light and dark', () => {
@@ -127,13 +156,38 @@ describe('board column, card and header look (research/08)', () => {
     expect(tokenValues('--blok-database-column-red-add-hover-bg')).toEqual(['var(--blok-database-column-red-card-hover-bg)']);
   });
 
-  // findings-board B19: Notion's "+ New page" text is 15px/18px after a 16px plus.
-  it('sets "+ New page" in 15px/18px after a 16px plus', () => {
+  // findings-board B19: the text is 15px/18px. notion-motion.md, Round 8c: the plus ink is 10.5 wide, and the slot must not squash it.
+  it('sets "+ New page" in 15px/18px after a plus as wide as Notion\'s', () => {
     const body = ruleBody(database, '[data-blok-database-add-card]');
+    const icon = ruleBody(database, '[data-blok-database-add-card-icon] svg');
 
     expect(body).toContain('font-size: 15px');
     expect(body).toContain('line-height: 18px');
-    expect(ruleBody(database, '[data-blok-database-add-card-icon] svg')).toContain('width: 16px');
+    expect(icon).toContain('width: 15.85px');
+    expect(icon).toContain('flex-shrink: 0');
+  });
+
+  // notion-motion.md Round 16 §3: "+ New group" is a 108x30 button with no ring; hover 0.051 and press 0.102 over 20ms ease-in.
+  it('makes "+ New group" a plain 30px button that fills in 20ms', () => {
+    const body = ruleBody(database, '[data-blok-database-add-column]');
+
+    expect(body).toContain('height: 30px');
+    expect(body).toContain('border: none');
+    expect(body).not.toContain('border: 1px');
+    expect(body).toContain('transition: background-color 20ms ease-in');
+    expect(ruleBody(database, '[data-blok-database-add-column]:hover')).toContain('background-color: var(--blok-database-popover-hover)');
+    expect(ruleBody(database, '[data-blok-database-add-column]:active')).toContain('background-color: var(--blok-database-pressed-bg)');
+  });
+
+  // notion-motion.md Round 23 §5: padding 0 8 0 6, a 16px plus, 8px after it.
+  it('lays "+ New group" out as a 16px plus 8px before its words, 6px from the start', () => {
+    const body = ruleBody(database, '[data-blok-database-add-column]');
+    const icon = ruleBody(database, '[data-blok-database-add-column-icon] svg');
+
+    expect(body).toContain('padding: 0 var(--blok-space-2) 0 var(--blok-space-1-5)');
+    expect(icon).toContain('width: 16px');
+    expect(icon).toContain('height: 16px');
+    expect(ruleBody(database, '[data-blok-database-add-column-icon]')).toContain('margin-inline-end: var(--blok-space-2)');
   });
 
   it('makes "+ New page" a 40px ring button with group-colored text', () => {
@@ -184,6 +238,20 @@ describe('board column, card and header look (research/08)', () => {
     expect(body).toContain('font-family: inherit');
     expect(body).toContain('cursor: pointer');
     expect(ruleBody(database, 'button[data-blok-database-column-count]:hover')).toContain('background-color: var(--blok-database-hover-bg)');
+  });
+
+  // notion-motion.md Round 31 §3: 24 tall, padding 0 8, radius 6, 14px 500, muted ink (AA), hover 0.051.
+  it('draws a sub-group band count as a 24px button with a gray hover', () => {
+    const body = ruleBody(database, '[data-blok-database-board-lane-count]');
+
+    expect(body).toContain('height: 24px');
+    expect(body).toContain('padding: 0 var(--blok-space-2)');
+    expect(body).toContain('border-radius: var(--blok-radius-control)');
+    expect(body).toContain('font-size: 14px');
+    expect(body).toContain('font-weight: 500');
+    expect(body).toContain('color: var(--blok-database-ink-secondary)');
+    expect(ruleBody(database, 'button[data-blok-database-board-lane-count]')).toContain('cursor: pointer');
+    expect(ruleBody(database, 'button[data-blok-database-board-lane-count]:hover')).toContain('background-color: var(--blok-database-hover-bg)');
   });
 
   it('shows the no-value label as plain 14px/500 text, no pill', () => {
@@ -252,5 +320,165 @@ describe('board in dark (research/21 §1f)', () => {
       'rgb(56, 56, 54) 0 0 0 1px, rgba(25, 25, 25, 0.08) 0 4px 12px -2px',
       'rgb(56, 56, 54) 0 0 0 1px, rgba(25, 25, 25, 0.08) 0 4px 12px -2px',
     ]);
+  });
+});
+
+// notion-motion.md, Round 8c "Hidden groups": a hidden group's eye is gray, a shown one keeps the ink.
+describe('group eye on the Group page', () => {
+  it('grays the eye of a hidden group', () => {
+    expect(ruleBody(database, '[data-blok-database-group-visibility-row][data-hidden] > [data-blok-database-property-eye]'))
+      .toContain('color: var(--blok-database-table-gutter-icon)');
+  });
+});
+
+// notion-motion.md Round 24 §1 (r24-pinsec-1.raw): "+ New group" and "Pinned groups" share one strip. The header is
+// 28 tall, 4 under New group, padded 0 8 with a gap 8, radius 6. Rows are 28 tall, 24 in, the first 10 under the header,
+// pitch 32. A row holds a 20px pill (3px around it) and the count 11 after it; its Unpin (24px) sits right after the row.
+// Notion's header ink rgb(161,158,153) fails AA, so it takes Blok's muted text; the count is primary ink.
+describe('board pinned groups strip', () => {
+  it('stacks the add-group button and the pinned list in one column', () => {
+    const body = ruleBody(database, '[data-blok-database-group-strip]');
+
+    expect(body).toContain('flex-direction: column');
+    expect(body).toContain('flex-shrink: 0');
+  });
+
+  it('draws the header 28px tall, 4px under New group, padded 0 8px with an 8px gap', () => {
+    const body = ruleBody(database, '[data-blok-database-pinned-groups-header]');
+
+    expect(body).toContain('height: 28px');
+    expect(body).toContain('margin-block-start: var(--blok-space-1)');
+    expect(body).toContain('padding: 0 var(--blok-space-2)');
+    expect(body).toContain('gap: var(--blok-space-2)');
+    expect(body).toContain('border-radius: var(--blok-radius-control)');
+    expect(body).toContain('color: var(--blok-database-table-muted-text)');
+    expect(body).toContain('transition: background-color 0.1s ease-in-out');
+  });
+
+  it('indents rows 24px, the first 10px under the header, 32px apart', () => {
+    const body = ruleBody(database, '[data-blok-database-pinned-group]');
+
+    expect(body).toContain('margin-inline-start: var(--blok-space-6)');
+    expect(body).toContain('margin-block-start: var(--blok-space-1)');
+    expect(ruleBody(database, '[data-blok-database-pinned-groups-header] + [data-blok-database-pinned-group]')).toContain('margin-block-start: var(--blok-space-2-5)');
+  });
+
+  it('draws a row 28px tall with the count 11px after a 3px-framed pill', () => {
+    const row = ruleBody(database, '[data-blok-database-pinned-group-open]');
+
+    expect(row).toContain('height: 28px');
+    expect(row).toContain('padding: 0 var(--blok-space-2)');
+    expect(row).toContain('gap: var(--blok-space-2-75)');
+    expect(row).toContain('transition: background-color 0.1s ease-in-out');
+    expect(ruleBody(database, '[data-blok-database-pinned-group-pill]')).toContain('margin-inline: var(--blok-space-0-75)');
+    expect(ruleBody(database, '[data-blok-database-pinned-group-pill]')).toContain('height: 20px');
+    expect(ruleBody(database, '[data-blok-database-pinned-group-count]')).toContain('color: var(--blok-database-table-cell-text)');
+  });
+
+  // notion-motion.md Round 25 §2: the header sits 4 under "+ New group", and at the column top when it is first.
+  it('drops the header gap when the header is the strip\'s first item', () => {
+    expect(ruleBody(database, '[data-blok-database-group-strip] > [data-blok-database-pinned-groups]:first-child > [data-blok-database-pinned-groups-header]')).toContain('margin-block-start: 0');
+  });
+
+  it('draws Unpin 24px square', () => {
+    const body = ruleBody(database, '[data-blok-database-pinned-group-unpin]');
+
+    expect(body).toContain('width: 24px');
+    expect(body).toContain('height: 24px');
+  });
+});
+
+// notion-motion.md Round 24 §1 (r24-grp.raw): in Settings › Group the pin (x 1440) touches the eye (x 1464).
+describe('Settings › Group pin button', () => {
+  it('sits right against the eye', () => {
+    expect(ruleBody(database, '[data-blok-database-group-pin] + [data-blok-database-property-eye]')).toContain('margin-inline-start: calc(-1 * var(--blok-space-2))');
+  });
+
+  // notion-motion.md Round 25 §2 (r25-grp-pinbtn-rest.raw, -hover.raw): a 16×16 pin in rgb(142,139,134), fill over 0.1s
+  // ease-in-out, and the glyph swaps to the filled pin on hover.
+  it('draws a 16px pin in the header icon gray that fills on hover', () => {
+    const pin = ruleBody(database, '[data-blok-database-group-pin]');
+
+    expect(pin).toContain('color: var(--blok-database-table-header-icon)');
+    expect(pin).toContain('transition: background-color 0.1s ease-in-out');
+    expect(ruleBody(database, '[data-blok-database-group-pin] svg')).toContain('width: 16px');
+    expect(ruleBody(database, '[data-blok-database-group-pin] svg')).toContain('height: 16px');
+    expect(ruleBody(database, '[data-blok-database-property-eye] svg')).toContain('width: 20px');
+    expect(ruleBody(database, '[data-blok-database-group-pin-glyph="hover"]')).toContain('display: none');
+    expect(ruleBody(database, '[data-blok-database-group-pin]:hover:not(:disabled) > [data-blok-database-group-pin-glyph="rest"]')).toContain('display: none');
+    expect(ruleBody(database, '[data-blok-database-group-pin]:hover:not(:disabled) > [data-blok-database-group-pin-glyph="hover"]')).toContain('display: flex');
+  });
+});
+
+// notion-motion.md Round 25 §1 (r25-pinmodal.raw, motion-r25-pinrow-open.json): an 800×496 dialog, radius 12, over a
+// rgba(15,15,15,0.6) overlay; the overlay fades in and the dialog scales 0.97 → 1, both 200ms ease. Closing is instant.
+describe('pinned group modal', () => {
+  it('fades the overlay in and scales the dialog up over 200ms', () => {
+    const backdrop = ruleBody(database, '[data-blok-database-group-modal]');
+    const panel = ruleBody(database, '[data-blok-database-group-modal-panel]');
+
+    expect(backdrop).toContain('background-color: var(--blok-database-confirm-backdrop)');
+    expect(backdrop).toContain('animation: blok-database-confirm-fade 200ms ease both');
+    expect(panel).toContain('animation: blok-database-confirm-in 200ms ease both');
+    expect(database).not.toContain('[data-blok-database-group-modal][data-blok-closing]');
+    expect(database).toMatch(/\[data-blok-database-group-modal\],\s*\[data-blok-database-group-modal-panel\]\s*\{\s*animation: none;/);
+  });
+
+  it('draws an 800×496 dialog with radius 12 and the dialog shadow', () => {
+    const panel = ruleBody(database, '[data-blok-database-group-modal-panel]');
+
+    expect(panel).toContain('width: 800px');
+    expect(panel).toContain('height: 496px');
+    expect(panel).toContain('border-radius: var(--blok-radius-dialog)');
+    expect(panel).toContain('box-shadow: var(--blok-database-confirm-shadow)');
+  });
+
+  // r25-pinmodal.raw: header 48 tall, padding 12 24 0; Search 28×28 radius 6; Dismiss a 22×22 circle, fill 0.06,
+  // hover 0.16 over 0.1s, ending 32 from the dialog's right edge. The × takes Blok's 3:1 step of 142,139,134.
+  it('lays the header out as Notion does', () => {
+    const header = ruleBody(database, '[data-blok-database-group-modal-header]');
+    const search = ruleBody(database, '[data-blok-database-group-modal-search]');
+    const close = ruleBody(database, '[data-blok-database-group-modal-close]');
+
+    expect(header).toContain('height: 48px');
+    expect(header).toContain('padding: var(--blok-space-3) var(--blok-space-6) 0');
+    expect(search).toContain('width: 28px');
+    expect(search).toContain('height: 28px');
+    expect(search).toContain('border-radius: var(--blok-radius-control)');
+    expect(close).toContain('width: 22px');
+    expect(close).toContain('height: 22px');
+    expect(close).toContain('border-radius: 50%');
+    expect(close).toContain('background-color: var(--blok-database-confirm-small-close-bg)');
+    expect(close).toContain('color: var(--blok-database-confirm-small-close-icon)');
+    expect(close).toContain('margin-inline-end: var(--blok-space-2)');
+    expect(close).toContain('transition: background-color 0.1s ease-in-out');
+    expect(ruleBody(database, '[data-blok-database-group-modal-close]:hover')).toContain('background-color: var(--blok-database-confirm-small-close-hover-bg)');
+  });
+
+  // r25-pinmodal-row.raw: one 800-wide scroller that scrolls both ways, content 24 in.
+  it('scrolls the table both ways in one body', () => {
+    expect(ruleBody(database, '[data-blok-database-group-modal-body]')).toContain('overflow: auto');
+    expect(ruleBody(database, '[data-blok-database-group-modal-body] [data-blok-database-table-scroller]')).toContain('overflow: visible');
+  });
+
+  // notion-motion.md Round 27 §2 "Chip row layout": the sort and filter groups sit 25 apart, chips 6 apart.
+  // 6 gap + 6 margin + the 1px divider + 6 margin + 6 gap = 25.
+  it('sets the divider 6px clear of the 6px chip gap on each side', () => {
+    expect(ruleBody(database, '[data-blok-database-group-modal-chips]')).toContain('gap: var(--blok-space-1-5)');
+    expect(ruleBody(database, '[data-blok-database-group-modal-chips] > [data-blok-database-chip-divider]')).toContain('margin-inline: var(--blok-space-1-5)');
+  });
+});
+
+// notion-motion.md Round 32 §3 Board: the group pill starts 3px into the header (x 550) and the count sits 3px after it.
+describe('board group header pill (Round 32)', () => {
+  it('starts the pill 3px into the header', () => {
+    expect(ruleBody(database, '[data-blok-database-column-pill]')).toContain('margin-inline-start: var(--blok-space-0-75)');
+  });
+
+  it('keeps the no-value group name where it was: 4px in, 6px before the count', () => {
+    const body = ruleBody(database, '[data-blok-database-no-value-group] [data-blok-database-column-pill]');
+
+    expect(body).toContain('margin-inline-start: var(--blok-space-1)');
+    expect(body).toContain('margin-inline-end: var(--blok-space-0-75)');
   });
 });

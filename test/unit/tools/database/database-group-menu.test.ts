@@ -4,7 +4,8 @@ import type { I18n } from '../../../../types';
 import type { PopoverItemParams } from '../../../../types/utils/popover/popover-item';
 import { groupMenuItems, type GroupMenuParams } from '../../../../src/tools/database/database-group-menu';
 import { OPTION_COLORS } from '../../../../src/tools/database/cells/option-colors';
-import { IconCheck, IconEyeSlash } from '../../../../src/components/icons';
+import { IconCheck, IconEyeSlash, IconGroup } from '../../../../src/components/icons';
+import { PopoverItemType } from '../../../../src/components/utils/popover/components/popover-item';
 
 const i18n = { t: (key: string) => key, has: () => true } as unknown as I18n;
 
@@ -47,8 +48,28 @@ describe('groupMenuItems', () => {
     const names = items.map((item) => item.name ?? item.type);
 
     expect(names.slice(0, 4)).toEqual(['edit-groups', 'toggle-aggregation', 'hide-group', 'move-to-trash']);
-    expect(names.slice(5)).toEqual(OPTION_COLORS.map((color) => `color-${color}`));
+    expect(names.slice(6)).toEqual(OPTION_COLORS.map((color) => `color-${color}`));
     expect(named(items, 'move-to-trash').isDestructive).toBe(true);
+  });
+
+  // A board's sub-group band shows no count, so its menu has no aggregation row.
+  it('leaves out the aggregation row when there is no count to toggle', () => {
+    const { onToggleAggregation: _omit, ...rest } = params();
+    const names = (groupMenuItems(rest) as Item[]).map((item) => item.name ?? item.type);
+
+    expect(names.slice(0, 3)).toEqual(['edit-groups', 'hide-group', 'move-to-trash']);
+  });
+
+  // notion-motion.md Round 10 "Group header ⋯ menu": a "Colors" label under the line, over the swatches.
+  it('heads the colors with a Colors label', () => {
+    const items = groupMenuItems(params()) as Item[];
+    const heading = items[5] as Item & { element?: HTMLElement };
+
+    expect(items[4].type).toBe(PopoverItemType.Separator);
+    expect(heading.name).toBe('colors-heading');
+    expect(heading.type).toBe(PopoverItemType.Html);
+    expect(heading.element?.textContent).toBe('tools.database.optionColors');
+    expect(heading.element?.hasAttribute('data-blok-database-group-menu-heading')).toBe(true);
   });
 
   it('marks the current color with a check mark, and no other', () => {
@@ -70,6 +91,11 @@ describe('groupMenuItems', () => {
     const names = (groupMenuItems(params({ isNoValue: true, color: undefined })) as Item[]).map((item) => item.name);
 
     expect(names.some((name) => name?.startsWith('color-'))).toBe(false);
+  });
+
+  // notion-motion.md Round 30 §2: Edit groups draws `squareGridBelowLines`, the glyph of the header menu's Group (IconGroup).
+  it('draws Edit groups with the Group glyph', () => {
+    expect(named(groupMenuItems(params()), 'edit-groups').icon).toBe(IconGroup);
   });
 
   // findings-board B14: Edit groups opens the view settings Group page.

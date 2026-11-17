@@ -15,7 +15,8 @@ import type {
 import type { MenuConfig } from '../../../types/tools/menu-config';
 import type { CodeData } from '../../../types/tools/code';
 import { IconCodeBlock, IconCheck, IconCopy, IconWand } from '../../components/icons';
-import { buildCodeDOM, setActiveViewMode, setFilenameDisplay } from './dom-builder';
+import { buildCodeDOM, setActiveViewMode, setBreadcrumb, setFilenameDisplay } from './dom-builder';
+import { codeBreadcrumb } from './breadcrumb';
 import { caretLineIndex, measureLineRows, rowHeight } from './line-geometry';
 import type { CodeDOMRefs } from './dom-builder';
 import { handleCodeKeydown } from './code-keyboard';
@@ -53,20 +54,18 @@ import type { CodeViewMode } from './constants';
 import { renderLatex } from '../../shared/katex';
 import { renderMermaid } from './mermaid-loader';
 import { tokenizePrism, isHighlightable } from './prism-loader';
-import { applyPrismHighlight, disposePrismStyles, ensurePrismStyles } from './prism-applier';
+import { applyPrismHighlight, disposePrismStyles } from './prism-applier';
 import {
   buildLanguagePickerItems as buildPickerItems,
   loadLanguageLogos,
   loadedLanguageLogos,
-  readRecentLanguages,
-  rememberLanguage,
   repaintBadges,
   resolvePickerTheme,
 } from './language-picker';
 import { detectLanguage } from './language-detector';
 import { renderCodePreview } from './preview';
 import { normalizeFenceLang } from '../../markdown/fence-language';
-import { CODE_LANGUAGE_ATTR } from '../../components/modules/paste/constants';
+import { CODE_FILENAME_ATTR, CODE_LANGUAGE_ATTR } from '../../components/modules/paste/constants';
 import { overrideStatic } from '../../components/utils/override-static';
 
 const COPIED_FEEDBACK_DURATION = 1500;
@@ -119,6 +118,8 @@ export class CodeTool implements BlockTool {
   private _builtReadOnly = false;
   private _lineNumbers: boolean = CODE_LOAD_DEFAULTS.lineNumbers;
   private _picker: PopoverDesktop | null = null;
+  /** Caret offset in the code when the picker opened, or -1 when the caret was elsewhere. */
+  private _caretBeforePicker = -1;
   private _viewMode: CodeViewMode = 'preview';
   private _previewContainer: HTMLElement | null = null;
   private _highlightRafId: number | null = null;
@@ -128,10 +129,13 @@ export class CodeTool implements BlockTool {
   private _highlightedLang: string | null = null;
   private _lineRows: number[] = [];
   private _activeLineIndex: number | null = null;
+  /** Set by edits: the caret line may not move while the blocks around it change. */
+  private _breadcrumbStale = false;
   private _rowHeight = 0;
   private _paddingTop = 0;
   private _geometryRafId: number | null = null;
-  private _previewRequest = 0;
+  private _pasteRafId: number | null = null;
+  private _endFilenameEdit: (() => void) | null = null;
   private _resizeObserver: ResizeObserver | null = null;
   private _copiedTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private readonly onSelectionChange = (): void => this.updateActiveLine();
@@ -258,6 +262,7 @@ export class CodeTool implements BlockTool {
       });
 
       dom.codeElement.addEventListener('input', () => {
+        this._breadcrumbStale = true;
         this.syncTrailingBr();
         this.updateGutter();
         this.scheduleHighlight();
@@ -282,7 +287,11 @@ export class CodeTool implements BlockTool {
       // mutates but our gutter/highlight/detection refresh never runs.
       // Re-run the refresh after the browser's native paste completes.
       dom.codeElement.addEventListener('paste', () => {
-        requestAnimationFrame(() => {
+        if (this._pasteRafId !== null) {
+          cancelAnimationFrame(this._pasteRafId);
+        }
+        this._pasteRafId = requestAnimationFrame(() => {
+          this._pasteRafId = null;
           this.syncTrailingBr();
           this.updateGutter();
           this.scheduleHighlight();
@@ -304,6 +313,8 @@ export class CodeTool implements BlockTool {
         return;
       }
 
+      // Read before show(): the picker's search field takes focus.
+      this._caretBeforePicker = this.codeCaretOffset();
       // Suggestions depend on recent picks in other blocks and on the filename,
       // so the rows are rebuilt on every open.
       this.rebuildLanguagePicker()?.show();
@@ -455,6 +466,8 @@ export class CodeTool implements BlockTool {
   }
 
   public setReadOnly(state: boolean): void {
+    // Before the swap below: it needs the display back in the DOM.
+    this._endFilenameEdit?.();
     this.readOnly = state;
 
     if (!this._dom) {
@@ -536,6 +549,7 @@ export class CodeTool implements BlockTool {
       }
 
       state.done = true;
+      this._endFilenameEdit = null;
 
       const next = commit ? input.value.trim() : previous;
 
@@ -578,6 +592,7 @@ export class CodeTool implements BlockTool {
       }
     });
     input.addEventListener('blur', () => finish(true, false));
+    this._endFilenameEdit = () => finish(true, false);
 
     display.replaceWith(input);
     input.focus();
@@ -749,6 +764,7 @@ export class CodeTool implements BlockTool {
 
   public onPaste(event: PasteEvent): void {
     const detail = event.detail;
+    const oldLanguage = this._data.language;
 
     if ('data' in detail) {
       const content = detail.data;
@@ -757,6 +773,10 @@ export class CodeTool implements BlockTool {
         this._data.code = CodeTool.textWithLineBreaks(content);
         this._data.language =
           normalizeFenceLang(content.getAttribute(CODE_LANGUAGE_ATTR) ?? '') ?? this._data.language;
+
+        const filename = content.getAttribute(CODE_FILENAME_ATTR);
+
+        Object.assign(this._data, filename ? { filename } : {});
       } else if (typeof content === 'string') {
         // Pattern match — strip triple backtick fences
         const stripped = content.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '');
@@ -767,8 +787,13 @@ export class CodeTool implements BlockTool {
 
     if (this._dom) {
       this._dom.codeElement.textContent = this._data.code;
+      this.renderFilename();
       this.syncTrailingBr();
       this.updateGutter();
+
+      if (this._data.language !== oldLanguage) {
+        this.applyLanguageChange(this._data.language);
+      }
     }
 
     void this.highlightCode();
@@ -830,13 +855,12 @@ export class CodeTool implements BlockTool {
       logos: loadedLanguageLogos(),
       selectedId: this._data.language,
       detectedId: this._detectedLanguage,
-      filename: this._data.filename ?? '',
-      recent: readRecentLanguages(),
       nameOf: (id) => this.getLanguageName(id),
       t: (key) => this.api.i18n.t(key),
       onPick: (id) => {
-        rememberLanguage(id);
         this.setLanguage(id);
+        // Here, not in setLanguage: the block menu and paste also set the language.
+        this.restoreCaretAfterPick();
       },
     });
   }
@@ -865,10 +889,6 @@ export class CodeTool implements BlockTool {
     // outside click, Escape, and picking a language.
     picker.on(PopoverEvent.Closed, () => {
       this.setLanguagePickerExpanded(false);
-      void this.previewLanguage(null);
-    });
-    picker.onCurrentItemChange((current) => {
-      void this.previewLanguage(current?.name ?? null);
     });
 
     if (loadedLanguageLogos() === null) {
@@ -881,47 +901,6 @@ export class CodeTool implements BlockTool {
     this.setLanguagePickerExpanded(false);
 
     return picker;
-  }
-
-  /**
-   * Recolor the code as `id` would, on the overlay layer only. `null`, the
-   * current language, or a hidden code area clears it. A newer call wins over
-   * a tokenize still in flight.
-   */
-  private async previewLanguage(id: string | null): Promise<void> {
-    const layer = this._dom?.previewLayer;
-
-    if (!layer || !this._dom) {
-      return;
-    }
-
-    const request = ++this._previewRequest;
-    const code = this._dom.codeElement.textContent ?? '';
-
-    if (id === null || id === this._data.language || this._dom.preElement.hidden || code === '') {
-      layer.hidden = true;
-      layer.textContent = '';
-
-      return;
-    }
-
-    const html = isHighlightable(id) ? await tokenizePrism(code, id) : null;
-
-    if (request !== this._previewRequest || !this._dom) {
-      return;
-    }
-
-    ensurePrismStyles();
-    layer.className = layer.className.replace(/\s?(blok-code|lang-\S+)/g, '');
-    layer.classList.add('blok-code', `lang-${id.replace(/\s+/g, '-')}`);
-
-    if (html === null) {
-      layer.textContent = code;
-    } else {
-      layer.innerHTML = html;
-    }
-
-    layer.hidden = false;
   }
 
   /**
@@ -1090,6 +1069,11 @@ export class CodeTool implements BlockTool {
     const isFocused = dom.codeElement.ownerDocument.activeElement === dom.codeElement;
     const index = isFocused && !this.readOnly ? caretLineIndex(dom.codeElement) : null;
 
+    if (dom.breadcrumb && (index !== this._activeLineIndex || this._breadcrumbStale)) {
+      this._breadcrumbStale = false;
+      setBreadcrumb(dom.breadcrumb, index === null ? [] : codeBreadcrumb(dom.codeElement.textContent ?? '', index));
+    }
+
     if (index !== this._activeLineIndex) {
       const rows = dom.gutterElement.children;
 
@@ -1256,6 +1240,48 @@ export class CodeTool implements BlockTool {
   }
 
   /**
+   * Caret offset in the code text, or -1 when the caret is not in the code.
+   */
+  private codeCaretOffset(): number {
+    const codeEl = this._dom?.codeElement;
+    const selection = codeEl?.ownerDocument.getSelection();
+
+    if (!codeEl || !selection || selection.rangeCount === 0 || !codeEl.contains(selection.focusNode)) {
+      return -1;
+    }
+
+    const range = codeEl.ownerDocument.createRange();
+
+    range.selectNodeContents(codeEl);
+    range.setEnd(selection.getRangeAt(0).endContainer, selection.getRangeAt(0).endOffset);
+
+    return range.toString().length;
+  }
+
+  /**
+   * After a picked language, put the caret back where it was in the code (Notion U156).
+   */
+  private restoreCaretAfterPick(): void {
+    const offset = this._caretBeforePicker;
+    const codeEl = this._dom?.codeElement;
+
+    this._caretBeforePicker = -1;
+
+    if (offset < 0 || !codeEl) {
+      return;
+    }
+
+    const position = findTextPosition(codeEl, offset);
+    const range = codeEl.ownerDocument.createRange();
+
+    range.setStart(position.node, position.offset);
+    range.collapse(true);
+    codeEl.focus({ preventScroll: true });
+    codeEl.ownerDocument.getSelection()?.removeAllRanges();
+    codeEl.ownerDocument.getSelection()?.addRange(range);
+  }
+
+  /**
    * Place caret at end of the Nth text line inside the code element.
    * Line index is 0-based. Out-of-range indices are clamped.
    */
@@ -1306,6 +1332,11 @@ export class CodeTool implements BlockTool {
     }
     this._resizeObserver = null;
 
+    if (this._pasteRafId !== null) {
+      cancelAnimationFrame(this._pasteRafId);
+      this._pasteRafId = null;
+    }
+
     if (this._copiedTimeoutId !== null) {
       clearTimeout(this._copiedTimeoutId);
       this._copiedTimeoutId = null;
@@ -1335,6 +1366,11 @@ export class CodeTool implements BlockTool {
     }
 
     this._dom = null;
+  }
+
+  /** Editor teardown: `editor.destroy()` calls this, never `removed()`. */
+  public destroy(): void {
+    this.removed();
   }
 
   public static get toolbox(): ToolboxConfig {
@@ -1381,10 +1417,10 @@ export class CodeTool implements BlockTool {
   public static get pasteConfig(): PasteConfig {
     return {
       /**
-       * The language attribute must be listed here or the paste sanitizer drops
-       * it, since it keeps only the attributes a tool names for its own tags.
+       * The language and filename attributes must be listed here or the paste sanitizer drops
+       * them, since it keeps only the attributes a tool names for its own tags.
        */
-      tags: [{ PRE: { [CODE_LANGUAGE_ATTR]: true } }],
+      tags: [{ PRE: { [CODE_LANGUAGE_ATTR]: true, [CODE_FILENAME_ATTR]: true } }],
       patterns: {
         code: /^```/,
       },

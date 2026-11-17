@@ -31,14 +31,22 @@ export interface OverflowListOptions {
   onReorder?: (id: string, afterId: string | null, beforeId: string | null) => void;
   /** "•••" on a row. The caller's menu lives outside the list. Omitted: no "•••". */
   onMenu?: (button: HTMLElement, id: string, row: HTMLElement) => void;
-  /** Omitted: no new-item row. */
-  onNew?: () => void;
+  /** Omitted: no new-item row. Gets the row, for a menu that opens beside it, and whether a key picked it. */
+  onNew?: (row: HTMLElement, byKeyboard: boolean) => void;
+  /** The list stays open when the new-item row opens something beside it. */
+  keepOpenOnNew?: boolean;
   /** A second new-item row below the first ("New data source"). */
   onNewSecond?: { label: string; icon: string; activate: () => void };
   /** A node outside the list that still belongs to it (the row menu). */
   ownsNode: (target: Node) => boolean;
   /** Escape closes the caller's top layer first; true when it closed one. */
   closeLayer: () => boolean;
+  /** A menu over the list (Add view beside it) takes the arrows and Enter while it is open. */
+  yieldsKeys?: () => boolean;
+  /** The list's top in the window, from the anchor's box and the list's height; unset: below the anchor, flipped by room. */
+  placeTop?: (anchor: DOMRect, height: number) => number;
+  /** True while a layer over the list is open: an outside press closes only that layer, not the list. */
+  peelsOutsidePress?: () => boolean;
   /** An element whose own Escape must not close the list (a rename field). */
   ownsEscape: (target: EventTarget | null) => boolean;
   onClose?: () => void;
@@ -81,6 +89,8 @@ export class OverflowList {
   private tracker: PositionTracker | null = null;
   private drag: { id: string; row: HTMLElement; moved: boolean } | null = null;
   private highlighted: HTMLElement | null = null;
+  /** A layer was open when the press began; the popover registry closes it before mousedown. */
+  private pressPeeled = false;
   private readonly listId = `blok-overflow-list-${++listIds.next}`;
 
   constructor(options: OverflowListOptions) {
@@ -139,7 +149,7 @@ export class OverflowList {
     if (this.options.onNewSecond !== undefined) {
       const second = this.options.onNewSecond;
 
-      listbox.appendChild(this.createNewRow(second.activate, { label: second.label, icon: second.icon, suffix: 'new-second' }));
+      listbox.appendChild(this.createNewRow(() => second.activate(), { label: second.label, icon: second.icon, suffix: 'new-second' }));
     }
     // Outside the listbox: only options belong in it.
     dropdown.append(search.getElement(), empty, listbox);
@@ -149,6 +159,11 @@ export class OverflowList {
     promoteToTopLayer(dropdown);
     const reposition = (): void => {
       positionFixedAnchored(dropdown, anchor, { side: 'bottom', offset: 4 });
+      const placeTop = this.options.placeTop;
+
+      if (placeTop !== undefined) {
+        dropdown.style.setProperty('top', `${placeTop(anchor.getBoundingClientRect(), dropdown.getBoundingClientRect().height)}px`);
+      }
     };
 
     // The anchor mirrors with the editor, so a flip re-places the dropdown.
@@ -159,6 +174,8 @@ export class OverflowList {
     this.tracker = createPositionTracker(dropdown, reposition);
     this.tracker.attach();
 
+    // Capture: runs before the popover registry's pointerdown closes the layer.
+    document.addEventListener('pointerdown', this.handleOutsidePointerDown, true);
     document.addEventListener('mousedown', this.handleOutsideMouseDown);
     // Window capture runs before the popover registry's document-capture
     // Escape, so one press peels only the top layer.
@@ -178,6 +195,7 @@ export class OverflowList {
     this.search = null;
     this.highlighted = null;
     window.removeEventListener('keydown', this.handleKeyDown, true);
+    document.removeEventListener('pointerdown', this.handleOutsidePointerDown, true);
     document.removeEventListener('mousedown', this.handleOutsideMouseDown);
     removeFromTopLayer(this.element);
     this.element.remove();
@@ -185,10 +203,16 @@ export class OverflowList {
     this.options.onClose?.();
   }
 
+  private readonly handleOutsidePointerDown = (): void => {
+    this.pressPeeled = this.options.peelsOutsidePress?.() === true;
+  };
+
   private readonly handleOutsideMouseDown = (event: MouseEvent): void => {
     const target = event.target;
+    const peeled = this.pressPeeled;
 
-    if (!(target instanceof Node) || this.element === null) {
+    this.pressPeeled = false;
+    if (!(target instanceof Node) || this.element === null || peeled) {
       return;
     }
     if (!this.element.contains(target) && !this.options.anchor.contains(target) && !this.options.ownsNode(target)) {
@@ -200,7 +224,7 @@ export class OverflowList {
     const input = this.search?.getInput();
 
     // Only the search field steers the highlight: a rename field or a row menu keeps its own keys.
-    if (input !== undefined && event.target === input && !event.isComposing && this.handleNavigation(event)) {
+    if (input !== undefined && event.target === input && !event.isComposing && this.options.yieldsKeys?.() !== true && this.handleNavigation(event)) {
       event.preventDefault();
       event.stopPropagation();
 
@@ -218,6 +242,9 @@ export class OverflowList {
       return;
     }
     if (this.options.closeLayer()) {
+      // A layer that took the focus with it hands it back to the search field.
+      if (!(document.activeElement instanceof Node) || this.element?.contains(document.activeElement) !== true) this.search?.focus();
+
       return;
     }
     this.close();
@@ -263,6 +290,8 @@ export class OverflowList {
       input?.removeAttribute('aria-activedescendant');
     } else {
       input?.setAttribute('aria-activedescendant', target.id);
+      // The list scrolls once capped (database.css); jsdom has no scrollIntoView.
+      target.scrollIntoView?.({ block: 'nearest' });
     }
   }
 
@@ -326,16 +355,16 @@ export class OverflowList {
     return item;
   }
 
-  private createNewRow(onNew: () => void, second?: { label: string; icon: string; suffix: string }): DocumentFragment {
+  private createNewRow(onNew: (row: HTMLElement, byKeyboard: boolean) => void, second?: { label: string; icon: string; suffix: string }): DocumentFragment {
     const { prefix, labels } = this.options;
     const fragment = document.createDocumentFragment();
     const separator = document.createElement('div');
     const button = document.createElement('div');
     const icon = document.createElement('span');
     const label = document.createElement('span');
-    const activate = (): void => {
-      this.close();
-      onNew();
+    const activate = (byKeyboard: boolean): void => {
+      if (second !== undefined || this.options.keepOpenOnNew !== true) this.close();
+      onNew(button, byKeyboard);
     };
 
     separator.setAttribute(`${prefix}-separator`, '');
@@ -351,11 +380,12 @@ export class OverflowList {
     icon.innerHTML = second?.icon ?? IconPlus;
     label.textContent = second?.label ?? labels.newItem;
     button.append(icon, label);
-    button.addEventListener('click', activate);
+    // Enter in the search field clicks the row with no pointer: detail 0.
+    button.addEventListener('click', (event) => activate(event.detail === 0));
     button.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
-        activate();
+        activate(true);
       }
     });
     // The second row shares the first one's separator.

@@ -5,7 +5,7 @@ import { getUnixTime } from './clock';
 import { GRID_ORDER_KEY, GRID_ROWS_KEY, isDiffableTextKey, isListSlotMapKey, isOrderedIdArrayKey, stripNul, toSerializableValue, type YBlockSerializer, type YjsOutputBlockData, stripNulIfString } from './serializer';
 import { writeRichText } from './rich-text-write';
 import { diffText } from './text-diff';
-import { writePageField, type PageFields } from './page-fields';
+import { readPageFields, writePageField, type PageFields } from './page-fields';
 import { LOCAL_ORIGIN_TAGS, type AwarenessChange, type BlockPlacement, type LocalOriginTag, type UndoScopeType } from './types';
 // The narrow module, not the utils barrel: the collab fixture generator
 // bundles this file for node.
@@ -228,6 +228,7 @@ export class DocumentStore {
     this.ydoc.transact(() => {
       writePageField(this.yPage, 'title', fields.title);
       writePageField(this.yPage, 'icon', fields.icon);
+      writePageField(this.yPage, 'cover', fields.cover);
     }, 'load');
   }
 
@@ -788,6 +789,41 @@ export class DocumentStore {
     }, 'local');
 
     return yblock;
+  }
+
+  /**
+   * `addBlockAt` for a run of blocks that follow each other under one parent:
+   * the first goes right after `placement.afterId`, each next one after the
+   * one before it. One order lookup and one insert for the whole run.
+   * @param blockDatas - Blocks to add, in order
+   * @param placement - Target parent and the sibling the first block follows
+   */
+  public addBlocksAt(blockDatas: YjsOutputBlockData[], placement: BlockPlacement): void {
+    const parentId = typeof placement.parentId === 'string' ? stripNul(placement.parentId) : null;
+    const entries = blockDatas.flatMap((blockData) => {
+      const unparented = { ...blockData };
+
+      delete unparented.parent;
+
+      const id = typeof blockData.id === 'string' ? stripNul(blockData.id) : blockData.id;
+
+      return typeof id === 'string' ? [{ id, yblock: this.serializer.outputDataToYBlock(unparented) }] : [];
+    });
+    const placed = entries.filter(({ id }) => parentId === null || !this.wouldFormCycle(id, parentId));
+
+    this.transact(() => {
+      entries.forEach(({ id, yblock }) => this.yBlocksMap.set(id, yblock));
+
+      if (parentId !== null) {
+        placed.forEach(({ yblock }) => yblock.set('parentId', parentId));
+      }
+
+      const target = this.resolveTargetOrder(parentId ?? undefined);
+
+      if (target !== null && placed.length > 0) {
+        target.insert(this.placementSlot(target, placement.afterId), placed.map(({ id }) => id));
+      }
+    }, 'local');
   }
 
   /**
@@ -2503,6 +2539,8 @@ export class DocumentStore {
    */
   private readonly updateHandlers = new Set<(update: Uint8Array, origin: unknown) => void>();
 
+  private readonly resetHandlers = new Set<() => void>();
+
   /**
    * Apply a binary Yjs update coming from outside this editor.
    *
@@ -2590,6 +2628,36 @@ export class DocumentStore {
   /**
    * Encode this document's state vector (for requesting a diff from a peer).
    */
+  /**
+   * The blocks and page fields `item` would leave when undone (or redone), replayed on a
+   * copy; this doc is untouched.
+   */
+  public previewReplay(item: Y.UndoManager['undoStack'][number], direction: 'undo' | 'redo'): { blocks: YjsOutputBlockData[]; page: PageFields } {
+    const copy = new DocumentStore(this.serializer);
+
+    // No gc: the step's removed items must keep their content to come back.
+    copy.ydoc = new Y.Doc({ gc: false });
+    copy.yBlocksMap = copy.ydoc.getMap('blocks');
+    copy.yRootOrder = copy.ydoc.getArray('root');
+    copy.yValues = copy.ydoc.getMap('values');
+    copy.yPage = copy.ydoc.getMap('page');
+    Y.applyUpdate(copy.ydoc, Y.encodeStateAsUpdate(this.ydoc));
+    const manager = new Y.UndoManager(copy.undoScope, { captureTimeout: 0 });
+
+    (direction === 'undo' ? manager.undoStack : manager.redoStack).push(item);
+    if (direction === 'undo') {
+      manager.undo();
+    } else {
+      manager.redo();
+    }
+    manager.destroy();
+    const preview = { blocks: copy.toJSON(), page: readPageFields(copy.yPage) };
+
+    copy.ydoc.destroy();
+
+    return preview;
+  }
+
   public getStateVector(): Uint8Array {
     return Y.encodeStateVector(this.ydoc);
   }
@@ -2863,6 +2931,23 @@ export class DocumentStore {
         this.awareness.setLocalState(localAwarenessState);
       }
     }
+
+    for (const handler of [...this.resetHandlers]) {
+      handler();
+    }
+  }
+
+  /**
+   * Called after {@link resetForRelineage} swapped in the fresh doc. Anything
+   * built on the old doc's types (an undo manager) rebuilds here.
+   * @param handler - runs once per reset
+   */
+  public onReset(handler: () => void): () => void {
+    this.resetHandlers.add(handler);
+
+    return (): void => {
+      this.resetHandlers.delete(handler);
+    };
   }
 
   /**
@@ -2874,6 +2959,7 @@ export class DocumentStore {
       this.ydoc.off('update', handler);
     }
     this.updateHandlers.clear();
+    this.resetHandlers.clear();
 
     // Destroy awareness BEFORE the doc: its own `doc.on('destroy')` hook would
     // otherwise reach a half-torn-down instance. Clears the sweep timer.

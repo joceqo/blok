@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/dotnet"
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
 )
 
 // Headers the endpoint reads and writes.
@@ -32,9 +32,12 @@ const (
 	DefaultMaxResponseBytes = 64 << 20
 	errorBodyPrefixBytes    = 512
 	// JSONMaxDepth is YDocConverter.JsonMaxDepth, both ways.
-	JSONMaxDepth   = 512
-	connectTimeout = 10 * time.Second
+	JSONMaxDepth = 512
 )
+
+// connectTimeout is SocketsHttpHandler.ConnectTimeout. A var so tests can
+// lower it.
+var connectTimeout = 10 * time.Second
 
 // Options configure a Client. Endpoint is the operator's URL, already parsed.
 type Options struct {
@@ -77,19 +80,16 @@ type Client struct {
 	http    *http.Client
 }
 
-// New builds a client. A nil transport is a fresh one with a 10 s connect
-// timeout. C# also caps a pooled connection's life at 5 minutes so a DNS
-// change is picked up; net/http has no such setting (idle connections are
-// closed after IdleConnTimeout instead).
+// New builds a client. A nil transport is DocEndpointClient.CreateHandler:
+// a 10 s connect timeout, and a pooled connection retired after 5 minutes
+// so a DNS change at the endpoint is picked up. It asks for no
+// compression, and the cap counts the raw body.
 func New(options Options, transport http.RoundTripper) *Client {
 	if transport == nil {
-		transport = &http.Transport{
-			Proxy:           http.ProxyFromEnvironment,
-			DialContext:     (&net.Dialer{Timeout: connectTimeout}).DialContext,
-			IdleConnTimeout: 5 * time.Minute,
-			// C# asks for no compression, and caps the raw body.
-			DisableCompression: true,
-		}
+		transport = dotnet.NewSocketsTransport(dotnet.SocketsOptions{
+			ConnectTimeout:           connectTimeout,
+			PooledConnectionLifetime: 5 * time.Minute,
+		})
 	}
 	if options.MaxResponseBytes == 0 {
 		options.MaxResponseBytes = DefaultMaxResponseBytes
@@ -140,7 +140,12 @@ func (c *Client) Save(ctx context.Context, docID string, outputData any, version
 	}
 	request.Header["Content-Type"] = []string{"application/json; charset=utf-8"}
 	if version != nil {
-		request.Header[VersionHeader] = []string{*version}
+		// The endpoint's own answer: a CR or LF in it would start a header of its own.
+		value, ok := latin1HeaderValue(*version)
+		if !ok {
+			return nil, &Error{Message: "collab: the doc endpoint version cannot be sent as a header."}
+		}
+		request.Header[VersionHeader] = []string{value}
 	}
 	if projection != nil {
 		request.Header[LineageHeader] = []string{projection.Lineage}
@@ -197,16 +202,32 @@ func seconds(d time.Duration) string {
 	return strings.TrimSuffix(text, ".")
 }
 
+// latin1HeaderValue is a header value as undici and the C# client send it:
+// tab, printable ASCII and U+0080..U+00FF only, the last as one Latin-1
+// byte each (net/http writes a string's bytes, so it is rewritten here).
+// Any other char is refused.
+func latin1HeaderValue(value string) (string, bool) {
+	out := make([]byte, 0, len(value))
+	for _, r := range value {
+		if r != '\t' && (r < 0x20 || r == 0x7f || r > 0xff) {
+			return "", false
+		}
+		out = append(out, byte(r))
+	}
+	return string(out), true
+}
+
 func (c *Client) send(ctx context.Context, request *http.Request) ([]byte, error) {
 	// An empty value makes net/http send no User-Agent, as C# sends none.
 	request.Header["User-Agent"] = []string{""}
 	// Refused, not dropped: a stray newline from a shell-quoted secret would
 	// otherwise send every request unauthenticated.
 	if auth := c.options.Authorization; auth != "" {
-		if strings.ContainsAny(auth, "\r\n") {
+		value, ok := latin1HeaderValue(auth)
+		if !ok {
 			return nil, &Error{Message: "collab: the doc endpoint Authorization value cannot be sent as a header (a stray newline?)."}
 		}
-		request.Header["Authorization"] = []string{auth}
+		request.Header["Authorization"] = []string{value}
 	}
 	timeout := ctx
 	if c.options.RequestTimeout > 0 {
@@ -216,7 +237,10 @@ func (c *Client) send(ctx context.Context, request *http.Request) ([]byte, error
 	}
 	response, err := c.http.Do(request.WithContext(timeout))
 	if err != nil {
-		if ctx.Err() == nil && timeout.Err() != nil {
+		// A connect or handshake timeout is an OperationCanceledException
+		// in C#, so it reads as timed out too.
+		var netError net.Error
+		if ctx.Err() == nil && (timeout.Err() != nil || errors.As(err, &netError) && netError.Timeout()) {
 			return nil, c.timedOut(request.Method, err)
 		}
 		if ctx.Err() != nil {

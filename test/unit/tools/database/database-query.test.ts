@@ -507,21 +507,104 @@ describe('database-query — date ranges', () => {
 
   const ranged = row('r', 'a0', { due: '2026-10-05/2026-10-10' });
 
+  // notion-motion.md Round 14 item 9: Start date (the plain operators) reads the range's first day only.
   it.each([
     ['equals', '2026-10-05', true],
-    ['equals', '2026-10-07', true],
-    ['equals', '2026-10-10', true],
-    ['equals', '2026-10-11', false],
+    ['equals', '2026-10-07', false],
+    ['equals', '2026-10-10', false],
+    ['does_not_equal', '2026-10-07', true],
+    ['does_not_equal', '2026-10-05', false],
     ['before', '2026-10-06', true],
     ['before', '2026-10-05', false],
-    ['after', '2026-10-09', true],
-    ['after', '2026-10-10', false],
+    ['after', '2026-10-04', true],
+    ['after', '2026-10-05', false],
+    ['after', '2026-10-09', false],
     ['on_or_before', '2026-10-05', true],
     ['on_or_before', '2026-10-04', false],
-    ['on_or_after', '2026-10-10', true],
-    ['on_or_after', '2026-10-11', false],
-  ])('a range %s %s → %s (any day of the range counts)', (operator, value, expected) => {
+    ['on_or_after', '2026-10-05', true],
+    ['on_or_after', '2026-10-06', false],
+    ['on_or_after', '2026-10-10', false],
+    ['is_between', '2026-10-01/2026-10-05', true],
+    ['is_between', '2026-10-06/2026-10-12', false],
+  ])('a range %s %s → %s (Start date reads the first day)', (operator, value, expected) => {
     expect(matches(ranged, { propertyId: 'due', operator, value })).toBe(expected);
+  });
+
+  it('matches the measured Notion case: Oct 1 → Oct 10 against Oct 5', () => {
+    const range = row('r14', 'a0', { due: '2026-10-01/2026-10-10' });
+
+    expect(matches(range, { propertyId: 'due', operator: 'after', value: '2026-10-05' })).toBe(false);
+    expect(matches(range, { propertyId: 'due', operator: 'end:after', value: '2026-10-05' })).toBe(true);
+    expect(matches(range, { propertyId: 'due', operator: 'equals', value: '2026-10-05' })).toBe(false);
+  });
+
+  it('reads a range by its first day against today', () => {
+    const NOW = new Date(2026, 9, 9, 12, 0);
+    const startsLastMonth = row('r', 'a0', { due: '2026-09-20/2026-10-09' });
+    const endsNextWeek = row('r', 'a0', { due: '2026-10-08/2026-10-20' });
+
+    expect(rowMatchesFilters(startsLastMonth, [{ propertyId: 'due', operator: 'this_week', value: null }], schema, NOW)).toBe(false);
+    expect(rowMatchesFilters(startsLastMonth, [{ propertyId: 'due', operator: 'end:this_week', value: null }], schema, NOW)).toBe(true);
+    expect(rowMatchesFilters(endsNextWeek, [{ propertyId: 'due', operator: 'relative_to_today', value: 'past:3:day' }], schema, NOW)).toBe(true);
+    expect(rowMatchesFilters(endsNextWeek, [{ propertyId: 'due', operator: 'end:relative_to_today', value: 'past:3:day' }], schema, NOW)).toBe(false);
+    expect(rowMatchesFilters(startsLastMonth, [{ propertyId: 'due', operator: 'equals', value: 'today' }], schema, NOW)).toBe(false);
+    expect(rowMatchesFilters(startsLastMonth, [{ propertyId: 'due', operator: 'end:equals', value: 'today' }], schema, NOW)).toBe(true);
+  });
+
+  it.each([
+    ['equals', '2026-10-05', true],
+    ['equals', '2026-10-06', false],
+    ['does_not_equal', '2026-10-05', false],
+    ['before', '2026-10-06', true],
+    ['before', '2026-10-05', false],
+    ['after', '2026-10-04', true],
+    ['after', '2026-10-05', false],
+    ['on_or_before', '2026-10-05', true],
+    ['on_or_after', '2026-10-05', true],
+    ['on_or_after', '2026-10-06', false],
+    ['is_between', '2026-10-05/2026-10-06', true],
+    ['is_between', '2026-10-06/2026-10-07', false],
+    ['end:after', '2026-10-04', true],
+    ['end:before', '2026-10-05', false],
+  ])('a single day %s %s → %s', (operator, value, expected) => {
+    expect(matches(row('d', 'a0', { due: '2026-10-05' }), { propertyId: 'due', operator, value })).toBe(expected);
+  });
+
+  // notion-motion.md Round 13: a Date filter has a Start date / End date chooser. "end:" reads the end day only.
+  it.each([
+    ['end:equals', '2026-10-10', true],
+    ['end:equals', '2026-10-07', false],
+    ['end:before', '2026-10-10', false],
+    ['end:on_or_before', '2026-10-10', true],
+    ['end:after', '2026-10-09', true],
+    ['end:after', '2026-10-10', false],
+    ['end:on_or_after', '2026-10-10', true],
+    ['end:on_or_after', '2026-10-11', false],
+    ['end:on_or_before', '2026-10-09', false],
+    ['end:does_not_equal', '2026-10-10', false],
+    ['end:is_between', '2026-10-08/2026-10-12', true],
+    ['end:is_between', '2026-10-01/2026-10-06', false],
+  ])('a range %s %s → %s (End date reads the last day)', (operator, value, expected) => {
+    expect(matches(ranged, { propertyId: 'due', operator, value })).toBe(expected);
+  });
+
+  it('reads a single day as its own end date', () => {
+    const day = row('d', 'a0', { due: '2026-10-05' });
+
+    expect(matches(day, { propertyId: 'due', operator: 'end:equals', value: '2026-10-05' })).toBe(true);
+    expect(matches(row('e', 'a0'), { propertyId: 'due', operator: 'end:is_empty', value: null })).toBe(true);
+    expect(matches(day, { propertyId: 'due', operator: 'end:is_empty', value: null })).toBe(false);
+  });
+
+  it('lets a row through an end side it cannot read', () => {
+    expect(matches(ranged, { propertyId: 'due', operator: 'end:nope', value: '2026-10-01' })).toBe(true);
+    expect(matches(row('t', 'a0', { title: 'x' }), { propertyId: 'title', operator: 'end:equals', value: 'y' })).toBe(true);
+  });
+
+  it('fills a new row so an End date filter keeps it', () => {
+    const values = newRowValues([{ propertyId: 'due', operator: 'end:equals', value: '2026-10-05' }], schema);
+
+    expect(values.due).toBe('2026-10-05');
   });
 
   it('treats a range as not empty', () => {
@@ -664,6 +747,13 @@ describe('database-query — Phase 2 types in Phase 3 filters', () => {
 
     expect(ids(queryRows({ schema: people, rows, me: null }, { view: v }).rows)).toEqual([]);
     expect(ids(queryRows({ schema: people, rows, me: null }, { view: not }).rows)).toEqual(['mine', 'theirs']);
+  });
+
+  it('hides nothing with a Created time "is" filter that has no date yet', () => {
+    const created: PropertyDefinition[] = [{ id: 'ct', name: 'Created time', type: 'createdTime', position: 'a0' }];
+    const v = view({ filters: [{ propertyId: 'ct', operator: 'equals', value: null }] });
+
+    expect(ids(queryRows({ schema: created, rows }, { view: v }).rows)).toEqual(['mine', 'theirs']);
   });
 
   it('searches email text', () => {

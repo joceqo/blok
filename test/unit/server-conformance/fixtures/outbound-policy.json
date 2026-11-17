@@ -20,6 +20,9 @@
     "127.0.0.0",
     "127.255.255.255",
     "128.0.0.0",
+    "168.63.129.15",
+    "168.63.129.16",
+    "168.63.129.17",
     "169.253.255.255",
     "169.254.0.0",
     "169.254.255.255",
@@ -111,6 +114,7 @@
     "::ffff:0.0.0.0",
     "::ffff:10.0.0.1",
     "::ffff:127.0.0.1",
+    "::ffff:168.63.129.16",
     "::ffff:8.8.8.8",
     "::ffff:ffff",
     "fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
@@ -125,7 +129,19 @@
     "feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
     "ff00::",
     "ff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
-    "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"
+    "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "::ffff:0:0:0",
+    "::ffff:0:7f00:1",
+    "::ffff:0:a9fe:a9fe",
+    "::ffff:0:a00:1",
+    "::ffff:0:ffff:ffff",
+    "::fffe:ffff:ffff:ffff",
+    "::ffff:1:0:0",
+    "::7f00:1",
+    "2002:7f00:1::",
+    "2002:a00:1::",
+    "64:ff9b:1::a00:1",
+    "64:ff9b::a9fe:a9fe"
   ],
   "urls": [
     "http://example.com/",
@@ -179,7 +195,33 @@
     "http://a℅b.com/",
     "http://a⑴.com/",
     "http://a.com。/",
-    "http://a％ｃ３％ｂｃb.com/"
+    "http://a％ｃ３％ｂｃb.com/",
+    "\u0000https://example.com/",
+    "https://example.com/\u0000",
+    "https://example.com/a\u0000b",
+    "\thttps://example.com/",
+    "https://example.com/\t",
+    "https://example.com/\n",
+    "https://example.com/a\r\nb",
+    "https://exa\tmple.com/",
+    "\u0001https://example.com/",
+    "https://example.com/\u001F",
+    "https://example.com/\u007F",
+    "https://example.com/\u0085",
+    "\u0085https://example.com/",
+    "https://example.com/\u009F",
+    "https://example.com/\u0080x",
+    "  https://example.com/a  ",
+    "https://example.com/a%00b",
+    "https://example.com/café",
+    "https://example.com/\u00A0",
+    "https://-a.example/",
+    "https://_a.example/",
+    "https://a.-b.example/",
+    "http://-a.example/",
+    "http://@example.com/",
+    "http://:@example.com/",
+    "http://a‍b.example/"
   ],
   "relative": [
     [
@@ -225,6 +267,34 @@
     [
       "http://example.com/a/b",
       "//evil＠127.0.0.1/"
+    ],
+    [
+      "http://example.com/a/b",
+      "/c\u0000"
+    ],
+    [
+      "http://example.com/a/b",
+      "\u0000/c"
+    ],
+    [
+      "http://example.com/a/b",
+      "/c\t"
+    ],
+    [
+      "http://example.com/a/b",
+      "/c\u0085"
+    ],
+    [
+      "http://example.com/a/b",
+      "/cÑ\u0080"
+    ],
+    [
+      "http://example.com/a/b",
+      " /c "
+    ],
+    [
+      "http://example.com/a/b",
+      "/café"
     ]
   ],
   "answers": {
@@ -251,7 +321,6 @@
       true,
       true,
       false,
-      false,
       true,
       true,
       false,
@@ -270,49 +339,6 @@
       false,
       true,
       true,
-      true,
-      false,
-      false,
-      true,
-      false,
-      false,
-      true,
-      false,
-      false,
-      true,
-      true,
-      true,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      true,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      true,
-      false,
-      false,
-      true,
-      false,
-      true,
-      false,
-      false,
-      true,
-      true,
-      false,
-      false,
-      true,
-      true,
-      false,
-      false,
-      false,
       false,
       false,
       true,
@@ -324,27 +350,9 @@
       false,
       false,
       true,
-      true,
-      true,
       false,
       false,
       true,
-      false,
-      true,
-      false,
-      true,
-      true,
-      false,
-      false,
-      true,
-      false,
-      false,
-      false,
-      true,
-      false,
-      true,
-      false,
-      false,
       true,
       true,
       false,
@@ -354,6 +362,84 @@
       false,
       false,
       true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
       false
     ],
     "urls": [
@@ -624,6 +710,116 @@
         "host": "a%c3%bcb.com",
         "port": 80,
         "literal": null
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": true,
+        "url": "https://example.com/a",
+        "host": "example.com",
+        "port": 443,
+        "literal": null
+      },
+      {
+        "allowed": true,
+        "url": "https://example.com/a%00b",
+        "host": "example.com",
+        "port": 443,
+        "literal": null
+      },
+      {
+        "allowed": true,
+        "url": "https://example.com/caf%C3%A9",
+        "host": "example.com",
+        "port": 443,
+        "literal": null
+      },
+      {
+        "allowed": true,
+        "url": "https://example.com/%C2%A0",
+        "host": "example.com",
+        "port": 443,
+        "literal": null
+      },
+      {
+        "allowed": true,
+        "url": "https://-a.example/",
+        "host": "-a.example",
+        "port": 443,
+        "literal": null
+      },
+      {
+        "allowed": true,
+        "url": "https://_a.example/",
+        "host": "_a.example",
+        "port": 443,
+        "literal": null
+      },
+      {
+        "allowed": true,
+        "url": "https://a.-b.example/",
+        "host": "a.-b.example",
+        "port": 443,
+        "literal": null
+      },
+      {
+        "allowed": true,
+        "url": "http://-a.example/",
+        "host": "-a.example",
+        "port": 80,
+        "literal": null
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
       }
     ],
     "relative": [
@@ -683,6 +879,35 @@
       },
       {
         "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": false
+      },
+      {
+        "allowed": true,
+        "url": "http://example.com/c",
+        "host": "example.com",
+        "port": 80,
+        "literal": null
+      },
+      {
+        "allowed": true,
+        "url": "http://example.com/caf%C3%A9",
+        "host": "example.com",
+        "port": 80,
+        "literal": null
       }
     ]
   }

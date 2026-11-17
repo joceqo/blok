@@ -120,6 +120,20 @@ export class PageReferences extends Module {
     return pageId !== null && this.entries.get(pageId)?.anchors.has(anchor) === true;
   }
 
+  /**
+   * What a mention of `pageId` shows now: the host-resolved title and link.
+   * Undefined until the host resolves it, and for a missing or denied page.
+   */
+  public shownLink(pageId: string): { title?: string; href: string | null } | undefined {
+    const info = this.entries.get(pageId)?.info;
+
+    if (info === null || info === undefined || info.access === 'none') {
+      return undefined;
+    }
+
+    return { title: info.title, href: this.href(pageId) };
+  }
+
   public destroy(): void {
     this.observer?.disconnect();
     this.observer = null;
@@ -241,9 +255,13 @@ export class PageReferences extends Module {
     const visibleTitle = allowed && typeof info.title === 'string' && info.title.trim() !== ''
       ? info.title
       : this.Blok.I18n.t('tools.page.unresolved');
-    const title = info?.access === 'none'
-      ? this.Blok.I18n.t('tools.page.noAccess')
-      : visibleTitle;
+    const title = ((): string => {
+      if (info === null) {
+        return this.Blok.I18n.t('tools.page.missing');
+      }
+
+      return info?.access === 'none' ? this.Blok.I18n.t('tools.page.noAccess') : visibleTitle;
+    })();
 
     const { icon, label } = this.parts(anchor);
 

@@ -9,7 +9,7 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/JackUait/blok/packages/server/go/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
 )
 
 // Failure is GuardedFetchFailure.
@@ -22,6 +22,7 @@ const (
 	TimedOut
 	TooManyRedirects
 	UnsupportedContentEncoding
+	RateLimited
 )
 
 // Error is GuardedFetchException.
@@ -53,7 +54,7 @@ var forbidden = func() []netip.Prefix {
 		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "0.0.0.0/8",
 		"169.254.0.0/16", "192.0.0.0/24", "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24",
 		"192.88.99.0/24", "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4", "255.255.255.255/32",
-		"100.64.0.0/10", "::/96", "100::/64", "2001::/23", "2001:2::/48", "2001:db8::/32",
+		"100.64.0.0/10", "168.63.129.16/32", "::/96", "::ffff:0:0:0/96", "100::/64", "2001::/23", "2001:2::/48", "2001:db8::/32",
 		"2001::/32", "fc00::/7", "fec0::/10", "fe80::/10", "ff00::/8", "2002::/16",
 		"64:ff9b::/96", "64:ff9b:1::/48", "5f00::/16", "2001:10::/28", "2001:20::/28",
 		"3fff::/20", "100:0:0:1::/64",
@@ -74,19 +75,18 @@ func resolve(raw string, base *dotnet.URI) (*dotnet.URI, bool) {
 }
 
 // Validate allows http and https on port 80 or 443 with a host and no
-// userinfo. An IP literal must parse.
+// userinfo. An IP literal must parse. A raw control character anywhere is
+// refused: Go's parser trims them at the ends and .NET's keeps some as %00.
 func (DefaultPolicy) Validate(raw string, base *dotnet.URI) (Target, error) {
 	url, ok := resolve(raw, base)
-	if strings.TrimSpace(raw) == "" || !ok || !url.IsHTTP() || url.Host == "" || url.UserInfo != "" ||
+	if strings.TrimSpace(raw) == "" || HasControl(raw) || !ok || !url.IsHTTP() || url.Host == "" || url.UserInfo != "" ||
 		authorityHasAt(url) {
 		return Target{}, fail(Blocked)
 	}
 	if url.Port != 80 && url.Port != 443 {
 		return Target{}, fail(Blocked)
 	}
-	// .NET's IdnHost throws when the mapped name holds a URL delimiter, as
-	// "a／b" mapping to "a/b". Go would put a different host on the wire.
-	if url.HostType == "Dns" && strings.ContainsAny(url.IdnHost, `#/:?@[\]`) {
+	if url.IdnHostThrows {
 		return Target{}, fail(Blocked)
 	}
 	target := Target{URL: url, Host: url.IdnHost, Port: url.Port}
@@ -132,7 +132,7 @@ func (p ExactOriginPolicy) Validate(raw string, base *dotnet.URI) (Target, error
 	url, ok := resolve(raw, base)
 	original := raw
 	if base != nil && ok {
-		original = url.AbsoluteURI
+		_, original, _ = dotnet.ResolveURIOriginal(base, raw)
 	}
 	if !ok || url.Scheme != "http" || url.Host != "127.0.0.1" || url.Port != p.Port || url.UserInfo != "" ||
 		!strings.HasPrefix(original, p.Origin) ||

@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/blob"
-	"github.com/JackUait/blok/packages/server/go/internal/dotnet"
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
-	"github.com/JackUait/blok/packages/server/go/internal/mediatype"
-	"github.com/JackUait/blok/packages/server/go/internal/outbound"
-	"github.com/JackUait/blok/packages/server/go/internal/unfurl"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/blob"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/mediatype"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/outbound"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/unfurl"
 )
 
 const maxEnvelopeBytes = 8 << 10
@@ -30,7 +30,10 @@ func (s *Server) unfurl(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, []byte("{\"success\":0}\n"))
 		return
 	}
-	response, err := s.fetcher.Get(r.Context(), target, unfurlLimits)
+	limits := unfurlLimits
+	limits.Hop = s.hopBudget(r)
+	limits.Caller = s.fetchCaller(r)
+	response, err := s.fetcher.Get(r.Context(), target, limits)
 	if err != nil {
 		if r.Context().Err() == nil {
 			writeJSON(w, http.StatusOK, []byte("{\"success\":0}\n"))
@@ -147,7 +150,8 @@ func (s *Server) uploadByURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response, err := s.fetcher.Get(r.Context(), target, outbound.Limits{
-		Timeout: 2 * time.Minute, MaxBytes: s.options.MaxUploadBytes, MaxRedirects: 5,
+		Timeout: 2 * time.Minute, MaxBytes: s.options.MaxUploadBytes, MaxRedirects: 5, Hop: s.hopBudget(r),
+		Upload: true, Caller: s.fetchCaller(r),
 	})
 	if err != nil {
 		if r.Context().Err() == nil {
@@ -185,9 +189,10 @@ func nameFromURL(raw string) string {
 	return sanitizeFileName(dotnet.UnescapeDataString(url.AbsolutePath))
 }
 
-// serveLocalFile is LocalFileEndpoint: no guard and no CORS, a generated
-// name only, served as an attachment with nosniff.
+// serveLocalFile is LocalFileEndpoint: no guard, CORS only with FilesCORS,
+// a generated name only, served as an attachment with nosniff.
 func (s *Server) serveLocalFile(w http.ResponseWriter, r *http.Request) {
+	s.filesCORS(w, r)
 	name := r.PathValue("fileName")
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) || !blob.IsGenerated(name) {
 		writeText(w, http.StatusNotFound, "404 page not found\n")

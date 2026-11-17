@@ -20,15 +20,24 @@ export interface AudioData extends BlockToolData {
    */
   captionVisible?: boolean;
   title?: string;
+  /** Who made the recording: an artist, a host or a speaker. */
   artist?: string;
   coverUrl?: string;
   loop?: boolean;
+  /** Compact player: one row, with a wire to seek on in place of the ridgeline. Off when absent. */
+  compact?: boolean;
   width?: number;
   alignment?: AudioAlignment;
   fileName?: string;
   mimeType?: string;
   duration?: number;
   peaks?: number[];
+  /**
+   * What the track does over time (hits and loudness), packed as base64. Blok
+   * works it out once from the audio and the cover animation reads it. Opaque:
+   * do not write it by hand.
+   */
+  motion?: string;
 }
 
 export interface AudioUploadContext {

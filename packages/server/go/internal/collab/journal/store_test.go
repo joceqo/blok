@@ -16,8 +16,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/JackUait/blok/packages/server/go/internal/collab/operation"
-	"github.com/JackUait/blok/packages/server/go/internal/collab/workingset"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/operation"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/workingset"
 )
 
 // Go twins of LocalCollabOperationStoreTests and LocalCollabOperationHistoryTests
@@ -500,7 +500,33 @@ func TestAnAppendThatCannotBeUndoneFaultsTheSession(t *testing.T) {
 		t.Fatal("the record was cut after the fence moved")
 	}
 	_, err := session.FindCommitted(context.Background(), twinOpID(1), make([]byte, 32))
-	if err == nil || errors.Is(err, ErrFenceLost) || !strings.Contains(err.Error(), "could not be flushed") {
+	// C# LocalCollabOperationStore.RequireFence, with its closing period.
+	want := `collab: the journal for "doc-1" could not be flushed and this session can no longer say what is durable; reopen the document.`
+	if err == nil || errors.Is(err, ErrFenceLost) || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+// C# LocalCollabOperationStore.WriteCheckpointAsync lists the folder for
+// stale checkpoints without a guard, so a listing failure after the
+// publication throws even though the manifest names the new checkpoint.
+func TestAListingFailureAfterACheckpointIsPublishedIsReported(t *testing.T) {
+	store := newTwinStore(t)
+	session := store.open(t)
+	twinReset(t, session, 1, twinLineage(1))
+	if _, err := twinAppend(t, session, 1, 0x01); err != nil {
 		t.Fatal(err)
+	}
+	defer func(saved func(string, string) ([]string, error)) { globFiles = saved }(globFiles)
+	injected := errors.New("injected listing failure")
+	globFiles = func(string, string) ([]string, error) { return nil, injected }
+	err := session.WriteCheckpoint(context.Background(), operation.Checkpoint{Through: 1, State: []byte{0x02}})
+	if !errors.Is(err, injected) {
+		t.Fatalf("err = %v, want the listing failure", err)
+	}
+	session.Close()
+	reopened := store.open(t)
+	if checkpoint := reopened.OpenResult().Checkpoint; checkpoint == nil || checkpoint.Through != 1 {
+		t.Fatalf("reopened checkpoint = %+v, want the one through 1", checkpoint)
 	}
 }

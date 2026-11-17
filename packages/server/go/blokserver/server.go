@@ -9,37 +9,57 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/auth"
-	"github.com/JackUait/blok/packages/server/go/internal/blob"
-	"github.com/JackUait/blok/packages/server/go/internal/collab"
-	"github.com/JackUait/blok/packages/server/go/internal/collab/synchttp"
-	"github.com/JackUait/blok/packages/server/go/internal/dotnet"
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
-	"github.com/JackUait/blok/packages/server/go/internal/outbound"
-	"github.com/JackUait/blok/packages/server/go/internal/route"
-	"github.com/JackUait/blok/packages/server/go/internal/ticket"
+	"github.com/JackUait/blok/packages/server/go/v2/blokagent"
+	"github.com/JackUait/blok/packages/server/go/v2/blokdocs"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/auth"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/blob"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/collabhttp"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/synchttp"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsruntime"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/outbound"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/route"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/ticket"
 )
 
 // Server is a configured Blok server. Build it with New.
 type Server struct {
-	options    Options
+	options    settings
 	publicPath string
-	limiter    *rateLimiter
-	clock      func() time.Time
-	fetcher    *outbound.Fetcher
+	// hostNames is what hostAllowed takes besides loopback.
+	hostNames []string
+	limiter   *rateLimiter
+	clock     func() time.Time
+	fetcher   *outbound.Fetcher
+	pdfChecks *pdfCheckCache
 
 	storeOnce sync.Once
 	store     blob.Store
 	storeErr  error
 
-	// rooms is nil until the room lane lands; /sync is mapped only with it.
-	rooms       collab.Rooms
-	connections *synchttp.ConnectionTable
+	// rooms is set when collaboration is on; /sync is mapped only with it.
+	rooms  collab.Rooms
+	collab *collabRooms
+	// runtime is the engine pool the rooms and the agent share, built on
+	// first use.
+	runtime       *lazyRuntime
+	documentsOnce sync.Once
+	documents     *blokdocs.Converter
+	// warmed closes when the warm-up New started has finished.
+	warmed             <-chan struct{}
+	agentOnce          sync.Once
+	agent              *blokagent.Executor
+	agentErr           error
+	conformanceJournal bool
+	connections        *synchttp.ConnectionTable
 }
 
 // New validates o and returns a server. Like AddBlokServer, nothing heavy is
 // built until a request needs it.
-func New(o Options) (*Server, error) {
+func New(options Options) (*Server, error) {
+	o := options.resolve()
 	publicPath, err := o.validate()
 	if err != nil {
 		return nil, err
@@ -59,22 +79,81 @@ func New(o Options) (*Server, error) {
 	s := &Server{
 		options:    o,
 		publicPath: publicPath,
+		hostNames:  hostNames(o.AllowedOrigins, o.PublicURL),
 		clock:      clock,
 		fetcher:    outbound.NewFetcher(outbound.DefaultPolicy{}),
+		runtime: &lazyRuntime{options: jsruntime.Options{
+			PoolSize:     o.Documents.PoolSize,
+			Timeout:      o.Documents.Timeout,
+			MemoryBudget: o.Documents.MemoryBudget,
+		}},
+	}
+	if o.Documents.WarmUp {
+		// In the background, as C#'s BlokDocumentWarmUp: a failed or slow
+		// warm-up never fails or delays New.
+		done := make(chan struct{})
+		s.warmed = done
+		converter := s.DocumentConverter()
+		go func() {
+			defer close(done)
+			_ = converter.WarmUp(context.Background())
+		}()
 	}
 	s.limiter = newRateLimiter(o.RateLimitPerMinute, func() time.Time { return s.clock() })
+	s.pdfChecks = newPDFCheckCache(func() time.Time { return s.clock() })
 	s.connections = synchttp.NewConnectionTable(o.CollabMaxConnections, o.CollabMaxConnectionsPerUserPerDoc)
+	if o.CollabEnabled {
+		s.collab = &collabRooms{server: s}
+		s.rooms = s.collab
+	}
 	return s, nil
 }
 
 // Drain stops the server's long-lived work before the HTTP server shuts
-// down. Without collaboration there is none.
-func (s *Server) Drain(context.Context) error { return nil }
+// down: new upgrades get 503, every room flushes, members close 1001.
+// Without collaboration there is none.
+func (s *Server) Drain(ctx context.Context) error {
+	if s.collab == nil {
+		return nil
+	}
+	manager, err := s.collab.get()
+	if err != nil {
+		return err
+	}
+	if err := manager.Drain(ctx); err != nil {
+		return err
+	}
+	// http.Server.Shutdown does not wait for hijacked sockets, and each
+	// member's close is only queued: wait for the sockets, as Kestrel waits
+	// for upgraded connections, until ctx ends.
+	for s.connections.Live() > 0 {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	return nil
+}
 
 // Handler is MapBlokServer: the routes the options switch on under prefix
 // ("" for the root), every other path in the group answered 404, and local
 // files served at the public URL path, outside the prefix.
 func (s *Server) Handler(prefix string) http.Handler {
+	return s.handler(prefix, func(next http.Handler) http.Handler { return next })
+}
+
+// HandlerWithAuth is Handler with the host's own authentication in front
+// of the group, as MapBlokServer(prefix).RequireAuthorization() is in C#:
+// auth wraps every route, 405 answer and the group's 404, but /health (and
+// its 405) and every CORS preflight stay anonymous, as AllowAnonymous
+// keeps them. Local files and paths outside the group are not the group's,
+// so auth does not see them either.
+func (s *Server) HandlerWithAuth(prefix string, auth func(http.Handler) http.Handler) http.Handler {
+	return s.handler(prefix, auth)
+}
+
+func (s *Server) handler(prefix string, protect func(http.Handler) http.Handler) http.Handler {
 	prefix = strings.TrimRight(prefix, "/")
 	router := &route.Router{}
 	o := &s.options
@@ -89,23 +168,63 @@ func (s *Server) Handler(prefix string) http.Handler {
 
 	router.Handle(prefix+"/health", []string{"GET", "HEAD"}, http.HandlerFunc(s.health))
 	router.Handle(prefix+"/health", nil, route.MethodNotAllowed("GET, HEAD"))
+	shell := func(pattern, method string, handler http.HandlerFunc) {
+		s.shell(router, pattern, method, handler, protect)
+	}
 	if o.UnfurlEnabled {
-		s.shell(router, prefix+"/unfurl", "GET", s.unfurl)
+		shell(prefix+"/unfurl", "GET", s.unfurl)
+		shell(prefix+"/frame-check", "GET", s.frameCheck)
+	}
+	if o.FileBytesEnabled {
+		shell(prefix+"/file-bytes", "GET", s.fileBytes)
 	}
 	if o.hasStorage() {
-		s.shell(router, prefix+"/upload", "POST", s.upload)
-		s.shell(router, prefix+"/delete", "POST", s.delete)
+		shell(prefix+"/upload", "POST", s.upload)
+		shell(prefix+"/delete", "POST", s.delete)
 		if o.UnfurlEnabled {
-			s.shell(router, prefix+"/upload-by-url", "POST", s.uploadByURL)
+			shell(prefix+"/upload-by-url", "POST", s.uploadByURL)
 		}
 	}
 	if o.CollabEnabled && s.rooms != nil {
 		// Not behind the guard: the handshake is its own door, and a live
 		// socket outlasts any request deadline.
-		router.Handle(prefix+"/sync/{doc}", []string{"GET"}, withoutRequestTimeout(s.syncEndpoint()))
-		router.Handle(prefix+"/sync/{doc}", nil, route.MethodNotAllowed("GET"))
+		router.Handle(prefix+"/sync/{doc}", []string{"GET"}, withoutRequestTimeout(protect(s.syncEndpoint())))
+		router.Handle(prefix+"/sync/{doc}", nil, protect(route.MethodNotAllowed("GET")))
+		routes := collabhttp.New(collabhttp.Config{
+			TicketMode:      o.Auth == "ticket",
+			Authorization:   o.Authorization,
+			Rooms:           s.collab.get,
+			MaxMessageBytes: o.CollabMaxMessageBytes,
+			CorruptLog:      s.corruptLog,
+
+			EnforceRestoreGuards: o.CollabEnforceRestoreGuards,
+			StampAuthority:       o.CollabStampAuthority,
+			Now:                  s.clock,
+		})
+		shell(prefix+"/sync/{doc}/reset", "POST", routes.Reset)
+		shell(prefix+"/sync/{doc}/edit", "POST", routes.Edit)
+		shell(prefix+"/sync/{doc}/state", "GET", routes.State)
+		shell(prefix+"/sync/{doc}/history", "GET", routes.HistoryList)
+		shell(prefix+"/sync/{doc}/history/{lineage}/{sequence}", "GET", routes.HistoryRead)
+		shell(prefix+"/sync/{doc}/history/{lineage}", "DELETE", routes.HistoryDelete)
+		shell(prefix+"/sync/{doc}/history/{lineage}/{sequence}/restore", "POST", routes.HistoryRestore)
+		shell(prefix+"/sync/{doc}/history/{lineage}/{sequence}/restore/preview", "POST", routes.HistoryRestorePreview)
+		shell(prefix+"/sync/{doc}/history/{lineage}/{sequence}/changes", "GET", routes.HistoryChanges)
+		shell(prefix+"/sync/{doc}/history/at", "GET", routes.HistoryAt)
+		shell(prefix+"/sync/{doc}/history/changes", "GET", routes.HistoryChangesBetween)
+		if o.Auth == "none" && o.Authorization == nil {
+			s.warnOpenSyncRoutes(prefix)
+		}
 	}
-	return router
+	notFound := protect(route.NotFound)
+	router.Fallback = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if route.InGroup(r, prefix) {
+			notFound.ServeHTTP(w, r)
+			return
+		}
+		route.NotFound.ServeHTTP(w, r)
+	})
+	return dotnet.RecoverLikeKestrel(withDefaultBodyLimits(router))
 }
 
 func (s *Server) syncEndpoint() *synchttp.Endpoint {
@@ -118,6 +237,7 @@ func (s *Server) syncEndpoint() *synchttp.Endpoint {
 		Clock:             func() time.Time { return s.clock() },
 		Authorization:     o.Authorization,
 		Rooms:             s.rooms,
+		HasOperationStore: s.hasJournal(),
 		MaxMessageBytes:   o.CollabMaxMessageBytes,
 		KeepAliveInterval: o.CollabKeepAliveInterval,
 		Connections:       s.connections,
@@ -131,13 +251,13 @@ func (s *Server) syncEndpoint() *synchttp.Endpoint {
 }
 
 // shell maps one guarded route with its preflight and its 405 answer.
-func (s *Server) shell(router *route.Router, pattern, method string, handler http.HandlerFunc) {
+func (s *Server) shell(router *route.Router, pattern, method string, handler http.HandlerFunc, protect func(http.Handler) http.Handler) {
 	requireWrite := method != "GET"
-	router.Handle(pattern, []string{method}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	router.Handle(pattern, []string{method}, protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r, ok := s.guard(w, r, requireWrite); ok {
 			handler(w, r)
 		}
-	}))
+	})))
 	router.Handle(pattern, []string{"OPTIONS"}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.preflight(w, r, method)
 	}))
@@ -150,7 +270,7 @@ func (s *Server) shell(router *route.Router, pattern, method string, handler htt
 	case method == "GET":
 		allow = "GET, HEAD, OPTIONS"
 	}
-	router.Handle(pattern, nil, route.MethodNotAllowed(allow))
+	router.Handle(pattern, nil, protect(route.MethodNotAllowed(allow)))
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -172,9 +292,10 @@ func requestOrigin(r *http.Request) string {
 }
 
 // originAllowed is BlokServerCors.IsAllowed: an exact, case-insensitive
-// match against a trimmed candidate. An empty origin never matches.
+// match against a trimmed candidate. An empty origin never matches, nor one
+// Kestrel could not echo: a browser writes a non-ASCII host in punycode.
 func (s *Server) originAllowed(origin string) bool {
-	if origin == "" {
+	if origin == "" || !isFieldValue(origin) {
 		return false
 	}
 	for _, candidate := range s.options.AllowedOrigins {
@@ -192,7 +313,7 @@ func (s *Server) preflight(w http.ResponseWriter, r *http.Request, method string
 		return
 	}
 	requested := firstValue(r.Header, "Access-Control-Request-Headers")
-	if !isFieldValue(origin) || !isFieldValue(requested) {
+	if !isFieldValue(requested) {
 		headerValueRefused(w)
 		return
 	}
@@ -235,10 +356,14 @@ func firstValue(h http.Header, name string) string {
 	return ""
 }
 
-// guard is BlokServerRequestGuard: origin, then ticket, then rate limit.
-// CORS headers go on before the ticket and limiter checks so their refusals
-// stay readable to the page.
+// guard is BlokServerRequestGuard: host, then origin, then ticket, then
+// rate limit. CORS headers go on before the ticket and limiter checks so
+// their refusals stay readable to the page.
 func (s *Server) guard(w http.ResponseWriter, r *http.Request, requireWrite bool) (*http.Request, bool) {
+	if s.options.LoopbackHostCheck && s.options.Auth != "ticket" && !hostAllowed(r.Host, s.hostNames) {
+		writeText(w, http.StatusMisdirectedRequest, "host not allowed\n")
+		return r, false
+	}
 	origin := requestOrigin(r)
 	allowed := s.originAllowed(origin)
 	_, hasOrigin := r.Header["Origin"]
@@ -249,10 +374,6 @@ func (s *Server) guard(w http.ResponseWriter, r *http.Request, requireWrite bool
 		return r, false
 	}
 	if allowed {
-		if !isFieldValue(origin) {
-			headerValueRefused(w)
-			return r, false
-		}
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Add("Vary", "Origin")
 	}
@@ -284,7 +405,16 @@ func (s *Server) guard(w http.ResponseWriter, r *http.Request, requireWrite bool
 		writeText(w, http.StatusTooManyRequests, "rate limit exceeded\n")
 		return r, false
 	}
-	return r, true
+	return r.WithContext(context.WithValue(r.Context(), rateKey{}, key)), true
+}
+
+type rateKey struct{}
+
+// hopBudget charges each outbound redirect hop to the caller's rate limit
+// key, the one the guard charged for the request itself.
+func (s *Server) hopBudget(r *http.Request) func() bool {
+	key, _ := r.Context().Value(rateKey{}).(string)
+	return func() bool { return s.limiter.allow(key) }
 }
 
 // remoteAddress is Connection.RemoteIpAddress: the peer IP without the port.
@@ -390,7 +520,7 @@ func uploadResponse(w http.ResponseWriter, url, fileName string, size int64, mim
 	writeJSON(w, http.StatusOK, append(body, "}\n"...))
 }
 
-func newS3Store(o *Options, clock func() time.Time) (blob.Store, error) {
+func newS3Store(o *settings, clock func() time.Time) (blob.Store, error) {
 	return blob.NewS3(&blob.S3{
 		Endpoint: o.S3Endpoint, Region: o.S3Region, Bucket: o.S3Bucket, AccessKey: o.S3AccessKey,
 		SecretKey: o.S3SecretKey, PublicURL: o.S3BucketURL, Addressing: o.S3Addressing,

@@ -155,10 +155,12 @@ export class SpacerTool implements BlockTool {
     return wrapper;
   }
 
-  /**
-   * Clean up the fresh-reveal document listeners when the block is removed
-   */
   public removed(): void {
+    this.destroy();
+  }
+
+  /** Editor teardown: `editor.destroy()` calls this, never `removed()`. */
+  public destroy(): void {
     this.dismissFreshReveal?.();
     this.guide.hide();
   }
@@ -199,6 +201,11 @@ export class SpacerTool implements BlockTool {
   /**
    * Toolbox appearance
    */
+  /** Nothing: other apps have no gap or outline, and the labels are not content. */
+  public static clipboardHtml(): string {
+    return '';
+  }
+
   public static get toolbox(): ToolboxConfig {
     return {
       icon: IconSpacer,

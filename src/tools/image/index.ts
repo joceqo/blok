@@ -1,5 +1,7 @@
 import { describeImage } from '../../shared/tool-descriptions/image';
+import { BLOK_HOSTED_IMAGE_ATTR, imageClipboardHtml } from '../../shared/clipboard-html';
 import { IMAGE_ACTION_HANDLERS } from '../../shared/tool-actions/image';
+import { isSafeImageUrl } from '../../shared/url-policy';
 import { MEDIA_ACTION_HANDLERS } from '../../shared/tool-actions/media';
 import { imageSanitize } from '../../shared/tool-descriptions/sanitize/blocks';
 import type {
@@ -68,18 +70,22 @@ import { openAltPopover } from './alt-popover';
 import { probeImageDimensions } from './probe-dimensions';
 import { renderUploadingState, type UploadingStateElement } from './uploading-state';
 import { readVariants } from '../../shared/read-variants';
-import { Uploader, type UploadResult } from './uploader';
+import { Uploader, isDataUrl, type UploadResult } from './uploader';
 import { convertGifToWebm } from './gif-to-webm';
 import { downloadImage } from './download';
 import { resolveConvertedUploader } from './converted-uploader';
 import { tr } from './i18n';
-import { deliverToRebuiltBlock, putBackOnRebuiltBlock, releaseObjectUrl, writeDerived } from './detached-upload';
+import { deliverToRebuiltBlock, isStillInDocument, putBackOnRebuiltBlock, releaseObjectUrl, writeDerived } from './detached-upload';
 import { renderImagePreview } from './preview';
 import { figureInsets } from './figure-insets';
 import { overrideStatic } from '../../components/utils/override-static';
 import type { LazySheet } from '../../components/utils/lazy-styles';
+import { createSafeObjectUrl } from '../../shared/safe-object-url';
 
 type ToolState = 'EMPTY' | 'LOADING' | 'RENDERED' | 'ERROR';
+
+/** A link job. `upload` is the host's answer for a pasted link; a retry reuses it. */
+type UrlSource = { kind: 'url'; url: string; upload?: Promise<boolean> };
 
 function canAnimate(el: Element | null): el is Element & { animate: HTMLElement['animate'] } {
   return el != null && typeof (el as HTMLElement).animate === 'function';
@@ -89,6 +95,8 @@ function prefersReducedMotion(): boolean {
   return typeof window !== 'undefined'
     && !!window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
 }
+
+const isSvgFile = (file: File): boolean => file.type.split(';')[0].trim().toLowerCase() === 'image/svg+xml';
 
 const mergeToolActionHandlers = () => ({ ...MEDIA_ACTION_HANDLERS.image, ...IMAGE_ACTION_HANDLERS });
 
@@ -147,7 +155,7 @@ export class ImageTool implements BlockTool {
   private altPopoverDetach: (() => void) | null = null;
   private errorMessage: string | null = null;
   private lastFileName: string | null = null;
-  private lastSource: { kind: 'file'; file: File } | { kind: 'url'; url: string } | null = null;
+  private lastSource: { kind: 'file'; file: File } | UrlSource | null = null;
   private brokenImage = false;
   private retrying = false;
   /** Tries of the current upload, the first one included. */
@@ -166,6 +174,8 @@ export class ImageTool implements BlockTool {
   private mending = false;
   private reloadAttempts = 0;
   private converting = false;
+  /** Counts GIF conversions; a conversion whose number is no longer current was cancelled or replaced. */
+  private conversionJob = 0;
   /** Set by `removed()`: this instance is no longer the document's block. */
   private detached = false;
   /** Object URL of the picked file shown in the failure notice; freed when the failure ends. */
@@ -242,6 +252,11 @@ export class ImageTool implements BlockTool {
     return typeof data.url === 'string' && data.url.length > 0;
   }
 
+  /** The image and its caption, without the buttons drawn over it. */
+  public static clipboardHtml(data: ImageData): string | null {
+    return imageClipboardHtml(data.url, data);
+  }
+
   public static get toolbox(): ToolboxConfig {
     return {
       icon: IconImage,
@@ -274,7 +289,7 @@ export class ImageTool implements BlockTool {
   public static get pasteConfig(): PasteConfig {
     return {
       patterns: { image: URL_PATTERN },
-      tags: [{ img: { src: true, alt: true } }],
+      tags: [{ img: { src: true, alt: true, [BLOK_HOSTED_IMAGE_ATTR]: true } }],
       files: { mimeTypes: ['image/*'] },
     };
   }
@@ -284,7 +299,10 @@ export class ImageTool implements BlockTool {
     if (event.type === 'pattern') {
       if (sources === 'upload') return;
       const detail = (event as PatternPasteEvent).detail;
-      if (this.shouldConvertGifUrl(detail.data)) {
+      const upload = this.uploader.decidePastedUrl(detail.data, { source: 'url', copiedFromBlok: false });
+      if (upload !== undefined) {
+        this.startUrl(detail.data, upload);
+      } else if (this.shouldConvertGifUrl(detail.data)) {
         this.startUrl(detail.data);
       } else {
         this.applyResult({ url: detail.data });
@@ -296,7 +314,19 @@ export class ImageTool implements BlockTool {
       const node = (event as HTMLPasteEvent).detail.data;
       const src = node?.getAttribute?.('src') ?? '';
       if (!src) return;
-      this.startUrl(src);
+      const copiedFromBlok = node.hasAttribute(BLOK_HOSTED_IMAGE_ATTR);
+      // The host decides when it can. Any page can forge the mark, so it is only a hint then.
+      const upload = this.uploader.decidePastedUrl(src, { source: 'html', copiedFromBlok });
+      if (upload !== undefined) {
+        this.startUrl(src, upload);
+      } else if (copiedFromBlok && !isDataUrl(src) && isSafeImageUrl(src)) {
+        // Like a paste of Blok's own clipboard: the url is kept as it is. Any page
+        // can forge the mark, so it keeps only what Blok's copy can write: http(s)
+        // or a relative path. Everything else, data: too, goes through the checks.
+        this.applyResult({ url: src });
+      } else {
+        this.startUrl(src);
+      }
       return;
     }
     if (event.type === 'file') {
@@ -341,6 +371,7 @@ export class ImageTool implements BlockTool {
   private uploadImageFile(file: File, before: string | undefined): void {
     const source = { kind: 'file', file } as const;
 
+    this.conversionJob++;
     this.converting = false;
     this.lastFileName = file.name;
     this.lastSource = source;
@@ -377,8 +408,9 @@ export class ImageTool implements BlockTool {
 
       return;
     }
+    if (this.lastSource !== source) return;
     this.applyError(err, { file: source.file });
-    if (this.lastSource !== source || this.data.fileName !== source.file.name) return;
+    if (this.data.fileName !== source.file.name) return;
     this.data = { ...this.data, fileName: before };
     this.block.dispatchChange({ derived: true, from: ['fileName'] });
   }
@@ -396,10 +428,12 @@ export class ImageTool implements BlockTool {
   }
 
   /**
-   * Try to convert a GIF to a looping WebM video block. Returns true only when
-   * the block was swapped; false means the caller should keep the GIF (image).
+   * Try to convert a GIF to a looping WebM video block. Returns true when the
+   * block was swapped or the user cancelled; false means the caller should keep the GIF (image).
    */
   private async convertGifToVideoBlock(file: File): Promise<boolean> {
+    const job = ++this.conversionJob;
+
     this.converting = true;
     this.state = 'LOADING';
     this.errorMessage = null;
@@ -408,16 +442,27 @@ export class ImageTool implements BlockTool {
     this.renderState();
     try {
       const blob = await convertGifToWebm(await file.arrayBuffer(), { onProgress: this.reportProgress });
+      if (this.conversionGone(job)) return true;
       if (!blob) { this.converting = false; return false; }
       const webm = new File([blob], file.name.replace(/\.gif$/i, '.webm'), { type: 'video/webm' });
       const url = await this.uploadConverted(webm);
+      if (this.conversionGone(job)) return true;
       if (url === null) { this.converting = false; return false; }
       this.converting = false;
       return this.swapToVideoBlock(url, webm.name, ['fileName']);
     } catch {
+      if (this.conversionGone(job)) return true;
       this.converting = false;
       return false;
     }
+  }
+
+  /**
+   * @param job - the conversion's number
+   * @returns true when the user cancelled it, a newer image replaced it, or its block was deleted
+   */
+  private conversionGone(job: number): boolean {
+    return this.conversionJob !== job || (this.detached && !isStillInDocument(this.api, this.block.id));
   }
 
   private async uploadConverted(file: File): Promise<string | null> {
@@ -426,7 +471,7 @@ export class ImageTool implements BlockTool {
       const res = await upload(file, { onProgress: this.reportProgress });
       return res.url;
     }
-    return URL.createObjectURL(file);
+    return createSafeObjectUrl(file);
   }
 
   /**
@@ -447,17 +492,21 @@ export class ImageTool implements BlockTool {
     return true;
   }
 
-  private startUrl(url: string): void {
+  /**
+   * @param url - the link
+   * @param upload - the host's answer for a pasted link; false keeps it as it is
+   */
+  private startUrl(url: string, upload?: Promise<boolean>): void {
     this.uploadTries = 1;
     const before = this.writeEnteredUrl(url);
 
     if (this.shouldConvertGifUrl(url)) {
-      void this.convertGifUrlToVideoBlock(url).then((handled) => {
-        if (!handled) this.loadImageUrl(url, before);
+      void this.convertGifUrlToVideoBlock(url, upload).then((handled) => {
+        if (!handled) this.loadImageUrl(url, before, upload);
       });
       return;
     }
-    this.loadImageUrl(url, before);
+    this.loadImageUrl(url, before, upload);
   }
 
   /**
@@ -475,9 +524,11 @@ export class ImageTool implements BlockTool {
     return before;
   }
 
-  private loadImageUrl(url: string, before: string): void {
-    const source = { kind: 'url', url } as const;
+  private loadImageUrl(url: string, before: string, upload?: Promise<boolean>): void {
+    const source: UrlSource = { kind: 'url', url, upload };
 
+    this.conversionJob++;
+    this.converting = false;
     this.lastFileName = null;
     this.lastSource = source;
     this.state = 'LOADING';
@@ -491,9 +542,9 @@ export class ImageTool implements BlockTool {
    * @param source - the job
    * @param before - `data.url` before the link was entered
    */
-  private uploadUrl(source: { kind: 'url'; url: string }, before: string): void {
+  private uploadUrl(source: UrlSource, before: string): void {
     void this.uploader
-      .handleUrl(source.url, { onProgress: this.reportProgress })
+      .handleUrl(source.url, { onProgress: this.reportProgress, upload: source.upload })
       .then((result) => this.applyUrlUpload(result, source))
       .catch((err) => this.applyUrlError(err, source, before));
   }
@@ -511,8 +562,9 @@ export class ImageTool implements BlockTool {
 
       return;
     }
+    if (this.lastSource !== source) return;
     this.applyError(err, { url: source.url });
-    if (this.lastSource !== source || this.data.url !== source.url) return;
+    if (this.data.url !== source.url) return;
     this.data = { ...this.data, url: before, variants: this.variantsBeforeLink };
     this.block.dispatchChange({ derived: true, from: ['url'] });
   }
@@ -521,8 +573,13 @@ export class ImageTool implements BlockTool {
     return this.config.convertGifToVideo !== false && /\.gif(\?|#|$)/i.test(url) && this.isVideoToolRegistered();
   }
 
-  private async convertGifUrlToVideoBlock(url: string): Promise<boolean> {
+  /** Like {@link convertGifToVideoBlock}, for a link. */
+  private async convertGifUrlToVideoBlock(url: string, upload?: Promise<boolean>): Promise<boolean> {
+    const job = ++this.conversionJob;
+    // The video is a new upload, so a link the host keeps is not converted.
+    if (upload !== undefined && !(await upload)) return this.conversionGone(job);
     const bytes = await this.fetchGifBytes(url);
+    if (this.conversionGone(job)) return true;
     if (!bytes) return false;
     this.converting = true;
     this.state = 'LOADING';
@@ -530,13 +587,16 @@ export class ImageTool implements BlockTool {
     this.renderState();
     try {
       const blob = await convertGifToWebm(bytes, { onProgress: this.reportProgress });
+      if (this.conversionGone(job)) return true;
       if (!blob) { this.converting = false; return false; }
       const webm = new File([blob], 'animation.webm', { type: 'video/webm' });
       const uploadedUrl = await this.uploadConverted(webm);
+      if (this.conversionGone(job)) return true;
       if (uploadedUrl === null) { this.converting = false; return false; }
       this.converting = false;
       return this.swapToVideoBlock(uploadedUrl, webm.name, ['url']);
     } catch {
+      if (this.conversionGone(job)) return true;
       this.converting = false;
       return false;
     }
@@ -577,6 +637,7 @@ export class ImageTool implements BlockTool {
   }
 
   private applyResult(result: UploadResult): void {
+    this.conversionJob++;
     if (this.detached) {
       deliverToRebuiltBlock(this.api, this.block, 'Image', this.resultDelta(result));
 
@@ -667,7 +728,9 @@ export class ImageTool implements BlockTool {
       // The same file keeps its URL: a new one is decoded again and the tile blinks.
       if (source.file === undefined || source.file !== this.failurePreviewFile) {
         this.releaseFailurePreview();
-        this.failurePreview = source.file === undefined ? null : URL.createObjectURL(source.file);
+        // No SVG thumbnail: an SVG blob opened in a tab runs as the host, and a
+        // data: URL needs an async read this sync render path does not have.
+        this.failurePreview = source.file === undefined || isSvgFile(source.file) ? null : createSafeObjectUrl(source.file);
         this.failurePreviewFile = source.file ?? null;
       }
     }
@@ -1549,6 +1612,12 @@ export class ImageTool implements BlockTool {
     this.brokenImage = false;
     this.lastSource = null;
     this.lastFileName = null;
+    this.conversionJob++;
+    this.converting = false;
+    this.retrying = false;
+    if (this.heldFailure !== null) clearTimeout(this.heldFailure);
+    this.heldFailure = null;
+    this.endSend();
     this.clearFailure();
     this.swapToEmptyAnimated(outgoing);
     this.block.dispatchChange();

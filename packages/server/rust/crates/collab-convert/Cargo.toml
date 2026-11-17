@@ -1,0 +1,27 @@
+[package]
+name = "blok-collab-convert"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal part of blok-mcp (document conversion for collaboration). Not a stable API."
+publish = true
+
+[dependencies]
+blok-collab-operation.workspace = true
+blok-dotnet.workspace = true
+blok-jsjson.workspace = true
+blok-jsruntime.workspace = true
+blok-lib0.workspace = true
+blok-yjs.workspace = true
+getrandom = "0.4"
+sha2 = "0.10"
+
+[dev-dependencies]
+base64 = "0.22"
+blok-collab-collabtest = { path = "../collab-collabtest" }
+blok-yjs-yjstest = { path = "../yjs-yjstest" }
+
+[lints]
+workspace = true

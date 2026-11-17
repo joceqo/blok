@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
-	"github.com/JackUait/blok/packages/server/go/internal/jsruntime"
-	"github.com/JackUait/blok/packages/server/go/internal/yjs"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsruntime"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/yjs"
 )
 
 // MigrationReadTimeout is the one-time budget a seed and a migration read
@@ -56,12 +56,12 @@ func (c *DocConverter) Seed(ctx context.Context, doc *yjs.Doc, outputData *jsjso
 	if err != nil {
 		return err
 	}
-	read, err := c.read(ctx, found, MigrationReadTimeout)
+	read, err := c.read(ctx, found, new(MigrationReadTimeout))
 	if err != nil {
 		return err
 	}
 	page := &jsjson.Object{}
-	for _, key := range []string{"title", "icon"} {
+	for _, key := range []string{"title", "icon", "cover"} {
 		node, err := member(outputData, key)
 		if err != nil {
 			return errors.Join(ErrNotUnicode, err)
@@ -94,7 +94,7 @@ func (c *DocConverter) ApplyOps(ctx context.Context, doc *yjs.Doc, ops []EditOp)
 			}
 		}
 	}
-	read, err := c.read(ctx, found, 0)
+	read, err := c.read(ctx, found, nil)
 	if err != nil {
 		if IsTransient(ctx, err) && !IsTooLarge(err) {
 			// Nothing is written yet: the room retries this one request.
@@ -113,14 +113,14 @@ func (c *DocConverter) ApplyOps(ctx context.Context, doc *yjs.Doc, ops []EditOp)
 // MigrateRichText reads a format-1 room's legacy HTML with the one-time
 // budget, then migrates it to formatted text; it returns the field count.
 func (c *DocConverter) MigrateRichText(ctx context.Context, doc *yjs.Doc) (int, error) {
-	read, err := c.read(ctx, CollectLegacyRichText(doc, c.fields()), MigrationReadTimeout)
+	read, err := c.read(ctx, CollectLegacyRichText(doc, c.fields()), new(MigrationReadTimeout))
 	if err != nil {
 		return 0, err
 	}
 	return MigrateRichText(doc, Converting(c.fields(), read))
 }
 
-// Export is {time, blocks, title?, icon?}, the legacy HTML slots read to segments.
+// Export is {time, blocks, title?, icon?, cover?}, the legacy HTML slots read to segments.
 func (c *DocConverter) Export(ctx context.Context, doc *yjs.Doc) (*jsjson.Object, error) {
 	now := c.Now().UnixMilli()
 	blocks, slots, err := Export(doc, c.fields(), c.Log)
@@ -164,7 +164,7 @@ func (c *DocConverter) Resolve(ctx context.Context, slots []RichTextHTMLSlot) er
 	for i, slot := range slots {
 		found[i] = slot.HTML
 	}
-	read, err := c.read(ctx, found, 0)
+	read, err := c.read(ctx, found, nil)
 	if err != nil {
 		// A JavaScript error or a malformed answer repeats on every attempt
 		// and keeps the refusal path, or a journal room would retry forever.
@@ -197,7 +197,7 @@ func IsTooLarge(err error) bool {
 }
 
 // read is each distinct non-empty HTML string's segments; "" is an empty text.
-func (c *DocConverter) read(ctx context.Context, found []RichTextHTML, timeout time.Duration) (map[string][]any, error) {
+func (c *DocConverter) read(ctx context.Context, found []RichTextHTML, timeout *time.Duration) (map[string][]any, error) {
 	var distinct []RichTextHTML
 	seen := map[string]bool{}
 	for _, field := range found {

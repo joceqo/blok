@@ -9,7 +9,7 @@ import type { ShownRun } from '../helpers/shown-look';
 const UNDO = process.platform === 'darwin' ? 'Meta+z' : 'Control+z';
 const REDO = process.platform === 'darwin' ? 'Meta+Shift+z' : 'Control+Shift+z';
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
-const CAPTURE_GAP_MS = 700;
+const CAPTURE_GAP_MS = 800;
 const TOOLBAR = '[data-blok-testid=inline-toolbar]';
 
 declare global {
@@ -226,7 +226,7 @@ test.describe('undo audit W4: inline formatting', () => {
     test(`W4I-3-${mode}: toolbar ${mode} undoes and redoes`, async ({ page }) => {
       await mount(page, [P('p', 'Hello world')]);
       await select(page, 'world');
-      await toolbarItem(page, 'sup-sub').click();
+      await toolbarItem(page, 'more').click();
       await page.locator(`[data-blok-item-name="${mode}"]`).click();
       await gap(page);
       const formatted = await savedText(page, 'p');

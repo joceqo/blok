@@ -6,14 +6,18 @@ package blokserver
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/dotnet"
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/blokdocs"
+	"github.com/JackUait/blok/packages/server/go/v2/blokserver/collabstore"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsruntime"
 )
 
 // MinimumSecretLength is the shortest ticket secret, in UTF-16 code units.
@@ -24,24 +28,45 @@ const MinimumSecretLength = 32
 const maxRemoteUpload = 2147483591
 
 // Options configure the server. Field meanings and refusals follow the C#
-// BlokServerOptions; DefaultOptions returns its defaults.
+// BlokServerOptions. A pointer field left nil takes the C# default, as an
+// unset property of new BlokServerOptions() does; a value set, 0 or ""
+// included, means what it means in C#: a refusal, or "off" for the
+// keep-alive and the inbound rates. Options{} is the default set, and so is
+// DefaultOptions, which spells it out.
 type Options struct {
-	Version        string
-	ListenAddress  string
-	Auth           string
+	Version        *string
+	ListenAddress  *string
+	Auth           *string
 	Secret         string
 	AllowedOrigins []string
+	// LoopbackHostCheck refuses, with 421, a guarded request whose Host is
+	// not loopback or the host of an allowed origin or the public URL, when
+	// Auth is "none" or "proxy". It stops DNS rebinding. The standalone host
+	// turns it on; an app that mounts Handler on its own name leaves it off.
+	// C#: UseLoopbackHostCheck.
+	LoopbackHostCheck bool
 
 	StorageDirectory string
 	PublicURL        string
-	MaxUploadBytes   int64
+	MaxUploadBytes   *int64
 	// RateLimitPerMinute is requests a minute per caller; 0 is off.
 	RateLimitPerMinute int64
 
-	// UnfurlEnabled opens GET /unfurl and POST /upload-by-url. Both make the
-	// server fetch a URL the caller chose, so the zero value keeps them
-	// closed, like C#'s UnfurlDisabled = true.
+	// UnfurlEnabled opens GET /unfurl, GET /frame-check and POST
+	// /upload-by-url. All three make the server fetch a URL the caller chose,
+	// so the zero value keeps them closed, like C#'s UnfurlDisabled = true.
 	UnfurlEnabled bool
+
+	// FileBytesEnabled opens GET /file-bytes, behind the same guard as
+	// /unfurl: the PDF preview reads a file's bytes through it. Off by
+	// default, apart from UnfurlEnabled, since it relays whole files.
+	FileBytesEnabled bool
+	// FileBytesMaxBytes is the largest file /file-bytes serves. Nil is
+	// 100 MiB.
+	FileBytesMaxBytes *int64
+	// FilesCORS sends CORS headers on stored local files for an allowed
+	// origin, so a page on another origin can read them. Off by default.
+	FilesCORS bool
 
 	S3Endpoint   string
 	S3Region     string
@@ -58,37 +83,132 @@ type Options struct {
 	CollabS3Prefix  string
 	CollabJournal   bool
 
-	CollabMaxConnectionsPerUserPerDoc    int
+	CollabMaxConnectionsPerUserPerDoc    *int
 	CollabMaxConnections                 int64
-	CollabMaxMessageBytes                int
-	CollabKeepAliveInterval              time.Duration
-	CollabInboundFramesPerSecond         int
-	CollabInboundBurstFrames             int
-	CollabInboundResyncsPerMinute        int
-	CollabInboundAwarenessBytesPerSecond int
+	CollabMaxMessageBytes                *int
+	CollabKeepAliveInterval              *time.Duration
+	CollabInboundFramesPerSecond         *int
+	CollabInboundBurstFrames             *int
+	CollabInboundResyncsPerMinute        *int
+	CollabInboundAwarenessBytesPerSecond *int
 
 	// RichTextFields lists custom tools' rich text fields by block type.
 	RichTextFields map[string][]string
+
+	// Documents sizes the one engine pool DocumentConverter, AgentExecutor
+	// and the rooms share, as a host's own AddBlokDocuments call does in C#.
+	// Zero values take the defaults; WarmUp is off, as AddBlokServer leaves it.
+	Documents blokdocs.Options
 
 	// Authorization narrows document access. Nil allows what the ticket
 	// allows.
 	Authorization Authorization
 
-	// Clock is the TimeProvider override: tickets, the rate limit window and
-	// S3 signing read it. Nil is the system clock.
+	// CollabOperationStore is UseCollabOperationStore<T>: the host's own
+	// journal. Setting it turns the journal on, as CollabJournal does with
+	// the built-in one, and it wins over CollabJournal.
+	CollabOperationStore collabstore.OperationStore
+
+	// CollabActivityObserver is UseCollabActivityObserver<T>. Nil makes no
+	// calls.
+	CollabActivityObserver collabstore.ActivityObserver
+
+	// CollabEnforceRestoreGuards is CollabEnforceRestoreGuards: a history
+	// restore that would change who can see or fill out a view, or unlock or
+	// reshape a locked database, is refused 409 until the request confirms
+	// each kind (X-Blok-Restore-Confirm or a body {"confirm":[...]}). False,
+	// the default, restores without asking.
+	CollabEnforceRestoreGuards bool
+
+	// CollabRestoreTrashesPages is CollabRestoreTrashesPages: a history
+	// restore sets data.trashed on a page block added after the point instead
+	// of removing it. False, the default, removes it. A host that turns it on
+	// must show such a block as in Trash: the editor does not hide it.
+	CollabRestoreTrashesPages bool
+
+	// CollabChangeSignalWindow is CollabChangeSignalWindow: how long one
+	// change window runs from a document's first journalled write before a
+	// room.ChangeObserver is told what changed. Nil is 60 s; zero or less
+	// uses 60 s too. More than one day is refused.
+	CollabChangeSignalWindow *time.Duration
+
+	// CollabRecordNotes is UseCollabRecordNotes<T>: a note of who wrote each
+	// journal record, kept beside the journal. The history routes then carry
+	// actor kinds. Nil keeps none.
+	CollabRecordNotes collabstore.RecordNotes
+
+	// CollabStampAuthority is CollabStampAuthority: POST /edit inserts get the
+	// server's createdAt/By/With and lastEditedAt/By/With, and an update
+	// stamps its block's lastEdited*. False, the default, keeps the caller's.
+	CollabStampAuthority bool
+
+	// Clock is the TimeProvider override: tickets, the rate limit window, S3
+	// signing and the rooms' timestamps (activity, cooldowns, export
+	// deadlines) read it. Nil is the system clock.
 	Clock func() time.Time
+
+	// Timers is the TimeProvider's CreateTimer override: the rooms' export,
+	// eviction and persist timers and every commit-timeout bound run on it.
+	// Nil is wall time, as a C# provider that overrides only the clock.
+	Timers Timers
+
+	// Logger receives the server's warnings, each with a "category"
+	// attribute (CollabLogCategory for the rooms). Nil discards them.
+	Logger *slog.Logger
 }
 
-// DefaultOptions returns the C# BlokServerOptions defaults.
+// DefaultOptions returns the C# BlokServerOptions defaults, every pointer
+// field set.
 func DefaultOptions() Options {
+	d := defaults()
 	return Options{
+		Version:                              &d.Version,
+		ListenAddress:                        &d.ListenAddress,
+		Auth:                                 &d.Auth,
+		MaxUploadBytes:                       &d.MaxUploadBytes,
+		FileBytesMaxBytes:                    &d.FileBytesMaxBytes,
+		CollabMaxConnectionsPerUserPerDoc:    &d.CollabMaxConnectionsPerUserPerDoc,
+		CollabMaxMessageBytes:                &d.CollabMaxMessageBytes,
+		CollabKeepAliveInterval:              &d.CollabKeepAliveInterval,
+		CollabChangeSignalWindow:             &d.CollabChangeSignalWindow,
+		CollabInboundFramesPerSecond:         &d.CollabInboundFramesPerSecond,
+		CollabInboundBurstFrames:             &d.CollabInboundBurstFrames,
+		CollabInboundResyncsPerMinute:        &d.CollabInboundResyncsPerMinute,
+		CollabInboundAwarenessBytesPerSecond: &d.CollabInboundAwarenessBytesPerSecond,
+	}
+}
+
+// settings is Options with every pointer field resolved. Its plain fields
+// shadow the embedded pointers, so the server reads s.options.Auth as text.
+type settings struct {
+	Options
+	Version                              string
+	ListenAddress                        string
+	Auth                                 string
+	MaxUploadBytes                       int64
+	FileBytesMaxBytes                    int64
+	CollabMaxConnectionsPerUserPerDoc    int
+	CollabMaxMessageBytes                int
+	CollabKeepAliveInterval              time.Duration
+	CollabChangeSignalWindow             time.Duration
+	CollabInboundFramesPerSecond         int
+	CollabInboundBurstFrames             int
+	CollabInboundResyncsPerMinute        int
+	CollabInboundAwarenessBytesPerSecond int
+}
+
+// defaults is new BlokServerOptions(): options-defaults.json pins it.
+func defaults() settings {
+	return settings{
 		Version:                              "dev",
 		ListenAddress:                        "127.0.0.1:4000",
 		Auth:                                 "none",
 		MaxUploadBytes:                       32 << 20,
+		FileBytesMaxBytes:                    100 << 20,
 		CollabMaxConnectionsPerUserPerDoc:    8,
 		CollabMaxMessageBytes:                1 << 20,
 		CollabKeepAliveInterval:              15 * time.Second,
+		CollabChangeSignalWindow:             60 * time.Second,
 		CollabInboundFramesPerSecond:         50,
 		CollabInboundBurstFrames:             100,
 		CollabInboundResyncsPerMinute:        60,
@@ -96,17 +216,46 @@ func DefaultOptions() Options {
 	}
 }
 
-func (o *Options) hasStorage() bool { return o.StorageDirectory != "" || o.S3Bucket != "" }
+func pick[T any](set *T, fallback T) T {
+	if set != nil {
+		return *set
+	}
+	return fallback
+}
+
+// resolve fills each unset pointer field with its C# default.
+func (o *Options) resolve() settings {
+	d := defaults()
+	return settings{
+		Options:                              *o,
+		Version:                              pick(o.Version, d.Version),
+		ListenAddress:                        pick(o.ListenAddress, d.ListenAddress),
+		Auth:                                 pick(o.Auth, d.Auth),
+		MaxUploadBytes:                       pick(o.MaxUploadBytes, d.MaxUploadBytes),
+		FileBytesMaxBytes:                    pick(o.FileBytesMaxBytes, d.FileBytesMaxBytes),
+		CollabMaxConnectionsPerUserPerDoc:    pick(o.CollabMaxConnectionsPerUserPerDoc, d.CollabMaxConnectionsPerUserPerDoc),
+		CollabMaxMessageBytes:                pick(o.CollabMaxMessageBytes, d.CollabMaxMessageBytes),
+		CollabKeepAliveInterval:              pick(o.CollabKeepAliveInterval, d.CollabKeepAliveInterval),
+		CollabChangeSignalWindow:             pick(o.CollabChangeSignalWindow, d.CollabChangeSignalWindow),
+		CollabInboundFramesPerSecond:         pick(o.CollabInboundFramesPerSecond, d.CollabInboundFramesPerSecond),
+		CollabInboundBurstFrames:             pick(o.CollabInboundBurstFrames, d.CollabInboundBurstFrames),
+		CollabInboundResyncsPerMinute:        pick(o.CollabInboundResyncsPerMinute, d.CollabInboundResyncsPerMinute),
+		CollabInboundAwarenessBytesPerSecond: pick(o.CollabInboundAwarenessBytesPerSecond, d.CollabInboundAwarenessBytesPerSecond),
+	}
+}
+
+func (o *settings) hasStorage() bool { return o.StorageDirectory != "" || o.S3Bucket != "" }
 
 // Validate returns an error unless the options work together. The messages
 // match BlokServerOptions.Validate byte for byte.
 func (o *Options) Validate() error {
-	_, err := o.validate()
+	resolved := o.resolve()
+	_, err := resolved.validate()
 	return err
 }
 
 // validate also returns the public path local files are served under.
-func (o *Options) validate() (string, error) {
+func (o *settings) validate() (string, error) {
 	fail := func(format string, args ...any) (string, error) {
 		return "", errors.New(fmt.Sprintf(format, args...))
 	}
@@ -135,6 +284,17 @@ func (o *Options) validate() (string, error) {
 	}
 	if o.RateLimitPerMinute < 0 {
 		return fail("--rate-limit must be zero or greater (got %d)", o.RateLimitPerMinute)
+	}
+	if o.FileBytesEnabled && o.FileBytesMaxBytes <= 0 {
+		return fail("FileBytesMaxBytes must be a positive number of bytes (got %d)", o.FileBytesMaxBytes)
+	}
+	// C# AddBlokDocuments refuses these in the call, not at the first
+	// conversion.
+	if err := jsruntime.ValidateConstraints(o.Documents.Timeout, o.Documents.MemoryBudget); err != nil {
+		return "", err
+	}
+	if err := jsruntime.ValidatePoolSize(o.Documents.PoolSize); err != nil {
+		return "", err
 	}
 	if err := o.validateCollab(); err != nil {
 		return "", err
@@ -182,7 +342,7 @@ func (o *Options) validate() (string, error) {
 	return publicPath, nil
 }
 
-func (o *Options) validateCollab() error {
+func (o *settings) validateCollab() error {
 	fail := func(format string, args ...any) error { return errors.New(fmt.Sprintf(format, args...)) }
 	switch {
 	case o.CollabMaxConnectionsPerUserPerDoc <= 0:
@@ -191,6 +351,8 @@ func (o *Options) validateCollab() error {
 		return fail("CollabMaxConnections must be zero (no ceiling) or greater (got %d)", o.CollabMaxConnections)
 	case o.CollabMaxMessageBytes <= 0:
 		return fail("CollabMaxMessageBytes must be a positive number of bytes (got %d): a zero cap closes every sync connection on its first frame", o.CollabMaxMessageBytes)
+	case o.CollabChangeSignalWindow > 24*time.Hour:
+		return fail("CollabChangeSignalWindow must be at most one day (got %s)", formatTimeSpan(o.CollabChangeSignalWindow))
 	case o.CollabKeepAliveInterval < 0:
 		return fail("CollabKeepAliveInterval must be zero (off) or greater (got %s)", formatTimeSpan(o.CollabKeepAliveInterval))
 	case o.CollabInboundFramesPerSecond < 0:
@@ -297,7 +459,7 @@ func checkRichTextFields(fields map[string][]string) error {
 	return nil
 }
 
-func (o *Options) localPublicPath() (string, error) {
+func (o *settings) localPublicPath() (string, error) {
 	if strings.ContainsAny(o.PublicURL, "?#") {
 		return "", fmt.Errorf("PublicUrl must not contain a query or fragment (got %s)", quote(o.PublicURL))
 	}
@@ -450,4 +612,10 @@ func formatTimeSpan(d time.Duration) string {
 		text += fmt.Sprintf(".%07d", fraction)
 	}
 	return text
+}
+
+// Timers runs f once d has passed on its clock; stop cancels f and reports
+// whether it had not run yet.
+type Timers interface {
+	AfterFunc(d time.Duration, f func()) (stop func() bool)
 }

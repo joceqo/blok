@@ -1,0 +1,35 @@
+[package]
+name = "blok-collab-room"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal part of blok-mcp (collaboration rooms). Not a stable API."
+publish = true
+
+[dependencies]
+blok-collab.workspace = true
+blok-collab-convert.workspace = true
+blok-collab-docendpoint.workspace = true
+blok-collab-journal.workspace = true
+blok-collab-operation.workspace = true
+blok-collab-wire.workspace = true
+blok-collab-workingset.workspace = true
+blok-dotnet.workspace = true
+blok-jsjson.workspace = true
+blok-jsruntime.workspace = true
+blok-yjs.workspace = true
+getrandom = "0.4"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+base64 = "0.22"
+blok-collab-collabtest = { path = "../collab-collabtest" }
+blok-lib0 = { path = "../lib0" }
+blok-yjs-yjstest = { path = "../yjs-yjstest" }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

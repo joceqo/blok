@@ -20,12 +20,14 @@ export function makePreview(kind: MediaPreviewKind): HTMLElement {
 export function setPreviewProgress(stage: HTMLElement, percent: number): void {
   const value = Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0;
   stage.setAttribute('data-uploading', '');
+  stage.toggleAttribute('data-done', value >= 100);
   stage.style.setProperty('--blok-media-progress', String(value / 100));
 }
 
 /** Takes a preview back out of upload mode, to its resting look. */
 export function clearPreviewProgress(stage: HTMLElement): void {
   stage.removeAttribute('data-uploading');
+  stage.removeAttribute('data-done');
   stage.style.removeProperty('--blok-media-progress');
 }
 
@@ -72,6 +74,19 @@ const delayOf = (el: Element): number => {
   return depthOf(el) * 30;
 };
 
+// The dog-ear flips across its 45-degree fold (blok-media-preview-flap in
+// media-empty.css). Blending its computed matrix turns the flip into a spin,
+// so it springs home through the same transform list as the keyframes.
+const FOLDED = '.blok-media-preview__flap, .blok-media-preview__crease';
+const foldAt = (scale: number): string => `rotate(45deg) scaleY(${scale}) rotate(-45deg)`;
+
+// The scale across the fold is the determinant of the flap's matrix.
+const foldScale = (matrix: string): number => {
+  const [a, b, c, d] = (matrix.match(/-?[\d.]+(?:e-?\d+)?/g) ?? []).map(Number);
+  const scale = a * d - b * c;
+  return matrix.startsWith('matrix(') && Number.isFinite(scale) ? Math.round(scale * 1000) / 1000 : 1;
+};
+
 /**
  * Ends the hover demo: every part still moving is caught where it is and
  * springs home, and a few parts add a flourish. Returns a function that stops
@@ -84,7 +99,7 @@ export function springHome(stage: HTMLElement): () => void {
     ? Array.from(stage.querySelectorAll<SVGElement>('svg *'))
       // Only keyframe demos: a running transition has no fixed end to spring to.
       .filter((el) => el.getAnimations().some((animation) => 'animationName' in animation))
-      .map((el) => ({ el, from: getComputedStyle(el).transform }))
+      .map((el) => ({ el, from: getComputedStyle(el).transform, folded: el.matches(FOLDED) }))
     : [];
 
   stage.removeAttribute('data-hover');
@@ -92,8 +107,10 @@ export function springHome(stage: HTMLElement): () => void {
   stage.style.setProperty('--spring', easing);
   if (!canCapture) return () => undefined;
 
-  const played: Animation[] = moving.map(({ el, from }) => el.animate(
-    [{ transform: from }, { transform: getComputedStyle(el).transform }],
+  const played: Animation[] = moving.map(({ el, from, folded }) => el.animate(
+    folded
+      ? [{ transform: foldAt(foldScale(from)) }, { transform: foldAt(1) }]
+      : [{ transform: from }, { transform: getComputedStyle(el).transform }],
     { duration: EXIT_MS, easing, delay: delayOf(el), fill: 'backwards' }
   ));
 

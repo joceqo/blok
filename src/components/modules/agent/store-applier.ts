@@ -35,12 +35,13 @@ export class StoreApplier implements AgentApplier {
   private count = 0;
   private broken = false;
   private readonly unsubscribe: () => void;
+  private readonly unsubscribeReset: () => void;
   public readonly prepareInsert: AgentApplier['prepareInsert'];
   /**
    * Tracks only this applier's batches and its own replays: a peer's update
    * carries a remote origin, and other 'local' writes to the store are not captured.
    */
-  private readonly undoManager: Y.UndoManager;
+  private undoManager: Y.UndoManager;
   private applying = false;
   private readonly done: Step[] = [];
   private readonly undone: Step[] = [];
@@ -62,12 +63,25 @@ export class StoreApplier implements AgentApplier {
     this.unsubscribe = store.onAnyUpdate(() => {
       this.count++;
     });
-    this.undoManager = new Y.UndoManager(store.undoScope, {
+    this.undoManager = this.newUndoManager();
+    // The store swapped its doc: every step was on the old one, so history starts over.
+    this.unsubscribeReset = store.onReset(() => {
+      this.undoManager.destroy();
+      this.undoManager = this.newUndoManager();
+      this.done.length = 0;
+      this.undone.length = 0;
+    });
+  }
+
+  private newUndoManager(): Y.UndoManager {
+    const manager: Y.UndoManager = new Y.UndoManager(this.store.undoScope, {
       // 0: each batch is its own step, however fast the next one comes.
       captureTimeout: 0,
       trackedOrigins: new Set(['local']),
-      captureTransaction: transaction => this.applying || transaction.origin === this.undoManager,
+      captureTransaction: transaction => this.applying || transaction.origin === manager,
     });
+
+    return manager;
   }
 
   public isReadOnly(): boolean {
@@ -79,7 +93,11 @@ export class StoreApplier implements AgentApplier {
   }
 
   public snapshot(): DocSnapshot {
-    const blocks = this.store.toJSON().map(block => {
+    return this.snapshotOf(this.store.toJSON(), readPageFields(this.store.page));
+  }
+
+  private snapshotOf(stored: ReturnType<DocumentStore['toJSON']>, page: ReturnType<typeof readPageFields>): DocSnapshot {
+    const blocks = stored.map(block => {
       const fields = this.options.richTextFieldsFor(block.type);
 
       return {
@@ -91,7 +109,7 @@ export class StoreApplier implements AgentApplier {
       };
     });
 
-    return DocSnapshot.fromOutput({ ...readPageFields(this.store.page), blocks });
+    return DocSnapshot.fromOutput({ ...page, blocks });
   }
 
   public apply(plan: Plan, _draft: DocSnapshot): Promise<void> {
@@ -208,6 +226,17 @@ export class StoreApplier implements AgentApplier {
     return name === 'history.undo' ? shares?.backward : shares?.forward;
   }
 
+  public previewHistory(name: 'history.undo' | 'history.redo'): DocSnapshot | undefined {
+    const item = (name === 'history.undo' ? this.done.at(-1) : this.undone.at(-1))?.item ?? null;
+
+    if (item === null) {
+      return undefined;
+    }
+    const preview = this.store.previewReplay(item, name === 'history.undo' ? 'undo' : 'redo');
+
+    return this.snapshotOf(preview.blocks, preview.page);
+  }
+
   public historyStepId(name: 'history.undo' | 'history.redo'): unknown {
     return name === 'history.undo' ? this.done.at(-1) : this.undone.at(-1);
   }
@@ -246,6 +275,7 @@ export class StoreApplier implements AgentApplier {
 
   public dispose(): void {
     this.unsubscribe();
+    this.unsubscribeReset();
     this.undoManager.destroy();
   }
 

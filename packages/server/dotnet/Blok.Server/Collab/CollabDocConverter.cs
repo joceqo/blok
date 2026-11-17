@@ -59,10 +59,24 @@ internal sealed class CollabDocConverter(
     {
       ["title"] = document["title"]?.DeepClone(),
       ["icon"] = document["icon"]?.DeepClone(),
+      ["cover"] = document["cover"]?.DeepClone(),
     });
   }
 
   public async ValueTask ApplyOpsAsync(
+      YDoc doc, IReadOnlyList<CollabEditOp> ops, CancellationToken cancellationToken = default)
+  {
+    var input = await ReadOpsHtmlAsync(doc, ops, cancellationToken);
+
+    YDocConverter.ApplyOps(doc, ops, input);
+  }
+
+  /// <summary>
+  /// The first half of <see cref="ApplyOpsAsync"/>: plans the ops and reads
+  /// their rich-text HTML, writing nothing. A caller that must wrap the apply
+  /// in its own transaction applies the result with YDocConverter.ApplyOps.
+  /// </summary>
+  internal async ValueTask<RichTextInput> ReadOpsHtmlAsync(
       YDoc doc, IReadOnlyList<CollabEditOp> ops, CancellationToken cancellationToken = default)
   {
     // Collecting plans the whole request, so a refusal is thrown before any
@@ -101,7 +115,7 @@ internal sealed class CollabDocConverter(
           $"collab: the rich text HTML in this edit could not be read: {error.Message}", error);
     }
 
-    YDocConverter.ApplyOps(doc, ops, input);
+    return input;
   }
 
   public async ValueTask<int> MigrateRichTextAsync(YDoc doc, CancellationToken cancellationToken = default)

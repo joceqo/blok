@@ -655,8 +655,20 @@ export class BlockInsertion {
   ): void {
     const parent = block.parentId === null ? undefined : this.getBlock(block.parentId);
 
+    // A table keeps its children out of contentIds order, so the sibling to
+    // follow comes from the flat order. Walking back from the block stops at
+    // the nearest one: a flat index in the doc would walk the whole document.
     if (parent !== undefined && isSelfPlacedParent(parent, this.getBlock)) {
-      this.dependencies.YjsManager.addBlock({ ...blockData, parent: parent.id }, index);
+      const blocks = this.repository.blocks;
+      const start = blocks[index] === block ? index : blocks.indexOf(block);
+
+      if (start === -1) {
+        this.dependencies.YjsManager.addBlock({ ...blockData, parent: parent.id }, index);
+
+        return;
+      }
+
+      this.dependencies.YjsManager.addBlockAt(blockData, { parentId: parent.id, afterId: this.docSiblingBefore(start, parent) });
 
       return;
     }
@@ -668,6 +680,29 @@ export class BlockInsertion {
     const afterId = [...before].reverse().find(id => this.dependencies.YjsManager.getBlockById(id) !== undefined);
 
     this.dependencies.YjsManager.addBlockAt(blockData, { parentId: block.parentId, afterId: afterId ?? null });
+  }
+
+  /**
+   * The nearest earlier child of `parent` that the doc has, walking back from
+   * flat index `start` and stopping at the parent.
+   * @param start - the new block's flat index
+   * @param parent - its parent
+   */
+  private docSiblingBefore(start: number, parent: Block): string | null {
+    const blocks = this.repository.blocks;
+    const cursor = { index: start - 1 };
+
+    while (cursor.index >= 0 && blocks[cursor.index] !== parent) {
+      const candidate = blocks[cursor.index];
+
+      // The doc must hold it under the same parent, or the slot falls to the end.
+      if (candidate.parentId === parent.id && this.dependencies.YjsManager.getBlockById(candidate.id)?.get('parentId') === parent.id) {
+        return candidate.id;
+      }
+      cursor.index--;
+    }
+
+    return null;
   }
 
   /**
@@ -772,9 +807,10 @@ export class BlockInsertion {
    *
    * Uses atomic Yjs transaction to ensure split is a single undo entry.
    * @param blocksStore - The blocks store to modify
+   * @param tailTool - tool for the second half; the current block's tool when omitted
    * @returns Split block
    */
-  public split(blocksStore: BlocksStore): Block {
+  public split(blocksStore: BlocksStore, tailTool?: string): Block {
     const currentBlock = this.ctx.currentBlock;
 
     if (currentBlock === undefined) {
@@ -815,20 +851,22 @@ export class BlockInsertion {
       const truncatedText = currentBlock.holder
         .querySelector('[contenteditable="true"]:not([data-blok-mutation-free])')?.innerHTML ?? '';
 
-      // New block carries the source block's full data with only `text` replaced
-      // by the extracted content, so it is complete in a single transaction.
-      const newBlockData = { ...sourceData, text: extractedText };
+      // Same tool: the source block's full data with only `text` replaced, so it
+      // is complete in a single transaction. A named tail tool starts from
+      // `text` alone; a heading's `level` means nothing to a paragraph.
+      const newBlockType = tailTool ?? currentBlock.name;
+      const newBlockData = tailTool === undefined ? { ...sourceData, text: extractedText } : { text: extractedText };
 
       // Atomic Yjs transaction: update original + add new (single undo entry)
       this.dependencies.YjsManager.transact(() => {
         this.dependencies.YjsManager.updateBlockData(currentBlock.id, 'text', truncatedText);
-        this.addSplitTailToYjs({ id: newBlockId, type: currentBlock.name, data: newBlockData }, currentBlock, placement, insertIndex);
+        this.addSplitTailToYjs({ id: newBlockId, type: newBlockType, data: newBlockData }, currentBlock, placement, insertIndex);
       });
 
       // Insert DOM block (skip Yjs sync - already done above)
       const newBlock = this.ctx.insert({
         id: newBlockId,
-        tool: currentBlock.name,
+        tool: newBlockType,
         data: newBlockData,
         needToFocus: false,
         skipYjsSync: true,
@@ -1065,7 +1103,43 @@ export class BlockInsertion {
    * @param index - the index the caller asked for
    */
   private clampIntoSubtree(parent: Block, index: number): number {
-    return Math.min(Math.max(index, this.repository.blocks.indexOf(parent) + 1), this.subtreeEnd(parent));
+    const blocks = this.repository.blocks;
+    const first = blocks.indexOf(parent) + 1;
+
+    if (index <= first) {
+      return first;
+    }
+
+    // The flat array is a depth-first walk, so an index whose predecessor is
+    // the parent or under it is inside the run. Measuring the run's end walks
+    // every child, which made each new table cell cost the whole table.
+    const before = index <= blocks.length ? blocks[index - 1] : undefined;
+
+    if (before !== undefined && this.isAtOrUnder(before, parent.id)) {
+      return index;
+    }
+
+    return Math.min(index, this.subtreeEnd(parent));
+  }
+
+  /**
+   * Whether `block` is `ancestorId` or sits under it. Cycle-safe.
+   * @param block - the block to test
+   * @param ancestorId - the possible ancestor
+   */
+  private isAtOrUnder(block: Block, ancestorId: string): boolean {
+    const seen = new Set<string>();
+    const cursor: { block: Block | undefined } = { block };
+
+    while (cursor.block !== undefined && !seen.has(cursor.block.id)) {
+      if (cursor.block.id === ancestorId) {
+        return true;
+      }
+      seen.add(cursor.block.id);
+      cursor.block = cursor.block.parentId === null ? undefined : this.getBlock(cursor.block.parentId);
+    }
+
+    return false;
   }
 
   /**

@@ -16,7 +16,7 @@ import {
   type OnDestroy,
 } from '@angular/core';
 import { NG_VALUE_ACCESSOR, type ControlValueAccessor } from '@angular/forms';
-import { BlokContentDirective, getConstructedCollaboration } from './blok-content.directive';
+import { BlokContentDirective, getConstructedCollaboration, getConstructedData } from './blok-content.directive';
 import { BLOK_DEFAULT_CONFIG } from './provide-blok';
 import { createEmittedEchoWindow } from '@bloklabs/core/adapters';
 import { deepEqual } from '@bloklabs/core/adapters';
@@ -560,7 +560,7 @@ export class BlokEditorComponent implements AfterViewInit, DoCheck, OnDestroy, C
 
     this.appliedHandlers = handlers;
 
-    // Always both wrappers: core captures them once, and no channel pushes a later presence flip.
+    // Always every wrapper: core captures them once, and no channel pushes a later presence flip.
     // A falsy pageTitle stays as-is, since any object switches the title on.
     if (cfg.pageTitle) {
       cfg.pageTitle = {
@@ -577,6 +577,13 @@ export class BlokEditorComponent implements AfterViewInit, DoCheck, OnDestroy, C
 
           if (latest !== null && typeof latest === 'object' && latest.onIconChange !== undefined) {
             this.ngZone.run(() => latest.onIconChange?.(...args));
+          }
+        },
+        onCoverChange: (...args: Parameters<NonNullable<TitleConfig['onCoverChange']>>): void => {
+          const latest = this.escapeHatchConfig().pageTitle;
+
+          if (latest !== null && typeof latest === 'object' && latest.onCoverChange !== undefined) {
+            this.ngZone.run(() => latest.onCoverChange?.(...args));
           }
         },
       };
@@ -899,18 +906,22 @@ export class BlokEditorComponent implements AfterViewInit, DoCheck, OnDestroy, C
         return;
       }
 
-      // A freshly created editor was already seeded with `data` at construction;
-      // record it without re-rendering.
+      // A freshly created editor was already seeded at construction. When
+      // `data` still matches that seed, record it without re-rendering; when it
+      // changed before the editor was ready, render it.
       if (this.seededEditor !== editor) {
         this.seededEditor = editor;
-        this.lastRenderedData = data;
         // A render still pending on a PRIOR editor is moot for this fresh one;
         // clear it so its content cannot dedupe a needed render here.
         this.pendingData = undefined;
         // Payloads emitted by a PRIOR editor are likewise moot for this one.
         this.emittedEcho.clear();
 
-        return;
+        if (deepEqual(data, getConstructedData(editor))) {
+          this.lastRenderedData = data;
+
+          return;
+        }
       }
 
       // Structural comparison (`equalsOutputData`, not a raw deep-equal): a host
@@ -976,10 +987,21 @@ export class BlokEditorComponent implements AfterViewInit, DoCheck, OnDestroy, C
       // one, which the runtime reports as an unhandled rejection. Swallowing it
       // here also leaves the chain resolved, so the next queued render still runs.
       this.renderChain = this.renderChain
-        .then(() => editor.render(toRenderableData(data)))
+        // A render queued behind a slow one may run after this editor was
+        // destroyed or replaced; it must not reach the dead editor.
+        .then(async () => {
+          if (this.instance() !== editor) {
+            return false;
+          }
+          await editor.render(toRenderableData(data));
+
+          return true;
+        })
         .then(
-          () => {
-            this.lastRenderedData = data;
+          (rendered) => {
+            if (rendered) {
+              this.lastRenderedData = data;
+            }
           },
           () => undefined
         )

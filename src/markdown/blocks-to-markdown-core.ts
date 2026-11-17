@@ -17,9 +17,13 @@ import type { BlockToolData } from '../../types';
 import type { PageInfo } from '../../types/tools/page';
 import { orderByContent } from '../shared/content-order';
 import { databaseRowTitle, inRowOrder, isTemplateRow, titlePropertyIdOf } from '../shared/database-rows';
+import { placeText, verificationStatus } from '../shared/database/tier3-values';
+import type { PropertyValue } from '../shared/database/types';
+import { ALERT_STYLE, alertKindFor } from './alerts';
 import { claimedCellTexts, leadingCellText, repairedTableRows } from '../shared/table-grid';
 import { isPagePointer } from '../shared/page-pointer';
 import { hasUnsafeUrlProtocol } from '../shared/url-policy';
+import { matchEmbedService } from '../shared/embed-registry';
 import { withoutAnnotations } from '../shared/annotation-blocks';
 
 export interface SerializableBlock {
@@ -63,9 +67,62 @@ export interface InlineBackend {
    * @param html - the block field's inline HTML
    * @param onLoss - called with the construct name of every mark the walk had
    * to unwrap because Markdown cannot express it (see {@link inlineLosses}).
+   * @param onFootnote - called with the body of every hint in the field;
+   * returns the marker to write after the hinted phrase. Without it a hint
+   * reads as its phrase alone.
    */
-  inlineToMarkdown(html: string, onLoss?: (construct: string) => void): string;
+  inlineToMarkdown(html: string, onLoss?: (construct: string) => void, onFootnote?: FootnoteSink): string;
 }
+
+/** Takes one footnote body and returns the marker to put after the phrase. */
+export type FootnoteSink = (body: string) => string;
+
+/**
+ * A hint's marker until the whole document is laid out: only then is the
+ * order of appearance, and so the footnote number, known. Private-use
+ * characters, so no escaping pass touches it.
+ */
+const FOOTNOTE_OPEN = '\uE000';
+const FOOTNOTE_CLOSE = '\uE001';
+const FOOTNOTE_MARKER = new RegExp(`${FOOTNOTE_OPEN}(\\d+)${FOOTNOTE_CLOSE}`, 'g');
+
+/**
+ * The body of a hint's footnote: its text, then ` — subtitle`. Later lines are
+ * indented four spaces, which is what keeps them inside the definition.
+ * @param text - the hint text
+ * @param subtitle - the hint's subtitle, if any
+ */
+export const annotationFootnote = (text: string, subtitle: string | null): string => {
+  const whole = subtitle === null || subtitle === '' ? text : `${text} — ${subtitle}`;
+
+  return markdownTextEscaper(whole)(whole).split('\n').join('\n    ');
+};
+
+/**
+ * Number the hint markers in order of appearance and append their definitions.
+ * @param markdown - the laid-out document, markers included
+ * @param bodies - footnote bodies, indexed as the markers name them
+ */
+const resolveFootnotes = (markdown: string, bodies: string[]): string => {
+  const order: number[] = [];
+  const text = markdown.replace(FOOTNOTE_MARKER, (marker: string, index: string): string => {
+    const body = Number(index);
+
+    if (bodies[body] === undefined) {
+      return marker;
+    }
+
+    if (!order.includes(body)) {
+      order.push(body);
+    }
+
+    return `[^${order.indexOf(body) + 1}]`;
+  });
+
+  return order.length === 0
+    ? text
+    : `${text}\n\n${order.map((body, position) => `[^${position + 1}]: ${bodies[body]}`).join('\n')}`;
+};
 
 /** Inline marks whose tag alone names the loss. */
 const NAMED_INLINE_LOSSES: Record<string, string> = {
@@ -122,8 +179,39 @@ export type TextEscaper = (text: string) => string;
 /** Text inside a code span is literal: escaping it would print the backslashes. */
 export const RAW_TEXT: TextEscaper = (text) => text;
 
-/** A bare URL. GFM links it as written, so a backslash inside would join the URL. */
-const BARE_URL = /((?:https?:\/\/|www\.)[^\s<]*)/;
+/** Where a bare URL starts. GFM links it as written, so a backslash inside would join the URL. */
+const BARE_URL_START = /(?:https?:\/\/|www\.)/g;
+
+/** What ends a bare URL. */
+const BARE_URL_END = /[\s<]/g;
+
+/**
+ * `text.split(/((?:https?:\/\/|www\.)[^\s<]*)/)`: prose and bare URLs in
+ * turn, each URL at an odd index. Two searches, not that regex: its greedy
+ * run made QuickJS allocate over 256 MiB on a 12 MiB bookmark URL.
+ * @param text - plain text
+ */
+export const splitBareUrls = (text: string): string[] => {
+  const parts: string[] = [];
+  BARE_URL_START.lastIndex = 0;
+  /* eslint-disable no-restricted-syntax -- cursors moved as the scan goes */
+  let from = 0;
+  let start = BARE_URL_START.exec(text);
+  /* eslint-enable no-restricted-syntax */
+
+  while (start !== null) {
+    BARE_URL_END.lastIndex = start.index + start[0].length;
+    const end = BARE_URL_END.exec(text)?.index ?? text.length;
+
+    parts.push(text.slice(from, start.index), text.slice(start.index, end));
+    from = end;
+    BARE_URL_START.lastIndex = end;
+    start = BARE_URL_START.exec(text);
+  }
+  parts.push(text.slice(from));
+
+  return parts;
+};
 
 /** An `&` that would read as a character reference. */
 const ENTITY_LIKE = /&(?=#[0-9]{1,7};|#[xX][0-9a-fA-F]{1,6};|[A-Za-z][A-Za-z0-9]{1,31};)/g;
@@ -233,8 +321,7 @@ export const markdownTextEscaper = (html: string): TextEscaper => {
   const dollars = html.includes(EQUATION_MARKER) || (html.match(/\$/g) ?? []).length >= 2;
 
   /** The capture group keeps each URL in the split, at every odd index. */
-  return (text) => text
-    .split(BARE_URL)
+  return (text) => splitBareUrls(text)
     .map((part, index) => (index % 2 === 1 ? part : escapeProse(part, dollars)))
     .join('');
 };
@@ -248,6 +335,9 @@ const DESTINATION_BREAKER = /[\u0000-\u0020\u007f<>]/;
 /** Every character {@link markdownDestination} may rewrite: breakers, `&`, parens and `\`. */
 const DESTINATION_SPECIAL = /[\u0000-\u0020\u007f<>&()\\]/g;
 
+/** {@link DESTINATION_SPECIAL} without the `g` flag, so `test` keeps no state. */
+const HAS_DESTINATION_SPECIAL = /[\u0000-\u0020\u007f<>&()\\]/;
+
 /** What follows `&` in a CommonMark character reference. The longest entity name is 31 letters. */
 const CHARACTER_REFERENCE_TAIL = /^(?:#\d{1,7}|#[xX][\da-fA-F]{1,6}|[A-Za-z][A-Za-z\d]{0,31});/;
 
@@ -256,17 +346,34 @@ const CHARACTER_REFERENCE_TAIL = /^(?:#\d{1,7}|#[xX][\da-fA-F]{1,6}|[A-Za-z][A-Z
  * destination. Every backslash before them is escaped, so all of them count.
  * @param url - the raw URL
  */
-const parensBalanced = (url: string): boolean => Array.from(
-  /** Only the parens are split apart: a pasted image's data URL runs to MiB. */
-  url.replace(/[^()]/g, '')
-).reduce((depth, char) => {
-  /** Once below zero a `)` has closed the destination; later parens cannot fix it. */
-  if (depth < 0) {
-    return depth;
+const parensBalanced = (url: string): boolean => {
+  /**
+   * indexOf, not a regex or a split: a pasted image's data URL runs to MiB,
+   * and the Go server's regex engine holds every match of a global replace
+   * (an 8 MiB URL held 1 GiB). Each next paren is searched for once.
+   */
+  /* eslint-disable no-restricted-syntax -- two cursors and a count, moved as the scan goes */
+  let depth = 0;
+  let open = url.indexOf('(');
+  let close = url.indexOf(')');
+  /* eslint-enable no-restricted-syntax */
+
+  while (open >= 0 || close >= 0) {
+    if (close < 0 || (open >= 0 && open < close)) {
+      depth += 1;
+      open = url.indexOf('(', open + 1);
+      continue;
+    }
+    /** Once below zero a `)` has closed the destination; later parens cannot fix it. */
+    depth -= 1;
+    if (depth < 0) {
+      return false;
+    }
+    close = url.indexOf(')', close + 1);
   }
 
-  return char === '(' ? depth + 1 : depth - 1;
-}, 0) === 0;
+  return depth === 0;
+};
 
 /**
  * The URL to write as a Markdown destination, or null when it must not be
@@ -283,6 +390,10 @@ const parensBalanced = (url: string): boolean => Array.from(
 export const markdownDestination = (url: string, kind: 'href' | 'src'): string | null => {
   if (hasUnsafeUrlProtocol(url, kind)) {
     return null;
+  }
+  /** A replace that matches nothing still made QuickJS allocate the size of the string, and a data URL runs to MiB. */
+  if (!HAS_DESTINATION_SPECIAL.test(url)) {
+    return url;
   }
 
   const escapeParens = !parensBalanced(url);
@@ -319,19 +430,25 @@ export const markdownDestination = (url: string, kind: 'href' | 'src'): string |
  */
 export const inlineEquation = (latex: string): string => (latex.trim() === '' ? '' : `$${latex.trim()}$`);
 
+/** The first character, after up to 3 spaces, of every line {@link escapeLineStarts} rewrites. */
+const LINE_START_SIGNIFICANT = /^ {0,3}[#>+\-=\d]/;
+
 /**
  * Escape what text can only mean at the start of a line: an ATX heading, a
  * blockquote, a list marker, a setext underline or a thematic break. A line
  * starts after every newline, and these can interrupt a paragraph.
+ *
+ * Other lines skip the five replaces: on one 12 MiB line (a pasted data URL)
+ * they made QuickJS allocate over 64 MiB.
  * @param markdown - one inline field's Markdown
  */
 const escapeLineStarts = (markdown: string): string =>
-  markdown.split('\n').map((line) => line
+  markdown.split('\n').map((line) => (!LINE_START_SIGNIFICANT.test(line) ? line : line
     .replace(/^( {0,3})(#{1,6})(?=[ \t]|$)/, '$1\\$2')
     .replace(/^( {0,3})>/, '$1\\>')
     .replace(/^( {0,3})([+-])(?=[ \t]|$)/, '$1\\$2')
     .replace(/^( {0,3})(-+|=+)([ \t]*)$/, '$1\\$2$3')
-    .replace(/^( {0,3}\d{1,9})([.)])(?=[ \t]|$)/, '$1\\$2')).join('\n');
+    .replace(/^( {0,3}\d{1,9})([.)])(?=[ \t]|$)/, '$1\\$2'))).join('\n');
 
 /** A construct that could not be carried into Markdown as-is. */
 export interface MarkdownDegradation {
@@ -384,6 +501,26 @@ const CONTAINER_TOOLS = new Set([
 const asString = (value: unknown): string => (typeof value === 'string' ? value : '');
 
 /**
+ * The stored embed `service` when `url` really matches it, else ''. The
+ * field is free text in saved data, so it must not name another site's link.
+ * Some registry id builders throw in the Jint server runtime (no
+ * URLSearchParams); that reads as no match.
+ * @param service - stored service name
+ * @param url - stored source URL
+ */
+const matchedService = (service: string, url: string): string => {
+  if (service === '') {
+    return '';
+  }
+
+  try {
+    return matchEmbedService(url)?.service === service ? service : '';
+  } catch {
+    return '';
+  }
+};
+
+/**
  * Narrow an unknown value to a plain record.
  * @param value - value to check
  */
@@ -408,6 +545,8 @@ interface SerializationContext {
   active: Set<string>;
   /** Inline losses already reported, so one kind is named once per document. */
   inlineSeen: Set<string>;
+  /** Hint footnote bodies, in the order the fields were read. */
+  footnotes: string[];
 }
 
 /**
@@ -492,7 +631,7 @@ const inlineMarkdown = (context: SerializationContext, html: string): string =>
 
     context.inlineSeen.add(construct);
     warn(context, construct, 'degraded', INLINE_LOSS_DETAILS[construct] ?? `${construct} has no Markdown equivalent`);
-  })).replace(BREAK_ONLY_LINES, '\\\n'));
+  }, (body: string): string => `${FOOTNOTE_OPEN}${context.footnotes.push(body) - 1}${FOOTNOTE_CLOSE}`)).replace(BREAK_ONLY_LINES, '\\\n'));
 
 /**
  * Join loss names into a readable list: `a`, `a and b`, `a, b and c`.
@@ -986,6 +1125,141 @@ const databaseRowToMarkdown = (row: SerializableBlock, context: SerializationCon
 };
 
 /**
+ * A callout as a GitHub alert. The marker line and a blank quote line come
+ * first, so a first child that cannot interrupt a paragraph (a list, a table)
+ * is not read as part of the marker's line.
+ * @param block - the callout block
+ * @param context - the serialization context
+ */
+const calloutToMarkdown = (block: SerializableBlock, context: SerializationContext): string => {
+  // The callout tool loads a missing emoji as its default and a missing colour as none.
+  const emoji = typeof block.data.emoji === 'string' ? block.data.emoji : ALERT_STYLE.callout.emoji;
+  const backgroundColor = typeof block.data.backgroundColor === 'string' ? block.data.backgroundColor : null;
+  const kind = alertKindFor(emoji, backgroundColor);
+  const losses = [
+    ...(ALERT_STYLE[kind].emoji === emoji ? [] : ['emoji']),
+    ...(ALERT_STYLE[kind].backgroundColor === backgroundColor ? [] : ['background colour']),
+    ...(typeof block.data.textColor === 'string' && block.data.textColor !== '' ? ['text colour'] : []),
+  ];
+
+  if (losses.length > 0) {
+    warn(context, block.tool, 'degraded', `callout is written as a [!${kind.toUpperCase()}] alert; its ${joinLosses(losses)} ${losses.length > 1 ? 'are' : 'is'} lost`);
+  }
+
+  const body = childrenToMarkdown(block, context);
+
+  return prefixLines(body === '' ? `[!${kind.toUpperCase()}]` : `[!${kind.toUpperCase()}]\n\n${body}`, '> ');
+};
+
+const isRecordValue = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * One database cell as Markdown table text, the way the grid shows it.
+ * @param property - the schema property
+ * @param value - the row's stored value
+ * @param context - the serialization context (resolves relation titles)
+ */
+const databaseCellMarkdown = (property: Record<string, unknown>, value: unknown, context: SerializationContext): string => {
+  const options = isRecordValue(property.config) && Array.isArray(property.config.options) ? property.config.options.filter(isRecordValue) : [];
+  const labelOf = (id: string): string => asString(options.find((option) => option.id === id)?.label);
+  const ids = (Array.isArray(value) ? value : [value]).flatMap((item: unknown) => {
+    const id = isRecordValue(item) ? item.id : item;
+
+    return typeof id === 'string' && id !== '' ? [id] : [];
+  });
+  const plain = (text: string): string => escapePlainText(text);
+
+  switch (property.type) {
+    case 'checkbox':
+      return value === true ? 'Yes' : 'No';
+    case 'select':
+    case 'status':
+    case 'multiSelect':
+      return plain(ids.map(labelOf).filter((label) => label !== '').join(', '));
+    case 'person':
+    case 'createdBy':
+    case 'lastEditedBy':
+      return plain(ids.join(', '));
+    case 'relation':
+      return plain(ids.map((id) => {
+        const row = context.byId.get(id);
+        const database = typeof row?.parentId === 'string' ? context.byId.get(row.parentId) : undefined;
+        const title = row === undefined ? '' : databaseRowTitle(row, database === undefined ? undefined : titlePropertyIdOf(database.data));
+
+        return title === '' ? id : title;
+      }).join(', '));
+    case 'files':
+      return plain(Array.isArray(value) ? value.flatMap((file: unknown) => (isRecordValue(file) && typeof file.url === 'string' ? [file.url] : [])).join(', ') : '');
+    case 'richText':
+      // A legacy rich text value is a small document: its blocks' inline text, one per line.
+      return isRecordValue(value) && Array.isArray(value.blocks)
+        ? value.blocks.filter(isRecordValue).map((inner) => inlineMarkdown(context, asString(isRecordValue(inner.data) ? inner.data.text : ''))).filter((line) => line !== '').join(HARD_BREAK)
+        : plain(asString(value));
+    case 'uniqueId': {
+      const prefix = isRecordValue(property.uniqueId) ? asString(property.uniqueId.prefix) : '';
+
+      return typeof value === 'number' ? plain(prefix === '' ? String(value) : `${prefix}-${value}`) : '';
+    }
+    case 'place':
+      return plain(placeText(value as PropertyValue));
+    case 'verification':
+      return value === undefined || value === null ? '' : verificationStatus(value);
+    default:
+      return typeof value === 'string' || typeof value === 'number' ? plain(String(value)) : '';
+  }
+};
+
+/**
+ * A database as its bold title, then a GFM table: the row title, then every
+ * schema property in order. Each row's page body follows the table under the
+ * row's bold title. The table pastes back as a table, not a database.
+ * @param block - the database block
+ * @param context - the serialization context
+ */
+const databaseToMarkdown = (block: SerializableBlock, context: SerializationContext): string => {
+  const { data } = block;
+  const children = context.childrenOf.get(block.id ?? '') ?? [];
+  const titleId = titlePropertyIdOf(data);
+  const rows = inRowOrder(children.filter((child) => child.tool === 'database-row' && !isTemplateRow(child)));
+  const schema = (Array.isArray(data.schema) ? data.schema.filter(isRecordValue) : [])
+    .map((property, index) => ({ property, index }))
+    .sort((a, b) => {
+      const pa = asString(a.property.position);
+      const pb = asString(b.property.position);
+
+      if (pa === pb) {
+        return a.index - b.index;
+      }
+
+      return pa < pb ? -1 : 1;
+    })
+    .map(({ property }) => property);
+  const titleProperty = schema.find((property) => property.type === 'title');
+  const columns = schema.filter((property) => property !== titleProperty);
+  const cell = (text: string): string => escapeTableCell(text, () => undefined).trim();
+  const header = [asString(titleProperty?.name) || 'Name', ...columns.map((property) => asString(property.name))].map((name) => cell(escapePlainText(name)));
+  const lines = rows.map((row) => {
+    const properties = isRecordValue(row.data.properties) ? row.data.properties : {};
+
+    return [
+      cell(escapePlainText(databaseRowTitle(row, titleId))),
+      ...columns.map((property) => cell(databaseCellMarkdown(property, properties[asString(property.id)], context))),
+    ];
+  });
+  const table = [header, header.map(() => '---'), ...lines].map((line) => `| ${line.join(' | ')} |`).join('\n');
+  const bodies = rows.map((row) => {
+    const body = childrenToMarkdown(row, context);
+    const title = databaseRowTitle(row, titleId);
+
+    return body === '' || title === '' ? body : `**${escapePlainText(title)}**\n\n${body}`;
+  });
+  const title = asString(data.title);
+
+  return [title === '' ? '' : `**${escapePlainText(title)}**`, table, ...bodies].filter((part) => part !== '').join('\n\n');
+};
+
+/**
  * Whether a block sits inside a list item. Four leading spaces continue a list
  * item, but outside one they are an indented code block — so a non-list block
  * only carries a flat indent when a list actually owns it.
@@ -1179,20 +1453,12 @@ const blockMarkdownBody = (block: SerializableBlock, context: SerializationConte
       return `${indent}- ${text}`;
     }
     /**
-     * A callout carries no `data.text` of its own — its content is child
-     * blocks — so without this case it serialized to an EMPTY line while its
-     * children escaped as loose siblings, indented four spaces into a code
-     * block. Rendered as a blockquote: the emoji leads the body; type and
-     * colours are lost.
+     * A callout carries no `data.text` of its own: its content is child
+     * blocks. It is written as a GitHub alert, the marker on its own line and
+     * the children below it, so the importer makes them separate child blocks.
      */
-    case 'callout': {
-      warn(context, block.tool, 'degraded', 'callout is rendered as a blockquote; its emoji styling, colours and type are lost');
-
-      const emoji = asString(data.emoji);
-      const body = childrenToMarkdown(block, context);
-
-      return prefixLines([emoji, body].filter((part) => part !== '').join(' '), '> ');
-    }
+    case 'callout':
+      return calloutToMarkdown(block, context);
     /**
      * Markdown has no collapsible section, so the summary becomes a bold line
      * and the body follows it as ordinary blocks.
@@ -1229,15 +1495,8 @@ const blockMarkdownBody = (block: SerializableBlock, context: SerializationConte
       }
 
       return childrenToMarkdown(block, context);
-    case 'database': {
-      const children = context.childrenOf.get(block.id ?? '') ?? [];
-      const titleId = titlePropertyIdOf(data);
-      const rows = inRowOrder(children.filter((child) => child.tool === 'database-row' && !isTemplateRow(child)))
-        .map((row) => databaseRowToMarkdown(row, context, databaseRowTitle(row, titleId)));
-      const title = asString(data.title);
-
-      return [title === '' ? '' : `**${escapePlainText(title)}**`, ...rows].filter((part) => part !== '').join('\n\n');
-    }
+    case 'database':
+      return databaseToMarkdown(block, context);
     case 'database-row':
       return databaseRowToMarkdown(block, context, databaseRowTitle(block, undefined));
     case 'tab': {
@@ -1355,10 +1614,8 @@ const blockMarkdownBody = (block: SerializableBlock, context: SerializationConte
     case 'delimiter':
       return `${flatIndent}---`;
     /**
-     * `![…]` is the ALT slot, so it carries `data.alt` and nothing else. It used
-     * to carry the caption, which both hid the author's alt text and handed the
-     * importer an alt they never wrote (`mdast-to-blocks.ts` reads that slot
-     * back into `alt` AND `caption`).
+     * `![…]` is the ALT slot, so it carries `data.alt` and nothing else.
+     * `mdast-to-blocks.ts` reads that slot back into `alt` only.
      */
     case 'image': {
       const alt = asString(data.alt);
@@ -1391,7 +1648,7 @@ const blockMarkdownBody = (block: SerializableBlock, context: SerializationConte
 
       const url = asString(data.url) || asString(data.source);
       const label = inlineMarkdown(context, asString(data.caption))
-        || escapePlainText(asString(data.title) || asString(data.fileName) || asString(data.service) || url);
+        || escapePlainText(asString(data.title) || asString(data.fileName) || matchedService(asString(data.service), url) || url);
 
       const href = markdownDestination(url, 'href');
 
@@ -1487,7 +1744,8 @@ const buildContext = (
     pageHref,
     warnings,
     active: new Set<string>(),
-    inlineSeen: new Set<string>() };
+    inlineSeen: new Set<string>(),
+    footnotes: [] };
 };
 
 /**
@@ -1541,9 +1799,9 @@ const collectOwnedIds = (blocks: SerializableBlock[], context: SerializationCont
     .filter((id): id is string => typeof id === 'string')
     .forEach(claimId);
 
-  while (queue.length > 0) {
-    const parentId = queue.shift() ?? '';
-
+  // for...of also visits ids claimed during the walk. Not shift(): it copies
+  // the queue, so a long child list took quadratic time.
+  for (const parentId of queue) {
     (context.childrenOf.get(parentId) ?? []).forEach(claim);
   }
 
@@ -1569,6 +1827,6 @@ export const serializeBlocksToMarkdown = (
   const ownedIds = collectOwnedIds(blocks, context);
   const topLevel = blocks.filter((block) => block.id === undefined || !ownedIds.has(block.id));
 
-  return { markdown: sequenceToMarkdown(topLevel, context),
+  return { markdown: resolveFootnotes(sequenceToMarkdown(topLevel, context), context.footnotes),
     warnings };
 };

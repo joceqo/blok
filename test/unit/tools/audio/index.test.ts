@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { API, BlockAPI, BlockToolConstructorOptions } from '../../../../types';
+import type { API, BlockAPI, BlockTool, BlockToolConstructorOptions } from '../../../../types';
 import type { MenuConfig } from '../../../../types/tools/menu-config';
 import type { AudioConfig, AudioData } from '../../../../types/tools/audio';
 import type * as CoverPickerModule from '../../../../src/tools/audio/cover-picker';
 import { AudioTool } from '../../../../src/tools/audio';
+import { leakedListeners } from '../../../helpers/listener-leaks';
 
 const toMenuArray = (config: MenuConfig): Array<Record<string, unknown>> => {
   return (Array.isArray(config) ? config : [config]) as Array<Record<string, unknown>>;
@@ -20,8 +21,12 @@ const coverPickerCalls: Array<{
   onFile: (f: File) => void;
   onUrl: (u: string) => void;
   onClose?: () => void;
-  handle: { close: ReturnType<typeof vi.fn>; setError: ReturnType<typeof vi.fn> };
+  surface?: string;
+  current?: string;
+  handle: { close: ReturnType<typeof vi.fn>; setError: ReturnType<typeof vi.fn>; settle: ReturnType<typeof vi.fn> };
 }> = [];
+/** Set to hold the picker's `settle()` open; call the stored function to let it go. */
+const coverSettle: { hold: boolean; release: Array<() => void> } = { hold: false, release: [] };
 
 vi.mock('../../../../src/tools/audio/cover-picker', async (importOriginal) => {
   const actual = await importOriginal<typeof CoverPickerModule>();
@@ -33,14 +38,22 @@ vi.mock('../../../../src/tools/audio/cover-picker', async (importOriginal) => {
       onFile: (f: File) => void;
       onUrl: (u: string) => void;
       onClose?: () => void;
+      surface?: string;
+      current?: string;
     }) => {
-      const handle = { close: vi.fn(), setError: vi.fn() };
+      const handle = {
+        close: vi.fn(),
+        setError: vi.fn(),
+        settle: vi.fn(() => (coverSettle.hold ? new Promise<void>((resolve) => { coverSettle.release.push(resolve); }) : Promise.resolve())),
+      };
       coverPickerCalls.push({
         anchor: o.anchor,
         trigger: o.trigger,
         onFile: o.onFile,
         onUrl: o.onUrl,
         onClose: o.onClose,
+        surface: o.surface,
+        current: o.current,
         handle,
       });
       return handle;
@@ -51,6 +64,10 @@ vi.mock('../../../../src/tools/audio/cover-picker', async (importOriginal) => {
 vi.mock('../../../../src/tools/audio/waveform', () => ({
   decodePeaks: vi.fn().mockResolvedValue(null),
   attachWaveform: vi.fn().mockReturnValue({ destroy: vi.fn() }),
+}));
+
+vi.mock('../../../../src/tools/audio/wire', () => ({
+  attachWire: vi.fn(() => ({ destroy: vi.fn() })),
 }));
 
 // Helper to get the mocked decodePeaks function after module mocking
@@ -120,6 +137,8 @@ const opts = (
 beforeEach(() => {
   vi.clearAllMocks();
   coverPickerCalls.length = 0;
+  coverSettle.hold = false;
+  coverSettle.release.length = 0;
   uploaderInstances.length = 0;
 });
 afterEach(() => {
@@ -266,9 +285,8 @@ describe('AudioTool', () => {
     await Promise.resolve();
 
     const error = el.querySelector('[data-role="audio-error"]');
-    expect(error?.textContent).toContain(
-      'Audio from Google Drive can’t be played directly. Download the file and upload it here instead.',
-    );
+    expect(error?.querySelector('[data-role="audio-error-title"]')?.textContent).toBe('Google Drive audio can’t play here');
+    expect(error?.querySelector('[data-role="audio-error-message"]')?.textContent).toBe('Download the file and upload it here instead.');
   });
 
   it('shows a OneDrive-specific error when the link needs an upload backend', async () => {
@@ -289,9 +307,8 @@ describe('AudioTool', () => {
     await Promise.resolve();
 
     const error = el.querySelector('[data-role="audio-error"]');
-    expect(error?.textContent).toContain(
-      'Audio from OneDrive can’t be played directly. Download the file and upload it here instead.',
-    );
+    expect(error?.querySelector('[data-role="audio-error-title"]')?.textContent).toBe('OneDrive audio can’t play here');
+    expect(error?.querySelector('[data-role="audio-error-message"]')?.textContent).toBe('Download the file and upload it here instead.');
   });
 
   describe('error state', () => {
@@ -316,10 +333,10 @@ describe('AudioTool', () => {
       expect(error?.getAttribute('data-reason')).toBe('google-drive');
     });
 
-    it('tops a share-link failure with a playful badge, not the service name', async () => {
+    it('shows a share-link failure as one of the four broken objects', async () => {
       const el = await failDriveLink({});
-      const badge = el.querySelector('[data-role="audio-error"] [data-role="audio-error-source"]');
-      expect(badge?.textContent).toBe('Needle skipped');
+      const scene = el.querySelector('[data-role="audio-error"]')?.getAttribute('data-scene');
+      expect(['shattered', 'ink-burst', 'sand', 'pulled-plug']).toContain(scene);
     });
 
     it('lets the user upload the downloaded file straight from the error', async () => {
@@ -394,6 +411,26 @@ describe('AudioTool', () => {
     expect(tool.save().peaks).toBeUndefined();
     // Once for the pick and once for the upload, not again for null peaks.
     expect(vi.mocked(block.dispatchChange).mock.calls).toEqual([[], [{ derived: true, from: ['fileName'] }]]);
+  });
+
+  it('I3m: decoded motion is cached in data and round-trips through save()', async () => {
+    const decodePeaksMock = await getDecodePeaksMock();
+    decodePeaksMock.mockResolvedValueOnce({ peaks: [0.1, 0.5, 1], duration: 8, motion: 'AQAAAAAAAA==' });
+
+    const tool = new AudioTool(opts({ url: '' }, {}, createMockBlock()));
+    tool.render();
+    tool.onPaste({ type: 'file', detail: { file: new File(['x'], 'track.mp3', { type: 'audio/mpeg' }) } } as never);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(tool.save().motion).toBe('AQAAAAAAAA==');
+  });
+
+  it('I3n: saved motion round-trips, and a non-string motion is dropped', () => {
+    expect(new AudioTool(opts({ url: 'https://x/y.mp3', motion: 'AQAAAAAAAA==' })).save().motion).toBe('AQAAAAAAAA==');
+    expect(new AudioTool(opts({ url: 'https://x/y.mp3', motion: 5 as never })).save()).not.toHaveProperty('motion');
+    expect(new AudioTool(opts({ url: 'https://x/y.mp3' })).save()).not.toHaveProperty('motion');
   });
 
   it('I3: decoded peaks and duration are cached in data and round-trip through save()', async () => {
@@ -736,6 +773,43 @@ describe('AudioTool', () => {
       expect(audioUploadByFile).not.toHaveBeenCalled();
     });
 
+    it('opens the ink well, showing the cover the track has now', () => {
+      const { root } = renderTool({ coverUrl: 'https://cdn/old.png' });
+      root.querySelector<HTMLButtonElement>('[data-role="audio-cover-change"]')!.click();
+
+      expect(coverPickerCalls[0].surface).toBe('ink-well');
+      expect(coverPickerCalls[0].current).toBe('https://cdn/old.png');
+    });
+
+    it('waits for the ink well to open onto the picture before it sets the cover and closes', async () => {
+      coverSettle.hold = true;
+      const { root, block } = renderTool();
+      root.querySelector<HTMLButtonElement>('[data-role="audio-cover-change"]')!.click();
+      (block.dispatchChange as ReturnType<typeof vi.fn>).mockClear();
+
+      coverPickerCalls[0].onFile(new File(['x'], 'c.png', { type: 'image/png' }));
+      await vi.waitFor(() => expect(coverPickerCalls[0].handle.settle).toHaveBeenCalled());
+
+      // Uploaded, but the well is still opening: closing now would hide it.
+      expect(root.querySelector('[data-role="audio-cover"] img')).toBeNull();
+      expect(coverPickerCalls[0].handle.close).not.toHaveBeenCalled();
+
+      coverSettle.release.forEach((release) => release());
+      await vi.waitFor(() => {
+        expect(root.querySelector<HTMLImageElement>('[data-role="audio-cover"] img')?.getAttribute('src')).toBe('https://cdn/c.png');
+      });
+      expect(coverPickerCalls[0].handle.close).toHaveBeenCalled();
+      expect(block.dispatchChange).toHaveBeenCalledTimes(1);
+      // The new cover pops on the player.
+      expect(root.querySelector('[data-role="audio-cover"]')?.classList.contains('is-fresh')).toBe(true);
+    });
+
+    it('a cover that was there on load does not pop', () => {
+      const { root } = renderTool({ coverUrl: 'https://cdn/old.png' });
+
+      expect(root.querySelector('[data-role="audio-cover"]')?.classList.contains('is-fresh')).toBe(false);
+    });
+
     it('rejects a non-image file via setError without mutating data', () => {
       const { root, block } = renderTool();
       root.querySelector<HTMLButtonElement>('[data-role="audio-cover-change"]')!.click();
@@ -746,7 +820,7 @@ describe('AudioTool', () => {
       expect(block.dispatchChange).not.toHaveBeenCalled();
     });
 
-    it('removeCover reverts to the disc placeholder', () => {
+    it('removeCover reverts to the ink drop', () => {
       const { tool, root, block } = renderTool({ coverUrl: 'https://cdn/cover.png' });
       expect(root.querySelector('[data-role="audio-cover"] img')).not.toBeNull();
 
@@ -755,7 +829,7 @@ describe('AudioTool', () => {
       (remove as { onActivate: () => void }).onActivate();
 
       expect(root.querySelector('[data-role="audio-cover"] img')).toBeNull();
-      expect(root.querySelector('.blok-audio-cover__disc')).not.toBeNull();
+      expect(root.querySelector('[data-role="audio-cover-ink"]')).not.toBeNull();
       expect(block.dispatchChange).toHaveBeenCalled();
     });
 
@@ -902,5 +976,192 @@ describe('AudioTool — an upload belongs to the pick that started it', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(tool.save().url).toBe('');
+  });
+
+  it('ignores a file upload that fails after it was cancelled', async () => {
+    const onUploadError = vi.fn();
+    const tool = new AudioTool(opts({ url: '' }, { onUploadError }));
+    const root = tool.render();
+    let reject: (err: Error) => void = () => undefined;
+
+    uploaderInstances[0].handleFile.mockReturnValueOnce(new Promise((_r, rej) => {
+      reject = rej;
+    }));
+    pasteTrack(tool);
+    root.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.click();
+
+    reject(new Error('network down'));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(root.querySelector('[data-role="audio-error"]')).toBeNull();
+    expect(onUploadError).not.toHaveBeenCalled();
+  });
+
+  it('ignores a link upload that fails after it was cancelled', async () => {
+    const onUploadError = vi.fn();
+    const tool = new AudioTool(opts({ url: '' }, { onUploadError }));
+    const root = tool.render();
+    let reject: (err: Error) => void = () => undefined;
+
+    uploaderInstances[0].handleUrl.mockReturnValueOnce(new Promise((_r, rej) => {
+      reject = rej;
+    }));
+    tool.onPaste({ type: 'pattern', detail: { data: 'https://example.com/song.mp3' } } as never);
+    root.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.click();
+
+    reject(new Error('network down'));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(root.querySelector('[data-role="audio-error"]')).toBeNull();
+    expect(onUploadError).not.toHaveBeenCalled();
+  });
+});
+
+describe('AudioTool — editor teardown', () => {
+  it('leaves no player listener behind when the editor is destroyed', async () => {
+    const { attachWaveform } = await import('../../../../src/tools/audio/waveform');
+    const added = vi.spyOn(window, 'addEventListener');
+    const removed = vi.spyOn(window, 'removeEventListener');
+    const tool: BlockTool = new AudioTool(opts({ url: 'https://cdn/track.mp3', peaks: [0.1, 0.5, 1] }));
+
+    await tool.render();
+    const waveform = vi.mocked(attachWaveform).mock.results[0]?.value as { destroy: ReturnType<typeof vi.fn> } | undefined;
+
+    expect(added).toHaveBeenCalled();
+    expect(waveform).toBeDefined();
+
+    // editor.destroy() reaches the tool only through destroy(), never removed().
+    tool.destroy?.();
+
+    expect(leakedListeners(added, removed)).toEqual([]);
+    expect(waveform?.destroy).toHaveBeenCalled();
+  });
+});
+
+describe('AudioTool — compact mode', () => {
+  const PEAKS = [0.2, 0.8, 0.4];
+  const waveformMock = async (): Promise<ReturnType<typeof vi.fn>> => {
+    const mod = await import('../../../../src/tools/audio/waveform');
+
+    return vi.mocked(mod.attachWaveform);
+  };
+  const compactItem = (tool: AudioTool): { isActive?: boolean; onActivate?: () => void } => {
+    const settings = tool.renderSettings();
+    const item = (Array.isArray(settings) ? settings : [settings])
+      .find((it) => (it as { name?: string }).name === 'audio-compact');
+
+    if (!item) throw new Error('no audio-compact setting');
+
+    return item as { isActive?: boolean; onActivate?: () => void };
+  };
+
+  it('saves the flag only when it is on', () => {
+    expect(new AudioTool(opts({ url: 'https://x/y.mp3', compact: true })).save().compact).toBe(true);
+    expect(new AudioTool(opts({ url: 'https://x/y.mp3' })).save()).not.toHaveProperty('compact');
+  });
+
+  it('draws no ridgeline for a compact player', async () => {
+    const attach = await waveformMock();
+    const root = new AudioTool(opts({ url: 'https://x/y.mp3', peaks: PEAKS, compact: true })).render();
+
+    expect(attach).not.toHaveBeenCalled();
+    expect(root.getAttribute('data-compact')).toBe('on');
+  });
+
+  it('draws the ridgeline for a full player', async () => {
+    const attach = await waveformMock();
+    const root = new AudioTool(opts({ url: 'https://x/y.mp3', peaks: PEAKS })).render();
+
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(root.getAttribute('data-compact')).toBe('off');
+  });
+
+  it('draws the wire for a compact player, with or without peaks', async () => {
+    const { attachWire } = await import('../../../../src/tools/audio/wire');
+    const root = new AudioTool(opts({ url: 'https://x/y.mp3', compact: true, motion: 'm' })).render();
+
+    expect(vi.mocked(attachWire)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(attachWire).mock.calls[0]?.[0]).toMatchObject({
+      mount: root.querySelector('[data-role="audio-waveform"]'),
+      media: root.querySelector('[data-role="audio-media"]'),
+      motion: 'm',
+    });
+  });
+
+  it('draws no wire for a full player', async () => {
+    const { attachWire } = await import('../../../../src/tools/audio/wire');
+
+    new AudioTool(opts({ url: 'https://x/y.mp3', peaks: PEAKS })).render();
+
+    expect(vi.mocked(attachWire)).not.toHaveBeenCalled();
+  });
+
+  it('switching to compact swaps the ridgeline for the wire, and back', async () => {
+    const { attachWire } = await import('../../../../src/tools/audio/wire');
+    const attach = await waveformMock();
+    const tool = new AudioTool(opts({ url: 'https://x/y.mp3', peaks: PEAKS }));
+
+    tool.render();
+    compactItem(tool).onActivate?.();
+
+    expect(vi.mocked(attachWire)).toHaveBeenCalledTimes(1);
+    const wire = vi.mocked(attachWire).mock.results[0]?.value as { destroy: ReturnType<typeof vi.fn> };
+
+    compactItem(tool).onActivate?.();
+
+    expect(wire.destroy).toHaveBeenCalledTimes(1);
+    expect(attach).toHaveBeenCalledTimes(2);
+  });
+
+  it('removing the block tears the wire down', async () => {
+    const { attachWire } = await import('../../../../src/tools/audio/wire');
+    const tool = new AudioTool(opts({ url: 'https://x/y.mp3', compact: true }));
+
+    tool.render();
+    tool.destroy();
+
+    const wire = vi.mocked(attachWire).mock.results[0]?.value as { destroy: ReturnType<typeof vi.fn> };
+
+    expect(wire.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers the setting in the block menu and marks it when on', () => {
+    expect(compactItem(new AudioTool(opts({ url: 'https://x/y.mp3' }))).isActive).toBe(false);
+    expect(compactItem(new AudioTool(opts({ url: 'https://x/y.mp3', compact: true }))).isActive).toBe(true);
+  });
+
+  it('switching to compact removes the ridgeline without rebuilding the player', async () => {
+    const attach = await waveformMock();
+    const block = createMockBlock();
+    const tool = new AudioTool(opts({ url: 'https://x/y.mp3', peaks: PEAKS }, {}, block));
+    const root = tool.render();
+    const media = root.querySelector('[data-role="audio-media"]');
+    const handle = attach.mock.results[0]?.value as { destroy: ReturnType<typeof vi.fn> };
+
+    compactItem(tool).onActivate?.();
+
+    expect(handle.destroy).toHaveBeenCalledTimes(1);
+    expect(root.getAttribute('data-compact')).toBe('on');
+    expect(tool.save().compact).toBe(true);
+    expect(block.dispatchChange).toHaveBeenCalledTimes(1);
+    // A rebuilt <audio> would stop a playing track.
+    expect(root.querySelector('[data-role="audio-media"]')).toBe(media);
+  });
+
+  it('switching back draws the ridgeline again on the same player', async () => {
+    const attach = await waveformMock();
+    const tool = new AudioTool(opts({ url: 'https://x/y.mp3', peaks: PEAKS, compact: true }));
+    const root = tool.render();
+
+    compactItem(tool).onActivate?.();
+
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(attach.mock.calls[0]?.[0]).toMatchObject({
+      mount: root.querySelector('[data-role="audio-waveform"]'),
+      media: root.querySelector('[data-role="audio-media"]'),
+      peaks: PEAKS,
+    });
+    expect(root.getAttribute('data-compact')).toBe('off');
+    expect(tool.save()).not.toHaveProperty('compact');
   });
 });

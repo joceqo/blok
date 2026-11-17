@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +35,12 @@ function run(command, args, options = {}) {
 const ORDINARY_CONFIGURATION = 'Release';
 const JOURNAL_CONFIGURATIONS = ['Debug', 'Release'];
 
-const TARGETS = ['csharp', 'go'];
+// interop builds C# and Go, interop-rust builds Go and Rust, and both run only
+// INTEROP_SUITES: one directory, written by one server and served by the other.
+const TARGETS = ['csharp', 'go', 'interop', 'rust', 'interop-rust'];
+const INTEROP_TARGETS = ['interop', 'interop-rust'];
+
+const INTEROP_SUITES = ['journal-interop-contract'];
 
 const SUITES = [
   'harness-contract',
@@ -49,6 +54,8 @@ const SUITES = [
   'http-host-contract',
   'page-transfer-sidecar',
   'sync-transport-contract',
+  'collab-http-contract',
+  'file-bytes-contract',
 ];
 
 // Suites that live outside test/unit/server-conformance.
@@ -65,21 +72,23 @@ function selectedOptions(args) {
   const configuration = configurationIndex >= 0 ? args[configurationIndex + 1] : 'Debug';
   const suites = args.flatMap((arg, index) => (arg === '--suite' ? [args[index + 1]] : []));
 
-  // Go has no Debug or Release build, so --configuration would mean nothing.
+  const allowed = INTEROP_TARGETS.includes(target) ? INTEROP_SUITES : SUITES;
+
+  // Go and Rust have no Debug or Release choice here, so --configuration would mean nothing.
   if (
     !TARGETS.includes(target) ||
-    (target === 'go' && configurationIndex >= 0) ||
+    ((target === 'go' || target === 'rust' || target === 'interop-rust') && configurationIndex >= 0) ||
     (filterIndex >= 0 && (testNamePattern === undefined || testNamePattern === '')) ||
     !JOURNAL_CONFIGURATIONS.includes(configuration) ||
-    suites.some((suite) => !SUITES.includes(suite))
+    suites.some((suite) => !allowed.includes(suite))
   ) {
     throw new Error(
-      'Usage: node scripts/test-server-conformance.mjs [--target csharp|go] ' +
-      '[--suite NAME]... [--test-name-pattern PATTERN] [--configuration Debug|Release (csharp only)]',
+      'Usage: node scripts/test-server-conformance.mjs [--target csharp|go|interop|rust|interop-rust] ' +
+      '[--suite NAME]... [--test-name-pattern PATTERN] [--configuration Debug|Release (csharp and interop)]',
     );
   }
 
-  return { target, testNamePattern, configuration, suites: suites.length > 0 ? suites : SUITES };
+  return { target, testNamePattern, configuration, suites: suites.length > 0 ? suites : allowed };
 }
 
 /**
@@ -126,7 +135,7 @@ async function requireExecutedTests(reportPath, testNamePattern) {
   );
 }
 
-async function buildCsharp(options, temporaryDirectory, executableSuffix) {
+async function buildCsharp(options, temporaryDirectory, executableSuffix, withOrdinary = true) {
   const ordinaryDirectory = join(temporaryDirectory, 'csharp-ordinary');
   const conformanceDirectory = join(temporaryDirectory, 'csharp-conformance');
   const hostProject = join(
@@ -136,16 +145,18 @@ async function buildCsharp(options, temporaryDirectory, executableSuffix) {
 
   announceConfigurations(options.configuration);
 
-  await run('dotnet', [
-    'build',
-    hostProject,
-    '--configuration',
-    ORDINARY_CONFIGURATION,
-    '--output',
-    ordinaryDirectory,
-  ], {
-    cwd: repositoryRoot,
-  });
+  if (withOrdinary) {
+    await run('dotnet', [
+      'build',
+      hostProject,
+      '--configuration',
+      ORDINARY_CONFIGURATION,
+      '--output',
+      ordinaryDirectory,
+    ], {
+      cwd: repositoryRoot,
+    });
+  }
   await run('dotnet', [
     'build',
     hostProject,
@@ -189,17 +200,85 @@ async function buildGo(temporaryDirectory, executableSuffix) {
   return { ordinary, conformance };
 }
 
+function announceRust() {
+  console.log('Conformance binaries — rust: release build, and one with --features conformance.');
+}
+
+/**
+ * Both builds share one target directory, so the second only relinks. Each
+ * binary is copied out at once: the next build writes the same path.
+ */
+async function buildRust(temporaryDirectory, executableSuffix) {
+  const workspace = join(repositoryRoot, 'packages/server/rust');
+  const built = join(workspace, 'target/release', `blok-server${executableSuffix}`);
+  const binaries = {
+    ordinary: join(temporaryDirectory, 'rust-ordinary', `blok-server${executableSuffix}`),
+    conformance: join(temporaryDirectory, 'rust-conformance', `blok-server${executableSuffix}`),
+  };
+
+  announceRust();
+
+  for (const [kind, features] of [['ordinary', []], ['conformance', ['--features', 'conformance']]]) {
+    await run('cargo', ['build', '--release', '--locked', '-p', 'blok-server', ...features], { cwd: workspace });
+    await mkdir(dirname(binaries[kind]), { recursive: true });
+    await copyFile(built, binaries[kind]);
+  }
+
+  return binaries;
+}
+
 function announceSuites(options) {
-  console.log(`Conformance suites: ${options.suites === SUITES ? 'all' : options.suites.join(', ')}.`);
+  const all = options.suites === SUITES || options.suites === INTEROP_SUITES;
+  console.log(`Conformance suites: ${all ? 'all' : options.suites.join(', ')}.`);
 }
 
 function announce(options) {
   announceSuites(options);
-  if (options.target === 'go') {
+  if (options.target === 'rust') {
+    announceRust();
+    return;
+  }
+  if (options.target === 'interop-rust') {
     announceGo();
-  } else {
+    announceRust();
+    return;
+  }
+  if (options.target !== 'csharp') {
+    announceGo();
+  }
+  if (options.target !== 'go') {
     announceConfigurations(options.configuration);
   }
+}
+
+/** Both conformance builds, each under its own name; no suite here needs an ordinary host. */
+async function buildBoth(options, temporaryDirectory, executableSuffix) {
+  const csharp = await buildCsharp(options, temporaryDirectory, executableSuffix, false);
+  const go = await buildGo(temporaryDirectory, executableSuffix);
+
+  return {
+    ordinary: csharp.ordinary,
+    conformance: csharp.conformance,
+    interop: {
+      BLOK_CONFORMANCE_CSHARP_SERVER: csharp.conformance,
+      BLOK_CONFORMANCE_GO_SERVER: go.conformance,
+    },
+  };
+}
+
+/** Go and Rust conformance builds, for the Go and Rust journal handover. */
+async function buildGoAndRust(temporaryDirectory, executableSuffix) {
+  const go = await buildGo(temporaryDirectory, executableSuffix);
+  const rust = await buildRust(temporaryDirectory, executableSuffix);
+
+  return {
+    ordinary: go.ordinary,
+    conformance: go.conformance,
+    interop: {
+      BLOK_CONFORMANCE_GO_SERVER: go.conformance,
+      BLOK_CONFORMANCE_RUST_SERVER: rust.conformance,
+    },
+  };
 }
 
 async function main() {
@@ -209,9 +288,14 @@ async function main() {
   const executableSuffix = process.platform === 'win32' ? '.exe' : '';
 
   try {
-    const binaries = options.target === 'go'
-      ? await buildGo(temporaryDirectory, executableSuffix)
-      : await buildCsharp(options, temporaryDirectory, executableSuffix);
+    const build = {
+      csharp: buildCsharp,
+      go: (_options, ...rest) => buildGo(...rest),
+      interop: buildBoth,
+      rust: (_options, ...rest) => buildRust(...rest),
+      'interop-rust': (_options, ...rest) => buildGoAndRust(...rest),
+    };
+    const binaries = await build[options.target](options, temporaryDirectory, executableSuffix);
 
     const vitestArgs = [
       join(repositoryRoot, 'node_modules/vitest/vitest.mjs'),
@@ -238,6 +322,7 @@ async function main() {
         BLOK_CONFORMANCE_ORDINARY_SERVER: binaries.ordinary,
         BLOK_CONFORMANCE_SERVER: binaries.conformance,
         BLOK_CONFORMANCE_TARGET: options.target,
+        ...binaries.interop,
       },
     });
 

@@ -1,6 +1,6 @@
 import type { I18n } from '../../../types';
 import type { DatabaseViewRenderer } from './database-view-renderer';
-import { fileChipIcon, pageIconElement, showsPageIcon } from './page-icon';
+import { fileChipIcon, rowPageGlyph, showsPageIcon } from './page-icon';
 import type { DatabaseRow, DatabaseViewConfig, PropertyDefinition } from './types';
 import { renderCellValue } from './cells';
 import { rowCellContext } from './reminders';
@@ -20,7 +20,7 @@ import {
   visibleDays,
 } from './calendar-dates';
 import type { PlacedEvent } from './calendar-dates';
-import { resolveCalendarRange, resolveShowWeekends, resolveViewProperties } from './view-settings';
+import { resolveCalendarRange, resolveShowWeekends, resolveViewProperties, resolveWrapCells } from './view-settings';
 import { isHistoryKey } from './database-keyboard';
 import { syncCommentBadge } from './database-comment-badge';
 import type { CommentBadges } from './database-comment-badge';
@@ -35,8 +35,8 @@ export interface CalendarHandlers {
   openRow: (rowId: string) => void;
   /** Adds a row dated `day` (`YYYY-MM-DD`), and opens it when `open` is set. */
   addRow: (day: string, open?: boolean) => void;
-  /** The row's new date value, as a stored string. */
-  setDate: (rowId: string, value: string) => void;
+  /** The row's new date value, as a stored string. `landedOn` is the day a moved event was dropped on. */
+  setDate: (rowId: string, value: string, landedOn?: string) => void;
   /** Show the range around `anchor`, then focus `focusDay` when given. */
   navigate: (anchor: string, focusDay?: string) => void;
   /** Shift-click: select the event without opening it. Absent when read-only. */
@@ -67,6 +67,10 @@ export interface DatabaseCalendarViewOptions {
   cellContext?: Partial<CellContext>;
   /** A day to focus once drawn: keyboard navigation that crossed into a new range. */
   focusDay?: string;
+  /** The anchor shown before this draw. Days in both months start at their old ink and fade to the new one. */
+  inkFrom?: string;
+  /** The day a move just landed on: its drop tint fades out once. */
+  dropDay?: string;
   commentBadges?: CommentBadges;
   /** The host's "Manage in Calendar" (`config.calendar`), a toolbar button. Read-only keeps it. */
   manageInCalendar?: { label: string; onClick: () => void };
@@ -113,8 +117,18 @@ export class DatabaseCalendarView implements DatabaseViewRenderer {
   private shownDays: string[] = [];
   private columns = 7;
 
+  /** Each day the last month drew, and whether it was inside that month. */
+  private readonly inkBefore = new Map<string, boolean>();
+
   constructor(options: DatabaseCalendarViewOptions) {
     this.options = options;
+    const from = options.inkFrom;
+
+    if (from !== undefined && this.range === 'month') {
+      for (const dayIso of calendarWeeks({ anchor: from, range: 'month', weekStart: options.weekStart }).flat()) {
+        this.inkBefore.set(dayIso, dayIso.startsWith(from.slice(0, 7)));
+      }
+    }
   }
 
   get interacting(): boolean {
@@ -141,6 +155,8 @@ export class DatabaseCalendarView implements DatabaseViewRenderer {
     root.setAttribute('role', 'region');
     root.setAttribute('aria-label', this.t('tools.database.calendarLabel'));
     root.style.setProperty('--blok-database-calendar-event-lines', String(this.visibleProperties().length));
+    // notion-motion.md Round 25 §5: "Wrap page titles" makes every card two lines tall.
+    root.toggleAttribute('data-wrap-titles', resolveWrapCells(this.options.view));
     this.root = root;
 
     root.appendChild(this.createToolbar());
@@ -160,6 +176,23 @@ export class DatabaseCalendarView implements DatabaseViewRenderer {
     root.addEventListener('dblclick', this.onDoubleClick);
     root.addEventListener('keydown', this.onKeyDown);
     root.addEventListener('pointerdown', this.onPointerDown);
+
+    if (root.querySelector('[data-ink-from]') !== null) {
+      // The tool attaches the view after createView returns. Reading the style
+      // there commits the old ink, so dropping the stamp runs the transition.
+      queueMicrotask(() => {
+        const cells = [...root.querySelectorAll<HTMLElement>('[data-ink-from]')];
+
+        cells.forEach((cell) => {
+          const number = cell.querySelector('[data-blok-database-calendar-day-number]');
+
+          if (number !== null && root.isConnected) {
+            getComputedStyle(number).getPropertyValue('color');
+          }
+        });
+        cells.forEach((cell) => cell.removeAttribute('data-ink-from'));
+      });
+    }
 
     if (this.options.focusDay !== undefined) {
       const focusDay = this.options.focusDay;
@@ -258,6 +291,7 @@ export class DatabaseCalendarView implements DatabaseViewRenderer {
           rows,
           titlePropertyId: this.options.titlePropertyId,
           hint: this.t('tools.database.calendarNoDateHint'),
+          rowHasBody: (rowId) => this.options.cellContext?.rowHasBody?.(rowId) === true,
           // Unmeasured in Notion: a click dates the page today.
           pick: (rowId) => handlers.setDate(rowId, this.options.today),
           open: (rowId) => handlers.openRow(rowId),
@@ -348,6 +382,23 @@ export class DatabaseCalendarView implements DatabaseViewRenderer {
       if (this.range === 'month' && !dayIso.startsWith(month)) {
         cell.setAttribute('data-outside', '');
       }
+      if (dayIso === this.options.dropDay) {
+        cell.setAttribute('data-drop-leaving', '');
+        // The landed event's halo animation ends inside this cell too.
+        const settle = (event: Event): void => {
+          if (event.target === cell) {
+            cell.removeAttribute('data-drop-leaving');
+            cell.removeEventListener('animationend', settle);
+          }
+        };
+
+        cell.addEventListener('animationend', settle);
+      }
+      const before = this.inkBefore.get(dayIso);
+
+      if (before !== undefined && before !== dayIso.startsWith(month) && dayIso !== this.options.today) {
+        cell.setAttribute('data-ink-from', before ? 'inside' : 'outside');
+      }
       if (isWeekend(dayIso)) {
         cell.setAttribute('data-weekend', '');
       }
@@ -421,7 +472,9 @@ export class DatabaseCalendarView implements DatabaseViewRenderer {
     if (titleEl.textContent === '') {
       titleEl.setAttribute('data-placeholder', this.t('tools.database.cardTitlePlaceholder'));
     }
-    const icon = row !== undefined && showsPageIcon(this.options.view) ? pageIconElement(row) : null;
+    const icon = row !== undefined && showsPageIcon(this.options.view)
+      ? rowPageGlyph(row, this.options.cellContext?.rowHasBody?.(row.id) === true, false)
+      : null;
 
     if (icon !== null) {
       el.appendChild(icon);
@@ -960,7 +1013,9 @@ export class DatabaseCalendarView implements DatabaseViewRenderer {
       ? moveDateValue(value, addDays(span.start, daysBetween(drag.grabDay, drag.overDay)))
       : resizeDateValue(value, drag.mode, drag.overDay);
 
-    if (next !== null && next !== value) {
+    if (next !== null && next !== value && drag.mode === 'move') {
+      this.options.handlers?.setDate(drag.rowId, next, drag.overDay);
+    } else if (next !== null && next !== value) {
       this.options.handlers?.setDate(drag.rowId, next);
     }
   };

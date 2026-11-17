@@ -455,7 +455,7 @@ describe('pass 2: research/33 §4 colour dump', () => {
 
   it('pressed: header cells and toolbar icons darken to Notion\'s pressed fill', () => {
     expect(themed('--blok-database-pressed-bg')).toEqual({ light: 'rgba(33, 27, 23, 0.102)', dark: 'rgba(255, 255, 255, 0.11)', attr: 'rgba(255, 255, 255, 0.11)' });
-    expect(ruleBody('[data-blok-database-table-column-header]:active')).toContain('background-image: linear-gradient(var(--blok-database-pressed-bg), var(--blok-database-pressed-bg))');
+    expect(ruleBody('[data-blok-database-table-column-header]:active')).toContain('--blok-database-header-tint: var(--blok-database-pressed-bg)');
     expect(ruleBody('[data-blok-database-view-toolbar] > button:active')).toContain('background-color: var(--blok-database-pressed-bg)');
   });
 
@@ -482,7 +482,7 @@ describe('pass 2: research/33 §4 colour dump', () => {
   it('card layout: the picked tile has an ink ring, not blue, and an ink label', () => {
     const picked = ruleBody('[data-blok-database-card-layout-tile][aria-pressed="true"] [data-blok-database-card-layout-drawing]');
 
-    expect(picked).toContain('box-shadow: 0 0 0 1px var(--blok-database-ink)');
+    expect(picked).toContain('outline: 2px solid var(--blok-database-ink)');
     expect(picked).not.toMatch(/39, 131, 222|35, 131, 226|focus-ring/);
     expect(ruleBody('[data-blok-database-card-layout-tile][aria-pressed="true"]')).toContain('color: var(--blok-database-ink)');
   });
@@ -543,8 +543,7 @@ describe('round 13: research/35 §1.1-§1.3, §1.8', () => {
     both('--blok-database-column-yellow-card-hover-bg', 'rgb(63, 58, 42)');
   });
 
-  it('board: a dragged or picked card keeps its column\'s hover fill', () => {
-    expect(ruleBody('[data-blok-database-card][data-blok-database-drag-source]')).toContain('background-color: var(--_blok-group-card-hover, var(--blok-database-card-bg-hover))');
+  it('board: a picked card keeps its column\'s hover fill', () => {
     expect(ruleBody('[data-blok-database-card-active]')).toContain('background-color: var(--_blok-group-card-hover, var(--blok-database-card-bg-hover))');
   });
 
@@ -600,7 +599,27 @@ describe('round 13: research/35 §1.1-§1.3, §1.8', () => {
 
     expect(ruleBody(ROW)).toContain('height: 28px');
     expect(ruleBody(ROW)).toContain('padding-block: 0');
-    expect(ruleBody("[data-blok-popover][data-blok-popover-custom-class~='blok-database-menu'] [data-blok-popover-item]")).toBe('');
+    expect(ruleBody("[data-blok-popover][data-blok-popover-custom-class~='blok-database-menu'] [data-blok-popover-item]")).not.toMatch(/height|padding/);
+  });
+
+  // notion-motion.md Round 27 §3: "+ New template" reads in the header's gray, its plus in the icon gray 142,139,134.
+  it('"New template" is gray: secondary text, gray plus', () => {
+    const ADD = "[data-blok-database-template-menu] [data-blok-item-name='template-add']";
+
+    expect(ruleBody(ADD)).toContain('color: var(--blok-database-ink-secondary)');
+    expect(ruleBody(`${ADD} [data-blok-popover-item-icon]`)).toContain('color: var(--blok-database-table-header-icon)');
+  });
+
+  // r27-newchev-anat.raw: the plus is 20 at +8, the text 14px 400 (line 16.8) at +36, and the rules sit 12 in.
+  it('"New template" has the menu row geometry and the rules sit 12 in', () => {
+    const ADD = "[data-blok-database-template-menu] [data-blok-item-name='template-add']";
+
+    expect(ruleBody(`${ADD} [data-blok-popover-item-icon]`)).toContain('width: 20px');
+    expect(ruleBody(`${ADD} [data-blok-popover-item-icon]`)).toContain('margin-inline-end: var(--blok-space-2)');
+    expect(ruleBody(`${ADD} [data-blok-popover-item-title]`)).toContain('font-size: 14px');
+    expect(ruleBody(`${ADD} [data-blok-popover-item-title]`)).toContain('font-weight: 400');
+    expect(ruleBody(`${ADD} [data-blok-popover-item-title]`)).toContain('line-height: 16.8px');
+    expect(ruleBody('[data-blok-database-template-menu] > [data-blok-popover-container] [data-blok-popover-item-separator]')).toContain('padding-inline: var(--blok-space-2)');
   });
 });
 

@@ -1,6 +1,6 @@
 import type { SanitizerConfig } from '../../../types';
 import type { MarkSnapshot, MarkSpec, MarkValue } from '../../../types/api';
-import { splitRangeByEditingHost } from '../selection/cross-block-range';
+import { applyDirectedSpanningSelection, splitRangeByEditingHost } from '../selection/cross-block-range';
 import {
   collectFormattingAncestors,
   extendRangeToTrailingWhitespace,
@@ -757,8 +757,9 @@ const hostSlicesOf = (range: Range): Range[] | null => {
  * slice's own bookkeeping put it, and the user's selection would vanish on a
  * cross-block Cmd+B.
  * @param slices - the per-host slices that were just operated on
+ * @param backward - the selection's anchor was at the range end
  */
-const reselectAcrossHosts = (slices: Range[]): void => {
+const reselectAcrossHosts = (slices: Range[], backward: boolean): void => {
   const selection = window.getSelection();
   const first = slices[0];
   const last = slices[slices.length - 1];
@@ -778,6 +779,41 @@ const reselectAcrossHosts = (slices: Range[]): void => {
 
   selection.removeAllRanges();
   selection.addRange(spanning);
+
+  if (backward) {
+    applyDirectedSpanningSelection(
+      { node: spanning.endContainer, offset: spanning.endOffset },
+      { node: spanning.startContainer, offset: spanning.startOffset }
+    );
+  }
+};
+
+/**
+ * Whether the selection's anchor sits at the end of `range`. Read before the
+ * mark surgery moves the boundaries.
+ * @param range - the range a mark operation acts on
+ */
+const isSelectionBackwardOver = (range: Range): boolean => {
+  const selection = window.getSelection();
+
+  return selection !== null && !selection.isCollapsed &&
+    selection.anchorNode === range.endContainer && selection.anchorOffset === range.endOffset;
+};
+
+/**
+ * Turn the live selection backward again: the within-host surgery re-selects
+ * its result forward.
+ * @param backward - the selection was backward before the surgery
+ */
+const restoreBackwardWithinHost = (backward: boolean): void => {
+  const selection = window.getSelection();
+
+  if (!backward || selection === null || selection.rangeCount === 0 || selection.isCollapsed) {
+    return;
+  }
+  const range = selection.getRangeAt(0);
+
+  selection.setBaseAndExtent(range.endContainer, range.endOffset, range.startContainer, range.startOffset);
 };
 
 /**
@@ -804,14 +840,19 @@ export const hasMark = <State>(spec: MarkSpec<State>, range: Range): boolean => 
  */
 export const applyMark = <State>(spec: MarkSpec<State>, state: State | undefined, range: Range): HTMLElement[] => {
   const slices = hostSlicesOf(range);
+  const backward = isSelectionBackwardOver(range);
 
   if (slices === null) {
-    return applyMarkWithinHost(spec, state, range);
+    const changed = applyMarkWithinHost(spec, state, range);
+
+    restoreBackwardWithinHost(backward);
+
+    return changed;
   }
 
   const applied = slices.flatMap((slice) => applyMarkWithinHost(spec, state, slice));
 
-  reselectAcrossHosts(slices);
+  reselectAcrossHosts(slices, backward);
 
   return applied;
 };
@@ -823,14 +864,19 @@ export const applyMark = <State>(spec: MarkSpec<State>, state: State | undefined
  */
 export const removeMark = <State>(spec: MarkSpec<State>, range: Range): HTMLElement[] => {
   const slices = hostSlicesOf(range);
+  const backward = isSelectionBackwardOver(range);
 
   if (slices === null) {
-    return removeMarkWithinHost(spec, range);
+    const changed = removeMarkWithinHost(spec, range);
+
+    restoreBackwardWithinHost(backward);
+
+    return changed;
   }
 
   const removed = slices.flatMap((slice) => removeMarkWithinHost(spec, slice));
 
-  reselectAcrossHosts(slices);
+  reselectAcrossHosts(slices, backward);
 
   return removed;
 };

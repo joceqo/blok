@@ -2677,6 +2677,40 @@ describe('createCollabProvider', () => {
       expect(applied.toJSON().map((block) => block.id)).toEqual(['residual']);
     });
 
+    it('a residual answer that lands while an operation is out is not enveloped, so that work is not sent twice', async () => {
+      const outbox = new FakeOutbox(LINEAGE_A);
+      const peer = newPeer();
+      const { harness, socket } = v2Handshake(outbox);
+
+      serverFirstSync(harness, socket, peer);
+      await settle();
+      expect(socket.frameTypes.filter((type) => type === 'syncStep1'), 'the residual round was not asked for').toHaveLength(2);
+
+      // A write made after the residual request, before the server answered it.
+      harness.store.addBlock({ id: 'late', type: 'paragraph', data: { text: 'written during the round' } });
+      const row = outbox.seed(harness.store.encodeStateAsUpdate(peer.getStateVector()));
+
+      harness.provider.drain();
+      await settle();
+      expect(operationFrames(socket)).toHaveLength(1);
+
+      // The server answers the residual request with the state it had before the write.
+      socket.deliver({ type: 'syncStep1', stateVector: peer.getStateVector() });
+      await settle();
+
+      expect(outbox.appended, 'the in-flight write was enveloped again as a residual operation').toEqual([]);
+
+      peer.applyRemoteUpdate(row.bytes, {});
+      socket.deliver({ type: 'acknowledgement', lineage: LINEAGE_A, operationId: row.operationId, serverSequence: '1' });
+      await settle();
+      expect(socket.frameTypes.filter((type) => type === 'syncStep1'), 'the deferred residual round was not asked for again').toHaveLength(3);
+      socket.deliver({ type: 'syncStep1', stateVector: peer.getStateVector() });
+      await settle();
+
+      expect(outbox.appended).toEqual([]);
+      expect(operationFrames(socket)).toHaveLength(1);
+    });
+
     it('envelopes nothing when the server already holds every local struct', async () => {
       const outbox = new FakeOutbox(LINEAGE_A);
       const peer = newPeer();
@@ -2960,6 +2994,115 @@ describe('createCollabProvider', () => {
       }
     });
 
+    describe('after a final rejection', () => {
+      /**
+       * A session whose local document holds one refused block, its rows
+       * quarantined, and the store's session recorded again — what the host
+       * does on the next `connected`.
+       */
+      const refuseOneBlock = async (): Promise<{ outbox: FakeOutbox; peer: DocumentStore; harness: Harness; socket: MockSocket }> => {
+        const outbox = new FakeOutbox(LINEAGE_A);
+        const peer = newPeer();
+
+        peer.addBlock({ id: 'room', type: 'paragraph', data: { text: 'in the room' } });
+
+        const { harness, socket } = v2Handshake(outbox);
+
+        // The host's write tap, as the Collaboration module wires it.
+        harness.store.onUpdate((update) => {
+          void outbox.appendLocal(update).then(() => harness.provider.drain(), () => undefined);
+        });
+        serverFirstSync(harness, socket, peer);
+        await settle();
+        harness.store.addBlock({ id: 'refused', type: 'paragraph', data: { text: 'refused' } });
+        await settle();
+
+        const [operation] = operationFrames(socket);
+
+        socket.deliver({ type: 'rejection', lineage: LINEAGE_A, operationId: operation.operationId, code: 'read-only' });
+        await settle();
+
+        return { outbox, peer, harness, socket };
+      };
+
+      /** Drops the connection and lets the next one open. */
+      const reconnectV2 = (harness: Harness, socket: MockSocket): MockSocket => {
+        socket.serverClose(1006);
+        advanceToReconnect(harness);
+
+        const next = harness.socket();
+
+        next.open(PROTOCOL_V2);
+        next.deliver(controlFrame());
+
+        return next;
+      };
+
+      it('never sends the refused write again on the next connection', async () => {
+        const { outbox, peer, harness, socket } = await refuseOneBlock();
+        const next = reconnectV2(harness, socket);
+        const opening = next.frames[0];
+
+        expect(opening.type === 'syncStep1' && clientsIn(opening.stateVector), 'the next connection did not ask for the whole room').toEqual([]);
+
+        next.deliver({ type: 'syncStep2', update: peer.encodeStateAsUpdate() });
+        outbox.lineage = LINEAGE_A;
+        next.deliver({ type: 'syncStep1', stateVector: peer.getStateVector() });
+        await settle();
+        next.deliver({ type: 'syncStep1', stateVector: peer.getStateVector() });
+        await settle();
+
+        expect(outbox.appended.slice(1), 'the residual round put the refused write back in the outbox').toEqual([]);
+        expect(operationFrames(next), 'the refused write went out again').toEqual([]);
+        expect(harness.store.toJSON().map((block) => block.id), 'the document still holds the refused write').toEqual(['room']);
+      });
+
+      it('does not send the refused write in a residual round on the same connection', async () => {
+        const { outbox, peer, socket } = await refuseOneBlock();
+
+        outbox.lineage = LINEAGE_A;
+        socket.deliver({ type: 'syncStep1', stateVector: peer.getStateVector() });
+        await settle();
+        socket.deliver({ type: 'syncStep1', stateVector: peer.getStateVector() });
+        await settle();
+
+        expect(outbox.appended.slice(1), 'the residual round put the refused write back in the outbox').toEqual([]);
+        expect(operationFrames(socket)).toHaveLength(1);
+      });
+
+      it('still sends a row that was not refused once the room is reloaded', async () => {
+        const { outbox, peer, harness, socket } = await refuseOneBlock();
+
+        // Another tab's edit, journalled after the quarantine.
+        const kept = outbox.seed(new Uint8Array([7]));
+        const next = reconnectV2(harness, socket);
+
+        next.deliver({ type: 'syncStep2', update: peer.encodeStateAsUpdate() });
+        await settle();
+
+        expect(operationIds(next), 'a row nobody refused was not sent after the reload').toEqual([kept.operationId]);
+      });
+
+      it('sends an edit made on the reloaded document', async () => {
+        const { outbox, peer, harness, socket } = await refuseOneBlock();
+        const next = reconnectV2(harness, socket);
+
+        next.deliver({ type: 'syncStep2', update: peer.encodeStateAsUpdate() });
+        outbox.lineage = LINEAGE_A;
+        await settle();
+        harness.store.addBlock({ id: 'later', type: 'paragraph', data: { text: 'later' } });
+        await settle();
+
+        const [frame] = operationFrames(next);
+        const applied = newPeer();
+
+        applied.applyRemoteUpdate(peer.encodeStateAsUpdate(), {});
+        applied.applyRemoteUpdate(frame.update, {});
+
+        expect(applied.toJSON().map((block) => block.id), 'the new edit did not reach the room whole').toEqual(['room', 'later']);
+      });
+    });
+
     it('transient server close leaves every row pending', async () => {
       const outbox = new FakeOutbox(LINEAGE_A);
       const peer = newPeer();
@@ -3122,6 +3265,99 @@ describe('createCollabProvider', () => {
         socket.frameTypes.filter((type) => type === 'syncStep1'),
         'a second residual round went out, and a conformant server answers that with another SyncStep1 — a ping-pong with no end'
       ).toHaveLength(2);
+    });
+
+    /**
+     * Q24: what a reload sends. The residual round diffs against the server's
+     * state vector, and a state vector carries no deletions, so yjs writes the
+     * whole delete set. The client cannot tell that from a delete the server
+     * lacks, so it sends it, and the server must not journal it.
+     */
+    describe('a reload of a document the server already holds', () => {
+      /** A server copy that has seen a delete, so its delete set is not empty. */
+      const serverWithHistory = (): DocumentStore => {
+        const peer = newPeer();
+
+        peer.addBlock({ id: 'kept', type: 'paragraph', data: { text: 'kept' } });
+        peer.addBlock({ id: 'gone', type: 'paragraph', data: { text: 'gone' } });
+        peer.removeBlock('gone');
+
+        return peer;
+      };
+
+      /** The whole v2 boot: first sync, then the residual round the empty outbox asks for. */
+      const reload = async (harness: Harness, socket: MockSocket, peer: DocumentStore): Promise<void> => {
+        serverFirstSync(harness, socket, peer);
+        await settle();
+        socket.deliver({ type: 'syncStep1', stateVector: peer.getStateVector() });
+        await settle();
+      };
+
+      /** The one operation a reload sends: no structs, only a delete set the server already holds. */
+      const expectOnlyHeldDeletes = (socket: MockSocket, peer: DocumentStore): void => {
+        const frames = operationFrames(socket);
+
+        expect(frames).toHaveLength(1);
+
+        const decoded = Y.decodeUpdate(frames[0].update);
+
+        expect(decoded.structs).toEqual([]);
+        expect(decoded.ds.clients.size).toBeGreaterThan(0);
+
+        const before = peer.encodeStateAsUpdate();
+
+        peer.applyRemoteUpdate(frames[0].update, {});
+        expect(peer.encodeStateAsUpdate()).toEqual(before);
+      };
+
+      it('sends one delete-set-only operation when the tab boots with no local copy', async () => {
+        const outbox = new FakeOutbox(LINEAGE_A);
+        const peer = serverWithHistory();
+        const { harness, socket } = v2Handshake(outbox);
+
+        await reload(harness, socket, peer);
+
+        expect(harness.store.toJSON().map((block) => block.id)).toEqual(['kept']);
+        expectOnlyHeldDeletes(socket, peer);
+      });
+
+      it('sends one delete-set-only operation when the tab boots from a local copy equal to the server', async () => {
+        const outbox = new FakeOutbox(LINEAGE_A);
+        const peer = serverWithHistory();
+        const harness = createHarness({ outbox });
+
+        harness.store.applyRemoteUpdate(peer.encodeStateAsUpdate(), {});
+
+        const socket = connectAndHandshake(harness, PROTOCOL_V2);
+
+        await reload(harness, socket, peer);
+
+        expectOnlyHeldDeletes(socket, peer);
+      });
+
+      it('still envelopes a local delete the server lacks', async () => {
+        const outbox = new FakeOutbox(LINEAGE_A);
+        const peer = newPeer();
+
+        peer.addBlock({ id: 'kept', type: 'paragraph', data: { text: 'kept' } });
+        peer.addBlock({ id: 'gone', type: 'paragraph', data: { text: 'gone' } });
+
+        const harness = createHarness({ outbox });
+
+        harness.store.applyRemoteUpdate(peer.encodeStateAsUpdate(), {});
+        // Made offline under an earlier v1 session, so no outbox row covers it.
+        harness.store.removeBlock('gone');
+
+        const socket = connectAndHandshake(harness, PROTOCOL_V2);
+
+        await reload(harness, socket, peer);
+
+        const frames = operationFrames(socket);
+
+        expect(frames, 'a delete the server lacks never went up').toHaveLength(1);
+        peer.applyRemoteUpdate(frames[0].update, {});
+        expect(peer.toJSON().map((block) => block.id)).toEqual(['kept']);
+      });
     });
 
     /**

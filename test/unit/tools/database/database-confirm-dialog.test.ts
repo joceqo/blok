@@ -1,3 +1,4 @@
+import { within } from '@testing-library/dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import { openDatabaseChoice, openDatabaseConfirm } from '../../../../src/tools/database/database-confirm-dialog';
@@ -21,6 +22,36 @@ describe('openDatabaseConfirm', () => {
   afterEach(() => {
     document.body.innerHTML = '';
     vi.restoreAllMocks();
+  });
+
+  // notion-motion.md Round 14: the close is the open in reverse, 200ms; nothing stays in the DOM after it.
+  // The answer comes as the close starts, with focus already back, so what the caller does next is not undone
+  // when the fade ends (a redraw would close a menu opened in those 200ms).
+  it('answers as its close starts, and leaves once the close has played', async () => {
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+    const opener = document.createElement('button');
+
+    document.body.appendChild(opener);
+    opener.focus();
+    const answered = vi.fn();
+    void open().then(answered);
+    const panel = dialog();
+    const backdrop = document.querySelector('[data-blok-database-confirm]');
+    const probe = document.createElement('div');
+
+    probe.style.animationName = 'blok-database-confirm-out';
+    vi.spyOn(window, 'getComputedStyle').mockReturnValue(probe.style);
+    action('cancel')?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(answered).toHaveBeenCalledWith(false);
+    expect(opener).toHaveFocus();
+    expect(backdrop?.isConnected).toBe(true);
+    expect(backdrop?.getAttribute('data-blok-closing')).toBe('true');
+    expect(within(document.body).queryByRole('alertdialog')).toBeNull();
+    panel?.dispatchEvent(new Event('animationend', { bubbles: true }));
+    expect(backdrop?.isConnected).toBe(false);
   });
 
   it('shows the question with the confirm button above the cancel button', () => {

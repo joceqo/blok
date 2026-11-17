@@ -1,6 +1,6 @@
 import { nanoid } from 'nanoid';
 
-import { IconChevronRight, IconMenu, IconPlus } from '../../../components/icons';
+import { IconCheck, IconChevronRight, IconMenu, IconPlus } from '../../../components/icons';
 import type { I18n } from '../../../../types';
 import { DatabaseModel } from '../database-model';
 import { orderedStatusOptions, statusGroupOf, statusGroupsOf } from '../property-values';
@@ -9,6 +9,8 @@ import type { PropertyDefinition, SelectOption } from '../types';
 import { createOptionPill } from './display';
 import { pickOptionColor, shownStatusOption } from './option-colors';
 import { OptionDrag, buildDeletePrompt, buildOptionPanel, placeDroppedOption } from './option-editing';
+import { CellPopover } from './cell-popover';
+import { openDatabaseConfirm } from '../database-confirm-dialog';
 
 export interface OptionsEditorOptions {
   /** Shown labels: pass the localized property. */
@@ -18,6 +20,27 @@ export interface OptionsEditorOptions {
   onChange: (options: SelectOption[]) => void;
   /** Status only: "Set as default" picked another option (research/30 §10f). */
   onSetDefault?: (optionId: string) => void;
+  /** Keeps the menu around the list open under a status option's menu, until the release. */
+  hold?: () => () => void;
+  /** The menu around the list calls `close` when it closes, so a status option's menu goes with it. */
+  onHostClose?: (close: () => void) => void;
+}
+
+/** notion-motion.md Round 56 §5, Round 57 §2: an option row's menu is 220 wide, like the select editor's. */
+const OPTION_MENU_CLASS = 'blok-database-option-menu';
+const ROW_OPTION_MENU_CLASS = 'blok-database-row-option-menu';
+const GROUP_MENU_CLASS = 'blok-database-option-group-menu';
+const OPTION_MENU_WIDTH = 220;
+/** notion-motion.md Round 57 §4: the Group › menu is 250x94. */
+const GROUP_MENU_WIDTH = 250;
+
+interface Flyout {
+  popover: CellPopover;
+  root: HTMLElement;
+  optionId: string;
+  release: () => void;
+  groupMenu: { popover: CellPopover; release: () => void; row: HTMLElement } | null;
+  deletePrompt: boolean;
 }
 
 const byPosition = (options: SelectOption[]): SelectOption[] =>
@@ -43,11 +66,11 @@ const button = (attribute: string, icon: string, label: string): HTMLButtonEleme
 class OptionsEditor {
   readonly root = document.createElement('div');
   private options: SelectOption[];
-  private panelOptionId: string | null = null;
   /** The group whose add field is open; '' for a select. */
   private adding: string | null = null;
   private readonly drag: OptionDrag;
   private defaultId: string | undefined;
+  private flyout: Flyout | null = null;
 
   constructor(private readonly opts: OptionsEditorOptions) {
     this.options = this.sorted(opts.property.config?.options ?? []);
@@ -63,6 +86,7 @@ class OptionsEditor {
         this.set(this.options.map((option) => (option.id === id ? placed : option)));
       }
     }, () => this.render());
+    opts.onHostClose?.(() => this.closeFlyout());
     this.render();
   }
 
@@ -88,7 +112,7 @@ class OptionsEditor {
   }
 
   /**
-   * Escape steps back from a panel or the add field. Window capture runs
+   * Escape steps back from the add field. Window capture runs
    * before the popover registry's document-capture Escape, which would close
    * the whole menu. On only while there is something to step back from.
    */
@@ -103,25 +127,19 @@ class OptionsEditor {
     }
     event.preventDefault();
     event.stopPropagation();
-    this.panelOptionId = null;
     this.adding = null;
     this.render();
   };
 
   private syncEscape(): void {
     window.removeEventListener('keydown', this.handleKey, true);
-    if (this.panelOptionId !== null || this.adding !== null) {
+    if (this.adding !== null) {
       window.addEventListener('keydown', this.handleKey, true);
     }
   }
 
   private render(): void {
     this.syncEscape();
-    if (this.panelOptionId !== null) {
-      this.renderPanel(this.panelOptionId);
-
-      return;
-    }
     const sections = this.isStatus
       ? statusGroupsOf(this.opts.property).map((group) => ({ id: group.id, label: group.name }))
       : [{ id: '', label: this.t('tools.database.editOptions') }];
@@ -132,9 +150,12 @@ class OptionsEditor {
       if (this.adding === section.id) {
         rows.push(this.addField(section.id));
       }
-      this.options
-        .filter((option) => !this.isStatus || statusGroupOf(this.withOptions(this.options), option.id)?.id === section.id)
-        .forEach((option) => rows.push(this.row(option)));
+      const members = this.options.filter((option) => !this.isStatus || statusGroupOf(this.withOptions(this.options), option.id)?.id === section.id);
+
+      members.forEach((option) => rows.push(this.row(option)));
+      if (this.isStatus && members.length === 0 && this.adding !== section.id) {
+        rows.push(this.addRow(section.id));
+      }
     }
     this.root.replaceChildren(...rows);
     this.root.querySelector<HTMLInputElement>('[data-blok-database-options-add-input]')?.focus();
@@ -160,6 +181,23 @@ class OptionsEditor {
     return heading;
   }
 
+  /** notion-motion.md Round 58 §7: an empty status group offers "+ Add an option"; a click opens its add field. */
+  private addRow(groupId: string): HTMLElement {
+    const row = document.createElement('button');
+
+    row.type = 'button';
+    row.setAttribute('data-blok-database-options-add-row', '');
+    row.setAttribute('data-group-id', groupId);
+    row.innerHTML = IconPlus;
+    row.append(this.t('tools.database.addOption'));
+    row.addEventListener('click', () => {
+      this.adding = groupId;
+      this.render();
+    });
+
+    return row;
+  }
+
   private addField(groupId: string): HTMLElement {
     const input = document.createElement('input');
 
@@ -167,7 +205,7 @@ class OptionsEditor {
     input.setAttribute('data-blok-database-options-add-input', '');
     input.setAttribute('data-blok-database-option-name', '');
     input.setAttribute('aria-label', this.t('tools.database.addOption'));
-    input.placeholder = this.t('tools.database.addOption');
+    input.placeholder = this.t('tools.database.addOptionPlaceholder');
     input.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' || event.isComposing) {
         return;
@@ -208,8 +246,13 @@ class OptionsEditor {
     handle.addEventListener('pointerdown', (event) => {
       if (this.isStatus || this.opts.property.optionSort === undefined) this.drag.start(event, option.id);
     });
+    handle.addEventListener('click', (event) => event.stopPropagation());
     label.setAttribute('data-blok-database-select-option-label', '');
-    label.appendChild(createOptionPill(this.isStatus ? shownStatusOption(option) : option));
+    const pill = createOptionPill(this.isStatus ? shownStatusOption(option) : option);
+
+    // The status pill rules in database.css draw its dot.
+    if (this.isStatus) pill.setAttribute('data-status-group', statusGroupOf(this.withOptions(this.options), option.id)?.kind ?? 'todo');
+    label.appendChild(pill);
     // research/30 §10f: the Edit property list reads "Not started DEFAULT". Its look was not measured.
     if (this.isStatus && option.id === this.defaultId) {
       const badge = document.createElement('span');
@@ -218,53 +261,17 @@ class OptionsEditor {
       badge.textContent = this.t('tools.database.templateDefault');
       label.append(' ', badge);
     }
-    menu.addEventListener('click', () => {
-      this.panelOptionId = option.id;
-      this.render();
+    // Rows are rebuilt on every edit, so the open state is set here too.
+    menu.setAttribute('aria-expanded', String(this.flyout?.optionId === option.id));
+    menu.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.openFlyout(option.id, row);
     });
+    // notion-motion.md Round 56 §5 (status), Round 57 §2 (select): a click on the row opens its menu.
+    row.addEventListener('click', () => this.openFlyout(option.id, row));
     row.append(handle, label, menu);
 
     return row;
-  }
-
-  private renderPanel(optionId: string): void {
-    const option = this.options.find((o) => o.id === optionId);
-
-    if (option === undefined) {
-      this.panelOptionId = null;
-      this.render();
-
-      return;
-    }
-    const update = (changes: Partial<Pick<SelectOption, 'label' | 'color'>>): void =>
-      this.set(this.options.map((o) => (o.id === optionId ? { ...o, ...changes } : o)));
-    const { panel, name } = buildOptionPanel(option, {
-      t: (key) => this.t(key),
-      onRename: (label) => update({ label }),
-      onRecolor: (color) => {
-        update({ color });
-        this.render();
-      },
-      status: this.isStatus,
-      ...(this.isStatus && this.opts.onSetDefault !== undefined ? { onSetDefault: () => this.setDefault(optionId) } : {}),
-      onDelete: () => {
-        const { prompt, confirm } = buildDeletePrompt({
-          t: (key) => this.t(key),
-          onConfirm: () => {
-            this.panelOptionId = null;
-            this.set(this.options.filter((o) => o.id !== optionId));
-            this.render();
-          },
-          onCancel: () => this.render(),
-        });
-
-        this.root.replaceChildren(prompt);
-        confirm.focus();
-      },
-    });
-
-    this.root.replaceChildren(panel);
-    name.focus();
   }
 
   /** The current default keeps the row (shot 23); picking it again changes nothing. */
@@ -272,8 +279,228 @@ class OptionsEditor {
     if (optionId === this.defaultId) return;
     this.defaultId = optionId;
     this.opts.onSetDefault?.(optionId);
-    this.panelOptionId = null;
+    this.closeFlyout();
     this.render();
+  }
+
+  /**
+   * notion-motion.md Round 57 §4: Notion asks first. Escape closes only the dialog;
+   * Continue closes the option menu. The hold keeps the menu's own Escape and outside
+   * presses off it while the dialog is up.
+   */
+  private confirmDefault(optionId: string): void {
+    const flyout = this.flyout;
+    const option = this.options.find((o) => o.id === optionId);
+
+    if (flyout === null || option === undefined || optionId === this.defaultId) return;
+    const release = flyout.popover.hold();
+    const params = { name: option.label };
+    const host = flyout.root.closest<HTMLElement>('[data-blok-popover]');
+
+    void openDatabaseConfirm({
+      title: this.opts.i18n.t('tools.database.statusDefaultConfirm', params),
+      description: this.opts.i18n.t('tools.database.statusDefaultConfirmDescription', params),
+      // notion-motion.md Round 58 §2: the phrase is bold and Continue a red fill.
+      emphasis: this.t('tools.database.statusDefaultConfirmEmphasis'),
+      confirmLabel: this.t('tools.database.buttonConfirmContinue'),
+      cancelLabel: this.t('tools.database.layoutCancel'),
+      destructive: true,
+      filled: true,
+      focusConfirm: true,
+      roomy: true,
+      directionSource: flyout.root,
+      // Inside the menu: focus on a dialog outside it would close the menus. The top layer keeps it above them.
+      ...(host === null ? {} : { container: host, topLayer: true }),
+    }).then((confirmed) => {
+      release();
+      if (confirmed) {
+        this.setDefault(optionId);
+      } else if (this.flyout === flyout) {
+        flyout.root.querySelector<HTMLElement>('[data-blok-database-option-name]')?.focus();
+      }
+    });
+  }
+
+  // ─── Option menu (notion-motion.md Round 56 §5, Round 57 §2) ───
+
+  /** Its right edge on the row's right. The hold must start before the menu takes focus. */
+  private openFlyout(optionId: string, row: HTMLElement): void {
+    this.closeFlyout();
+    if (this.adding !== null) {
+      this.adding = null;
+      this.render();
+    }
+    // The redraw above replaces the row.
+    const anchor = row.isConnected ? row : this.root.querySelector<HTMLElement>(`[data-blok-database-select-option="${CSS.escape(optionId)}"]`) ?? row;
+    const release = this.opts.hold?.() ?? ((): void => undefined);
+    const root = document.createElement('div');
+    const popover = new CellPopover({
+      anchor,
+      content: root,
+      panel: true,
+      surfaceClass: `${OPTION_MENU_CLASS} ${ROW_OPTION_MENU_CLASS}`,
+      minWidth: `${OPTION_MENU_WIDTH}px`,
+      gap: 0,
+      alignEnd: true,
+      // An edit redraws the list and drops this row; the list itself stays.
+      positionContext: this.root,
+      onEscape: () => (this.flyout?.deletePrompt === true ? this.renderFlyout() : this.closeFlyout()),
+      onDismiss: () => this.closeFlyout(),
+    });
+
+    this.flyout = { popover, root, optionId, release, groupMenu: null, deletePrompt: false };
+    this.markOpen(optionId, true);
+    popover.show();
+    this.renderFlyout();
+    // notion-motion.md Round 58 §4: the whole name is selected on open only, not on a later redraw.
+    root.querySelector<HTMLInputElement>('input[data-blok-database-option-name]')?.select();
+  }
+
+  /** notion-motion.md Round 58 §4: the row › turns while its menu is open. */
+  private markOpen(optionId: string, open: boolean): void {
+    this.root
+      .querySelector(`[data-blok-database-select-option="${CSS.escape(optionId)}"] [data-blok-database-select-option-menu]`)
+      ?.setAttribute('aria-expanded', String(open));
+  }
+
+  private closeFlyout(): void {
+    const flyout = this.flyout;
+
+    if (flyout === null) return;
+    this.closeGroupMenu();
+    this.flyout = null;
+    this.markOpen(flyout.optionId, false);
+    flyout.popover.close();
+    flyout.release();
+  }
+
+  private renderFlyout(): void {
+    const flyout = this.flyout;
+
+    if (flyout === null) return;
+    flyout.deletePrompt = false;
+    const optionId = flyout.optionId;
+    const option = this.options.find((o) => o.id === optionId);
+
+    if (option === undefined) {
+      this.closeFlyout();
+
+      return;
+    }
+    const update = (changes: Partial<Pick<SelectOption, 'label' | 'color'>>): void => {
+      this.set(this.options.map((o) => (o.id === optionId ? { ...o, ...changes } : o)));
+      this.render();
+    };
+    const { panel, name } = buildOptionPanel(option, {
+      t: (key) => this.t(key),
+      onRename: (label) => update({ label }),
+      onRecolor: (color) => {
+        update({ color });
+        this.renderFlyout();
+      },
+      status: this.isStatus,
+      ...(this.isStatus && this.opts.onSetDefault !== undefined ? { onSetDefault: () => this.confirmDefault(optionId) } : {}),
+      ...(this.isStatus ? {
+        group: {
+          label: statusGroupOf(this.withOptions(this.options), optionId)?.name ?? '',
+          onOpen: (groupRow: HTMLElement) => this.openGroupMenu(groupRow),
+        },
+      } : {}),
+      onDelete: () => {
+        const { prompt, confirm } = buildDeletePrompt({
+          t: (key) => this.t(key),
+          onConfirm: () => {
+            this.closeFlyout();
+            this.set(this.options.filter((o) => o.id !== optionId));
+            this.render();
+          },
+          onCancel: () => this.renderFlyout(),
+        });
+
+        flyout.root.replaceChildren(prompt);
+        flyout.deletePrompt = true;
+        confirm.focus();
+      },
+    });
+
+    flyout.root.replaceChildren(panel);
+    name.focus();
+  }
+
+  /** Group ›: the status groups, the option's own checked (notion-motion.md Round 57 §4). */
+  private openGroupMenu(groupRow: HTMLElement): void {
+    const flyout = this.flyout;
+
+    if (flyout === null) return;
+    this.closeGroupMenu();
+    const release = flyout.popover.hold();
+    const list = document.createElement('div');
+    const current = statusGroupOf(this.withOptions(this.options), flyout.optionId)?.id;
+
+    list.setAttribute('role', 'menu');
+    list.setAttribute('aria-label', this.t('tools.database.groupStatusGroup'));
+    statusGroupsOf(this.opts.property).forEach((group) => {
+      const item = document.createElement('button');
+
+      item.type = 'button';
+      item.setAttribute('role', 'menuitemradio');
+      item.setAttribute('aria-checked', String(group.id === current));
+      item.setAttribute('data-blok-database-option-group-pick', group.id);
+      item.append(group.name);
+      if (group.id === current) {
+        const check = document.createElement('span');
+
+        check.setAttribute('data-blok-database-select-option-check', '');
+        check.setAttribute('aria-hidden', 'true');
+        check.innerHTML = IconCheck;
+        item.appendChild(check);
+      }
+      item.addEventListener('click', () => this.moveToGroup(flyout.optionId, group.id));
+      list.appendChild(item);
+    });
+    const popover = new CellPopover({
+      anchor: groupRow,
+      content: list,
+      panel: true,
+      surfaceClass: GROUP_MENU_CLASS,
+      minWidth: `${GROUP_MENU_WIDTH}px`,
+      gap: 0,
+      alignEnd: true,
+      onEscape: () => this.closeGroupMenu(),
+      onDismiss: () => this.closeGroupMenu(),
+    });
+
+    flyout.groupMenu = { popover, release, row: groupRow };
+    groupRow.setAttribute('aria-expanded', 'true');
+    popover.show();
+    list.querySelector<HTMLElement>('[data-blok-database-option-group-pick]')?.focus();
+  }
+
+  private closeGroupMenu(): void {
+    const flyout = this.flyout;
+    const menu = flyout?.groupMenu ?? null;
+
+    if (flyout === null || menu === null) return;
+    flyout.groupMenu = null;
+    menu.row.setAttribute('aria-expanded', 'false');
+    menu.popover.close();
+    menu.release();
+  }
+
+  /** The option goes to the top of its new group (notion-motion.md Round 57 §4). */
+  private moveToGroup(optionId: string, groupId: string): void {
+    this.closeGroupMenu();
+    const property = this.withOptions(this.options);
+
+    if (statusGroupOf(property, optionId)?.id !== groupId) {
+      const peers = this.options.filter((o) => o.id !== optionId && statusGroupOf(property, o.id)?.id === groupId);
+      const first = byPosition(peers).at(0);
+      const position = DatabaseModel.positionBetween(null, first?.position ?? null);
+
+      this.set(this.options.map((o) => (o.id === optionId ? { ...o, groupId, position } : o)));
+      this.render();
+    }
+    this.renderFlyout();
   }
 }
 

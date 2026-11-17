@@ -157,6 +157,7 @@ afterEach(() => {
   teardown?.();
   teardown = null;
   restoreOffsets();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   document.body.innerHTML = '';
   document.body.style.overflow = '';
@@ -180,10 +181,10 @@ describe('openFilePreview — modal chrome', () => {
     expect(title.className).toBe('blok-file-preview-title');
     expect(title.children.length).toBe(2);
 
-    const titleIcon = childAt(title, 0);
-    expect(titleIcon.className).toBe('blok-file-preview-title-icon');
-    expect(titleIcon.getAttribute('aria-hidden')).toBe('true');
-    expect(titleIcon.innerHTML).toContain('svg');
+    const badge = childAt(title, 0);
+    expect(badge.className).toBe('blok-file-preview-badge');
+    expect(badge.getAttribute('aria-hidden')).toBe('true');
+    expect(badge.textContent).toBe('PDF');
 
     const titleText = childAt(title, 1);
     expect(titleText.className).toBe('blok-file-preview-title-text');
@@ -255,17 +256,27 @@ describe('openFilePreview — modal chrome', () => {
     expect(dialog.getAttribute('aria-label')).toBe('report.pdf');
   });
 
-  it('renders the pdf iframe with its class, title and src', () => {
-    teardown = openFilePreview({ url: 'https://example.com/a.pdf', fileName: 'report.pdf', labels: FULL_LABELS });
+  const stubPdfBlob = (): void => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, blob: async () => new Blob(['%PDF'], { type: 'application/pdf' }) }));
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:https://example.com/wrapped');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+  };
+
+  it('renders the pdf iframe with its class, title and src', async () => {
+    stubPdfBlob();
+    teardown = openFilePreview({ url: 'blob:https://example.com/raw', fileName: 'report.pdf', labels: FULL_LABELS });
+    await flush();
 
     const frame = find(document.body, '[data-role="file-preview-frame"]');
     expect(frame.className).toBe('blok-file-preview-frame');
     expect(frame.getAttribute('title')).toBe('report.pdf');
-    expect(frame.getAttribute('src')).toBe('https://example.com/a.pdf');
+    expect(frame.getAttribute('src')).toBe('blob:https://example.com/wrapped');
   });
 
-  it('titles the pdf iframe with the close label when there is no file name', () => {
-    teardown = openFilePreview({ url: 'https://example.com/a.pdf', labels: FULL_LABELS });
+  it('titles the pdf iframe with the close label when there is no file name', async () => {
+    stubPdfBlob();
+    teardown = openFilePreview({ url: 'blob:https://example.com/raw', mimeType: 'application/pdf', labels: FULL_LABELS });
+    await flush();
 
     expect(find(document.body, '[data-role="file-preview-frame"]').getAttribute('title')).toBe('Close preview');
   });
@@ -277,6 +288,19 @@ describe('openFilePreview — modal chrome', () => {
     const error = find(body, '[data-role="file-preview-error"]');
     expect(error.className).toBe('blok-file-preview-error');
     expect(body.children.length).toBe(1);
+  });
+
+  it('gives an unsafe pdf url both lines too, with advice about the link', () => {
+    teardown = openFilePreview({
+      url: 'data:application/pdf;base64,AAAA',
+      mimeType: 'application/pdf',
+      labels: { ...FULL_LABELS, error: 'Vorschau fehlgeschlagen', errorNoLinkDetail: 'Link prüfen.' },
+    });
+
+    const error = find(document.body, '[data-role="file-preview-error"]');
+
+    expect(find(error, '[data-role="file-preview-error-detail"]').textContent).toBe('Link prüfen.');
+    expect(find(error, '[data-role="file-preview-error-title"]').textContent).toBe('Vorschau fehlgeschlagen');
   });
 
   it('renders the open-in-new-tab anchor with its class and label', () => {
@@ -296,14 +320,13 @@ describe('openFilePreview — modal chrome', () => {
     expect(open.title).toBe('');
   });
 
-  it('shows the loading placeholder — not an iframe, not an open-tab anchor — for a text file', () => {
+  it('shows the loading placeholder, not an iframe, for a text file', () => {
     vi.mocked(loadTextPreview).mockReturnValue(new Promise(() => undefined));
 
     teardown = openFilePreview({ url: 'https://example.com/notes.txt', fileName: 'notes.txt', labels: FULL_LABELS });
 
     const body = childAt(dialogEl(), 1);
     expect(body.querySelector('[data-role="file-preview-frame"]')).toBeNull();
-    expect(document.body.querySelector('[data-action="preview-open-tab"]')).toBeNull();
 
     const loading = find(body, '[data-role="file-preview-loading"]');
     expect(loading.className).toBe('blok-file-preview-loading');

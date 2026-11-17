@@ -7,7 +7,7 @@ import { BlockAPI } from '../../block/api';
 import { Dom as $ } from '../../dom';
 import { BlockSettingsClosed, BlockSettingsOpened, BlokMobileLayoutToggled } from '../../events';
 import { Flipper } from '../../flipper';
-import { IconColumns, IconCopy, IconReplace, IconTrash } from '../../icons';
+import { IconArrowDiagonal, IconColumns, IconCopy, IconReplace, IconTrash } from '../../icons';
 import { resolveColumnWrapRoots, wrapBlocksInColumns } from '../../../tools/column-drop';
 import { SelectionUtils } from '../../selection/index';
 import type { BlockToolAdapter } from '../../tools/block';
@@ -17,6 +17,8 @@ import { getCaretOffset } from '../../utils/caret/selection';
 import { findCommonNestedContainer, scheduleCaretIntoNestedContainer } from '../../utils/nested-container-caret';
 import { getConvertibleToolsForBlock, getConvertibleToolsForBlocks } from '../../utils/blocks';
 import { buildConvertMenuEntries, buildConvertMenuItems } from '../../utils/convert-menu';
+import { announceConversion } from '../../utils/conversion-announcement';
+import { announceDeletedRoots, selectionRoots } from '../../utils/selection-roots';
 import { runConvert } from '../../utils/convert-refusal';
 import type { PopoverItemParams, Popover } from '../../utils/popover';
 import { PopoverDesktop, PopoverMobile, PopoverItemType } from '../../utils/popover';
@@ -24,8 +26,13 @@ import { css as popoverItemCls } from '../../utils/popover/components/popover-it
 import { isToolConvertable, translateToolTitle } from '../../utils/tools';
 import { prepareImportString } from '../blockManager/block-mutation';
 import { isBlockReadOnly } from '../../utils/read-only-blocks';
+import { deleteWithTrashToast, showTrashToast } from '../../utils/trash-toast';
+import { assertCanMoveAll, type BlockTree } from '../api/block-placement';
+import { PagePicker } from '../../../tools/page/page-picker';
+import { filterMoveTargets, listMoveTargets } from './move-to';
 
 import type { PopoverParams } from '@/types/utils/popover/popover';
+import { DATA_ATTR } from '../../constants';
 import { PopoverEvent } from '@/types/utils/popover/popover-event';
 
 
@@ -35,6 +42,14 @@ import { PopoverEvent } from '@/types/utils/popover/popover-event';
  * so assistive tech knows which menu the toggler expands.
  */
 export const SETTINGS_POPOVER_ID = 'blok-block-settings-popover';
+
+/**
+ * A modal dialog is open: keys belong to it, not to a block selection. A host
+ * modal the editor itself sits in does not count.
+ * @param blocks - the blocks the menu acted on
+ */
+const isModalOpen = (blocks: Block[]): boolean => Array.from(document.querySelectorAll('[aria-modal="true"], dialog[open]'))
+  .some((modal) => !blocks.some((block) => modal.contains(block.holder)));
 
 /**
  * HTML Elements that used for BlockSettings
@@ -142,6 +157,31 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
   private settingsTrigger: HTMLElement | null = null;
 
   /**
+   * Blocks a tune that closes the menu acted on. close() leaves them selected.
+   */
+  private actedBlocks: Block[] | null = null;
+
+  /**
+   * True when the last close() left a block selection, which then owns the keyboard.
+   */
+  private closeKeptSelection = false;
+
+  /** Stops watching for focus that would leave a kept selection under a field. */
+  private stopFocusWatch: () => void = () => undefined;
+
+  /** Blocks the open menu acts on. */
+  private menuBlocks: Block[] = [];
+
+  /** True during an Escape press, so its close keeps the block selected (Notion U109). */
+  private escapePressed = false;
+
+  /** True while a click inside the open menu is being handled. */
+  private clickInMenu = false;
+
+  /** Stops watching for clicks inside the open menu. */
+  private stopClickWatch: () => void = () => undefined;
+
+  /**
    * Panel with block settings with 2 sections:
    *  - Tool's Settings
    *  - Default Settings [Move, Remove, etc]
@@ -162,6 +202,8 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
     this.popover = null;
     this.detachFlipperKeydownListener();
     this.removeAllNodes();
+    this.stopClickWatch();
+    this.stopFocusWatch();
     this.listeners.destroy();
     this.eventsDispatcher.off(BlokMobileLayoutToggled, this.close);
   }
@@ -226,6 +268,7 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
      * the flag stays true and the toolbar permanently stops appearing on hover.
      */
     this.isOpening = true;
+    this.stopFocusWatch();
 
     try {
       /**
@@ -246,6 +289,8 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
        * For multiple blocks, they should already be selected
        */
       if (!hasMultipleBlocksSelected) {
+        // A block an earlier Escape left selected gives way, like Notion.
+        selectedBlocks.filter((selected) => selected !== block).forEach((selected) => this.Blok.BlockSelection.unselectBlock(selected));
         this.Blok.BlockSelection.selectBlock(block);
         this.Blok.BlockSelection.clearCache();
       }
@@ -262,7 +307,14 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
       };
 
       /** Get tool-specific tunes and common tunes (delete, move, etc.) */
-      const { toolTunes, commonTunes } = block.getTunes(renderContext);
+      const tunes = block.getTunes(renderContext);
+      const actedOn = hasMultipleBlocksSelected ? [...selectedBlocks] : [block];
+      const commonTunes = this.noteActions(tunes.commonTunes, actedOn);
+      const toolTunes = tunes.toolTunes === undefined ? undefined : this.noteActions(tunes.toolTunes, actedOn);
+
+      this.actedBlocks = null;
+      this.menuBlocks = actedOn;
+      this.watchMenuClicks();
 
       const items = await this.getTunesItems(block, commonTunes, toolTunes, caretOffset);
 
@@ -346,6 +398,9 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
       this.settingsTrigger = trigger ?? null;
 
       this.popover.on(PopoverEvent.Closed, this.onPopoverClose);
+      this.popover.escapeClosesSubmenuFirst = true;
+      // Window capture runs before the popover registry's document capture.
+      window.addEventListener('keydown', this.noteEscape, true);
 
       this.attachDeleteKeyListener(items);
 
@@ -410,6 +465,19 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
 
     this.opened = false;
     this.isOpening = false; // Clear isOpening flag when closing
+    this.stopClickWatch();
+    window.removeEventListener('keydown', this.noteEscape, true);
+
+    if (this.escapePressed && this.actedBlocks === null) {
+      this.actedBlocks = this.menuBlocks;
+    }
+    this.escapePressed = false;
+
+    // Read before keepActedSelection: a menu Delete leaves no caret (Notion U104, U163).
+    const menuBlocksRemoved = this.menuBlocks.length > 0 && this.menuBlocks.every((block) => !block.holder.isConnected);
+    const kept = this.keepActedSelection();
+
+    this.closeKeptSelection = kept;
 
     /**
      * If selection is at blok on Block Settings closing,
@@ -418,7 +486,7 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
      *
      * So, we need to restore selection back to Block after closing the Block Settings
      */
-    if (!SelectionUtils.isAtBlok) {
+    if (!kept && !menuBlocksRemoved && !SelectionUtils.isAtBlok) {
       this.selection.restore();
     }
 
@@ -430,7 +498,9 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
      * Remove highlighted content of Blocks we are working with
      * Handle both single and multiple block selection
      */
-    this.clearBlockSelectionOnClose();
+    if (!kept) {
+      this.clearBlockSelectionOnClose();
+    }
 
     /** Tell to subscribers that block settings is closed */
     this.eventsDispatcher.emit(this.events.closed);
@@ -442,6 +512,83 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
       this.popover = null;
     }
   };
+
+  /**
+   * Close on a tool's request (`api.toolbar.toggleBlockSettings(false)`). A
+   * tool that closes its menu from a click inside it, like a callout colour
+   * pick, acted on the block, so the block stays selected (Notion U140). A
+   * close from anywhere else clears the selection as before.
+   */
+  public closeByTool(): void {
+    if (this.opened && this.clickInMenu && this.actedBlocks === null) {
+      this.actedBlocks = this.menuBlocks;
+    }
+
+    this.close();
+  }
+
+  private readonly noteEscape = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape') {
+      return;
+    }
+    this.escapePressed = true;
+    // An Escape that closes only a submenu leaves the menu open: forget it after the press.
+    window.setTimeout(() => {
+      this.escapePressed = false;
+    }, 0);
+  };
+
+  /**
+   * Makes the menu's Move to Trash show the Trash toast once the block is gone.
+   * @param tune - the delete tune, renamed Move to Trash
+   * @param block - the block it trashes
+   */
+  private withTrashToast(tune: MenuConfigItem, block: Block): MenuConfigItem {
+    if (!('onActivate' in tune) || typeof tune.onActivate !== 'function') {
+      return tune;
+    }
+    const run = tune.onActivate;
+
+    return {
+      ...tune,
+      onActivate: (item: PopoverItemParams, event?: PointerEvent): void => {
+        const stepBefore = this.Blok.HistoryAPI.latestStep();
+
+        // DeleteTune returns its delete's promise; the block is gone once it settles.
+        void Promise.resolve(run(item, event)).then(() => {
+          if (this.Blok.BlockManager.getBlockById(block.id) === undefined) {
+            showTrashToast(this.Blok, stepBefore);
+          }
+        });
+      },
+    };
+  }
+
+  /**
+   * Notes clicks inside the open menu, for {@link closeByTool}.
+   */
+  private watchMenuClicks(): void {
+    this.stopClickWatch();
+
+    const onClick = (event: MouseEvent): void => {
+      if (!(event.target instanceof HTMLElement) || !this.contains(event.target)) {
+        return;
+      }
+
+      this.clickInMenu = true;
+      // The click's own handlers run before this timer.
+      window.setTimeout(() => {
+        this.clickInMenu = false;
+      }, 0);
+    };
+
+    window.addEventListener('click', onClick, true);
+    this.stopClickWatch = () => {
+      window.removeEventListener('click', onClick, true);
+      this.clickInMenu = false;
+      this.stopClickWatch = () => undefined;
+    };
+  }
 
   /**
    * Returns list of items to be displayed in block tunes menu.
@@ -504,6 +651,15 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
       items.push(...toolTunes);
     }
 
+    // Items the tool names in `lead` come before Turn into, like Notion's
+    // "Turn into inline database" on a database page link.
+    const lead = titled && hasToolTunes ? blockMenu?.lead ?? [] : [];
+    const isLead = (tune: MenuConfigItem): boolean => 'name' in tune && typeof tune.name === 'string' && lead.includes(tune.name);
+
+    if (lead.length > 0) {
+      items.push(...(toolTunes ?? []).filter(isLead));
+    }
+
     /**
      * Get convertible tools based on selection:
      * - For single block: use existing single-block conversion logic
@@ -538,7 +694,7 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
         // runConvert never rejects: the popover invokes this handler inside a
         // SYNCHRONOUS try/catch, so a rejection would escape unhandled and
         // Toolbar.close() below would never run.
-        const newBlock = await runConvert(
+        const converted = await runConvert(
           this.Blok.API.methods,
           () => this.convertBlock(
             currentBlock,
@@ -548,13 +704,17 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
             entry.data
           )
         );
+        const newBlock = converted?.block ?? null;
 
         Toolbar.close();
 
-        if (newBlock) {
-          // Only a single-block conversion has a caret offset to preserve.
-          if (hasMultipleBlocksSelected) {
-            Caret.setToBlock(newBlock, Caret.positions.END);
+        if (converted !== null && newBlock !== null) {
+          announceConversion(this.Blok.I18n, tool, entry.data ?? {}, converted.count);
+
+          // Notion leaves the result selected. A list exploded into separate
+          // blocks has no Notion measurement, so it keeps the caret.
+          if (converted.selected.length > 0) {
+            this.selectResult(converted.selected);
           } else {
             Caret.setToBlock(newBlock, Caret.positions.DEFAULT, caretOffset);
           }
@@ -564,7 +724,7 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
 
     /**
      * For a multi-block selection, "Turn into columns" belongs in the same
-     * "Convert to" submenu as the other tool conversions. The selected ids are
+     * "Turn into" submenu as the other tool conversions. The selected ids are
      * captured HERE, at build time — reading BlockSelection.selectedBlocks
      * inside onActivate returns an empty list, because the document mousedown
      * that fires when the popover item is clicked clears the block selection
@@ -625,7 +785,7 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
     }
 
     if (titled && hasToolTunes) {
-      items.push(...toolTunes);
+      items.push(...toolTunes.filter((tune) => !isLead(tune)));
     }
 
     // Formatting still needs a boundary before the actions when the block
@@ -657,12 +817,21 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
       onActivate: () => {
         const { BlockSelection, DragManager, Toolbar } = this.Blok;
 
+        // A selected source makes the duplicate select its copies, as in Notion.
         if (duplicateSelected.length > 1) {
           BlockSelection.clearSelection();
           duplicateSelected.forEach((selected) => BlockSelection.selectBlock(selected));
+        } else {
+          BlockSelection.selectBlock(currentBlock);
         }
 
-        void DragManager?.duplicateBlocksInPlace(currentBlock);
+        // The menu's restored caret can leave its field focused under the selected copy.
+        void DragManager?.duplicateBlocksInPlace(currentBlock).then((copies) => {
+          if (copies.some((copy) => copy.selected)) {
+            this.releaseFocus();
+            this.letGoOnFocus(copies);
+          }
+        });
 
         Toolbar.close();
       },
@@ -677,6 +846,9 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
         : tune)
       : commonTunes;
 
+    const moveToItem = this.createMoveToItem(hasMultipleBlocksSelected ? selectionRoots(selectedBlocks) : [currentBlock]);
+    const moveTo = moveToItem === null ? [] : [moveToItem];
+
     // Keep custom actions in registration order, with deletion isolated last.
     if (!hasMultipleBlocksSelected) {
       const deleteIndex = actionTunes.findIndex(
@@ -690,18 +862,20 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
         items.push(
           ...actionTunes.filter((_tune, index) => index !== deleteIndex),
           duplicateItem,
-          { ...actionTunes[deleteIndex], title: this.Blok.I18n.t('blockSettings.moveToTrash') } as MenuConfigItem
+          ...moveTo,
+          this.withTrashToast({ ...actionTunes[deleteIndex], title: this.Blok.I18n.t('blockSettings.moveToTrash') } as MenuConfigItem, currentBlock)
         );
       } else {
         items.push(
           ...actionTunes.filter((_tune, index) => index !== deleteIndex),
           duplicateItem,
+          ...moveTo,
           { type: PopoverItemType.Separator },
           actionTunes[deleteIndex]
         );
       }
     } else {
-      items.push(duplicateItem, { type: PopoverItemType.Separator });
+      items.push(duplicateItem, ...moveTo, { type: PopoverItemType.Separator });
       items.push({
         icon: IconTrash,
         title: this.Blok.I18n.t('blockSettings.delete'),
@@ -712,9 +886,13 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
         onActivate: () => {
           const { BlockManager, Caret, Toolbar } = this.Blok;
 
-          const nestedContainer = findCommonNestedContainer(BlockManager.blocks.filter((block) => block.selected));
+          const selected = BlockManager.blocks.filter((block) => block.selected);
+          const nestedContainer = findCommonNestedContainer(selected);
+          const roots = selectionRoots(selected);
 
-          const insertedBlock = BlockManager.deleteSelectedBlocksAndInsertReplacement();
+          const insertedBlock = deleteWithTrashToast(this.Blok, roots, () => BlockManager.deleteSelectedBlocksAndInsertReplacement());
+
+          announceDeletedRoots(this.Blok.I18n, roots, (id) => BlockManager.getBlockById(id) !== undefined);
 
           if (insertedBlock) {
             Caret.setToBlock(insertedBlock, Caret.positions.END);
@@ -746,6 +924,107 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
     });
 
     return items;
+  }
+
+  /**
+   * "Move to": a page picker over the pages this document holds, like Notion's.
+   * Null when no page can take every block in `sources`.
+   * @param sources - the blocks to move, without their descendants
+   */
+  private createMoveToItem(sources: Block[]): MenuConfigItem | null {
+    const { BlockManager, I18n, Tools } = this.Blok;
+
+    // Only a database row holds a page body in this document.
+    if (!Tools.blockTools.has('database-row')) {
+      return null;
+    }
+    const tree: BlockTree = { blocks: BlockManager.blocks, getBlockById: (id) => BlockManager.getBlockById(id) };
+    const canMoveInto = (roots: readonly Block[], rowId: string): boolean => {
+      try {
+        // The same moves moveInto makes, in its order, so a pick never throws.
+        assertCanMoveAll(tree, [...roots], { parentId: rowId, position: 'end' });
+
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const rules = { canMoveInto, isReadOnly: (block: Block): boolean => isBlockReadOnly(block, tree.getBlockById) };
+    const roots = [...sources].sort((left, right) => BlockManager.getBlockIndex(left) - BlockManager.getBlockIndex(right));
+    const targets = listMoveTargets(BlockManager.blocks, roots, rules);
+
+    if (targets.length === 0) {
+      return null;
+    }
+
+    // Captured now: the click that opens the picker clears the block selection.
+    const rootIds = roots.map((root) => root.id);
+    const anchor = roots[0].holder;
+
+    return {
+      icon: IconArrowDiagonal,
+      title: I18n.t('blockSettings.moveTo'),
+      name: 'move-to',
+      closeOnActivate: true,
+      onActivate: () => {
+        this.Blok.Toolbar.close();
+        this.openMovePicker(rootIds, targets, anchor, rules);
+      },
+    };
+  }
+
+  /**
+   * Opens the page picker for "Move to" and moves `rootIds` under the picked page.
+   * @param rootIds - the blocks to move, in document order
+   * @param targets - the pages offered
+   * @param anchor - the element the picker opens under
+   * @param rules - core's checks, asked again at the pick
+   */
+  private openMovePicker(
+    rootIds: string[],
+    targets: ReturnType<typeof listMoveTargets>,
+    anchor: HTMLElement,
+    rules: { canMoveInto: (roots: readonly Block[], rowId: string) => boolean; isReadOnly: (block: Block) => boolean }
+  ): void {
+    const t = (key: string, vars?: Record<string, string | number>): string => this.Blok.I18n.t(key, vars);
+    const untitled = t('tools.database.relationUntitled');
+    const picker = new PagePicker(t('blockSettings.moveTo'), untitled, t('tools.page.draft'), t('popover.nothingFound'), t);
+
+    picker.open('', anchor, (rowId) => this.moveInto(rootIds, rowId, rules), {
+      searchField: {
+        placeholder: t('tools.page.search'),
+        onQuery: (query) => picker.setResults(filterMoveTargets(targets, query, untitled)),
+      },
+    });
+    picker.setResults(targets);
+  }
+
+  /**
+   * Moves the blocks, with their children, to the end of the page's body as
+   * one undo step. Does nothing when the document changed so that one of them
+   * may no longer go there.
+   * @param rootIds - the blocks to move, in document order
+   * @param rowId - the page's block
+   * @param rules - core's checks
+   */
+  private moveInto(
+    rootIds: string[],
+    rowId: string,
+    rules: { canMoveInto: (roots: readonly Block[], rowId: string) => boolean; isReadOnly: (block: Block) => boolean }
+  ): void {
+    const { BlockManager, BlockSelection } = this.Blok;
+    const blocks = this.Blok.API.methods.blocks;
+    const row = BlockManager.getBlockById(rowId);
+    const roots = rootIds.map((id) => BlockManager.getBlockById(id)).filter((block): block is Block => block !== undefined);
+
+    if (row === undefined || rules.isReadOnly(row) || roots.length !== rootIds.length || !rules.canMoveInto(roots, rowId)) {
+      return;
+    }
+
+    BlockSelection.clearSelection();
+    (blocks.transact ?? ((fn: () => void): void => fn()))(() => {
+      roots.forEach((root) => blocks.moveTo(root.id, { parentId: rowId, position: 'end' }));
+    });
   }
 
   /**
@@ -850,6 +1129,7 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
   private onPopoverClose = (): void => {
     const trigger = this.settingsTrigger;
 
+    this.closeKeptSelection = false;
     this.close();
 
     /**
@@ -858,10 +1138,147 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
      * opened the menu — but only when focus was actually lost, so we never
      * steal it from a caret an activated item just placed inside a block.
      */
-    if (trigger !== null && document.activeElement === document.body) {
+    if (trigger !== null && !this.closeKeptSelection && document.activeElement === document.body) {
       trigger.focus();
     }
   };
+
+  /**
+   * Makes each tune that closes the menu note the blocks it acted on, and
+   * each switch that keeps it open take the menu cursor.
+   * @param tunes - tunes to wrap
+   * @param blocks - blocks the menu acts on
+   */
+  private noteActions(tunes: MenuConfigItem[], blocks: Block[]): MenuConfigItem[] {
+    type ClosingTune = MenuConfigItem & { closeOnActivate: true; onActivate: (item: PopoverItemParams, event?: PointerEvent) => void };
+    type SwitchTune = MenuConfigItem & { name: string; isActive: () => boolean; onActivate: (item: PopoverItemParams, event?: PointerEvent) => void };
+    const isClosing = (tune: MenuConfigItem): tune is ClosingTune =>
+      'closeOnActivate' in tune && tune.closeOnActivate === true && 'onActivate' in tune && typeof tune.onActivate === 'function';
+    const isSwitch = (tune: MenuConfigItem): tune is SwitchTune =>
+      !isClosing(tune) && 'onActivate' in tune && typeof tune.onActivate === 'function'
+      && 'isActive' in tune && typeof tune.isActive === 'function' && typeof tune.name === 'string';
+
+    return tunes.map((tune) => {
+      if (isSwitch(tune)) {
+        const toggle = tune.onActivate;
+
+        return {
+          ...tune,
+          // The press cleared the block selection and left no cursor in the menu.
+          // Notion keeps the block selected and moves focus to the switch (U161).
+          onActivate: (item: PopoverItemParams, event?: PointerEvent): void => {
+            toggle(item, event);
+            blocks.filter((block) => block.holder.isConnected).forEach((block) => this.Blok.BlockSelection.selectBlock(block));
+            if (this.popover instanceof PopoverDesktop) {
+              this.popover.focusItemByName(tune.name);
+            }
+          },
+        };
+      }
+
+      if (!isClosing(tune)) {
+        return tune;
+      }
+
+      const run = tune.onActivate;
+
+      return {
+        ...tune,
+        onActivate: (item: PopoverItemParams, event?: PointerEvent): void => {
+          this.actedBlocks = blocks;
+          run(item, event);
+        },
+      };
+    });
+  }
+
+  /**
+   * After a tune closes the menu, Notion leaves its block selected. Not when
+   * the tune removed the block or opened another UI: a key typed there would
+   * otherwise delete the selected block.
+   * @returns true when the blocks were left selected
+   */
+  private keepActedSelection(): boolean {
+    const blocks = (this.actedBlocks ?? []).filter((block) => block.holder.isConnected);
+    const active = document.activeElement;
+    const focusFree = active === null
+      || active === document.body
+      || active === this.settingsTrigger
+      || this.popover?.getElement().contains(active) === true;
+
+    this.actedBlocks = null;
+
+    if (blocks.length === 0 || !focusFree || isModalOpen(blocks)) {
+      return false;
+    }
+
+    blocks.forEach((block) => this.Blok.BlockSelection.selectBlock(block));
+    this.releaseFocus();
+    this.letGoOnFocus(blocks);
+
+    // Some UIs open a modal a frame after the tune ran.
+    requestAnimationFrame(() => {
+      const active = document.activeElement;
+
+      if ((active === document.body || (active !== null && active === this.settingsTrigger)) && !isModalOpen(blocks)) {
+        return;
+      }
+
+      blocks.filter((block) => block.selected).forEach((block) => this.Blok.BlockSelection.unselectBlock(block));
+    });
+
+    return true;
+  }
+
+  /**
+   * Leaves `blocks` block-selected with no caret, as Notion does after a menu action.
+   * @param blocks - blocks to select
+   */
+  private selectResult(blocks: Block[]): void {
+    const { BlockSelection } = this.Blok;
+
+    BlockSelection.clearSelection();
+    blocks.forEach((block) => BlockSelection.selectBlock(block));
+    this.releaseFocus();
+    this.letGoOnFocus(blocks);
+  }
+
+  /**
+   * Unselects `blocks` when focus next lands anywhere, at any delay. A key
+   * typed in a field focused under the selection would replace the blocks.
+   * @param blocks - the blocks left selected
+   */
+  private letGoOnFocus(blocks: Block[]): void {
+    this.stopFocusWatch();
+
+    const onFocus = (event: FocusEvent): void => {
+      // The popover registry gives focus back to the menu button after a close.
+      // Keys typed there type no text, so the selection stays (keyboard users keep their place).
+      if (this.settingsTrigger !== null && event.target === this.settingsTrigger) {
+        return;
+      }
+      this.stopFocusWatch();
+      blocks.filter((block) => block.selected).forEach((block) => this.Blok.BlockSelection.unselectBlock(block));
+    };
+
+    document.addEventListener('focusin', onFocus, true);
+    this.stopFocusWatch = () => {
+      document.removeEventListener('focusin', onFocus, true);
+      this.stopFocusWatch = () => undefined;
+    };
+  }
+
+  /**
+   * Blurs what the editor holds focused, like navigation mode, so the next
+   * key reaches the block selection instead of a field or the menu button.
+   */
+  private releaseFocus(): void {
+    const active = document.activeElement;
+
+    if (active instanceof HTMLElement && active.closest(`[${DATA_ATTR.editor}]`) !== null) {
+      active.blur();
+    }
+  }
 
   /**
    * Clears block selection when block settings is closed
@@ -895,7 +1312,7 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
    * @param blocks - array of blocks to convert
    * @param targetToolName - name of the tool to convert to
    * @param toolboxData - optional data overrides for the new blocks
-   * @returns the resulting block (merged or last converted) or null if all conversions failed
+   * @returns the resulting block (merged or last converted) or null if all conversions failed, how many selected blocks converted, and the blocks to leave selected
    */
   private async convertBlock(
     currentBlock: Block,
@@ -903,7 +1320,7 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
     hasMultipleBlocksSelected: boolean,
     tool: BlockToolAdapter,
     toolboxData?: Record<string, unknown>
-  ): Promise<Block | null> {
+  ): Promise<{ block: Block | null; count: number; selected: Block[] }> {
     const { BlockManager } = this.Blok;
 
     if (hasMultipleBlocksSelected) {
@@ -917,11 +1334,11 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
     const explodableItems = await this.getExplodableItems(currentBlock);
     const shouldExplode = !this.canToolMergeMultipleItems(tool) && explodableItems !== null;
 
-    if (shouldExplode) {
-      return this.convertMultiItemBlockToSeparateBlocks(currentBlock, tool.name, toolboxData);
-    }
+    const block = shouldExplode
+      ? await this.convertMultiItemBlockToSeparateBlocks(currentBlock, tool.name, toolboxData)
+      : await BlockManager.convert(currentBlock, tool.name, toolboxData);
 
-    return BlockManager.convert(currentBlock, tool.name, toolboxData);
+    return { block, count: 1, selected: block === null || shouldExplode ? [] : [block] };
   }
 
   /**
@@ -931,17 +1348,17 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
    * @param blocks - array of blocks to convert
    * @param targetToolName - name of the tool to convert to
    * @param toolboxData - optional data overrides for the new blocks
-   * @returns the resulting block (merged or last converted) or null if all conversions failed
+   * @returns the resulting block (merged or last converted) or null if all conversions failed, how many blocks converted, and the blocks to leave selected
    */
   private async convertMultipleBlocks(
     blocks: Block[],
     targetToolName: string,
     toolboxData?: Record<string, unknown>
-  ): Promise<Block | null> {
+  ): Promise<{ block: Block | null; count: number; selected: Block[] }> {
     const { Tools } = this.Blok;
 
     if (blocks.length === 0) {
-      return null;
+      return { block: null, count: 0, selected: [] };
     }
 
     /**
@@ -965,7 +1382,7 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
     });
 
     if (convertibleBlocks.length === 0) {
-      return null;
+      return { block: null, count: 0, selected: [] };
     }
 
     /**
@@ -977,13 +1394,19 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
     const shouldMergeIntoSingleBlock = targetTool && this.canToolMergeMultipleItems(targetTool);
 
     if (shouldMergeIntoSingleBlock) {
-      return this.convertBlocksToSingleMergedBlock(convertibleBlocks, targetToolName, toolboxData);
+      const merged = await this.convertBlocksToSingleMergedBlock(convertibleBlocks, targetToolName, toolboxData);
+
+      return merged === null
+        ? { block: null, count: 0, selected: [] }
+        : { block: merged, count: convertibleBlocks.length, selected: [merged] };
     }
 
     /**
      * Convert each block individually, maintaining them as separate blocks
      */
-    return this.convertBlocksIndividually(convertibleBlocks, targetToolName, toolboxData);
+    const converted = await this.convertBlocksIndividually(convertibleBlocks, targetToolName, toolboxData);
+
+    return { block: converted.at(-1) ?? null, count: converted.length, selected: converted };
   }
 
   /**
@@ -1094,13 +1517,13 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
    * @param blocks - blocks to convert
    * @param targetToolName - name of the tool to convert to
    * @param toolboxData - optional data overrides
-   * @returns the last converted block or null if all conversions failed
+   * @returns the converted blocks, in order; a block that failed to convert is left out
    */
   private async convertBlocksIndividually(
     blocks: Block[],
     targetToolName: string,
     toolboxData?: Record<string, unknown>
-  ): Promise<Block | null> {
+  ): Promise<Block[]> {
     const { BlockManager } = this.Blok;
     const convertedBlocks: Block[] = [];
 
@@ -1117,9 +1540,7 @@ export class BlockSettings extends Module<BlockSettingsNodes> {
       }
     }
 
-    return convertedBlocks.length > 0
-      ? convertedBlocks[convertedBlocks.length - 1]
-      : null;
+    return convertedBlocks;
   }
 
   /**

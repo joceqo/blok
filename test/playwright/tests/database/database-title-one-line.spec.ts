@@ -1,0 +1,264 @@
+import type { Page } from '@playwright/test';
+import type { Blok, OutputData } from '@/types';
+import { BLOK_INTERFACE_SELECTOR } from '../../../../src/components/constants';
+import { ensureBlokBundleBuilt } from '../helpers/ensure-build';
+import { expect, gotoTestPage, test } from '../helpers/shared-page';
+
+declare global {
+  interface Window {
+    blokInstance?: Blok;
+    BlokDatabase: unknown;
+    BlokDatabaseRow: unknown;
+  }
+}
+
+/**
+ * A one-view database title (notion-motion.md, Round 7 "Long database title"):
+ * Notion keeps it one line, 31.2 tall, with an ellipsis, at every width.
+ */
+const HOLDER_ID = 'blok';
+const LONG_TITLE = 'Quarterly planning tracker for the product design and engineering teams, 2026 Q4';
+const ROW = `${BLOK_INTERFACE_SELECTOR} [data-blok-database-title-row]`;
+const TITLE = `${ROW} > [data-blok-database-title]`;
+
+const blocks = (data: Record<string, unknown>): OutputData['blocks'] => [{
+  id: 'db-1',
+  type: 'database',
+  data: {
+    schema: [{ id: 't', name: 'Name', type: 'title', position: 'a0' }],
+    views: [{ id: 'v1', name: 'Table', type: 'table', position: 'a0', sorts: [], filters: [], properties: [{ id: 't', visible: true, width: 280 }] }],
+    activeViewId: 'v1',
+    ...data,
+  },
+  content: [],
+}];
+
+const create = async (page: Page, data: Record<string, unknown>): Promise<void> => {
+  await page.evaluate(async ({ holder, blokBlocks }) => {
+    if (window.blokInstance) {
+      await window.blokInstance.destroy?.();
+      window.blokInstance = undefined;
+    }
+    document.getElementById(holder)?.remove();
+    const container = document.createElement('div');
+
+    container.id = holder;
+    container.style.width = '1000px';
+    document.body.appendChild(container);
+    const blok = new window.Blok({
+      holder,
+      data: { blocks: blokBlocks },
+      tools: {
+        database: { class: window.BlokDatabase },
+        'database-row': { class: window.BlokDatabaseRow },
+      },
+    });
+
+    window.blokInstance = blok;
+    await blok.isReady;
+  }, { holder: HOLDER_ID, blokBlocks: blocks(data) });
+};
+
+/** Sizes the holder so the title row's content box is `width`, as Notion's box is measured. */
+const setRowWidth = async (page: Page, width: number): Promise<void> => {
+  await page.evaluate(async ({ holder, target, rowSelector }) => {
+    const container = document.getElementById(holder);
+    const row = document.querySelector<HTMLElement>(rowSelector);
+
+    if (container === null || row === null) throw new Error('no title row');
+    const inner = (): number => {
+      const style = getComputedStyle(row);
+
+      return row.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight);
+    };
+
+    // The row caps its content at the text column (720), so a wider holder gives no
+    // feedback: start at the target, where the row tracks the holder 1:1.
+    container.style.width = `${target}px`;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    for (let i = 0; i < 6 && inner() !== target; i++) {
+      container.style.width = `${Number.parseFloat(container.style.width) + target - inner()}px`;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+    if (inner() !== target) throw new Error(`row is ${inner()}, not ${target}`);
+  }, { holder: HOLDER_ID, target: width, rowSelector: ROW });
+};
+
+const titleBox = (page: Page): Promise<{ height: number; clientHeight: number; scrollHeight: number; scrollTop: number; clamp: string; overflow: string }> =>
+  page.locator(TITLE).evaluate((el) => {
+    const style = getComputedStyle(el);
+
+    return {
+      height: el.getBoundingClientRect().height,
+      clientHeight: el.clientHeight,
+      scrollHeight: el.scrollHeight,
+      scrollTop: el.scrollTop,
+      clamp: style.webkitLineClamp,
+      overflow: style.textOverflow,
+    };
+  });
+
+const editBox = (page: Page): Promise<{ height: number; clientHeight: number; scrollHeight: number; scrollLeft: number; whiteSpace: string; scrollbarWidth: string; clamp: string; overflow: string; left: number; right: number; rowRight: number; caretRight: number }> =>
+  page.locator(TITLE).evaluate((el) => {
+    const style = getComputedStyle(el);
+    const box = el.getBoundingClientRect();
+    const row = el.parentElement?.getBoundingClientRect();
+    const selection = window.getSelection();
+    const caret = selection !== null && selection.rangeCount > 0 ? selection.getRangeAt(0).getBoundingClientRect() : null;
+
+    return {
+      height: box.height,
+      clientHeight: el.clientHeight,
+      scrollHeight: el.scrollHeight,
+      scrollLeft: el.scrollLeft,
+      whiteSpace: style.whiteSpace,
+      scrollbarWidth: style.scrollbarWidth,
+      clamp: style.webkitLineClamp,
+      overflow: style.textOverflow,
+      left: box.left,
+      right: box.right,
+      rowRight: row?.right ?? 0,
+      caretRight: caret?.right ?? 0,
+    };
+  });
+
+test.describe('Database — a long title stays one line', () => {
+  test.beforeAll(() => {
+    ensureBlokBundleBuilt();
+  });
+
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1512, height: 717 });
+    await gotoTestPage(page);
+  });
+
+  for (const width of [700, 480, 400, 330, 320, 319]) {
+    test(`is one 31.2px line with an ellipsis in a ${width}px row`, async ({ page }) => {
+      await create(page, { title: LONG_TITLE });
+      await setRowWidth(page, width);
+      const box = await titleBox(page);
+
+      expect(box.height).toBeCloseTo(31.2, 0);
+      // The text is longer than the line: it is cut, not wrapped.
+      expect(box.scrollHeight).toBeGreaterThan(box.clientHeight);
+      expect(box.clamp).toBe('1');
+      expect(box.overflow).toBe('ellipsis');
+      expect((await page.locator(ROW).boundingBox())?.height).toBe(40);
+      // The title gives way: "+" and "…" stay 24 wide, as Notion's do.
+      expect((await page.locator(ROW).locator('[data-blok-database-add-view]').boundingBox())?.width).toBe(24);
+      expect((await page.locator(ROW).locator('[data-blok-database-title-more]').boundingBox())?.width).toBe(24);
+    });
+  }
+
+  // notion-motion.md, Round 8b "Long title while editing": one 31.2 line that scrolls sideways.
+  test('stays one line while it is edited and scrolls to the caret, then clamps again after Enter', async ({ page }) => {
+    await create(page, { title: LONG_TITLE });
+    await setRowWidth(page, 400);
+    await page.locator(TITLE).click();
+    await page.keyboard.press('End');
+    await page.keyboard.type('!');
+    const editing = await editBox(page);
+
+    expect(editing.height).toBeCloseTo(31.2, 0);
+    expect(editing.scrollHeight).toBe(editing.clientHeight);
+    expect(editing.whiteSpace).toBe('nowrap');
+    expect(editing.scrollbarWidth).toBe('none');
+    expect(editing.scrollLeft).toBeGreaterThan(0);
+    expect(editing.caretRight).toBeLessThanOrEqual(editing.right + 1);
+    expect(editing.caretRight).toBeGreaterThan(editing.left);
+    expect(editing.right).toBeLessThanOrEqual(editing.rowRight);
+    await expect(page.locator(TITLE)).toHaveText(`${LONG_TITLE}!`);
+
+    await page.keyboard.press('Enter');
+    const after = await editBox(page);
+
+    expect(after.height).toBeCloseTo(31.2, 0);
+    expect(after.clamp).toBe('1');
+    expect(after.overflow).toBe('ellipsis');
+    expect(after.scrollLeft).toBe(0);
+  });
+
+  test('reached from the keyboard, End and typing land at the end in view', async ({ page }) => {
+    await create(page, { title: LONG_TITLE });
+    await setRowWidth(page, 400);
+    await page.locator(TITLE).focus();
+    await page.keyboard.press('End');
+    await page.keyboard.type('!');
+
+    await expect(page.locator(TITLE)).toHaveText(`${LONG_TITLE}!`);
+    expect((await editBox(page)).scrollLeft).toBeGreaterThan(0);
+  });
+
+  // notion-motion.md, Round 8b "Long title with view tabs": the title has its own one-line row.
+  test('with several views the title is one line with an ellipsis above the tabs', async ({ page }) => {
+    await create(page, {
+      title: LONG_TITLE,
+      views: [
+        { id: 'v1', name: 'Table', type: 'table', position: 'a0', sorts: [], filters: [], properties: [{ id: 't', visible: true, width: 280 }] },
+        { id: 'v2', name: 'List view', type: 'list', position: 'a1', sorts: [], filters: [], properties: [{ id: 't', visible: true }] },
+      ],
+    });
+    await setRowWidth(page, 400);
+    const box = await titleBox(page);
+
+    expect(box.height).toBeCloseTo(31.2, 0);
+    expect(box.clamp).toBe('1');
+    expect(box.overflow).toBe('ellipsis');
+    const title = await page.locator(TITLE).boundingBox();
+    const tab = await page.locator(`${BLOK_INTERFACE_SELECTOR} [data-blok-database-tab-bar] [role="tab"], ${BLOK_INTERFACE_SELECTOR} [data-blok-database-tab-compact]`).first().boundingBox();
+
+    // Notion: title top 224.4, first tab top 269.
+    expect((tab?.y ?? 0) - (title?.y ?? 0)).toBeCloseTo(44.6, 0);
+  });
+
+  // Notion's title box spans its own row (Round 8b: 388 wide in a 400 database), so an empty one still shows its placeholder.
+  test('with several views an empty title spans the row and shows its placeholder', async ({ page }) => {
+    await create(page, {
+      title: '',
+      views: [
+        { id: 'v1', name: 'Table', type: 'table', position: 'a0', sorts: [], filters: [], properties: [{ id: 't', visible: true, width: 280 }] },
+        { id: 'v2', name: 'List view', type: 'list', position: 'a1', sorts: [], filters: [], properties: [{ id: 't', visible: true }] },
+      ],
+    });
+    await setRowWidth(page, 400);
+    const box = await page.locator(TITLE).boundingBox();
+
+    expect(box?.width).toBeCloseTo(400, 0);
+    expect(box?.height).toBeCloseTo(31.2, 0);
+  });
+
+  test('an empty title keeps its placeholder width', async ({ page }) => {
+    await create(page, { title: '' });
+    await setRowWidth(page, 700);
+    const box = await page.locator(TITLE).boundingBox();
+
+    expect(box?.height).toBeCloseTo(31.2, 0);
+    // "New database" at 24px: the hidden copy still holds the title open.
+    expect(box?.width).toBeGreaterThan(100);
+  });
+
+  test('a full-page database still hides its own title', async ({ page }) => {
+    await create(page, { title: LONG_TITLE, fullPage: true });
+
+    await expect(page.locator(TITLE)).toBeHidden();
+  });
+
+  // notion-motion.md, Round 7 "⤢ fold point": below 320, » goes with New ⌄.
+  test('minimize folds with New below a 320px row', async ({ page }) => {
+    await create(page, {
+      title: LONG_TITLE,
+      views: [{ id: 'v1', name: 'Table', type: 'table', position: 'a0', sorts: [{ propertyId: 't', direction: 'ascending' }], filters: [], properties: [{ id: 't', visible: true, width: 280 }] }],
+    });
+    const minimize = page.getByTestId('database-toolbar-minimize');
+    const settings = page.getByTestId('database-toolbar-settings');
+
+    await setRowWidth(page, 320);
+    await expect(minimize).toBeVisible();
+    await expect(page.getByTestId('database-toolbar-new')).toBeVisible();
+
+    await setRowWidth(page, 319);
+    await expect(minimize).toBeHidden();
+    await expect(page.getByTestId('database-toolbar-new')).toBeHidden();
+    await expect(settings).toBeVisible();
+  });
+});

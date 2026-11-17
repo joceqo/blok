@@ -1,16 +1,21 @@
 import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, inputRequired, inputResponse, McpServer, ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 
-import type { Tool } from '@modelcontextprotocol/server';
-import type { AgentApprovalRequest, AgentApprover } from '../../types/agent';
+import type {
+  CallToolRequest, CallToolResult, GetPromptRequest, GetPromptResult, InputRequiredResult, Prompt, ServerContext, Tool,
+} from '@modelcontextprotocol/server';
+import type { AgentApprovalRequest } from '../../types/agent';
 
-import { approvalKey, describeShareChange, plainLine } from '../shared/agent/approval';
-import { failure } from '../shared/agent/errors';
+import { approvalKey } from '../shared/agent/approval';
+import { approvalQuestion, canElicit, elicitationApprover } from '../shared/mcp/approval';
 
 import { safeClientName } from './actor';
 import { UnknownToolError } from './dispatcher';
 import { getMcpPrompt, listMcpPrompts } from './prompts';
 import type { Caller, CallOptions, ToolOutcome } from './dispatcher';
 import type { McpTool } from './tools';
+
+/** The SDK's low-level server: McpServer.server, or one a host made itself. */
+export type SdkServer = McpServer['server'];
 
 export type Dispatch = (
   name: string,
@@ -19,100 +24,160 @@ export type Dispatch = (
   options?: CallOptions,
 ) => Promise<ToolOutcome>;
 
-/**
- * The question MCP elicitation puts to the client's person (spec: client/elicitation).
- * Named by the saved title, so a rename in the same batch cannot hide the database.
- */
-/** The one tick the person gives: named for what it allows. */
-const approvalField = (request: AgentApprovalRequest): 'unlock' | 'restore' | 'share' => {
-  switch (request.kind) {
-    case 'database.restore':
-      return 'restore';
-    case 'database.share':
-      return 'share';
-    case 'database.unlock':
-    // Never asked here (elicitationApprover says no first); named for the switch only.
-    case 'database.buttonConfirm':
-    case 'database.buttonHooks':
-      return 'unlock';
+/** Who calls one tools/call. Throwing a ProtocolError refuses the call. */
+export type ResolveCaller = (clientName: string, ctx: ServerContext) => Caller | Promise<Caller>;
+
+/** Blok's answers for the four methods it serves, bound to one SDK server. */
+export interface BlokHandlers {
+  ownsTool(name: string): boolean;
+  ownsPrompt(name: string): boolean;
+  listTools(): { tools: Tool[] };
+  listPrompts(): { prompts: Prompt[] };
+  callTool(request: CallToolRequest, ctx: ServerContext): Promise<CallToolResult | InputRequiredResult>;
+  getPrompt(request: GetPromptRequest): GetPromptResult;
+}
+
+/** The host's own tools and prompts, served next to Blok's on the same methods. */
+export interface HostSurface {
+  tools?: Tool[];
+  callTool?(request: CallToolRequest, ctx: ServerContext): CallToolResult | InputRequiredResult | Promise<CallToolResult | InputRequiredResult>;
+  prompts?: Prompt[];
+  getPrompt?(request: GetPromptRequest, ctx: ServerContext): GetPromptResult | InputRequiredResult | Promise<GetPromptResult | InputRequiredResult>;
+}
+
+const objectRooted = (tools: McpTool[]): (McpTool & Tool)[] => {
+  // The SDK requires an object root; keep the renderer schemas by reference.
+  if (!tools.every((tool): tool is McpTool & Tool => tool.inputSchema.type === 'object')) {
+    throw new TypeError('MCP tool input schemas must have an object root.');
   }
+
+  return tools;
 };
 
-const FIELDS = {
-  unlock: { title: 'Unlock', description: 'Tick to let the agent unlock this database.' },
-  restore: { title: 'Restore', description: 'Tick to let the agent restore this version.' },
-  share: { title: 'Allow', description: 'Tick to let the agent make exactly this sharing change.' },
+const clientNameOf = (server: SdkServer, envelope: unknown): string => {
+  const clientInfo = typeof envelope === 'object' && envelope !== null && CLIENT_INFO_META_KEY in envelope
+    ? envelope[CLIENT_INFO_META_KEY]
+    : undefined;
+
+  return safeClientName(typeof clientInfo === 'object' && clientInfo !== null
+    && 'name' in clientInfo && typeof clientInfo.name === 'string'
+    ? clientInfo.name
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- 2025-era clients name themselves only in initialize; they send no per-request envelope.
+    : server.getClientVersion()?.name);
 };
 
-/** `client` is already safeClientName's: letters, digits, dot, dash and underscore. */
-const unlockQuestion = (request: AgentApprovalRequest, client: string): ReturnType<typeof inputRequired.elicit> => {
-  // The title is already one plain line (savedTitle); JSON quoting keeps its own quotes from closing ours.
-  const database = `${request.title === undefined ? '' : `${JSON.stringify(request.title)} `}(id ${JSON.stringify(plainLine(request.blockId, 64) ?? '?')})`;
-  const field = approvalField(request);
-  const message = ((): string => {
-    switch (request.kind) {
-      case 'database.restore':
-        return `${client}'s agent wants to restore a version that changes the locked database ${database}. `
-          + 'A person locked it; the version removes it or changes its properties, views or settings. Restore it?';
-      case 'database.share': {
-        const view = `${request.view === undefined ? '' : `${JSON.stringify(request.view)} `}(id ${JSON.stringify(plainLine(request.viewId, 64) ?? '?')})`;
+export const blokHandlers = (input: { tools: McpTool[]; dispatch: Dispatch; resolveCaller: ResolveCaller }, server: SdkServer): BlokHandlers => {
+  const tools = objectRooted(input.tools);
+  const byName = new Map(tools.map(tool => [tool.name, tool]));
+  const promptNames = new Set(listMcpPrompts().map(prompt => prompt.name));
 
-        return `${client}'s agent wants to change who can see or fill out the view ${view} of the database ${database}. `
-          + `After the change: ${request.changes.map(describeShareChange).join('; ')}. Allow it?`;
+  return {
+    ownsTool: name => byName.has(name),
+    ownsPrompt: name => promptNames.has(name),
+    listTools: () => ({ tools }),
+    // Ask AI's skills, so an MCP client can offer the same buttons.
+    listPrompts: () => ({ prompts: listMcpPrompts() }),
+    getPrompt: request => getMcpPrompt(request.params.name, request.params.arguments),
+    callTool: async (request, ctx) => {
+      const name = request.params.name;
+      const tool = byName.get(name);
+
+      if (tool === undefined) {
+        throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);
       }
-      case 'database.unlock':
-        return `${client}'s agent wants to unlock the database ${database}. A person locked it, so its properties and views cannot change. Unlock it?`;
-      case 'database.buttonConfirm':
-        return `${client}'s agent wants to press a button in the database ${database} that asks for confirmation. Go on?`;
-      case 'database.buttonHooks':
-        return `${client}'s agent wants to press a button in the database ${database} that calls the host. Go on?`;
-    }
-  })();
+      const envelope: unknown = ctx.mcpReq.envelope;
+      const caller = await input.resolveCaller(clientNameOf(server, envelope), ctx);
+      const declared = typeof envelope === 'object' && envelope !== null && CLIENT_CAPABILITIES_META_KEY in envelope
+        ? envelope[CLIENT_CAPABILITIES_META_KEY]
+        // eslint-disable-next-line @typescript-eslint/no-deprecated -- 2025-era clients declare capabilities only in initialize.
+        : server.getClientCapabilities();
+      const asked: AgentApprovalRequest[] = [];
+      const approve = canElicit(declared) ? elicitationApprover(ctx.mcpReq.inputResponses, asked, inputResponse) : undefined;
+      const outcome = await (async (): Promise<ToolOutcome> => {
+        try {
+          return await input.dispatch(name, request.params.arguments ?? {}, caller, { signal: ctx.mcpReq.signal, ...(approve !== undefined && { approve }) });
+        } catch (thrown) {
+          if (thrown instanceof UnknownToolError) {
+            throw new ProtocolError(ProtocolErrorCode.InvalidParams, thrown.message);
+          }
+          throw thrown;
+        }
+      })();
 
-  return inputRequired.elicit({
-    message,
-    requestedSchema: {
-      type: 'object',
-      properties: { [field]: { type: 'boolean', ...FIELDS[field], default: false } },
-      required: [field],
+      const question = asked[0];
+
+      // The batch applied nothing; the client asks its person, then sends the same call again with the reply.
+      if (question !== undefined) {
+        return inputRequired({ inputRequests: { [approvalKey(question)]: inputRequired.elicit(approvalQuestion(question, caller.clientName)) } });
+      }
+
+      return server.projectCallToolResult({
+        content: [{ type: 'text', text: JSON.stringify(outcome.structuredContent) }],
+        structuredContent: outcome.structuredContent,
+        isError: outcome.isError,
+      }, tool.outputSchema);
     },
-  });
+  };
+};
+
+const BLOK_METHODS = ['tools/list', 'tools/call', 'prompts/list', 'prompts/get'] as const;
+
+const clashes = (names: string[] | undefined, owns: (name: string) => boolean): string[] =>
+  (names ?? []).filter(name => owns(name));
+
+/** The host's tool and prompt names, checked against Blok's before anything is served. */
+export interface HostNames {
+  tools?: ReadonlyArray<{ name: string }>;
+  prompts?: ReadonlyArray<{ name: string }>;
+}
+
+export const assertNoClash = (blok: BlokHandlers, host: HostNames): void => {
+  const taken = [
+    ...clashes(host.tools?.map(tool => tool.name), blok.ownsTool),
+    ...clashes(host.prompts?.map(prompt => prompt.name), blok.ownsPrompt),
+  ];
+
+  if (taken.length > 0) {
+    throw new Error(`Blok already serves ${taken.join(', ')}: rename the host's tool or prompt`);
+  }
 };
 
 /**
- * Answers from the person's elicitation replies on this request. With no reply yet it records
- * the question and says no, so the batch applies nothing; the server then asks and the client retries.
- * The model never sees these replies: the client sends them, not the tool arguments.
+ * Serves Blok's tools and prompts on a host's low-level server, next to the host's own.
+ * It never changes serverInfo, instructions or a handler the host set; it only adds the
+ * tools and prompts capabilities when they are missing.
  */
-const elicitationApprover = (responses: unknown, asked: AgentApprovalRequest[]): AgentApprover => (request) => {
-  // Button presses run only in the editor; a question MCP cannot word is never asked.
-  if (request.kind === 'database.buttonConfirm' || request.kind === 'database.buttonHooks') {
-    return Promise.resolve(false);
+export const attachBlok = (server: SdkServer, blok: BlokHandlers, host: HostSurface = {}): void => {
+  assertNoClash(blok, host);
+  // Without the handler, a call to a listed host tool or prompt would reach Blok and answer "Unknown tool".
+  if ((host.tools?.length ?? 0) > 0 && host.callTool === undefined) {
+    throw new Error('The host lists its own tools but passes no callTool to attach()');
   }
-  const replies = typeof responses === 'object' && responses !== null ? responses as Record<string, unknown> : undefined;
-  const reply = inputResponse(replies, approvalKey(request));
-
-  if (reply.kind === 'elicit') {
-    return Promise.resolve(reply.action === 'accept' && reply.content?.[approvalField(request)] === true);
+  if ((host.prompts?.length ?? 0) > 0 && host.getPrompt === undefined) {
+    throw new Error('The host lists its own prompts but passes no getPrompt to attach()');
   }
-  // A retry carries only the last round's replies, so asking again here would ask about the first database forever.
-  if (replies !== undefined && Object.keys(replies).length > 0) {
-    return Promise.reject(failure('APPROVAL_REQUIRED', request.kind === 'database.share'
-      ? 'Only one change a person must approve can be asked per call, and nothing in this batch was applied. '
-        + 'Send the sharing change of each view, and each unlock, in its own blok_execute.'
-      : 'Only one database can be unlocked per call, and nothing in this batch was applied. '
-        + 'Send each database.setLock that unlocks in its own blok_execute.', { details: { reason: 'one-per-call', approval: request } }));
+  for (const method of BLOK_METHODS) {
+    try {
+      server.assertCanSetRequestHandler(method);
+    } catch {
+      throw new Error(`The host server already answers ${method}. attach() serves it: pass the host's own tools and prompts to attach(), or compose handlers() yourself`);
+    }
   }
-  asked.push(request);
+  const capabilities = server.getCapabilities();
 
-  return Promise.resolve(false);
-};
-
-/** Form mode only: an empty elicitation object means form (the SDK's getSupportedElicitationModes); a URL-only client cannot send the tick back. */
-const canElicit = (capabilities: unknown): boolean => {
-  const elicitation = typeof capabilities === 'object' && capabilities !== null && 'elicitation' in capabilities ? capabilities.elicitation : undefined;
-
-  return typeof elicitation === 'object' && elicitation !== null && (Object.keys(elicitation).length === 0 || 'form' in elicitation);
+  // setRequestHandler checks the capability, so it must be there first.
+  server.registerCapabilities({
+    ...(capabilities.tools === undefined && { tools: {} }),
+    ...(capabilities.prompts === undefined && { prompts: {} }),
+  });
+  server.setRequestHandler('tools/list', async () => (host.tools === undefined ? blok.listTools() : { tools: [...host.tools, ...blok.listTools().tools] }));
+  server.setRequestHandler('prompts/list', async () => (host.prompts === undefined ? blok.listPrompts() : { prompts: [...host.prompts, ...blok.listPrompts().prompts] }));
+  server.setRequestHandler('prompts/get', async (request, ctx) => (blok.ownsPrompt(request.params.name) || host.getPrompt === undefined
+    ? blok.getPrompt(request)
+    : host.getPrompt(request, ctx)));
+  server.setRequestHandler('tools/call', async (request, ctx) => (blok.ownsTool(request.params.name) || host.callTool === undefined
+    ? blok.callTool(request, ctx)
+    : host.callTool(request, ctx)));
 };
 
 export const buildSdkServer = (input: {
@@ -122,69 +187,11 @@ export const buildSdkServer = (input: {
   caller: (clientName: string) => Caller;
   version: string;
 }): McpServer['server'] => {
-  const tools = input.tools;
-
-  // The SDK requires an object root; keep the renderer schemas by reference.
-  if (!tools.every((tool): tool is McpTool & Tool => tool.inputSchema.type === 'object')) {
-    throw new TypeError('MCP tool input schemas must have an object root.');
-  }
   // Clients put instructions in the model's context; otherwise the primer is only in blok_describe().
   const mcp = new McpServer({ name: 'blok-mcp', version: input.version }, { instructions: input.instructions });
   const server = mcp.server;
-  const byName = new Map(tools.map(tool => [tool.name, tool]));
 
-  server.registerCapabilities({ tools: {}, prompts: {} });
-  server.setRequestHandler('tools/list', async () => ({ tools }));
-  // Ask AI's skills, so an MCP client can offer the same buttons.
-  server.setRequestHandler('prompts/list', async () => ({ prompts: listMcpPrompts() }));
-  server.setRequestHandler('prompts/get', async request => getMcpPrompt(request.params.name, request.params.arguments));
-  server.setRequestHandler('tools/call', async (request, ctx) => {
-    const name = request.params.name;
-    const tool = byName.get(name);
-
-    if (tool === undefined) {
-      throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown tool: ${name}`);
-    }
-    const envelope: unknown = ctx.mcpReq.envelope;
-    const clientInfo = typeof envelope === 'object' && envelope !== null && CLIENT_INFO_META_KEY in envelope
-      ? envelope[CLIENT_INFO_META_KEY]
-      : undefined;
-    const rawName = typeof clientInfo === 'object' && clientInfo !== null
-      && 'name' in clientInfo && typeof clientInfo.name === 'string'
-      ? clientInfo.name
-      // eslint-disable-next-line @typescript-eslint/no-deprecated -- 2025-era clients name themselves only in initialize; they send no per-request envelope.
-      : server.getClientVersion()?.name;
-    const caller = input.caller(safeClientName(rawName));
-    const declared = typeof envelope === 'object' && envelope !== null && CLIENT_CAPABILITIES_META_KEY in envelope
-      ? envelope[CLIENT_CAPABILITIES_META_KEY]
-      // eslint-disable-next-line @typescript-eslint/no-deprecated -- 2025-era clients declare capabilities only in initialize.
-      : server.getClientCapabilities();
-    const asked: AgentApprovalRequest[] = [];
-    const approve = canElicit(declared) ? elicitationApprover(ctx.mcpReq.inputResponses, asked) : undefined;
-    const outcome = await (async (): Promise<ToolOutcome> => {
-      try {
-        return await input.dispatch(name, request.params.arguments ?? {}, caller, { signal: ctx.mcpReq.signal, ...(approve !== undefined && { approve }) });
-      } catch (thrown) {
-        if (thrown instanceof UnknownToolError) {
-          throw new ProtocolError(ProtocolErrorCode.InvalidParams, thrown.message);
-        }
-        throw thrown;
-      }
-    })();
-
-    const question = asked[0];
-
-    // The batch applied nothing; the client asks its person, then sends the same call again with the reply.
-    if (question !== undefined) {
-      return inputRequired({ inputRequests: { [approvalKey(question)]: unlockQuestion(question, caller.clientName) } });
-    }
-
-    return server.projectCallToolResult({
-      content: [{ type: 'text', text: JSON.stringify(outcome.structuredContent) }],
-      structuredContent: outcome.structuredContent,
-      isError: outcome.isError,
-    }, tool.outputSchema);
-  });
+  attachBlok(server, blokHandlers({ tools: input.tools, dispatch: input.dispatch, resolveCaller: clientName => input.caller(clientName) }, server));
 
   return server;
 };

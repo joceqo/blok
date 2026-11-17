@@ -10,6 +10,7 @@ internal enum GuardedFetchFailure
   TimedOut,
   TooManyRedirects,
   UnsupportedContentEncoding,
+  RateLimited,
 }
 
 internal sealed class GuardedFetchException : Exception
@@ -56,7 +57,11 @@ internal sealed class GuardedOutboundPolicy : IGuardedOutboundPolicy
     NetworkRange.Parse("240.0.0.0/4"),
     NetworkRange.Parse("255.255.255.255/32"),
     NetworkRange.Parse("100.64.0.0/10"),
+    // Azure WireServer: every Azure VM reaches it.
+    NetworkRange.Parse("168.63.129.16/32"),
     NetworkRange.Parse("::/96"),
+    // SIIT ::ffff:0:a.b.c.d reaches IPv4 through a translator.
+    NetworkRange.Parse("::ffff:0:0:0/96"),
     NetworkRange.Parse("100::/64"),
     NetworkRange.Parse("2001::/23"),
     NetworkRange.Parse("2001:2::/48"),
@@ -84,7 +89,10 @@ internal sealed class GuardedOutboundPolicy : IGuardedOutboundPolicy
       ? Uri.TryCreate(rawUrl, UriKind.Absolute, out var url)
       : Uri.TryCreate(baseUrl, rawUrl, out url);
 
+    // A raw control character anywhere is refused: .NET keeps some as %00
+    // and Go's parser trims them at the ends.
     if (string.IsNullOrWhiteSpace(rawUrl) ||
+        BrowserUrl.HasControl(rawUrl) ||
         !parsed ||
         url is null ||
         (url.Scheme != Uri.UriSchemeHttp &&

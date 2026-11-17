@@ -43,28 +43,12 @@ export class Dom {
 
   /**
    * Checks if a class name is valid for use with classList.add()
-   * classList.add() throws if class contains whitespace, is empty, or contains invalid characters
+   * Per the DOM spec, classList.add() throws only for an empty token or one with whitespace
    * @param className - class name to validate
    * @returns {boolean} - true if valid for classList.add()
    */
   private static isValidClassName(className: string): boolean {
-    if (className === '' || /\s/.test(className)) {
-      return false;
-    }
-
-    /**
-     * Try to validate by creating a temporary element and using classList.add
-     * This is more reliable than regex because it follows the actual browser implementation
-     */
-    try {
-      const testEl = document.createElement('div');
-
-      testEl.classList.add(className);
-
-      return true;
-    } catch {
-      return false;
-    }
+    return className !== '' && !/\s/.test(className);
   }
 
   /**
@@ -238,22 +222,21 @@ export class Dom {
    * @param holder - element where to find inputs
    */
   public static findAllInputs(holder: Element): HTMLElement[] {
-    const elements = Array.from(holder.querySelectorAll(Dom.allInputsSelector));
-    const htmlElements: HTMLElement[] = [];
+    const result: HTMLElement[] = [];
 
-    for (const element of elements) {
-      if (element instanceof HTMLElement) {
-        htmlElements.push(element);
+    for (const input of Array.from(holder.querySelectorAll(Dom.allInputsSelector))) {
+      if (!(input instanceof HTMLElement)) {
+        continue;
+      }
+
+      if (Dom.isNativeInput(input) || Dom.containsOnlyInlineElements(input)) {
+        result.push(input);
+      } else {
+        Dom.collectDeepestBlockElements(input, result);
       }
     }
 
-    return htmlElements.reduce((result, input) => {
-      if (Dom.isNativeInput(input) || Dom.containsOnlyInlineElements(input)) {
-        return [...result, input];
-      }
-
-      return [...result, ...Dom.getDeepestBlockElements(input)];
-    }, [] as HTMLElement[]);
+    return result;
   }
 
   /**
@@ -544,13 +527,28 @@ export class Dom {
    * @returns {HTMLElement[]}
    */
   public static getDeepestBlockElements(parent: HTMLElement): HTMLElement[] {
+    const result: HTMLElement[] = [];
+
+    Dom.collectDeepestBlockElements(parent, result);
+
+    return result;
+  }
+
+  /**
+   * Push `parent`'s deepest block elements onto `result`, in document order
+   * @param parent - root element
+   * @param result - array to fill
+   */
+  private static collectDeepestBlockElements(parent: HTMLElement, result: HTMLElement[]): void {
     if (Dom.containsOnlyInlineElements(parent)) {
-      return [ parent ];
+      result.push(parent);
+
+      return;
     }
 
-    return Array.from(parent.children).reduce((result, element) => {
-      return [...result, ...Dom.getDeepestBlockElements(element as HTMLElement)];
-    }, [] as HTMLElement[]);
+    for (const element of Array.from(parent.children)) {
+      Dom.collectDeepestBlockElements(element as HTMLElement, result);
+    }
   }
 
   /**

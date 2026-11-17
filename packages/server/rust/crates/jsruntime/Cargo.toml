@@ -1,0 +1,21 @@
+[package]
+name = "blok-jsruntime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal part of blok-mcp (embedded JavaScript runtime). Not a stable API."
+publish = true
+
+[dependencies]
+icu_collator = "2.4.0"
+rquickjs = "=0.14.0"
+tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+
+[lints]
+workspace = true

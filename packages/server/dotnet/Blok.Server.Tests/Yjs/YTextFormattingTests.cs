@@ -261,6 +261,78 @@ public sealed class YTextFormattingTests
         transaction => content.Insert(transaction, 0, "a", Attrs(("bold", YUndefined.Instance)))));
   }
 
+  /// <summary>
+  /// Only the index is range-checked. A negative length is not the
+  /// length-0 early return, and it skips FormatText's length-0 break, so the
+  /// conflicting mark at the start is deleted and its value restored after.
+  /// </summary>
+  [Fact]
+  public void ANegativeFormatLengthStillDeletesTheConflictingMarkAtTheStart()
+  {
+    var doc = new YDoc(4242);
+    var text = doc.GetText("content");
+    var updates = new List<byte[]>();
+
+    doc.Transact(transaction => text.Insert(transaction, 0, "ab", Attrs(("bold", true))));
+    doc.UpdateEmitted += update => updates.Add(update.Update);
+    doc.Transact(transaction => text.Format(transaction, 0, -1, Attrs(("bold", false))));
+
+    // Writes bold:false, deletes the bold:true mark at clock 0 (the delete
+    // set's 4242:0+1), then restores bold:true after it.
+    Assert.Equal(
+        "01029221044692210004626F6C640566616C7365C692210092210104626F6C640474727565019221010001",
+        Convert.ToHexString(Assert.Single(updates)));
+    Assert.Equal("""[{"insert":"ab","attributes":{"bold":true}}]""", DeltaJson(text.ToDelta()).ToJsonString());
+  }
+
+  /// <summary>
+  /// The same attributes object formatted twice. The mark keeps the
+  /// caller's value instance, so the second call finds a mark that is ===
+  /// what it wants (its nested object included) and writes nothing.
+  /// </summary>
+  [Fact]
+  public void FormattingTheSameNestedMarkObjectTwiceWritesItOnce()
+  {
+    var doc = new YDoc(4242);
+    var text = doc.GetText("content");
+    var updates = new List<byte[]>();
+    var link = Attrs(("link", Attrs(("href", "h"), ("meta", Attrs(("x", 1d))))));
+
+    doc.Transact(transaction => text.Insert(transaction, 0, "ab", Attrs()));
+    doc.UpdateEmitted += update => updates.Add(update.Update);
+    doc.Transact(transaction => text.Format(transaction, 0, 2, link));
+    doc.Transact(transaction => text.Format(transaction, 0, 2, link));
+
+    Assert.Equal(
+        "010292210246922100046C696E6B1B7B2268726566223A2268222C226D657461223A7B2278223A317D7D86922101046C696E6B046E756C6C00",
+        Convert.ToHexString(Assert.Single(updates)));
+  }
+
+  /// <summary>
+  /// Two different link objects that share ONE nested meta instance: the
+  /// flat compare finds every member ===, so the second call writes
+  /// nothing. Two meta objects that are only deep-equal write again.
+  /// </summary>
+  [Theory]
+  [InlineData(true, 1)]
+  [InlineData(false, 2)]
+  public void TwoMarkObjectsSharingOneNestedInstanceWriteOnce(bool shared, int writes)
+  {
+    var doc = new YDoc(4242);
+    var text = doc.GetText("content");
+    var updates = new List<byte[]>();
+    var meta = Attrs(("x", 1d));
+    var first = Attrs(("link", Attrs(("href", "h"), ("meta", meta))));
+    var second = Attrs(("link", Attrs(("href", "h"), ("meta", shared ? meta : Attrs(("x", 1d))))));
+
+    doc.Transact(transaction => text.Insert(transaction, 0, "ab", Attrs()));
+    doc.UpdateEmitted += update => updates.Add(update.Update);
+    doc.Transact(transaction => text.Format(transaction, 0, 2, first));
+    doc.Transact(transaction => text.Format(transaction, 0, 2, second));
+
+    Assert.Equal(writes, updates.Count);
+  }
+
   private static AnyObject Attrs(params (string Key, object? Value)[] entries)
   {
     var attributes = new AnyObject();

@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/dotnet"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/dotnet"
 )
 
 // Hand ports of the TLS cases in GuardedOutboundFetcherTests, plus the
@@ -38,9 +38,9 @@ func makeCert(t *testing.T, template, parent *x509.Certificate, public, private 
 }
 
 type testPKI struct {
-	root *x509.Certificate
-	pool *x509.CertPool
-	leaf tls.Certificate
+	root  *x509.Certificate
+	roots []*x509.Certificate
+	leaf  tls.Certificate
 }
 
 // newPKI is TestCertificates.Create: a root and a leaf for name, with extra
@@ -65,9 +65,7 @@ func newPKI(t *testing.T, name string, leafFields func(*x509.Certificate)) testP
 		leafFields(leafTemplate)
 	}
 	leaf := makeCert(t, leafTemplate, root, &leafKey.PublicKey, rootKey)
-	pool := x509.NewCertPool()
-	pool.AddCert(root)
-	return testPKI{root: root, pool: pool, leaf: tls.Certificate{Certificate: [][]byte{leaf.Raw}, PrivateKey: leafKey}}
+	return testPKI{root: root, roots: []*x509.Certificate{root}, leaf: tls.Certificate{Certificate: [][]byte{leaf.Raw}, PrivateKey: leafKey}}
 }
 
 // tlsOrigin is LoopbackOrigin with a server certificate: it records the SNI
@@ -109,10 +107,10 @@ func startTLSOrigin(t *testing.T, certificate tls.Certificate, protocols []strin
 	return o
 }
 
-func loopbackFetcher(host string, port int, roots *x509.CertPool) *Fetcher {
+func loopbackFetcher(host string, port int, roots []*x509.Certificate) *Fetcher {
 	resolver := &countingResolver{answers: [][]netip.Addr{addrs("127.0.0.1")}}
 	f := newTestFetcher(&fixturePolicy{host: host, port: port, allowed: addrs("127.0.0.1")}, resolver)
-	f.RootCAs = roots
+	f.Roots = roots
 	return f
 }
 
@@ -127,7 +125,7 @@ func wantBlocked(t *testing.T, err error) {
 func TestPreservesTheHostnameForTLSSNIAndCertificateValidation(t *testing.T) {
 	pki := newPKI(t, "secure.example", nil)
 	o := startTLSOrigin(t, pki.leaf, nil)
-	f := loopbackFetcher("secure.example", o.port, pki.pool)
+	f := loopbackFetcher("secure.example", o.port, pki.roots)
 	response, err := f.Get(context.Background(), "https://secure.example:"+strconv.Itoa(o.port)+"/tls", testLimits)
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +139,7 @@ func TestPreservesTheHostnameForTLSSNIAndCertificateValidation(t *testing.T) {
 func TestRejectsATrustedCertificateForTheWrongHostname(t *testing.T) {
 	pki := newPKI(t, "other.example", nil)
 	o := startTLSOrigin(t, pki.leaf, nil)
-	f := loopbackFetcher("secure.example", o.port, pki.pool)
+	f := loopbackFetcher("secure.example", o.port, pki.roots)
 	_, err := f.Get(context.Background(), "https://secure.example:"+strconv.Itoa(o.port)+"/", testLimits)
 	wantBlocked(t, err)
 }
@@ -158,7 +156,7 @@ func TestRetainsNormalTLSCertificateValidation(t *testing.T) {
 func TestOffersOnlyHTTP11DuringTLSNegotiation(t *testing.T) {
 	pki := newPKI(t, "alpn.example", nil)
 	o := startTLSOrigin(t, pki.leaf, []string{"h2", "http/1.1"})
-	f := loopbackFetcher("alpn.example", o.port, pki.pool)
+	f := loopbackFetcher("alpn.example", o.port, pki.roots)
 	response, err := f.Get(context.Background(), "https://alpn.example:"+strconv.Itoa(o.port)+"/", testLimits)
 	if err != nil {
 		t.Fatal(err)
@@ -183,7 +181,7 @@ func TestNeverChecksRevocation(t *testing.T) {
 		leaf.OCSPServer = []string{responder.URL + "/ocsp"}
 	})
 	o := startTLSOrigin(t, pki.leaf, nil)
-	f := loopbackFetcher("revoked.example", o.port, pki.pool)
+	f := loopbackFetcher("revoked.example", o.port, pki.roots)
 	response, err := f.Get(context.Background(), "https://revoked.example:"+strconv.Itoa(o.port)+"/", testLimits)
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +198,7 @@ func TestAnIPLiteralSendsNoServerName(t *testing.T) {
 	pki := newPKI(t, "127.0.0.1", nil)
 	o := startTLSOrigin(t, pki.leaf, nil)
 	f := NewFetcher(anyAddress{})
-	f.RootCAs = pki.pool
+	f.Roots = pki.roots
 	response, err := f.Get(context.Background(), "https://127.0.0.1:"+strconv.Itoa(o.port)+"/", testLimits)
 	if err != nil {
 		t.Fatal(err)
@@ -227,3 +225,77 @@ func (anyAddress) Validate(raw string, base *dotnet.URI) (Target, error) {
 }
 
 func (anyAddress) AddressAllowed(netip.Addr) bool { return true }
+
+// portsPolicy allows one host on any of the listed ports, at 127.0.0.1.
+type portsPolicy struct {
+	host  string
+	ports []int
+}
+
+func (p portsPolicy) Validate(raw string, base *dotnet.URI) (Target, error) {
+	url, ok := resolve(raw, base)
+	if !ok || url.Host != p.host {
+		return Target{}, fail(Blocked)
+	}
+	for _, port := range p.ports {
+		if url.Port == port {
+			return Target{URL: url, Host: url.IdnHost, Port: url.Port}, nil
+		}
+	}
+	return Target{}, fail(Blocked)
+}
+
+func (portsPolicy) AddressAllowed(address netip.Addr) bool {
+	return address == netip.MustParseAddr("127.0.0.1")
+}
+
+func TestRefusesARedirectFromHTTPSDownToHTTP(t *testing.T) {
+	var plainHits atomic.Int32
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		plainHits.Add(1)
+		_, _ = w.Write([]byte("plain"))
+	}))
+	t.Cleanup(plain.Close)
+	plainPort := plain.Listener.Addr().(*net.TCPAddr).Port
+	pki := newPKI(t, "secure.example", nil)
+	secure := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "http://secure.example:"+strconv.Itoa(plainPort)+"/plain")
+		w.WriteHeader(http.StatusFound)
+	}))
+	secure.TLS = &tls.Config{Certificates: []tls.Certificate{pki.leaf}}
+	secure.StartTLS()
+	t.Cleanup(secure.Close)
+	securePort := secure.Listener.Addr().(*net.TCPAddr).Port
+	f := newTestFetcher(portsPolicy{host: "secure.example", ports: []int{securePort, plainPort}},
+		&countingResolver{answers: [][]netip.Addr{addrs("127.0.0.1")}})
+	f.Roots = pki.roots
+
+	_, err := f.Get(context.Background(), "https://secure.example:"+strconv.Itoa(securePort)+"/", testLimits)
+	wantBlocked(t, err)
+	if plainHits.Load() != 0 {
+		t.Fatalf("the http hop was fetched %d times", plainHits.Load())
+	}
+}
+
+func TestFollowsARedirectFromHTTPUpToHTTPS(t *testing.T) {
+	pki := newPKI(t, "secure.example", nil)
+	o := startTLSOrigin(t, pki.leaf, nil)
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "https://secure.example:"+strconv.Itoa(o.port)+"/up")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(plain.Close)
+	plainPort := plain.Listener.Addr().(*net.TCPAddr).Port
+	f := newTestFetcher(portsPolicy{host: "secure.example", ports: []int{o.port, plainPort}},
+		&countingResolver{answers: [][]netip.Addr{addrs("127.0.0.1")}})
+	f.Roots = pki.roots
+
+	response, err := f.Get(context.Background(), "http://secure.example:"+strconv.Itoa(plainPort)+"/", testLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Release()
+	if string(response.Body) != "ok" {
+		t.Fatalf("body %q", response.Body)
+	}
+}

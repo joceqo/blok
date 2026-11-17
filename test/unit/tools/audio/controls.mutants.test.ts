@@ -8,10 +8,10 @@ import {
   IconPlayerPause,
   IconPlayerPlay,
   IconPlayerSettings,
-  IconPlayerVolume,
   IconPlayerVolumeMute,
   IconPlus,
 } from '../../../../src/components/icons';
+import { volumeLevelIcon } from '../../../../src/components/utils/volume-icon';
 
 const VOL_KEY = 'blok:audio:volume';
 const RATE_KEY = 'blok:audio:rate';
@@ -101,6 +101,7 @@ interface Mounted {
   root: HTMLElement;
   play: HTMLButtonElement;
   time: HTMLElement;
+  seek: HTMLInputElement;
   mute: HTMLButtonElement;
   volume: HTMLInputElement;
   volumeWrap: HTMLElement;
@@ -108,11 +109,12 @@ interface Mounted {
   speedWrap: HTMLElement;
   menu: HTMLElement;
   readout: HTMLElement;
-  sliderRow: HTMLElement;
+  stepperRow: HTMLElement;
+  wire: HTMLElement;
   slider: HTMLInputElement;
   steppers: HTMLButtonElement[];
-  chipRow: HTMLElement;
-  chips: HTMLButtonElement[];
+  presetRow: HTMLElement;
+  presets: HTMLButtonElement[];
   loop: HTMLButtonElement;
 }
 
@@ -140,6 +142,7 @@ const mount = (options: MountOptions): Mounted => {
     root,
     play: must<HTMLButtonElement>(root, '[data-role="audio-play"]'),
     time: must<HTMLElement>(root, '[data-role="audio-time"]'),
+    seek: must<HTMLInputElement>(root, '[data-role="audio-seek"]'),
     mute: must<HTMLButtonElement>(root, '[data-role="audio-mute"]'),
     volume: must<HTMLInputElement>(root, '[data-role="audio-volume"]'),
     volumeWrap: must<HTMLElement>(root, '.blok-audio-controls__volume-wrap'),
@@ -147,11 +150,12 @@ const mount = (options: MountOptions): Mounted => {
     speedWrap: must<HTMLElement>(root, '.blok-audio-controls__speed-wrap'),
     menu: must<HTMLElement>(root, '.blok-audio-controls__speed-menu'),
     readout: must<HTMLElement>(root, '.blok-audio-controls__speed-readout'),
-    sliderRow: must<HTMLElement>(root, '.blok-audio-controls__speed-slider-row'),
+    stepperRow: must<HTMLElement>(root, '.blok-audio-controls__speed-stepper'),
+    wire: must<HTMLElement>(root, '.blok-audio-controls__speed-wire'),
     slider: must<HTMLInputElement>(root, '.blok-audio-controls__speed-slider'),
     steppers: [...root.querySelectorAll<HTMLButtonElement>('.blok-audio-controls__speed-step')],
-    chipRow: must<HTMLElement>(root, '.blok-audio-controls__speed-chips'),
-    chips: [...root.querySelectorAll<HTMLButtonElement>('.blok-audio-controls__speed-chip')],
+    presetRow: must<HTMLElement>(root, '.blok-audio-controls__speed-presets'),
+    presets: [...root.querySelectorAll<HTMLButtonElement>('.blok-audio-controls__speed-preset')],
     loop: must<HTMLButtonElement>(root, '[data-role="audio-loop"]'),
   };
 };
@@ -232,7 +236,7 @@ describe('attachControls — rendered contract', () => {
 
     expect(ui.root.className).toBe('blok-audio-controls');
     expect(ui.root.getAttribute('data-role')).toBe('audio-controls');
-    expect([...ui.root.children]).toStrictEqual([ui.play, ui.time, ui.volumeWrap, ui.speedWrap, ui.loop]);
+    expect([...ui.root.children]).toStrictEqual([ui.play, ui.time, ui.seek, ui.volumeWrap, ui.speedWrap, ui.loop]);
     ui.handle.destroy();
   });
 
@@ -268,7 +272,7 @@ describe('attachControls — rendered contract', () => {
     expect(ui.volume.getAttribute('aria-label')).toBe('Volume');
     expect(ui.mute.getAttribute('aria-pressed')).toBe('false');
     expect(ui.mute.getAttribute('aria-label')).toBe('Mute');
-    expect(ui.mute.innerHTML).toBe(iconMarkup(IconPlayerVolume));
+    expect(ui.mute.innerHTML).toBe(iconMarkup(volumeLevelIcon(1)));
     ui.handle.destroy();
   });
 
@@ -287,16 +291,19 @@ describe('attachControls — rendered contract', () => {
     ui.handle.destroy();
   });
 
-  it('renders the speed menu rows: readout, steppers around the slider, then the presets', () => {
+  it('renders the speed menu rows: steppers around the readout, the wire, then the presets', () => {
     const ui = mount({ media: makeMedia() });
 
-    expect([...ui.menu.children]).toStrictEqual([ui.readout, ui.sliderRow, ui.chipRow]);
+    expect([...ui.menu.children]).toStrictEqual([ui.stepperRow, ui.wire, ui.presetRow]);
     expect(ui.readout.className).toBe('blok-audio-controls__speed-readout');
-    expect(ui.readout.getAttribute('aria-hidden')).toBe('true');
+    expect(ui.readout.getAttribute('role')).toBe('button');
     expect(ui.readout.textContent).toBe('1×');
+    expect([...ui.readout.children].map((child) => child.className))
+      .toStrictEqual(['blok-audio-controls__speed-readout-digits', 'blok-audio-controls__speed-readout-unit']);
 
-    expect(ui.sliderRow.className).toBe('blok-audio-controls__speed-slider-row');
-    expect([...ui.sliderRow.children]).toStrictEqual([ui.steppers[0], ui.slider, ui.steppers[1]]);
+    expect(ui.stepperRow.className).toBe('blok-audio-controls__speed-stepper');
+    expect([...ui.stepperRow.children]).toStrictEqual([ui.steppers[0], ui.readout, ui.steppers[1]]);
+    expect(ui.wire.contains(ui.slider)).toBe(true);
     expect(ui.steppers.map((step) => step.type)).toStrictEqual(['button', 'button']);
     expect(ui.steppers.map((step) => step.className))
       .toStrictEqual(['blok-audio-controls__speed-step', 'blok-audio-controls__speed-step']);
@@ -306,9 +313,10 @@ describe('attachControls — rendered contract', () => {
       .toStrictEqual([iconMarkup(IconMinus), iconMarkup(IconPlus)]);
     expect(ui.steppers.map((step) => step.disabled)).toStrictEqual([false, false]);
 
-    expect(ui.chipRow.className).toBe('blok-audio-controls__speed-chips');
-    expect(ui.chips.map((chip) => chip.textContent)).toStrictEqual(['0.5×', '1×', '1.5×', '2×']);
-    expect(ui.chips.map((chip) => chip.type)).toStrictEqual(['button', 'button', 'button', 'button']);
+    expect(ui.presetRow.className).toBe('blok-audio-controls__speed-presets');
+    expect(ui.presets.map((preset) => preset.className)).toStrictEqual(ui.presets.map(() => 'blok-audio-controls__speed-preset'));
+    expect(ui.presets.map((preset) => preset.textContent)).toStrictEqual(['0.25×', '0.5×', '1×', '1.5×', '2×']);
+    expect(ui.presets.map((preset) => preset.type)).toStrictEqual(ui.presets.map(() => 'button'));
     ui.handle.destroy();
   });
 
@@ -323,8 +331,6 @@ describe('attachControls — rendered contract', () => {
     expect(ui.slider.className).toBe('blok-audio-controls__speed-slider');
     expect(ui.slider.getAttribute('aria-label')).toBe('Playback speed');
     expect(ui.slider.getAttribute('aria-valuetext')).toBe('1×');
-    // audio.css paints the elapsed fill from this property; any other name freezes it.
-    expect(ui.slider.style.getPropertyValue('--blok-audio-speed-pct')).toBe('42.857142857142854%');
     ui.handle.destroy();
   });
 
@@ -556,7 +562,7 @@ describe('attachControls — position restore', () => {
 });
 
 describe('attachControls — volume and mute', () => {
-  it('repaints the mute state from the click itself, not from the element echoing it', () => {
+  it('repaints the mute state from the click itself, not from the element echoing it', async () => {
     const storage = memoryStorage();
     const media = silentVolumeEcho();
     const ui = mount({ media, storage });
@@ -565,14 +571,14 @@ describe('attachControls — volume and mute', () => {
 
     expect(ui.mute.getAttribute('aria-pressed')).toBe('true');
     expect(ui.mute.getAttribute('aria-label')).toBe('Unmute');
-    expect(ui.mute.innerHTML).toBe(iconMarkup(IconPlayerVolumeMute));
+    await vi.waitFor(() => expect(ui.mute.innerHTML).toBe(iconMarkup(IconPlayerVolumeMute)));
     expect(ui.volume.value).toBe('0');
     expect(ui.volume.style.getPropertyValue('--blok-audio-vol-pct')).toBe('0%');
     expect(storage.entries.get(VOL_KEY)).toBe('{"volume":1,"muted":true}');
     ui.handle.destroy();
   });
 
-  it('mutes the element and repaints the button, slider and fill', () => {
+  it('mutes the element and repaints the button, slider and fill', async () => {
     const storage = memoryStorage();
     const media = makeMedia();
     const ui = mount({ media, storage });
@@ -582,7 +588,7 @@ describe('attachControls — volume and mute', () => {
     expect(media.muted).toBe(true);
     expect(ui.mute.getAttribute('aria-pressed')).toBe('true');
     expect(ui.mute.getAttribute('aria-label')).toBe('Unmute');
-    expect(ui.mute.innerHTML).toBe(iconMarkup(IconPlayerVolumeMute));
+    await vi.waitFor(() => expect(ui.mute.innerHTML).toBe(iconMarkup(IconPlayerVolumeMute)));
     expect(ui.volume.value).toBe('0');
     expect(ui.volume.style.getPropertyValue('--blok-audio-vol-pct')).toBe('0%');
     expect(storage.entries.get(VOL_KEY)).toBe('{"volume":1,"muted":true}');
@@ -599,7 +605,7 @@ describe('attachControls — volume and mute', () => {
     expect(media.muted).toBe(false);
     expect(ui.mute.getAttribute('aria-pressed')).toBe('false');
     expect(ui.mute.getAttribute('aria-label')).toBe('Mute');
-    expect(ui.mute.innerHTML).toBe(iconMarkup(IconPlayerVolume));
+    expect(ui.mute.innerHTML).toBe(iconMarkup(volumeLevelIcon(1)));
     expect(ui.volume.value).toBe('1');
     ui.handle.destroy();
   });
@@ -890,40 +896,38 @@ describe('attachControls — speed menu', () => {
 });
 
 describe('attachControls — playback speed', () => {
-  it('applies a preset chip to the element, the readout, the slider and storage', () => {
+  it('applies a preset to the element, the readout, the slider and storage', () => {
     const storage = memoryStorage();
     const media = makeMedia();
     const ui = mount({ media, storage });
 
     ui.gear.click();
-    ui.chips[3].click();
+    ui.presets[4].click();
 
     expect(media.playbackRate).toBe(2);
     expect(ui.readout.textContent).toBe('2×');
     expect(ui.slider.value).toBe('2');
     expect(ui.slider.getAttribute('aria-valuetext')).toBe('2×');
-    expect(ui.slider.style.getPropertyValue('--blok-audio-speed-pct')).toBe('100%');
     expect(ui.steppers[0].disabled).toBe(false);
-    expect(ui.steppers[1].disabled).toBe(true);
+    expect(ui.steppers[1].disabled).toBe(false);
     expect(storage.entries.get(RATE_KEY)).toBe('2');
     expect(ui.menu.hidden).toBe(false);
     ui.handle.destroy();
   });
 
-  it('applies the slowest chip and paints the fill down the track', () => {
+  it('applies a slow preset', () => {
     const media = makeMedia();
     const ui = mount({ media });
 
-    ui.chips[0].click();
+    ui.presets[1].click();
 
     expect(media.playbackRate).toBe(0.5);
     expect(ui.readout.textContent).toBe('0.5×');
-    expect(ui.slider.style.getPropertyValue('--blok-audio-speed-pct')).toBe('14.285714285714285%');
     expect(ui.steppers[0].disabled).toBe(false);
     ui.handle.destroy();
   });
 
-  it('drives the rate from the slider and parks the stepper at the floor', () => {
+  it('drives the rate from the slider, whose floor is above the typed floor', () => {
     const media = makeMedia();
     const ui = mount({ media });
 
@@ -931,8 +935,7 @@ describe('attachControls — playback speed', () => {
 
     expect(media.playbackRate).toBe(0.25);
     expect(ui.readout.textContent).toBe('0.25×');
-    expect(ui.slider.style.getPropertyValue('--blok-audio-speed-pct')).toBe('0%');
-    expect(ui.steppers[0].disabled).toBe(true);
+    expect(ui.steppers[0].disabled).toBe(false);
     expect(ui.steppers[1].disabled).toBe(false);
     ui.handle.destroy();
   });
@@ -972,27 +975,26 @@ describe('attachControls — playback speed', () => {
     expect(ui.slider.value).toBe('1.5');
     expect(ui.readout.textContent).toBe('1.5×');
     expect(ui.slider.getAttribute('aria-valuetext')).toBe('1.5×');
-    expect(ui.slider.style.getPropertyValue('--blok-audio-speed-pct')).toBe('71.42857142857143%');
     ui.handle.destroy();
   });
 
   it('keeps the decrease stepper disabled when the restored rate is the floor', () => {
-    const storage = memoryStorage({ [RATE_KEY]: '0.25' });
+    const storage = memoryStorage({ [RATE_KEY]: '0.1' });
     const media = makeMedia();
     const ui = mount({ media, storage });
 
-    expect(media.playbackRate).toBe(0.25);
+    expect(media.playbackRate).toBe(0.1);
     expect(ui.steppers[0].disabled).toBe(true);
     expect(ui.steppers[1].disabled).toBe(false);
     ui.handle.destroy();
   });
 
   it('keeps the increase stepper disabled when the restored rate is the ceiling', () => {
-    const storage = memoryStorage({ [RATE_KEY]: '2' });
+    const storage = memoryStorage({ [RATE_KEY]: '3' });
     const media = makeMedia();
     const ui = mount({ media, storage });
 
-    expect(media.playbackRate).toBe(2);
+    expect(media.playbackRate).toBe(3);
     expect(ui.steppers[0].disabled).toBe(false);
     expect(ui.steppers[1].disabled).toBe(true);
     ui.handle.destroy();
@@ -1237,83 +1239,6 @@ describe('attachControls — keyboard', () => {
 
     expect(media.play).toHaveBeenCalled();
     ui.handle.destroy();
-  });
-});
-
-describe('attachControls — vinyl platter', () => {
-  interface Platter {
-    frames: FrameRequestCallback[];
-    cancel: ReturnType<typeof vi.fn>;
-    figure: HTMLElement;
-  }
-
-  const platterFixture = (): Platter => {
-    const frames: FrameRequestCallback[] = [];
-
-    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((frame: FrameRequestCallback): number => {
-      frames.push(frame);
-
-      return frames.length;
-    });
-
-    const cancel = vi.fn();
-
-    vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(cancel);
-
-    const figure = document.createElement('figure');
-    const disc = document.createElement('div');
-
-    disc.className = 'blok-audio-cover__disc';
-    figure.appendChild(disc);
-
-    return { frames, cancel, figure };
-  };
-
-  it('holds the record still until the element reports playback', () => {
-    const { frames, figure } = platterFixture();
-    const media = makeMedia();
-    const ui = mount({ media, figure });
-
-    expect(frames).toHaveLength(0);
-
-    media.dispatchEvent(new Event('play'));
-    expect(frames).toHaveLength(1);
-    ui.handle.destroy();
-  });
-
-  it('coasts the record to a stop after a pause instead of spinning forever', () => {
-    const { frames, figure } = platterFixture();
-    const media = makeMedia();
-    const ui = mount({ media, figure });
-    const cursor = { index: 0, timestamp: 0 };
-    const pump = (limit: number): void => {
-      while (cursor.index < frames.length && cursor.index < limit) {
-        const frame = frames[cursor.index];
-
-        cursor.index += 1;
-        cursor.timestamp += 16;
-        frame(cursor.timestamp);
-      }
-    };
-
-    media.dispatchEvent(new Event('play'));
-    pump(2);
-    media.dispatchEvent(new Event('pause'));
-    pump(600);
-
-    expect(frames.length).toBeLessThan(600);
-    ui.handle.destroy();
-  });
-
-  it('cancels the spin loop on destroy', () => {
-    const { cancel, figure } = platterFixture();
-    const media = makeMedia();
-    const ui = mount({ media, figure });
-
-    media.dispatchEvent(new Event('play'));
-    ui.handle.destroy();
-
-    expect(cancel).toHaveBeenCalledWith(1);
   });
 });
 

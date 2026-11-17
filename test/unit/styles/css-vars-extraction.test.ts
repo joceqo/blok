@@ -227,6 +227,14 @@ describe('R2 — repeated length literals in themeable properties must be tokeni
     '[data-blok-component="callout"] button:has(+ [data-blok-toggle-children] > :first-child :is(h1, h2, h3))|margin-top',
     '[data-blok-tool="video"] .blok-video-controls__speed-needle|margin-left',
     '[data-blok-tool="video"] .blok-video-controls__speed-needle::before|margin-left',
+    // Centres the 20px title "Aa" over the 16px column icon slot.
+    '[data-blok-database-table-column-icon][data-type="title"] svg|margin',
+    // Notion's 61px "And" starts 1px left of the 60px "Where" column, so both rows' buttons line up.
+    '[data-blok-database-filter-conjunction]|margin-inline-start',
+    // r20-cc-list-style.raw: the card's trash sits 6 down, 1 border plus 5, so the card is 100 tall.
+    '[data-blok-database-color-rule]|padding',
+    // notion-motion.md Round 51 §3: the Name cell reaches 1px into the next column, so its editor is 280.
+    '[data-blok-database-timeline-table-title]|margin-inline-end',
   ]);
 
   it('no non-zero length repeats across themeable-property declarations', () => {
@@ -346,8 +354,9 @@ const DANGLING_VAR_ALLOWLIST = new Set([
   // the table's top corner. Reads fall back to the old spot before the first pointer move.
   '--blok-table-toggle-end',
   '--blok-table-toggle-top',
-  // Set at runtime on the closing full-screen table by animateClose: its width on the page.
-  '--blok-table-inline-width',
+  // Set at runtime on a brand mark by brandMarkElement (components/utils/brand-mark-services.ts):
+  // the brand colour of its app icon tile. Reads fall back for ink marks, which have none.
+  '--blok-brand-mark-color',
   // Consumer-supplied per-block font sizes (config.style.fontSize, or any
   // --blok-* channel: style.tokens / editor.tokens.set() / plain CSS). Each
   // falls back to that block's historical size, so an unconfigured editor is

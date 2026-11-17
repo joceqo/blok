@@ -185,13 +185,13 @@ $$e^{i\\pi} + 1 = 0$$`;
 
       expect(blocks).toHaveLength(1);
       expect(blocks[0].type).toBe('image');
-      expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', caption: 'a picture', alt: 'a picture' });
+      expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', alt: 'a picture' });
     });
 
-    it('keeps Markdown-decoded characters verbatim in the caption', async () => {
+    it('keeps Markdown-decoded characters verbatim in the alt', async () => {
       const blocks = await markdownToBlocks('![a &amp; b](https://img.com/pic.png)');
 
-      expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', caption: 'a & b', alt: 'a & b' });
+      expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', alt: 'a & b' });
     });
 
     it('leaves an image mixed with text as a paragraph', async () => {
@@ -209,7 +209,7 @@ $$e^{i\\pi} + 1 = 0$$`;
 
       expect(blocks).toHaveLength(1);
       expect(blocks[0].type).toBe('image');
-      expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', caption: 'a picture', alt: 'a picture' });
+      expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', alt: 'a picture' });
     });
   });
 
@@ -493,7 +493,7 @@ describe('markdownToBlocks — unsafe URL schemes', () => {
   });
 
   it('reports an image dropped for an executable data: media type', async () => {
-    const { warnings } = await markdownToBlocksWithReport('![x](data:image/svg+xml,<svg/>)');
+    const { warnings } = await markdownToBlocksWithReport('![x](data:text/xml,<svg/>)');
 
     expect(warnings).toEqual([
       { construct: 'image', action: 'dropped', detail: expect.stringContaining('data:') },
@@ -613,3 +613,137 @@ describe('markdownToBlocks with large input', () => {
   }, 60_000);
 });
 
+
+describe('SVG data: images', () => {
+  it('keeps a data:image/svg+xml image as an image block', async () => {
+    const url = 'data:image/svg+xml;base64,PHN2Zy8+';
+    const { blocks, warnings } = await markdownToBlocksWithReport(`![x](${url})`);
+
+    expect(warnings).toEqual([]);
+    expect(JSON.stringify(blocks)).toContain(url);
+  });
+});
+
+describe('image round trip through Markdown', () => {
+  /** The `![…]` slot is alt text, so it must not come back as a visible caption. */
+  it('brings an alt-only image back with no caption', async () => {
+    const markdown = blocksToMarkdown({ blocks: [{ type: 'image', data: { url: 'https://img.com/pic.png', alt: 'A cat' } }] });
+    const blocks = await markdownToBlocks(markdown);
+
+    expect(blocks[0].data).toEqual({ url: 'https://img.com/pic.png', alt: 'A cat' });
+  });
+
+  it('does not turn the alt into the caption of an image that had another caption', async () => {
+    const markdown = blocksToMarkdown({ blocks: [{ type: 'image', data: { url: 'https://img.com/pic.png', alt: 'A cat', caption: 'My cat' } }] });
+    const blocks = await markdownToBlocks(markdown);
+
+    expect(blocks[0].data).not.toHaveProperty('caption');
+    expect(blocks[0].data).toMatchObject({ alt: 'A cat' });
+  });
+});
+
+describe('markdownToBlocks with pageIdFromHref', () => {
+  const config: InternalMarkdownImportConfig = {
+    htmlText: true,
+    pageIdFromHref: (url, text) => (url === 'https://workspace.test/pages/roadmap' && text === 'Roadmap' ? 'roadmap' : undefined),
+  };
+
+  it('writes a link the callback names as its mention, inline and by reference', async () => {
+    const md = '**[Roadmap](https://workspace.test/pages/roadmap)** and [Roadmap][r] and [ref][r] and [other](https://other.test/)\n\n[r]: https://workspace.test/pages/roadmap';
+    const blocks = await markdownToSegmentBlocks(md, config);
+
+    expect(blocks.map((block) => block.data.text)).toEqual([
+      '<strong><a data-blok-page-id="roadmap">Page</a></strong> and <a data-blok-page-id="roadmap">Page</a> and <a href="https://workspace.test/pages/roadmap" target="_blank" rel="noopener noreferrer nofollow">ref</a> and <a href="https://other.test/" target="_blank" rel="noopener noreferrer nofollow">other</a>',
+    ]);
+  });
+
+  it('hands the callback a soft line break in link text as a space', async () => {
+    const seen: string[] = [];
+    const collect: InternalMarkdownImportConfig = {
+      htmlText: true,
+      softBreaks: true,
+      pageIdFromHref: (_url, text) => {
+        seen.push(text);
+
+        return undefined;
+      },
+    };
+
+    await markdownToSegmentBlocks('[Road\nmap](https://workspace.test/pages/roadmap)', collect);
+
+    expect(seen).toEqual(['Road map']);
+  });
+
+  it('hands the callback the link\'s plain text, marks dropped', async () => {
+    const seen: Array<[string, string]> = [];
+
+    const collect: InternalMarkdownImportConfig = {
+      htmlText: true,
+      pageIdFromHref: (url, text) => {
+        seen.push([url, text]);
+
+        return undefined;
+      },
+    };
+
+    await markdownToSegmentBlocks('[**Road**map](https://workspace.test/pages/roadmap) and <https://workspace.test/pages/x>', collect);
+
+    expect(seen).toEqual([
+      ['https://workspace.test/pages/roadmap', 'Roadmap'],
+      ['https://workspace.test/pages/x', 'https://workspace.test/pages/x'],
+    ]);
+  });
+});
+
+describe('markdownToBlocks — nested lists are a tree', () => {
+  const shape = (blocks: OutputBlockData[]): Array<{ text: unknown; parent?: string; content?: string[] }> => {
+    const index = new Map(blocks.map((block, i) => [block.id, i]));
+
+    return blocks.map((block) => ({
+      text: block.data.text ?? block.data.code,
+      ...(block.parent !== undefined && { parent: `#${index.get(block.parent)}` }),
+      ...(block.content !== undefined && { content: block.content.map((id) => `#${index.get(id)}`) }),
+    }));
+  };
+
+  it('hangs each nested item under its parent item, and the parent lists it in content', async () => {
+    const blocks = await markdownToBlocks('- a\n  - b\n    - c\n  - d\n- e');
+
+    expect(shape(blocks)).toStrictEqual([
+      { text: 'a', content: ['#1', '#3'] },
+      { text: 'b', parent: '#0', content: ['#2'] },
+      { text: 'c', parent: '#1' },
+      { text: 'd', parent: '#0' },
+      { text: 'e' },
+    ]);
+    expect(blocks.map((block) => block.data.depth)).toStrictEqual([0, 1, 2, 1, 0]);
+  });
+
+  it('hangs a code block and a second paragraph in an item under that item, before its nested list', async () => {
+    const blocks = await markdownToBlocks('- a\n\n  more\n\n  ```\n  x\n  ```\n\n  - b');
+
+    expect(shape(blocks)).toStrictEqual([
+      { text: 'a', content: ['#1', '#2', '#3'] },
+      { text: 'more', parent: '#0' },
+      { text: 'x', parent: '#0' },
+      { text: 'b', parent: '#0' },
+    ]);
+  });
+
+  it('keeps a callout body under the callout when the callout sits in an item', async () => {
+    const blocks = await markdownToBlocks('- a\n\n  > [!NOTE]\n  > inside');
+
+    expect(blocks.map((block) => block.type)).toStrictEqual(['list', 'callout', 'paragraph']);
+    expect(blocks[1].parent).toBe(blocks[0].id);
+    expect(blocks[0].content).toStrictEqual([blocks[1].id]);
+    expect(blocks[2].parent).toBe(blocks[1].id);
+  });
+
+  it('gives a list inside a quote inside an item the depth of its place in the tree', async () => {
+    const blocks = await markdownToBlocks('- a\n\n  > q\n  >\n  > - b');
+    const b = blocks.find((block) => block.data.text === 'b');
+
+    expect(b?.parent).toBe(blocks[0].id);
+    expect(b?.data.depth).toBe(1);
+  });
+});

@@ -5,7 +5,7 @@ export type ServerPathId = 'own-storage' | 'dotnet' | 'own-server' | 'serverless
 export interface ServerCodeSample {
   /** Plain-language label above the block, e.g. "Start the service". */
   label: string;
-  language: 'bash' | 'csharp' | 'typescript';
+  language: 'bash' | 'csharp' | 'go' | 'typescript';
   code: string;
   /** A package install command; reported as `copy_kind: "install"` on copy. */
   install?: true;
@@ -40,10 +40,20 @@ export interface ServerPath {
   failureModes: ServerFailureMode[];
 }
 
+/** One build of the MCP server: what it is, how to install it, how to embed it. */
+export interface ServerMcpBuild {
+  id: 'node' | 'csharp' | 'go' | 'rust';
+  title: string;
+  description: string;
+  samples: ServerCodeSample[];
+}
+
 export interface ServerLimit {
   id: string;
   title: string;
   body: string;
+  /** Code under the body, such as a reference adapter. */
+  samples?: ServerCodeSample[];
 }
 
 /**
@@ -188,7 +198,7 @@ public sealed class ArticleExport(IBlokDocumentConverter blok)
 
     foreach (var warning in conversion.Warnings)
     {
-      // e.g. construct "callout", action "degraded", detail "rendered as a blockquote…"
+      // e.g. construct "callout", action "degraded", detail "callout is written as a [!CALLOUT] alert; its emoji is lost"
       logger.LogInformation("{Construct} {Action}: {Detail}", warning.Construct, warning.Action, warning.Detail);
     }
 
@@ -617,7 +627,90 @@ export const serverLimits: ServerLimit[] = [
   {
     id: 'collab-version-history',
     title: 'Version history comes from the journal, and your app builds the UI',
-    body: 'With an operation journal, a document keeps its past. Your app can list its versions, read one, list the edits inside one, compare two, restore one and delete old history. Blok ships the data and the routes. Your app builds the history UI.\n\nA version is a point, the pair (lineage, sequence). A lineage is one unbroken run of the journal. A reset, a first seed or the format migration starts a new one. Sequence 0 is the state the lineage started from.\n\nStore points in your own records, never positions in the list. The newest version keeps growing while people edit, so positions shift.\n\nFive routes serve history. Each one checks the pass\'s doc claim, like the other collaboration routes.\n\n- GET /sync/{doc}/history lists every lineage still held, and the versions grouped by time. It needs read access.\n  - Times are Unix milliseconds. An unknown time is null.\n  - By default, a new group starts after 2 minutes without edits, or once a group spans 10 minutes.\n  - Add `group` with 1, 15 or 60 to use that many minutes for both limits. Any other `group` answers 400.\n- GET /sync/{doc}/history/{lineage}/{sequence} returns the document as it was at that point. It needs read access.\n  - The answer also carries `title` and `icon`: the page title and icon at that point, at the top level, as your document endpoint gets them. Each is left out when the point has none.\n  - It also carries `page` and `values`: any other page fields, and the values `history.track` keeps, as they were at that point. Only plain JSON keys are listed, and an empty map is left out.\n  - An unknown or malformed lineage, or a sequence past the head, answers 404. A sequence that is not a whole number of zero or more answers 400.\n- GET /sync/{doc}/history/{lineage}/{sequence}/changes lists the edits inside one version, one row per journal record. It needs read access.\n  - Pass `since` as the sequence of the next older version in your list. Rows cover the records after `since`, up to and including the sequence. Without `since`, they start after 0.\n  - Rows come oldest first, with `sequence`, `committedAt` and `actor`. Each touched block is `added`, `removed`, `changed` or `moved`, with its `before` and `after`.\n  - `page` lists the page fields that changed, such as `title` and `icon`. A tracked value shows up as `values.<key>`. A record with no visible edit still gets a row with empty `blocks`.\n  - One answer holds at most 200 rows and at most 4 MiB of rows. Past that, it holds the newest rows that fit and `truncated` is true. To read older rows, ask again with the oldest row\'s `sequence` minus 1 in the path.\n  - A malformed `since`, or one above the sequence, answers 400.\n- POST /sync/{doc}/history/{lineage}/{sequence}/restore makes the live document match that point. It needs write access.\n  - It is a forward edit, not a rewind. It runs through the same path as an outside edit, so every open tab sees it.\n  - It also brings back the page title and icon, and the values `history.track` keeps. A key the point lacks is removed. All of it is one edit and counts toward the 413 limit.\n  - It needs a `Blok-Idempotency-Key` and takes an optional `If-Match`. It answers like the edit route: 204 with the new head, 400 for a bad key or tag, 412 for a stale tag, 413 for a change too large, 422 for a refused change. A stale tag answers 412 even when the point is gone.\n- DELETE /sync/{doc}/history/{lineage} deletes one old lineage. It needs write access.\n  - It answers 204, 404 for an unknown or malformed lineage, and 409 for the current one.\n\nTo compare two versions, read both and pass them to diffOutputData from @bloklabs/core/view. It matches blocks by id.\n\nHistory needs a journal that keeps it. The built-in journal does. A store you write must also implement ICollabOperationHistoryStore. Without one of those, every history route answers 501.\n\nHistory starts at this release. The built-in journal lists no lineage it finished before. Its oldest lineage is the one that was current when this release first touched the document.\n\nBlok never deletes history by itself. Deleting is your call. To trim, call POST /sync/{doc}/reset, then delete the old lineage. A lineage is kept whole or deleted whole.',
+    body: 'With an operation journal, a document keeps its past. Your app can list its versions, read one, list the edits inside one, compare two, restore one and delete old history. Blok ships the data and the routes. Your app builds the history UI.\n\nA version is a point, the pair (lineage, sequence). A lineage is one unbroken run of the journal. A reset, a first seed or the format migration starts a new one. Sequence 0 is the state the lineage started from.\n\nStore points in your own records, never positions in the list. The newest version keeps growing while people edit, so positions shift.\n\nEight routes serve history. Each one checks the pass\'s doc claim, like the other collaboration routes.\n\n- GET /sync/{doc}/history lists every lineage still held, and the versions grouped by time. It needs read access.\n  - Times are Unix milliseconds. An unknown time is null.\n  - By default, a new group starts after 2 minutes without edits, or once a group spans 10 minutes.\n  - Add `group` with 1, 15 or 60 to use that many minutes for both limits. Any other `group` answers 400.\n  - Add `by=actor` to also start a new group where the actor changes. It works with `group` too. Any other `by` is ignored.\n  - The list has no cap, so with `by=actor` a busy document can list one version per record.\n- GET /sync/{doc}/history/{lineage}/{sequence} returns the document as it was at that point. It needs read access.\n  - The answer also carries `title` and `icon`: the page title and icon at that point, at the top level, as your document endpoint gets them. Each is left out when the point has none.\n  - It also carries `page` and `values`: any other page fields, and the values `history.track` keeps, as they were at that point. Only plain JSON keys are listed, and an empty map is left out.\n  - An unknown or malformed lineage, or a sequence past the head, answers 404. A sequence that is not a whole number of zero or more answers 400.\n- GET /sync/{doc}/history/{lineage}/{sequence}/changes lists the edits inside one version, one row per journal record. It needs read access.\n  - Pass `since` as the sequence of the next older version in your list. Rows cover the records after `since`, up to and including the sequence. Without `since`, they start after 0.\n  - Rows come oldest first, with `sequence`, `committedAt` and `actor`. Each touched block is `added`, `removed`, `changed` or `moved`, with its `before` and `after`.\n  - `page` lists the page fields that changed, such as `title` and `icon`. A tracked value shows up as `values.<key>`. A record with no visible edit still gets a row with empty `blocks`.\n  - One answer holds at most 200 rows and at most 4 MiB of rows. Past that, it holds the newest rows that fit, `truncated` is true and `olderEnd` names the oldest row: `{lineage, sequence, committedAt}`. To read older rows, ask again with `olderEnd.sequence` minus 1 in the path and the same `since`.\n  - A malformed `since`, or one above the sequence, answers 400.\n  - Add `detail=properties` to see inside database edits. A changed `database-row` block then carries `properties`, one `{id, before, after}` per property value that changed. A side is left out when the value is absent.\n  - With `detail=properties`, a changed `database` block carries `schema`, one `{id, name, action}` per property that was `created`, `updated` or `deleted`. It also carries `views`, one `{id, action}` per view. Each list is left out when empty, or when either side holds more than 500 entries.\n  - Values compare as blocks do. Rich text in the old HTML format compares as raw HTML. Any other `detail` answers 400.\n  - Add `block=<id>` to keep only the changes of that block. A row that did not touch it is left out, and so is `page`. An empty or repeated `block` is ignored.\n  - A narrowed answer can be cut with no rows left. Its `olderEnd` then names the oldest record it read, so keep paging from there.\n- GET /sync/{doc}/history/at reads which point the document was at, at a given `time`. It needs read access.\n  - `time` is an ISO 8601 time with an offset, such as `2026-10-07T12:00:00Z`. Send a plus sign as `%2B`, because a raw one in a query reads as a space. A time without an offset answers 400.\n  - It finds the newest point at or before the time. Sequence 0 counts as a point at the lineage\'s creation time. So a time just after a reset finds sequence 0 of the new lineage.\n  - It answers 302 to `{lineage}/{sequence}`, relative to the history route. With `Accept: application/json` it answers `{lineage, sequence, committedAt}` instead.\n  - A time before the oldest point answers 404 with `{"reason":"not_found"}`.\n- GET /sync/{doc}/history/changes lists the edits in a time range, across lineages. It needs read access.\n  - `from` and `to` are times in the same format, with `from` included and `to` not. Without `to` the range ends now, and without `from` it starts 24 hours before `to`.\n  - Rows come newest first, shaped like the rows above with `lineage` added. It takes `detail=properties` and `block` too.\n  - `before=<lineage>:<sequence>` keeps only the records older than that point.\n  - The caps are the same, and one answer reads at most 8 lineages. On a cut, `truncated` is true and `olderEnd` names the oldest row. Ask again with the same range and `before` set to that row.\n  - Do not page with `to`. Times are whole milliseconds, so rows in the same millisecond would be skipped.\n  - A bad time, `from` after `to`, a malformed `before`, or an empty or repeated `block` answers 400. A `before` lineage the journal does not hold answers 404.\n- POST /sync/{doc}/history/{lineage}/{sequence}/restore makes the live document match that point. It needs write access.\n  - It is a forward edit, not a rewind. It runs through the same path as an outside edit, so every open tab sees it.\n  - It also brings back the page title and icon, and the values `history.track` keeps. A key the point lacks is removed. All of it is one edit and counts toward the 413 limit.\n  - It needs a `Blok-Idempotency-Key` and takes an optional `If-Match`. It answers like the edit route: 204 with the new head, 400 for a bad key or tag, 412 for a stale tag, 413 for a change too large, 422 for a refused change. A stale tag answers 412 even when the point is gone.\n  - It can ask first. Turn on `CollabEnforceRestoreGuards` on the server options (Rust: `collab_enforce_restore_guards`). It is off by default, and then a restore never asks.\n  - With it on, a restore that changes who can see or fill out a database view (`share`), unlocks a locked database (`unlock`), or removes or reshapes one (`lockedReshape`) answers 409 and changes nothing.\n  - That 409 is JSON: `{"error": "confirmation_required", "guards": [...]}`. Each guard has `kind` and `blockId`, and a share guard also has `viewId`. It carries the header `X-Blok-Restore-Refusal: confirmation_required`.\n  - To confirm, name the kinds in `X-Blok-Restore-Confirm`, such as `share, unlock`, or in a JSON body `{"confirm": ["share"]}`. Every kind present must be named. The refusal does not use up the key, so retry with the same one.\n  - A confirm covers every guard of that kind, including one that appeared since you looked. So confirm together with the preview\'s `expectRevision` as `If-Match`: a document that moved in between then answers 412.\n  - Confirming is a step for anyone with write access, not an access check. Who may restore at all is still decided by your write check.\n  - The 409 for a reused key stays plain text, without that header. Tell the two apart by the header, never by the status alone.\n  - Add `databases=keep` to leave every database block as it is now, with its rows and their bodies. The default, `databases=restore`, restores them as before. Only one exact `keep` keeps them: any other value is a plain restore, as older servers ignored the param.\n  - With `keep`, a database deleted since the point stays deleted, and one made since stays.\n  - If the restore would remove the block a kept database sits in, it answers 409 with `{"error": "restore_refused", "guards": [...]}`, one `orphanedDatabase` guard per database, and the header `X-Blok-Restore-Refusal: restore_refused`. No confirm passes it. Restore without `keep`, or move the database first.\n  - Database comments are blocks too. Comments added after the point are removed, and older ones come back as they were, resolved state included.\n  - A `page` block added after the point is removed by default, and the sub-page\'s own document is then left with nothing pointing at it. Turn on `CollabRestoreTrashesPages` (Rust: `collab_restore_trashes_pages`) to keep the block and set `data.trashed` on it instead. The preview plans the same way.\n  - With it on, the block keeps its place. When the same restore removes the block\'s parent, the block goes to the end of the document.\n  - `trashed` holds `at` in Unix milliseconds, `by` (the user who restored, or null), and `formerParentId` and `formerIndex`, where the block sat. `formerParentId` is null at the top level. `formerParentId` can name a block the same restore removed, so a restore from Trash must check that the parent still exists.\n  - The editor does not hide a trashed block yet. A host that turns the option on must treat such a block as in Trash: hide it, or show it as trashed.\n  - `trashed` is block data that anyone with write access can set. Never treat its `by` or `at` as proof of who trashed the page, or as grounds to purge it, without your own checks.\n- POST /sync/{doc}/history/{lineage}/{sequence}/restore/preview previews the restore. It writes nothing and needs no key. It needs write access, like the restore.\n  - It answers 200 with `wouldUndo`, `guards`, `fits`, `frameBytes`, `limitBytes` and `expectRevision`. `wouldUndo` has `blocks` (each with `id`, `type` and `kind`) and the `page` keys, as /changes would list them.\n  - It reports the guards whether or not the server enforces them. `fits` is false when the real restore would answer 413.\n  - It takes `databases` too, and answers 400 for any value other than `keep` or `restore`. With `keep`, a database the restore would orphan is listed as an `orphanedDatabase` guard.\n  - Send `expectRevision` as the real restore\'s `If-Match`, in quotes. If anyone edited in between, the restore answers 412. The preview takes an `If-Match` too.\n  - A server older than this route answers it with 404 and restores nothing.\n  - Agents reach it with `history.previewRestore`: blok-mcp\'s live handles call this route, and the in-process agent asks the room the same way, with the same body.\n- DELETE /sync/{doc}/history/{lineage} deletes one old lineage. It needs write access.\n  - It answers 204, 404 for an unknown or malformed lineage, and 409 for the current one.\n\nHistory can also say who wrote each record. Register a record notes store: `UseCollabRecordNotes<T>()` in C#, `CollabRecordNotes` on the Go options, or `collab_record_notes` in Rust. `InMemoryCollabRecordNotes` keeps them in memory, until a restart.\n\n- With a store, each version carries `actorKinds`, one `{id, kind, onBehalfOf}` per actor that has a note. Each changes row carries `actors`, with its actor, or empty.\n  - `kind` is `agent` for a write by Blok\'s own agent executor. Its `onBehalfOf` names the person it acted for, and is left out when there is none.\n  - Any other actor is `person`. The text of an actor id never makes it an agent, because your app mints the ids. Your store may rewrite the kind as it writes a note.\n- Without a store, neither field is sent.\n- A note is written right after its record, but not in the same step. A crash in between loses that note, and the record then has no kind. The edit is never refused for it.\n- Blok never deletes notes. Delete them yourself when you purge a document or delete a lineage.\n\nThe server can also own block stamps. Turn on `CollabStampAuthority` on the server options (Rust: `collab_stamp_authority`). It is off by default, and then an edit keeps the stamps it sends.\n\n- With it on, POST /sync/{doc}/edit replaces the six stamps of an insert. `createdAt` and `lastEditedAt` become the server\'s time.\n- `createdBy` and `lastEditedBy` become the actor of the pass. The `With` stamps are left out, since a pass never says it is an agent.\n- An update also stamps its block with `lastEditedAt` and `lastEditedBy`. So an update that changes nothing is still journalled.\n- With no actor, an insert gets only the two times, and an update gets no stamp.\n- The request is checked against its key before the stamps change, so a retry still matches. A restore keeps the stamps it brings back.\n\nTo compare two versions, read both and pass them to diffOutputData from @bloklabs/core/view. It matches blocks by id. To build an activity feed, pass changes rows to foldUpdates from the same entry. It folds one person\'s nearby edits into one entry.\n\nHistory needs a journal that keeps it. The built-in journal does. A store you write must also implement ICollabOperationHistoryStore. Without one of those, every history route answers 501.\n\nHistory starts at this release. The built-in journal lists no lineage it finished before. Its oldest lineage is the one that was current when this release first touched the document.\n\nBlok never deletes history by itself. Deleting is your call. To trim, call POST /sync/{doc}/reset, then delete the old lineage. A lineage is kept whole or deleted whole.\n\nYour app can narrow history with three optional hooks on its authorization hook. Each one keeps today\'s behaviour until your app answers otherwise.\n\n- `CanReadHistoryAsync` decides who may read history. It is asked on the list, a version read, its changes, `history/at`, `history/changes`, a restore and its preview, after the read check said yes. No answers 403, and the default is yes.\n  - A restore asks it too, since a restore reads the version it writes. A delete is still decided by your write check.\n- `HistoryWindowAsync` sets how far back a caller may see. A point older than now minus the window is hidden, never deleted. The default is no window.\n  - Reading a hidden point, its changes, a restore to it and its preview answer 404 with `{"reason":"retention"}`. So does an `at` that lands on one, or a `before` that names one.\n  - The list and `history/changes` leave hidden points out. A changes read starts after the window edge.\n  - A point exactly at the edge is kept. A point below a hidden one in the same lineage is hidden too.\n  - A baseline with no created-at, as on a lineage from before history, is hidden by any window.\n  - The list builds its groups from visible records only, and gives a lineage whose baseline is hidden a null `createdAt`.\n  - The hook is asked on every request, so a smaller window applies at once.\n- `IsHistoryHeldAsync` protects a lineage from DELETE. A held lineage answers 409 with `{"reason":"held"}`. It is asked before any other check on the lineage, and the default holds nothing.\n  - Blok stores no bookmarks. If your app names versions, hold the lineages they sit in.\n  - A document purge does not ask this hook.\n\nIn Go these are the optional interfaces `HistoryReadAuthorizer`, `HistoryWindower` and `HistoryHolder`, found on your `Authorization`. If you wrap your `Authorization` in another type, implement them on the wrapper too: a hook Go cannot find is not asked, so history stays open. In Rust they are the trait methods `can_read_history`, `history_window` and `is_history_held`, each with a default body.\n\nThe read and window hooks also apply when the server\'s in-process agent runs `history.versions`, `history.read`, `history.changes`, `history.restore` or `history.previewRestore`. The agent has no request, so the hooks get a user named by the person it acts for (`OnBehalfOf`), or else by the agent\'s id. A hidden version reads to the agent as one that does not exist.\n\nBlok can also tell your app what changed, soon after it happens. Make your activity observer take change signals.\n\n- C#: override `OnChangesAsync` on `ICollabActivityObserver`.\n- Go: implement `collabstore.ChangeObserver` on the same observer.\n- Rust: return one from `changes()`.\n\nWithout that, the server keeps no windows and reads nothing. Signals also need a journal that keeps history.\n\n- A window starts at a document\'s first journalled write and lasts 60 seconds. Set `CollabChangeSignalWindow` on the server options to change it (Rust: `collab_change_signal_window_nanos`). Zero or less uses 60 seconds, and more than one day is refused.\n- When the window ends, the observer gets one signal with `doc`, `lineage`, `fromSequence`, `toSequence`, `windowStart`, `windowEnd` and `truncated`.\n- A signal names what changed by id only, never content. Read GET /sync/{doc}/history/changes for the content.\n  - `blocks` holds `{id, kind}`, and `page` the changed page keys.\n  - `properties` holds one `{rowId, ids}` per database row whose values changed.\n  - `schema` holds one `{databaseId, id, action}` per database property that was `created`, `updated` or `deleted`. Property names are content, so they are left out.\n- A block added and removed in the same window is left out, with its properties. A window with nothing left sends no signal.\n- `authors` holds one `{id, kind}` per actor of the window, first seen first. `kind` comes from the record note, and is null without one.\n- A write on a new lineage, as after a reset or a restore, closes the open window early.\n- One signal reads at most 200 records. A busier window sends `truncated: true`, and `fromSequence` is then the oldest record it read.\n\nSignals can be lost, so treat them as a hint.\n\n- A server that stops inside a window loses that window.\n- A journal read or an observer call that fails, or runs past 30 seconds, is logged and dropped.\n- Past 1024 waiting signals and events, the oldest is dropped and logged.\n- A truncated signal leaves out the window\'s older records.\n- A slow observer only delays later signals. It never holds up a document.\n- To miss nothing, keep the newest point you have handled. Then read GET /sync/{doc}/history/changes from there and follow `olderEnd`.\n\nThe same observer can take typed audit events: `OnEventAsync` in C#, `collabstore.AuditObserver` in Go, or `audit()` in Rust. Blok stores none of them.\n\n- `content.edited` comes after a journalled write by a known actor, at most once per 55 seconds per document and actor. Presence heartbeats do not count toward that limit. Its `actor` is `{id, kind, onBehalfOf}`, from the record note.\n- `history.lineageDeleted` comes after DELETE removes a lineage. Its `actor` is the pass\'s user. Its `kind` is always `person`, because the text of an id is never trusted to make it an agent.\n- `document.purged` comes after a purge. It has no actor, because the purge call takes none.\n- A restore event and the page trash events are not sent yet.\n\nDelivery belongs to your app. The Go sample below posts each signal to a webhook. It is an example, not part of Blok.\n\n- It signs the delivery id, the time and the body together with HMAC-SHA256. A receiver checks the signature with `hmac.Equal` and rejects a time older than 5 minutes.\n- It tries 8 times, doubling the wait from 10 minutes, about 21 hours in all. It does not retry a 4xx answer, except 408 and 429.\n- It sends at most 8 at once, gives each request 30 seconds, and never logs the body.\n- Its retries live in memory, so a restart loses them.',
+    samples: [
+      {
+        label: 'Post each change signal to a signed webhook (Go, an example)',
+        language: 'go',
+        code: `// signalHook posts each change signal to your webhook. Register it as
+// blokserver.Options.CollabActivityObserver.
+type signalHook struct {
+	url    string
+	secret []byte
+	client *http.Client  // set Timeout: 30 * time.Second
+	slots  chan struct{} // make(chan struct{}, 8): at most 8 sends at once
+}
+
+func (h *signalHook) Record(context.Context, string, string, time.Time, collabstore.ActivityKind) error {
+	return nil
+}
+
+func (h *signalHook) OnChanges(_ context.Context, s collabstore.ChangeSignal) error {
+	body, err := json.Marshal(map[string]any{
+		"doc": s.DocID, "lineage": s.Lineage,
+		"fromSequence": s.FromSequence, "toSequence": s.ToSequence,
+		"windowStart": s.WindowStart.UnixMilli(), "windowEnd": s.WindowEnd.UnixMilli(),
+		"blocks": s.Blocks, "page": s.Page, "properties": s.Properties,
+		"schema": s.Schema, "authors": s.Authors, "truncated": s.Truncated,
+	})
+	if err != nil {
+		return err
+	}
+	id := make([]byte, 16)
+	if _, err := rand.Read(id); err != nil {
+		return err
+	}
+	// Retries run on their own goroutine, so the next signal is not held up.
+	// They live in memory: a restart loses them.
+	go h.send(hex.EncodeToString(id), body)
+	return nil
+}
+
+func (h *signalHook) send(delivery string, body []byte) {
+	wait := 10 * time.Minute
+	for try := 1; try <= 8; try++ {
+		status, err := h.post(delivery, body)
+		switch {
+		case err == nil && status < 300:
+			return
+		case err == nil && status >= 400 && status < 500 && status != 408 && status != 429:
+			log.Printf("change signal %s refused with %d", delivery, status)
+			return
+		}
+		if try < 8 {
+			time.Sleep(wait)
+			wait *= 2
+		}
+	}
+	log.Printf("change signal %s dropped after 8 tries", delivery)
+}
+
+func (h *signalHook) post(delivery string, body []byte) (int, error) {
+	h.slots <- struct{}{}
+	defer func() { <-h.slots }()
+	sent := strconv.FormatInt(time.Now().Unix(), 10)
+	// The receiver rebuilds this, compares with hmac.Equal, and rejects a
+	// time older than 5 minutes.
+	mac := hmac.New(sha256.New, h.secret)
+	mac.Write([]byte(delivery + "." + sent + "."))
+	mac.Write(body)
+	request, err := http.NewRequest(http.MethodPost, h.url, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Blok-Delivery", delivery)
+	request.Header.Set("X-Blok-Timestamp", sent)
+	request.Header.Set("X-Blok-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	response, err := h.client.Do(request)
+	if err != nil {
+		return 0, err
+	}
+	defer response.Body.Close()
+	return response.StatusCode, nil
+}`,
+      },
+    ],
   },
   {
     id: 'collab-access-lifecycle',
@@ -647,7 +740,7 @@ export const serverLimits: ServerLimit[] = [
   {
     id: 'asset-cors',
     title: 'The hostname serving your uploads has to answer CORS',
-    body: 'Five things in the editor read an uploaded file back after it is stored.\n\n- The audio player fetches the track to draw its waveform.\n- The image block fetches a GIF before turning it into a video, and an SVG to read its real size.\n- The file block fetches a document to show a preview.\n- The image download button fetches the picture so the browser saves it rather than opening it.\n\nOnce uploads are served from their own hostname, every one of those is a cross-origin request. The browser refuses it unless the response carries Access-Control-Allow-Origin for your app.\n\nEach of them is written to give up quietly rather than break the block. So you get no error.\n\n- The player has no waveform.\n- The GIF stays a still image.\n- The SVG is the wrong size.\n- The preview never appears.\n- The download opens the file instead of saving it.\n\nNothing in Blok reports why. Allow your app\'s origin on the bucket or hostname the files are served from.',
+    body: 'Five things in the editor read an uploaded file back after it is stored.\n\n- The audio player fetches the track to draw its waveform.\n- The image block fetches a GIF before turning it into a video, and an SVG to read its real size.\n- The file block fetches a document to show a preview.\n- The image download button fetches the picture so the browser saves it rather than opening it.\n\nOnce uploads are served from their own hostname, every one of those is a cross-origin request. The browser refuses it unless the response carries Access-Control-Allow-Origin for your app.\n\nEach of them is written to give up quietly rather than break the block. So you get no error.\n\n- The player has no waveform.\n- The GIF stays a still image.\n- The SVG is the wrong size.\n- The preview never appears.\n- The download opens the file instead of saving it.\n\nNothing in Blok reports why. Allow your app\'s origin on the bucket or hostname the files are served from. With local storage, --files-cors does this for every --allow-origin origin.',
   },
   {
     id: 's3-untested',
@@ -660,9 +753,29 @@ export const serverLimits: ServerLimit[] = [
     body: 'Every request that carries an Origin must match an address listed with --allow-origin, in every auth mode. In none and proxy modes, an originless request marked Sec-Fetch-Site: cross-site is also refused. A genuine server-to-server backend request that carries neither header still works.\n\nTicket mode always requires an allowed Origin. Preflight requests follow the same allowlist.',
   },
   {
+    id: 'loopback-host',
+    title: 'A loopback server answers only its own names',
+    body: 'With --auth none or proxy, the standalone service refuses a request whose Host is not its own with 421 host not allowed. This stops DNS rebinding: a web page whose name now points at 127.0.0.1 sends its own name as Host.\n\n- Allowed: localhost, a 127.x.x.x address and [::1], with any port.\n- Also allowed: the host of each --allow-origin entry and of --public-url.\n\nIf a front proxy forwards your public Host, add that origin to --allow-origin, or make the proxy send a loopback Host. Ticket mode does not check Host. Behind a proxy that is the proxy\'s job.\n\nAn ASP.NET Core app turns the check on with UseLoopbackHostCheck(). Leave it off when the app serves the routes under its own public name.',
+  },
+  {
     id: 'upload-by-url-json',
     title: 'Remote uploads accept JSON requests only',
     body: 'POST /upload-by-url requires Content-Type: application/json. Parameters such as charset=utf-8 are allowed. Other media types, including application/problem+json, receive 415 before the service fetches the URL.',
+  },
+  {
+    id: 'frame-check',
+    title: 'GET /frame-check says whether a page lets your editor frame it',
+    body: 'GET /frame-check?url=… is open whenever /unfurl is. It answers `{"verdict": …, "link": …, "oembed": {…}}`. The editor calls it before a generic embed when `server` is set and `linkPaste.checkEmbed` is not.\n\n- blocked means the final page\'s enforced `frame-ancestors` or `X-Frame-Options` refuses your editor. Report-only policies, `<meta>` tags and redirect hops do not count.\n- insecure means the final page is not https. blocked wins over it.\n- unknown means the request had no Origin, or the page could not be fetched or did not answer 2xx.\n\nYour editor is the request\'s Origin, used only when it is an allowed origin. `link` is the final URL after redirects. `oembed` holds only `title`, `provider_name`, an https `thumbnail_url`, and `width` and `height` capped at 4096.\n\nThe verdict is a hint for your interface, not a security check. The service cannot see the reader\'s cookies, the frames above your editor, or scripts that break out of frames.',
+  },
+  {
+    id: 'file-bytes',
+    title: 'GET /file-bytes hands the PDF preview a file\'s bytes',
+    body: 'GET /file-bytes?url=… is off by default. Turn it on with --file-bytes. It is apart from --no-unfurl, because it relays whole files. It sits behind the same origin, pass and rate checks as /unfurl, and a pass with write: false may call it.\n\nIn-process, the options are FileBytesEnabled, FileBytesMaxBytes and FilesCors in C#. Go spells the last one FilesCORS, and Rust uses file_bytes_enabled, file_bytes_max_bytes and files_cors. The `server` shorthand points the file tool\'s `previewEndpoint` at this route.\n\nWhat the route does:\n\n- It serves PDFs only. It looks for `%PDF-` in the file\'s first 1024 bytes and answers 415 otherwise. That check can cost one more request against the rate limit.\n- One answer holds at most 1 MiB. Ask for a Range, as the editor does. A larger answer gets 413.\n- A file larger than --file-bytes-max-bytes gets 413. The default is 100 MiB.\n- A file this service stored on local disk is read from disk. Anything else is fetched with the same guards as /upload-by-url.\n\nOther answers:\n\n- 404: the route is off, or a stored file is missing.\n- 416: the Range starts past the end of a stored file.\n- 429: the rate limit is used up.\n- 502: the file could not be fetched, or its host did not answer 2xx.\n\n--files-cors lets a page on another origin read the files this service stores on local disk. It answers CORS for each --allow-origin origin, and it is off by default. With it on, the editor can read a stored PDF directly.\n\nA 200 or 206 answer is `application/pdf`, with `nosniff` and `Content-Security-Policy: sandbox`, so a browser never runs it as a page.',
+  },
+  {
+    id: 'outbound-redirects',
+    title: 'Remote fetches follow five redirects at most, and never from https to http',
+    body: 'When the service fetches a URL for you, it follows at most 5 redirects. A redirect from https to http is refused. So is a response head over 64 KiB, and so is a URL whose raw text holds a control character (C0, DEL or C1), whether you send it or a redirect points to it.\n\nWhen a rate limit is on, each redirect hop counts as one more request for the caller. A long chain can then end in `{"success":0}` from /unfurl or 400 from /upload-by-url, and later requests reach 429 sooner. Raise --rate-limit if real traffic hits it.\n\nThe service runs at most four page fetches for /unfurl and /frame-check, and four downloads for /upload-by-url, at once. So slow downloads never hold up link checks. When a rate limit is on, one caller may run at most two of each at once. A third waits for one of that caller\'s own slots, within its own time limit, and other callers are not held up.',
   },
   {
     id: 'proxy-rate-limit',
@@ -748,5 +861,133 @@ export const serverLimits: ServerLimit[] = [
     id: 'tls-termination',
     title: 'Terminate TLS before internet traffic reaches the service',
     body: 'The standalone host speaks plain HTTP. It does not terminate TLS or manage certificates. An internet-facing deployment must sit behind a reverse proxy or hosting platform that accepts HTTPS and forwards HTTP over a private or loopback connection. Never send a ticket over plain internet traffic.',
+  },
+];
+
+export const serverMcpIntro: string =
+  'Blok\'s MCP server lets an outside agent read and edit Blok documents through any MCP client. It comes in four builds: Node, C#, Go and Rust.\n\nAll four serve the same six tools and take the same flags and environment variables. One shared test suite checks every build against the Node one. The Node README lists the flags.\n\nFour options let your own app take over more of the work:\n\n- Embedding serves Blok\'s `blok_*` tools and prompts on an MCP server you build, next to your own tools. Use `createBlok` in Node, `WithBlok` in C#, `blokmcp.Embed` in Go and `BlokTools` in Rust.\n- A document source of your own loads and saves stored documents through your code, instead of `files` or `endpoint`.\n- `--create-page <url>` lets your app make each new sub-page document. It needs `--page-titles page-map` and a stored `--source`.\n- `--handle-store memory|files:<dir>` sets where stored handles live. With one shared store, any process can serve any call for a stored handle. `files:<dir>` shares them on one machine.\n\nEvery build refuses JSON nested more than 48 levels of objects and arrays: in a call\'s arguments, in a document it opens, and in a document a call would save.';
+
+export const serverMcpDifferences: string =
+  'Where the C#, Go and Rust builds differ from Node, on purpose:\n\n- `--authorize` takes only an http(s) webhook URL. A module path is JavaScript, so they refuse it at startup.\n- Uploads work only through the library API, as in Node. There is no flag for them.\n- Each call runs in an embedded JavaScript engine, with a 60 second limit. Node has no such limit.\n- Each engine also has a memory budget per call: 2 GiB of allocations in C#, about 1 GiB of heap growth in Go, 256 MiB held in Rust.\n- The C# library checks the `Host` header only when you list `AllowedHosts`. Without it, use ASP.NET Core\'s own host filtering. Node answers 403 to a `Host` that is not loopback, unless `--public`.\n- In the Rust library, naming `hosts` in `Embedded::http` also serves callers from other machines, even without OAuth. In Node a caller from another machine needs `--public`, and `--public` needs OAuth.\n- The libraries can also open live handles on the rooms of their own app, in the same process, with no socket and no ticket: `LiveRooms` in C#, `Options.Rooms` in Go and `rooms` in Rust. They join a remote sync service too, as Node does with `--sync-url` (`SyncUrl` in C#).\n\nEach library\'s options are listed in its README, next to its code in `packages/server`.';
+
+/**
+ * The MCP server's builds. Node leads: it is the one the others are tested
+ * against. Signatures come from the code: `AddBlokMcp`/`MapBlokMcp` in
+ * Blok.Server.Mcp, `blokmcp.New`/`Handler` in the Go module.
+ */
+export const serverMcpBuilds: ServerMcpBuild[] = [
+  {
+    id: 'node',
+    title: 'Node: @bloklabs/mcp',
+    description: 'The npm package. It needs Node 20.19 or newer.',
+    samples: [
+      {
+        label: 'Run it against a folder of JSON documents',
+        language: 'bash',
+        code: 'npx @bloklabs/mcp --source files:./docs',
+      },
+    ],
+  },
+  {
+    id: 'csharp',
+    title: 'C#: Blok.Mcp and Blok.Server.Mcp',
+    description:
+      'Two NuGet packages, for .NET 10. `Blok.Mcp` is a .NET tool that runs `blok-mcp` on its own. `Blok.Server.Mcp` puts the same server inside your ASP.NET Core app.\n\nIn the app:\n\n- `AddBlokMcp` takes the document source and the access check.\n- Without `Authorize`, a registered `IBlokAuthorization` decides. With neither, `MapBlokMcp` throws at startup, unless you set `AllowEveryCallerEveryDocument` or serve only live rooms through `TicketUrl` with no document source.\n- `MapBlokMcp` serves stateless streamable HTTP. Its path defaults to `/mcp`.',
+    samples: [
+      {
+        label: 'Install the tool and run it',
+        language: 'bash',
+        code: 'dotnet tool install -g Blok.Mcp\nblok-mcp --source files:./docs',
+        install: true,
+      },
+      {
+        label: 'Or run it once without installing',
+        language: 'bash',
+        code: 'dnx Blok.Mcp --yes -- --source files:./docs',
+      },
+      {
+        label: 'Add the library to your app',
+        language: 'bash',
+        code: 'dotnet add package Blok.Server.Mcp',
+        install: true,
+      },
+      {
+        label: 'Register and map it',
+        language: 'csharp',
+        code: `using Blok.Server.Mcp;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddBlokMcp(options =>
+{
+  options.FilesDirectory = "./docs";
+  // Your own check: may this principal open this document?
+  options.Authorize = (request, cancellationToken) =>
+    ValueTask.FromResult(MayOpen(request.Principal, request.DocumentId, request.Write));
+});
+
+var app = builder.Build();
+
+app.MapBlokMcp("/mcp");
+app.Run();`,
+      },
+    ],
+  },
+  {
+    id: 'go',
+    title: 'Go: blok-mcp and the blokmcp package',
+    description:
+      'The `blok-mcp` command and the `blokmcp` package are part of the Go module. Each release also carries `blok-mcp-go_<os>_<arch>` archives, if you would rather not build it.\n\nIn your app:\n\n- `blokmcp.New` takes `blokmcp.Options`, whose fields match the flags.\n- `Authorize` decides every open and every handle call.\n- `Handler()` serves `/mcp`, so mount it at the root. It needs `Transport.Kind` set to `"http"`.',
+    samples: [
+      {
+        label: 'Install the command and run it',
+        language: 'bash',
+        code: 'go install github.com/JackUait/blok/packages/server/go/v2/cmd/blok-mcp@latest\nblok-mcp --source files:./docs',
+        install: true,
+      },
+      {
+        label: 'Serve it from your app',
+        language: 'go',
+        code: `server, err := blokmcp.New(blokmcp.Options{
+	Transport: blokmcp.Transport{Kind: "http", Listen: "127.0.0.1:3001"},
+	Auth:      blokmcp.Auth{Kind: "none"},
+	Source:    &blokmcp.Source{Kind: "files", Dir: "./docs"},
+	// Your own check: may this principal open this document?
+	Authorize: func(ctx context.Context, principal, documentID string, write bool) (bool, error) {
+		return mayOpen(principal, documentID, write), nil
+	},
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer server.Close()
+
+handler, err := server.Handler()
+if err != nil {
+	log.Fatal(err)
+}
+log.Fatal(http.ListenAndServe("127.0.0.1:3001", handler))`,
+      },
+    ],
+  },
+  {
+    id: 'rust',
+    title: 'Rust: blok-mcp on crates.io',
+    description:
+      'The `blok-mcp` crate on crates.io holds the command and the library. It needs Rust 1.99 or later. The `blok-*` crates it pulls in are its own parts, not a stable API.',
+    samples: [
+      {
+        label: 'Install the command',
+        language: 'bash',
+        code: 'cargo install blok-mcp\nblok-mcp --source files:./docs',
+        install: true,
+      },
+      {
+        label: 'Add it to your app, then start it with blok_mcp::Embedded',
+        language: 'bash',
+        code: 'cargo add blok-mcp',
+        install: true,
+      },
+    ],
   },
 ];

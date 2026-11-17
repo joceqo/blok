@@ -5,6 +5,7 @@ import type { DocSnapshot } from './snapshot';
 
 import { deepEqual } from '../deep-equal';
 import { LOCK_PROTECTED_FIELDS } from '../tool-actions/database';
+import { normalizeDatabase } from '../tool-actions/load-defaults';
 
 import { AgentFailure, failure } from './errors';
 import { plainLine } from './plain-line';
@@ -266,21 +267,49 @@ export const lockedAmong = (snapshot: DocSnapshot, ids: readonly string[]): stri
   return ids.filter(id => snapshot.get(id)?.type === 'database' && lockedOrHeld(snapshot, id, locked));
 };
 
+/** The target's blocks by id. The first copy of a repeated id wins, as the servers' restore planner writes it. */
+const firstById = (target: OutputData): Map<string, OutputData['blocks'][number]> => {
+  const byId = new Map<string, OutputData['blocks'][number]>();
+
+  for (const block of target.blocks) {
+    if (block.id !== undefined && !byId.has(block.id)) {
+      byId.set(block.id, block);
+    }
+  }
+
+  return byId;
+};
+
+/**
+ * How a restore treats databases, as the server's `databases` param: `keep` leaves every database, on either
+ * side, as it is now, so it touches no lock and no share. `restore` (the default) restores them.
+ */
+export interface RestoreScope { databases?: 'keep' | 'restore' }
+
 /**
  * Databases locked now (their own lock or a holder's) that the restored version removes, turns into
  * something else, or changes in any field the lock protects. A new id never stands in for an old one.
  */
-export const restoreTouchesLocked = (now: DocSnapshot, target: OutputData): string[] => {
+const withEmptySlots = (data: Record<string, unknown>): Record<string, unknown> =>
+  ({ deletedProperties: {}, ...normalizeDatabase(data) });
+
+export const restoreTouchesLocked = (now: DocSnapshot, target: OutputData, scope: RestoreScope = {}): string[] => {
+  if (scope.databases === 'keep') {
+    return [];
+  }
+
   const locked = lockedIn(now);
-  const restored = new Map(target.blocks.flatMap(block => (block.id === undefined ? [] : [[block.id, block] as const])));
+  const restored = firstById(target);
 
   return now.ids().filter(id => now.get(id)?.type === 'database' && lockedOrHeld(now, id, locked)).filter((id) => {
     const after = restored.get(id);
     const before = now.get(id);
-    const data: Record<string, unknown> = typeof after?.data === 'object' && after.data !== null ? after.data : {};
+    // A missing slot counts as its empty default: a version saved before it existed still matches.
+    const data = withEmptySlots(typeof after?.data === 'object' && after.data !== null ? after.data : {});
+    const was = withEmptySlots(before?.data ?? {});
 
     return after === undefined || after.type !== 'database'
-      || LOCK_PROTECTED_FIELDS.some(field => !deepEqual(before?.data[field], data[field]));
+      || LOCK_PROTECTED_FIELDS.some(field => !deepEqual(was[field], data[field]));
   });
 };
 
@@ -404,8 +433,12 @@ export const sharedBetween = (from: DocSnapshot, to: DocSnapshot): ShareStep[] =
   shareSteps(to.ids(), snapshotSource(from), snapshotSource(to));
 
 /** Restoring `target` over `now` changes these views' sharing. */
-export const restoreShares = (now: DocSnapshot, target: OutputData): ShareStep[] => {
-  const restored = new Map(target.blocks.flatMap(block => (block.id === undefined ? [] : [[block.id, block] as const])));
+export const restoreShares = (now: DocSnapshot, target: OutputData, scope: RestoreScope = {}): ShareStep[] => {
+  if (scope.databases === 'keep') {
+    return [];
+  }
+
+  const restored = firstById(target);
 
   return shareSteps([...restored.keys()], snapshotSource(now), id => {
     const block = restored.get(id);

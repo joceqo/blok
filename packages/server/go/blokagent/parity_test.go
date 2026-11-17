@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
 )
 
 // The stored Go runner over test/fixtures/agent-commands, as C#
@@ -127,10 +127,11 @@ var (
 )
 
 // sharedExecutor is one pool for the package's real-bundle tests: each
-// engine parses the bundle.
+// engine parses the bundle. It has the default size, so parallel subtests
+// do not queue on one engine.
 func sharedExecutor(t *testing.T) *Executor {
 	t.Helper()
-	bundleOnce.Do(func() { bundleExecutor, bundleErr = New(FactoryOptions{PoolSize: 1}) })
+	bundleOnce.Do(func() { bundleExecutor, bundleErr = New(FactoryOptions{}) })
 	if bundleErr != nil {
 		t.Fatal(bundleErr)
 	}
@@ -148,6 +149,7 @@ func TestMatchesTheAgentCommandCorpus(t *testing.T) {
 	onBehalfOf := "human-1"
 	for _, c := range corpus {
 		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := context.Background()
 			document, err := write(c.seed)
 			if err != nil {
@@ -182,6 +184,63 @@ func TestMatchesTheAgentCommandCorpus(t *testing.T) {
 				t.Fatal("no golden")
 			}
 			got := normalizeDocument(mustParse(t, document), callerChosenIDs(c))
+			if stable(t, got) != stable(t, want) {
+				t.Fatalf("document\n got %s\nwant %s", stable(t, got), stable(t, want))
+			}
+		})
+	}
+}
+
+// The live-room Go runner over the same corpus, as C# RoomAgentParityTests:
+// a real room on the real converter and journal, the "room" expectation,
+// and the stored golden when the case succeeds everywhere.
+func TestMatchesTheAgentCommandCorpusInARoom(t *testing.T) {
+	loadRichFields(t)
+	corpus := loadCorpus(t)
+	if len(corpus) != 52 {
+		t.Fatalf("corpus has %d runnable cases, want 52", len(corpus))
+	}
+	onBehalfOf := "human-1"
+	actor := Actor{ID: "agent-test", Name: "Parity", OnBehalfOf: &onBehalfOf}
+	for _, c := range corpus {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			rooms := newTestRoom(t, false, nil)
+			seed, err := write(c.seed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc := "parity-" + newGUID()
+			rooms.docs.hold(doc, seed)
+			code := ""
+			for _, batch := range c.batches {
+				batchJSON, err := write(batch)
+				if err != nil {
+					t.Fatal(err)
+				}
+				execution, err := rooms.executor.ExecuteInRoom(ctx, doc, batchJSON, actor, nil)
+				if err != nil {
+					t.Fatalf("execute: %v", err)
+				}
+				result := mustParse(t, execution.ResultJSON)
+				if ok, _ := isTrue(result, "ok"); !ok {
+					code, _ = stringOf(lookup(lookup(result, "error"), "code"))
+					break
+				}
+			}
+			if want := expectedError(c, "room"); code != want {
+				t.Fatalf("error %q, want %q", code, want)
+			}
+			// Same gate as the stored runner: content only.
+			if code != "" || expectedError(c, "json") != "" {
+				return
+			}
+			want := golden(t, c.name)
+			if want == nil {
+				t.Fatal("no golden")
+			}
+			got := normalizeDocument(rooms.export(t, doc), callerChosenIDs(c))
 			if stable(t, got) != stable(t, want) {
 				t.Fatalf("document\n got %s\nwant %s", stable(t, got), stable(t, want))
 			}

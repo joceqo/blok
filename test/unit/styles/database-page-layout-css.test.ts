@@ -43,7 +43,7 @@ describe('database row page layout css', () => {
   // feel/findings-rowpage R10: the header row shows on hover of the page head or title, not the whole page.
   it('shows Customize layout on page head hover, like Add icon', () => {
     expect(database).toMatch(/\[data-blok-database-drawer-customize\] \{[^}]*opacity: 0;/);
-    expect(database).toMatch(/\[data-blok-database-drawer-page-head\]:is\(:hover, [^{]*\[data-blok-database-drawer-customize\][^{]*\{ opacity: 1; \}/);
+    expect(database).toMatch(/\[data-blok-database-drawer-page-head\]:hover [^{]*\[data-blok-database-drawer-customize\][^{]*\{\s*opacity: 1;\s*\}/);
   });
 
   it('turns the section caret and the details panel motion off for reduced motion', () => {
@@ -114,7 +114,7 @@ describe('database row page layout css', () => {
     expect(handle).toContain('cursor: col-resize');
     expect(ruleBody('[data-blok-database-peek-resize][hidden]')).toContain('display: none');
     expect(ruleBody('[data-blok-database-peek-resize]:focus-visible')).toContain('outline: none');
-    expect(ruleBody('[data-blok-database-peek-resize]:focus-visible:where(:root:not([data-blok-modality="pointer"]) *)'))
+    expect(ruleBody(':where(:root:not([data-blok-modality="pointer"])) [data-blok-database-peek-resize]:focus-visible'))
       .toContain('var(--blok-focus-ring)');
   });
 
@@ -498,7 +498,7 @@ describe('database row page layout css', () => {
     // Sections move from their menu only, so their ⠿ is no drag handle.
     expect(ruleBody('[data-blok-database-layout-group-handle], [data-blok-database-layout-section-handle]')).not.toContain('cursor: grab');
     // Rings show after keyboard use only.
-    expect(database).toContain('[data-blok-database-layout-section-row]:focus-visible:where(:root:not([data-blok-modality="pointer"]) *)');
+    expect(database).toContain(':where(:root:not([data-blok-modality="pointer"])) [data-blok-database-layout-section-row]:focus-visible');
     expect(ruleBody('[data-blok-database-layout-group-row][data-dragging]')).toContain('opacity: 0.5');
   });
 
@@ -529,7 +529,8 @@ describe('database row page layout css', () => {
   it('widens only the full page when the layout is full width', () => {
     const narrow = ruleBody('[data-blok-database-drawer][data-peek-mode="full"]:not([data-full-width]) [data-blok-database-drawer-content]');
 
-    expect(narrow).toContain('max-inline-size: var(--blok-content-max-width, var(--max-width-content))');
+    // fullpage.png: the title ink and the labels sit on the page's text column (x 539, 563), so the 6px title inset lies outside it.
+    expect(narrow).toContain('max-inline-size: calc(var(--blok-content-max-width, var(--max-width-content)) + 2 * var(--blok-space-1-5))');
     expect(narrow).toContain('margin-inline: auto');
     expect(database).not.toMatch(/data-peek-mode="(?:side|center)"\][^{]*data-full-width/);
   });
@@ -571,6 +572,14 @@ describe('database row page layout css', () => {
     // feel/findings-rowpage R04: 20px glyphs, Notion's 22px ellipsis.
     expect(ruleBody('[data-blok-database-peek-expand] svg, [data-blok-database-peek-mode] svg, [data-blok-database-peek-prev] svg, [data-blok-database-peek-next] svg, [data-blok-database-peek-copy-link] svg, [data-blok-database-peek-page-info] svg, [data-blok-database-peek-favorite] svg')).toContain('width: 20px');
     expect(ruleBody('[data-blok-database-peek-actions] svg')).toContain('width: 22px');
+  });
+
+  // notion-motion.md Round 44 §5: the center peek's ⤢ is 11 x 11 of ink; Keyline's at 22px is 11.3.
+  it('draws the center peek\'s expand glyph at Notion\'s ink size', () => {
+    const body = ruleBody('[data-peek-mode="center"] [data-blok-database-peek-expand] svg');
+
+    expect(body).toContain('width: 22px');
+    expect(body).toContain('height: 22px');
   });
 
   // research/22 §14: favorited is a yellow star, not a selected state, so it gets ink but no button fill.

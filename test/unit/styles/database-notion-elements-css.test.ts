@@ -45,11 +45,66 @@ describe('sort panel buttons (research/26 §3a, §4a)', () => {
 });
 
 describe('selection bar dividers (research/26 §3b, §4a)', () => {
-  it('draw a 1px shadow on the end side of every segment but the last, 1px apart', () => {
-    expect(ruleBody('[data-blok-database-table-selection-bar]')).toContain('gap: var(--blok-space-0-25)');
+  // notion-motion.md Round 27 §3: the segments abut (gap 0); the shadow alone divides them.
+  it('draw a 1px shadow on the end side of every segment but the last, with no gap', () => {
+    expect(ruleBody('[data-blok-database-table-selection-bar]')).toContain('gap: 0');
     expect(ruleBody('[data-blok-database-table-selection-bar] > :not(:last-child)')).toContain('box-shadow: var(--blok-database-table-border) 1px 0 0 0');
     expect(ruleBody('[dir="rtl"] [data-blok-database-table-selection-bar] > :not(:last-child)')).toContain('box-shadow: var(--blok-database-table-border) -1px 0 0 0');
     expect(tokenValues('--blok-database-table-border')).toEqual([ 'rgba(42, 28, 0, 0.07)', 'rgba(255, 255, 243, 0.082)', 'rgba(255, 255, 243, 0.082)' ]);
+  });
+});
+
+describe('table selection bar fade (notion-motion.md Round 14, row checkbox)', () => {
+  const TABLE_BARS = [
+    '[data-blok-database-selecting="table"] > [data-blok-database-table-selection-bar]',
+    '[data-blok-database-table] > [data-blok-database-table-selection-bar]',
+  ];
+
+  it('fades in over 200ms ease when the first row is picked', () => {
+    for (const selector of TABLE_BARS) {
+      expect(ruleBody(selector)).toContain('animation: blok-database-confirm-fade 200ms ease both');
+    }
+  });
+
+  it('appears at once under reduced motion', () => {
+    const reduced = [ ...database.matchAll(/@media \(prefers-reduced-motion: reduce\) \{((?:[^{}]*\{[^{}]*\})*)[^{}]*\}/g) ]
+      .map((m) => m[1])
+      .filter((block) => TABLE_BARS.every((selector) => block.includes(selector)));
+
+    expect(reduced.join(' ')).toContain('animation: none');
+  });
+});
+
+describe('table selection bar fade-out (notion-motion.md Round 16 §2)', () => {
+  const LEAVING = '[data-blok-database-table-selection-bar-leaving]';
+
+  it('fades the leaving bar 1 to 0 over 200ms ease, with no slide or scale', () => {
+    const body = ruleBody(LEAVING);
+
+    expect(body).toContain('animation: blok-database-confirm-fade-out 200ms ease forwards');
+    expect(body).toContain('pointer-events: none');
+    expect(body).not.toContain('transform');
+  });
+
+  it('keeps the leaving bar looking and sitting like the bar', () => {
+    for (const selector of [
+      '[data-blok-database-table-selection-bar]',
+      '[data-blok-database-view-bar] > [data-blok-database-table-selection-bar]',
+      '[data-blok-database-title-row] > [data-blok-database-table-selection-bar]',
+      '[data-blok-database-table-selection-bar] > :not(:last-child)',
+      '[data-blok-database-table-selection-bar] button',
+      '[data-blok-database-table-selection-bar] svg',
+    ]) {
+      expect(ruleBody(selector.replace('[data-blok-database-table-selection-bar]', LEAVING))).toContain(ruleBody(selector));
+    }
+    expect(ruleBody('[data-blok-database-view-bar]:has(> [data-blok-database-table-selection-bar-leaving])')).toContain('position: relative');
+    expect(ruleBody('[data-blok-database-title-row]:has(> [data-blok-database-table-selection-bar-leaving])')).toContain('position: relative');
+  });
+
+  it('fades the row halo out with the bar: only its opacity changes', () => {
+    expect(ruleBody('[data-blok-database-table-row]::after')).toContain('background-color: var(--blok-icon-active-bg)');
+    expect(ruleBody('[data-blok-database-table-row]::after')).toContain('transition: opacity 200ms ease');
+    expect(ruleBody('[data-blok-database-table-row][aria-selected="true"]::after')).not.toContain('background-color');
   });
 });
 
@@ -168,5 +223,84 @@ describe('Edit property "Options" heading and status group names (notion-spec-2 
     expect(body).toContain('line-height: 14.4px');
     expect(body).toContain('font-weight: 500');
     expect(body).toContain('color: var(--blok-database-ink-secondary)');
+  });
+});
+
+// research/33 §3.2 (cardlay.sh reads `outline` on a 109x82 button beside its label): 1px gray, 2px when picked.
+describe('board Card layout tiles (research/33 §3.2)', () => {
+  const DRAWING = '[data-blok-database-card-layout-drawing]';
+  const PICKED = '[data-blok-database-card-layout-tile][aria-pressed="true"] [data-blok-database-card-layout-drawing]';
+
+  it('are 109x82 with a 10px radius and a 1px outline outside the box', () => {
+    const body = ruleBody(DRAWING);
+
+    expect(body).toContain('inline-size: 109px');
+    expect(body).toContain('block-size: 82px');
+    expect(body).toContain('border-radius: var(--blok-radius-surface)');
+    expect(body).toContain('outline: 1px solid var(--blok-database-tpl-border)');
+    expect(body).not.toContain('border:');
+  });
+
+  it('draw the picked tile with a 2px outline in ink', () => {
+    const body = ruleBody(PICKED);
+
+    expect(body).toContain('outline: 2px solid var(--blok-database-ink)');
+    expect(body).not.toContain('box-shadow');
+  });
+});
+
+// notion-motion.md Round 9 (r9-vs-layout.raw): Layout rows are 274x28 at x+8, 29 apart; the switch ends 8px in.
+describe('View settings Layout page rows (notion-motion Round 9)', () => {
+  const ROW = '[data-blok-database-panel-page="layout"] [data-blok-database-panel-row]';
+  const NEXT = '[data-blok-database-panel-page="layout"] [data-blok-database-panel-row] + [data-blok-database-panel-row]';
+
+  it('inset rows 8px each side, so they are 274 wide in the 290 panel', () => {
+    const body = ruleBody(ROW);
+
+    expect(body).toContain('inline-size: auto');
+    expect(body).toContain('margin-inline: var(--blok-space-1)');
+  });
+
+  it('put 1px between rows, a 29px pitch', () => {
+    expect(ruleBody(NEXT)).toContain('margin-block-start: var(--blok-space-0-25)');
+  });
+});
+
+// r35:497-509 (two rules 32 tall at y 133 and 173) and r10-sort-popover.png (box top 305, rule 313, Add sort 351, bottom 412).
+describe('sort panel rule list (r35:497-509, r10-sort-popover.png)', () => {
+  it('puts rules 40px apart: a 32px row and an 8px gap', () => {
+    expect(ruleBody('[data-blok-database-panel-page="sort"] > [data-blok-database-panel-list]')).toContain('gap: var(--blok-space-2)');
+  });
+
+  it('starts the first rule 8px down and Add sort 6px under the last rule, 107 tall with one rule', () => {
+    expect(ruleBody('[data-blok-database-panel-page="sort"] > [data-blok-database-panel-list]')).toContain('margin-block: var(--blok-space-1) var(--blok-space-1-5)');
+    expect(ruleBody('[data-blok-database-panel-page="sort"]')).toContain('padding-block-end: var(--blok-space-1)');
+  });
+
+  // r18-sort-one.raw (Add sort +46, Delete sort +75), r35-sort2.raw (441.8 / 470.8), r17-sort-one.raw (Delete alone: 78 tall).
+  it('puts Delete sort 29 under Add sort, as every Notion menu row', () => {
+    expect(ruleBody('[data-blok-database-panel-page="sort"] > [data-blok-database-panel-row] + [data-blok-database-panel-row]')).toContain('margin-block-start: var(--blok-space-0-25)');
+  });
+
+  // r27-pm-sortpop.raw: the pinned modal's editor has no handle, so its property button sits 12 in (392 - 380).
+  it('starts the property button 12px in when the rules have no handle', () => {
+    expect(ruleBody('[data-blok-database-sort-compact][data-blok-database-panel-page="sort"] > [data-blok-database-panel-list]')).toContain('padding-inline: var(--blok-space-2)');
+  });
+});
+
+// notion-motion.md Round 35 gap 6 (r35-sort2.raw): a 351.1-wide popover at x 539 with a 16px handle glyph at 553 (+14),
+// the property button at 579 (+40), the × glyph 19.9 after the widest direction button and 18 from the edge.
+describe('sort panel insets (Round 35 gap 6)', () => {
+  const PAGE = '[data-blok-database-panel-page="sort"]';
+
+  it('draws a 16px handle glyph 14px in, and the property button 40px in', () => {
+    expect(ruleBody(`${PAGE} > [data-blok-database-panel-list]`)).toContain('padding-inline: var(--blok-space-2-25) var(--blok-space-2-5)');
+    expect(ruleBody(`${PAGE} [data-blok-database-panel-handle]`)).toContain('margin-inline-end: var(--blok-space-2-25)');
+    expect(ruleBody(`${PAGE} [data-blok-database-panel-handle] svg`)).toContain('width: 16px');
+    expect(ruleBody(`${PAGE} [data-blok-database-panel-handle] svg`)).toContain('height: 16px');
+  });
+
+  it('keeps the × glyph 20px after the direction button and 18px from the edge', () => {
+    expect(ruleBody('[data-blok-database-sort-row] > [data-blok-database-panel-row]:nth-child(2)')).toContain('margin-inline-end: var(--blok-space-2)');
   });
 });

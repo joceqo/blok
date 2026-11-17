@@ -149,6 +149,66 @@ describe('DatabasePanel', () => {
       panel.close();
     });
 
+    // research/35 §2.3, research/27 18.png: on a full-page database it runs from under the toolbar row to the window's bottom, flush with its end edge.
+    it('on a full-page database sits flush with the window\'s end edge, under the toolbar row', () => {
+      const wrapper = document.createElement('div');
+      const row = document.createElement('div');
+
+      wrapper.setAttribute('data-blok-database-wrapper', '');
+      wrapper.setAttribute('data-blok-database-page', '');
+      row.setAttribute('data-blok-database-title-row', '');
+      row.appendChild(anchor);
+      wrapper.appendChild(row);
+      document.body.appendChild(wrapper);
+      vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(new DOMRect(1409, 136, 28, 28));
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(56, 130, 1456, 40));
+      const panel = new DatabasePanel({ anchor, root: { build: () => [] }, testId: 'panel', width: 290, backLabel: 'Back', docked: true });
+
+      panel.open();
+      const popover = popoverOf();
+
+      expect(popover?.getAttribute('data-blok-popover-custom-class')).toContain('blok-database-docked-page');
+      expect(popover?.style.left).toBe(`${window.innerWidth}px`);
+      expect(popover?.style.top).toBe('170px');
+      expect(document.querySelector<HTMLElement>('[data-blok-testid="panel"]')?.style.height).toBe('calc(100dvh - 170px)');
+      panel.close();
+    });
+
+    it('on a full-page database docks under the toolbar row when a column header opened it', () => {
+      const wrapper = document.createElement('div');
+      const row = document.createElement('div');
+      const toolbar = document.createElement('div');
+      const header = document.createElement('div');
+
+      wrapper.setAttribute('data-blok-database-wrapper', '');
+      wrapper.setAttribute('data-blok-database-page', '');
+      row.setAttribute('data-blok-database-title-row', '');
+      toolbar.setAttribute('data-blok-database-view-toolbar', '');
+      row.appendChild(toolbar);
+      header.appendChild(anchor);
+      wrapper.append(row, header);
+      document.body.appendChild(wrapper);
+      vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(new DOMRect(400, 180, 200, 36));
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(56, 130, 1456, 40));
+      const panel = new DatabasePanel({ anchor, root: { build: () => [] }, testId: 'panel', width: 290, backLabel: 'Back', docked: true });
+
+      panel.open();
+
+      expect(popoverOf()?.getAttribute('data-blok-popover-custom-class')).toContain('blok-database-docked-page');
+      expect(popoverOf()?.style.top).toBe('170px');
+      panel.close();
+    });
+
+    it('keeps the floating dock on an inline database', () => {
+      vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(new DOMRect(40, 300, 28, 28));
+      const panel = new DatabasePanel({ anchor, root: { build: () => [] }, testId: 'panel', width: 290, backLabel: 'Back', docked: true });
+
+      panel.open();
+
+      expect(popoverOf()?.getAttribute('data-blok-popover-custom-class')).not.toContain('blok-database-docked-page');
+      panel.close();
+    });
+
     it('opens under its anchor when not docked', () => {
       vi.spyOn(anchor, 'getBoundingClientRect').mockReturnValue(new DOMRect(40, 300, 28, 28));
       open({ build: () => [] });
@@ -320,5 +380,35 @@ describe('DatabasePanel', () => {
       expect(row('b').style.top).toBe('');
       expect(row('b').hasAttribute('data-dragging')).toBe(false);
     });
+  });
+
+  // notion-motion.md Round 18 §2 (r18-adv-open.raw): the advanced filter is as wide as its rules.
+  it('grows a fitContent page to its rows over a width floor, and gives the width back on leaving it', () => {
+    const panel = open({ title: 'First', build: () => [] });
+
+    panel.push({ fitContent: true, build: () => [] });
+
+    expect(panel.root.style.width).toBe('max-content');
+    expect(panel.root.style.minWidth).toBe('290px');
+    expect(panel.root.hasAttribute('data-fit-content')).toBe(true);
+
+    panel.back();
+
+    expect(panel.root.style.width).toBe('290px');
+    expect(panel.root.style.minWidth).toBe('');
+    expect(panel.root.hasAttribute('data-fit-content')).toBe(false);
+    panel.close();
+  });
+
+  // The sort panel sets its own max-content width after it is built.
+  it('keeps a width the opener set while its pages redraw', () => {
+    const panel = open({ build: () => [] });
+
+    panel.root.style.width = 'max-content';
+    panel.refresh();
+    panel.push({ build: () => [] });
+
+    expect(panel.root.style.width).toBe('max-content');
+    panel.close();
   });
 });

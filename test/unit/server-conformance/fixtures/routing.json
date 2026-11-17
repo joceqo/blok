@@ -34,7 +34,8 @@
       { "method": "POST", "path": "/nope" },
       { "method": "OPTIONS", "path": "/nope" },
       { "method": "OPTIONS", "path": "*" },
-      { "method": "GET", "path": "/unfurl" }
+      { "method": "GET", "path": "/unfurl" },
+      { "method": "GET", "path": "/frame-check" }
     ],
     "encodedNul": [
       { "method": "GET", "path": "/health%00" },
@@ -42,6 +43,48 @@
       { "method": "POST", "path": "/x%00" },
       { "method": "GET", "path": "/a%00b/c" },
       { "method": "GET", "path": "/x/../health%00" }
+    ],
+    "rawNonAscii": [
+      "/health\u00e9",
+      "/health?x=\u00e9",
+      "/nope\u00ff",
+      "/x/../health\u00e9",
+      "/sync/q\u00e9/state"
+    ],
+    "rawNul": [
+      { "method": "GET", "path": "/health\u0000" },
+      { "method": "GET", "path": "/health?x=\u0000y" },
+      { "method": "GET", "path": "/health?\u0000" },
+      { "method": "GET", "path": "/nope\u0000" },
+      { "method": "GET", "path": "/x\u0000/../health" },
+      { "method": "GET", "path": "/sync/q\u0000/state" }
+    ],
+    "unparsedTargets": [
+      { "method": "GET", "path": "/health\u0001", "status": 404 },
+      { "method": "GET", "path": "/health\t", "status": 404 },
+      { "method": "GET", "path": "/health\r", "status": 404 },
+      { "method": "GET", "path": "/health\u001f", "status": 404 },
+      { "method": "GET", "path": "/health\u007f", "status": 404 },
+      { "method": "HEAD", "path": "/a\u0001b", "status": 404 },
+      { "method": "GET", "path": "/a%zzb", "status": 404 },
+      { "method": "GET", "path": "/health%", "status": 404 },
+      { "method": "GET", "path": "/health%4", "status": 404 },
+      { "method": "GET", "path": "/health%%41", "status": 404 },
+      { "method": "GET", "path": "/health%C3%", "status": 404 },
+      { "method": "GET", "path": "/health%zz/..", "status": 404 },
+      { "method": "GET", "path": "/x/%zz/../health", "status": 404 },
+      { "method": "GET", "path": "/health\u0001?", "status": 404 },
+      { "method": "GET", "path": "/a%zzb?x=\u007f", "status": 404 },
+      { "method": "GET", "path": "/health?x=\u0001y", "status": 200 },
+      { "method": "GET", "path": "/health?x=\ty", "status": 200 },
+      { "method": "GET", "path": "/health?x=\ry", "status": 200 },
+      { "method": "GET", "path": "/health?x=\u007fy", "status": 200 },
+      { "method": "GET", "path": "/health?q=%zz\u0001", "status": 200 },
+      { "method": "HEAD", "path": "/health?x=\u0001", "status": 200 },
+      { "method": "GET", "path": "/%zz/../health", "status": 200 },
+      { "method": "GET", "path": "/x\u0001/../health", "status": 200 },
+      { "method": "GET", "path": "/HEALTH/%zz/..", "status": 200 },
+      { "method": "GET", "path": "/health/%zz/..", "status": 200 }
     ],
     "notRefused": [
       { "path": "/health?x=%00", "status": 200 },
@@ -59,7 +102,8 @@
       { "method": "POST", "path": "/sync/x/state", "allow": "GET, OPTIONS" },
       { "method": "GET", "path": "/sync/x/history/l", "allow": "DELETE, OPTIONS" },
       { "method": "PUT", "path": "/sync/x/history/l", "allow": "DELETE, OPTIONS" },
-      { "method": "POST", "path": "/unfurl", "allow": "GET, HEAD, OPTIONS" }
+      { "method": "POST", "path": "/unfurl", "allow": "GET, HEAD, OPTIONS" },
+      { "method": "POST", "path": "/frame-check", "allow": "GET, HEAD, OPTIONS" }
     ],
     "notFound": [
       "/sync",
@@ -74,6 +118,55 @@
       { "path": "/sync/a%2fb/state", "doc": "a%2fb" },
       { "path": "/sync/a%5Cb/state", "doc": "a\\b" },
       { "path": "/sync/a%252Fb/state", "doc": "a%2Fb" }
+    ],
+    "decodedDoc": [
+      { "path": "/sync/u0%80/state", "doc": "u0%80" },
+      { "path": "/sync/u1%C3%28/state", "doc": "u1%C3(" },
+      { "path": "/sync/u2%E2%82/state", "doc": "u2%E2%82" },
+      { "path": "/sync/u3%E2%82x/state", "doc": "u3%E2%82x" },
+      { "path": "/sync/u4%C0%AF/state", "doc": "u4%C0%AF" },
+      { "path": "/sync/u5%ED%A0%80/state", "doc": "u5%ED%A0%80" },
+      { "path": "/sync/u6%F4%90%80%80/state", "doc": "u6%F4%90%80%80" },
+      { "path": "/sync/u7%FF%C3%A9/state", "doc": "u7%FF\u00e9" },
+      { "path": "/sync/u8%C3%A9/state", "doc": "u8\u00e9" },
+      { "path": "/sync/u9%E2%82%AC/state", "doc": "u9\u20ac" },
+      { "path": "/sync/u10%F0%9F%98%80/state", "doc": "u10\ud83d\ude00" },
+      { "path": "/sync/u11%C3/state", "doc": "u11%C3" },
+      { "path": "/sync/u12%E2%82%FF/state", "doc": "u12%E2%82%FF" },
+      { "path": "/sync/u13%C3%A9%FF/state", "doc": "u13\u00e9%FF" },
+      { "path": "/sync/u14%F0%9F%98/state", "doc": "u14%F0%9F%98" },
+      { "path": "/sync/u15%F8%88%80%80%80/state", "doc": "u15%F8%88%80%80%80" },
+      { "path": "/sync/u16%C3%C3%A9/state", "doc": "u16%C3\u00e9" },
+      { "path": "/sync/u17%E2%C3%A9/state", "doc": "u17%E2\u00e9" },
+      { "path": "/sync/u18%E0%80%80/state", "doc": "u18%E0%80%80" },
+      { "path": "/sync/u19%F0%80%80%80/state", "doc": "u19%F0%80%80%80" },
+      { "path": "/sync/u20%EF%BF%BF/state", "doc": "u20\uffff" },
+      { "path": "/sync/u21%F4%8F%BF%BF/state", "doc": "u21\udbff\udfff" },
+      { "path": "/sync/u22%E2%82%41/state", "doc": "u22%E2%82A" },
+      { "path": "/sync/u23%C3%A9%C3/state", "doc": "u23\u00e9%C3" },
+      { "path": "/sync/u24%25C3%25A9/state", "doc": "u24%C3%A9" },
+      { "path": "/sync/u25%FF/state", "doc": "u25%FF" },
+      { "path": "/sync/u26%c3%28/state", "doc": "u26%c3(" },
+      { "path": "/sync/u27%Ff%c3%A9/state", "doc": "u27%Ff\u00e9" },
+      { "path": "/sync/u28%c3%a9/state", "doc": "u28\u00e9" },
+      { "path": "/sync/u37%Ff|/state", "doc": "u37%Ff|" },
+      { "path": "/sync/u43%Ff%7c/state", "doc": "u43%Ff|" }
+    ],
+    "unparsedDoc": [
+      { "path": "/sync/u29%zz/state", "doc": "u29%zz" },
+      { "path": "/sync/u30%C3%/state", "doc": "u30%C3%" },
+      { "path": "/sync/u31%%41/state", "doc": "u31%A" },
+      { "path": "/sync/u32%4/state", "doc": "u32%4" },
+      { "path": "/sync/u33\u0001x/state", "doc": "u33\u0001x" },
+      { "path": "/sync/u34\tx/state", "doc": "u34\tx" },
+      { "path": "/sync/u35\rx/state", "doc": "u35\rx" },
+      { "path": "/sync/u36\u007fx/state", "doc": "u36\u007fx" },
+      { "path": "/sync/u38%C3%A9%/state", "doc": "u38\u00e9%" },
+      { "path": "/sync/u39%\u0001/state", "doc": "u39%\u0001" },
+      { "path": "/sync/u40%2/state", "doc": "u40%2" },
+      { "path": "/sync/u41%g4/state", "doc": "u41%g4" },
+      { "path": "/sync/u42%/state", "doc": "u42%" },
+      { "path": "/sync/u45\u001f%zz%C3%A9/state", "doc": "u45\u001f%zz\u00e9" }
     ]
   }
 }

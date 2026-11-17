@@ -5,9 +5,10 @@ import type { BlokModules } from '../../../types-internal/blok-modules';
 import { Dom as dom$ } from '../../dom';
 import { composeSanitizerConfig, clean } from '../../utils/sanitizer';
 import { normalizeInlineMarkupHtml } from '../../utils/inline-normalization';
-import { preservePageReferenceAnchor } from '../../../shared/page-reference';
+import { mayHoldPageReference, preservePageReferenceAnchor } from '../../../shared/page-reference';
+import { protectAnnotationSpan } from '../../../shared/inline-text-sanitize';
 
-import { BLOK_MIME_TYPE, NEXT_SPACE_MIMES, NOTION_BLOCKS_V3_MIME, SAFE_STRUCTURAL_TAGS } from './constants';
+import { BLOK_MIME_TYPE, NEXT_SPACE_MIMES, NOTION_BLOCKS_V3_MIME, SAFE_STRUCTURAL_TAGS, STRUCTURAL_TAG_ATTRIBUTES } from './constants';
 import { preprocessPastedHtml } from './preprocess-pasted-html';
 import { parseNotionBlocksV3 } from './notion-blocks-v3';
 import { parseNextSpaceBlocks } from './next-space-blocks';
@@ -17,12 +18,15 @@ import { FilesHandler } from './handlers/files-handler';
 import { HtmlHandler } from './handlers/html-handler';
 import { MarkdownHandler } from '../../../markdown/markdown-handler';
 import { PatternHandler } from './handlers/pattern-handler';
+import { PlainGridHandler } from './handlers/plain-grid-handler';
 import { TableCellsHandler } from './handlers/table-cells-handler';
 import { TextHandler } from './handlers/text-handler';
 import { SanitizerConfigBuilder } from './sanitizer-config';
 import type { ToolRegistry } from './tool-registry';
 import type { HandlerContext } from './types';
 import { pasteHtmlAsBlocks } from './html-import';
+import { htmlWithConfirmedPageReferences } from './pasted-page-gate';
+import { parseUntrustedHtml } from '../../utils/inert-html';
 
 /**
  * The paste pipeline: handlers, preprocessors and importers. The Paste module
@@ -51,15 +55,20 @@ export class PasteEngine {
       new FilesHandler(Blok, toolRegistry, this.sanitizerBuilder),
       new PatternHandler(Blok, toolRegistry, this.sanitizerBuilder, config),
       new HtmlHandler(Blok, toolRegistry, this.sanitizerBuilder, config),
+      new PlainGridHandler(Blok, toolRegistry, this.sanitizerBuilder),
       new MarkdownHandler(Blok, toolRegistry, this.sanitizerBuilder),
       new TextHandler(Blok, toolRegistry, this.sanitizerBuilder, config),
     ];
   }
 
+  /** Set when the editor goes; a paste still waiting on the host then drops. */
+  private destroyed = false;
+
   /**
    * Closes the link paste menu if it is still open.
    */
   public destroy(): void {
+    this.destroyed = true;
     this.handlers.forEach(handler => handler.destroy?.());
   }
 
@@ -104,8 +113,10 @@ export class PasteEngine {
 
   /**
    * Handle pasted data transfer object.
+   * @param trustPageIds - skip the page id check: the agent's import runs its own
+   *   checks on the result, and in its hidden editor every live page looks unknown
    */
-  public async processDataTransfer(dataTransfer: DataTransfer, pasteTarget?: Element): Promise<void> {
+  public async processDataTransfer(dataTransfer: DataTransfer, pasteTarget?: Element, trustPageIds = false): Promise<void> {
     const plainData = dataTransfer.getData('text/plain');
 
     // Give consumers a chance to transform or drop the raw clipboard HTML
@@ -114,22 +125,33 @@ export class PasteEngine {
     // HTML paste path entirely (an empty string makes HtmlHandler bail, so the
     // paste falls through to the plain-text handler).
     const clipboardHtml = dataTransfer.getData('text/html');
-    const rawHtmlData = clipboardHtml && this.config.onBeforePaste
+    const hookedHtml = clipboardHtml && this.config.onBeforePaste
       ? this.config.onBeforePaste(clipboardHtml) ?? ''
       : clipboardHtml;
-
     // Native Blok clipboard data always wins. When absent, fall back to the
     // lossless proprietary flavours of other editors (web→web paste): they
     // carry full block state (checked, language, nesting, colour…) that the
     // HTML flavour cannot. We translate them into the Blok clipboard shape so
     // they flow through the existing BlokDataHandler two-pass hierarchy builder.
+    const nativeBlokData = dataTransfer.getData(BLOK_MIME_TYPE);
     const blokData =
-      dataTransfer.getData(BLOK_MIME_TYPE) ||
+      nativeBlokData ||
       this.readNotionBlocksV3(dataTransfer) ||
       this.readNextSpaceBlocks(dataTransfer);
 
+    // Awaited only for a mention the paste will use: block data wins over the
+    // html, and BlokDataHandler checks its own pages.
+    const rawHtmlData = !trustPageIds && mayHoldPageReference(hookedHtml) && !isBlockList(blokData)
+      ? await htmlWithConfirmedPageReferences(this.Blok, hookedHtml)
+      : hookedHtml;
+
+    // The host's resolve may be slow: the editor can be gone by now.
+    if (this.destroyed) {
+      return;
+    }
+
     // Route to handlers based on data type
-    const handled = await this.routeToHandlers(dataTransfer, plainData, rawHtmlData, blokData, pasteTarget);
+    const handled = await this.routeToHandlers(dataTransfer, plainData, rawHtmlData, blokData, pasteTarget, nativeBlokData !== '', trustPageIds);
 
     if (handled) {
       return;
@@ -218,7 +240,9 @@ export class PasteEngine {
     plainData: string,
     rawHtmlData: string,
     blokData: string,
-    pasteTarget?: Element
+    pasteTarget?: Element,
+    fromBlokClipboard = false,
+    trustPageIds = false
   ): Promise<boolean> {
     const { BlockManager } = this.Blok;
     const currentBlock = BlockManager.currentBlock;
@@ -235,11 +259,21 @@ export class PasteEngine {
       currentBlock: currentBlock ?? undefined,
       plainData,
       pasteTarget,
+      fromBlokClipboard,
+      trustPageIds,
     };
+
+    const memo: { cleaned?: string } = {};
+    const cleanHtml = (): string => {
+      memo.cleaned ??= this.cleanPastedHtml(rawHtmlData);
+
+      return memo.cleaned;
+    };
+    const flavours: ClipboardFlavours = { dataTransfer, plainData, rawHtmlData, blokData, cleanHtml };
 
     // Try handlers in priority order
     for (const handler of this.handlers) {
-      const dataToCheck = this.getDataForHandler(handler, dataTransfer, plainData, rawHtmlData, blokData);
+      const dataToCheck = this.getDataForHandler(handler, flavours);
 
       if (dataToCheck === undefined) {
         continue;
@@ -251,7 +285,8 @@ export class PasteEngine {
         continue;
       }
 
-      const handled = await handler.handle(dataToCheck, context);
+      const literalText = handler instanceof TextHandler && this.htmlAsLiteralText(flavours) !== null;
+      const handled = await handler.handle(dataToCheck, literalText ? { ...context, literalText } : context);
 
       if (handled) {
         return true;
@@ -264,13 +299,9 @@ export class PasteEngine {
   /**
    * Get the appropriate data for each handler type.
    */
-  private getDataForHandler(
-    handler: PasteHandler,
-    dataTransfer: DataTransfer,
-    plainData: string,
-    rawHtmlData: string,
-    blokData: string
-  ): unknown {
+  private getDataForHandler(handler: PasteHandler, flavours: ClipboardFlavours): unknown {
+    const { dataTransfer, plainData, rawHtmlData, blokData, cleanHtml } = flavours;
+
     if (handler instanceof BlokDataHandler) {
       return blokData;
     }
@@ -287,23 +318,64 @@ export class PasteEngine {
       return plainData;
     }
 
+    // Matches the paste inside a table: a grid only when the clipboard has no HTML.
+    if (handler instanceof PlainGridHandler) {
+      return rawHtmlData === '' ? plainData : undefined;
+    }
+
     if (handler instanceof MarkdownHandler) {
-      return plainData;
+      return this.htmlAsLiteralText(flavours) === null ? plainData : undefined;
     }
 
     if (handler instanceof TextHandler) {
-      return plainData;
+      return this.htmlAsLiteralText(flavours) ?? plainData;
     }
 
     if (!(handler instanceof HtmlHandler)) {
       return undefined;
     }
 
+    const cleanData = cleanHtml();
+    const cleanDataIsHtml = dom$.isHTMLString(cleanData);
+    const shouldProcessAsPlain = !cleanData.trim() || (cleanData.trim() === plainData || !cleanDataIsHtml);
+
+    return shouldProcessAsPlain ? undefined : cleanData;
+  }
+
+  /**
+   * The text of an html flavour that has no markup left after cleaning and
+   * says the same as text/plain. Such html states the text is literal, so
+   * `#` or `**` in it is not markdown. Its text also keeps the U+00A0 that
+   * Chrome turns into spaces in text/plain.
+   * @returns the text, or null when the html is absent, has markup, or differs
+   */
+  private htmlAsLiteralText({ plainData, rawHtmlData, cleanHtml }: ClipboardFlavours): string | null {
+    if (!rawHtmlData) {
+      return null;
+    }
+
+    const cleanData = cleanHtml();
+
+    if (!cleanData.trim() || dom$.isHTMLString(cleanData)) {
+      return null;
+    }
+
+    const text = parseUntrustedHtml(cleanData).textContent ?? '';
+    const spaced = (value: string): string => value.replace(/\u00A0/g, ' ');
+
+    return spaced(text) === spaced(plainData) ? text : null;
+  }
+
+  /**
+   * The clipboard html after the first, whole-document sanitize pass.
+   * @param rawHtmlData - the text/html flavour
+   */
+  private cleanPastedHtml(rawHtmlData: string): string {
     // Build sanitize config first
     const toolsTags = this.sanitizerBuilder.buildToolsTagsConfig(this.toolRegistry.toolsTags);
     const inlineSanitizeConfig = this.Blok.Tools.getAllInlineToolsSanitizeConfig();
     const structuralTagsConfig = Object.fromEntries(
-      [...SAFE_STRUCTURAL_TAGS].map((tag) => [tag, {}])
+      [...SAFE_STRUCTURAL_TAGS].map((tag) => [tag, STRUCTURAL_TAG_ATTRIBUTES[tag] ?? {}])
     );
     /**
      * The whole-document first pass must always keep structural tags and tool
@@ -318,7 +390,8 @@ export class PasteEngine {
       structuralTagsConfig,
       toolsTags,
       inlineSanitizeConfig,
-      { a: preservePageReferenceAnchor, br: {} },
+      // The tools' span rule is the equation's alone, which would strip a pasted hint.
+      { a: preservePageReferenceAnchor, br: {}, span: protectAnnotationSpan(inlineSanitizeConfig.span) },
       this.config.sanitizer as SanitizerConfig
     );
 
@@ -333,10 +406,31 @@ export class PasteEngine {
      * `clean()` allowlists the href/src ATTRIBUTE but never inspects its scheme,
      * so a pasted `javascript:` link would otherwise arrive as a live anchor.
      */
-    const cleanData = normalizeInlineMarkupHtml(clean(preprocessed, customConfig));
-    const cleanDataIsHtml = dom$.isHTMLString(cleanData);
-    const shouldProcessAsPlain = !cleanData.trim() || (cleanData.trim() === plainData || !cleanDataIsHtml);
-
-    return shouldProcessAsPlain ? undefined : cleanData;
+    return normalizeInlineMarkupHtml(clean(preprocessed, customConfig));
   }
+}
+
+/**
+ * Whether block data parses to a block list, so BlokDataHandler takes the paste.
+ * @param data - the block data flavour
+ */
+const isBlockList = (data: string): boolean => {
+  if (data === '') {
+    return false;
+  }
+  try {
+    return Array.isArray(JSON.parse(data));
+  } catch {
+    return false;
+  }
+};
+
+/** Every clipboard flavour of one paste. */
+interface ClipboardFlavours {
+  dataTransfer: DataTransfer;
+  plainData: string;
+  rawHtmlData: string;
+  blokData: string;
+  /** The cleaned text/html, computed once on first use. */
+  cleanHtml: () => string;
 }

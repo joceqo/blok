@@ -1,5 +1,8 @@
+import type { AutoScroll } from '../../components/modules/drag/utils/AutoScroll';
 import { copyGhostContext, copyGhostRadius, mountGhost } from './copy-ghost-radius';
+import { cardAutoScrollSpeed, cardVerticalAutoScrollSpeed, createDatabaseAutoScroll } from './database-auto-scroll';
 import { DatabaseDropLine } from './database-drop-line';
+import { swallowClickAfterCancel, swallowReleaseClick } from './drag-click-guard';
 
 const DRAG_THRESHOLD = 10;
 
@@ -36,7 +39,12 @@ export class DatabaseCardDrag {
   private sourceCard: HTMLElement | null = null;
   private ghostOffsetX = 0;
   private ghostOffsetY = 0;
+  /** Where the card sat when the drag began, as a drop would describe it. */
+  private origin: Omit<CardDragResult, 'rowId'> | null = null;
   private readonly dropLine: DatabaseDropLine;
+  private autoScroll: AutoScroll | null = null;
+  private pageAutoScroll: AutoScroll | null = null;
+  private lastPointer: PointerEvent | null = null;
 
   private readonly boundPointerMove: (e: PointerEvent) => void;
   private readonly boundPointerUp: (e: PointerEvent) => void;
@@ -78,6 +86,12 @@ export class DatabaseCardDrag {
     document.removeEventListener('pointercancel', this.boundPointerCancel);
     document.removeEventListener('keydown', this.boundKeyDown);
 
+    this.autoScroll?.destroy();
+    this.autoScroll = null;
+    this.pageAutoScroll?.destroy();
+    this.pageAutoScroll = null;
+    this.lastPointer = null;
+
     this.ghostEl?.remove();
     this.ghostEl = null;
 
@@ -93,6 +107,7 @@ export class DatabaseCardDrag {
     this.rowId = '';
     this.ghostOffsetX = 0;
     this.ghostOffsetY = 0;
+    this.origin = null;
   }
 
   /** True while a drag has passed the threshold and not yet dropped. */
@@ -100,9 +115,9 @@ export class DatabaseCardDrag {
     return this.isDragging;
   }
 
+  /** A drop rebuilds the board and tears this down before the line fades, so the line is hidden, not destroyed. */
   public destroy(): void {
     this.cleanup();
-    this.dropLine.destroy();
   }
 
   private handlePointerMove(e: PointerEvent): void {
@@ -115,13 +130,18 @@ export class DatabaseCardDrag {
     }
 
     if (this.isDragging) {
+      this.lastPointer = e;
       this.updateGhostPosition(e);
       this.updateDropIndicator(e);
+      this.autoScroll?.start(e.clientX);
+      this.pageAutoScroll?.start(e.clientY);
     }
   }
 
   private handlePointerUp(e: PointerEvent): void {
     if (this.isDragging) {
+      // A drag is not a click: a card dropped back stays in the DOM and would open its page.
+      swallowReleaseClick();
       this.commitDrop(e);
     }
 
@@ -133,9 +153,13 @@ export class DatabaseCardDrag {
   }
 
   private handleKeyDown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      this.cleanup();
+    if (e.key !== 'Escape') {
+      return;
     }
+    if (this.isDragging) {
+      swallowClickAfterCancel();
+    }
+    this.cleanup();
   }
 
   private startActiveDrag(e: PointerEvent): void {
@@ -145,10 +169,19 @@ export class DatabaseCardDrag {
       this.ghostOffsetX = this.startX - rect.left;
       this.ghostOffsetY = this.startY - rect.top;
       this.sourceCard.setAttribute('data-blok-database-drag-source', '');
+      this.origin = this.placeOf(this.sourceCard);
     }
 
     this.wrapper.setAttribute('data-blok-database-dragging', '');
     this.createGhost(e);
+    const follow = (): void => {
+      if (this.lastPointer !== null) {
+        this.updateDropIndicator(this.lastPointer);
+      }
+    };
+
+    this.autoScroll = createDatabaseAutoScroll(this.sourceCard ?? this.wrapper, 'x', cardAutoScrollSpeed, follow);
+    this.pageAutoScroll = createDatabaseAutoScroll(this.sourceCard ?? this.wrapper, 'y', cardVerticalAutoScrollSpeed, follow);
   }
 
   private createGhost(e: PointerEvent): void {
@@ -312,7 +345,32 @@ export class DatabaseCardDrag {
     const afterRowId = this.resolveAfterRowId(position.beforeEl, cards, beforeIndex);
 
     const toSubGroup = targetColumn.getAttribute('data-sub-group');
+    const origin = this.origin;
+
+    if (origin !== null && origin.toOptionId === toOptionId && origin.toSubGroup === (toSubGroup ?? undefined)
+      && origin.beforeRowId === beforeRowId && origin.afterRowId === afterRowId) {
+      return;
+    }
 
     this.onDrop({ rowId: this.rowId, toOptionId, ...(toSubGroup !== null ? { toSubGroup } : {}), beforeRowId, afterRowId });
+  }
+
+  private placeOf(card: HTMLElement): Omit<CardDragResult, 'rowId'> | null {
+    const column = card.closest<HTMLElement>('[data-blok-database-column]');
+
+    if (column === null) {
+      return null;
+    }
+
+    const cards = Array.from(column.querySelectorAll<HTMLElement>('[data-blok-database-card]'));
+    const index = cards.indexOf(card);
+    const subGroup = column.getAttribute('data-sub-group');
+
+    return {
+      toOptionId: column.getAttribute('data-option-id') ?? '',
+      ...(subGroup !== null ? { toSubGroup: subGroup } : {}),
+      beforeRowId: cards[index + 1]?.getAttribute('data-row-id') ?? null,
+      afterRowId: cards[index - 1]?.getAttribute('data-row-id') ?? null,
+    };
   }
 }

@@ -12,7 +12,7 @@ import { describeList } from '../../shared/tool-descriptions/list';
 import type { MoveEvent } from '../../../types/tools/hook-events';
 import type { MenuConfig } from '../../../types/tools/menu-config';
 import { setupPlaceholder } from '../../components/utils/placeholder';
-import { INDEX_MOVE_NEIGHBOURS, type IndexMoveNeighbours } from '../../components/utils/index-move-neighbours';
+import { INDEX_MOVE_NEIGHBOURS, REPARENT_IN_PLACE, type IndexMoveNeighbours } from '../../components/utils/index-move-neighbours';
 
 import {
   rerenderListItem,
@@ -41,14 +41,14 @@ import { handleEnter, handleBackspace, handleIndent, handleOutdent, toggleCheckl
 import { renderListItem } from './list-lifecycle';
 import { ListMarkerCalculator } from './marker-calculator';
 import { OrderedMarkerManager } from './ordered-marker-manager';
-import { isPasteEventHTMLElement, detectStyleFromPastedContent, extractPastedContent, extractDepthFromPastedContent } from './paste-handler';
+import { isPasteEventHTMLElement, detectStyleFromPastedContent, extractPastedContent, extractDepthFromPastedContent, extractStartFromPastedContent } from './paste-handler';
 import { getListSanitizeConfig, getListPasteConfig, getListConversionConfig } from './static-configs';
 import { STYLE_CONFIGS, getToolboxConfig } from './style-config';
 import type { ListItemStyle, ListItemConfig, StyleConfig, ListItemData } from './types';
 import { overrideStatic } from '../../components/utils/override-static';
 
 /** A moved() event that may carry the neighbours of an index move core no longer makes. */
-type IndexMoveEvent = MoveEvent & { [INDEX_MOVE_NEIGHBOURS]?: IndexMoveNeighbours };
+type IndexMoveEvent = MoveEvent & { [INDEX_MOVE_NEIGHBOURS]?: IndexMoveNeighbours; [REPARENT_IN_PLACE]?: true };
 
 export class ListItem implements BlockTool {
   // Feeds only the agent planner; in-editor conversion still runs conversionConfig's functions.
@@ -96,14 +96,30 @@ export class ListItem implements BlockTool {
     this.depthValidator = new ListDepthValidator(api.blocks);
     this.markerCalculator = new ListMarkerCalculator(api.blocks);
 
-    this.markerManager = this._data.style === 'ordered' ? new OrderedMarkerManager(api.blocks) : null;
+    this.markerManager = null;
+    this.syncMarkerManager();
 
     if (block) {
       this.blockId = block.id;
     }
+  }
 
-    if (this._data.style === 'ordered') {
+  /**
+   * Only an ordered item renumbers its siblings, so only it listens for adds
+   * and removes. Call after every style change.
+   */
+  private syncMarkerManager(): void {
+    const ordered = this._data.style === 'ordered';
+
+    if (ordered === (this.markerManager !== null)) {
+      return;
+    }
+    if (ordered) {
+      this.markerManager = new OrderedMarkerManager(this.api.blocks);
       this.api.events.on('block changed', this.handleBlockChanged);
+    } else {
+      this.markerManager = null;
+      this.api.events.off('block changed', this.handleBlockChanged);
     }
   }
 
@@ -299,7 +315,9 @@ export class ListItem implements BlockTool {
       this.adjustDepthTo(derivedDepth);
       this.updateMarkerForDepth(derivedDepth, this._data.style);
       this.wasStructurallyNested = structuralDepth !== null;
-    } else {
+    } else if (event[REPARENT_IN_PLACE] !== true) {
+      // A reparent in place keeps the carried depth: the drag rules below read
+      // flat neighbours, which say nothing about a list pasted into a cell.
       this.validateAndAdjustDepthAfterMove(event.toIndex, event.isGroupMove, undefined, event[INDEX_MOVE_NEIGHBOURS]);
     }
 
@@ -401,7 +419,7 @@ export class ListItem implements BlockTool {
   }
 
   public removed(): void {
-    if (this._data.style !== 'ordered') {
+    if (this.markerManager === null) {
       return;
     }
 
@@ -672,6 +690,9 @@ export class ListItem implements BlockTool {
     this.rerender();
 
     if (previousStyle !== style) {
+      // Before the sync: an item leaving ordered still renumbers the rest.
+      this.markerManager?.scheduleUpdateAll();
+      this.syncMarkerManager();
       this.markerManager?.scheduleUpdateAll();
     }
   }
@@ -779,14 +800,17 @@ export class ListItem implements BlockTool {
 
     const { text, checked } = extractPastedContent(data);
     const depth = extractDepthFromPastedContent(data);
+    const start = extractStartFromPastedContent(data);
 
     this._data = {
       text,
       style: detectStyleFromPastedContent(data, this._data.style),
       checked,
       depth,
+      ...(start === undefined ? {} : { start }),
     };
 
+    this.syncMarkerManager();
     this.rerender();
   }
 

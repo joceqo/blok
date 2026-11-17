@@ -43,12 +43,15 @@ interface AnnouncerConfig {
   politeness?: Politeness;
   /** Clear announcement after this many milliseconds (default: 1000) */
   clearAfter?: number;
+  /** A new text drops the still-queued texts of its group, so a burst ends on the latest one */
+  group?: string;
 }
 
 interface QueuedAnnouncement {
   message: string;
   politeness: Politeness;
   clearAfter: number;
+  group?: string;
 }
 
 /**
@@ -97,6 +100,11 @@ class Announcer {
    * Pending timeouts, tracked so they can be cleared on destroy
    */
   private timeoutIds: Set<ReturnType<typeof setTimeout>> = new Set();
+
+  /**
+   * Bumped on every write to a region, so a clear can tell a newer write took the region
+   */
+  private writeCounts: WeakMap<HTMLElement, number> = new WeakMap();
 
   /**
    * Private constructor for singleton
@@ -175,12 +183,17 @@ class Announcer {
    * @param config - Configuration options
    */
   public announce(message: string, config: AnnouncerConfig = {}): void {
-    const { politeness = 'polite', clearAfter = 1000 } = config;
+    const { politeness = 'polite', clearAfter = 1000, group } = config;
+
+    if (group !== undefined) {
+      this.queue = this.queue.filter((item) => item.group !== group);
+    }
 
     this.queue.push({
       message,
       politeness,
       clearAfter,
+      group,
     });
 
     this.processQueue();
@@ -218,9 +231,15 @@ class Announcer {
     this.schedule(() => {
       region.textContent = item.message;
 
-      // Blank the region after the caller-specified delay.
+      const write = (this.writeCounts.get(region) ?? 0) + 1;
+
+      this.writeCounts.set(region, write);
+
+      // Only this write's own clear may blank it: an older message's timer must not wipe a newer one.
       this.schedule(() => {
-        region.textContent = '';
+        if (this.writeCounts.get(region) === write) {
+          region.textContent = '';
+        }
       }, item.clearAfter);
 
       // Advance to the next queued message once this one has settled.

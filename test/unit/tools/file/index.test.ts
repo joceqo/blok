@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { FileTool } from '../../../../src/tools/file';
 import type { FileData, FileConfig } from '../../../../types/tools/file';
-import type { API, BlockAPI, BlockToolConstructorOptions, FilePasteEvent } from '../../../../types';
+import type { API, BlockAPI, BlockTool, BlockToolConstructorOptions, FilePasteEvent } from '../../../../types';
 
 const createMockApi = (overrides: Partial<API> = {}): API => ({
   styles: { block: 'blok-block' },
@@ -48,7 +48,37 @@ describe('FileTool — rendering', () => {
   it('renders the empty state when data.url is empty', () => {
     const root = new FileTool(createOptions()).render();
     expect(root.querySelector('input[type="file"]')).not.toBeNull();
-    expect(root.querySelector('[data-tab="embed"]')).not.toBeNull();
+    expect(root.querySelector('[data-action="from-link"]')).not.toBeNull();
+  });
+
+  it('gives the card its object: an archive shows a folder at once', () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 404 })));
+    const root = new FileTool(createOptions({ url: 'https://cdn/assets.zip', fileName: 'assets.zip' })).render();
+
+    expect(root.querySelector('[data-role="file-object"]')?.getAttribute('data-file-object')).toBe('archive');
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the plain card and reads nothing when cardPreview is off', () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const root = new FileTool(createOptions({ url: 'https://cdn/assets.zip', fileName: 'assets.zip' }, { cardPreview: false })).render();
+
+    expect(root.querySelector('[data-role="file-card-wrapper"]')).not.toBeNull();
+    expect(root.querySelector('[data-role="file-object"]')).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('takes the object away when the block is removed', () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 404 })));
+    const tool = new FileTool(createOptions({ url: 'https://cdn/assets.zip', fileName: 'assets.zip' }));
+    const root = tool.render();
+
+    tool.removed();
+
+    expect(root.querySelector('[data-role="file-object"]')).toBeNull();
+    vi.unstubAllGlobals();
   });
 
   it('renders the download card when data.url is present', () => {
@@ -193,9 +223,10 @@ describe('FileTool — upload flow', () => {
     const root = tool.render();
     tool.onPaste(filePasteEvent(new File([new Uint8Array(50)], 'big.bin', { type: 'application/octet-stream' })));
     await flush();
-    const msg = root.querySelector('[data-role="file-error"] span');
-    expect(msg?.textContent).toBe('tools.file.errorFileTooLarge');
-    expect(msg?.textContent).not.toContain('FILE_TOO_LARGE');
+    const card = root.querySelector('[data-role="file-error"]');
+    expect(card?.querySelector('[data-role="file-error-title"]')?.textContent).toBe('tools.file.errorFileTooLargeTitle');
+    expect(card?.querySelector('[data-role="file-error-detail"]')?.textContent).toBe('tools.file.errorFileTooLargeDetail');
+    expect(card?.textContent).not.toContain('FILE_TOO_LARGE');
   });
 });
 
@@ -347,7 +378,7 @@ describe('FileTool — image auto-convert', () => {
     const tool = new FileTool(createOptions({}, {}, undefined, api));
     const root = tool.render();
 
-    root.querySelector<HTMLButtonElement>('[data-tab="embed"]')?.click();
+    root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
     const urlInput = root.querySelector<HTMLInputElement>('.blok-media-empty__embed-input');
     const submit = root.querySelector<HTMLButtonElement>('[data-action="submit-url"]');
     if (!urlInput || !submit) throw new Error('embed url field missing');
@@ -590,6 +621,19 @@ describe('FileTool — preview', () => {
     tool.removed();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
+
+  it('closes an open preview when the editor is destroyed', () => {
+    const tool: BlockTool = new FileTool(createOptions({ url: 'https://cdn/doc.pdf', fileName: 'doc.pdf', mimeType: 'application/pdf' }));
+    const root = tool.render();
+    if (!(root instanceof HTMLElement)) throw new Error('render() must return an element');
+    root.querySelector<HTMLElement>('[data-role="file-card"]')?.click();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    // editor.destroy() reaches the tool only through destroy(), never removed().
+    tool.destroy?.();
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
 });
 
 describe('FileTool — an upload belongs to the pick that started it', () => {
@@ -649,6 +693,49 @@ describe('FileTool — an upload belongs to the pick that started it', () => {
     expect(tool.save().url).toBe('');
   });
 
+  it('ignores a file upload that fails after it was cancelled', async () => {
+    const onUploadError = vi.fn();
+    let reject: (err: Error) => void = () => undefined;
+    const uploadByFile = (): Promise<{ url: string }> => new Promise((_r, rej) => {
+      reject = rej;
+    });
+    const tool = new FileTool(createOptions({}, { uploader: { uploadByFile }, onUploadError }));
+    const root = tool.render();
+    tool.onPaste(filePasteEvent(pdf()));
+    await Promise.resolve();
+    root.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.click();
+
+    reject(new Error('network down'));
+    await flush();
+
+    expect(root.querySelector('[data-role="file-error"]')).toBeNull();
+    expect(onUploadError).not.toHaveBeenCalled();
+  });
+
+  it('ignores a link upload that fails after it was cancelled', async () => {
+    const onUploadError = vi.fn();
+    let reject: (err: Error) => void = () => undefined;
+    const uploadByUrl = (): Promise<{ url: string }> => new Promise((_r, rej) => {
+      reject = rej;
+    });
+    const tool = new FileTool(createOptions({}, { uploader: { uploadByUrl }, onUploadError }));
+    const root = tool.render();
+    root.querySelector<HTMLButtonElement>('[data-action="from-link"]')?.click();
+    const urlInput = root.querySelector<HTMLInputElement>('.blok-media-empty__embed-input');
+    const submit = root.querySelector<HTMLButtonElement>('[data-action="submit-url"]');
+    if (!urlInput || !submit) throw new Error('embed url field missing');
+    urlInput.value = 'https://cdn/a.pdf';
+    submit.click();
+    await Promise.resolve();
+    root.querySelector<HTMLButtonElement>('[data-action="cancel"]')?.click();
+
+    reject(new Error('network down'));
+    await flush();
+
+    expect(root.querySelector('[data-role="file-error"]')).toBeNull();
+    expect(onUploadError).not.toHaveBeenCalled();
+  });
+
   it('turns the file preview into the upload progress', async () => {
     const upload = heldUpload();
     const tool = new FileTool(createOptions({}, { uploader: { uploadByFile: upload.uploadByFile } }));
@@ -656,6 +743,7 @@ describe('FileTool — an upload belongs to the pick that started it', () => {
     tool.onPaste(filePasteEvent(pdf()));
     await Promise.resolve();
 
-    expect(root.querySelector('.blok-file-uploading [data-blok-media-preview="file"]')).not.toBeNull();
+    expect(root.querySelector('[data-role="uploading"] [data-blok-media-preview="file"]')).not.toBeNull();
+    expect(root.querySelector('.blok-file-uploading')).toBeNull();
   });
 });

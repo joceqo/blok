@@ -1,0 +1,394 @@
+using System.Text.Json.Nodes;
+using Blok.Server.Mcp.Core;
+using Blok.Server.Mcp.Outbound;
+using Blok.Server.Runtime;
+using Xunit;
+
+namespace Blok.Server.Mcp.Tests;
+
+/// <summary>Stop (server.ts assembleMcp stop) and handle lifetime through the dispatcher.</summary>
+public sealed class McpServerCoreStopTests : IClassFixture<BundleFixture>, IDisposable
+{
+  private readonly string dir = Directory.CreateTempSubdirectory("blok-mcp-stop-").FullName;
+  private readonly BundleFixture fixture;
+
+  public McpServerCoreStopTests(BundleFixture fixture)
+  {
+    this.fixture = fixture;
+    File.WriteAllText(Path.Combine(dir, "doc.json"), """{"blocks":[]}""");
+  }
+
+  public void Dispose()
+  {
+    Directory.Delete(dir, recursive: true);
+  }
+
+  private McpServerCore Core(McpAuthorize authorize, double maxHandles = 8)
+  {
+    return new McpServerCore(fixture.Host.Bundle, new McpConfig
+    {
+      Source = new McpSourceConfig.Files(dir),
+      Authorize = authorize,
+      MaxHandlesPerPrincipal = maxHandles,
+    }, new McpHttpCaller());
+  }
+
+  private static string Ping(int id) => $"{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"ping\"}}";
+
+  private static Task<McpCallResult> OpenAsync(McpServerCore core, McpCaller caller)
+  {
+    return core.CallToolAsync("blok_open", new JsonObject { ["documentId"] = "doc", ["write"] = true }, caller, null, CancellationToken.None);
+  }
+
+  [Fact]
+  public async Task StopWaitsForACallInFlight()
+  {
+    var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+    await using var core = Core((_, _, _, _) =>
+    {
+      entered.TrySetResult();
+
+      return gate.Task;
+    });
+    var caller = await core.CallerAsync("alice", "desk", null, CancellationToken.None);
+    var open = OpenAsync(core, caller);
+
+    await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+    var stop = core.StopAsync();
+    await Task.Delay(200);
+
+    Assert.False(open.IsCompleted);
+    Assert.False(stop.IsCompleted);
+    gate.SetResult(true);
+    await stop.WaitAsync(TimeSpan.FromSeconds(10));
+    Assert.True(open.IsCompleted);
+  }
+
+  // As Node's closeAll waits for the handle's queue: a call read before stop runs, then the handle closes.
+  [Fact]
+  public async Task StopRunsACallReadBeforeItOnItsHandle()
+  {
+    await using var core = Core((_, _, _, _) => Task.FromResult(true));
+    var caller = await core.CallerAsync("alice", "desk", null, CancellationToken.None);
+    var handle = McpJson.String((await OpenAsync(core, caller)).Answer?["structuredContent"]?["handle"])!;
+
+    core.Reserve("10", handle);
+    var stop = core.StopAsync();
+    await Task.Delay(200);
+    var execute = await core.InArrivalOrderAsync(handle, "10", () => core.CallToolAsync("blok_execute", new JsonObject
+    {
+      ["handle"] = handle,
+      ["commands"] = new JsonArray(new JsonObject { ["name"] = "doc.setTitle", ["args"] = new JsonObject { ["title"] = "Changed" } }),
+    }, caller, null, CancellationToken.None)).WaitAsync(TimeSpan.FromSeconds(20));
+    await stop.WaitAsync(TimeSpan.FromSeconds(20));
+
+    Assert.Equal(true, McpJson.Bool(execute.Answer?["structuredContent"]?["ok"]));
+    Assert.Contains("Changed", File.ReadAllText(Path.Combine(dir, "doc.json")));
+  }
+
+  // Jint answers at once when its thread ends before the await looks. The call then reaches
+  // Authorize before CallToolAsync returns, and a stop started there must still wait for it.
+  [Fact]
+  public async Task StopWaitsForACallThatReachedAuthorizeBeforeItReturned()
+  {
+    var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+    var returned = false;
+    var authorizedFirst = false;
+    var stoppedEarly = false;
+    Task? stop = null;
+    McpServerCore? core = null;
+    await using var built = new McpServerCore(new McpBundle(new AnsweredAtOnce(fixture.Host.Bundle.Runtime)), new McpConfig
+    {
+      Source = new McpSourceConfig.Files(dir),
+      Authorize = (_, _, _, _) =>
+      {
+        authorizedFirst = !returned;
+        stop = core!.StopAsync();
+        // Gives the drain time to look. A stop that ignores this call ends here.
+        stoppedEarly = stop.Wait(TimeSpan.FromSeconds(2), CancellationToken.None);
+
+        return gate.Task;
+      },
+    }, new McpHttpCaller());
+    core = built;
+    // Far past the wait below, so giving up on the call cannot pass for waiting on it.
+    core.StopDrain = TimeSpan.FromMinutes(10);
+    var caller = await core.CallerAsync("alice", "desk", null, CancellationToken.None);
+    var open = OpenAsync(core, caller);
+
+    returned = true;
+    Assert.False(stoppedEarly);
+    Assert.True(authorizedFirst);
+    gate.SetResult(true);
+    await stop!.WaitAsync(TimeSpan.FromSeconds(60));
+    Assert.True(open.IsCompleted);
+  }
+
+  private sealed class AnsweredAtOnce(IBlokRuntime inner) : IBlokRuntime
+  {
+    public ValueTask<string> InvokeAsync(string operation, string inputJson, TimeSpan? timeout = null, CancellationToken cancellationToken = default)
+    {
+      return ValueTask.FromResult(inner.InvokeAsync(operation, inputJson, timeout, cancellationToken).AsTask().GetAwaiter().GetResult());
+    }
+  }
+
+  [Fact]
+  public async Task StopGivesUpOnACallThatNeverEnds()
+  {
+    await using var core = Core((_, _, _, _) => new TaskCompletionSource<bool>().Task);
+    var caller = await core.CallerAsync("alice", "desk", null, CancellationToken.None);
+    _ = OpenAsync(core, caller);
+
+    core.StopDrain = TimeSpan.FromMilliseconds(300);
+    await core.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
+  }
+
+  [Fact]
+  public async Task ACloseRefusedForLostAccessStillFreesTheHandlesPlace()
+  {
+    var allowed = true;
+    await using var core = Core((_, _, _, _) => Task.FromResult(allowed), maxHandles: 1);
+    var caller = await core.CallerAsync("alice", "desk", null, CancellationToken.None);
+    var handle = McpJson.String((await OpenAsync(core, caller)).Answer?["structuredContent"]?["handle"]);
+
+    allowed = false;
+    var closed = await core.CallToolAsync("blok_close", new JsonObject { ["handle"] = handle }, caller, null, CancellationToken.None);
+    allowed = true;
+    var reopened = await OpenAsync(core, caller);
+
+    Assert.Equal("FORBIDDEN", McpJson.String(closed.Answer?["structuredContent"]?["error"]?["code"]));
+    Assert.Equal(false, McpJson.Bool(reopened.Answer?["isError"]));
+  }
+
+  [Fact]
+  public async Task ACallOnAHandleGoesOnOnlyOnceTheCallBeforeItJoinedTheQueue()
+  {
+    await using var core = Core((_, _, _, _) => Task.FromResult(true));
+    var started = new List<int>();
+    var joined = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var first = core.InArrivalOrderAsync("h", null, async () =>
+    {
+      started.Add(1);
+      await joined.Task;
+      HandleArrival.Joined();
+      await Task.Delay(100);
+
+      return 1;
+    });
+    var second = core.InArrivalOrderAsync("h", null, () =>
+    {
+      started.Add(2);
+
+      return Task.FromResult(2);
+    });
+
+    await Task.Delay(100);
+    Assert.Equal([1], started);
+    joined.SetResult();
+    await second.WaitAsync(TimeSpan.FromSeconds(10));
+    Assert.False(first.IsCompleted);
+    Assert.Equal([1, 2], started);
+  }
+
+  [Fact]
+  public async Task APlaceTakenWhenTheRequestWasReadComesBeforeALaterOne()
+  {
+    await using var core = Core((_, _, _, _) => Task.FromResult(true));
+    var started = new List<string>();
+
+    core.Reserve("1", "h");
+    core.Reserve("2", "h");
+    var second = core.InArrivalOrderAsync("h", "2", () =>
+    {
+      started.Add("2");
+
+      return Task.FromResult(2);
+    });
+    await Task.Delay(100);
+    Assert.Empty(started);
+
+    var first = core.InArrivalOrderAsync("h", "1", () =>
+    {
+      started.Add("1");
+
+      return Task.FromResult(1);
+    });
+
+    await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10));
+    Assert.Equal(["1", "2"], started);
+  }
+
+  [Fact]
+  public async Task AnAnsweredRequestThatNeverRanGivesItsPlaceUp()
+  {
+    await using var core = Core((_, _, _, _) => Task.FromResult(true));
+
+    core.Reserve("1", "h");
+    core.Unreserve("1");
+
+    Assert.Equal(2, await core.InArrivalOrderAsync("h", null, () => Task.FromResult(2)).WaitAsync(TimeSpan.FromSeconds(10)));
+  }
+
+  [Fact]
+  public async Task StdinTakesHandlePlacesInTheOrderTheLinesArrive()
+  {
+    await using var core = Core((_, _, _, _) => Task.FromResult(true));
+    var wire = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"blok_execute\",\"arguments\":{\"handle\":\"h\"}}}\n"
+        + "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"blok_execute\",\"arguments\":{\"handle\":\"h\"}}}\n";
+    await using var input = new Blok.Server.Mcp.Protocol.McpOrderedInput(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(wire)), core);
+    var buffer = new byte[7];
+
+    while (await input.ReadAsync(buffer) > 0)
+    {
+    }
+    var started = new List<string>();
+    var third = core.InArrivalOrderAsync("h", "3", () =>
+    {
+      started.Add("3");
+
+      return Task.FromResult(3);
+    });
+    await Task.Delay(100);
+    var second = core.InArrivalOrderAsync("h", "2", () =>
+    {
+      started.Add("2");
+
+      return Task.FromResult(2);
+    });
+
+    await Task.WhenAll(second, third).WaitAsync(TimeSpan.FromSeconds(10));
+    Assert.Equal(["2", "3"], started);
+  }
+
+  [Fact]
+  public async Task AStdinMessageOverTenMebibytesEndsTheInputAndIsNeverPassedOn()
+  {
+    await using var core = Core((_, _, _, _) => Task.FromResult(true));
+    var big = new string('x', Blok.Server.Mcp.Protocol.McpOrderedInput.MaxMessageBytes + 1);
+    var wire = System.Text.Encoding.UTF8.GetBytes($"{Ping(1)}\n{big}\n{Ping(2)}\n");
+    await using var input = new Blok.Server.Mcp.Protocol.McpOrderedInput(new MemoryStream(wire), core);
+    using var passed = new MemoryStream();
+
+    await input.CopyToAsync(passed);
+
+    Assert.Equal($"{Ping(1)}\n", System.Text.Encoding.UTF8.GetString(passed.ToArray()));
+  }
+
+  [Fact]
+  public async Task AStdinMessageOfTenMebibytesIsPassedOnWhole()
+  {
+    await using var core = Core((_, _, _, _) => Task.FromResult(true));
+    const string Head = "{\"jsonrpc\":\"2.0\",\"method\":\"x\",\"params\":{\"p\":\"";
+    var line = Head + new string('x', Blok.Server.Mcp.Protocol.McpOrderedInput.MaxMessageBytes - Head.Length - 3) + "\"}}";
+    await using var input = new Blok.Server.Mcp.Protocol.McpOrderedInput(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(line + "\n")), core);
+    using var passed = new MemoryStream();
+
+    await input.CopyToAsync(passed);
+
+    Assert.Equal(line.Length + 1, passed.Length);
+  }
+
+  [Fact]
+  public async Task StdinDropsAParamsThatIsNotAnObjectAndReadsARepeatedKeyAsItsLastValue()
+  {
+    await using var core = Core((_, _, _, _) => Task.FromResult(true));
+    var wire = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":\"x\"}\n"
+        + "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"blok_read\",\"arguments\":\"x\"}}\n"
+        + "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"blok_execute\",\"arguments\":{\"handle\":\"other\",\"handle\":\"h\"}}}\n"
+        + "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"blok_execute\",\"arguments\":{\"handle\":\"h\"}}}\n";
+    await using var input = new Blok.Server.Mcp.Protocol.McpOrderedInput(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(wire)), core);
+    using var passed = new MemoryStream();
+
+    await input.CopyToAsync(passed);
+    // Node's SDK never answers the first line, so the SDK here never gets it.
+    Assert.Equal(
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"blok_read\",\"arguments\":\"x\"}}\n"
+        + "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"blok_execute\",\"arguments\":{\"handle\":\"h\"}}}\n"
+        + "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"blok_execute\",\"arguments\":{\"handle\":\"h\"}}}\n",
+        System.Text.Encoding.UTF8.GetString(passed.ToArray()));
+    var started = new List<string>();
+    var third = core.InArrivalOrderAsync("h", "3", () =>
+    {
+      started.Add("3");
+
+      return Task.FromResult(3);
+    });
+    await Task.Delay(100);
+    var second = core.InArrivalOrderAsync("h", "2", () =>
+    {
+      started.Add("2");
+
+      return Task.FromResult(2);
+    });
+
+    await Task.WhenAll(second, third).WaitAsync(TimeSpan.FromSeconds(10));
+    Assert.Equal(["2", "3"], started);
+  }
+
+  // JSON.parse reads 101.0 as 101, and Node answers id 101; the SDK here cannot read 101.0 at all.
+  [Fact]
+  public async Task StdinWritesAnIdOf101Point0As101AndBooksItsTurnUnderIt()
+  {
+    await using var core = Core((_, _, _, _) => Task.FromResult(true));
+    var wire = "{\"jsonrpc\":\"2.0\",\"id\":101.0,\"method\":\"tools/call\",\"params\":{\"name\":\"blok_read\",\"arguments\":{\"handle\":\"h\"}}}\n";
+    await using var input = new Blok.Server.Mcp.Protocol.McpOrderedInput(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(wire)), core);
+    using var passed = new MemoryStream();
+
+    await input.CopyToAsync(passed);
+    Assert.Equal(
+        "{\"jsonrpc\":\"2.0\",\"id\":101,\"method\":\"tools/call\",\"params\":{\"name\":\"blok_read\",\"arguments\":{\"handle\":\"h\"}}}\n",
+        System.Text.Encoding.UTF8.GetString(passed.ToArray()));
+    // The turn booked under "101" is the one the call takes, so the handle is not held.
+    Assert.Equal(7, await core.InArrivalOrderAsync("h", "101", () => Task.FromResult(7)).WaitAsync(TimeSpan.FromSeconds(10)));
+    Assert.Equal(8, await core.InArrivalOrderAsync("h", "102", () => Task.FromResult(8)).WaitAsync(TimeSpan.FromSeconds(10)));
+  }
+
+  // Node's queue runs both, in wire order, even when the second handler starts first: the
+  // reader tags the second line as it reads it, so nothing depends on the SDK's scheduling.
+  [Fact]
+  public async Task TwoLinesWithOneIdRunInWireOrderWhenTheSecondHandlerStartsFirst()
+  {
+    await using var core = Core((_, _, _, _) => Task.FromResult(true));
+    var line = "{\"jsonrpc\":\"2.0\",\"id\":50,\"method\":\"tools/call\",\"params\":{\"name\":\"blok_execute\",\"arguments\":{\"handle\":\"h\"}}}\n";
+    await using var input = new Blok.Server.Mcp.Protocol.McpOrderedInput(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(line + line)), core);
+    using var passed = new MemoryStream();
+
+    await input.CopyToAsync(passed);
+    var lines = System.Text.Encoding.UTF8.GetString(passed.ToArray()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+    var firstTag = JsonNode.Parse(lines[0])!["params"]!["_meta"]?[McpServerCore.ArrivalTagMeta];
+    var secondTag = (long)JsonNode.Parse(lines[1])!["params"]!["_meta"]![McpServerCore.ArrivalTagMeta]!;
+    var started = new List<string>();
+    var b = core.InArrivalOrderAsync("h", "50", () =>
+    {
+      started.Add("b");
+
+      return Task.FromResult(2);
+    }, secondTag);
+    await Task.Delay(100);
+    var a = core.InArrivalOrderAsync("h", "50", () =>
+    {
+      started.Add("a");
+
+      return Task.FromResult(1);
+    });
+
+    await Task.WhenAll(a, b).WaitAsync(TimeSpan.FromSeconds(10));
+    Assert.Null(firstTag);
+    Assert.Equal(["a", "b"], started);
+  }
+
+  [Fact]
+  public async Task ATaggedRequestThatNeverRanFreesItsPlace()
+  {
+    await using var core = Core((_, _, _, _) => Task.FromResult(true));
+
+    Assert.Null(core.Reserve("1", "h"));
+    var tag = core.Reserve("1", "h");
+
+    core.Unreserve("1");
+    core.ReleaseTag(tag!.Value);
+
+    Assert.Equal(2, await core.InArrivalOrderAsync("h", null, () => Task.FromResult(2)).WaitAsync(TimeSpan.FromSeconds(10)));
+  }
+}

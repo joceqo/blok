@@ -12,6 +12,7 @@ import { enclosingCellTable } from '../components/utils/enclosing-cell-table';
 import { subtreeEndIndex } from '../components/utils/blocks-tree';
 import { parseUntrustedHtml } from '../components/utils/inert-html';
 import type { InternalMarkdownImportConfig } from './types';
+import { pastedPageId, pastedPageMentions, type PastedPageLink } from '../components/modules/paste/pasted-page-id';
 
 /**
  * Patterns that indicate text is likely Markdown rather than plain text.
@@ -25,6 +26,8 @@ const MARKDOWN_SIGNALS: RegExp[] = [
   /^[ \t]*[-*+][ \t]+\S/m,         // Unordered list item: - / * / + marker + content
   /^[ \t]*\d{1,9}[.)][ \t]+\S/m,  // Ordered list item: 1. / 1) marker + content
   /^ {0,3}> \S/m,                  // Blockquote: `> text` (a space then content, so `->`/`=>`/`>>>` never match)
+  // No thematic break here: the plain-text paste turns a lone `---` into a
+  // divider itself, so it must not make the rest of the text Markdown.
   // Link text excludes `[`/`]` and the URL excludes `[` so neither scan can
   // run past the next candidate start: `/\[.+?\]\(.+?\)/` retried from every
   // `[` and froze the tab on hostile paste. Costs link text containing
@@ -74,12 +77,25 @@ export class MarkdownHandler extends BasePasteHandler implements PasteHandler {
     return hasMarkdownSignals(data) ? 30 : 0;
   }
 
+  /** Set when the editor goes; a paste still waiting on the host then drops. */
+  private destroyed = false;
+
+  destroy(): void {
+    this.destroyed = true;
+  }
+
   async handle(data: unknown, context: HandlerContext): Promise<boolean> {
     if (typeof data !== 'string') {
       return false;
     }
 
     const rawOutputBlocks = await this.convert(data);
+
+    // The host's resolve may be slow: the editor can be gone by now. Handled,
+    // so no later handler pastes it either.
+    if (this.destroyed) {
+      return true;
+    }
 
     if (rawOutputBlocks === null || !rawOutputBlocks.length) {
       return false;
@@ -260,8 +276,31 @@ export class MarkdownHandler extends BasePasteHandler implements PasteHandler {
       // A line break the user pasted is one they can see; keep it. HTML text:
       // an inline paste below writes it into the DOM.
       const config: InternalMarkdownImportConfig = { softBreaks: true, htmlText: true };
+      const links: PastedPageLink[] = [];
+      const collect: InternalMarkdownImportConfig = {
+        ...config,
+        pageIdFromHref: (href, text) => {
+          if (pastedPageId(this.Blok.Tools, href) !== undefined) {
+            links.push({ href, text });
+          }
 
-      return await markdownToBlocks(data, config);
+          return undefined;
+        },
+      };
+      const blocks = await markdownToBlocks(data, collect);
+
+      if (links.length === 0) {
+        return blocks;
+      }
+
+      // The host's titles may come async; the converter is sync. Ask first,
+      // then convert again with the answers.
+      const pageIds = await pastedPageMentions(this.Blok.Tools, links);
+      const mentions = new Map(links.map(({ href, text }, index) => [`${href}\n${text}`, pageIds[index]]));
+
+      const convert: InternalMarkdownImportConfig = { ...config, pageIdFromHref: (href, text) => mentions.get(`${href}\n${text}`) };
+
+      return await markdownToBlocks(data, convert);
     } catch (e) {
       console.warn('MarkdownHandler: markdown conversion failed, falling back to plain text', e);
 

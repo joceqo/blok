@@ -30,11 +30,6 @@
   }
 }
 
-@keyframes blok-emoji-tones-in {
-  from { opacity: 0; transform: translateY(-5px) scale(0.82, 0.94); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
 @keyframes blok-emoji-card-in {
   from { opacity: 0; transform: translateY(10px) rotate(0deg) scale(0.8); }
   to { opacity: 1; transform: translateY(0) rotate(var(--emoji-card-tilt)) scale(1); }
@@ -127,18 +122,23 @@
 }
 
 @keyframes blok-database-confirm-in {
-  from { opacity: 0; transform: scale(0.97); }
-  to { opacity: 1; transform: none; }
+  from { transform: scale(0.97); }
+  to { transform: none; }
+}
+
+@keyframes blok-database-confirm-out {
+  from { transform: none; }
+  to { transform: scale(0.97); }
+}
+
+@keyframes blok-database-confirm-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
 @keyframes blok-database-confirm-fade {
   from { opacity: 0; }
   to { opacity: 1; }
-}
-
-@keyframes blok-image-shimmer {
-  from { transform: translateX(-100%); }
-  to   { transform: translateX(100%); }
 }
 
 @keyframes blok-image-retry-spin {

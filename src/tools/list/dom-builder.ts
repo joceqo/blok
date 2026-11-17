@@ -328,6 +328,8 @@ export interface SemanticListItem {
   checked?: boolean;
   /** Nesting depth level (0 = root, 1 = first indent, …) */
   depth?: number;
+  /** First number of an ordered list; written only on the item that opens an `<ol>` */
+  start?: number;
 }
 
 /**
@@ -362,6 +364,11 @@ export const buildSemanticListHtml = (items: SemanticListItem[]): HTMLElement =>
       checkbox.type = 'checkbox';
       checkbox.checked = Boolean(item.checked);
 
+      // innerHTML writes the attribute, not the property; a paste reads it.
+      if (item.checked === true) {
+        checkbox.setAttribute('checked', '');
+      }
+
       const text = document.createElement('span');
 
       text.innerHTML = item.text;
@@ -393,6 +400,10 @@ export const buildSemanticListHtml = (items: SemanticListItem[]): HTMLElement =>
 
     const listEl = makeListElement(item.style);
 
+    if (item.style === 'ordered' && item.start !== undefined && item.start !== 1) {
+      listEl.setAttribute('start', String(item.start));
+    }
+
     if (depth === 0) {
       container.appendChild(listEl);
     } else {
@@ -411,10 +422,13 @@ export const buildSemanticListHtml = (items: SemanticListItem[]): HTMLElement =>
     return level;
   };
 
+  // A run copied from inside a list starts below depth 0.
+  const base = Math.min(...items.map((item) => Math.max(0, item.depth ?? 0)));
+
   for (const item of items) {
     // Clamp so an item can be at most one level deeper than the deepest open
     // list — a jump from depth 0 to 2 would otherwise leave an orphan level.
-    const depth = Math.min(Math.max(0, item.depth ?? 0), stack.length);
+    const depth = Math.min(Math.max(0, (item.depth ?? 0) - base), stack.length);
 
     // Close any levels deeper than this item's depth.
     while (stack.length > depth + 1) {

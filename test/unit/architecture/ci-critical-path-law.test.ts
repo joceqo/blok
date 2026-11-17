@@ -37,6 +37,7 @@ type Job = {
   'runs-on'?: string;
   'timeout-minutes'?: number;
   if?: string;
+  env?: Record<string, WorkflowValue>;
   with?: Record<string, WorkflowValue>;
   steps?: Step[];
   strategy?: {
@@ -157,9 +158,10 @@ const e2eMatrix: MatrixEntry[] = [
   { project: 'webkit', browser: 'webkit', shard: '1/2' },
   { project: 'webkit', browser: 'webkit', shard: '2/2' },
   { project: 'chromium-logic', browser: 'chromium', shard: '1/1' },
-  { project: 'chromium-default', browser: 'chromium', shard: '1/3' },
-  { project: 'chromium-default', browser: 'chromium', shard: '2/3' },
-  { project: 'chromium-default', browser: 'chromium', shard: '3/3' },
+  { project: 'chromium-default', browser: 'chromium', shard: '1/4' },
+  { project: 'chromium-default', browser: 'chromium', shard: '2/4' },
+  { project: 'chromium-default', browser: 'chromium', shard: '3/4' },
+  { project: 'chromium-default', browser: 'chromium', shard: '4/4' },
   { project: 'chromium-undo', browser: 'chromium', shard: '1/2' },
   { project: 'chromium-undo', browser: 'chromium', shard: '2/2' },
 ];
@@ -184,6 +186,7 @@ describe('CI critical-path law', () => {
       'server-security',
       'server',
       'server-delivery',
+      'mcp-conformance',
       'unit-tests',
       'workspace-unit-tests',
       'validate-spec-coverage',
@@ -284,6 +287,33 @@ describe('CI critical-path law', () => {
           key: '${{ steps.lint-cache.outputs.cache-primary-key }}',
         },
       },
+      // The Rust server's conformance: here, so it takes no slot of the
+      // 20-job cap, and after TypeScript, whose globs would sweep target/.
+      {
+        name: 'Cache Rust release build',
+        uses: 'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9',
+        with: {
+          path: ['~/.cargo/registry', '~/.cargo/git', 'packages/server/rust/target', ''].join('\n'),
+          key: "rust-release-${{ runner.os }}-${{ hashFiles('packages/server/rust/Cargo.lock', 'packages/server/rust/rust-toolchain.toml') }}",
+          'restore-keys': 'rust-release-${{ runner.os }}-',
+        },
+      },
+      {
+        name: 'Setup Go',
+        uses: 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e',
+        with: {
+          'go-version-file': 'packages/server/go/go.mod',
+          'cache-dependency-path': 'packages/server/go/go.sum',
+        },
+      },
+      {
+        name: 'Test Rust conformance',
+        run: 'node scripts/test-server-conformance.mjs --target rust',
+      },
+      {
+        name: 'Test journal interop between Go and Rust',
+        run: 'node scripts/test-server-conformance.mjs --target interop-rust',
+      },
     ]);
   });
 
@@ -354,11 +384,24 @@ describe('CI critical-path law', () => {
       },
       {
         name: 'Test packed .NET packages',
-        run: 'node scripts/test-server-packages.mjs',
+        // The MCP packages are checked in MCP Conformance, which has the minutes.
+        run: 'node scripts/test-server-packages.mjs --packages server',
       },
       {
         name: 'Test C# conformance',
         run: 'node scripts/test-server-conformance.mjs --target csharp',
+      },
+      {
+        name: 'Setup Go',
+        uses: 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e',
+        with: {
+          'go-version-file': 'packages/server/go/go.mod',
+          'cache-dependency-path': 'packages/server/go/go.sum',
+        },
+      },
+      {
+        name: 'Test journal interop between C# and Go',
+        run: 'node scripts/test-server-conformance.mjs --target interop',
       },
       {
         name: 'Dry-run server artifacts',
@@ -387,10 +430,86 @@ describe('CI critical-path law', () => {
     ]);
   });
 
-  // The Go gates ride in Server Security, which has minutes to spare, so they
-  // take no extra job slot under the 20-job cap and leave Server Delivery
-  // well under 7 minutes.
-  it('formats, vets, tests, audits and conformance-tests the Go server beside the security scans', () => {
+  // Waits for Server so it starts once the E2E shards have their slots: a
+  // job started at t=0 holds a slot of the 20-job cap while shards queue.
+  // `!cancelled()` keeps the MCP result when Server fails.
+  it('runs MCP conformance for every target after Server, in parts under seven minutes', () => {
+    const mcp = getJob(ci, 'mcp-conformance');
+
+    expect(mcp.name).toBe('MCP Conformance (${{ matrix.part }})');
+    expect(mcp.needs).toEqual(['server']);
+    expect(mcp.if).toBe('${{ !cancelled() }}');
+    expect(mcp['runs-on']).toBe('ubuntu-latest');
+    expect(mcp['timeout-minutes']).toBe(10);
+    expect(mcp.strategy?.['fail-fast']).toBe(false);
+    expect(mcp.strategy?.matrix?.include).toEqual([
+      { part: 'node', target: 'node', suites: '' },
+      { part: 'go 1/3', target: 'go', suites: '--suite live' },
+      { part: 'go 2/3', target: 'go', suites: '--suite embed' },
+      { part: 'go 3/3', target: 'go', suites: '--suite protocol --suite tool-args --suite corpus --suite files-source --suite endpoint-source --suite cli --suite http --suite approvals --suite tickets --suite pages --suite handles --suite handles-shared --suite shutdown --suite timeouts' },
+      { part: 'rust 1/3', target: 'rust', suites: '--suite live' },
+      { part: 'rust 2/3', target: 'rust', suites: '--suite embed' },
+      { part: 'rust 3/3', target: 'rust', suites: '--suite protocol --suite tool-args --suite corpus --suite files-source --suite endpoint-source --suite cli --suite http --suite approvals --suite tickets --suite pages --suite handles --suite handles-shared --suite shutdown --suite timeouts' },
+      { part: 'csharp 1/5', target: 'csharp', suites: '--suite live' },
+      { part: 'csharp 2/5', target: 'csharp', suites: '--suite corpus --suite tool-args --suite handles --suite pages' },
+      { part: 'csharp 3/5', target: 'csharp', suites: '--suite protocol --suite tickets --suite approvals --suite http' },
+      { part: 'csharp 4/5', target: 'csharp', suites: '--suite embed --suite handles-shared' },
+      { part: 'csharp 5/5', target: 'csharp', suites: '--suite shutdown --suite cli --suite timeouts --suite files-source --suite endpoint-source' },
+    ]);
+    expectOrderedSteps('ci.mcp-conformance', mcp, [
+      checkout,
+      setupNodeDependencies,
+      // The live suite's sync host is the Go conformance build, for every target.
+      {
+        name: 'Setup Go',
+        uses: 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e',
+        with: {
+          'go-version-file': 'packages/server/go/go.mod',
+          'cache-dependency-path': 'packages/server/go/go.sum',
+        },
+      },
+      {
+        name: 'Setup .NET',
+        if: "matrix.target == 'csharp'",
+        uses: 'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68',
+        with: {
+          'dotnet-version': '10.0.x',
+        },
+      },
+      // Its own key: Lint's cache never built blok-mcp, and it saves only on a miss.
+      {
+        name: 'Cache Rust MCP release build',
+        if: "matrix.target == 'rust'",
+        uses: 'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9',
+        with: {
+          path: ['~/.cargo/registry', '~/.cargo/git', 'packages/server/rust/target', ''].join('\n'),
+          key: "rust-mcp-release-${{ runner.os }}-${{ hashFiles('packages/server/rust/Cargo.lock', 'packages/server/rust/rust-toolchain.toml') }}",
+          'restore-keys': 'rust-mcp-release-${{ runner.os }}-\nrust-release-${{ runner.os }}-\n',
+        },
+      },
+      {
+        name: 'Test MCP conformance',
+        run: 'node scripts/test-mcp-conformance.mjs --target ${{ matrix.target }} ${{ matrix.suites }}',
+      },
+      {
+        name: 'Test packed MCP NuGets',
+        if: "matrix.part == 'csharp 3/5'",
+        run: 'node scripts/test-server-packages.mjs --packages mcp',
+      },
+    ]);
+    // A step gated on a part name that no longer exists is skipped without a word.
+    const parts = (mcp.strategy?.matrix?.include ?? []).map((entry) => (entry as Record<string, unknown>).part);
+    for (const step of mcp.steps ?? []) {
+      for (const [, part] of String(step.if ?? '').matchAll(/matrix\.part == '([^']+)'/g)) {
+        expect(parts, step.name).toContain(part);
+      }
+    }
+  });
+
+  // The Go gates ride in Server Security, so they take no extra job slot under
+  // the 20-job cap. The container image (Workflow Lint) and Go conformance
+  // (Validate Spec File Coverage) moved out to make room.
+  it('formats, vets, tests and audits the Go server beside the security scans', () => {
     const security = getJob(ci, 'server-security');
     const steps = (security.steps ?? []).map(normalizeStep);
     const goStart = steps.findIndex((step) => step.name === 'Setup Node.js and Dependencies');
@@ -403,8 +522,6 @@ describe('CI critical-path law', () => {
       'Audit NuGet dependencies',
       'Scan committed secrets',
       'Scan repository vulnerabilities and configuration',
-      'Build server container image',
-      'Scan server container image',
     ]);
     expect(steps.slice(goStart)).toEqual([
       setupNodeDependencies,
@@ -444,10 +561,6 @@ describe('CI critical-path law', () => {
           'go tool cover -func="$RUNNER_TEMP/go-coverage.out" | tail -n 1',
           'node ../../../scripts/check-server-coverage.mjs --go "$RUNNER_TEMP/go-coverage.out"',
         ].join('\n'),
-      },
-      {
-        name: 'Test Go conformance',
-        run: 'node scripts/test-server-conformance.mjs --target go --suite harness-contract --suite server-contract --suite routing-contract --suite host-cli-contract --suite http-host-contract --suite sync-transport-contract',
       },
       {
         name: 'Test Go module consumer and release build',
@@ -518,6 +631,12 @@ describe('CI critical-path law', () => {
     expect(buildTests.filter((file) => !covered(file))).toEqual([]);
   });
 
+  // Same flags on every Rust build step, or each one rebuilds the crates.
+  const rustBuildEnv = { CARGO_INCREMENTAL: '0' };
+  const rustTestEnv = { ...rustBuildEnv, CARGO_PROFILE_TEST_DEBUG: 'line-tables-only' };
+  const NEXTEST_VERSION = '0.9.148';
+  const NEXTEST_SHA256 = '223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc';
+
   it('runs unsharded workspace suites and the dist-reading unit tests after build', () => {
     const workspace = getJob(ci, 'workspace-unit-tests');
     const distTests = /const DIST_TESTS = \[([^\]]*)\]/.exec(readFileSync(resolve(root, 'vitest.config.ts'), 'utf8'))?.[1] ?? '';
@@ -533,6 +652,8 @@ describe('CI critical-path law', () => {
     expect(workspace.name).toBe('Workspace Unit Tests');
     expect(workspace.needs).toEqual(['build']);
     expect(workspace['runs-on']).toBe('ubuntu-latest');
+    // Incremental data was most of the cached target and is never reused.
+    expect(workspace.env).toEqual({ CARGO_INCREMENTAL: 0 });
     expectOrderedSteps('ci.workspace-unit-tests', workspace, [
       checkout,
       setupNodeDependencies,
@@ -575,6 +696,50 @@ describe('CI critical-path law', () => {
           'yarn vitest run --project=unit test/unit/build/',
           'yarn vitest run --project=unit test/unit/architecture/react-fixture-import-map-law.test.ts',
         ].join('\n'),
+      },
+      // The Rust server's gates: here, so they take no slot of the 20-job cap.
+      {
+        name: 'Cache Rust build',
+        uses: 'actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9',
+        with: {
+          path: ['~/.cargo/registry', '~/.cargo/git', 'packages/server/rust/target', ''].join('\n'),
+          key: "rust-v3-${{ runner.os }}-${{ hashFiles('packages/server/rust/Cargo.lock', 'packages/server/rust/Cargo.toml', 'packages/server/rust/rust-toolchain.toml') }}",
+          'restore-keys': 'rust-v3-${{ runner.os }}-',
+        },
+      },
+      {
+        name: 'Check Rust formatting',
+        'working-directory': 'packages/server/rust',
+        run: 'cargo fmt --check',
+      },
+      {
+        name: 'Lint Rust server',
+        'working-directory': 'packages/server/rust',
+        env: rustBuildEnv,
+        run: 'cargo clippy --locked --all-targets -- -D warnings',
+      },
+      {
+        name: 'Install cargo-nextest',
+        run: [
+          'curl --fail --silent --show-error --location --output "$RUNNER_TEMP/nextest.tar.gz" \\',
+          `  https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/cargo-nextest-${NEXTEST_VERSION}-x86_64-unknown-linux-gnu.tar.gz`,
+          `echo "${NEXTEST_SHA256}  $RUNNER_TEMP/nextest.tar.gz" | sha256sum --check`,
+          'tar -xzf "$RUNNER_TEMP/nextest.tar.gz" -C ~/.cargo/bin',
+        ].join('\n'),
+      },
+      // nextest runs every test binary at once.
+      {
+        name: 'Test Rust server',
+        'working-directory': 'packages/server/rust',
+        env: rustTestEnv,
+        run: 'cargo nextest run --locked --workspace',
+      },
+      // nextest skips doc tests, so they run here.
+      {
+        name: 'Test Rust doc examples',
+        'working-directory': 'packages/server/rust',
+        env: rustTestEnv,
+        run: 'cargo test --locked --workspace --doc',
       },
     ]);
   });
@@ -621,6 +786,8 @@ describe('CI critical-path law', () => {
 
     expect(coverage.name).toBe('Validate Spec File Coverage');
     expect(coverage['runs-on']).toBe('ubuntu-latest');
+    // About twice its longest green run since it gained Go conformance (159s).
+    expect(coverage['timeout-minutes']).toBe(6);
     expectOrderedSteps('ci.validate-spec-coverage', coverage, [
       checkout,
       setupNodeDependencies,
@@ -634,6 +801,20 @@ describe('CI critical-path law', () => {
       {
         name: 'Validate test categories',
         run: 'yarn e2e:validate-categories',
+      },
+      // Here, not in Server Security: this job is done in a minute, and the Go
+      // unit tests fill Server Security.
+      {
+        name: 'Setup Go',
+        uses: 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e',
+        with: {
+          'go-version-file': 'packages/server/go/go.mod',
+          'cache-dependency-path': 'packages/server/go/go.sum',
+        },
+      },
+      {
+        name: 'Test Go conformance',
+        run: 'node scripts/test-server-conformance.mjs --target go',
       },
     ]);
 
@@ -897,7 +1078,9 @@ describe('Playwright OS-deps apt cache law', () => {
     const firstAptInstall = stepIndex(
       (step) =>
         step.run !== undefined &&
-        (step.run.includes('install-deps') || step.run.includes('--with-deps')),
+        (step.run.includes('install-deps') ||
+          step.run.includes('--with-deps') ||
+          step.run.includes('install-os-deps.sh')),
     );
 
     expect(restore).toBeGreaterThanOrEqual(0);
@@ -920,6 +1103,25 @@ describe('Playwright OS-deps apt cache law', () => {
     expect(restore['restore-keys']).toBe(
       '${{ steps.apt-key.outputs.prefix }}\n${{ steps.apt-key.outputs.base }}\n',
     );
+  });
+
+  // install-deps always runs apt-get update, which waits about 20s per index
+  // when the mirror's DNS fails. The script skips update when it can.
+  it('installs OS deps through the no-update fast path, never install-deps or --with-deps', () => {
+    const osDeps = browserAction.runs.steps.find(
+      (step) => step.name === 'Install Browser OS Dependencies',
+    );
+    const browsers = browserAction.runs.steps.find(
+      (step) => step.name === 'Install Playwright Browsers',
+    );
+
+    expect(osDeps?.run).toBe(
+      'bash "${{ github.action_path }}/install-os-deps.sh" ${{ inputs.browsers }}',
+    );
+    expect(osDeps?.if).toBe("inputs.os-deps == 'true'");
+    expect(browsers?.run).toBe('npx playwright install ${{ inputs.browsers }}');
+    // An HTTP timeout does not bound a DNS failure.
+    expect(browserAction.runs.steps.some((step) => step.id === 'apt-timeouts')).toBe(false);
   });
 
   it('saves the cache only from the warming job, only after the warm step proved it', () => {

@@ -139,6 +139,52 @@ public sealed class JintBlokRuntimeTests
     Assert.Equal("ok", output);
   }
 
+  private const string PendingScript = """
+            let calls = 0;
+            globalThis.blokServerInvoke = async (operation) => {
+              calls++;
+              if (operation === 'wait') return await new Promise(() => {});
+              return String(calls);
+            };
+            """;
+
+  /*
+   * A promise that never settles: the caller's cancel before the call
+   * timeout ends the wait with the cancel, and the engine is replaced. Go
+   * and Rust pin the same.
+   */
+  [Fact]
+  public async Task WaitsOnAPendingPromiseUntilTheCallerCancels()
+  {
+    var runtime = new JintBlokRuntime(PendingScript, poolSize: 1, timeout: TimeSpan.FromSeconds(5));
+    using var cancelled = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+    var clock = System.Diagnostics.Stopwatch.StartNew();
+
+    await Assert.ThrowsAnyAsync<OperationCanceledException>(
+        () => runtime.InvokeAsync("wait", "{}", cancellationToken: cancelled.Token).AsTask());
+
+    Assert.InRange(clock.Elapsed, TimeSpan.FromMilliseconds(250), TimeSpan.FromSeconds(4));
+    Assert.Equal("1", await runtime.InvokeAsync("count", "{}"));
+  }
+
+  /*
+   * With no cancel the wait ends at the call timeout, as a timeout, and the
+   * engine is replaced, so one call cannot hold a pool of 1 for good.
+   */
+  [Fact]
+  public async Task EndsAPendingPromiseAtTheCallTimeout()
+  {
+    var runtime = new JintBlokRuntime(PendingScript, poolSize: 1, timeout: TimeSpan.FromMilliseconds(200));
+    var clock = System.Diagnostics.Stopwatch.StartNew();
+
+    var failure = await Assert.ThrowsAsync<BlokDocumentConversionException>(
+        () => runtime.InvokeAsync("wait", "{}").AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+
+    Assert.Equal(BlokConversionFailure.TimedOut, failure.Reason);
+    Assert.InRange(clock.Elapsed, TimeSpan.FromMilliseconds(150), TimeSpan.FromSeconds(3));
+    Assert.Equal("1", await runtime.InvokeAsync("count", "{}").AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+  }
+
   [Fact]
   public async Task TimesOutInsteadOfHanging()
   {
@@ -174,6 +220,34 @@ public sealed class JintBlokRuntimeTests
         async () => await runtime.InvokeAsync("blocksToHtml", "{}"));
 
     Assert.Equal(BlokConversionFailure.DocumentTooLarge, failure.Reason);
+  }
+
+  private const string EchoScript = "globalThis.blokServerInvoke = function (op, input) { return input; };";
+
+  [Fact]
+  public async Task HandsTheEngineTheLastValueOfARepeatedKey()
+  {
+    var runtime = new JintBlokRuntime(EchoScript, poolSize: 1);
+
+    Assert.Equal("""{"a":2,"b":1}""", await runtime.InvokeAsync("x", """{"a":1,"b":1,"a":2}"""));
+  }
+
+  /// <summary>
+  /// The rewrite runs on the host, so it is held to the engine's allocation
+  /// budget too. The echo script would hand the text back if it got that far.
+  /// </summary>
+  [Fact]
+  public async Task RefusesARewriteLargerThanTheAllocationBudgetAndKeepsServing()
+  {
+    var runtime = new JintBlokRuntime(EchoScript, poolSize: 1, allocationBudgetBytes: 8 * 1024 * 1024);
+    var blocks = string.Join(",", Enumerable.Range(0, 100_000).Select(i => $$$"""{"id":"b{{{i}}}","type":"paragraph","data":{"text":"x"}}"""));
+
+    var failure = await Assert.ThrowsAsync<BlokDocumentConversionException>(
+        async () => await runtime.InvokeAsync("x", $$"""{"blocks":[],"blocks":[{{blocks}}]}"""));
+
+    Assert.Equal(BlokConversionFailure.DocumentTooLarge, failure.Reason);
+    Assert.IsType<InsufficientMemoryException>(failure.InnerException);
+    Assert.Equal("{}", await runtime.InvokeAsync("x", "{}"));
   }
 
   /// <summary>
@@ -358,6 +432,61 @@ public sealed class JintBlokRuntimeTests
     var output = await runtime.InvokeAsync(operation, input);
 
     Assert.Contains("level 119", output, StringComparison.Ordinal);
+  }
+
+  /// <summary>
+  /// How deep a document may nest must not depend on who calls. The stack
+  /// guard measures the calling thread's native stack, so a call from a thread
+  /// that had already spent 512 KiB stopped at about 100
+  /// outline levels to HTML, and one from a fresh thread at about 170. Every
+  /// call now runs on an engine thread of its own fixed stack.
+  /// </summary>
+  [Fact]
+  public void ConvertsTheSameDepthWhateverTheCallerHasSpentOfItsStack()
+  {
+    var runtime = JintBlokRuntime.FromEmbeddedResource(poolSize: 1, timeout: TimeSpan.FromMinutes(2));
+    var blocks = Enumerable.Range(0, 1000).Select(depth => new
+    {
+      id = $"n{depth}",
+      parent = depth == 0 ? null : $"n{depth - 1}",
+      type = "list",
+      data = new { style = "unordered", text = $"level {depth}" },
+    });
+    var input = JsonSerializer.Serialize(new { blocks });
+    string? output = null;
+    Exception? failure = null;
+    var caller = new Thread(() =>
+    {
+      try
+      {
+        output = Spend(512, () => Convert(runtime, input));
+      }
+      catch (Exception exception)
+      {
+        failure = exception;
+      }
+    });
+
+    caller.Start();
+    caller.Join();
+
+    Assert.Null(failure);
+    Assert.Contains("level 999", output, StringComparison.Ordinal);
+  }
+
+#pragma warning disable xUnit1031 // The call must start on the caller's own spent stack, not on an await continuation.
+  private static string Convert(JintBlokRuntime runtime, string input) =>
+      runtime.InvokeAsync("blocksToHtml", input).AsTask().GetAwaiter().GetResult();
+#pragma warning restore xUnit1031
+
+  [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+  private static string Spend(int kibibytes, Func<string> then)
+  {
+    Span<byte> frame = stackalloc byte[1024];
+
+    frame[0] = 1;
+
+    return kibibytes <= 0 ? then() : Spend(kibibytes - frame[0], then);
   }
 
   /// <summary>

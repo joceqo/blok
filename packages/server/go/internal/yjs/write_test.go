@@ -1,11 +1,13 @@
 package yjs
 
 import (
+	"encoding/hex"
 	"slices"
+	"strings"
 	"testing"
 
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
-	"github.com/JackUait/blok/packages/server/go/internal/lib0"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/lib0"
 )
 
 // Ports of the YDocWriteTests, YTextFormattingTests and StructStoreTests
@@ -250,5 +252,92 @@ func TestEqualAttrsComparesFlatAndStrictEqualsByIdentity(t *testing.T) {
 	}
 	if equalAttrs(obj("a", obj()), obj("a", obj())) {
 		t.Fatal("a nested object only equals itself")
+	}
+}
+
+// C# StrictEquals compares arrays by reference: a parsed [] is === itself,
+// and two parsed [] are two arrays.
+func TestAnEmptyArrayStrictEqualsOnlyItself(t *testing.T) {
+	parse := func() any {
+		value, err := jsjson.Parse([]byte("[]"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	empty, other := parse(), parse()
+	if !strictEquals(empty, empty) {
+		t.Fatal("a parsed [] is not === itself")
+	}
+	if strictEquals(empty, other) {
+		t.Fatal("two parsed [] are ===")
+	}
+}
+
+// C# StrictEquals: undefined === undefined.
+func TestUndefinedStrictEqualsUndefined(t *testing.T) {
+	if !strictEquals(jsjson.Undefined{}, jsjson.Undefined{}) || strictEquals(jsjson.Undefined{}, nil) {
+		t.Fatal("undefined")
+	}
+}
+
+// C# ANegativeFormatLengthStillDeletesTheConflictingMarkAtTheStart: only the
+// index is range-checked, and a negative length skips formatText's length-0
+// break, so the bold:true mark at clock 0 is deleted and restored after.
+func TestANegativeFormatLengthStillDeletesTheConflictingMarkAtTheStart(t *testing.T) {
+	doc := docWithID(4242)
+	text := doc.GetText(s("content"))
+	doc.Transact(func(txn *Transaction) { text.Insert(txn, 0, s("ab"), obj("bold", true)) })
+	update := doc.Transact(func(txn *Transaction) { text.Format(txn, 0, -1, obj("bold", false)) })
+	const want = "01029221044692210004626F6C640566616C7365C692210092210104626F6C640474727565019221010001"
+	if got := strings.ToUpper(hex.EncodeToString(update)); got != want {
+		t.Fatalf("update %s", got)
+	}
+	delta := text.ToDelta()
+	if len(delta) != 1 || delta[0].Insert.(jsjson.Str).String() != "ab" {
+		t.Fatalf("%+v", delta)
+	}
+	if bold, _ := delta[0].Attributes.Get(s("bold")); bold != true {
+		t.Fatalf("bold %v", bold)
+	}
+}
+
+// C# FormattingTheSameNestedMarkObjectTwiceWritesItOnce: the mark keeps
+// the caller's value, so the second call finds it === and writes nothing.
+func TestFormattingTheSameNestedMarkObjectTwiceWritesItOnce(t *testing.T) {
+	doc := docWithID(4242)
+	text := doc.GetText(s("content"))
+	link := obj("link", obj("href", s("h"), "meta", obj("x", 1.0)))
+	doc.Transact(func(txn *Transaction) { text.Insert(txn, 0, s("ab"), obj()) })
+	first := doc.Transact(func(txn *Transaction) { text.Format(txn, 0, 2, link) })
+	second := doc.Transact(func(txn *Transaction) { text.Format(txn, 0, 2, link) })
+	const want = "010292210246922100046C696E6B1B7B2268726566223A2268222C226D657461223A7B2278223A317D7D86922101046C696E6B046E756C6C00"
+	if got := strings.ToUpper(hex.EncodeToString(first)); got != want {
+		t.Fatalf("first %s", got)
+	}
+	if second != nil {
+		t.Fatalf("second wrote %x", second)
+	}
+}
+
+// C# TwoMarkObjectsSharingOneNestedInstanceWriteOnce: the flat compare
+// finds the shared nested instance ===; a deep-equal copy is not.
+func TestTwoMarkObjectsSharingOneNestedInstanceWriteOnce(t *testing.T) {
+	for _, shared := range []bool{true, false} {
+		doc := docWithID(4242)
+		text := doc.GetText(s("content"))
+		meta := obj("x", 1.0)
+		other := meta
+		if !shared {
+			other = obj("x", 1.0)
+		}
+		first := obj("link", obj("href", s("h"), "meta", meta))
+		second := obj("link", obj("href", s("h"), "meta", other))
+		doc.Transact(func(txn *Transaction) { text.Insert(txn, 0, s("ab"), obj()) })
+		doc.Transact(func(txn *Transaction) { text.Format(txn, 0, 2, first) })
+		wrote := doc.Transact(func(txn *Transaction) { text.Format(txn, 0, 2, second) })
+		if shared != (wrote == nil) {
+			t.Fatalf("shared %v: second wrote %x", shared, wrote)
+		}
 	}
 }

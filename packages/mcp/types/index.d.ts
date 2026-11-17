@@ -51,7 +51,11 @@ export interface BlokMcpOptions {
    * agent's id is named alone. The default actor sets it to the principal.
    */
   agentActor?: (principal: string, clientName: string) => AgentActor;
-  source?: { kind: 'endpoint'; url: string; endpointAuth: string; list?: string } | { kind: 'files'; dir: string };
+  /** Where stored documents live. `custom` is your own store; it cannot be combined with the other two. */
+  source?:
+    | { kind: 'endpoint'; url: string; endpointAuth: string; list?: string }
+    | { kind: 'files'; dir: string }
+    | { kind: 'custom'; source: BlokMcpDocumentSource };
   /** Host custom tool descriptions, as `--manifest <file>` loads them. */
   manifest?: BlokCustomToolsFile;
   /** 'page-map' turns on headless page.rename / page.setIcon, and inserting a page block (it creates the page document). Default 'off'. */
@@ -71,11 +75,150 @@ export interface BlokMcpOptions {
   /** Turns on `image.uploadFile`, `video.uploadFile`, `audio.uploadFile` and `file.uploadFile`. */
   uploads?: McpUploads;
   /**
+   * Makes each new page document yourself, for example as your own article. Runs only with
+   * `pageTitles: 'page-map'` and a `source`; with `sync`, or with no source, the server refuses to start.
+   * Answer the new page id (1-512 characters, no control characters, not `.` or `..`), or null to refuse (FORBIDDEN).
+   * Blok then skips its own `authorize` of the new id and saves nothing for it. Undo, redo and delete
+   * never call it. A throw or a bad id is logged to stderr; the agent sees SOURCE_UNAVAILABLE, or,
+   * after pages were already made in that batch, ORPHANED_SIDE_EFFECT listing them.
+   */
+  createPage?: (request: BlokPageCreateRequest) => Promise<string | null>;
+  /**
+   * Where stored-mode handles live, so several processes behind one load balancer can serve
+   * one agent. Absent: this process's memory. Live handles always stay in their process.
+   * `--handle-store files:<dir>` makes the reference file store.
+   */
+  handleStore?: BlokMcpHandleStore;
+  /**
    * False: the editors keep comments in the host's own system (a `comments` hook). Agent
    * comments would be invisible to people there, so the comment commands are unavailable.
    * On by default.
    */
   comments?: boolean;
+}
+
+/**
+ * One stored-mode handle as a handle store keeps it: plain JSON, written by Blok. Live handles hold
+ * sockets and are never stored. The server checks `principal` and `contractRevision`, never the store.
+ */
+export interface BlokMcpHandleRecord {
+  /** The record format. A store keeps the record as it is given. */
+  v: 1;
+  /** The tool contract of the server that opened the handle. Another one answers VERSION_SKEW. */
+  contractRevision: string;
+  /** The opener. A call from another principal answers UNKNOWN_HANDLE. */
+  principal: string;
+  clientName: string;
+  scopes: readonly string[] | null;
+  actor: AgentActor;
+  documentId: string;
+  write: boolean;
+  /** The source version the next save sends as `ifVersion`. */
+  version: string | null;
+  /** The last save or reload failed: the next call reloads from the source first. */
+  stale: boolean;
+  /** The document as the handle holds it: `blocks` and the page fields (`title`, `icon`, ...). */
+  document: { blocks: unknown[] };
+  /**
+   * Undo and redo steps, `{ past, future, lost?, revision }`, each step a whole document. Not
+   * bounded in bytes: the newest step is always kept, so a store must take large values.
+   */
+  history: Record<string, unknown>;
+}
+
+/**
+ * One call's hold on a handle. A lease is time-limited: the store ends it unless it is renewed, so
+ * a paused holder can lose it to another process. Every op checks that this lease still holds the
+ * handle; once it does not, renew, save and remove must throw and change nothing.
+ */
+export interface BlokMcpHandleLease {
+  readonly record: BlokMcpHandleRecord;
+  /**
+   * Extends the lease. Blok calls it every 5 seconds while a call holds the lease, so a store needs
+   * no timer of its own; a lease not renewed for longer than the store's lease time (30 s) may be taken.
+   * Its timer does not wait for the other ops: a renew may run while save, remove or release of the
+   * same lease is in progress, so a store must allow that.
+   */
+  renew(): Promise<void>;
+  /** Replaces the record. Blok calls it after the source save, before release. */
+  save(record: BlokMcpHandleRecord): Promise<void>;
+  /** Ends the lease and restarts the handle's idle time. Does nothing once the lease is gone. */
+  release(): Promise<void>;
+  /** Deletes the handle (blok_close, or a record that could not be saved). The lease ends with it. */
+  remove(): Promise<void>;
+}
+
+/**
+ * Where stored-mode handles live, so any process sharing the store can serve a call. A handle
+ * expires after `idleMs` without a lease; a leased handle never expires. Blok passes only handles
+ * of 1-128 characters of [A-Za-z0-9_-]. Any throw is logged and the agent sees SOURCE_UNAVAILABLE.
+ */
+export interface BlokMcpHandleStore {
+  /** The principal's handles that have not expired. */
+  count(principal: string, idleMs: number): Promise<number>;
+  /** Counts and adds as one step: false, and nothing added, when the principal already holds maxPerPrincipal. */
+  tryAdd(handle: string, record: BlokMcpHandleRecord, maxPerPrincipal: number, idleMs: number): Promise<boolean>;
+  /** Waits up to timeoutMs for the lease. 'unknown': no such handle, or it expired. 'busy': still leased at the timeout. */
+  acquire(handle: string, idleMs: number, timeoutMs: number): Promise<BlokMcpHandleLease | 'unknown' | 'busy'>;
+  /**
+   * Deletes every handle idle longer than idleMs that nobody leases, of every principal. Blok calls
+   * it on a timer. A store that expires records by itself (a TTL) may do nothing here.
+   */
+  sweep(idleMs: number): Promise<void>;
+}
+
+/** What `createPage` gets when an agent inserts a page block. */
+export interface BlokPageCreateRequest {
+  /** The open document the page block goes into. */
+  parentDocumentId: string;
+  principal: string;
+  actor: AgentActor;
+  /** A fresh Blok id you may use or ignore. */
+  suggestedPageId: string;
+}
+
+/** Who works on a document: the caller that opened the handle, with the agent's actor. */
+export interface BlokDocumentCaller {
+  principal: string;
+  clientName: string;
+  /** Null when the caller came without scopes. */
+  scopes: readonly string[] | null;
+  actor: AgentActor;
+}
+
+/**
+ * Your own document store. Blok checks every loaded document as it checks a file (a `blocks`
+ * array, at most 48 levels deep, lone surrogates as U+FFFD), and still runs `authorize` first.
+ * Throw a `BlokMcpSourceError` to refuse with a code. Any other throw, or a missing version, is
+ * logged to stderr and the agent sees SOURCE_UNAVAILABLE; a failed save drops the batch from memory.
+ */
+export interface BlokMcpDocumentSource {
+  /**
+   * Null: never saved (opens empty, `exists: false`). Else the document as JSON text, as you store it,
+   * with its non-empty version. Blok parses the text as `JSON.parse` does (a repeated key keeps its
+   * last value), so pass stored text through rather than a parsed object.
+   */
+  load(caller: BlokDocumentCaller, documentId: string): Promise<{ documentText: string; version: string } | null>;
+  /**
+   * `documentText` is compact JSON. `ifVersion` null means "must not exist yet"; otherwise it must
+   * equal the stored version, or throw `changed`. Answer the new non-empty version.
+   */
+  save(caller: BlokDocumentCaller, documentId: string, documentText: string, ifVersion: string | null): Promise<{ version: string }>;
+  /** Absent: listing is not supported. Blok drops every id `authorize` refuses. */
+  list?(
+    caller: BlokDocumentCaller,
+    request: { query?: string; cursor?: string; limit: number },
+  ): Promise<{ documents: Array<{ id: string; title?: string | null }>; nextCursor?: string | null }>;
+}
+
+/** changed: DOCUMENT_CHANGED; unavailable: SOURCE_UNAVAILABLE; forbidden: FORBIDDEN; invalidId: INVALID_ARGS. */
+export type BlokMcpSourceErrorKind = 'changed' | 'unavailable' | 'forbidden' | 'invalidId';
+
+/** A refusal from your document source. The agent sees `agentMessage`, or Blok's own words when it is empty. */
+export declare class BlokMcpSourceError extends Error {
+  readonly kind: BlokMcpSourceErrorKind;
+  readonly agentMessage: string;
+  constructor(kind: BlokMcpSourceErrorKind, agentMessage?: string, options?: { cause?: unknown });
 }
 
 export type McpAssetKind = 'image' | 'video' | 'audio' | 'file';
@@ -86,7 +229,11 @@ export interface McpUploadContext {
   tool?: string;
 }
 
-/** The host's own uploader, which an agent's upload goes through. */
+/**
+ * The host's own uploader, which an agent's upload goes through. When it throws, the agent sees
+ * TOOL_ACTION_FAILED "The upload failed." and the error goes to stderr. A string `agentMessage`
+ * on the thrown error is shown to the agent instead.
+ */
 export interface McpUploads {
   uploader: {
     /** A file card keeps `size` and `mimeType` when the host returns them. */
@@ -101,3 +248,133 @@ export interface McpUploads {
 }
 
 export declare function createBlokMcpServer(options: BlokMcpOptions): { start(): Promise<void>; stop(): Promise<void> };
+
+/** The `blok-mcp` flags and env as options, with the `--authorize` and `--create-page` hooks, the `--handle-store` and the manifest files loaded. */
+export declare function parseBlokMcpArgs(argv: string[], env: Record<string, string | undefined>): Promise<BlokMcpOptions>;
+
+/** The same options as the standalone server. The host owns the transport and sign-in, so both are optional. */
+export type BlokEmbedOptions = Omit<BlokMcpOptions, 'transport' | 'auth'> & Partial<Pick<BlokMcpOptions, 'transport' | 'auth'>>;
+
+/** The parts of an `@modelcontextprotocol/server` request context Blok reads. The SDK's `ServerContext` fits it. */
+export interface BlokMcpRequestContext {
+  mcpReq: { signal: AbortSignal; envelope?: unknown; inputResponses?: unknown };
+  http?: { authInfo?: { token?: string; clientId?: string; scopes?: string[]; extra?: Record<string, unknown> } };
+}
+
+/** Who the host says calls. No principal (or an empty one) means signed in without a name. */
+export interface BlokCallerIdentity {
+  principal?: string | null;
+  /** OAuth-style scopes; null or absent skips Blok's `blok.read` / `blok.write` checks. */
+  scopes?: readonly string[] | null;
+}
+
+export interface CreateBlokHooks {
+  /**
+   * The signed-in caller of one `tools/call`, or null/undefined for an anonymous one.
+   * Default: `ctx.http.authInfo`, named by its `extra.sub`. An anonymous caller gets the
+   * protocol error "Blok needs a signed-in caller."; an unnamed one "Blok needs a named caller (sub or NameIdentifier).".
+   */
+  caller?(ctx: BlokMcpRequestContext): BlokCallerIdentity | null | undefined | Promise<BlokCallerIdentity | null | undefined>;
+  /** Serve anonymous callers as this principal. Absent: they are refused. */
+  anonymousPrincipal?: string;
+}
+
+/** An `@modelcontextprotocol/server` low-level `Server`, or an `McpServer` (its `.server` is used). */
+export type BlokMcpSdkServer = { setRequestHandler: unknown } | { server: { setRequestHandler: unknown } };
+
+export interface BlokMcpToolEntry {
+  name: string;
+  description?: string;
+  inputSchema: { type: 'object'; [key: string]: unknown };
+  [key: string]: unknown;
+}
+
+export interface BlokMcpPromptEntry {
+  name: string;
+  [key: string]: unknown;
+}
+
+export interface BlokMcpToolCall {
+  params: { name: string; arguments?: Record<string, unknown> };
+}
+
+export interface BlokMcpPromptGet {
+  params: { name: string; arguments?: Record<string, string> };
+}
+
+/** The one question Blok asks the client's person: approve a change a person guarded (a locked database). */
+export interface BlokMcpApprovalRequest {
+  method: 'elicitation/create';
+  params: {
+    mode: 'form';
+    message: string;
+    requestedSchema: {
+      type: 'object';
+      properties: Record<string, { type: 'boolean'; title?: string; description?: string; default?: boolean }>;
+      required?: string[];
+    };
+  };
+}
+
+/** A `tools/call` result, or an `input_required` result asking for approval (the SDK turns it into elicitation for 2025 clients). */
+export type BlokMcpCallResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean; [key: string]: unknown }
+  | { resultType: 'input_required'; inputRequests: Record<string, BlokMcpApprovalRequest>; [key: string]: unknown };
+
+export interface BlokMcpPromptResult {
+  description?: string;
+  messages: Array<{ role: 'user' | 'assistant'; content: { type: 'text'; text: string } }>;
+  [key: string]: unknown;
+}
+
+/** Blok's answers for one server, for a host that installs the four handlers itself. */
+export interface BlokMcpHandlers {
+  ownsTool(name: string): boolean;
+  ownsPrompt(name: string): boolean;
+  listTools(): { tools: BlokMcpToolEntry[] };
+  listPrompts(): { prompts: BlokMcpPromptEntry[] };
+  /** Throws Blok's protocol errors (-32602, -32603, -32600 for the caller) for the SDK to send. */
+  callTool(request: BlokMcpToolCall, ctx: BlokMcpRequestContext): Promise<BlokMcpCallResult>;
+  getPrompt(request: BlokMcpPromptGet): BlokMcpPromptResult;
+}
+
+/** Your own tool and prompt names, checked against Blok's. */
+export interface BlokMcpHostNames {
+  tools?: ReadonlyArray<{ name: string }>;
+  prompts?: ReadonlyArray<{ name: string }>;
+}
+
+/** The host's own tools and prompts, served next to Blok's by `attach`. Other names reach these handlers. */
+export interface BlokMcpHostSurface {
+  tools?: BlokMcpToolEntry[];
+  callTool?(request: BlokMcpToolCall, ctx: BlokMcpRequestContext): unknown;
+  prompts?: BlokMcpPromptEntry[];
+  getPrompt?(request: BlokMcpPromptGet, ctx: BlokMcpRequestContext): unknown;
+}
+
+export interface BlokMcp {
+  /** Blok's primer. Put it into your own server's instructions; Blok never sets them. */
+  readonly instructions: string;
+  readonly toolNames: readonly string[];
+  readonly promptNames: readonly string[];
+  readonly version: string;
+  /**
+   * Serves Blok's tools and prompts on your server, next to `host`'s. It adds the tools and
+   * prompts capabilities when missing and changes nothing else. It throws when a host name
+   * is a Blok name, or when the server already answers tools/list, tools/call, prompts/list or prompts/get.
+   */
+  attach(server: BlokMcpSdkServer, host?: BlokMcpHostSurface): void;
+  /**
+   * Blok's four handlers, for a server whose tools/list, tools/call, prompts/list and prompts/get you
+   * install yourself. Pass your own tools and prompts: it throws when one of their names is a Blok name.
+   */
+  handlers(server: BlokMcpSdkServer, host?: BlokMcpHostNames): BlokMcpHandlers;
+  /** Waits for calls in flight and closes every handle. */
+  close(): Promise<void>;
+}
+
+/**
+ * Blok's tools and prompts for your own MCP server. Build it once and attach it to every
+ * server you make (one per request over stateless HTTP). It needs `authorize`, as HTTP does,
+ * and refuses `auth: oauth` and `principal`: your server signs callers in.
+ */
+export declare function createBlok(options: BlokEmbedOptions, hooks?: CreateBlokHooks): BlokMcp;

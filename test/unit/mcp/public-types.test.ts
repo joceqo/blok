@@ -2,8 +2,13 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CallToolRequest, Server, ServerContext } from '@modelcontextprotocol/server';
 import type * as Public from '../../../packages/mcp/types/index';
-import type { BlokMcpOptions as InternalOptions } from '../../../src/mcp/options';
+import { BlokMcpSourceError, parseBlokMcpArgs } from '../../../src/mcp/index';
+import type { createBlok } from '../../../src/mcp/index';
+import type {
+  BlokDocumentCaller, BlokMcpDocumentSource, BlokMcpHandleLease, BlokMcpHandleRecord, BlokMcpHandleStore, BlokMcpOptions as InternalOptions, BlokPageCreateRequest,
+} from '../../../src/mcp/options';
 import type { AgentActor } from '../../../types/agent';
 import type { BlokCustomToolsFile, ManifestOverrides } from '../../../types/tool-manifest';
 
@@ -20,6 +25,30 @@ const customToolsToPublic = (value: BlokCustomToolsFile): Public.BlokCustomTools
 const optionsToPublic = (value: InternalOptions): Public.BlokMcpOptions => value;
 const optionsFromPublic = (value: Public.BlokMcpOptions): Omit<InternalOptions, 'manifest'> => value;
 
+// The options copy loosens the manifest, so createBlok is checked by its hooks and its answer.
+// handlers() answers the SDK's wider result types; wireHost below checks the public ones fit the SDK.
+const blokToPublic = (value: ReturnType<typeof createBlok>): Omit<Public.BlokMcp, 'handlers'> => value;
+const hooksFromPublic = (value: Public.CreateBlokHooks): NonNullable<Parameters<typeof createBlok>[1]> => value;
+const parseArgsToPublic: typeof Public.parseBlokMcpArgs = parseBlokMcpArgs;
+const sourceToPublic = (value: BlokMcpDocumentSource): Public.BlokMcpDocumentSource => value;
+const sourceFromPublic = (value: Public.BlokMcpDocumentSource): BlokMcpDocumentSource => value;
+const sourceErrorToPublic: typeof Public.BlokMcpSourceError = BlokMcpSourceError;
+const pageRequestToPublic = (value: BlokPageCreateRequest): Public.BlokPageCreateRequest => value;
+const pageRequestFromPublic = (value: Public.BlokPageCreateRequest): BlokPageCreateRequest => value;
+const handleStoreToPublic = (value: BlokMcpHandleStore): Public.BlokMcpHandleStore => value;
+const handleStoreFromPublic = (value: Public.BlokMcpHandleStore): BlokMcpHandleStore => value;
+const handleRecordToPublic = (value: BlokMcpHandleRecord): Public.BlokMcpHandleRecord => value;
+const handleRecordFromPublic = (value: Public.BlokMcpHandleRecord): BlokMcpHandleRecord => value;
+
+// A TypeScript host wires the public handlers into the SDK without a cast.
+const wireHost = (server: Server, blok: Public.BlokMcp): void => {
+  const handlers = blok.handlers(server);
+
+  server.setRequestHandler('tools/call', (request: CallToolRequest, ctx: ServerContext) => handlers.callTool(request, ctx));
+  server.setRequestHandler('tools/list', () => handlers.listTools());
+  blok.attach(server, { tools: [{ name: 'host_echo', inputSchema: { type: 'object' } }], callTool: (_request, ctx) => ctx.mcpReq.signal });
+};
+
 // Assignability misses a dropped optional field, so the key sets must match too.
 type SameKeys<A, B> = [keyof A] extends [keyof B] ? ([keyof B] extends [keyof A] ? true : false) : false;
 type CustomBlock = BlokCustomToolsFile['blocks'][number];
@@ -31,7 +60,13 @@ const sameKeys: [
   SameKeys<BlokCustomToolsFile, Public.BlokCustomToolsFile>,
   SameKeys<CustomBlock, PublicCustomBlock>,
   SameKeys<InternalOptions, Public.BlokMcpOptions>,
-] = [true, true, true, true, true];
+  SameKeys<BlokDocumentCaller, Public.BlokDocumentCaller>,
+  SameKeys<BlokMcpDocumentSource, Public.BlokMcpDocumentSource>,
+  SameKeys<BlokPageCreateRequest, Public.BlokPageCreateRequest>,
+  SameKeys<BlokMcpHandleStore, Public.BlokMcpHandleStore>,
+  SameKeys<BlokMcpHandleLease, Public.BlokMcpHandleLease>,
+  SameKeys<BlokMcpHandleRecord, Public.BlokMcpHandleRecord>,
+] = [true, true, true, true, true, true, true, true, true, true, true];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -43,8 +78,11 @@ afterEach(() => {
 
 describe('@bloklabs/mcp public types', () => {
   it('keeps the compile-time checks referenced', () => {
-    expect([actorToPublic, actorFromPublic, overridesToPublic, overridesFromPublic, customToolsToPublic, optionsToPublic, optionsFromPublic])
-      .toHaveLength(7);
+    expect([
+      actorToPublic, actorFromPublic, overridesToPublic, overridesFromPublic, customToolsToPublic, optionsToPublic, optionsFromPublic,
+      blokToPublic, hooksFromPublic, parseArgsToPublic, wireHost, sourceToPublic, sourceFromPublic, sourceErrorToPublic,
+      pageRequestToPublic, pageRequestFromPublic, handleStoreToPublic, handleStoreFromPublic, handleRecordToPublic, handleRecordFromPublic,
+    ]).toHaveLength(20);
     expect(sameKeys.every(Boolean)).toBe(true);
   });
 
@@ -52,6 +90,8 @@ describe('@bloklabs/mcp public types', () => {
     const source = readFileSync(resolve(__dirname, '../../../packages/mcp/types/index.d.ts'), 'utf-8');
 
     expect(source).toContain('export declare function createBlokMcpServer');
+    expect(source).toContain('export declare function createBlok(');
+    expect(source).toContain('export declare function parseBlokMcpArgs');
     expect(source).not.toMatch(/\bfrom\s+['"]|\bimport\s*\(|\brequire\s*\(/);
   });
 });

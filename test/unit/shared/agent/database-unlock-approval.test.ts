@@ -312,6 +312,51 @@ describe.each(sessions)('unlocking a database a person locked, on a %s session',
       }
     });
 
+    it('a comment after a lock does not hide it: undo never unlocks unasked', async () => {
+      const withRow: OutputData = { blocks: [
+        database('db', false, ['r1']),
+        { id: 'r1', type: 'database-row', parent: 'db', data: { properties: {} } },
+      ] };
+      const session = open(withRow);
+      const comment = { name: 'database.addComment', args: { id: 'db', rowId: 'r1', text: 'a note' } };
+
+      try {
+        expect(codeOf(await run(session, [lock]))).toBeUndefined();
+        expect(codeOf(await run(session, [comment]))).toBeUndefined();
+        const undone = await run(session, [undo]);
+
+        expect(await isLocked(session)).toBe(true);
+        expect(['APPROVAL_REQUIRED', 'NOTHING_TO_UNDO']).toContain(codeOf(undone));
+      } finally {
+        session.close();
+      }
+    });
+
+    it('an undo with no step asks nobody, and says there is nothing to undo', async () => {
+      const session = open(seed());
+      const approve = vi.fn<Approve>(() => Promise.resolve(true));
+
+      try {
+        expect(codeOf(await run(session, [undo], approve))).toBe('NOTHING_TO_UNDO');
+        expect(approve).not.toHaveBeenCalled();
+        expect(codeOf(await run(session, [undo]))).toBe('NOTHING_TO_UNDO');
+      } finally {
+        session.close();
+      }
+    });
+
+    it('a redo with no step asks nobody, and says there is nothing to redo', async () => {
+      const session = open(seed());
+      const approve = vi.fn<Approve>(() => Promise.resolve(true));
+
+      try {
+        expect(codeOf(await run(session, [redo], approve))).toBe('NOTHING_TO_REDO');
+        expect(approve).not.toHaveBeenCalled();
+      } finally {
+        session.close();
+      }
+    });
+
     it('undoing an unlock locks again without asking', async () => {
       const session = open(seed());
       const approve = vi.fn<Approve>(() => Promise.resolve(true));
@@ -347,6 +392,21 @@ describe.each(sessions)('unlocking a database a person locked, on a %s session',
 
         expect(codeOf(result)).toBe('APPROVAL_REQUIRED');
         expect(await isLocked(session)).toBe(true);
+      } finally {
+        session.close();
+      }
+    });
+
+    it('writing the deleted properties of a locked database directly is refused', async () => {
+      const session = open(seed());
+      const gone = { id: 'n', name: 'Size', type: 'number', position: 'a1', deletedAt: 1 };
+
+      try {
+        const result = await run(session, [{ name: 'block.update', args: { id: 'db', data: { deletedProperties: { n: gone } } } }]);
+        const read = await session.read({ ids: ['db'], detail: 'full' });
+
+        expect(result.ok).toBe(false);
+        expect(read.blocks.find(block => block.id === 'db')?.data?.deletedProperties ?? {}).toEqual({});
       } finally {
         session.close();
       }

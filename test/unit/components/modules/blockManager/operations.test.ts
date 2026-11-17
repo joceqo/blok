@@ -181,7 +181,7 @@ const createMockDependencies = (): BlockOperationsDependencies => {
     Caret: {
       extractFragmentFromCaretPosition: vi.fn(() => document.createDocumentFragment()),
       setToBlock: vi.fn(),
-      positions: { START: 'start', END: 'end' },
+      positions: { START: 'start', END: 'end', DEFAULT: 'default' },
     } as unknown as Caret,
     I18n: {
       t: vi.fn((key: string) => key),
@@ -691,9 +691,11 @@ describe('BlockOperations', () => {
     });
 
     it('does not call stopCapturing when suppressStopCapturing is true', () => {
-      operations.suppressStopCapturing = true;
+      const release = operations.holdStopCapturing();
+
       operations.currentBlockIndexValue = 1;
       expect(dependencies.YjsManager.stopCapturing).not.toHaveBeenCalled();
+      release();
     });
   });
 
@@ -2947,6 +2949,26 @@ describe('BlockOperations', () => {
       // ...while `text` is the extracted tail, not the source's original text.
       expect(newBlockArg?.data?.text).toBe('World');
     });
+
+    it('U093: gives a tail of another tool only the extracted text', () => {
+      (dependencies.YjsManager.getBlockDataObject as ReturnType<typeof vi.fn>).mockReturnValue({
+        text: 'HelloWorld',
+        level: 2,
+      });
+
+      const fragment = document.createDocumentFragment();
+      fragment.appendChild(document.createTextNode('World'));
+      (dependencies.Caret.extractFragmentFromCaretPosition as ReturnType<typeof vi.fn>).mockReturnValue(fragment);
+
+      operations.currentBlockIndexValue = 0;
+      const newBlock = operations.split(blocksStore, 'paragraph');
+
+      expect(dependencies.YjsManager.addBlockAt).toHaveBeenCalledWith(
+        expect.objectContaining({ id: newBlock.id, type: 'paragraph', data: { text: 'World' } }),
+        expect.anything()
+      );
+      expect(newBlock.name).toBe('paragraph');
+    });
   });
 
   describe('splitBlockWithData', () => {
@@ -3890,6 +3912,25 @@ describe('BlockOperations', () => {
       expect(dependencies.Caret.setToBlock).toHaveBeenCalled();
       expect(operations.currentBlockIndexValue).toBe(0);
     });
+
+    it('puts the caret back at its offset in the moved block, not at the end', () => {
+      const block = repository.getBlockByIndex(1);
+      const input = block?.holder.querySelector<HTMLElement>('[contenteditable="true"]');
+
+      if (block === undefined || input === null || input === undefined) {
+        throw new Error('expected block 2 and its input');
+      }
+      input.textContent = 'three';
+      Object.assign(block, { currentInput: input });
+      document.body.appendChild(block.holder);
+      window.getSelection()?.collapse(input.firstChild, 2);
+      operations.currentBlockIndexValue = 1;
+
+      operations.moveCurrentBlockUp(blocksStore);
+
+      expect(dependencies.Caret.setToBlock).toHaveBeenCalledWith(block, 'default', 2);
+      block.holder.remove();
+    });
   });
 
   describe('moveCurrentBlockDown', () => {
@@ -3923,11 +3964,26 @@ describe('BlockOperations', () => {
 
   describe('suppressStopCapturing flag', () => {
     it('prevents stopCapturing during atomic operations', () => {
-      operations.suppressStopCapturing = true;
+      const release = operations.holdStopCapturing();
+
       operations.currentBlockIndexValue = 1;
 
       expect(dependencies.YjsManager.stopCapturing).not.toHaveBeenCalled();
-      operations.suppressStopCapturing = false;
+      release();
+    });
+
+    it('stays on until every nested hold is released', () => {
+      const outer = operations.holdStopCapturing();
+      const inner = operations.holdStopCapturing();
+
+      inner();
+      expect(operations.suppressStopCapturing).toBe(true);
+
+      inner();
+      expect(operations.suppressStopCapturing).toBe(true);
+
+      outer();
+      expect(operations.suppressStopCapturing).toBe(false);
     });
   });
 

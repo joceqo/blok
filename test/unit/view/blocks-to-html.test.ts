@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import { blocksToHtml, blocksToViewNodes, defineBlokSchema } from '../../../src/view';
+import { blocksToHtml, blocksToViewNodes, defineBlokSchema, htmlToBlocks } from '../../../src/view';
 import { TableModel } from '../../../src/tools/table/table-model';
-import { CODE_FILENAME_CLASSES, CODE_HEADER_CLASSES, CODE_WRAPPER_CLASSES } from '../../../src/shared/tool-classes/code';
+import { CODE_CARD_CLASSES, CODE_FILENAME_CLASSES, CODE_HEADER_CLASSES, CODE_WRAPPER_CLASSES } from '../../../src/shared/tool-classes/code';
 import {
   PAGE_ICON_CLASSES,
   PAGE_LOCK_ICON,
@@ -273,8 +273,15 @@ describe('blocksToHtml', () => {
       const name = CODE_FILENAME_CLASSES.join(' ');
       const html = blocksToHtml(doc([{ type: 'code', data: { code: 'x', filename: '<b>a</b>.ts' } }]), { classes: true });
 
-      expect(html).toContain(`<div class="${CODE_WRAPPER_CLASSES.join(' ')}"><div class="${header}"><span class="${name}">&lt;b&gt;a&lt;/b&gt;.ts</span></div><pre class="`);
+      expect(html).toContain(`<div class="${CODE_WRAPPER_CLASSES.join(' ')}"><div class="${CODE_CARD_CLASSES.join(' ')}"><div class="${header}"><span class="${name}">&lt;b&gt;a&lt;/b&gt;.ts</span></div><pre class="`);
       expect(html).toMatch(/<pre class="[^"]*\bborder-t border-border-secondary"/);
+    });
+
+    it('under classes, boxes the code in a card inside a plain block root, as the editor does', () => {
+      const html = blocksToHtml(doc([{ type: 'code', data: { code: 'x' } }]), { classes: true });
+
+      expect(html).toContain(`<div class="${CODE_WRAPPER_CLASSES.join(' ')}"><div class="${CODE_CARD_CLASSES.join(' ')}"><pre class="`);
+      expect(html).toContain('</code></pre></div></div>');
     });
 
     it('under classes, adds no header row without a filename', () => {
@@ -466,13 +473,22 @@ describe('blocksToHtml', () => {
 
   describe('embed', () => {
     const SANDBOX = 'allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-presentation';
+    const FRAME = `sandbox="${SANDBOX}" referrerpolicy="strict-origin-when-cross-origin"`;
 
     it('derives a registry iframe src from the source and sandboxes it, with caption', () => {
       const html = blocksToHtml(doc([
         { type: 'embed', data: { service: 'youtube', source: 'https://youtu.be/x', embed: 'https://www.youtube.com/embed/x', caption: 'Vid' } },
       ]));
 
-      expect(html).toBe(`<figure><iframe src="https://www.youtube.com/embed/x" sandbox="${SANDBOX}"></iframe><figcaption>Vid</figcaption></figure>`);
+      expect(html).toBe(`<figure><iframe src="https://www.youtube.com/embed/x" ${FRAME}></iframe><figcaption>Vid</figcaption></figure>`);
+    });
+
+    it('keeps popups of a code provider inside the sandbox', () => {
+      const html = blocksToHtml(doc([
+        { type: 'embed', data: { service: 'codepen', source: 'https://codepen.io/team/pen/AbCdEf', embed: '' } },
+      ]));
+
+      expect(html).toContain('sandbox="allow-scripts allow-same-origin allow-popups allow-presentation"');
     });
 
     it('never frames a stored embed URL that differs from the one the source derives', () => {
@@ -484,7 +500,7 @@ describe('blocksToHtml', () => {
       ]));
 
       expect(html).not.toContain('attacker.example');
-      expect(html).toBe(`<figure><iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" sandbox="${SANDBOX}"></iframe></figure>`);
+      expect(html).toBe(`<figure><iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" ${FRAME}></iframe></figure>`);
     });
 
     it('renders a non-registry https embed as a link to its source, never an iframe', () => {
@@ -493,7 +509,7 @@ describe('blocksToHtml', () => {
       ]));
 
       expect(html).not.toContain('<iframe');
-      expect(html).toBe('<a href="https://attacker.example/page">phish</a>');
+      expect(html).toBe('<a href="https://attacker.example/page">https://attacker.example/page</a>');
     });
 
     it('renders nothing for a registry service whose source does not match it', () => {
@@ -520,7 +536,29 @@ describe('blocksToHtml', () => {
       );
 
       expect(transformUrl).toHaveBeenCalledWith('https://www.youtube.com/embed/x', { attr: 'src', blockType: 'embed' });
-      expect(html).toBe(`<figure><iframe src="https://proxy.test/?u=https%3A%2F%2Fwww.youtube.com%2Fembed%2Fx" sandbox="${SANDBOX}"></iframe></figure>`);
+      // The proxy is another origin, so the frame gets the generic sandbox.
+      expect(html).toBe('<figure><iframe src="https://proxy.test/?u=https%3A%2F%2Fwww.youtube.com%2Fembed%2Fx" sandbox="allow-scripts allow-forms allow-popups" referrerpolicy="strict-origin-when-cross-origin"></iframe></figure>');
+    });
+
+    it.each([
+      ['http', 'http://proxy.test/x'],
+      ['relative', '/proxy?u=x'],
+      ['protocol-relative', '//proxy.test/x'],
+      ['javascript', 'javascript:alert(1)'],
+      // These resolve against the page, so the frame would be same-origin with it.
+      ['https: with one slash', 'https:/proxy?u=x'],
+      ['https: with no slash', 'https:proxy.test/x'],
+      ['https: with a backslash', 'https:\\proxy'],
+      ['https:// with no host', 'https:///proxy'],
+      ['https:// with an empty host', 'https://?u=x'],
+    ])('falls back to the source link when transformUrl makes the iframe src %s', (_, rewritten) => {
+      const html = blocksToHtml(
+        doc([{ type: 'embed', data: { service: 'youtube', source: 'https://youtu.be/x', embed: 'https://www.youtube.com/embed/x' } }]),
+        { transformUrl: (url, ctx) => (ctx.attr === 'src' ? rewritten : url) }
+      );
+
+      expect(html).not.toContain('<iframe');
+      expect(html).toBe('<a href="https://youtu.be/x">youtube</a>');
     });
 
     it('falls back to the source link when transformUrl drops the iframe src', () => {
@@ -557,7 +595,7 @@ describe('blocksToHtml', () => {
         { type: 'embed', data: { service: 'evil', source: 'https://ok.example', embed: 'javascript:alert(1)' } },
       ]));
 
-      expect(html).toBe('<a href="https://ok.example">evil</a>');
+      expect(html).toBe('<a href="https://ok.example">https://ok.example</a>');
       expect(html).not.toContain('javascript:');
     });
   });
@@ -1891,5 +1929,44 @@ describe('blocksToHtml with title: true', () => {
 
     expect(blocksToHtml(data)).toBe('<p>Body</p>');
     expect(blocksToHtml(data, { root: true })).toBe('<div data-blok-interface="view"><p>Body</p></div>');
+  });
+});
+
+describe('SVG data images (no-uploader SVG uploads)', () => {
+  const SVG = `data:image/svg+xml;base64,${btoa('<svg xmlns="http://www.w3.org/2000/svg"/>')}`;
+
+  it('renders a saved SVG data: URL in <img>', () => {
+    expect(blocksToHtml(doc([{ type: 'image', data: { url: SVG, caption: '' } }]))).toContain(`<img src="${SVG}" alt="">`);
+  });
+
+  it('reads the <img> back into an image block with the same URL', () => {
+    const [block] = htmlToBlocks(blocksToHtml(doc([{ type: 'image', data: { url: SVG } }])));
+
+    expect(block).toMatchObject({ type: 'image', data: { url: SVG } });
+  });
+
+  it('runs transformUrl first, then the image check', () => {
+    const html = blocksToHtml(doc([{ type: 'image', data: { url: 'https://x/a.svg' } }]), { transformUrl: () => SVG });
+    const unsafe = blocksToHtml(doc([{ type: 'image', data: { url: SVG } }]), { transformUrl: () => 'data:text/html,<b>' });
+
+    expect(html).toContain(`<img src="${SVG}"`);
+    expect(unsafe).toContain('<img alt="">');
+  });
+
+  it('shows an SVG data: page icon in a page block <img>', () => {
+    const html = blocksToHtml(doc([{ type: 'page', data: { pageId: 'p1' } }]), {
+      pageInfo: () => ({ title: 'P', icon: { type: 'image', url: SVG } }),
+    });
+
+    expect(html).toContain(`<img src="${SVG}" alt="">`);
+  });
+
+  it.each([
+    ['video', { url: SVG }],
+    ['audio', { url: SVG }],
+    ['file', { url: SVG, fileName: 'a.svg' }],
+    ['bookmark', { url: SVG }],
+  ])('still refuses it outside an image: %s', (type, data) => {
+    expect(blocksToHtml(doc([{ type, data }]))).not.toContain(`="${SVG}"`);
   });
 });

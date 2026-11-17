@@ -14,7 +14,7 @@ type scriptedRuntime struct {
 	calls   int
 }
 
-func (s *scriptedRuntime) Invoke(_ context.Context, _, _ string, _ time.Duration) (string, error) {
+func (s *scriptedRuntime) Invoke(_ context.Context, _, _ string, _ *time.Duration) (string, error) {
 	s.calls++
 	if s.err != nil {
 		return "", s.err
@@ -99,7 +99,7 @@ func TestIsFullyUnderstoodOnlyWithNothingMalformedOrUnknown(t *testing.T) {
 
 func newRealConverter(t *testing.T) *Converter {
 	t.Helper()
-	c, err := New(Options{PoolSize: 1})
+	c, err := New(Options{PoolSize: new(1)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -135,13 +135,45 @@ func TestConvertsThroughTheEmbeddedBundle(t *testing.T) {
 	}
 }
 
+// C# BlokDocumentConverterTests.RefusesADocumentNestedPastTheParseDepth:
+// Jint's JSON.parse refuses a 65th nested array or object, and the bare
+// readers hand it the document as is; plain text wraps it one level deeper.
+func TestRefusesADocumentNestedPastTheParseDepth(t *testing.T) {
+	c := newRealConverter(t)
+	ctx := context.Background()
+	nested := func(depth int) string {
+		return `{"blocks":[],"deep":` + strings.Repeat("[", depth-1) + strings.Repeat("]", depth-1) + `}`
+	}
+	if _, err := c.ToHTML(ctx, nested(64)); err != nil {
+		t.Fatalf("ToHTML at 64: %v", err)
+	}
+	if _, err := c.ToMarkdown(ctx, nested(64)); err != nil {
+		t.Fatalf("ToMarkdown at 64: %v", err)
+	}
+	if _, err := c.ToPlainText(ctx, nested(64), false); !isReason(err, InvalidDocument) {
+		t.Fatalf("ToPlainText at 64: err = %v", err)
+	}
+	if _, err := c.ToHTML(ctx, nested(65)); !isReason(err, InvalidDocument) {
+		t.Fatalf("ToHTML at 65: err = %v", err)
+	}
+	if _, err := c.ToMarkdown(ctx, nested(65)); !isReason(err, InvalidDocument) {
+		t.Fatalf("ToMarkdown at 65: err = %v", err)
+	}
+}
+
 func TestRefusesLimitsBelowTheFloorsBeforeLoading(t *testing.T) {
 	var constraint *ConstraintError
-	if _, err := New(Options{Timeout: time.Millisecond}); !errors.As(err, &constraint) {
-		t.Fatalf("err = %v, want a ConstraintError", err)
-	}
-	if _, err := New(Options{MemoryBudget: 1024}); !errors.As(err, &constraint) {
-		t.Fatalf("err = %v, want a ConstraintError", err)
+	// C# BlokRuntimeStartupTests.RefusesAnExplicitZero: nil is the
+	// default, an explicit 0 is under the floor.
+	for _, options := range []Options{
+		{Timeout: new(time.Millisecond)},
+		{Timeout: new(time.Duration(0))},
+		{MemoryBudget: new(int64(1024))},
+		{MemoryBudget: new(int64(0))},
+	} {
+		if _, err := New(options); !errors.As(err, &constraint) {
+			t.Fatalf("%+v: err = %v, want a ConstraintError", options, err)
+		}
 	}
 }
 
@@ -151,9 +183,8 @@ func isReason(err error, reason Reason) bool {
 }
 
 // goja's JSON.parse reads a lone-surrogate escape as U+FFFD, so the bare
-// operations convert such a document in Go. C# differs (measured, recorded in
-// progress-documents-runtime.md): ToMarkdown throws a raw JsonException, and
-// Validate reports Unknown for a lone-surrogate block type.
+// operations convert such a document. C# reads its runtime input the same way
+// (JsonInputNormalizer.cs), pinned by the C# test of the same name.
 func TestReadsALoneSurrogateInABareDocumentAsAReplacementCharacter(t *testing.T) {
 	c := newRealConverter(t)
 	ctx := context.Background()
@@ -173,5 +204,39 @@ func TestReadsALoneSurrogateInABareDocumentAsAReplacementCharacter(t *testing.T)
 	}
 	if _, err := c.ToPlainText(ctx, lone, false); !isReason(err, InvalidDocument) {
 		t.Fatalf("an envelope operation: err = %v, want InvalidDocument", err)
+	}
+}
+
+type recordingRuntime struct{ input string }
+
+func (r *recordingRuntime) Invoke(_ context.Context, _, input string, _ *time.Duration) (string, error) {
+	r.input = input
+	return `{"document":{}}`, nil
+}
+
+// A repeated id is what assigning it twice into a C# Dictionary gives: one
+// entry, at the first position, holding the last value.
+func TestARepeatedIdKeepsItsFirstPlaceAndItsLastValue(t *testing.T) {
+	runtime := &recordingRuntime{}
+	c := newConverter(runtime)
+	first, last := "first", "last"
+	var hrefs []string
+	href := func(id string) string { hrefs = append(hrefs, id); return "" }
+	pages := []Page{{ID: "b", Info: &PageInfo{Title: &first}}, {ID: "a"}, {ID: "b", Info: &PageInfo{Title: &last}}}
+	if _, err := c.ToHTMLWithPages(context.Background(), `{"blocks":[]}`, pages, href); err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"document":{"blocks":[]},"pages":{"b":{"title":"last"},"a":null}}`; runtime.input != want {
+		t.Fatalf("input = %s, want %s", runtime.input, want)
+	}
+	if strings.Join(hrefs, ",") != "b" {
+		t.Fatalf("href calls = %v, want [b]", hrefs)
+	}
+	ids := []IDMapping{{Old: "y", New: "1"}, {Old: "x", New: "2"}, {Old: "y", New: "3"}}
+	if _, err := c.RemapPageDocument(context.Background(), `{"blocks":[]}`, ids, []IDMapping{}); err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"document":{"blocks":[]},"blockIds":{"y":"3","x":"2"},"pageIds":{}}`; runtime.input != want {
+		t.Fatalf("input = %s, want %s", runtime.input, want)
 	}
 }

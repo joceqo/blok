@@ -39,6 +39,8 @@ export interface AgentApplier {
   historyStepId?(name: 'history.undo' | 'history.redo'): unknown;
   /** The document a history step would leave, when the applier keeps whole snapshots. */
   historyTarget?(name: 'history.undo' | 'history.redo'): DocSnapshot | undefined;
+  /** The document a history step would leave, replayed on a copy. Read only for checkDraft. */
+  previewHistory?(name: 'history.undo' | 'history.redo'): DocSnapshot | undefined;
   /** Keeps, on the step this batch just made, what that step unlocks when redone and when undone. */
   recordUnlocks?(unlocks: StepUnlocks): void;
   /**
@@ -69,6 +71,8 @@ export interface BatchInput {
   log: CommandLogEntry[];
   batchNo: number;
   now?: () => number;
+  /** A refusal for a write, given before any of it is applied; null lets it apply. */
+  checkDraft?: (draft: DocSnapshot) => AgentError | null;
 }
 
 type Preparation = () => Promise<unknown>;
@@ -241,10 +245,11 @@ export const marksOf = (applier: AgentApplier): HistoryMarks => {
  * documents, a native one reads the record kept on that step. Unknown means every locked database.
  */
 const unlockedByStep = (applier: AgentApplier, name: 'history.undo' | 'history.redo'): readonly string[] => {
-  const target = applier.historyTarget?.(name);
+  if (applier.historyTarget !== undefined) {
+    const target = applier.historyTarget(name);
 
-  if (target !== undefined) {
-    return unlockedBetween(applier.snapshot(), target);
+    // No target: no step, which undo and redo then refuse themselves.
+    return target === undefined ? [] : unlockedBetween(applier.snapshot(), target);
   }
 
   return applier.pendingUnlocks?.(name) ?? lockedDatabases(applier.snapshot());
@@ -335,6 +340,13 @@ const historyStep = (applier: AgentApplier, name: 'history.undo' | 'history.redo
 
     to.push(from.pop() ?? 'own');
   };
+};
+
+/** checkDraft on the document the history step would leave; null when it may run. */
+const historyRefusal = (input: BatchInput, name: 'history.undo' | 'history.redo'): AgentError | null => {
+  const target = input.checkDraft === undefined ? undefined : input.applier.previewHistory?.(name);
+
+  return target === undefined ? null : input.checkDraft?.(target) ?? null;
 };
 
 const failureRevision = (applier: AgentApplier): string | undefined => {
@@ -626,15 +638,18 @@ export const runBatch = async (input: BatchInput): Promise<AgentResult> => {
       const step = historyStep(input.applier, first.name, expected);
 
       checkCancel(input.signal, orphaned);
-      await step();
-      const revision = input.applier.revision();
+      const refused = historyRefusal(input, first.name);
+      // As a write's checkDraft refusal: nothing ran, so no revision.
+      const result: AgentResult = refused !== null
+        ? { ok: false, error: refused, warnings }
+        : await step().then(() => ({
+          ok: true, revision: input.applier.revision(), results: [{}], refs: {},
+          changed: { created: [], updated: [], moved: [], removed: [] }, warnings,
+        }));
 
-      record([{}], null);
+      record(refused === null ? [{}] : null, refused);
 
-      return {
-        ok: true, revision, results: [{}], refs: {},
-        changed: { created: [], updated: [], moved: [], removed: [] }, warnings,
-      };
+      return result;
     }
 
     const atCommand = (error: unknown): never => {
@@ -673,6 +688,13 @@ export const runBatch = async (input: BatchInput): Promise<AgentResult> => {
 
     // Asked before any prepare step, so a no leaves no host work behind. Kept for this batch only.
     const approved = new Set<string>();
+
+    /*
+     * A statement between keeps the minifier from joining `approved` and the await below into one
+     * declaration list: Jint then made `approved` a new, empty set after the await (measured), and
+     * the final plan went STALE on an approved unlock.
+     */
+    checkCancel(input.signal);
     const pre = await planWithApprovals(granted => {
       warnings.splice(0, warnings.length, ...corrected);
 
@@ -736,8 +758,20 @@ export const runBatch = async (input: BatchInput): Promise<AgentResult> => {
     if (hostEffects.length > 0 && input.applier.runHostEffects === undefined) {
       throw failure('COMMAND_UNAVAILABLE', 'This command runs host hooks, which only the editor runs.', { details: { reason: 'runtime' } });
     }
+    const refused = plan.edits.length > 0 ? input.checkDraft?.(draft) ?? null : null;
+
+    // As agentExecute answers its own refusal: nothing ran, so no revision.
+    if (refused !== null) {
+      record(null, refused);
+
+      return { ok: false, error: refused, warnings };
+    }
     if (plan.edits.length > 0) {
       await input.applier.apply(plan, draft);
+    }
+    // A comment is no undo step: the applier keeps none for it, so a mark or an unlock record here
+    // would land on the step before it.
+    if (plan.edits.length > 0 && plan.commentsOnly !== true) {
       const marks = marksOf(input.applier);
 
       marks.past.push('own');
@@ -749,7 +783,7 @@ export const runBatch = async (input: BatchInput): Promise<AgentResult> => {
         backward: unlockedBetween(draft, snapshot),
         ...(shares !== undefined && { shares }),
       });
-    } else if (batch.commands.some(command => input.ctx.commands.get(command.name)?.effects === 'host')) {
+    } else if (plan.edits.length === 0 && batch.commands.some(command => input.ctx.commands.get(command.name)?.effects === 'host')) {
       marksOf(input.applier).past.push('other');
     }
     // After the writes landed, as the person's click runs them; a turn stopped meanwhile runs none.

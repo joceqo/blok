@@ -435,6 +435,38 @@
       "localPublicPath": ""
     },
     {
+      "name": "negative per-user cap",
+      "options": {
+        "CollabMaxConnectionsPerUserPerDoc": -1
+      },
+      "error": "CollabMaxConnectionsPerUserPerDoc must be a positive number (got -1): a zero cap refuses every sync connection",
+      "localPublicPath": ""
+    },
+    {
+      "name": "negative message bytes",
+      "options": {
+        "CollabMaxMessageBytes": -1
+      },
+      "error": "CollabMaxMessageBytes must be a positive number of bytes (got -1): a zero cap closes every sync connection on its first frame",
+      "localPublicPath": ""
+    },
+    {
+      "name": "negative keep-alive second",
+      "options": {
+        "CollabKeepAliveIntervalMs": -1000
+      },
+      "error": "CollabKeepAliveInterval must be zero (off) or greater (got -00:00:01)",
+      "localPublicPath": ""
+    },
+    {
+      "name": "negative burst",
+      "options": {
+        "CollabInboundBurstFrames": -1
+      },
+      "error": "CollabInboundBurstFrames must be a positive number of frames (got -1): a zero burst closes every connection on its first frame",
+      "localPublicPath": ""
+    },
+    {
       "name": "doc endpoint without collab",
       "options": {
         "DocEndpoint": "https://app.example/docs"
@@ -536,6 +568,26 @@
         "CollabEnabled": true,
         "DocEndpoint": "https://app.example/docs",
         "DocEndpointAuth": "Bearer x\n"
+      },
+      "error": "--doc-endpoint-auth must not contain a line break (a trailing newline from `echo` or a file is the usual cause): the header would be silently dropped from every doc-endpoint request",
+      "localPublicPath": ""
+    },
+    {
+      "name": "collab endpoint auth crlf",
+      "options": {
+        "CollabEnabled": true,
+        "DocEndpoint": "https://app.example/docs",
+        "DocEndpointAuth": "Bearer x\r\n"
+      },
+      "error": "--doc-endpoint-auth must not contain a line break (a trailing newline from `echo` or a file is the usual cause): the header would be silently dropped from every doc-endpoint request",
+      "localPublicPath": ""
+    },
+    {
+      "name": "collab endpoint auth inner cr",
+      "options": {
+        "CollabEnabled": true,
+        "DocEndpoint": "https://app.example/docs",
+        "DocEndpointAuth": "Bearer\rx"
       },
       "error": "--doc-endpoint-auth must not contain a line break (a trailing newline from `echo` or a file is the usual cause): the header would be silently dropped from every doc-endpoint request",
       "localPublicPath": ""
@@ -863,6 +915,111 @@
         "S3AccessKey": "a",
         "S3SecretKey": "b",
         "S3Addressing": "virtual"
+      },
+      "error": "",
+      "localPublicPath": ""
+    },
+    {
+      "name": "zero keep-alive is off",
+      "options": {
+        "CollabKeepAliveIntervalMs": 0
+      },
+      "error": "",
+      "localPublicPath": ""
+    },
+    {
+      "name": "zero frames is off",
+      "options": {
+        "CollabInboundFramesPerSecond": 0
+      },
+      "error": "",
+      "localPublicPath": ""
+    },
+    {
+      "name": "zero resyncs is off",
+      "options": {
+        "CollabInboundResyncsPerMinute": 0
+      },
+      "error": "",
+      "localPublicPath": ""
+    },
+    {
+      "name": "zero awareness is off",
+      "options": {
+        "CollabInboundAwarenessBytesPerSecond": 0
+      },
+      "error": "",
+      "localPublicPath": ""
+    },
+    {
+      "name": "empty auth",
+      "options": {
+        "Auth": ""
+      },
+      "error": "--auth must be none, proxy, or ticket (got \"\")",
+      "localPublicPath": ""
+    },
+    {
+      "name": "empty listen address",
+      "options": {
+        "ListenAddress": ""
+      },
+      "error": "--auth none serves anyone who can reach \"\" (an address with no host binds every network interface); it may only bind loopback — use --listen 127.0.0.1:PORT, or --auth ticket to expose this service",
+      "localPublicPath": ""
+    },
+    {
+      "name": "empty version",
+      "options": {
+        "Version": ""
+      },
+      "error": "",
+      "localPublicPath": ""
+    },
+    {
+      "name": "change signal window of one day",
+      "options": {
+        "CollabChangeSignalWindowMs": 86400000
+      },
+      "error": "",
+      "localPublicPath": ""
+    },
+    {
+      "name": "change signal window past one day",
+      "options": {
+        "CollabChangeSignalWindowMs": 86400001
+      },
+      "error": "CollabChangeSignalWindow must be at most one day (got 1.00:00:00.0010000)",
+      "localPublicPath": ""
+    },
+    {
+      "name": "change signal window past fifty days",
+      "options": {
+        "CollabChangeSignalWindowMs": 4320000000
+      },
+      "error": "CollabChangeSignalWindow must be at most one day (got 50.00:00:00)",
+      "localPublicPath": ""
+    },
+    {
+      "name": "change signal window below zero uses the default",
+      "options": {
+        "CollabChangeSignalWindowMs": -1000
+      },
+      "error": "",
+      "localPublicPath": ""
+    },
+    {
+      "name": "file bytes with a zero cap",
+      "options": {
+        "FileBytesEnabled": true,
+        "FileBytesMaxBytes": 0
+      },
+      "error": "FileBytesMaxBytes must be a positive number of bytes (got 0)",
+      "localPublicPath": ""
+    },
+    {
+      "name": "a zero file bytes cap while the route is off",
+      "options": {
+        "FileBytesMaxBytes": 0
       },
       "error": "",
       "localPublicPath": ""

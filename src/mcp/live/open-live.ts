@@ -10,11 +10,15 @@ import { createStoreAgentSession } from '../../components/modules/agent/store-se
 import { YBlockSerializer } from '../../components/modules/yjs/serializer';
 import type { AgentActor } from '../../../types/agent';
 import type { AgentPorts } from '../../shared/agent/types';
+import { tooDeepToSave } from '../../shared/mcp/wire-json';
 import { htmlToSegmentsNode } from '../../view/rich-text-node';
 import type { McpContracts } from '../contract';
 import type { Caller, OpenRequest } from '../dispatcher';
 import { isMcpSurfaceError, McpSurfaceError, surfaceError } from '../errors';
-import type { HandleSession, UnavailableCommand } from '../session';
+import type { HandleSession } from '../session';
+import { liveUnavailableCommands } from '../../shared/mcp/surface';
+import { createPageDeliveryTracker } from '../page-titles';
+
 import { createLiveSession, terminalToError } from './live-session';
 import { nodeSocketFactory } from './node-socket';
 import { AgentPresence } from './presence';
@@ -27,7 +31,7 @@ export interface OpenLiveDeps {
   ticketsFor?: (request: OpenRequest, caller: Caller, actor: AgentActor) => Promise<CollabTicketSource>;
   /** Defaults to `ws` with the configured Origin. */
   socketFactory?: CollabSocketFactory;
-  portsFor(caller: Caller, actor: AgentActor, isOpenDocument?: (pageId: string) => Promise<boolean>): AgentPorts;
+  portsFor(caller: Caller, actor: AgentActor, isOpenDocument?: (pageId: string) => Promise<boolean>, unconfirmed?: () => void): AgentPorts;
   /** The name peers see in presence; defaults to actor.name. */
   presenceName?: (caller: Caller, actor: AgentActor) => string;
   pageTitles?: 'off' | 'page-map';
@@ -121,21 +125,6 @@ const withRevocation = (room: HeadlessRoom, guard: ReturnType<typeof revocable>)
   close: () => room.close(),
 });
 
-// tools/list renders the stored contract, so a live handle names what it refuses from that list.
-const refusedHere = (contracts: McpContracts): UnavailableCommand[] => {
-  const live = new Map(contracts.live.commands.map((entry) => [entry.name, entry]));
-
-  return contracts.stored.commands.flatMap((entry) => {
-    const here = live.get(entry.name);
-
-    if (!entry.available || here?.available === true) {
-      return [];
-    }
-
-    return [{ name: entry.name, reason: here?.unavailableReason ?? 'runtime' }];
-  });
-};
-
 export const createOpenLive = (deps: OpenLiveDeps) => async (request: OpenRequest, caller: Caller, actor: AgentActor): Promise<HandleSession> => {
   const url = syncUrlFor(deps.sync.url, request.documentId);
   const guard = deps.ticketsFor === undefined ? undefined : revocable(await deps.ticketsFor(request, caller, actor));
@@ -159,17 +148,20 @@ export const createOpenLive = (deps: OpenLiveDeps) => async (request: OpenReques
   const room = guard === undefined ? opened : withRevocation(opened, guard);
 
   try {
+    const pages = createPageDeliveryTracker();
     const agent = createStoreAgentSession({
       store: room.store,
       tools: deps.contracts.runtimes,
       contract: deps.contracts.live,
       actor,
       // A room id has no aliases, so only the same id is the open document.
-      ports: deps.portsFor(caller, actor, async (pageId) => pageId === request.documentId),
+      ports: deps.portsFor(caller, actor, async (pageId) => pageId === request.documentId, pages.unconfirmed),
       richTextFieldsFor: deps.contracts.richTextFieldsFor,
+      // As the ports' agentExecute: a room this deep is one no port could open.
+      checkDraft: (draft) => tooDeepToSave(draft.toOutput())?.agentError ?? null,
       ...(deps.pageTitles === 'page-map' && { pageTitles: 'page-map' as const }),
       services: {
-        versionHistory: createHttpVersionHistory({ roomUrl: url, origin: deps.sync.origin, tickets: ticketSource }),
+        versionHistory: createHttpVersionHistory({ roomUrl: url, origin: deps.sync.origin, tickets: ticketSource, write: request.write }),
         ...(deps.uploader !== undefined && { uploader: deps.uploader }),
       },
     });
@@ -178,8 +170,8 @@ export const createOpenLive = (deps: OpenLiveDeps) => async (request: OpenReques
       { actor, name: deps.presenceName?.(caller, actor) ?? actor.name }
     );
 
-    const session = createLiveSession({ room, agent, contract: deps.contracts.live, presence, write: request.write });
-    const unavailableCommands = refusedHere(deps.contracts);
+    const session = pages.wrap(createLiveSession({ room, agent, contract: deps.contracts.live, presence, write: request.write }));
+    const unavailableCommands = liveUnavailableCommands(deps.contracts.stored, deps.contracts.live);
 
     // assign, not spread: the session's durability is a getter.
     return unavailableCommands.length === 0 ? session : Object.assign(session, { unavailableCommands });

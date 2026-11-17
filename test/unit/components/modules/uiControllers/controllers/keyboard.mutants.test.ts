@@ -18,13 +18,18 @@ import {
 import { isEscapeConsumed } from '../../../../../../src/components/utils/consumed-escape';
 import { registerLayer } from '../../../../../../src/components/utils/dismissable-layer';
 import { deliverOnSubmit } from '../../../../../../src/components/utils/on-submit';
+import { announce } from '../../../../../../src/components/utils/announcer';
 import type { PopoverAbstract } from '../../../../../../src/components/utils/popover/popover-abstract';
 import { PopoverRegistry } from '../../../../../../src/components/utils/popover/popover-registry';
+import { Shortcuts } from '../../../../../../src/components/utils/shortcuts';
 import type { BlokModules } from '../../../../../../src/types-internal/blok-modules';
 import type { API, BlokConfig, OutputData } from '../../../../../../types';
 
 /** Flipped per test so the iOS Shift+Enter exception can be exercised. */
 const iosDevice = vi.hoisted(() => ({ value: false }));
+
+/** Flipped per test: macOS uses Notion's history keys. */
+const macOS = vi.hoisted(() => ({ value: false }));
 
 vi.mock('../../../../../../src/components/utils/browser', async (importOriginal) => {
   const actual = await importOriginal<typeof BrowserModule>();
@@ -34,8 +39,11 @@ vi.mock('../../../../../../src/components/utils/browser', async (importOriginal)
     get isIosDevice() {
       return iosDevice.value;
     },
+    getUserOS: () => ({ win: !macOS.value, mac: macOS.value, x11: false, linux: false }),
   };
 });
+
+vi.mock('../../../../../../src/components/utils/announcer', () => ({ announce: vi.fn() }));
 
 vi.mock('../../../../../../src/components/utils/on-submit', () => ({
   deliverOnSubmit: vi.fn(),
@@ -159,6 +167,7 @@ const createHarness = (options?: {
       unsetCurrentBlock: vi.fn(),
       deleteSelectedBlocksAndInsertReplacement: vi.fn(() => undefined),
       getBlock: vi.fn(() => undefined),
+      getBlockById: vi.fn((id: string) => state.blocks.find((block) => block.id === id)),
       convert: vi.fn(() => Promise.resolve(makeBlock('converted'))),
     },
     BlockSelection: {
@@ -223,15 +232,14 @@ const createHarness = (options?: {
         DEFAULT: 'default',
       },
     },
+    // Undo and redo key presses announce their result.
+    I18n: { t: (key: string, vars?: { count?: number }) => (vars?.count === undefined ? key : `${key}:${vars.count}`) },
     YjsManager: {
       markCaretBeforeChange: vi.fn(() => {
         order.push('controller');
       }),
-      checkAndHandleBoundary: vi.fn(() => {
-        order.push('boundary');
-      }),
-      undo: vi.fn(),
-      redo: vi.fn(),
+      undo: vi.fn(() => true),
+      redo: vi.fn(() => true),
       stopCapturing: vi.fn(),
     },
     DragManager: {
@@ -305,6 +313,7 @@ describe('KeyboardController — mutation coverage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     iosDevice.value = false;
+    macOS.value = false;
     PopoverRegistry.resetForTests();
     vi.spyOn(Selection, 'isSelectionExists', 'get').mockReturnValue(true);
     vi.spyOn(Selection, 'isCollapsed', 'get').mockReturnValue(false);
@@ -393,22 +402,6 @@ describe('KeyboardController — mutation coverage', () => {
       harness.redactor.dispatchEvent(new InputEvent('beforeinput', { bubbles: true }));
 
       expect(harness.blok.YjsManager.markCaretBeforeChange).toHaveBeenCalledWith(true);
-    });
-
-    it('closes a timed-out word-boundary step before the typed character is written', () => {
-      const harness = enabledHarness();
-
-      harness.redactor.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'insertText', data: 'd' }));
-
-      expect(harness.order).toStrictEqual(['boundary', 'controller']);
-    });
-
-    it('leaves the word-boundary step alone for input that is not typed text', () => {
-      const harness = enabledHarness();
-
-      harness.redactor.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'deleteContentBackward' }));
-
-      expect(harness.blok.YjsManager.checkAndHandleBoundary).not.toHaveBeenCalled();
     });
   });
 
@@ -1168,6 +1161,62 @@ describe('KeyboardController — mutation coverage', () => {
       expect(reachedLaterDocumentListener).toBe(false);
     });
 
+    // Notion U106 / U135: the live region counts the deleted blocks, children not included.
+    it('says how many selected blocks Backspace deleted, not counting children', () => {
+      const harness = enabledHarness();
+      const toggle = makeBlock('tg');
+      const child = Object.assign(makeBlock('kid'), { parentId: 'tg' });
+      const other = makeBlock('b');
+
+      [toggle, child, other].forEach((block) => Object.assign(block, { selected: true, parentId: block.parentId ?? null }));
+      harness.state.blocks = [toggle, child, other, makeBlock('c')];
+      harness.state.anyBlockSelected = true;
+      noNativeSelection();
+      vi.mocked(harness.blok.BlockManager.deleteSelectedBlocksAndInsertReplacement).mockImplementation(() => {
+        harness.state.blocks = harness.state.blocks.filter((block) => !block.selected);
+
+        return undefined;
+      });
+
+      harness.press(document.body, { key: 'Backspace' });
+
+      expect(vi.mocked(announce)).toHaveBeenCalledWith('a11y.blocksDeleted:2');
+      expect(vi.mocked(announce)).toHaveBeenCalledTimes(1);
+      expect(harness.blok.BlockManager.deleteSelectedBlocksAndInsertReplacement).toHaveBeenCalledTimes(1);
+    });
+
+    // USER DECISION 2026-11-12 (A4-3): only the count is said, as in Notion.
+    it('leaves navigation mode without saying so before it clears the selection', () => {
+      const harness = enabledHarness();
+
+      harness.state.anyBlockSelected = true;
+      noNativeSelection();
+      vi.mocked(harness.blok.BlockManager.deleteSelectedBlocksAndInsertReplacement).mockReturnValue(makeBlock('replacement'));
+
+      harness.press(document.body, { key: 'Delete' });
+
+      const { disableNavigationMode, clearSelection } = harness.blok.BlockSelection;
+      const exitOrder = vi.mocked(disableNavigationMode).mock.invocationCallOrder[0];
+
+      // Caret.setToBlock clears the selection too, which would say the exit.
+      expect(disableNavigationMode).toHaveBeenCalledWith(false, false);
+      expect(exitOrder).toBeLessThan(vi.mocked(harness.blok.Caret.setToBlock).mock.invocationCallOrder[0]);
+      expect(exitOrder).toBeLessThan(vi.mocked(clearSelection).mock.invocationCallOrder[0]);
+    });
+
+    it('says nothing when Backspace deleted none of the selected blocks', () => {
+      const harness = enabledHarness();
+      const locked = Object.assign(makeBlock('locked'), { selected: true, parentId: null });
+
+      harness.state.blocks = [locked];
+      harness.state.anyBlockSelected = true;
+      noNativeSelection();
+
+      harness.press(document.body, { key: 'Backspace' });
+
+      expect(vi.mocked(announce)).not.toHaveBeenCalled();
+    });
+
     it('removes the selected blocks on Delete too', () => {
       const harness = enabledHarness();
 
@@ -1357,6 +1406,18 @@ describe('KeyboardController — mutation coverage', () => {
       expect(popover(childEl).hide).toHaveBeenCalledTimes(1);
       expect(popover(parentEl).hide).not.toHaveBeenCalled();
       expect(PopoverRegistry.instance.hasOpenPopovers()).toBe(true);
+    });
+
+    // Every editor on the page listens on document: a menu's submenu must not close with its menu.
+    it('two editors on one page close one popover per Escape', () => {
+      enabledHarness();
+      const second = enabledHarness();
+      const closeTopmost = vi.spyOn(PopoverRegistry.instance, 'closeTopmost').mockImplementation(() => true);
+
+      vi.spyOn(PopoverRegistry.instance, 'hasOpenPopovers').mockReturnValue(true);
+      second.press(second.outside, { key: 'Escape' });
+
+      expect(closeTopmost).toHaveBeenCalledTimes(1);
     });
 
     it('closing a popover over a modal layer keeps the layer: one Escape peels one layer', () => {
@@ -1657,6 +1718,70 @@ describe('KeyboardController — mutation coverage', () => {
       expect(reachedTarget).toBe(false);
     });
 
+    // Notion U047: the history tells a key press from an API call.
+    it('tells the history the undo came from a key press', () => {
+      const harness = enabledHarness();
+
+      harness.press(harness.outside, { key: 'z', ctrlKey: true });
+
+      expect(harness.blok.YjsManager.undo).toHaveBeenCalledWith(true);
+    });
+
+    // Notion U178: one undo takes back "/tod" and the menu closes; redo leaves it closed.
+    it.each([
+      ['undo', { key: 'z', ctrlKey: true }],
+      ['redo', { key: 'z', ctrlKey: true, shiftKey: true }],
+    ] as const)('closes an open slash menu before the %s walks history', (direction, init) => {
+      const harness = enabledHarness();
+      const walk = harness.blok.YjsManager[direction];
+
+      harness.state.toolboxOpened = true;
+
+      harness.press(harness.outside, init);
+
+      expect(harness.blok.Toolbar.toolbox.close).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(harness.blok.Toolbar.toolbox.close).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(walk).mock.invocationCallOrder[0]);
+    });
+
+    // Notion RM8 says "Nothing to undo" only with the caret in the page.
+    it('says Nothing to undo for an empty undo with the caret in the editor', () => {
+      const harness = enabledHarness();
+      const range = document.createRange();
+
+      vi.mocked(harness.blok.YjsManager.undo).mockReturnValue(false);
+      range.setStart(harness.inside.firstChild ?? harness.inside, 0);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+
+      harness.press(harness.inside, { key: 'z', ctrlKey: true });
+
+      expect(vi.mocked(announce)).toHaveBeenCalledWith('a11y.nothingToUndo', { group: 'history' });
+    });
+
+    it('says nothing for an empty undo with the caret outside the editor', () => {
+      const harness = enabledHarness();
+      const range = document.createRange();
+
+      vi.mocked(harness.blok.YjsManager.undo).mockReturnValue(false);
+      range.setStart(harness.outside.firstChild ?? harness.outside, 0);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+
+      harness.press(harness.outside, { key: 'z', ctrlKey: true });
+
+      expect(harness.blok.YjsManager.undo).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(announce)).not.toHaveBeenCalled();
+    });
+
+    it('leaves a closed toolbox alone on undo', () => {
+      const harness = enabledHarness();
+
+      harness.press(harness.outside, { key: 'z', ctrlKey: true });
+
+      expect(harness.blok.Toolbar.toolbox.close).not.toHaveBeenCalled();
+    });
+
     it('undoes on Cmd+Z', () => {
       const harness = enabledHarness();
 
@@ -1775,7 +1900,7 @@ describe('KeyboardController — mutation coverage', () => {
       expect(harness.blok.BlockManager.unsetCurrentBlock).toHaveBeenCalledTimes(1);
     });
 
-    it('ignores Cmd+Y, which is not the redo alias', () => {
+    it('ignores Meta+Y on Windows and Linux, where it is not the redo alias', () => {
       const harness = enabledHarness();
 
       harness.press(harness.outside, { key: 'y', code: 'KeyY', metaKey: true });
@@ -2233,6 +2358,177 @@ describe('KeyboardController — mutation coverage', () => {
       harness.press(dialogOwner(), { key: 'z', code: 'KeyZ', metaKey: true });
 
       expect(harness.blok.YjsManager.undo).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('undo and redo on macOS (Notion keys)', () => {
+    beforeEach(() => {
+      macOS.value = true;
+    });
+
+    it('redoes on Cmd+Y and swallows the keystroke', () => {
+      const harness = enabledHarness();
+
+      const { event, reachedTarget } = harness.press(harness.inside, { key: 'y', code: 'KeyY', metaKey: true });
+
+      expect(harness.blok.YjsManager.redo).toHaveBeenCalledTimes(1);
+      expect(event.defaultPrevented).toBe(true);
+      expect(reachedTarget).toBe(false);
+    });
+
+    it('redoes on Cmd+Y on a non-Latin layout', () => {
+      const harness = enabledHarness();
+
+      harness.press(harness.inside, { key: 'н', code: 'KeyY', metaKey: true });
+
+      expect(harness.blok.YjsManager.redo).toHaveBeenCalledTimes(1);
+    });
+
+    it('still undoes on Cmd+Z and redoes on Cmd+Shift+Z', () => {
+      const harness = enabledHarness();
+
+      harness.press(harness.inside, { key: 'z', code: 'KeyZ', metaKey: true });
+      harness.press(harness.inside, { key: 'z', code: 'KeyZ', metaKey: true, shiftKey: true });
+
+      expect(harness.blok.YjsManager.undo).toHaveBeenCalledTimes(1);
+      expect(harness.blok.YjsManager.redo).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves Cmd+Shift+Y to the tool shortcut listener', () => {
+      const harness = enabledHarness();
+
+      const { event, reachedTarget } = harness.press(harness.inside, { key: 'y', code: 'KeyY', metaKey: true, shiftKey: true });
+
+      expect(harness.blok.YjsManager.redo).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+      expect(reachedTarget).toBe(true);
+    });
+
+    // The default is cancelled so the browser's own undo cannot rewind the DOM behind Yjs.
+    it.each([
+      ['Ctrl+Z', { key: 'z', code: 'KeyZ', ctrlKey: true }],
+      ['Ctrl+Shift+Z', { key: 'z', code: 'KeyZ', ctrlKey: true, shiftKey: true }],
+      ['Ctrl+Cmd+Z', { key: 'z', code: 'KeyZ', ctrlKey: true, metaKey: true }],
+      ['Ctrl+Y', { key: 'y', code: 'KeyY', ctrlKey: true }],
+    ] as const)('does not walk history on %s, and cancels its default', (_name, init) => {
+      const harness = enabledHarness();
+
+      const { event, reachedTarget } = harness.press(harness.inside, init);
+
+      expect(harness.blok.YjsManager.undo).not.toHaveBeenCalled();
+      expect(harness.blok.YjsManager.redo).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(true);
+      expect(reachedTarget).toBe(false);
+    });
+
+    it('leaves Ctrl+Z on a host page editable outside the editor alone', () => {
+      const harness = enabledHarness();
+      const field = document.createElement('div');
+
+      field.setAttribute('contenteditable', 'true');
+      document.body.appendChild(field);
+
+      const { event, reachedTarget } = harness.press(field, { key: 'z', code: 'KeyZ', ctrlKey: true });
+
+      expect(harness.blok.YjsManager.undo).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+      expect(reachedTarget).toBe(true);
+    });
+
+    it('leaves Ctrl+Z in a text input to the input', () => {
+      const harness = enabledHarness();
+      const input = document.createElement('input');
+
+      harness.redactor.appendChild(input);
+
+      const { event } = harness.press(input, { key: 'z', code: 'KeyZ', ctrlKey: true });
+
+      expect(harness.blok.YjsManager.undo).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+    });
+
+    it('redoes on Cmd+Y inside a keyboard owner, after the subtree has seen the key', () => {
+      const harness = enabledHarness();
+      const owner = document.createElement('div');
+      const field = document.createElement('button');
+
+      owner.setAttribute('data-blok-keyboard-owner', '');
+      owner.appendChild(field);
+      harness.redactor.appendChild(owner);
+
+      const { event, reachedTarget } = harness.press(field, { key: 'y', code: 'KeyY', metaKey: true });
+
+      expect(harness.blok.YjsManager.redo).toHaveBeenCalledTimes(1);
+      expect(reachedTarget).toBe(true);
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it('does not walk history on Ctrl+Z inside a keyboard owner', () => {
+      const harness = enabledHarness();
+      const owner = document.createElement('div');
+      const field = document.createElement('button');
+
+      owner.setAttribute('data-blok-keyboard-owner', '');
+      owner.appendChild(field);
+      harness.redactor.appendChild(owner);
+
+      harness.press(field, { key: 'z', code: 'KeyZ', ctrlKey: true });
+
+      expect(harness.blok.YjsManager.undo).not.toHaveBeenCalled();
+    });
+
+    it('swallows Cmd+Y while a drag is in progress', () => {
+      const harness = enabledHarness();
+
+      harness.state.isDragging = true;
+
+      const { event } = harness.press(harness.inside, { key: 'y', code: 'KeyY', metaKey: true });
+
+      expect(harness.blok.YjsManager.redo).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    // Same as Ctrl+Y on Windows and Linux: redo wins over a tool's CMD+Y shortcut.
+    it('redoes on Cmd+Y instead of running a tool CMD+Y shortcut', () => {
+      const harness = enabledHarness();
+      const toolShortcut = vi.fn();
+
+      Shortcuts.add({ name: 'CMD+Y', on: harness.redactor, handler: toolShortcut });
+
+      try {
+        harness.press(harness.inside, { key: 'y', code: 'KeyY', metaKey: true });
+      } finally {
+        Shortcuts.remove(harness.redactor, 'CMD+Y');
+      }
+
+      expect(harness.blok.YjsManager.redo).toHaveBeenCalledTimes(1);
+      expect(toolShortcut).not.toHaveBeenCalled();
+    });
+
+    it('runs a tool CMD+SHIFT+Y shortcut on Cmd+Shift+Y', () => {
+      const harness = enabledHarness();
+      const toolShortcut = vi.fn();
+
+      Shortcuts.add({ name: 'CMD+SHIFT+Y', on: harness.redactor, handler: toolShortcut });
+
+      try {
+        harness.press(harness.inside, { key: 'y', code: 'KeyY', metaKey: true, shiftKey: true });
+      } finally {
+        Shortcuts.remove(harness.redactor, 'CMD+SHIFT+Y');
+      }
+
+      expect(toolShortcut).toHaveBeenCalledTimes(1);
+      expect(harness.blok.YjsManager.redo).not.toHaveBeenCalled();
+    });
+
+    it('still undoes from the browser Edit menu', () => {
+      const harness = enabledHarness();
+      const event = new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'historyUndo' });
+
+      harness.inside.dispatchEvent(event);
+
+      expect(harness.blok.YjsManager.undo).toHaveBeenCalledTimes(1);
+      expect(event.defaultPrevented).toBe(true);
     });
   });
 });

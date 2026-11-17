@@ -85,6 +85,9 @@ internal enum CollabEditStatus
   /// head to check it against. The endpoint answers 428.
   /// </summary>
   PreconditionRequired,
+
+  /// <summary>A dry run planned the edit and applied nothing; the receipt is the head it planned against.</summary>
+  Previewed,
 }
 
 /// <summary>The journal head an HTTP edit expects, from its If-Match header.</summary>
@@ -184,17 +187,68 @@ internal sealed record CollabHistoryChangesResult(
     IReadOnlyList<CollabRecordChanges> Changes,
     bool Truncated);
 
-/// <summary><paramref name="Edit"/> is set only when <paramref name="History"/> is Ready.</summary>
+/// <summary>A restore planned and measured against the live document, with nothing applied.</summary>
+internal sealed record CollabRestorePreview(
+    IReadOnlyList<CollabBlockChange> Blocks,
+    IReadOnlyList<string> Page,
+    IReadOnlyList<CollabRestoreGuard> Guards,
+    long FrameBytes,
+    long LimitBytes,
+    CollabEditReceipt Head)
+{
+  /// <summary>The preview route's body. The agent's history.previewRestore answers the same body.</summary>
+  internal JsonObject ToJson() => new()
+  {
+    ["wouldUndo"] = new JsonObject
+    {
+      ["blocks"] = new JsonArray([.. Blocks.Select(change => (JsonNode)new JsonObject
+      {
+        ["id"] = change.Id,
+        ["type"] = change.Type,
+        ["kind"] = change.Kind switch
+        {
+          CollabBlockChangeKind.Added => "added",
+          CollabBlockChangeKind.Removed => "removed",
+          CollabBlockChangeKind.Changed => "changed",
+          _ => "moved",
+        },
+      })]),
+      ["page"] = new JsonArray([.. Page.Select(key => (JsonNode)key)]),
+    },
+    ["guards"] = new JsonArray([.. Guards.Select(guard => (JsonNode)guard.ToJson())]),
+    ["fits"] = FrameBytes <= LimitBytes,
+    ["frameBytes"] = FrameBytes,
+    ["limitBytes"] = LimitBytes,
+    ["expectRevision"] = string.Create(CultureInfo.InvariantCulture, $"{Head.Tag.Lineage}:{Head.ServerSequence}"),
+  };
+}
+
+/// <summary>A dry run's answer: the preview, or the edit result that refused before the plan.</summary>
+internal sealed record CollabRestorePreviewResult(
+    CollabHistoryStatus History,
+    CollabRestorePreview? Preview,
+    CollabEditResult? Edit);
+
+/// <summary><paramref name="Edit"/> is set only when <paramref name="History"/> is Ready. <paramref name="Refused"/> is set when a guard refused it.</summary>
 internal sealed record CollabRestoreResult(
     CollabHistoryStatus History,
-    CollabEditResult? Edit);
+    CollabEditResult? Edit,
+    IReadOnlyList<CollabRestoreGuard>? Refused = null,
+    bool Hidden = false,
+    string RefusedAs = "confirmation_required");
+
+/// <summary>
+/// How one restore runs. <paramref name="Hidden"/>: the host's history window hides the point.
+/// <paramref name="KeepDatabases"/>: <c>databases=keep</c>, every database stays as it is now.
+/// </summary>
+internal sealed record CollabRestoreOptions(bool Hidden = false, bool KeepDatabases = false);
 
 /// <summary>
 /// Owns one <see cref="CollabRoom"/> per open doc. Rooms remove themselves
 /// when they close (eviction, reset, seed failure, drain); a join that races
 /// a closing room simply retries on a fresh one.
 /// </summary>
-internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPurger
+internal sealed partial class CollabRoomManager : ICollabRoomManager, ICollabDocumentPurger
 {
   private const int MaxJoinAttempts = 16;
 
@@ -207,10 +261,15 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
   /// replaying one now would bring back what this replaced.
   /// </summary>
   internal event Action<string>? DocumentReplaced;
+
+  /// <summary>The room clock: what a history window counts back from.</summary>
+  internal DateTimeOffset Now => timeProvider.GetUtcNow();
   private readonly Dictionary<string, CommitCooldown> cooldowns = new(StringComparer.Ordinal);
   private readonly ICollabWorkingSetStore store;
   private readonly ICollabOperationStore? operationStore;
   private readonly ICollabActivityObserver? activityObserver;
+  private readonly CollabChangeSignalHub? signalHub;
+  private readonly ICollabRecordNotes? recordNotes;
   private readonly IDocEndpointClient endpoint;
   private readonly ICollabDocConverter converter;
   private readonly CollabRoomOptions options;
@@ -226,7 +285,8 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
       TimeProvider timeProvider,
       Action<string>? log = null,
       ICollabOperationStore? operationStore = null,
-      ICollabActivityObserver? activityObserver = null)
+      ICollabActivityObserver? activityObserver = null,
+      ICollabRecordNotes? recordNotes = null)
   {
     ArgumentNullException.ThrowIfNull(store);
     ArgumentNullException.ThrowIfNull(endpoint);
@@ -242,6 +302,14 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
     this.log = log;
     this.operationStore = operationStore;
     this.activityObserver = activityObserver;
+    this.recordNotes = recordNotes;
+    signalHub = CollabChangeSignalHub.For(
+        activityObserver,
+        options.ChangeSignalWindow,
+        timeProvider,
+        (doc, lineage, sequence, since, maxRecords, token) =>
+            ChangesAsync(doc, lineage, sequence, since, maxRecords, cancellationToken: token),
+        log);
   }
 
   internal int LiveRoomCount
@@ -280,7 +348,12 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
         return new CollabJoinResult(CollabJoinStatus.Unavailable, null, null);
       }
 
-      var room = RoomFor(docId);
+      var room = RoomUnlessDraining(docId, out var refused);
+
+      if (refused)
+      {
+        return new CollabJoinResult(CollabJoinStatus.Draining, null, null);
+      }
 
       if (room is null)
       {
@@ -367,7 +440,7 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
   /// <summary>Without a journal, an edit with no ops still persists and schedules an export.</summary>
   internal bool HasJournal => operationStore is not null;
 
-  /// <summary>The journal keeps versions: <see cref="HistoryAsync"/> and <see cref="ReadVersionAsync"/> can answer.</summary>
+  /// <summary>The journal keeps versions: <see cref="HistoryAsync(string, TimeSpan?, bool, CancellationToken)"/> and <see cref="ReadVersionAsync"/> can answer.</summary>
   internal bool HasHistory => operationStore is ICollabOperationHistoryStore;
 
   /// <summary>Block-level HTTP edit with the endpoint's idempotency receipt.</summary>
@@ -406,7 +479,8 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
       ReadOnlyMemory<byte> digest,
       string? actorId,
       CollabEditPrecondition? expect,
-      Func<YDoc, CancellationToken, ValueTask>? applied = null,
+      Func<YDoc, CollabEditReceipt?, CancellationToken, ValueTask>? applied = null,
+      CollabRecordNote? note = null,
       CancellationToken cancellationToken = default)
   {
     ArgumentException.ThrowIfNullOrEmpty(docId);
@@ -421,7 +495,7 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
 
     return await EditInRoomAsync(
         docId,
-        room => room.EditAsync(planOps, operationId, digest, actorId, expect, applied, cancellationToken));
+        room => room.EditAsync(planOps, operationId, digest, actorId, expect, applied, note, cancellationToken));
   }
 
   private async ValueTask<CollabEditResult> EditInRoomAsync(
@@ -448,7 +522,12 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
         return new CollabEditResult(CollabEditStatus.Unavailable, null);
       }
 
-      var room = RoomFor(docId);
+      var room = RoomUnlessDraining(docId, out var refused);
+
+      if (refused)
+      {
+        return new CollabEditResult(CollabEditStatus.Draining, null);
+      }
 
       if (room is null)
       {
@@ -473,10 +552,34 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
   /// Every lineage the journal holds, and its versions newest first. A
   /// <paramref name="group"/> window replaces both default grouping limits.
   /// </summary>
-  internal async ValueTask<CollabHistoryListResult> HistoryAsync(
+  internal ValueTask<CollabHistoryListResult> HistoryAsync(
       string docId,
       TimeSpan? group = null,
-      CancellationToken cancellationToken = default)
+      CancellationToken cancellationToken = default) =>
+      HistoryAsync(docId, group, byActor: false, cancellationToken);
+
+  /// <summary>
+  /// <paramref name="byActor"/> also starts a version where the actor
+  /// changes. With a record notes store, each version carries its actors' kinds.
+  /// </summary>
+  internal ValueTask<CollabHistoryListResult> HistoryAsync(
+      string docId,
+      TimeSpan? group,
+      bool byActor,
+      CancellationToken cancellationToken) =>
+      HistoryAsync(docId, group, byActor, null, cancellationToken);
+
+  /// <summary>
+  /// <see cref="HistoryAsync(string, TimeSpan?, bool, CancellationToken)"/> over what a window with this
+  /// <paramref name="cut"/> shows: groups are built from visible records only, and a lineage whose
+  /// baseline is hidden has no created-at. A null cut shows everything.
+  /// </summary>
+  internal async ValueTask<CollabHistoryListResult> HistoryAsync(
+      string docId,
+      TimeSpan? group,
+      bool byActor,
+      DateTimeOffset? cut,
+      CancellationToken cancellationToken)
   {
     ArgumentException.ThrowIfNullOrEmpty(docId);
 
@@ -522,12 +625,63 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
       return new CollabHistoryListResult(CollabHistoryStatus.Purged, [], []);
     }
 
+    if (cut is { } at)
+    {
+      withHeaders = CollabHistoryWindow.Visible(withHeaders, at);
+      lineages = [.. withHeaders.Select(entry => entry.Item1)];
+    }
+
+    Func<string, ulong, CollabRecordNote?>? noteOf = null;
+
+    if (recordNotes is not null)
+    {
+      var byLineage = new Dictionary<string, IReadOnlyDictionary<ulong, CollabRecordNote>>(StringComparer.Ordinal);
+
+      foreach (var lineage in lineages)
+      {
+        byLineage[lineage.Lineage] = await ReadNotesAsync(docId, lineage.Lineage, cancellationToken) ?? Empty;
+      }
+
+      noteOf = (lineage, sequence) => byLineage[lineage].GetValueOrDefault(sequence);
+    }
+
     return new CollabHistoryListResult(
         CollabHistoryStatus.Ready,
         lineages,
-        group is { } window
-          ? CollabVersionTimeline.Group(withHeaders, window, window)
-          : CollabVersionTimeline.Group(withHeaders));
+        CollabVersionTimeline.Group(
+            withHeaders,
+            group ?? CollabVersionTimeline.IdleGap,
+            group ?? CollabVersionTimeline.MaxSpan,
+            byActor,
+            noteOf));
+  }
+
+  private static readonly IReadOnlyDictionary<ulong, CollabRecordNote> Empty = new Dictionary<ulong, CollabRecordNote>();
+
+  /// <summary>
+  /// The record notes of one lineage; null without a store. A store that
+  /// fails reads as no notes: they are informational.
+  /// </summary>
+  internal async ValueTask<IReadOnlyDictionary<ulong, CollabRecordNote>?> ReadNotesAsync(
+      string docId,
+      string lineage,
+      CancellationToken cancellationToken)
+  {
+    if (recordNotes is null)
+    {
+      return null;
+    }
+
+    try
+    {
+      return await recordNotes.ReadAsync(docId, lineage, cancellationToken);
+    }
+    catch (Exception error) when (error is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+    {
+      log?.Invoke($"collab: the record notes of \"{docId}\" could not be read: {error.Message}");
+
+      return Empty;
+    }
   }
 
   /// <summary>One point of a lineage as OutputData JSON, read without the room.</summary>
@@ -556,12 +710,12 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
       output.Remove("time");
     }
 
-    // A host reads its own page fields from here after a restore. The title
-    // and icon are already top-level (the export writes them), so the page
+    // A host reads its own page fields from here after a restore. The title,
+    // icon and cover are already top-level (the export writes them), so the page
     // object leaves them out, and is left out when nothing else remains.
     if (point.Doc is { } doc)
     {
-      foreach (var (name, map) in YDocConverter.PlainPageMaps(doc, ["title", "icon"]))
+      foreach (var (name, map) in YDocConverter.PlainPageMaps(doc, ["title", "icon", "cover"]))
       {
         output[name] = map;
       }
@@ -732,6 +886,7 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
   internal async ValueTask<(CollabHistoryStatus Status, CollabLineageDeleteOutcome? Outcome)> DeleteLineageAsync(
       string docId,
       string lineage,
+      string? actorId = null,
       CancellationToken cancellationToken = default)
   {
     ArgumentException.ThrowIfNullOrEmpty(docId);
@@ -749,16 +904,38 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
 
     var outcome = await history.DeleteLineageAsync(docId, lineage, cancellationToken);
 
-    return outcome == CollabLineageDeleteOutcome.Purged || IsPurging(docId)
-      ? (CollabHistoryStatus.Purged, CollabLineageDeleteOutcome.Purged)
-      : (CollabHistoryStatus.Ready, outcome);
+    if (outcome == CollabLineageDeleteOutcome.Purged || IsPurging(docId))
+    {
+      return (CollabHistoryStatus.Purged, CollabLineageDeleteOutcome.Purged);
+    }
+
+    if (outcome == CollabLineageDeleteOutcome.Deleted)
+    {
+      var note = CollabActorKinds.Classify(actorId);
+
+      signalHub?.Event(new CollabAuditEvent(
+          CollabAuditEventTypes.LineageDeleted,
+          docId,
+          timeProvider.GetUtcNow(),
+          note is null ? null : new CollabAuditActor(actorId!, note.Kind, note.OnBehalfOf),
+          lineage));
+    }
+
+    return (CollabHistoryStatus.Ready, outcome);
   }
 
   /// <summary>The restore key's digest: the request line, never the plan.</summary>
-  internal static byte[] RestoreDigest(string lineage, ulong sequence)
+  internal static byte[] RestoreDigest(string lineage, ulong sequence) => RestoreDigest(lineage, sequence, false);
+
+  /// <summary>
+  /// With <paramref name="keepDatabases"/> the line ends in <c>\nkeep</c>, so a key
+  /// reused across the two kinds of restore is a different edit. Without it the
+  /// digest is the one restores always had.
+  /// </summary>
+  internal static byte[] RestoreDigest(string lineage, ulong sequence, bool keepDatabases)
   {
     return SHA256.HashData(Encoding.UTF8.GetBytes(
-        string.Create(CultureInfo.InvariantCulture, $"restore\n{lineage}\n{sequence}")));
+        string.Create(CultureInfo.InvariantCulture, $"restore\n{lineage}\n{sequence}{(keepDatabases ? "\nkeep" : "")}")));
   }
 
   /// <summary>
@@ -767,7 +944,7 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
   /// after the duplicate and precondition checks, so a retry gets its first
   /// receipt and nothing lands between planning and applying.
   /// </summary>
-  internal async ValueTask<CollabRestoreResult> RestoreAsync(
+  internal ValueTask<CollabRestoreResult> RestoreAsync(
       string docId,
       string lineage,
       ulong sequence,
@@ -776,9 +953,50 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
       CollabEditPrecondition? expect = null,
       CancellationToken cancellationToken = default)
   {
-    ArgumentException.ThrowIfNullOrEmpty(operationId);
+    return RestoreAsync(docId, lineage, sequence, operationId, actorId, expect, null, cancellationToken);
+  }
 
-    var point = await ReadPointAsync(docId, lineage, sequence, cancellationToken);
+  /// <summary>
+  /// <see cref="RestoreAsync(string, string, ulong, string, string?, CollabEditPrecondition?, CancellationToken)"/>
+  /// with the guards enforced when <paramref name="confirmed"/> is not null: a guard whose kind it lacks
+  /// refuses the restore, which changes nothing and answers the guards in <see cref="CollabRestoreResult.Refused"/>.
+  /// </summary>
+  internal ValueTask<CollabRestoreResult> RestoreAsync(
+      string docId,
+      string lineage,
+      ulong sequence,
+      string operationId,
+      string? actorId,
+      CollabEditPrecondition? expect,
+      IReadOnlySet<string>? confirmed,
+      CancellationToken cancellationToken = default)
+  {
+    return RestoreAsync(docId, lineage, sequence, operationId, actorId, expect, confirmed, new CollabRestoreOptions(), cancellationToken);
+  }
+
+  /// <summary>
+  /// A restore with its <paramref name="restore"/> options. A hidden point is
+  /// never rebuilt; it is refused in the lane, after the duplicate check, so
+  /// a committed retry still gets its receipt.
+  /// </summary>
+  internal async ValueTask<CollabRestoreResult> RestoreAsync(
+      string docId,
+      string lineage,
+      ulong sequence,
+      string operationId,
+      string? actorId,
+      CollabEditPrecondition? expect,
+      IReadOnlySet<string>? confirmed,
+      CollabRestoreOptions restore,
+      CancellationToken cancellationToken = default)
+  {
+    ArgumentException.ThrowIfNullOrEmpty(operationId);
+    ArgumentNullException.ThrowIfNull(restore);
+
+    var point = restore.Hidden
+      ? (Status: CollabHistoryStatus.NotFound, Output: (JsonNode?)null, Time: (DateTimeOffset?)null, Doc: (YDoc?)null)
+      : await ReadPointAsync(docId, lineage, sequence, cancellationToken);
+    IReadOnlyList<CollabRestoreGuard>? refused = null;
 
     // A missing point still goes to the room: a retry whose lineage was
     // deleted since must get its first receipt from the duplicate check.
@@ -790,7 +1008,8 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
     var target = point.Output?["blocks"] as JsonArray ?? [];
     var targetMaps = point.Doc is { } replayed ? YDocConverter.ReadPageMaps(replayed) : null;
     // The request, never the plan: a retry plans against a doc that moved.
-    var digest = RestoreDigest(lineage, sequence);
+    var digest = RestoreDigest(lineage, sequence, restore.KeepDatabases);
+    var refusedAs = "confirmation_required";
     CollabEditResult edit;
 
     try
@@ -800,6 +1019,11 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
           room => room.EditAsync(
               async (doc, token) =>
               {
+                if (restore.Hidden)
+                {
+                  throw new RestorePointHiddenException();
+                }
+
                 if (point.Status == CollabHistoryStatus.NotFound || targetMaps is null)
                 {
                   throw new RestorePointMissingException();
@@ -807,24 +1031,72 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
 
                 var structure = YDocConverter.DescribeStructure(doc);
                 var current = await converter.ExportAsync(doc, token);
+                var currentBlocks = current["blocks"] as JsonArray ?? [];
+                var aim = target;
+                IReadOnlySet<string>? pinned = null;
+
+                // After the duplicate check: a refusal consumes no key, and a committed retry keeps its receipt.
+                if (restore.KeepDatabases)
+                {
+                  var kept = CollabRestorePlanner.KeepDatabases(currentBlocks, target);
+
+                  // Never confirmable, and refused whether or not the server enforces guards.
+                  if (kept.Orphaned.Count > 0)
+                  {
+                    refused = kept.Orphaned;
+                    refusedAs = "restore_refused";
+
+                    throw new RestoreGuardedException();
+                  }
+
+                  aim = kept.Target;
+                  pinned = kept.Pinned;
+                }
+
+                if (confirmed is not null)
+                {
+                  var guards = pinned is null
+                    ? CollabRestoreGuards.Of(currentBlocks, aim)
+                    : CollabRestoreGuards.Kept(currentBlocks, kept: new CollabKeptDatabases(aim, pinned, []));
+
+                  if (guards.Any(guard => !confirmed.Contains(guard.Kind)))
+                  {
+                    refused = guards;
+
+                    throw new RestoreGuardedException();
+                  }
+                }
 
                 return CollabRestorePlanner.Plan(
-                    current["blocks"] as JsonArray ?? [],
+                    currentBlocks,
                     structure,
-                    target,
+                    aim,
                     YDocConverter.ReadPageMaps(doc),
-                    targetMaps);
+                    targetMaps,
+                    options.RestoreTrashesPages
+                      ? new CollabRestoreTrash(string.IsNullOrEmpty(actorId) ? null : actorId, timeProvider.GetUtcNow().ToUnixTimeMilliseconds())
+                      : null,
+                    pinned);
               },
               operationId,
               digest,
               actorId,
               expect,
               null,
+              null,
               cancellationToken));
     }
     catch (RestorePointMissingException)
     {
       return new CollabRestoreResult(CollabHistoryStatus.NotFound, null);
+    }
+    catch (RestorePointHiddenException)
+    {
+      return new CollabRestoreResult(CollabHistoryStatus.NotFound, null, Hidden: true);
+    }
+    catch (RestoreGuardedException)
+    {
+      return new CollabRestoreResult(CollabHistoryStatus.Ready, null, refused, RefusedAs: refusedAs);
     }
 
     if (edit.Status == CollabEditStatus.Applied)
@@ -833,6 +1105,86 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
     }
 
     return new CollabRestoreResult(CollabHistoryStatus.Ready, edit);
+  }
+
+  /// <summary>
+  /// A restore's dry run: planned in the lane against the live document, measured on a scratch copy,
+  /// and never applied. A refusal before the plan (a stale If-Match, a purge, a room that cannot load)
+  /// comes back as the edit.
+  /// </summary>
+  internal ValueTask<CollabRestorePreviewResult> PreviewRestoreAsync(
+      string docId,
+      string lineage,
+      ulong sequence,
+      CollabEditPrecondition? expect,
+      string? actorId = null,
+      CancellationToken cancellationToken = default) =>
+      PreviewRestoreAsync(docId, lineage, sequence, expect, actorId, new CollabRestoreOptions(), cancellationToken);
+
+  /// <summary>A restore's dry run with its options. A kept database's orphaning shows as a guard.</summary>
+  internal async ValueTask<CollabRestorePreviewResult> PreviewRestoreAsync(
+      string docId,
+      string lineage,
+      ulong sequence,
+      CollabEditPrecondition? expect,
+      string? actorId,
+      CollabRestoreOptions restore,
+      CancellationToken cancellationToken = default)
+  {
+    ArgumentNullException.ThrowIfNull(restore);
+
+    var point = await ReadPointAsync(docId, lineage, sequence, cancellationToken);
+
+    if (point.Status != CollabHistoryStatus.Ready || point.Doc is not { } replayed)
+    {
+      return new CollabRestorePreviewResult(point.Status == CollabHistoryStatus.Ready ? CollabHistoryStatus.NotFound : point.Status, null, null);
+    }
+
+    var target = point.Output?["blocks"] as JsonArray ?? [];
+    var targetMaps = YDocConverter.ReadPageMaps(replayed);
+    IReadOnlyList<CollabBlockChange> blocks = [];
+    IReadOnlyList<string> page = [];
+    IReadOnlyList<CollabRestoreGuard> guards = [];
+    long frameBytes = 0;
+
+    var edit = await EditInRoomAsync(
+        docId,
+        room => room.PreviewAsync(
+            async (doc, token) =>
+            {
+              var current = (await converter.ExportAsync(doc, token))["blocks"] as JsonArray ?? [];
+              var kept = restore.KeepDatabases ? CollabRestorePlanner.KeepDatabases(current, target) : null;
+              var aim = kept?.Target ?? target;
+              var ops = CollabRestorePlanner.Plan(
+                  current,
+                  YDocConverter.DescribeStructure(doc),
+                  aim,
+                  YDocConverter.ReadPageMaps(doc),
+                  targetMaps,
+                  // The restorer's id is part of the frame the real restore sends.
+                  options.RestoreTrashesPages
+                    ? new CollabRestoreTrash(string.IsNullOrEmpty(actorId) ? null : actorId, timeProvider.GetUtcNow().ToUnixTimeMilliseconds())
+                    : null,
+                  kept?.Pinned);
+              var (scratch, bytes) = await CollabRoom.ApplyToScratchAsync(doc, converter, ops, token);
+              var after = (await converter.ExportAsync(scratch, token))["blocks"] as JsonArray ?? [];
+
+              blocks = CollabVersionChanges.Blocks(current, after);
+              page = CollabVersionChanges.Page(CollabVersionChanges.PageFields(doc), CollabVersionChanges.PageFields(scratch));
+              guards = kept is null ? CollabRestoreGuards.Of(current, aim) : CollabRestoreGuards.Kept(current, kept);
+              frameBytes = bytes;
+
+              return ops;
+            },
+            expect,
+            cancellationToken));
+
+    return edit.Status == CollabEditStatus.Previewed && edit.Receipt is { } head
+      ? new CollabRestorePreviewResult(
+          CollabHistoryStatus.Ready,
+          new CollabRestorePreview(blocks, page, guards, frameBytes, CollabRoom.FrameLimit(options), head),
+          null)
+      : new CollabRestorePreviewResult(CollabHistoryStatus.Ready, null, edit);
   }
 
   private async ValueTask<bool> IsPurgedAsync(
@@ -845,6 +1197,12 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
 
   /// <summary>Thrown by a restore's planner when its point is gone and the op id was never committed.</summary>
   private sealed class RestorePointMissingException : Exception;
+
+  /// <summary>Thrown by a restore's planner when the host's window hides its point.</summary>
+  private sealed class RestorePointHiddenException : Exception;
+
+  /// <summary>Thrown by a restore's planner when a guard is present that the request did not confirm.</summary>
+  private sealed class RestoreGuardedException : Exception;
 
   /// <summary>
   /// A point rebuilt and exported. Its bounds come from the store's headers:
@@ -960,7 +1318,12 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
         return new CollabStateResult(CollabStateStatus.Unavailable, []);
       }
 
-      var room = RoomFor(docId);
+      var room = RoomUnlessDraining(docId, out var refused);
+
+      if (refused)
+      {
+        return new CollabStateResult(CollabStateStatus.Draining, []);
+      }
 
       if (room is null)
       {
@@ -1110,6 +1473,13 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
 
       await store.DeleteAsync(documentId, cancellationToken);
 
+      signalHub?.Forget(documentId);
+      signalHub?.Event(new CollabAuditEvent(
+          CollabAuditEventTypes.DocumentPurged,
+          documentId,
+          timeProvider.GetUtcNow(),
+          null));
+
       return CollabDocumentPurgeOutcome.Purged;
     }
     finally
@@ -1147,6 +1517,23 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
     {
       await room.SettleAsync();
     }
+
+    if (signalHub is not null)
+    {
+      await signalHub.SettleAsync();
+    }
+  }
+
+  /// <summary>Test hook: waits until no room has a working-set write in flight.</summary>
+  internal async Task SettleWritesAsync()
+  {
+    foreach (var room in LiveRooms())
+    {
+      while (await room.PersistInFlightAsync())
+      {
+        await Task.Delay(1);
+      }
+    }
   }
 
   private async Task DrainRoomAsync(
@@ -1183,10 +1570,33 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
 
   private CollabRoom? RoomFor(string docId)
   {
+    return RoomForDoor(docId, refuseDraining: false, out _);
+  }
+
+  /// <summary>
+  /// RoomFor, but refused once a drain has begun. Checked under the lock
+  /// DrainAsync's sweep takes, so no room is made after its last empty sweep.
+  /// </summary>
+  private CollabRoom? RoomUnlessDraining(string docId, out bool refused)
+  {
+    return RoomForDoor(docId, refuseDraining: true, out refused);
+  }
+
+  private CollabRoom? RoomForDoor(string docId, bool refuseDraining, out bool refused)
+  {
+    refused = false;
+
     lock (rooms)
     {
       if (purgeLanes.ContainsKey(docId))
       {
+        return null;
+      }
+
+      if (refuseDraining && draining)
+      {
+        refused = true;
+
         return null;
       }
 
@@ -1201,7 +1611,9 @@ internal sealed class CollabRoomManager : ICollabRoomManager, ICollabDocumentPur
             timeProvider,
             log,
             operationStore,
-            activityObserver);
+            activityObserver,
+            recordNotes,
+            signalHub);
         room.Closed += OnRoomClosed;
         rooms[docId] = room;
       }

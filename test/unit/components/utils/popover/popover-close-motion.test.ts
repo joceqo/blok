@@ -179,6 +179,36 @@ describe('PopoverDesktop close motion (animateClose)', () => {
     expect(popover.getElement().hasAttribute('inert')).toBe(false);
   });
 
+  it('shrinks back toward the corner it opened from, and drops that corner once the motion ends', async () => {
+    const popover = open({ animateClose: true });
+    const motion = controllableAnimation();
+    const root = popover.getElement();
+
+    // A menu that opened up and to the left of its anchor, like the database's New ⌄.
+    root.setAttribute('data-blok-popover-open-left', 'true');
+    root.setAttribute('data-blok-popover-open-top', 'true');
+    stubAnimations(popover, [motion.animation]);
+    popover.hide();
+
+    expect(root.getAttribute('data-blok-popover-open-left')).toBe('true');
+    expect(root.getAttribute('data-blok-popover-open-top')).toBe('true');
+
+    await motion.end();
+
+    expect(root.hasAttribute('data-blok-popover-open-left')).toBe(false);
+    expect(root.hasAttribute('data-blok-popover-open-top')).toBe(false);
+  });
+
+  it('drops its open corner at once when it closes without motion', () => {
+    const popover = open();
+    const root = popover.getElement();
+
+    root.setAttribute('data-blok-popover-open-left', 'true');
+    popover.hide();
+
+    expect(root.hasAttribute('data-blok-popover-open-left')).toBe(false);
+  });
+
   it('leaves the top layer at once without the opt-in', () => {
     const popover = open();
 
@@ -292,5 +322,78 @@ describe('PopoverDesktop close motion (animateClose)', () => {
 
     vi.advanceTimersByTime(1);
     expect(isInTopLayer(popover)).toBe(false);
+  });
+
+  // notion-motion.md Round 10 "Edit property flyout": a submenu of a fading menu fades out too when it closes.
+  describe('a submenu', () => {
+    const openWithSubmenu = (animateClose: boolean): { root: PopoverDesktop; nested: HTMLElement } => {
+      const trigger = document.createElement('button');
+
+      document.body.appendChild(trigger);
+      const root = new PopoverDesktop({
+        trigger,
+        animateClose,
+        items: [{ title: 'More', name: 'more', children: { items: items() } }],
+      });
+
+      root.show();
+      root.escapeClosesSubmenuFirst = true;
+      root.activateItemByName('more');
+      const nested = root.getElement().querySelector<HTMLElement>('[data-blok-nested]');
+
+      if (nested === null) throw new Error('submenu missing');
+
+      return { root, nested };
+    };
+    const stubNested = (nested: HTMLElement, animations: Animation[]): void => {
+      const container = nested.querySelector<HTMLElement>('[data-blok-popover-container]');
+
+      if (container === null) throw new Error('submenu container missing');
+      Object.defineProperty(container, 'getAnimations', { configurable: true, value: () => animations });
+    };
+
+    it('stays painted while its close motion plays when the menu fades, then goes', async () => {
+      const { root, nested } = openWithSubmenu(true);
+      const motion = controllableAnimation();
+
+      stubNested(nested, [motion.animation]);
+      root.closeSubmenuOnEscape();
+
+      expect(nested.isConnected).toBe(true);
+      expect(nested.getAttribute('data-state')).toBe('closed');
+
+      await motion.end();
+
+      expect(nested.isConnected).toBe(false);
+    });
+
+    it('reopened while the old one still fades: one live submenu, and the faded one goes when its motion ends', async () => {
+      const { root, nested } = openWithSubmenu(true);
+      const motion = controllableAnimation();
+
+      stubNested(nested, [motion.animation]);
+      root.closeSubmenuOnEscape();
+      root.activateItemByName('more');
+
+      const live = (): HTMLElement[] => [...root.getElement().querySelectorAll<HTMLElement>('[data-blok-nested]')]
+        .filter((el) => !el.hasAttribute('inert') && el.hasAttribute(OPENED));
+
+      expect(live()).toHaveLength(1);
+      expect(live()[0]).not.toBe(nested);
+
+      await motion.end();
+
+      expect(nested.isConnected).toBe(false);
+      expect(live()).toHaveLength(1);
+    });
+
+    it('goes at once when the menu does not fade', () => {
+      const { root, nested } = openWithSubmenu(false);
+
+      stubNested(nested, [controllableAnimation().animation]);
+      root.closeSubmenuOnEscape();
+
+      expect(nested.isConnected).toBe(false);
+    });
   });
 });

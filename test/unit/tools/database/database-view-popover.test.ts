@@ -12,6 +12,8 @@ const { MockPopover, mockPopoverInstances } = vi.hoisted(() => {
     destroy: () => void;
     on: (event: string, cb: () => void) => void;
     triggerClosed: () => void;
+    focusedNames: string[];
+    arrowTarget: ((arrow: 'up' | 'down' | 'left' | 'right', index: number, count: number) => number | undefined) | null;
     el: HTMLElement | null;
     closedCallbacks: Array<() => void>;
   }> = [];
@@ -49,6 +51,22 @@ const { MockPopover, mockPopoverInstances } = vi.hoisted(() => {
         cb();
       }
     }
+
+    /** Names the menu's keyboard cursor was put on, once shown. */
+    public focusedNames: string[] = [];
+
+    /** The grid's arrow map, once shown. */
+    public arrowTarget: ((arrow: 'up' | 'down' | 'left' | 'right', index: number, count: number) => number | undefined) | null = null;
+
+    setArrowTarget(pick: (arrow: 'up' | 'down' | 'left' | 'right', index: number, count: number) => number | undefined): void {
+      this.arrowTarget = pick;
+    }
+
+    focusItemByName(name: string): boolean {
+      if (this.el !== null) this.focusedNames.push(name);
+
+      return true;
+    }
   }
 
   return { MockPopover: MockPopoverClass, mockPopoverInstances: instances };
@@ -64,6 +82,7 @@ vi.mock('../../../../src/components/utils/popover', () => ({
 }));
 
 import { DatabaseViewPopover } from '../../../../src/tools/database/database-view-popover';
+import { VIEW_ICONS } from '../../../../src/tools/database/database-tab-bar';
 
 describe('DatabaseViewPopover', () => {
   let onSelect: ReturnType<typeof vi.fn<(type: ViewType) => void>>;
@@ -129,14 +148,14 @@ describe('DatabaseViewPopover', () => {
       expect(boardEl!.style.cursor).not.toBe('not-allowed');
     });
 
-    it('lists the layouts in Notion order without the Dashboard slot (research/08:113)', () => {
+    it('lists the layouts in Notion order, Dashboard after Chart (research/08:113, notion-motion Round 15 A)', () => {
       popover.open(anchor);
       const items = getLastItems();
       const types = items
         .map((item) => item.element?.getAttribute('data-blok-database-view-option'))
         .filter(Boolean);
 
-      expect(types).toEqual(['table', 'board', 'gallery', 'list', 'chart', 'timeline', 'feed', 'map', 'calendar', 'form']);
+      expect(types).toEqual(['table', 'board', 'gallery', 'list', 'chart', 'dashboard', 'timeline', 'feed', 'map', 'calendar', 'form']);
     });
 
     it('calls onSelect with "table" when Table option is clicked', () => {
@@ -242,6 +261,43 @@ describe('DatabaseViewPopover', () => {
     const option = (type: string): HTMLElement =>
       params().items.map((item) => item.element).find((el) => el?.getAttribute('data-blok-database-view-option') === type)!;
 
+    // notion-motion.md Round 15 §A: the first tile's fill on open is the keyboard cursor, so the arrows move on from it.
+    it('puts the keyboard cursor on the first tile on a pointer open', () => {
+      popover.open(anchor);
+
+      expect(mockPopoverInstances.at(-1)?.focusedNames).toEqual(['database-view-tile']);
+      expect(option('table').hasAttribute('data-active')).toBe(false);
+    });
+
+    // notion-motion.md Round 42 §5: 11 tiles in rows of 4, then New data source (index 11).
+    it('moves the arrows across the grid as Notion does', () => {
+      const withSource = new DatabaseViewPopover({ onSelect: vi.fn(), onNewSource: vi.fn() });
+
+      withSource.open(anchor);
+      const pick = mockPopoverInstances.at(-1)?.arrowTarget;
+      const move = (arrow: 'up' | 'down' | 'left' | 'right', from: number): number | undefined => pick?.(arrow, from, 12);
+
+      expect([move('right', 0), move('right', 10), move('right', 11)]).toEqual([1, 11, 0]);
+      expect([move('down', 1), move('down', 5), move('down', 9), move('down', 2)]).toEqual([5, 9, 11, 6]);
+      expect([move('up', 11), move('up', 5), move('left', 6)]).toEqual([8, 1, 5]);
+      withSource.destroy();
+    });
+
+    it('wraps Right from the last tile to the first when there is no New data source', () => {
+      popover.open(anchor);
+      const pick = mockPopoverInstances.at(-1)?.arrowTarget;
+
+      expect(pick?.('right', 10, 11)).toBe(0);
+      expect(pick?.('down', 9, 11)).toBe(9);
+    });
+
+    it('leaves the first tile to the menu\'s own focus on a keyboard open', () => {
+      popover.open(anchor, 'below', true);
+
+      expect(mockPopoverInstances.at(-1)?.focusedNames).toEqual([]);
+      expect((mockPopoverInstances.at(-1)?.params as { autoFocusFirstItem?: boolean }).autoFocusFirstItem).toBe(true);
+    });
+
     it('heads the menu "Add a new view"', () => {
       popover.open(anchor);
 
@@ -262,6 +318,98 @@ describe('DatabaseViewPopover', () => {
         'data-blok-database-view-option-label',
       ]);
       expect(board.querySelector('[data-blok-database-view-option-desc]')).toBeNull();
+    });
+
+    // Notion draws one timeline glyph in the tile and in the tab (notion-live/addview.png, timeline.png).
+    it('draws the Timeline tile with the Timeline tab\'s icon', () => {
+      popover.open(anchor);
+
+      const tab = document.createElement('span');
+
+      tab.innerHTML = VIEW_ICONS.timeline;
+      expect(option('timeline').querySelector('[data-blok-database-view-option-icon]')?.innerHTML).toBe(tab.innerHTML);
+    });
+
+    // notion-motion Round 9 (r9-addview-svgs.raw), research/07:50, 81-scratch-form.png:
+    // Notion draws one glyph per layout in the tile and in the tab.
+    it.each(['table', 'board', 'gallery', 'list', 'chart', 'dashboard', 'timeline', 'feed', 'map', 'calendar', 'form'])('draws the %s tile with its tab\'s icon', (type) => {
+      popover.open(anchor);
+
+      const tab = document.createElement('span');
+
+      tab.innerHTML = VIEW_ICONS[type];
+      expect(option(type).querySelector('[data-blok-database-view-option-icon]')?.innerHTML).toBe(tab.innerHTML);
+    });
+
+    // motion-addview.json: "+" ends at y 252 and the card starts at y 256.
+    it('opens 4px below the "+"', () => {
+      popover.open(anchor);
+
+      expect((mockPopoverInstances.at(-1)?.params as { offset?: number }).offset).toBe(4);
+    });
+
+    // notion-motion.md Round 31 §3: from "N more…" › New view, a flyout centred on the row, its left on the row's right.
+    it('opens beside a menu row with no gap when asked for the aside placement', () => {
+      popover.open(anchor, 'aside');
+
+      const opened = mockPopoverInstances.at(-1)?.params as { offset?: number; placeLeftOfAnchor?: boolean; asideSide?: string; width?: string };
+
+      expect(opened.placeLeftOfAnchor).toBe(true);
+      expect(opened.asideSide).toBe('right');
+      expect(opened.offset).toBe(0);
+      expect(opened.width).toBe('390px');
+    });
+
+    // notion-motion.md Round 32 §1 (r32-a-more-newview-narrow.*): with no room on the right it flips left,
+    // its right edge on the fold menu's left + 4, and either side stops 11.8 above the window bottom.
+    it('opens on the left of the row with the aside-left placement, 11.8 from the window edges', () => {
+      popover.open(anchor, 'aside-left');
+
+      const opened = mockPopoverInstances.at(-1)?.params as { offset?: number; placeLeftOfAnchor?: boolean; asideSide?: string; viewportMargin?: number };
+
+      expect(opened.placeLeftOfAnchor).toBe(true);
+      expect(opened.asideSide).toBe('left');
+      expect(opened.offset).toBe(0);
+      expect(opened.viewportMargin).toBe(11.8);
+    });
+
+    // notion-motion.md Round 38 §6: with room on neither side the card stays on the menu's right,
+    // slid in to 12.2 from the window, centred on the row.
+    it('stays on the right of the row, 12.2 from the window, with the aside-over placement', () => {
+      popover.open(anchor, 'aside-over');
+
+      const opened = mockPopoverInstances.at(-1)?.params as { offset?: number; placeLeftOfAnchor?: boolean; asideSide?: string; viewportMargin?: number; asideStayMargin?: number; items: Array<{ element?: HTMLElement }> };
+
+      expect(opened.placeLeftOfAnchor).toBe(true);
+      expect(opened.asideSide).toBe('right');
+      expect(opened.asideStayMargin).toBe(12.2);
+      expect(opened.offset).toBe(0);
+      expect(opened.viewportMargin).toBe(11.8);
+    });
+
+    it('slides no other placement in over its anchor', () => {
+      for (const placement of ['below', 'aside', 'aside-left'] as const) {
+        popover.open(anchor, placement);
+        expect((mockPopoverInstances.at(-1)?.params as { asideStayMargin?: number }).asideStayMargin).toBeUndefined();
+      }
+    });
+
+    it('keeps the right-side flyout 11.8 from the window edges too', () => {
+      popover.open(anchor, 'aside');
+
+      expect((mockPopoverInstances.at(-1)?.params as { viewportMargin?: number }).viewportMargin).toBe(11.8);
+    });
+
+    // Round 31 §3: Notion's fold menu holds its own "New data source" row, right beside the flyout.
+    it('leaves "New data source" out of a flyout beside the fold menu, which has its own', () => {
+      const withSource = new DatabaseViewPopover({ onSelect, onNewSource: vi.fn() });
+
+      withSource.open(anchor, 'aside');
+      expect(params().items.some((item) => item.element?.hasAttribute('data-blok-database-view-new-source') === true)).toBe(false);
+      withSource.open(anchor, 'aside-left');
+      expect(params().items.some((item) => item.element?.hasAttribute('data-blok-database-view-new-source') === true)).toBe(false);
+      withSource.open(anchor);
+      expect(params().items.some((item) => item.element?.hasAttribute('data-blok-database-view-new-source') === true)).toBe(true);      withSource.close();
     });
 
     it('is a 390px grid menu', () => {

@@ -248,9 +248,15 @@ describe('New data source: every layout on a second source', () => {
     expect(layoutRoot('[data-blok-database-timeline]').getAttribute('data-zoom')).toBe('year');
   });
 
-  it('a form answer becomes a source row', async () => {
+  it('a form answer in the Preview becomes a source row', async () => {
     const api = await make(doc('vb', {}, { type: 'form' }));
-    const root = layoutRoot('[data-blok-database-form]');
+
+    layoutRoot('[data-blok-database-form]');
+    // The builder has no Submit: the Preview dialog answers, on body.
+    await click(own('[data-blok-testid="database-toolbar-preview-form"]'));
+    const root = document.querySelector<HTMLElement>('[data-blok-database-form-preview]');
+
+    if (root === null) throw new Error('no Preview');
     const size = root.querySelector<HTMLInputElement>('[data-blok-database-form-question="size"] input');
 
     if (size === null) throw new Error('no Size field');
@@ -271,9 +277,11 @@ describe('New data source: every layout on a second source', () => {
     await make(doc('vb'));
     await openLayoutPage();
 
-    for (const type of ['table', 'board', 'gallery', 'list', 'chart', 'timeline', 'feed', 'calendar', 'form', 'map']) {
+    for (const type of ['table', 'board', 'gallery', 'list', 'chart', 'timeline', 'feed', 'calendar', 'map']) {
       expect(document.querySelector(`[data-blok-testid="database-layout-${type}"]`), type).not.toBeNull();
     }
+    // notion-motion.md Round 23 §6: Form is only in Add view, not a table's Layout list.
+    expect(document.querySelector('[data-blok-testid="database-layout-form"]')).toBeNull();
   });
 
   it('switching a second source\'s view to Board groups by the source\'s select and saves on the holder', async () => {
@@ -374,6 +382,12 @@ describe('New data source: every layout on a second source', () => {
     const api = await make(doc('vb', {}, { type: 'board', groupBy: 'stage' }));
 
     await click(layoutRoot('[data-blok-database-board]').querySelector('[data-blok-database-add-column]'));
+    // "+ New group" asks for the name first.
+    const name = document.querySelector<HTMLInputElement>('[data-blok-database-new-group] input');
+
+    if (name === null) throw new Error('no New group field');
+    name.value = 'Review';
+    await click(document.querySelector('[data-blok-database-new-group-done]'));
     const stage = (await dataOf(api, 'src-b'))?.schema.find((p) => p.id === 'stage');
 
     expect(stage?.config?.options).toHaveLength(3);
@@ -402,7 +416,8 @@ describe('New data source: every layout on a second source', () => {
     expect(api.blocks.getChildren('db').filter((b) => b.name === 'database').map((b) => b.id)).toEqual(['src-b']);
   });
 
-  it('Cmd-click on a second source\'s gallery card selects it and shows the selection bar', async () => {
+  // notion-motion.md Round 12: a gallery pick shows no bar; ⌘/ opens its action menu.
+  it('Cmd-click on a second source\'s gallery card selects it, and ⌘/ opens its action menu', async () => {
     await make(doc('vb', {}, { type: 'gallery' }));
     const card = layoutRoot('[data-blok-database-gallery]').querySelector<HTMLElement>('[data-blok-database-gallery-card][data-row-id="b1"]');
 
@@ -411,7 +426,10 @@ describe('New data source: every layout on a second source', () => {
     await quiet();
 
     expect(layoutRoot('[data-blok-database-gallery]').querySelector('[data-row-id="b1"]')?.hasAttribute('data-blok-database-row-selected')).toBe(true);
-    expect(own('[data-blok-database-table-selection-bar]')).not.toBeNull();
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '/', metaKey: true, bubbles: true, cancelable: true }));
+    await quiet();
+
+    expect([...document.querySelectorAll('[data-blok-popover-opened] [data-blok-testid="popover-item-title"]')].map((node) => node.textContent)).toContain('Duplicate');
   });
 
   it('the Today button of a second source\'s timeline keeps its centre on the holder\'s view', async () => {

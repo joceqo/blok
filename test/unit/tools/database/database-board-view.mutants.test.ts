@@ -184,10 +184,10 @@ describe('DatabaseBoardView — mutation coverage', () => {
       const addColumnBtn = requireEl(board, '[data-blok-database-add-column]');
 
       expect({
-        text: addColumnBtn.textContent,
+        text: addColumnBtn.textContent?.trim(),
         label: addColumnBtn.getAttribute('aria-label'),
       }).toStrictEqual({
-        text: '+ T(tools.database.newGroup)',
+        text: 'T(tools.database.newGroup)',
         label: 'T(tools.database.newGroup)',
       });
     });
@@ -241,7 +241,7 @@ describe('DatabaseBoardView — mutation coverage', () => {
         headerDisplay: 'flex',
         headerAlignItems: 'center',
         headerPadding: '0px',
-        headerGap: '6px',
+        headerGap: '3px',
         headerCursor: 'grab',
         cardsDisplay: 'flex',
         cardsFlexDirection: 'column',

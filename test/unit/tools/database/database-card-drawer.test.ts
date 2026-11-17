@@ -107,7 +107,7 @@ describe('DatabaseCardDrawer', () => {
 
     const el = options.wrapper.querySelector('[data-blok-database-drawer]') as HTMLElement;
 
-    el.dispatchEvent(new Event('transitionend'));
+    el.dispatchEvent(Object.assign(new Event('transitionend'), { propertyName: 'transform' }));
 
     expect(options.wrapper.querySelector('[data-blok-database-drawer]')).toBeNull();
   });
@@ -220,7 +220,7 @@ describe('DatabaseCardDrawer', () => {
 
         return 0;
       });
-      vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1000);
+      vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1512);
 
       const host = document.createElement('div');
 
@@ -244,9 +244,9 @@ describe('DatabaseCardDrawer', () => {
     });
 
     it('ends the page at the 756px drawer and keeps the toolbar 24px clear of it', () => {
-      const { host, drawer } = openWithHost({ left: 100, right: 900 });
+      const { host, drawer } = openWithHost({ left: 100, right: 1412 });
 
-      // The drawer covers x 244..1000; the page reaches 900, so it gives up its last 656px.
+      // The drawer covers x 756..1512; the page reaches 1412, so it gives up its last 656px.
       expect(host.hasAttribute('data-blok-database-peek')).toBe(true);
       expect(inset(host)).toBe('656px');
       expect(gap(host)).toBe('24px');
@@ -286,11 +286,69 @@ describe('DatabaseCardDrawer', () => {
       expect(gap(host)).toBe('0px');
       expect(host.hasAttribute('data-blok-database-peek')).toBe(true);
 
-      options.wrapper.querySelector('[data-blok-database-drawer]')?.dispatchEvent(new Event('transitionend'));
+      options.wrapper.querySelector('[data-blok-database-drawer]')?.dispatchEvent(Object.assign(new Event('transitionend'), { propertyName: 'transform' }));
 
       expect(host.hasAttribute('data-blok-database-peek')).toBe(false);
       expect(inset(host)).toBe('');
       expect(gap(host)).toBe('');
+    });
+
+    // notion-motion.md Round 56 §6: the page widens over 200ms when the side peek turns into a center peek.
+    describe('switching to a center peek', () => {
+      const pickCenter = (options: CardDrawerOptions): void => {
+        options.wrapper.querySelector<HTMLElement>('[data-blok-database-peek-mode]')?.click();
+        document.querySelector<HTMLElement>('[data-blok-popover-custom-class~="blok-database-peek-mode-menu"] [data-blok-popover-item]:nth-child(2)')?.click();
+      };
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('keeps the page marked while it widens, then drops the marks', () => {
+        const { host, drawer, options } = openWithHost({ left: 100, right: 1412 });
+
+        host.setAttribute('data-blok-database-peek-resizing', '');
+        pickCenter(options);
+
+        expect(options.wrapper.querySelector('[data-blok-database-drawer]')?.getAttribute('data-peek-mode')).toBe('center');
+        expect(host.hasAttribute('data-blok-database-peek')).toBe(true);
+        expect(host.hasAttribute('data-blok-database-peek-resizing')).toBe(false);
+        expect(inset(host)).toBe('0px');
+        expect(gap(host)).toBe('0px');
+
+        host.dispatchEvent(Object.assign(new Event('transitionend'), { propertyName: 'padding-right' }));
+
+        expect(host.hasAttribute('data-blok-database-peek')).toBe(false);
+        expect(inset(host)).toBe('');
+        drawer.destroy();
+      });
+
+      it('drops the marks after the fallback when no transitionend comes', () => {
+        const { host, drawer, options } = openWithHost({ left: 100, right: 1412 });
+
+        pickCenter(options);
+        vi.advanceTimersByTime(300);
+
+        expect(host.hasAttribute('data-blok-database-peek')).toBe(false);
+        drawer.destroy();
+      });
+
+      it('keeps a side peek picked again mid-widen narrowed', () => {
+        const { host, drawer, options } = openWithHost({ left: 100, right: 1412 });
+
+        pickCenter(options);
+        options.wrapper.querySelector<HTMLElement>('[data-blok-database-peek-mode]')?.click();
+        document.querySelector<HTMLElement>('[data-blok-popover-custom-class~="blok-database-peek-mode-menu"] [data-blok-popover-item]:nth-child(1)')?.click();
+        vi.advanceTimersByTime(300);
+
+        expect(host.hasAttribute('data-blok-database-peek')).toBe(true);
+        expect(inset(host)).toBe('656px');
+        drawer.destroy();
+      });
     });
 
     it('drops its marks at once on destroy', () => {
@@ -327,11 +385,29 @@ describe('DatabaseCardDrawer', () => {
 
     beforeEach(() => {
       window.localStorage.removeItem(KEY);
+      vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1512);
     });
 
     afterEach(() => {
       window.localStorage.removeItem(KEY);
       document.body.innerHTML = '';
+    });
+
+    // notion-motion.md Round 14: at a 900px window the peek is 600 wide, two thirds of the window.
+    it('takes at most two thirds of a narrow window, and its limits follow', () => {
+      vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(900);
+      const { el, handle, drawer } = openSide();
+
+      expect(width(el)).toBe('600px');
+      expect(handle.getAttribute('aria-valuenow')).toBe('600');
+      expect(handle.getAttribute('aria-valuemax')).toBe('600');
+      key(handle, 'ArrowLeft');
+      expect(width(el)).toBe('600px');
+      key(handle, 'Home');
+      expect(width(el)).toBe('564px');
+      key(handle, 'End');
+      expect(width(el)).toBe('600px');
+      drawer.destroy();
     });
 
     it('opens at 756px with a focusable vertical separator on its inner edge', () => {
@@ -725,7 +801,11 @@ describe('DatabaseCardDrawer', () => {
       const closeBtn = options.wrapper.querySelector('[data-blok-database-drawer-close]') as HTMLElement;
 
       expect(closeBtn.querySelectorAll('svg')).toHaveLength(1);
-      expect(closeBtn.querySelectorAll('svg path')).toHaveLength(2);
+      const paths = closeBtn.querySelectorAll('svg path');
+
+      // Keyline draws both chevrons as one path with two strokes.
+      expect(paths).toHaveLength(1);
+      expect(paths[0]?.getAttribute('d')?.match(/M/g)).toHaveLength(2);
     });
 
     // feel/findings-rowpage R25: Notion's empty row page title reads "New page".
@@ -820,7 +900,7 @@ describe('DatabaseCardDrawer', () => {
 
       const drawerEl = options.wrapper.querySelector('[data-blok-database-drawer]') as HTMLElement;
 
-      drawerEl.dispatchEvent(new Event('transitionend'));
+      drawerEl.dispatchEvent(Object.assign(new Event('transitionend'), { propertyName: 'transform' }));
 
       const titleEl = options.wrapper.querySelector('[data-blok-database-drawer-title]') as HTMLTextAreaElement;
 
@@ -1395,7 +1475,7 @@ describe('DatabaseCardDrawer', () => {
 
       const drawerEl = options.wrapper.querySelector('[data-blok-database-drawer]') as HTMLElement;
 
-      drawerEl.dispatchEvent(new Event('transitionend'));
+      drawerEl.dispatchEvent(Object.assign(new Event('transitionend'), { propertyName: 'transform' }));
 
       expect(focusSpy).toHaveBeenCalled();
 
@@ -1456,7 +1536,7 @@ describe('DatabaseCardDrawer', () => {
 
       const drawerEl = options.wrapper.querySelector('[data-blok-database-drawer]') as HTMLElement;
 
-      drawerEl.dispatchEvent(new Event('transitionend'));
+      drawerEl.dispatchEvent(Object.assign(new Event('transitionend'), { propertyName: 'transform' }));
 
       expect(focusSpy).not.toHaveBeenCalled();
     });
@@ -2162,7 +2242,7 @@ describe('DatabaseCardDrawer', () => {
 
       const el = options.wrapper.querySelector('[data-blok-database-drawer]') as HTMLElement;
 
-      el.dispatchEvent(new Event('transitionend'));
+      el.dispatchEvent(Object.assign(new Event('transitionend'), { propertyName: 'transform' }));
 
       expect(options.wrapper.querySelector('[data-blok-database-drawer]')).toBeNull();
     });

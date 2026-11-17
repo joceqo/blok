@@ -11,10 +11,8 @@ import {
   positionAnchored,
   createPositionTracker,
 } from '../../components/utils/popover/anchored-position';
-import {
-  renderMediaEmptyState,
-  type MediaEmptyStateElement,
-} from '../../components/utils/media-empty-state';
+import { renderMediaEmptyState, type MediaEmptyStateLabels } from '../../components/utils/media-empty-state';
+import { renderInkWell } from './ink-well';
 
 /** Validate a chosen cover file. Returns an error message, or null when valid. */
 export function validateCoverFile(file: File, i18n?: I18nInstance): string | null {
@@ -40,11 +38,86 @@ export interface OpenCoverPickerOptions {
   onUrl(url: string): void;
   onClose?(): void;
   i18n?: I18nInstance;
+  /**
+   * `ink-well` is the audio block's own picker: the ink drop beside the uploader.
+   * `card` is the uploader alone. Defaults to `card`.
+   */
+  surface?: 'card' | 'ink-well';
+  /** The cover set now. The ink well shows it from the start. */
+  current?: string;
 }
 
 export interface CoverPickerHandle {
   close(): void;
   setError(message: string | null): void;
+  /**
+   * Resolves once the ink well has finished opening onto a new picture.
+   * Wait for it before closing, or the picture is never seen. At once on `card`.
+   */
+  settle(): Promise<void>;
+}
+
+/** What the dialog shows inside. */
+interface PickerSurface {
+  element: HTMLElement;
+  setError(message: string | null): void;
+  settle(): Promise<void>;
+  destroy(): void;
+}
+
+function uploaderLabels(opts: OpenCoverPickerOptions): MediaEmptyStateLabels {
+  return {
+    add: tr(opts.i18n, 'tools.audio.coverAdd', 'Add a cover'),
+    hint: tr(opts.i18n, 'tools.audio.coverHint', 'Drag an image here, choose one, or paste a link.'),
+    dropAnywhere: tr(opts.i18n, 'tools.image.emptyDropAnywhere', 'Let go anywhere in this block.'),
+    cancelLink: tr(opts.i18n, 'notifier.cancel', 'Cancel'),
+    embed: tr(opts.i18n, 'tools.audio.coverLink', 'Link'),
+    chooseFile: tr(opts.i18n, 'tools.audio.coverChooseFile', 'Choose file'),
+    dropToUpload: tr(opts.i18n, 'tools.audio.coverDropToUpload', 'Drop to upload'),
+    urlPlaceholder: tr(opts.i18n, 'tools.audio.coverUrlPlaceholder', 'Paste an image URL…'),
+    urlAria: tr(opts.i18n, 'tools.audio.coverUrlAria', 'Image URL'),
+    submit: tr(opts.i18n, 'tools.audio.coverInsert', 'Insert'),
+  };
+}
+
+function inkWellSurface(opts: OpenCoverPickerOptions): PickerSurface {
+  const element = renderInkWell({
+    acceptTypes: [...COVER_TYPES],
+    onFile: opts.onFile,
+    onUrl: opts.onUrl,
+    ...(opts.current ? { current: opts.current } : {}),
+    labels: {
+      ...uploaderLabels(opts),
+      ...(opts.current ? { add: tr(opts.i18n, 'tools.audio.coverChange', 'Change cover') } : {}),
+      // The same words as the audio block's own uploader.
+      embed: tr(opts.i18n, 'tools.audio.emptyLink', 'From a link'),
+      submit: tr(opts.i18n, 'tools.audio.emptyInsert', 'Add'),
+      wellAria: tr(opts.i18n, 'tools.audio.coverSet', 'Set cover image'),
+    },
+  });
+
+  return {
+    element,
+    setError: (message) => element.setError(message),
+    settle: () => element.settle(),
+    destroy: () => element.destroy(),
+  };
+}
+
+function cardSurface(opts: OpenCoverPickerOptions): PickerSurface {
+  const element = renderMediaEmptyState({
+    acceptTypes: [...COVER_TYPES],
+    onFile: opts.onFile,
+    onUrl: opts.onUrl,
+    labels: uploaderLabels(opts),
+  });
+
+  return {
+    element,
+    setError: (message) => element.setError(message),
+    settle: () => Promise.resolve(),
+    destroy: () => undefined,
+  };
 }
 
 export function openCoverPicker(opts: OpenCoverPickerOptions): CoverPickerHandle {
@@ -54,28 +127,11 @@ export function openCoverPicker(opts: OpenCoverPickerOptions): CoverPickerHandle
   dialog.setAttribute('role', 'dialog');
   dialog.setAttribute('aria-label', tr(opts.i18n, 'tools.audio.coverSet', 'Set cover image'));
 
-  const surface: MediaEmptyStateElement = renderMediaEmptyState({
-    acceptTypes: [...COVER_TYPES],
-    onFile: opts.onFile,
-    onUrl: opts.onUrl,
-    // The picker is a floating popover, so the inline height tween only reads as
-    // lag here. Slide the incoming panel in from the travel direction instead —
-    // the swap keeps its personality while the popover resizes instantly.
-    swap: 'slide',
-    labels: {
-      add: tr(opts.i18n, 'tools.audio.coverAdd', 'Add a cover'),
-      upload: tr(opts.i18n, 'tools.audio.coverUpload', 'Upload'),
-      embed: tr(opts.i18n, 'tools.audio.coverLink', 'Link'),
-      chooseFile: tr(opts.i18n, 'tools.audio.coverChooseFile', 'Choose file'),
-      orDropHere: tr(opts.i18n, 'tools.audio.coverOrDropHere', 'or drop an image here'),
-      dropToUpload: tr(opts.i18n, 'tools.audio.coverDropToUpload', 'Drop to upload'),
-      urlPlaceholder: tr(opts.i18n, 'tools.audio.coverUrlPlaceholder', 'Paste an image URL…'),
-      urlAria: tr(opts.i18n, 'tools.audio.coverUrlAria', 'Image URL'),
-      submit: tr(opts.i18n, 'tools.audio.coverInsert', 'Insert'),
-      sourceAria: tr(opts.i18n, 'tools.audio.coverSourceAria', 'Cover source'),
-    },
-  });
-  dialog.appendChild(surface);
+  const kind = opts.surface ?? 'card';
+  const surface = kind === 'ink-well' ? inkWellSurface(opts) : cardSurface(opts);
+
+  dialog.setAttribute('data-surface', kind);
+  dialog.appendChild(surface.element);
 
   // The element that owns the picker's ARIA state and regains focus on close.
   const trigger = opts.trigger ?? opts.anchor;
@@ -142,6 +198,7 @@ export function openCoverPicker(opts: OpenCoverPickerOptions): CoverPickerHandle
     document.removeEventListener('keydown', onKeyDown, true);
     tracker.detach();
     unregisterLayer();
+    surface.destroy();
     removeFromTopLayer(dialog);
     dialog.remove();
     trigger.setAttribute('aria-expanded', 'false');
@@ -195,5 +252,6 @@ export function openCoverPicker(opts: OpenCoverPickerOptions): CoverPickerHandle
   return {
     close,
     setError: (message) => surface.setError(message),
+    settle: () => surface.settle(),
   };
 }

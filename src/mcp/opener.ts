@@ -8,22 +8,33 @@ import { loadStoredDocument } from '../view/agent-runtime';
 
 import { defaultAgentActor } from './actor';
 import type { McpContracts } from './contract';
+import { createHostPage } from './create-page';
 import type { Caller, DispatcherDeps, ListResult, OpenRequest } from './dispatcher';
 import { isMcpSurfaceError, surfaceError } from './errors';
 import { resolveMode } from './mode';
-import type { BlokMcpOptions } from './options';
+import { createPageDeliveryTracker } from './page-titles';
+import type { BlokMcpHandleRecord, BlokMcpOptions } from './options';
 import type { HandleSession } from './session';
+import { createCustomSource } from './sources/custom';
 import { createEndpointSource } from './sources/endpoint';
 import { createFilesSource } from './sources/files';
 import type { DocumentSource } from './sources/types';
-import { openStoredSession } from './stored-session';
+import { openStoredSession, restoreStoredSession, type StoredSessionInput } from './stored-session';
 
 export const createSource = (source: BlokMcpOptions['source']): DocumentSource | null => {
   if (source === undefined) {
     return null;
   }
-
-  return source.kind === 'files' ? createFilesSource(source.dir) : createEndpointSource(source);
+  switch (source.kind) {
+    case 'files':
+      return createFilesSource(source.dir);
+    case 'custom':
+      return createCustomSource(source.source);
+    case 'endpoint':
+    default:
+      // An unknown kind from untyped JS has always been an endpoint.
+      return createEndpointSource(source);
+  }
 };
 
 export interface OpenerDeps {
@@ -31,7 +42,13 @@ export interface OpenerDeps {
   contracts: McpContracts;
   source: DocumentSource | null;
   openLive?: (request: OpenRequest, caller: Caller, actor: AgentActor) => Promise<HandleSession>;
-  portsFor(caller: Caller, actor: AgentActor, isOpenDocument?: (pageId: string) => Promise<boolean>): AgentPorts;
+  portsFor(
+    caller: Caller,
+    actor: AgentActor,
+    isOpenDocument?: (pageId: string) => Promise<boolean>,
+    unconfirmed?: () => void,
+    documentId?: string,
+  ): AgentPorts;
   /** The host's file uploader, for `<tool>.uploadFile`. */
   uploader?: unknown;
 }
@@ -42,13 +59,17 @@ export const createOpener = (
   open: DispatcherDeps['open'];
   list: DispatcherDeps['list'];
   actorFor(caller: Caller): AgentActor;
-  createPage(caller: Caller): Promise<{ pageId: string }>;
+  createPage(caller: Caller, parentDocumentId: string): Promise<{ pageId: string }>;
+  restore(record: BlokMcpHandleRecord): Promise<HandleSession>;
 } => {
   const syncConfigured = deps.options.sync !== undefined;
   const actorFor = (caller: Caller): AgentActor =>
     (deps.options.agentActor ?? defaultAgentActor)(caller.principal, caller.clientName);
 
   const authorize = deps.options.authorize;
+  // A host's source acts for the caller that opened the handle; files and endpoint ignore who calls.
+  const sourceFor = (caller: Caller, actor: AgentActor): DocumentSource | null =>
+    deps.source?.forCaller?.({ principal: caller.principal, clientName: caller.clientName, scopes: caller.scopes, actor }) ?? deps.source;
 
   const open: DispatcherDeps['open'] = async (request, caller) => {
     if (authorize !== undefined && !(await authorize(caller.principal, request.documentId, request.write))) {
@@ -64,38 +85,87 @@ export const createOpener = (
 
       return deps.openLive(request, caller, actor);
     }
-    const source = deps.source;
+
+    return storedSession(request.documentId, request.write, caller, actor, (input) => openStoredSession(input));
+  };
+
+  /**
+   * One stored session's wiring. The caller and actor are the opener's: a restored handle works
+   * for them, whichever caller sends the call.
+   */
+  const storedSession = async (
+    documentId: string,
+    write: boolean,
+    caller: Caller,
+    actor: AgentActor,
+    make: (input: StoredSessionInput) => HandleSession | Promise<HandleSession>,
+  ): Promise<HandleSession> => {
+    const source = sourceFor(caller, actor);
 
     if (source === null) {
       throw surfaceError('SOURCE_UNAVAILABLE', 'No document source is configured. Start blok-mcp with --source.');
     }
 
-    return openStoredSession({
-      documentId: request.documentId,
-      write: request.write,
+    const pages = createPageDeliveryTracker();
+    const madePages: string[] = [];
+    const portsOf = (): AgentPorts => {
+      const ports = deps.portsFor(caller, actor, async (pageId) =>
+        pageId === documentId || (await source.sameDocument?.(pageId, documentId) ?? false), pages.unconfirmed, documentId);
+      const create = ports.createPageDocument;
+
+      return create === undefined ? ports : {
+        ...ports,
+        createPageDocument: async (pageActor) => {
+          const made = await create.call(ports, pageActor);
+
+          madePages.push(made.pageId);
+
+          return made;
+        },
+      };
+    };
+
+    return pages.wrap(await make({
+      documentId,
+      write,
       source,
       contract: deps.contracts.stored,
       // Every source runs assertDocumentShape before returning raw, so `blocks` is an array here.
       loadDocument: (raw) => loadStoredDocument(raw as OutputData, deps.contracts.richTextFieldsFor),
-      createAgentSession: (document) => createDocumentAgentSession({
+      createAgentSession: (document, history) => createDocumentAgentSession({
         document,
         tools: deps.contracts.runtimes,
         contract: deps.contracts.stored,
         actor,
-        ports: deps.portsFor(caller, actor, async (pageId) =>
-          pageId === request.documentId || (await source.sameDocument?.(pageId, request.documentId) ?? false)),
+        ports: portsOf(),
         // 01 builds the Node pageBackend only with this flag and the openPageDocument port (Task 26).
         ...(deps.options.pageTitles === 'page-map' && { pageTitles: 'page-map' as const }),
         ...(deps.uploader !== undefined && { services: { uploader: deps.uploader } }),
+        ...(history !== undefined && { history }),
       }),
-    });
+      madePages,
+      ...(deps.options.handleStore !== undefined && {
+        owner: { principal: caller.principal, clientName: caller.clientName, scopes: caller.scopes, actor },
+      }),
+    }));
   };
 
+  /** A stored handle a shared store kept, rebuilt for its opener. */
+  const restore = (record: BlokMcpHandleRecord): Promise<HandleSession> => storedSession(
+    record.documentId,
+    record.write,
+    { principal: record.principal, clientName: record.clientName, scopes: record.scopes },
+    record.actor,
+    (input) => restoreStoredSession(input, record),
+  );
+
   const list: DispatcherDeps['list'] = async (request, caller): Promise<ListResult> => {
-    if (deps.source?.list === undefined) {
+    const source = sourceFor(caller, actorFor(caller));
+
+    if (source?.list === undefined) {
       return { documents: [], nextCursor: null, supported: false };
     }
-    const listing = await deps.source.list(request);
+    const listing = await source.list(request);
     // A listed id is a read; without a hook (stdio) every document is visible.
     const readable = authorize === undefined
       ? listing.documents
@@ -114,8 +184,14 @@ export const createOpener = (
    * document. Live mode joins the new room once: the sync service seeds it before the join syncs, and
    * the host's first PUT of it comes later, on an edit or a reopen.
    */
-  const createPage = async (caller: Caller): Promise<{ pageId: string }> => {
-    const source = deps.source;
+  const createPage = async (caller: Caller, parentDocumentId: string): Promise<{ pageId: string }> => {
+    const hostCreate = deps.options.createPage;
+
+    // checkOptionSafety allows the hook only in stored mode with a source.
+    if (hostCreate !== undefined) {
+      return createHostPage(hostCreate, { parentDocumentId, principal: caller.principal, actor: actorFor(caller), suggestedPageId: mintId() });
+    }
+    const source = sourceFor(caller, actorFor(caller));
     const pageId = mintId();
 
     try {
@@ -164,5 +240,5 @@ export const createOpener = (
     }
   };
 
-  return { open, list, actorFor, createPage };
+  return { open, list, actorFor, createPage, restore };
 };

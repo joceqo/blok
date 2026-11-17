@@ -608,7 +608,8 @@ export interface BlokMountOptions {
 
   /**
    * Enable document-level undo/redo shortcuts.
-   * When true, Cmd+Z / Ctrl+Z and Cmd+Shift+Z / Ctrl+Shift+Z work even when
+   * When true, the undo and redo keys (Cmd+Z, Cmd+Shift+Z, Cmd+Y on macOS;
+   * Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y elsewhere) work even when
    * the editor is not focused (e.g., after dragging a block).
    * @default true
    */
@@ -644,8 +645,9 @@ export interface BlokMountOptions {
    * Base URL of a service speaking Blok's upload and unfurl contracts, e.g.
    * `https://blok.myapp.com` or a same-origin path like `/api/blok`.
    *
-   * Shorthand only: it fills in `uploader` and the bookmark tool's `endpoint`
-   * if you have not set them yourself. Anything you set explicitly wins, so
+   * Shorthand only: it fills in `uploader`, the bookmark tool's `endpoint`
+   * and `linkPaste.checkEmbed` (the server's `GET /frame-check`) if you have
+   * not set them yourself. Anything you set explicitly wins, so
    * taking the service for link previews while uploading into your own S3 needs
    * no extra wiring.
    *
@@ -1073,8 +1075,9 @@ export interface BlokMountOptions {
   linkPaste?: {
     /**
      * When true, pasting a URL that matches no registered embed provider still
-     * offers "Create embed", framing it in a sandboxed iframe. Default false keeps
-     * blok's registry-only embed guarantee.
+     * offers "Create embed", framing it in a strict sandboxed iframe (no cookies
+     * or storage of its own, no `allow` permissions, no referrer). Default false
+     * keeps blok's registry-only embed guarantee.
      * @default false
      */
     allowGenericEmbed?: boolean;
@@ -1085,15 +1088,72 @@ export interface BlokMountOptions {
      * (`*.internal.example.dev` — matches any subdomain depth, never the bare
      * suffix). A stored generic embed whose https URL matches an entry is
      * framed; any other generic embed renders as a safe link card instead.
-     * `allowGenericEmbed: true` subsumes this list.
+     * `allowGenericEmbed: true` subsumes this list. The host's own site (see
+     * `hostAliases`) is never framed, even when listed here.
+     *
+     * An entry may also be an https origin (`https://a.com`, `https://*.a.com`,
+     * `https://a.com:8443`). An origin with a port allows only that port. An
+     * entry with a path, another scheme or a user name allows nothing.
      */
     allowedEmbedOrigins?: string[];
+
+    /**
+     * Hosts that never get a generic embed, even with `allowGenericEmbed: true`
+     * or a matching `allowedEmbedOrigins` entry. Same syntax as
+     * `allowedEmbedOrigins`: a hostname (`ads.example.com`) or a wildcard
+     * (`*.example.com`). A wildcard does not cover the bare domain, so list
+     * both to block a whole site. Entries may be written in Unicode or as an
+     * origin (`https://ads.example.com:8443/`); a trailing dot, letter case,
+     * the scheme, the port and any path are ignored.
+     *
+     * Checked at render from this config, never from saved data: a stored
+     * generic embed of a blocked host shows as a link card, and the paste menu
+     * does not offer "Create embed" for it. Registry providers (YouTube,
+     * Figma, …) are not affected.
+     */
+    blockedEmbedOrigins?: string[];
+
+    /**
+     * When true, a generic (non-registry) embed shows a placeholder with the
+     * site's host and a "Load content from <host>" button. No iframe exists
+     * and no request reaches the site until the reader clicks, so the site
+     * does not learn the reader's IP address just because they opened the
+     * document. The click is not saved; each reader decides. Registry
+     * providers (YouTube, Figma, …) load at once either way.
+     * Set to false to frame generic embeds as soon as they render.
+     * @default true
+     */
+    genericEmbedClickToLoad?: boolean;
+
+    /**
+     * Asks your backend whether a page may be shown in a frame, before a
+     * generic (non-registry) embed is inserted from the paste menu or the
+     * embed URL input. Registry providers are never checked.
+     *
+     * - `blocked` or `insecure`: Blok inserts a bookmark instead and shows a
+     *   short notice.
+     * - `allowed`, `unknown`, an error, or no answer within 3 seconds: the
+     *   generic embed is inserted as usual.
+     *
+     * The verdict is a hint for the UI only. It is never saved in block data,
+     * and `allowed` never lifts any other rule: the own site,
+     * `blockedEmbedOrigins`, the https check and the strict sandbox still
+     * apply. When `server` is set and this is not, Blok calls the server's
+     * `GET /frame-check`.
+     *
+     * @param url - the pasted or typed URL
+     */
+    checkEmbed?: (url: string) => Promise<{ verdict: 'allowed' | 'blocked' | 'insecure' | 'unknown' }>;
 
     /**
      * Other hostnames that count as the editor's own site, next to the page's
      * own hostname. Entries are hostnames (`example.com`) or wildcard subdomain
      * patterns (`*.example.com` — any subdomain depth, never the bare suffix).
-     * Pasting a link to the own site never offers "Create bookmark".
+     * Pasting a link to the own site never offers "Create bookmark". A generic
+     * embed of the own site, or of a subdomain or parent domain of it, is never
+     * framed; it renders as a link card. Entries may be written in Unicode or
+     * as an origin (`https://example.com:8443`); a trailing dot, letter case,
+     * the scheme, the port and any path are ignored.
      */
     hostAliases?: string[];
   };

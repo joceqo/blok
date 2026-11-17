@@ -15,8 +15,8 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/JackUait/blok/packages/server/go/blokdocs"
-	"github.com/JackUait/blok/packages/server/go/internal/jsruntime"
+	"github.com/JackUait/blok/packages/server/go/v2/blokdocs"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsruntime"
 )
 
 // The repo root, from this package's directory.
@@ -197,10 +197,10 @@ type fixtureRuntime struct {
 	next   int
 }
 
-func (f *fixtureRuntime) Invoke(ctx context.Context, op, input string, timeout time.Duration) (string, error) {
+func (f *fixtureRuntime) Invoke(ctx context.Context, op, input string, timeout *time.Duration) (string, error) {
 	f.r.events = append(f.r.events, map[string]any{"op": op, "input": pinned(&input)})
-	if timeout != 0 {
-		f.r.t.Errorf("%s: timeout %v, want the pool's", op, timeout)
+	if timeout != nil {
+		f.r.t.Errorf("%s: timeout %v, want the pool's", op, *timeout)
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err

@@ -262,6 +262,7 @@ const CASES: Case[] = [
   { setting: 'cardPreview', view: 'gallery', ui: () => ({ cardPreview: 'none' }), agent: { cardPreview: 'none' } },
   { setting: 'fitImage', view: seedView('gallery', { cardPreview: 'cover' }), ui: () => ({ fitImage: true }), agent: { fitImage: true }, drawn: false },
   { setting: 'cardLayout', view: seedView('board', { properties: [{ id: 'n', visible: true }, { id: 'c', visible: true }] }), ui: () => ({ cardLayout: 'compact' }), agent: { cardLayout: 'compact' } },
+  { setting: 'directTitleEdit', view: 'list', ui: () => ({ directTitleEdit: true }), agent: { directTitleEdit: true } },
   { setting: 'calendarBy', view: 'calendar', ui: () => ({ calendarBy: 'e' }), agent: { calendarBy: 'e' } },
   { setting: 'calendarRange', view: 'calendar', ui: () => ({ calendarRange: 'week' }), agent: { calendarRange: 'week' } },
   { setting: 'showWeekends', view: 'calendar', ui: () => ({ showWeekends: false }), agent: { showWeekends: false } },
@@ -295,8 +296,10 @@ const CASES: Case[] = [
   { setting: 'showDataSourceTitle', view: 'table', ui: () => ({ showDataSourceTitle: false }), agent: { showDataSourceTitle: false }, drawn: false },
   { setting: 'groupByStatus', view: 'board', ui: () => ({ groupByStatus: 'group' }), agent: { groupByStatus: 'group' }, drawn: false },
   {
+    // The builder draws no Submit (notion-motion.md Round 31 §1); its title and description are what it draws.
     setting: 'form', view: 'form',
-    ui: () => ({ form: { submitLabel: 'Send', confirmation: 'Thanks' } }), agent: { form: { submitLabel: 'Send', confirmation: 'Thanks' } },
+    ui: () => ({ form: { title: 'Signup', description: 'Tell us', submitLabel: 'Send', confirmation: 'Thanks' } }),
+    agent: { form: { title: 'Signup', description: 'Tell us', submitLabel: 'Send', confirmation: 'Thanks' } },
   },
   {
     setting: 'form questions', view: 'form',
@@ -317,10 +320,14 @@ describe('a view the agent writes saves and renders as the editor\'s own write',
   beforeEach(() => {
     vi.clearAllMocks();
     Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => null });
+    // The calendar opens on today's month, and the rows are dated in October.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 15, 12));
   });
 
   afterEach(async () => {
     await teardown();
+    vi.useRealTimers();
     Reflect.deleteProperty(document, 'elementFromPoint');
     vi.restoreAllMocks();
   });

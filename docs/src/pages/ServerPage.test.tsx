@@ -4,7 +4,7 @@ import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import { ServerPage } from './ServerPage';
 import { I18nProvider } from '../contexts/I18nContext';
-import { serverLimits, serverPaths } from '../components/server/server-data';
+import { serverLimits, serverMcpBuilds, serverPaths } from '../components/server/server-data';
 import { getRouteMetadata } from '../seo/route-metadata';
 import { applyTypography } from '../utils/typography';
 
@@ -83,6 +83,26 @@ describe('ServerPage', () => {
     }
   });
 
+  it("shows a limit's code samples under its body, with localized labels", () => {
+    const withSamples = serverLimits.filter((limit) => (limit.samples ?? []).length > 0);
+    expect(withSamples.map((limit) => limit.id)).toContain('collab-version-history');
+
+    renderPage();
+    for (const limit of withSamples) {
+      const card = screen.getByTestId(`server-limit-${limit.id}`);
+      for (const sample of limit.samples ?? []) {
+        expect(within(card).getByText(sample.label)).toBeInTheDocument();
+        expect(card.textContent).toContain('hmac.New(sha256.New');
+      }
+    }
+  });
+
+  it('labels the version-history webhook sample in Russian on a ru page', () => {
+    renderPage('ru', '/ru/server');
+    const card = screen.getByTestId('server-limit-collab-version-history');
+    expect(card.textContent?.replace(/\s+/g, ' ')).toContain('Отправка каждого сигнала изменений на подписанный вебхук (Go, пример)');
+  });
+
   it('heads a ru page with the localized H1, not the hardcoded English one', () => {
     const metadata = getRouteMetadata('/ru/server');
 
@@ -129,6 +149,40 @@ describe('ServerPage', () => {
       const card = screen.getByTestId(`server-limit-${limit.id}`);
       expect(within(card).queryByText(limit.body)).toBeNull();
       expect(card).toHaveTextContent(/[\u0400-\u04FF]{4}/);
+    }
+  });
+
+  it('shows the four MCP builds, each with its install and its samples', () => {
+    renderPage();
+
+    const mcp = screen.getByTestId('server-mcp');
+    expect(within(mcp).getByRole('heading', { level: 2 })).toBeInTheDocument();
+    for (const build of serverMcpBuilds) {
+      const card = within(mcp).getByTestId(`server-mcp-${build.id}`);
+      expect(within(card).getByRole('heading', { level: 3 })).toHaveTextContent(build.title);
+      for (const sample of build.samples) {
+        expect(within(card).getByText(sample.label)).toBeInTheDocument();
+      }
+    }
+  });
+
+  it('states where the C#, Go and Rust builds differ from Node', () => {
+    renderPage();
+
+    const differences = screen.getByTestId('server-mcp-differences');
+    expect(differences).toHaveTextContent('--authorize');
+    expect(differences).toHaveTextContent('60 second limit');
+  });
+
+  it('localizes the MCP section on a ru page', () => {
+    renderPage('ru', '/ru/server');
+
+    const mcp = screen.getByTestId('server-mcp');
+    expect(mcp).toHaveTextContent(/[\u0400-\u04FF]{4}/);
+    expect(screen.getByTestId('server-mcp-differences')).toHaveTextContent(/намеренно отличаются/);
+    for (const build of serverMcpBuilds) {
+      const card = within(mcp).getByTestId(`server-mcp-${build.id}`);
+      expect(within(card).queryByText(build.description)).toBeNull();
     }
   });
 

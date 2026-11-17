@@ -17,8 +17,19 @@ internal sealed class ManualTimeProvider : TimeProvider
   private readonly List<ManualTimer> timers = [];
   private DateTimeOffset now = new(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
 
+  /// <summary>Runs once, on the next clock read, before it answers.</summary>
+  internal Action? BeforeNextRead
+  {
+    get => beforeNextRead;
+    set => beforeNextRead = value;
+  }
+
+  private Action? beforeNextRead;
+
   public override DateTimeOffset GetUtcNow()
   {
+    Interlocked.Exchange(ref beforeNextRead, null)?.Invoke();
+
     lock (timers)
     {
       return now;
@@ -223,6 +234,9 @@ internal sealed record StoredWorkingSet(byte[] Frames, CollabWorkingSetTag Tag);
 /// </summary>
 internal sealed class FakeWorkingSetStore : ICollabWorkingSetStore
 {
+  /// <summary>Throw on a cancelled token as the real store does; off by default.</summary>
+  internal bool RefusesCancelledWrites { get; set; }
+
   private readonly Dictionary<string, StoredWorkingSet> documents = new(StringComparer.Ordinal);
   private readonly Lock guard = new();
   private readonly List<string> journal = [];
@@ -333,6 +347,12 @@ internal sealed class FakeWorkingSetStore : ICollabWorkingSetStore
       CollabWorkingSetTag tag,
       CancellationToken cancellationToken = default)
   {
+    // LocalCollabStore's answer to a token already cancelled.
+    if (RefusesCancelledWrites && cancellationToken.IsCancellationRequested)
+    {
+      throw new TaskCanceledException();
+    }
+
     using var entry = Enter();
     Interlocked.Increment(ref writes);
     Interlocked.Add(ref writtenBytes, updates.Length);
@@ -482,6 +502,9 @@ internal sealed class FakeDocEndpoint : IDocEndpointClient
 
   internal Exception? NextSaveFailure { get; set; }
 
+  /// <summary>How many saves after the next one fail the same way.</summary>
+  internal int MoreSaveFailures { get; set; }
+
   internal string? NextSaveVersion { get; set; }
 
   /// <summary>When set, LoadAsync waits for it before answering.</summary>
@@ -546,13 +569,35 @@ internal sealed class FakeDocEndpoint : IDocEndpointClient
 
     if (SaveGate is not null)
     {
-      await SaveGate.Task.WaitAsync(cancellationToken);
+      // Cancels with HttpClient's texts (DocEndpointClientTests pins them):
+      // a token cancelled before the call, then one cancelled during it.
+      if (cancellationToken.IsCancellationRequested)
+      {
+        throw new TaskCanceledException();
+      }
+
+      try
+      {
+        await SaveGate.Task.WaitAsync(cancellationToken);
+      }
+      catch (TaskCanceledException error) when (cancellationToken.IsCancellationRequested)
+      {
+        throw new TaskCanceledException("The operation was canceled.", error, cancellationToken);
+      }
     }
 
     if (NextSaveFailure is not null)
     {
       var failure = NextSaveFailure;
-      NextSaveFailure = null;
+
+      if (MoreSaveFailures > 0)
+      {
+        MoreSaveFailures--;
+      }
+      else
+      {
+        NextSaveFailure = null;
+      }
 
       throw failure;
     }
@@ -773,13 +818,17 @@ internal sealed class FakeMember(
 
   internal TaskCompletionSource? RecheckGate { get; set; }
 
+  /// <summary>When set, the gate is awaited without the caller's token.</summary>
+  internal bool RecheckIgnoresCancellation { get; set; }
+
   public async ValueTask<bool> RecheckAccessAsync(CancellationToken cancellationToken)
   {
     RecheckEntered?.TrySetResult();
 
     if (RecheckGate is not null)
     {
-      await RecheckGate.Task.WaitAsync(cancellationToken);
+      await RecheckGate.Task.WaitAsync(
+          RecheckIgnoresCancellation ? CancellationToken.None : cancellationToken);
     }
 
     if (RecheckFailure is not null)

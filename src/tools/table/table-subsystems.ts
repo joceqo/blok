@@ -2,10 +2,7 @@ import type { API, BlockAPI, SanitizerConfig } from '../../../types';
 import { DATA_ATTR } from '../../components/constants/data-attributes';
 import { getElementDirection } from '../../components/utils/direction';
 import type { TextDirection } from '../../components/utils/direction';
-import { INLINE_TEXT_SANITIZE } from '../../components/shared/inline-content-sanitize';
-import { clean } from '../../components/utils/sanitizer';
 import { parseUntrustedDocument, parseUntrustedHtml } from '../../components/utils/inert-html';
-import { PAGE_REFERENCE_ATTR } from '../../shared/page-reference';
 
 import { TableAddControls } from './table-add-controls';
 import type { TableCellBlocks } from './table-cell-blocks';
@@ -19,6 +16,8 @@ import {
   parseGenericHtmlTable,
   parsePlainTextGrid,
   pastedContentOutsideTable,
+  TABLE_HEADINGS_ATTR,
+  withPlainPageReferences,
 } from './table-cell-clipboard';
 import type { CellColorMode } from './table-cell-color-picker';
 import { TableCellSelection } from './table-cell-selection';
@@ -49,10 +48,17 @@ import { TableScrollHaze } from './table-scroll-haze';
 import { scrollToInlineEnd } from './table-direction';
 import type { CellPlacement, ClipboardBlockData, TableCellsClipboard } from './types';
 import { movePlacementWithMotion } from './table-cell-placement-motion';
+import { BLOK_MIME_TYPE } from '../../components/modules/paste/constants';
 import { preprocessPastedHtml } from '../../components/modules/paste/preprocess-pasted-html';
 import { findOwn } from '../../components/utils/own-element';
 import { markPasteContinuation, pasteContinuationSettled } from '../../components/utils/paste-continuation';
 import { logLabeled } from '../../components/utils/logger';
+import { cellBlockWithoutUnconfirmedPages, confirmPageIds, pageReferenceIds, pastedPageIds, withChildren } from '../../components/modules/paste/pasted-page-gate';
+import type { PageConfig } from '../page/types';
+import { sanitizeBlocks } from '../../components/utils/sanitizer';
+
+/** Core's stub tool name (`Tools.stubTool`); a tool has no module access to read it. */
+const STUB_TOOL = 'stub';
 
 /**
  * Tags each bulk-formattable mark produces. The first entry is what we WRITE;
@@ -312,12 +318,21 @@ export class TableSubsystems {
   }
 
   private addRowAtEnd(gridEl: HTMLElement): void {
+    this.addRowsAtEnd(gridEl, 1, true);
+  }
+
+  /**
+   * @param populate - give the new cells their blocks now; false leaves that to the caller
+   */
+  private addRowsAtEnd(gridEl: HTMLElement, count: number, populate: boolean): void {
     this.host.runTransactedStructuralOp(() => {
       const hadMerges = this.host.model.hasMerges();
 
-      this.host.model.addRow();
-      this.applyStructuralDom(hadMerges, () => this.host.grid.addRow(gridEl));
-      populateNewCells(gridEl, this.host.cellBlocks);
+      Array.from({ length: count }).forEach(() => this.host.model.addRow());
+      this.applyStructuralDom(hadMerges, () => this.host.grid.appendRows(gridEl, count));
+      if (populate) {
+        populateNewCells(gridEl, this.host.cellBlocks);
+      }
       updateHeadingStyles(this.host.gridElement, this.host.model.withHeadings);
       updateHeadingColumnStyles(this.host.gridElement, this.host.model.withHeadingColumn);
     });
@@ -342,7 +357,44 @@ export class TableSubsystems {
     });
   }
 
-  private addColumnAtEnd(gridEl: HTMLElement): void {
+  /**
+   * {@link addColumnAtEnd} `count` times in one pass, when nothing is merged
+   * and the grid is in px mode; otherwise column by column.
+   * @param populate - give the new cells their blocks now; false leaves that to the caller
+   */
+  private addColumnsAtEnd(gridEl: HTMLElement, count: number, populate: boolean): void {
+    const colWidths = this.host.model.colWidths ?? readPixelWidths(gridEl);
+
+    if (this.host.model.hasMerges() || !this.host.grid.canAppendColumnsPx(gridEl, colWidths)) {
+      Array.from({ length: count }).forEach(() => this.addColumnAtEnd(gridEl, populate));
+
+      return;
+    }
+
+    this.host.runTransactedStructuralOp(() => {
+      const widths = [...colWidths];
+      const added = Array.from({ length: count }, () => {
+        const halfWidth = this.host.model.initialColWidth !== undefined
+          ? Math.round((this.host.model.initialColWidth / 2) * 100) / 100
+          : computeHalfAvgWidth(widths);
+
+        this.host.model.addColumn(undefined, halfWidth);
+        widths.push(halfWidth);
+
+        return halfWidth;
+      });
+
+      this.host.model.setColWidths(widths);
+      this.host.grid.appendColumns(gridEl, colWidths, added);
+      applyPixelWidths(gridEl, widths);
+      if (populate) {
+        populateNewCells(gridEl, this.host.cellBlocks);
+      }
+      updateHeadingColumnStyles(this.host.gridElement, this.host.model.withHeadingColumn);
+    });
+  }
+
+  private addColumnAtEnd(gridEl: HTMLElement, populate = true): void {
     this.host.runTransactedStructuralOp(() => {
       const colWidths = this.host.model.colWidths ?? readPixelWidths(gridEl);
       const halfWidth = this.host.model.initialColWidth !== undefined
@@ -357,12 +409,10 @@ export class TableSubsystems {
       this.host.model.setColWidths(newWidths);
       this.applyStructuralDom(hadMergesForCol, () => this.host.grid.addColumn(gridEl, undefined, colWidths, halfWidth));
       applyPixelWidths(gridEl, newWidths);
-      populateNewCells(gridEl, this.host.cellBlocks);
-      updateHeadingColumnStyles(this.host.gridElement, this.host.model.withHeadingColumn);
-
-      if (this.host.scrollContainer) {
-        scrollToInlineEnd(this.host.scrollContainer);
+      if (populate) {
+        populateNewCells(gridEl, this.host.cellBlocks);
       }
+      updateHeadingColumnStyles(this.host.gridElement, this.host.model.withHeadingColumn);
     });
   }
 
@@ -414,6 +464,8 @@ export class TableSubsystems {
    * Shrinking stops at the first row or column that has content.
    */
   public setSize(gridEl: HTMLElement, rows: number, cols: number): void {
+    const startCols = this.host.model.cols;
+
     this.openDragTransaction();
     this.resize?.destroy();
     this.resize = null;
@@ -423,16 +475,25 @@ export class TableSubsystems {
       Array.from({ length: Math.abs(target - current()) }).every(() => (current() < target ? more() : fewer()));
     };
 
-    step(() => {
-      this.addRowAtEnd(gridEl);
+    const startRows = this.host.model.rows;
 
-      return true;
-    }, () => this.removeLastRowIfEmpty(gridEl), () => this.host.model.rows, rows);
-    step(() => {
-      this.addColumnAtEnd(gridEl);
+    // Growth is one pass: one reindex, and new cells filled together at the end.
+    if (rows > startRows) {
+      this.addRowsAtEnd(gridEl, rows - startRows, false);
+    }
+    step(() => false, () => this.removeLastRowIfEmpty(gridEl), () => this.host.model.rows, rows);
+    if (cols > startCols) {
+      this.addColumnsAtEnd(gridEl, cols - startCols, false);
+    }
+    step(() => false, () => this.removeLastColumnIfEmpty(gridEl), () => this.host.model.cols, cols);
+    if (rows > startRows || cols > startCols) {
+      this.host.runTransactedStructuralOp(() => populateNewCells(gridEl, this.host.cellBlocks));
+    }
 
-      return true;
-    }, () => this.removeLastColumnIfEmpty(gridEl), () => this.host.model.cols, cols);
+    // Once, not per column: each scroll lays out the whole table.
+    if (this.host.model.cols > startCols && this.host.scrollContainer) {
+      scrollToInlineEnd(this.host.scrollContainer);
+    }
 
     this.initResize(gridEl);
     this.rowColControls?.refresh();
@@ -524,6 +585,10 @@ export class TableSubsystems {
       onDragRemoveRow: () => this.removeLastRowIfEmpty(gridEl),
       onDragAddCol: () => {
         this.addColumnAtEnd(gridEl);
+
+        if (this.host.scrollContainer) {
+          scrollToInlineEnd(this.host.scrollContainer);
+        }
         dragState.addedCols++;
 
         return true;
@@ -650,7 +715,7 @@ export class TableSubsystems {
       onDragStart: () => {
         // One gesture, one undo entry. Without this each added row is its own
         // stack item: block operations call stopCapturing() per operation and
-        // the 500ms Yjs captureTimeout does not merge them.
+        // the Yjs captureTimeout does not merge them.
         this.openDragTransaction();
 
         /*
@@ -971,11 +1036,19 @@ export class TableSubsystems {
    * Colors and placement are formatting, not content: Notion's "Clear contents"
    * leaves them in place, and so does this. (There is no "clear formatting"
    * action; if one is ever added it must be its own explicitly-named operation.)
+   * @param cells - the cells to empty
+   * @param focus - put the caret in the first cell; a cell-range Delete keeps the range instead (Notion U162)
    */
-  private clearCellsContent(cells: HTMLElement[]): void {
+  private clearCellsContent(cells: HTMLElement[], focus = true): void {
     const cellBlocks = this.host.cellBlocks;
 
     if (!cellBlocks || cells.length === 0) {
+      return;
+    }
+
+    // The range stays selected after a Delete, so a second Delete would swap empty
+    // paragraphs for new ones: a step that changes nothing, and a dead undo press.
+    if (!focus && this.cellsAlreadyEmpty(cellBlocks.getBlockIdsFromCells(cells), cells.length)) {
       return;
     }
 
@@ -988,10 +1061,40 @@ export class TableSubsystems {
     // the model's cell entries here would leave that handler with nothing to
     // repair and the non-anchor cells with no editable at all.
     this.host.runTransactedStructuralOp(() => {
-      cellBlocks.deleteBlocks(cellBlocks.getBlockIdsFromCells(cells));
+      cellBlocks.deleteBlocks(cellBlocks.getBlockIdsFromCells(cells), focus);
     });
 
-    cellBlocks.focusClearedCell(anchorCell);
+    if (focus) {
+      cellBlocks.focusClearedCell(anchorCell);
+
+      return;
+    }
+
+    const grid = this.host.gridElement;
+    const active = document.activeElement;
+    const selection = window.getSelection();
+    const anchor = selection?.anchorNode ?? null;
+
+    if (active instanceof HTMLElement && grid?.contains(active) === true) {
+      active.blur();
+    }
+    // The deleted cell block may have held the caret, so a detached anchor counts as ours.
+    if (anchor !== null && (grid?.contains(anchor) === true || !anchor.isConnected)) {
+      selection?.removeAllRanges();
+    }
+  }
+
+  /**
+   * Each cell holds just the empty paragraph a clear leaves behind.
+   * @param ids - the cells' block ids
+   * @param cellCount - how many cells there are
+   */
+  private cellsAlreadyEmpty(ids: string[], cellCount: number): boolean {
+    return ids.length === cellCount && ids.every((id) => {
+      const block = this.host.api.blocks.getById(id);
+
+      return block?.name === 'paragraph' && block.isEmpty;
+    });
   }
 
   private handleRowColAction(gridEl: HTMLElement, action: RowColAction): void {
@@ -1229,22 +1332,10 @@ export class TableSubsystems {
    * Heading flags travel only when the range holds the heading row/column.
    */
   private buildCellClipboardPayload(cells: HTMLElement[]): TableCellsClipboard | null {
-    const sanitizeReference = (block: ClipboardBlockData): ClipboardBlockData => {
-      const text = block.data.text;
-
-      return {
-        ...block,
-        data: typeof text === 'string' && text.includes(PAGE_REFERENCE_ATTR)
-          ? { ...block.data, text: clean(text, INLINE_TEXT_SANITIZE) }
-          : block.data,
-        ...(block.children === undefined ? {} : { children: block.children.map(sanitizeReference) }),
-      };
-    };
-
     // Copy reads preservedData before save; leave that live object untouched.
     const entries = this.collectCellBlockData(cells).map(entry => ({
       ...entry,
-      blocks: entry.blocks.map(sanitizeReference),
+      blocks: entry.blocks.map(withPlainPageReferences),
     }));
 
     if (entries.length === 0) {
@@ -1261,6 +1352,13 @@ export class TableSubsystems {
 
     if (this.host.model.withHeadingColumn && hasColZero) {
       payload.withHeadingColumn = true;
+    }
+
+    const minCol = Math.min(...entries.map(entry => entry.col));
+    const colWidths = this.host.model.colWidths?.slice(minCol, minCol + payload.cols);
+
+    if (colWidths?.length === payload.cols) {
+      payload.colWidths = colWidths;
     }
 
     return payload;
@@ -1618,8 +1716,8 @@ export class TableSubsystems {
         // Selection finalized — restore grips so hover works normally
         this.rowColControls?.setGripsDisplay(true);
       },
-      onClearContent: (cells) => {
-        this.clearCellsContent(cells);
+      onClearContent: (cells, options) => {
+        this.clearCellsContent(cells, options?.keepRange !== true);
       },
       onCopy: (cells, clipboardData) => {
         this.handleCellCopy(cells, clipboardData);
@@ -1719,6 +1817,19 @@ export class TableSubsystems {
 
     const html = e.clipboardData.getData('text/html');
     const blokPayload = parseClipboardHtml(html, tool => this.toolSanitizeConfig(tool));
+
+    // A block copy holds whole blocks (a table in a toggle, a table block).
+    // Its HTML table is only their rendering, so the editor paste places them.
+    if (blokPayload === null && e.clipboardData.getData(BLOK_MIME_TYPE) !== '') {
+      return;
+    }
+
+    // The html alone of a whole table copy. Its mark is forgeable, but it only
+    // picks this placement: the editor paste still cleans the table.
+    if (blokPayload === null && html !== '' && parseUntrustedDocument(html).querySelector(`table[${TABLE_HEADINGS_ATTR}]`) !== null) {
+      return;
+    }
+
     // Raw clipboard HTML skips the paste module's pre-passes.
     const preprocessed = blokPayload === null && html !== '' ? preprocessPastedHtml(html, { keepTables: true }) : '';
     const externalPayload = blokPayload === null ? parseGenericHtmlTable(preprocessed) : null;
@@ -1784,9 +1895,87 @@ export class TableSubsystems {
       block => block.tool === 'paragraph' && isTextSerializable(block)
     );
 
+    // A 1x1 block paste at a caret in a filled cell adds its blocks there,
+    // like a block paste outside a table; it never clears the cell.
+    const caretBlockId = payload.rows === 1 && payload.cols === 1 && !isTextOnlySingleCell
+      ? this.caretBlockToPasteAfter(targetCell, activeElement)
+      : null;
+
+    const pageIds = pastedPageIds(payload.cells.flat().flatMap(cell => withChildren(cell.blocks)), STUB_TOOL, tool => this.toolSanitizeConfig(tool));
+
+    if (pageIds.size === 0) {
+      this.landGridPaste(payload, { targetCell, targetRowIndex, targetColIndex, isTextOnlySingleCell, caretBlockId, contentOutsideTable }, gridEl);
+
+      return;
+    }
+
+    void this.confirmPastedPages(gridEl, payload, pageIds).then(() => {
+      // The table can be gone while the host resolves.
+      if (gridEl.isConnected && targetCell.isConnected) {
+        this.landGridPaste(payload, { targetCell, targetRowIndex, targetColIndex, isTextOnlySingleCell, caretBlockId, contentOutsideTable }, gridEl);
+      }
+    }).catch((error: unknown) => {
+      logLabeled('Table: could not paste the cells', 'warn', error);
+    });
+  }
+
+  /**
+   * Turns every page in the payload the host did not confirm into text. A
+   * pasted page id is a claim: it stays only when the page is already in this
+   * editor, or the page tool's `resolve` finds it and grants access. When
+   * the check itself fails, every page becomes text.
+   */
+  private async confirmPastedPages(gridEl: HTMLElement, payload: TableCellsClipboard, pageIds: ReadonlySet<string>): Promise<void> {
+    const confirmed = await this.pastedPagesHere(gridEl, pageIds).catch((error: unknown) => {
+      logLabeled('Table: could not check the pasted page links', 'warn', error);
+
+      return new Set<string>();
+    });
+
+    payload.cells.flat().forEach((cell) => {
+      // eslint-disable-next-line no-param-reassign -- the payload was parsed for this paste
+      cell.blocks = cell.blocks.map(block => cellBlockWithoutUnconfirmedPages(block, confirmed, STUB_TOOL, tool => this.toolSanitizeConfig(tool)));
+    });
+  }
+
+  /** The pasted page ids already in this editor or granted by the page tool's `resolve`. */
+  private async pastedPagesHere(gridEl: HTMLElement, pageIds: ReadonlySet<string>): Promise<Set<string>> {
+    const page = this.host.api.tools?.getBlockTools().find(tool => tool.name === 'page')?.settings as PageConfig | undefined;
+    const editor = gridEl.closest(`[${DATA_ATTR.editor}]`) ?? gridEl;
+    const live = pageReferenceIds(editor);
+    const { blocks } = this.host.api;
+
+    Array.from({ length: blocks.getBlocksCount() }, (_, index) => blocks.getBlockByIndex(index)).forEach((block) => {
+      const pageId: unknown = block !== undefined && (block.name === 'page' || block.name === 'page-link') ? block.preservedData.pageId : undefined;
+
+      if (typeof pageId === 'string') {
+        live.add(pageId);
+      }
+    });
+
+    return confirmPageIds(page, live, pageIds);
+  }
+
+  private landGridPaste(
+    payload: TableCellsClipboard,
+    target: {
+      targetCell: HTMLElement;
+      targetRowIndex: number;
+      targetColIndex: number;
+      isTextOnlySingleCell: boolean;
+      caretBlockId: string | null;
+      contentOutsideTable: { html: string; text: string } | null;
+    },
+    gridEl: HTMLElement
+  ): void {
+    const { targetCell, targetRowIndex, targetColIndex, isTextOnlySingleCell, caretBlockId, contentOutsideTable } = target;
     const pasteCells = (): void => {
       if (isTextOnlySingleCell) {
         this.insertSingleCellPayloadInline(payload.cells[0][0]);
+      } else if (caretBlockId !== null) {
+        const rest = this.splitCaretParagraph(caretBlockId, payload.cells[0][0]) ?? payload.cells[0][0];
+
+        this.insertCellPayloadAfter(targetCell, targetRowIndex, targetColIndex, caretBlockId, rest);
       } else {
         this.pastePayloadIntoCells(gridEl, payload, targetRowIndex, targetColIndex);
       }
@@ -1942,6 +2131,119 @@ export class TableSubsystems {
 
     selection.removeAllRanges();
     selection.addRange(newRange);
+  }
+
+  /**
+   * The cell's top-level block holding a collapsed caret, or null when the
+   * paste should replace the cell: a box over several cells, a selected text
+   * range, or a cell that holds only one empty paragraph.
+   */
+  private caretBlockToPasteAfter(cell: HTMLElement, activeElement: HTMLElement): string | null {
+    const selection = window.getSelection();
+    const range = this.cellSelection?.getSelectedRange() ?? null;
+    // A caret boxes its own cell, so only a box over several cells is a range.
+    const isCellRange = range !== null && (range.minRow !== range.maxRow || range.minCol !== range.maxCol);
+
+    if (isCellRange || selection === null || selection.rangeCount === 0 || !selection.getRangeAt(0).collapsed) {
+      return null;
+    }
+
+    const holder = Array.from(cell.querySelector(`[${CELL_BLOCKS_ATTR}]`)?.children ?? [])
+      .find(child => child.contains(activeElement));
+    const id = holder?.getAttribute('data-blok-id') ?? null;
+    const ids = this.host.cellBlocks?.getBlockIdsFromCells([cell]) ?? [];
+    const only = ids.length === 1 ? this.host.api.blocks.getById(ids[0]) : null;
+
+    if (only?.name === 'paragraph' && only.isEmpty) {
+      return null;
+    }
+
+    return id;
+  }
+
+  /**
+   * Split the caret paragraph for a run of blocks that starts and ends with
+   * plain paragraphs, as a block paste outside a table does: the first block's
+   * text goes in at the caret and the text after the caret rides on the last.
+   * Returns the blocks still to insert after the paragraph, or null when the
+   * run does not split.
+   */
+  private splitCaretParagraph(caretBlockId: string, payloadCell: { blocks: ClipboardBlockData[] }): { blocks: ClipboardBlockData[] } | null {
+    const { blocks } = payloadCell;
+    const first = blocks[0];
+    const last = blocks[blocks.length - 1];
+    const isPlainParagraph = (block: ClipboardBlockData | undefined): block is ClipboardBlockData =>
+      block?.tool === 'paragraph' && isTextSerializable(block);
+    const caretBlock = this.host.api.blocks.getById(caretBlockId);
+    const selection = window.getSelection();
+    const range = selection !== null && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    const input = range === null || caretBlock === null ? null : findOwn(caretBlock.holder, '[contenteditable="true"]');
+
+    if (
+      blocks.length < 2 || !isPlainParagraph(first) || !isPlainParagraph(last) ||
+      caretBlock?.name !== 'paragraph' || caretBlock.isEmpty ||
+      range === null || !range.collapsed || input === null || !input.contains(range.startContainer)
+    ) {
+      return null;
+    }
+
+    const tailRange = range.cloneRange();
+
+    tailRange.setEnd(input, input.childNodes.length);
+    const tail = document.createElement('div');
+
+    tail.append(tailRange.extractContents());
+
+    // Any page can write this payload, and an external table was cleaned with
+    // the generic table rules: clean it with the target paragraph's own rules.
+    const [cleaned] = sanitizeBlocks([{ tool: 'paragraph', data: { text: first.data.text } }], this.toolSanitizeConfig('paragraph') ?? {});
+    const head = parseUntrustedHtml(String(cleaned.data.text));
+    const fragment = document.createDocumentFragment();
+
+    fragment.append(...Array.from(head.childNodes));
+    range.insertNode(fragment);
+
+    return {
+      blocks: [
+        ...blocks.slice(1, -1),
+        { ...last, data: { ...last.data, text: `${String(last.data.text)}${tail.innerHTML}` } },
+      ],
+    };
+  }
+
+  /**
+   * Insert one clipboard cell's blocks into `cell` right after `afterId`,
+   * keeping the blocks already there.
+   */
+  private insertCellPayloadAfter(
+    cell: HTMLElement,
+    row: number,
+    col: number,
+    afterId: string,
+    payloadCell: { blocks: ClipboardBlockData[] },
+  ): void {
+    const cellBlocks = this.host.cellBlocks;
+    const container = cell.querySelector<HTMLElement>(`[${CELL_BLOCKS_ATTR}]`);
+
+    if (!cellBlocks || !container || payloadCell.blocks.length === 0) {
+      return;
+    }
+
+    const lastId = this.host.runTransactedStructuralOp(() => payloadCell.blocks.reduce((previousId, blockData) => {
+      const previous = this.host.api.blocks.getById(previousId)?.holder ?? null;
+      // After the previous block's subtree, so the table's children stay in
+      // cell order (see mountTextBlocks).
+      const block = cellBlocks.insertClipboardBlock(blockData, cellBlocks.indexAfterSubtreeOf(previousId));
+
+      container.insertBefore(block.holder, previous?.nextSibling ?? null);
+      this.host.api.blocks.setBlockParent(block.id, this.host.blockId ?? '');
+      cellBlocks.insertClipboardChildren(block.id, blockData.children);
+
+      return block.id;
+    }, afterId));
+
+    this.host.model.setCellBlocks(row, col, cellBlocks.getBlockIdsFromCells([cell]));
+    this.host.api.caret?.setToBlock(lastId, 'end');
   }
 
   /**

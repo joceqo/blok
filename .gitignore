@@ -105,6 +105,10 @@ override-extension/payload/
 # TOML files (gitleaks config stays tracked)
 *.toml
 !gitleaks.toml
+# The Rust server's manifests
+!packages/server/rust/**/Cargo.toml
+!packages/server/rust/rust-toolchain.toml
+!packages/server/rust/.config/nextest.toml
 
 # Stryker's sandboxes: one full copy of the repo per concurrent runner, left
 # behind when a run is killed rather than finishing.
@@ -120,3 +124,9 @@ stryker.log
 # Playwright blob reports from sharded runs
 blob-report/
 .vitest/
+
+# Local research notes
+research_notes/
+
+# Local reports
+reports/

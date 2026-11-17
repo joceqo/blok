@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/collab"
-	"github.com/JackUait/blok/packages/server/go/internal/ws"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/ws"
 )
 
 const (
@@ -26,6 +26,13 @@ type Socket interface {
 	SendBinary(payload []byte) error
 	CloseOutput(status uint16, reason string) error
 	Abort()
+}
+
+// peerWatcher is a socket that sees the peer's FIN or RST while nobody
+// receives, and its own dispose, a keep-alive timeout included (ws.Conn).
+type peerWatcher interface {
+	PeerGone() <-chan struct{}
+	Done() <-chan struct{}
 }
 
 // MemberOptions are SyncSocketMember's constructor arguments.
@@ -166,7 +173,27 @@ func (m *SocketMember) next(gone <-chan struct{}) (outbound, bool) {
 // leaves the room and frees the lease BEFORE answering the peer's close, so
 // a reconnecting client never races its own slot.
 func (m *SocketMember) Run(ctx context.Context, socket Socket, membership collab.Membership, maxMessageBytes int, lease *Lease) {
-	receiving := newCanceller(socket)
+	// C#'s receive token: cancelling it also drops a frame still waiting
+	// for the room lane.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	receiving := newCanceller(socket, cancel)
+	// C# links the receive token to RequestAborted for the whole run. A
+	// keep-alive timeout aborts the connection there too, so a frame
+	// already waiting on the lane is dropped (SyncDroppedPeerTests.cs).
+	if watched, ok := socket.(peerWatcher); ok {
+		runDone := make(chan struct{})
+		defer close(runDone)
+		go func() {
+			select {
+			case <-watched.PeerGone():
+				receiving.after(0)
+			case <-watched.Done():
+				receiving.after(0)
+			case <-runDone:
+			}
+		}()
+	}
 	pumpDone := make(chan struct{})
 	go func() {
 		defer close(pumpDone)
@@ -192,16 +219,18 @@ func (m *SocketMember) Run(ctx context.Context, socket Socket, membership collab
 	receiving.stop()
 }
 
-// canceller aborts the socket, which is what cancelling a .NET receive does.
+// canceller aborts the socket and cancels the receive's context, which is
+// what cancelling a .NET receive token does.
 type canceller struct {
 	socket Socket
+	cancel context.CancelFunc
 	mu     sync.Mutex
 	timer  *time.Timer
 	done   chan struct{}
 }
 
-func newCanceller(socket Socket) *canceller {
-	return &canceller{socket: socket, done: make(chan struct{})}
+func newCanceller(socket Socket, cancel context.CancelFunc) *canceller {
+	return &canceller{socket: socket, cancel: cancel, done: make(chan struct{})}
 }
 
 // after is CancelAfter: the latest call sets the time.
@@ -212,6 +241,7 @@ func (c *canceller) after(d time.Duration) {
 		c.timer.Stop()
 	}
 	c.timer = time.AfterFunc(d, func() {
+		c.cancel()
 		c.socket.Abort()
 		c.mu.Lock()
 		defer c.mu.Unlock()

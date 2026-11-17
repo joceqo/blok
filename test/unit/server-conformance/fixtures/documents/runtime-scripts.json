@@ -240,12 +240,8 @@
       {
         "op": "odd",
         "expect": {
-          "error": "InvalidDocument"
-        },
-        "goja": {
           "error": "Unknown"
-        },
-        "why": "Jint turns the rejected value into a string for its exception message; String(Object.create(null)) throws a TypeError, and C# classifies that TypeError instead of the value. goja keeps the value."
+        }
       },
       {
         "op": "count",
@@ -521,6 +517,125 @@
         "op": "count",
         "expect": {
           "result": "2"
+        }
+      }
+    ]
+  },
+  {
+    "name": "localeCompare reads a lone surrogate as U+FFFD",
+    "script": "let calls = 0;\nglobalThis.blokServerInvoke = function (operation) {\n  calls += 1;\n  if (operation === 'count') return String(calls);\n  const sorted = ['\\ud800', 'a', 'b', '\\ufffd', 'z', '\\u4e00'].sort((x, y) => x.localeCompare(y));\n  return sorted.map((s) => s.charCodeAt(0).toString(16)).join() + ' ' + '\\ud800'.localeCompare('\\ufffd') + ' ' + 'a'.localeCompare('\\udc00');\n};\n",
+    "steps": [
+      {
+        "op": "sort",
+        "expect": {
+          "result": "61,62,7a,4e00,d800,fffd 0 -1"
+        },
+        "why": "A lone surrogate collates as U+FFFD, as Go's and Rust's collators read it and as .NET's CompareInfo does once the text is well formed. node's ICU gives an unpaired surrogate its own weight instead ('\\ud800'.localeCompare('\\ufffd') is -1 there)."
+      },
+      {
+        "op": "count",
+        "expect": {
+          "result": "2"
+        }
+      }
+    ]
+  },
+  {
+    "name": "the engine adds no host globals",
+    "script": "let calls = 0;\nglobalThis.blokServerInvoke = function (operation) {\n  calls += 1;\n  if (operation === 'count') return String(calls);\n  const names = ['atob', 'btoa', 'performance', 'queueMicrotask', 'structuredClone', 'console', 'setTimeout', 'setInterval', 'clearTimeout', 'DOMException', 'navigator', 'process', 'require'];\n  return names.filter((name) => typeof globalThis[name] !== 'undefined' || Object.prototype.hasOwnProperty.call(globalThis, name)).join();\n};\n",
+    "steps": [
+      {
+        "op": "globals",
+        "expect": {
+          "result": ""
+        },
+        "why": "Jint, as C# builds it, has none of these names. goja has none either; QuickJS's full context adds atob, btoa, DOMException, performance and queueMicrotask, which Rust leaves out. A bundle that feature-detects one must see the same answer on every server."
+      },
+      {
+        "op": "count",
+        "expect": {
+          "result": "2"
+        }
+      }
+    ]
+  },
+  {
+    "name": "only Jint has Intl",
+    "script": "globalThis.blokServerInvoke = function () {\n  return typeof Intl;\n};\n",
+    "steps": [
+      {
+        "op": "intl",
+        "expect": {
+          "result": "object"
+        },
+        "goja": {
+          "result": "undefined"
+        },
+        "why": "Jint has Intl; goja and QuickJS do not. The bundle checks `typeof Intl` in one place, formula dates (src/shared/database/formula/dates.ts wallTime), and falls back to Date's getters. The server never passes a time zone there, so both branches read the host zone: fixtures/agent/formula-dates.json pins the same answers on all three servers across ten zones."
+      }
+    ]
+  },
+  {
+    "name": "JSON.parse stops past 64 levels",
+    "script": "let calls = 0;\nglobalThis.blokServerInvoke = function (operation) {\n  calls += 1;\n  if (operation === 'count') return String(calls);\n  const arrays = (n) => '['.repeat(n) + ']'.repeat(n);\n  const objects = (n) => '{\"a\":'.repeat(n) + '1' + '}'.repeat(n);\n  const read = (text) => { try { JSON.parse(text); return 'ok'; } catch (error) { return error.name + ': ' + error.message; } };\n  if (operation === 'deepest') return [read(arrays(64)), read(objects(64)), read('[' + objects(63) + ']')].join(' | ');\n  if (operation === 'too deep') return [read(arrays(65)), read(objects(65)), read(' [\"[{\", ' + arrays(64) + ']')].join(' | ');\n  if (operation === 'clone') { let value = 1; for (let i = 0; i < 70; i++) value = { a: value }; return read(JSON.stringify(value)); }\n  if (operation === 'surrogates') return [read('[\"\\ud800\", ' + arrays(64) + ']'), read('[\"\\ud83d\\ude00\", ' + arrays(64) + ']')].join(' | ');\n  if (operation === 'throws') JSON.parse(arrays(65));\n  return 'unknown';\n};\n",
+    "steps": [
+      {
+        "op": "deepest",
+        "expect": {
+          "result": "ok | ok | ok"
+        }
+      },
+      {
+        "op": "too deep",
+        "expect": {
+          "result": "SyntaxError: Max. depth level of JSON reached at position 64 | SyntaxError: Max. depth level of JSON reached at position 320 | SyntaxError: Max. depth level of JSON reached at position 71"
+        },
+        "why": "Jint's JSON.parse refuses a 65th nested array or object (Options.Json.MaxParseDepth, default 64, which C# keeps). Go and Rust wrap JSON.parse to match, message and position (UTF-16 index of the bracket) included. A bracket inside a string does not count."
+      },
+      {
+        "op": "clone",
+        "expect": {
+          "result": "SyntaxError: Max. depth level of JSON reached at position 320"
+        },
+        "why": "A value the bundle built itself is refused too: the cap is in JSON.parse, not on the input."
+      },
+      {
+        "op": "surrogates",
+        "expect": {
+          "result": "SyntaxError: Max. depth level of JSON reached at position 69 | SyntaxError: Max. depth level of JSON reached at position 70"
+        },
+        "why": "Positions count UTF-16 units: a lone surrogate is one, a pair two."
+      },
+      {
+        "op": "throws",
+        "expect": {
+          "error": "InvalidDocument"
+        }
+      },
+      {
+        "op": "count",
+        "expect": {
+          "result": "6"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a promise that never settles ends at the call timeout",
+    "timeoutMs": 200,
+    "script": "let calls = 0;\nglobalThis.blokServerInvoke = async (operation) => {\n  calls += 1;\n  if (operation === 'count') return String(calls);\n  return await new Promise(() => {});\n};\n",
+    "steps": [
+      {
+        "op": "wait",
+        "expect": {
+          "error": "TimedOut"
+        },
+        "why": "No caller cancels, so the 200 ms call timeout ends the wait, and the engine is replaced: one call cannot hold a pool of 1 for good."
+      },
+      {
+        "op": "count",
+        "expect": {
+          "result": "1"
         }
       }
     ]

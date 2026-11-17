@@ -1413,7 +1413,7 @@ ordinaryIt('keeps the conformance-only journal flag out of an ordinary binary', 
   );
 });
 
-it('unfurls redirected metadata with stable precedence and resolved URLs', async () => {
+it('unfurls redirected metadata with stable precedence and drops image and favicon URLs on a loopback http origin', async () => {
   const origin = await startFixtureOrigin();
 
   try {
@@ -1439,11 +1439,34 @@ it('unfurls redirected metadata with stable precedence and resolved URLs', async
         meta: {
           title: 'OpenGraph title',
           description: 'OpenGraph description',
-          image: { url: origin.metadataImageUrl },
-          favicon: origin.metadataFaviconUrl,
+          image: {},
           domain: '127.0.0.1',
         },
       });
+    });
+  } finally {
+    await origin.stop();
+  }
+});
+
+it('reads a redirect Location that is not valid UTF-8 as Latin-1', async () => {
+  const origin = await startFixtureOrigin();
+
+  try {
+    await withServer(serverArgs(
+      '--storage-dir',
+      '',
+      '--conformance-origin',
+      origin.baseUrl,
+    ), async (server) => {
+      const response = await server.request(
+        'GET',
+        `/unfurl?url=${encodeURIComponent(origin.latin1RedirectUrl)}`,
+        { parseJson: true },
+      );
+
+      expect(origin.received.map(({ path }) => path)).toEqual(['/latin1/redirect', '/latin1/caf%C3%A9']);
+      expect(response.json).toMatchObject({ success: 1, link: `${origin.baseUrl}/latin1/caf%C3%A9` });
     });
   } finally {
     await origin.stop();

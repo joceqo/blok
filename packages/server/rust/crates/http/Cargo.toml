@@ -1,0 +1,20 @@
+[package]
+name = "blok-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal part of blok-mcp (HTTP/1.1 server). Not a stable API."
+publish = true
+
+[dependencies]
+socket2 = "0.6.5"
+tokio = { version = "1", features = ["net", "io-util", "time", "rt", "sync", "signal", "macros"] }
+
+[dev-dependencies]
+blok-ws = { path = "../ws" }
+tokio = { version = "1", features = ["net", "io-util", "time", "rt", "rt-multi-thread", "sync", "macros"] }
+
+[lints]
+workspace = true

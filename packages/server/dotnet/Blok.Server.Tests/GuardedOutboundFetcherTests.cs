@@ -12,7 +12,7 @@ using Xunit;
 
 namespace Blok.Server.Tests;
 
-public sealed class GuardedOutboundFetcherTests
+public sealed partial class GuardedOutboundFetcherTests
 {
   private static readonly GuardedFetchLimits Limits = new(
       TimeSpan.FromSeconds(2),
@@ -81,6 +81,108 @@ public sealed class GuardedOutboundFetcherTests
         catch
         {
         }
+      }
+    }
+  }
+
+  // Four held uploads fill only the upload pool: a short check still runs at
+  // once, and a fifth upload waits.
+  [Fact]
+  public async Task HeldUploadsNeverTakeACheckSlot()
+  {
+    await using var origin = new LoopbackOrigin();
+    var policy = new FixtureOutboundPolicy(
+        "bounded.example",
+        origin.Port,
+        IPAddress.Loopback);
+    var fetcher = new GuardedOutboundFetcher(
+        policy,
+        new SequenceDnsResolver([IPAddress.Loopback]));
+    var url = $"http://bounded.example:{origin.Port}/";
+    var upload = Limits with { Upload = true };
+    var held = new List<GuardedResponse>();
+
+    try
+    {
+      for (var i = 0; i < 4; i++)
+      {
+        held.Add(await fetcher.GetAsync(url, upload, CancellationToken.None));
+      }
+
+      await using (var check = await fetcher.GetAsync(
+          url,
+          Limits with { TotalTimeout = TimeSpan.FromMilliseconds(300) },
+          CancellationToken.None))
+      {
+        Assert.Equal(200, check.StatusCode);
+      }
+
+      var fifth = await Assert.ThrowsAsync<GuardedFetchException>(
+          async () => await fetcher.GetAsync(
+              url,
+              upload with { TotalTimeout = TimeSpan.FromMilliseconds(300) },
+              CancellationToken.None));
+      Assert.Equal(GuardedFetchFailure.TimedOut, fifth.Failure);
+    }
+    finally
+    {
+      foreach (var response in held)
+      {
+        await response.DisposeAsync();
+      }
+    }
+  }
+
+  // One caller holds at most two slots of a pool. Its third fetch waits for
+  // one of its own, inside its own deadline, and never holds a pool slot
+  // while it waits: other callers still get the two free slots.
+  [Fact]
+  public async Task ACallersThirdFetchWaitsForItsOwnSlot()
+  {
+    await using var origin = new LoopbackOrigin();
+    var policy = new FixtureOutboundPolicy(
+        "bounded.example",
+        origin.Port,
+        IPAddress.Loopback);
+    var fetcher = new GuardedOutboundFetcher(
+        policy,
+        new SequenceDnsResolver([IPAddress.Loopback]));
+    var url = $"http://bounded.example:{origin.Port}/";
+    var caller = Limits with { Caller = "addr:192.0.2.1" };
+    var shortWait = caller with { TotalTimeout = TimeSpan.FromMilliseconds(300) };
+    var held = new List<GuardedResponse>();
+    Task<GuardedResponse>? third = null;
+
+    try
+    {
+      for (var i = 0; i < 2; i++)
+      {
+        held.Add(await fetcher.GetAsync(url, caller, CancellationToken.None));
+      }
+
+      var timedOut = await Assert.ThrowsAsync<GuardedFetchException>(
+          async () => await fetcher.GetAsync(url, shortWait, CancellationToken.None));
+      Assert.Equal(GuardedFetchFailure.TimedOut, timedOut.Failure);
+
+      third = fetcher.GetAsync(url, caller, CancellationToken.None).AsTask();
+      await Task.Delay(100);
+      foreach (var other in new[] { "addr:192.0.2.2", "addr:192.0.2.3" })
+      {
+        held.Add(await fetcher.GetAsync(
+            url,
+            shortWait with { Caller = other },
+            CancellationToken.None));
+      }
+
+      Assert.False(third.IsCompleted, "the third fetch ran while its caller held two");
+      await held[0].DisposeAsync();
+      held.Add(await third.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+    finally
+    {
+      foreach (var response in held)
+      {
+        await response.DisposeAsync();
       }
     }
   }
@@ -393,6 +495,38 @@ public sealed class GuardedOutboundFetcherTests
     Assert.Equal("ok", Encoding.UTF8.GetString(response.Body.Span));
     Assert.Equal("secure.example", origin.LastTlsServerName);
     Assert.Equal($"secure.example:{origin.Port}", origin.LastRequest?.Host);
+  }
+
+  // Go and Rust copy this: .NET refuses at TLS a label with '-' at an
+  // end and a label past 63 bytes, with a trusted certificate naming it
+  // (macOS: SecPolicyCreateSSL; Linux: IdnMapping in the name check).
+  [Theory]
+  [InlineData("ok.example", true)]
+  [InlineData("a_b.example", true)]
+  [InlineData("a.-b.example", false)]
+  [InlineData("foo-.example", false)]
+  [InlineData("-a.example", false)]
+  [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example", false)]
+  public async Task RefusesAtTlsTheHostNamesDotNetRefuses(string host, bool fetched)
+  {
+    using var certificates = TestCertificates.Create(host);
+    await using var origin = new LoopbackOrigin(certificates.Server);
+    var fetcher = new GuardedOutboundFetcher(
+        new FixtureOutboundPolicy(host, origin.Port, IPAddress.Loopback),
+        new SequenceDnsResolver([IPAddress.Loopback]),
+        new X509Certificate2Collection(certificates.Root));
+    var url = $"https://{host}:{origin.Port}/";
+
+    if (fetched)
+    {
+      var response = await fetcher.GetAsync(url, Limits, CancellationToken.None);
+      Assert.Equal("ok", Encoding.UTF8.GetString(response.Body.Span));
+      return;
+    }
+
+    var error = await Assert.ThrowsAsync<GuardedFetchException>(
+        async () => await fetcher.GetAsync(url, Limits, CancellationToken.None));
+    Assert.Equal(GuardedFetchFailure.BlockedDestination, error.Failure);
   }
 
   [Fact]
@@ -803,6 +937,34 @@ public sealed class GuardedOutboundFetcherTests
   }
 
   [Fact]
+  public async Task AsksTheHopBudgetBeforeEveryRedirect()
+  {
+    await using var origin = new LoopbackOrigin(
+        async (request, stream, requestCount, cancellationToken) =>
+        {
+          var response = "HTTP/1.1 302 Found\r\n" +
+              $"Location: /{requestCount}\r\n" +
+              "Content-Length: 0\r\n" +
+              "Connection: close\r\n\r\n";
+          await stream.WriteAsync(
+              Encoding.ASCII.GetBytes(response),
+              cancellationToken);
+        });
+    var asked = 0;
+    var fetcher = CreateFixtureFetcher(origin, "hop.example");
+
+    var error = await Assert.ThrowsAsync<GuardedFetchException>(
+        async () => await fetcher.GetAsync(
+            $"http://hop.example:{origin.Port}/0",
+            Limits with { AllowHop = () => ++asked < 3 },
+            CancellationToken.None));
+
+    Assert.Equal(GuardedFetchFailure.RateLimited, error.Failure);
+    Assert.Equal(3, origin.RequestCount);
+    Assert.Equal(3, asked);
+  }
+
+  [Fact]
   public async Task RejectsCredentialsIntroducedByARedirect()
   {
     await using var origin = new LoopbackOrigin(
@@ -876,6 +1038,106 @@ public sealed class GuardedOutboundFetcherTests
   }
 
   [Fact]
+  public async Task RefusesARedirectFromHttpsDownToHttp()
+  {
+    using var certificates = TestCertificates.Create("secure.example");
+    await using var plain = new LoopbackOrigin();
+    await using var secure = new LoopbackOrigin(
+        async (request, stream, requestCount, cancellationToken) =>
+        {
+          var response = "HTTP/1.1 302 Found\r\n" +
+              $"Location: http://secure.example:{plain.Port}/plain\r\n" +
+              "Content-Length: 0\r\n" +
+              "Connection: close\r\n\r\n";
+          await stream.WriteAsync(
+              Encoding.ASCII.GetBytes(response),
+              cancellationToken);
+        },
+        certificates.Server);
+    var fetcher = new GuardedOutboundFetcher(
+        new PortsFixturePolicy("secure.example", [secure.Port, plain.Port]),
+        new SequenceDnsResolver([IPAddress.Loopback]),
+        new X509Certificate2Collection(certificates.Root));
+
+    var error = await Assert.ThrowsAsync<GuardedFetchException>(
+        async () => await fetcher.GetAsync(
+            $"https://secure.example:{secure.Port}/",
+            Limits,
+            CancellationToken.None));
+
+    Assert.Equal(
+        GuardedFetchFailure.BlockedDestination,
+        error.Failure);
+    Assert.Equal(1, secure.RequestCount);
+    Assert.Equal(0, plain.RequestCount);
+  }
+
+  [Fact]
+  public async Task FollowsARedirectFromHttpUpToHttps()
+  {
+    using var certificates = TestCertificates.Create("secure.example");
+    await using var secure = new LoopbackOrigin(certificates.Server);
+    await using var plain = new LoopbackOrigin(
+        async (request, stream, requestCount, cancellationToken) =>
+        {
+          var response = "HTTP/1.1 302 Found\r\n" +
+              $"Location: https://secure.example:{secure.Port}/up\r\n" +
+              "Content-Length: 0\r\n" +
+              "Connection: close\r\n\r\n";
+          await stream.WriteAsync(
+              Encoding.ASCII.GetBytes(response),
+              cancellationToken);
+        });
+    var fetcher = new GuardedOutboundFetcher(
+        new PortsFixturePolicy("secure.example", [secure.Port, plain.Port]),
+        new SequenceDnsResolver([IPAddress.Loopback]),
+        new X509Certificate2Collection(certificates.Root));
+
+    await using var response = await fetcher.GetAsync(
+        $"http://secure.example:{plain.Port}/",
+        Limits,
+        CancellationToken.None);
+
+    Assert.Equal("ok", Encoding.UTF8.GetString(response.Body.Span));
+  }
+
+  [Theory]
+  [InlineData(48, true)]
+  [InlineData(80, false)]
+  public async Task RefusesAResponseHeadOverSixtyFourKiB(int kib, bool allowed)
+  {
+    await using var origin = new LoopbackOrigin(
+        async (request, stream, requestCount, cancellationToken) =>
+        {
+          var response = "HTTP/1.1 200 OK\r\n" +
+              $"X-Padding: {new string('a', kib * 1024)}\r\n" +
+              "Content-Length: 2\r\n" +
+              "Connection: close\r\n\r\nok";
+          await stream.WriteAsync(
+              Encoding.ASCII.GetBytes(response),
+              cancellationToken);
+        });
+    var fetcher = CreateFixtureFetcher(origin, "fixture.example");
+
+    if (allowed)
+    {
+      await using var response = await fetcher.GetAsync(
+          $"http://fixture.example:{origin.Port}/",
+          Limits,
+          CancellationToken.None);
+      Assert.Equal("ok", Encoding.UTF8.GetString(response.Body.Span));
+      return;
+    }
+
+    var error = await Assert.ThrowsAsync<GuardedFetchException>(
+        async () => await fetcher.GetAsync(
+            $"http://fixture.example:{origin.Port}/",
+            Limits,
+            CancellationToken.None));
+    Assert.Equal(GuardedFetchFailure.BlockedDestination, error.Failure);
+  }
+
+  [Fact]
   public async Task KeepsABodyExactlyAtTheConfiguredCap()
   {
     await using var origin = new LoopbackOrigin(
@@ -918,6 +1180,28 @@ public sealed class GuardedOutboundFetcherTests
             CancellationToken.None));
 
     Assert.Equal(GuardedFetchFailure.ResponseTooLarge, error.Failure);
+  }
+
+  [Theory]
+  [InlineData(-1L, 0, "The response byte limit is outside the supported range. (Parameter 'limits')")]
+  [InlineData(0x7FFFFFC8L, 0, "The response byte limit is outside the supported range. (Parameter 'limits')")]
+  [InlineData(4L, -1, "The redirect limit cannot be negative. (Parameter 'limits')")]
+  public async Task RefusesLimitsOutsideTheSupportedRangeBeforeFetching(
+      long maximumBytes,
+      int maximumRedirects,
+      string message)
+  {
+    await using var origin = new LoopbackOrigin();
+    var fetcher = CreateFixtureFetcher(origin, "limits.example");
+
+    var error = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+        async () => await fetcher.GetAsync(
+            $"http://limits.example:{origin.Port}/",
+            new GuardedFetchLimits(TimeSpan.FromSeconds(2), maximumBytes, maximumRedirects),
+            CancellationToken.None));
+
+    Assert.Equal(message, error.Message);
+    Assert.Equal(0, origin.RequestCount);
   }
 
   [Fact]
@@ -1201,6 +1485,76 @@ public sealed class GuardedOutboundFetcherTests
             cancellation.Token));
 
     Assert.Equal(cancellation.Token, error.CancellationToken);
+  }
+
+  [Fact]
+  public async Task TruncatesTheBodyAtTheCapWhenAskedAndKeepsTheFinalHeaders()
+  {
+    var body = string.Concat(Enumerable.Repeat("0123456789", 100));
+    var compressed = Compress(Encoding.ASCII.GetBytes(body));
+    await using var origin = new LoopbackOrigin(
+        async (request, stream, requestCount, cancellationToken) =>
+        {
+          if (request.Target == "/start")
+          {
+            await stream.WriteAsync(
+                Encoding.ASCII.GetBytes(
+                    "HTTP/1.1 302 Found\r\n" +
+                    "Content-Security-Policy: frame-ancestors 'none'\r\n" +
+                    "Location: /final\r\n" +
+                    "Content-Length: 0\r\n" +
+                    "Connection: close\r\n\r\n"),
+                cancellationToken);
+            return;
+          }
+
+          var gzip = request.Target == "/final/gzip";
+          var payload = gzip ? compressed : Encoding.ASCII.GetBytes(body);
+          await stream.WriteAsync(
+              Encoding.ASCII.GetBytes(
+                  "HTTP/1.1 200 OK\r\n" +
+                  "Content-Security-Policy: default-src 'self'\r\n" +
+                  "Content-Security-Policy: frame-ancestors https://a.example, img-src *\r\n" +
+                  "X-Frame-Options: DENY\r\n" +
+                  (gzip ? "Content-Encoding: gzip\r\n" : "") +
+                  $"Content-Length: {payload.Length}\r\n" +
+                  "Connection: close\r\n\r\n"),
+              cancellationToken);
+          await stream.WriteAsync(payload, cancellationToken);
+        });
+    var fetcher = CreateFixtureFetcher(origin, "cut.example");
+    var limits = new GuardedFetchLimits(
+        TimeSpan.FromSeconds(5), 25, 5, TruncateBody: true);
+    var baseUrl = $"http://cut.example:{origin.Port}";
+
+    await using (var response = await fetcher.GetAsync(
+        $"{baseUrl}/start", limits, CancellationToken.None))
+    {
+      Assert.Equal(body[..25], Encoding.ASCII.GetString(response.Body.Span));
+      Assert.Equal(1, response.Redirects);
+      Assert.Equal($"{baseUrl}/final", response.FinalUrl);
+      Assert.Equal(
+          ["default-src 'self'", "frame-ancestors https://a.example, img-src *"],
+          response.HeaderValues("Content-Security-Policy"));
+      Assert.Equal(["DENY"], response.HeaderValues("x-frame-options"));
+      Assert.Empty(response.HeaderValues("Link"));
+    }
+
+    await using (var response = await fetcher.GetAsync(
+        $"{baseUrl}/final/gzip",
+        limits with { MaximumResponseBytes = 100 },
+        CancellationToken.None))
+    {
+      Assert.Equal(body[..100], Encoding.ASCII.GetString(response.Body.Span));
+      Assert.Equal(0, response.Redirects);
+    }
+
+    var error = await Assert.ThrowsAsync<GuardedFetchException>(
+        async () => await fetcher.GetAsync(
+            $"{baseUrl}/final",
+            limits with { TruncateBody = false },
+            CancellationToken.None));
+    Assert.Equal(GuardedFetchFailure.ResponseTooLarge, error.Failure);
   }
 
   [Fact]
@@ -1624,6 +1978,36 @@ public sealed class GuardedOutboundFetcherTests
     public bool IsAddressAllowed(IPAddress address)
     {
       return addresses.Contains(address);
+    }
+  }
+
+  private sealed class PortsFixturePolicy(
+      string host,
+      int[] ports) : IGuardedOutboundPolicy
+  {
+    public GuardedTarget Validate(
+        string rawUrl,
+        Uri? baseUrl = null)
+    {
+      var parsed = baseUrl is null
+        ? Uri.TryCreate(rawUrl, UriKind.Absolute, out var url)
+        : Uri.TryCreate(baseUrl, rawUrl, out url);
+
+      if (!parsed ||
+          url is null ||
+          url.Host != host ||
+          !ports.Contains(url.Port))
+      {
+        throw new GuardedFetchException(
+            GuardedFetchFailure.BlockedDestination);
+      }
+
+      return new GuardedTarget(url, url.IdnHost, url.Port, null);
+    }
+
+    public bool IsAddressAllowed(IPAddress address)
+    {
+      return address.Equals(IPAddress.Loopback);
     }
   }
 
@@ -2157,9 +2541,7 @@ public sealed class GuardedOutboundFetcherTests
           new X509EnhancedKeyUsageExtension(
               [new Oid("1.3.6.1.5.5.7.3.1")],
               critical: true));
-      var names = new SubjectAlternativeNameBuilder();
-      names.AddDnsName(host);
-      serverRequest.CertificateExtensions.Add(names.Build());
+      serverRequest.CertificateExtensions.Add(DnsNameExtension(host));
       using var issuedServer = serverRequest.Create(
           root,
           DateTimeOffset.UtcNow.AddMinutes(-5),
@@ -2172,6 +2554,25 @@ public sealed class GuardedOutboundFetcherTests
           password: null);
 
       return new TestCertificates(root, server);
+    }
+
+    // SubjectAlternativeNameBuilder refuses names IdnMapping refuses
+    // ("a.-b.example"); the client's answer to them is what some tests pin.
+    private static X509Extension DnsNameExtension(string host)
+    {
+      var writer = new System.Formats.Asn1.AsnWriter(
+          System.Formats.Asn1.AsnEncodingRules.DER);
+      using (writer.PushSequence())
+      {
+        writer.WriteCharacterString(
+            System.Formats.Asn1.UniversalTagNumber.IA5String,
+            host,
+            new System.Formats.Asn1.Asn1Tag(
+                System.Formats.Asn1.TagClass.ContextSpecific,
+                2));
+      }
+
+      return new X509Extension("2.5.29.17", writer.Encode(), critical: false);
     }
 
     internal static TestCertificates CreateWithIntermediateAia(

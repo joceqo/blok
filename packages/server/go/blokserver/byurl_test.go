@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JackUait/blok/packages/server/go/internal/outbound"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/outbound"
 )
 
 // blockingStore holds Put until release closes.
@@ -30,7 +30,7 @@ func (b *blockingStore) Delete(context.Context, string) error { return nil }
 
 // UploadByUrlEndpoint.cs:90 holds the response (and its fetch slot) with
 // `await using` until PutAsync returns, so a slow store still counts
-// against the four outbound fetches.
+// against the four upload fetches.
 func TestUploadByURLHoldsItsFetchSlotUntilTheStoreReturns(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
@@ -66,7 +66,7 @@ func TestUploadByURLHoldsItsFetchSlotUntilTheStoreReturns(t *testing.T) {
 		t.Fatal("upload-by-url never reached the store")
 	}
 
-	limits := outbound.Limits{Timeout: 200 * time.Millisecond, MaxBytes: 1 << 20, MaxRedirects: 0}
+	limits := outbound.Limits{Timeout: 200 * time.Millisecond, MaxBytes: 1 << 20, MaxRedirects: 0, Upload: true}
 	var held []*outbound.Response
 	for i := 0; i < 3; i++ {
 		response, err := s.fetcher.Get(context.Background(), origin.URL+"/", limits)
@@ -84,5 +84,50 @@ func TestUploadByURLHoldsItsFetchSlotUntilTheStoreReturns(t *testing.T) {
 	}
 	for _, response := range held {
 		response.Release()
+	}
+}
+
+// recordingStore keeps every Put; C# RecordingBlobStore.
+type recordingStore struct{ puts int }
+
+func (r *recordingStore) Put(_ context.Context, extension, _ string, content io.Reader) (string, error) {
+	_, _ = io.Copy(io.Discard, content)
+	r.puts++
+	return "https://uploads.example.com/files/" + strings.Repeat("b", 32) + extension, nil
+}
+
+func (r *recordingStore) Delete(context.Context, string) error { return nil }
+
+// A later "url": null does not erase an earlier string.
+func TestDuplicateNullURLRetainsThePriorString(t *testing.T) {
+	var fetched []string
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetched = append(fetched, r.URL.Path)
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("png"))
+	}))
+	defer origin.Close()
+	port, _ := strconv.Atoi(strings.TrimPrefix(origin.URL, "http://127.0.0.1:"))
+	o := DefaultOptions()
+	o.StorageDirectory = t.TempDir()
+	o.PublicURL = "https://uploads.example.com/files/"
+	o.UnfurlEnabled = true
+	s, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.fetcher = outbound.NewFetcher(outbound.ExactOriginPolicy{Origin: origin.URL, Port: port})
+	store := &recordingStore{}
+	s.storeOnce.Do(func() { s.store = store })
+	body := `{"url":"` + origin.URL + `/file","url":null}`
+	request := httptest.NewRequest(http.MethodPost, "/upload-by-url", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	s.Handler("").ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", recorder.Code, recorder.Body)
+	}
+	if len(fetched) != 1 || fetched[0] != "/file" || store.puts != 1 {
+		t.Fatalf("fetched %v, puts %d", fetched, store.puts)
 	}
 }

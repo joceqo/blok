@@ -1,6 +1,7 @@
 using System.Text;
 using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
+using Blok.Server.Outbound;
 
 namespace Blok.Server.Metadata;
 
@@ -26,6 +27,7 @@ internal static class UnfurlMetadataParser
     var twitterImage = "";
     var iconHref = "";
     var appleIconHref = "";
+    var oEmbedHref = "";
 
     try
     {
@@ -95,6 +97,16 @@ internal static class UnfurlMetadataParser
                                StringSplitOptions.RemoveEmptyEntries))
               {
                 var normalized = relation.ToLowerInvariant();
+                // oEmbed JSON discovery only; XML discovery is ignored.
+                // ToLowerInvariant, not OrdinalIgnoreCase: U+0131 must not
+                // match "i", as Go's ASCII lowering does not.
+                var type = Attribute(element, "type").ToLowerInvariant();
+                if (normalized == "alternate" &&
+                    string.Equals(type, "application/json+oembed", StringComparison.Ordinal))
+                {
+                  KeepFirst(ref oEmbedHref, href);
+                }
+
                 if (normalized == "icon")
                 {
                   KeepFirst(ref iconHref, href);
@@ -132,22 +144,24 @@ internal static class UnfurlMetadataParser
             openGraphDescription,
             twitterDescription,
             plainDescription),
-        FirstNonEmpty(
-            openGraphImage,
-            twitterImage),
-        FirstNonEmpty(
-            iconHref,
-            appleIconHref));
+        [openGraphImage, twitterImage],
+        [iconHref, appleIconHref],
+        oEmbedHref);
   }
 
+  // Keeps the first image and favicon a browser may load (BrowserUrl), so
+  // an http og:image gives way to an https twitter:image. With a base,
+  // /favicon.ico is the last favicon to try.
   private static UnfurlMetadata Build(
       Uri? baseUrl,
       string title = "",
       string description = "",
-      string image = "",
-      string favicon = "")
+      string[]? images = null,
+      string[]? favicons = null,
+      string oEmbed = "")
   {
     var domain = "";
+    favicons ??= [];
     if (baseUrl is not null)
     {
       domain = baseUrl.IdnHost.ToLowerInvariant();
@@ -156,18 +170,32 @@ internal static class UnfurlMetadataParser
         domain = domain[4..];
       }
 
-      if (favicon == "")
-      {
-        favicon = "/favicon.ico";
-      }
+      favicons = [.. favicons, "/favicon.ico"];
     }
 
     return new UnfurlMetadata(
         title,
         description,
-        ResolveUrl(baseUrl, image),
-        ResolveUrl(baseUrl, favicon),
-        domain);
+        FirstBrowserUrl(baseUrl, images ?? []),
+        FirstBrowserUrl(baseUrl, favicons),
+        domain,
+        ResolveUrl(baseUrl, oEmbed));
+  }
+
+  private static string FirstBrowserUrl(
+      Uri? baseUrl,
+      string[] references)
+  {
+    foreach (var reference in references)
+    {
+      if (reference != "" &&
+          BrowserUrl.Secure(baseUrl, reference) is { } url)
+      {
+        return url;
+      }
+    }
+
+    return "";
   }
 
   private static Uri? TryParseBaseUrl(string value)

@@ -57,7 +57,8 @@ func (c opsCase) input() string {
 			if i > 0 {
 				b.WriteString(part.Join)
 			}
-			b.WriteString(strings.ReplaceAll(part.Items[i%len(part.Items)], "{i}", strconv.Itoa(i)))
+			item := strings.ReplaceAll(part.Items[i%len(part.Items)], "{i}", strconv.Itoa(i))
+			b.WriteString(strings.ReplaceAll(item, "{i1}", strconv.Itoa(i+1)))
 		}
 	}
 	return b.String()
@@ -68,8 +69,8 @@ var importIDs = regexp.MustCompile(`"(md|html)-[a-z0-9]+-`)
 var surrogateEscape = regexp.MustCompile(`\\u[dD][89a-fA-F][0-9a-fA-F]{2}`)
 
 // gojaReadsLoneSurrogates is what goja makes of node's answer: its JSON.parse
-// reads a lone-surrogate escape as U+FFFD (measured), where node and Jint keep
-// the unit. Paired escapes stay escapes.
+// reads a lone-surrogate escape as U+FFFD (measured), where node keeps the
+// unit. The C# runner applies the same rewrite. Paired escapes stay escapes.
 func gojaReadsLoneSurrogates(want string) string {
 	matches := surrogateEscape.FindAllStringIndex(want, -1)
 	high := func(i int) bool { return strings.ContainsAny(want[matches[i][0]+3:matches[i][0]+4], "89abAB") }
@@ -105,7 +106,7 @@ func TestMatchesNodeOnTheDocumentOpsFixture(t *testing.T) {
 	if len(cases) < 300 {
 		t.Fatalf("only %d cases", len(cases))
 	}
-	pool, err := NewPool(Options{PoolSize: 1})
+	pool, err := NewPool(Options{PoolSize: new(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestMatchesNodeOnTheDocumentOpsFixture(t *testing.T) {
 				t.Skip("large document: run without -short and -race")
 			}
 			start := time.Now()
-			got, err := pool.Invoke(context.Background(), c.Op, c.input(), 5*time.Minute)
+			got, err := pool.Invoke(context.Background(), c.Op, c.input(), new(5*time.Minute))
 			if big {
 				t.Logf("%s: %v", c.Op, time.Since(start).Round(time.Millisecond))
 			}

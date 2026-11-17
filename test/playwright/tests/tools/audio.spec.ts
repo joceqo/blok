@@ -1,7 +1,7 @@
 // test/playwright/tests/tools/audio.spec.ts
 
 import { join } from 'node:path';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import type { Blok } from '@/types';
 import { ensureBlokBundleBuilt } from '../helpers/ensure-build';
 import { BLOK_INTERFACE_SELECTOR } from '../../../../src/components/constants';
@@ -261,16 +261,14 @@ test('user can set a cover image from a URL', async ({ page }) => {
   const picker = page.locator('[data-role="audio-cover-picker"]');
   await expect(picker).toBeVisible();
 
-  // Switch to the Link (embed) tab with a real click.
-  await picker.locator('[data-tab="embed"]').click();
-
-  // The URL input must be visible — this assertion guards the rendered picker width.
-  // A 2px-wide picker would make the input invisible/unreachable, catching the bug.
+  // "From a link" swaps the buttons for the link field. It must be visible:
+  // a 2px-wide picker would make it unreachable.
+  await picker.getByRole('button', { name: 'From a link' }).click();
   await expect(picker.getByRole('textbox')).toBeVisible();
 
   // Fill the URL and submit with real interactions.
   await picker.getByRole('textbox').fill('https://example.com/cover.jpg');
-  await picker.locator('[data-action="submit-url"]').click();
+  await picker.getByRole('button', { name: 'Add' }).click();
 
   // The cover img must appear with the submitted src.
   const coverImg = page.locator(`${AUDIO_BLOCK_SELECTOR} [data-role="audio-cover"] img`);
@@ -317,7 +315,7 @@ test('cover picker paints a themed surface matching the player (no white canvas)
   expect(surfaces.picker).not.toBe('rgb(255, 255, 255)');
 });
 
-test('cover picker subtree uses border-box so the tab-swap height does not jump', async ({ page }) => {
+test('cover picker subtree uses border-box, though it lives outside the editor', async ({ page }) => {
   await createBlok(page);
   await insertAudioBlock(page);
 
@@ -325,34 +323,115 @@ test('cover picker subtree uses border-box so the tab-swap height does not jump'
   await audioBlock.getByTestId('file-input').setInputFiles(FIXTURE_PATH);
   await expect(audioBlock.locator('[data-role="audio-controls"]')).toBeVisible();
 
-  const cover = audioBlock.locator('[data-role="audio-cover"]');
-  await cover.hover();
-  const changeBtn = audioBlock.locator('[data-role="audio-cover-change"]');
-  await expect(changeBtn).toBeVisible();
-  await changeBtn.click();
+  await audioBlock.locator('[data-role="audio-cover"]').hover();
+  await audioBlock.locator('[data-role="audio-cover-change"]').click();
 
   const picker = page.locator('[data-role="audio-cover-picker"]');
   await expect(picker).toBeVisible();
 
   // The picker is appended to document.body, outside blok's scoped border-box
-  // reset, so its panel defaulted to content-box. The Upload/Link height-swap
-  // animation measures the border-box height but animates the `height` property,
-  // which under content-box adds the panel padding on top — overshooting then
-  // snapping back (the visible jump). Border-box keeps the animated height equal
-  // to the measured one.
-  const boxes = await page.evaluate(() => {
-    const root = document.querySelector('[data-role="audio-cover-picker"]');
-    const panel = root?.querySelector('.blok-media-empty__panel');
-    const card = root?.querySelector('.blok-media-empty__card');
-    return {
-      dialog: root ? getComputedStyle(root).boxSizing : null,
-      panel: panel ? getComputedStyle(panel).boxSizing : null,
-      card: card ? getComputedStyle(card).boxSizing : null,
-    };
+  // reset. Content-box would add the padding on top of the well's set size.
+  const boxes = await picker.evaluate((root) => ({
+    dialog: getComputedStyle(root).boxSizing,
+    surface: getComputedStyle(root.querySelector('[data-role="ink-well-surface"]') ?? root).boxSizing,
+    link: getComputedStyle(root.querySelector('input[type="url"]') ?? root).boxSizing,
+  }));
+  expect(boxes).toEqual({ dialog: 'border-box', surface: 'border-box', link: 'border-box' });
+});
+
+test('the ink well takes a picture: it opens onto it, then the cover lands on the player', async ({ page }) => {
+  await createBlok(page);
+  await insertAudioBlock(page);
+
+  const audioBlock = page.locator(AUDIO_BLOCK_SELECTOR);
+  await audioBlock.getByTestId('file-input').setInputFiles(FIXTURE_PATH);
+  await expect(audioBlock.locator('[data-role="audio-controls"]')).toBeVisible();
+
+  await audioBlock.locator('[data-role="audio-cover"]').hover();
+  await audioBlock.locator('[data-role="audio-cover-change"]').click();
+
+  const picker = page.locator('[data-role="audio-cover-picker"]');
+  const well = picker.locator('[data-role="ink-well"]');
+  const coverImg = audioBlock.locator('[data-role="audio-cover"] img');
+
+  // One surface: the well, Choose file and From a link, with no tabs.
+  await expect(well).toBeVisible();
+  await expect(picker.getByRole('button', { name: 'Choose file' })).toBeVisible();
+  await expect(picker.getByRole('button', { name: 'From a link' })).toBeVisible();
+  await expect(picker.getByRole('tab')).toHaveCount(0);
+
+  // Layout size, not the painted box: the picker is still scaling in.
+  expect(await well.evaluate((el: HTMLElement) => [el.offsetWidth, el.offsetHeight])).toEqual([148, 148]);
+
+  // The drop is drawn: the middle of the well is ink, its corner is paper.
+  const pixel = (x: number, y: number): Promise<number[]> => well.locator('[data-role="ink-well-canvas"]').evaluate((canvas: HTMLCanvasElement, at) => {
+    const scale = canvas.width / canvas.clientWidth;
+
+    return Array.from(canvas.getContext('2d')?.getImageData(Math.round(at.x * scale), Math.round(at.y * scale), 1, 1).data ?? []);
+  }, { x, y });
+
+  await expect.poll(async () => (await pixel(74, 74))[3]).toBe(255);
+  expect((await pixel(6, 6))[3]).toBe(0);
+
+  await picker.getByTestId('file-input').setInputFiles(join(process.cwd(), 'test/playwright/fixtures/image/photo.jpg'));
+
+  // The well fills corner to corner, with ink and then with the picture.
+  await expect.poll(async () => (await pixel(6, 6))[3]).toBe(255);
+  // Still open while it shows the picture; the cover is not swapped under it.
+  await expect(picker).toBeVisible();
+
+  await expect(coverImg).toBeAttached();
+  await expect(picker).toHaveCount(0);
+});
+
+test('the ink well picker widens so both buttons stay on one line', async ({ page }) => {
+  await createBlok(page);
+  await insertAudioBlock(page);
+
+  const audioBlock = page.locator(AUDIO_BLOCK_SELECTOR);
+  await audioBlock.getByTestId('file-input').setInputFiles(FIXTURE_PATH);
+  await expect(audioBlock.locator('[data-role="audio-controls"]')).toBeVisible();
+
+  await audioBlock.locator('[data-role="audio-cover"]').hover();
+  await audioBlock.locator('[data-role="audio-cover-change"]').click();
+
+  const picker = page.locator('[data-role="audio-cover-picker"]');
+  const choose = picker.getByRole('button', { name: 'Choose file' });
+  const fromLink = picker.locator('[data-action="from-link"]');
+  const tops = async (): Promise<number[]> => [
+    await choose.evaluate((el: HTMLElement) => el.offsetTop),
+    await fromLink.evaluate((el: HTMLElement) => el.offsetTop),
+  ];
+  const width = (): Promise<number> => picker.evaluate((el: HTMLElement) => el.offsetWidth);
+  const setLinkLabel = (text: string): Promise<void> => fromLink.evaluate((el, value) => {
+    const label = el.querySelector('span:last-child');
+
+    if (label) label.textContent = value;
+  }, text);
+
+  await expect(choose).toBeVisible();
+  // How wide the English buttons are depends on the system font, so only the floor is fixed here.
+  expect(await width()).toBeGreaterThanOrEqual(440);
+  expect(new Set(await tops()).size).toBe(1);
+
+  // Short labels: the picker keeps its 440px floor.
+  await setLinkLabel('Link');
+  expect(await width()).toBe(440);
+
+  // A language with long labels: the picker grows, the buttons do not wrap or clip.
+  await setLinkLabel('From a link somewhere on the internet');
+
+  expect(await width()).toBeGreaterThan(440);
+  expect(new Set(await tops()).size).toBe(1);
+  const fits = await picker.evaluate((root) => {
+    const box = root.getBoundingClientRect();
+    const button = root.querySelector('[data-action="from-link"]')?.getBoundingClientRect();
+
+    return button !== undefined && button.right <= box.right;
   });
-  expect(boxes.dialog).toBe('border-box');
-  expect(boxes.panel).toBe('border-box');
-  expect(boxes.card).toBe('border-box');
+  expect(fits).toBe(true);
+  // The sentence wraps inside the picker; it never sets the width.
+  expect(await picker.evaluate((root) => root.scrollWidth <= root.clientWidth)).toBe(true);
 });
 
 test('cover picker animates in when opened', async ({ page }) => {
@@ -379,9 +458,9 @@ test('cover picker animates in when opened', async ({ page }) => {
 });
 
 // ---------------------------------------------------------------------------
-// 7. Cover — remove via block settings restores the spinning disc
+// 7. Cover — remove via block settings restores the ink drop
 // ---------------------------------------------------------------------------
-test('user can remove a cover and the vinyl disc returns', async ({ page }) => {
+test('user can remove a cover and the ink drop returns', async ({ page }) => {
   await createBlok(page);
   await insertAudioBlock(page);
 
@@ -400,10 +479,9 @@ test('user can remove a cover and the vinyl disc returns', async ({ page }) => {
 
   const picker2 = page.locator('[data-role="audio-cover-picker"]');
   await expect(picker2).toBeVisible();
-  await picker2.locator('[data-tab="embed"]').click();
-  await expect(picker2.getByRole('textbox')).toBeVisible();
+  await picker2.getByRole('button', { name: 'From a link' }).click();
   await picker2.getByRole('textbox').fill('https://example.com/cover.jpg');
-  await picker2.locator('[data-action="submit-url"]').click();
+  await picker2.getByRole('button', { name: 'Add' }).click();
 
   // Confirm cover img is set before removing it.
   const coverImg = page.locator(`${AUDIO_BLOCK_SELECTOR} [data-role="audio-cover"] img`);
@@ -420,7 +498,110 @@ test('user can remove a cover and the vinyl disc returns', async ({ page }) => {
   await expect(removeItem).toBeVisible();
   await removeItem.click();
 
-  // The img must be gone and the vinyl disc placeholder must return.
+  // The img must be gone and the ink drop must return.
   await expect(page.locator(`${AUDIO_BLOCK_SELECTOR} [data-role="audio-cover"] img`)).toHaveCount(0);
-  await expect(page.locator(`${AUDIO_BLOCK_SELECTOR} [data-role="audio-cover-disc"]`)).toBeVisible();
+  await expect(page.locator(`${AUDIO_BLOCK_SELECTOR} [data-role="audio-cover-ink"]`)).toBeVisible();
+});
+
+test('the Compact setting hides the ridgeline and brings it back', async ({ page }) => {
+  await createBlok(page);
+  await insertAudioBlock(page);
+
+  const audioBlock = page.locator(AUDIO_BLOCK_SELECTOR);
+  const ridgeline = audioBlock.locator('[data-role="audio-waveform-canvas"]');
+  const compactItem = page.locator('[data-blok-item-name="audio-compact"]');
+  const openSettings = async (): Promise<void> => {
+    await audioBlock.hover();
+    await page.locator(SETTINGS_BUTTON_SELECTOR).click();
+    await expect(compactItem).toBeVisible();
+  };
+
+  await audioBlock.getByTestId('file-input').setInputFiles(FIXTURE_PATH);
+  await expect(ridgeline).toBeVisible();
+
+  await openSettings();
+  await compactItem.click();
+
+  await expect(ridgeline).toHaveCount(0);
+  await expect(audioBlock).toHaveAttribute('data-compact', 'on');
+  await expect(audioBlock.locator('[data-role="audio-seek"]')).toBeVisible();
+  await expect.poll(async () => {
+    const saved = await page.evaluate(async () => window.blokInstance?.save());
+
+    return saved?.blocks.find((block) => block.type === 'audio')?.data.compact;
+  }).toBe(true);
+
+  await openSettings();
+  await compactItem.click();
+
+  await expect(ridgeline).toBeVisible();
+  await expect(audioBlock).toHaveAttribute('data-compact', 'off');
+});
+
+test('the compact player is one row: cover, play, title, then a wire that seeks', async ({ page }) => {
+  await createBlok(page);
+  await insertAudioBlock(page);
+
+  const audioBlock = page.locator(AUDIO_BLOCK_SELECTOR);
+  const compactItem = page.locator('[data-blok-item-name="audio-compact"]');
+  const part = (role: string): Locator => audioBlock.locator(`[data-role="${role}"]`);
+  const middleOf = async (role: string): Promise<{ x: number; y: number }> => {
+    const box = await part(role).boundingBox();
+
+    if (!box) throw new Error(`${role} has no box`);
+
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  };
+
+  await audioBlock.getByTestId('file-input').setInputFiles(FIXTURE_PATH);
+  await expect(part('audio-waveform-canvas')).toBeVisible();
+  await audioBlock.hover();
+  await page.locator(SETTINGS_BUTTON_SELECTOR).click();
+  await compactItem.click();
+
+  await expect(part('audio-wire')).toBeVisible();
+
+  const [cover, play, title, wire, time] = await Promise.all(
+    ['audio-cover', 'audio-play', 'audio-title', 'audio-wire', 'audio-time'].map(middleOf)
+  );
+
+  expect(cover.x).toBeLessThan(play.x);
+  expect(play.x).toBeLessThan(title.x);
+  expect(title.x).toBeLessThan(wire.x);
+  expect(wire.x).toBeLessThan(time.x);
+  // One row: the cover, the button, the wire and the time share a centre line.
+  expect(Math.abs(cover.y - play.y)).toBeLessThan(1);
+  expect(Math.abs(wire.y - play.y)).toBeLessThan(1);
+  expect(Math.abs(time.y - play.y)).toBeLessThan(1);
+
+  await expect.poll(() => part('audio-media').evaluate((el: HTMLAudioElement) => el.duration > 0)).toBe(true);
+  await page.mouse.click(wire.x, wire.y);
+
+  await expect.poll(() => part('audio-media').evaluate((el: HTMLAudioElement) => el.currentTime / el.duration))
+    .toBeCloseTo(0.5, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Title and author save as plain text, so the inline toolbar stays away.
+// ---------------------------------------------------------------------------
+test('selecting the title or author opens no inline toolbar', async ({ page }) => {
+  await createBlok(page);
+  await insertAudioBlock(page);
+
+  const audioBlock = page.locator(AUDIO_BLOCK_SELECTOR);
+
+  await audioBlock.getByTestId('file-input').setInputFiles(FIXTURE_PATH);
+
+  const fields = [audioBlock.locator('[data-role="audio-title"]'), audioBlock.locator('[data-role="audio-artist"]')];
+
+  for (const field of fields) {
+    await field.click();
+    await page.keyboard.type('Episode 12');
+    await field.selectText();
+    await page.keyboard.press('ControlOrMeta+b');
+
+    await expect(page.getByTestId('inline-toolbar')).toBeHidden();
+    // No <b>/<strong> wrapper: the markup is the bare text.
+    expect(await field.innerHTML()).toBe('Episode 12');
+  }
 });

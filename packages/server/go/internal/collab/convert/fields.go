@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/JackUait/blok/packages/server/go/internal/jsjson"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/jsjson"
 )
 
 // RichTextFields names the data keys stored as formatted text, per block
@@ -74,6 +74,12 @@ func checkFieldName(name, what string) error {
 // IsRich is whether key of a block of type kind holds formatted text.
 func (f *RichTextFields) IsRich(kind, key string) bool {
 	return kind != "" && slices.Contains(f.table[kind], key)
+}
+
+// isRich is IsRich on the doc's own UTF-16, compared exactly as C# does: a
+// lone surrogate is not its U+FFFD replacement, so it matches no field.
+func (f *RichTextFields) isRich(kind, key jsjson.Str) bool {
+	return !hasLoneSurrogate(kind) && !hasLoneSurrogate(key) && f.IsRich(kind.String(), key.String())
 }
 
 // Table is each type's fields in ordinal order.

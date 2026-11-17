@@ -6,11 +6,13 @@ import {
   IconPlayerSettings,
   IconPlayerSpeed,
   IconPlayerVolume,
-  IconPlayerVolumeMute,
   IconPlus,
 } from '../../components/icons';
-import { createPlatterSpin } from './disc';
+import { createVolumeIcon } from '../../components/utils/volume-icon';
 import { tr } from './i18n';
+import { SPEED_MAX, SPEED_MIN, SPEED_PEGS, SPEED_SLIDER_STEP, clampRate, rateToFraction, snapRate } from '../video/speed-scale';
+import { createSpeedEntry } from '../video/speed-entry';
+import { createSpeedWire } from '../video/speed-wire';
 import type { I18nInstance } from '../../components/utils/tools';
 import type { AudioData } from '../../../types/tools/audio';
 
@@ -63,8 +65,7 @@ function button(role: string, label: string, icon: string): HTMLButtonElement {
 
 /**
  * Build a custom transport control bar for an `<audio>` element and wire it
- * to the media. The waveform (Task 6) serves as the scrubber — this bar does
- * NOT render its own seek track.
+ * to the media: play, time, a seek slider, volume, speed and loop.
  *
  * Returns `{ element, destroy }`. Call `destroy()` to remove every listener
  * and clear all timers.
@@ -116,17 +117,11 @@ export function attachControls({
 
   const state = { playing: false, selectedRate: 1 };
 
-  // Inertial spin for the no-cover vinyl record (no-op when a cover image is
-  // shown — the disc only exists in the placeholder). Spins up on play, coasts
-  // down on pause.
-  const platter = createPlatterSpin(figure);
-
   const setPlaying = (next: boolean): void => {
     state.playing = next;
     figure.setAttribute('data-playing', String(next));
     playToggle.innerHTML = next ? IconPlayerPause : IconPlayerPlay;
     playToggle.setAttribute('aria-label', next ? i18nLabel('pause', 'Pause') : i18nLabel('play', 'Play'));
-    if (next) platter.start(); else platter.stop();
   };
   setPlaying(false);
 
@@ -138,6 +133,63 @@ export function attachControls({
 
   const renderTime = (): void => {
     timeEl.textContent = `${formatTime(media.currentTime)} / ${formatTime(media.duration)}`;
+  };
+
+  // ----- seek -----
+  const seekInput = document.createElement('input');
+  seekInput.type = 'range';
+  // Native ranges reverse in RTL; the fill gradient runs LTR.
+  seekInput.dir = 'ltr';
+  seekInput.min = '0';
+  seekInput.max = '1';
+  // A stepped range snaps the thumb, so it would not glide.
+  seekInput.step = 'any';
+  seekInput.value = '0';
+  seekInput.className = 'blok-audio-controls__seek';
+  seekInput.setAttribute('data-role', 'audio-seek');
+  seekInput.setAttribute('aria-label', i18nLabel('seek', 'Seek'));
+
+  const trackLength = (): number => (Number.isFinite(media.duration) && media.duration > 0 ? media.duration : 0);
+
+  const placeSeek = (): void => {
+    const length = trackLength();
+    const ratio = length ? Math.min(1, media.currentTime / length) : 0;
+
+    seekInput.value = String(ratio);
+    seekInput.style.setProperty('--blok-audio-seek-pct', `${Number((ratio * 100).toFixed(3))}%`);
+  };
+
+  const syncSeek = (): void => {
+    placeSeek();
+    seekInput.setAttribute('aria-valuetext', timeEl.textContent ?? '');
+  };
+
+  // `timeupdate` fires only a few times a second, so the thumb follows the
+  // track on every frame while it plays.
+  const seekFollow = { raf: 0 };
+
+  const stopSeekFollow = (): void => {
+    if (seekFollow.raf) globalThis.cancelAnimationFrame(seekFollow.raf);
+    seekFollow.raf = 0;
+  };
+
+  const followSeek = (): void => {
+    placeSeek();
+    seekFollow.raf = globalThis.requestAnimationFrame(followSeek);
+  };
+
+  const startSeekFollow = (): void => {
+    stopSeekFollow();
+    if (globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    seekFollow.raf = globalThis.requestAnimationFrame(followSeek);
+  };
+
+  const onSeekInput = (): void => {
+    const length = trackLength();
+
+    if (length) media.currentTime = Number(seekInput.value) * length;
+    renderTime();
+    syncSeek();
   };
 
   // ----- volume + mute -----
@@ -157,16 +209,16 @@ export function attachControls({
   volumeInput.setAttribute('aria-label', i18nLabel('volume', 'Volume'));
 
   const isMuted = (): boolean => media.muted || media.volume === 0;
+  const volumeIcon = createVolumeIcon(muteToggle);
 
   const syncMuteUI = (): void => {
     const muted = isMuted();
     muteToggle.setAttribute('aria-pressed', String(muted));
-    muteToggle.innerHTML = muted ? IconPlayerVolumeMute : IconPlayerVolume;
+    volumeIcon.paint(media.volume, muted);
     muteToggle.setAttribute('aria-label', muted ? i18nLabel('unmute', 'Unmute') : i18nLabel('mute', 'Mute'));
     volumeInput.value = muted ? '0' : String(media.volume);
-    // audio.css paints the filled track from --blok-audio-vol-pct (same naming
-    // as the speed slider's --blok-audio-speed-pct); writing any other name
-    // freezes the fill at its 100% default, so muted looks identical to full.
+    // audio.css paints the filled track from --blok-audio-vol-pct; writing any other
+    // name freezes the fill at its 100% default, so muted looks identical to full.
     volumeInput.style.setProperty('--blok-audio-vol-pct', `${Number(volumeInput.value) * 100}%`);
   };
 
@@ -203,6 +255,8 @@ export function attachControls({
     } catch { /* corrupt entry */ }
   };
   restoreVolume();
+  // The first paint never glides, so it must follow the restore.
+  volumeIcon.paint(media.volume, isMuted());
 
   const restorePosition = (): void => {
     const raw = safeGet(posKey());
@@ -215,13 +269,9 @@ export function attachControls({
   };
 
   // ----- speed gear menu -----
-  const SPEED_PRESETS = [0.5, 1, 1.5, 2];
-  const SPEED_MIN = 0.25;
-  const SPEED_MAX = 2;
-  const SPEED_SLIDER_STEP = 0.05;
-  const clampRate = (rate: number): number =>
-    Math.min(SPEED_MAX, Math.max(SPEED_MIN, Math.round(rate * 100) / 100));
-  const speedLabel = (rate: number): string => `${rate}×`;
+  // The video player's speed card: a big value between − and +, a bead on a wire
+  // with a peg per preset, and one plain button under each peg.
+  const reducedMotion = !!window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
 
   const gearBtn = button('audio-speed', i18nLabel('playbackSpeed', 'Playback speed'), IconPlayerSettings || IconPlayerSpeed);
   gearBtn.setAttribute('aria-haspopup', 'menu');
@@ -232,12 +282,27 @@ export function attachControls({
   speedMenu.setAttribute('role', 'menu');
   speedMenu.hidden = true;
 
+  const speedSpan = (className: string, text = ''): HTMLSpanElement => {
+    const span = document.createElement('span');
+    span.className = className;
+    span.textContent = text;
+    return span;
+  };
+
+  // The live value. Clicking it opens a field to type any speed from 0.1× to 3×.
   const speedReadout = document.createElement('div');
   speedReadout.className = 'blok-audio-controls__speed-readout';
-  speedReadout.setAttribute('aria-hidden', 'true');
-  speedReadout.textContent = speedLabel(state.selectedRate);
+  const readoutDigits = speedSpan('blok-audio-controls__speed-readout-digits');
+  speedReadout.append(readoutDigits, speedSpan('blok-audio-controls__speed-readout-unit', '×'));
+  const speedEntry = createSpeedEntry({
+    readout: speedReadout,
+    host: speedMenu,
+    classPrefix: 'blok-audio-controls',
+    t: i18nLabel,
+    rate: () => state.selectedRate,
+    onRate: (rate) => setRate(rate),
+  });
 
-  // − [slider] ＋ — flat steppers flank the track, mirroring the video player.
   // Identified by class only (no data-role) so the generic button[data-role]
   // control-button rule doesn't size them into 30px pills.
   const speedStepper = (icon: string, label: string): HTMLButtonElement => {
@@ -251,70 +316,107 @@ export function attachControls({
   const speedDec = speedStepper(IconMinus, i18nLabel('speedDecrease', 'Decrease playback speed'));
   const speedInc = speedStepper(IconPlus, i18nLabel('speedIncrease', 'Increase playback speed'));
 
-  const speedSlider = document.createElement('input');
-  speedSlider.type = 'range';
-  speedSlider.dir = 'ltr';
-  speedSlider.className = 'blok-audio-controls__speed-slider';
-  speedSlider.min = String(SPEED_MIN);
-  speedSlider.max = String(SPEED_MAX);
-  speedSlider.step = String(SPEED_SLIDER_STEP);
-  speedSlider.value = String(state.selectedRate);
-  speedSlider.setAttribute('aria-label', i18nLabel('playbackSpeed', 'Playback speed'));
-  // Announce the initial rate up front — setRate only fires on interaction, so
-  // without this the slider reads its raw numeric value until the first change.
-  speedSlider.setAttribute('aria-valuetext', speedLabel(state.selectedRate));
+  const speedStepperRow = document.createElement('div');
+  speedStepperRow.className = 'blok-audio-controls__speed-stepper';
+  speedStepperRow.append(speedDec, speedReadout, speedInc);
 
-  // Drive the elapsed-fill gradient from JS so the painted track tracks the
-  // native knob exactly (same approach as the volume + video sliders).
-  const speedFillPct = (rate: number): string =>
-    `${((rate - SPEED_MIN) / (SPEED_MAX - SPEED_MIN)) * 100}%`;
-  speedSlider.style.setProperty('--blok-audio-speed-pct', speedFillPct(state.selectedRate));
+  // setRate is declared just below; the wire only calls back on interaction.
+  const speedWire = createSpeedWire({
+    label: i18nLabel('playbackSpeed', 'Playback speed'),
+    reducedMotion,
+    classPrefix: 'blok-audio-controls',
+    onRate: (rate) => setRate(rate),
+  });
 
+  // Only the characters that changed roll in: up for a faster speed, down for a slower one.
+  const readout = { text: '' };
+  const paintReadout = (rate: number, rising: boolean): void => {
+    const text = String(rate);
+    if (text === readout.text) return;
+    const digits = [...text].map((char, i) => {
+      const digit = speedSpan('blok-audio-controls__speed-digit', char);
+      if (readout.text !== '' && readout.text[i] !== char) digit.setAttribute('data-roll', rising ? 'up' : 'down');
+      return digit;
+    });
+    readoutDigits.replaceChildren(...digits);
+    readout.text = text;
+  };
+
+  const syncSpeedUi = (rate: number, previous: number): void => {
+    paintReadout(rate, rate > previous);
+    speedDec.disabled = rate <= SPEED_MIN;
+    speedInc.disabled = rate >= SPEED_MAX;
+    speedWire.sync(rate);
+  };
   const setRate = (rate: number): void => {
+    const previous = state.selectedRate;
     const next = clampRate(rate);
     state.selectedRate = next;
     media.playbackRate = next;
-    speedReadout.textContent = speedLabel(next);
-    speedSlider.value = String(next);
-    speedSlider.setAttribute('aria-valuetext', speedLabel(next));
-    speedSlider.style.setProperty('--blok-audio-speed-pct', speedFillPct(next));
-    speedDec.disabled = next <= SPEED_MIN;
-    speedInc.disabled = next >= SPEED_MAX;
+    syncSpeedUi(next, previous);
     safeSet(RATE_KEY, String(next));
   };
+  syncSpeedUi(state.selectedRate, state.selectedRate);
 
   // Restore the shared playback speed through setRate so the menu UI stays in sync.
   const storedRate = Number(safeGet(RATE_KEY) ?? NaN);
   if (Number.isFinite(storedRate) && storedRate > 0) setRate(storedRate);
 
-  const onSpeedSliderInput = (): void => setRate(Number(speedSlider.value));
-  speedSlider.addEventListener('input', onSpeedSliderInput);
-  speedDec.addEventListener('click', () => setRate(state.selectedRate - SPEED_SLIDER_STEP));
-  speedInc.addEventListener('click', () => setRate(state.selectedRate + SPEED_SLIDER_STEP));
-  speedDec.disabled = state.selectedRate <= SPEED_MIN;
-  speedInc.disabled = state.selectedRate >= SPEED_MAX;
+  // Minus and plus: one step per press, and a held button keeps stepping.
+  const STEP_HOLD_DELAY = 350;
+  const STEP_HOLD_EVERY = 70;
+  const stepHold = { delay: 0, repeat: 0 };
+  const stopStepHold = (): void => {
+    window.clearTimeout(stepHold.delay);
+    window.clearInterval(stepHold.repeat);
+    stepHold.delay = 0;
+    stepHold.repeat = 0;
+  };
+  const stepRate = (delta: number): void => {
+    setRate(snapRate(state.selectedRate + delta));
+    // A disabled button gets no pointerup, so the end of the range ends the hold.
+    if (state.selectedRate <= SPEED_MIN || state.selectedRate >= SPEED_MAX) stopStepHold();
+  };
+  const wireStep = (step: HTMLButtonElement, delta: number): void => {
+    step.addEventListener('pointerdown', (event) => {
+      if (event.button > 0) return;
+      stopStepHold();
+      stepRate(delta);
+      stepHold.delay = window.setTimeout(() => {
+        stepHold.repeat = window.setInterval(() => stepRate(delta), STEP_HOLD_EVERY);
+      }, STEP_HOLD_DELAY);
+    });
+    ['pointerup', 'pointerleave', 'pointercancel', 'blur'].forEach((type) => step.addEventListener(type, stopStepHold));
+    // The pointer already stepped on press. detail 0 is a keyboard or scripted click.
+    step.addEventListener('click', (event) => { if (event.detail === 0) stepRate(delta); });
+  };
+  wireStep(speedDec, -SPEED_SLIDER_STEP);
+  wireStep(speedInc, SPEED_SLIDER_STEP);
 
-  const speedSliderRow = document.createElement('div');
-  speedSliderRow.className = 'blok-audio-controls__speed-slider-row';
-  speedSliderRow.append(speedDec, speedSlider, speedInc);
-
-  // Quiet quick-jump presets (mirrors the video player): every chip reads the
-  // same muted weight, lifting only on hover. The live rate is communicated by
-  // the readout + slider knob, not a filled "selected" chip.
-  const speedChipRow = document.createElement('div');
-  speedChipRow.className = 'blok-audio-controls__speed-chips';
-  SPEED_PRESETS.forEach((rate) => {
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'blok-audio-controls__speed-chip';
-    chip.textContent = `${rate}×`;
-    // Apply the preset but leave the menu open so the user can keep nudging the
-    // rate (slider/steppers/other presets) without re-opening it each time.
-    chip.addEventListener('click', () => setRate(rate));
-    speedChipRow.appendChild(chip);
+  // Presets only set a value. They never show a selected state: the bead on the
+  // peg above already says which one is current. The card stays open after a pick.
+  const speedPresets = document.createElement('div');
+  speedPresets.className = 'blok-audio-controls__speed-presets';
+  speedPresets.dir = 'ltr';
+  SPEED_PEGS.forEach((rate) => {
+    const preset = document.createElement('button');
+    preset.type = 'button';
+    preset.className = 'blok-audio-controls__speed-preset';
+    // Where its peg sits along the wire; audio.css centres the button under it.
+    preset.style.setProperty('--blok-audio-speed-at', String(rateToFraction(rate)));
+    preset.textContent = `${rate}×`;
+    preset.addEventListener('click', () => setRate(rate));
+    speedPresets.appendChild(preset);
   });
+  // While the field is open the presets give way to this line (see the stylesheet).
+  speedPresets.append(speedEntry.helpLine);
 
-  speedMenu.append(speedReadout, speedSliderRow, speedChipRow);
+  speedMenu.append(speedStepperRow, speedWire.element, speedPresets);
+  // A press anywhere else in the card sets a typed speed first, so a step or a drag
+  // starts from it. Capture: the stepper acts on its own pointerdown.
+  speedMenu.addEventListener('pointerdown', (event) => {
+    if (!(event.target instanceof Element && event.target.closest('.blok-audio-controls__speed-entry'))) speedEntry.commit();
+  }, true);
 
   // Gear + menu share a positioned wrapper so the menu anchors directly above
   // the gear button (rather than the card corner).
@@ -322,16 +424,32 @@ export function attachControls({
   speedWrap.className = 'blok-audio-controls__speed-wrap';
   speedWrap.append(gearBtn, speedMenu);
 
+  // The card opens from the gear's edge and may cross the window's; slide it back in.
+  const WINDOW_EDGE_GAP = 8;
+  const keepMenuInWindow = (): void => {
+    speedMenu.style.removeProperty('translate');
+    const box = speedMenu.getBoundingClientRect();
+    if (!box.width) return;
+    const limit = document.documentElement.clientWidth - WINDOW_EDGE_GAP;
+    const shift = box.right > limit ? limit - box.right : Math.max(0, WINDOW_EDGE_GAP - box.left);
+    if (shift !== 0) speedMenu.style.setProperty('translate', `${shift}px`);
+  };
+
   const openSpeedMenu = (): void => {
     if (!speedMenu.hidden) return;
     speedMenu.hidden = false;
     gearBtn.setAttribute('aria-expanded', 'true');
+    keepMenuInWindow();
+    speedWire.enter();
     document.addEventListener('mousedown', onSpeedMenuOutside);
   };
   const closeSpeedMenu = (): void => {
+    stopStepHold();
     if (speedMenu.hidden) return;
+    speedEntry.commit();
     speedMenu.hidden = true;
     gearBtn.setAttribute('aria-expanded', 'false');
+    speedWire.rest();
     document.removeEventListener('mousedown', onSpeedMenuOutside);
   };
   const onSpeedMenuOutside = (event: MouseEvent): void => {
@@ -376,7 +494,7 @@ export function attachControls({
   volumeWrap.className = 'blok-audio-controls__volume-wrap';
   volumeWrap.append(muteToggle, volumeInput);
 
-  root.append(playToggle, timeEl, volumeWrap, speedWrap, loopBtn);
+  root.append(playToggle, timeEl, seekInput, volumeWrap, speedWrap, loopBtn);
 
   // ----- intent handlers -----
   const togglePlay = (): void => {
@@ -406,15 +524,23 @@ export function attachControls({
   };
 
   // ----- media event handlers -----
-  const onPlay = (): void => setPlaying(true);
-  const onPause = (): void => setPlaying(false);
+  const onPlay = (): void => {
+    setPlaying(true);
+    startSeekFollow();
+  };
+  const onPause = (): void => {
+    setPlaying(false);
+    stopSeekFollow();
+  };
   const onTimeUpdate = (): void => {
     renderTime();
+    syncSeek();
     persistPosition();
   };
   const onLoadedMetadata = (): void => {
     renderTime();
     restorePosition();
+    syncSeek();
   };
   const onVolumeChange = (): void => syncMuteUI();
 
@@ -472,6 +598,7 @@ export function attachControls({
   playToggle.addEventListener('click', togglePlay);
   muteToggle.addEventListener('click', onMuteClick);
   volumeInput.addEventListener('input', onVolumeInput);
+  seekInput.addEventListener('input', onSeekInput);
   loopBtn.addEventListener('click', onLoopClick);
 
   media.addEventListener('play', onPlay);
@@ -484,21 +611,23 @@ export function attachControls({
 
   // ----- destroy -----
   const destroy = (): void => {
-    platter.destroy();
+    stopSeekFollow();
     closeSpeedMenu();
 
     playToggle.removeEventListener('click', togglePlay);
     muteToggle.removeEventListener('click', onMuteClick);
     volumeInput.removeEventListener('input', onVolumeInput);
+    seekInput.removeEventListener('input', onSeekInput);
     loopBtn.removeEventListener('click', onLoopClick);
     gearBtn.removeEventListener('click', onGearClick);
-    speedSlider.removeEventListener('input', onSpeedSliderInput);
+    speedWire.destroy();
 
     media.removeEventListener('play', onPlay);
     media.removeEventListener('pause', onPause);
     media.removeEventListener('timeupdate', onTimeUpdate);
     media.removeEventListener('loadedmetadata', onLoadedMetadata);
     media.removeEventListener('volumechange', onVolumeChange);
+    volumeIcon.destroy();
 
     figure.removeEventListener('keydown', onFigureKeydown);
     window.removeEventListener('storage', onStorage);

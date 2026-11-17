@@ -1,0 +1,468 @@
+package blokmcp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"sort"
+
+	"github.com/JackUait/blok/packages/server/go/v2/internal/collab/docendpoint"
+
+	"github.com/JackUait/blok/packages/server/go/v2/internal/yjs"
+)
+
+// historyStepLimit is AGENT_HISTORY_LIMITS.steps.
+const historyStepLimit = 100
+
+// liveStep is one applied batch, as Node's StoreApplier keeps it for
+// history.undo and history.redo.
+type liveStep struct {
+	item       *yjs.StackItem
+	ids        map[string]bool
+	placedOnly map[string]bool
+	parents    map[string]bool // "" is the root
+	shape      string
+}
+
+type exportedBlock struct {
+	ID      string          `json:"id"`
+	Parent  *string         `json:"parent"`
+	Content []string        `json:"content"`
+	Raw     json.RawMessage `json:"-"`
+}
+
+// blocksOf reads an exported document's blocks, each with its raw JSON.
+func blocksOf(document json.RawMessage) []exportedBlock {
+	var doc struct {
+		Blocks []json.RawMessage `json:"blocks"`
+	}
+	_ = json.Unmarshal(document, &doc)
+	blocks := make([]exportedBlock, 0, len(doc.Blocks))
+	for _, raw := range doc.Blocks {
+		var block exportedBlock
+		_ = json.Unmarshal(raw, &block)
+		block.Raw = raw
+		blocks = append(blocks, block)
+	}
+	return blocks
+}
+
+func parentKey(parent *string) string {
+	if parent == nil {
+		return ""
+	}
+	return "#" + *parent
+}
+
+// shape is the step's blocks as the document has them now (a moved one by
+// its slot), with each parent's order of them: Node's StoreApplier.shape.
+func (step *liveStep) shapeOf(document json.RawMessage) string {
+	blocks := blocksOf(document)
+	byID := map[string]exportedBlock{}
+	var roots []string
+	for _, block := range blocks {
+		byID[block.ID] = block
+		if block.Parent == nil {
+			roots = append(roots, block.ID)
+		}
+	}
+	ids := make([]string, 0, len(step.ids))
+	for id := range step.ids {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	shape := []any{}
+	for _, id := range ids {
+		block, ok := byID[id]
+		switch {
+		case !ok:
+			shape = append(shape, "gone")
+		case step.placedOnly[id]:
+			shape = append(shape, placement(byID, roots, id))
+		default:
+			shape = append(shape, block.Raw)
+		}
+	}
+	parents := []any{}
+	keys := make([]string, 0, len(step.parents))
+	for key := range step.parents {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		var order []string
+		if key == "" {
+			order = roots
+		} else if parent, ok := byID[key[1:]]; ok {
+			order = parent.Content
+		} else {
+			parents = append(parents, []any{key, nil})
+			continue
+		}
+		filtered := []string{}
+		for _, id := range order {
+			if step.ids[id] {
+				filtered = append(filtered, id)
+			}
+		}
+		parents = append(parents, []any{key, filtered})
+	}
+	written, _ := json.Marshal(map[string]any{"blocks": shape, "parents": parents})
+	return string(written)
+}
+
+// placement is the store's getPlacement: the parent and the sibling before.
+func placement(byID map[string]exportedBlock, roots []string, id string) map[string]any {
+	block := byID[id]
+	order := roots
+	if block.Parent != nil {
+		order = byID[*block.Parent].Content
+	}
+	var after any
+	if at := slices.Index(order, id); at > 0 {
+		after = order[at-1]
+	}
+	var parent any
+	if block.Parent != nil {
+		parent = *block.Parent
+	}
+	return map[string]any{"parentId": parent, "afterId": after}
+}
+
+type plannedBlock struct {
+	ID       string         `json:"id"`
+	Children []plannedBlock `json:"children"`
+}
+
+// stepFor reads which blocks a batch's edits added, removed or moved.
+func stepFor(edits json.RawMessage, before json.RawMessage) *liveStep {
+	step := &liveStep{ids: map[string]bool{}, placedOnly: map[string]bool{}, parents: map[string]bool{}}
+	byID := map[string]exportedBlock{}
+	for _, block := range blocksOf(before) {
+		byID[block.ID] = block
+	}
+	var list []struct {
+		Op           string       `json:"op"`
+		ID           string       `json:"id"`
+		Block        plannedBlock `json:"block"`
+		WithChildren bool         `json:"withChildren"`
+	}
+	_ = json.Unmarshal(edits, &list)
+	var insertTree func(block plannedBlock)
+	insertTree = func(block plannedBlock) {
+		step.ids[block.ID] = true
+		for _, child := range block.Children {
+			insertTree(child)
+		}
+	}
+	moved := func(id string) {
+		if !step.ids[id] {
+			step.ids[id] = true
+			step.placedOnly[id] = true
+		}
+	}
+	removed := func(id string) {
+		step.ids[id] = true
+		delete(step.placedOnly, id)
+	}
+	for _, edit := range list {
+		switch edit.Op {
+		case "insert":
+			insertTree(edit.Block)
+		case "remove":
+			if edit.WithChildren {
+				var walk func(id string)
+				walk = func(id string) {
+					for _, child := range byID[id].Content {
+						walk(child)
+					}
+					removed(id)
+				}
+				walk(edit.ID)
+				continue
+			}
+			for _, child := range byID[edit.ID].Content {
+				moved(child)
+			}
+			removed(edit.ID)
+		case "move":
+			moved(edit.ID)
+		}
+	}
+	return step
+}
+
+// noteParents records the step blocks' parents before and after.
+func (step *liveStep) noteParents(documents ...json.RawMessage) {
+	for _, document := range documents {
+		for _, block := range blocksOf(document) {
+			if step.ids[block.ID] {
+				step.parents[parentKey(block.Parent)] = true
+			}
+		}
+	}
+}
+
+// replay runs history.undo or history.redo on the session's own steps.
+// gate is the bundle's answer with no steps; mu is held.
+func (l *liveSession) replay(ctx context.Context, name string, gate json.RawMessage) (json.RawMessage, bool, error) {
+	undo := name == "history.undo"
+	from, to := &l.done, &l.undone
+	if !undo {
+		from, to = &l.undone, &l.done
+	}
+	if len(*from) == 0 {
+		return gate, false, nil
+	}
+	step := (*from)[len(*from)-1]
+	document, _, err := l.exportLocked(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	top := l.undo.UndoTop()
+	if !undo {
+		top = l.undo.RedoTop()
+	}
+	if step.shapeOf(document) != step.shape || (step.item != nil && top != step.item) {
+		verb := "undone"
+		if !undo {
+			verb = "redone"
+		}
+		result, _ := marshal(map[string]any{
+			"ok": false, "revision": fmt.Sprintf("l%d", l.room.count),
+			"error":    map[string]any{"code": "CONFLICT", "message": "Someone else changed the blocks this step added, removed or moved, so it can no longer be " + verb + ". Re-read the document before retrying.", "retryable": true},
+			"warnings": []any{},
+		})
+		return result, false, nil
+	}
+	if step.item != nil {
+		var replayed bool
+		if undo {
+			replayed, err = l.undo.Undo()
+		} else {
+			replayed, err = l.undo.Redo()
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		step.item = nil
+		if replayed {
+			step.item = l.undo.RedoTop()
+			if !undo {
+				step.item = l.undo.UndoTop()
+			}
+		}
+	}
+	after, _, err := l.exportLocked(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	step.shape = step.shapeOf(after)
+	*from = (*from)[:len(*from)-1]
+	*to = append(*to, step)
+	result, _ := marshal(map[string]any{
+		"ok": true, "revision": fmt.Sprintf("l%d", l.room.count), "results": []any{map[string]any{}}, "refs": map[string]any{},
+		"changed": map[string]any{"created": []any{}, "updated": []any{}, "moved": []any{}, "removed": []any{}}, "warnings": []any{},
+	})
+	return result, true, nil
+}
+
+// historyReplay names a batch that is one history.undo or history.redo.
+func historyReplay(batch json.RawMessage) string {
+	commands, ok := batchCommands(batch)
+	if !ok || len(commands) != 1 {
+		return ""
+	}
+	if name := commands[0].name; name == "history.undo" || name == "history.redo" {
+		return name
+	}
+	return ""
+}
+
+// recordStep keeps a write batch as a step, as StoreApplier.apply does.
+func (l *liveSession) recordStep(step *liveStep, before, after json.RawMessage, stacked *yjs.StackItem) {
+	step.noteParents(before, after)
+	if top := l.undo.UndoTop(); top != stacked {
+		step.item = top
+	}
+	step.shape = step.shapeOf(after)
+	l.done = append(l.done, step)
+	l.undone = nil
+	for len(l.done) > historyStepLimit {
+		oldest := l.done[0]
+		l.done = l.done[1:]
+		if oldest.item != nil {
+			l.undo.DropOldest(oldest.item)
+		}
+	}
+}
+
+// historyMark is one write batch in undo order: the session's own step, or
+// a restore (restored names the version current before it).
+type historyMark struct {
+	restored *string
+	// other: the batch wrote only another document (page.rename).
+	other bool
+}
+
+func restoredPrevious(result json.RawMessage) *string {
+	var parsed struct {
+		Results []struct {
+			Previous *string `json:"previous"`
+		} `json:"results"`
+	}
+	_ = json.Unmarshal(result, &parsed)
+	if len(parsed.Results) == 0 || parsed.Results[0].Previous == nil {
+		return new(string)
+	}
+	return parsed.Results[0].Previous
+}
+
+// refusedResult is an AgentResult refusing the batch at its first command.
+func (l *liveSession) refusedResult(code, message string, retryable bool) json.RawMessage {
+	result, _ := marshal(map[string]any{
+		"ok": false, "revision": fmt.Sprintf("l%d", l.room.count),
+		"error":    map[string]any{"code": code, "message": message, "commandIndex": 0, "retryable": retryable},
+		"warnings": []any{},
+	})
+	return result
+}
+
+// markRefusal is the executor's historyStep check: a restore cannot be
+// undone, and nothing is redone after one.
+func (l *liveSession) markRefusal(name string) json.RawMessage {
+	if len(l.marksPast) == 0 {
+		return nil
+	}
+	last := l.marksPast[len(l.marksPast)-1]
+	if last.other && name == "history.undo" {
+		return l.refusedResult("UNDO_OTHER_DOCUMENT", "The last batch wrote another document (a sub-page title or icon). history.undo cannot undo it. To revert it, run that command again with the old value.", false)
+	}
+	if last.restored == nil {
+		return nil
+	}
+	if name == "history.redo" {
+		return l.refusedResult("NOTHING_TO_REDO", "The last batch restored a version. There is nothing to redo after it.", false)
+	}
+	message := "The last batch restored a version. history.undo cannot undo a restore."
+	if *last.restored != "" {
+		message += ` To go back, history.restore "` + *last.restored + `", the version that was current before.`
+	}
+	return l.refusedResult("UNDO_RESTORED", message, false)
+}
+
+// approveReplay runs the executor's approval gate in the bundle: the step's
+// outcome, previewed on a copy of the doc, is carried as the session's
+// one step, so undoing a lock asks as database.setLock does. It returns a
+// refusal result, a question, or neither when the replay may run.
+func (l *liveSession) approveReplay(ctx context.Context, call *callContext, name string, batch json.RawMessage, document json.RawMessage, revision map[string]string) (json.RawMessage, *askedQuestion, error) {
+	preview, err := l.undo.Preview(name == "history.undo")
+	if err != nil {
+		return nil, nil, err
+	}
+	exported, err := l.room.converter.Export(ctx, preview)
+	if err != nil {
+		return nil, nil, err
+	}
+	target, err := docendpoint.Serialize(exported)
+	if err != nil {
+		return nil, nil, err
+	}
+	read, err := l.server.answerOf(ctx, "mcpRead", map[string]any{
+		"mcp": l.server.mcpFlags("live", l.write), "document": document, "actor": call.actor, "view": map[string]any{},
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	var view struct {
+		StructuredContent struct {
+			Revision string `json:"revision"`
+		} `json:"structuredContent"`
+	}
+	_ = json.Unmarshal(read, &view)
+	history := map[string]any{"past": []any{}, "future": []any{}, "revision": view.StructuredContent.Revision}
+	if name == "history.undo" {
+		history["past"] = []any{json.RawMessage(target)}
+	} else {
+		history["future"] = []any{json.RawMessage(target)}
+	}
+	input := l.sessionInput(call, document, revision)
+	input["history"] = history
+	input["batch"] = batch
+	if call.approval != nil {
+		input["approval"] = call.approval
+	}
+	var out liveExecuteOutput
+	if _, err := l.server.bundle.call(ctx, "agentExecute", input, &out); err != nil {
+		return nil, nil, err
+	}
+	if out.Ask != nil {
+		return nil, out.Ask, nil
+	}
+	var parsed liveResult
+	_ = json.Unmarshal(out.Result, &parsed)
+	if !parsed.OK {
+		return out.Result, nil, nil
+	}
+	return nil, nil, nil
+}
+
+// historyBatch is history.undo or history.redo on a live handle: the
+// executor's checks, then the native replay. mu is held.
+func (l *liveSession) historyBatch(ctx context.Context, call *callContext, batch json.RawMessage, name string, gate liveExecuteOutput, mark int) (*executed, error) {
+	answer := func(result json.RawMessage) (*executed, error) {
+		written, err := l.server.executeAnswer(ctx, map[string]any{"result": result})
+		return &executed{answer: written}, err
+	}
+	if refusal := l.markRefusal(name); refusal != nil {
+		return answer(refusal)
+	}
+	from := l.done
+	if name == "history.redo" {
+		from = l.undone
+	}
+	if len(from) == 0 {
+		return answer(gate.Result)
+	}
+	document, revision, err := l.exportLocked(ctx)
+	if err != nil {
+		return nil, err
+	}
+	refusal, ask, err := l.approveReplay(ctx, call, name, batch, document, revision)
+	if err != nil {
+		return nil, err
+	}
+	if ask != nil {
+		return &executed{ask: ask}, nil
+	}
+	if refusal != nil {
+		return answer(refusal)
+	}
+	l.room.holdAppends = true
+	result, wrote, err := l.replay(ctx, name, gate.Result)
+	if err != nil || !wrote {
+		l.room.holdAppends = false
+		l.room.pendingLocal = nil
+		if err != nil {
+			return nil, err
+		}
+		return answer(result)
+	}
+	if name == "history.undo" {
+		l.marksFuture = append(l.marksFuture, popMark(&l.marksPast))
+	} else {
+		l.marksPast = append(l.marksPast, popMark(&l.marksFuture))
+	}
+	gate.Result, gate.Writes = result, true
+	return l.deliver(ctx, gate, mark)
+}
+
+func popMark(marks *[]historyMark) historyMark {
+	if len(*marks) == 0 {
+		return historyMark{}
+	}
+	last := (*marks)[len(*marks)-1]
+	*marks = (*marks)[:len(*marks)-1]
+	return last
+}

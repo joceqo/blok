@@ -1,0 +1,21 @@
+[package]
+name = "blok-collab-docendpoint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Internal part of blok-mcp (document endpoint client). Not a stable API."
+publish = true
+
+[dependencies]
+blok-dotnet.workspace = true
+blok-jsjson.workspace = true
+blok-outbound.workspace = true
+tokio = { version = "1", features = ["io-util", "net", "rt", "time", "macros"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "net", "rt", "rt-multi-thread", "time", "macros"] }
+
+[lints]
+workspace = true

@@ -78,7 +78,7 @@
 }
 
 @keyframes blok-assistant-draw {
-  from { stroke-dashoffset: 16 }
+  from { stroke-dashoffset: 17 }
 }
 
 @keyframes blok-assistant-in {
@@ -123,16 +123,10 @@
   to { opacity: 1; transform: translateY(0) scale(1) }
 }
 
-@keyframes blok-audio-glitch {
-  0%, 80%, 96% { height: var(--blok-audio-flatline) }
-  84% { height: 16px }
-  88% { height: 6px }
-  92% { height: 20px }
-}
-
-@keyframes blok-audio-ping {
-  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--blok-audio-error-ink) 45%, transparent) }
-  100% { box-shadow: 0 0 0 6px transparent }
+@keyframes blok-audio-cover-pop {
+  0% { transform: scale(0.7) }
+  60% { transform: scale(1.12) }
+  100% { transform: scale(1) }
 }
 
 @keyframes blok-audio-rise {
@@ -140,17 +134,32 @@
   to { opacity: 1; transform: translateY(0) }
 }
 
-@keyframes blok-audio-skip {
-  0%, 82% { transform: rotate(-14deg) }
-  86% { transform: rotate(-6deg) }
-  90% { transform: rotate(-14deg) }
-  94% { transform: rotate(-8deg) }
+@keyframes blok-audio-speed-roll-down {
+  from { opacity: 0; transform: translateY(-0.45em) }
+  to { opacity: 1; transform: translateY(0) }
+}
+
+@keyframes blok-audio-speed-roll-up {
+  from { opacity: 0; transform: translateY(0.45em) }
+  to { opacity: 1; transform: translateY(0) }
 }
 
 @keyframes blok-block-target-pulse {
   0% { background-color: var(--blok-selection) }
   60% { background-color: var(--blok-selection) }
   100% { background-color: transparent }
+}
+
+@keyframes blok-bookmark-breathe {
+  50% { opacity: 0.45 }
+}
+
+@keyframes blok-bookmark-fade {
+  from { opacity: 0 }
+}
+
+@keyframes blok-bookmark-focus {
+  from { opacity: 0; filter: blur(16px) }
 }
 
 @keyframes blok-callout-emoji-jump-in {
@@ -188,14 +197,32 @@
   to { opacity: 1; transform: none }
 }
 
+@keyframes blok-database-calendar-drop-out {
+  from { background-color: var(--blok-icon-active-bg) }
+}
+
 @keyframes blok-database-confirm-fade {
   from { opacity: 0 }
   to { opacity: 1 }
 }
 
+@keyframes blok-database-confirm-fade-out {
+  from { opacity: 1 }
+  to { opacity: 0 }
+}
+
 @keyframes blok-database-confirm-in {
-  from { opacity: 0; transform: scale(0.97) }
-  to { opacity: 1; transform: none }
+  from { transform: scale(0.97) }
+  to { transform: none }
+}
+
+@keyframes blok-database-confirm-out {
+  from { transform: none }
+  to { transform: scale(0.97) }
+}
+
+@keyframes blok-database-landed {
+  from { opacity: 0 }
 }
 
 @keyframes blok-dice-impact {
@@ -247,6 +274,25 @@
   40% { transform: scale(1.025) }
 }
 
+@keyframes blok-embed-deck-shuffle {
+  0% { transform: var(--_right); z-index: 4; opacity: 1 }
+  5%, 17.5% { transform: var(--_front); z-index: 5; opacity: 1 }
+  20% { transform: translate(0, -64px) rotate(-9deg) scale(.7); z-index: 5; opacity: 1 }
+  20.01% { z-index: 1 }
+  24.5%, 60% { transform: var(--_back); z-index: 1; opacity: 0 }
+  65%, 80% { transform: var(--_left); z-index: 3; opacity: 1 }
+  85%, 100% { transform: var(--_right); z-index: 4; opacity: 1 }
+}
+
+@keyframes blok-embed-deck-tone {
+  0%, 14% { --blok-embed-window-tone: var(--blok-color-red-text) }
+  20%, 34% { --blok-embed-window-tone: var(--blok-color-blue-text) }
+  40%, 54% { --blok-embed-window-tone: var(--blok-color-purple-text) }
+  60%, 74% { --blok-embed-window-tone: var(--blok-color-pink-text) }
+  80%, 94% { --blok-embed-window-tone: var(--blok-color-green-text) }
+  100% { --blok-embed-window-tone: var(--blok-color-red-text) }
+}
+
 @keyframes blok-embed-rejected {
   25%, 75% { transform: translateX(-4px) }
   50% { transform: translateX(4px) }
@@ -267,14 +313,11 @@
   to { transform: translateY(0) scale(1) }
 }
 
-@keyframes blok-emoji-tones-in {
-  from { opacity: 0; transform: translateY(-5px) scale(0.82, 0.94) }
-  to { opacity: 1; transform: translateY(0) scale(1) }
-}
-
-@keyframes blok-file-bar-sheen {
-  from { transform: translateX(-100%) }
-  to { transform: translateX(100%) }
+@keyframes blok-file-drop {
+  0% { transform: translateY(0); opacity: 1 }
+  38% { transform: translateY(7px); opacity: 0 }
+  39% { transform: translateY(-11px); opacity: 0 }
+  100% { transform: translateY(0); opacity: 1 }
 }
 
 @keyframes blok-file-preview-backdrop-in {
@@ -306,6 +349,12 @@
 @keyframes blok-file-preview-view-in-right {
   from { transform: translate3d(14px, 0, 0) }
   to { transform: none }
+}
+
+@keyframes blok-file-tray {
+  0%, 28%, 100% { transform: none }
+  44% { transform: translateY(1.5px) scaleX(1.06) }
+  62% { transform: translateY(-0.5px) }
 }
 
 @keyframes blok-find-arrive {
@@ -414,11 +463,6 @@
   100% { width: 92% }
 }
 
-@keyframes blok-image-shimmer {
-  from { transform: translateX(-100%) }
-  to { transform: translateX(100%) }
-}
-
 @keyframes blok-image-unmend {
   from { background-color: color-mix(in srgb, var(--blok-text-primary) 3%, var(--blok-bg-secondary)); border-color: var(--blok-border-subtle) }
 }
@@ -486,23 +530,6 @@
   to { stroke-dasharray: 1 1; stroke-dashoffset: 0 }
 }
 
-@keyframes blok-media-empty-host-in {
-  from { opacity: 0; transform: translateX(6px) }
-}
-
-@keyframes blok-media-empty-kbd-nudge {
-  50% { transform: translateX(2px) }
-}
-
-@keyframes blok-media-empty-shine {
-  from { transform: translateX(-110%) }
-  to { transform: translateX(110%) }
-}
-
-@keyframes blok-media-empty-site-flip {
-  from { transform: scaleX(0) }
-}
-
 @keyframes blok-media-preview-breathe {
   0%, 100% { transform: scaleY(0.55) }
   50% { transform: scaleY(1) }
@@ -515,13 +542,18 @@
 
 @keyframes blok-media-preview-flap {
   0%, 100% { transform: rotate(45deg) scaleY(1) rotate(-45deg) }
-  40% { transform: rotate(45deg) scaleY(-0.45) rotate(-45deg) }
+  40% { transform: rotate(45deg) scaleY(0.45) rotate(-45deg) }
   70% { transform: rotate(45deg) scaleY(1.12) rotate(-45deg) }
 }
 
 @keyframes blok-media-preview-hover {
   0%, 100% { translate: 0 0 }
   50% { translate: -1.5px -2.5px }
+}
+
+@keyframes blok-media-preview-land {
+  0%, 100% { transform: translateY(var(--lift)) scale(var(--scale)) }
+  40% { transform: translateY(calc(var(--lift) - 4px)) scale(1.07) }
 }
 
 @keyframes blok-media-preview-pan {
@@ -554,6 +586,10 @@
 @keyframes blok-media-preview-shuffle {
   0%, 100% { transform: var(--rest) }
   30%, 70% { transform: translate(calc(var(--dir) * 30px), -6px) rotate(calc(var(--dir) * 16deg)) }
+}
+
+@keyframes blok-page-cover-picker-in {
+  from { opacity: 0 }
 }
 
 @keyframes blok-presence-caret-pulse {
@@ -975,6 +1011,14 @@
   to { background-size: 100% 100% }
 }
 
+@keyframes blok-tether-menu-in {
+  from { opacity: 0; transform: scale(0.94) }
+}
+
+@keyframes blok-tether-stem-in {
+  from { transform: scaleY(0) }
+}
+
 @keyframes blok-toast-check-pop {
   40% { scale: 1.1 }
 }
@@ -1057,25 +1101,15 @@
   100% { transform: scale(1) }
 }
 
-@keyframes blok-video-burst-ring {
-  0% { opacity: 0.7; transform: scale(0.85) }
-  60% { opacity: 0.28 }
-  100% { opacity: 0; transform: scale(1.75) }
-}
-
 @keyframes blok-video-loop-spin {
   from { transform: rotate(0deg) }
   to { transform: rotate(360deg) }
 }
 
 @keyframes blok-video-menu-in {
-  from { opacity: 0; transform: translateY(8px) scale(0.94) }
+  from { opacity: 0; transform: translateY(6px) scale(0.96) }
+  50% { opacity: 1 }
   to { opacity: 1; transform: translateY(0) scale(1) }
-}
-
-@keyframes blok-video-menu-rise {
-  from { transform: translateY(10px) }
-  to { transform: translateY(0) }
 }
 
 @keyframes blok-video-mute-pop {
@@ -1092,11 +1126,6 @@
 @keyframes blok-video-rise {
   from { opacity: 0; transform: translateY(8px) scale(0.98) }
   to { opacity: 1; transform: none }
-}
-
-@keyframes blok-video-roll {
-  from { background-position: 0 0, 0 100%, 0 0 }
-  to { background-position: 0 0, 0 0, 0 0 }
 }
 
 @keyframes blok-video-seek-flash-back {
@@ -1125,25 +1154,18 @@
   50% { transform: translateX(3px); opacity: 1 }
 }
 
+@keyframes blok-video-speed-roll-down {
+  from { opacity: 0; transform: translateY(-0.45em) }
+  to { opacity: 1; transform: translateY(0) }
+}
+
+@keyframes blok-video-speed-roll-up {
+  from { opacity: 0; transform: translateY(0.45em) }
+  to { opacity: 1; transform: translateY(0) }
+}
+
 @keyframes blok-video-spin {
   to { transform: rotate(360deg) }
-}
-
-@keyframes blok-video-static {
-  0% { transform: translate(0, 0) }
-  20% { transform: translate(-7%, 4%) }
-  40% { transform: translate(5%, -6%) }
-  60% { transform: translate(-3%, -9%) }
-  80% { transform: translate(8%, 3%) }
-}
-
-@keyframes blok-video-tear {
-  0% { opacity: 0 }
-  84% { opacity: 1; transform: translateX(-9%); clip-path: inset(0 0 58% 0) }
-  86% { opacity: 1; transform: translateX(6%) scaleY(0.6); clip-path: inset(36% 0 0 0) }
-  88% { opacity: 0.85; transform: translateX(-2%); clip-path: inset(0) }
-  90% { opacity: 1; transform: translate(12%, 140%) scaleY(0.3); clip-path: inset(0 0 40% 0) }
-  92% { opacity: 0; transform: none; clip-path: inset(0) }
 }
 
 @keyframes blok-video-theater-curtain {

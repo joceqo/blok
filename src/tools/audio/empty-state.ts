@@ -10,9 +10,9 @@ import type { I18nInstance } from '../../components/utils/tools';
 export interface EmptyStateOptions {
   onFile(file: File): void;
   onUrl(url: string): void;
-  /** MIME types to accept on file picker + show in the formats hint. */
+  /** MIME types to accept on file picker. */
   acceptTypes?: string[];
-  /** Max file size in bytes — surfaced in the formats hint when set. */
+  /** Max file size in bytes — shown under the button when set. */
   maxSize?: number;
   /** Which insert sources to expose. Default `'both'`. */
   sources?: MediaSource;
@@ -32,15 +32,17 @@ export function renderEmptyState(opts: EmptyStateOptions): EmptyStateElement {
     onUrl: opts.onUrl,
     labels: {
       add: tr(i18n, 'tools.audio.emptyAddAudio', 'Add audio'),
-      upload: tr(i18n, 'tools.audio.emptyUpload', 'From device'),
+      hint: tr(i18n, 'tools.audio.emptyHint', 'Drag an audio file here, choose one from your device, or paste a link.'),
+      hintUpload: tr(i18n, 'tools.audio.emptyHintUpload', 'Drag an audio file here or choose one from your device.'),
+      hintLink: tr(i18n, 'tools.image.emptyHintLink', 'Paste a link to it below.'),
+      dropAnywhere: tr(i18n, 'tools.image.emptyDropAnywhere', 'Let go anywhere in this block.'),
+      cancelLink: tr(i18n, 'notifier.cancel', 'Cancel'),
       embed: tr(i18n, 'tools.audio.emptyLink', 'From a link'),
       chooseFile: tr(i18n, 'tools.audio.emptyChooseFile', 'Choose audio'),
-      orDropHere: tr(i18n, 'tools.audio.emptyOrDropHere', 'or drag it here'),
       dropToUpload: tr(i18n, 'tools.audio.emptyDropToUpload', 'Drop to add'),
       urlPlaceholder: tr(i18n, 'tools.audio.emptyUrlPlaceholder', 'Paste an audio link…'),
       urlAria: tr(i18n, 'tools.audio.emptyUrlAria', 'Audio URL'),
       submit: tr(i18n, 'tools.audio.emptyInsert', 'Add'),
-      sourceAria: tr(i18n, 'tools.audio.emptySourceAria', 'Audio source'),
       maxSize: (size) =>
         i18n?.has('tools.audio.emptyMaxSize')
           ? i18n.t('tools.audio.emptyMaxSize', { size })

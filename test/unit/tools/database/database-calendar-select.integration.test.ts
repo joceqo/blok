@@ -156,6 +156,28 @@ describe('DatabaseTool — calendar event selection (research/22 §1)', () => {
     expect(open).not.toHaveBeenCalled();
   });
 
+  // notion-motion.md Round 40 §3: the moved event is selected and its halo fades in; the next draw fades the day's tint.
+  it('a moved event lands selected, and its new day fades its tint out', () => {
+    const { el, tool } = buildTool(doc(), {}, calendarData());
+    const handlers = (tool as unknown as { view: { options: { handlers: { setDate: (rowId: string, value: string, day?: string) => void } } } }).view.options.handlers;
+
+    handlers.setDate('delta', '2026-10-22', '2026-10-22');
+
+    expect(selected(el)).toEqual(['delta']);
+    expect(eventOf(el, 'delta').hasAttribute('data-blok-database-row-landed')).toBe(true);
+    expect(dayCell(el, '2026-10-22').hasAttribute('data-drop-leaving')).toBe(true);
+  });
+
+  it('a resized event is not selected and no day fades', () => {
+    const { el, tool } = buildTool(doc(), {}, calendarData());
+    const handlers = (tool as unknown as { view: { options: { handlers: { setDate: (rowId: string, value: string) => void } } } }).view.options.handlers;
+
+    handlers.setDate('delta', '2026-10-20/2026-10-22');
+
+    expect(selected(el)).toEqual([]);
+    expect(el.querySelector('[data-drop-leaving]')).toBeNull();
+  });
+
   it('a plain click opens the row and selects nothing', () => {
     const { el, tool } = buildTool(doc(), {}, calendarData());
     const open = vi.spyOn(tool as unknown as Opener, 'handleRowClick');
@@ -300,6 +322,19 @@ describe('DatabaseTool — calendar event comments (research/22 §11)', () => {
     document.querySelector<HTMLElement>('[data-blok-popover-item][data-blok-item-name="database-row-comment"]')?.click();
 
     expect(open).toHaveBeenCalledWith({ databaseId: 'db', rowId: 'delta' }, eventOf(el, 'delta'));
+  });
+
+  // notion-motion.md Round 59 §4: an event's menu opens at the pointer x, 1px under it.
+  it('anchors an event\'s right-click menu at the pointer', () => {
+    const { el } = buildTool(doc(), {}, calendarData());
+
+    eventOf(el, 'delta').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 880, clientY: 200 }));
+    const point = document.querySelector<HTMLElement>('[data-blok-database-menu-point]');
+
+    expect(point?.style.left).toBe('880px');
+    expect(point?.style.top).toBe('201px');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(document.querySelector('[data-blok-database-menu-point]')).toBeNull();
   });
 
   it('one picked event opens its comments on ⌘⇧M', () => {

@@ -4,7 +4,7 @@ import (
 	"cmp"
 	"slices"
 
-	"github.com/JackUait/blok/packages/server/go/internal/lib0"
+	"github.com/JackUait/blok/packages/server/go/v2/internal/lib0"
 )
 
 // Store holds every integrated struct, one contiguous ascending run per
@@ -143,6 +143,14 @@ func (s *Store) addStruct(added Struct) {
 type StateVector struct {
 	clocks map[uint64]uint64
 	order  []uint64
+}
+
+func (v *StateVector) has(client uint64) bool {
+	if v == nil {
+		return false
+	}
+	_, ok := v.clocks[client]
+	return ok
 }
 
 // Get is the client's clock, 0 when unknown.

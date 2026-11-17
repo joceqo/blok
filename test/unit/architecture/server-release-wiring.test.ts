@@ -17,7 +17,9 @@ const SETUP_NODE_ACTION = '.github/actions/setup-node-deps/action.yml';
 const CHECKOUT_ACTION = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1';
 const SETUP_DOTNET_ACTION = 'actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68';
 const BUILDX_ACTION = 'docker/setup-buildx-action@';
+const QEMU_ACTION = 'docker/setup-qemu-action@';
 const LOGIN_ACTION = 'docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6';
+const NUGET_LOGIN_ACTION = 'NuGet/login@8d196754b4036150537f80ac539e15c2f1028841';
 const SETUP_NODE_ACTION_SHA = 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1';
 const PUBLIC_PUBLISH_STEP = 'Publish NuGet packages';
 const MIRROR_STEP = 'Mirror NuGet packages to the dodopizza feed';
@@ -50,6 +52,7 @@ type FamilyEntry = {
 
 type WorkflowStep = {
   if?: string;
+  id?: string;
   env?: Record<string, string>;
   name?: string;
   run?: string;
@@ -194,7 +197,8 @@ describe('server release wiring', () => {
   it('keeps every Node, C# and Go server gate in final CI', () => {
     const workflow = parse(read('.github/workflows/ci.yml')) as Workflow;
     const jobs = [workflow.jobs.server, workflow.jobs['server-delivery']];
-    const steps = [...jobs, workflow.jobs['server-security']].flatMap((job) => job?.steps ?? []);
+    const steps = [...jobs, workflow.jobs['server-security'], workflow.jobs['validate-spec-coverage']]
+      .flatMap((job) => job?.steps ?? []);
     const runs = steps.map((step) => step.run ?? '').join('\n');
 
     // The two jobs run in parallel; each builds the server, so each needs both toolchains.
@@ -241,6 +245,8 @@ describe('server release wiring', () => {
       'http-host-contract',
       'page-transfer-sidecar',
       'sync-transport-contract',
+      'collab-http-contract',
+      'file-bytes-contract',
     ]) {
       expect(runner).toContain(`'${suite}'`);
     }
@@ -353,6 +359,17 @@ describe('server release wiring', () => {
     expect(source.indexOf('Wait for successful CI'))
       .toBeLessThan(source.indexOf('dotnet nuget push'));
 
+    // A tag whose CI can never pass (a test bug fixed only on a later commit)
+    // ships through a dispatch that names its reason. A tag push has no input,
+    // so its gate always holds. The reason goes through env, not into the script.
+    const ciGateStep = steps.find((step) => step.name === 'Wait for successful CI');
+
+    expect(workflow.on?.workflow_dispatch?.inputs?.ci_waiver?.required).toBe(false);
+    expect(ciGateStep?.env?.CI_WAIVER).toBe('${{ inputs.ci_waiver }}');
+    expect(ciGate).not.toContain('${{');
+    expect(ciGate?.indexOf('if [ -n "$CI_WAIVER" ]; then')).toBe(0);
+    expect(ciGate).toContain('echo "::warning::CI gate waived for $RELEASE_TAG: $CI_WAIVER"');
+
     for (const project of [
       'packages/server/dotnet/Blok.Server/Blok.Server.csproj',
       'packages/server/dotnet/Blok.Server.AspNetCore/Blok.Server.AspNetCore.csproj',
@@ -377,7 +394,18 @@ describe('server release wiring', () => {
     expect(runs).toContain('Blok.Server."$BLOK_SERVER_VERSION".nupkg');
     expect(runs).toContain('Blok.Server.AspNetCore."$BLOK_SERVER_VERSION".nupkg');
     expect(runs).toContain('dotnet nuget push');
-    expect(source).toContain('NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}');
+    // nuget.org Trusted Publishing: a short-lived key minted from the job's
+    // OIDC token, so no long-lived key can expire under a tag. The policy on
+    // nuget.org names this workflow file and owner JackUait.
+    const login = steps.find((step) => step.uses === NUGET_LOGIN_ACTION);
+    const publish = steps.find((step) => step.name === PUBLIC_PUBLISH_STEP);
+
+    expect(job?.permissions).toMatchObject({ 'id-token': 'write' });
+    expect(login?.id).toBe('nuget-login');
+    expect(login?.with).toEqual({ user: 'JackUait' });
+    expect(steps.indexOf(login ?? {})).toBe(steps.indexOf(publish ?? {}) - 1);
+    expect(publish?.env?.NUGET_API_KEY).toBe('${{ steps.nuget-login.outputs.NUGET_API_KEY }}');
+    expect(source).not.toContain('secrets.NUGET_API_KEY');
     expect(source).not.toContain('BLOK_NUGET');
 
     expect(runs).toContain(
@@ -541,6 +569,35 @@ describe('server release wiring', () => {
     expect(logout?.run).toContain('docker logout ghcr.io');
   });
 
+  // The base image lags Ubuntu's security fixes, and the CI Trivy gate fails
+  // on any fixable HIGH. The upgrade runs as root, so it must come before USER.
+  it('upgrades the runtime image packages as root', () => {
+    const dockerfile = read('packages/server/Dockerfile');
+    const runtimeStage = dockerfile.slice(
+      dockerfile.lastIndexOf('FROM mcr.microsoft.com/dotnet/runtime-deps:10.0'),
+    );
+    const upgradeIndex = runtimeStage.indexOf('apt-get upgrade -y');
+
+    expect(upgradeIndex).toBeGreaterThan(-1);
+    expect(runtimeStage.indexOf('apt-get update')).toBeLessThan(upgradeIndex);
+    expect(runtimeStage).toContain('rm -rf /var/lib/apt/lists/*');
+    expect(upgradeIndex).toBeLessThan(runtimeStage.indexOf('USER 65532:65532'));
+  });
+
+  // The runtime stage runs apt for the target platform. The runner registers
+  // no arm64 emulator, so without QEMU the arm64 build fails at that RUN.
+  it('registers QEMU before the builder for the multi-architecture push', () => {
+    const workflow = parse(read(RELEASE_WORKFLOW)) as Workflow;
+    const steps = workflow.jobs['release-server']?.steps ?? [];
+    const qemuIndex = steps.findIndex((step) => (step.uses ?? '').startsWith(QEMU_ACTION));
+    const buildxIndex = steps.findIndex((step) => (step.uses ?? '').startsWith(BUILDX_ACTION));
+
+    expect(qemuIndex).toBeGreaterThan(-1);
+    expect(qemuIndex).toBe(buildxIndex - 1);
+    expect(steps[qemuIndex]?.uses).toMatch(/^docker\/setup-qemu-action@[0-9a-f]{40}$/);
+    expect(steps[qemuIndex]?.with).toEqual({ platforms: 'arm64' });
+  });
+
   it('dispatches tagged docs deployment after publishing the release', () => {
     const workflow = parse(read(RELEASE_WORKFLOW)) as Workflow;
     const job = workflow.jobs['release-server'];
@@ -615,6 +672,34 @@ describe('server release wiring', () => {
     );
   });
 
+  // Pushed in dependency order, so no feed ever lists Blok.Server.Mcp while
+  // the Blok.Server.AspNetCore it depends on is missing.
+  it('packs, pushes, mirrors, uploads and verifies the two MCP NuGets', () => {
+    const steps = (parse(read(RELEASE_WORKFLOW)) as Workflow).jobs['release-server']?.steps ?? [];
+    const run = (name: string): string => steps.find((step) => step.name === name)?.run ?? '';
+    const build = run('Build NuGet and host artifacts');
+    const verify = run('Verify published server delivery');
+    const ids = ['Blok.Server', 'Blok.Server.AspNetCore', 'Blok.Server.Mcp', 'Blok.Mcp'];
+
+    for (const project of ['Blok.Server.Mcp/Blok.Server.Mcp.csproj', 'Blok.Mcp/Blok.Mcp.csproj']) {
+      const pack = build.indexOf(`dotnet pack packages/server/dotnet/${project}`);
+
+      expect(pack).toBeGreaterThan(-1);
+      expect(build.indexOf('node scripts/test-server-packages.mjs')).toBeGreaterThan(pack);
+    }
+    for (const name of [PUBLIC_PUBLISH_STEP, MIRROR_STEP]) {
+      const pushes = ids.map((id) => run(name).indexOf(`.server-release-dist/nuget/${id}."$BLOK_SERVER_VERSION".nupkg`));
+
+      expect(pushes.every((index) => index > -1)).toBe(true);
+      expect([...pushes].sort((left, right) => left - right)).toEqual(pushes);
+    }
+    for (const id of ['Blok.Server.Mcp', 'Blok.Mcp']) {
+      expect(run('Upload release assets')).toContain(`.server-release-dist/nuget/${id}."$BLOK_SERVER_VERSION".nupkg`);
+      expect(verify).toContain(`"${id}.$BLOK_SERVER_VERSION.nupkg"`);
+    }
+    expect(verify).toContain('for package in blok.server blok.server.aspnetcore blok.server.mcp blok.mcp; do');
+  });
+
   it('lets the package fixture validate the exact release NuGets', () => {
     const fixture = read('scripts/test-server-packages.mjs');
     const project = read(
@@ -655,6 +740,19 @@ describe('server release wiring', () => {
 
     // yarn resolves a portal by reading its manifest; without it --immutable fails with "Manifest not found".
     expect(localTargets.filter((target) => !beforeInstall.includes(`COPY ${target}/ ${target}/`))).toEqual([]);
+  });
+
+  it('copies every yarn patch before the immutable yarn install', () => {
+    const dockerfile = read('packages/server/Dockerfile');
+    const beforeInstall = dockerfile.slice(0, dockerfile.indexOf('yarn install --immutable'));
+    const dockerignore = read('.dockerignore').split('\n');
+    const patchDirs = [...read('yarn.lock').matchAll(/#~\/([^":]+)\/[^/":]+\.patch/g)]
+      .map((match) => match[1])
+      .filter((dir, index, all) => all.indexOf(dir) === index);
+
+    // yarn reads each patch file while resolving; without it --immutable fails with ENOENT.
+    expect(patchDirs.filter((dir) => !beforeInstall.includes(`COPY ${dir}/ ${dir}/`))).toEqual([]);
+    expect(patchDirs.filter((dir) => !dockerignore.includes(`!${dir}`))).toEqual([]);
   });
 
   it('builds the C# host from the root context into .NET 10 runtime-deps', () => {
@@ -793,7 +891,7 @@ describe('server release wiring', () => {
     expect(read('packages/server/README.md')).not.toContain('UseMySql');
     expect(read(RELEASE_WORKFLOW)).not.toContain('MySql');
     expect(read(RELEASE_WORKFLOW)).toContain('node scripts/publish-server-go.mjs');
-    expect(read('packages/server/README.md')).toContain('github.com/JackUait/blok/packages/server/go');
+    expect(read('packages/server/README.md')).toContain('github.com/JackUait/blok/packages/server/go/v2');
     expect(read('packages/server/README.md')).toContain('checksums-go.txt');
   });
 

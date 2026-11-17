@@ -8,7 +8,7 @@ using Xunit;
 namespace Blok.Server.Tests.Collab;
 
 /// <summary>History list, read, delete and restore through the room manager, on the real converter.</summary>
-public sealed class CollabHistoryManagerTests
+public sealed partial class CollabHistoryManagerTests
 {
   private const string DocId = "doc-1";
   private readonly FakeWorkingSetStore store = new();
@@ -367,6 +367,72 @@ public sealed class CollabHistoryManagerTests
   }
 
   [Fact]
+  public async Task APreviewWithTrashCountsTheRestorerInItsFrame()
+  {
+    var manager = CreateManager(new CollabRoomOptions { RestoreTrashesPages = true });
+    await LoadAsync(manager);
+    await EditAsync(manager, new CollabEditOp.Insert(
+        "pg", new JsonObject { ["type"] = "page", ["data"] = new JsonObject { ["pageId"] = "sub" } }, "a", null));
+
+    var shortId = await manager.PreviewRestoreAsync(DocId, Lineage(), 0, null, "u");
+    var longId = await manager.PreviewRestoreAsync(DocId, Lineage(), 0, null, new string('u', 200));
+
+    Assert.True(longId.Preview!.FrameBytes > shortId.Preview!.FrameBytes,
+        $"{shortId.Preview.FrameBytes} vs {longId.Preview.FrameBytes}");
+  }
+
+  [Fact]
+  public async Task ARestoreRemovesALaterPagePointerByDefault()
+  {
+    var manager = CreateManager();
+    await LoadAsync(manager);
+    await EditAsync(manager, new CollabEditOp.Insert(
+        "pg", new JsonObject { ["type"] = "page", ["data"] = new JsonObject { ["pageId"] = "sub" } }, "a", null));
+
+    var result = await manager.RestoreAsync(DocId, Lineage(), 0, "op-restore", "u9");
+
+    Assert.Equal(CollabEditStatus.Applied, result.Edit!.Status);
+    Assert.DoesNotContain(
+        (await BlocksAsync(manager)).AsArray(), block => block?["id"]?.GetValue<string>() == "pg");
+  }
+
+  [Fact]
+  public async Task ARestoreTrashesAPagePointerAddedAfterThePoint()
+  {
+    var manager = CreateManager(new CollabRoomOptions { RestoreTrashesPages = true });
+    await LoadAsync(manager);
+    await EditAsync(manager, new CollabEditOp.Insert(
+        "pg", new JsonObject { ["type"] = "page", ["data"] = new JsonObject { ["pageId"] = "sub" } }, "a", null));
+
+    var result = await manager.RestoreAsync(DocId, Lineage(), 0, "op-restore", "u9");
+
+    Assert.Equal(CollabEditStatus.Applied, result.Edit!.Status);
+    var pointer = (await BlocksAsync(manager)).AsArray().Single(block => block?["id"]?.GetValue<string>() == "pg")!;
+    Assert.True(JsonNode.DeepEquals(
+        new JsonObject
+        {
+          ["at"] = time.GetUtcNow().ToUnixTimeMilliseconds(),
+          ["by"] = "u9",
+          ["formerParentId"] = null,
+          ["formerIndex"] = 1,
+        },
+        pointer["data"]?["trashed"]), pointer.ToJsonString());
+
+    // A JS client reads a bigint as typeof "bigint" and drops the field.
+    var doc = await ReplayAsync(result.Edit.Receipt!.ServerSequence);
+    Assert.True(doc.GetMap("blocks").TryGet("pg", out var block));
+    Assert.True(((YMap)block!).TryGet("data", out var data));
+    Assert.True(((YMap)data!).TryGet("trashed", out var trashed));
+    var at = trashed switch
+    {
+      YMap map when map.TryGet("at", out var value) => value,
+      AnyObject plain when plain.TryGet("at", out var value) => value,
+      _ => trashed,
+    };
+    Assert.IsType<double>(at);
+  }
+
+  [Fact]
   public async Task ARestoreReachesALineageAResetReplaced()
   {
     var manager = CreateManager();
@@ -448,6 +514,35 @@ public sealed class CollabHistoryManagerTests
     await converter.ApplyOpsAsync(live, ops);
 
     Assert.Equal(broadcast, measured);
+  }
+
+  // Agent undo steps drop their plans on this event; Go pins the same list in
+  // room/replaced_test.go.
+  [Fact]
+  public async Task DocumentReplacedFiresOnAResetAnAppliedRestoreAndAPurgeOnly()
+  {
+    var manager = CreateManager();
+    var fired = new List<string>();
+    manager.DocumentReplaced += fired.Add;
+    await LoadAsync(manager);
+    await EditAsync(manager, Update("a", "A"));
+    await EditAsync(manager, Update("a", "B"));
+    var lineage = Lineage();
+
+    Assert.Empty(fired);
+    Assert.Equal(CollabHistoryStatus.NotFound, (await manager.RestoreAsync(DocId, lineage, 9, "op-missing", null)).History);
+    var stale = await manager.RestoreAsync(DocId, lineage, 1, "op-stale", null, new CollabEditPrecondition(lineage, 1));
+    Assert.Equal(CollabEditStatus.PreconditionFailed, stale.Edit!.Status);
+    Assert.Empty(fired);
+
+    Assert.Equal(CollabEditStatus.Applied, (await manager.RestoreAsync(DocId, lineage, 1, "op-restore", null)).Edit!.Status);
+    Assert.Equal([DocId], fired);
+
+    await ResetAsync(manager);
+    Assert.Equal([DocId, DocId], fired);
+
+    await manager.PurgeDocumentAsync(DocId, _ => ValueTask.FromResult(true));
+    Assert.Equal([DocId, DocId, DocId], fired);
   }
 
   [Fact]
@@ -653,7 +748,8 @@ public sealed class CollabHistoryManagerTests
   private CollabRoomManager ManagerOver(
       ICollabOperationStore? operationStore,
       CollabRoomOptions? options = null,
-      IRichTextHtmlReader? reader = null)
+      IRichTextHtmlReader? reader = null,
+      ICollabRecordNotes? recordNotes = null)
   {
     return new CollabRoomManager(
         store,
@@ -662,7 +758,8 @@ public sealed class CollabHistoryManagerTests
         options ?? new CollabRoomOptions(),
         time,
         log.Add,
-        operationStore);
+        operationStore,
+        recordNotes: recordNotes);
   }
 
   private string Lineage() => operations.Head(DocId)!.Lineage;

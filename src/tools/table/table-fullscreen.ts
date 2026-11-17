@@ -1,4 +1,4 @@
-import { IconCross, IconExpandDiagonal, IconTable } from '../../components/icons';
+import { IconCross, IconExpandDiagonal, IconHash, IconMinus, IconPlus, IconTable } from '../../components/icons';
 import { DATA_ATTR } from '../../components/constants';
 import { ScrollLocker } from '../../components/utils/scroll-locker';
 import { promoteToTopLayer, removeFromTopLayer, TOP_LAYER_MARKER_ATTR } from '../../components/utils/top-layer';
@@ -15,6 +15,11 @@ const SIZE_WRAP_ATTR = 'data-blok-table-fullscreen-size-wrap';
 const SIZE_LABEL_ATTR = 'data-blok-table-fullscreen-size-label';
 const SIZE_NOTE_ATTR = 'data-blok-table-fullscreen-size-note';
 const SIZE_DONE_ATTR = 'data-blok-table-fullscreen-size-done';
+const SIZE_MODE_ATTR = 'data-blok-table-fullscreen-size-mode';
+const SIZE_GRID_ATTR = 'data-blok-table-fullscreen-size-grid';
+const SIZE_CELL_ATTR = 'data-blok-table-fullscreen-size-cell';
+const SIZE_READOUT_ATTR = 'data-blok-table-fullscreen-size-readout';
+const SIZE_NUMBERS_ATTR = 'data-blok-table-fullscreen-size-numbers';
 const STEP_ATTR = 'data-blok-table-fullscreen-step';
 /** Holding a stepper: first repeat after this long, then one step per REPEAT_MS. */
 const HOLD_MS = 380;
@@ -26,11 +31,32 @@ const REPEAT_MS = 70;
  */
 const stepperRow = (axis: 'cols' | 'rows'): string =>
   `<span ${SIZE_LABEL_ATTR}="${axis}"></span><span data-blok-table-fullscreen-stepper>`
-  + `<button type="button" ${STEP_ATTR}="-1" data-axis="${axis}" tabindex="-1" aria-hidden="true">−</button>`
+  + `<button type="button" ${STEP_ATTR}="-1" data-axis="${axis}" tabindex="-1" aria-hidden="true">${IconMinus}</button>`
   + '<input role="spinbutton" inputmode="numeric" autocomplete="off">'
-  + `<button type="button" ${STEP_ATTR}="1" data-axis="${axis}" tabindex="-1" aria-hidden="true">+</button></span>`;
+  + `<button type="button" ${STEP_ATTR}="1" data-axis="${axis}" tabindex="-1" aria-hidden="true">${IconPlus}</button></span>`;
 const NEAR_ATTR = 'data-blok-table-fullscreen-near';
-const CLOSING_ATTR = 'data-blok-table-fullscreen-closing';
+
+/* The grid picks up to 10 × 10; a bigger table takes the numbers. tables.css sizes it to fill the card. */
+const GRID_SIZE = 10;
+
+/** The size card opens in the mode last chosen. Per viewer, so any storage failure reads as numbers. */
+export const SIZE_MODE_STORAGE_KEY = 'blok:table:size-mode';
+
+const readGridPreferred = (): boolean => {
+  try {
+    return localStorage.getItem(SIZE_MODE_STORAGE_KEY) === 'grid';
+  } catch {
+    return false;
+  }
+};
+
+const writeGridPreferred = (grid: boolean): void => {
+  try {
+    localStorage.setItem(SIZE_MODE_STORAGE_KEY, grid ? 'grid' : 'numbers');
+  } catch {
+    /* storage blocked: the card keeps opening on numbers */
+  }
+};
 
 /** How far the button sits in from the table's inline-end edge. */
 const CORNER_INSET = 6;
@@ -45,9 +71,22 @@ interface TableSize {
   cols: number;
 }
 
+/** Arrow keys on the grid: across moves columns, down adds rows. */
+const GRID_KEYS: Record<string, { axis: 'cols' | 'rows'; by: number } | undefined> = {
+  ArrowRight: { axis: 'cols', by: 1 },
+  ArrowLeft: { axis: 'cols', by: -1 },
+  ArrowDown: { axis: 'rows', by: 1 },
+  ArrowUp: { axis: 'rows', by: -1 },
+};
+
 const OPEN_MS = 460;
-const CLOSE_MS = 420;
+/** The sheet fades out, then the table fades in on the page: two beats, no copy of the table. */
+const FADE_OUT_MS = 180;
+const FADE_IN_MS = 220;
 const SPRING = 'cubic-bezier(.16, 1, .3, 1)';
+const SOFT = 'cubic-bezier(.22, .8, .2, 1)';
+/** Set on the header and close button while the sheet has a transform. See tables.css. */
+const LEAVING_ATTR = 'data-blok-table-fullscreen-leaving';
 /* Matches the modal's corner radius in tables.css (--blok-radius-dialog). */
 const SHEET_CLIP = 'inset(0px 0px 0px 0px round 12px)';
 
@@ -118,6 +157,15 @@ const flowEdge = (holder: HTMLElement): number =>
  * relaid the table out every frame. The root, not the scroll container: the
  * grips and add buttons measure the grid against the root, so both must move.
  */
+/** Where the scroller puts its grid: its box less its padding, whatever its scroll. */
+const contentBox = (el: HTMLElement): DOMRect => {
+  const r = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  const left = parseFloat(style.paddingLeft);
+
+  return new DOMRect(r.left + left, r.top, r.width - left - parseFloat(style.paddingRight), r.height);
+};
+
 const shift = (to: DOMRect, from: DOMRect): Keyframe => ({
   transform: `translate(${to.left - from.left}px, ${to.top - from.top}px)`,
 });
@@ -143,6 +191,11 @@ export class TableFullscreen {
   private readonly colsInput: HTMLInputElement;
   private readonly rowsInput: HTMLInputElement;
   private readonly steppers: HTMLButtonElement[];
+  /** Wraps both stepper rows, hidden while the grid shows. */
+  private readonly numbers: HTMLElement;
+  private readonly grid: HTMLElement;
+  private readonly readout: HTMLElement;
+  private readonly modeButton: HTMLButtonElement;
   private readonly sizeNote: HTMLElement;
   private holdTimer: ReturnType<typeof setTimeout> | null = null;
   /** The note shows once a value is brought down to the filled cells, not merely sitting there. */
@@ -154,12 +207,6 @@ export class TableFullscreen {
   /** The tool root the button sits in, watched for the pointer coming near. */
   private root: HTMLElement | null = null;
   private backdrop: HTMLElement | null = null;
-  /** The table's inline box at open. The page is scroll-locked, so it holds until close. */
-  private origin: DOMRect | null = null;
-  /** The table's own visible box at open: the scroll container runs past a narrow grid. */
-  private shape: DOMRect | null = null;
-  /** The tool root's width on the page. A fluid table takes it back the moment close starts. */
-  private inlineWidth = 0;
   /** The holder, held at its inline height so the page under the modal does not reflow. */
   private holder: HTMLElement | null = null;
   private closing: { host: HTMLElement; backdrop: HTMLElement | null; animations: Animation[] } | null = null;
@@ -194,8 +241,10 @@ export class TableFullscreen {
     // The card's fields are steppers, not text boxes, so they skip the data-blok-field look.
     header.innerHTML = `${IconTable}<span ${TITLE_ATTR}></span>`
       + `<span ${SIZE_WRAP_ATTR}><button type="button" ${SIZE_ATTR} aria-expanded="false"></button>`
-      + `<span ${SIZE_EDITOR_ATTR} role="group" hidden>${stepperRow('cols')}${stepperRow('rows')}`
-      + `<span ${SIZE_NOTE_ATTR} hidden></span><button type="button" ${SIZE_DONE_ATTR}></button></span></span>`;
+      + `<span ${SIZE_EDITOR_ATTR} role="group" hidden><span ${SIZE_NUMBERS_ATTR}>${stepperRow('cols')}${stepperRow('rows')}</span>`
+      + `<span ${SIZE_READOUT_ATTR} aria-live="polite" hidden></span><span ${SIZE_GRID_ATTR} data-blok-testid="table-size-grid" tabindex="0" hidden></span>`
+      + `<span ${SIZE_NOTE_ATTR} hidden></span><button type="button" ${SIZE_MODE_ATTR}></button>`
+      + `<button type="button" ${SIZE_DONE_ATTR}></button></span></span>`;
     this.header = header;
 
     const [colsInput, rowsInput] = Array.from(header.querySelectorAll('input'));
@@ -210,6 +259,45 @@ export class TableFullscreen {
     this.sizeNote.textContent = options.t('tools.table.sizeKeepsContent');
     done.textContent = options.t('tools.equation.done');
     done.addEventListener('click', () => this.commitSizeEdit());
+
+    this.numbers = header.querySelector<HTMLElement>(`[${SIZE_NUMBERS_ATTR}]`) ?? document.createElement('span');
+    this.grid = header.querySelector<HTMLElement>(`[${SIZE_GRID_ATTR}]`) ?? document.createElement('span');
+    this.readout = header.querySelector<HTMLElement>(`[${SIZE_READOUT_ATTR}]`) ?? document.createElement('span');
+    this.modeButton = header.querySelector<HTMLButtonElement>(`[${SIZE_MODE_ATTR}]`) ?? document.createElement('button');
+    this.grid.setAttribute('aria-label', options.t('tools.table.changeSize'));
+    this.grid.replaceChildren(...Array.from({ length: GRID_SIZE * GRID_SIZE }, (_, i) => {
+      const cell = document.createElement('span');
+
+      cell.setAttribute(SIZE_CELL_ATTR, '');
+      cell.setAttribute('data-col', String((i % GRID_SIZE) + 1));
+      cell.setAttribute('data-row', String(Math.floor(i / GRID_SIZE) + 1));
+
+      return cell;
+    }));
+    // Keeps focus in the card while the mode swaps, so focusout does not apply the size.
+    this.modeButton.addEventListener('pointerdown', event => event.preventDefault());
+    this.modeButton.addEventListener('click', () => {
+      const grid = this.grid.hidden !== false;
+
+      writeGridPreferred(grid);
+      this.setGridMode(grid);
+    });
+    this.grid.addEventListener('pointermove', (event) => {
+      const pick = this.cellAt(event.target);
+
+      if (pick !== null) {
+        this.previewGrid(pick);
+      }
+    });
+    this.grid.addEventListener('pointerleave', () => this.previewGrid(null));
+    this.grid.addEventListener('click', (event) => {
+      const pick = this.cellAt(event.target);
+
+      if (pick !== null) {
+        this.writeFields(pick);
+        this.commitSizeEdit();
+      }
+    });
 
     this.titleEl = header.querySelector<HTMLElement>(`[${TITLE_ATTR}]`) ?? document.createElement('span');
     this.sizeButton = header.querySelector<HTMLButtonElement>(`[${SIZE_ATTR}]`) ?? document.createElement('button');
@@ -260,6 +348,16 @@ export class TableFullscreen {
       }
     });
     this.sizeEditor.addEventListener('keydown', (event) => {
+      const gridStep = event.target === this.grid ? GRID_KEYS[event.key] : undefined;
+
+      if (gridStep !== undefined) {
+        // Cells run from the inline start, so in RTL the left arrow adds a column.
+        const flip = gridStep.axis === 'cols' && getComputedStyle(this.grid).direction === 'rtl' ? -1 : 1;
+
+        event.preventDefault();
+        this.stepSize(gridStep.axis === 'cols' ? this.colsInput : this.rowsInput, gridStep.by * flip, GRID_SIZE);
+        this.previewGrid(null);
+      }
       if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && event.target instanceof HTMLInputElement) {
         event.preventDefault();
         this.stepSize(event.target, (event.key === 'ArrowUp' ? 1 : -1) * (event.shiftKey ? 10 : 1));
@@ -297,9 +395,10 @@ export class TableFullscreen {
 
     // One layout for every read before the box moves.
     const source = host.querySelector<HTMLElement>('[data-blok-table-scroll]') ?? host;
-    const origin = source.getBoundingClientRect();
-    const shape = visibleGrid(source, origin);
-    const inlineWidth = source.parentElement?.offsetWidth ?? 0;
+    // The scroller's content box: full screen pads the scroller, so the motion lines up this, not its box.
+    const anchor = contentBox(source);
+    // The table's own visible box: the scroll container runs past a narrow grid.
+    const shape = visibleGrid(source, source.getBoundingClientRect());
     const holder = host.parentElement;
     const flowBefore = holder === null ? 0 : flowEdge(holder);
     const room = holder === null ? 0 : flowBefore - (window.scrollY + holder.getBoundingClientRect().top);
@@ -343,16 +442,13 @@ export class TableFullscreen {
 
     window.addEventListener('keydown', this.onKeydown, true);
     this.host = host;
-    this.origin = origin;
-    this.shape = shape;
-    this.inlineWidth = inlineWidth;
     this.syncButton();
-    this.animateOpen(host, backdrop, source, origin, shape);
+    this.animateOpen(host, backdrop, source, anchor, shape);
   }
 
   /**
-   * The dialog is gone at once for keyboard and screen reader users. The box
-   * stays in the top layer only while it shrinks back into the page.
+   * The dialog is gone at once for keyboard and screen reader users. The sheet
+   * fades out in the top layer, then the table lands on the page and fades in.
    */
   public close(): void {
     const host = this.host;
@@ -372,17 +468,43 @@ export class TableFullscreen {
     const backdrop = this.backdrop;
 
     this.backdrop = null;
-    this.closing = { host, backdrop, animations: this.animateClose(host, backdrop) };
-    this.syncButton();
+    host.getAnimations({ subtree: true }).forEach(a => a.cancel());
 
-    const animations = this.closing.animations;
+    const closing = { host, backdrop, animations: [] as Animation[] };
 
-    if (animations.length === 0) {
+    this.closing = closing;
+
+    if (!host.isConnected || !canAnimate(host)) {
       this.finishClose();
 
       return;
     }
-    void Promise.all(animations.map(a => a.finished)).then(() => this.finishClose(), () => undefined);
+
+    const out = this.animateOut(host);
+
+    closing.animations.push(out);
+
+    if (backdrop !== null) {
+      closing.animations.push(backdrop.animate([{ opacity: 1 }, { opacity: 0 }], {
+        duration: FADE_OUT_MS + FADE_IN_MS, easing: 'ease-out', fill: 'forwards',
+      }));
+    }
+
+    void out.finished.then(() => {
+      if (this.closing !== closing) {
+        return;
+      }
+      // A cancelled animation's `finished` rejects, so it leaves the list first.
+      closing.animations.splice(closing.animations.indexOf(out), 1);
+      out.cancel();
+      this.land(host);
+      closing.animations.push(host.animate(
+        [{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }],
+        { duration: FADE_IN_MS, easing: SOFT, fill: 'backwards' }
+      ));
+
+      return Promise.all(closing.animations.map(a => a.finished));
+    }).then(() => this.finishClose(), () => undefined);
   }
 
   /**
@@ -414,27 +536,12 @@ export class TableFullscreen {
       return;
     }
     this.closing = null;
-    this.origin = null;
-    this.shape = null;
-    closing.host.removeAttribute(CLOSING_ATTR);
-    closing.host.style.removeProperty('--blok-table-inline-width');
-
     closing.animations.forEach(a => a.cancel());
-    this.header.replaceChildren();
-    removeFromTopLayer(closing.host);
-    closing.host.removeAttribute(FULLSCREEN_ATTR);
-    this.holder?.style.removeProperty('min-height');
-    this.holder = null;
+    this.land(closing.host);
 
     if (closing.backdrop !== null) {
       removeFromTopLayer(closing.backdrop);
       closing.backdrop.remove();
-    }
-
-    this.scroll.unlock();
-
-    if (closing.host.isConnected) {
-      this.options.onRelayout();
     }
 
     if (this.button.isConnected) {
@@ -443,18 +550,55 @@ export class TableFullscreen {
   }
 
   /**
+   * Puts the table back on the page, once: the full-screen attribute says it is
+   * still up. The backdrop stays until the fade-in ends.
+   */
+  private land(host: HTMLElement): void {
+    if (!host.hasAttribute(FULLSCREEN_ATTR)) {
+      return;
+    }
+    this.header.replaceChildren();
+    [this.header, this.button].forEach((el) => {
+      el.removeAttribute(LEAVING_ATTR);
+      el.style.removeProperty('--_blok-table-leave-top');
+    });
+    removeFromTopLayer(host);
+    host.removeAttribute(FULLSCREEN_ATTR);
+    // Lands at its start, as it was before it opened.
+    const scroller = host.querySelector<HTMLElement>('[data-blok-table-scroll]');
+
+    if (scroller !== null) {
+      scroller.scrollLeft = 0;
+    }
+    this.holder?.style.removeProperty('min-height');
+    this.holder = null;
+    this.scroll.unlock();
+    // The button swaps to its page icon only now: the fading sheet still shows it.
+    this.syncButton();
+
+    if (host.isConnected) {
+      this.options.onRelayout();
+    }
+  }
+
+  /**
    * Only clip-path, transform and opacity move, so no frame relays the table out.
    * WAAPI writes no attributes, so none of this reaches the block's mutation observer.
    */
-  private animateOpen(host: HTMLElement, backdrop: HTMLElement, source: HTMLElement, origin: DOMRect, shape: DOMRect): void {
+  private animateOpen(host: HTMLElement, backdrop: HTMLElement, source: HTMLElement, anchor: DOMRect, shape: DOMRect): void {
     if (!canAnimate(host)) {
       return;
     }
-    const landed = source.getBoundingClientRect();
+    const landed = contentBox(source);
     const timing = { duration: OPEN_MS, easing: SPRING };
 
     host.animate([{ clipPath: insetOf(host.getBoundingClientRect(), shape) }, { clipPath: SHEET_CLIP }], timing);
-    source.parentElement?.animate([shift(origin, landed), { transform: 'none' }], timing);
+    // A grip shown mid-motion was placed against the moving root. Closing cancels this, which rejects.
+    void source.parentElement?.animate([shift(anchor, landed), { transform: 'none' }], timing).finished.then(() => {
+      if (this.host === host) {
+        this.options.onRelayout();
+      }
+    }, () => undefined);
     backdrop.animate([{ opacity: 0 }, { opacity: 1 }], { duration: OPEN_MS * 0.8, easing: 'linear' });
     // The header and button are position: fixed inside the moving root, which
     // holds them while it has a transform. They show once it stops.
@@ -464,40 +608,22 @@ export class TableFullscreen {
     ));
   }
 
-  private animateClose(host: HTMLElement, backdrop: HTMLElement | null): Animation[] {
-    const origin = this.origin;
-    const shape = this.shape;
+  /**
+   * The sheet fades out with a slight shrink, the live table still inside it.
+   * A transform makes the sheet the box its fixed header and close button sit
+   * in, and the sheet scrolls, so they are pinned to its top for the motion.
+   */
+  private animateOut(host: HTMLElement): Animation {
+    // On these two, not the sheet: a custom property on the sheet restyles every cell.
+    [this.header, this.button].forEach((el) => {
+      el.style.setProperty('--_blok-table-leave-top', `${host.scrollTop}px`);
+      el.setAttribute(LEAVING_ATTR, '');
+    });
 
-    host.getAnimations({ subtree: true }).forEach(a => a.cancel());
-
-    if (origin === null || shape === null || !host.isConnected || !canAnimate(host)) {
-      return [];
-    }
-    // The table takes its page width back now, while it moves: after the
-    // motion a fluid table's columns would snap narrower at rest.
-    host.style.setProperty('--blok-table-inline-width', `${this.inlineWidth}px`);
-    host.setAttribute(CLOSING_ATTR, '');
-    this.options.onRelayout();
-
-    const source = host.querySelector<HTMLElement>('[data-blok-table-scroll]');
-    const timing = { duration: CLOSE_MS, easing: SPRING, fill: 'forwards' as const };
-    const animations = [
-      host.animate([{ clipPath: SHEET_CLIP }, { clipPath: insetOf(host.getBoundingClientRect(), shape) }], timing),
-    ];
-
-    if (source?.parentElement) {
-      animations.push(source.parentElement.animate([{ transform: 'none' }, shift(origin, source.getBoundingClientRect())], timing));
-      source.scrollLeft = 0;
-    }
-    if (backdrop !== null) {
-      animations.push(backdrop.animate([{ opacity: 1 }, { opacity: 0 }], { ...timing, easing: 'linear' }));
-    }
-    // Hidden at once: the moving root would carry them off their place (see animateOpen).
-    [this.header, this.button].forEach(el => animations.push(
-      el.animate([{ opacity: 0 }, { opacity: 0 }], { duration: CLOSE_MS, fill: 'forwards' })
-    ));
-
-    return animations;
+    return host.animate(
+      [{ opacity: 1, transform: 'scale(1)' }, { opacity: 0, transform: 'scale(0.97)' }],
+      { duration: FADE_OUT_MS, easing: 'ease-out', fill: 'forwards' }
+    );
   }
 
   /**
@@ -570,14 +696,89 @@ export class TableFullscreen {
     this.colsInput.value = String(cols);
     this.rowsInput.value = String(rows);
     this.syncSteppers();
+    this.showNumbers();
     this.sizeEditor.hidden = false;
     this.sizeButton.setAttribute('aria-expanded', 'true');
-    this.colsInput.focus();
-    this.colsInput.select();
+    this.setGridMode(readGridPreferred());
   }
 
-  /** Moves a field by `by`, clamped to the filled cells and MAX_SIZE. */
-  private stepSize(input: HTMLInputElement, by: number): void {
+  /** The fields stay the model in both modes; the grid only reads and writes them. */
+  private setGridMode(on: boolean): void {
+    if (!on) {
+      // Focus moves before the grid hides: hiding the focused grid blurs to nothing, and focusout applies the size.
+      this.numbers.hidden = false;
+      this.colsInput.focus();
+      this.colsInput.select();
+      this.showNumbers();
+
+      return;
+    }
+    this.grid.hidden = false;
+    this.readout.hidden = false;
+    this.renderGrid(null);
+    // Focus moves before the fields hide, or focusout would apply the size.
+    this.grid.focus();
+    this.numbers.hidden = true;
+    this.modeButton.innerHTML = `${IconHash}${this.options.t('tools.table.typeNumbers')}`;
+  }
+
+  private showNumbers(): void {
+    this.numbers.hidden = false;
+    this.grid.hidden = true;
+    this.readout.hidden = true;
+    this.modeButton.innerHTML = `${IconTable}${this.options.t('tools.table.pickOnGrid')}`;
+  }
+
+  private readFields(): TableSize {
+    const min = this.minSize ?? { cols: 1, rows: 1 };
+    const read = (input: HTMLInputElement, floor: number): number => {
+      const value = Number.parseInt(input.value, 10);
+
+      return Math.min(MAX_SIZE, Math.max(floor, Number.isFinite(value) ? value : floor));
+    };
+
+    return { cols: read(this.colsInput, min.cols), rows: read(this.rowsInput, min.rows) };
+  }
+
+  private writeFields(pick: TableSize): void {
+    this.colsInput.value = String(pick.cols);
+    this.rowsInput.value = String(pick.rows);
+    this.stepSize(this.colsInput, 0);
+    this.stepSize(this.rowsInput, 0);
+  }
+
+  private cellAt(target: EventTarget | null): TableSize | null {
+    const cell = target instanceof Element ? target.closest<HTMLElement>(`[${SIZE_CELL_ATTR}]`) : null;
+
+    return cell === null ? null : { cols: Number(cell.dataset.col), rows: Number(cell.dataset.row) };
+  }
+
+  /** Shows `pick`, raised to the filled cells, or the fields' size when there is none. */
+  private previewGrid(pick: TableSize | null): void {
+    const min = this.minSize;
+
+    if (min === null || this.grid.hidden) {
+      return;
+    }
+    if (pick !== null && (pick.cols < min.cols || pick.rows < min.rows)) {
+      this.hitFloor = true;
+    }
+    this.renderGrid(pick === null ? null : { cols: Math.max(min.cols, pick.cols), rows: Math.max(min.rows, pick.rows) });
+    this.syncSteppers();
+  }
+
+  /** Marks the cells, never replaces them: a new cell under the pointer would drop its hover. */
+  private renderGrid(preview: TableSize | null): void {
+    const size = preview ?? this.readFields();
+
+    this.grid.querySelectorAll<HTMLElement>(`[${SIZE_CELL_ATTR}]`).forEach((cell) => {
+      cell.toggleAttribute('data-on', Number(cell.dataset.col) <= size.cols && Number(cell.dataset.row) <= size.rows);
+    });
+    this.readout.textContent = `${size.cols} × ${size.rows}`;
+  }
+
+  /** Moves a field by `by`, clamped to the filled cells and `cap`. */
+  private stepSize(input: HTMLInputElement, by: number, cap = MAX_SIZE): void {
     const min = this.minSize;
 
     if (min === null) {
@@ -585,7 +786,7 @@ export class TableFullscreen {
     }
     const floor = input === this.colsInput ? min.cols : min.rows;
     const value = Number.parseInt(input.value, 10);
-    const next = Math.min(MAX_SIZE, Math.max(floor, (Number.isFinite(value) ? value : floor) + by));
+    const next = Math.min(Math.max(cap, floor), Math.max(floor, (Number.isFinite(value) ? value : floor) + by));
 
     if (next === floor && (by < 0 || value < floor)) {
       this.hitFloor = true;
@@ -682,6 +883,7 @@ export class TableFullscreen {
     }
     this.stopHold();
     this.minSize = null;
+    this.showNumbers();
     this.sizeEditor.hidden = true;
     this.sizeButton.setAttribute('aria-expanded', 'false');
   }

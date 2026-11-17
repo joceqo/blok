@@ -4,6 +4,7 @@ using Blok.Server.Documents;
 using Jint;
 using Jint.Constraints;
 using Jint.Native;
+using Jint.Native.Function;
 using Jint.Native.Object;
 using Jint.Runtime;
 
@@ -14,6 +15,58 @@ internal sealed class JintBlokRuntime : IBlokRuntime
   private const string BundleResourceName = "Blok.Server.Runtime.blok-server-runtime.js";
 
   private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(10);
+
+  // Jint's collator calls string.Normalize, which throws on a lone
+  // surrogate, so localeCompare made the engine fail. It now reads one as
+  // U+FFFD, as .NET's CompareInfo, Go and Rust compare it.
+  private const string Prelude = """
+      (() => {
+        const compare = String.prototype.localeCompare;
+        Object.defineProperty(String.prototype, 'localeCompare', {
+          value: {
+            localeCompare(that, locales, options) {
+              if (this === null || this === undefined) {
+                throw new TypeError('String.prototype.localeCompare called on null or undefined');
+              }
+              return compare.call(`${this}`.toWellFormed(), `${that}`.toWellFormed(), locales, options);
+            },
+          }.localeCompare,
+          writable: true,
+          enumerable: false,
+          configurable: true,
+        });
+
+        // Jint formats a rejected value into its exception message, and
+        // String(Object.create(null)) throws, so that TypeError would be
+        // classified instead of the value. A rejection is wrapped in an
+        // object that formats as the value would, or safely when it cannot;
+        // the host unwraps it.
+        class Rejection {
+          constructor(value) {
+            this.value = value;
+          }
+
+          toString() {
+            try {
+              return String(this.value);
+            } catch {
+              return 'a value that cannot be written as a string';
+            }
+          }
+        }
+        Object.defineProperty(globalThis, '__blokRejection', { value: Rejection.prototype });
+        Object.defineProperty(globalThis, '__blokServerInvokeSettled', {
+          value: (operation, input) => {
+            const answer = globalThis.blokServerInvoke(operation, input);
+            return answer instanceof Promise
+              ? answer.then(undefined, (error) => {
+                throw new Rejection(error);
+              })
+              : answer;
+          },
+        });
+      })();
+      """;
 
   /*
    * Jint counts every allocation a call makes, not what it still holds, so this
@@ -180,26 +233,57 @@ internal sealed class JintBlokRuntime : IBlokRuntime
 
     var engine = await engines.Reader.ReadAsync(cancellationToken);
     var deadline = Deadline(engine);
+    var callTimeout = timeout ?? this.timeout;
+
+    /*
+     * Jint's deadline stops running code, not the wait on a promise that
+     * never settles. This token ends that wait at the same deadline, so one
+     * call cannot hold an engine for good.
+     */
+    using var waitLimit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
     var reusable = true;
     var returned = false;
+    var running = false;
     string result;
 
     try
     {
-      deadline.Begin(timeout ?? this.timeout, CancellationToken.None);
-      result = (await engine.InvokeAsync(
-          "blokServerInvoke",
-          cancellationToken,
-          operation,
-          inputJson)).AsString();
+      deadline.Begin(callTimeout, CancellationToken.None);
+
+      // Every op's input passes here, so Go and C# read it alike. It runs
+      // under the call's deadline, budget and cancellation, before the engine.
+      inputJson = JsonInputNormalizer.Normalize(inputJson, allocationBudgetBytes, () =>
+      {
+        cancellationToken.ThrowIfCancellationRequested();
+        deadline.Check();
+      });
+
+      running = true;
+      var entry = engine.GetValue("blokServerInvoke") is Function ? "__blokServerInvokeSettled" : "blokServerInvoke";
+      result = (await OnEngineStack(
+          () =>
+          {
+            waitLimit.CancelAfter(callTimeout);
+            return engine.InvokeAsync(entry, waitLimit.Token, operation, inputJson).GetAwaiter().GetResult();
+          })).AsString();
     }
     /*
      * NEVER wrapped: a caller's own cancellation has to stay cancellation, or
      * every `catch (OperationCanceledException)` upstream stops working.
      */
-    catch (OperationCanceledException)
+    catch (OperationCanceledException exception) when (running && !cancellationToken.IsCancellationRequested)
     {
       reusable = false;
+      throw new BlokDocumentConversionException(BlokConversionFailure.TimedOut, exception);
+    }
+    catch (OperationCanceledException)
+    {
+      reusable = !running;
+      throw;
+    }
+    // Only the input rewrite throws this here, and it never touched the engine.
+    catch (BlokDocumentConversionException)
+    {
       throw;
     }
     /*
@@ -211,7 +295,7 @@ internal sealed class JintBlokRuntime : IBlokRuntime
      */
     catch (TimeoutException exception)
     {
-      reusable = false;
+      reusable = !running;
       throw new BlokDocumentConversionException(BlokConversionFailure.TimedOut, exception);
     }
     catch (MemoryLimitExceededException exception)
@@ -228,7 +312,15 @@ internal sealed class JintBlokRuntime : IBlokRuntime
      */
     catch (PromiseRejectedException exception)
     {
-      throw new BlokDocumentConversionException(Classify(exception.RejectedValue), exception);
+      var rejected = exception.RejectedValue;
+
+      if (rejected is ObjectInstance wrapper &&
+          ReferenceEquals(wrapper.Prototype, engine.GetValue("__blokRejection")))
+      {
+        rejected = wrapper.Get("value");
+      }
+
+      throw new BlokDocumentConversionException(Classify(rejected), exception);
     }
     catch (JavaScriptException exception)
     {
@@ -331,12 +423,51 @@ internal sealed class JintBlokRuntime : IBlokRuntime
 
     try
     {
-      return engine.Execute(script);
+      return engine.Execute(Prelude).Execute(script);
     }
     finally
     {
       deadline.End();
     }
+  }
+
+  /*
+   * The stack guard stops recursion where the CALLING thread's native stack
+   * runs low, so on a thread-pool thread the depth a document could
+   * nest depended on how deep the caller already was and on JIT tiering:
+   * 26 to 175 outline levels to HTML, measured, against a fixture that needs
+   * 120. Every call runs on a fresh thread of its own fixed stack instead,
+   * where the reachable depth no longer depends on the caller. 32 MiB, as
+   * the Rust server's engine thread; it converted 2405 levels to HTML
+   * whatever ran before it (16 MiB reached 2020). A thread costs about
+   * 0.1 ms to start, against about 0.35 ms for the smallest conversion.
+   */
+  private const int EngineStackBytes = 32 << 20;
+
+  private static Task<JsValue> OnEngineStack(Func<JsValue> run)
+  {
+    var done = new TaskCompletionSource<JsValue>(TaskCreationOptions.RunContinuationsAsynchronously);
+    var thread = new Thread(
+        () =>
+        {
+          try
+          {
+            done.SetResult(run());
+          }
+          catch (Exception exception)
+          {
+            done.SetException(exception);
+          }
+        },
+        EngineStackBytes)
+    {
+      IsBackground = true,
+      Name = "blok-jint",
+    };
+
+    thread.Start();
+
+    return done.Task;
   }
 
   private static OperationDeadlineConstraint Deadline(Engine engine)

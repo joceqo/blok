@@ -69,6 +69,8 @@ const pasteConfigOf = (config: BlokConfig): BlokConfig => ({
   placeholder: false,
   find: false,
   loader: false,
+  // The page-wide toasts would show the hidden editor's failures, e.g. an image it has no uploader for.
+  notifier: () => undefined,
 });
 
 /** Only text/html: a text/plain flavour would let the URL, Markdown and text handlers claim it. */
@@ -165,7 +167,8 @@ export const pasteHtmlAsBlocks = async (config: BlokConfig, html: string): Promi
     if (first !== undefined) {
       scratch.module.caret.setToBlock(first, 'start');
     }
-    await scratch.module.paste.processDataTransfer(htmlOnlyTransfer(html));
+    // The hidden editor holds no page, so a page check here would drop every mention.
+    await scratch.module.paste.processDataTransfer(htmlOnlyTransfer(html), undefined, undefined, true);
 
     return (await scratch.save()).blocks;
   } finally {

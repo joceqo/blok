@@ -151,7 +151,7 @@ describe('EmojiPicker', () => {
     expect(emojiButton).not.toBeNull();
     emojiButton.click();
 
-    expect(onSelect).toHaveBeenCalledWith(emojiButton.dataset.emojiNative);
+    expect(onSelect).toHaveBeenCalledWith(emojiButton.dataset.emojiNative, expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }));
   });
 
   it('calls onRemove when remove button is clicked', async () => {
@@ -350,7 +350,7 @@ describe('EmojiPicker', () => {
       expect(options[1].getAttribute('aria-pressed')).toBe('true');
     });
 
-    it('renders the toggle outside the search wrapper, showing the default hand', async () => {
+    it('renders the toggle outside the search wrapper, showing the default tone', async () => {
       const { EmojiPicker } = await import('../../../../../src/tools/callout/emoji-picker');
       const picker = new EmojiPicker({ onSelect: vi.fn(), onRemove: vi.fn(), i18n: { t: (k: string) => k }, locale: 'en' });
       const el = picker.getElement();
@@ -361,10 +361,10 @@ describe('EmojiPicker', () => {
 
       expect(toggle).not.toBeNull();
       expect(searchWrapper.contains(toggle)).toBe(false);
-      expect(toggle.textContent).toBe('✋');
+      expect(toggle).toHaveAttribute('data-emoji-skin-current', '0');
     });
 
-    it('opens a popover with 6 hand variants when toggle is clicked', async () => {
+    it('opens a dial of 6 tones when toggle is clicked', async () => {
       const { EmojiPicker } = await import('../../../../../src/tools/callout/emoji-picker');
       const picker = new EmojiPicker({ onSelect: vi.fn(), onRemove: vi.fn(), i18n: { t: (k: string) => k }, locale: 'en' });
       container.appendChild(picker.getElement());
@@ -398,7 +398,7 @@ describe('EmojiPicker', () => {
       // Select second skin tone (light)
       options[1].click();
 
-      expect(toggle.textContent).toBe('✋🏻');
+      expect(toggle).toHaveAttribute('data-emoji-skin-current', '1');
       expect(popover.hidden).toBe(true);
 
       const emojiButtons = Array.from(picker.getElement().querySelectorAll('[data-emoji-native]'));
@@ -416,16 +416,14 @@ describe('EmojiPicker', () => {
 
       const toggle = picker.getElement().querySelector('[data-emoji-picker-skin-toggle]') as HTMLButtonElement;
 
-      // No active state initially
-      expect(toggle.classList.contains('bg-neutral-100')).toBe(false);
+      // The active fill is CSS keyed off aria-expanded.
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
 
-      // Open popover — toggle gets active background
       toggle.click();
-      expect(toggle.classList.contains('bg-neutral-100')).toBe(true);
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
 
-      // Close popover — active state removed
       toggle.click();
-      expect(toggle.classList.contains('bg-neutral-100')).toBe(false);
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
     });
 
     describe('localStorage persistence', () => {
@@ -465,7 +463,7 @@ describe('EmojiPicker', () => {
 
         const toggle = picker.getElement().querySelector('[data-emoji-picker-skin-toggle]') as HTMLButtonElement;
 
-        expect(toggle.textContent).toBe('✋🏼');
+        expect(toggle).toHaveAttribute('data-emoji-skin-current', '2');
       });
 
       it('restores skin tone from localStorage when picker opens', async () => {
@@ -479,7 +477,7 @@ describe('EmojiPicker', () => {
         // Toggle should show medium-light hand
         const toggle = picker.getElement().querySelector('[data-emoji-picker-skin-toggle]') as HTMLButtonElement;
 
-        expect(toggle.textContent).toBe('✋🏼');
+        expect(toggle).toHaveAttribute('data-emoji-skin-current', '2');
 
         // Thumbs up should have medium-light skin tone applied
         const emojiButtons = Array.from(picker.getElement().querySelectorAll('[data-emoji-native]'));
@@ -496,7 +494,7 @@ describe('EmojiPicker', () => {
 
         const toggle = picker.getElement().querySelector('[data-emoji-picker-skin-toggle]') as HTMLButtonElement;
 
-        expect(toggle.textContent).toBe('✋');
+        expect(toggle).toHaveAttribute('data-emoji-skin-current', '0');
       });
 
       it('defaults to neutral (0) when localStorage contains an invalid value', async () => {
@@ -509,7 +507,7 @@ describe('EmojiPicker', () => {
 
         const toggle = picker.getElement().querySelector('[data-emoji-picker-skin-toggle]') as HTMLButtonElement;
 
-        expect(toggle.textContent).toBe('✋');
+        expect(toggle).toHaveAttribute('data-emoji-skin-current', '0');
       });
 
       it('handles localStorage being unavailable without crashing', async () => {
@@ -528,7 +526,7 @@ describe('EmojiPicker', () => {
           // Should default to neutral without throwing
           const toggle = picker.getElement().querySelector('[data-emoji-picker-skin-toggle]') as HTMLButtonElement;
 
-          expect(toggle.textContent).toBe('✋');
+          expect(toggle).toHaveAttribute('data-emoji-skin-current', '0');
 
           // Selecting a skin tone should not throw either
           toggle.click();
@@ -660,7 +658,7 @@ describe('EmojiPicker', () => {
     expect(mockOnHover).toHaveBeenCalledWith(removeBtn, expect.any(String), { placement: 'bottom' });
   });
 
-  it('attaches JS tooltips to emoji buttons via onHover with placement bottom', async () => {
+  it('leaves emoji names to the stage instead of hover hints on every button', async () => {
     const { EmojiPicker } = await import('../../../../../src/tools/callout/emoji-picker');
     const picker = new EmojiPicker({ onSelect: vi.fn(), onRemove: vi.fn(), i18n: { t: (k: string) => k }, locale: 'en' });
     container.appendChild(picker.getElement());
@@ -671,7 +669,7 @@ describe('EmojiPicker', () => {
     expect(emojiButtons.length).toBeGreaterThan(0);
 
     for (const btn of Array.from(emojiButtons)) {
-      expect(mockOnHover).toHaveBeenCalledWith(btn, expect.any(String), { placement: 'bottom' });
+      expect(mockOnHover).not.toHaveBeenCalledWith(btn, expect.anything(), expect.anything());
     }
   });
 
@@ -1080,8 +1078,8 @@ describe('EmojiPicker', () => {
       const bulbBtn = allBtns.find(btn => btn.getAttribute('data-emoji-native') === '💡');
 
       expect(bulbBtn).toBeDefined();
-      // Name is shown via JS tooltip (onHover), not browser title attribute
-      expect(mockOnHover).toHaveBeenCalledWith(bulbBtn, 'ampoule', { placement: 'bottom' });
+      // The name is the button's label; the stage shows it on hover.
+      expect(bulbBtn?.getAttribute('aria-label')).toBe('ampoule');
     });
 
     it('falls back to English name in lowercase when translated name is not available', async () => {
@@ -1102,7 +1100,7 @@ describe('EmojiPicker', () => {
       const thumbsBtn = allBtns.find(btn => btn.getAttribute('data-emoji-native') === '👍');
 
       expect(thumbsBtn).toBeDefined();
-      expect(mockOnHover).toHaveBeenCalledWith(thumbsBtn, 'thumbs up', { placement: 'bottom' });
+      expect(thumbsBtn?.getAttribute('aria-label')).toBe('thumbs up');
     });
 
     it('displays English emoji names in lowercase', async () => {
@@ -1117,7 +1115,7 @@ describe('EmojiPicker', () => {
       const bulbBtn = allBtns.find(btn => btn.getAttribute('data-emoji-native') === '💡');
 
       expect(bulbBtn).toBeDefined();
-      expect(mockOnHover).toHaveBeenCalledWith(bulbBtn, 'light bulb', { placement: 'bottom' });
+      expect(bulbBtn?.getAttribute('aria-label')).toBe('light bulb');
       expect(mockLoadEmojiLocale).not.toHaveBeenCalled();
     });
 
@@ -1136,7 +1134,7 @@ describe('EmojiPicker', () => {
       const bulbBtn = allBtns.find(btn => btn.getAttribute('data-emoji-native') === '💡');
 
       expect(bulbBtn).toBeDefined();
-      expect(mockOnHover).toHaveBeenCalledWith(bulbBtn, 'ampoule électrique', { placement: 'bottom' });
+      expect(bulbBtn?.getAttribute('aria-label')).toBe('ampoule électrique');
     });
   });
 });

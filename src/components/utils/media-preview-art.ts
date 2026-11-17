@@ -65,6 +65,12 @@ const docLines = (): string => [
   .map((line, row) => `<rect class="blok-media-preview__line blok-media-preview__line--write${line.title ? ' blok-media-preview__line--title' : ''}" style="--row:${row}" x="78" y="${line.y}" width="${line.width}" height="${line.height}" rx="${line.height / 2}"/>`)
   .join('');
 
+// The file arriving in pieces while it uploads: a 5x5 grid on the front page.
+// --n orders the pieces for the fill-in in media-empty.css.
+const fileChunks = (): string => Array.from({ length: 25 }, (_, n) =>
+  `<rect class="blok-media-preview__chunk" style="--n:${n}" x="${78 + (n % 5) * 9.75}" y="${42 + Math.floor(n / 5) * 10}" width="7" height="7" rx="1.8"/>`)
+  .join('');
+
 // Clip, filter and shadow ids must be unique per instance: several empty
 // blocks share one document.
 const drawings: Record<MediaPreviewKind, (id: string) => string> = {
@@ -80,7 +86,10 @@ const drawings: Record<MediaPreviewKind, (id: string) => string> = {
           <path class="blok-media-preview__hill blok-media-preview__hill--far" d="M20 80l34-30 26 20 22-16 40 26 30-22 44 30z"/>
           <path class="blok-media-preview__hill" d="M20 80l26-14 30 14 34-20 40 20 36-16 30 16z"/>
         </g>
+        <rect class="blok-media-preview__veil" x="32" y="16" width="136" height="62"/>
       </g>
+      <rect class="blok-media-preview__screen-edge" x="32" y="16" width="136" height="62" rx="7"/>
+      <rect class="blok-media-preview__playhead" x="31.5" y="16" width="2" height="62" rx="1"/>
       <rect class="blok-media-preview__track" x="32" y="87" width="136" height="4" rx="2"/>
       <rect class="blok-media-preview__progress" x="32" y="87" width="136" height="4" rx="2"/>
       ${drop(id)}`)}
@@ -94,8 +103,8 @@ const drawings: Record<MediaPreviewKind, (id: string) => string> = {
     ${ground(id)}
     ${layer(3, `
       <rect id="${id}-s" class="blok-media-preview__frame" x="14" y="20" width="172" height="80" rx="16"/>
-      <rect class="blok-media-preview__line" x="92" y="36" width="62" height="5" rx="2.5"/>
-      <rect class="blok-media-preview__line blok-media-preview__line--soft" x="92" y="46" width="38" height="4" rx="2"/>
+      <rect class="blok-media-preview__line blok-media-preview__line--write" style="--row:0" x="92" y="36" width="62" height="5" rx="2.5"/>
+      <rect class="blok-media-preview__line blok-media-preview__line--soft blok-media-preview__line--write" style="--row:1" x="92" y="46" width="38" height="4" rx="2"/>
       ${waveBars()}
       ${drop(id)}`)}
     ${layer(7, `
@@ -118,11 +127,14 @@ const drawings: Record<MediaPreviewKind, (id: string) => string> = {
             <path class="blok-media-preview__hill blok-media-preview__hill--far" d="M42 84l30-30 24 20 18-12 48 22z"/>
             <path class="blok-media-preview__hill" d="M42 84l22-14 26 14z"/>
           </g>
+          <rect class="blok-media-preview__veil" x="42" y="14" width="120" height="70"/>
         </g>
+        <rect class="blok-media-preview__screen-edge" x="42" y="14" width="120" height="70" rx="3"/>
+        <rect class="blok-media-preview__scan" x="42" y="13.5" width="120" height="2" rx="1"/>
         <rect class="blok-media-preview__line blok-media-preview__line--soft" x="42" y="92" width="46" height="4" rx="2"/>
       </g>`)}`,
   file: (id) => `
-    <defs><clipPath id="${id}"><path d="${PAGE}"/></clipPath>${shadowFilters(id)}</defs>
+    <defs>${shadowFilters(id)}</defs>
     ${ground(id)}
     ${layer(1, `
       <g class="blok-media-preview__sheet blok-media-preview__sheet--back">
@@ -140,12 +152,14 @@ const drawings: Record<MediaPreviewKind, (id: string) => string> = {
     ${layer(5, `
       <g id="${id}-f" class="blok-media-preview__sheet blok-media-preview__sheet--front">
         <path id="${id}-s" class="blok-media-preview__frame" d="${PAGE}"/>
-        <g clip-path="url(#${id})"><rect class="blok-media-preview__fill" x="70" y="10" width="62" height="92"/></g>
         <path class="blok-media-preview__crease" filter="url(#${id}-d)" d="${FLAP}"/>
         <path class="blok-media-preview__flap" d="${FLAP}"/>
-        ${docLines()}
-        <rect class="blok-media-preview__chip" x="78" y="82" width="22" height="11" rx="3"/>
-        <rect class="blok-media-preview__chip-mark" x="82" y="86" width="14" height="3" rx="1.5"/>
+        <g class="blok-media-preview__page-text">
+          ${docLines()}
+          <rect class="blok-media-preview__chip" x="78" y="82" width="22" height="11" rx="3"/>
+          <rect class="blok-media-preview__chip-mark" x="82" y="86" width="14" height="3" rx="1.5"/>
+        </g>
+        <g class="blok-media-preview__chunks">${fileChunks()}</g>
       </g>`)}`,
 };
 
@@ -194,7 +208,7 @@ export const previewSvg = (kind: MediaPreviewKind): string =>
 // ---- Embed window scenes: what a typed link will become ----
 
 export const EMBED_SCENE_KINDS = [
-  'idle', 'generic', 'video', 'audio', 'image', 'social', 'document',
+  'generic', 'video', 'audio', 'image', 'social', 'document',
   'table', 'form', 'code', 'design', 'chart', 'map', 'calendar',
 ] as const;
 
@@ -212,25 +226,6 @@ const winDots = (x: number, y: number): string => [0, 1, 2].map((i) => circle('c
 type EmbedScene = Exclude<EmbedSceneKind, 'video' | 'audio' | 'image'>;
 
 const embedScenes: Record<EmbedScene, (id: string) => string> = {
-  idle: (id) => `
-    <defs>${shadowFilters(id)}</defs>
-    ${ground(id)}
-    ${layer(3, `
-      ${rect('frame dashed', 30, 12, 140, 88, 12, body(id))}
-      ${winDots(43, 24)}
-      ${rect('field', 70, 19, 86, 10, 5)}
-      ${rect('line line--title', 44, 42, 62, 5, 2.5)}
-      ${rect('line', 44, 54, 96, 3.5, 1.75)}
-      ${rect('line', 44, 62, 80, 3.5, 1.75)}
-      ${rect('line line--soft', 44, 70, 52, 3.5, 1.75)}
-      ${drop(id)}`)}
-    ${layer(7, `
-      <g id="${id}-f" class="blok-media-preview__chip-float">
-        ${rect('frame', 96, 72, 68, 24, 12)}
-        ${rect('link', 105, 80, 11, 8, 4)}
-        ${rect('link', 112, 80, 11, 8, 4)}
-        ${rect('line', 130, 82, 24, 4, 2)}
-      </g>`)}`,
   generic: (id) => `
     <defs>${shadowFilters(id)}</defs>
     ${ground(id)}
@@ -246,30 +241,32 @@ const embedScenes: Record<EmbedScene, (id: string) => string> = {
       ${drop(id)}`)}
     ${layer(7, `
       <g id="${id}-f">
-        ${circle('frame', 156, 86, 15)}
-        <ellipse class="blok-media-preview__groove" cx="156" cy="86" rx="6.5" ry="15"/>
-        ${path('groove', 'M141 86h30')}
+        ${circle('frame', 168, 96, 14)}
+        <ellipse class="blok-media-preview__groove" cx="168" cy="96" rx="6" ry="14"/>
+        ${path('groove', 'M154 96h28')}
       </g>`)}`,
   social: (id) => `
-    <defs><clipPath id="${id}"><rect x="52" y="58" width="96" height="36" rx="6"/></clipPath>${shadowFilters(id)}</defs>
+    <defs><clipPath id="${id}"><rect x="52" y="38" width="96" height="36" rx="6"/></clipPath>${shadowFilters(id)}</defs>
     ${ground(id)}
     ${layer(3, `
       ${rect('frame', 40, 6, 120, 98, 12, body(id))}
       ${circle('screen', 61, 24, 8)}
       ${rect('line line--title', 75, 19, 40, 4.5, 2.25)}
       ${rect('line line--soft', 75, 27, 26, 3, 1.5)}
-      ${rect('line', 52, 40, 92, 3.5, 1.75)}
-      ${rect('line', 52, 48, 70, 3.5, 1.75)}
-      ${rect('screen', 52, 58, 96, 36, 6)}
+      ${rect('screen', 52, 38, 96, 36, 6)}
       <g clip-path="url(#${id})"><g class="blok-media-preview__scene">
-        ${circle('sun', 128, 68, 5)}
-        ${path('hill hill--far', 'M52 94l24-20 20 12 18-10 34 18z')}
+        ${circle('sun', 130, 48, 5)}
+        ${path('hill hill--far', 'M52 74l24-18 20 11 16-9 36 16z')}
+        ${path('hill', 'M52 74l18-9 24 9z')}
       </g></g>
+      ${rect('screen-edge', 52, 38, 96, 36, 6)}
+      ${rect('line', 52, 81, 70, 3.5, 1.75)}
+      ${rect('line line--soft', 52, 89, 46, 3.5, 1.75)}
       ${drop(id)}`)}
     ${layer(7, `
       <g id="${id}-f">
-        ${circle('frame', 158, 92, 13)}
-        ${path('heart', 'M158 98.5c-6-4-9-7-9-11a4.5 4.5 0 0 1 9-2a4.5 4.5 0 0 1 9 2c0 4-3 7-9 11z')}
+        ${circle('frame', 148, 92, 8)}
+        ${path('heart', 'M148 96.2c-3.1-2.1-4.6-3.8-4.6-5.8a2.4 2.4 0 0 1 4.6-1a2.4 2.4 0 0 1 4.6 1c0 2-1.5 3.7-4.6 5.8z')}
       </g>`)}`,
   document: (id) => `
     <defs>${shadowFilters(id)}</defs>
@@ -322,8 +319,8 @@ const embedScenes: Record<EmbedScene, (id: string) => string> = {
       ${drop(id)}`)}
     ${layer(7, `
       <g id="${id}-f">
-        ${rect('frame', 128, 76, 30, 30, 9)}
-        ${path('tick', 'M135.5 91.5l5 5 10-11')}
+        ${rect('frame', 134, 80, 18, 18, 6)}
+        ${path('tick', 'M138.8 89.2l3 3 5.6-6.2')}
       </g>`)}`,
   code: (id) => {
     const rows: Array<[number, number, boolean]> = [[0, 46, false], [12, 52, true], [12, 38, false], [24, 30, true], [12, 44, false], [0, 22, false]];
@@ -343,10 +340,10 @@ const embedScenes: Record<EmbedScene, (id: string) => string> = {
       ${drop(id)}`)}
     ${layer(7, `
       <g id="${id}-f">
-        ${rect('frame', 124, 74, 46, 26, 9)}
-        ${path('tick', 'M139 81l-6 6 6 6')}
-        ${path('tick', 'M155 81l6 6-6 6')}
-        ${path('tick', 'M149.5 80l-5 14')}
+        ${rect('frame', 128, 74, 40, 22, 6)}
+        ${path('tick', 'M141 80l-5 5 5 5')}
+        ${path('tick', 'M155 80l5 5-5 5')}
+        ${path('tick', 'M150 79l-4 12')}
       </g>`)}`;
   },
   design: (id) => `
@@ -363,7 +360,6 @@ const embedScenes: Record<EmbedScene, (id: string) => string> = {
     ${layer(8, `
       <g id="${id}-f">
         ${path('pointer', 'M138 70v22l6-5.5 4.5 9.5 4-1.8-4.5-9.5h8z')}
-        ${rect('tag', 152, 92, 26, 11, 5.5)}
       </g>`)}`,
   chart: (id) => {
     const bars = [22, 36, 28, 48, 40, 58].map((h, i) => rect('chart-bar', 40 + i * 19, 92 - h, 11, h, 2.5)).join('');
@@ -396,6 +392,7 @@ const embedScenes: Record<EmbedScene, (id: string) => string> = {
         ${path('road road--minor', 'M88 12L112 100')}
         ${path('road road--minor', 'M28 34C60 40 80 30 100 36')}
       </g>
+      ${rect('screen-edge', 32, 16, 136, 80, 6)}
       ${drop(id)}`)}
     ${layer(9, `
       <g id="${id}-f">
@@ -417,10 +414,10 @@ const embedScenes: Record<EmbedScene, (id: string) => string> = {
       ${drop(id)}`)}
     ${layer(7, `
       <g id="${id}-f">
-        ${rect('frame', 110, 80, 62, 22, 7)}
-        ${rect('glyph', 115, 85, 3, 12, 1.5)}
-        ${rect('line line--title', 123, 86, 34, 4, 2)}
-        ${rect('line line--soft', 123, 93, 24, 3, 1.5)}
+        ${rect('frame', 78, 68, 62, 22, 7)}
+        ${rect('glyph', 83, 73, 3, 12, 1.5)}
+        ${rect('line line--title', 91, 74, 34, 4, 2)}
+        ${rect('line line--soft', 91, 81, 24, 3, 1.5)}
       </g>`)}`;
   },
 };

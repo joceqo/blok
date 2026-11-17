@@ -1,0 +1,1160 @@
+import { createHash } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+
+import { expect } from 'vitest';
+
+import { nodeContractRevisions } from './contract-revision';
+import { type BearerSpec, type FakeHost, type RecordedRequest, type RouteTable, signAccessToken, startFakeHost } from './fake-host';
+import { type LiveRoom, type RoomAction, type RoomSpec, startLiveRoom } from './live-room';
+import {
+  caseEnv, type Exit, type HttpAnswer, type HttpServer, type JsonMessage, runToExit, sendHttp, startHttp, startStdio, type StdioServer,
+} from './mcp-process';
+
+/**
+ * The fixture format. Every fixture file is `{ "description", "defaults"?, "cases": [Case] }`;
+ * `defaults` is merged under each case (shallow, per key).
+ *
+ * Case:
+ *   name        unique in the file.
+ *   transport   "stdio" | "http" | "cli".
+ *               stdio: spawn, run the steps over stdin/stdout, then close stdin
+ *                      and record the exit (`expectExit`).
+ *               http:  the argv must carry `--http 127.0.0.1:0`; the URL comes from
+ *                      the `listening on <url>` stderr line. Steps POST to it.
+ *               cli:   spawn with stdin closed, no steps, record the exit.
+ *   argv, env   flags and env vars, with ${placeholders}. The binary sees no
+ *               other BLOK_* variable.
+ *   files       written under ${dir} before spawning: {"<name>": {"json": v} |
+ *               {"text": s} | {"link": "<target name>"}}, plus "mtimeAgoSeconds" and "mode"
+ *               (octal text, e.g. "0640"). json is written compact.
+ *   hosts       a route table for the fake host (fake-host.ts) at ${host}, plus
+ *               "$upgradeStatus" for the sync upgrade it refuses. Every request it
+ *               gets is recorded in order, or by "hostRequestOrder": "sorted" | "distinct".
+ *               "maskHostKeys" masks those key names in the records after ordering, for
+ *               values a server makes up per run (timestamps). "mintedHostKeys" is for ids a
+ *               server mints (a page creator's suggestedPageId): each value must be a Blok id
+ *               (10 characters of [A-Za-z0-9_-]) and differ from every other one in the case;
+ *               it is recorded as "<minted>". Any other value stays as sent, so it fails.
+ *   room        {"journal"?: false}: a real sync host (live-room.ts) at ${roomWs}; without
+ *               a journal the host speaks blok-sync.v1 only. stdio only.
+ *   session     {"protocolVersion", "capabilities"?, "clientName"?, "headers"?}: the
+ *               harness opens the session the way the SDK client does.
+ *               2025 versions: initialize + notifications/initialized first, and
+ *               HTTP requests then carry MCP-Protocol-Version.
+ *               2026-07-28: no handshake; every request gets params._meta
+ *               (protocolVersion, clientInfo, clientCapabilities) and, over HTTP,
+ *               the Mcp-Method / Mcp-Name / MCP-Protocol-Version headers.
+ *               A step with "raw": true gets none of this.
+ *   steps       see Step.
+ *   watchFiles  names under ${dir} whose exact bytes are recorded as expectFiles.
+ *   watchModes  names under ${dir} whose permission bits are recorded as expectModes.
+ *   stderrPattern  a regular expression stderr must match (a failed process's, or a clean one's),
+ *               recorded instead of the exact text.
+ *   fsVariants  true when the answer depends on whether the temp disk ignores letter
+ *               case. Expectations then live in "variants": {"caseInsensitiveFs": …,
+ *               "caseSensitiveFs": …}, each recorded on such a disk (set TMPDIR).
+ *   expect*     recorded by --update from Node; never hand-written.
+ *
+ * Step (one of send / sendText / notify / http / room / sleepMs / signal):
+ *   room        an action on the case's room (live-room.ts); its answer is the step's "expect".
+ *   send        a JSON-RPC request; "id" is filled in when left out. The answer
+ *               is the message with the same id.
+ *   notify      a JSON-RPC notification; no answer is read (HTTP records the status).
+ *   http        a raw request {method, path, headers, body | bodyText | bodyRepeat | bodyBase64}.
+ *               bodyBase64 carries bytes a string cannot, e.g. invalid UTF-8.
+ *   headers     extra HTTP headers for send/notify; null removes a default.
+ *   serverRequests  stdio only: server-to-client requests expected while the
+ *               answer is pending, in order, each with the "reply" to send back.
+ *   capture     {"name": "/json/pointer"}, {"name": {"keyOf": "/pointer"}} (the first key
+ *               there) or {"name": {"pointer", "optional": true}} (no error when absent):
+ *               a string from the answer, usable as ${name} later. A captured value
+ *               is recorded as its placeholder, so random handles compare equal.
+ *   mask        pointers into the answer whose values vary run to run (a case's
+ *               "maskKeys" masks those key names anywhere in every answer).
+ *   expectSavedVersion  {"file", "pointer"}: the answer's value there must be the
+ *               SHA-256 hex of that file's bytes. Checked on every run.
+ *   minElapsedMs  send: the answer must not come sooner, e.g. a timeout the
+ *               server has to wait out. Checked on every run, never recorded.
+ *   readTimeoutMs  how long to wait for this step's answer (default 20 s).
+ *   sleepMs     alone: wait this long, e.g. for an idle handle to expire.
+ *   signal      "SIGTERM" | "SIGINT". Alone: send it, wait up to exitTimeoutMs
+ *               (default 15 s) for the exit and record it as "expect"; minElapsedMs
+ *               counts from the signal. With send/http: send the request, wait for
+ *               "signalWhenHost" ("METHOD /path" seen once by the fake host), send the
+ *               signal, then record the answer, or null when none came before the exit.
+ *               A lone signal also takes "signalWhenHost", and "noWait": true sends it
+ *               without waiting for the exit (nothing is recorded).
+ *   awaitExit   alone: wait for an exit already under way and record it, as a lone signal does.
+ *   afterHost   stdio send/notify: wait until the fake host saw this "METHOD /path" once first.
+ *   sendText    stdio: one raw input line, written as is (no id or _meta added), for
+ *               text JSON.stringify cannot make (e.g. an id of 3.0). The answer is the
+ *               message with the id JSON.parse reads from it.
+ *   noAnswer    stdio send / sendText: write the request and go on without reading an answer.
+ *               A noAnswer sendText may be any text, JSON or not.
+ *   closeInputAfter  stdio send / sendText: end stdin right after the write, then read the
+ *               answer, or null when the process exits without one.
+ *   rawText     keep content[].text items as the exact strings sent, not parsed, so
+ *               escaping counts (a raw emoji or U+2028 against a \uXXXX escape).
+ *   sseOrder    "byId": http only; sort a batch's SSE answers by id, for requests that
+ *               may end in either order.
+ *   instance    "b": http only; send this step to a second process started with the same argv
+ *               (and env) once the first is up, at ${mcpUrlB} / ${mcpPortB}. It gets the same
+ *               opening exchange. The two share ${dir}, so a --source or --handle-store there is
+ *               shared too. Steps without it go to the first process.
+ *   instanceB   (case) {"argv"?, "session"?}: what instance b runs with instead of the case's argv
+ *               and session, e.g. another contract flag (VERSION_SKEW) or another client name.
+ *   together    http only: a list of send steps sent at once, each recorded under its own
+ *               "expect"; the step ends when all are answered. Each may name its instance.
+ *
+ * compare      "blok-owned" (the embed suite): the server is a host's, so its SDK owns the wire.
+ *               Only what Blok owns is compared (see blokOwned): each answer's result or
+ *               error, tools and prompts keyed by name (order is the SDK's; a host_* entry
+ *               counts by name only; a name listed twice is "<duplicate>"), serverInfo name,
+ *               instructions, which of the tools and prompts capabilities exist, the host's own
+ *               logging capability as is (initialize only), and a server request's method, message and schema.
+ *               No expectHttp is recorded. --example-* flags are the example's own, so they
+ *               are left out when working out ${contractRevision}.
+ *
+ * Answers are compared as parsed JSON (key order ignored, array order kept).
+ * A text content item that holds JSON must equal structuredContent once parsed; it
+ * is recorded as {"type":"text","json":"<same as structuredContent>"}. Placeholders: ${dir}, ${root}, ${host}, ${hostWs}, ${mcpUrl},
+ * ${mcpPort}, ${version} (packages/mcp/package.json), ${contractRevision} and
+ * ${liveContractRevision} (what Node reports for the case's flags at that version,
+ * see contract-revision.ts) and captured names.
+ * Inputs may use {"$bearer": BearerSpec} for an OAuth access token and
+ * {"$repeat": {"text", "count"}} for a long string.
+ */
+
+export interface FileSpec { json?: unknown; text?: string; link?: string; mtimeAgoSeconds?: number; mode?: string }
+
+export interface ServerRequestSpec { expect?: unknown; reply: Record<string, unknown> }
+
+export interface Step {
+  note?: string;
+  room?: RoomAction;
+  send?: JsonMessage;
+  sendText?: string;
+  notify?: JsonMessage;
+  http?: { method: string; path: string; headers?: Record<string, unknown>; body?: unknown; bodyText?: string; bodyBase64?: string; bodyRepeat?: { text: string; count: number } };
+  raw?: boolean;
+  headers?: Record<string, unknown>;
+  serverRequests?: ServerRequestSpec[];
+  capture?: Record<string, CaptureSource>;
+  mask?: string[];
+  expectSavedVersion?: { file: string; pointer: string };
+  minElapsedMs?: number;
+  readTimeoutMs?: number;
+  sleepMs?: number;
+  signal?: NodeJS.Signals;
+  signalWhenHost?: string;
+  exitTimeoutMs?: number;
+  noWait?: boolean;
+  awaitExit?: boolean;
+  noAnswer?: boolean;
+  closeInputAfter?: boolean;
+  rawText?: boolean;
+  sseOrder?: 'byId';
+  instance?: 'b';
+  together?: Step[];
+  afterHost?: string;
+  expect?: unknown;
+  expectHttp?: unknown;
+  notifications?: unknown[];
+}
+
+export type CaptureSource = string | { keyOf: string } | { pointer: string; optional: true };
+
+export interface Session {
+  protocolVersion: string;
+  capabilities?: Record<string, unknown>;
+  clientName?: string;
+  headers?: Record<string, unknown>;
+}
+
+export interface FixtureCase {
+  name: string;
+  transport: 'stdio' | 'http' | 'cli';
+  argv?: string[];
+  env?: Record<string, string>;
+  files?: Record<string, FileSpec>;
+  hosts?: RouteTable & { $upgradeStatus?: number };
+  room?: RoomSpec;
+  session?: Session;
+  instanceB?: { argv?: string[]; session?: Session };
+  steps?: Step[];
+  watchFiles?: string[];
+  watchModes?: string[];
+  fsVariants?: boolean;
+  stderrPattern?: string;
+  hostRequestOrder?: 'sorted' | 'distinct';
+  maskKeys?: string[];
+  maskHostKeys?: string[];
+  mintedHostKeys?: string[];
+  compare?: 'blok-owned';
+  variants?: Record<string, Partial<FixtureCase>>;
+  expectExit?: unknown;
+  expectFiles?: Record<string, FileSpec | null>;
+  expectModes?: Record<string, string | null>;
+  expectHostRequests?: unknown;
+}
+
+export interface FixtureFile { description?: string; defaults?: Partial<FixtureCase>; cases: FixtureCase[] }
+
+const MODERN = '2026-07-28';
+const SAME_AS_STRUCTURED = '<same as structuredContent>';
+const RECORDED_RESPONSE_HEADERS = ['allow', 'www-authenticate', 'mcp-session-id', 'access-control-allow-origin'];
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+export const packageVersion = (): string => {
+  const pkg: unknown = JSON.parse(readFileSync(resolve(__dirname, '../../../packages/mcp/package.json'), 'utf8'));
+
+  if (!isRecord(pkg) || typeof pkg.version !== 'string') {
+    throw new Error('packages/mcp/package.json has no version');
+  }
+
+  return pkg.version;
+};
+
+type Vars = Map<string, string>;
+
+const substituteString = (text: string, vars: Vars): string =>
+  text.replace(/\$\{([A-Za-z][A-Za-z0-9_]*)\}/g, (whole, name: string) => vars.get(name) ?? whole);
+
+/** Fills ${placeholders}, $bearer and $repeat in a case input. */
+const materialize = (value: unknown, vars: Vars): unknown => {
+  if (typeof value === 'string') {
+    return substituteString(value, vars);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => materialize(item, vars));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  if (isRecord(value.$bearer)) {
+    const spec: unknown = materialize(value.$bearer, vars);
+
+    return `Bearer ${signAccessToken(spec as BearerSpec)}`;
+  }
+  if (isRecord(value.$repeat)) {
+    return String(value.$repeat.text).repeat(Number(value.$repeat.count));
+  }
+
+  // Keys too: a 2026 retry names its answer by the key the server chose.
+  return Object.fromEntries(Object.entries(value).map(([key, inner]) => [substituteString(key, vars), materialize(inner, vars)]));
+};
+
+/** Turns run-specific values back into placeholders before an answer is recorded. */
+const placeholdersFor = (value: unknown, vars: Vars): unknown => {
+  const known = [...vars.entries()].sort((a, b) => b[1].length - a[1].length);
+  const walk = (inner: unknown): unknown => {
+    if (typeof inner === 'string') {
+      const exact = known.find(([, v]) => v === inner);
+
+      if (exact !== undefined) {
+        return `\${${exact[0]}}`;
+      }
+
+      return known.reduce((text, [name, v]) => (v.length >= 8 ? text.split(v).join(`\${${name}}`) : text), inner);
+    }
+    if (Array.isArray(inner)) {
+      return inner.map(walk);
+    }
+    if (isRecord(inner)) {
+      return Object.fromEntries(Object.entries(inner).map(([key, v]) => [walk(key) as string, walk(v)]));
+    }
+
+    return inner;
+  };
+
+  return walk(value);
+};
+
+const expected = (value: unknown, vars: Vars): unknown => materialize(value, vars);
+
+const pointerParts = (pointer: string): string[] =>
+  pointer === '' ? [] : pointer.slice(1).split('/').map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'));
+
+const at = (value: unknown, pointer: string): unknown => pointerParts(pointer).reduce<unknown>((node, part) => {
+  if (Array.isArray(node)) {
+    return node[Number(part)];
+  }
+
+  return isRecord(node) ? node[part] : undefined;
+}, value);
+
+const maskAt = (value: unknown, pointer: string): void => {
+  const parts = pointerParts(pointer);
+  const parent = at(value, `/${parts.slice(0, -1).join('/')}`.replace(/^\/$/, ''));
+  const last = parts.at(-1);
+
+  if (last !== undefined && (isRecord(parent) || Array.isArray(parent)) && last in parent) {
+    (parent as Record<string, unknown>)[last] = '<masked>';
+  }
+};
+
+/** A text content item holding a JSON object or array becomes {"type":"text","json":…}. */
+const parseTextItem = (item: unknown): unknown => {
+  if (!isRecord(item) || item.type !== 'text' || typeof item.text !== 'string') {
+    return item;
+  }
+  try {
+    const parsed: unknown = JSON.parse(item.text);
+
+    if (!isRecord(parsed) && !Array.isArray(parsed)) {
+      return item;
+    }
+    const { text: _text, ...rest } = item;
+
+    return { ...rest, json: parsed };
+  } catch {
+    return item;
+  }
+};
+
+/**
+ * Parses JSON text content so ports are free in key order and escaping, and
+ * checks that text and structuredContent say the same thing.
+ */
+const normalize = (value: unknown, label: string, rawText = false): unknown => {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalize(item, label, rawText));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  const out: Record<string, unknown> = Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, normalize(inner, label, rawText)]));
+
+  if (rawText || !Array.isArray(out.content)) {
+    return out;
+  }
+  const content: unknown[] = out.content.map((item: unknown) => parseTextItem(item));
+  const json = content.find((item): item is { json: unknown } => isRecord(item) && 'json' in item)?.json;
+
+  if (json !== undefined && 'structuredContent' in out) {
+    expect(json, `${label}: the text content differs from structuredContent`).toEqual(out.structuredContent);
+
+    // Checked above, so the record keeps one copy.
+    return { ...out, content: content.map((item) => (isRecord(item) && 'json' in item ? { ...item, json: SAME_AS_STRUCTURED } : item)) };
+  }
+
+  return { ...out, content };
+};
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** In a raw body text: each "key":<string or number> becomes "key":"<masked>", the rest stays byte for byte. */
+const maskTextKeys = (text: string, keys: ReadonlySet<string>): string => (keys.size === 0 ? text : text.replace(
+  new RegExp(`"(${[...keys].map(escapeRegExp).join('|')})":(?:"(?:[^"\\\\]|\\\\.)*"|-?\\d[\\d.eE+-]*)`, 'g'),
+  '"$1":"<masked>"',
+));
+
+/** Masks every non-null value under these key names, anywhere in the answer, and in a recorded bodyText. */
+const maskKeys = (value: unknown, keys: ReadonlySet<string>): unknown => {
+  if (Array.isArray(value)) {
+    return value.map((item) => maskKeys(item, keys));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  return Object.fromEntries(Object.entries(value).map(([key, inner]) => {
+    if (key === 'bodyText' && typeof inner === 'string') {
+      return [key, maskTextKeys(inner, keys)];
+    }
+
+    return [key, keys.has(key) && inner !== null ? '<masked>' : maskKeys(inner, keys)];
+  }));
+};
+
+const MINTED_ID = /^[A-Za-z0-9_-]{10}$/;
+
+/** Replaces each minted id under these key names with "<minted>", after checking its shape and that no two are equal. */
+const mintedKeys = (value: unknown, keys: ReadonlySet<string>, label: string): unknown => {
+  const seen = new Set<string>();
+  const walk = (inner: unknown): unknown => {
+    if (Array.isArray(inner)) {
+      return inner.map(walk);
+    }
+    if (!isRecord(inner)) {
+      return inner;
+    }
+
+    return Object.fromEntries(Object.entries(inner).map(([key, item]) => {
+      if (!keys.has(key) || typeof item !== 'string' || !MINTED_ID.test(item)) {
+        return [key, walk(item)];
+      }
+      if (seen.has(item)) {
+        throw new Error(`${label}: the minted ${key} ${item} was sent twice`);
+      }
+      seen.add(item);
+
+      return [key, '<minted>'];
+    }));
+  };
+
+  return walk(value);
+};
+
+const captured = (answer: unknown, source: CaptureSource): unknown => {
+  if (typeof source === 'string') {
+    return at(answer, source);
+  }
+  if ('pointer' in source) {
+    return at(answer, source.pointer);
+  }
+  const container = at(answer, source.keyOf);
+
+  return Object.keys(isRecord(container) ? container : {})[0];
+};
+
+const SERVER_INFO_META = 'io.modelcontextprotocol/serverInfo';
+// The embed example's own tools and prompts; their schemas are each host SDK's rendering.
+const HOST_ENTRY = /^host_/;
+
+// A name listed twice stays visible: clients would see two entries.
+const byName = (list: unknown): unknown => (Array.isArray(list)
+  ? list.filter(isRecord).reduce<Record<string, unknown>>((named, entry) => {
+    const name = String(entry.name);
+    const shown = HOST_ENTRY.test(name) ? '<host>' : entry;
+
+    return { ...named, [name]: name in named ? '<duplicate>' : shown };
+  }, {})
+  : list);
+
+const nameOnly = (value: unknown): unknown => (isRecord(value) ? { name: value.name } : value);
+
+/** The result keys Blok owns. Everything else (protocolVersion, cache hints, ...) is the host SDK's. */
+const blokOwnedResult = (result: Record<string, unknown>, method: string | undefined): Record<string, unknown> => {
+  const kept = Object.fromEntries(Object.entries({
+    serverInfo: nameOnly(result.serverInfo),
+    instructions: result.instructions,
+    capabilities: isRecord(result.capabilities)
+      ? {
+        tools: 'tools' in result.capabilities,
+        prompts: 'prompts' in result.capabilities,
+        // The example host declares logging itself; Blok must leave it as it is. Only initialize
+        // counts: logging is deprecated in 2026, and some SDKs (C# 2.3.1) leave it out of discovery.
+        ...(method === 'initialize' && { logging: result.capabilities.logging }),
+      }
+      : undefined,
+    tools: byName(result.tools),
+    prompts: byName(result.prompts),
+    description: result.description,
+    messages: result.messages,
+    content: result.content,
+    structuredContent: result.structuredContent,
+    resultType: result.resultType,
+    inputRequests: result.inputRequests,
+    _meta: isRecord(result._meta) && isRecord(result._meta[SERVER_INFO_META])
+      ? { [SERVER_INFO_META]: nameOnly(result._meta[SERVER_INFO_META]) }
+      : undefined,
+  }).filter(([, value]) => value !== undefined));
+
+  // A host SDK may leave isError: false out.
+  return Array.isArray(result.content) ? { ...kept, isError: result.isError === true } : kept;
+};
+
+/** What the embed suite compares of one message; see "compare" above. */
+const blokOwned = (message: unknown, method?: string): unknown => {
+  if (!isRecord(message)) {
+    return message;
+  }
+  if (typeof message.method === 'string') {
+    const params = isRecord(message.params) ? message.params : {};
+
+    return {
+      method: message.method,
+      ...(message.method === 'elicitation/create' && { params: { message: params.message, requestedSchema: params.requestedSchema, mode: params.mode } }),
+    };
+  }
+  if (isRecord(message.error)) {
+    const { code, message: text, data } = message.error;
+
+    return { error: { code, message: text, ...(data !== undefined && { data }) } };
+  }
+
+  return isRecord(message.result) ? { result: blokOwnedResult(message.result, method) } : message;
+};
+
+/**
+ * The argv without the embed example's own --example-* flags, each with its value.
+ * --example-source stays as --source: a host's source counts as one in the contract flags.
+ */
+const blokArgv = (argv: string[]): string[] =>
+  argv.flatMap((arg, index) => {
+    if (arg === '--example-source') {
+      return ['--source'];
+    }
+    if (argv[index - 1] === '--example-source') {
+      return [arg];
+    }
+
+    return arg.startsWith('--example-') || (argv[index - 1] ?? '').startsWith('--example-') ? [] : [arg];
+  });
+
+const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
+
+const parseHttpMessages = (answer: HttpAnswer): JsonMessage[] => {
+  const type = (answer.headers['content-type'] ?? '').split(';')[0].trim();
+
+  if (type === 'application/json' && answer.body !== '') {
+    const parsed: unknown = JSON.parse(answer.body);
+
+    return (Array.isArray(parsed) ? parsed : [parsed]).filter(isRecord);
+  }
+  if (type === 'text/event-stream') {
+    return answer.body.split(/\r?\n\r?\n/).flatMap((event) => {
+      const data = event.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
+
+      if (data === '') {
+        return [];
+      }
+      const parsed: unknown = JSON.parse(data);
+
+      return isRecord(parsed) ? [parsed] : [];
+    });
+  }
+
+  return [];
+};
+
+const httpSummary = (answer: HttpAnswer): Record<string, unknown> => ({
+  status: answer.status,
+  contentType: answer.headers['content-type'] === undefined ? null : answer.headers['content-type'].split(';')[0].trim(),
+  headers: Object.fromEntries(RECORDED_RESPONSE_HEADERS.map((name) => [name, answer.headers[name] ?? null])),
+});
+
+const idKey = (message: Record<string, unknown>): string => JSON.stringify(message.id ?? null);
+
+/**
+ * A raw HTTP answer body: SSE and JSON are parsed, so escaping and framing are free.
+ * "byId": a batch's answers come as each request ends, so equal requests finish in any order.
+ */
+const httpBody = (answer: HttpAnswer, sseOrder?: 'byId'): unknown => {
+  if (answer.body === '') {
+    return null;
+  }
+  if ((answer.headers['content-type'] ?? '').startsWith('text/event-stream')) {
+    const messages = parseHttpMessages(answer);
+
+    return { sse: sseOrder === 'byId' ? messages.sort((a, b) => idKey(a).localeCompare(idKey(b))) : messages };
+  }
+  try {
+    return { json: JSON.parse(answer.body) };
+  } catch {
+    return { text: answer.body };
+  }
+};
+
+const writeFiles = (dir: string, files: Record<string, FileSpec>, vars: Vars): void => {
+  for (const [name, spec] of Object.entries(files)) {
+    const path = join(dir, name);
+
+    mkdirSync(dirname(path), { recursive: true });
+    if (spec.link !== undefined) {
+      symlinkSync(spec.link, path);
+    } else if (spec.text !== undefined) {
+      writeFileSync(path, spec.text);
+    } else {
+      writeFileSync(path, JSON.stringify(materialize(spec.json, vars)));
+    }
+    if (spec.mode !== undefined) {
+      chmodSync(path, Number.parseInt(spec.mode, 8));
+    }
+    if (spec.mtimeAgoSeconds !== undefined) {
+      const when = new Date(Date.now() - spec.mtimeAgoSeconds * 1000);
+
+      utimesSync(path, when, when);
+    }
+  }
+};
+
+const withMeta = (message: JsonMessage, session: Session | undefined, raw: boolean): JsonMessage => {
+  if (raw || session?.protocolVersion !== MODERN) {
+    return message;
+  }
+  const params = isRecord(message.params) ? message.params : {};
+  const meta = isRecord(params._meta) ? params._meta : {};
+
+  return {
+    ...message,
+    params: {
+      ...params,
+      _meta: {
+        'io.modelcontextprotocol/protocolVersion': MODERN,
+        'io.modelcontextprotocol/clientInfo': { name: session.clientName ?? 'conformance', version: '1' },
+        'io.modelcontextprotocol/clientCapabilities': session.capabilities ?? {},
+        ...meta,
+      },
+    },
+  };
+};
+
+const BASE_HEADERS = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+
+const sessionHeaders = (session: Session | undefined, message: JsonMessage, raw: boolean): Record<string, string> => {
+  if (raw || session === undefined) {
+    return { ...BASE_HEADERS };
+  }
+  const name = isRecord(message.params) ? message.params.name : undefined;
+  const named = typeof name === 'string' && (message.method === 'tools/call' || message.method === 'prompts/get');
+  const modern = session.protocolVersion === MODERN && typeof message.method === 'string';
+
+  return {
+    ...BASE_HEADERS,
+    'mcp-protocol-version': session.protocolVersion,
+    ...(modern && { 'mcp-method': String(message.method) }),
+    ...(modern && named && { 'mcp-name': name }),
+  };
+};
+
+/** Lowercases names; a null value removes that header. */
+const mergeHeaders = (base: Record<string, string>, extra: unknown, vars: Vars): Record<string, string> => {
+  const filled = isRecord(extra) ? materialize(extra, vars) : {};
+  const entries = Object.entries(isRecord(filled) ? filled : {}).map(([name, value]) => [name.toLowerCase(), value] as const);
+  const removed = new Set(entries.filter(([, value]) => value === null).map(([name]) => name));
+
+  const kept: Array<[string, string]> = Object.entries(base).filter(([name]) => !removed.has(name));
+  const added: Array<[string, string]> = entries.flatMap(([name, value]): Array<[string, string]> =>
+    (value === null ? [] : [[name, typeof value === 'string' ? value : JSON.stringify(value)]]));
+
+  return Object.fromEntries([...kept, ...added]);
+};
+
+const requestBody = (spec: NonNullable<Step['http']>): Buffer | undefined => {
+  if (spec.bodyRepeat !== undefined) {
+    return Buffer.from(spec.bodyRepeat.text.repeat(spec.bodyRepeat.count));
+  }
+  if (spec.bodyText !== undefined) {
+    return Buffer.from(spec.bodyText);
+  }
+  if (spec.bodyBase64 !== undefined) {
+    return Buffer.from(spec.bodyBase64, 'base64');
+  }
+
+  return spec.body === undefined ? undefined : Buffer.from(JSON.stringify(spec.body));
+};
+
+/**
+ * stderr is part of the contract only when the process failed. `pattern` stands in
+ * for text a port cannot match byte for byte (a JSON parser's own message); after a
+ * clean exit it is still checked (a host error that must be logged), never recorded.
+ */
+const exitRecord = (code: number | null, signal: string | null, stderr: string, pattern?: string): Record<string, unknown> => {
+  if (code === 0) {
+    if (pattern !== undefined) {
+      expect(stderr, 'stderr').toMatch(new RegExp(pattern));
+    }
+
+    return { code };
+  }
+  if (pattern === undefined) {
+    return { code, signal, stderr };
+  }
+  expect(stderr, 'stderr').toMatch(new RegExp(pattern));
+
+  return { code, signal, stderr: { pattern } };
+};
+
+const readFileSpec = (path: string): FileSpec | null => (existsSync(path) ? { text: readFileSync(path, 'utf8') } : null);
+
+const readMode = (path: string): string | null =>
+  (existsSync(path) ? `0${(statSync(path).mode & 0o7777).toString(8)}` : null);
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const EXIT_TIMEOUT_MS = 15_000;
+const HOST_WAIT_MS = 20_000;
+
+/** The process side a signal step needs, the same for stdio and HTTP. */
+interface Signalled {
+  signal(name: NodeJS.Signals): void;
+  waitExit(timeoutMs: number): Promise<Exit | undefined>;
+  readonly stderr: string;
+}
+
+type Holder = Record<string, unknown>;
+
+/** One case against one binary: checks each answer, or records it under --update. */
+class CaseRun {
+  public readonly vars: Vars;
+  public readonly recorded: FixtureCase;
+  private host: FakeHost | undefined;
+  private nextId = 1;
+
+  public constructor(
+    private readonly c: FixtureCase,
+    private readonly record: boolean,
+    public readonly dir: string,
+    root: string
+  ) {
+    this.vars = new Map([['dir', dir], ['root', root], ['version', packageVersion()]]);
+    this.recorded = structuredClone(c);
+  }
+
+  public useHost(host: FakeHost): void {
+    this.host = host;
+    this.vars.set('host', host.url);
+    this.vars.set('hostWs', host.url.replace(/^http:/, 'ws:'));
+  }
+
+  public stepHolder(index: number): Holder {
+    const steps = this.recorded.steps ?? [];
+
+    return steps[index] as unknown as Holder;
+  }
+
+  public check(holder: Holder, key: string, actual: unknown, label: string): void {
+    if (this.record) {
+      Reflect.set(holder, key, placeholdersFor(actual, this.vars));
+
+      return;
+    }
+    if (!(key in holder)) {
+      throw new Error(`${label}: no recorded "${key}", got ${JSON.stringify(actual)?.slice(0, 1000)}. Run the suite with --target node --update.`);
+    }
+    expect(actual, label).toEqual(expected(holder[key], this.vars));
+  }
+
+  public checkCase(key: string, actual: unknown, label: string): void {
+    this.check(this.recorded as unknown as Holder, key, actual, label);
+  }
+
+  /** method: the request this message answers, when it is an answer. */
+  private owned(message: unknown, method?: string): unknown {
+    return this.c.compare === 'blok-owned' ? blokOwned(message, method) : message;
+  }
+
+  /** expectHttp: the status line and headers are the host SDK's in the embed suite. */
+  private checkHttp(holder: Holder, answer: HttpAnswer | null, label: string): void {
+    if (this.c.compare !== 'blok-owned') {
+      this.check(holder, 'expectHttp', answer === null ? null : httpSummary(answer), `${label} http`);
+    }
+  }
+
+  private finishStep(step: Step, holder: Holder, answer: unknown, label: string): void {
+    const method = step.send?.method;
+    const masked = maskKeys(this.owned(answer, typeof method === 'string' ? method : undefined), new Set(this.c.maskKeys ?? []));
+
+    (step.mask ?? []).forEach((pointer) => maskAt(masked, pointer));
+    for (const [name, source] of Object.entries(step.capture ?? {})) {
+      const value = captured(answer, source);
+
+      if (typeof source !== 'string' && 'optional' in source && value === undefined) {
+        continue;
+      }
+      if (typeof value !== 'string') {
+        throw new Error(`${label}: capture ${name} found no string in ${JSON.stringify(answer)}`);
+      }
+      this.vars.set(name, value);
+    }
+    if (step.expectSavedVersion !== undefined) {
+      const bytes = readFileSync(join(this.dir, step.expectSavedVersion.file));
+
+      expect(at(answer, step.expectSavedVersion.pointer), `${label}: the saved version is not the SHA-256 of the file`).toBe(sha256(bytes));
+    }
+    this.check(holder, 'expect', masked, label);
+  }
+
+  private replyToServer(server: StdioServer, incoming: JsonMessage, spec: ServerRequestSpec | undefined, label: string): ServerRequestSpec {
+    if (spec === undefined) {
+      throw new Error(`${label}: unexpected server request ${JSON.stringify(incoming)}`);
+    }
+    const copy: ServerRequestSpec = { ...spec };
+
+    this.check(copy as unknown as Holder, 'expect', this.owned(normalize({ ...incoming, id: '<server>' }, label)), `${label} server request`);
+    server.send({ jsonrpc: '2.0', id: incoming.id, ...materialize(spec.reply, this.vars) as JsonMessage });
+
+    return copy;
+  }
+
+  public async roomStep(room: LiveRoom | undefined, step: Step, holder: Holder, label: string): Promise<void> {
+    if (room === undefined) {
+      throw new Error(`${label}: a room step needs the case's "room"`);
+    }
+    this.finishStep(step, holder, await room.act(materialize(step.room, this.vars) as RoomAction), label);
+  }
+
+  /** A step with no request: a pause, or a signal and the exit it causes. Returns false for other steps. */
+  public async bareStep(server: Signalled, step: Step, holder: Holder, label: string): Promise<boolean> {
+    if (step.send !== undefined || step.sendText !== undefined || step.notify !== undefined || step.http !== undefined) {
+      return false;
+    }
+    if (step.sleepMs !== undefined) {
+      await sleep(step.sleepMs);
+
+      return true;
+    }
+    if (step.signal === undefined && step.awaitExit !== true) {
+      return false;
+    }
+    await this.waitForHost(step.signalWhenHost, label);
+    const sentAt = Date.now();
+
+    if (step.signal !== undefined) {
+      server.signal(step.signal);
+    }
+    if (step.noWait === true) {
+      return true;
+    }
+    const exit = await server.waitExit(step.exitTimeoutMs ?? EXIT_TIMEOUT_MS);
+
+    if (exit === undefined) {
+      throw new Error(`${label}: the server did not exit within ${step.exitTimeoutMs ?? EXIT_TIMEOUT_MS} ms.\nstderr:\n${server.stderr}`);
+    }
+    expect(Date.now() - sentAt, `${label}: exited sooner than minElapsedMs`).toBeGreaterThanOrEqual(step.minElapsedMs ?? 0);
+    this.finishStep(step, holder, exitRecord(exit.code, exit.signal, server.stderr), label);
+
+    return true;
+  }
+
+  /** For a request step with a signal: waits for the host to see the named request, then signals. */
+  private async signalAfterSend(server: Signalled, step: Step, label: string): Promise<void> {
+    if (step.signal === undefined) {
+      return;
+    }
+    await this.waitForHost(step.signalWhenHost, label);
+    server.signal(step.signal);
+  }
+
+  private async waitForHost(key: string | undefined, label: string): Promise<void> {
+    if (key === undefined) {
+      return;
+    }
+    if (this.host === undefined) {
+      throw new Error(`${label}: waiting for a host request needs the case's "hosts"`);
+    }
+    await this.host.waitForRequests(key, 1, HOST_WAIT_MS);
+  }
+
+  public async stdioStep(server: StdioServer, step: Step, holder: Holder, label: string): Promise<void> {
+    if (await this.bareStep(server, step, holder, label)) {
+      return;
+    }
+    const raw = step.raw === true;
+
+    await this.waitForHost(step.afterHost, label);
+    if (step.notify !== undefined) {
+      server.send(withMeta({ jsonrpc: '2.0', ...materialize(step.notify, this.vars) as JsonMessage }, this.c.session, raw));
+
+      return;
+    }
+    const text = step.sendText === undefined ? undefined : substituteString(step.sendText, this.vars);
+
+    if (text !== undefined && step.noAnswer === true) {
+      server.sendText(text);
+      this.endInputAfter(server, step);
+
+      return;
+    }
+    const message = text === undefined ? materialize(step.send, this.vars) as JsonMessage : JSON.parse(text) as JsonMessage;
+    const id = message.id ?? this.nextId++;
+    const wanted = step.serverRequests ?? [];
+    const seen: ServerRequestSpec[] = [];
+    const notifications: unknown[] = [];
+
+    const sentAt = Date.now();
+
+    if (text === undefined) {
+      server.send(withMeta({ jsonrpc: '2.0', ...message, id }, this.c.session, raw));
+    } else {
+      server.sendText(text);
+    }
+    this.endInputAfter(server, step);
+    if (step.noAnswer === true) {
+      return;
+    }
+    await this.signalAfterSend(server, step, label);
+    // After a signal or the end of stdin the process may exit without answering: that is recorded as null.
+    const read = (): Promise<JsonMessage | null> => (step.signal === undefined && step.closeInputAfter !== true
+      ? server.next(step.readTimeoutMs)
+      : server.next(step.readTimeoutMs).catch(async (thrown: unknown) => {
+        if (await server.waitExit(EXIT_TIMEOUT_MS) === undefined) {
+          throw thrown;
+        }
+
+        return null;
+      }));
+    let incoming = await read();
+
+    while (incoming !== null && !(incoming.id === id && ('result' in incoming || 'error' in incoming))) {
+      if (typeof incoming.method === 'string' && incoming.id !== undefined) {
+        seen.push(this.replyToServer(server, incoming, wanted[seen.length], label));
+      } else {
+        notifications.push(this.owned(normalize(incoming, label)));
+      }
+      incoming = await read();
+    }
+    expect(seen.length, `${label}: server requests`).toBe(wanted.length);
+    expect(Date.now() - sentAt, `${label}: answered sooner than minElapsedMs`).toBeGreaterThanOrEqual(step.minElapsedMs ?? 0);
+    if (wanted.length > 0) {
+      Reflect.set(holder, 'serverRequests', seen);
+    }
+    if (notifications.length > 0 || 'notifications' in step) {
+      this.check(holder, 'notifications', maskKeys(notifications, new Set(this.c.maskKeys ?? [])), `${label} notifications`);
+    }
+    this.finishStep(step, holder, normalize(incoming, label, step.rawText), label);
+  }
+
+  private endInputAfter(server: StdioServer, step: Step): void {
+    if (step.closeInputAfter === true) {
+      server.endInput();
+    }
+  }
+
+  public async httpStep(server: HttpServer, step: Step, holder: Holder, label: string, session: Session | undefined = this.c.session): Promise<void> {
+    if (await this.bareStep(server, step, holder, label)) {
+      return;
+    }
+    if (step.http !== undefined) {
+      const spec = materialize(step.http, this.vars) as NonNullable<Step['http']>;
+      const answer = await sendHttp(server.url, { method: spec.method, path: spec.path, headers: mergeHeaders({}, spec.headers, this.vars), body: requestBody(spec) });
+
+      this.checkHttp(holder, answer, label);
+      this.finishStep(step, holder, normalize(httpBody(answer, step.sseOrder), label, step.rawText), label);
+
+      return;
+    }
+    const raw = step.raw === true;
+    const isNotify = step.notify !== undefined;
+    const base = materialize(isNotify ? step.notify : step.send, this.vars) as JsonMessage;
+    const id = isNotify ? undefined : base.id ?? this.nextId++;
+    const message = withMeta({ jsonrpc: '2.0', ...base, ...(id !== undefined && { id }) }, session, raw);
+    const headers = mergeHeaders(mergeHeaders(sessionHeaders(session, message, raw), session?.headers, this.vars), step.headers, this.vars);
+    const sentAt = Date.now();
+    const sending = sendHttp(server.url, {
+      method: 'POST', path: new URL(server.url).pathname, headers, body: Buffer.from(JSON.stringify(message)), timeoutMs: step.readTimeoutMs,
+    });
+
+    await this.signalAfterSend(server, step, label);
+    const answer = step.signal === undefined ? await sending : await sending.catch(() => null);
+
+    expect(Date.now() - sentAt, `${label}: answered sooner than minElapsedMs`).toBeGreaterThanOrEqual(step.minElapsedMs ?? 0);
+
+    if (answer === null) {
+      this.checkHttp(holder, null, label);
+      this.finishStep(step, holder, null, label);
+
+      return;
+    }
+    this.checkHttp(holder, answer, label);
+    if (isNotify) {
+      return;
+    }
+    const messages = parseHttpMessages(answer);
+    const reply = messages.find((m) => m.id === id) ?? (messages.length === 1 ? messages[0] : undefined);
+
+    this.finishStep(step, holder, reply === undefined ? null : normalize(reply, label, step.rawText), label);
+  }
+
+  /** The SDK client's opening exchange for a 2025 session; 2026 has none. */
+  public async handshake(send: (message: JsonMessage) => Promise<JsonMessage | undefined>, session: Session | undefined = this.c.session): Promise<void> {
+    if (session === undefined || session.protocolVersion === MODERN) {
+      return;
+    }
+    const answer = await send({
+      jsonrpc: '2.0',
+      id: 0,
+      method: 'initialize',
+      params: { protocolVersion: session.protocolVersion, capabilities: session.capabilities ?? {}, clientInfo: { name: session.clientName ?? 'conformance', version: '1' } },
+    });
+
+    if (answer === undefined || !isRecord(answer.result)) {
+      throw new Error(`initialize failed: ${JSON.stringify(answer)}`);
+    }
+    await send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  }
+}
+
+/** JSON with object keys sorted, so a port's own key order in a body does not matter. */
+const canonical = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonical).join(',')}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+  }
+
+  return JSON.stringify(value) ?? 'undefined';
+};
+
+/**
+ * "sorted": calls made in parallel (a listing's authorize checks) arrive in any order.
+ * "distinct": a room's reconnect attempts repeat on a timer, so only their content counts.
+ */
+const orderedRequests = (requests: RecordedRequest[], order: FixtureCase['hostRequestOrder']): RecordedRequest[] => {
+  const keyed = requests.map((request) => ({ request, key: canonical(request) }));
+
+  if (order === 'sorted') {
+    // Code-unit order, not localeCompare: the same on every machine.
+    return keyed.sort((a, b) => (a.key < b.key ? -1 : Number(a.key > b.key))).map(({ request }) => request);
+  }
+  if (order === 'distinct') {
+    return keyed.filter(({ key }, index) => keyed.findIndex((other) => other.key === key) === index).map(({ request }) => request);
+  }
+
+  return requests;
+};
+
+const withHost = async (c: FixtureCase, run: CaseRun, body: () => Promise<void>): Promise<void> => {
+  if (c.hosts === undefined) {
+    await body();
+
+    return;
+  }
+  const { $upgradeStatus, ...routes } = c.hosts;
+  const host: FakeHost = await startFakeHost(routes, { secret: c.env?.BLOK_SECRET, upgradeStatus: $upgradeStatus });
+
+  run.useHost(host);
+  try {
+    await body();
+    const requests = orderedRequests(host.requests, c.hostRequestOrder);
+
+    run.checkCase('expectHostRequests', mintedKeys(maskKeys(requests, new Set(c.maskHostKeys ?? [])), new Set(c.mintedHostKeys ?? []), c.name), `${c.name} host requests`);
+  } finally {
+    await host.close();
+  }
+};
+
+const runStdio = async (run: CaseRun, c: FixtureCase, launch: Launch, room?: LiveRoom): Promise<void> => {
+  const server = startStdio(launch.command, launch.argv, launch.env, launch.cwd);
+
+  try {
+    await run.handshake(async (message) => {
+      server.send(message);
+
+      return message.id === undefined ? undefined : server.next();
+    });
+    for (const [index, step] of (c.steps ?? []).entries()) {
+      const label = `${c.name} step ${index}`;
+
+      await (step.room === undefined
+        ? run.stdioStep(server, step, run.stepHolder(index), label)
+        : run.roomStep(room, step, run.stepHolder(index), label));
+    }
+    const exit = await server.closeInput();
+
+    run.checkCase('expectExit', exitRecord(exit.code, exit.signal, server.stderr, c.stderrPattern), `${c.name} exit`);
+  } finally {
+    await server.kill();
+  }
+};
+
+const usesInstanceB = (steps: Step[]): boolean =>
+  steps.some((step) => step.instance === 'b' || usesInstanceB(step.together ?? []));
+
+const runHttp = async (run: CaseRun, c: FixtureCase, launch: Launch): Promise<void> => {
+  const server = await startHttp(launch.command, launch.argv, launch.env, launch.cwd);
+  const servers: { a: HttpServer; b?: HttpServer } = { a: server };
+  const sessionB = c.instanceB?.session ?? c.session;
+  const opened = async (target: HttpServer, session: Session | undefined): Promise<void> => {
+    await run.handshake(async (message) => {
+      const headers = message.id === undefined ? sessionHeaders(session, message, false) : { ...BASE_HEADERS };
+      const answer = await sendHttp(target.url, {
+        method: 'POST',
+        path: new URL(target.url).pathname,
+        headers: mergeHeaders(headers, session?.headers, run.vars),
+        body: Buffer.from(JSON.stringify(message)),
+      });
+
+      return parseHttpMessages(answer)[0];
+    }, session);
+  };
+
+  run.vars.set('mcpUrl', server.url);
+  run.vars.set('mcpPort', server.port);
+  try {
+    await opened(server, c.session);
+    if (usesInstanceB(c.steps ?? [])) {
+      const argvB = c.instanceB?.argv?.map((arg) => substituteString(arg, run.vars)) ?? launch.argv;
+
+      servers.b = await startHttp(launch.command, argvB, launch.env, launch.cwd);
+      run.vars.set('mcpUrlB', servers.b.url);
+      run.vars.set('mcpPortB', servers.b.port);
+      await opened(servers.b, sessionB);
+    }
+    const onB = (step: Step): boolean => step.instance === 'b' && servers.b !== undefined;
+    const target = (step: Step): HttpServer => (onB(step) && servers.b !== undefined ? servers.b : server);
+    const sessionOf = (step: Step): Session | undefined => (onB(step) ? sessionB : c.session);
+    const together = async (steps: Step[], holder: Holder, label: string): Promise<void> => {
+      const held = holder.together;
+
+      if (!Array.isArray(held)) {
+        throw new Error(`${label}: "together" must be a list of steps`);
+      }
+      await Promise.all(steps.map((inner, at) => run.httpStep(target(inner), inner, held[at] as Holder, `${label}.${at}`, sessionOf(inner))));
+    };
+
+    for (const [index, step] of (c.steps ?? []).entries()) {
+      const label = `${c.name} step ${index}`;
+
+      await (step.together === undefined
+        ? run.httpStep(target(step), step, run.stepHolder(index), label, sessionOf(step))
+        : together(step.together, run.stepHolder(index), label));
+    }
+  } finally {
+    await Promise.all([server.stop(), servers.b?.stop()]);
+  }
+};
+
+interface Launch { command: string[]; argv: string[]; env: NodeJS.ProcessEnv; cwd: string }
+
+/**
+ * Runs one case against the binary. In record mode it returns the case with
+ * every expectation filled from what the binary answered; otherwise it checks.
+ */
+export const runCase = async (command: string[], c: FixtureCase, record: boolean): Promise<FixtureCase> => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'blok-mcp-case-')));
+  const dir = join(root, 'docs');
+  const run = new CaseRun(c, record, dir, root);
+
+  mkdirSync(dir);
+  let room: LiveRoom | undefined;
+
+  try {
+    room = c.room === undefined ? undefined : await startLiveRoom(c.room);
+    if (room !== undefined) {
+      run.vars.set('roomWs', room.wsUrl);
+    }
+    await withHost(c, run, async () => {
+      writeFiles(dir, c.files ?? {}, run.vars);
+      const launch: Launch = {
+        command,
+        argv: (c.argv ?? []).map((arg) => substituteString(arg, run.vars)),
+        env: caseEnv(Object.fromEntries(Object.entries(c.env ?? {}).map(([key, value]) => [key, substituteString(value, run.vars)]))),
+        cwd: root,
+      };
+      const revisions = await nodeContractRevisions({ argv: blokArgv(launch.argv), env: launch.env, cwd: root, version: packageVersion() });
+
+      if (revisions !== undefined) {
+        run.vars.set('contractRevision', revisions.stored);
+        run.vars.set('liveContractRevision', revisions.live);
+      }
+      if (c.transport === 'cli') {
+        const exit = await runToExit(command, launch.argv, launch.env, root);
+
+        run.checkCase('expectExit', exitRecord(exit.code, exit.signal, exit.stderr, c.stderrPattern), `${c.name} exit`);
+      } else if (c.transport === 'stdio') {
+        await runStdio(run, c, launch, room);
+      } else {
+        await runHttp(run, c, launch);
+      }
+      if (c.watchModes !== undefined) {
+        run.checkCase('expectModes', Object.fromEntries(c.watchModes.map((name) => [name, readMode(join(dir, name))])), `${c.name} modes`);
+      }
+      if (c.watchFiles !== undefined) {
+        run.checkCase('expectFiles', Object.fromEntries(c.watchFiles.map((name) => [name, readFileSpec(join(dir, name))])), `${c.name} files`);
+      }
+    });
+  } finally {
+    await room?.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+
+  return run.recorded;
+};
