@@ -85,7 +85,49 @@ après une écriture DOM, en boucle**.
    se **remplit** pendant qu'elle rend : les 34 lectures différaient réellement.
    C'étaient 34 états sur le chemin d'un seul résultat.
 
-## Le problème ouvert
+## LA PISTE PRINCIPALE — mesurée en dernier, et de loin la plus grosse
+
+Mesuré en production sur la page de 870 blocs :
+
+| | |
+|---|---|
+| Blocs situés sous une ligne de database | **657 (75 %)** |
+| Lignes de database | 184, **toutes masquées** (classe `hidden`) |
+| Parmi ces 657, nombre effectivement différés | **10** |
+
+Les trois quarts du document sont des corps de lignes de database
+**invisibles** — 429 paragraphes, 174 listes, 35 titres — et ils sont montés
+et rendus intégralement.
+
+Or le mécanisme pour l'éviter existe déjà, et c'est précisément son seul rôle :
+`isClosedRowBody` dans
+`/Users/joce/.codex/worktrees/blok-notes-comments/blok/src/components/modules/blockManager/factory.ts`
+— « je suis dans le corps d'une ligne fermée, ne construis pas le DOM de mon
+outil ». Il devrait retenir ~657 blocs. **Il en retient 10.**
+
+```ts
+if (name === 'database-row'
+    && (live === undefined || live.holder.classList.contains('hidden'))) return true;
+```
+
+Deux moments à distinguer dans l'enquête :
+
+1. **À la composition** — la remontée part de `parentId`. La classe `hidden` est
+   posée sur la ligne dans `composeBlock` lui-même, et l'ordre de composition
+   est DFS parent-avant-enfant, donc elle devrait être là. À vérifier.
+2. **Au réveil** — `shouldDeferRender` est re-interrogé par `renderIfVisible()`
+   (`…/src/components/block/index.ts:437,649`). Si quelque chose réveille ces
+   blocs (l'adoption des enfants par le `rendered()` de la database ?), le
+   prédicat doit les retenir — les lignes sont bien masquées au moment de la
+   mesure.
+
+**C'est là qu'il faut commencer.** Faire dormir ces 657 blocs ramènerait le
+montage à ~213 blocs. Le travail sur le viewport décrit plus bas a été construit
+par-dessus ce mécanisme cassé, ce qui explique qu'il n'ait rien changé même
+quand il s'activait : la masse n'est pas dans les racines hors écran, elle est
+dans l'invisible déjà censé dormir.
+
+## Le problème ouvert (secondaire)
 
 Objectif : ne plus monter 870 blocs quand un seul écran est visible.
 
