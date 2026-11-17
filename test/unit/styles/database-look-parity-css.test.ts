@@ -520,19 +520,29 @@ describe('row page header hover row', () => {
     expect(ruleBody(`${selector} svg`)).toContain('inline-size: 14px');
   });
 
-  it('shows on hover of the page head or the title, not the whole content', () => {
+  it('shows on hover of the page head, or on a full page its title, not the whole content', () => {
     expect(database.includes('[data-blok-database-drawer-content]:hover [data-blok-database-drawer-add-icon]')).toBe(false);
     expect(database.includes('[data-blok-database-drawer-content]:hover [data-blok-database-drawer-customize]')).toBe(false);
-    const shown = '[data-blok-database-drawer-page-head]:is(:hover, :has(+ [data-blok-database-drawer-title]:hover)) [data-blok-database-drawer-customize],';
-
-    expect(database.includes(shown)).toBe(true);
+    expect(database.includes('[data-blok-database-drawer-page-head]:hover [data-blok-database-drawer-customize],')).toBe(true);
+    expect(database.includes('[data-peek-mode="full"] [data-blok-database-drawer-page-head]:has(+ [data-blok-database-drawer-title]:hover) [data-blok-database-drawer-customize],')).toBe(true);
   });
 
-  // notion-motion.md "Side peek top bar": in a peek the row shows while the pointer is anywhere over the peek.
-  it('shows in a side or center peek while the peek is hovered', () => {
+  // notion-motion.md Round 56 §1, §6: in a peek the row shows only near its top: the bar or the page head.
+  it('shows in a side or center peek while the top bar is hovered, not the whole peek', () => {
     for (const button of buttons) {
-      expect(database.includes(`[data-blok-database-drawer]:not([data-peek-mode="full"]):hover ${button}`)).toBe(true);
+      expect(database.includes(`[data-blok-database-drawer]:not([data-peek-mode="full"]):hover ${button}`)).toBe(false);
+      expect(database.includes(`[data-blok-database-drawer]:not([data-peek-mode="full"]):has(> [data-blok-database-drawer-toolbar]:hover) ${button}`)).toBe(true);
     }
+  });
+
+  // Round 56 §1: Notion's zone is the bar plus 44..80 under it; the head reaches up over the content's top padding to fill it.
+  it('lets a peek page head reach up to the bar without moving anything', () => {
+    const head = ruleBody('[data-blok-database-drawer]:is([data-peek-mode="side"], [data-peek-mode="center"]) [data-blok-database-drawer-page-head]');
+
+    expect(head).toContain('margin-block: calc(-1 * var(--_blok-peek-head-reach)) 0');
+    expect(head).toContain('padding-block: var(--_blok-peek-head-reach) var(--blok-space-1)');
+    expect(ruleBody('[data-blok-database-drawer][data-peek-mode="side"]')).toContain('--_blok-peek-head-reach: var(--blok-space-1)');
+    expect(ruleBody('[data-blok-database-drawer][data-peek-mode="side"] [data-blok-database-drawer-content]')).toContain('padding-block-start: var(--blok-space-1)');
   });
 });
 
@@ -607,6 +617,51 @@ describe('map view chrome', () => {
     expect(colors).not.toContain('--blok-radius-map');
   });
 
+  // Round 52 §2: Notion's map is 684x400 at the column start (539), 8 short of the 692 column, 14 under the toolbar.
+  it('keeps the map in the text column, 8 short of its end, 8 under the view top', () => {
+    const map = ruleBody('[data-blok-database-map]');
+
+    expect(map).toContain('padding-inline-start: max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2))');
+    expect(map).toContain('padding-inline-end: calc(max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2)) + var(--blok-space-2))');
+    expect(map).toContain('padding-block-start: var(--blok-space-2)');
+  });
+
+  // Round 52 §2: a column of 312x28 rows, pitch 29; a 20 icon box at +8, text at +36; hover 20ms ease-in.
+  it('stacks the "No place" rows: 28 tall, 1 apart, icon box 20 at 8, text at 36', () => {
+    // 320 wide with rows of 312: 4 in on each side.
+    const box = ruleBody('[data-blok-database-map-no-place-list]');
+
+    expect(box).toContain('padding: var(--blok-space-1)');
+    expect(box).not.toContain('gap:');
+    const list = ruleBody('[data-blok-database-map-no-place-rows]');
+
+    expect(list).toContain('display: flex');
+    expect(list).toContain('flex-direction: column');
+    expect(list).toContain('gap: var(--blok-space-0-25)');
+    const row = ruleBody('[data-blok-database-map-no-place-row]');
+
+    expect(row).toContain('display: flex');
+    expect(row).toContain('block-size: 28px');
+    expect(row).toContain('padding: 0 var(--blok-space-2)');
+    expect(row).toContain('gap: var(--blok-space-2)');
+    expect(row).toContain('transition: background-color 20ms ease-in');
+    const icon = ruleBody('[data-blok-database-map-no-place-row] > :is([data-blok-database-page-icon], [data-blok-database-page-icon-placeholder])');
+
+    expect(icon).toContain('inline-size: 20px');
+    expect(icon).toContain('block-size: 20px');
+  });
+
+  // Round 53 §8a: the field is 296x28, 12 in and 12 down; the rows start 52 down, so 55 + 29 per row (229 for 6).
+  it('boxes the "No place" search as a 296x28 field, 12 in, with the rows 12 under it', () => {
+    const field = ruleBody('[data-blok-database-map-no-place-list] > [data-blok-database-map-no-place-search]');
+
+    expect(field).toContain('margin: var(--blok-space-2) var(--blok-space-2) var(--blok-space-3)');
+    expect(field).toContain('width: auto');
+    // Notion's 6 sides; the shared field's 1px border adds one.
+    expect(field).toContain('padding-inline: var(--blok-space-1-5)');
+    expect(field).toContain('font-size: 14px');
+  });
+
   it('holds Add pin in a 28px white pill, radius 6, padding 2, 8 in from the corner', () => {
     const pill = ruleBody('[data-blok-database-map-add-pin-pill]');
 
@@ -616,13 +671,17 @@ describe('map view chrome', () => {
     expect(pill).toContain('padding: var(--blok-space-0-5)');
     expect(pill).toContain('border-radius: var(--blok-radius-control)');
     expect(pill).toContain('background-color: var(--blok-bg-primary)');
-    expect(pill).toContain('box-shadow: var(--blok-database-popover-shadow)');
+    // Round 52 §2: 0.027 8/12 + 0.027 2/6 + a 0.07 ring, as the place cell's map link.
+    expect(pill).toContain('box-shadow: var(--blok-database-place-map-link-shadow)');
     const button = ruleBody('[data-blok-database-map-add-pin]');
 
     expect(button).toContain('inline-size: 24px');
     expect(button).toContain('block-size: 24px');
     expect(button).toContain('border-radius: var(--blok-radius-control-sm)');
     expect(button).not.toContain('box-shadow');
+    // Round 52 §2: the button is clear on the white pill; its hover fill eases in 100ms.
+    expect(button).toContain('background-color: transparent');
+    expect(button).toContain('transition: background-color 0.1s ease-in-out');
     expect(button).not.toContain('position: absolute');
   });
 
@@ -635,5 +694,18 @@ describe('map view chrome', () => {
     expect(title).toContain('font-size: 13px');
     expect(title).toContain('font-weight: 600');
     expect(title).toContain('line-height: 14.95px');
+  });
+});
+
+// notion-motion.md Round 59 §5: Edit property's add field is 276x28, 12 in from the 300 flyout, typed in the database ink.
+describe('options add field (Round 59 §5)', () => {
+  it('is 28 tall, 8 in from the list (12 from the flyout), typed in the database ink, with an AA placeholder', () => {
+    const body = ruleBody('[data-blok-database-options-add-input]');
+
+    expect(body).toContain('box-sizing: border-box');
+    expect(body).toContain('block-size: 28px');
+    expect(body).toContain('margin-inline: var(--blok-space-2)');
+    expect(body).toContain('color: var(--blok-database-ink)');
+    expect(ruleBody('[data-blok-database-options-add-input]::placeholder')).toContain('color: var(--blok-database-ink-tertiary)');
   });
 });

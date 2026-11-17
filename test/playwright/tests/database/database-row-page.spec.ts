@@ -446,6 +446,584 @@ test.describe('side peek width', () => {
     await expect(peek(page)).toHaveAttribute('data-peek-mode', 'center');
     await expect(peek(page).getByRole('separator', { name: 'Side peek' })).toBeHidden();
   });
+
+  // notion-motion.md Round 44 §5: a center peek shows the mode switch and the row steps only while the pointer is on its header.
+  test('a center peek shows its mode switch and row steps only while the pointer is on the header', async ({ page }) => {
+    await mount(page, blocks({ openPagesIn: 'center' }));
+    await openRow(page, 'r1');
+    await expect(peek(page)).toHaveAttribute('data-peek-mode', 'center');
+
+    const toolbar = peek(page).locator('[data-blok-database-drawer-toolbar]');
+    const revealed = toolbar.locator('[data-blok-database-peek-mode], [data-blok-database-peek-next]');
+    const box = await toolbar.boundingBox();
+
+    if (box === null) throw new Error('no toolbar');
+
+    await page.mouse.move(box.x + box.width / 2, box.y + 300);
+    for (const el of await revealed.all()) await expect(el).toHaveCSS('opacity', '0');
+    await expect(toolbar.locator('[data-blok-database-peek-expand]')).toHaveCSS('opacity', '1');
+    await expect(toolbar.locator('[data-blok-database-drawer-close]')).toBeHidden();
+
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    for (const el of await revealed.all()) await expect(el).toHaveCSS('opacity', '1');
+  });
+
+  test('a keyboard user still reaches the center peek\'s hidden header controls', async ({ page }) => {
+    await mount(page, blocks({ openPagesIn: 'center' }));
+    await openRow(page, 'r1');
+
+    const toolbar = peek(page).locator('[data-blok-database-drawer-toolbar]');
+    const box = await peek(page).boundingBox();
+
+    if (box === null) throw new Error('no peek');
+    // The peek focuses its title on open; wait so that does not take focus back later.
+    await expect(peekTitle(page)).toBeFocused();
+    await page.mouse.move(box.x + box.width / 2, box.y + 300);
+    await toolbar.locator('[data-blok-database-peek-expand]').focus();
+    await page.keyboard.press('Tab');
+    // The Tab must stay with the header: Blok's block Tab would nest the database under the paragraph above.
+    expect((await saved(page)).find((b) => b.id === 'db-1')?.parent).toBeUndefined();
+    await expect(toolbar.locator('[data-blok-database-peek-mode]')).toBeFocused();
+    await expect(toolbar.locator('[data-blok-database-peek-mode]')).toHaveCSS('opacity', '1');
+  });
+
+  // notion-motion.md Round 56 §1: the controls show only near the top: the bar, and the page head down to 4px under its icon row.
+  test('a side peek shows its top controls only while the pointer is near its top', async ({ page }) => {
+    await mount(page, blocks());
+    await openRow(page, 'r1');
+    // Hover is read where the pointer lands, so the slide-in must be over first.
+    // data-open comes a frame after mount. Before it no slide runs yet and the peek sits off screen.
+    await expect(peek(page)).toHaveAttribute('data-open', '');
+    await expect.poll(() => peek(page).evaluate((el) => el.getAnimations().length)).toBe(0);
+
+    const box = await peek(page).boundingBox();
+    const head = await peek(page).locator('[data-blok-database-drawer-page-head]').boundingBox();
+    const title = await peekTitle(page).boundingBox();
+
+    if (box === null || head === null || title === null) throw new Error('no peek');
+    const controls = [peek(page).locator('[data-blok-database-peek-mode]'), peek(page).getByRole('button', { name: 'Add icon' })];
+    const expectOpacity = async (opacity: string): Promise<void> => {
+      for (const el of controls) await expect(el).toHaveCSS('opacity', opacity);
+    };
+
+    await page.mouse.move(box.x + box.width / 2, box.y + 300);
+    await expectOpacity('0');
+    // Just under the bar, over the head's top: Notion's 44..80 strip.
+    await page.mouse.move(head.x + head.width / 2, box.y + 46);
+    await expectOpacity('1');
+    await page.mouse.move(title.x + title.width / 2, title.y + title.height / 2);
+    await expectOpacity('0');
+    await page.mouse.move(box.x + box.width / 2, box.y + 20);
+    await expectOpacity('1');
+    await expect(controls[0]).toHaveCSS('transition', 'opacity 0.1s');
+  });
+
+  // notion-motion.md Round 56 §6: a center peek hides its icon row too while the pointer is lower down.
+  test('a center peek shows its icon row only while the pointer is near its top', async ({ page }) => {
+    await mount(page, blocks({ openPagesIn: 'center' }));
+    await openRow(page, 'r1');
+
+    const box = await peek(page).boundingBox();
+    const addIcon = peek(page).getByRole('button', { name: 'Add icon' });
+
+    if (box === null) throw new Error('no peek');
+    await page.mouse.move(box.x + box.width / 2, box.y + 300);
+    await expect(addIcon).toHaveCSS('opacity', '0');
+    await page.mouse.move(box.x + box.width / 2, box.y + 20);
+    await expect(addIcon).toHaveCSS('opacity', '1');
+  });
+
+  // notion-motion.md Round 56 §6: switching to a center peek widens the page over 200ms ease.
+  test('switching a side peek to a center peek widens the page over 200ms', async ({ page }) => {
+    await mount(page, blocks());
+    await openRow(page, 'r1');
+    const host = page.locator('[data-blok-database-peek]');
+
+    await expect(host).toHaveCount(1);
+    const handle = await host.elementHandle();
+
+    if (handle === null) throw new Error('no host');
+    await page.getByRole('button', { name: 'Open pages in' }).click();
+    await page.getByText('Center peek').click();
+    await expect(peek(page)).toHaveAttribute('data-peek-mode', 'center');
+
+    const widening = await handle.evaluate((el) => el.getAnimations().map((a) => (a as CSSTransition).transitionProperty));
+
+    // Chromium names the running transition by its physical side.
+    expect(widening).toEqual(expect.arrayContaining(['padding-right']));
+    await expect.poll(() => handle.evaluate((el) => getComputedStyle(el).paddingInlineEnd)).toBe('0px');
+    await expect(host).toHaveCount(0);
+  });
+});
+
+// notion-motion.md Round 57 §6 and Round 58 §1, read at 1512×717 (and 530 / 900 tall for the cover height).
+test.describe('row page cover', () => {
+  const COVER = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2210%22 height=%2210%22%3E%3Crect width=%2210%22 height=%2210%22 fill=%22%23e07a3f%22/%3E%3C/svg%3E';
+  // r1 has an icon and a cover, r2 only an icon, r3 only a cover.
+  const HEADS: Record<string, Record<string, string> | undefined> = { r1: { icon: '🍎', cover: COVER }, r2: { icon: '🍎' }, r3: { cover: COVER } };
+  const withCover = (view: Record<string, unknown> = {}): OutputBlockData[] => blocks(view).map((block) => {
+    const extra = HEADS[block.id ?? ''];
+
+    return extra === undefined ? block : { ...block, data: { ...block.data, ...extra } };
+  });
+
+  interface Box { x: number; y: number; width: number; height: number }
+
+  const boxOf = async (locator: Locator): Promise<Box> => {
+    const box = await locator.boundingBox();
+
+    if (box === null) throw new Error('no box');
+
+    return box;
+  };
+
+  const open = async (page: Page, rowId: string, mode: 'side' | 'center' | 'full'): Promise<void> => {
+    await mount(page, withCover(mode === 'side' ? {} : { openPagesIn: mode }));
+    await openRow(page, rowId);
+    await expect(peek(page)).toHaveAttribute('data-peek-mode', mode);
+    // data-open comes a frame after mount. Before it no slide runs yet and a side peek sits off screen.
+    await expect(peek(page)).toHaveAttribute('data-open', '');
+    await expect.poll(() => peek(page).evaluate((el) => el.getAnimations().length)).toBe(0);
+  };
+
+  const cover = (page: Page): Locator => peek(page).locator('[data-blok-database-drawer-cover]');
+  const coverImagePosition = (page: Page): Promise<string> => cover(page).evaluate((el) => {
+    const image = el.querySelector('img');
+
+    return image === null ? '' : getComputedStyle(image).objectPosition;
+  });
+  const icon = (page: Page): Locator => peek(page).locator('[data-blok-database-drawer-icon]');
+  const control = (page: Page, name: 'add-icon' | 'add-cover' | 'customize'): Locator => peek(page).locator(`[data-blok-database-drawer-${name}]`);
+
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 1512, height: 717 });
+  });
+
+  test('side peek: spans the whole peek under the bar, square, the row under it and a 36px icon under the row', async ({ page }) => {
+    await open(page, 'r1', 'side');
+
+    const box = await boxOf(peek(page));
+    const coverBox = await boxOf(cover(page));
+    const iconBox = await boxOf(icon(page));
+    const customize = await boxOf(control(page, 'customize'));
+    const title = await boxOf(peekTitle(page));
+
+    expect(coverBox.x).toBe(box.x);
+    expect(coverBox.width).toBe(box.width);
+    expect(coverBox.y).toBe(box.y + 44);
+    expect(coverBox.height).toBeCloseTo(143.4, 1);
+    await expect(cover(page)).toHaveCSS('border-radius', '0px');
+    expect(customize.y).toBeCloseTo(coverBox.y + coverBox.height + 16, 1);
+    expect(customize.x).toBeCloseTo(title.x - 1, 1);
+    expect(iconBox.width).toBe(36);
+    expect(iconBox.height).toBe(36);
+    expect(iconBox.x).toBeCloseTo(title.x + 8, 1);
+    expect(iconBox.y).toBeCloseTo(customize.y + 32, 1);
+    expect(title.y).toBeCloseTo(iconBox.y + iconBox.height, 1);
+  });
+
+  test('side peek: an icon with no cover sits under the row, 36px', async ({ page }) => {
+    await open(page, 'r2', 'side');
+
+    const box = await boxOf(peek(page));
+    const iconBox = await boxOf(icon(page));
+    const addCover = await boxOf(control(page, 'add-cover'));
+    const customize = await boxOf(control(page, 'customize'));
+    const title = await boxOf(peekTitle(page));
+
+    expect(addCover.y).toBe(box.y + 48);
+    expect(addCover.x).toBeCloseTo(title.x - 1, 1);
+    expect(customize.x).toBeCloseTo(addCover.x + addCover.width, 1);
+    expect(iconBox.width).toBe(36);
+    expect(iconBox.x).toBeCloseTo(title.x + 8, 1);
+    expect(iconBox.y).toBe(box.y + 80);
+    expect(title.y).toBe(box.y + 116);
+  });
+
+  for (const [height, side, full] of [[530, 106, 159], [900, 180, 270]] as const) {
+    test(`the cover is 20vh in a peek and 30vh on a full page (${height} tall)`, async ({ page }) => {
+      await page.setViewportSize({ width: 1512, height });
+      await open(page, 'r3', 'side');
+      expect((await boxOf(cover(page))).height).toBeCloseTo(side, 1);
+      await open(page, 'r3', 'center');
+      expect((await boxOf(cover(page))).height).toBeCloseTo(side, 1);
+      await open(page, 'r3', 'full');
+      expect((await boxOf(cover(page))).height).toBeCloseTo(full, 1);
+    });
+  }
+
+  for (const [mode, coverHeight] of [['center', 143.4], ['full', 215.1]] as const) {
+    test(`${mode}: the cover spans the whole page under the bar and a 78px icon overlaps it by 42`, async ({ page }) => {
+      await open(page, 'r1', mode);
+
+      const box = await boxOf(peek(page));
+      const coverBox = await boxOf(cover(page));
+      const iconBox = await boxOf(icon(page));
+      const customize = await boxOf(control(page, 'customize'));
+      const title = await boxOf(peekTitle(page));
+
+      expect(coverBox.x).toBe(box.x);
+      expect(coverBox.width).toBe(box.width);
+      expect(coverBox.y).toBe(box.y + 44);
+      expect(coverBox.height).toBeCloseTo(coverHeight, 1);
+      await expect(cover(page)).toHaveCSS('border-radius', '0px');
+      expect(iconBox.width).toBe(78);
+      expect(iconBox.height).toBe(78);
+      expect(iconBox.x).toBeCloseTo(title.x + 8, 1);
+      expect(iconBox.y).toBeCloseTo(coverBox.y + coverBox.height - 42, 1);
+      // The icon paints over the cover.
+      expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-blok-database-drawer-icon]') !== null, { x: iconBox.x + 39, y: iconBox.y + 10 })).toBe(true);
+      expect(customize.x).toBeCloseTo(title.x - 1, 1);
+      expect(customize.y).toBeCloseTo(iconBox.y + iconBox.height + 8, 1);
+      expect(title.y).toBeCloseTo(customize.y + 32, 1);
+    });
+
+    test(`${mode}: with a cover and no icon the row sits 16 under the cover`, async ({ page }) => {
+      await open(page, 'r3', mode);
+
+      const coverBox = await boxOf(cover(page));
+      const addIcon = await boxOf(control(page, 'add-icon'));
+      const customize = await boxOf(control(page, 'customize'));
+      const title = await boxOf(peekTitle(page));
+
+      expect(addIcon.y).toBeCloseTo(coverBox.y + coverBox.height + 16, 1);
+      expect(addIcon.x).toBeCloseTo(title.x - 1, 1);
+      expect(customize.x).toBeCloseTo(addIcon.x + addIcon.width, 1);
+      expect(title.y).toBeCloseTo(addIcon.y + 32, 1);
+    });
+
+    test(`${mode}: an icon with no cover sits 96 under the bar, the row under it`, async ({ page }) => {
+      await open(page, 'r2', mode);
+
+      const box = await boxOf(peek(page));
+      const iconBox = await boxOf(icon(page));
+      const addCover = await boxOf(control(page, 'add-cover'));
+      const title = await boxOf(peekTitle(page));
+
+      expect(iconBox.width).toBe(78);
+      expect(iconBox.x).toBeCloseTo(title.x + 8, 1);
+      expect(iconBox.y).toBe(box.y + 44 + 96);
+      expect(addCover.x).toBeCloseTo(title.x - 1, 1);
+      expect(addCover.y).toBe(iconBox.y + iconBox.height + 8);
+      expect(title.y).toBe(addCover.y + 32);
+    });
+  }
+
+  // notion-motion.md Round 59 §2: no icon and no cover. Centre: row at bar + 32, shown at bar + 46, hidden at bar + 66.
+  // Full page: row at bar + 80, shown at bar + 66. The title 32 under the row in both.
+  for (const [mode, gap, shownAt, hiddenAt] of [['center', 32, 46, 66], ['full', 80, 66, null]] as const) {
+    test(`${mode}: with no icon and no cover the row sits ${gap} under the bar, the title 32 under it`, async ({ page }) => {
+      await mount(page, blocks({ openPagesIn: mode }));
+      await openRow(page, 'r2');
+      await expect(peek(page)).toHaveAttribute('data-peek-mode', mode);
+      await expect(peek(page)).toHaveAttribute('data-open', '');
+      await expect.poll(() => peek(page).evaluate((el) => el.getAnimations().length)).toBe(0);
+
+      const box = await boxOf(peek(page));
+      const addIcon = await boxOf(control(page, 'add-icon'));
+      const title = await boxOf(peekTitle(page));
+
+      expect(addIcon.y).toBeCloseTo(box.y + 44 + gap, 1);
+      expect(title.y).toBeCloseTo(addIcon.y + 32, 1);
+
+      const at = async (y: number, opacity: string): Promise<void> => {
+        await page.mouse.move(box.x + box.width / 2, box.y + 500);
+        await expect(control(page, 'add-icon')).toHaveCSS('opacity', '0');
+        await page.mouse.move(addIcon.x + 200, box.y + 44 + y);
+        await expect(control(page, 'add-icon')).toHaveCSS('opacity', opacity);
+      };
+
+      await at(shownAt, '1');
+      if (hiddenAt !== null) await at(hiddenAt, '0');
+    });
+  }
+
+  // Keyboard focus follows the drawn order: top to bottom, then start to end. The cover's own button comes first.
+  const tabOrderAndDrawn = async (page: Page): Promise<{ tabbed: string[]; drawn: string[] }> => {
+    const head = peek(page).locator('[data-blok-database-drawer-page-head]');
+    const drawn = await head.evaluate((el) => [...el.querySelectorAll('button')]
+      .filter((b) => b.closest('[data-blok-database-drawer-cover]') === null)
+      .map((b) => ({ name: b.getAttributeNames().find((n) => n.startsWith('data-blok-database-drawer-')) ?? '', rect: b.getBoundingClientRect() }))
+      .sort((a, b) => (Math.round(a.rect.top) - Math.round(b.rect.top)) || (a.rect.left - b.rect.left))
+      .map((b) => b.name));
+    const tabbed: string[] = [];
+
+    await head.evaluate((el) => {
+      [...el.querySelectorAll('button')].find((b) => b.closest('[data-blok-database-drawer-cover]') === null)?.focus();
+    });
+    for (const _ of drawn) {
+      tabbed.push(await page.evaluate(() => document.activeElement?.getAttributeNames().find((n) => n.startsWith('data-blok-database-drawer-')) ?? ''));
+      await page.keyboard.press('Tab');
+    }
+
+    return { tabbed, drawn };
+  };
+
+  for (const [mode, rowId] of [['side', 'r1'], ['side', 'r2'], ['center', 'r1'], ['center', 'r2'], ['full', 'r1']] as const) {
+    test(`${mode}: Tab walks the head (${rowId}) in the order it is drawn`, async ({ page }) => {
+      await open(page, rowId, mode);
+      const { tabbed, drawn } = await tabOrderAndDrawn(page);
+
+      expect(tabbed).toEqual(drawn);
+      expect(drawn.length).toBeGreaterThan(1);
+    });
+  }
+
+  // notion-motion.md Round 59 §1: a 28-tall white group 12 in from the cover's top-right. Round 60 §1: its text is 12/16.
+  const coverGroup = (page: Page): Locator => cover(page).locator('[data-blok-database-drawer-cover-controls]');
+
+  const expectGroupAt = async (page: Page, right: number): Promise<void> => {
+    const coverBox = await boxOf(cover(page));
+
+    await page.mouse.move(coverBox.x + 40, coverBox.y + coverBox.height / 2);
+    await expect(coverGroup(page)).toHaveCSS('opacity', '1');
+    const group = await boxOf(coverGroup(page));
+    const change = await boxOf(coverGroup(page).getByRole('button', { name: 'Change the page cover' }));
+    const reposition = await boxOf(coverGroup(page).getByRole('button', { name: 'Reposition the cover image' }));
+    const download = await boxOf(coverGroup(page).getByRole('button', { name: 'Download the cover image' }));
+
+    expect(group.y).toBeCloseTo(coverBox.y + 12, 1);
+    expect(group.x + group.width).toBeCloseTo(right - 12, 1);
+    expect(group.height).toBeCloseTo(28, 1);
+    expect(change.height).toBeCloseTo(24, 1);
+    expect(change.y).toBeCloseTo(group.y + 2, 1);
+    expect(download.width).toBeCloseTo(24, 1);
+    expect(download.height).toBeCloseTo(24, 1);
+    // A 1px divider with 4px on each side between each two buttons.
+    expect(reposition.x).toBeCloseTo(change.x + change.width + 9, 1);
+    expect(download.x).toBeCloseTo(reposition.x + reposition.width + 9, 1);
+    expect(download.x + download.width).toBeCloseTo(group.x + group.width - 2, 1);
+  };
+
+  for (const mode of ['side', 'center', 'full'] as const) {
+    test(`${mode}: the cover group sits 12 in from the cover's top-right`, async ({ page }) => {
+      await open(page, 'r3', mode);
+      await expectGroupAt(page, (await boxOf(cover(page))).x + (await boxOf(cover(page))).width);
+      const change = coverGroup(page).getByRole('button', { name: 'Change the page cover' });
+
+      await expect(change).toHaveText('Change');
+      await expect(change).toHaveCSS('font-size', '12px');
+      await expect(change).toHaveCSS('line-height', '16px');
+      await expect(change).toHaveCSS('padding', '0px 6px');
+      await expect(change).toHaveCSS('border-radius', '4px');
+      await expect(coverGroup(page)).toHaveCSS('padding', '2px');
+      await expect(coverGroup(page)).toHaveCSS('border-radius', '6px');
+    });
+  }
+
+  for (const mode of ['side', 'center', 'full'] as const) {
+    test(`${mode} with the details panel open: the cover stops at the panel and the group sits 12 in from it`, async ({ page }) => {
+      const data = withCover(mode === 'side' ? {} : { openPagesIn: mode }).map((block) => (block.id !== 'db-1' ? block : {
+        ...block,
+        data: { ...block.data, schema: SCHEMA.map((p) => (p.type === 'title' ? { ...p, pageLayoutPlacements: [{ id: 'p-notes', place: 'panel' }] } : p)) },
+      }));
+
+      await mount(page, data);
+      await openRow(page, 'r3');
+      await expect(peek(page)).toHaveAttribute('data-peek-mode', mode);
+      await expect(peek(page)).toHaveAttribute('data-open', '');
+      await peek(page).locator('[data-blok-database-peek-page-info]').click();
+      const panel = peek(page).locator('[data-blok-database-drawer-details]');
+
+      await expect(panel).toBeVisible();
+      await expect.poll(() => peek(page).evaluate((el) => el.getAnimations({ subtree: true }).length)).toBe(0);
+      const coverBox = await boxOf(cover(page));
+      const panelBox = await boxOf(panel);
+
+      // Round 59 §3 (side peek): the cover stops at the panel. Centre and full are inferred from it.
+      expect(coverBox.x + coverBox.width).toBeCloseTo(panelBox.x, 1);
+      await expectGroupAt(page, panelBox.x);
+      // Nothing paints over the buttons.
+      for (const name of ['Change the page cover', 'Download the cover image']) {
+        const button = coverGroup(page).getByRole('button', { name });
+        const b = await boxOf(button);
+
+        expect(await page.evaluate(({ x, y, label }) => document.elementFromPoint(x, y)?.closest('button')?.getAttribute('aria-label') === label, { x: b.x + b.width / 2, y: b.y + b.height / 2, label: name })).toBe(true);
+      }
+    });
+  }
+
+  test('the cover group fades in over 0.2s and holds 0.11s before it fades out', async ({ page }) => {
+    await open(page, 'r3', 'side');
+    const group = coverGroup(page);
+    const timing = (): Promise<string[]> => group.evaluate((el) => {
+      const style = getComputedStyle(el);
+
+      return [style.transitionProperty, style.transitionDuration, style.transitionTimingFunction, style.transitionDelay];
+    });
+
+    await page.mouse.move(10, 700);
+    await expect(group).toHaveCSS('opacity', '0');
+    expect(await timing()).toEqual(['opacity', '0.2s', 'ease', '0.11s']);
+    const coverBox = await boxOf(cover(page));
+
+    await page.mouse.move(coverBox.x + 40, coverBox.y + 40);
+    await expect(group).toHaveCSS('opacity', '1');
+    expect(await timing()).toEqual(['opacity', '0.2s', 'ease', '0s']);
+  });
+
+  // notion-motion.md Round 60 §1: Reposition.
+  test('Reposition swaps the group, shows the pill, and a drag moves the image vertically until Save', async ({ page }) => {
+    await open(page, 'r3', 'side');
+    const coverBox = await boxOf(cover(page));
+
+    await page.mouse.move(coverBox.x + 40, coverBox.y + coverBox.height / 2);
+    await coverGroup(page).getByRole('button', { name: 'Reposition the cover image' }).click();
+
+    const save = coverGroup(page).getByRole('button', { name: 'Save position' });
+    const cancel = coverGroup(page).getByRole('button', { name: 'Cancel' });
+    const hint = cover(page).getByText('Drag image to reposition');
+
+    await expect(save).toBeVisible();
+    await expect(cover(page)).toHaveCSS('cursor', 'ns-resize');
+    // No divider: Save sits right against Cancel, and both against the group's 2px padding.
+    const group = await boxOf(coverGroup(page));
+    const saveBox = await boxOf(save);
+    const cancelBox = await boxOf(cancel);
+
+    expect(group.height).toBeCloseTo(28, 1);
+    expect(cancelBox.x).toBeCloseTo(saveBox.x + saveBox.width, 1);
+    expect(group.width).toBeCloseTo(saveBox.width + cancelBox.width + 4, 1);
+    expect(group.x + group.width).toBeCloseTo(coverBox.x + coverBox.width - 12, 1);
+
+    const pill = await boxOf(hint);
+
+    expect(pill.height).toBeCloseTo(25.2, 0);
+    expect(pill.x + pill.width / 2).toBeCloseTo(coverBox.x + coverBox.width / 2, 0);
+    expect(pill.y + pill.height / 2).toBeCloseTo(coverBox.y + coverBox.height / 2, 0);
+    await expect(hint).toHaveCSS('background-color', 'rgba(0, 0, 0, 0.4)');
+    await expect(hint).toHaveCSS('font-size', '12px');
+    await expect(hint).toHaveCSS('transition-property', 'opacity');
+    await expect(hint).toHaveCSS('transition-duration', '0.2s');
+    // A mouse click hands focus to Save with no ring.
+    expect(await save.evaluate((el) => el.matches(':focus-visible'))).toBe(false);
+
+    // The group stays with the pointer off the cover.
+    await page.mouse.move(coverBox.x + 40, coverBox.y + coverBox.height + 200);
+    await expect(coverGroup(page)).toHaveCSS('opacity', '1');
+
+    // The 10×10 image shows as wide as the cover is, so a 70px drag down is 70 ÷ width.
+    await page.mouse.move(coverBox.x + 200, coverBox.y + 60);
+    await page.mouse.down();
+    await page.mouse.move(coverBox.x + 280, coverBox.y + 100, { steps: 4 });
+    await page.mouse.move(coverBox.x + 280, coverBox.y + 130, { steps: 2 });
+    await page.mouse.up();
+    const expected = Math.round((50 - (70 / coverBox.width) * 100) * 100) / 100;
+    const position = (await coverImagePosition(page)).split(' ');
+
+    expect(position[0]).toBe('50%');
+    expect(parseFloat(position[1])).toBeCloseTo(expected, 1);
+    await expect(page.locator('[data-blok-selected="true"]')).toHaveCount(0);
+    await expect(peek(page)).toHaveAttribute('data-open', '');
+
+    await save.click();
+    await expect(hint).toHaveCount(0);
+    await expect(coverGroup(page).getByRole('button', { name: 'Reposition the cover image' })).toHaveCount(1);
+    const saved = await page.evaluate(async () => (await window.blokInstance?.save())?.blocks.find((block) => block.id === 'r3')?.data as { coverPosition?: number } | undefined);
+
+    expect(saved?.coverPosition).toBeCloseTo(expected, 1);
+    await expect.poll(() => coverImagePosition(page)).toBe(`50% ${saved?.coverPosition}%`);
+  });
+
+  // notion-motion.md Round 61 §3: Escape cancels and closes the side peek; a click elsewhere saves.
+  test('Cancel and Escape leave Reposition without moving the image, and Escape closes the side peek', async ({ page }) => {
+    await open(page, 'r3', 'side');
+    const coverBox = await boxOf(cover(page));
+    const reposition = async (): Promise<void> => {
+      await page.mouse.move(coverBox.x + 40, coverBox.y + coverBox.height / 2);
+      await coverGroup(page).getByRole('button', { name: 'Reposition the cover image' }).click();
+      await page.mouse.move(coverBox.x + 200, coverBox.y + 60);
+      await page.mouse.down();
+      await page.mouse.move(coverBox.x + 200, coverBox.y + 120, { steps: 3 });
+      await page.mouse.up();
+      await expect.poll(() => coverImagePosition(page)).not.toBe('50% 50%');
+    };
+
+    await reposition();
+    await coverGroup(page).getByRole('button', { name: 'Cancel' }).click();
+    // The pill is still there, fading to 0, then goes.
+    expect(await cover(page).evaluate((el) => el.querySelector<HTMLElement>('[data-blok-database-drawer-cover-hint]')?.style.opacity ?? 'gone')).toBe('0');
+    await expect(cover(page).getByText('Drag image to reposition')).toHaveCount(0);
+    await expect.poll(() => coverImagePosition(page)).toBe('50% 50%');
+
+    await reposition();
+    await page.keyboard.press('Escape');
+    await expect(peek(page)).not.toHaveAttribute('data-open', '');
+    await expect(page.locator('[data-blok-selected="true"]')).toHaveCount(0);
+    const saved = await page.evaluate(async () => (await window.blokInstance?.save())?.blocks.find((block) => block.id === 'r3')?.data);
+
+    expect(saved).not.toHaveProperty('coverPosition');
+    await openRow(page, 'r3');
+    await expect(peek(page)).toHaveAttribute('data-open', '');
+    await expect.poll(() => coverImagePosition(page)).toBe('50% 50%');
+  });
+
+  test('a click on the title or outside the peek saves the dragged position', async ({ page }) => {
+    await open(page, 'r3', 'side');
+    const coverBox = await boxOf(cover(page));
+    const repositionBy = async (dy: number): Promise<string> => {
+      await page.mouse.move(coverBox.x + 40, coverBox.y + coverBox.height / 2);
+      await coverGroup(page).getByRole('button', { name: 'Reposition the cover image' }).click();
+      await page.mouse.move(coverBox.x + 200, coverBox.y + 40);
+      await page.mouse.down();
+      await page.mouse.move(coverBox.x + 200, coverBox.y + 40 + dy, { steps: 3 });
+      await page.mouse.up();
+      await expect.poll(() => coverImagePosition(page)).not.toBe('50% 50%');
+
+      return coverImagePosition(page);
+    };
+    const savedPosition = (): Promise<number | undefined> => page.evaluate(async () => ((await window.blokInstance?.save())?.blocks.find((block) => block.id === 'r3')?.data as { coverPosition?: number } | undefined)?.coverPosition);
+
+    const shown = await repositionBy(40);
+
+    await peek(page).locator('[data-blok-database-drawer-title]').click();
+    await expect(cover(page).getByText('Drag image to reposition')).toHaveCount(0);
+    await expect(peek(page)).toHaveAttribute('data-open', '');
+    await expect.poll(savedPosition).toBe(parseFloat(shown.split(' ')[1]));
+
+    const moved = await repositionBy(20);
+
+    await page.mouse.click(20, 700);
+    await expect.poll(savedPosition).toBe(parseFloat(moved.split(' ')[1]));
+  });
+
+  test('Download saves the cover image and Change opens the picker', async ({ page }) => {
+    await open(page, 'r3', 'side');
+    const coverBox = await boxOf(cover(page));
+
+    await page.mouse.move(coverBox.x + 40, coverBox.y + 40);
+    const download = page.waitForEvent('download');
+
+    await coverGroup(page).getByRole('button', { name: 'Download the cover image' }).click();
+    expect(await download).toBeTruthy();
+    await coverGroup(page).getByRole('button', { name: 'Change the page cover' }).click();
+    await expect(page.locator('[data-role="audio-cover-picker"]')).toBeVisible();
+  });
+
+  test('shows the top controls over the whole cover and down to the title', async ({ page }) => {
+    await open(page, 'r1', 'side');
+
+    const box = await peek(page).boundingBox();
+
+    if (box === null) throw new Error('no peek');
+    const mode = peek(page).locator('[data-blok-database-peek-mode]');
+    // Notion's points, relative to the peek's left edge (756).
+    const at = async (x: number, y: number, opacity: string): Promise<void> => {
+      await page.mouse.move(box.x + 744, 700);
+      await expect(mode).toHaveCSS('opacity', '0');
+      await page.mouse.move(box.x + x - 756, y);
+      await expect(mode).toHaveCSS('opacity', opacity);
+    };
+
+    await at(780, 62, '1');
+    await at(1440, 62, '1');
+    await at(1000, 190, '1');
+    await at(1000, 268, '1');
+    await at(1000, 274, '0');
+    await at(800, 200, '0');
+    await at(1450, 200, '0');
+    await at(800, 250, '0');
+  });
 });
 
 test.describe('page icon', () => {

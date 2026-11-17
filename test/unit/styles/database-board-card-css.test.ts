@@ -75,6 +75,12 @@ describe('database board card and calendar "No date" styles', () => {
       .toMatch(/--max-height:\s*calc\(100dvh - 24px\)/);
   });
 
+  // notion-motion.md Round 50 row 57: Notion caps the card ⋯ menu at 70vh (501.9 in a 717 window).
+  it('caps the card ⋯ menu at 70vh', () => {
+    expect(ruleBody("[data-blok-popover-custom-class~='blok-database-fade-menu'] [data-blok-popover-container]"))
+      .toMatch(/--max-height:\s*70vh/);
+  });
+
   // research/07:95 (feel findings B17): a select pill on a board card is 18px, 0 6px, 12px/18px.
   // notion-spec-2 §21.7 and board-status.png: the status pill too has 12/18 text and spans the same 18 rows as the select.
   it('draws every pill on a card, status included, at 18px and 12px', () => {
@@ -163,6 +169,11 @@ describe('database board card and calendar "No date" styles', () => {
 
     expect(body).toContain('margin-inline: calc(-1 * var(--blok-space-1))');
     expect(body).toContain('margin-block-end: var(--blok-space-0-5)');
+  });
+
+  // notion-motion.md Round 45 §1 Board: the property list starts 36.5 below the card top, 6 under the title block.
+  it('starts the property list 6px under the title block', () => {
+    expect(ruleBody('[data-blok-database-card-properties]')).toContain('margin-block-start: var(--blok-space-1-5)');
   });
 
   it('bleeds the preview to the card edges and crops unless Fit image is on', () => {

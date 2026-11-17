@@ -486,6 +486,53 @@ describe('resolvePosition', () => {
       });
     });
 
+    // notion-motion.md Round 33 §1 (r33-form-move-w1000.raw): the form's Move flyout opens left of
+    // the Question options row, and flips to its right when the left has no room.
+    describe('asideFlip', () => {
+      const input = (windowWidth: number, rowLeft: number, flip: boolean): Parameters<typeof resolvePosition>[0] => ({
+        anchor: rect({ top: 459.8, bottom: 487.8, left: rowLeft, right: rowLeft + 282 }),
+        popoverSize: { width: 280, height: 123 },
+        scopeBounds: rect({ top: 0, bottom: 717, left: 0, right: windowWidth }),
+        viewportSize: { width: windowWidth, height: 717 },
+        scrollOffset: { x: 0, y: 0 },
+        offset: 0,
+        placeLeftOfAnchor: true,
+        asideSide: 'left',
+        viewportMargin: 12,
+        ...(flip ? { asideFlip: true } : {}),
+      });
+
+      it('opens on the right of the row, centred on it, when the left has no room', () => {
+        const result = resolvePosition(input(1000, 96, true));
+
+        expect(result.left).toBeCloseTo(378);
+        expect(result.top).toBeCloseTo(412.3);
+        expect(result.openLeft).toBe(false);
+      });
+
+      it('stays on the left when it fits there', () => {
+        const result = resolvePosition(input(1512, 1213, true));
+
+        expect(result.left).toBeCloseTo(933);
+        expect(result.openLeft).toBe(true);
+      });
+
+      it('falls back below or above when neither side has room', () => {
+        expect(resolvePosition(input(520, 96, true))).toEqual(resolvePosition(input(520, 96, false)));
+      });
+
+      it('flips a right-side popover to the left when only the left has room', () => {
+        const result = resolvePosition({ ...input(1000, 600, true), asideSide: 'right' });
+
+        expect(result.left).toBeCloseTo(320);
+        expect(result.openLeft).toBe(true);
+      });
+
+      it('does not flip without the option', () => {
+        expect(resolvePosition(input(1000, 96, false)).left).not.toBeCloseTo(378);
+      });
+    });
+
     describe("asideSide: 'right' (toolbarPosition: 'right')", () => {
       it('places the popover to the right of the anchor, vertically centered', () => {
         const result = resolvePosition({
@@ -1027,6 +1074,27 @@ describe('resolvePosition', () => {
 
     it('still keeps the popover inside the window', () => {
       expect(resolvePosition({ ...input, anchor: rect({ top: 300, bottom: 324, left: 20, right: 44 }), alignEnd: true }).left).toBe(0);
+    });
+  });
+
+  // notion-motion.md Round 55 §5: the peek mode menu sits centred under its button.
+  describe('alignCenter', () => {
+    const input = {
+      anchor: rect({ top: 10, bottom: 34, left: 827.5, right: 851.5 }),
+      popoverSize: { width: 220, height: 160 },
+      scopeBounds: rect({ top: 0, bottom: 717, left: 0, right: 1512 }),
+      viewportSize: { width: 1512, height: 717 },
+      scrollOffset: { x: 0, y: 0 },
+      offset: 0,
+    };
+
+    it('centres the popover under the anchor', () => {
+      expect(resolvePosition({ ...input, alignCenter: true })).toMatchObject({ left: 729.5, top: 34 });
+    });
+
+    it('still keeps the popover inside the window', () => {
+      expect(resolvePosition({ ...input, anchor: rect({ top: 10, bottom: 34, left: 1480, right: 1504 }), alignCenter: true }).left).toBe(1292);
+      expect(resolvePosition({ ...input, anchor: rect({ top: 10, bottom: 34, left: 8, right: 32 }), alignCenter: true }).left).toBe(0);
     });
   });
 });

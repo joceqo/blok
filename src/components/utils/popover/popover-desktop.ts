@@ -2,6 +2,7 @@ import { DATA_ATTR } from '../../constants/data-attributes';
 import { loadSheet } from '../lazy-styles';
 import { PopoverRegistry } from './popover-registry';
 import { Flipper } from '../../flipper';
+import type { ArrowTarget } from '../../flipper';
 import { keyCodes } from '../../utils';
 import { generateId } from '../id-generator';
 import { isKeyboardModality, recordPointerGesture } from '../input-modality';
@@ -140,6 +141,8 @@ export type PopoverDesktopParams = PopoverParams & {
   coverVerticalMargin?: number;
   /** With `placeLeftOfAnchor`: with no room on `asideSide`, stay there, slid in over the anchor to this gap from the window. */
   asideStayMargin?: number;
+  /** With `placeLeftOfAnchor`: with no room on `asideSide` but room on the other, open there. */
+  asideFlip?: boolean;
 };
 
 export class PopoverDesktop extends PopoverAbstract {
@@ -323,6 +326,9 @@ export class PopoverDesktop extends PopoverAbstract {
   /** Opt-in, set before show(): the popover's end edge sits on the trigger's end edge. */
   public alignEnd = false;
 
+  /** Opt-in, set before show(): the popover is centred under (or over) the trigger. */
+  public alignCenter = false;
+
   /**
    * When true, places the popover to the left of the trigger, vertically
    * centered on the trigger and shifted only as needed to stay on screen.
@@ -351,10 +357,14 @@ export class PopoverDesktop extends PopoverAbstract {
 
   /** It opened above: it stays there while open, so a shrinking list keeps its bottom. */
   private coverAbove = false;
+  /** Open holds (holdOpen): while any is on, pointer moves never close the submenu. */
+  private holds = 0;
 
   private coverVerticalMargin: number | undefined;
 
   private asideStayMargin: number | undefined;
+
+  private asideFlip: boolean | undefined;
 
   /**
    * Updates the element whose left edge is used for horizontal positioning.
@@ -416,6 +426,7 @@ export class PopoverDesktop extends PopoverAbstract {
     this.coverFlipOffset = params.coverFlipOffset;
     this.coverVerticalMargin = params.coverVerticalMargin;
     this.asideStayMargin = params.asideStayMargin;
+    this.asideFlip = params.asideFlip;
 
     if (params.trigger) {
       this.trigger = params.trigger;
@@ -921,11 +932,13 @@ export class PopoverDesktop extends PopoverAbstract {
       offset: this.offset,
       leftAlignRect,
       alignEnd: this.alignEnd,
+      alignCenter: this.alignCenter,
       direction: getElementDirection(this.nodes.popover),
       placeLeftOfAnchor: this.placeLeftOfAnchor,
       asideSide: this.asideSide,
       viewportMargin: this.viewportMargin,
       asideStayMargin: this.asideStayMargin,
+      asideFlip: this.asideFlip,
       cover: this.cover,
       coverFlipOffset: this.coverFlipOffset,
       coverStayAbove: this.coverAbove,
@@ -1106,11 +1119,19 @@ export class PopoverDesktop extends PopoverAbstract {
    */
   public holdOpen(): (focusItemName?: string) => void {
     const trigger = this.params.trigger;
+    const hold = { on: true };
 
     PopoverRegistry.instance.unregister(this);
     this.flipper?.deactivate();
+    // The held surface sits outside the submenu too: the pointer leaving for it must not close the submenu.
+    this.holds += 1;
+    this.cancelNestedCloseIntent();
 
     return (focusItemName) => {
+      if (hold.on) {
+        hold.on = false;
+        this.holds -= 1;
+      }
       if (!this.nodes.popover.hasAttribute(DATA_ATTR.popoverOpened)) {
         return;
       }
@@ -1128,9 +1149,19 @@ export class PopoverDesktop extends PopoverAbstract {
   }
 
   /**
+   * Lets a grid menu pick where each arrow moves the cursor.
+   * @param pick - see Flipper.setArrowTarget
+   */
+  public setArrowTarget(pick: ArrowTarget | null): void {
+    // The published Flipper type has no arrow target; only Blok's own flipper takes one.
+    if (this.flipper instanceof Flipper) this.flipper.setArrowTarget(pick);
+  }
+
+  /**
    * Puts the cursor on the row named `name`: in the open submenu if it has
    * that row, else in this menu. A menu drawn again after a pick uses it to
-   * keep the row the pick came from highlighted.
+   * keep the row the pick came from highlighted. An HTML row carries its name
+   * on its wrapper, so the cursor goes to its first control.
    * @param name - the row's `name`
    * @returns false when no shown row has that name
    */
@@ -1138,7 +1169,7 @@ export class PopoverDesktop extends PopoverAbstract {
     if (this.nestedPopover?.focusItemByName(name) === true) {
       return true;
     }
-    const index = this.flippableElements.findIndex((item) => item.getAttribute(DATA_ATTR.itemName) === name);
+    const index = this.flippableElements.findIndex((item) => item.closest(`[${DATA_ATTR.itemName}]`)?.getAttribute(DATA_ATTR.itemName) === name);
 
     if (index < 0 || this.flipper === undefined) {
       return false;
@@ -1468,7 +1499,7 @@ export class PopoverDesktop extends PopoverAbstract {
    * submenu's own area, not from the last row it wandered onto.
    */
   private scheduleNestedClose(): void {
-    if (this.nestedPopover === undefined || this.nestedPopover === null) {
+    if (this.nestedPopover === undefined || this.nestedPopover === null || this.holds > 0) {
       return;
     }
 
@@ -2075,6 +2106,13 @@ export class PopoverDesktop extends PopoverAbstract {
 
     popoverClone.setAttribute(DATA_ATTR.popoverOpened, 'true');
     popoverClone.querySelector(`[${DATA_ATTR.nested}]`)?.remove();
+
+    // A shown thumb adds a gutter to the list (slash-search.css). Placement
+    // re-measures while it shows, but --width is set without it, so the
+    // gutter would push an end-aligned popover off its edge.
+    popoverClone.querySelectorAll(`[${DATA_ATTR.popoverScrollbar}]`).forEach((thumb) => {
+      thumb.setAttribute('hidden', '');
+    });
 
     const container = popoverClone.querySelector(`[${DATA_ATTR.popoverContainer}]`) as HTMLElement;
 

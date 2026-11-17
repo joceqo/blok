@@ -143,6 +143,8 @@
   --blok-database-avatar-ring: rgba(42, 28, 0, 0.07);
   /* notion-spec-2 §23.1, §23.4: file and property type glyphs. Light keeps the text ink. */
   --blok-database-glyph: currentColor;
+  /* notion-motion.md Round 41: the type picker's icons are gray in light; dark keeps §23.4's bright glyph. */
+  --blok-database-type-icon: var(--blok-database-table-header-icon);
   /* Notion's × is one grey on every chip (darkest pixel 141,139,134); fill unread, so §25.6's icon grey. */
   --blok-database-chip-remove-ink: rgb(142, 139, 134);
   --blok-database-relation-toggle-shadow: none;
@@ -224,6 +226,10 @@
   --blok-database-column-gray-bg: var(--blok-database-column-bg);
   --blok-database-column-gray-ring: var(--blok-database-card-ring);
   --blok-database-column-gray-accent: rgb(110, 107, 102);
+  /* notion-motion.md Round 42 §1, Round 44 §7: board ⋯ and + inks. A colourless or Default group gives 95,94,89;
+     Gray falls to its status dot, 142,139,134. Off is 161,158,153 in every group; dark is unmeasured and follows that popover ink. */
+  --blok-database-column-default-glyph: var(--blok-database-column-accent);
+  --blok-database-column-glyph-off: var(--blok-popover-search-suffix-text);
   --blok-database-column-yellow-card-hover-bg: rgba(194, 164, 0, 0.063);
   --blok-database-card-lift: rgba(25, 25, 25, 0.027) 0 4px 12px, rgba(25, 25, 25, 0.02) 0 1px 2px;
   --blok-database-card-ring: rgba(42, 28, 0, 0.07);
@@ -380,6 +386,9 @@
   /* Feed card, measured on Notion's feed view (research/08). */
   --blok-database-feed-card-bg: #ffffff;
   --blok-database-feed-card-shadow: rgba(0, 0, 0, 0.02) 0 12px 32px, rgba(0, 0, 0, 0.05) 0 0 0 1px;
+  /* Round 48 §C, ring Round 49 §A2. Light only; Notion's dark chip and fade are unmeasured. */
+  --blok-database-feed-see-more-shadow: rgba(0, 0, 0, 0.08) 0 4px 12px -2px, rgba(255, 255, 255, 0.05) 0 0 0 1px inset;
+  --blok-database-feed-fade: linear-gradient(rgba(255, 255, 255, 0) 0, rgb(255, 255, 255) 30px);
   /* Add reaction and other people's reactions (research/19 §2c). */
   --blok-database-feed-reaction-bg: rgb(249, 248, 247);
   /* Feed card hover ring and hover action pill (research/21 §1j). */
@@ -545,6 +554,7 @@
     --blok-database-avatar-ring: rgba(255, 255, 243, 0.082);
     /* notion-spec-2 §23.1, §23.3: glyphs; a letter avatar is the menu fill with a faint ring (pixels). */
     --blok-database-glyph: rgb(230, 229, 227);
+    --blok-database-type-icon: var(--blok-database-glyph);
     --blok-database-chip-remove-ink: rgb(173, 169, 163);
     --blok-database-relation-toggle-shadow: rgb(56, 56, 54) 0 0 0 1px, rgba(25, 25, 25, 0.08) 0 4px 12px -2px;
     --blok-database-person-initial-bg: rgb(37, 37, 37);
@@ -755,6 +765,9 @@
     --blok-database-chart-gray: #9b9b9b;
     /* Feed card and reactions: research/21 §1j. */
     --blok-database-feed-card-bg: rgb(32, 32, 32);
+    /* Unmeasured: the light chip without the ring, the fade to the card. */
+    --blok-database-feed-see-more-shadow: rgba(0, 0, 0, 0.08) 0 4px 12px -2px;
+    --blok-database-feed-fade: linear-gradient(rgba(32, 32, 32, 0) 0, rgb(32, 32, 32) 30px);
     --blok-database-feed-card-shadow: rgba(255, 255, 255, 0.05) 0 0 0 1px inset;
         --blok-database-feed-reaction-bg: rgb(32, 32, 32);
     --blok-database-feed-card-hover-shadow: rgba(255, 255, 255, 0.1) 0 0 0 1px inset;
@@ -905,6 +918,7 @@
   --blok-database-avatar-ring: rgba(255, 255, 243, 0.082);
   /* notion-spec-2 §23.1, §23.3: glyphs; a letter avatar is the menu fill with a faint ring (pixels). */
   --blok-database-glyph: rgb(230, 229, 227);
+  --blok-database-type-icon: var(--blok-database-glyph);
   --blok-database-chip-remove-ink: rgb(173, 169, 163);
   --blok-database-relation-toggle-shadow: rgb(56, 56, 54) 0 0 0 1px, rgba(25, 25, 25, 0.08) 0 4px 12px -2px;
   --blok-database-person-initial-bg: rgb(37, 37, 37);
@@ -1114,6 +1128,9 @@
   --blok-database-chart-gray: #9b9b9b;
   /* Feed card and reactions: research/21 §1j. */
   --blok-database-feed-card-bg: rgb(32, 32, 32);
+  /* Unmeasured: the light chip without the ring, the fade to the card. */
+  --blok-database-feed-see-more-shadow: rgba(0, 0, 0, 0.08) 0 4px 12px -2px;
+  --blok-database-feed-fade: linear-gradient(rgba(32, 32, 32, 0) 0, rgb(32, 32, 32) 30px);
   --blok-database-feed-card-shadow: rgba(255, 255, 255, 0.05) 0 0 0 1px inset;
     --blok-database-feed-reaction-bg: rgb(32, 32, 32);
   --blok-database-feed-card-hover-shadow: rgba(255, 255, 255, 0.1) 0 0 0 1px inset;
@@ -1405,8 +1422,9 @@
   background: var(--blok-database-card-menu-hover-bg);
 }
 
-/* Notion's board card glyphs are 16px (feel findings B08). */
-[data-blok-database-card] [data-blok-database-card-actions] svg {
+/* Notion's board and gallery card glyphs are 16px (feel findings B08, notion-motion.md Round 60 §5). */
+[data-blok-database-card] [data-blok-database-card-actions] svg,
+[data-blok-database-gallery-card] [data-blok-database-card-actions] svg {
   inline-size: 16px;
   block-size: 16px;
 }
@@ -1436,8 +1454,11 @@
   color: var(--blok-database-ink-secondary);
 }
 
-/* Notion's 18px blank page glyph before a title being edited (feel findings B09). */
-[data-blok-database-card-edit-glyph] {
+/* Notion's 18px blank page glyph before a title being edited (feel findings B09),
+   and the lines glyph of a page with a body (notion-motion.md, Round 45 gap 2). */
+[data-blok-database-card-edit-glyph],
+[data-blok-database-card] > [data-blok-database-page-icon-placeholder],
+[data-blok-database-gallery-card] > [data-blok-database-page-icon-placeholder] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1449,7 +1470,9 @@
   color: var(--blok-database-card-actions-icon);
 }
 
-[data-blok-database-card-edit-glyph] svg {
+[data-blok-database-card-edit-glyph] svg,
+[data-blok-database-card] > [data-blok-database-page-icon-placeholder] svg,
+[data-blok-database-gallery-card] > [data-blok-database-page-icon-placeholder] svg {
   inline-size: 18px;
   block-size: 18px;
 }
@@ -1458,7 +1481,8 @@
   width: calc(100% - 22px);
 }
 
-[data-blok-database-card-edit-glyph] + [data-blok-database-card-title-input] {
+[data-blok-database-card-edit-glyph] + [data-blok-database-card-title-input],
+[data-blok-database-page-icon-placeholder] + [data-blok-database-card-title-input] {
   width: calc(100% - 26px);
 }
 
@@ -1563,13 +1587,9 @@
   border: none;
   border-radius: var(--blok-radius-control);
   background: none;
-  color: var(--_blok-group-accent, var(--blok-database-column-accent));
+  /* notion-motion.md Round 42 §1: the group colour while Color columns is on (database-board-view.ts sets it), else gray. */
+  color: var(--_blok-group-glyph, var(--blok-database-column-glyph-off));
   cursor: pointer;
-}
-
-/* notion-motion.md Round 28 (r28-empty-Board.raw): a status board's ⋯ and + are gray in every group. */
-[data-blok-database-column-actions][data-status] button {
-  color: var(--blok-database-table-header-icon);
 }
 
 [data-blok-database-column-actions] button:hover {
@@ -1837,7 +1857,10 @@
   top: 72px;
   inset-inline: 0;
   margin-inline: auto;
-  width: min(960px, calc(100vw - 2 * var(--blok-space-4)));
+  /* The cover bleed reads this too. */
+  --_blok-center-peek-width: min(960px, calc(100vw - 2 * var(--blok-space-4)));
+
+  width: var(--_blok-center-peek-width);
   height: auto;
   max-height: calc(100vh - 144px);
   border: none;
@@ -1873,7 +1896,7 @@
   top: 72px;
   inset-inline: 0;
   margin-inline: auto;
-  width: min(960px, calc(100vw - 2 * var(--blok-space-4)));
+  width: var(--_blok-center-peek-width);
   height: auto;
   max-height: calc(100vh - 144px);
 }
@@ -1981,16 +2004,17 @@
   background-color: var(--blok-database-peek-separator);
 }
 
-/* Mode, the rules and the row steps fade in only while the peek is hovered, the bar holds keyboard focus or has a menu open (R03, R18). */
+/* Mode, the rules and the row steps fade in only near the peek's top, while the bar holds keyboard focus or has a menu open (R03, R18). */
 [data-blok-database-peek-mode],
 [data-blok-database-peek-separator],
 [data-blok-database-peek-prev],
 [data-blok-database-peek-next] {
-  transition: opacity 150ms linear;
+  transition: opacity 100ms ease;
 }
 
+/* notion-motion.md Round 56 §1, §6: "near the top" is the bar or the page head under it, in both peeks. */
 @media (hover: hover) {
-  [data-blok-database-drawer]:not(:hover) [data-blok-database-drawer-toolbar]:not(:has(:focus-visible)):not(:has([data-blok-database-peek-mode][aria-expanded="true"])) :is([data-blok-database-peek-mode], [data-blok-database-peek-separator], [data-blok-database-peek-prev], [data-blok-database-peek-next]) {
+  [data-blok-database-drawer]:not(:has(> [data-blok-database-drawer-toolbar]:hover, > [data-blok-database-drawer-content] > [data-blok-database-drawer-page-head]:hover)) > [data-blok-database-drawer-toolbar]:not(:has(:focus-visible)):not(:has([data-blok-database-peek-mode][aria-expanded="true"])) :is([data-blok-database-peek-mode], [data-blok-database-peek-separator], [data-blok-database-peek-prev], [data-blok-database-peek-next]) {
     opacity: 0;
   }
 }
@@ -2094,6 +2118,23 @@
   transform: rotate(180deg);
 }
 
+/* notion-motion.md Round 41: Notion's steps are 12 x 6.5 of ink; Keyline's chevron at 28px is 11.55 x 6.65. */
+[data-blok-database-peek-prev] svg,
+[data-blok-database-peek-next] svg {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  max-height: none;
+}
+
+/* notion-motion.md Round 44 §5: the center peek's ⤢ is 11 x 11 of ink; Keyline's at 22px is 11.3. */
+[data-peek-mode="center"] [data-blok-database-peek-expand] svg {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  max-height: none;
+}
+
 /* The glyph's panel sits at the inline end, where the details panel opens. */
 [dir="rtl"] [data-blok-database-peek-page-info] svg {
   transform: scaleX(var(--_blok-inline-sign, 1));
@@ -2166,6 +2207,14 @@
 [data-blok-database-drawer-close] svg {
   width: 20px;
   height: 20px;
+}
+
+/* notion-motion.md Round 41: Notion's » is 12 x 12 of ink; Keyline's at 28px is 12.25 x 11.55. */
+[data-peek-mode="side"] [data-blok-database-drawer-close] svg {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  max-height: none;
 }
 
 /* The » points toward the inline end, where the drawer closes to. */
@@ -2273,12 +2322,14 @@
 }
 
 [data-blok-database-page-icon] + [data-blok-database-card-title],
-[data-blok-database-page-icon] + [data-blok-database-gallery-title] {
+[data-blok-database-page-icon] + [data-blok-database-gallery-title],
+[data-blok-database-page-icon-placeholder] + [data-blok-database-card-title] {
   display: inline;
 }
 
 /* Calendar, timeline and feed icon boxes, measured in Notion (research/16 §2). */
 [data-blok-database-calendar-event] > [data-blok-database-page-icon],
+[data-blok-database-calendar-event] > [data-blok-database-page-icon-placeholder],
 [data-blok-database-timeline-bar] > [data-blok-database-page-icon],
 [data-blok-database-feed-head] > [data-blok-database-page-icon] {
   display: inline-flex;
@@ -2288,12 +2339,26 @@
 }
 
 /* Measured gap is 3px; the event's 6px flex gap already applies. */
-[data-blok-database-calendar-event] > [data-blok-database-page-icon] {
+[data-blok-database-calendar-event] > [data-blok-database-page-icon],
+[data-blok-database-calendar-event] > [data-blok-database-page-icon-placeholder] {
   inline-size: 14px;
   block-size: 14px;
   margin-inline-end: calc(var(--blok-space-0-75) - var(--blok-space-1-5));
   font-size: 12.6px;
   line-height: 12.6px;
+}
+
+/* notion-motion.md, Round 45: the lines glyph's ink is about 9.5x12.5 in rgb(142,139,134). */
+[data-blok-database-calendar-event] > [data-blok-database-page-icon-placeholder] {
+  color: var(--blok-database-card-actions-icon);
+}
+
+[data-blok-database-calendar-event] > [data-blok-database-page-icon-placeholder] svg {
+  flex: none;
+  inline-size: 16px;
+  block-size: 16px;
+  /* Taller than its 14px box: the cap would shrink it back. */
+  max-block-size: none;
 }
 
 /* Measured gap is 6px: the bar's flex gap alone. */
@@ -2319,10 +2384,14 @@
   line-height: 23.4px;
 }
 
-/* Page cover over the top of the page. Height unmeasured: Blok's image block height. */
+/*
+  Page cover over the top of the page. notion-motion.md Round 58 §1: the Add icon / Add cover / Customize row
+  has no gaps and starts 1px before the title box; the icon starts 8px into it.
+*/
 [data-blok-database-drawer-page-head] {
   flex-wrap: wrap;
-  gap: var(--blok-space-1);
+  gap: var(--blok-space-1) 0;
+  margin-inline-start: calc(-1 * var(--blok-space-0-25));
 }
 
 [data-blok-database-drawer-cover] {
@@ -2334,6 +2403,77 @@
   border-radius: var(--blok-radius-block);
 }
 
+/*
+  notion-motion.md Round 58 §1: the cover spans the whole page under its bar, square, 20vh tall in a peek, 30vh on a full page.
+  A bleed is the content's inline padding plus its 8px gutter; the start one less the head's 1px.
+*/
+[data-blok-database-drawer]:is([data-peek-mode="side"], [data-peek-mode="center"]) [data-blok-database-drawer-cover] {
+  flex-basis: calc(100% + var(--_blok-cover-bleed-start) + var(--_blok-cover-bleed-end));
+  height: 20vh;
+  margin-block: calc(-1 * var(--_blok-peek-head-reach)) var(--blok-space-3);
+  margin-inline: calc(-1 * var(--_blok-cover-bleed-start)) calc(-1 * var(--_blok-cover-bleed-end));
+  border-radius: 0;
+}
+
+[data-blok-database-drawer][data-peek-mode="side"] [data-blok-database-drawer-cover] {
+  --_blok-cover-bleed-start: calc(70px + var(--blok-space-2) - var(--blok-space-0-25));
+  --_blok-cover-bleed-end: calc(68px + var(--blok-space-2));
+}
+
+/* The centre content's padding, from the dialog width: a % here would mean the column. */
+[data-blok-database-drawer][data-peek-mode="center"] [data-blok-database-drawer-cover] {
+  --_blok-cover-bleed-start: calc(max(var(--blok-space-4), calc(var(--_blok-center-peek-width) / 2 - 354px - var(--blok-space-2))) + var(--blok-space-2) - var(--blok-space-0-25));
+  --_blok-cover-bleed-end: calc(max(var(--blok-space-4), calc(var(--_blok-center-peek-width) / 2 - 354px - var(--blok-space-2))) + var(--blok-space-2));
+}
+
+/*
+  Nothing in a full page's column knows the page width, so the cover is placed on the drawer.
+  The head keeps its room: 16 under the cover, less the content's 40px top padding.
+*/
+[data-blok-database-drawer][data-peek-mode="full"] {
+  position: relative;
+}
+
+[data-blok-database-drawer][data-peek-mode="full"] [data-blok-database-drawer-cover] {
+  position: absolute;
+  inset-block-start: var(--_blok-peek-toolbar-size, 0px);
+  inset-inline: 0 var(--_blok-peek-details-covered, 0px);
+  height: 30vh;
+  margin: 0;
+  border-radius: 0;
+}
+
+[data-blok-database-drawer][data-peek-mode="full"] [data-blok-database-drawer-page-head]:has(> [data-blok-database-drawer-cover]) {
+  padding-block-start: calc(30vh - var(--blok-space-6));
+}
+
+/* Side: a 36px icon on its own line under the row, the title right under it. The DOM order is set per mode in database-card-drawer.ts. */
+[data-blok-database-drawer][data-peek-mode="side"] [data-blok-database-drawer-icon] {
+  inline-size: 36px;
+  block-size: 36px;
+  margin-block: 0 calc(-1 * var(--blok-space-1));
+  margin-inline: var(--blok-space-2-25) calc(100% - 36px - var(--blok-space-2-25));
+  font-size: 36px;
+  line-height: 36px;
+}
+
+/* Centre and full page: a 78px icon on its own line, 96 under the bar or 42 over the cover; the row 8 under it. */
+[data-blok-database-drawer]:is([data-peek-mode="center"], [data-peek-mode="full"]) [data-blok-database-drawer-icon] {
+  position: relative;
+  inline-size: 78px;
+  block-size: 78px;
+  margin-block: var(--blok-space-14) var(--blok-space-1);
+  margin-inline: var(--blok-space-2-25) calc(100% - 78px - var(--blok-space-2-25));
+  font-size: 78px;
+  line-height: 78px;
+}
+
+[data-blok-database-drawer]:is([data-peek-mode="center"], [data-peek-mode="full"]) [data-blok-database-drawer-cover] ~ [data-blok-database-drawer-icon] {
+  --_blok-cover-icon-overlap: 42px;
+
+  margin-block-start: calc(-1 * var(--_blok-cover-icon-overlap) - var(--blok-space-4));
+}
+
 [data-blok-database-drawer-cover] img {
   display: block;
   width: 100%;
@@ -2341,15 +2481,110 @@
   object-fit: cover;
 }
 
+/*
+  notion-motion.md Round 59 §1: a white group 12 in from the cover's top-right, 173 wide with
+  Change · Reposition · Download (Round 60 §1: text 12/16). Fades in at once and holds 110ms before it fades out.
+*/
 [data-blok-database-drawer-cover-controls] {
-  position: absolute; inset-block-start: var(--blok-space-3); inset-inline-end: var(--blok-space-3);
-  display: flex; align-items: center; padding: 2px; border-radius: var(--blok-radius-control);
-  background: var(--blok-bg-primary); box-shadow: var(--blok-database-table-open-shadow); opacity: 0;
+  position: absolute;
+  inset-block-start: var(--blok-space-3);
+  inset-inline-end: var(--blok-space-3);
+  display: flex;
+  align-items: center;
+  padding: var(--blok-space-0-5);
+  border-radius: var(--blok-radius-control);
+  background-color: var(--blok-database-table-open-bg);
+  box-shadow: var(--blok-database-table-open-shadow);
+  opacity: 0;
+  transition: opacity 0.2s ease 0.11s;
 }
+
+[data-blok-database-drawer-cover]:hover [data-blok-database-drawer-cover-controls],
+[data-blok-database-drawer-cover-controls]:has(:focus-visible) {
+  opacity: 1;
+  transition-delay: 0s;
+}
+
 [data-blok-database-drawer-cover-controls] > button {
-  position: relative; display: inline-flex; align-items: center; height: 26px;
-  padding: 0 8px; border: 0; border-radius: var(--blok-radius-control-sm);
-  background: transparent; color: var(--blok-text-secondary); font: inherit; font-size: 12px; cursor: pointer;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  block-size: 24px;
+  padding: 0 var(--blok-space-1-5);
+  border: none;
+  border-radius: var(--blok-radius-control-sm);
+  background: transparent;
+  color: var(--blok-database-ink-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.1s ease-in-out;
+}
+
+[data-blok-database-drawer-cover-controls] > button + button::before {
+  content: '';
+  position: absolute;
+  inset-block-start: var(--blok-space-1);
+  inset-inline-start: calc(-1 * var(--blok-space-1) - var(--blok-border-width-hairline));
+  inline-size: var(--blok-border-width-hairline);
+  block-size: var(--blok-space-4);
+  background: var(--blok-database-feed-actions-border);
+}
+
+[data-blok-database-drawer-cover-controls] > button + button {
+  margin-inline-start: calc(var(--blok-space-1) * 2 + var(--blok-border-width-hairline));
+}
+
+[data-blok-database-drawer-cover-controls] > button:hover {
+  background: var(--blok-database-hover-bg);
+}
+
+[data-blok-database-drawer-download-cover] {
+  inline-size: 24px;
+  padding: 0;
+}
+
+/* notion-motion.md Round 60 §1: Reposition. Save position · Cancel with no divider stay shown off the cover. */
+[data-blok-database-drawer-cover-repositioning] {
+  cursor: ns-resize;
+}
+
+[data-blok-database-drawer-cover-repositioning] > [data-blok-database-drawer-cover-controls] {
+  opacity: 1;
+  transition-delay: 0s;
+}
+
+[data-blok-database-drawer-cover-repositioning] > [data-blok-database-drawer-cover-controls] > button + button {
+  margin-inline-start: 0;
+}
+
+[data-blok-database-drawer-cover-repositioning] > [data-blok-database-drawer-cover-controls] > button + button::before {
+  content: none;
+}
+
+/* "Drag image to reposition": 180×25.2 at the cover's centre. Centred by auto margins, so RTL needs nothing. */
+[data-blok-database-drawer-cover-hint] {
+  position: absolute;
+  inset: 0;
+  inline-size: fit-content;
+  block-size: fit-content;
+  margin: auto;
+  padding: 3.6px var(--blok-space-4-5);
+  border-radius: var(--blok-radius-control-sm);
+  background: var(--blok-page-cover-hint-bg, rgba(0, 0, 0, 0.4));
+  color: var(--blok-page-cover-hint-fg, #fff);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+
+[data-blok-database-drawer-download-cover] svg {
+  inline-size: 16px;
+  block-size: 16px;
 }
 [data-blok-database-drawer-cover-controls] > button + button { border-inline-start: 1px solid var(--blok-border-subtle); }
 [data-blok-database-drawer-cover-controls] > button:hover { background: var(--blok-item-hover-bg); }
@@ -2362,6 +2597,36 @@
   display: flex;
   min-height: var(--blok-space-6);
   margin-bottom: var(--blok-space-1);
+}
+
+/*
+  notion-motion.md Round 56 §1, §6: a peek's hover zone runs from the bar down to 4px under the icon row.
+  The head takes the content's top padding and its own bottom margin as padding, so nothing moves.
+  The reach must equal the content's padding-block-start in that mode.
+*/
+[data-blok-database-drawer][data-peek-mode="side"] { --_blok-peek-head-reach: var(--blok-space-1); }
+[data-blok-database-drawer][data-peek-mode="center"] { --_blok-peek-head-reach: var(--blok-space-10); }
+
+/*
+  notion-motion.md Round 59 §2: with no icon and no cover the row sits 32 under the bar in a centre peek, 80 on a full page.
+  The full page's extra 40 is the head's padding, so the head is hovered from bar + 40 (Notion shows the row at bar + 66).
+*/
+[data-blok-database-drawer][data-peek-mode="center"]:not(:has(> [data-blok-database-drawer-content] > [data-blok-database-drawer-page-head] > :is([data-blok-database-drawer-cover], [data-blok-database-drawer-icon]))) {
+  --_blok-peek-head-reach: 32px;
+}
+
+[data-blok-database-drawer][data-peek-mode="center"] [data-blok-database-drawer-content] {
+  padding-block-start: var(--_blok-peek-head-reach);
+}
+
+[data-blok-database-drawer][data-peek-mode="full"] [data-blok-database-drawer-page-head]:not(:has(> :is([data-blok-database-drawer-cover], [data-blok-database-drawer-icon]))) {
+  padding-block-start: var(--blok-space-10);
+}
+
+[data-blok-database-drawer]:is([data-peek-mode="side"], [data-peek-mode="center"]) [data-blok-database-drawer-page-head] {
+  min-height: calc(var(--blok-space-6) + var(--_blok-peek-head-reach) + var(--blok-space-1));
+  margin-block: calc(-1 * var(--_blok-peek-head-reach)) 0;
+  padding-block: var(--_blok-peek-head-reach) var(--blok-space-1);
 }
 
 [data-blok-database-drawer-icon] {
@@ -2423,14 +2688,17 @@
   flex-shrink: 0;
 }
 
-/* Shown while the head or the title under it is hovered; :has stays on the small head, not the page.
-   In a peek, while the pointer is anywhere over it, with the top bar's mode and arrows (notion-motion.md "Side peek top bar"). */
-[data-blok-database-drawer-page-head]:is(:hover, :has(+ [data-blok-database-drawer-title]:hover)) [data-blok-database-drawer-add-icon],
-[data-blok-database-drawer-page-head]:is(:hover, :has(+ [data-blok-database-drawer-title]:hover)) [data-blok-database-drawer-add-cover],
-[data-blok-database-drawer-page-head]:is(:hover, :has(+ [data-blok-database-drawer-title]:hover)) [data-blok-database-drawer-customize],
-[data-blok-database-drawer]:not([data-peek-mode="full"]):hover [data-blok-database-drawer-add-icon],
-[data-blok-database-drawer]:not([data-peek-mode="full"]):hover [data-blok-database-drawer-add-cover],
-[data-blok-database-drawer]:not([data-peek-mode="full"]):hover [data-blok-database-drawer-customize],
+/* Shown while the head is hovered, or on a full page the title under it; :has stays on the small head, not the page.
+   In a peek, also while the top bar is hovered, with its mode and arrows (notion-motion.md Round 56 §1). */
+[data-blok-database-drawer-page-head]:hover [data-blok-database-drawer-add-icon],
+[data-blok-database-drawer-page-head]:hover [data-blok-database-drawer-add-cover],
+[data-blok-database-drawer-page-head]:hover [data-blok-database-drawer-customize],
+[data-peek-mode="full"] [data-blok-database-drawer-page-head]:has(+ [data-blok-database-drawer-title]:hover) [data-blok-database-drawer-add-icon],
+[data-peek-mode="full"] [data-blok-database-drawer-page-head]:has(+ [data-blok-database-drawer-title]:hover) [data-blok-database-drawer-add-cover],
+[data-peek-mode="full"] [data-blok-database-drawer-page-head]:has(+ [data-blok-database-drawer-title]:hover) [data-blok-database-drawer-customize],
+[data-blok-database-drawer]:not([data-peek-mode="full"]):has(> [data-blok-database-drawer-toolbar]:hover) [data-blok-database-drawer-add-icon],
+[data-blok-database-drawer]:not([data-peek-mode="full"]):has(> [data-blok-database-drawer-toolbar]:hover) [data-blok-database-drawer-add-cover],
+[data-blok-database-drawer]:not([data-peek-mode="full"]):has(> [data-blok-database-drawer-toolbar]:hover) [data-blok-database-drawer-customize],
 [data-blok-database-drawer-add-icon]:focus-visible,
 [data-blok-database-drawer-add-cover]:focus-visible,
 [data-blok-database-drawer-customize]:focus-visible {
@@ -2779,11 +3047,12 @@
   margin-inline-start: var(--blok-space-0-5);
 }
 
-/* Round 8c: Notion's plus ink is 10.5 wide. Blok's 20px plus (10 + 1.25 stroke) reaches that at 18.67px. */
+/* Round 8c: Notion's plus ink is 10.5 wide. Blok's 20px plus (12 + 1.25 stroke, IconPlus) reaches that at 15.85px.
+   Redrawing IconPlus changes this size. */
 [data-blok-database-add-card-icon] svg {
   flex-shrink: 0;
-  width: 18.67px;
-  height: 18.67px;
+  width: 15.85px;
+  height: 15.85px;
 }
 
 /**
@@ -3110,6 +3379,11 @@ button[data-blok-database-board-lane-count]:hover {
   --max-height: calc(100dvh - 24px);
 }
 
+/* notion-motion.md Round 50 row 57: the card ⋯ menu (the only fade menu) caps at 70vh. Must follow the rule above. */
+[data-blok-popover-custom-class~='blok-database-fade-menu'] [data-blok-popover-container] {
+  --max-height: 70vh;
+}
+
 /* Literals, not var(--blok-database-hover-bg): the selected-state law rejects an alias of an alias. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-blok-theme="light"]) [data-blok-popover][data-blok-popover-custom-class~='blok-database-menu'],
@@ -3187,6 +3461,21 @@ button[data-blok-database-board-lane-count]:hover {
   transform-origin: center;
 }
 
+/* notion-motion.md Round 55 §5: the peek mode menu sits centred under its button and grows from there. */
+[data-blok-popover][data-blok-popover-custom-class~='blok-database-peek-mode-menu'] > [data-blok-popover-container] {
+  transform-origin: top center;
+}
+
+/* notion-motion.md Round 61 §2: the row menu's comment box grows from its top centre, or its bottom centre
+   when flipped. The extra [popover] outranks core's open-left and open-top rules. */
+[data-blok-popover][popover][data-blok-popover-custom-class~='blok-database-comment-box'] > [data-blok-popover-container] {
+  transform-origin: top center;
+}
+
+[data-blok-popover][popover][data-blok-popover-open-top='true'][data-blok-popover-custom-class~='blok-database-comment-box'] > [data-blok-popover-container] {
+  transform-origin: bottom center;
+}
+
 /* Panels and pickers in a CellPopover (Filter, Sort…) move like the menus (notion-motion.md "Popovers").
    Editors that open at once opt out further down, after these rules. */
 [data-blok-popover][popover][data-blok-popover-custom-class~='blok-database-menu'],
@@ -3233,6 +3522,11 @@ button[data-blok-database-board-lane-count]:hover {
 [data-blok-popover][data-blok-popover-custom-class~='blok-database-column-menu'] [data-blok-popover-item-icon] {
   width: 20px;
   margin-inline-end: var(--blok-space-2);
+}
+
+/* notion-motion.md Round 44 §3 (r44-tp-change.raw): the Change type list's glyphs are rgb(56, 56, 54). */
+[data-blok-popover][data-blok-popover-custom-class~='blok-database-change-type'] [data-blok-popover-item-icon] {
+  color: var(--blok-database-peek-glyph-strong);
 }
 
 /* notion-motion.md, Round 8c "Card ⋯ menu": 14px/16.8 text. */
@@ -4027,16 +4321,19 @@ button[data-blok-database-board-lane-count]:hover {
   color: var(--blok-database-add-text);
 }
 
-/* Notion's white "Edit" pencil right after the title, on hover: 26x20, a 16px pencilLine (notion-motion.md Round 26 §4). */
+/* Notion's white "Edit" pencil right after the title, on hover: a 16px pencilLine (notion-motion.md Round 26 §4)
+   in a 30x24 frame padded 2px around the 26x20 button (Round 45 §1). */
 [data-blok-database-list-row-edit] {
   display: none;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 26px;
-  height: 20px;
+  width: 30px;
+  height: 24px;
+  position: relative;
+  isolation: isolate;
   margin-inline-start: var(--blok-space-1-75);
-  padding: 0;
+  padding: var(--blok-space-0-5);
   border: none;
   border-radius: var(--blok-radius-control);
   background: var(--blok-database-card-actions-bg);
@@ -4049,8 +4346,18 @@ button[data-blok-database-board-lane-count]:hover {
   display: inline-flex;
 }
 
-[data-blok-database-list-row-edit]:hover {
-  background: var(--blok-database-card-menu-hover-bg);
+/* notion-motion.md Round 46 §C.3: only the inner 26x20 fills; the 2px frame stays white. */
+[data-blok-database-list-row-edit]::before {
+  content: '';
+  position: absolute;
+  inset: var(--blok-space-0-5);
+  z-index: -1;
+  border-radius: var(--blok-radius-control);
+  transition: background-color 100ms ease-in-out;
+}
+
+[data-blok-database-list-row-edit]:hover::before {
+  background-color: var(--blok-database-card-menu-hover-bg);
 }
 
 [data-blok-database-list-row-edit] svg {
@@ -4066,7 +4373,14 @@ button[data-blok-database-board-lane-count]:hover {
 [data-blok-database-list][data-direct-edit] [data-blok-database-list-row-edit] {
   width: 26px;
   height: 20px;
+  padding: 0;
   border-radius: var(--blok-radius-control-sm);
+}
+
+/* With no frame the whole 26x20 button fills. */
+[data-blok-database-list][data-direct-edit] [data-blok-database-list-row-edit]::before {
+  inset: 0;
+  border-radius: inherit;
 }
 
 [data-blok-database-list][data-direct-edit] [data-blok-database-list-row-edit] svg {
@@ -4330,7 +4644,8 @@ button[data-blok-database-board-lane-count]:hover {
 }
 
 /* notion-motion.md Round 32 §3 List: plus at x 546, text at 570, in line with the row titles. */
-[data-blok-database-list] > [data-blok-database-add-row] > span[aria-hidden="true"] {
+[data-blok-database-list] > [data-blok-database-add-row] > span[aria-hidden="true"],
+[data-blok-database-list-group] > [data-blok-database-add-row] > span[aria-hidden="true"] {
   margin-inline-start: var(--blok-space-0-25);
 }
 
@@ -4342,6 +4657,16 @@ button[data-blok-database-board-lane-count]:hover {
   display: flex;
   flex-direction: column;
   margin-bottom: calc(var(--blok-space-6) + var(--blok-space-1));
+}
+
+/* notion-motion.md Round 45 §1: Notion's first group header text is 8px lower; the gaps after it already match. */
+[data-blok-database-list-group]:first-child {
+  margin-top: var(--blok-space-2);
+}
+
+/* Round 45 §1: rows in a group step 31, not the ungrouped list's 32. */
+[data-blok-database-list-group] [data-blok-database-list-row] + [data-blok-database-list-row] {
+  margin-top: 0;
 }
 
 /* The board header's parts (findings-listgallery L08): caret, value pill, then "…" and "+" on hover. */
@@ -4485,7 +4810,10 @@ button[data-blok-database-board-lane-count]:hover {
   transition: opacity 100ms ease;
 }
 
-[data-blok-database-drawer-content]:hover [data-blok-database-drawer-backlinks],
+/* In a peek, near its top only, as the icon row (notion-motion.md Round 56 §8). */
+[data-peek-mode="full"] [data-blok-database-drawer-content]:hover [data-blok-database-drawer-backlinks],
+[data-blok-database-drawer-page-head]:hover [data-blok-database-drawer-backlinks],
+[data-blok-database-drawer]:has(> [data-blok-database-drawer-toolbar]:hover) [data-blok-database-drawer-backlinks],
 [data-blok-database-drawer-backlinks][aria-expanded="true"],
 [data-blok-database-drawer-backlinks]:focus-visible { opacity: 1; }
 
@@ -5632,6 +5960,16 @@ button[data-blok-database-layout-pin-name]:focus-visible {
   }
 
   [data-blok-database-drawer][data-peek-mode="side"][data-details-open] [data-blok-database-drawer-content] { padding-inline-end: var(--_blok-peek-details-inset); }
+
+  /* notion-motion.md Round 59 §3: the cover stops at the panel. The content's end padding past the panel, plus its 8px gutter. */
+  [data-blok-database-drawer][data-peek-mode="side"][data-details-open] [data-blok-database-drawer-cover] {
+    --_blok-cover-bleed-end: calc(var(--_blok-peek-details-inset) - 280px + var(--blok-space-2));
+  }
+}
+
+/* The centre panel too (inferred from the side peek's Round 59 §3). */
+[data-blok-database-drawer][data-peek-mode="center"][data-details-open] [data-blok-database-drawer-cover] {
+  --_blok-cover-bleed-end: calc(var(--_blok-peek-details-inset) - 280px + var(--blok-space-2));
 }
 
 /* research/10 §10: Close panel at the top, then "Properties" 13px/500 grey. */
@@ -5973,15 +6311,52 @@ button[data-blok-database-layout-pin-name]:focus-visible {
   box-sizing: border-box;
   width: 378px;
   height: 28px;
-  padding: 0 var(--blok-space-0-5);
+  /* notion-motion.md Round 44 §3: Select icon at +4, the field at +32. */
+  padding: var(--blok-space-0-5) var(--blok-space-1);
+  gap: var(--blok-space-1);
   background: var(--blok-database-popover-bg);
   border-radius: var(--blok-radius-control);
   box-shadow: none;
 }
 
-[data-blok-database-property-type-name-over-anchor] [data-blok-database-property-type-glyph] {
+/* notion-motion.md Round 44 §3: section labels at the box's x + 19 (box 4, body 4, label 11). */
+[data-blok-database-property-type-layout='grid'] [data-blok-database-property-type-heading] {
+  padding-inline: var(--blok-space-2-75);
+}
+
+/* notion-motion.md Round 44 §3: 8 from the search button to the first type. */
+[data-blok-database-property-type-layout='grid'] [data-blok-database-property-type-list-heading] {
+  padding-bottom: var(--blok-space-2);
+}
+
+/* notion-motion.md Round 44 §3: the field sits 2 under where the first type was; the types move down 34. */
+[data-blok-database-property-type-layout='grid'] [data-blok-database-property-type-body] > [data-blok-database-property-type-search-input] {
+  margin-top: var(--blok-space-0-5);
+}
+
+/* notion-motion.md Round 44 §3: "Select icon", a 24 box with a 19.2 gray emoji glyph. */
+[data-blok-database-property-type-icon-button] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
   width: 24px;
   height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--blok-radius-control);
+  background: transparent;
+  color: var(--blok-database-type-icon);
+  cursor: pointer;
+}
+
+[data-blok-database-property-type-icon-button]:hover {
+  background-color: var(--blok-database-popover-hover);
+}
+
+[data-blok-database-property-type-icon-button] svg {
+  width: 19.2px;
+  height: 19.2px;
 }
 
 /**
@@ -6030,7 +6405,7 @@ button[data-blok-database-layout-pin-name]:focus-visible {
   justify-content: center;
   width: 20px;
   height: 20px;
-  color: var(--blok-database-glyph);
+  color: var(--blok-database-type-icon);
   flex-shrink: 0;
   transition: color 100ms ease;
 }
@@ -6075,7 +6450,8 @@ button[data-blok-database-layout-pin-name]:focus-visible {
   border: none;
   border-radius: var(--blok-radius-control-sm);
   background: transparent;
-  color: inherit;
+  /* notion-motion.md Round 44 §3: the glyph is icon gray, not the label's ink. */
+  color: var(--blok-database-type-icon);
   cursor: pointer;
 }
 
@@ -6123,6 +6499,13 @@ button[data-blok-database-layout-pin-name]:focus-visible {
 
 [data-blok-database-property-autofill-option]:hover {
   background-color: var(--blok-database-popover-hover);
+}
+
+/* notion-motion.md Round 41 Part A: Notion's line under the AI rows. In the grid it lands 12 in from the popover's sides. */
+[data-blok-database-property-autofill-rule] {
+  height: 1px;
+  margin: var(--blok-space-2) var(--blok-space-1);
+  background-color: var(--blok-database-table-border);
 }
 
 [data-blok-database-property-autofill-tag] {
@@ -6411,6 +6794,21 @@ button[data-blok-database-layout-pin-name]:focus-visible {
 
 [data-blok-database-confirm-dialog][data-roomy] {
   width: 406px;
+}
+
+/* notion-motion.md Round 58 §2, "Change default to …?": 406x229, a 16/24 body with a 600 phrase under a 600 title.
+   Delete property is roomy with no body; its title weight is unmeasured. */
+[data-blok-database-confirm-dialog][data-roomy] [data-blok-database-confirm-title]:has(+ [data-blok-database-confirm-description]) {
+  font-weight: 600;
+}
+
+[data-blok-database-confirm-dialog][data-roomy] [data-blok-database-confirm-description] {
+  font-size: 16px;
+  line-height: 24px;
+}
+
+[data-blok-database-confirm-dialog][data-roomy] [data-blok-database-confirm-description] strong {
+  font-weight: 600;
 }
 
 /* research/36 §8.2: Reset, 300x226. */
@@ -7708,6 +8106,12 @@ td[data-blok-database-csv-preview-cell] > [data-blok-database-csv-icon] {
   cursor: pointer;
 }
 
+/* notion-motion.md Round 44 §3: a 16.8 type glyph in the 28 box. */
+[data-blok-database-property-menu-icon] svg {
+  width: 16.8px;
+  height: 16.8px;
+}
+
 [data-blok-database-property-menu-icon]:hover {
   background-color: var(--blok-database-property-icon-button-hover-bg);
 }
@@ -8075,6 +8479,38 @@ textarea[data-blok-database-cell-input] {
 
 @media (hover: hover) {
   [data-blok-database-options-add]:hover {
+    background-color: var(--blok-database-hover-bg);
+  }
+}
+
+/* notion-motion.md Round 58 §7: "+ Add an option" in an emptied status group, 284x28 at +8 in the 300 list. */
+[data-blok-database-options-add-row] {
+  display: flex;
+  align-items: center;
+  gap: var(--blok-space-2);
+  min-height: 28px;
+  margin-inline: var(--blok-space-1);
+  padding: 0 var(--blok-space-2);
+  border: none;
+  border-radius: var(--blok-radius-control);
+  background: transparent;
+  font-size: 14px;
+  line-height: 16.8px;
+  font-weight: 400;
+  color: var(--blok-database-ink);
+  text-align: start;
+  cursor: pointer;
+  transition: background-color 0.02s ease-in;
+}
+
+[data-blok-database-options-add-row] svg {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+}
+
+@media (hover: hover) {
+  [data-blok-database-options-add-row]:hover {
     background-color: var(--blok-database-hover-bg);
   }
 }
@@ -8550,6 +8986,22 @@ textarea[data-blok-database-cell-input] {
   transform: scaleX(-1);
 }
 
+/* notion-motion.md Round 58 §4: the row › and Group › turn 90° while their menu is open. */
+[data-blok-database-options-editor] [data-blok-database-select-option-menu] svg,
+[data-blok-database-option-group-chevron] svg {
+  transition: transform 0.2s ease-in-out;
+}
+
+[data-blok-database-options-editor] [data-blok-database-select-option-menu][aria-expanded='true'] svg,
+[data-blok-database-option-group][aria-expanded='true'] [data-blok-database-option-group-chevron] svg {
+  transform: rotate(90deg);
+}
+
+/* The flip stays first, so the turn interpolates as a rotation. */
+[dir="rtl"] [data-blok-database-options-editor] [data-blok-database-select-option-menu][aria-expanded='true'] svg {
+  transform: scaleX(-1) rotate(90deg);
+}
+
 [data-blok-database-options-editor] [data-blok-database-options-heading] {
   padding-inline: var(--blok-space-2) var(--blok-space-1-5);
 }
@@ -8730,16 +9182,15 @@ textarea[data-blok-database-cell-input] {
   gap: var(--blok-space-2);
 }
 
-[data-blok-database-select-option][data-dragging] {
-  opacity: 0.5;
+/* notion-motion.md Round 56 §7: the dragged row follows the pointer over the others, which slide aside. No drop line. */
+[data-blok-database-option-reordering] [data-blok-database-select-option] {
+  transition: transform 200ms ease;
 }
 
-[data-blok-database-select-option][data-drop-before] {
-  box-shadow: inset 0 2px 0 var(--blok-active-icon);
-}
-
-[data-blok-database-select-option][data-drop-after] {
-  box-shadow: inset 0 -2px 0 var(--blok-active-icon);
+[data-blok-database-option-reordering] [data-blok-database-select-option][data-dragging] {
+  position: relative;
+  z-index: 1;
+  transition: none;
 }
 
 [data-blok-database-option-panel] {
@@ -8755,8 +9206,24 @@ textarea[data-blok-database-cell-input] {
   border-radius: var(--blok-radius-control);
 }
 
+/* notion-motion.md Round 59 §5: Edit property's add field is 276x28, 12 in from the 300 flyout (the list sits 4 in). */
+[data-blok-database-options-add-input] {
+  flex: none;
+  box-sizing: border-box;
+  block-size: 28px;
+  margin-inline: var(--blok-space-2);
+  padding-block: 0;
+  color: var(--blok-database-ink);
+}
+
+[data-blok-database-options-add-input]::placeholder {
+  color: var(--blok-database-ink-tertiary);
+}
+
 [data-blok-database-option-delete],
 [data-blok-database-option-set-default],
+[data-blok-database-option-group],
+[data-blok-database-option-group-pick],
 [data-blok-database-option-delete-confirm],
 [data-blok-database-option-delete-cancel],
 [data-blok-database-option-color],
@@ -8778,6 +9245,8 @@ textarea[data-blok-database-cell-input] {
 @media (hover: hover) {
   [data-blok-database-option-delete]:hover,
   [data-blok-database-option-set-default]:hover,
+  [data-blok-database-option-group]:hover,
+  [data-blok-database-option-group-pick]:hover,
   [data-blok-database-option-delete-confirm]:hover,
   [data-blok-database-option-delete-cancel]:hover,
   [data-blok-database-option-color]:hover,
@@ -8812,7 +9281,8 @@ textarea[data-blok-database-cell-input] {
 }
 
 [data-blok-database-option-delete] svg,
-[data-blok-database-option-set-default] svg {
+[data-blok-database-option-set-default] svg,
+[data-blok-database-option-group] svg {
   width: 16px;
   height: 16px;
 }
@@ -8851,6 +9321,77 @@ textarea[data-blok-database-cell-input] {
 [data-blok-database-option-swatch][data-color="purple"] { box-shadow: inset 0 0 0 1px var(--blok-database-option-purple-ring, var(--blok-database-option-purple-bg)); }
 [data-blok-database-option-swatch][data-color="pink"] { box-shadow: inset 0 0 0 1px var(--blok-database-option-pink-ring, var(--blok-database-option-pink-bg)); }
 [data-blok-database-option-swatch][data-color="red"] { box-shadow: inset 0 0 0 1px var(--blok-database-option-red-ring, var(--blok-database-option-red-bg)); }
+
+/* notion-motion.md Round 26 "Option ⋯ menu", Round 55 §4: the select editor's option menu is its own 220 popover.
+   Field 196x28 at +12/+12, Delete at +52, Default at +125.9, colour rows 212x28 at +4, pitch 29, 4 under the last.
+   Edit property opens it from an option row (Round 56 §5, Round 57 §2). */
+[data-blok-popover-custom-class~='blok-database-option-menu'] [data-blok-popover-container] {
+  inline-size: 220px;
+}
+
+[data-blok-popover-custom-class~='blok-database-option-menu'] [data-blok-database-option-panel] {
+  padding: var(--blok-space-3) var(--blok-space-1) var(--blok-space-1);
+  gap: var(--blok-space-0-25);
+}
+
+[data-blok-popover-custom-class~='blok-database-option-menu'] [data-blok-database-option-panel] > [role='menu'] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--blok-space-0-25);
+}
+
+[data-blok-popover-custom-class~='blok-database-option-menu'] [data-blok-database-option-name] {
+  flex: none;
+  box-sizing: border-box;
+  block-size: 28px;
+  margin: 0 var(--blok-space-2) var(--blok-space-2-75);
+  padding-block: 0;
+}
+
+/* Round 56 §5: Edit property's option menu grows from its top-right corner. Group › reads its group at the end. */
+[data-blok-popover][data-blok-popover-custom-class~='blok-database-row-option-menu'] [data-blok-popover-container] {
+  transform-origin: top right;
+}
+
+[data-blok-popover][data-blok-popover-custom-class~='blok-database-row-option-menu'][data-blok-popover-open-left='true'] [data-blok-popover-container] {
+  transform-origin: top left;
+}
+
+[data-blok-database-option-group-value] {
+  margin-inline-start: auto;
+  color: var(--blok-database-ink-secondary);
+}
+
+[data-blok-database-option-group-pick] [data-blok-database-select-option-check] {
+  margin-inline-start: auto;
+}
+
+/* Round 57 §4: 250x94, rows 242x28 at +4, pitch 29. */
+[data-blok-popover-custom-class~='blok-database-option-group-menu'] [role='menu'] {
+  display: flex;
+  flex-direction: column;
+  padding: var(--blok-space-1);
+  gap: var(--blok-space-0-25);
+}
+
+/* The rule sits on top of the band, "Colors" in the rest. Where the label sits inside it is unmeasured. */
+[data-blok-popover-custom-class~='blok-database-option-menu'] [data-blok-database-option-colors-heading] {
+  position: relative;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  block-size: 43.9px;
+  padding: var(--blok-space-3-25) var(--blok-space-2) 0;
+  font-weight: 500;
+}
+
+[data-blok-popover-custom-class~='blok-database-option-menu'] [data-blok-database-option-colors-heading]::before {
+  content: '';
+  position: absolute;
+  inset: var(--blok-space-1-5) var(--blok-space-2) auto;
+  block-size: 1px;
+  background-color: var(--blok-database-page-divider);
+}
 
 /* Date picker. Notion's, measured from its top-left: field box 12/12, header 52, grid 74, rows from 307. */
 [data-blok-database-date-editor] {
@@ -9114,6 +9655,10 @@ textarea[data-blok-database-cell-input] {
   [data-blok-database-checkbox],
   [data-blok-database-select-option-handle],
   [data-blok-database-select-option-menu],
+  [data-blok-database-options-editor] [data-blok-database-select-option-menu] svg,
+  [data-blok-database-option-group-chevron] svg,
+  [data-blok-database-options-add-row],
+  [data-blok-database-option-reordering] [data-blok-database-select-option],
   [data-blok-database-switch-track],
   [data-blok-database-switch-track] > span {
     transition: none;
@@ -9225,6 +9770,11 @@ textarea[data-blok-database-cell-input] {
   border-radius: var(--blok-radius-surface);
   box-shadow: var(--blok-database-popover-shadow);
   --blok-radius-inner: max(var(--blok-radius-floor), calc(var(--blok-radius-surface) - var(--blok-space-1)));
+}
+
+/* notion-motion.md Round 55 §4: Remind rows are 29 apart. */
+[data-blok-database-date-remind-menu] {
+  row-gap: var(--blok-space-0-25);
 }
 
 /* research/26 §1f: the picker's Date format and Time format are 180 wide; Remind and the property menu stay 250. */
@@ -9488,7 +10038,8 @@ textarea[data-blok-database-cell-input] {
   background-color: var(--blok-database-table-resize);
 }
 
-[data-blok-database-table-add-property] {
+[data-blok-database-table-add-property],
+[data-blok-database-table-property-visibility] {
   display: inline-flex;
   flex: none;
   align-items: center;
@@ -9515,8 +10066,26 @@ textarea[data-blok-database-cell-input] {
   white-space: nowrap;
 }
 
-[data-blok-database-table-add-property]:hover {
+[data-blok-database-table-add-property]:hover,
+[data-blok-database-table-property-visibility]:hover {
   background-color: var(--blok-database-table-header-hover-bg);
+}
+
+/* notion-motion.md Round 44 §3: while its menu is open the "+" is the new column's slot under the name box, so ⋯ sits past it. */
+[data-blok-database-table-add-property][data-blok-database-property-type-slot] {
+  width: 378px;
+  background-color: var(--blok-database-table-header-hover-bg);
+}
+
+/* notion-motion.md Round 41 Part A: Notion's "Show or hide properties" sits flush after "+". */
+[data-blok-database-table-property-visibility] {
+  margin-inline-start: 0;
+}
+
+/* Notion's dots read 12 x 3 of ink; IconDotsHorizontal at 20px reads 13 x 3 at the same weight. */
+[data-blok-database-table-property-visibility] svg {
+  width: 20px;
+  height: 20px;
 }
 
 [data-blok-database-table-add-property] svg {
@@ -9603,6 +10172,7 @@ textarea[data-blok-database-cell-input] {
   border-block-end: 1px solid var(--blok-database-table-border);
   outline: none;
   cursor: default;
+  font-variant-numeric: lining-nums tabular-nums;
 }
 
 [data-blok-database-table-grid][data-vertical-lines="true"] [data-blok-database-table-cell],
@@ -9630,14 +10200,29 @@ textarea[data-blok-database-cell-input] {
   justify-content: center;
   width: 22px;
   height: 22px;
-  margin-block-start: calc(-1 * var(--blok-space-0-5));
+  /* notion-motion.md Round 46 §A, Round 47 §B8: the box sits at row + 7.5. The 2px comes off the bottom so the row stays 37. */
+  margin-block: 0 calc(-1 * var(--blok-space-0-5));
   margin-inline: calc(-1 * var(--blok-space-0-5)) var(--blok-space-0-75);
   color: var(--blok-database-table-title-icon);
+}
+
+/* notion-motion.md Round 47 §B8: Notion's emoji. */
+[data-blok-database-table-cell] > [data-blok-database-page-icon] {
+  font-size: 18px;
+  line-height: 1;
 }
 
 [data-blok-database-page-icon-placeholder] svg {
   width: 18px;
   height: 18px;
+}
+
+/* notion-motion.md Round 59 §8: Notion's table glyph inks 14x18. In a 20 grid the sheet inks that at 23px; the 22 box keeps the text still. */
+[data-blok-database-table-cell] > [data-blok-database-page-icon-placeholder] svg {
+  flex: none;
+  width: 23px;
+  height: 23px;
+  max-height: none;
 }
 
 /* Floats like the icon after it: inline, it would push the value below. */
@@ -9647,12 +10232,6 @@ textarea[data-blok-database-cell-input] {
 
 [data-blok-database-table-cell][data-type="number"] {
   text-align: end;
-  font-variant-numeric: lining-nums tabular-nums;
-}
-
-/* research/35 §17: tabular figures in the table only (notion-spec-2 §14.9). */
-[data-blok-database-table-cell][data-type="formula"] {
-  font-variant-numeric: lining-nums tabular-nums;
 }
 
 [data-blok-database-table-cell][data-type="select"],
@@ -9785,8 +10364,18 @@ textarea[data-blok-database-cell-input] {
   transition: --blok-database-frozen-shadow-on 200ms ease;
 }
 
-[data-blok-database-table-scroller][data-scrolled] [data-frozen-edge] {
+[data-blok-database-table-scroller][data-frozen-shadow] [data-frozen-edge] {
   --blok-database-frozen-shadow-on: 1;
+}
+
+/* notion-motion.md Round 46 §A: the frozen block sticks 30px in from this edge (FROZEN_STICK_INSET in
+   database-table-view.ts). Nothing scrolled past it shows in those 30px. */
+[data-blok-database-table-scroller][data-scrolled] {
+  clip-path: inset(0 0 0 30px);
+}
+
+[dir="rtl"] [data-blok-database-table-scroller][data-scrolled] {
+  clip-path: inset(0 30px 0 0);
 }
 
 [dir="rtl"] [data-blok-database-table-scroller] [data-frozen-edge] {
@@ -9819,7 +10408,8 @@ textarea[data-blok-database-cell-input] {
 [data-blok-database-table-open] {
   position: absolute;
   inset-block-start: 6px;
-  inset-inline-end: 6px;
+  /* notion-motion.md Round 46 §A. OPEN_INSET in database-table-view.ts must match. */
+  inset-inline-end: var(--blok-space-1);
   z-index: 1;
   display: none;
   align-items: center;
@@ -9864,6 +10454,7 @@ textarea[data-blok-database-cell-input] {
    frame around a 26x20 button. The label stays, hidden, as the button's name. Only the inner button takes the
    pointer, so the fill stays inside it and a press on the 2px frame reaches the title cell, as in Notion. */
 [data-blok-database-table-open][data-compact] {
+  inset-inline-end: var(--blok-space-1);
   justify-content: center;
   width: 30px;
   padding: var(--blok-space-0-5);
@@ -9896,12 +10487,23 @@ textarea[data-blok-database-cell-input] {
   white-space: nowrap;
 }
 
-[data-blok-database-table-open]:not([data-compact]):hover {
-  background-image: linear-gradient(var(--blok-database-table-header-hover-bg), var(--blok-database-table-header-hover-bg));
+/* notion-motion.md Round 46 §A: only the inner 64.6x20 fills; the 2px frame stays white. z-index -1 paints it over
+   the button's own fill and under its label, as the button is its own stacking context. */
+[data-blok-database-table-open]:not([data-compact])::before {
+  content: '';
+  position: absolute;
+  inset: var(--blok-space-0-5);
+  z-index: -1;
+  border-radius: var(--blok-radius-control-sm);
+  transition: background-color 20ms ease-in;
 }
 
-[data-blok-database-table-open]:not([data-compact]):active {
-  background-image: linear-gradient(var(--blok-database-pressed-bg), var(--blok-database-pressed-bg));
+[data-blok-database-table-open]:not([data-compact]):hover::before {
+  background-color: var(--blok-database-table-header-hover-bg);
+}
+
+[data-blok-database-table-open]:not([data-compact]):active::before {
+  background-color: var(--blok-database-pressed-bg);
 }
 
 /* ─── URL, email and phone cells: hover pill with Comment and Copy (research/16 §4) ─── */
@@ -10193,6 +10795,12 @@ textarea[data-blok-database-cell-input] {
   padding: 0;
 }
 
+/* Round 60 §3: the popover box is 470x44, avatar 12 from its left. Its items area pads 4. */
+[data-blok-popover-item-html] > [data-blok-database-comments] {
+  width: min(462px, calc(100vw - 40px));
+  padding: var(--blok-space-1-5) var(--blok-space-1) var(--blok-space-1-5) var(--blok-space-2);
+}
+
 /* The gallery card has no padding of its own; the title pads itself. */
 [data-blok-database-gallery-title] + [data-blok-database-comment-badge] {
   margin: 0 var(--blok-space-2) var(--blok-space-1);
@@ -10410,8 +11018,11 @@ textarea[data-blok-database-cell-input] {
 
 /* ─── "+ New page", Load more, empty state ─── */
 
-/* research/22 §12: the hover fills only the 28px button. r11-gap-nocalc.raw: the row is 37, the button 4.5 from its top. */
+/* research/22 §12: the hover fills only the 28px button. r11-gap-nocalc.raw: the row is 37, the button 4.5 from its top.
+   notion-motion.md Round 46 §A: it stays at the text column (the scroller's padded edge) on a sideways scroll. */
 [data-blok-database-table-add-row] {
+  position: sticky;
+  inset-inline-start: 0;
   display: flex;
   align-items: center;
   width: fit-content;
@@ -10721,7 +11332,8 @@ button[data-blok-database-table-calc] > [data-blok-database-table-calc-box]:hove
 /* Notion's filled caret (research/07:85; the board band's too, notion-motion.md Round 29 §6): IconPlayerPlay
    points right, so `rotate` turns it down. `transform` stays free for the collapse turn. */
 [data-blok-database-table-group-toggle] svg,
-[data-blok-database-board-lane-toggle] svg {
+[data-blok-database-board-lane-toggle] svg,
+[data-blok-database-list-group-toggle] svg {
   width: 20px;
   height: 20px;
   rotate: 90deg;
@@ -11120,7 +11732,8 @@ button[data-blok-database-table-group-count]:hover {
   [data-blok-database-table-open] > span[aria-hidden="true"],
   [data-blok-database-table-scroller] [data-frozen-edge],
   [data-blok-database-table-scroller] [data-blok-database-table-column-header][data-frozen-edge],
-  [data-blok-database-table-add-property] {
+  [data-blok-database-table-add-property],
+  [data-blok-database-table-property-visibility] {
     transition: none;
   }
 }
@@ -11484,6 +12097,11 @@ button[data-blok-database-table-group-count]:hover {
   background-color: var(--blok-database-table-border);
 }
 
+/* notion-motion.md Round 47 §D: 12 from each chip, with the bar's 6 gap. */
+[data-blok-database-filter-pills] > [data-blok-database-chip-divider] {
+  margin-inline: var(--blok-space-1-5);
+}
+
 /* Notion paints a pill with a value blue; Blok's selected tokens keep it gray (D3). */
 [data-blok-database-filter-pill][data-active] {
   background-color: var(--blok-icon-active-bg);
@@ -11805,10 +12423,11 @@ button[data-blok-database-table-group-count]:hover {
   background-color: var(--blok-database-table-header-hover-bg);
 }
 
+/* notion-motion.md Round 45 §1: Notion's settings panels stop at 80% of the window (573.6 at 717). */
 [data-blok-database-panel] {
   display: flex;
   flex-direction: column;
-  max-height: min(70vh, 560px);
+  max-height: 80vh;
   padding: var(--blok-space-1);
   overflow-y: auto;
   color: var(--blok-database-ink);
@@ -12350,6 +12969,7 @@ button[data-blok-database-table-group-count]:hover {
   margin-block-end: var(--blok-space-2);
   text-align: center;
   font-size: 12px;
+  font-weight: 500;
   color: var(--blok-database-ink-secondary);
 }
 
@@ -13234,6 +13854,12 @@ input[data-blok-database-picker-search]:focus {
   height: 20px;
 }
 
+/* notion-motion.md Round 41, Round 42 §3: the filter and sort pickers' icons are rgb(56, 56, 54). */
+[data-blok-database-picker-list="filter"] [data-blok-database-panel-icon],
+[data-blok-database-picker-list="sort"] [data-blok-database-panel-icon] {
+  color: var(--blok-database-peek-glyph-strong);
+}
+
 /* notion-motion.md Round 9 (r9-vs-layout.raw): Layout rows are 274x28 at x+8, 29px apart, the switch 8px in. */
 [data-blok-database-panel-page="layout"] [data-blok-database-panel-row] {
   inline-size: auto;
@@ -13294,7 +13920,7 @@ input[data-blok-database-picker-search]:focus {
   background: transparent;
   color: var(--blok-database-ink-secondary);
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
 }
 
@@ -14352,26 +14978,22 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   outline-offset: 2px;
 }
 
+/* notion-motion.md Round 53 §9E: the held card stays solid with its hover fill; a ghost and a body line (database-drop-line.ts) show the drag. */
 [data-blok-database-gallery-card][data-dragging] {
-  opacity: 0.4;
+  background-color: var(--blok-database-gallery-card-hover-bg);
 }
 
-[data-blok-database-gallery-card][data-drop]::before {
-  content: '';
-  position: absolute;
-  inset-block: 0;
-  inline-size: 4px;
-  background-color: var(--blok-database-table-drop-line);
-  border-radius: var(--blok-radius-mark);
-  pointer-events: none;
+/* notion-motion.md Round 54 §6: the copy keeps the hover buttons and a 0.06 fill; the held card shows no buttons. */
+[data-blok-database-ghost] > [data-blok-database-gallery-card] {
+  background-color: var(--blok-database-card-drag-source-bg, var(--blok-database-gallery-card-hover-bg));
 }
 
-[data-blok-database-gallery-card][data-drop="before"]::before {
-  inset-inline-start: 0;
+[data-blok-database-ghost] > [data-blok-database-gallery-card] [data-blok-database-card-actions] {
+  opacity: 1;
 }
 
-[data-blok-database-gallery-card][data-drop="after"]::before {
-  inset-inline-end: 0;
+[data-blok-database-gallery-card][data-dragging] [data-blok-database-card-actions] {
+  opacity: 0;
 }
 
 [data-blok-database-gallery-grid][data-drop="inside"] {
@@ -14391,9 +15013,10 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   border-block-end: 1px solid var(--blok-database-gallery-preview-border);
 }
 
+/* notion-motion.md Round 45 §1: the text starts 16 in and 16 down, dark ink at 0.8. */
 [data-blok-database-gallery-preview][data-preview="content"] {
-  padding: var(--blok-space-2) var(--blok-space-2) 0;
-  color: var(--blok-database-gallery-preview-text);
+  padding: var(--blok-space-4) var(--blok-space-4) 0;
+  color: color-mix(in srgb, var(--blok-database-gallery-title-text) 80%, transparent);
   font-size: 12px;
   line-height: 18px;
 }
@@ -14427,7 +15050,8 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   object-position: 50% 50%;
 }
 
-[data-blok-database-gallery][data-fit-image] [data-blok-database-gallery-image] {
+[data-blok-database-gallery][data-fit-image] [data-blok-database-gallery-image],
+[data-blok-database-ghost][data-fit-image] [data-blok-database-gallery-image] {
   object-fit: contain;
 }
 
@@ -14440,6 +15064,19 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   color: var(--blok-database-gallery-title-text);
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+/* notion-motion.md, Round 45: the glyph at x 11 and the title at x 36, as on a board card.
+   The card is a flex column: the negative end margin lays the title over the glyph's line. */
+[data-blok-database-gallery-card] > [data-blok-database-page-icon-placeholder] {
+  align-self: flex-start;
+  margin-block: var(--blok-space-2) calc(-22.5px - var(--blok-space-2));
+  margin-inline-start: calc(var(--blok-space-2-5) + var(--blok-space-0-25));
+}
+
+[data-blok-database-page-icon-placeholder] + [data-blok-database-gallery-title] {
+  /* 11 to the glyph, its 18 box, then 7. */
+  padding-inline-start: calc(var(--blok-space-2-75) + var(--blok-space-4-5) + var(--blok-space-1-75));
 }
 
 [data-blok-database-gallery-title]:empty::before {
@@ -14459,7 +15096,8 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 }
 
 /* findings-listgallery L22: a compact card sets its properties side by side, as on a board. */
-[data-blok-database-gallery][data-card-layout="compact"] [data-blok-database-gallery-properties] {
+[data-blok-database-gallery][data-card-layout="compact"] [data-blok-database-gallery-properties],
+[data-blok-database-ghost][data-card-layout="compact"] [data-blok-database-gallery-properties] {
   flex-direction: row;
   flex-wrap: wrap;
   column-gap: var(--blok-space-1-5);
@@ -14648,10 +15286,10 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   color: var(--blok-database-calendar-day-text);
 }
 
+/* notion-motion.md Round 60 §5: ‹, Today and › touch. */
 [data-blok-database-calendar-nav] {
   display: flex;
   align-items: center;
-  gap: var(--blok-space-0-5);
 }
 
 [data-blok-database-calendar-nav] button {
@@ -14685,9 +15323,23 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   block-size: 20px;
 }
 
+/* Round 60 §5: Manage ends at 1124.3; ‹'s 24px box starts at 1132.3 (its 20px glyph at 1134.3). */
+[data-blok-database-calendar-nav] [data-blok-database-calendar-manage-calendar] {
+  margin-inline-end: var(--blok-space-2);
+}
+
 [data-blok-database-calendar-nav] [data-blok-database-calendar-manage-calendar] svg {
   inline-size: 16px;
   block-size: 16px;
+}
+
+/* notion-motion.md Round 41: Notion's arrows are 7 x 12 of ink; Keyline's chevron at 28px is 6.65 x 11.55. */
+[data-blok-database-calendar-nav] [data-blok-database-calendar-prev] svg,
+[data-blok-database-calendar-nav] [data-blok-database-calendar-next] svg {
+  flex: none;
+  inline-size: 28px;
+  block-size: 28px;
+  max-block-size: none;
 }
 
 /* Arrows only: the calendar icon keeps its look in RTL. */
@@ -14745,7 +15397,8 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 [data-blok-database-calendar-day] {
   position: relative;
   /* findings C09: 124px in the text column, 140px at full width (below). */
-  min-block-size: max(124px, calc(var(--blok-database-calendar-number-row) + var(--blok-database-calendar-lanes, 0) * var(--blok-database-calendar-lane-pitch) + 8px));
+  /* notion-motion.md Round 45 §1: a grown day ends 7 under its last card; the lane pitch holds 6 of it. */
+  min-block-size: max(124px, calc(var(--blok-database-calendar-number-row) + var(--blok-database-calendar-lanes, 0) * var(--blok-database-calendar-lane-pitch) + 1px));
   border-inline-end: 1px solid var(--blok-database-calendar-border);
   border-block-end: 1px solid var(--blok-database-calendar-border);
   outline-offset: -2px;
@@ -14754,13 +15407,13 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 /* Unverified: Notion's switch point. Measured only at 691px (124px) and 1231px (140px) grids. */
 @container blok-calendar (min-width: 960px) {
   [data-blok-database-calendar-day] {
-    min-block-size: max(140px, calc(var(--blok-database-calendar-number-row) + var(--blok-database-calendar-lanes, 0) * var(--blok-database-calendar-lane-pitch) + 8px));
+    min-block-size: max(140px, calc(var(--blok-database-calendar-number-row) + var(--blok-database-calendar-lanes, 0) * var(--blok-database-calendar-lane-pitch) + 1px));
   }
 }
 
 /* findings C08: a week row is 372px tall. */
 [data-blok-database-calendar][data-range="week"] [data-blok-database-calendar-day] {
-  min-block-size: max(372px, calc(var(--blok-database-calendar-number-row) + var(--blok-database-calendar-lanes, 0) * var(--blok-database-calendar-lane-pitch) + 8px));
+  min-block-size: max(372px, calc(var(--blok-database-calendar-number-row) + var(--blok-database-calendar-lanes, 0) * var(--blok-database-calendar-lane-pitch) + 1px));
 }
 
 [data-blok-database-calendar-day][data-weekend] {
@@ -14841,7 +15494,6 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   color: var(--blok-database-calendar-nav-icon);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.2s ease-out;
 }
 
 [data-blok-database-calendar-add]::before {
@@ -14873,9 +15525,9 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   position: absolute;
   z-index: 1;
   inset-block-start: calc(var(--blok-database-calendar-number-row) + var(--blok-database-calendar-lane, 0) * var(--blok-database-calendar-lane-pitch));
-  /* findings C13: 6px from each side of the cell. */
+  /* findings C13: 6px from each side of the cell. Round 45: the cell's 1px end border counts (86.7 in 98.7). */
   inset-inline-start: 6px;
-  inline-size: calc(var(--blok-database-calendar-span, 1) * 100% - 12px);
+  inline-size: calc(var(--blok-database-calendar-span, 1) * (100% + 1px) - 12px);
   min-block-size: 28px;
   box-sizing: border-box;
   display: flex;
@@ -15052,7 +15704,6 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 
 @media (prefers-reduced-motion: reduce) {
   [data-blok-database-calendar-nav] button,
-  [data-blok-database-calendar-add],
   [data-blok-database-calendar-day-number],
   [data-blok-database-calendar-event] {
     transition: none;
@@ -15074,10 +15725,18 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   --blok-database-timeline-line: 28px;
   /* The view sets 1 when the toolbar names the month (findings C06). */
   --blok-database-timeline-header-rows: 2;
+  /* notion-motion.md Round 47 A2: a second row's labels sit in the 36 toolbar row, not under it. */
+  --blok-database-timeline-header-band: calc((var(--blok-database-timeline-header-rows) - 1) * 36px);
+  /* notion-motion.md Round 47 A2: the day row is 32 in every zoom, the digits on a 28 line at its top. */
+  --blok-database-timeline-header-under: 4px;
+  --blok-database-timeline-header-block: calc(var(--blok-database-timeline-line) + var(--blok-database-timeline-header-under));
   /* The view sets the day width inline on the canvas. */
   --blok-database-timeline-day: 40px;
-  /* notion-motion.md Round 6: 376 with the border, at 1512 and 1100. The toolbar's « and month are placed from it. */
-  --blok-database-timeline-table-width: 376px;
+  /* notion-motion.md Round 6: 376 with the border, at 1512 and 1100. Round 48 A7: its first 6px sit under Notion's sidebar,
+     so 370 show (the page edge to 640). The toolbar's « and month are placed from it. */
+  --blok-database-timeline-table-width: 370px;
+  /* The view sets the count of panel columns past Name. */
+  --blok-database-timeline-table-more: 0;
   /* "+ New" reads the view's width (cqi) from inside the wide canvas. */
   container-type: inline-size;
   display: flex;
@@ -15093,12 +15752,13 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   position: relative;
   /* Above the table panel, which runs up behind « and the month. */
   z-index: 2;
-  /* notion-motion.md Round 32 §3 Timeline: Today at y 319.7, 5.7px lower; the grid under it stays put. */
+  /* notion-motion.md Round 32 §3: Today at y 319.7. Round 47 A4: the block is 40 (Notion 4 + 36), the controls stay put. */
   box-sizing: border-box;
-  min-block-size: 42px;
-  padding-block-start: var(--blok-space-2-75);
-  /* The toolbar keeps to the text column; the grid below stays as wide as the view (side-by-side-4 #2). */
-  padding-inline-start: max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2));
+  min-block-size: 40px;
+  padding-block-start: var(--blok-space-3-25);
+  /* The toolbar keeps to the text column; the grid below stays as wide as the view (side-by-side-4 #2).
+     « starts 6 before the column (notion-motion.md Round 46 B). */
+  padding-inline-start: max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2 - var(--blok-space-1-5)));
   padding-inline-end: max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2));
 }
 
@@ -15106,6 +15766,21 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 [data-blok-database-timeline-toolbar]:has(> [data-blok-database-timeline-table-toggle][aria-pressed="true"]) {
   padding-inline-start: 0;
   padding-inline-end: 0;
+}
+
+/*
+ * The room before « (37 before the panel's end, less the 4px gap). notion-motion.md Round 54 §4: each column past
+ * Name moves it 200 (603 → 1003), like the panel's 200px auto columns. It shrinks first, so a panel wider than
+ * the view keeps Today and the zoom on screen (Notion's capped case is unread).
+ */
+[data-blok-database-timeline-toolbar]:has(> [data-blok-database-timeline-table-toggle][aria-pressed="true"])::before {
+  content: '';
+  flex: 0 1 calc(var(--blok-database-timeline-table-width) + var(--blok-database-timeline-table-more) * 200px - 41px);
+  min-inline-size: 0;
+}
+
+[data-blok-database-timeline-toolbar]:has(> [data-blok-database-timeline-table-toggle][aria-pressed="true"]) > * {
+  flex-shrink: 0;
 }
 
 /* notion-motion.md Round 41 Part B: with the panel shut, a page-wide editor's timeline spans the column plus 8px each side. Round 6: open, it is full-bleed. */
@@ -15117,12 +15792,69 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   flex: 1;
 }
 
+/* Quarter, Year and 5 Years labels scroll in the band under the toolbar. They slide under a control, not over it.
+   notion-motion.md Round 48 A2: two white boxes, « and the month, then the controls. Each is flush with the controls
+   inside and reaches the chart's edge outside. */
+[data-blok-database-timeline-toolbar] > :not([data-blok-database-timeline-toolbar-spacer]) {
+  position: relative;
+  isolation: isolate;
+}
+
+[data-blok-database-timeline-toolbar] > :not([data-blok-database-timeline-toolbar-spacer])::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-color: var(--blok-bg-primary);
+}
+
+/* Covers the toolbar gap. The next control paints over the overlap where controls touch. */
+[data-blok-database-timeline-toolbar] > :not([data-blok-database-timeline-toolbar-spacer]):not(:last-child):not(:has(+ [data-blok-database-timeline-toolbar-spacer]))::before {
+  inset-inline-end: calc(-1 * var(--blok-space-1));
+}
+
+/* With the panel open the month starts 16 into the chart (the « rule below). Its box reaches back to the chart's start,
+   not over the panel, whose border and shadow show through in Notion (r48-pair-quarter-p.png). */
+[data-blok-database-timeline-toolbar]:has(> [data-blok-database-timeline-table-toggle][aria-pressed="true"]) > [data-blok-database-timeline-month]::before {
+  inset-inline-start: calc(-1 * var(--blok-space-4));
+}
+
+/* The toolbar's padding, in cqi so it resolves here (the view is the container). Keep in step with its padding. */
+[data-blok-database-timeline-toolbar]:not(:has(> [data-blok-database-timeline-table-toggle][aria-pressed="true"])) > :first-child::before {
+  inset-inline-start: calc(-1 * max(0px, calc((100cqi - var(--blok-content-max-width, var(--max-width-content))) / 2 - var(--blok-space-1-5))));
+}
+
+[data-blok-database-timeline-toolbar]:not(:has(> [data-blok-database-timeline-table-toggle][aria-pressed="true"])) > :last-child::before {
+  inset-inline-end: calc(-1 * max(0px, calc((100cqi - var(--blok-content-max-width, var(--max-width-content))) / 2)));
+}
+
 /* findings C05: the shown month, right after the table toggle. */
 [data-blok-database-timeline-month] {
   font-size: 14px;
   line-height: 21px;
   font-weight: 500;
   white-space: nowrap;
+}
+
+/* notion-motion.md Round 46 B: « is 24x22 with 4px sides; Month's chevron ink
+   takes a 10 box, 6 after the label; ‹, Today and › touch. */
+[data-blok-database-timeline-toolbar] [data-blok-database-timeline-table-toggle] {
+  inline-size: var(--blok-space-6);
+  min-inline-size: 0;
+  block-size: 22px;
+  padding: 0 var(--blok-space-1);
+}
+
+[data-blok-database-timeline-toolbar] > :is([data-blok-database-timeline-today], [data-blok-database-timeline-next]) {
+  margin-inline-start: calc(-1 * var(--blok-space-1));
+}
+
+[data-blok-database-timeline-toolbar] [data-blok-database-timeline-zoom] {
+  gap: var(--blok-space-1-5);
+}
+
+[data-blok-database-timeline-zoom] svg {
+  margin-inline: calc(-1 * var(--blok-space-0-75));
 }
 
 [data-blok-database-timeline-toolbar] :is([data-blok-database-timeline-prev], [data-blok-database-timeline-next]) {
@@ -15251,19 +15983,23 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 
 [data-blok-database-timeline-table] {
   flex: none;
-  inline-size: var(--blok-database-timeline-table-width);
-  /* Notion keeps 96 before the Name column at every width; it does not follow the text column. */
-  padding-inline-start: 96px;
+  /* notion-motion.md Round 53 §3: 200 wider per shown column, no cap; past the view's edge the columns are cut. */
+  inline-size: max-content;
+  min-inline-size: var(--blok-database-timeline-table-width);
+  max-inline-size: 100%;
+  /* Notion keeps 96 before the Name column at every width (90 of it visible); it does not follow the text column. */
+  padding-inline-start: 90px;
   /*
-   * motion-r6-timelinepanel.json: the card starts 8px above «. « sits 9px into the 42px toolbar,
-   * so the card reaches 41px up into it. The padding keeps the rows where they were.
+   * The card starts 4 under the toolbar top (motion-r6-timelinepanel.json; notion-motion.md Round 47 A4).
+   * Tied to the toolbar's 40px height. The padding keeps the rows where they were.
    */
-  --blok-database-timeline-panel-reach: 41px;
+  --blok-database-timeline-panel-reach: 36px;
   position: relative;
   z-index: 1;
   margin-block-start: calc(-1 * var(--blok-database-timeline-panel-reach));
   padding-block-start: var(--blok-database-timeline-panel-reach);
-  overflow: hidden;
+  /* Clip, not hidden: rows run past the panel, and focus in a cut-off cell would scroll it. */
+  overflow: clip;
   border-inline-end: 1px solid var(--blok-database-timeline-grid-line);
   background-color: var(--blok-database-timeline-panel-bg);
   box-shadow: var(--blok-database-timeline-panel-shadow);
@@ -15284,18 +16020,27 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   border-block-end: 1px solid var(--blok-database-timeline-grid-line);
 }
 
-/* r10-timeline-calc-edge.raw: the outer cells reach the panel edges, the button 4px in.
-   The row keeps its padding so inner cells stay on the header's columns. */
-[data-blok-database-timeline-table-footer] > :first-child {
-  margin-inline-start: calc(-1 * var(--blok-space-2));
+/*
+ * notion-motion.md Round 51 §3: Name keeps the 279 of a Name-only row and the row grows past the panel
+ * (679 with two more columns; 200 each is a fit to that total). The cells hold the side padding, so the
+ * footer cells reach the column edges (r10-timeline-calc-edge.raw).
+ */
+[data-blok-database-timeline-table-header],
+[data-blok-database-timeline-table-row],
+[data-blok-database-timeline-table-footer] {
+  grid-template-columns: 279px;
+  grid-auto-columns: 200px;
+  inline-size: max-content;
+  padding-inline: 0;
 }
 
-[data-blok-database-timeline-table-footer] > :last-child {
-  margin-inline-end: calc(-1 * var(--blok-space-2));
+[data-blok-database-timeline-table-header] > *,
+[data-blok-database-timeline-table-row] > * {
+  padding-inline: var(--blok-space-2);
 }
 
 [data-blok-database-timeline-table-header] {
-  block-size: calc(var(--blok-database-timeline-line) * var(--blok-database-timeline-header-rows));
+  block-size: var(--blok-database-timeline-header-block);
   box-sizing: border-box;
   color: var(--blok-database-timeline-header-text);
 }
@@ -15311,21 +16056,53 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 }
 
 [data-blok-database-timeline-table-title] {
+  position: relative;
   display: flex;
+  align-self: stretch;
   align-items: center;
   gap: var(--blok-space-1-5);
+  /* Round 51 §3: the Name editor is 280 at 359; it covers this box 1px out on each side. */
+  margin-inline-end: -1px;
   font-weight: 500;
   cursor: pointer;
 }
 
+/* The title text ellipsises on its own; the cell must not clip the OPEN pill's shadow. */
+[data-blok-database-timeline-table-row] > [data-blok-database-timeline-table-title] {
+  overflow: visible;
+}
+
+/* notion-motion.md Round 57 §5: the OPEN frame sits 6px under the row top and 5px in from the row end. */
+[data-blok-database-timeline-table-title] > [data-blok-database-table-open] {
+  inset-block-start: 6px;
+  inset-inline-end: 5px;
+}
+
+[data-blok-database-timeline-table-row]:hover [data-blok-database-table-open] {
+  display: inline-flex;
+}
+
+/* Beats the timeline's 16px svg rule: the table's 18px glyph draws Notion's ink. */
+[data-blok-database-timeline-table-title] > [data-blok-database-table-open] svg {
+  inline-size: 18px;
+  block-size: 18px;
+}
+
+/* notion-motion.md Round 46 B: an 18 glyph 8 in, the title 32 in. */
 [data-blok-database-timeline-table-title] > :is([data-blok-database-page-icon], [data-blok-database-page-icon-placeholder]) {
   display: flex;
   flex: none;
   align-items: center;
   justify-content: center;
-  inline-size: 20px;
-  block-size: 20px;
+  inline-size: 18px;
+  block-size: 18px;
   color: var(--blok-database-table-header-icon);
+}
+
+/* Beats the timeline's 16px svg rule. */
+[data-blok-database-timeline-table-title] > [data-blok-database-page-icon-placeholder] svg {
+  inline-size: 18px;
+  block-size: 18px;
 }
 
 [data-blok-database-timeline-table-title-text] {
@@ -15338,11 +16115,14 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 [data-blok-database-timeline-table-header] > * {
   display: flex;
   align-items: center;
-  gap: var(--blok-space-1);
+  gap: var(--blok-space-1-5);
 }
 
+/* notion-motion.md Round 50 item 6: 16 centred in 18, like the row icons below. */
 [data-blok-database-timeline-table-header-icon] {
   display: inline-flex;
+  justify-content: center;
+  inline-size: 18px;
   color: var(--blok-database-table-header-icon);
 }
 
@@ -15367,13 +16147,16 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 }
 
 /*
- * timeline.png: the « ink starts 27px before the panel's border and the month ink 18px after it.
- * The 28px button (6px padding, ink 4px into the 16px icon) ends 10px before the panel's end;
- * the margin plus the 4px gap starts the month 16px past it.
+ * notion-motion.md Round 50 item 6: open, « is 28x24 with 6px sides and ends 9 before the panel's end;
+ * the margin plus the 4px gap starts the month 16 past it. Its glyph sits 2.5 above the row's centre, 12 into the card;
+ * a relative offset, so the toolbar keeps its height.
  */
 [data-blok-database-timeline-toolbar] [data-blok-database-timeline-table-toggle][aria-pressed="true"] {
-  margin-inline-start: calc(var(--blok-database-timeline-table-width) - 38px);
-  margin-inline-end: 22px;
+  inset-block-start: -2.5px;
+  inline-size: 28px;
+  block-size: 24px;
+  padding: 0 var(--blok-space-1-5);
+  margin-inline-end: 21px;
 }
 
 [data-blok-database-timeline-toolbar] [data-blok-database-timeline-table-toggle][aria-pressed="true"] svg {
@@ -15427,10 +16210,12 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   position: relative;
   flex: 1 1 auto;
   min-inline-size: 0;
+  /* Runs up under the toolbar so the group labels scroll in its band. The band and the tick row stay unfilled (Round 48 A4). */
+  margin-block-start: calc(-1 * var(--blok-database-timeline-header-band));
   overflow-x: auto;
   overflow-y: hidden;
   outline-offset: -2px;
-  background-color: var(--blok-database-timeline-canvas-bg);
+  background: linear-gradient(transparent calc(var(--blok-database-timeline-header-band) + var(--blok-database-timeline-header-block)), var(--blok-database-timeline-canvas-bg) 0);
   border-block-end: 1px solid var(--blok-database-calendar-border);
 }
 
@@ -15446,11 +16231,15 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 
 [data-blok-database-timeline-header] {
   position: relative;
-  block-size: calc(var(--blok-database-timeline-line) * var(--blok-database-timeline-header-rows));
+  block-size: calc(var(--blok-database-timeline-header-band) + var(--blok-database-timeline-header-block));
   box-shadow: var(--blok-database-timeline-header-line) 0 -1px 0 0 inset;
 }
 
-[data-blok-database-timeline-groups],
+[data-blok-database-timeline-groups] {
+  position: relative;
+  block-size: var(--blok-database-timeline-header-band);
+}
+
 [data-blok-database-timeline-units] {
   position: relative;
   block-size: var(--blok-database-timeline-line);
@@ -15466,11 +16255,12 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 }
 
 [data-blok-database-timeline-groups] > * {
-  padding-inline-start: var(--blok-space-4);
+  /* notion-motion.md Round 47 A2: the label box starts at the band top with 13 above the text.
+     Round 48 A1, A2: the text starts on its line; month lines are drawn in the body only. */
+  padding-block-start: var(--blok-space-3-25);
   font-size: 14px;
   line-height: 21px;
   font-weight: 500;
-  border-inline-end: 1px solid var(--blok-database-timeline-grid-line);
 }
 
 [data-blok-database-timeline-units] > * {
@@ -15504,7 +16294,29 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   color: var(--blok-database-timeline-period-text);
 }
 
-[data-blok-database-timeline-tick-line] {
+/* notion-motion.md Round 48 A4 (r48-n-week-hdr.raw): "M 16", 3 after the letter and 7 each side of the number.
+   The letter keeps the AA tick ink (Notion's is lighter). */
+[data-blok-database-timeline-weekday] {
+  padding-inline-end: var(--blok-space-0-75);
+}
+
+[data-blok-database-timeline-day-number] {
+  position: relative;
+  display: inline-block;
+  padding-inline: var(--blok-space-1-75);
+}
+
+/* The circle sits on today's number, after its letter (833 in Week, 6.8 past the day's middle). */
+[data-blok-database-timeline-day-number] > [data-blok-database-timeline-today-dot] {
+  inset-inline-start: 50%;
+}
+
+[data-blok-database-timeline-units] > [data-day]:has([data-blok-database-timeline-today-dot]) {
+  font-weight: 500;
+}
+
+[data-blok-database-timeline-tick-line],
+[data-blok-database-timeline-month-line] {
   position: absolute;
   inset-block: 0;
   inline-size: 1px;
@@ -15514,7 +16326,7 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 [data-blok-database-timeline-today-dot] {
   position: absolute;
   z-index: 1;
-  inset-block-start: calc(var(--blok-database-timeline-line) * (var(--blok-database-timeline-header-rows) - 1) + 3px);
+  inset-block-start: calc(var(--blok-database-timeline-header-band) + 3px);
   margin-inline-start: -11px;
   inline-size: 22px;
   block-size: 22px;
@@ -15529,7 +16341,7 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 
 [data-blok-database-timeline-background] {
   position: absolute;
-  inset-block: calc(var(--blok-database-timeline-line) * var(--blok-database-timeline-header-rows)) 0;
+  inset-block: calc(var(--blok-database-timeline-header-band) + var(--blok-database-timeline-header-block)) 0;
   inset-inline: 0;
   pointer-events: none;
 }
@@ -15644,6 +16456,11 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   margin-inline-start: var(--blok-space-1);
 }
 
+/* notion-motion.md Round 48 A5: the "→" chip ends 8px before the chart's end (1215 in 531..1239). */
+[data-blok-database-timeline-row-end] > [data-blok-database-timeline-offscreen] {
+  margin-inline-end: var(--blok-space-1);
+}
+
 [data-blok-database-timeline-offscreen]:hover {
   background-color: var(--blok-database-timeline-arrow-hover-bg);
 }
@@ -15685,6 +16502,13 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   outline: 2px solid var(--blok-focus-ring);
 }
 
+/* notion-motion.md Round 48 A5: a far-zoom bar can be 11 wide; both 6px sides would hold it at 12. The title runs past the end anyway. */
+[data-blok-database-timeline][data-zoom="quarter"] [data-blok-database-timeline-bar],
+[data-blok-database-timeline][data-zoom="year"] [data-blok-database-timeline-bar],
+[data-blok-database-timeline][data-zoom="5_years"] [data-blok-database-timeline-bar] {
+  padding-inline-end: 0;
+}
+
 /* A layer under the content, so it tints a conditional colour fill too (research/21 §1i). notion-motion.md Timeline: 20ms ease-in. */
 [data-blok-database-timeline-bar]::before {
   content: "";
@@ -15713,7 +16537,8 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   outline: none;
 }
 
-[data-blok-database-timeline-row][data-blok-database-row-selected] [data-blok-database-timeline-bar]::after {
+/* notion-motion.md Round 50 §2: a cleared pick fades out over 200ms ease; a new one shows at once. */
+[data-blok-database-timeline-bar]::after {
   content: "";
   position: absolute;
   inset: 2px;
@@ -15723,6 +16548,13 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   border-end-end-radius: inherit;
   background-color: var(--blok-icon-active-bg);
   pointer-events: none;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+[data-blok-database-timeline-row][data-blok-database-row-selected] [data-blok-database-timeline-bar]::after {
+  opacity: 1;
+  transition: none;
 }
 
 [data-blok-database-timeline-bar][data-dragging] {
@@ -15735,15 +16567,8 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 }
 
 [data-blok-database-timeline]:is([data-dragging="start"], [data-dragging="end"]) [data-blok-database-timeline-bar][data-dragging]::after {
-  content: "";
-  position: absolute;
-  inset: 2px;
-  border-start-start-radius: inherit;
-  border-start-end-radius: inherit;
-  border-end-start-radius: inherit;
-  border-end-end-radius: inherit;
-  background-color: var(--blok-icon-active-bg);
-  pointer-events: none;
+  opacity: 1;
+  transition: none;
 }
 
 [data-blok-database-timeline][data-dragging="start"] [data-blok-database-timeline-bar][data-dragging] [data-blok-database-timeline-resize="start"]::after,
@@ -15765,29 +16590,34 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   inset-inline-start: 0;
 }
 
+/* notion-motion.md Round 50 item 1: a 22-tall box at bar top + 7, on the canvas fill so grid lines stop at it. */
 [data-blok-database-timeline-edge-readout] {
   position: absolute;
-  inset-block-start: 50%;
-  translate: 0 -50%;
+  inset-block-start: 7px;
+  padding: var(--blok-space-1);
+  border-radius: var(--blok-radius-control);
+  background-color: var(--blok-database-timeline-canvas-bg);
   font-size: 12px;
-  line-height: 16px;
+  line-height: 14px;
   font-weight: 400;
   color: var(--blok-database-timeline-text);
   pointer-events: none;
 }
 
+/* notion-motion.md Round 49 B9: the box 10 outside the edge. */
 [data-blok-database-timeline-edge-readout="end"] {
-  inset-inline-start: calc(100% + 8px);
+  inset-inline-start: calc(100% + 10px);
 }
 
 [data-blok-database-timeline-edge-readout="start"] {
-  inset-inline-end: calc(100% + 8px);
+  inset-inline-end: calc(100% + 10px);
 }
 
 /* findings C15: the dragged range's pill behind the day numbers. */
 [data-blok-database-timeline-range] {
   position: absolute;
-  inset-block-end: 3px;
+  /* On the day line, like the today dot: Month's row is taller than the line. */
+  inset-block-start: calc(var(--blok-database-timeline-header-band) + var(--blok-space-0-75));
   block-size: 22px;
   border-radius: var(--blok-radius-pill);
   background-color: var(--blok-database-timeline-weekend-bg);
@@ -15812,7 +16642,8 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 [data-blok-database-timeline-bar][data-clipped-start] > [data-blok-database-timeline-bar-chip="start"],
 [data-blok-database-timeline-bar][data-clipped-end] > [data-blok-database-timeline-bar-chip="end"] {
   position: sticky;
-  inset-inline-start: var(--blok-space-1-5);
+  /* notion-motion.md Round 48 A5: 8px in (539 in a chart from 531). */
+  inset-inline-start: var(--blok-space-2);
   display: inline-flex;
   flex: none;
   align-items: center;
@@ -15842,7 +16673,8 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 
 [data-blok-database-timeline-bar][data-clipped-start] > [data-blok-database-timeline-bar-title] {
   position: sticky;
-  inset-inline-start: calc(var(--blok-space-1-5) * 2 + 16px);
+  /* notion-motion.md Round 48 A5: the title 3px after the chip (558). */
+  inset-inline-start: calc(var(--blok-space-2) + 16px + var(--blok-space-0-75));
 }
 
 [data-blok-database-timeline-bar-title] {
@@ -15932,6 +16764,7 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   [data-blok-database-timeline-row-handle],
   [data-blok-database-timeline-bar],
   [data-blok-database-timeline-bar]::before,
+  [data-blok-database-timeline-bar]::after,
   [data-blok-database-timeline-toolbar] [data-blok-database-timeline-table-toggle][data-swapped] > svg,
   [data-blok-database-timeline-toolbar] [data-blok-database-timeline-table-toggle] [data-blok-database-timeline-toggle-out] {
     transition: none;
@@ -16003,7 +16836,7 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 [data-blok-database-card-properties] {
   display: flex;
   flex-direction: column;
-  margin-block-start: var(--blok-space-1);
+  margin-block-start: var(--blok-space-1-5);
   margin-block-end: var(--blok-space-0-5);
   /* Follows the card's 10px inline padding: rows sit 6px from the edge. */
   margin-inline: calc(-1 * var(--blok-space-1));
@@ -16142,6 +16975,12 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   width: 20px;
   height: 20px;
   color: var(--blok-database-table-header-icon);
+}
+
+/* notion-motion.md Round 46 B: an 18 glyph; the title already sits where Notion's does. */
+[data-blok-database-no-date-row] > [data-blok-database-page-icon-placeholder] svg {
+  inline-size: 18px;
+  block-size: 18px;
 }
 
 [data-blok-database-no-date-title] {
@@ -17750,7 +18589,8 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   align-items: center;
   /* notion-motion.md Round 32 §3 Feed: cards at a 200 pitch, 175.5 tall. */
   gap: var(--blok-space-6);
-  padding-block: var(--blok-space-4);
+  /* Round 61 §6: the first card is 50 under the tab row. */
+  padding-block: var(--blok-space-3-5) var(--blok-space-4);
 }
 
 [data-blok-database-feed-card] {
@@ -17836,7 +18676,8 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 }
 
 :where(:root:not([data-blok-modality="pointer"])) [data-blok-database-feed-title]:focus-visible,
-:where(:root:not([data-blok-modality="pointer"])) [data-blok-database-feed-more]:focus-visible {
+:where(:root:not([data-blok-modality="pointer"])) [data-blok-database-feed-more]:focus-visible,
+:where(:root:not([data-blok-modality="pointer"])) [data-blok-database-feed-see-more]:focus-visible {
   outline: 2px solid var(--blok-focus-ring);
   outline-offset: 2px;
 }
@@ -17892,11 +18733,46 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
 /* Reactions, measured (research/19 §2c): pills "<emoji> <count>", 25px tall,
    then Add reaction. Your own pill is marked gray, not Notion's blue (CLAUDE.md
    "No blue selected states"). Other people's pills are unmeasured. */
+/* notion-motion.md Round 45 §1 Feed card: the chip at card + 93.5, or + 123.5 under a property line. */
 [data-blok-database-feed-reactions] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--blok-space-1-5);
+  margin-block-start: 11.5px;
+}
+
+/* Round 48 §C: the preview too. Notion's property row is 30 + 12 margin; Blok's is 21 and the card gap is 8. */
+[data-blok-database-feed-properties] + [data-blok-database-feed-reactions],
+[data-blok-database-feed-properties] + [data-blok-database-feed-body] {
+  margin-block-start: 8.5px;
+}
+
+/* Round 45 §1: under a byline the property line starts at the title, the chip and composer 6 further in. */
+[data-blok-database-feed-byline] ~ [data-blok-database-feed-properties] {
+  margin-inline-start: calc(var(--blok-space-6) + var(--blok-space-2));
+}
+
+/* Round 49 §A4: Notion's preview is 600 with 30 each side, its text 8 in. */
+[data-blok-database-feed-byline] ~ [data-blok-database-feed-body] {
+  margin-inline: 30px;
+  padding-inline: var(--blok-space-2);
+}
+
+[data-blok-database-feed-byline] ~ [data-blok-database-feed-reactions],
+[data-blok-database-feed-byline] ~ [data-blok-database-feed-comments] {
+  margin-inline-start: calc(var(--blok-space-6) + var(--blok-space-3-5));
+}
+
+/* Round 50 §7: with no byline the preview fills the card and its text sits 8 in on both sides. */
+[data-blok-database-feed-card]:not(:has(> [data-blok-database-feed-byline])) > [data-blok-database-feed-body] {
+  padding-inline: var(--blok-space-2);
+}
+
+/* Round 47 §C: with no byline the footer column keeps an 8 inset. */
+[data-blok-database-feed-card]:not(:has(> [data-blok-database-feed-byline])) > [data-blok-database-feed-reactions],
+[data-blok-database-feed-card]:not(:has(> [data-blok-database-feed-byline])) > [data-blok-database-feed-comments] {
+  margin-inline-start: var(--blok-space-2);
 }
 
 [data-blok-database-feed-reaction],
@@ -17961,6 +18837,28 @@ button[data-blok-database-feed-reaction]:hover,
   padding: 0;
 }
 
+/* Round 45 §1: the composer starts 14 under the chip, its input 27 tall, 5.5 after the avatar. */
+[data-blok-database-feed-comments] {
+  margin-block-start: var(--blok-space-1-5);
+}
+
+[data-blok-database-feed-comments] [data-blok-database-comment-composer] {
+  gap: 5.5px;
+}
+
+[data-blok-database-feed-comments] [data-blok-database-comment-composer] > [data-blok-database-comment-avatar] {
+  align-self: flex-start;
+}
+
+[data-blok-database-feed-comments] [data-blok-database-comment-input] {
+  min-height: 27px;
+}
+
+/* Notion hides the composer tools until the box has focus. A focused textarea always matches :focus-visible; so does a send reached by Tab. */
+[data-blok-database-feed-comments] [data-blok-database-comment-composer]:not(:has(:focus-visible)) > [data-blok-database-comment-send] {
+  opacity: 0;
+}
+
 [data-blok-database-feed-comments-summary] {
   display: flex;
   align-items: center;
@@ -17998,30 +18896,124 @@ button[data-blok-database-feed-reaction]:hover,
   font-size: 12px;
 }
 
+/* Round 45 §1 (r45-n-feedprops.raw): a 21 line with pills at card + 87.5, 13/18, items 14 apart, the checkbox 14. */
 [data-blok-database-feed-properties] {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--blok-space-1) var(--blok-space-2);
+  align-items: center;
+  gap: var(--blok-space-1) var(--blok-space-3-5);
+  margin-block-start: var(--blok-space-1);
   font-size: 14px;
+  line-height: 21px;
 }
 
+[data-blok-database-feed-property] {
+  display: flex;
+  align-items: center;
+}
+
+[data-blok-database-feed-properties] [data-blok-database-option-pill] {
+  height: 18px;
+  padding: 0 var(--blok-space-2);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+[data-blok-database-feed-properties] [data-blok-database-checkbox] {
+  width: 14px;
+  height: 14px;
+}
+
+/* notion-motion.md Round 46 §C.4: 14/400/21, at the footer's column under a byline. Round 48 §C: capped at 500. */
 [data-blok-database-feed-body] {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--blok-space-1);
-  font-size: 16px;
-  line-height: 1.5;
+  gap: 0;
+  max-block-size: 500px;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 21px;
   overflow-wrap: anywhere;
 }
 
-[data-blok-database-feed-line][data-level="h1"] { font-size: 1.5em; font-weight: 600; }
-[data-blok-database-feed-line][data-level="h2"] { font-size: 1.25em; font-weight: 600; }
-[data-blok-database-feed-line][data-level="h3"] { font-size: 1.1em; font-weight: 600; }
+/* The cap clips; without this the column squeezes the image instead. */
+[data-blok-database-feed-body] > * {
+  flex-shrink: 0;
+}
 
+[data-blok-database-feed-body][data-expanded] {
+  max-block-size: none;
+}
+
+/* Round 49 §A2: Notion's fade is 30 tall at bottom -2. A box hanging out of the body would count as overflow
+   and keep the chip, so the box stops at the edge and only its 30px gradient runs past. */
+[data-blok-database-feed-fade] {
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  block-size: 28px;
+  background: var(--blok-database-feed-fade) top / 100% 30px no-repeat;
+}
+
+/* Round 49 §A2: the chip's top is 4 above the fade's, 468 under the preview's. */
+[data-blok-database-feed-see-more] {
+  margin-block-start: calc(-1 * var(--blok-space-1));
+  display: inline-flex;
+  align-items: center;
+  gap: var(--blok-space-1-25);
+  padding: var(--blok-space-1) 10px var(--blok-space-1) var(--blok-space-2);
+  border: none;
+  border-radius: var(--blok-radius-control);
+  background-color: var(--blok-tooltip-bg);
+  color: var(--blok-tooltip-font);
+  box-shadow: var(--blok-database-feed-see-more-shadow);
+  font: inherit;
+  font-size: 12px;
+  line-height: 16.8px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+[data-blok-database-feed-see-more] > span {
+  display: inline-flex;
+}
+
+[data-blok-database-feed-see-more] svg {
+  inline-size: 12px;
+  block-size: 12px;
+}
+
+/* Round 47 §C: Notion's title block is 28.5 + 5 margin; Blok's is 26, and the card gap is 8. */
+[data-blok-database-feed-title] + [data-blok-database-feed-body],
+[data-blok-database-feed-head] + [data-blok-database-feed-body] {
+  margin-block-start: -0.5px;
+}
+
+/* Round 47 §C: the footer's 12 top padding, after the last line's 8 and the card gap. */
+[data-blok-database-feed-body] + [data-blok-database-feed-reactions] {
+  margin-block-start: var(--blok-space-1);
+}
+
+/* Round 47 §C: each preview block has 6 padding, its text 2 more. Headings are the page sizes x 0.875 with the page's top padding. */
+[data-blok-database-feed-line] {
+  padding-block: var(--blok-space-2);
+}
+
+[data-blok-database-feed-line][data-level="h1"] { padding-block-start: 32px; font-size: 26.25px; line-height: 34.125px; font-weight: 600; }
+[data-blok-database-feed-line][data-level="h2"] { padding-block-start: calc(var(--blok-space-6) + var(--blok-space-1)); font-size: 21px; line-height: 27.3px; font-weight: 600; }
+[data-blok-database-feed-line][data-level="h3"] { padding-block-start: var(--blok-space-6); font-size: 17.5px; line-height: 22.75px; font-weight: 600; }
+
+/* Round 48 §C: Notion's image block has 8 padding; the image is the 600 preview less 16, radius 2. */
 [data-blok-database-feed-image] {
   display: block;
-  max-inline-size: 100%;
-  border-radius: var(--blok-radius-control);
+  max-inline-size: min(100%, 584px);
+  margin-block: var(--blok-space-2);
+  border-radius: var(--blok-radius-mark);
 }
 
 [data-blok-database-feed-more] {
@@ -18187,10 +19179,10 @@ button[data-blok-database-feed-reaction]:hover,
 
 /* A form view's "Share form" (research/19 §3d): Notion's blue toolbar button.
    The toolbar prefix outranks `[data-blok-database-view-toolbar] > button`, which would paint it gray.
-   6px + Preview's 1px hairline margin = Notion's 7px gap (r41-n-empty-form.png). */
+   Round 61 §6: 6 after Preview and none after it; the shared 1px button margins are dropped. */
 [data-blok-database-view-toolbar] > [data-blok-database-toolbar-share-form] {
   height: 28px;
-  margin-inline-start: var(--blok-space-1-5);
+  margin-inline: var(--blok-space-1-5) 0;
   padding-inline: var(--blok-space-2);
   border: none;
   border-radius: var(--blok-radius-control);
@@ -18215,6 +19207,7 @@ button[data-blok-database-feed-reaction]:hover,
    area matches Notion's at 500 (158 px² both) and not at 400 (136). */
 [data-blok-database-view-toolbar] > [data-blok-database-toolbar-preview-form] {
   gap: var(--blok-space-1-5);
+  margin-inline: var(--blok-space-1-5) 0;
   padding-inline: var(--blok-space-1-5) var(--blok-space-2);
   border: 1px solid var(--blok-database-table-control-border);
   color: var(--blok-database-ink);
@@ -18235,9 +19228,11 @@ button[data-blok-database-feed-reaction]:hover,
   box-shadow: var(--blok-database-new-divider) 1px 0 0 0 inset;
 }
 
+/* notion-motion.md Round 41: Notion's chevron is 10 x 6 of ink; Keyline's at 24px is 9.9 x 5.7. */
 [data-blok-database-new] svg {
-  width: 16px;
-  height: 16px;
+  flex: none;
+  width: 24px;
+  height: 24px;
 }
 
 [data-blok-database-template-banner] {
@@ -18430,7 +19425,7 @@ button[data-blok-database-feed-reaction]:hover,
 }
 
 [data-blok-database-list-row][data-subitem-depth],
-[data-blok-database-timeline-table-row][data-subitem-depth] {
+[data-blok-database-timeline-table-row][data-subitem-depth] > [data-blok-database-timeline-table-title] {
   padding-inline-start: calc(var(--blok-database-subitem-depth) * var(--blok-database-subitem-indent));
 }
 
@@ -18576,8 +19571,14 @@ button[data-blok-database-feed-reaction]:hover,
   padding-block: var(--blok-space-1);
 }
 
-/* The resize readout takes its place. */
-[data-blok-database-timeline]:is([data-dragging="start"], [data-dragging="end"]) [data-blok-database-timeline-link-handle] {
+/* notion-motion.md Round 46 B: 14px regular. */
+[data-blok-item-name^="database-timeline-zoom-"] [data-blok-popover-item-title] {
+  font-size: 14px;
+  font-weight: 400;
+}
+
+/* A resize shows its readout there; a moving bar hides it (notion-motion.md Round 46 B). */
+[data-blok-database-timeline]:is([data-dragging="move"], [data-dragging="start"], [data-dragging="end"]) [data-blok-database-timeline-link-handle] {
   opacity: 0;
 }
 
@@ -18773,6 +19774,13 @@ button[data-blok-database-feed-reaction]:hover,
   padding-block: var(--blok-space-3);
 }
 
+/* notion-motion.md Round 52 §2: Notion's map is 684x400 at the column start, 8 short of the 692 column, 14 under the toolbar. */
+[data-blok-database-map] {
+  padding-block-start: var(--blok-space-2);
+  padding-inline-start: max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2));
+  padding-inline-end: calc(max(0px, calc((100% - var(--blok-content-max-width, var(--max-width-content))) / 2)) + var(--blok-space-2));
+}
+
 [data-blok-database-form] form {
   display: flex;
   flex-direction: column;
@@ -18864,7 +19872,9 @@ button[data-blok-database-feed-reaction]:hover,
 /* notion-motion.md Round 32 §4 (r32-b-form-geom.raw): the builder's 600 column is centred in the database.
    The icon row sits 50 under the toolbar, the title 4 under the row and 19 in, the description 16 under the
    title, the access bar 24 under that and the first card 34 under the bar. */
+/* notion-motion.md Round 44 §1: the column is min(600, database − 80). */
 [data-blok-database-form]:has(> [data-blok-database-form-access]) > :is([data-blok-database-form-header], [data-blok-database-form-access], form) {
+  max-inline-size: min(600px, 100% - 80px);
   margin-inline: auto;
 }
 
@@ -18965,6 +19975,20 @@ button[data-blok-database-feed-reaction]:hover,
   margin-inline-start: 0;
 }
 
+/* Round 61 §6: a 14 glyph 8 in (Round 31's padding 0 8); the button keeps its width. Warm AA ink, not the page's. */
+[data-blok-database-form-header] :is([data-blok-page-add-icon], [data-blok-page-add-cover]) {
+  padding-inline-start: var(--blok-space-2);
+}
+
+[data-blok-database-form-header] :is([data-blok-page-add-icon], [data-blok-page-add-cover]):not(:hover) {
+  color: var(--blok-database-ink-secondary);
+}
+
+[data-blok-database-form-header] :is([data-blok-page-add-icon], [data-blok-page-add-cover]) svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* Round 31 §1: both buttons fade out over 100ms; page-title.css gives Add icon 100ms only in its own row. */
 [data-blok-database-form-header-row] [data-blok-page-add-icon] {
   transition: opacity 100ms ease, background-color 120ms ease, color 120ms ease;
@@ -19053,6 +20077,68 @@ button[data-blok-database-feed-reaction]:hover,
   background: var(--blok-database-hover-bg);
 }
 
+/* notion-motion.md Round 52 §3: Add question is a round 32 "+" centred under the cards; hover 100ms ease-in-out.
+   Notion tints it blue: neutral here, like the gap "+". The 20px glyph is unmeasured. */
+[data-blok-database-form-add] {
+  display: inline-flex;
+  align-self: center;
+  /* notion-motion.md Round 53 (d): 12 under the last card, though cards sit 24 apart. */
+  margin-block-start: calc(var(--blok-space-3) - var(--blok-space-6));
+  align-items: center;
+  justify-content: center;
+  inline-size: 32px;
+  block-size: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--blok-radius-pill);
+  background: var(--blok-database-hover-bg);
+  color: var(--blok-block-control);
+  cursor: pointer;
+  transition: background-color 100ms ease-in-out;
+}
+
+[data-blok-database-form-add]:hover {
+  background: var(--blok-database-pressed-bg);
+}
+
+[data-blok-database-form-add] svg {
+  inline-size: 20px;
+  block-size: 20px;
+}
+
+/* notion-motion.md Round 52 §3 / Round 53 (a): a dragged card's gap lines, 4 tall at 0.28, the target at 1; none beside the card. */
+[data-blok-database-form-drop-zone] {
+  z-index: 88;
+  border-radius: var(--blok-radius-pill);
+  background-color: var(--blok-database-drop-line, rgba(35, 131, 226, 0.43));
+  opacity: 0.28;
+  transition: opacity 0.14s cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* notion-motion.md Round 55 §3: the lines fade in from 0 as the drag starts. */
+@starting-style {
+  [data-blok-database-form-drop-zone] {
+    opacity: 0;
+  }
+}
+
+[data-blok-database-form-drop-zone][data-adjacent] {
+  opacity: 0;
+}
+
+[data-blok-database-form-drop-zone][data-target] {
+  opacity: 1;
+}
+
+/* notion-motion.md Round 53 (b): the moving copy keeps the hover ring, gray here. */
+[data-blok-database-ghost] > [data-blok-database-form-question] {
+  box-shadow: var(--blok-border-strong) 0 0 0 1.25px, var(--blok-border-strong) 0 0 0 1.25px inset;
+}
+
+[data-blok-database-form]:has([data-blok-database-drag-source]) [data-blok-database-form-insert] {
+  visibility: hidden;
+}
+
 [data-blok-database-form-type-row] {
   min-height: 44px;
 }
@@ -19091,6 +20177,10 @@ button[data-blok-database-feed-reaction]:hover,
   background: transparent;
   color: var(--blok-database-ink-secondary);
   cursor: pointer;
+  /* notion-motion.md Round 52 §3: card right − 34, top + 10, out of the card's 12 padding. */
+  align-self: flex-start;
+  margin-block-start: calc(var(--blok-space-0-5) * -1);
+  margin-inline-end: calc(var(--blok-space-0-5) * -1);
   /* notion-motion.md Round 34 §6: fades both ways. */
   transition: opacity 0.2s ease;
 }
@@ -19204,7 +20294,6 @@ button[data-blok-database-feed-reaction]:hover,
 
 [data-blok-database-form]:has(> [data-blok-database-form-access]) > [data-blok-database-form-access] {
   box-sizing: border-box;
-  max-inline-size: 600px;
   --_blok-form-access-inset: 22px;
 
   min-block-size: 48px;
@@ -19234,6 +20323,13 @@ button[data-blok-database-feed-reaction]:hover,
   font: inherit;
   font-weight: 500;
   cursor: pointer;
+}
+
+/* Round 61 §6: 28 tall, no vertical padding, 4 into the bar's 22 end padding. */
+[data-blok-database-form]:has(> [data-blok-database-form-access]) > [data-blok-database-form-access] > button {
+  block-size: 28px;
+  margin-inline-end: calc(var(--blok-space-1) * -1);
+  padding-block: 0;
 }
 
 [data-blok-database-form-access] > button:hover {
@@ -19457,10 +20553,11 @@ button[data-blok-database-feed-reaction]:hover,
   padding: var(--blok-space-0-5);
   border-radius: var(--blok-radius-control);
   background-color: var(--blok-bg-primary);
-  box-shadow: var(--blok-database-popover-shadow);
+  /* notion-motion.md Round 52 §2: the same shadow as the place cell's map link. */
+  box-shadow: var(--blok-database-place-map-link-shadow);
 }
 
-/* Measured (research/20 §1b): 24x24, 4px radius, muted glyph. */
+/* Measured (research/20 §1b): 24x24, 4px radius, muted glyph. Round 52 §2: clear, hover 0.1s ease-in-out. */
 [data-blok-database-map-add-pin] {
   display: inline-flex;
   align-items: center;
@@ -19470,9 +20567,10 @@ button[data-blok-database-feed-reaction]:hover,
   padding: 0;
   border: 0;
   border-radius: var(--blok-radius-control-sm);
-  background-color: var(--blok-bg-primary);
+  background-color: transparent;
   color: var(--blok-database-ink-secondary);
   cursor: pointer;
+  transition: background-color 0.1s ease-in-out;
 }
 
 [data-blok-database-map-add-pin]:hover,
@@ -19488,19 +20586,57 @@ button[data-blok-database-feed-reaction]:hover,
 [data-blok-database-map-no-place-list] {
   display: flex;
   flex-direction: column;
-  gap: var(--blok-space-1);
-  padding: var(--blok-space-1-5);
+  padding: var(--blok-space-1);
+}
+
+/* notion-motion.md Round 53 §8a: a 296x28 field 12 in and 12 down, rows 12 under it; text 6 in, 14px.
+   Fill, ring, 1px border and radius stay the shared field look. Outranks input[data-blok-field]'s 100% width. */
+[data-blok-database-map-no-place-list] > [data-blok-database-map-no-place-search] {
+  margin: var(--blok-space-2) var(--blok-space-2) var(--blok-space-3);
+  width: auto;
+  padding-inline: var(--blok-space-1-5);
+  font-size: 14px;
+}
+
+/* notion-motion.md Round 52 §2: rows 28 tall, pitch 29; a 20 icon box at +8, text at +36; hover 20ms ease-in. */
+[data-blok-database-map-no-place-rows] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--blok-space-0-25);
 }
 
 [data-blok-database-map-no-place-row] {
-  padding: var(--blok-space-1-5);
+  display: flex;
+  align-items: center;
+  gap: var(--blok-space-2);
+  block-size: 28px;
+  padding: 0 var(--blok-space-2);
   border: 0;
   border-radius: var(--blok-radius-control);
   background: none;
   color: inherit;
   font: inherit;
+  font-size: 14px;
   text-align: start;
   cursor: pointer;
+  transition: background-color 20ms ease-in;
+}
+
+[data-blok-database-map-no-place-row] > :is([data-blok-database-page-icon], [data-blok-database-page-icon-placeholder]) {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  inline-size: 20px;
+  block-size: 20px;
+  color: var(--blok-database-table-header-icon);
+}
+
+[data-blok-database-map-no-place-title] {
+  min-inline-size: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 [data-blok-database-map-no-place-row]:hover {

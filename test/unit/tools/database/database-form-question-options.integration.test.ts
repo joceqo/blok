@@ -37,6 +37,20 @@ const blocks: OutputBlockData[] = [{
   } satisfies DatabaseData,
 }];
 
+const settle = (): Promise<void> => new Promise((resolve) => {
+  setTimeout(resolve, 0);
+});
+
+const quiet = async (): Promise<void> => {
+  await settle();
+  for (let i = 0; i < 3; i++) {
+    await new Promise((resolve) => {
+      requestAnimationFrame(() => resolve(undefined));
+    });
+  }
+  await settle();
+};
+
 const mount = async (): Promise<void> => {
   editor = new Blok({
     holder, dataModel: 'hierarchical',
@@ -45,6 +59,9 @@ const mount = async (): Promise<void> => {
   }) as unknown as PublicBlok;
   await editor.isReady;
   await vi.waitFor(() => expect(q('[data-blok-database-form]')).not.toBeNull());
+  // The first render's sync window stays open until the next frame. An edit
+  // inside it is written back untracked, so it never becomes an undo step.
+  await quiet();
 };
 
 const openOptions = (id: string): void => click(`[data-blok-database-form-question="${id}"] ${byTestId('database-form-question-menu')}`);
@@ -76,6 +93,26 @@ describe('form Question options (notion-motion.md Round 31 §1)', () => {
     const order = saved?.views[0].properties?.filter((entry) => entry.visible).map((entry) => entry.id);
 
     expect(order).toEqual(['title', 'notes', 'email']);
+  });
+
+  // notion-motion.md Round 52 §3: a card dragged by its blank area lands in the gap under the pointer.
+  it('dragging a card to the top reorders the questions, saves the order and redraws', async () => {
+    await mount();
+    const cards = [...document.querySelectorAll<HTMLElement>('[data-blok-database-form] [data-blok-database-form-question]')];
+
+    cards.forEach((card, index) => {
+      vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(new DOMRect(585, 100 + index * 164, 600, 140));
+    });
+    const notes = cards[2];
+
+    notes.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 700, clientY: 450 }));
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 700, clientY: 90 }));
+    document.dispatchEvent(new PointerEvent('pointerup', { clientX: 700, clientY: 90 }));
+
+    await vi.waitFor(() => expect(questionIds()).toEqual(['notes', 'title', 'email']));
+    const saved = (await editor?.save())?.blocks.find((block) => block.id === 'db')?.data as DatabaseData | undefined;
+
+    expect(saved?.views[0].properties?.filter((entry) => entry.visible).map((entry) => entry.id)).toEqual(['notes', 'title', 'email']);
   });
 
   it('View linked property opens the property menu of that question\'s property', async () => {
@@ -118,6 +155,8 @@ describe('form "+" between cards (notion-motion.md Round 31 §1)', () => {
     // Adding opens the new question's options; close them so the view can redraw.
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     await vi.waitFor(() => expect(q(byTestId('database-form-question-settings'))).toBeNull());
+    // The new name keeps focus (Round 52 §3), and a focused name holds the redraw; leave it first.
+    q<HTMLInputElement>(`[data-blok-database-form-question="${added}"] [data-blok-database-form-question-name]`)?.blur();
     (editor as unknown as { history: { undo: () => void } }).history.undo();
     await vi.waitFor(async () => {
       const undone = (await editor?.save())?.blocks.find((block) => block.id === 'db')?.data as DatabaseData | undefined;

@@ -10,7 +10,7 @@ import { htmlToPlainText } from '../../components/utils/plain-text';
 import { safeImageSrc } from '../../components/utils/sanitize-url';
 import { onHover } from '../../components/utils/tooltip';
 import { onPropertyHover } from './property-hint';
-import { IconDotsHorizontal, IconEmojiSmile, IconPlus } from '../../components/icons';
+import { IconDotsHorizontal, IconEmojiSmile, IconMoveDown, IconPlus } from '../../components/icons';
 
 /** A host's footer for one card: comments, reactions (Tier 3, D6). Returns its cleanup. */
 export type FeedFooter = (context: { rowId: string; holder: HTMLElement }) => (() => void) | void;
@@ -157,6 +157,8 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
   /** Every shown byline age, re-read by one shared timer. */
   private readonly ages = new Map<HTMLElement, number>();
   private readonly tickAges = (): void => this.refreshAges();
+  /** One per card with a body: shows "See more" while the preview runs past its cap. */
+  private readonly bodyObservers = new Map<HTMLElement, ResizeObserver>();
 
   constructor(options: FeedViewOptions) {
     this.options = options;
@@ -206,6 +208,10 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
     const card = wrapper.querySelector(`[data-blok-database-feed-card][data-row-id="${CSS.escape(rowId)}"]`);
 
     [...this.ages.keys()].filter((el) => card?.contains(el) === true).forEach((el) => this.ages.delete(el));
+    if (card instanceof HTMLElement) {
+      this.bodyObservers.get(card)?.disconnect();
+      this.bodyObservers.delete(card);
+    }
     card?.remove();
   }
 
@@ -232,6 +238,8 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
 
   destroy(): void {
     this.cleanups.splice(0).forEach((cleanup) => cleanup());
+    this.bodyObservers.forEach((observer) => observer.disconnect());
+    this.bodyObservers.clear();
     offAgeTick(this.tickAges);
     this.ages.clear();
   }
@@ -279,7 +287,10 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
 
     const body = this.createBody(row.id);
 
-    if (body.childElementCount > 0) card.appendChild(body);
+    if (body.childElementCount > 0) {
+      card.appendChild(body);
+      this.watchOverflow(card, body);
+    }
     const reactions = this.createReactions(row);
 
     if (reactions !== null) card.appendChild(reactions);
@@ -498,6 +509,42 @@ export class DatabaseFeedView implements DatabaseViewRenderer {
     img.loading = 'lazy';
     img.src = src;
     body.appendChild(img);
+  }
+
+  /**
+   * notion-motion.md Round 48 §C: the preview stops at 500 and a "See more" chip shows over a fade while it
+   * runs over. Images load late, so this follows the body's size. Round 49 §A1: the click lifts the cap in
+   * place. That state lives in the DOM only, so a new view (a tab switch) is capped again, as in Notion.
+   */
+  private watchOverflow(card: HTMLElement, body: HTMLElement): void {
+    if (typeof ResizeObserver === 'undefined') return;
+    const fade = document.createElement('div');
+    const chip = document.createElement('button');
+    const icon = document.createElement('span');
+
+    fade.setAttribute('data-blok-database-feed-fade', '');
+    chip.type = 'button';
+    chip.setAttribute('data-blok-database-feed-see-more', '');
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = IconMoveDown;
+    chip.append(icon, this.options.i18n.t('tools.database.feedSeeMore'));
+    fade.appendChild(chip);
+    chip.addEventListener('click', () => {
+      this.bodyObservers.get(card)?.disconnect();
+      this.bodyObservers.delete(card);
+      body.setAttribute('data-expanded', '');
+      fade.remove();
+    });
+    const observer = new ResizeObserver(() => {
+      if (body.scrollHeight > body.clientHeight) {
+        if (!fade.isConnected) body.appendChild(fade);
+      } else {
+        fade.remove();
+      }
+    });
+
+    observer.observe(body);
+    this.bodyObservers.set(card, observer);
   }
 
   /** The page content as read-only text and images. Other block kinds show their text only. */

@@ -486,8 +486,8 @@ describe('DatabaseTableView', () => {
       const { root } = mount({ view });
 
       expect(cell(root, 'r1', 'p-title').hasAttribute('data-frozen')).toBe(true);
-      expect(cell(root, 'r1', 'p-title').style.insetInlineStart).toBe('0px');
-      expect(cell(root, 'r1', 'p-notes').style.insetInlineStart).toBe('250px');
+      expect(cell(root, 'r1', 'p-title').style.insetInlineStart).toBe('calc(0px + var(--_blok-database-frozen-shift, 0px))');
+      expect(cell(root, 'r1', 'p-notes').style.insetInlineStart).toBe('calc(250px + var(--_blok-database-frozen-shift, 0px))');
       expect(cell(root, 'r1', 'p-amount').hasAttribute('data-frozen')).toBe(false);
     });
 
@@ -503,19 +503,81 @@ describe('DatabaseTableView', () => {
       expect(cell(root, 'r1', 'p-amount').hasAttribute('data-frozen-edge')).toBe(false);
     });
 
-    // notion-motion.md Round 28 §5: the frozen edge casts a shadow only while the table is scrolled sideways.
-    it('marks the scroller while it is scrolled sideways, and clears it back at the start', () => {
-      const view = tableView({ frozenColumnCount: 1 });
+    /** Mounts with a scroller whose measured inline-start padding is `pad`, as the stylesheet would give it. */
+    const mountPadded = (pad: number, view: DatabaseViewConfig): { root: HTMLElement; scroller: HTMLElement } => {
+      const observed: ResizeObserverCallback[] = [];
+
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(callback: ResizeObserverCallback) {
+          observed.push(callback);
+        }
+
+        observe = vi.fn();
+        unobserve = vi.fn();
+        disconnect = vi.fn();
+      });
       const { root } = mount({ view });
       const scroller = root.querySelector<HTMLElement>('[data-blok-database-table-scroller]');
 
       if (scroller === null) throw new Error('no scroller');
+      scroller.style.paddingInlineStart = `${pad}px`;
+      observed.forEach((callback) => callback([], {} as ResizeObserver));
+
+      return { root, scroller };
+    };
+    const scrollTo = (scroller: HTMLElement, left: number): void => {
+      Object.assign(scroller, { scrollLeft: left }).dispatchEvent(new Event('scroll'));
+    };
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    // notion-motion.md Round 46 §A and Round 29 §5: the frozen block sticks 30px in from the scroller's edge
+    // (x 300 with the scroller at 270), so with the 269px text-column padding it sticks at scrollLeft 239.
+    it('sticks the frozen block 30px in from the scroller edge, not at the text column', () => {
+      const { scroller } = mountPadded(269, tableView({ frozenColumnCount: 1 }));
+
+      expect(scroller.style.getPropertyValue('--_blok-database-frozen-shift')).toBe('-239px');
+    });
+
+    // notion-motion.md Round 28 §5: the frozen edge casts a shadow only once content slides under the frozen block.
+    it('marks the scroller only once the frozen block has stuck, and clears it back before that', () => {
+      const { scroller } = mountPadded(269, tableView({ frozenColumnCount: 1 }));
+
       expect(scroller.hasAttribute('data-scrolled')).toBe(false);
-      scroller.scrollLeft = 400;
-      scroller.dispatchEvent(new Event('scroll'));
+      scrollTo(scroller, 200);
+      expect(scroller.hasAttribute('data-scrolled')).toBe(false);
+      scrollTo(scroller, 240);
       expect(scroller.hasAttribute('data-scrolled')).toBe(true);
-      scroller.scrollLeft = 0;
-      scroller.dispatchEvent(new Event('scroll'));
+      scrollTo(scroller, 0);
+      expect(scroller.hasAttribute('data-scrolled')).toBe(false);
+      // Right-to-left scrolls negative.
+      scrollTo(scroller, -240);
+      expect(scroller.hasAttribute('data-scrolled')).toBe(true);
+    });
+
+    // notion-motion.md Round 47 §B6: the stick (239) clips the strip, but Notion's shadow comes on at 268, 29 later.
+    it('casts the frozen shadow from 29px after the stick, both ways and in right-to-left', () => {
+      const { scroller } = mountPadded(269, tableView({ frozenColumnCount: 1 }));
+
+      scrollTo(scroller, 239);
+      expect(scroller.hasAttribute('data-scrolled')).toBe(true);
+      expect(scroller.hasAttribute('data-frozen-shadow')).toBe(false);
+      scrollTo(scroller, 267);
+      expect(scroller.hasAttribute('data-frozen-shadow')).toBe(false);
+      scrollTo(scroller, 268);
+      expect(scroller.hasAttribute('data-frozen-shadow')).toBe(true);
+      scrollTo(scroller, 0);
+      expect(scroller.hasAttribute('data-frozen-shadow')).toBe(false);
+      scrollTo(scroller, -268);
+      expect(scroller.hasAttribute('data-frozen-shadow')).toBe(true);
+    });
+
+    it('never marks a table with no frozen column, so nothing clips its edge', () => {
+      const { scroller } = mountPadded(269, tableView());
+
+      scrollTo(scroller, 400);
       expect(scroller.hasAttribute('data-scrolled')).toBe(false);
     });
 
@@ -813,8 +875,8 @@ describe('DatabaseTableView', () => {
       expect(root.querySelector('[data-blok-database-table-selection-bar]')).toBeNull();
     });
 
-    // notion-spec-2 §19.4: Tab saves, closes and selects the cell to the right, no editor open.
-    it('Tab in a cell editor saves, closes and selects the cell to the right', () => {
+    // notion-motion.md Round 57 §1: Tab after a change in a Text editor saves and closes, and no cell is selected.
+    it('Tab in a Text cell editor after a change saves and closes, and leaves no cell selected', () => {
       const { root, handlers } = mount();
 
       cell(root, 'r1', 'p-notes').click();
@@ -822,11 +884,12 @@ describe('DatabaseTableView', () => {
       editorField().dispatchEvent(new Event('input', { bubbles: true }));
       const event = press(editorField(), 'Tab');
 
-      expect(selectedCells(root)).toEqual(['r1/p-amount']);
+      expect(selectedCells(root)).toEqual([]);
+      expect(anchorCell(root)).toBeNull();
       expect(event.defaultPrevented).toBe(true);
       expect(editor()).toBeNull();
       expect(handlers.commitCell).toHaveBeenCalledWith('r1', 'p-notes', 'typed');
-      expect(grid(root)).toHaveFocus();
+      expect(document.body).toHaveFocus();
     });
 
     it('Tab in a Number cell editor saves and selects the cell to the right', () => {
@@ -841,15 +904,52 @@ describe('DatabaseTableView', () => {
       expect(handlers.commitCell).toHaveBeenCalledWith('r2', 'p-amount', 42);
     });
 
-    // notion-motion.md Round 29 §3: in an editor, Shift+Tab commits and selects the cell to the left.
-    it('Shift+Tab in a cell editor saves and selects the cell to the left', () => {
+    // notion-motion.md Round 57 §1: Tab with the value unchanged closes the editor and selects the next cell.
+    it('Tab in a Text cell editor with the value unchanged selects the cell to the right', () => {
+      const { root, handlers } = mount();
+
+      cell(root, 'r1', 'p-notes').click();
+      editorField().value = 'shortx';
+      editorField().dispatchEvent(new Event('input', { bubbles: true }));
+      editorField().value = 'short';
+      editorField().dispatchEvent(new Event('input', { bubbles: true }));
+      press(editorField(), 'Tab');
+
+      expect(selectedCells(root)).toEqual(['r1/p-amount']);
+      expect(editor()).toBeNull();
+      expect(handlers.commitCell).not.toHaveBeenCalled();
+      expect(grid(root)).toHaveFocus();
+    });
+
+    // notion-motion.md Round 29 §3: in a Number editor, Shift+Tab commits and selects the cell to the left.
+    it('Shift+Tab in a Number cell editor saves and selects the cell to the left', () => {
+      const { root, handlers } = mount();
+
+      cell(root, 'r2', 'p-amount').click();
+      editorField().value = '42';
+      press(editorField(), 'Tab', { shiftKey: true });
+
+      expect(selectedCells(root)).toEqual(['r2/p-notes']);
+      expect(editor()).toBeNull();
+      expect(handlers.commitCell).toHaveBeenCalledWith('r2', 'p-amount', 42);
+    });
+
+    // notion-motion.md Round 57 §1: Shift+Tab out of a Text editor leaves no cell selected, changed or not.
+    it.each([
+      ['unchanged', 'short'],
+      ['changed', 'typed'],
+    ])('Shift+Tab in a Text cell editor with the value %s leaves no cell selected', (_case, value) => {
       const { root } = mount();
 
       cell(root, 'r1', 'p-notes').click();
+      editorField().value = value;
+      editorField().dispatchEvent(new Event('input', { bubbles: true }));
       press(editorField(), 'Tab', { shiftKey: true });
 
-      expect(selectedCells(root)).toEqual(['r1/p-title']);
+      expect(selectedCells(root)).toEqual([]);
+      expect(anchorCell(root)).toBeNull();
       expect(editor()).toBeNull();
+      expect(document.body).toHaveFocus();
     });
 
     // feel/findings-table T13: Notion's bar shows the first 4 properties; the rest wait under "…".
@@ -1551,7 +1651,7 @@ describe('DatabaseTableView', () => {
         expect(open.lastElementChild?.textContent).toBe('tools.database.tableOpen');
       });
 
-      // A labelled button that fits with the 6px end inset keeps its label from 102.
+      // A labelled button that fits with the 4px end inset keeps its label from 102.
       it('keeps the label from 102 when the labelled button fits', () => {
         const { root } = mount();
         const open = sized(root, 102);
@@ -1569,6 +1669,16 @@ describe('DatabaseTableView', () => {
         vi.spyOn(open, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, open.hasAttribute('data-compact') ? 30 : 108, 24));
         over(cell(root, 'r1', 'p-title'));
         expect(open.hasAttribute('data-compact')).toBe(true);
+      });
+
+      // notion-motion.md Round 46 §A: the labelled pill sits 4 in from the cell end, so 98 + 4 still fits in 102.
+      it('keeps the label at 102 for a 98px labelled button, with the 4px end inset', () => {
+        const { root } = mount();
+        const open = sized(root, 102);
+
+        vi.spyOn(open, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, open.hasAttribute('data-compact') ? 30 : 98, 24));
+        over(cell(root, 'r1', 'p-title'));
+        expect(open.hasAttribute('data-compact')).toBe(false);
       });
 
       it('fits again when the pointer leaves the table and comes back to the same row', () => {
@@ -1939,6 +2049,30 @@ describe('DatabaseTableView', () => {
 
       add?.click();
       expect(handlers.addProperty).toHaveBeenCalledWith(add);
+    });
+
+    // notion-motion.md Round 41 Part A: Notion's header row ends with "+" and a "⋯" named "Show or hide properties".
+    it('the ⋯ after the header "+" opens property visibility under itself', () => {
+      const handlers = { ...makeHandlers(), propertyVisibility: vi.fn() };
+      const { root } = mount({ handlers });
+      const add = root.querySelector<HTMLElement>('[data-blok-database-table-add-property]');
+      const more = root.querySelector<HTMLElement>('[data-blok-database-table-property-visibility]');
+
+      expect(add?.nextElementSibling).toBe(more);
+      expect(more?.getAttribute('aria-label')).toBe('tools.database.tableShowHideProperties');
+      expect(more?.querySelector('svg')).not.toBeNull();
+      more?.click();
+      expect(handlers.propertyVisibility).toHaveBeenCalledWith(more);
+      expect(handlers.addProperty).not.toHaveBeenCalled();
+    });
+
+    // r41-n-empty-table.png: the title-only header shows the labelled "+ Add property" and no ⋯.
+    it('leaves the ⋯ out while the title is the only property, and when nothing opens property visibility', () => {
+      const lone = mount({ schema: [schema[0]], handlers: { ...makeHandlers(), propertyVisibility: vi.fn() } }).root;
+
+      expect(lone.querySelector('[data-blok-database-table-property-visibility]')).toBeNull();
+      document.body.innerHTML = '';
+      expect(mount().root.querySelector('[data-blok-database-table-property-visibility]')).toBeNull();
     });
 
     it('header view items freeze, hide, wrap and insert through the view helpers', () => {

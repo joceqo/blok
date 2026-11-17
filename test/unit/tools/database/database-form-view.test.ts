@@ -4,6 +4,7 @@ import { DatabaseFormView } from '../../../../src/tools/database/database-form-v
 import type { DatabaseFormViewOptions } from '../../../../src/tools/database/database-form-view';
 import { IconChevronUpDown } from '../../../../src/components/icons';
 import type { DatabaseViewConfig, FormSettings, PropertyDefinition } from '../../../../src/tools/database/types';
+import { PopoverDesktop } from '../../../../src/components/utils/popover/popover-desktop';
 
 /** An icon string as the DOM serializes it once it is set as innerHTML. */
 const markup = (svg: string): string => Object.assign(document.createElement('span'), { innerHTML: svg }).innerHTML;
@@ -604,6 +605,87 @@ describe('DatabaseFormView question options rows', () => {
     expect(flyoutRows()).toEqual(['database-form-question-move-up', 'database-form-question-move-top']);
   });
 
+  // notion-motion.md Round 33 §1 (r33-form-move-w1000.raw): with no room left of the panel, the flyout
+  // opens on its right, its left edge on the row's right (panel right − 4), centred on the row.
+  const openBesideCard = (viewport: number, card: DOMRect): HTMLElement | null => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(viewport);
+    vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(717);
+    vi.spyOn(PopoverDesktop.prototype, 'size', 'get').mockReturnValue({ width: 290, height: 355 });
+    const { root } = mount({ setQuestionSetting: vi.fn() });
+    const wrapper = question(root, 'size');
+
+    if (wrapper === null) throw new Error('no question');
+    wrapper.getBoundingClientRect = () => card;
+    wrapper.querySelector<HTMLButtonElement>('[data-blok-testid="database-form-question-menu"]')?.click();
+
+    return panel()?.closest<HTMLElement>('[data-blok-popover]') ?? null;
+  };
+
+  // notion-motion.md Round 31 §1 and r33-form-move-mid.raw: at 1512 the panel sits 24 right of the card, top level with it.
+  it('Question options opens 24 right of the card when the window has room there', () => {
+    const box = openBesideCard(1512, new DOMRect(585, 225, 600, 140));
+
+    expect(parseFloat(box?.style.left ?? '')).toBeCloseTo(1209);
+    expect(parseFloat(box?.style.top ?? '')).toBeCloseTo(225);
+  });
+
+  // r33-form-move-w1000.raw: at 1000 the panel opens 24 left of the card (92–382 against a card at 406).
+  it('Question options opens 24 left of the card when its right has no room', () => {
+    const box = openBesideCard(1000, new DOMRect(406, 224.8, 458, 140));
+
+    expect(parseFloat(box?.style.left ?? '')).toBeCloseTo(92);
+    expect(parseFloat(box?.style.top ?? '')).toBeCloseTo(224.8);
+  });
+
+  const openSelectTypeBeside = (viewport: number, add: DOMRect): HTMLElement | null => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(viewport);
+    vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(717);
+    vi.spyOn(PopoverDesktop.prototype, 'size', 'get').mockReturnValue({ width: 290, height: 502 });
+    const { root } = mount({ setQuestionSetting: vi.fn(), addQuestion: vi.fn() });
+    const button = root.querySelector<HTMLElement>('[data-blok-testid="database-form-add-question"]');
+    const rect = HTMLElement.prototype.getBoundingClientRect;
+
+    if (button === null) throw new Error('no Add question');
+    // The round "+" is 32 wide: the panel goes beside the column-wide slot it opens.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-blok-database-form-slot') ? add : rect.call(this);
+    });
+    button.click();
+
+    return document.querySelector('[data-blok-testid="database-form-select-type"]')?.closest<HTMLElement>('[data-blok-popover]') ?? null;
+  };
+
+  // notion-motion.md Round 31 §1: at 1512 Select type is a side panel at x 1209, 24 right of the 600 column at 585.
+  it('Select type opens 24 right of the column when the window has room there', () => {
+    const box = openSelectTypeBeside(1512, new DOMRect(585, 160, 600, 28));
+
+    expect(parseFloat(box?.style.left ?? '')).toBeCloseTo(1209);
+    expect(parseFloat(box?.style.top ?? '')).toBeCloseTo(160);
+  });
+
+  // notion-motion.md Round 44 §1 (r44-q1.raw): at 1000 it sits at x 92, 24 left of the 458 column at 406.
+  it('Select type opens 24 left of the column when its right has no room', () => {
+    const box = openSelectTypeBeside(1000, new DOMRect(406, 160, 458, 28));
+
+    expect(parseFloat(box?.style.left ?? '')).toBeCloseTo(92);
+  });
+
+  it('Move question opens on the panel\'s right when its left has no room', () => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1000);
+    vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(717);
+    vi.spyOn(PopoverDesktop.prototype, 'size', 'get').mockReturnValue({ width: 280, height: 123 });
+    open('size', { moveQuestion: vi.fn() });
+    const move = row('database-form-question-move');
+
+    if (move === null) throw new Error('no Move question row');
+    move.getBoundingClientRect = () => new DOMRect(96, 459.8, 282, 28);
+    move.click();
+    const box = flyout()?.closest<HTMLElement>('[data-blok-popover]');
+
+    expect(parseFloat(box?.style.left ?? '')).toBeCloseTo(378);
+    expect(parseFloat(box?.style.top ?? '')).toBeCloseTo(412.3);
+  });
+
   it('each move puts the question where its row says and closes both menus', () => {
     const moveQuestion = vi.fn();
     const pick = (testId: string): void => {
@@ -688,6 +770,21 @@ describe('DatabaseFormView add question between cards', () => {
     expect(root.querySelector('[data-blok-database-form-slot]')).toBeNull();
   });
 
+  // notion-motion.md Round 52 §3: the new card's name takes focus, whole name selected; Question options stays open.
+  it('a new question takes focus in its name with the whole name selected', () => {
+    const addQuestion = vi.fn((): PropertyDefinition => notes);
+    const { root } = mount({ setQuestionSetting: vi.fn(), addQuestion });
+
+    root.querySelector<HTMLElement>('[data-blok-testid="database-form-add-question"]')?.click();
+    document.querySelector<HTMLElement>('[data-blok-testid="database-form-new-text"]')?.click();
+    const name = question(root, 'notes')?.querySelector<HTMLInputElement>('[data-blok-database-form-question-name]');
+
+    expect(name).toHaveFocus();
+    expect([name?.selectionStart, name?.selectionEnd]).toEqual([0, 'Notes'.length]);
+    // Still open: its ⋯ goes back to false only when the panel closes.
+    expect(question(root, 'notes')?.querySelector('[data-blok-testid="database-form-question-menu"]')?.getAttribute('aria-expanded')).toBe('true');
+  });
+
   it('the end row still adds a question last', () => {
     const addQuestion = vi.fn((): PropertyDefinition => notes);
     const { root } = mount({ setQuestionSetting: vi.fn(), addQuestion });
@@ -697,6 +794,22 @@ describe('DatabaseFormView add question between cards', () => {
 
     expect(addQuestion).toHaveBeenCalledWith('text', undefined);
     expect(ids(root).at(-1)).toBe('notes');
+  });
+
+  // notion-motion.md Round 52 §3: a round "+" under the cards, named by its hint; Select type opens a slot above it.
+  it('the end "+" is an icon button named Add question that opens a slot above it, gone on Escape', () => {
+    const { root } = mount({ setQuestionSetting: vi.fn(), addQuestion: vi.fn() });
+    const add = root.querySelector<HTMLButtonElement>('[data-blok-testid="database-form-add-question"]');
+
+    expect(add?.getAttribute('aria-label')).toBe('tools.database.formAddQuestion');
+    expect(add?.textContent?.trim()).toBe('');
+    expect(add?.querySelector('svg')).not.toBeNull();
+    add?.click();
+
+    expect(root.querySelector('[data-blok-database-form-slot]')?.nextElementSibling).toBe(add);
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(root.querySelector('[data-blok-database-form-slot]')).toBeNull();
   });
 
   // Round 31 §1: Select type rows are 44 tall with a framed 32px icon.
@@ -812,5 +925,207 @@ describe('DatabaseFormView header', () => {
     expect(root.querySelector('p[data-blok-database-form-header-description]')?.textContent).toBe('Tell us');
     document.body.innerHTML = '';
     expect(mount().root.querySelector('[data-blok-database-form-header]')).toBeNull();
+  });
+});
+
+// notion-motion.md Round 52 §3: drag a card by its blank area; faint drop lines show in every gap
+// that would move it, none next to the card itself.
+describe('DatabaseFormView drag to reorder questions', () => {
+  const CARD_TOP = 100;
+  const CARD_HEIGHT = 140;
+  const PITCH = 164;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    document.dispatchEvent(new PointerEvent('pointercancel'));
+    vi.restoreAllMocks();
+    document.body.innerHTML = '';
+  });
+
+  const ids = (root: HTMLElement): string[] =>
+    [...root.querySelectorAll('[data-blok-database-form-question]')].map((el) => el.getAttribute('data-blok-database-form-question') ?? '');
+  const setup = (): { root: HTMLElement; moveQuestion: ReturnType<typeof vi.fn> } => {
+    const moveQuestion = vi.fn();
+    const { root } = mount({ setQuestionSetting: vi.fn(), moveQuestion });
+
+    ids(root).forEach((id, index) => {
+      const card = question(root, id);
+
+      if (card !== null) card.getBoundingClientRect = () => new DOMRect(585, CARD_TOP + index * PITCH, 600, CARD_HEIGHT);
+    });
+
+    return { root, moveQuestion };
+  };
+  const press = (target: Element, y: number): void => {
+    target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 700, clientY: y }));
+  };
+  const moveTo = (y: number): void => {
+    document.dispatchEvent(new PointerEvent('pointermove', { clientX: 700, clientY: y }));
+  };
+  const release = (y: number): void => {
+    document.dispatchEvent(new PointerEvent('pointerup', { clientX: 700, clientY: y }));
+  };
+  const zones = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('[data-blok-database-form-drop-zone]')];
+
+  it('drops a card in the gap under the pointer and moves the question there', () => {
+    const { root, moveQuestion } = setup();
+    const agree = question(root, 'agree');
+
+    expect(ids(root)).toEqual(['email', 'title', 'size', 'agree', 'pick']);
+    if (agree === null) throw new Error('no card');
+    press(agree, 600);
+    moveTo(250);
+    release(250);
+
+    expect(moveQuestion).toHaveBeenCalledWith('agree', 'title');
+  });
+
+  it('a drop past the last card makes the question last', () => {
+    const { root, moveQuestion } = setup();
+    const title = question(root, 'title');
+
+    if (title === null) throw new Error('no card');
+    press(title, 300);
+    moveTo(900);
+    release(900);
+
+    expect(moveQuestion).toHaveBeenCalledWith('title', null);
+  });
+
+  it('shows a faint line centred in every gap, none beside the dragged card, and marks the target', () => {
+    const { root } = setup();
+    const agree = question(root, 'agree');
+
+    if (agree === null) throw new Error('no card');
+    press(agree, 600);
+    moveTo(250);
+    const shown = zones().filter((zone) => !zone.hasAttribute('data-adjacent'));
+
+    expect(zones()).toHaveLength(6);
+    expect(zones().filter((zone) => zone.hasAttribute('data-adjacent'))).toHaveLength(2);
+    expect(shown).toHaveLength(4);
+    // The gap between email (bottom 240) and title (top 264) centres at 252.
+    const target = zones().find((zone) => zone.hasAttribute('data-target'));
+
+    expect(target?.style.top).toBe('250px');
+    expect(target?.style.left).toBe('585px');
+    expect(target?.style.width).toBe('600px');
+    expect(target?.style.height).toBe('4px');
+    expect(zones().filter((zone) => zone.hasAttribute('data-target'))).toHaveLength(1);
+  });
+
+  // The lines mount on <body>, outside the editor's tokens: they carry the form's resolved ones.
+  it('the lines take the form\'s resolved line colour and pill radius', () => {
+    const { root } = setup();
+    const agree = question(root, 'agree');
+
+    if (agree === null) throw new Error('no card');
+    root.style.setProperty('--blok-database-drop-line', 'rgb(1, 2, 3)');
+    root.style.setProperty('--blok-radius-pill', '9999px');
+    press(agree, 600);
+    moveTo(250);
+
+    expect(zones()[0]?.style.backgroundColor).toBe('rgb(1, 2, 3)');
+    expect(zones()[0]?.style.borderRadius).toBe('9999px');
+  });
+
+  it('a drop beside the card itself moves nothing', () => {
+    const { root, moveQuestion } = setup();
+    const agree = question(root, 'agree');
+
+    if (agree === null) throw new Error('no card');
+    press(agree, 600);
+    moveTo(560);
+    release(560);
+
+    expect(moveQuestion).not.toHaveBeenCalled();
+    expect(zones()).toHaveLength(0);
+  });
+
+  // notion-motion.md Round 53 (b): a copy of the card at 0.18 follows the pointer with the grab offset.
+  it('moves a faint copy of the card with the pointer and drops it on release', () => {
+    const { root } = setup();
+    const agree = question(root, 'agree');
+    const name = agree?.querySelector<HTMLInputElement>('[data-blok-database-form-question-name]');
+
+    if (agree === null || name === null || name === undefined) throw new Error('no card');
+    name.value = 'Renamed';
+    press(agree, 600);
+    moveTo(250);
+    const ghost = document.querySelector<HTMLElement>('[data-blok-database-ghost]');
+    const copy = ghost?.querySelector<HTMLElement>('[data-blok-database-form-question]');
+
+    expect(ghost?.style.position).toBe('fixed');
+    expect(ghost?.style.opacity).toBe('0.18');
+    expect(ghost?.style.pointerEvents).toBe('none');
+    expect(ghost?.style.left).toBe('585px');
+    // Pressed 8 below the card's top (592).
+    expect(ghost?.style.top).toBe('242px');
+    expect(ghost?.style.width).toBe('600px');
+    expect(ghost?.style.height).toBe(`${CARD_HEIGHT}px`);
+    expect(ghost?.getAttribute('aria-hidden')).toBe('true');
+    expect(root.contains(ghost ?? null)).toBe(false);
+    expect(copy?.hasAttribute('data-blok-database-drag-source')).toBe(false);
+    expect(copy?.querySelector<HTMLInputElement>('[data-blok-database-form-question-name]')?.value).toBe('Renamed');
+
+    moveTo(300);
+    expect(ghost?.style.top).toBe('292px');
+    release(300);
+    expect(document.querySelector('[data-blok-database-ghost]')).toBeNull();
+  });
+
+  it('Escape removes the copy', () => {
+    const { root } = setup();
+    const agree = question(root, 'agree');
+
+    if (agree === null) throw new Error('no card');
+    press(agree, 600);
+    moveTo(250);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+    expect(document.querySelector('[data-blok-database-ghost]')).toBeNull();
+  });
+
+  it('Escape cancels the drag: no move, no lines', () => {
+    const { root, moveQuestion } = setup();
+    const agree = question(root, 'agree');
+
+    if (agree === null) throw new Error('no card');
+    press(agree, 600);
+    moveTo(250);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    release(250);
+
+    expect(moveQuestion).not.toHaveBeenCalled();
+    expect(zones()).toHaveLength(0);
+  });
+
+  it('a press in the name or the answer box does not drag', () => {
+    const { root, moveQuestion } = setup();
+    const name = question(root, 'agree')?.querySelector('[data-blok-database-form-question-name]');
+
+    if (name === null || name === undefined) throw new Error('no name');
+    press(name, 600);
+    moveTo(250);
+    release(250);
+
+    expect(moveQuestion).not.toHaveBeenCalled();
+    expect(zones()).toHaveLength(0);
+  });
+
+  it('a respondent cannot drag', () => {
+    const moveQuestion = vi.fn();
+    const { root } = mount({ moveQuestion });
+    const card = question(root, 'title');
+
+    if (card === null) throw new Error('no card');
+    press(card, 300);
+    moveTo(900);
+    release(900);
+
+    expect(moveQuestion).not.toHaveBeenCalled();
   });
 });

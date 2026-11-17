@@ -6,6 +6,7 @@ import type { DatabaseViewConfig, FilterRule, PropertyDefinition } from '../../.
 import { HINT_DELAY, destroy as destroyTooltip } from '../../../../src/components/utils/tooltip';
 import { hover, shownHint } from './hint-harness';
 import { PAGE_LIST_ROLLUP } from '../../../../src/shared/database/value-helpers';
+import { IconSigma } from '../../../../src/components/icons';
 
 const schema: PropertyDefinition[] = [
   { id: 'title', name: 'Name', type: 'title', position: 'a0' },
@@ -222,6 +223,20 @@ describe('DatabaseViewControls', () => {
     ]);
   });
 
+  // notion-motion.md Round 52 §2: Notion's Map toolbar has no Sort.
+  it('hides Sort on a map view only', () => {
+    const { controls, saved } = setup();
+
+    saved.view = { ...saved.view, type: 'map' };
+    controls.refresh();
+    expect(q('database-toolbar-sort')?.hidden).toBe(true);
+    expect(q('database-toolbar-filter')?.hidden).toBe(false);
+
+    saved.view = { ...saved.view, type: 'list' };
+    controls.refresh();
+    expect(q('database-toolbar-sort')?.hidden).toBe(false);
+  });
+
   // research/23 §2e: the column header's Group follows the same rule as the settings picker.
   it('turns Hide empty groups on when a column header groups by a number', () => {
     const { controls, host } = setup();
@@ -229,6 +244,62 @@ describe('DatabaseViewControls', () => {
     controls.groupBy('num', document.body.appendChild(document.createElement('button')));
 
     expect(host.updateView).toHaveBeenCalledWith({ groupBy: 'num', groupSettings: { hideEmptyGroups: true } });
+  });
+
+  // notion-motion.md Round 41 Part A: the filter picker draws Formula as Σ. The host reads a formula as its result type.
+  describe('a formula read as its text result', () => {
+    const withFormula = (): ReturnType<typeof setup> => setup({
+      schema: () => [...schema, { id: 'fo', name: 'Formula', type: 'text', position: 'a3' }],
+      levers: { storedType: (id) => (id === 'fo' ? 'formula' : undefined) },
+    });
+    const glyph = (row: Element | null | undefined): string | undefined => row?.querySelector('svg path')?.getAttribute('d') ?? undefined;
+    const sigma = /d="([^"]+)"/.exec(IconSigma)?.[1];
+
+    it('draws Σ in the Filter picker', () => {
+      withFormula();
+      click('database-toolbar-filter');
+
+      expect(glyph(q('database-pick-property-fo'))).toBe(sigma);
+    });
+
+    // notion-motion.md Round 41, Round 42 §3: both pickers take the strong ink; the list says which picker it is.
+    it('names the Filter picker list "filter" and the Sort picker list "sort"', () => {
+      setup();
+      click('database-toolbar-filter');
+      expect(q('database-filter-picker')?.querySelector('[data-blok-database-picker-list]')?.getAttribute('data-blok-database-picker-list')).toBe('filter');
+      document.body.innerHTML = '';
+      setup();
+      click('database-toolbar-sort');
+      expect(q('database-sort-picker')?.querySelector('[data-blok-database-picker-list]')?.getAttribute('data-blok-database-picker-list')).toBe('sort');
+    });
+
+    // notion-motion.md Round 42 §3: the first row is filled on open. Like the group ⋯ menu, the fill then
+    // follows the pointer, so only one row is filled at a time.
+    it('fills the Sort picker\'s first row on open, and the fill follows the pointer', () => {
+      setup();
+      click('database-toolbar-sort');
+      const rows = (): Element[] => [...(q('database-sort-picker')?.querySelectorAll('[data-blok-database-picker-list] [data-blok-database-panel-row]') ?? [])];
+      const filled = (): number[] => rows().flatMap((row, index) => row.hasAttribute('data-active') ? [index] : []);
+
+      expect(filled()).toEqual([0]);
+      rows()[1].dispatchEvent(new MouseEvent('mousemove', { bubbles: true }));
+      expect(filled()).toEqual([1]);
+    });
+
+    it('draws Σ in the Sort picker', () => {
+      withFormula();
+      click('database-toolbar-sort');
+
+      expect(glyph(q('database-pick-property-fo'))).toBe(sigma);
+    });
+
+    it('draws Σ on the Property visibility page', () => {
+      withFormula();
+      click('database-toolbar-settings');
+      click('database-settings-properties');
+
+      expect(glyph(q('database-property-visible-fo')?.closest('[data-blok-database-property-visibility-row]'))).toBe(sigma);
+    });
   });
 
   it('never offers a button property in "+ Filter"', () => {
@@ -2091,6 +2162,33 @@ describe('DatabaseViewControls', () => {
       expect(q('database-sort-add')).toBeNull();
     });
 
+    // notion-motion.md Round 46 §C.5: the toolbar's filter and sort pickers open 4 under the button (303.2 under 299.2).
+    it.each([
+      ['database-toolbar-filter', 'database-filter-picker'],
+      ['database-toolbar-sort', 'database-sort-picker'],
+    ])('%s opens its picker 4px under the button', (button, picker) => {
+      setup();
+      const anchor = q(button);
+
+      if (anchor === null) throw new Error('no button');
+      anchor.getBoundingClientRect = () => new DOMRect(1100, 275, 28, 24);
+      click(button);
+
+      expect(q(picker)?.closest<HTMLElement>('[data-blok-popover]')?.style.top).toBe('303px');
+    });
+
+    // notion-motion.md Round 47 §D: the bar's "+ Filter" chip opens its picker 4 under it, as the toolbar button does.
+    it('opens the "+ Filter" chip\'s picker 4px under the chip', () => {
+      withSort();
+      const add = q('database-filter-bar-add');
+
+      if (add === null) throw new Error('no chip');
+      add.getBoundingClientRect = () => new DOMRect(700, 301, 60, 24);
+      click('database-filter-bar-add');
+
+      expect(q('database-filter-picker')?.closest<HTMLElement>('[data-blok-popover]')?.style.top).toBe('329px');
+    });
+
     it('opens 4px under the chip', () => {
       withSort();
       const chip = q('database-sort-pill');
@@ -2232,6 +2330,17 @@ describe('DatabaseViewControls', () => {
       expect(controls.effective(saved.view).sorts).toEqual([expect.objectContaining({ propertyId: 'alpha', direction: 'asc' })]);
       expect(q('database-sort-picker')).toBeNull();
     });
+
+    // notion-motion.md Round 47 §D: picking a property opens the new sort's panel under its chip.
+    it('opens the new sort\'s panel under its chip after a pick', () => {
+      setup({ schema: () => many });
+
+      click('database-toolbar-sort');
+      click('database-pick-property-alpha');
+
+      expect(q('database-sort-panel')).not.toBeNull();
+      expect(q('database-sort-pill')?.hasAttribute('data-popover-open')).toBe(true);
+    });
   });
   describe('search box (Notion: the magnifier stays, a clear ×)', () => {
     it('keeps the magnifier in front of the input', () => {
@@ -2296,6 +2405,28 @@ describe('DatabaseViewControls', () => {
       expect(q('database-toolbar-minimize')?.hidden).toBe(true);
       expect(controls.toolbar.hasAttribute('data-minimized')).toBe(true);
       expect(controls.filterBar.hidden).toBe(true);
+    });
+
+    // notion-motion.md Round 41 Part B (r41-n-empty-form.png): a form view's toolbar has no ».
+    it('shows no » on a form view', () => {
+      const form = { id: 'v1', name: 'Form builder', type: 'form', position: 'a0', sorts: [], filters: [], visibleProperties: [] } as DatabaseViewConfig;
+
+      setup({ levers: { savedView: () => form } });
+
+      expect(q('database-toolbar-minimize')?.hidden).toBe(true);
+    });
+
+    it('takes » away when a sorted view switches to a form', () => {
+      const { controls, saved } = setup();
+
+      saved.view = { ...saved.view, sorts: [{ propertyId: 'title', direction: 'asc' }] };
+      controls.refresh();
+      expect(q('database-toolbar-minimize')?.hidden).toBe(false);
+
+      saved.view = { ...saved.view, type: 'form' };
+      controls.refresh();
+
+      expect(q('database-toolbar-minimize')?.hidden).toBe(true);
     });
 
     it('opens a view saved minimized with only « and settings', () => {
@@ -2544,6 +2675,26 @@ describe('DatabaseViewControls', () => {
       click('database-search-clear');
 
       expect(registry.has('blok-database-search-match')).toBe(false);
+    });
+
+    it('never tints the OPEN pill inside a timeline panel title', () => {
+      const { controls } = setup();
+      const root = document.createElement('div');
+      const body = document.createElement('div');
+
+      body.innerHTML = '<div data-blok-database-timeline-table-title><span>Open day</span>'
+        + '<button data-blok-database-table-open><span></span><span>Open</span></button></div>';
+      root.append(controls.toolbar, controls.filterBar, body);
+      document.body.append(root);
+
+      click('database-toolbar-search');
+      const input = q('database-search-input') as HTMLInputElement;
+
+      input.value = 'open';
+      input.dispatchEvent(new Event('input'));
+
+      expect(registry.get('blok-database-search-match')?.ranges.map((range) => range.toString())).toEqual(['Open']);
+      expect(registry.get('blok-database-search-match')?.ranges[0]?.startContainer.parentElement?.closest('[data-blok-database-table-open]')).toBeNull();
     });
   });
   describe('Filter toggles the chip bar; » minimizes it (Notion)', () => {
