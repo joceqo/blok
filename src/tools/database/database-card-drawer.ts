@@ -559,6 +559,9 @@ export class DatabaseCardDrawer {
   private childPeek: DatabaseCardDrawer | null = null;
   private parentScroll: Array<{ element: HTMLElement; top: number; left: number }> = [];
   private pendingBodyMount: { frame: number | null; timer: number | null; holder: HTMLElement; placeholder: HTMLElement } | null = null;
+
+  /** Pending frame for the measures applyMode defers; see scheduleModeMeasures. */
+  private modeMeasureFrame: number | null = null;
   private readonly onEditViewDefault: CardDrawerOptions['onEditViewDefault'];
   private readonly rowLink: CardDrawerOptions['rowLink'];
   private readonly onExpand: CardDrawerOptions['onExpand'];
@@ -2507,10 +2510,6 @@ export class DatabaseCardDrawer {
     const modeButton = drawer.querySelector<HTMLElement>('[data-blok-database-peek-mode]');
 
     if (modeButton !== null) modeButton.innerHTML = PEEK_MODE_ICONS[mode];
-    // The title is 40px on a full page and in the center peek, 32px in the side peek.
-    const titleInput = drawer.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]');
-
-    if (titleInput !== null) this.autoResizeTitle(titleInput);
     // A full page has no mode switcher and no row steps (R17).
     drawer.querySelectorAll<HTMLElement>('[data-blok-database-peek-mode], [data-blok-database-peek-separator], [data-blok-database-peek-prev], [data-blok-database-peek-next]')
       .forEach((el) => el.toggleAttribute('hidden', mode === 'full'));
@@ -2521,7 +2520,34 @@ export class DatabaseCardDrawer {
     this.syncStepButtons();
     this.syncActionsButton();
     this.syncFavoriteButton();
-    this.syncDetailsDock();
+    this.scheduleModeMeasures();
+  }
+
+  /**
+   * The title's height and the details dock both read geometry, and a read
+   * after a style write relayouts the whole page behind the peek. Opening one
+   * over a large table costs ~100ms there, so measure once the peek has painted.
+   */
+  private scheduleModeMeasures(): void {
+    this.cancelModeMeasures();
+    this.modeMeasureFrame = requestAnimationFrame(() => {
+      this.modeMeasureFrame = null;
+
+      const drawer = this.drawer;
+
+      if (drawer === null) return;
+      // The title is 40px on a full page and in the center peek, 32px in the side peek.
+      const titleInput = drawer.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]');
+
+      if (titleInput !== null) this.autoResizeTitle(titleInput);
+      this.syncDetailsDock();
+    });
+  }
+
+  private cancelModeMeasures(): void {
+    if (this.modeMeasureFrame === null) return;
+    cancelAnimationFrame(this.modeMeasureFrame);
+    this.modeMeasureFrame = null;
   }
 
   /** A full page takes over its editor and the URL (row-page-takeover.ts); a peek gives both back. */
@@ -4390,6 +4416,7 @@ export class DatabaseCardDrawer {
 
   private cleanupEditor(): void {
     this.cancelPendingBodyMount();
+    this.cancelModeMeasures();
     this.closeCellEditor();
     this.detachBody();
     this.pageMount?.destroy();

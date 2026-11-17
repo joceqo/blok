@@ -136,3 +136,28 @@ it('paints the row shell before mounting a host page body', async () => {
   expect(mount).toHaveBeenCalledWith('body-1', expect.any(HTMLElement));
   expect(wrapper.querySelector('[aria-busy="true"]')).toBeNull();
 });
+
+it('paints the peek before measuring its toolbar and its title', async () => {
+  vi.useFakeTimers();
+  const editor = document.createElement('div'); editor.setAttribute('data-blok-editor', '');
+  const wrapper = document.createElement('div'); editor.append(wrapper); document.body.append(editor);
+  const rowPages: CardDrawerOptions['rowPages'] = {
+    lookup: async () => null,
+    copyFromLegacy: async () => { throw new Error('unused'); },
+    reconcileLegacy: async () => { throw new Error('unused'); },
+    mount: vi.fn(() => ({ destroy: vi.fn() })),
+  };
+  const drawer = new DatabaseCardDrawer({ wrapper, readOnly: false, titlePropertyId: 'title', schema: [], onTitleChange: vi.fn(), onDescriptionChange: vi.fn(), onClose: vi.fn(), rowPages });
+
+  drawers.push(drawer);
+  drawer.open({ id: 'sprint', position: 'a0', properties: { title: 'Sprint #14' } }, 'side');
+  const panel = wrapper.querySelector<HTMLElement>('[data-blok-database-drawer]');
+  const title = wrapper.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]');
+
+  // Reading offsetHeight/scrollHeight here forces a full layout of the page behind the peek.
+  expect(panel?.style.getPropertyValue('--_blok-peek-toolbar-size')).toBe('');
+  expect(title?.style.height).toBe('');
+  await vi.advanceTimersByTimeAsync(40);
+  expect(panel?.style.getPropertyValue('--_blok-peek-toolbar-size')).not.toBe('');
+  expect(title?.style.height).not.toBe('');
+});
