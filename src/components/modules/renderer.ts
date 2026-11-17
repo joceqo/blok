@@ -389,7 +389,15 @@ export class Renderer extends Module {
     };
     // Live Yjs transactions stay synchronous. Their materialization path also
     // defers closed row bodies, but must not interleave a snapshot with peers.
-    const sliced = processedBlocks.length > 80 && !(this.Blok.Collaboration?.isEnabled ?? false);
+    //
+    // The FIRST render is the exception: the editor holds no block yet, so
+    // there is no snapshot of ours for a peer's change to interleave with —
+    // and that render is exactly the one that freezes the tab, since a shared
+    // document always has collaboration on. Without this, `sliced` is false on
+    // every collaborative page and the whole document lands in one task.
+    const firstRender = this.Blok.BlockManager.blocks.length === 0;
+    const sliced = processedBlocks.length > 80
+      && (firstRender || !(this.Blok.Collaboration?.isEnabled ?? false));
     const renderState: { releaseBarrier?: () => void; registered: boolean } = { registered: false };
     const renderedBarrier = sliced ? new Promise<void>(resolve => {
       renderState.releaseBarrier = resolve;
