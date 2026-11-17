@@ -23,7 +23,7 @@ export const DATABASE_ROW_DATA = {
       type: 'string',
       description: 'Row title, mirrored from the title column. Absent on rows written before this key existed.',
     },
-    pageId: { type: 'string', minLength: 1, description: 'Id of the separate document that holds the row page body.' },
+    pageId: { type: 'string', minLength: 1, description: 'Host-managed id of the separate body document. Open it with blok_open to edit the body; never replace or remove this pointer.' },
     bodyBlocks: {
       type: 'boolean',
       description: 'True once the page body lives in the row\'s child blocks. A legacy body blob in a richText property is then ignored.',
@@ -81,8 +81,8 @@ export const DATABASE_ROW_DATA = {
 
 export const describeDatabaseRow = (_config: Record<string, unknown> = {}): BlockToolDescription => ({
   summary: 'One row of a database. Its child blocks are its page body. An optional pageId points to a separate body document instead.',
-  guidance: 'Write row values with database.setRowValues on the parent database: the title mirrors the title property. block.delete and block.duplicate on a row run database.deleteRow and database.duplicateRow.',
+  guidance: 'Write row values with database.setRowValues on the parent database: the title mirrors the title property. If pageId exists, open that separate document with blok_open to edit the body; do not insert children under this row or rewrite pageId. Properties, title, icon, cover and row comments stay in the parent. block.delete and block.duplicate on a row run database.deleteRow and database.duplicateRow. Duplication and applying templates from this document refuse external bodies; the editor can duplicate them after loading their content.',
   data: DATABASE_ROW_DATA,
-  guardedFields: { properties: 'database.setRowValues' },
-  summaryFields: ['title'],
+  guardedFields: { properties: 'database.setRowValues', pageId: 'blok_open with the existing pageId to edit the separate body document' },
+  summaryFields: ['title', 'pageId'],
 });

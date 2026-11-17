@@ -985,30 +985,42 @@ const rawData = (ctx: ToolActionContext, id: string): Record<string, unknown> =>
   return isRecord(data) ? data : {};
 };
 
+const requireInlineBody = (ctx: ToolActionContext, id: string): void => {
+  const pageId = rawData(ctx, id).pageId;
+
+  if (ctx.read(id)?.type === 'database-row' && typeof pageId === 'string' && pageId.length > 0) {
+    ctx.fail('PRECONDITION_FAILED', `Row ${id} has a separate body document (pageId: ${pageId}). Open that document to edit its content. This command cannot copy or replace a body it has not loaded; use the editor to duplicate this row.`);
+  }
+};
+
 /**
  * As DatabaseTool.copyChildBlocks: the page body as insert specs, comment
  * threads left behind. A table's cells get new ids, so its grid names them.
  */
-const bodyOf = (ctx: ToolActionContext, fromId: string): InsertSpec[] => (ctx.read(fromId)?.children ?? []).flatMap((childId) => {
-  const child = ctx.read(childId);
+const bodyOf = (ctx: ToolActionContext, fromId: string): InsertSpec[] => {
+  requireInlineBody(ctx, fromId);
 
-  if (child === null || isAnnotationType(child.type)) {
-    return [];
-  }
-  const children = bodyOf(ctx, childId);
-  const data = isRecord(child.data) ? jsonCopy(child.data) : {};
-  const ids = new Map(child.children.map((id, index) => [id, children[index]]));
+  return (ctx.read(fromId)?.children ?? []).flatMap((childId) => {
+    const child = ctx.read(childId);
 
-  if (child.type === 'table' && Array.isArray(data.content)) {
-    const renamed = (id: unknown): unknown => (typeof id === 'string' ? ids.get(id)?.id ?? id : id);
+    if (child === null || isAnnotationType(child.type)) {
+      return [];
+    }
+    const children = bodyOf(ctx, childId);
+    const data = isRecord(child.data) ? jsonCopy(child.data) : {};
+    const ids = new Map(child.children.map((id, index) => [id, children[index]]));
 
-    data.content = (data.content as unknown[]).map((cells): unknown => (Array.isArray(cells)
-      ? (cells as unknown[]).map((cell): unknown => (isRecord(cell) && Array.isArray(cell.blocks) ? { ...cell, blocks: (cell.blocks as unknown[]).map(renamed) } : cell))
-      : cells));
-  }
+    if (child.type === 'table' && Array.isArray(data.content)) {
+      const renamed = (id: unknown): unknown => (typeof id === 'string' ? ids.get(id)?.id ?? id : id);
 
-  return [{ type: child.type, id: ctx.newId(), data, children }];
-});
+      data.content = (data.content as unknown[]).map((cells): unknown => (Array.isArray(cells)
+        ? (cells as unknown[]).map((cell): unknown => (isRecord(cell) && Array.isArray(cell.blocks) ? { ...cell, blocks: (cell.blocks as unknown[]).map(renamed) } : cell))
+        : cells));
+    }
+
+    return [{ type: child.type, id: ctx.newId(), data, children }];
+  });
+};
 
 // A top-level id would stay reserved: only ids a parent names are claimed (createActionContext).
 const copyBody = (ctx: ToolActionContext, fromId: string, toId: string): void =>
@@ -1413,6 +1425,8 @@ const applyTemplate: ToolActionImpl<{ rowId: string; templateId: string }> = {
     const { dataId, state } = rowHome(ctx);
     const target = rowOf(ctx, dataId, args.rowId);
     const template = templateOf(ctx, dataId, args.templateId);
+
+    requireInlineBody(ctx, target.id);
 
     if ((ctx.read(target.id)?.children ?? []).some(id => !isAnnotationType(ctx.read(id)?.type))) {
       ctx.fail('PRECONDITION_FAILED', `Row ${target.id} already has page content. A template applies to an empty page only.`);

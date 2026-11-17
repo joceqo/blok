@@ -1,4 +1,5 @@
 import { isRichText } from '../rich-text/guards';
+import { isAnnotationType } from '../annotation-blocks';
 import { cleanupEmptiedColumnList } from '../tool-actions/columns';
 import { carriedBlockColors } from '../turn-into';
 import { convertMissing, convertShape, emitAfterSwap, emitBeforeSwap } from './plan-convert';
@@ -27,6 +28,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const isArray = (value: unknown): value is unknown[] => Array.isArray(value);
 const SPEC_KEYS = new Set(['type', 'data', 'tunes', 'id', 'children']);
+
+const requireInlineRowBody = (state: PlanState, block: { type: string; data: Record<string, unknown> } | undefined): void => {
+  if (block?.type === 'database-row' && typeof block.data.pageId === 'string' && block.data.pageId.length > 0) {
+    state.fail('PRECONDITION_FAILED', `This row has a separate body document (pageId: ${block.data.pageId}). Open that document to edit its content; copying or converting its body from the parent document is not supported.`);
+  }
+};
 
 // Children are checked node by node; the schema profile does not resolve $ref.
 const INSERT_NODE: JsonSchema = {
@@ -359,6 +366,13 @@ const buildBlock = (
     return refusePlacement(state, type, path);
   }
 
+  if ('id' in parent && parent.id !== null && !isAnnotationType(type)) {
+    requireInlineRowBody(state, state.draft.get(parent.id));
+  }
+  // A copied database must not alias its rows' external bodies. Only the host
+  // creates these links after materializing an independent body document.
+  requireInlineRowBody(state, { type, data: spec.data ?? {} });
+
   const tool = state.tool(type) ?? failUnknownTool(state, type, `${path}/type`);
 
   // The contract's word: a type it calls not insertable never inserts, so describe and the runtime agree.
@@ -680,6 +694,9 @@ export const emitMove = (
   }
 
   const placement = state.place(parentArg, position);
+  if (placement.parentId !== null && !isAnnotationType(block.type)) {
+    requireInlineRowBody(state, state.draft.get(placement.parentId));
+  }
   const parentType = placement.parentId === null ? undefined : state.draft.get(placement.parentId)?.type;
   const isScoped = (id: string): boolean => options.allowSelfPlaced && options.isScopedContainer?.(id) === true;
 
@@ -730,6 +747,8 @@ export const emitMove = (
 
 export const planConvert = (state: PlanState, args: Record<string, unknown>): unknown => {
   const block = state.requireBlock(args.id, '/id');
+
+  requireInlineRowBody(state, block);
   const source = requireTool(state, block);
   const targetType = args.type;
 

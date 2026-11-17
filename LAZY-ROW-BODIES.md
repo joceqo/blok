@@ -29,8 +29,28 @@ même nombre de pairs ; le délai de fin du profiler comprend son attente d'inac
 - Le corps utilise la collaboration, le cache hors ligne et l'outbox existants.
   Un corps jamais ouvert n'est pas disponible hors ligne. Historique et undo du
   corps sont ceux de son document ; les propriétés restent dans la page parent.
+- Les fils `database-comment` rattachés directement à la ligne, leurs réponses
+  et leurs liens aux propriétés restent dans le document parent lors de la migration.
 - Aucun changement des moteurs Yjs Go/C#/Rust : la migration appartient à l'hôte
   Go `apps/service` et réutilise ses documents et sa remise à zéro de lignée.
+
+## Édition par MCP
+
+- Lire la ligne dans Sprints : son `pageId` apparaît aussi dans `attrs` en lecture
+  outline. Ouvrir cet identifiant avec `blok_open` pour modifier son corps ou
+  les tableaux qu'il contient. Ne pas réinsérer ces blocs sous la ligne parent.
+- Modifier les cellules avec `database.setRowValues` dans le document parent ;
+  utiliser les commandes dédiées pour les colonnes, options, relations et vues.
+  Ces modifications conservent `pageId`. Grouper les changements liés dans un batch.
+- `pageId` est géré par l'hôte : les écritures MCP ne peuvent ni le remplacer,
+  ni le supprimer, ni le recopier sur une nouvelle ligne.
+- La duplication et l'application de modèles MCP refusent les corps externes
+  non chargés. La duplication d'une base contenant ces lignes est également
+  refusée pour éviter de partager accidentellement leurs corps. Utiliser la
+  duplication de l'éditeur, qui charge et copie le contenu. Les lignes inline
+  conservent leurs commandes habituelles.
+- Les tests couvrent les sessions JSON/Yjs et l'entrée `agentExecute` du runtime
+  MCP en modes stored/live, dont le refus atomique d'un batch mal adressé.
 
 ## Déploiement et migration manuelle
 

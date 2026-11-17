@@ -157,3 +157,33 @@ func TestRowBodyPlanEmptyAndExistingPage(t *testing.T) {
 		})
 	}
 }
+
+func TestRowBodyPlanKeepsDatabaseCommentsWithRow(t *testing.T) {
+	input := json.RawMessage(`{"blocks":[
+		{"id":"db","type":"database","data":{},"content":["row"]},
+		{"id":"row","type":"database-row","parent":"db","data":{"properties":{}},"content":["body","comment"]},
+		{"id":"body","type":"paragraph","parent":"row","data":{"text":"Body"}},
+		{"id":"comment","type":"database-comment","parent":"row","data":{"text":"About the status","propertyId":"status","authorId":"alice"},"content":["reply"]},
+		{"id":"reply","type":"database-comment","parent":"comment","data":{"text":"Resolved tomorrow","authorId":"bob"}}
+	]}`)
+	plan, err := planRowBody(input, "row", "row-page")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(plan.DescendantIDs, []string{"body"}) {
+		t.Fatalf("row comments moved away from their database: %v", plan.DescendantIDs)
+	}
+	source, before := rowPlanJSON(t, plan.Source), rowPlanJSON(t, input)
+	for _, id := range []string{"comment", "reply"} {
+		if !reflect.DeepEqual(rowPlanBlock(t, source, id), rowPlanBlock(t, before, id)) {
+			t.Fatalf("comment %s changed", id)
+		}
+	}
+	if !reflect.DeepEqual(rowPlanBlock(t, source, "row")["content"], []any{"comment"}) {
+		t.Fatal("row lost its comment thread reference")
+	}
+	again, err := planRowBody(plan.Source, "row", "row-page")
+	if err != nil || !again.AlreadyMoved || !reflect.DeepEqual(rowPlanJSON(t, again.Source), source) {
+		t.Fatalf("retry with retained comments failed: %v", err)
+	}
+}

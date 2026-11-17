@@ -1152,6 +1152,7 @@ export const DATABASE_ACTIONS: ToolActionDeclaration[] = [
   {
     name: 'applyTemplate',
     summary: 'Apply a template to a row whose page is empty, as picking one on the row page does: it fills the row\'s empty values, a missing icon, cover and width, and copies the template\'s page body.',
+    guidance: 'A row with pageId has a separate body document, whose emptiness this command cannot check. It refuses that row without applying anything; open the body document to edit its content.',
     target: 'block',
     preconditions: ['The row\'s page has no content yet.'],
     args: closed({ rowId: ROW_ID, templateId: { type: 'string', minLength: 1 } }, ['rowId', 'templateId']),
@@ -1160,6 +1161,7 @@ export const DATABASE_ACTIONS: ToolActionDeclaration[] = [
   {
     name: 'duplicateRow',
     summary: 'Copy a row right after itself with its page body, as the row menu\'s Duplicate does; in an open view with its own manual order the copy goes right after it there too. A parent\'s sub-items are copied under the copy. A template copy stays a template. block.duplicate on a row does the same.',
+    guidance: 'Refuses rows or sub-items with pageId: their separate bodies are not loaded here. Use the editor to make an independent copy including the body; never copy the pageId onto another row.',
     target: 'block',
     args: closed({ rowId: ROW_ID }, ['rowId']),
     result: closed({ rowId: { type: 'string' } }, ['rowId']),

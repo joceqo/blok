@@ -8,8 +8,8 @@ import (
 )
 
 // rowBodyPlan describes a copy and its source projection; it performs no writes.
-// All descendants, including annotation blocks, move together. Splitting out
-// annotations here would silently drop data whose owner is the row.
+// Body descendants move together. Database comment threads remain with their
+// row (and property ids), where the editor and MCP comment commands read them.
 type rowBodyPlan struct {
 	Source        json.RawMessage
 	Body          json.RawMessage
@@ -118,10 +118,19 @@ func planRowBody(document json.RawMessage, rowID, pageID string) (rowBodyPlan, e
 		return zero, fmt.Errorf("row must belong to a database")
 	}
 	data := row["data"].(map[string]any)
+	bodyRoots := []string{}
+	retainedRoots := []any{}
+	for _, id := range children[rowID] {
+		if blocks[id]["type"] == "database-comment" {
+			retainedRoots = append(retainedRoots, id)
+		} else {
+			bodyRoots = append(bodyRoots, id)
+		}
+	}
 	plan := rowBodyPlan{DescendantIDs: []string{}}
 	if existing, exists := data["pageId"]; exists && existing != nil {
 		value, valid := existing.(string)
-		if !valid || value != pageID || len(children[rowID]) != 0 {
+		if !valid || value != pageID || len(bodyRoots) != 0 {
 			return zero, fmt.Errorf("row page requires explicit reconciliation")
 		}
 		plan.AlreadyMoved = true
@@ -129,8 +138,8 @@ func planRowBody(document json.RawMessage, rowID, pageID string) (rowBodyPlan, e
 	moved := make(map[string]bool)
 	bodyBlocks := []any{}
 	stack := []string{}
-	for index := len(children[rowID]) - 1; index >= 0; index-- {
-		stack = append(stack, children[rowID][index])
+	for index := len(bodyRoots) - 1; index >= 0; index-- {
+		stack = append(stack, bodyRoots[index])
 	}
 	for len(stack) > 0 {
 		id := stack[len(stack)-1]
@@ -149,7 +158,11 @@ func planRowBody(document json.RawMessage, rowID, pageID string) (rowBodyPlan, e
 	if !plan.AlreadyMoved {
 		data["pageId"] = pageID
 		data["bodyBlocks"] = true
-		delete(row, "content")
+		if len(retainedRoots) == 0 {
+			delete(row, "content")
+		} else {
+			row["content"] = retainedRoots
+		}
 	}
 	kept := make([]any, 0, len(items)-len(moved))
 	for _, item := range items {
