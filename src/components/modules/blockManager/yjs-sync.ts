@@ -15,6 +15,18 @@ import { acceptsChildren, isChildToolAllowed } from '../../utils/child-tools';
 import { moveElementAfter, moveElementBefore, withBatchedMoves } from '../../utils/html';
 import { yieldToBrowser } from '../../utils/render-slices';
 
+/** A block the document has and memory does not, ready to be built. */
+interface PendingCreate {
+  blockId: string;
+  toolName: string;
+  data: Record<string, unknown>;
+  parentId: string | undefined;
+  lastEditedAt: number | undefined;
+  lastEditedBy: string | null;
+  lastEditedWith: string | null;
+  docIndex: number;
+}
+
 /**
  * How long one activation run may hold the thread before handing it back.
  * Matches the renderer's own slice budget (`forEachRenderSlice`).
@@ -2208,58 +2220,42 @@ export class BlockYjsSync {
       && new Set(toCreate.map(entry => entry.blockId)).size === toCreate.length;
     const previousSibling = new Map<string | null, string>();
 
+    const canSlice = initialBatch && toCreate.length > ACTIVATION_SLICE;
+    const batchProbe = (globalThis as { __blokBatchProbe?: Record<string, unknown> }).__blokBatchProbe;
+
+    if (batchProbe !== undefined) {
+      batchProbe.calls = ((batchProbe.calls as number) ?? 0) + 1;
+      batchProbe.sliced = ((batchProbe.sliced as number) ?? 0) + (canSlice ? 1 : 0);
+
+      // The BIGGEST batch, not the last: a load sends one large batch and then
+      // a few of two blocks, and recording the last hid the only one that mattered.
+      if (toCreate.length > ((batchProbe.biggestCreated as number) ?? 0)) {
+        batchProbe.biggestCreated = toCreate.length;
+        batchProbe.biggestInitial = initialBatch;
+        batchProbe.biggestOrigin = String(origin);
+        batchProbe.biggestSliced = canSlice;
+      }
+    }
+
+    // Filling an empty view is the one case where the thread may be handed back
+    // mid-way: nothing in memory for a peer's change to interleave with, and an
+    // inert redactor so nobody is editing. BOTH passes are sliced — creating
+    // the blocks held the thread as long as activating them.
+    if (canSlice) {
+      void this.withAtomicOperationAsync(
+        () => this.buildInSlices(toCreate, order, origin, previousSibling, initialBatch),
+        { extendThroughRAF: true }
+      );
+
+      return;
+    }
+
     this.withAtomicOperation(() => {
       // Pass 1 — create blocks and add to array (no DOM, no RENDERED)
       const created: Array<{ block: Block; targetIndex: number; parentId: string | undefined; placement: TreePlacement | undefined }> = [];
 
       for (const entry of toCreate) {
-        // Against the live array: earlier entries of this batch are in it and
-        // may be this entry's doc neighbour.
-        const parentId = entry.parentId ?? null;
-        const { placement, targetIndex } = (() => {
-          if (initialBatch && this.repository.length === created.length) {
-            const parent = parentId === null ? undefined : this.repository.getBlockById(parentId);
-            const hasPlacement = parentId === null
-              || (parent !== undefined && !isSelfPlacedParent(parent, id => this.repository.getBlockById(id)));
-
-            return {
-              placement: hasPlacement ? { parentId, afterId: previousSibling.get(parentId) ?? null } : undefined,
-              targetIndex: entry.docIndex,
-            };
-          }
-          const placement = this.docPlacementInMemory(entry.blockId, parentId, order);
-
-          return {
-            placement,
-            targetIndex: placement !== undefined
-              ? this.flatIndexFor(placement)
-              : this.memoryIndexFromDocNeighbour(entry.blockId, entry.parentId, order),
-          };
-        })();
-        const block = this.factory.composeBlock({
-          id: entry.blockId,
-          tool: entry.toolName,
-          data: entry.data,
-          parentId: entry.parentId,
-          bindEventsImmediately: true,
-          origin: 'replay',
-          replaySource: replaySourceOf(origin),
-          lastEditedAt: entry.lastEditedAt,
-          lastEditedBy: entry.lastEditedBy,
-          lastEditedWith: entry.lastEditedWith,
-        });
-
-        this.blocksStore.addToArray(targetIndex, block);
-        previousSibling.set(parentId, entry.blockId);
-
-        // Same as the single add: the tool normalises after this window — see
-        // `settlingBlocks`. Marked in pass 1 so a container's rendered() hook
-        // in pass 2 is already inside every child's window.
-        if (isMaterializingOrigin(origin)) {
-          this.markMaterializing(entry.blockId);
-        }
-
-        created.push({ block, targetIndex, parentId: entry.parentId, placement });
+        this.createEntry(entry, order, origin, previousSibling, initialBatch, created);
       }
 
       // Read each parent's authoritative sibling order once after all of this
@@ -2267,53 +2263,76 @@ export class BlockYjsSync {
       const affectedParents = new Set<string>();
 
       // Pass 2 — activate blocks (DOM insert + RENDERED), then emit events.
-      // One reading of the selection for the whole pass: each placement moves a
-      // holder and then asked the live selection whether the caret was inside
-      // it, which forces a full layout right after a DOM write. On an 849-block
-      // load that was 862 reads at ~31 ms each. Batching per placement does NOT
-      // help — this is the loop that runs once per block.
-      // Filling an empty view, outside a remote batch, is the one case where
-      // the thread may be handed back mid-way: nothing else is expected to
-      // touch the document, and this loop is where the page freezes. A remote
-      // batch keeps the single synchronous pass, so peers never observe a
-      // half-applied change.
-      // `initialBatch` alone is the guard: it means the view held nothing, so
-      // there is no local state for a peer's change to interleave with, and the
-      // redactor is inert so nobody can be editing either.
-      //
-      // NOT `origin !== 'remote'`, which was the first attempt: a cached
-      // document is replayed through `applyRemoteUpdate`, so its origin IS
-      // remote — the test excluded precisely the load it was meant to cut up.
-      const canSlice = initialBatch && created.length > ACTIVATION_SLICE;
-      const batchProbe = (globalThis as { __blokBatchProbe?: Record<string, unknown> }).__blokBatchProbe;
-
-      if (batchProbe !== undefined) {
-        batchProbe.calls = ((batchProbe.calls as number) ?? 0) + 1;
-        batchProbe.sliced = ((batchProbe.sliced as number) ?? 0) + (canSlice ? 1 : 0);
-
-        // The BIGGEST batch, not the last: a load sends one large batch and
-        // then a few of two blocks, and recording the last hid the only one
-        // that mattered.
-        if (created.length > ((batchProbe.biggestCreated as number) ?? 0)) {
-          batchProbe.biggestCreated = created.length;
-          batchProbe.biggestInitial = initialBatch;
-          batchProbe.biggestOrigin = String(origin);
-          batchProbe.biggestSliced = canSlice;
-        }
-      }
-
-      if (canSlice) {
-        void this.withAtomicOperationAsync(
-          () => this.activateInSlices(created, origin),
-          { extendThroughRAF: true }
-        );
-
-        return;
-      }
-
       this.activateSlice(created, origin, affectedParents);
       affectedParents.forEach(parentId => this.reconcileParentChildOrderFromDoc(parentId));
     }, { extendThroughRAF: true });
+  }
+
+  /**
+   * Creates one block of a batch and records where it goes. No DOM, no
+   * RENDERED — pass 2 does that, and only once every block exists.
+   * @param entry - the document entry to build
+   * @param order - the document's block order
+   * @param origin - what produced the change
+   * @param previousSibling - the last id seen per parent, for an empty view
+   * @param initialBatch - whether this batch fills an empty view
+   * @param created - collects what pass 2 will activate
+   */
+  private createEntry(
+    entry: PendingCreate,
+    order: string[],
+    origin: BlockChangeEvent['origin'] | undefined,
+    previousSibling: Map<string | null, string>,
+    initialBatch: boolean,
+    created: Array<{ block: Block; targetIndex: number; parentId: string | undefined; placement: TreePlacement | undefined }>
+  ): void {
+      // Against the live array: earlier entries of this batch are in it and
+      // may be this entry's doc neighbour.
+      const parentId = entry.parentId ?? null;
+      const { placement, targetIndex } = (() => {
+        if (initialBatch && this.repository.length === created.length) {
+          const parent = parentId === null ? undefined : this.repository.getBlockById(parentId);
+          const hasPlacement = parentId === null
+            || (parent !== undefined && !isSelfPlacedParent(parent, id => this.repository.getBlockById(id)));
+
+          return {
+            placement: hasPlacement ? { parentId, afterId: previousSibling.get(parentId) ?? null } : undefined,
+            targetIndex: entry.docIndex,
+          };
+        }
+        const placement = this.docPlacementInMemory(entry.blockId, parentId, order);
+
+        return {
+          placement,
+          targetIndex: placement !== undefined
+            ? this.flatIndexFor(placement)
+            : this.memoryIndexFromDocNeighbour(entry.blockId, entry.parentId, order),
+        };
+      })();
+      const block = this.factory.composeBlock({
+        id: entry.blockId,
+        tool: entry.toolName,
+        data: entry.data,
+        parentId: entry.parentId,
+        bindEventsImmediately: true,
+        origin: 'replay',
+        replaySource: replaySourceOf(origin),
+        lastEditedAt: entry.lastEditedAt,
+        lastEditedBy: entry.lastEditedBy,
+        lastEditedWith: entry.lastEditedWith,
+      });
+
+      this.blocksStore.addToArray(targetIndex, block);
+      previousSibling.set(parentId, entry.blockId);
+
+      // Same as the single add: the tool normalises after this window — see
+      // `settlingBlocks`. Marked in pass 1 so a container's rendered() hook
+      // in pass 2 is already inside every child's window.
+      if (isMaterializingOrigin(origin)) {
+        this.markMaterializing(entry.blockId);
+      }
+
+      created.push({ block, targetIndex, parentId: entry.parentId, placement });
   }
 
   /**
@@ -2360,6 +2379,43 @@ export class BlockYjsSync {
       affectedParents.add(parentId);
       this.warnIfChildToolDenied(block, parentId);
     }
+  }
+
+  /**
+   * Builds then activates a first fill, handing the thread back throughout.
+   *
+   * Pass 1 must finish before pass 2 starts: a container's rendered() hook
+   * adopts its children, so every block has to exist first.
+   * @param toCreate - the document entries to build, in document order
+   * @param order - the document's block order
+   * @param origin - what produced the change
+   * @param previousSibling - the last id seen per parent
+   * @param initialBatch - whether this batch fills an empty view
+   */
+  private async buildInSlices(
+    toCreate: PendingCreate[],
+    order: string[],
+    origin: BlockChangeEvent['origin'] | undefined,
+    previousSibling: Map<string | null, string>,
+    initialBatch: boolean
+  ): Promise<void> {
+    const created: Array<{ block: Block; targetIndex: number; parentId: string | undefined; placement: TreePlacement | undefined }> = [];
+    let next = 0;
+
+    while (next < toCreate.length) {
+      const began = performance.now();
+
+      do {
+        this.createEntry(toCreate[next], order, origin, previousSibling, initialBatch, created);
+        next += 1;
+      } while (next < toCreate.length && performance.now() - began < ACTIVATION_BUDGET_MS);
+
+      if (next < toCreate.length) {
+        await yieldToBrowser();
+      }
+    }
+
+    await this.activateInSlices(created, origin);
   }
 
   /**
