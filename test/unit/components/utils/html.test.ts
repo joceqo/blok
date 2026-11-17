@@ -4,6 +4,7 @@ import {
   moveElementBefore,
   moveElementAfter,
   moveElementToEnd,
+  withBatchedMoves,
 } from '../../../../src/components/utils/html';
 
 describe('html', () => {
@@ -284,6 +285,81 @@ describe('html', () => {
         const { parent, a } = setup();
 
         expect(() => moveElementToEnd(parent, a)).not.toThrow();
+      });
+    });
+
+    // Mounting a document moves one holder per nested child, and each move read
+    // the live selection right after a DOM write: 862 reads at ~31 ms of forced
+    // layout each, 26.7 s of a 46 s load. Inside a batch the anchor is read once
+    // and `node.contains` answers the rest for free.
+    describe('withBatchedMoves', () => {
+      it('reads the selection once however many nodes move', () => {
+        const { parent, a, b, c } = setup();
+        const getSelection = vi.spyOn(window, 'getSelection');
+
+        withBatchedMoves(() => {
+          moveElementToEnd(parent, a);
+          moveElementToEnd(parent, b);
+          moveElementToEnd(parent, c);
+        });
+
+        expect(getSelection.mock.calls.length).toBeLessThanOrEqual(1);
+        expect(order(parent)).toBe('abc');
+      });
+
+      it('still keeps a caret that sits inside a moved node', () => {
+        const { parent, a, c } = setup();
+        const text = document.createTextNode('three');
+
+        c.appendChild(text);
+        window.getSelection()?.setBaseAndExtent(text, 5, text, 5);
+
+        withBatchedMoves(() => { moveElementBefore(c, a); });
+
+        const selection = window.getSelection();
+
+        expect(order(parent)).toBe('cab');
+        expect([selection?.anchorNode, selection?.anchorOffset]).toEqual([text, 5]);
+      });
+
+      it('leaves a selection outside the moved nodes alone', () => {
+        const { a, b, c } = setup();
+        const text = document.createTextNode('two');
+
+        b.appendChild(text);
+        window.getSelection()?.setBaseAndExtent(text, 1, text, 3);
+
+        withBatchedMoves(() => { moveElementBefore(c, a); });
+
+        const selection = window.getSelection();
+
+        expect([selection?.anchorNode, selection?.anchorOffset, selection?.focusOffset]).toEqual([text, 1, 3]);
+      });
+
+      it('returns what the batch returned', () => {
+        expect(withBatchedMoves(() => 'fini')).toBe('fini');
+      });
+
+      it('reads the selection again on the next batch', () => {
+        const { parent, a, b } = setup();
+
+        withBatchedMoves(() => { moveElementToEnd(parent, a); });
+        const getSelection = vi.spyOn(window, 'getSelection');
+        withBatchedMoves(() => { moveElementToEnd(parent, b); });
+
+        expect(getSelection).toHaveBeenCalled();
+      });
+
+      it('restores batching even when the batch throws', () => {
+        const { parent, a } = setup();
+
+        expect(() => withBatchedMoves(() => { throw new Error('boom'); })).toThrow('boom');
+
+        const getSelection = vi.spyOn(window, 'getSelection');
+
+        moveElementToEnd(parent, a);
+
+        expect(getSelection).toHaveBeenCalled();
       });
     });
 

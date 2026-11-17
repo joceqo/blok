@@ -1,5 +1,5 @@
 import { DATA_ATTR } from '../components/constants/data-attributes';
-import { moveElementBefore, moveElementToEnd } from '../components/utils/html';
+import { moveElementBefore, moveElementToEnd, withBatchedMoves } from '../components/utils/html';
 
 /**
  * The caret, captured as raw primitives.
@@ -207,34 +207,39 @@ export const mountChildBlocks = (
     restoreCaret(caret);
   };
 
-  for (const [index, child] of children.entries()) {
-    if (child.holder.parentElement === container) {
-      continue;
-    }
+  // One reading of the selection for the whole mount, not one per child: each
+  // move used to read it right after a DOM write, forcing a full layout every
+  // time (26.7 s of a 849-block load).
+  withBatchedMoves(() => {
+    for (const [index, child] of children.entries()) {
+      if (child.holder.parentElement === container) {
+        continue;
+      }
 
-    const nested = child.holder.closest(`[${DATA_ATTR.nestedBlocks}]`);
+      const nested = child.holder.closest(`[${DATA_ATTR.nestedBlocks}]`);
 
-    // Claim a holder stranded in an ANCESTOR nested container. Callers pass
-    // this container's own MODEL children, and a container that ENCLOSES this
-    // one can never be a legitimate home for them — that is model/DOM
-    // divergence by definition. Two ways to get there: a drag reparent into a
-    // column drops the moved holder directly into the [data-blok-columns] row
-    // (where it renders as a rogue extra column), and a newly inserted first
-    // child is anchored as the container block's DOM *sibling*, i.e. inside
-    // whatever nested container encloses it — permanent when the destination
-    // slot had not committed yet (a framework adapter's portal commits a render
-    // later than core inserts), because nothing else ever re-runs the mount.
-    if (nested !== null && nested !== container && nested.contains(container)) {
+      // Claim a holder stranded in an ANCESTOR nested container. Callers pass
+      // this container's own MODEL children, and a container that ENCLOSES this
+      // one can never be a legitimate home for them — that is model/DOM
+      // divergence by definition. Two ways to get there: a drag reparent into a
+      // column drops the moved holder directly into the [data-blok-columns] row
+      // (where it renders as a rogue extra column), and a newly inserted first
+      // child is anchored as the container block's DOM *sibling*, i.e. inside
+      // whatever nested container encloses it — permanent when the destination
+      // slot had not committed yet (a framework adapter's portal commits a render
+      // later than core inserts), because nothing else ever re-runs the mount.
+      if (nested !== null && nested !== container && nested.contains(container)) {
+        mountAtModelPosition(child.holder, index);
+        continue;
+      }
+
+      // Otherwise leave holders that already live inside another nested container
+      // (a sibling, or a deeper nesting within this one) where they are.
+      if (nested !== null) {
+        continue;
+      }
+
       mountAtModelPosition(child.holder, index);
-      continue;
     }
-
-    // Otherwise leave holders that already live inside another nested container
-    // (a sibling, or a deeper nesting within this one) where they are.
-    if (nested !== null) {
-      continue;
-    }
-
-    mountAtModelPosition(child.holder, index);
-  }
+  });
 };

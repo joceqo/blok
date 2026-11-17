@@ -105,11 +105,92 @@ const moveNode = (parent: StatefulMoveParent, node: Node, reference: Node | null
  * the costly read entirely. Guessing wrong here means optimising the wrong line.
  * @param exit - which way the function returned
  */
-const countSelectionExit = (exit: 'detached' | 'inert' | 'read'): void => {
+const countSelectionExit = (exit: 'detached' | 'inert' | 'read' | 'batched'): void => {
   const probe = (globalThis as { __blokSelectionProbe?: Record<string, number> }).__blokSelectionProbe;
 
   if (probe !== undefined) {
     probe[exit] = (probe[exit] ?? 0) + 1;
+  }
+};
+
+/** What a move needs to know about the caret, as plain values. */
+interface SelectionAnchor {
+  anchorNode: Node;
+  anchorOffset: number;
+  focusNode: Node;
+  focusOffset: number;
+}
+
+/**
+ * The anchor remembered for the current batch of moves.
+ *
+ * `undefined` outside a batch, `null` for a batch that started with no
+ * selection, an anchor otherwise.
+ */
+let batchedAnchor: SelectionAnchor | null | undefined;
+
+/** Whether a batch is open but has not needed the selection yet. */
+let batchPending = false;
+
+/**
+ * The batch's anchor, read from the live selection on first need only.
+ *
+ * Reading it when the batch OPENS would read on every mount, including the
+ * mounts that move nothing — and merely touching the selection has side effects
+ * a render must not have.
+ */
+const batchAnchor = (): SelectionAnchor | null => {
+  if (!batchPending) {
+    return batchedAnchor ?? null;
+  }
+  batchPending = false;
+
+  const selection = typeof window === 'undefined' ? null : window.getSelection();
+  const anchorNode = selection?.anchorNode ?? null;
+  const focusNode = selection?.focusNode ?? null;
+
+  batchedAnchor =
+    selection === null || selection.rangeCount === 0 || anchorNode === null || focusNode === null
+      ? null
+      : { anchorNode, anchorOffset: selection.anchorOffset, focusNode, focusOffset: selection.focusOffset };
+
+  return batchedAnchor;
+};
+
+/**
+ * Runs a batch of moves against ONE reading of the selection.
+ *
+ * Mounting a document moves a holder per nested child, and each move read the
+ * live selection right after a DOM write — a layout-dependent read on a dirty
+ * layout, which makes Chrome recompute the whole page. Measured on a 849-block
+ * load: 862 such reads at ~31 ms each, 26.7 s of a 46 s freeze.
+ *
+ * Reading once is enough because what each move actually asks is whether the
+ * caret sits inside the node it is about to move, and `node.contains` answers
+ * that from a remembered anchor for free. The anchor stays valid across the
+ * batch: the only thing that moves the caret here is the restore each move
+ * performs, which puts it back on those very nodes and offsets.
+ *
+ * A cache keyed on `selectionchange` was tried and rejected: Chrome does not
+ * emit that event within the task that changed the selection, so a caret
+ * restored just before a move would be missed (the U113 scenario).
+ * @param run - the moves to perform
+ * @returns whatever `run` returned
+ */
+export const withBatchedMoves = <T>(run: () => T): T => {
+  // A nested batch keeps the outer anchor: it was read before any of these moves.
+  if (batchedAnchor !== undefined) {
+    return run();
+  }
+
+  batchedAnchor = null;
+  batchPending = true;
+
+  try {
+    return run();
+  } finally {
+    batchedAnchor = undefined;
+    batchPending = false;
   }
 };
 
@@ -127,6 +208,16 @@ const selectionInside = (node: Node): { anchorNode: Node; anchorOffset: number; 
     countSelectionExit('inert');
 
     return null;
+  }
+
+  if (batchedAnchor !== undefined) {
+    countSelectionExit('batched');
+
+    const anchor = batchAnchor();
+
+    return anchor !== null && node.contains(anchor.anchorNode) && node.contains(anchor.focusNode)
+      ? anchor
+      : null;
   }
 
   countSelectionExit('read');
