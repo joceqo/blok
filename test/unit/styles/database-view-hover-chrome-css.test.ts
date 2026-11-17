@@ -188,6 +188,15 @@ describe('form builder question card (research/21 §1k)', () => {
     expect(ruleBody('[data-blok-database-form-question-menu]')).toContain('transition: opacity 0.2s ease');
   });
 
+  // notion-motion.md Round 52 §3: the ⋯ sits 34 in from the card's right and 10 under its top (12 padding − 2).
+  it('places the "Edit question" chip 10 under the card top and 34 in from its right', () => {
+    const chip = ruleBody('[data-blok-database-form-question-menu]');
+
+    expect(chip).toContain('align-self: flex-start');
+    expect(chip).toContain('margin-block-start: calc(var(--blok-space-0-5) * -1)');
+    expect(chip).toContain('margin-inline-end: calc(var(--blok-space-0-5) * -1)');
+  });
+
   // Round 31 §1: the builder's name is a 24px 700 / 30 textbox; the preview's an H2 24px 700.
   it('draws the question name 24px bold, as a bare textbox in the builder', () => {
     const name = ruleBody('[data-blok-database-form-question-name]');
@@ -200,6 +209,56 @@ describe('form builder question card (research/21 §1k)', () => {
     expect(name).toContain('background: transparent');
     expect(label).toContain('font-size: 24px');
     expect(label).toContain('font-weight: 700');
+  });
+
+  // notion-motion.md Round 52 §3: while a card drags, each gap shows a 4px pill in the drop-line blue at 0.28; none beside the card.
+  it('draws the drag gap lines faint, hides the ones beside the card and the gap "+"', () => {
+    const zone = ruleBody('[data-blok-database-form-drop-zone]');
+
+    expect(zone).toContain('background-color: var(--blok-database-drop-line, rgba(35, 131, 226, 0.43))');
+    expect(zone).toContain('border-radius: var(--blok-radius-pill)');
+    expect(zone).toContain('opacity: 0.28');
+    expect(ruleBody('[data-blok-database-form-drop-zone][data-adjacent]')).toContain('opacity: 0');
+    expect(ruleBody('[data-blok-database-form-drop-zone][data-target]')).toContain('opacity: 1');
+    expect(ruleBody('[data-blok-database-form]:has([data-blok-database-drag-source]) [data-blok-database-form-insert]')).toContain('visibility: hidden');
+  });
+
+  // notion-motion.md Round 53 (a): the lines fade between faint and full over 0.14s.
+  it('fades the drag gap lines over 0.14s', () => {
+    expect(ruleBody('[data-blok-database-form-drop-zone]')).toContain('transition: opacity 0.14s cubic-bezier(0.2, 0, 0, 1)');
+  });
+
+  // notion-motion.md Round 55 §3: each line fades in from 0 when the drag starts, not at 0.28 at once.
+  it('fades the drag gap lines in from 0 as they appear', () => {
+    const starting = [...database.matchAll(/@starting-style\s*\{\s*([^{}]+)\{([^{}]*)\}\s*\}/g)]
+      .filter((match) => match[1].trim() === '[data-blok-database-form-drop-zone]');
+
+    expect(starting.map((match) => match[2].trim())).toEqual(['opacity: 0;']);
+  });
+
+  // notion-motion.md Round 53 (b): the moving copy keeps the hovered card's ring. Gray here, not Notion's blue.
+  it('draws the dragged card\'s copy with the hover ring', () => {
+    expect(ruleBody('[data-blok-database-ghost] > [data-blok-database-form-question]')).toContain('box-shadow: var(--blok-border-strong) 0 0 0 1.25px, var(--blok-border-strong) 0 0 0 1.25px inset');
+  });
+
+  // notion-motion.md Round 53 (d) / Round 54 §7: the "+" sits 12 under the last card; the cards stay 24 apart.
+  it('sets Add question 12px under the last card', () => {
+    expect(ruleBody('[data-blok-database-form-add]')).toContain('margin-block-start: calc(var(--blok-space-3) - var(--blok-space-6))');
+  });
+
+  // notion-motion.md Round 52 §3: Add question is a round 32 "+" centred under the cards; hover deepens it over 100ms ease-in-out.
+  // Notion tints it blue; neutral here like the gap "+" (CLAUDE.md "No blue selected states").
+  it('draws Add question as a round 32px "+" centred under the cards', () => {
+    const add = ruleBody('[data-blok-database-form-add]');
+
+    expect(add).toContain('inline-size: 32px');
+    expect(add).toContain('block-size: 32px');
+    expect(add).toContain('border-radius: var(--blok-radius-pill)');
+    expect(add).toContain('align-self: center');
+    expect(add).toContain('background: var(--blok-database-hover-bg)');
+    expect(add).toContain('transition: background-color 100ms ease-in-out');
+    expect(ruleBody('[data-blok-database-form-add]:hover')).toContain('background: var(--blok-database-pressed-bg)');
+    expect(add).not.toMatch(/35, 131, 226|39, 131, 222/);
   });
 
   // Round 31 §1: the "+" is a 32px teardrop centred on the gap, 8 left of the card; neutral, not blue.

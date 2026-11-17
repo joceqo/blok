@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import type { OutputData } from '@/types';
 import { ensureBlokBundleBuilt, TEST_PAGE_URL } from '../helpers/ensure-build';
+import { historyKeys } from '../helpers/history-keys';
 import { BLOK_INTERFACE_SELECTOR } from '../../../../src/components/constants';
 
 const HOLDER_ID = 'blok';
@@ -495,7 +496,7 @@ test.describe('annotation (Hint) inline tool', () => {
     await expect(text).toBeHidden();
     await expect(hint).toHaveAttribute('data-blok-annotation', 'Changed');
 
-    await page.keyboard.press('ControlOrMeta+z');
+    await page.keyboard.press((await historyKeys(page)).undo);
     await expect(hint).toHaveAttribute('data-blok-annotation', 'The step that limits the whole chain.');
   });
 
@@ -585,7 +586,9 @@ test.describe('annotation (Hint) inline tool', () => {
     expect(await savedText(page, 0)).toEqual([ { text: 'We found the bottleneck near the oven.' } ]);
   });
 
-  test('a hint copied inside one paragraph survives a paste into another', async ({ page, context }) => {
+  test('a hint copied inside one paragraph survives a paste into another', async ({ page, context, browserName }) => {
+    // eslint-disable-next-line playwright/no-skipped-test -- needs real clipboard permissions
+    test.skip(browserName !== 'chromium', 'Firefox and WebKit reject the clipboard-read/clipboard-write permissions a real paste needs');
     await context.grantPermissions([ 'clipboard-read', 'clipboard-write' ]);
     await createBlok(page, [ PLAIN, WITH_HINT ]);
 

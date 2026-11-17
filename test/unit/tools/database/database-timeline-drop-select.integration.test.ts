@@ -6,7 +6,7 @@ import { DatabaseTool } from '../../../../src/tools/database';
 import { DatabaseRowTool } from '../../../../src/tools/database-row';
 import { addDays, daysBetween } from '../../../../src/tools/database/calendar-dates';
 import { TIMELINE_DAY_WIDTH, timelineWindow } from '../../../../src/tools/database/timeline-dates';
-import type { OutputBlockData } from '../../../../types';
+import type { OutputBlockData, OutputData } from '../../../../types';
 
 /**
  * notion-motion.md Round 46 B: a bar dragged to new dates is left selected,
@@ -37,6 +37,7 @@ const doc = (): OutputBlockData[] => [
       schema: [
         { id: 't', name: 'Name', type: 'title', position: 'a0' },
         { id: 'due', name: 'Due', type: 'date', position: 'a1' },
+        { id: 'done', name: 'Done', type: 'checkbox', position: 'a2' },
       ],
       views: [{ id: 'v', name: 'View', type: 'timeline', timelineBy: 'due', showTimelineTable: true, position: 'a0', sorts: [], filters: [], visibleProperties: [] }],
       activeViewId: 'v',
@@ -97,5 +98,178 @@ describe('timeline bar drop selection', () => {
     expect(holder?.querySelector('[data-blok-database-timeline-row][data-row-id="r2"]')?.hasAttribute('data-blok-database-row-selected')).toBe(true);
     expect(holder?.querySelector('[data-blok-database-timeline-table-row][data-row-id="r2"]')?.hasAttribute('data-blok-database-row-selected')).toBe(true);
     expect(holder?.querySelector('[data-blok-database-timeline-row][data-row-id="r1"]')?.hasAttribute('data-blok-database-row-selected')).toBe(false);
+  });
+
+  // notion-motion.md Round 50 §2, Round 51 §5: a click outside the database clears a selected bar; one on the timeline header keeps it.
+  it('clears a bar selected by an edge press on a click outside the database, and keeps it on one inside', async () => {
+    editor = new Blok({
+      holder,
+      dataModel: 'hierarchical',
+      tools: { paragraph: Paragraph, database: { class: DatabaseTool, config: {} }, 'database-row': DatabaseRowTool },
+      data: { blocks: doc() },
+    } as never);
+    await editor.isReady;
+    await quiet();
+
+    const handle = holder?.querySelector<HTMLElement>('[data-blok-database-timeline-bar][data-row-id="r2"] [data-blok-database-timeline-resize="end"]');
+    const header = holder?.querySelector<HTMLElement>('[data-blok-database-timeline-header]');
+    const outside = document.createElement('div');
+    const selected = (): boolean | undefined =>
+      holder?.querySelector('[data-blok-database-timeline-row][data-row-id="r2"]')?.hasAttribute('data-blok-database-row-selected');
+
+    if (handle === null || handle === undefined || header === null || header === undefined) throw new Error('no timeline');
+    document.body.appendChild(outside);
+    pointer('pointerdown', handle, 100);
+    pointer('pointerup', document, 100);
+    await quiet();
+    expect(selected()).toBe(true);
+
+    pointer('pointerdown', header, 100);
+    expect(selected()).toBe(true);
+
+    pointer('pointerdown', outside, 100);
+    expect(selected()).toBe(false);
+    outside.remove();
+  });
+
+  // notion-motion.md Round 52 §5, Round 53 §6: a picked bar shows no "1 selected" bar.
+  it('shows no selection bar for a bar picked by an edge press', async () => {
+    editor = new Blok({
+      holder,
+      dataModel: 'hierarchical',
+      tools: { paragraph: Paragraph, database: { class: DatabaseTool, config: {} }, 'database-row': DatabaseRowTool },
+      data: { blocks: doc() },
+    } as never);
+    await editor.isReady;
+    await quiet();
+
+    const handle = holder?.querySelector<HTMLElement>('[data-blok-database-timeline-bar][data-row-id="r2"] [data-blok-database-timeline-resize="end"]');
+
+    if (handle === null || handle === undefined) throw new Error('no timeline');
+    pointer('pointerdown', handle, 100);
+    pointer('pointerup', document, 100);
+    await quiet();
+
+    expect(holder?.querySelector('[data-blok-database-table-selection-bar]')).toBeNull();
+    expect(holder?.querySelector('[data-blok-database-timeline-row][data-row-id="r2"]')?.hasAttribute('data-blok-database-row-selected')).toBe(true);
+  });
+
+  // notion-motion.md Round 49 B5: Notion keeps the scroll across a drop. Blok went back to its open place (Day 2393 → 3396, Month 2953 → 2721).
+  it('keeps the chart where it was scrolled after a moved bar is dropped', async () => {
+    editor = new Blok({
+      holder,
+      dataModel: 'hierarchical',
+      tools: { paragraph: Paragraph, database: { class: DatabaseTool, config: {} }, 'database-row': DatabaseRowTool },
+      data: { blocks: doc() },
+    } as never);
+    await editor.isReady;
+    await quiet();
+
+    const canvas = holder?.querySelector<HTMLElement>('[data-blok-database-timeline-canvas]');
+    const scroller = holder?.querySelector<HTMLElement>('[data-blok-database-timeline-scroller]');
+    const bar = holder?.querySelector<HTMLElement>('[data-blok-database-timeline-bar][data-row-id="r2"]');
+
+    if (canvas === null || canvas === undefined || scroller === null || scroller === undefined || bar === null || bar === undefined) throw new Error('no timeline');
+    const days = timelineWindow(today(), 'month').days;
+
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+      left: 0, top: 0, width: days * TIMELINE_DAY_WIDTH.month, height: 400, right: days * TIMELINE_DAY_WIDTH.month, bottom: 400, x: 0, y: 0, toJSON: () => ({}),
+    });
+    const xOf = (day: string): number => daysBetween(timelineWindow(today(), 'month').start, day) * TIMELINE_DAY_WIDTH.month + 20;
+
+    scroller.scrollLeft = 1234;
+    pointer('pointerdown', bar, xOf(today()));
+    pointer('pointermove', document, xOf(addDays(today(), 2)));
+    pointer('pointerup', document, xOf(addDays(today(), 2)));
+    await quiet();
+
+    const redrawn = holder?.querySelector<HTMLElement>('[data-blok-database-timeline-scroller]');
+
+    expect(redrawn).not.toBe(scroller);
+    expect(redrawn?.scrollLeft).toBe(1234);
+  });
+
+  // Round 49 B5 measured drops only; a row made from "+ New" is the same date write and keeps the scroll too.
+  it('keeps the chart where it was scrolled after a row is made from "+ New"', async () => {
+    editor = new Blok({
+      holder,
+      dataModel: 'hierarchical',
+      tools: { paragraph: Paragraph, database: { class: DatabaseTool, config: {} }, 'database-row': DatabaseRowTool },
+      data: { blocks: doc() },
+    } as never);
+    await editor.isReady;
+    await quiet();
+
+    const scroller = holder?.querySelector<HTMLElement>('[data-blok-database-timeline-scroller]');
+    const add = holder?.querySelector<HTMLElement>('[data-blok-database-timeline-table-new]');
+
+    if (scroller === null || scroller === undefined || add === null || add === undefined) throw new Error('no timeline');
+    scroller.scrollLeft = 1234;
+    add.click();
+    await quiet();
+
+    const redrawn = holder?.querySelector<HTMLElement>('[data-blok-database-timeline-scroller]');
+
+    expect(holder?.querySelectorAll('[data-blok-database-timeline-row]').length).toBe(3);
+    expect(redrawn?.scrollLeft).toBe(1234);
+  });
+
+  // notion-motion.md Round 50 §5: the panel's "+ New" row has no date and is named in a box over its panel title.
+  it('names a row made from the table panel "+ New" in place, with no date', async () => {
+    const blok = new Blok({
+      holder,
+      dataModel: 'hierarchical',
+      tools: { paragraph: Paragraph, database: { class: DatabaseTool, config: {} }, 'database-row': DatabaseRowTool },
+      data: { blocks: doc() },
+    } as never) as unknown as { isReady: Promise<unknown>; destroy: () => void; save: () => Promise<OutputData> };
+
+    editor = blok;
+    await blok.isReady;
+    await quiet();
+    holder?.querySelector<HTMLElement>('[data-blok-database-timeline-table-new]')?.click();
+    await quiet();
+
+    const input = document.querySelector<HTMLInputElement>('[data-blok-database-cell-input="title"]');
+    const rows = holder?.querySelectorAll('[data-blok-database-timeline-table-row]');
+    const fresh = rows?.[rows.length - 1];
+
+    expect(input).toHaveFocus();
+    expect(fresh?.hasAttribute('data-blok-database-editor-open')).toBe(true);
+    if (input === null) throw new Error('no editor');
+    input.value = 'Three';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await quiet();
+
+    const saved = (await blok.save()).blocks.find((block) => block.id === fresh?.getAttribute('data-row-id'));
+
+    expect(saved?.data).toMatchObject({ properties: { t: 'Three' } });
+    expect((saved?.data as { properties: Record<string, unknown> }).properties.due ?? null).toBeNull();
+  });
+
+  // A date edit in the open peek sent the chart to the narrowed chart's open place (browser: 2922 → 2833). Notion's side is unmeasured.
+  it('keeps the chart where it was scrolled after a value changes in the open peek', async () => {
+    editor = new Blok({
+      holder,
+      dataModel: 'hierarchical',
+      tools: { paragraph: Paragraph, database: { class: DatabaseTool, config: {} }, 'database-row': DatabaseRowTool },
+      data: { blocks: doc() },
+    } as never);
+    await editor.isReady;
+    await quiet();
+
+    holder?.querySelector<HTMLElement>('[data-blok-database-timeline-bar][data-row-id="r2"]')?.click();
+    await quiet();
+    const scroller = holder?.querySelector<HTMLElement>('[data-blok-database-timeline-scroller]');
+    const done = document.querySelector<HTMLElement>('[data-blok-database-drawer-prop-value][data-property-id="done"]');
+
+    if (scroller === null || scroller === undefined || done === null) throw new Error('no peek');
+    scroller.scrollLeft = 1234;
+    done.click();
+    await quiet();
+
+    const redrawn = holder?.querySelector<HTMLElement>('[data-blok-database-timeline-scroller]');
+
+    expect(redrawn).not.toBe(scroller);
+    expect(redrawn?.scrollLeft).toBe(1234);
   });
 });
