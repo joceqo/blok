@@ -2274,15 +2274,29 @@ export class BlockYjsSync {
       // touch the document, and this loop is where the page freezes. A remote
       // batch keeps the single synchronous pass, so peers never observe a
       // half-applied change.
-      const canSlice = initialBatch && created.length > ACTIVATION_SLICE && origin !== 'remote';
+      // `initialBatch` alone is the guard: it means the view held nothing, so
+      // there is no local state for a peer's change to interleave with, and the
+      // redactor is inert so nobody can be editing either.
+      //
+      // NOT `origin !== 'remote'`, which was the first attempt: a cached
+      // document is replayed through `applyRemoteUpdate`, so its origin IS
+      // remote — the test excluded precisely the load it was meant to cut up.
+      const canSlice = initialBatch && created.length > ACTIVATION_SLICE;
       const batchProbe = (globalThis as { __blokBatchProbe?: Record<string, unknown> }).__blokBatchProbe;
 
       if (batchProbe !== undefined) {
         batchProbe.calls = ((batchProbe.calls as number) ?? 0) + 1;
-        batchProbe.lastCreated = created.length;
-        batchProbe.lastInitial = initialBatch;
-        batchProbe.lastOrigin = String(origin);
         batchProbe.sliced = ((batchProbe.sliced as number) ?? 0) + (canSlice ? 1 : 0);
+
+        // The BIGGEST batch, not the last: a load sends one large batch and
+        // then a few of two blocks, and recording the last hid the only one
+        // that mattered.
+        if (created.length > ((batchProbe.biggestCreated as number) ?? 0)) {
+          batchProbe.biggestCreated = created.length;
+          batchProbe.biggestInitial = initialBatch;
+          batchProbe.biggestOrigin = String(origin);
+          batchProbe.biggestSliced = canSlice;
+        }
       }
 
       if (canSlice) {
