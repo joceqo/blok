@@ -4203,6 +4203,11 @@ export class DatabaseTool implements BlockTool {
    * and each one rebuilt this view from scratch: measured at 48 full rebuilds
    * on one load, 37 of them from here, ~51 ms each. The rebuild is the same
    * whichever render triggered it, so the burst collapses into one.
+   *
+   * On a frame rather than a microtask: those renders land in dozens of
+   * separate tasks, so a microtask only folded each task's own events and left
+   * 27 rebuilds standing. A frame spans the whole burst — and during a load the
+   * thread is busy, so the frame lands once the work is done.
    */
   private queueSourceRedraw(): void {
     if (this.sourceRedrawQueued) {
@@ -4210,7 +4215,7 @@ export class DatabaseTool implements BlockTool {
     }
     this.sourceRedrawQueued = true;
 
-    queueMicrotask(() => {
+    requestAnimationFrame(() => {
       this.sourceRedrawQueued = false;
       if (this.destroyed) {
         return;

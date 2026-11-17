@@ -8,6 +8,10 @@ import { DatabaseTool } from '../../../../src/tools/database';
  * on which render triggered it, so a burst must collapse into one.
  */
 describe('redraw d’une vue liée', () => {
+  /** Past the frame the redraw is queued on. */
+  const frame = (): Promise<void> =>
+    new Promise(resolve => { requestAnimationFrame(() => { resolve(); }); });
+
   /** The handler and the rebuild, reached without standing a whole database up. */
   const internalsOf = (tool: DatabaseTool): {
     handleDatabaseRendered(payload: unknown): void;
@@ -32,7 +36,7 @@ describe('redraw d’une vue liée', () => {
     for (let index = 0; index < 20; index++) {
       internals.queueSourceRedraw();
     }
-    await Promise.resolve();
+    await frame();
 
     expect(rerender).toHaveBeenCalledTimes(1);
     expect(rebuildTabs).toHaveBeenCalledTimes(1);
@@ -50,9 +54,9 @@ describe('redraw d’une vue liée', () => {
     Object.assign(internals, { rerenderView: rerender, rebuildTabBar: vi.fn() });
 
     internals.queueSourceRedraw();
-    await Promise.resolve();
+    await frame();
     internals.queueSourceRedraw();
-    await Promise.resolve();
+    await frame();
 
     expect(rerender).toHaveBeenCalledTimes(2);
   });
@@ -69,7 +73,7 @@ describe('redraw d’une vue liée', () => {
 
     internals.queueSourceRedraw();
     internals.destroyed = true;
-    await Promise.resolve();
+    await frame();
 
     expect(rerender).not.toHaveBeenCalled();
   });
