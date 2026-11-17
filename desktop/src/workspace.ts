@@ -1126,6 +1126,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ...workspaceAssistant,
   });
   ws.pageCanvas = ws.assistant.editorSlot;
+  ws.pageCanvas.setAttribute('data-desktop-page-canvas', '');
   ws.frame.canvas.append(ws.assistant.element);
   const sidebar = ws.frame.element.querySelector('[data-blok-sidebar]') as HTMLElement;
   const panel = ws.assistant.element.querySelector<HTMLElement>('[data-blok-agent-panel]');
