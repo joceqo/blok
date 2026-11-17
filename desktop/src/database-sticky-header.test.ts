@@ -51,6 +51,8 @@ it('keeps the real, clickable header visible while the page and table scroll', a
     const header = page.locator('[data-blok-database-table-header]');
     await expect.poll(() => header.evaluate(el => el.matches(':popover-open'))).toBe(true);
     expect((await header.boundingBox())?.y).toBeCloseTo(44, 0);
+    expect(await header.evaluate(el => getComputedStyle(el).overflowY)).toBe('visible');
+    expect(await header.evaluate(el => el.clientHeight)).toBe(36);
     await page.locator('[data-blok-database-table-scroller]').evaluate(el => { el.scrollLeft = 300; el.setAttribute('data-scrolled', ''); });
     await expect.poll(() => page.locator('[data-frozen]').evaluate(el => el.getBoundingClientRect().left)).toBeCloseTo(0, 0);
     await page.locator('[data-header-action]').click();

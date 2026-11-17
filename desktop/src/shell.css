@@ -185,13 +185,28 @@ body[data-blok-theme="light"] [data-desktop-floating-toc] {
   width: min(100%, 900px); min-height: 100%; margin-inline: auto; padding: 30px 64px 120px;
 }
 [data-desktop-page-canvas] { container-type: inline-size; }
-/* Keep the page's text column centred while a root database uses the canvas.
-   Its own table scroller then handles overflow without widening the page. */
-[data-desktop-document]:not([data-full-width]) > [data-desktop-editor] > [data-blok-interface]
-  > [data-blok-redactor] > [data-blok-element] > [data-blok-element-content]:has(> [data-blok-database-wrapper]) {
-  width: max(0px, calc(100cqi - 128px));
+/* Only the scrollport bleeds to the canvas edges. Its padding keeps the
+   unscrolled columns aligned with the page's text and database toolbar. */
+[data-desktop-document] > [data-desktop-editor] > [data-blok-interface]
+  > [data-blok-redactor] > [data-blok-element] > [data-blok-element-content]
+  > [data-blok-database-wrapper] > [data-blok-database-board-container]:has(> [data-blok-database-table]) {
+  overflow: visible !important;
+  margin-inline: 0;
+  padding-inline: 0;
+}
+[data-desktop-document] > [data-desktop-editor] > [data-blok-interface]
+  > [data-blok-redactor] > [data-blok-element] > [data-blok-element-content]
+  > [data-blok-database-wrapper] > [data-blok-database-board-container] > [data-blok-database-table]
+  > [data-blok-database-table-scroller] {
+  box-sizing: border-box;
+  width: 100cqi;
   max-width: none;
-  margin-inline-start: calc((min(100cqi, 900px) - 100cqi) / 2);
+  --_desktop-table-start: calc((100cqi - 100% + var(--blok-editor-gutter-start, 0px) - var(--blok-editor-gutter-end, 0px)) / 2);
+  margin-inline-start: calc(-1 * var(--_desktop-table-start));
+  padding-inline-start: var(--_desktop-table-start);
+  padding-inline-end: calc((100cqi - 100% - var(--blok-editor-gutter-start, 0px) + var(--blok-editor-gutter-end, 0px)) / 2);
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
 }
 [data-desktop-document][data-full-width] { width: 100%; padding-inline: clamp(24px, 5vw, 96px); }
 [data-desktop-document][data-has-cover] {

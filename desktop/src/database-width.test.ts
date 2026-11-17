@@ -17,6 +17,8 @@ it('lets a root database fill the page canvas while its table scrolls locally', 
   try {
     await page.setContent(`<style>${shell}</style><style>${databaseStyles}</style><style>
       [data-desktop-page-canvas] { width: 100%; overflow-x: auto; --max-width-content: 720px; }
+      [data-blok-interface] { --blok-editor-gutter-start: 56px; }
+      [data-blok-redactor] { padding-inline-start: 56px; }
       [data-blok-element-content] { max-width: 720px; margin-inline: auto; }
       [data-blok-width="full"] [data-blok-element-content] { max-width: none; }
       [data-blok-database-table-grid] { width: 2000px; height: 80px; }
@@ -39,11 +41,12 @@ it('lets a root database fill the page canvas while its table scrolls locally', 
     const scroller = page.locator('[data-blok-database-table-scroller]');
     const scrollBox = await scroller.boundingBox();
 
-    expect(text?.x).toBeCloseTo(360, 0);
-    expect(database?.x).toBeCloseTo(64, 0);
-    expect(database?.width).toBeCloseTo(1312, 0);
-    expect(scrollBox?.x).toBeCloseTo(database!.x, 0);
-    expect(scrollBox?.width).toBeCloseTo(database!.width, 0);
+    expect(database?.x).toBeCloseTo(text!.x, 0);
+    expect(database?.width).toBeCloseTo(text!.width, 0);
+    expect(scrollBox?.x).toBeCloseTo(0, 0);
+    expect(scrollBox?.width).toBeCloseTo(1440, 0);
+    expect((await page.locator('[data-blok-database-table-grid]').boundingBox())?.x).toBeCloseTo(text!.x, 0);
+    expect(await canvas.evaluate(el => el.scrollWidth)).toBe(1440);
     await scroller.evaluate(el => { el.scrollLeft = 400; });
     expect(await scroller.evaluate(el => el.scrollLeft)).toBe(400);
     expect(await canvas.evaluate(el => el.scrollLeft)).toBe(0);
@@ -51,15 +54,18 @@ it('lets a root database fill the page canvas while its table scrolls locally', 
     await page.locator('[data-desktop-document]').evaluate(el => el.setAttribute('data-full-width', ''));
     await page.locator('[data-blok-interface]').evaluate(el => el.setAttribute('data-blok-width', 'full'));
     const fullWidthDatabase = await page.locator('[data-database-content]').boundingBox();
-    expect(fullWidthDatabase?.x).toBeCloseTo(72, 0);
-    expect(fullWidthDatabase?.width).toBeCloseTo(1296, 0);
+    expect(fullWidthDatabase?.x).toBeCloseTo(128, 0);
+    expect(fullWidthDatabase?.width).toBeCloseTo(1240, 0);
+    expect((await scroller.boundingBox())?.x).toBeCloseTo(0, 0);
 
     await page.locator('[data-desktop-document]').evaluate(el => el.removeAttribute('data-full-width'));
     await page.locator('[data-blok-interface]').evaluate(el => el.removeAttribute('data-blok-width'));
     await page.setViewportSize({ width: 800, height: 800 });
     const narrowDatabase = await page.locator('[data-database-content]').boundingBox();
-    expect(narrowDatabase?.x).toBeCloseTo(64, 0);
-    expect(narrowDatabase?.width).toBeCloseTo(672, 0);
+    expect(narrowDatabase?.x).toBeCloseTo(120, 0);
+    expect(narrowDatabase?.width).toBeCloseTo(616, 0);
+    expect((await scroller.boundingBox())?.width).toBeCloseTo(800, 0);
+    expect(await canvas.evaluate(el => el.scrollWidth)).toBe(800);
     expect(await canvas.evaluate(el => el.scrollLeft)).toBe(0);
   } finally {
     await page.close();

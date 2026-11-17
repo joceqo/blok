@@ -760,7 +760,9 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     this.root?.querySelectorAll<HTMLElement>('[data-blok-database-table-open]').forEach((button) => {
       const rowId = button.closest('[data-row-id]')?.getAttribute('data-row-id');
 
-      if (typeof rowId === 'string') this.paintOpen(button, rowId);
+      if (typeof rowId === 'string' && button.hasAttribute('data-peeked') !== (this.options.peek?.rowId() === rowId)) {
+        this.paintOpen(button, rowId);
+      }
     });
     // OPEN and CLOSE differ in width; only the buttons on screen now need a new fit.
     [this.overRow, this.gridEl?.querySelector('[data-blok-database-table-cell-anchor]')].forEach((holder) => {

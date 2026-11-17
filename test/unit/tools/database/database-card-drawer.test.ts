@@ -92,7 +92,7 @@ describe('DatabaseCardDrawer', () => {
     expect(drawer.isOpen).toBe(true);
   });
 
-  it('mounts a prepared host page immediately without showing a loading skeleton', () => {
+  it('paints the peek shell before composing its details, even for a prepared body', async () => {
     const mount = vi.fn((_pageId: string, holder: HTMLElement) => {
       holder.textContent = 'Prepared body';
       return { destroy: vi.fn() };
@@ -113,7 +113,10 @@ describe('DatabaseCardDrawer', () => {
 
     try {
       drawer.open(makeRow({ pageId: 'page-1' }));
-      expect(mount).toHaveBeenCalledTimes(1);
+      expect(mount).not.toHaveBeenCalled();
+      expect(options.wrapper.querySelector('[data-blok-database-drawer-title]')).not.toBeNull();
+      expect(options.wrapper.querySelector('[data-blok-database-body-loading]')).not.toBeNull();
+      await vi.waitFor(() => expect(mount).toHaveBeenCalledTimes(1));
       expect(options.wrapper.querySelector('[data-blok-database-body-loading]')).toBeNull();
       expect(options.wrapper.querySelector('[data-blok-database-drawer-editor]')?.textContent).toBe('Prepared body');
     } finally {

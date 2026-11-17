@@ -9979,6 +9979,9 @@ textarea[data-blok-database-cell-input] {
   margin: 0;
   padding: 0;
   border: 0;
+  /* The UA's overflow:auto otherwise adds a scrollbar inside this 36px row,
+     cutting the column labels in half. The scrollport supplies horizontal clipping. */
+  overflow: visible;
 }
 
 /* In the top layer sticky cells no longer see their scrollport. Recreate the

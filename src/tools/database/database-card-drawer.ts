@@ -973,7 +973,9 @@ export class DatabaseCardDrawer {
     (this.parentPage?.drawer ?? this.wrapper).appendChild(drawer);
     this.drawer = drawer;
     this.setPeekWidth(this.peekWidth);
-    this.renderRegions(row);
+    const deferDetails = this.rowBody !== undefined || this.rowPages !== undefined;
+
+    if (!deferDetails) this.renderRegions(row);
     this.applyMode(mode);
 
     requestAnimationFrame(() => {
@@ -991,7 +993,7 @@ export class DatabaseCardDrawer {
       });
     });
 
-    this.mountRowBodyAfterPaint(editorHolder, row);
+    this.mountRowBodyAfterPaint(editorHolder, row, deferDetails);
 
     this.escapeHandler = (e: KeyboardEvent): void => {
       if (openPeek.drawer !== this) return;
@@ -1135,9 +1137,9 @@ export class DatabaseCardDrawer {
       const nextHolder = editorHolder.cloneNode(false) as HTMLElement;
 
       editorHolder.replaceWith(nextHolder);
-      this.mountRowBodyAfterPaint(nextHolder, row);
+      this.mountRowBodyAfterPaint(nextHolder, row, true);
     }
-    this.renderRegions(row);
+    if (editorHolder === null) this.renderRegions(row);
   }
 
   close(): void {
@@ -4448,13 +4450,14 @@ export class DatabaseCardDrawer {
   }
 
   /** Give the title and properties a paint before composing a lazy block body. */
-  private mountRowBodyAfterPaint(holder: HTMLElement, row: DatabaseRow): void {
+  private mountRowBodyAfterPaint(holder: HTMLElement, row: DatabaseRow, renderDetails = false): void {
     this.cancelPendingBodyMount();
     // A host page body is the expensive one: it builds a whole editor with its
     // collaboration provider. Composing it in the click's own tick freezes the
     // view behind the peek, and the peek never gets a frame to open in.
     if ((this.rowBody === undefined && this.rowPages === undefined)
-      || (row.pageId !== undefined && this.rowPages?.isReady?.(row.pageId) === true)) {
+      || (!renderDetails && row.pageId !== undefined && this.rowPages?.isReady?.(row.pageId) === true)) {
+      if (renderDetails) this.renderRegions(row);
       this.initNestedEditor(holder, row);
 
       return;
@@ -4481,6 +4484,7 @@ export class DatabaseCardDrawer {
         if (this.pendingBodyMount !== pending) return;
         this.cancelPendingBodyMount();
         if (this.currentRowId !== row.id || !holder.isConnected || !this.drawer?.contains(holder)) return;
+        if (renderDetails) this.renderRegions(this.currentRow ?? row);
         this.initNestedEditor(holder, this.currentRow ?? row);
       }, 0);
     });

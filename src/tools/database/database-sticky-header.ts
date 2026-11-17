@@ -18,10 +18,17 @@ export class DatabaseStickyHeader {
   ) {
     this.observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => this.schedule());
     this.observer?.observe(scroller);
-    document.addEventListener('scroll', this.schedule, true);
+    document.addEventListener('scroll', this.onScroll, true);
     window.addEventListener('resize', this.schedule);
     this.schedule();
   }
+
+  private readonly onScroll = (event: Event): void => {
+    const target = event.target;
+
+    if (target === document || target === this.scroller
+      || (target instanceof Element && target.contains(this.scroller))) this.schedule();
+  };
 
   private readonly schedule = (): void => {
     if (this.destroyed || this.frame !== 0) return;
@@ -51,6 +58,13 @@ export class DatabaseStickyHeader {
   private update(): void {
     if (this.destroyed || !this.scroller.isConnected || typeof this.header.showPopover !== 'function') return;
     const port = this.scroller.getBoundingClientRect();
+    // Cached row editors remain connected under a hidden host. They must not
+    // walk ancestors and recalculate sticky geometry on every page scroll.
+    if (port.width === 0 || port.height === 0) {
+      this.unpin();
+
+      return;
+    }
     const grid = this.grid.getBoundingClientRect();
     const top = this.pageEdge();
     const shouldPin = grid.top < top && port.bottom > top + this.header.offsetHeight
@@ -93,7 +107,7 @@ export class DatabaseStickyHeader {
     this.destroyed = true;
     if (this.frame !== 0) cancelAnimationFrame(this.frame);
     this.observer?.disconnect();
-    document.removeEventListener('scroll', this.schedule, true);
+    document.removeEventListener('scroll', this.onScroll, true);
     window.removeEventListener('resize', this.schedule);
     this.unpin();
   }
