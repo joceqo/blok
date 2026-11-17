@@ -670,6 +670,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       } finally { sync.localWrites--; updatePending(); }
     };
     const rowPages: DesktopRowPages | undefined = ref.kind === 'remote' ? createDesktopRowPages({
+      retainEditors: 2,
       snapshot: async bodyId => { await rowPages?.flush(); return repository.readLivePage(bodyId); },
       lookup: async () => null,
       copyFromLegacy: async () => { throw new Error('Row bodies are moved by offline maintenance'); },

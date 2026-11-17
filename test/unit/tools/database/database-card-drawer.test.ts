@@ -92,6 +92,36 @@ describe('DatabaseCardDrawer', () => {
     expect(drawer.isOpen).toBe(true);
   });
 
+  it('mounts a prepared host page immediately without showing a loading skeleton', () => {
+    const mount = vi.fn((_pageId: string, holder: HTMLElement) => {
+      holder.textContent = 'Prepared body';
+      return { destroy: vi.fn() };
+    });
+    const options = createOptions({
+      rowPages: {
+        lookup: async () => null,
+        copyFromLegacy: async () => { throw new Error('unused'); },
+        reconcileLegacy: async () => { throw new Error('unused'); },
+        isReady: () => true,
+        mount,
+      },
+      rowBody: { attach: () => false, detach: () => {}, start: () => {} },
+    });
+
+    document.body.append(options.wrapper);
+    const drawer = new DatabaseCardDrawer(options);
+
+    try {
+      drawer.open(makeRow({ pageId: 'page-1' }));
+      expect(mount).toHaveBeenCalledTimes(1);
+      expect(options.wrapper.querySelector('[data-blok-database-body-loading]')).toBeNull();
+      expect(options.wrapper.querySelector('[data-blok-database-drawer-editor]')?.textContent).toBe('Prepared body');
+    } finally {
+      drawer.destroy();
+      options.wrapper.remove();
+    }
+  });
+
   it('removes drawer element when closed after transition completes', () => {
     const options = createOptions();
     const drawer = new DatabaseCardDrawer(options);

@@ -183,6 +183,8 @@ export interface TableHandlers {
   duplicateRow: (rowId: string) => void;
   /** Opens a row page, in `mode` when the row menu's "Open in" names one. */
   openRow: (rowId: string, mode?: OpenPagesIn) => void;
+  /** Warm a row page after the pointer rests on its table row. */
+  prepareRow?: (rowId: string) => void;
   copyRowLink: (rowId: string) => void;
   /** Other databases of this document a row can move to. */
   moveTargets?: () => Array<{ id: string; title: string }>;
@@ -241,6 +243,7 @@ export interface TableNesting {
 export interface DatabaseTableViewOptions {
   /** Opens a row page without any write handler: what a read-only viewer gets. */
   openRow?: (rowId: string) => void;
+  prepareRow?: (rowId: string) => void;
   /** The row shown in the side peek, if any, and how to close it: its OPEN reads CLOSE (notion-spec-2 §25.3). */
   peek?: RowPeek;
   readOnly: boolean;
@@ -637,6 +640,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     gridEl.addEventListener('pointerover', this.handleOver);
     gridEl.addEventListener('pointerleave', () => {
       this.overRow = null;
+      window.clearTimeout(this.prepareTimer);
     });
 
     if (this.editable) {
@@ -767,6 +771,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
   /** The row the pointer is over: moving between its cells fires pointerover again. */
   private overRow: Element | null = null;
+  private prepareTimer: number | undefined;
 
   /** The selected title cell's OPEN, last fitted. */
   private anchorOpen: HTMLElement | null = null;
@@ -777,6 +782,14 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
     if (row === this.overRow) return;
     this.overRow = row;
+    window.clearTimeout(this.prepareTimer);
+    const rowId = row?.getAttribute('data-row-id');
+
+    if (rowId !== null && rowId !== undefined) {
+      this.prepareTimer = window.setTimeout(() => {
+        if (this.overRow === row) (this.handlers?.prepareRow ?? this.options.prepareRow)?.(rowId);
+      }, 120);
+    }
     const open = row?.querySelector<HTMLElement>('[data-blok-database-table-open]');
 
     if (open !== null && open !== undefined) fitOpen(open);
@@ -788,6 +801,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
   }
 
   destroy(): void {
+    window.clearTimeout(this.prepareTimer);
     const bulkEditor = this.bulkEditor;
 
     // Its close must not ask for a redraw: this view is going.

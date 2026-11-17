@@ -1603,6 +1603,10 @@ export interface DatabaseRowPages {
     acceptedBody: OutputData;
   }): Promise<DatabaseRowPageReceipt>;
   mount(pageId: string, holder: HTMLElement): { destroy(): void };
+  /** Start a row page while its visible row is hovered; keep only a bounded host cache. */
+  prepare?(pageId: string): void;
+  /** True when a prepared page can be mounted without a loading frame. */
+  isReady?(pageId: string): boolean;
   /**
    * Show the row's page as a full page in the host's own page area. Without
    * it, a full page takes the database's place in the editor.

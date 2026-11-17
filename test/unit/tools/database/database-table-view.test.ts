@@ -1647,6 +1647,28 @@ describe('DatabaseTableView', () => {
       expect(open?.lastElementChild?.textContent).toBe('tools.database.tableOpen');
     });
 
+    it('prepares only the row where the pointer rests before opening', () => {
+      vi.useFakeTimers();
+      try {
+        const handlers = { ...makeHandlers(), prepareRow: vi.fn() };
+        const { root, view } = mount({ handlers });
+        const over = (rowId: string): void => {
+          cell(root, rowId, 'p-title').dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+        };
+
+        over('r1');
+        vi.advanceTimersByTime(60);
+        over('r2');
+        vi.advanceTimersByTime(119);
+        expect(handlers.prepareRow).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(1);
+        expect(handlers.prepareRow).toHaveBeenCalledExactlyOnceWith('r2');
+        view.destroy();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     // notion-motion.md Round 28 §1 (r28-narrowpill-threshold.raw): the title column shows the icon pill at 100 and OPEN
     // from 102, whatever the label's width (Notion's 102 OPEN overlaps the title). 101 is unread; Blok counts it as narrow.
     describe('narrow title column', () => {

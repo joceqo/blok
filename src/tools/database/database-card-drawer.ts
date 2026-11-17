@@ -4453,7 +4453,8 @@ export class DatabaseCardDrawer {
     // A host page body is the expensive one: it builds a whole editor with its
     // collaboration provider. Composing it in the click's own tick freezes the
     // view behind the peek, and the peek never gets a frame to open in.
-    if (this.rowBody === undefined && this.rowPages === undefined) {
+    if ((this.rowBody === undefined && this.rowPages === undefined)
+      || (row.pageId !== undefined && this.rowPages?.isReady?.(row.pageId) === true)) {
       this.initNestedEditor(holder, row);
 
       return;

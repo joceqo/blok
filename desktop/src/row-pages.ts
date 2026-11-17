@@ -20,6 +20,8 @@ export interface DesktopRowPagesOptions {
   readOnly(pageId: string): boolean;
   watchReadOnly?(pageId: string, changed: () => void): () => void;
   onError?(error: unknown, pageId: string): void;
+  /** Keep a few ready editors alive after their peek closes. Zero keeps the old lifecycle. */
+  retainEditors?: number;
 }
 
 export interface DesktopRowPages extends DatabaseRowPages {
@@ -29,77 +31,161 @@ export interface DesktopRowPages extends DatabaseRowPages {
 
 /** Bodies use ordinary page editors and their existing offline/outbox lifecycle. */
 export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopRowPages {
-  const mounts = new Set<{ editor: RowPageEditor; destroy(): void }>();
+  interface Entry {
+    pageId: string;
+    editor: RowPageEditor;
+    surface: HTMLElement;
+    ready: boolean;
+    active: boolean;
+    disposed: boolean;
+    unwatch?: () => void;
+    refreshPermissions(): void;
+  }
+  const mounts = new Set<Entry>();
+  const idle = new Map<string, Entry>();
+  const retain = Math.max(0, Math.floor(options.retainEditors ?? 0));
+  const parked = document.createElement('div');
+
+  if (retain > 0) {
+    parked.hidden = true;
+    parked.setAttribute('inert', '');
+    document.body.append(parked);
+  }
   let destroyed = false;
+
+  const dispose = (entry: Entry): void => {
+    if (entry.disposed) return;
+    entry.disposed = true;
+    entry.active = false;
+    mounts.delete(entry);
+    if (idle.get(entry.pageId) === entry) idle.delete(entry.pageId);
+    try { entry.unwatch?.(); } finally {
+      try { entry.editor.destroy(); } finally {
+        if (retain > 0) entry.surface.remove();
+      }
+    }
+  };
+
+  const release = (entry: Entry): void => {
+    if (!entry.active || entry.disposed) return;
+    entry.active = false;
+    mounts.delete(entry);
+    if (destroyed || !entry.ready || retain === 0) {
+      dispose(entry);
+
+      return;
+    }
+    entry.surface.hidden = true;
+    parked.append(entry.surface);
+    const previous = idle.get(entry.pageId);
+
+    if (previous !== undefined) dispose(previous);
+    idle.set(entry.pageId, entry);
+    while (idle.size > retain) dispose(idle.values().next().value as Entry);
+  };
+
+  const createEntry = (pageId: string, holder: HTMLElement, active: boolean): Entry => {
+    const surface = retain > 0 ? document.createElement('div') : holder;
+
+    if (surface !== holder) holder.append(surface);
+    let editor: RowPageEditor;
+
+    try {
+      editor = options.createEditor({
+        ...options.editorConfig(pageId),
+        holder: surface,
+        readOnly: options.readOnly(pageId),
+      });
+    } catch (error) {
+      if (retain > 0) surface.remove();
+      throw error;
+    }
+    // Permission transitions may themselves await work; serialize them so an
+    // older transition cannot finish after the latest permission is applied.
+    let permissions = Promise.resolve();
+    const entry: Entry = {
+      pageId, editor, surface, ready: false, active, disposed: false,
+      refreshPermissions() {
+        if (!entry.ready || entry.disposed) return;
+        permissions = permissions.then(async () => {
+          if (!entry.disposed) await editor.readOnly.set(options.readOnly(pageId));
+        }).catch(fail);
+      },
+    };
+    const fail = (error: unknown): void => {
+      if (entry.disposed) return;
+      const wasActive = entry.active;
+
+      dispose(entry);
+      if (!wasActive) return;
+      if (options.onError) options.onError(error, pageId);
+      else console.error('Unable to open row page', pageId, error);
+    };
+
+    if (active) mounts.add(entry);
+    else idle.set(pageId, entry);
+    try {
+      entry.unwatch = options.watchReadOnly?.(pageId, entry.refreshPermissions);
+    } catch (error) {
+      dispose(entry);
+      throw error;
+    }
+    void editor.isReady.then(() => {
+      if (entry.disposed) return;
+      entry.ready = true;
+      entry.refreshPermissions();
+    }).catch(fail);
+
+    return entry;
+  };
 
   return {
     ...(options.snapshot ? {snapshot: options.snapshot} : {}),
     lookup: input => options.lookup(input),
     copyFromLegacy: input => options.copyFromLegacy(input),
     reconcileLegacy: input => options.reconcileLegacy(input),
+    prepare(pageId) {
+      if (destroyed || retain === 0 || idle.has(pageId) || [...mounts].some(entry => entry.pageId === pageId)) return;
+      try {
+        createEntry(pageId, parked, false);
+        while (idle.size > retain) dispose(idle.values().next().value as Entry);
+      } catch {
+        // Hover preparation is speculative. The visible mount reports a real error.
+      }
+    },
+    isReady(pageId) { return idle.get(pageId)?.ready === true; },
 
     mount(pageId, holder) {
       if (destroyed) throw new Error('Row pages host has been destroyed');
-      const editor = options.createEditor({
-        ...options.editorConfig(pageId),
-        holder,
-        readOnly: options.readOnly(pageId),
-      });
-      let disposed = false;
-      let ready = false;
-      let unwatch: (() => void) | undefined;
-      // Permission transitions may themselves await work; serialize them so an
-      // older transition cannot finish after the latest permission is applied.
-      let permissions = Promise.resolve();
-      const mounted = {
-        editor,
-        destroy() {
-          if (disposed) return;
-          disposed = true;
-          mounts.delete(mounted);
-          try { unwatch?.(); } finally { editor.destroy(); }
-        },
-      };
-      const fail = (error: unknown): void => {
-        if (disposed) return;
-        mounted.destroy();
-        if (options.onError) options.onError(error, pageId);
-        else console.error('Unable to open row page', pageId, error);
-      };
-      const refreshPermissions = (): void => {
-        if (!ready || disposed) return;
-        permissions = permissions.then(async () => {
-          if (!disposed) await editor.readOnly.set(options.readOnly(pageId));
-        }).catch(fail);
-      };
+      const cached = idle.get(pageId);
 
-      mounts.add(mounted);
-      try {
-        unwatch = options.watchReadOnly?.(pageId, refreshPermissions);
-      } catch (error) {
-        mounted.destroy();
-        throw error;
+      if (cached !== undefined) {
+        idle.delete(pageId);
+        cached.surface.hidden = false;
+        holder.append(cached.surface);
+        cached.active = true;
+        mounts.add(cached);
+        cached.refreshPermissions();
+
+        return { destroy: () => release(cached) };
       }
-      void editor.isReady.then(() => {
-        if (disposed) return;
-        ready = true;
-        refreshPermissions();
-      }).catch(fail);
+      const entry = createEntry(pageId, holder, true);
 
-      return { destroy: () => mounted.destroy() };
+      return { destroy: () => release(entry) };
     },
 
     async flush() {
-      await Promise.all([...mounts].map(async mounted => {
-        await mounted.editor.isReady;
-        if (mounts.has(mounted)) await mounted.editor.saver.flush();
+      await Promise.all([...mounts, ...idle.values()].map(async entry => {
+        await entry.editor.isReady;
+        if (!entry.disposed) await entry.editor.saver.flush();
       }));
     },
 
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      for (const mounted of [...mounts]) mounted.destroy();
+      for (const entry of [...mounts, ...idle.values()]) dispose(entry);
+      parked.remove();
     },
   };
 }

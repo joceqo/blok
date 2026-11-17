@@ -8198,7 +8198,10 @@ export class DatabaseTool implements BlockTool {
       cellContext: this.cellContext(),
       selectionBarSlot: () => context === undefined ? this.selectionBarSlot() : null,
       ...(context === undefined ? { peek: this.sidePeek() } : {}),
-      ...(readOnly ? { openRow: (rowId: string) => (context === undefined ? this.handleRowClick(rowId) : context.openRow(rowId)) } : {
+      ...(readOnly ? {
+        openRow: (rowId: string) => (context === undefined ? this.handleRowClick(rowId) : context.openRow(rowId)),
+        prepareRow: (rowId: string) => this.prepareRowPage(rowId),
+      } : {
         handlers: this.tableHandlers(context, () => renderer),
       }),
       ...this.commentLever(),
@@ -8400,6 +8403,12 @@ export class DatabaseTool implements BlockTool {
   }
 
   /** What the table view asks of the tool. Each write goes through the row block or the view, then the backend. */
+  private prepareRowPage(rowId: string): void {
+    const pageId = this.model.getRow(rowId)?.pageId;
+
+    if (pageId !== undefined) this.config.rowPages?.prepare?.(pageId);
+  }
+
   private tableHandlers(context?: NativeWidgetContext, table?: () => DatabaseTableView): TableHandlers {
     const writable = (): boolean => context === undefined ? !this.readOnly && !this.destroyed : context.writable();
 
@@ -8423,6 +8432,7 @@ export class DatabaseTool implements BlockTool {
       },
       duplicateRow: (rowId) => { if (writable()) this.duplicateTableRow(rowId); },
       openRow: (rowId, mode) => context === undefined ? this.handleRowClick(rowId, mode) : context.openRow(rowId, mode),
+      prepareRow: (rowId) => this.prepareRowPage(rowId),
       rowsEscaped: () => { if (context === undefined) this.closeRowPage(); },
       copyRowLink: (rowId) => this.copyRowLink(rowId),
       moveTargets: () => this.moveTargets(),
