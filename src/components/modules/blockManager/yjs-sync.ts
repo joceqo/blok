@@ -2223,6 +2223,17 @@ export class BlockYjsSync {
       // Pass 1 — create blocks and add to array (no DOM, no RENDERED)
       const created: Array<{ block: Block; targetIndex: number; parentId: string | undefined; placement: TreePlacement | undefined }> = [];
 
+      // Opened around COMPOSITION, because that is where a block decides
+      // whether to build its tool's DOM — a first attempt opened it around
+      // activation instead, by which time every block had already been
+      // composed eagerly and nothing ever slept.
+      //
+      // Only for a load of an empty view: a later batch of two blocks is
+      // something the person did, and must appear.
+      if (initialBatch) {
+        beginViewportPass(EAGER_ROOTS);
+      }
+
       for (const entry of toCreate) {
         // Against the live array: earlier entries of this batch are in it and
         // may be this entry's doc neighbour.
@@ -2272,6 +2283,7 @@ export class BlockYjsSync {
 
         created.push({ block, targetIndex, parentId: entry.parentId, placement });
       }
+      endViewportPass();
 
       // Read each parent's authoritative sibling order once after all of this
       // synchronous batch has landed, rather than rescanning it per child.
@@ -2331,6 +2343,9 @@ export class BlockYjsSync {
       } finally {
         endDocumentMount();
       }
+      // Sleepers are drawn on this path too, or a load small enough to skip
+      // slicing would leave its later roots blank for ever.
+      void this.wakeSleepers();
     }, { extendThroughRAF: true });
   }
 
@@ -2403,9 +2418,6 @@ export class BlockYjsSync {
     // Held across every slice AND the yields between them: the document is
     // part-built for the whole run, not just inside one slice.
     beginDocumentMount();
-    // Only the first roots are drawn now. The rest keep their holders and
-    // sleep; `wakeSleepers` draws them once the screen is usable.
-    beginViewportPass(EAGER_ROOTS);
     try {
       // A time budget, not a fixed count: a block's cost swings wildly — a
       // paragraph is nothing, a database row is not — so 25 of them measured
@@ -2432,7 +2444,6 @@ export class BlockYjsSync {
       affectedParents.forEach(parentId => this.reconcileParentChildOrderFromDoc(parentId));
     } finally {
       // A slice that throws must not leave the editor mounting for ever.
-      endViewportPass();
       endDocumentMount();
     }
     await this.wakeSleepers();
