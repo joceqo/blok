@@ -9,8 +9,22 @@
   handle {
     root * /srv
     try_files {path} /index.html
-    @html path / /index.html
-    header @html Cache-Control "no-cache"
+
+    # Les fichiers d'/assets portent un hash dans leur nom : leur contenu ne
+    # change jamais, donc ils se gardent indéfiniment.
+    @hashed path /assets/*
+    header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+    # Tout le reste est servi par index.html, et index.html doit être
+    # revalidé : il nomme les bundles hashés, et un index périmé en désigne
+    # qui n'existent plus — la page casse après chaque déploiement.
+    #
+    # Matché par la NÉGATIVE, parce qu'un `path / /index.html` ne voit que ces
+    # deux chemins : une route SPA comme /p/… recevait le même index.html sans
+    # aucun Cache-Control (vérifié en production : même ETag, en-tête absent).
+    @spa not path /assets/*
+    header @spa Cache-Control "no-cache"
+
     file_server
   }
   header {
