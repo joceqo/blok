@@ -99,6 +99,19 @@ export class BlockFactory {
    * @returns {Block}
    */
   public composeBlock(options: ComposeBlockOptions): Block {
+    // Temporary boot diagnostic: the 849 blocks of a load go through neither
+    // Renderer.render nor handleYjsBatchAdd — this says which path builds them.
+    const probe = (globalThis as { __blokComposeProbe?: { count: number; stacks: Record<string, number> } }).__blokComposeProbe;
+
+    if (probe !== undefined) {
+      probe.count++;
+      if (probe.count <= 400) {
+        const key = (new Error().stack ?? '').split('\n').slice(2, 9).map(line => line.trim()).join(' <- ').slice(0, 500);
+
+        probe.stacks[key] = (probe.stacks[key] ?? 0) + 1;
+      }
+    }
+
     const {
       tool: name,
       data = {},

@@ -300,6 +300,7 @@ export function startBootProfile(): void {
     (globalThis as { __blokRenderProbe?: Record<string, unknown> }).__blokRenderProbe = {};
     (globalThis as { __blokLoaderProbe?: Record<string, unknown> }).__blokLoaderProbe = {};
     (globalThis as { __blokBatchProbe?: Record<string, unknown> }).__blokBatchProbe = {};
+    (globalThis as { __blokComposeProbe?: { count: number; stacks: Record<string, number> } }).__blokComposeProbe = { count: 0, stacks: {} };
     console.info('[blok] profil du démarrage en cours…');
     watchUntilQuiet();
   } catch (error) {
@@ -342,6 +343,11 @@ export async function stopBootProfile(label = 'démarrage'): Promise<ProfileSumm
 
   const batch = (globalThis as { __blokBatchProbe?: Record<string, unknown> }).__blokBatchProbe;
 
+  const compose = (globalThis as { __blokComposeProbe?: { count: number; stacks: Record<string, number> } }).__blokComposeProbe;
+
+  if (compose !== undefined) {
+    console.info('Blocs construits :', compose.count, Object.entries(compose.stacks).sort((a, b) => b[1] - a[1]).slice(0, 4));
+  }
   if (batch !== undefined) {
     console.info('Lots de blocs :', batch);
   }
