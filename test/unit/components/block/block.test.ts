@@ -14,7 +14,7 @@ import { FakeCursorAboutToBeToggled, FakeCursorHaveBeenSet, RedactorDomChanged }
 import { SelectionUtils } from '../../../../src/components/selection';
 
 interface MockToolInstance {
-  render: Mock<() => HTMLElement>;
+  render: Mock<() => HTMLElement | Promise<HTMLElement>>;
   save: Mock<(el: HTMLElement) => Promise<BlockToolData>>;
   validate: Mock<(data: BlockToolData) => Promise<boolean>>;
   renderSettings?: () => unknown;
@@ -41,6 +41,7 @@ interface CreateBlockOptions {
   tunesData?: Record<string, BlockTuneData>;
   eventBus?: EventsDispatcher<BlokEventMap>;
   readOnly?: boolean;
+  deferRender?: boolean;
   toolSetReadOnly?: (state: boolean) => void;
   lastEditedAt?: number;
   lastEditedBy?: string | null;
@@ -156,6 +157,7 @@ const createBlock = (options: CreateBlockOptions = {}): CreateBlockResult => {
     data: options.data ?? {},
     tool: toolAdapter,
     readOnly: options.readOnly ?? false,
+    deferRender: options.deferRender,
     tunesData: options.tunesData ?? {},
     api: {} as ApiModules,
     lastEditedAt: options.lastEditedAt,
@@ -1272,6 +1274,42 @@ describe('Block', () => {
   });
 
   describe('setReadOnly', () => {
+    it.each([false, true])('applies the latest mode %s before an async sleeping tool becomes ready', async (finalReadOnly) => {
+      let resolveRender!: (element: HTMLElement) => void;
+      let root: HTMLElement | undefined;
+      const render = vi.fn(() => new Promise<HTMLElement>(resolve => { resolveRender = resolve; }));
+      const setReadOnly = vi.fn((state: boolean) => {
+        if (root === undefined) throw new Error('Tool DOM is not ready');
+        root.setAttribute('contenteditable', String(!state));
+      });
+      const { block, toolInstance } = createBlock({
+        readOnly: true,
+        deferRender: true,
+        toolOverrides: { render },
+        toolSetReadOnly: setReadOnly,
+      });
+      const rendered = vi.fn(() => root?.getAttribute('contenteditable'));
+
+      Object.assign(toolInstance, { rendered });
+      block.setReadOnly(false);
+      expect(render).not.toHaveBeenCalled();
+      expect(setReadOnly).not.toHaveBeenCalled();
+
+      block.ensureRendered();
+      block.setReadOnly(true);
+      block.setReadOnly(finalReadOnly);
+      expect(setReadOnly).not.toHaveBeenCalled();
+      root = document.createElement('div');
+      resolveRender(root);
+      await block.ready;
+
+      expect(setReadOnly).toHaveBeenCalledExactlyOnceWith(finalReadOnly);
+      expect(rendered).toHaveBeenCalledOnce();
+      expect(rendered).toHaveReturnedWith(String(!finalReadOnly));
+      expect(root.getAttribute('contenteditable')).toBe(String(!finalReadOnly));
+      block.destroy();
+    });
+
     it('stops propagating mutations when entering readonly', () => {
       const eventBus = new EventsDispatcher<BlokEventMap>();
       const { block } = createBlock({ readOnly: false, eventBus });

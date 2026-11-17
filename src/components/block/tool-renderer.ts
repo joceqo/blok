@@ -82,7 +82,8 @@ export class ToolRenderer {
     private readonly tunesManager: TunesManager,
     private readonly config: ToolConfig<ToolConfigWithPlaceholder>,
     private readonly renderedBarrier?: Promise<void>,
-    private readonly runDeferredLifecycle: (callback: () => void) => void = (callback) => callback()
+    private readonly runDeferredLifecycle: (callback: () => void) => void = (callback) => callback(),
+    private readonly onToolRendered: () => void = () => {}
   ) {
     this.ready = new Promise((resolve) => {
       this.readyResolver = resolve;
@@ -239,6 +240,7 @@ export class ToolRenderer {
     this.toolRenderedElementInternal = pluginsContent;
     this.addToolDataAttributes(pluginsContent, wrapper);
     contentNode.appendChild(pluginsContent);
+    this.onToolRendered();
 
     this.invokeRenderedLifecycle();
   }
@@ -264,6 +266,7 @@ export class ToolRenderer {
         this.toolRenderedElementInternal = resolvedElement;
         this.addToolDataAttributes(resolvedElement, wrapper);
         contentNode.appendChild(resolvedElement);
+        this.onToolRendered();
 
         this.invokeRenderedLifecycle();
       })

@@ -312,6 +312,9 @@ export class Block extends EventsDispatcher<BlockEvents> {
    */
   private readOnly: boolean;
 
+  /** Apply mode changes when a sleeping or async tool actually has a DOM. */
+  private readOnlyChangePending = false;
+
   /**
    * Cleanup function for draggable behavior
    */
@@ -429,7 +432,12 @@ export class Block extends EventsDispatcher<BlockEvents> {
       this.tunesManager,
       this.config,
       renderedBarrier,
-      renderDeferredWithoutCapture
+      renderDeferredWithoutCapture,
+      () => {
+        if (!this.readOnlyChangePending) return;
+        this.renderDeferredWithoutCapture(() => this.applyReadOnly());
+        this.readOnlyChangePending = false;
+      }
     );
 
     // Compose the block and get the holder
@@ -922,10 +930,26 @@ export class Block extends EventsDispatcher<BlockEvents> {
       return;
     }
 
-    // Some tools' in-place read-only setter requires their DOM. Honour the
-    // mode transition before exposing a body constructed in the old mode.
-    this.ensureRendered();
     this.readOnly = state;
+
+    // Collaboration unlocks the editor after initial sync. That transition
+    // must not materialise every closed row body. Tool setters often require
+    // their DOM, so reconcile the latest mode before its rendered() lifecycle.
+    if (this.toolRenderer.deferred || this.toolRenderer.pending) {
+      this.readOnlyChangePending = true;
+      if (state) {
+        this.inputManager.removeInputEvents();
+        this.mutationHandler.unwatch();
+      }
+
+      return;
+    }
+
+    this.applyReadOnly();
+  }
+
+  private applyReadOnly(): void {
+    const state = this.readOnly;
 
     const root = this.toolRenderer.toolRenderedElement;
 
@@ -939,13 +963,14 @@ export class Block extends EventsDispatcher<BlockEvents> {
       syncAnnotationFocus(root, state);
     }
 
-    if (!state) {
-      this.inputManager.addInputEvents();
-      this.mutationHandler.watch();
-    }
-
     if (typeof (this.toolInstance as unknown as { setReadOnly?: unknown }).setReadOnly === 'function') {
       (this.toolInstance as unknown as { setReadOnly: (s: boolean) => void }).setReadOnly(state);
+    }
+
+    if (!state) {
+      this.inputManager.dropCache();
+      this.inputManager.addInputEvents();
+      this.mutationHandler.watch();
     }
 
     // Which elements count as text depends on the mode.
