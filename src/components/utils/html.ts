@@ -95,13 +95,41 @@ const moveNode = (parent: StatefulMoveParent, node: Node, reference: Node | null
  * The live selection when both its ends sit inside `node`, else null.
  * @param node - the node about to move
  */
+/**
+ * Counts which exit of `selectionInside` a move takes, when something is
+ * counting. Installed by the boot profiler (`?profile=1`) and absent in a
+ * normal session, where this costs one property read per move.
+ *
+ * The profile blames this function for 26.8 s of a 46 s load but cannot say
+ * which exit runs: the loading redactor is meant to be inert, which would skip
+ * the costly read entirely. Guessing wrong here means optimising the wrong line.
+ * @param exit - which way the function returned
+ */
+const countSelectionExit = (exit: 'detached' | 'inert' | 'read'): void => {
+  const probe = (globalThis as { __blokSelectionProbe?: Record<string, number> }).__blokSelectionProbe;
+
+  if (probe !== undefined) {
+    probe[exit] = (probe[exit] ?? 0) + 1;
+  }
+};
+
 const selectionInside = (node: Node): { anchorNode: Node; anchorOffset: number; focusNode: Node; focusOffset: number } | null => {
   // A detached node cannot hold the selection. Checked first because Chrome
   // forces a whole-page layout on each selection read while nothing is selected.
   // The loading redactor is inert: it cannot carry a user caret either.
-  if (!node.isConnected || (node instanceof Element && node.closest('[inert]') !== null)) {
+  if (!node.isConnected) {
+    countSelectionExit('detached');
+
     return null;
   }
+
+  if (node instanceof Element && node.closest('[inert]') !== null) {
+    countSelectionExit('inert');
+
+    return null;
+  }
+
+  countSelectionExit('read');
 
   const selection = typeof window === 'undefined' ? null : window.getSelection();
   const anchorNode = selection?.anchorNode ?? null;

@@ -53,6 +53,8 @@ export interface ProfileSummary {
   durationMs: number;
   sampleCount: number;
   top: ProfileRow[];
+  /** How each exit of selectionInside was reached, when the probe was installed. */
+  selectionExits?: Record<string, number>;
 }
 
 const ANONYMOUS = '(anonyme)';
@@ -286,6 +288,13 @@ export function startBootProfile(): void {
   try {
     // 10 ms is Chrome's floor in practice; a 45 s freeze needs the big buffer.
     running = new Ctor({ sampleInterval: 10, maxBufferSize: 1_000_000 });
+    // Read by selectionInside (src/components/utils/html.ts). A sampling profile
+    // names the function but not which of its three exits ran; these do.
+    (globalThis as { __blokSelectionProbe?: Record<string, number> }).__blokSelectionProbe = {
+      detached: 0,
+      inert: 0,
+      read: 0,
+    };
     console.info('[blok] profil du démarrage en cours…');
     watchUntilQuiet();
   } catch (error) {
@@ -311,11 +320,15 @@ export async function stopBootProfile(label = 'démarrage'): Promise<ProfileSumm
   stopWatching = null;
 
   const trace = await profiler.stop();
-  const summary = summarizeProfile(trace);
+  const selectionExits = (globalThis as { __blokSelectionProbe?: Record<string, number> }).__blokSelectionProbe;
+  const summary = { ...summarizeProfile(trace), ...(selectionExits !== undefined && { selectionExits }) };
 
   (globalThis as { __blokBootProfile?: ProfileSummary }).__blokBootProfile = summary;
   console.group(`[blok] profil du ${label} — ${summary.durationMs} ms, ${summary.sampleCount} échantillons`);
   console.table(summary.top);
+  if (summary.selectionExits !== undefined) {
+    console.info('Sorties de selectionInside :', summary.selectionExits);
+  }
   console.info('Détail complet : window.__blokBootProfile');
   console.groupEnd();
 

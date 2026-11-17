@@ -231,6 +231,62 @@ describe('html', () => {
       expect(node.parentNode).toBe(target);
     });
 
+    // The profile blames selectionInside for 26.8 s of a 46 s load, but the
+    // function has three exits and the profile cannot tell them apart: the
+    // loading redactor is meant to be [inert], which should already skip the
+    // costly read. These counters say which exit actually runs.
+    describe('selection probe', () => {
+      afterEach(() => {
+        delete (globalThis as { __blokSelectionProbe?: unknown }).__blokSelectionProbe;
+      });
+
+      const probe = (): Record<string, number> => {
+        const counters = { detached: 0, inert: 0, read: 0 };
+
+        (globalThis as { __blokSelectionProbe?: unknown }).__blokSelectionProbe = counters;
+
+        return counters;
+      };
+
+      it('counts a move of a detached node as detached', () => {
+        const counters = probe();
+
+        moveElementToEnd(document.createElement('div'), document.createElement('div'));
+
+        expect(counters).toMatchObject({ detached: 1, inert: 0, read: 0 });
+      });
+
+      it('counts a move inside loading content as inert', () => {
+        const root = document.createElement('div');
+        const node = document.createElement('div');
+        const target = document.createElement('div');
+
+        root.setAttribute('inert', '');
+        root.append(node, target);
+        document.body.append(root);
+        const counters = probe();
+
+        moveElementToEnd(target, node);
+
+        expect(counters).toMatchObject({ detached: 0, inert: 1, read: 0 });
+      });
+
+      it('counts a move in live content as a selection read', () => {
+        const { parent, a } = setup();
+        const counters = probe();
+
+        moveElementToEnd(parent, a);
+
+        expect(counters).toMatchObject({ detached: 0, inert: 0, read: 1 });
+      });
+
+      it('stays silent when no probe is installed', () => {
+        const { parent, a } = setup();
+
+        expect(() => moveElementToEnd(parent, a)).not.toThrow();
+      });
+    });
+
     it('is a no-op when the reference is the node itself', () => {
       const moveBefore = vi.fn();
 
