@@ -16,9 +16,12 @@ import { moveElementAfter, moveElementBefore, withBatchedMoves } from '../../uti
 import { yieldToBrowser } from '../../utils/render-slices';
 
 /**
- * How many blocks one activation run handles before handing the thread back.
- * Matches the renderer's own slice size (`forEachRenderSlice`).
+ * How long one activation run may hold the thread before handing it back.
+ * Matches the renderer's own slice budget (`forEachRenderSlice`).
  */
+const ACTIVATION_BUDGET_MS = 8;
+
+/** Below this, a batch is too small for slicing to be worth a yield. */
 const ACTIVATION_SLICE = 25;
 import { equals } from '../../utils/object';
 import { sanitizeBlocks, stripUnsafeUrlsDeep } from '../../utils/sanitizer';
@@ -2361,11 +2364,23 @@ export class BlockYjsSync {
     origin: BlockChangeEvent['origin'] | undefined
   ): Promise<void> {
     const affectedParents = new Set<string>();
+    let start = 0;
 
-    for (let start = 0; start < created.length; start += ACTIVATION_SLICE) {
-      this.activateSlice(created.slice(start, start + ACTIVATION_SLICE), origin, affectedParents);
+    // A time budget, not a fixed count: 25 blocks measured ~130 ms because a
+    // block's cost swings wildly — a paragraph is nothing, a database row is
+    // not. The renderer slices on the same 8 ms rule.
+    while (start < created.length) {
+      const began = performance.now();
+      let end = start;
 
-      if (start + ACTIVATION_SLICE < created.length) {
+      while (end < created.length && (end === start || performance.now() - began < ACTIVATION_BUDGET_MS)) {
+        end += 1;
+      }
+
+      this.activateSlice(created.slice(start, end), origin, affectedParents);
+      start = end;
+
+      if (start < created.length) {
         await yieldToBrowser();
       }
     }
