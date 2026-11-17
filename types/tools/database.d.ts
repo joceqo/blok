@@ -1585,6 +1585,8 @@ export interface DatabaseRowPageReceipt {
 }
 
 export interface DatabaseRowPages {
+  /** Read a body on explicit duplication; never called to render a closed row. */
+  snapshot?(pageId: string): Promise<OutputData>;
   /** The row's page, or null when the row was never moved. */
   lookup(input: { rowId: string }): Promise<{ pageId: string; acceptedBody: OutputData } | null>;
   copyFromLegacy(input: { rowId: string; operationId: string; body: OutputData }): Promise<DatabaseRowPageReceipt>;

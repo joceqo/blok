@@ -300,6 +300,8 @@ export interface CardDrawerOptions {
    * or a legacy body a read-only viewer cannot convert).
    */
   rowBody?: {
+    /** Whether the row is available as a live inline body beside host pages. */
+    has?(rowId: string): boolean;
     attach(rowId: string, host: HTMLElement): boolean;
     detach(rowId: string): void;
     /** Enter on the title: the highlighted template pick, otherwise the caret in the body (adding its first paragraph when empty). */
@@ -2444,9 +2446,11 @@ export class DatabaseCardDrawer {
     this.drawer.querySelector('[data-blok-database-drawer-page-head]')?.replaceWith(this.buildPageHead(row));
     this.syncCrumbs();
 
-    if (this.attachedBodyRowId === row.id) {
+    if (this.attachedBodyRowId === row.id && (this.rowPages === undefined || row.pageId === undefined)) {
       return;
     }
+
+    if (this.attachedBodyRowId === row.id) this.detachBody();
 
     const description = this.descriptionFor(row);
     const editorHolder = this.drawer.querySelector<HTMLElement>('[data-blok-database-drawer-editor]');
@@ -4259,7 +4263,8 @@ export class DatabaseCardDrawer {
       editorHolder.toggleAttribute('inert', true);
       return;
     }
-    if (this.rowPages === undefined && this.rowBody !== undefined) {
+    if (this.rowBody !== undefined && (this.rowPages === undefined
+      || row.bodyBlocks === true || this.rowBody.has?.(row.id) === true)) {
       this.attachedBodyRowId = row.id;
       if (this.rowBody.attach(row.id, editorHolder)) {
         return;

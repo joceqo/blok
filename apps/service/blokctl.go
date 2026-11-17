@@ -18,6 +18,9 @@ const BlokctlUsage = `usage: blokctl <command>
   blokctl settings show
   blokctl settings set key=value...
   blokctl email test <address>
+  blokctl rows migrate <page-id> [--apply|--resume]
+
+Row migration defaults to dry run. Stop the service and close old clients first.
 
 Config is read from the environment (DATABASE_URL required).
 `
@@ -29,7 +32,7 @@ func Blokctl(ctx context.Context, cfg Config, args []string, stdout, stderr io.W
 		return errors.New("missing command")
 	}
 	switch args[0] {
-	case "admin", "settings", "email":
+	case "admin", "settings", "email", "rows":
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, BlokctlUsage)
 		return nil
@@ -50,6 +53,8 @@ func Blokctl(ctx context.Context, cfg Config, args []string, stdout, stderr io.W
 		return blokctlSettings(ctx, ops, args[1:], stdout, stderr)
 	case "email":
 		return blokctlEmail(ctx, ops, args[1:], stdout, stderr)
+	case "rows":
+		return blokctlRows(ctx, ops, args[1:], stdout)
 	default:
 		fmt.Fprint(stderr, BlokctlUsage)
 		return errors.New("unknown command")

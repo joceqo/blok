@@ -87,6 +87,10 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 				entry["sharedRoot"] = true
 			}
 			access[id] = entry
+			var metadata map[string]json.RawMessage
+			if json.Unmarshal(meta, &metadata) == nil && metadata["rowBodyOf"] != nil {
+				continue
+			}
 			if tr {
 				trash = append(trash, json.RawMessage(meta))
 			} else {
@@ -135,7 +139,7 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 		p := entry.page
 		id, _ := p["id"].(string)
 		parent, _ := p["parentId"].(string)
-		if !validPageMetadata(p) || ids[id] {
+		if !validPageMetadata(p) || ids[id] || p["rowBodyOf"] != nil {
 			problem(w, 400, "Invalid page metadata")
 			return
 		}
@@ -174,6 +178,20 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 	known, order, e := currentIndex(r.Context(), tx, ws.ID)
 	if e != nil {
 		problem(w, 500, "Save failed")
+		return
+	}
+	// Internal row pages belong to their source, never to a sidebar replacement.
+	requested := make([]string, 0, len(all))
+	for _, item := range all {
+		requested = append(requested, item.id())
+	}
+	var internalPage bool
+	if e = tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM pages WHERE workspace_id=$1 AND id=ANY($2) AND metadata ? 'rowBodyOf')`, ws.ID, requested).Scan(&internalPage); e != nil {
+		problem(w, 500, "Save failed")
+		return
+	}
+	if internalPage {
+		problem(w, 409, "Row body pages cannot be changed through the sidebar")
 		return
 	}
 	// Nommer une page qu'on ne voit pas n'est pas un enregistrement : c'est une
@@ -271,6 +289,14 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 				return
 			}
 		}
+	}
+	// Hidden bodies follow their source through trash, restore and permanent deletion.
+	if _, e = tx.Exec(r.Context(), `UPDATE pages AS body SET trashed=source.trashed,deleted=source.deleted
+      FROM pages AS source WHERE body.workspace_id=$1 AND source.workspace_id=$1
+      AND body.metadata->'rowBodyOf'->>'documentId'=source.id
+      AND (body.trashed IS DISTINCT FROM source.trashed OR body.deleted IS DISTINCT FROM source.deleted)`, ws.ID); e != nil {
+		problem(w, 500, "Save failed")
+		return
 	}
 	if _, e = tx.Exec(r.Context(), "UPDATE workspaces SET revision=revision+1 WHERE id=$1", ws.ID); e != nil {
 		problem(w, 500, "Save failed")
@@ -521,6 +547,11 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 		problem(w, 500, "Invalid source state")
 		return
 	}
+	bodyDocuments, e := s.inlineRowBodiesForCopy(r.Context(), u, ws.ID, content)
+	if e != nil {
+		problem(w, 409, "Could not copy row bodies: "+e.Error())
+		return
+	}
 	content["title"] = in.Title
 	encoded, _ := json.Marshal(content)
 	tx, e := s.DB.Begin(r.Context())
@@ -550,6 +581,13 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 	if e != nil || granted < levelView {
 		problem(w, 404, "Source page unavailable")
 		return
+	}
+	for _, bodyID := range bodyDocuments {
+		access, err := s.effectiveLevel(r.Context(), tx, u.ID, bodyID)
+		if err != nil || access < levelView {
+			problem(w, 404, "Row body unavailable")
+			return
+		}
 	}
 	sourceTS, e := s.pageTeamspace(r.Context(), tx, u.ID, source)
 	if e != nil {
@@ -588,6 +626,7 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 	}
 	var metadata map[string]any
 	json.Unmarshal(meta, &metadata)
+	delete(metadata, "rowBodyOf")
 	delete(metadata, "publicId")
 	delete(metadata, "teamspaceId")
 	metadata["id"] = in.ID
@@ -696,7 +735,7 @@ func (p incomingPage) id() string { v, _ := p.page["id"].(string); return v }
 
 // currentIndex rend les pages vivantes de l'espace et leur ordre actuel.
 func currentIndex(ctx context.Context, tx pgx.Tx, workspace string) (map[string]bool, []string, error) {
-	rows, e := tx.Query(ctx, "SELECT id FROM pages WHERE workspace_id=$1 AND NOT deleted ORDER BY (metadata->>'position')::numeric NULLS LAST,id", workspace)
+	rows, e := tx.Query(ctx, "SELECT id,metadata ? 'rowBodyOf' FROM pages WHERE workspace_id=$1 AND NOT deleted ORDER BY (metadata->>'position')::numeric NULLS LAST,id", workspace)
 	if e != nil {
 		return nil, nil, e
 	}
@@ -705,11 +744,14 @@ func currentIndex(ctx context.Context, tx pgx.Tx, workspace string) (map[string]
 	order := []string{}
 	for rows.Next() {
 		var id string
-		if e = rows.Scan(&id); e != nil {
+		var internal bool
+		if e = rows.Scan(&id, &internal); e != nil {
 			return nil, nil, e
 		}
 		known[id] = true
-		order = append(order, id)
+		if !internal {
+			order = append(order, id)
+		}
 	}
 	return known, order, rows.Err()
 }

@@ -1,3 +1,4 @@
+import type { OutputData } from '../../types';
 import { extractPageOutline } from './page-outline';
 import { mergeWorkspaceIndex } from './workspace-merge';
 import { loadIndex, readFile, writeFile, type WorkspaceIndex } from './storage';
@@ -75,6 +76,11 @@ export function workspaceRepository(workspace: WorkspaceRef) {
       const pending = (pageWrites.get(id) ?? Promise.resolve()).then(() => writeFile(id, data, ref));
       pageWrites.set(id, pending);
       return pending;
+    },
+    async readLivePage(id: string): Promise<OutputData> {
+      if (ref.kind !== 'remote') throw new Error('Remote operation only');
+      const {ticket} = await request<{ticket: string}>(`${base}/ticket?doc=${encodeURIComponent(id)}`);
+      return request<OutputData>(`${ref.server}/api/blok/sync/${encodeURIComponent(id)}/state`, {headers: {Authorization: `Bearer ${ticket}`}});
     },
     async seedPage(id: string, document: unknown): Promise<void> {
       if (ref.kind !== 'remote') throw new Error('Remote operation only');

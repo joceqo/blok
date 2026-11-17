@@ -33,6 +33,7 @@ var schema string
 
 type Service struct {
 	DB               *pgxpool.Pool
+	maintenanceGuard *pgxpool.Conn
 	aiCipher         cipher.AEAD
 	aiClient         *http.Client
 	aiInFlight       map[string]int
@@ -95,8 +96,12 @@ func New(ctx context.Context, c Config) (*Service, error) {
 			_ = tx.Rollback(ctx)
 		}
 		s.mcpTraceWriter.close()
+		s.releaseRowBodyGuard()
 		db.Close()
 		return nil, e
+	}
+	if e = s.acquireRowBodyGuard(ctx); e != nil {
+		return fail(e)
 	}
 	tx, e = db.Begin(ctx)
 	if e != nil {
@@ -126,6 +131,13 @@ func New(ctx context.Context, c Config) (*Service, error) {
 	}
 	if e = tx.Commit(ctx); e != nil {
 		return fail(e)
+	}
+	var pendingRowBodies bool
+	if e = db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM row_body_migrations WHERE state='prepared')`).Scan(&pendingRowBodies); e != nil {
+		return fail(e)
+	}
+	if pendingRowBodies {
+		return fail(errors.New("row-body migration unfinished: run blokctl rows migrate <page-id> --resume before starting the service"))
 	}
 	if setupRequired {
 		// Say it plainly at every start: until someone completes the assistant,
@@ -175,6 +187,7 @@ func (s *Service) Close() {
 		s.MCP.Close()
 	}
 	s.mcpTraceWriter.close()
+	s.releaseRowBodyGuard()
 	s.DB.Close()
 }
 func (s *Service) Drain(ctx context.Context) error {

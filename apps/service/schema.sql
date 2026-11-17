@@ -8,6 +8,18 @@ CREATE TABLE IF NOT EXISTS join_requests(id text PRIMARY KEY,workspace_id text R
 CREATE TABLE IF NOT EXISTS invites(id text PRIMARY KEY,workspace_id text REFERENCES workspaces(id),email text NOT NULL,role text NOT NULL CHECK(role IN ('member','viewer')),status text NOT NULL DEFAULT 'pending',expires_at timestamptz NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS pages(id text PRIMARY KEY,workspace_id text NOT NULL REFERENCES workspaces(id),metadata jsonb NOT NULL,trashed boolean NOT NULL DEFAULT false,deleted boolean NOT NULL DEFAULT false,content jsonb,version bigint NOT NULL DEFAULT 0,lineage text,sequence numeric(20,0));
 CREATE INDEX IF NOT EXISTS pages_workspace ON pages(workspace_id);
+-- A prepared transfer keeps its complete source backup and prevents normal
+-- startup until the collaboration journal has been reset and verified.
+CREATE TABLE IF NOT EXISTS row_body_migrations (
+  source_id text PRIMARY KEY REFERENCES pages(id),
+  workspace_id text NOT NULL REFERENCES workspaces(id),
+  state text NOT NULL CHECK(state IN ('prepared','complete')),
+  source_before jsonb NOT NULL,
+  source_after jsonb NOT NULL,
+  body_pages jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz
+);
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS mcp_tokens(id text PRIMARY KEY,user_id text NOT NULL REFERENCES users(id),label text NOT NULL,expires_at timestamptz NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),last_used_at timestamptz);
 CREATE INDEX IF NOT EXISTS mcp_tokens_user ON mcp_tokens(user_id);
@@ -157,3 +169,5 @@ CREATE TABLE IF NOT EXISTS mcp_debug_traces(
 );
 CREATE INDEX IF NOT EXISTS mcp_debug_traces_user_date ON mcp_debug_traces(user_id,started_at DESC);
 INSERT INTO schema_migrations(version) VALUES(11) ON CONFLICT DO NOTHING;
+
+INSERT INTO schema_migrations(version) VALUES(12) ON CONFLICT DO NOTHING;

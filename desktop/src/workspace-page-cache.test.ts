@@ -1,10 +1,11 @@
+import type { DatabaseRowPages } from '../../types/tools/database';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Workspace } from './workspace';
 import type { WorkspaceIndex } from './storage';
 import type { createPageFrame } from '@blok/sidebar';
 import type * as SidebarModule from '@blok/sidebar';
 type PageFrameOptions = Parameters<typeof createPageFrame>[0];
-const state = vi.hoisted(() => ({ editors: [] as Array<{ holder: HTMLElement; data: unknown; collaboration?: {offline?: boolean; offlineScope?: string}; configuredReadOnly(): boolean; rename(title: string): void; destroyed: boolean; flush: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> }>, sidebarAction: null as PageFrameOptions['onAction'] | null }));
+const state = vi.hoisted(() => ({ editors: [] as Array<{ holder: HTMLElement; data: unknown; collaboration?: {offline?: boolean; offlineScope?: string}; rowPages(): DatabaseRowPages | undefined; configuredReadOnly(): boolean; rename(title: string): void; destroyed: boolean; flush: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> }>, sidebarAction: null as PageFrameOptions['onAction'] | null }));
 vi.mock('@bloklabs/core/full', () => ({ allTools: {}, Blok: class {
   isReady: Promise<void>;
   data: unknown;
@@ -12,13 +13,15 @@ vi.mock('@bloklabs/core/full', () => ({ allTools: {}, Blok: class {
   collaboration?: {offline?: boolean; offlineScope?: string};
   holder: HTMLElement;
   titleText = '';
-  constructor(private config: { collaboration?: {offline?: boolean; offlineScope?: string}; holder: HTMLElement; readOnly?: boolean; pageTitle?: { onChange(title: string, change: {source: 'user' | 'remote'}): void }; persistence?: { load(): Promise<unknown>; save(data: unknown): Promise<void> } }) {
+  constructor(private config: { tools?: {database?: {config?: {rowPages?: DatabaseRowPages}}}; collaboration?: {offline?: boolean; offlineScope?: string}; holder: HTMLElement; readOnly?: boolean; pageTitle?: { onChange(title: string, change: {source: 'user' | 'remote'}): void }; persistence?: { load(): Promise<unknown>; save(data: unknown): Promise<void> } }) {
     this.holder = config.holder;
     this.collaboration = config.collaboration;
     const redactor = document.createElement('div'); redactor.dataset.blokRedactor = ''; this.holder.append(redactor);
     state.editors.push(this);
     this.isReady = Promise.resolve(config.persistence?.load()).then(data => { this.data = data; });
   }
+  rowPages(): DatabaseRowPages | undefined { return this.config.tools?.database?.config?.rowPages; }
+  readOnly = { set: vi.fn(async () => true) };
   width = { set: vi.fn() };
   theme = { set: vi.fn() };
   title = { get: () => this.titleText, set: (text: string) => { this.titleText = text; }, icon: { get: () => undefined } };
@@ -249,4 +252,22 @@ it('keeps remote page data across reloads in a stable account and workspace part
   expect(JSON.parse(first.collaboration?.offlineScope ?? 'null')).toEqual(['remote', location.origin, 'user', 'cache-test']);
   await go('b');
   expect(editorAt(1).collaboration?.offlineScope).toBe(first.collaboration?.offlineScope);
+});
+
+it('opens remote row bodies only on demand and flushes/destroys them with their page', async () => {
+  await startRemote();
+  const page = editorAt(0);
+  expect(state.editors).toHaveLength(1);
+  const rows = page.rowPages();
+  expect(rows).toBeDefined();
+  const holder = document.createElement('div');
+  page.holder.append(holder);
+  rows!.mount('body', holder);
+  expect(state.editors).toHaveLength(2);
+  const body = editorAt(1);
+  expect(body.collaboration).toMatchObject({doc: 'body', offline: true, offlineScope: page.collaboration?.offlineScope});
+  await workspace.flush();
+  expect(body.flush).toHaveBeenCalled();
+  workspace.destroy();
+  expect(body.destroy).toHaveBeenCalledTimes(1);
 });

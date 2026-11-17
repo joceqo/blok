@@ -4111,14 +4111,19 @@ export class DatabaseTool implements BlockTool {
     const block = this.api.blocks.getById(rowId) ?? undefined;
     const row = this.rowOrTemplate(rowId);
 
-    if (block === undefined || row === undefined) {
+    if (block === undefined || row === undefined || (this.config.rowPages !== undefined && row.pageId !== undefined)) {
       return false;
     }
     const live: DatabaseRowData[] = [];
 
     block.call('readData', { receive: (data: DatabaseRowData) => live.push(data) });
     const descriptionId = this.model.getSchema().find((property) => property.type === 'richText')?.id;
-    const legacy = live[0]?.bodyBlocks === true ? undefined : rowDescription(row, this.model.getSchema(), descriptionId);
+    const candidate = live[0]?.bodyBlocks === true ? undefined : rowDescription(row, this.model.getSchema(), descriptionId);
+    // A failed legacy conversion can leave some deterministic children behind.
+    // Retry those missing inserts, but never replay a stale blob over native children.
+    const convertedIds = new Set(candidate === undefined ? [] : legacyBodyInserts(rowId, candidate).map(insert => insert.id));
+    const hasNativeChildren = this.api.blocks.getChildren(rowId).some(child => !isAnnotationBlock(child) && !convertedIds.has(child.id));
+    const legacy = hasNativeChildren ? undefined : candidate;
     const unconverted = legacy !== undefined && legacy.blocks.length > 0;
 
     if (unconverted && (this.readOnly || !writable())) {
@@ -8684,13 +8689,36 @@ export class DatabaseTool implements BlockTool {
    * Duplicates a row with its page body. A parent's sub-items are
    * duplicated too, under the copy (research/05 §11.1). One undo step.
    */
-  private duplicateTableRow(rowId: string): void {
+  private duplicateTableRow(rowId: string, bodies?: Map<string, OutputData>): void {
     const row = this.model.getRow(rowId);
 
     if (row === undefined || this.readOnly) return;
     const ordered = this.model.getOrderedRows();
     const pair = this.model.subItemPair();
     const subItems = pair === undefined ? [] : descendantsOf(rowId, ordered, pair.forward);
+    const external = [rowId, ...subItems].flatMap(id => {
+      const pageId = this.model.getRow(id)?.pageId;
+
+      return pageId === undefined || this.config.rowPages === undefined ? [] : [{id, pageId}];
+    });
+
+    if (bodies === undefined && external.length > 0) {
+      const snapshot = this.config.rowPages?.snapshot;
+
+      if (snapshot === undefined) {
+        this.api.notifier.show({message: this.api.i18n.t('tools.stub.error'), style: 'error'});
+        return;
+      }
+      void Promise.all(external.map(async ({id, pageId}) => [id, await snapshot(pageId)] as const)).then(entries => {
+        if (this.destroyed || this.readOnly || external.some(({id, pageId}) => this.model.getRow(id)?.pageId !== pageId)) return;
+        this.duplicateTableRow(rowId, new Map(entries));
+      }).catch(() => this.api.notifier.show({message: this.api.i18n.t('tools.stub.error'), style: 'error'}));
+      return;
+    }
+    if (bodies !== undefined && external.some(({id}) => !bodies.has(id))) {
+      this.duplicateTableRow(rowId);
+      return;
+    }
     const copies = new Map([rowId, ...subItems].map((id) => [id, nanoid()]));
     const titlePropId = this.titlePropertyId();
     const remap = (value: PropertyValue | undefined): PropertyValue =>
@@ -8728,7 +8756,11 @@ export class DatabaseTool implements BlockTool {
         },
         { parentId: this.dataId, position: 'end', id },
       );
-      this.copyChildBlocks(sourceId, id);
+      const externalBody = bodies?.get(sourceId);
+      const copy = this.api.blocks.getById(id);
+
+      if (externalBody !== undefined && copy !== null && copy !== undefined) this.convertLegacyBody(copy, externalBody);
+      else this.copyChildBlocks(sourceId, id);
       created.push({ id, properties, position });
     });
 
@@ -10787,6 +10819,7 @@ export class DatabaseTool implements BlockTool {
         },
         savedOptionsOf: (propertyId) => this.model.getProperty(propertyId)?.config?.options,
         rowBody: {
+          has: (rowId) => this.api.blocks.getById?.(rowId) != null,
           attach: (rowId, host) => {
             if (!writable()) host.setAttribute('inert', '');
 
@@ -11967,6 +12000,9 @@ export class DatabaseTool implements BlockTool {
   }
 
   private legacyBodyOf(row: DatabaseRow | undefined): OutputData | undefined {
+    // Once the row has real child blocks, the retained blob is only an old
+    // snapshot. Reconciliation must never copy it over the current page body.
+    if (row?.bodyBlocks === true) return undefined;
     for (const property of this.model.getSchema()) {
       const value = row?.properties[property.id];
 

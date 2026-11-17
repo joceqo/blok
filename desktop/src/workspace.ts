@@ -1,3 +1,5 @@
+import type { BlokConfig } from '../../types/configs';
+import { createDesktopRowPages, type DesktopRowPages } from './row-pages';
 import {createPageHistoryApi} from './page-history-api';
 import type {createPageHistory} from './page-history';
 import { createPagePresence } from './page-presence';
@@ -197,6 +199,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const lifetime = new AbortController();
   const localMetadata = new Map<string, string>();
   const metadataOf = (page: DesktopPage): string => JSON.stringify({ ...page, createdAt: undefined, updatedAt: undefined });
+  const rowPermissionWatchers = new Set<() => void>();
   const adoptIndex = (value: WorkspaceIndex): WorkspaceIndex => {
     const livePages = new Map([...cachedPages.values(), ...(sessions.current ? [sessions.current] : [])].map(session => [session.id, session.page]));
     const pages = ref.kind === 'remote' ? value.pages.map(incoming => {
@@ -210,6 +213,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const adopted = { ...value, pages };
     ws.index = adopted;
     ws.access = pageAccess(ref, adopted.access);
+    for (const changed of rowPermissionWatchers) changed();
     return adopted;
   };
   /**
@@ -664,10 +668,51 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         if (life.active) saveStatus.saved('document');
       } finally { sync.localWrites--; updatePending(); }
     };
+    const rowPages: DesktopRowPages | undefined = ref.kind === 'remote' ? createDesktopRowPages({
+      snapshot: async bodyId => { await rowPages?.flush(); return repository.readLivePage(bodyId); },
+      lookup: async () => null,
+      copyFromLegacy: async () => { throw new Error('Row bodies are moved by offline maintenance'); },
+      reconcileLegacy: async () => { throw new Error('Close older clients before migrating row bodies'); },
+      createEditor: config => {
+        const body = new Blok(config);
+        let disposed = false;
+        let comments: ReturnType<typeof mountPageComments> | undefined;
+        const ready = body.isReady.then(() => {
+          if (disposed || !(config.holder instanceof HTMLElement)) return;
+          comments = mountPageComments({holder: config.holder, editor: body, author: () => commentAuthor(ref), canComment: () => !disposed && !readOnly(id) && !readOnly(config.collaboration?.doc ?? '')});
+          config.holder.append(comments.action, comments.element);
+        });
+        return {isReady: ready, readOnly: body.readOnly, saver: body.saver, destroy() {
+          if (disposed) return;
+          disposed = true; comments?.destroy(); body.destroy();
+        }};
+      },
+      readOnly: bodyId => readOnly(id) || readOnly(bodyId),
+      watchReadOnly: (_bodyId, changed) => {
+        rowPermissionWatchers.add(changed);
+        return () => { rowPermissionWatchers.delete(changed); };
+      },
+      onError: error => showError(error, 'document'),
+      editorConfig: bodyId => ({
+        tools: pageTools,
+        theme: readAppearance(),
+        documentId: `${workspaceKey(ref)}:${bodyId}`,
+        server: `${ref.server}/api/blok`,
+        ticket: ({ doc }) => repository.ticket(doc ?? bodyId),
+        user: { id: ref.accountId },
+        collaboration: {
+          doc: bodyId,
+          user: { get name() { return readAccountIdentity(ref).name; } },
+          offline: true,
+          offlineScope: workspaceKey(ref),
+        },
+      }),
+    }) : undefined;
+    const pageTools: NonNullable<BlokConfig['tools']> = { ...desktopTools, database: {class: Database, config: {...(rowPages ? {rowPages} : {}), people: { me: () => commentAuthor(ref).authorId, ...(memberProfiles ? { openProfile: (userId: string) => { void memberProfiles.open(userId); } } : {}), list: async () => { if(memberProfiles)return (await memberProfiles.list()).map(member=>({id:member.id,name:profileDisplayName(member.name,member.email),...(member.avatarUrl ? {avatarUrl:member.avatarUrl} : {})})); const author = commentAuthor(ref); return [{ id: author.authorId, get name() { return commentAuthor(ref).authorName; }, get avatarUrl() { return commentAuthor(ref).avatarUrl; } }]; } }, customEmojis: () => emojis.list(), coverGallery: COVER_GALLERY, uploadCover: (file: globalThis.File) => readCoverFile(file).then(repository.uploadImage)}}, page: { class: Page, config: { ...pageConfig } } };
     const instance = new Blok({
       holder,
       readOnly: readOnly(id),
-      tools: { ...desktopTools, database: {class: Database, config: {people: { me: () => commentAuthor(ref).authorId, ...(memberProfiles ? { openProfile: (userId: string) => { void memberProfiles.open(userId); } } : {}), list: async () => { if(memberProfiles)return (await memberProfiles.list()).map(member=>({id:member.id,name:profileDisplayName(member.name,member.email),...(member.avatarUrl ? {avatarUrl:member.avatarUrl} : {})})); const author = commentAuthor(ref); return [{ id: author.authorId, get name() { return commentAuthor(ref).authorName; }, get avatarUrl() { return commentAuthor(ref).avatarUrl; } }]; } }, customEmojis: () => emojis.list(), coverGallery: COVER_GALLERY, uploadCover: (file: globalThis.File) => readCoverFile(file).then(repository.uploadImage)}}, page: { class: Page, config: { ...pageConfig } } },
+      tools: pageTools,
       ...(memberProfiles ? {resolveUser: async (userId: string) => { const member=await memberProfiles.list().then(members=>members.find(person=>person.id===userId)).catch(()=>undefined); return member ? {name:profileDisplayName(member.name,member.email)} : null; }} : {}),
       theme: readAppearance(),
       pageTitle: {
@@ -829,10 +874,12 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         life.destroyed = true; life.active = false;
         historyView.value?.destroy();
         unwatchProfile(); pagePresence?.destroy();
+        rowPages?.destroy();
         toolbar.destroy(); instance.destroy();
         session.nodes = [];
       },
       async flush() {
+        await rowPages?.flush();
         await instance.saver.flush();
         if (ref.kind === 'local' && !readOnly(id)) await saveLocalData(await instance.save());
       },
@@ -872,7 +919,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const duplicatePage = async (page: DesktopPage): Promise<'navigated' | 'pending'> => {
     if (ref.kind === 'remote') {
       const copy = {id: crypto.randomUUID(), title: `${page.title} (copie)`, parentId: page.parentId};
-      if (ws.editor) { await ws.editor.isReady; await ws.editor.saver.flush(); }
+      if (sessions.current) { await sessions.current.editor.isReady; await sessions.current.flush(); }
       await ws.saveOrder;
       await repository.duplicatePage(page.id, copy);
       const refreshed = adoptIndex(await repository.loadIndex());
