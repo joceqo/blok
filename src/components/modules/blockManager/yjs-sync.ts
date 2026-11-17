@@ -14,6 +14,7 @@ import { logLabeled } from '../../utils';
 import { acceptsChildren, isChildToolAllowed } from '../../utils/child-tools';
 import { moveElementAfter, moveElementBefore, withBatchedMoves } from '../../utils/html';
 import { yieldToBrowser } from '../../utils/render-slices';
+import { beginDocumentMount, endDocumentMount } from '../../utils/document-mount';
 
 /**
  * How long one activation run may hold the thread before handing it back.
@@ -2311,8 +2312,15 @@ export class BlockYjsSync {
         return;
       }
 
-      this.activateSlice(created, origin, affectedParents);
-      affectedParents.forEach(parentId => this.reconcileParentChildOrderFromDoc(parentId));
+      // Whoever reacts to a block rendering sees a part-built document until
+      // this returns; say so, so they can wait for the whole thing.
+      beginDocumentMount();
+      try {
+        this.activateSlice(created, origin, affectedParents);
+        affectedParents.forEach(parentId => this.reconcileParentChildOrderFromDoc(parentId));
+      } finally {
+        endDocumentMount();
+      }
     }, { extendThroughRAF: true });
   }
 
@@ -2382,29 +2390,37 @@ export class BlockYjsSync {
     const affectedParents = new Set<string>();
     let next = 0;
 
-    // A time budget, not a fixed count: a block's cost swings wildly — a
-    // paragraph is nothing, a database row is not — so 25 of them measured
-    // ~130 ms. The renderer slices on the same 8 ms rule.
-    //
-    // The clock is read BETWEEN activations, not before them: a first attempt
-    // counted the run's length in a loop that did no work, so the clock never
-    // moved and the "slice" swallowed the whole list.
-    while (next < created.length) {
-      const began = performance.now();
+    // Held across every slice AND the yields between them: the document is
+    // part-built for the whole run, not just inside one slice.
+    beginDocumentMount();
+    try {
+      // A time budget, not a fixed count: a block's cost swings wildly — a
+      // paragraph is nothing, a database row is not — so 25 of them measured
+      // ~130 ms. The renderer slices on the same 8 ms rule.
+      //
+      // The clock is read BETWEEN activations, not before them: a first
+      // attempt counted the run's length in a loop that did no work, so the
+      // clock never moved and the "slice" swallowed the whole list.
+      while (next < created.length) {
+        const began = performance.now();
 
-      withBatchedMoves(() => {
-        do {
-          this.activateEntry(created[next], origin, affectedParents);
-          next += 1;
-        } while (next < created.length && performance.now() - began < ACTIVATION_BUDGET_MS);
-      });
+        withBatchedMoves(() => {
+          do {
+            this.activateEntry(created[next], origin, affectedParents);
+            next += 1;
+          } while (next < created.length && performance.now() - began < ACTIVATION_BUDGET_MS);
+        });
 
-      if (next < created.length) {
-        await yieldToBrowser();
+        if (next < created.length) {
+          await yieldToBrowser();
+        }
       }
-    }
 
-    affectedParents.forEach(parentId => this.reconcileParentChildOrderFromDoc(parentId));
+      affectedParents.forEach(parentId => this.reconcileParentChildOrderFromDoc(parentId));
+    } finally {
+      // A slice that throws must not leave the editor mounting for ever.
+      endDocumentMount();
+    }
   }
 
   /**

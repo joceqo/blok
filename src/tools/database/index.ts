@@ -160,6 +160,7 @@ import { isAnnotationBlock, mountChildBlocks } from '../nested-blocks';
 import { BuiltInCommentsUi } from './database-comments';
 import { isAnnotationType } from '../../shared/annotation-blocks';
 import { moveElementToEnd } from '../../components/utils/html';
+import { isDocumentMounting, onDocumentMounted } from '../../components/utils/document-mount';
 import { showsPageIcon } from './page-icon';
 import {
   DATABASE_DEFAULT_TEXT,
@@ -808,8 +809,8 @@ export class DatabaseTool implements BlockTool {
   private destroyed = false;
   /** This copy is leaving for another document that holds the same rows. */
   private movingOut = false;
-  /** Everything of the source the view currently on screen was drawn from. */
-  private sourceDigest: string | null = null;
+  /** A redraw from the source is owed once the document finishes mounting. */
+  private redrawAfterMount = false;
   /** Set while a full redraw waits for an inline edit or drag to end. */
   private redrawWhenIdleRetry: (() => void) | null = null;
   /** Whether each row the views drew had a body when they read it. Cleared on every redraw. */
@@ -4197,39 +4198,6 @@ export class DatabaseTool implements BlockTool {
   };
 
   /**
-   * Everything of the source this view draws, as one comparable string — null
-   * when it cannot be read, which must never be taken for "nothing changed".
-   *
-   * Reading the source is plain JS over the row blocks; the rebuild it saves
-   * writes DOM and forces layout, so the comparison is worth its own cost many
-   * times over on a load that emits dozens of identical renders.
-   */
-  private sourceProjection(): string | null {
-    const source = this.source;
-
-    // A source in another document is read asynchronously elsewhere; this
-    // handler cannot see whether it moved.
-    if (source === undefined || source.documentId !== undefined) {
-      return null;
-    }
-
-    const read = this.readDatabaseSource(source.databaseId);
-
-    if (read === undefined) {
-      return null;
-    }
-
-    // The tab bar is rebuilt from the source's views and title, so a change to
-    // either has to count as a change even when no row moved.
-    return JSON.stringify({
-      title: this.databaseTitleOf(source.databaseId) ?? null,
-      views: this.sourceViews(source.databaseId),
-      schema: read.schema,
-      rows: read.rows,
-    });
-  }
-
-  /**
    * Redraw this view from its source — unless the source reads exactly as it
    * did when the view on screen was drawn.
    *
@@ -4238,27 +4206,34 @@ export class DatabaseTool implements BlockTool {
    * activates: measured at 48 full rebuilds on one load, 37 of them here, at
    * ~51 ms each. Nearly all of them would redraw the very same thing.
    *
-   * Folding the burst was tried first and measured — it made things WORSE,
-   * 25 rebuilds to 47. Those renders are spread over seconds, not packed into
-   * a frame, so each one opened its own window instead of joining one, and
-   * deferring the redraw past the frame left a deleted source's banner on
-   * screen after the source came back. Dropping the redundant renders costs
-   * nothing and keeps the redraw where it was: synchronous.
+   * Two cheaper answers were tried and measured, and both failed. Folding the
+   * burst on a frame took it from 25 rebuilds to 47 — those renders are spread
+   * over seconds, so each opened its own window instead of joining one.
+   * Comparing a reading of the source and dropping the identical ones removed
+   * NOTHING, because the source is being filled as it renders: all 34 readings
+   * really did differ. They were 34 states on the way to one result.
+   *
+   * So the wait is on the mount, not on a clock: while the document is being
+   * built, remember that a redraw is owed and draw once at the end. Outside a
+   * mount the redraw stays synchronous — deferring it by even one frame left a
+   * deleted source's banner on screen after an undo brought the source back.
    */
   private redrawFromSource(): void {
-    // The reading describes what was DRAWN. A redraw that could draw nothing —
-    // no element, no tab bar yet — must not leave one behind, or the redraw
-    // that finally can draw is dropped against a view that was never built.
-    const drawable = this.element !== null && this.tabBar !== null;
-    const projection = drawable ? this.sourceProjection() : null;
+    if (isDocumentMounting()) {
+      if (!this.redrawAfterMount) {
+        this.redrawAfterMount = true;
+        onDocumentMounted(() => {
+          this.redrawAfterMount = false;
+          if (!this.destroyed) {
+            this.redrawFromSource();
+          }
+        });
+      }
 
-    if (projection !== null && projection === this.sourceDigest) {
       return;
     }
     this.rebuildTabBar();
     this.rerenderView({ keepDrawer: true });
-    // After the redraw, which clears it: what is on screen is this reading.
-    this.sourceDigest = projection;
   }
 
   /**
@@ -13583,10 +13558,6 @@ export class DatabaseTool implements BlockTool {
 
 
   private rerenderView(options: { keepDrawer?: boolean } = {}): void {
-    // Any redraw, from any path, leaves the view describing something this
-    // handler never read. Forget the reading rather than eliminate against it.
-    this.sourceDigest = null;
-
     // Temporary boot diagnostic: a full view rebuild costs 2.75 s of a 10.5 s
     // load, and the profile cannot say whether that is one rebuild or many.
     // Installed by the boot profiler (`?profile=1`), absent otherwise.
