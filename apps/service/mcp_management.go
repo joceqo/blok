@@ -77,6 +77,7 @@ func (s *Service) managementOperations() []managementOperation {
 	userPatch := managementFields("userId")
 	userPatch["name"] = map[string]any{"type": "string", "maxLength": 120}
 	userPatch["instanceAdmin"] = map[string]any{"type": "boolean"}
+	userPatch["avatarUrl"] = map[string]any{"type": "string", "maxLength": 2048, "description": "http(s) picture URL; empty string clears it."}
 	userCreate := managementFields("email")
 	userCreate["name"] = userPatch["name"]
 	paging := map[string]any{"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}, "offset": map[string]any{"type": "integer", "minimum": 0}}
@@ -127,7 +128,7 @@ func (s *Service) managementOperations() []managementOperation {
 		{"blok_update_instance_settings", "Update server name, signup rules, workspace creation policy or default workspace. Requires instance admin. Omitted fields are preserved; null clears defaultWorkspaceId.", "PATCH", s.patchAdminSettings, nil, nil, settings, nil, false},
 		{"blok_list_instance_users", "List server accounts, roles and workspace counts (paginated). Requires instance admin.", "GET", s.listAdminUsers, nil, nil, paging, nil, true},
 		{"blok_create_instance_user", "Create a server account without emailing or adding workspace membership. Requires instance admin.", "POST", s.createAdminUser, nil, nil, userCreate, []string{"email"}, false},
-		{"blok_update_instance_user", "Update account name or grant/revoke instance administrator status. Requires instance admin; protects the last admin.", "PATCH", s.patchAdminUser, nil, map[string]string{"userId": "id"}, userPatch, []string{"userId"}, false},
+		{"blok_update_instance_user", "Update account name, picture, or grant/revoke instance administrator status. Requires instance admin; protects the last admin.", "PATCH", s.patchAdminUser, nil, map[string]string{"userId": "id"}, userPatch, []string{"userId"}, false},
 		{"blok_delete_instance_user", "PERMANENTLY delete a server account and revoke its access. Requires instance admin; protects last administrators/owners. Use only for an explicit account deletion request.", "DELETE", s.deleteAdminUser, nil, map[string]string{"userId": "id"}, managementFields("userId"), []string{"userId"}, false},
 		{"blok_list_instance_workspaces", "List all server workspaces and member counts (paginated), without access to their private content. Requires instance admin.", "GET", s.listAdminWorkspaces, nil, nil, paging, nil, true},
 		{"blok_create_workspace", "Create a workspace and become its admin. Obeys server creation policy; instance admins can create even when normal creation is disabled.", "POST", s.mcpCreateWorkspaceHTTP, nil, nil, managementFields("name", "slug"), []string{"name", "slug"}, false},

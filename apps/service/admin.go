@@ -129,6 +129,9 @@ func (s *Service) patchAdminUser(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		InstanceAdmin *bool   `json:"instanceAdmin"`
 		Name          *string `json:"name"`
+		// Set a member's picture when their account is created for them, from a
+		// directory they are already in. Empty clears it.
+		AvatarURL *string `json:"avatarUrl"`
 	}
 	if !body(w, r, &in) {
 		return
@@ -168,6 +171,20 @@ func (s *Service) patchAdminUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u.Name = name
+	}
+
+	if in.AvatarURL != nil {
+		avatar := strings.TrimSpace(*in.AvatarURL)
+		// Only http(s): this lands in an <img src> for every member, so a
+		// javascript: or data: value would be a stored injection.
+		if avatar != "" && (len(avatar) > 2048 || !(strings.HasPrefix(avatar, "https://") || strings.HasPrefix(avatar, "http://"))) {
+			problem(w, 400, "Invalid avatar URL")
+			return
+		}
+		if _, e = tx.Exec(ctx, `UPDATE users SET avatar_url=nullif($2,'') WHERE id=$1`, id, avatar); e != nil {
+			problem(w, 500, "Could not update user")
+			return
+		}
 	}
 
 	if in.InstanceAdmin != nil {
