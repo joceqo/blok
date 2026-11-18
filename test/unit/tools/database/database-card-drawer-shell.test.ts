@@ -110,16 +110,18 @@ describe('DatabaseCardDrawer shell', () => {
 
       drawer.open(ROW, 'side');
 
-      expect(popover.shown).toEqual([q('[data-blok-database-peek-backdrop]'), q('[data-blok-database-drawer]')]);
+      expect(popover.shown).toEqual([q('[data-blok-database-peek-backdrop]')]);
+      expect(q('[data-blok-database-drawer]')?.parentElement).toBe(q('[data-blok-database-peek-backdrop]'));
       drawer.destroy();
     });
 
-    it('shows the center peek backdrop before the peek, so the peek paints above it', () => {
+    it('promotes the center peek and its backdrop together', () => {
       const drawer = new DatabaseCardDrawer(createOptions());
 
       drawer.open(ROW, 'center');
 
-      expect(popover.shown).toEqual([q('[data-blok-database-peek-backdrop]'), q('[data-blok-database-drawer]')]);
+      expect(popover.shown).toEqual([q('[data-blok-database-peek-backdrop]')]);
+      expect(q('[data-blok-database-drawer]')?.parentElement).toBe(q('[data-blok-database-peek-backdrop]'));
       drawer.destroy();
     });
 
@@ -129,7 +131,8 @@ describe('DatabaseCardDrawer shell', () => {
       drawer.open(ROW, 'side');
       drawer.open(ROW, 'center');
 
-      expect(popover.shown).toEqual([q('[data-blok-database-peek-backdrop]'), q('[data-blok-database-drawer]')]);
+      expect(popover.shown).toEqual([q('[data-blok-database-peek-backdrop]')]);
+      expect(q('[data-blok-database-drawer]')?.parentElement).toBe(q('[data-blok-database-peek-backdrop]'));
       drawer.destroy();
     });
 
@@ -164,8 +167,31 @@ describe('DatabaseCardDrawer shell', () => {
       drawer.close();
 
       expect(el?.isConnected).toBe(true);
-      expect(popover.shown).toEqual([el]);
+      expect(popover.shown).toEqual([el?.parentElement]);
+      expect(el?.parentElement?.hasAttribute('data-blok-database-peek-exiting')).toBe(true);
       drawer.destroy();
+    });
+
+    it('returns the live body before removing the exiting top layer', async () => {
+      vi.useFakeTimers();
+      const options = createOptions();
+      const body = document.createElement('div');
+      const connectedOnDetach: boolean[] = [];
+      const drawer = new DatabaseCardDrawer({ ...options, rowBody: {
+        has: () => true,
+        attach: (_id, holder) => { holder.append(body); return true; },
+        detach: () => { connectedOnDetach.push(body.isConnected); options.wrapper.append(body); },
+      } });
+      try {
+        drawer.open(ROW, 'side');
+        await vi.advanceTimersByTimeAsync(40);
+        drawer.close();
+        await vi.advanceTimersByTimeAsync(400);
+        expect(connectedOnDetach).toEqual([true]);
+        expect(body.isConnected).toBe(true);
+        expect(q('[data-blok-database-peek-exiting]')).toBeNull();
+        expect(popover.shown).toEqual([]);
+      } finally { drawer.destroy(); vi.useRealTimers(); }
     });
   });
 

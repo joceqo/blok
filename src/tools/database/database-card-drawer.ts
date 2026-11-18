@@ -42,6 +42,7 @@ import { getElementDirection, logicalArrow } from '../../components/utils/direct
 import { ScrollLocker } from '../../components/utils/scroll-locker';
 import { DATA_ATTR } from '../../components/constants/data-attributes';
 import { isPromotedToTopLayer, overlayMountFor, promoteToTopLayer, removeFromTopLayer } from '../../components/utils/top-layer';
+import { moveElementBefore, moveElementToEnd } from '../../components/utils/html';
 import { DatabasePropertyTypePopover } from './database-property-type-popover';
 import { propertyTypeMeta } from './database-property-types';
 import { rowDescription } from './row-body';
@@ -633,6 +634,7 @@ export class DatabaseCardDrawer {
   private showHiddenProps = false;
   private mode: OpenPagesIn = 'side';
   private backdrop: HTMLElement | null = null;
+  private readonly exitingLayers = new Set<HTMLElement>();
   private inertBackground: HTMLElement[] = [];
   private backgroundObserver: MutationObserver | null = null;
   private peekOpener: HTMLElement | null = null;
@@ -661,7 +663,7 @@ export class DatabaseCardDrawer {
       suspendSiblings(parent);
     };
 
-    suspendSiblings(this.drawer);
+    suspendSiblings(this.backdrop ?? this.drawer);
   }
 
   private releasePeekBackground(): void {
@@ -1192,7 +1194,7 @@ export class DatabaseCardDrawer {
     this.coverPicker = null;
     // An unsaved Reposition is dropped; its press listener lives on the document.
     this.coverReposition?.cancel();
-    this.removeBackdrop();
+    const exitingLayer = this.removeBackdrop(this.mode === 'side');
     this.releasePeekBackground();
     this.wrapper.removeAttribute('data-blok-database-full-page');
     this.takeover.leave();
@@ -1213,6 +1215,11 @@ export class DatabaseCardDrawer {
       afterSlide(drawer, () => {
         this.releaseLeavingBody();
         drawer.remove();
+        if (exitingLayer !== undefined) {
+          removeFromTopLayer(exitingLayer);
+          exitingLayer.remove();
+          this.exitingLayers.delete(exitingLayer);
+        }
 
         // A drawer opened meanwhile owns the inset now.
         if (this.drawer === null) {
@@ -1273,6 +1280,8 @@ export class DatabaseCardDrawer {
 
     this.releaseLeavingBody();
     exiting?.remove();
+    this.exitingLayers.forEach(layer => { removeFromTopLayer(layer); layer.remove(); });
+    this.exitingLayers.clear();
 
     this.currentRowId = null;
     this.currentRow = null;
@@ -1980,7 +1989,7 @@ export class DatabaseCardDrawer {
     const element = this.emojiPicker.getElement();
 
     if (!element.isConnected) {
-      overlayMountFor(anchor).appendChild(element);
+      (this.mode !== 'full' && this.drawer !== null ? this.drawer : overlayMountFor(anchor)).appendChild(element);
     }
     const current = this.currentRowId === rowId ? this.currentRow?.icon ?? '' : '';
 
@@ -2489,11 +2498,12 @@ export class DatabaseCardDrawer {
     } else {
       this.removeBackdrop();
     }
-    // Peeks go to the top layer, above host chrome and out of any transformed ancestor's containing block.
-    if (mode === 'full') {
-      removeFromTopLayer(drawer);
-    } else if (!isPromotedToTopLayer(drawer)) {
-      measurePeek(this.peekProfile, 'promoteDrawer', () => promoteToTopLayer(drawer));
+    // One promotion for the shell and its backdrop. A fixed backdrop outside
+    // the top layer could be trapped under host chrome or another open peek.
+    const shell = this.backdrop;
+
+    if (shell !== null && !isPromotedToTopLayer(shell)) {
+      measurePeek(this.peekProfile, 'promoteShell', () => promoteToTopLayer(shell));
     }
     measurePeek(this.peekProfile, 'isolateBackground', () => this.isolatePeek());
     // Before narrowPeekHost: it measures the page without its scrollbar.
@@ -2601,23 +2611,45 @@ export class DatabaseCardDrawer {
 
       backdrop.setAttribute('data-blok-database-peek-backdrop', '');
       // Dismiss on the completed click, so its press cannot activate a control underneath.
-      backdrop.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); });
-      backdrop.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); this.close(); });
+      backdrop.addEventListener('mousedown', event => {
+        if (event.target !== backdrop) return;
+        event.preventDefault(); event.stopPropagation();
+      });
+      backdrop.addEventListener('click', event => {
+        if (event.target !== backdrop) return;
+        event.preventDefault(); event.stopPropagation(); this.close();
+      });
+      drawer.before(backdrop);
       this.backdrop = backdrop;
     }
-    drawer.before(this.backdrop);
-    if (isPromotedToTopLayer(this.backdrop)) {
-      return;
+    if (drawer.parentElement !== this.backdrop) {
+      // A fresh shell has no live caret to preserve. Avoid the stateful move's
+      // selection read (and possible layout flush) on the opening click.
+      if (drawer.hasAttribute('data-open')) moveElementToEnd(this.backdrop, drawer);
+      else this.backdrop.appendChild(drawer);
     }
-    // The top layer stacks in show order: the peek leaves it and comes back above the backdrop.
-    removeFromTopLayer(drawer);
-    promoteToTopLayer(this.backdrop);
   }
 
-  private removeBackdrop(): void {
-    if (this.backdrop !== null) removeFromTopLayer(this.backdrop);
-    this.backdrop?.remove();
+  private removeBackdrop(animate = false): HTMLElement | undefined {
+    const backdrop = this.backdrop;
+
     this.backdrop = null;
+    if (backdrop === null) return;
+    const drawer = this.drawer;
+
+    if (animate && drawer !== null) {
+      // Keep the closing panel in its top layer until the slide finishes,
+      // while immediately releasing the click shield and background tint.
+      backdrop.removeAttribute('data-blok-database-peek-backdrop');
+      backdrop.setAttribute('data-blok-database-peek-exiting', '');
+      backdrop.setAttribute('inert', '');
+      this.exitingLayers.add(backdrop);
+      return backdrop;
+    }
+    if (drawer?.parentElement === backdrop) moveElementBefore(drawer, backdrop);
+    removeFromTopLayer(backdrop);
+    backdrop.remove();
+    return undefined;
   }
 
   /** Row whose holder the drawer shows as the page body, or null. */

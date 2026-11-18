@@ -252,7 +252,7 @@ it('profiles a real drawer opening only on opted-in loads', async () => {
   drawer.open({ id: 'private-row-id', position: 'a0', properties: { title: 'Private title' } }, 'side');
   const records = (globalThis as { __blokPeekProfiles?: PeekProfileRecord[] }).__blokPeekProfiles;
   const record = records?.at(-1);
-  expect(record?.spans.map(span => span.name)).toEqual(expect.arrayContaining(['openSync', 'backdrop', 'promoteDrawer']));
+  expect(record?.spans.map(span => span.name)).toEqual(expect.arrayContaining(['openSync', 'backdrop', 'promoteShell']));
   expect(record?.spans.map(span => span.name)).not.toContain('focusTitle');
   await vi.advanceTimersByTimeAsync(40);
   expect(record?.spans.map(span => span.name)).toContain('focusTitle');

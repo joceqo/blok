@@ -1,5 +1,6 @@
 import { openModalDialog } from '../../components/utils/modal-dialog';
-import { renderDeferredDescendants } from '../../components/utils/deferred-render';
+import { scheduleDeferredDescendants } from '../../components/utils/deferred-render';
+import { measurePeek, peekProfileFor } from '../../components/utils/peek-profile';
 import type { ModalDialogHandle } from '../../components/utils/modal-dialog';
 import { DATABASE_EMPTY_AUTOMATIONS } from '../../shared/tool-actions/load-defaults';
 import { describeDatabase } from '../../shared/tool-descriptions/database';
@@ -160,7 +161,7 @@ import { DATA_ATTR } from '../../components/constants/data-attributes';
 import { isAnnotationBlock, mountChildBlocks } from '../nested-blocks';
 import { BuiltInCommentsUi } from './database-comments';
 import { isAnnotationType } from '../../shared/annotation-blocks';
-import { moveElementToEnd } from '../../components/utils/html';
+import { moveElementToEnd, withBatchedMoves } from '../../components/utils/html';
 import { isDocumentMounting, onDocumentMounted } from '../../components/utils/document-mount';
 import { showsPageIcon } from './page-icon';
 import {
@@ -732,6 +733,7 @@ export class DatabaseTool implements BlockTool {
   private readonly hostLevers: DatabaseHostLevers;
 
   private element: HTMLDivElement | null = null;
+  private readonly bodyRenderJobs = new Map<string, () => void>();
   private titleElement: HTMLElement | null = null;
   private titleRowElement: HTMLDivElement | null = null;
   /** Refolds a one-view title row when it or its title changes size. */
@@ -3017,6 +3019,8 @@ export class DatabaseTool implements BlockTool {
     this.listRowDrag?.destroy();
     this.listRowDrag = null;
     this.cardDrawer?.destroy();
+    this.bodyRenderJobs.forEach(cancel => cancel());
+    this.bodyRenderJobs.clear();
     this.keyboard?.destroy();
     this.tabBar?.destroy();
     this.sync.flushPendingUpdates();
@@ -4129,6 +4133,7 @@ export class DatabaseTool implements BlockTool {
    * blob it gets false and the drawer shows the blob read-only.
    */
   private attachRowBody(rowId: string, host: HTMLElement, writable: () => boolean): boolean {
+    const profile = peekProfileFor(host);
     const block = this.api.blocks.getById(rowId) ?? undefined;
     const row = this.rowOrTemplate(rowId);
 
@@ -4151,11 +4156,21 @@ export class DatabaseTool implements BlockTool {
       return false;
     }
     if (unconverted) {
-      this.convertLegacyBody(block, legacy);
+      measurePeek(profile, 'inlineConvertLegacy', () => this.convertLegacyBody(block, legacy));
     }
-    this.mountRows();
-    moveElementToEnd(host, block.holder);
-    renderDeferredDescendants(block.holder);
+    // Share one caret snapshot across pool reconciliation and the final move:
+    // reading selection again after hiding rows can force a second layout.
+    withBatchedMoves(() => {
+      measurePeek(profile, 'inlineMountRows', () => this.mountRows());
+      measurePeek(profile, 'inlineMoveBody', () => moveElementToEnd(host, block.holder));
+    });
+    this.bodyRenderJobs.get(rowId)?.();
+    host.setAttribute('aria-busy', 'true');
+    this.bodyRenderJobs.set(rowId, scheduleDeferredDescendants(block.holder, {
+      isCurrent: () => this.cardDrawer?.openRowId === rowId && block.holder.parentElement === host,
+      onBatch: render => measurePeek(profile, 'inlineRenderBatch', render),
+      onIdle: () => { host.removeAttribute('aria-busy'); profile?.mark('inlineRenderQueueDrained'); },
+    }));
 
     return true;
   }
@@ -10892,7 +10907,11 @@ export class DatabaseTool implements BlockTool {
 
             return this.attachRowBody(rowId, host, writable);
           },
-          detach: () => this.mountRows(),
+          detach: rowId => {
+            this.bodyRenderJobs.get(rowId)?.();
+            this.bodyRenderJobs.delete(rowId);
+            this.mountRows();
+          },
           start: (rowId) => this.api.blocks.getById(rowId)?.call('enter'),
           move: (rowId, step) => {
             const handled: boolean[] = [];

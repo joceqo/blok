@@ -157,6 +157,32 @@ describe('row bodies are child blocks of the row', () => {
     expect(row?.content).toEqual(['c1']);
   });
 
+  it('yields while waking a large inline body and saves sleeping blocks if closed mid-render', async () => {
+    const bodies = Array.from({ length: 60 }, (_, i) => ({ id: `body-${i}`, type: 'paragraph', parent: 'r1', data: { text: `Line ${i}` } }));
+    await make([
+      databaseBlock(),
+      { id: 'r1', type: 'database-row', parent: 'db', data: { properties: { t: 'Large' }, position: 'a0', bodyBlocks: true }, content: bodies.map(b => b.id) },
+      ...bodies,
+      { id: 'r2', type: 'database-row', parent: 'db', data: { properties: { t: 'Other' }, position: 'a1' } },
+    ]);
+    const original = Paragraph.prototype.render;
+    let clock = performance.now();
+    vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const renders = vi.spyOn(Paragraph.prototype, 'render').mockImplementation(function (this: Paragraph) {
+      clock += 5;
+      return original.call(this);
+    });
+    await openRow('r1');
+    expect(renders.mock.calls.length).toBeGreaterThan(0);
+    expect(renders.mock.calls.length).toBeLessThan(60);
+    await pressEscape();
+    const stoppedAt = renders.mock.calls.length;
+    await quiet();
+    expect(renders).toHaveBeenCalledTimes(stoppedAt);
+    const saved = await editor?.save();
+    expect(saved?.blocks.filter(b => b.parent === 'r1').map(b => b.data.text)).toEqual(bodies.map(b => [{ text: b.data.text }]));
+  });
+
   it('places a body block inserted later into its row', async () => {
     await make(docWithBodies());
 

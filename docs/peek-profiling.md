@@ -15,7 +15,7 @@ Compare a first opening, an immediate reopening of the same row, and a different
 | Field | Meaning |
 | --- | --- |
 | `openSync` | Synchronous `drawer.open()` duration; does not include click handlers before this call. |
-| `backdrop`, `promoteDrawer`, `isolateBackground` | Work done while opening the shell. |
+| `backdrop`, `promoteShell`, `isolateBackground` | Shell construction, its single top-layer promotion (panel and backdrop together), and background isolation. Older builds have separate backdrop and `promoteDrawer` promotions. |
 | `focusTitle` | Automatic title focus, now deferred to a task after the shell frame. Omitted if another control gained focus or the peek closed first. |
 | `renderRegions`, `mountBody`, `hostEditorCreate` | Properties, body mounting, and host editor construction. `legacyEditorCreate` covers legacy inline editors. |
 | `measureTitle`, `measureDock`, `narrowHost` | Geometry work, including any synchronous layout it causes. |
@@ -25,6 +25,8 @@ Compare a first opening, an immediate reopening of the same row, and a different
 | `editorReady` | Editor initialization completed; this does **not** prove remote synchronization completed. |
 | `contentLoading`, `loaderHandoffStart`, `contentInteractive` | Loader shown, hide requested, and handoff completed. The content can be an offline snapshot; these do not certify server freshness. Cached content may have no loader cycle. |
 | `inlineBodyAttached` | Existing inline body successfully attached. |
+| `inlineMountRows`, `inlineMoveBody`, `inlineConvertLegacy` | Row-pool reconciliation, moving the opened row holder, and optional legacy conversion. Nested inside `mountBody`. |
+| `inlineRenderBatch`, `inlineRenderQueueDrained` | Each inline wake batch and the first drained queue. Batches yield after 8 ms or 24 tools; an individual tool is atomic and may exceed the budget. Async tools can enqueue further descendants after the first drain. Attachment is not completion of rendering. |
 | `longTasks` | Main-thread tasks over 50 ms during the window, when supported. Includes unrelated work and overlapping peeks. |
 
 Spans contain a start offset and duration. Milestones are offsets from the opening, not durations. Spans can nest (`hostEditorCreate` inside `mountBody`, for example): **do not sum them**. A missing milestone means it was not observed within this five-second window, not necessarily failure. Closing stops recording; late promises cannot update closed records. Browser User Timing tracks contain `blok:peek:<number>:<stage>` spans for correlation with a DevTools Performance recording.
