@@ -1,0 +1,5 @@
+[data-desktop-row-page] > [data-desktop-cover],
+[data-desktop-row-page] > [data-desktop-page-toolbar] [data-desktop-page-actions],
+[data-desktop-row-page] > article > [data-desktop-editor] > [data-desktop-page-comments] {
+  display: none;
+}

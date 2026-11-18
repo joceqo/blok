@@ -11,6 +11,9 @@ export interface RowPageEditor {
 }
 
 export interface DesktopRowPagesOptions {
+  navigate?: DatabaseRowPages['navigate'];
+  navigation?: DatabaseRowPages['navigation'];
+  href?: DatabaseRowPages['href'];
   snapshot?: DatabaseRowPages['snapshot'];
   lookup: DatabaseRowPages['lookup'];
   copyFromLegacy: DatabaseRowPages['copyFromLegacy'];
@@ -143,6 +146,9 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
   };
 
   return {
+    ...(options.navigate ? {navigate: options.navigate} : {}),
+    ...(options.navigation ? {navigation: options.navigation} : {}),
+    ...(options.href ? {href: options.href} : {}),
     ...(options.snapshot ? {snapshot: options.snapshot} : {}),
     lookup: input => options.lookup(input),
     copyFromLegacy: input => options.copyFromLegacy(input),

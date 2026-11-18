@@ -24,7 +24,42 @@ export function pageNavigationUrl(destination: string, currentHref = location.hr
   if (new URL(currentHref).searchParams.get('profile') === '1') url.searchParams.set('profile', '1');
   return url;
 }
-export interface ResolvedPage {pageId:string;publicId:string;title:string;workspace:CloudWorkspace;teamspaceId:string|null}
+export interface ResolvedPage {pageId:string;publicId:string;title:string;workspace:CloudWorkspace;teamspaceId:string|null;rowBodyOf?:{documentId:string;rowId:string}}
+export interface RowPageDestination {documentId:string;rowId:string;databaseId?:string;pageId?:string}
+// Resolver context is transient. Internal row bodies never become sidebar pages.
+const resolvedRows=new Map<string,RowPageDestination>();
+export function rememberResolvedRowPage(origin:string,page:ResolvedPage):void {
+  const keys=[`${origin}|public|${page.publicId.toLowerCase()}`,`${origin}|legacy|${page.pageId}`];
+  for(const key of keys){
+    if(page.rowBodyOf)resolvedRows.set(key,{...page.rowBodyOf,pageId:page.pageId});
+    else resolvedRows.delete(key);
+  }
+}
+export function rowPageDestination(href:string):RowPageDestination|null {
+  const url=new URL(href,location.href),destination=pageDestination(url.href);
+  if(destination.kind==='public' || destination.kind==='legacy'){
+    const resolved=resolvedRows.get(`${url.origin}|${destination.kind}|${destination.id}`);
+    if(resolved)return {...resolved};
+  }
+  const rowId=url.searchParams.get('row'),documentId=pageIdForHref(url.href);
+  if(!rowId || !documentId)return null;
+  const databaseId=url.searchParams.get('database');
+  return {documentId,rowId,...(databaseId ? {databaseId} : {})};
+}
+/** Inline and unmigrated rows stay addressable through their source page. */
+export function rowPageUrl(parentUrl:string,rowId:string,databaseId?:string):string {
+  const url=new URL(parentUrl,location.href);
+  url.hash='';url.searchParams.set('row',rowId);
+  if(databaseId)url.searchParams.set('database',databaseId);else url.searchParams.delete('database');
+  return url.href;
+}
+/** Boot canonicalizes the page identity while retaining a requested row. */
+export function restoredPageNavigationUrl(destination:string,currentHref=location.href):URL {
+  const url=pageNavigationUrl(destination,currentHref),current=new URL(currentHref);
+  for(const key of ['row','database']){const value=current.searchParams.get(key);if(value)url.searchParams.set(key,value);}
+  url.hash=current.hash;
+  return url;
+}
 export async function resolvePageDestination(client:Pick<CloudClient,'request'>,href:string,session:CloudSession):Promise<ResolvedPage> {
   const destination=pageDestination(href);
   if(destination.kind==='invalid' || destination.kind==='none')throw new Error('Page indisponible.');
@@ -57,7 +92,7 @@ export function copiedPageLink(href:string):string|null {
 /** A voluntary switch drops the destination; only an explicit login continuation retains it. */
 export function workspaceSwitchUrl(href:string,local:boolean,resumePage=false):string {
   const url=new URL(href);
-  if(!resumePage){url.pathname='/';url.searchParams.delete('page');url.searchParams.delete('library');url.hash='';}
+  if(!resumePage){url.pathname='/';for(const key of ['page','library','row','database'])url.searchParams.delete(key);url.hash='';}
   for(const key of ['cloud','manage','section','server'])url.searchParams.delete(key);
   if(local)url.searchParams.set('local','1');else url.searchParams.delete('local');
   return url.href;
@@ -71,7 +106,7 @@ export function libraryCategoryForHref(href: string): LibraryCategory | null {
 }
 export function libraryUrl(href: string, category: LibraryCategory = 'all'): string {
   const url = new URL(href, location.href);
-  url.pathname = '/'; url.hash = ''; url.searchParams.delete('page');
+  url.pathname = '/'; url.hash = ''; for(const key of ['page','row','database'])url.searchParams.delete(key);
   url.searchParams.set('library', category);
   return url.href;
 }

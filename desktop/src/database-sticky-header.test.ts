@@ -105,7 +105,7 @@ it.each(['ltr', 'rtl'])('keeps padded frozen header columns aligned across pinni
           <div data-blok-database-table-cell>Other body</div>
         </div><div style="height:1000px"></div></div>
       </div></div></div>`);
-    await page.locator('html').evaluate((el, dir) => { el.dir = dir; }, direction);
+    await page.locator('html').evaluate((el, dir) => { el.setAttribute('dir', dir); }, direction);
     await page.addScriptTag({ content: script });
     await page.evaluate(() => {
       const grid = document.querySelector<HTMLElement>('[data-blok-database-table-grid]');

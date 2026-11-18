@@ -5,7 +5,7 @@ import type { WorkspaceIndex } from './storage';
 import type { createPageFrame } from '@blok/sidebar';
 import type * as SidebarModule from '@blok/sidebar';
 type PageFrameOptions = Parameters<typeof createPageFrame>[0];
-const state = vi.hoisted(() => ({ editors: [] as Array<{ holder: HTMLElement; data: unknown; collaboration?: {offline?: boolean; offlineScope?: string}; rowPages(): DatabaseRowPages | undefined; configuredReadOnly(): boolean; rename(title: string): void; destroyed: boolean; flush: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> }>, sidebarAction: null as PageFrameOptions['onAction'] | null }));
+const state = vi.hoisted(() => ({ editors: [] as Array<{ holder: HTMLElement; data: unknown; collaboration?: {offline?: boolean; offlineScope?: string}; rowPages(): DatabaseRowPages | undefined; configuredReadOnly(): boolean; rename(title: string): void; destroyed: boolean; flush: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> }>, sidebarAction: null as PageFrameOptions['onAction'] | null, rowCalls: [] as Array<{rowId: string; mode: string}>, rowBodies: {} as Record<string,string> }));
 vi.mock('@bloklabs/core/full', () => ({ allTools: {}, Blok: class {
   isReady: Promise<void>;
   data: unknown;
@@ -27,7 +27,20 @@ vi.mock('@bloklabs/core/full', () => ({ allTools: {}, Blok: class {
   title = { get: () => this.titleText, set: (text: string) => { this.titleText = text; }, icon: { get: () => undefined } };
   toolbar = { close: vi.fn(), toggleBlockSettings: vi.fn(), toggleToolbox: vi.fn() };
   inlineToolbar = { close: vi.fn() };
-  blocks = { getById: () => undefined };
+  blocks = { getById: (id: string) => id === 'db' ? {
+    id, name: 'database', holder: this.holder,
+    call: (method: string, input?: {rowId: string; mode: string}) => {
+      const old=this.holder.querySelector('[data-blok-database-drawer-title]');
+      if (method === 'closeRow') { old?.remove(); return; }
+      if (!input) return;
+      state.rowCalls.push(input);
+      const title=document.createElement('textarea'); title.setAttribute('data-blok-database-drawer-title',''); title.value=input.rowId;
+      if(old)old.replaceWith(title);else this.holder.append(title);
+    },
+  } : id.startsWith('row') ? {
+    id, parentId: 'db', name: 'database-row',
+    call: (_method: string, input: {receive(value:{pageId?:string}):void}) => input.receive({pageId:state.rowBodies[id]}),
+  } : undefined };
   on = vi.fn();
   configuredReadOnly(): boolean { return this.config.readOnly === true; }
   rename(title: string): void { this.titleText = title; this.config.pageTitle?.onChange(title, {source: 'user'}); }
@@ -50,6 +63,8 @@ let workspace: Workspace;
 beforeEach(async () => {
   vi.clearAllMocks();
   state.editors.length = 0;
+  state.rowCalls.length = 0;
+  state.rowBodies = {};
   state.sidebarAction = null;
   localStorage.clear(); document.body.replaceChildren();
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} unobserve() {} });
@@ -70,7 +85,7 @@ function editorAt(index: number) {
   return editor;
 }
 async function go(id: string): Promise<void> {
-  history.replaceState(null, '', `?page=${id}`); workspace.onRoute();
+  history.replaceState(null, '', `/?page=${id}`); workspace.onRoute();
   await vi.waitFor(() => expect(document.title).toBe(id));
 }
 it('reuses a rendered page on A → B → A, with only the visible editor accepting input', async () => {
@@ -111,7 +126,7 @@ function requestBody(body: BodyInit | null | undefined): unknown {
   return JSON.parse(body) as unknown;
 }
 
-async function startRemote(): Promise<{ index: WorkspaceIndex; writes: WorkspaceIndex[] }> {
+async function startRemote(remoteOrigin = location.origin): Promise<{ index: WorkspaceIndex; writes: WorkspaceIndex[] }> {
   workspace.destroy();
   document.body.replaceChildren();
   state.editors.length = 0;
@@ -139,13 +154,14 @@ async function startRemote(): Promise<{ index: WorkspaceIndex; writes: Workspace
       if (server.index.access) server.index.access[copy.id] = {level: 'full'};
       return Response.json({});
     }
+    if (url.pathname.includes('/resolve-id/')) return Response.json({pageId:'body',publicId:'77777777-7777-7777-7777-777777777777',title:'Row',workspace:{id:'remote-cache',slug:'cache-test',name:'Remote',role:'admin'},teamspaceId:null,rowBodyOf:{documentId:'a',rowId:'row-body'}});
     if (url.pathname.endsWith('/teamspaces')) return Response.json({teamspaces: []});
     return Response.json({});
   }));
   history.replaceState(null, '', '?page=a');
   const {createWorkspace} = await import('./workspace');
   workspace = createWorkspace(() => undefined, () => undefined, {ref: {
-    kind: 'remote', id: 'remote-cache', name: 'Remote', accountId: 'user', workspaceId: 'cache-test', server: location.origin, role: 'admin',
+    kind: 'remote', id: 'remote-cache', name: 'Remote', accountId: 'user', workspaceId: 'cache-test', server: remoteOrigin, role: 'admin',
   }});
   document.body.append(workspace.element);
   await workspace.start();
@@ -270,4 +286,126 @@ it('opens remote row bodies only on demand and flushes/destroys them with their 
   expect(body.flush).toHaveBeenCalled();
   workspace.destroy();
   expect(body.destroy).toHaveBeenCalledTimes(1);
+});
+
+
+it('expands a row into a reloadable host route and restores its parent without adding body pages to the manifest', async () => {
+  const server = await startRemote();
+  const first = editorAt(0);
+  const host = first.rowPages();
+  const canvas=first.holder.closest('article')?.parentElement;
+  if(!canvas)throw new Error('Missing page canvas');
+  canvas.scrollTop=280;
+  expect(host?.navigate).toBeTypeOf('function');
+  host?.navigate?.('row-one', {databaseId: 'db'});
+  await vi.waitFor(() => expect(state.rowCalls).toContainEqual({rowId: 'row-one', mode: 'full', explicit: true}));
+  expect(new URL(location.href).searchParams.get('row')).toBe('row-one');
+  expect(canvas.scrollTop).toBe(0);
+  expect(host?.navigation?.current()).toEqual({rowId:'row-one',databaseId:'db'});
+  expect(server.index.pages.map(page => page.id)).toEqual(['a','b']);
+
+  history.replaceState(null, '', '?page=a&row=row-two&database=db');
+  workspace.onRoute();
+  await vi.waitFor(() => expect(state.rowCalls).toContainEqual({rowId:'row-two',mode:'full',explicit:true}));
+  host?.navigation?.back();
+  await vi.waitFor(() => expect(new URL(location.href).searchParams.has('row')).toBe(false));
+  await vi.waitFor(()=>expect(document.title).toBe('a'));
+  expect(canvas.scrollTop).toBe(280);
+  expect(first.destroyed).toBe(false);
+
+  history.replaceState(null, '', '?page=a&row=row-one&database=db');
+  workspace.destroy(); workspace.element.remove();
+  state.editors.length = 0;
+  const {createWorkspace} = await import('./workspace');
+  workspace = createWorkspace(() => undefined, () => undefined, {ref: {kind:'remote',id:'remote-cache',name:'Remote',accountId:'user',workspaceId:'cache-test',server:location.origin,role:'admin'}});
+  document.body.append(workspace.element);
+  state.rowCalls.length = 0;
+  await workspace.start();
+  await vi.waitFor(() => expect(state.rowCalls).toContainEqual({rowId:'row-one',mode:'full',explicit:true}));
+  expect(state.editors).toHaveLength(1);
+});
+
+
+it('opens a migrated body at its own public route, reloads its source row, and keeps parent page actions guarded', async () => {
+  const server=await startRemote();
+  state.rowBodies['row-body']='body';
+  const host=editorAt(0).rowPages();
+  host?.navigate?.('row-body',{databaseId:'db',pageId:'body'});
+  await vi.waitFor(() => expect(location.pathname).toBe('/p/row-77777777-7777-7777-7777-777777777777'));
+  await vi.waitFor(() => expect(document.title).toBe('row-body'));
+  expect(location.hash).toBe('');
+  expect(new URL(location.href).searchParams.has('row')).toBe(false);
+  expect(document.querySelector('[data-desktop-page-breadcrumbs]')?.textContent).toContain('row-body');
+  expect(document.querySelector('[data-desktop-row-page]')).not.toBeNull();
+  const more=document.querySelector<HTMLButtonElement>('[data-desktop-page-more]');
+  more?.click();
+  const remove=Array.from(document.querySelectorAll<HTMLButtonElement>('[data-desktop-page-menu] button')).find(button => button.textContent === 'Mettre à la corbeille');
+  expect(remove).toBeDefined(); remove?.click();
+  await workspace.flush();
+  expect(server.index.pages.map(page=>page.id)).toEqual(['a','b']);
+
+  workspace.destroy(); workspace.element.remove(); state.editors.length=0; state.rowCalls.length=0;
+  const {createWorkspace}=await import('./workspace');
+  workspace=createWorkspace(()=>undefined,()=>undefined,{ref:{kind:'remote',id:'remote-cache',name:'Remote',accountId:'user',workspaceId:'cache-test',server:location.origin,role:'admin'}});
+  document.body.append(workspace.element); await workspace.start();
+  await vi.waitFor(() => expect(document.title).toBe('row-body'));
+  expect(state.rowCalls).toContainEqual({rowId:'row-body',mode:'full',explicit:true});
+  expect(server.index.pages.map(page=>page.id)).toEqual(['a','b']);
+  await go('b');
+  expect(document.querySelector('[data-desktop-row-page]')).toBeNull();
+});
+
+it.each([false,true])('ignores a delayed row resolver after leaving its source (rejected: %s)', async rejected => {
+  await startRemote(); state.rowBodies['row-body']='body';
+  const original=fetch;
+  let finish: ((response:Response)=>void) | undefined;
+  const pending=new Promise<Response>(resolve=>{finish=resolve;});
+  let requested=false;
+  vi.stubGlobal('fetch',vi.fn(async(input:string|URL|Request,init?:RequestInit)=>{
+    const url=new URL(typeof input === 'string' || input instanceof URL ? input : input.url,location.href);
+    if(url.pathname.includes('/resolve-id/')){requested=true;return pending;}
+    return original(input,init);
+  }));
+  editorAt(0).rowPages()?.navigate?.('row-body',{databaseId:'db',pageId:'body'});
+  await vi.waitFor(()=>expect(requested).toBe(true));
+  await go('b');
+  if(!finish)throw new Error('Missing pending resolver');
+  finish(rejected ? Response.json({error:'stale row resolver failure'},{status:404}) : Response.json({pageId:'body',publicId:'77777777-7777-7777-7777-777777777777',title:'Row',workspace:{id:'remote-cache',slug:'cache-test',name:'Remote',role:'admin'},teamspaceId:null,rowBodyOf:{documentId:'a',rowId:'row-body'}}));
+  await pending; await workspace.flush(); await Promise.resolve();
+  expect(document.title).toBe('b');
+  expect(new URL(location.href).searchParams.get('page')).toBe('b');
+  expect(document.body.textContent).not.toContain('stale row resolver failure');
+});
+
+it('rejects a row route that names another database instead of showing its source page', async()=>{
+  await startRemote();
+  history.replaceState(null,'','?page=a&row=row-one&database=other');workspace.onRoute();
+  await vi.waitFor(()=>expect(document.querySelector('[data-page-unavailable]')).not.toBeNull());
+  expect(state.rowCalls).toEqual([]);
+});
+
+
+it('uses a native same-origin route for an unmigrated row and a public URL when copying it',async()=>{
+  vi.stubGlobal('__TAURI_INTERNALS__',{invoke:vi.fn(async()=>null)});
+  await startRemote('https://native-server.example');
+  const host=editorAt(0).rowPages();
+  host?.navigate?.('row-native',{databaseId:'db'});
+  await vi.waitFor(()=>expect(document.title).toBe('row-native'));
+  expect(location.origin).not.toBe('https://native-server.example');
+  expect(new URL(location.href).searchParams.get('page')).toBe('a');
+  expect(host?.href?.('row-native',{databaseId:'db'})).toBe('https://native-server.example/?page=a&row=row-native&database=db');
+});
+
+it('retains nested row body editors while falling back to core full-page navigation for their databases',async()=>{
+  await startRemote();
+  const host=editorAt(0).rowPages();
+  const holder=document.createElement('div');document.body.append(holder);
+  const mounted=host?.mount('body',holder);
+  await vi.waitFor(()=>expect(state.editors).toHaveLength(2));
+  const nested=editorAt(1).rowPages();
+  expect(nested?.mount).toBeTypeOf('function');
+  expect(nested?.navigate).toBeUndefined();
+  expect(nested?.navigation).toBeUndefined();
+  expect(nested?.href).toBeUndefined();
+  mounted?.destroy();holder.remove();
 });

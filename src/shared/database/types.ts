@@ -1632,11 +1632,21 @@ export interface DatabaseRowPages {
     acceptedBody: OutputData;
   }): Promise<DatabaseRowPageReceipt>;
   mount(pageId: string, holder: HTMLElement): { destroy(): void };
+  /** Start a bounded speculative row body editor. */
+  prepare?(pageId: string, options?: { ifRoom?: boolean }): void;
+  isReady?(pageId: string): boolean;
   /**
    * Show the row's page as a full page in the host's own page area. Without
    * it, a full page takes the database's place in the editor.
    */
-  navigate?(rowId: string): void;
+  navigate?(rowId: string, context?: { databaseId: string; pageId?: string }): void;
+  /** The host owns full-page history; the database still owns row metadata. */
+  navigation?: {
+    current(): { rowId: string; databaseId?: string } | null;
+    back(): void;
+  };
+  /** A host can copy a stable row route instead of the current peek's URL. */
+  href?(rowId: string, context: { databaseId: string; pageId?: string }): string;
 }
 
 /** View fields a person can change for themselves before "Save for everyone". */

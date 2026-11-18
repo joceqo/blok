@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it,vi} from 'vitest';
-import {pageNavigationUrl,libraryUrl,libraryCategoryForHref,pageDestination,publicPageUrl,resolvePageDestination,workspaceSwitchUrl,rememberPageLinks,pageIdForHref,copiedPageLink} from './page-urls';
+import {pageNavigationUrl,libraryUrl,libraryCategoryForHref,pageDestination,publicPageUrl,resolvePageDestination,workspaceSwitchUrl,rememberPageLinks,pageIdForHref,copiedPageLink,rememberResolvedRowPage,rowPageDestination,rowPageUrl,restoredPageNavigationUrl} from './page-urls';
 import type {CloudSession} from './cloud/client';
 const uuid='2a7aee31-f541-41e8-9190-6eae552291b8';
 it('preserves diagnostic opt-in during navigation without copying stale destinations or login parameters', () => {
@@ -12,6 +12,20 @@ const workspace={id:'ws',slug:'new-workspace',name:'New name',role:'member' as c
 const session:CloudSession={user:{id:'user',email:'user@example.org'},workspaces:[workspace]};
 afterEach(()=>rememberPageLinks(location.origin,location.origin,[]));
 describe('stable public page URLs',()=>{
+ it('keeps a migrated row at its own public URL while resolving its source outside the sidebar index',()=>{
+  const resolved={pageId:'body',publicId:uuid,title:'Task',workspace,teamspaceId:null,rowBodyOf:{documentId:'parent',rowId:'task'}};
+  rememberResolvedRowPage(location.origin,resolved);
+  rememberPageLinks(location.origin,location.origin,[{id:'parent',title:'Projects',publicId:'88888888-8888-8888-8888-888888888888'}]);
+  expect(rowPageDestination(`${location.origin}/p/task-${uuid}`)).toEqual({documentId:'parent',rowId:'task',pageId:'body'});
+  expect(rowPageDestination(`https://foreign.example/p/task-${uuid}`)).toBeNull();
+ });
+ it('gives rows without an independent body a reloadable parent route, and removes it on library/workspace navigation',()=>{
+  const href=rowPageUrl('https://example.org/?page=parent&profile=1#old','task / 1','db');
+  expect(rowPageDestination(href)).toEqual({documentId:'parent',rowId:'task / 1',databaseId:'db'});
+  expect(restoredPageNavigationUrl(`https://example.org/p/parent-${uuid}`,href).href).toBe(`https://example.org/p/parent-${uuid}?profile=1&row=task+%2F+1&database=db`);
+  expect(new URL(libraryUrl(href)).searchParams.has('row')).toBe(false);
+  expect(new URL(workspaceSwitchUrl(href,false)).searchParams.has('row')).toBe(false);
+ });
  it('parses the UUID independently of title and keeps legacy internal IDs intact',()=>{
   expect(pageDestination(`https://example.org/p/ancien-titre-${uuid}`)).toEqual({kind:'public',id:uuid});
   expect(pageDestination('https://example.org/?page=welcome-original-workspace')).toEqual({kind:'legacy',id:'welcome-original-workspace'});

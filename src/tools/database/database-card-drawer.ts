@@ -1170,10 +1170,11 @@ export class DatabaseCardDrawer {
     if (editorHolder === null) this.renderRegions(row);
   }
 
-  close(): void {
+  close(options?: { navigate?: boolean }): void {
     this.peekProfile?.finish('closed');
     this.childPeek?.close();
     const wasOpen = this.drawer !== null;
+    const hosted = this.isHostPage();
     // The side peek slides out with its body still in it; the body goes back
     // to the pool once the slide ends.
     const sliding = this.drawer !== null && this.mode === 'side' ? this.attachedBodyRowId : null;
@@ -1204,7 +1205,8 @@ export class DatabaseCardDrawer {
     const exitingLayer = this.removeBackdrop(this.mode === 'side');
     this.releasePeekBackground();
     this.wrapper.removeAttribute('data-blok-database-full-page');
-    this.takeover.leave();
+    if (hosted) this.takeover.release();
+    else this.takeover.leave();
 
     // Only the side peek slides out; center and full page leave at once.
     if (this.drawer !== null && this.mode !== 'side') {
@@ -1245,6 +1247,7 @@ export class DatabaseCardDrawer {
       this.peekOpener = null;
       if (opener !== null) this.restoreOpenerFocusAfterPaint(opener);
       this.onClose();
+      if (hosted && options?.navigate !== false) this.rowPages?.navigation?.back();
     }
   }
 
@@ -2638,9 +2641,17 @@ export class DatabaseCardDrawer {
   }
 
   /** A full page takes over its editor and the URL (row-page-takeover.ts); a peek gives both back. */
+  private isHostPage(): boolean {
+    const current = this.rowPages?.navigation?.current();
+
+    return this.mode === 'full' && this.currentRowId !== null && current?.rowId === this.currentRowId
+      && (current.databaseId === undefined || current.databaseId === this.databaseId);
+  }
+
   private syncTakeover(): void {
     if (this.mode === 'full' && this.drawer !== null && this.currentRowId !== null) {
-      this.takeover.enter(this.currentRowId, this.parentPage?.drawer ?? this.wrapper);
+      if (this.isHostPage()) this.takeover.resume();
+      else this.takeover.enter(this.currentRowId, this.parentPage?.drawer ?? this.wrapper);
     } else {
       this.takeover.leave();
       this.parentPage?.takeover.resume();

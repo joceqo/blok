@@ -3534,6 +3534,11 @@ export class DatabaseTool implements BlockTool {
     }
   }
 
+  /** The host left its row route while retaining the source editor. */
+  closeRow(): void {
+    this.cardDrawer?.close({navigate:false});
+  }
+
   /**
    * Store the IDs `assignUniqueIds` worked out. Derived: every peer computes
    * the same numbers, so this is not anyone's edit and not an undo step.
@@ -9871,9 +9876,12 @@ export class DatabaseTool implements BlockTool {
   private readonly followRowPageHistory = (): void => {
     if (this.source !== undefined || this.destroyed) return;
     const link = readRowPageHash();
+    const hosted = this.config.rowPages?.navigation?.current();
     const drawer = this.cardDrawer;
     const shownFull = drawer?.isOpen === true && drawer.openMode === 'full' ? drawer.openRowId : null;
-    const wanted = link?.full === true && this.model.getRow(link.rowId) !== undefined ? link.rowId : null;
+    const wanted = hosted !== undefined && hosted !== null
+      ? ((hosted.databaseId === undefined || hosted.databaseId === this.block.id) && this.model.getRow(hosted.rowId) !== undefined ? hosted.rowId : null)
+      : link?.full === true && this.model.getRow(link.rowId) !== undefined ? link.rowId : null;
 
     if (shownFull === wanted) return;
     if (link?.full === true && drawer?.hasFullPageChild(link.rowId)) return;
@@ -10000,7 +10008,9 @@ export class DatabaseTool implements BlockTool {
   /** Rows have no addressable URL yet: copies the page URL with the row id (and a view tab) as its fragment. */
   private copyRowLink(rowId: string, tabId?: string): void {
     const view = tabId === undefined ? '' : `?v=${encodeURIComponent(tabId)}`;
-    const url = `${window.location.href.split('#')[0]}#${encodeURIComponent(rowId)}${view}`;
+    const hostUrl = this.config.rowPages?.href?.(rowId, {databaseId: this.dataId, ...(this.model.getRow(rowId)?.pageId ? {pageId: this.model.getRow(rowId)?.pageId} : {})});
+    const url = hostUrl === undefined ? `${window.location.href.split('#')[0]}#${encodeURIComponent(rowId)}${view}`
+      : tabId === undefined ? hostUrl : `${hostUrl}#${encodeURIComponent(rowId)}${view}`;
 
     void navigator.clipboard?.writeText(url).then(
       () => this.api.notifier.show({ message: this.api.i18n.t('tools.database.tableLinkCopied') }),
@@ -11373,8 +11383,9 @@ export class DatabaseTool implements BlockTool {
           const navigate = this.config.rowPages?.navigate;
 
           if (navigate === undefined) return false;
-          this.cardDrawer?.close();
-          navigate(rowId);
+          this.cardDrawer?.close({navigate:false});
+          const row = this.model.getRow(rowId);
+          navigate(rowId, {databaseId: this.dataId, ...(row?.pageId ? {pageId: row.pageId} : {})});
 
           return true;
         },
@@ -12003,7 +12014,9 @@ export class DatabaseTool implements BlockTool {
     }
     this.ensureCardDrawer(origin);
     // Already shown: a fresh lookup would drop the open editor unsaved. open() only switches the mode.
-    const navigates = explicit === 'full' && this.config.rowPages?.navigate !== undefined;
+    const hosted = this.config.rowPages?.navigation?.current();
+    const hostRoute = hosted?.rowId === rowId && (hosted.databaseId === undefined || hosted.databaseId === this.block.id);
+    const navigates = explicit === 'full' && this.config.rowPages?.navigate !== undefined && !hostRoute;
 
     if (this.cardDrawer?.openRowId === rowId && !navigates) {
       if (explicit !== undefined && explicit !== this.cardDrawer.openMode) {
@@ -12017,9 +12030,9 @@ export class DatabaseTool implements BlockTool {
     const viewMode = openIn ?? (view === undefined ? 'side' : resolveOpenPagesIn(view));
     const mode = explicit ?? (this.cardDrawer?.isOpen === true ? this.cardDrawer.openMode : viewMode);
 
-    if (mode === 'full' && this.config.rowPages?.navigate !== undefined) {
-      this.cardDrawer?.close();
-      this.config.rowPages.navigate(rowId);
+    if (mode === 'full' && this.config.rowPages?.navigate !== undefined && !hostRoute) {
+      this.cardDrawer?.close({navigate:false});
+      this.config.rowPages.navigate(rowId, {databaseId: this.dataId, ...(row.pageId ? {pageId: row.pageId} : {})});
 
       return;
     }

@@ -56,6 +56,35 @@ const createOptions = (overrides: Partial<CardDrawerOptions> = {}): CardDrawerOp
 });
 
 describe('DatabaseCardDrawer', () => {
+  it('uses the host full-page route for its row title, properties and parent breadcrumb without adding a hash entry', async () => {
+    const back = vi.fn();
+    const wrapper = document.createElement('div');
+    const editor = document.createElement('div');
+    editor.setAttribute('data-blok-editor', '');
+    editor.append(wrapper); document.body.append(editor);
+    history.replaceState(null, '', '/?page=parent&row=row-1&database=db');
+    const options = createOptions({wrapper, databaseId:'db', databaseTitle:()=> 'Projects', schema:[makePropertyDef({name:'Status'})], rowPages: {
+      lookup: async () => null, copyFromLegacy: vi.fn(), reconcileLegacy: vi.fn(), mount: () => ({destroy:vi.fn()}),
+      navigation: { current: () => ({rowId:'row-1',databaseId:'db'}), back },
+    }});
+    const drawer = new DatabaseCardDrawer(options);
+    try {
+      drawer.open(makeRow(), 'full');
+      expect(location.hash).toBe('');
+      expect(editor.hasAttribute('data-blok-database-row-page')).toBe(true);
+      expect(wrapper.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]')?.value).toBe('Test card');
+      await vi.waitFor(() => expect(wrapper.querySelector('[data-blok-database-drawer-prop-label]')?.textContent).toBe('Status'));
+      const title=wrapper.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]');
+      if (!title) throw new Error('Missing row title');
+      title.value='Renamed task';title.dispatchEvent(new Event('input',{bubbles:true}));
+      expect(options.onTitleChange).toHaveBeenCalledWith('row-1','Renamed task');
+      expect(wrapper.querySelector('[data-blok-database-peek-crumb="database"]')?.textContent).toBe('Projects');
+      const crumb=wrapper.querySelector<HTMLButtonElement>('[data-blok-database-peek-crumb="database"]');
+      crumb?.click();
+      expect(back).toHaveBeenCalledOnce();
+      expect(editor.hasAttribute('data-blok-database-row-page')).toBe(false);
+    } finally { drawer.destroy(); editor.remove(); history.replaceState(null, '', '/'); }
+  });
   beforeEach(() => {
     vi.clearAllMocks();
   });
