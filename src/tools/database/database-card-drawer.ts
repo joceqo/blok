@@ -288,6 +288,8 @@ export interface CardDrawerOptions {
   events?: Pick<Events, 'on' | 'off'>;
   toolsConfig?: ToolsConfig;
   rowPages?: DatabaseRowPages;
+  /** Includes ancestor rows opened only to reach the host's destination. */
+  isHostedRow?: (rowId: string) => boolean;
   titlePropertyId: string;
   descriptionPropertyId?: string;
   schema: PropertyDefinition[];
@@ -533,6 +535,7 @@ export class DatabaseCardDrawer {
   private readonly i18n: I18n | undefined;
   private readonly toolsConfig: ToolsConfig | undefined;
   private readonly rowPages: DatabaseRowPages | undefined;
+  private readonly isHostedRow: ((rowId: string) => boolean) | undefined;
   private readonly titlePropertyId: string;
   private descriptionPropertyId: string | undefined;
   private schema: PropertyDefinition[];
@@ -730,6 +733,7 @@ export class DatabaseCardDrawer {
     this.i18n = options.i18n;
     this.toolsConfig = options.toolsConfig;
     this.rowPages = options.rowPages;
+    this.isHostedRow = options.isHostedRow;
     this.titlePropertyId = options.titlePropertyId;
     this.descriptionPropertyId = options.descriptionPropertyId;
     this.schema = options.schema;
@@ -858,11 +862,14 @@ export class DatabaseCardDrawer {
     const previous = openPeek.drawer;
 
     if (previous !== null && previous !== this) {
-      if (previous.mode !== 'full') previous.close();
+      // A nested database lives in the current peek's body. Closing that peek
+      // would return the child's whole subtree to a hidden pool mid-open.
+      const nested = previous.drawer?.contains(this.wrapper) === true;
+      if (previous.mode !== 'full' && !nested) previous.close();
       const page = openPeek.drawer;
       const editor = this.wrapper.closest('[data-blok-editor]');
 
-      if (page !== null && page !== this && page.mode === 'full' && editor !== null && page.wrapper.closest('[data-blok-editor]') === editor) {
+      if (page !== null && page !== this && (page.mode === 'full' || nested) && editor !== null && page.wrapper.closest('[data-blok-editor]') === editor) {
         this.parentPage = page;
         page.childPeek = this;
       } else {
@@ -1172,7 +1179,7 @@ export class DatabaseCardDrawer {
 
   close(options?: { navigate?: boolean }): void {
     this.peekProfile?.finish('closed');
-    this.childPeek?.close();
+    this.childPeek?.close(options);
     const wasOpen = this.drawer !== null;
     const hosted = this.isHostPage();
     // The side peek slides out with its body still in it; the body goes back
@@ -2214,7 +2221,7 @@ export class DatabaseCardDrawer {
     if (parent?.childPeek === this) {
       parent.childPeek = null;
       parent.drawer?.removeAttribute('data-blok-database-full-page');
-      if (parent.isOpen) parent.takeover.resume();
+      if (parent.isOpen && parent.mode === 'full') parent.takeover.resume();
     }
     this.restoreParentScroll();
     this.parentPage = null;
@@ -2644,17 +2651,17 @@ export class DatabaseCardDrawer {
   private isHostPage(): boolean {
     const current = this.rowPages?.navigation?.current();
 
-    return this.mode === 'full' && this.currentRowId !== null && current?.rowId === this.currentRowId
-      && (current.databaseId === undefined || current.databaseId === this.databaseId);
+    return this.mode === 'full' && this.currentRowId !== null && (this.isHostedRow?.(this.currentRowId)
+      || (current?.rowId === this.currentRowId && (current.databaseId === undefined || current.databaseId === this.databaseId)));
   }
 
   private syncTakeover(): void {
     if (this.mode === 'full' && this.drawer !== null && this.currentRowId !== null) {
-      if (this.isHostPage()) this.takeover.resume();
+      if (this.isHostPage()) this.takeover.resume(this.parentPage?.drawer ?? this.wrapper);
       else this.takeover.enter(this.currentRowId, this.parentPage?.drawer ?? this.wrapper);
     } else {
       this.takeover.leave();
-      this.parentPage?.takeover.resume();
+      if (this.parentPage?.mode === 'full') this.parentPage.takeover.resume();
       this.restoreParentScroll();
     }
   }

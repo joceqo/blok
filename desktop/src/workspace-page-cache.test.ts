@@ -1,4 +1,5 @@
 import type { DatabaseRowPages } from '../../types/tools/database';
+import type { BlockAPI } from '../../types';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Workspace } from './workspace';
 import type { WorkspaceIndex } from './storage';
@@ -408,4 +409,82 @@ it('retains nested row body editors while falling back to core full-page navigat
   expect(nested?.navigation).toBeUndefined();
   expect(nested?.href).toBeUndefined();
   mounted?.destroy();holder.remove();
+});
+
+it('opens nested rows through workspace routing and returns to their parent using native breadcrumbs and Back', async () => {
+  vi.stubGlobal('__TAURI_INTERNALS__', {invoke: vi.fn(async () => null)});
+  await startRemote('https://native-server.example');
+  const editor = editorAt(0);
+  const surface = document.createElement('div');
+  surface.setAttribute('data-blok-editor', '');
+  editor.holder.append(surface);
+  const block = (id: string, name: string, parentId: string | null, data: BlockAPI['preservedData']): BlockAPI => ({
+    id, name, parentId, holder: document.createElement('div'), preservedData: data,
+    call: vi.fn((method: string, input?: object) => {
+      if (method === 'readData' && input && 'receive' in input && typeof input.receive === 'function') input.receive(data);
+    }),
+  } as unknown as BlockAPI);
+  const schema = [{id: 'title', type: 'title'}];
+  const root = block('db', 'database', null, {schema});
+  const parent = block('row-parent', 'database-row', root.id, {properties: {title: 'Parent'}});
+  const childDatabase = block('db-child', 'database', parent.id, {schema});
+  const child = block('row-child', 'database-row', childDatabase.id, {properties: {title: 'Child'}});
+  surface.append(root.holder);
+  root.holder.append(parent.holder);
+  parent.holder.append(childDatabase.holder);
+  childDatabase.holder.append(child.holder);
+  const graph = new Map([root, parent, childDatabase, child].map(item => [item.id, item]));
+  Reflect.set(editor, 'blocks', {getById: (id: string) => graph.get(id)});
+  const opened: string[] = [];
+  const drawers = new Map<string, HTMLElement>();
+  const databaseCalls = (database: BlockAPI, row: BlockAPI, title: string) => vi.fn((method: string) => {
+    if (method !== 'openRow' && method !== 'closeRow') return;
+    const previous = drawers.get(database.id);
+    if (previous) {
+      database.holder.append(row.holder);
+      previous.remove(); drawers.delete(database.id);
+    }
+    if (method === 'closeRow') {
+      if (database === childDatabase) drawers.get(root.id)?.removeAttribute('data-blok-database-full-page');
+      return;
+    }
+    opened.push(row.id);
+    const drawer = document.createElement('div');
+    drawer.setAttribute('data-blok-database-drawer', ''); drawer.setAttribute('data-peek-mode', 'full');
+    const content = document.createElement('div'); content.setAttribute('data-blok-database-drawer-content', '');
+    const heading = document.createElement('textarea'); heading.setAttribute('data-blok-database-drawer-title', ''); heading.value = title;
+    const body = document.createElement('div'); body.setAttribute('data-blok-database-drawer-editor', '');
+    content.append(heading, body); drawer.append(content); database.holder.append(drawer); body.append(row.holder);
+    drawers.set(database.id, drawer);
+    if (database === childDatabase) drawers.get(root.id)?.setAttribute('data-blok-database-full-page', '');
+  });
+  root.call = databaseCalls(root, parent, 'Parent');
+  childDatabase.call = databaseCalls(childDatabase, child, 'Child');
+
+  const openChild = async (): Promise<void> => {
+    history.replaceState(null, '', '?page=a&row=row-child');
+    workspace.onRoute();
+    await vi.waitFor(() => expect(document.title).toBe('Child'));
+  };
+  await openChild();
+  expect(opened).toEqual(['row-parent', 'row-child']);
+  expect(root.call).toHaveBeenCalledWith('openRow', {rowId: parent.id, mode: 'full', explicit: true});
+  expect(childDatabase.call).toHaveBeenCalledWith('openRow', {rowId: child.id, mode: 'full', explicit: true});
+  const trail = document.querySelector('[data-desktop-page-breadcrumbs]');
+  expect(trail?.textContent).toContain('Parent');
+  expect(trail?.querySelector('[aria-current="page"]')?.textContent).toBe('Child');
+
+  editor.rowPages()?.navigation?.back();
+  await vi.waitFor(() => expect(document.title).toBe('Parent'));
+  expect(new URL(location.href).searchParams.get('row')).toBe(parent.id);
+  expect(new URL(location.href).searchParams.get('database')).toBe(root.id);
+  expect(location.origin).not.toBe('https://native-server.example');
+
+  await openChild();
+  const ancestor = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-desktop-page-breadcrumbs] button')).find(button => button.textContent === 'Parent');
+  if (!ancestor) throw new Error('Missing parent row breadcrumb');
+  ancestor.click();
+  await vi.waitFor(() => expect(document.title).toBe('Parent'));
+  expect(new URL(location.href).searchParams.get('row')).toBe(parent.id);
+  expect(location.origin).not.toBe('https://native-server.example');
 });

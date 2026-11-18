@@ -81,7 +81,8 @@ class PageTakeover {
   public suspend(): void { this.unmark(); }
 
   /** Restore the parent's DOM without navigating or changing its scroll position. */
-  public resume(): void {
+  public resume(viewRoot?: HTMLElement): void {
+    if (viewRoot !== undefined) this.viewRoot = viewRoot;
     this.unmark();
     const editor = this.viewRoot.closest<HTMLElement>('[data-blok-editor]');
 

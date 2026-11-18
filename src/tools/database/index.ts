@@ -9888,7 +9888,7 @@ export class DatabaseTool implements BlockTool {
     // returns on "nothing wanted, nothing shown", and before the drawer closes
     // — that drawer is what mounts the database able to open the row. Opening
     // its row hands the trip to the nested database, which runs this same code.
-    const host = wanted === null ? this.hostingRow(hosted?.databaseId) : undefined;
+    const host = wanted === null ? this.hostingRow(hosted?.databaseId ?? (hosted ? this.api.blocks.getById(hosted.rowId)?.parentId ?? undefined : undefined)) : undefined;
 
     if (host !== undefined) {
       if (shownFull !== host) this.handleRowClick(host, 'full');
@@ -9908,9 +9908,25 @@ export class DatabaseTool implements BlockTool {
   /** The row of this database whose body holds `databaseId`, if any. */
   private hostingRow(databaseId: string | undefined): string | undefined {
     if (databaseId === undefined || databaseId === this.dataId || databaseId === this.block.id) return undefined;
-    const row = this.nearestRow(this.api.blocks.getById(databaseId)?.parentId, new Set());
+    const seen = new Set<string>();
+    let id = this.api.blocks.getById(databaseId)?.parentId;
+    while (id && !seen.has(id)) {
+      seen.add(id);
+      const block = this.api.blocks.getById(id);
+      if (!block) return undefined;
+      if (block.name === 'database-row' && this.model.getRow(id) !== undefined) return id;
+      id = block.parentId;
+    }
+    return undefined;
+  }
 
-    return row !== undefined && this.model.getRow(row) !== undefined ? row : undefined;
+  /** The host owns both the destination and every row needed to expose it. */
+  private isHostedRow(rowId: string): boolean {
+    const route = this.config.rowPages?.navigation?.current();
+    if (!route) return false;
+    const databaseId = route.databaseId ?? this.api.blocks.getById(route.rowId)?.parentId ?? undefined;
+    return (route.rowId === rowId && (databaseId === undefined || databaseId === this.block.id))
+      || this.hostingRow(databaseId) === rowId;
   }
 
   private readonly handleDueVisibility = (): void => {
@@ -11162,6 +11178,7 @@ export class DatabaseTool implements BlockTool {
         events: this.api.events,
         toolsConfig: this.api.tools.getToolsConfig(),
         rowPages: this.config.rowPages,
+        isHostedRow: rowId => this.isHostedRow(rowId),
         customEmojis: this.config.customEmojis,
         titlePropertyId: titlePropId,
         descriptionPropertyId: descriptionPropId,
@@ -12034,11 +12051,9 @@ export class DatabaseTool implements BlockTool {
     }
     this.ensureCardDrawer(origin);
     // Already shown: a fresh lookup would drop the open editor unsaved. open() only switches the mode.
-    const hosted = this.config.rowPages?.navigation?.current();
     // The route points at this row, or at something inside its body: either way
     // the URL already names where we are going, so opening must not navigate again.
-    const hostRoute = (hosted?.rowId === rowId && (hosted.databaseId === undefined || hosted.databaseId === this.block.id))
-      || this.hostingRow(hosted?.databaseId) === rowId;
+    const hostRoute = this.isHostedRow(rowId);
     const navigates = explicit === 'full' && this.config.rowPages?.navigate !== undefined && !hostRoute;
 
     if (this.cardDrawer?.openRowId === rowId && !navigates) {

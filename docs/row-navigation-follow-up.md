@@ -48,3 +48,11 @@ Validation front : 44 tests de routage/cache, 126 tests du cœur/drawer et 8 sc�
 Limites : les databases imbriquées dans un corps séparé conservent la navigation pleine page du cœur ; leur routage récursif avec URL propre reste à faire. Un lien direct dont la source est elle-même un corps interne n’est pas encore résolu. Les espaces locaux conservent leur navigation existante. Le test sur l’instance déployée reste à faire après déploiement de cette branche ; aucune nouvelle migration de données n’est introduite.
 
 Vérification élargie : `database.test.ts` contient 21 échecs et 403 succès, exactement les mêmes 21 tests en échec sur `b39a02193`, vérifiés dans la copie de synchronisation intacte. Ces échecs antérieurs ne sont pas corrigés par cette branche.
+
+## Lignes imbriquées dans le même document
+
+Le chemin de chargement du workspace ouvre désormais les lignes ancêtres de la destination dans l’ordre, en attendant le déplacement de chaque corps hors du pool invisible. Un changement de route annule cette attente. Le titre et le fil d’Ariane suivent la destination ; les lignes parentes du fil d’Ariane et le bouton Retour permettent de remonter la chaîne.
+
+Le défaut a été constaté sur Sprints (refonte) : l’URL et le titre désignaient la tâche, mais son panneau avait une largeur de zéro sous deux parents masqués. `Block.call` réveillait déjà son outil ; il manquait l’ouverture des parents. Les aperçus imbriqués gardent aussi leur parent ouvert pour ne pas renvoyer leur propre table dans le pool au milieu du clic.
+
+Le test navigateur `nested-row-navigation.browser.test.ts` utilise le vrai éditeur et le même module d’ouverture que le workspace. Il vérifie cinq niveaux, l’URL directe sans `databaseId`, le clic réel sur « Ouvrir en pleine page », le rechargement, Précédent/Suivant et l’ouverture depuis un aperçu latéral. Les ancêtres ne créent pas d’entrées d’historique ni de fragments supplémentaires. La limite des chaînes traversant plusieurs documents de corps séparés, décrite plus haut, reste distincte de ce correctif.

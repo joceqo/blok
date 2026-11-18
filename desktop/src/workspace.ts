@@ -1,6 +1,7 @@
 import type { BlokConfig } from '../../types/configs';
 import type { DatabaseRowPages } from '../../types/tools/database';
 import { createDesktopRowPages, type DesktopRowPages } from './row-pages';
+import { openRowRoute, rowRoutePath, type RowRouteStep } from './row-route';
 import {createPageHistoryApi} from './page-history-api';
 import type {createPageHistory} from './page-history';
 import { createPagePresence } from './page-presence';
@@ -254,6 +255,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     }
   };
   const leavePage = (keep: boolean): void => {
+    clearRowPresentation();
     const session = sessions.current;
     const editor = ws.editor;
     ws.editor = null;
@@ -288,21 +290,27 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     else history.pushState(null, '', url);
     onRoute();
   };
-  const rowPresentation = { session: null as PageSession | null, databaseId: '', rowId: '', parentScroll: 0, observer: null as MutationObserver | null, dispose: () => {}, refresh: () => {} };
+  const rowPresentation = { session: null as PageSession | null, databaseId: '', rowId: '', steps: [] as RowRouteStep[], pending: null as AbortController | null, parentScroll: 0, observer: null as MutationObserver | null, dispose: () => {}, refresh: () => {} };
+  const navigateRowAncestor = (documentId: string, step: RowRouteStep): void => {
+    const parentUrl = '__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href,documentId) : pageUrl(documentId);
+    history.pushState(null, '', pageNavigationUrl(rowPageUrl(parentUrl, step.row.id, step.database.id)));
+    onRoute();
+  };
   let clearingRowPresentation = false;
   const clearRowPresentation = (): void => {
+    rowPresentation.pending?.abort(); rowPresentation.pending = null;
     rowPresentation.observer?.disconnect(); rowPresentation.observer = null;
     rowPresentation.dispose(); rowPresentation.dispose = () => {};
     rowPresentation.refresh = () => {};
     clearingRowPresentation = true;
-    try { rowPresentation.session?.editor.blocks.getById(rowPresentation.databaseId)?.call('closeRow'); }
+    try { for (const step of [...rowPresentation.steps].reverse()) step.database.call('closeRow'); }
     finally { clearingRowPresentation = false; }
     if (rowPresentation.session && sessions.current === rowPresentation.session) {
       ws.pageCanvas.scrollTop = rowPresentation.parentScroll;
       document.title = rowPresentation.session.page.title;
       ws.pageToolbar?.setBreadcrumbs(breadcrumbs(rowPresentation.session.id));
     }
-    rowPresentation.session = null; rowPresentation.rowId = ''; rowPresentation.databaseId = '';
+    rowPresentation.session = null; rowPresentation.rowId = ''; rowPresentation.databaseId = ''; rowPresentation.steps = [];
   };
   const presentRowRoute = async (id: string, href: string): Promise<void> => {
     const session = sessions.current;
@@ -323,17 +331,37 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const opening = rowPresentation.session !== session || rowPresentation.rowId !== route.rowId;
     if (rowPresentation.session === null) rowPresentation.parentScroll = ws.pageCanvas.scrollTop;
     rowPresentation.session = session; rowPresentation.databaseId = database.id; rowPresentation.rowId = route.rowId;
-    database.call('openRow', {rowId: route.rowId, mode:'full', explicit:true});
+    const pending = new AbortController();
+    rowPresentation.pending?.abort(); rowPresentation.pending = pending;
+    const current = (): boolean => !pending.signal.aborted && !sessions.disposed && sessions.current === session && location.href === href;
+    try {
+      rowPresentation.steps = rowRoutePath(session.editor.blocks, row, database);
+      await openRowRoute(session.editor.blocks, row, database, pending.signal);
+    } catch (error) {
+      if (current()) { clearRowPresentation(); showUnavailablePage(); throw error; }
+      return;
+    }
+    if (!current()) return;
     if (opening) { ws.pageCanvas.scrollTop = 0; window.scrollTo({top:0,left:0,behavior:'instant'}); }
     // A held source mounts its row in the visible owner database's wrapper.
     const editorSurface = database.holder.closest<HTMLElement>('[data-blok-editor]') ?? database.holder;
     const refresh = (): void => {
       if (sessions.current !== session || location.href !== href) return;
-      const title = editorSurface.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]')?.value;
+      const title = editorSurface.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer][data-peek-mode="full"]:not([data-blok-database-full-page]) > [data-blok-database-drawer-content] [data-blok-database-drawer-title]')?.value
+        ?? editorSurface.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]')?.value;
       if (!title) return;
       document.title = title;
       const parent = breadcrumbs(id).map(crumb => ({...crumb, onOpen: () => navigate(crumb.id)}));
-      ws.pageToolbar?.setBreadcrumbs([...parent, {id:route.rowId,title}]);
+      const ancestors = rowPresentation.steps.slice(0, -1).map(step => {
+        const schema = step.database.preservedData?.schema as Array<{id:string;type:string}> | undefined;
+        const titleId = schema?.find(property => property.type === 'title')?.id;
+        const values: Array<{properties?:Record<string,unknown>}> = [];
+        step.row.call('readData', {receive:(data:{properties?:Record<string,unknown>})=>values.push(data)});
+        const properties = (values[0] ?? step.row.preservedData)?.properties as Record<string,unknown> | undefined;
+        const value = titleId ? properties?.[titleId] : undefined;
+        return {id:step.row.id,title:typeof value === 'string' && value ? value : 'Sans titre',onOpen:()=>navigateRowAncestor(id,step)};
+      });
+      ws.pageToolbar?.setBreadcrumbs([...parent, ...ancestors, {id:route.rowId,title}]);
     };
     rowPresentation.observer?.disconnect(); rowPresentation.dispose();
     rowPresentation.observer = new MutationObserver(refresh);
@@ -740,7 +768,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           const route = rowPageDestination(location.href);
           return !clearingRowPresentation && life.active && route?.documentId === id ? {rowId:route.rowId,...(route.databaseId ? {databaseId:route.databaseId} : {})} : null;
         },
-        back: () => { if (life.active) navigate(id); },
+        back: () => {
+          if (!life.active) return;
+          const parent = rowPresentation.session?.id === id ? rowPresentation.steps.at(-2) : undefined;
+          if (parent) navigateRowAncestor(id, parent); else navigate(id);
+        },
       },
       href: (rowId, context) => rowPageUrl(pageUrl(id), rowId, context.databaseId),
       navigate: (rowId, context) => {
@@ -1428,6 +1460,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
 
   function onRoute(): void {
     if (sessions.disposed || !ws.index) return;
+    rowPresentation.pending?.abort();
     routeRevision++;
     ws.pageCanvas.toggleAttribute('data-desktop-row-page', rowPageDestination(location.href) !== null);
     const category = libraryCategoryForHref(location.href);
