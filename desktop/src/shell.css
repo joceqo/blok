@@ -205,6 +205,12 @@ body[data-blok-theme="light"] [data-desktop-floating-toc] {
   width: min(100%, 900px); min-height: 100%; margin-inline: auto; padding: 30px 64px 120px;
 }
 [data-desktop-page-canvas] { container-type: inline-size; }
+/* Full-page rows share the canvas scrollport. The side/center peek's clipping
+   must not cut off wide tables in their body, even when those tables already
+   have the correct canvas-sized bounding box. */
+[data-desktop-document] [data-blok-database-drawer][data-peek-mode="full"] {
+  overflow: visible;
+}
 /* Only the scrollport bleeds to the canvas edges. Its padding keeps the
    unscrolled columns aligned with the page's text and database toolbar.
    Two places hold a depth-0 database: the page itself, and the body of a row
