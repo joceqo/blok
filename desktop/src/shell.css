@@ -648,6 +648,10 @@ div[data-desktop-menu-account], div[data-desktop-menu-account]:hover { cursor: d
 [data-desktop-settings-nav] { min-width: 0; box-sizing: border-box; overflow-x: hidden; }
 [data-desktop-action-label] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-desktop-settings-nav-item] [data-desktop-action-label] { flex: 1; }
+/* The account tab swaps icon and label for an avatar and a profile name, so it
+   carries no [data-desktop-action-label]. An email is one long word and would
+   spill out of the nav without this. */
+[data-profile-nav-name] { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-desktop-settings-copy] { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
 [data-desktop-settings-copy] svg { flex: none; }
 [data-desktop-settings-content] { max-width: 860px; margin-inline: auto; }
