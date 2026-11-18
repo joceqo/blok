@@ -262,3 +262,22 @@ it('profiles a real drawer opening only on opted-in loads', async () => {
   drawer.close();
   expect(record?.status).toBe('closed');
 });
+
+it('returns focus to the opener only after the peek has left', async () => {
+  vi.useFakeTimers();
+  const editor = document.createElement('div'); editor.setAttribute('data-blok-editor', '');
+  const wrapper = document.createElement('div'); editor.append(wrapper); document.body.append(editor);
+  const opener = document.createElement('button');
+
+  wrapper.append(opener);
+  opener.focus();
+  const drawer = make(wrapper);
+
+  drawer.open({ id: 'sprint', position: 'a0', properties: { title: 'Sprint #14' } }, 'side');
+  await vi.advanceTimersByTimeAsync(40);
+  drawer.close();
+  // Native focus forces layout across the host document; the peek's exit frame comes first.
+  expect(document.activeElement).not.toBe(opener);
+  await vi.advanceTimersByTimeAsync(40);
+  expect(document.activeElement).toBe(opener);
+});

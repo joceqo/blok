@@ -639,6 +639,11 @@ export class DatabaseCardDrawer {
   private backgroundObserver: MutationObserver | null = null;
   private peekOpener: HTMLElement | null = null;
 
+  /** Pending frame and task for the opener focus close defers; see restoreOpenerFocusAfterPaint. */
+  private openerFocusFrame: number | null = null;
+
+  private openerFocusTimer: number | null = null;
+
   /** Keep the drawer in its editor's DOM/token scope, but suspend every sibling on its path. */
   private isolatePeek(): void {
     this.releasePeekBackground();
@@ -865,6 +870,8 @@ export class DatabaseCardDrawer {
       }
     }
     openPeek.drawer = this;
+    // Reopening cancels a pending hand-back: the new peek owns the focus now.
+    this.cancelOpenerFocus();
     this.peekOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     while (PopoverRegistry.instance.closeTopmost()) { /* Close menus owned by the background editor. */ }
     hideTooltip();
@@ -1233,14 +1240,17 @@ export class DatabaseCardDrawer {
     this.releaseParentPage();
 
     if (wasOpen) {
-      if (this.peekOpener?.isConnected && !this.peekOpener.closest('[inert]')) this.peekOpener.focus({ preventScroll: true });
+      const opener = this.peekOpener;
+
       this.peekOpener = null;
+      if (opener !== null) this.restoreOpenerFocusAfterPaint(opener);
       this.onClose();
     }
   }
 
   destroy(): void {
     this.peekProfile?.finish('closed');
+    this.cancelOpenerFocus();
     this.childPeek?.destroy();
     this.events?.off('i18n:changed', this.followOuterDirection);
     this.pageScroll.unlock();
@@ -2584,6 +2594,39 @@ export class DatabaseCardDrawer {
         }
       }, 0);
     });
+  }
+
+  /**
+   * Native focus forces layout across the host document — closing a peek over
+   * a large table costs ~70ms there, the same way opening one did. Hand the
+   * focus back once the peek's exit frame has passed, and never take a focus
+   * the person chose meanwhile.
+   */
+  private restoreOpenerFocusAfterPaint(opener: HTMLElement): void {
+    this.cancelOpenerFocus();
+    this.openerFocusFrame = requestAnimationFrame(() => {
+      this.openerFocusFrame = null;
+      this.openerFocusTimer = window.setTimeout(() => {
+        this.openerFocusTimer = null;
+        const active = document.activeElement;
+        // Focus left behind in the peek that is leaving is not a choice: the
+        // panel is inert or already detached, so hand it back.
+        const stranded = active instanceof HTMLElement
+          && (!active.isConnected || active.closest('[inert]') !== null);
+
+        // Anything else holding focus — a reopened peek, a click elsewhere — keeps it.
+        if (active !== null && active !== document.body && !stranded) return;
+        if (!opener.isConnected || opener.closest('[inert]') !== null) return;
+        opener.focus({ preventScroll: true });
+      }, 0);
+    });
+  }
+
+  private cancelOpenerFocus(): void {
+    if (this.openerFocusFrame !== null) cancelAnimationFrame(this.openerFocusFrame);
+    if (this.openerFocusTimer !== null) window.clearTimeout(this.openerFocusTimer);
+    this.openerFocusFrame = null;
+    this.openerFocusTimer = null;
   }
 
   private cancelModeMeasures(): void {
