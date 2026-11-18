@@ -269,7 +269,7 @@ func (s *Service) workspaceResource(w http.ResponseWriter, r *http.Request) {
 	case "join-requests":
 		s.joinRequests(w, r, ws, id, action)
 	case "invites":
-		s.invites(w, r, u, ws, id)
+		s.invites(w, r, u, ws, id, action)
 	default:
 		problem(w, 404, "Not found")
 	}
@@ -450,7 +450,7 @@ func (s *Service) joinRequests(w http.ResponseWriter, r *http.Request, ws Worksp
 	}
 	jsonOut(w, 200, map[string]bool{"ok": true})
 }
-func (s *Service) invites(w http.ResponseWriter, r *http.Request, u identity, ws Workspace, id string) {
+func (s *Service) invites(w http.ResponseWriter, r *http.Request, u identity, ws Workspace, id, action string) {
 	if r.Method == "GET" && id == "" {
 		rows, e := s.DB.Query(r.Context(), "SELECT id,email,role,status,expires_at FROM invites WHERE workspace_id=$1 ORDER BY created_at DESC", ws.ID)
 		if e != nil {
@@ -488,6 +488,10 @@ func (s *Service) invites(w http.ResponseWriter, r *http.Request, u identity, ws
 		jsonOut(w, 200, map[string]bool{"ok": true})
 		return
 	}
+	if r.Method == "POST" && id != "" && action == "resend" {
+		s.resendInvite(w, r, u, ws, id)
+		return
+	}
 	if r.Method != "POST" || id != "" {
 		problem(w, 405, "Method not allowed")
 		return
@@ -496,6 +500,9 @@ func (s *Service) invites(w http.ResponseWriter, r *http.Request, u identity, ws
 		Email   string `json:"email"`
 		Role    string `json:"role"`
 		Message string `json:"message"`
+		// Record the invitation without mailing anyone. An admin setting a
+		// workspace up adds the team first and sends later, with resend.
+		Silent bool `json:"silent"`
 	}
 	if !body(w, r, &in) {
 		return
@@ -526,14 +533,57 @@ func (s *Service) invites(w http.ResponseWriter, r *http.Request, u identity, ws
 		problem(w, 500, "Invitation failed")
 		return
 	}
-	invitationText := "Vous êtes invité à rejoindre " + ws.Name + ".\nConnectez-vous avec cette adresse email sur " + s.Config.PublicURL + " pour accepter cette invitation.\nCette invitation expire dans 7 jours."
-	if in.Message != "" {
-		invitationText += "\n\nMessage de l’administrateur :\n" + in.Message
+	if in.Silent {
+		// Pending without a mail: it shows in Invitations and resend delivers it.
+		jsonOut(w, 201, map[string]bool{"ok": true, "sent": false})
+		return
 	}
-	if e = s.send(email, "Invitation Blok — "+ws.Name, invitationText); e != nil {
+	if e = s.send(email, "Invitation Blok — "+ws.Name, s.invitationText(ws, in.Message)); e != nil {
 		s.DB.Exec(r.Context(), "UPDATE invites SET status='delivery-failed' WHERE id=$1", inviteID)
 		problem(w, 503, "Invitation email delivery failed")
 		return
 	}
-	jsonOut(w, 201, map[string]bool{"ok": true})
+	jsonOut(w, 201, map[string]bool{"ok": true, "sent": true})
+}
+
+func (s *Service) invitationText(ws Workspace, message string) string {
+	text := "Vous êtes invité à rejoindre " + ws.Name + ".\nConnectez-vous avec cette adresse email sur " + s.Config.PublicURL + " pour accepter cette invitation.\nCette invitation expire dans 7 jours."
+	if message != "" {
+		text += "\n\nMessage de l’administrateur :\n" + message
+	}
+	return text
+}
+
+// Mail a pending invitation again, restarting its seven days. Used both to
+// chase someone who never answered and to deliver a silently created one.
+func (s *Service) resendInvite(w http.ResponseWriter, r *http.Request, u identity, ws Workspace, id string) {
+	var in struct {
+		Message string `json:"message"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	if utf8.RuneCountInString(in.Message) > 2000 {
+		problem(w, 400, "Invitation message must be at most 2000 characters")
+		return
+	}
+	if !s.rate(r.Context(), "invite:"+u.ID, 30) {
+		problem(w, 429, "Too many invitations")
+		return
+	}
+	var email string
+	if e := s.DB.QueryRow(r.Context(), "SELECT email FROM invites WHERE id=$1 AND workspace_id=$2 AND status='pending'", id, ws.ID).Scan(&email); e != nil {
+		problem(w, 404, "Pending invitation not found")
+		return
+	}
+	if e := s.send(email, "Invitation Blok — "+ws.Name, s.invitationText(ws, in.Message)); e != nil {
+		s.DB.Exec(r.Context(), "UPDATE invites SET status='delivery-failed' WHERE id=$1", id)
+		problem(w, 503, "Invitation email delivery failed")
+		return
+	}
+	if _, e := s.DB.Exec(r.Context(), "UPDATE invites SET expires_at=now()+interval '7 days' WHERE id=$1", id); e != nil {
+		problem(w, 500, "Invitation failed")
+		return
+	}
+	jsonOut(w, 200, map[string]bool{"ok": true, "sent": true})
 }

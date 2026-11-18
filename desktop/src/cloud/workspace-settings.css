@@ -41,5 +41,7 @@
 [data-cloud-invite-dialog] [data-blok-field], [data-cloud-invite-dialog] [aria-haspopup] { margin-top:7px; width:100%; font-weight:400; }
 [data-cloud-invite-dialog] textarea { resize:vertical; min-height:76px; max-height:180px; }
 [data-cloud-invite-hint] { margin:5px 0 0; font-size:11px; color:var(--desktop-muted); }
+[data-cloud-invite-silent] { display:flex; align-items:center; gap:8px; margin:0 0 4px; font-size:13px; color:var(--desktop-muted); cursor:pointer; }
+[data-cloud-invite-silent] input { flex:none; margin:0; cursor:pointer; }
 [data-cloud-invite-actions] { display:flex; justify-content:flex-end; gap:8px; margin-top:26px; }
 @media(max-width:700px) { [data-cloud-member-row] td { padding:12px 4px; } [data-cloud-member-actions] { flex-wrap:wrap; justify-content:flex-end; } [data-cloud-member-actions] > [data-desktop-choice] { width:125px; } [data-cloud-members-toolbar] { align-items:flex-start; flex-direction:column; gap:10px; } [data-cloud-members-tabs] { gap:12px; } [data-cloud-invite-dialog] { padding:22px; } }

@@ -39,6 +39,33 @@ describe('embedded workspace access panel',()=>{
   must(document.querySelector<HTMLButtonElement>('[role=tab]:nth-child(2)')).click();await loaded('applicant@example.test');await choose('Accès pour applicant@example.test',WORKSPACE_ROLES.viewer);click('Accepter');await loaded('Aucune demande en attente.');
   must(document.querySelector<HTMLButtonElement>('[role=tab]:nth-child(3)')).click();await loaded('invited@example.test');click('Révoquer');await loaded('Aucune invitation en attente.');handle.destroy();
  });
+ it('chases a pending invitation again without revoking it',async()=>{
+  const calls:string[]=[];
+  vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
+   if(init?.method==='POST'){calls.push(url);return reply({ok:true,sent:true});}
+   if(url.endsWith('/members'))return reply({members:[]});
+   if(url.endsWith('/join-requests'))return reply({requests:[]});
+   return reply({invites:[{id:'i1',email:'invited@example.test',role:'viewer',status:'pending'}]});
+  }));
+  const handle=mountWorkspaceMembers(document.body,{client:new CloudClient(),slug:'team'});
+  must(document.querySelector<HTMLButtonElement>('[role=tab]:nth-child(3)')).click();
+  await loaded('invited@example.test');
+  click('Relancer');
+  await vi.waitFor(()=>expect(calls.some(url=>url.endsWith('/invites/i1/resend'))).toBe(true));
+  // Chasing keeps the invitation listed; only Révoquer removes it.
+  await loaded('invited@example.test');
+  handle.destroy();
+ });
+ it('records invitations without mailing anyone when asked',async()=>{
+  const bodies:string[]=[];
+  vi.stubGlobal('fetch',vi.fn(async(_url:string,init?:RequestInit)=>{bodies.push(requestBody(init));return reply({ok:true,sent:false});}));
+  openWorkspaceInvitation({client:new CloudClient(),slug:'team',container:document.body});
+  must(document.querySelector<HTMLInputElement>('input[type=text]')).value='later@example.test';
+  must(document.querySelector<HTMLInputElement>('[data-cloud-invite-silent] input')).click();
+  submit();
+  await vi.waitFor(()=>expect(bodies).toHaveLength(1));
+  expect(JSON.parse(bodies[0] as string)).toMatchObject({email:'later@example.test',silent:true});
+ });
  it('keeps API failures visible without discarding the current access list',async()=>{
   vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
     if(init?.method==='DELETE')return reply({error:'Keep at least one administrator'},409);

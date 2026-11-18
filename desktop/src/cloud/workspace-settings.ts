@@ -280,6 +280,9 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
   function appendInviteControls(controls: HTMLElement, item: Invite): void {
     controls.append(
       el('span', 'En attente', 'data-cloud-settings-muted'),
+      // Mails the invitation again and restarts its seven days. Also how an
+      // invitation created without a mail finally reaches the person.
+      action('Relancer', () => { void mutate(`/invites/${encodeURIComponent(item.id)}/resend`, 'POST', {}); }),
       action('Révoquer', () => { void mutate(`/invites/${encodeURIComponent(item.id)}`, 'DELETE'); }),
     );
   }
@@ -411,6 +414,11 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
   note.maxLength = 2000;
   note.placeholder = 'Ajoutez un mot à votre invitation…';
   messageLabel.append(note);
+  // Setting a workspace up: add the team now, mail them from Invitations later.
+  const silentLabel = el('label', undefined, 'data-cloud-invite-silent');
+  const silent = el('input');
+  silent.type = 'checkbox';
+  silentLabel.append(silent, document.createTextNode('Ajouter sans envoyer d’e-mail maintenant'));
   const error = el('p', undefined, 'data-cloud-settings-error');
   error.setAttribute('role', 'alert');
   error.hidden = true;
@@ -426,9 +434,14 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
   const actions = el('div', undefined, 'data-cloud-invite-actions');
   const cancel = action('Annuler', () => close());
   const submit = action('Envoyer l’invitation', () => {}, true);
+
   submit.type = 'submit';
+  silent.addEventListener('change', () => {
+    submit.textContent = silent.checked ? 'Ajouter sans envoyer' : 'Envoyer l’invitation';
+    note.disabled = silent.checked;
+  });
   actions.append(cancel, submit);
-  form.append(emailLabel, hint, roleLabel, messageLabel, error, status, actions);
+  form.append(emailLabel, hint, roleLabel, messageLabel, silentLabel, error, status, actions);
   surface.append(icon, title, intro, form);
   overlay.append(surface);
   form.addEventListener('submit', (event) => {
@@ -467,6 +480,7 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
             email: address,
             role: role.value,
             ...(note.value.trim() ? { message: note.value.trim() } : {}),
+            ...(silent.checked ? { silent: true } : {}),
           }),
         });
         progress.sent++;
