@@ -67,6 +67,9 @@ func (s *Service) managementOperations() []managementOperation {
 	invite := managementFields("workspace", "email")
 	invite["role"] = enumField("member", "viewer")
 	invite["message"] = map[string]any{"type": "string", "maxLength": 2000}
+	invite["silent"] = map[string]any{"type": "boolean"}
+	addMember := managementFields("workspace", "email")
+	addMember["role"] = enumField("member", "viewer")
 	join := managementFields("workspace", "requestId")
 	join["role"] = enumField("member", "viewer")
 	settings := map[string]any{
@@ -119,7 +122,8 @@ func (s *Service) managementOperations() []managementOperation {
 		{"blok_set_workspace_member_role", "Change an existing member's workspace role. Requires workspace admin. Protects the last admin and teamspace owner. Does not grant instance administration.", "PATCH", s.workspaceResource, map[string]string{"resource": "members"}, wsMemberParams, wsRole, []string{"workspace", "userId", "role"}, false},
 		{"blok_remove_workspace_member", "Remove a workspace member and their page shares. Requires workspace admin; last admin/teamspace owner protected.", "DELETE", s.workspaceResource, map[string]string{"resource": "members"}, wsMemberParams, managementFields("workspace", "userId"), []string{"workspace", "userId"}, false},
 		{"blok_list_workspace_invites", "List workspace invitations and delivery status. Requires workspace admin.", "GET", s.workspaceResource, map[string]string{"resource": "invites"}, wsParams, managementFields("workspace"), wsRequired, false},
-		{"blok_invite_workspace_member", "Invite someone by email. SENDS an invitation email, valid for 7 days. Requires workspace admin. Use only when the user requests an invitation.", "POST", s.workspaceResource, map[string]string{"resource": "invites"}, wsParams, invite, []string{"workspace", "email"}, false},
+		{"blok_add_workspace_member", "Give an email access to a workspace right away, without mailing anyone. An address that already has an account becomes a member; an unknown one gets a pending invitation instead, and the answer says which happened. Requires workspace admin. Promote to admin afterwards with blok_set_workspace_member_role.", "POST", s.workspaceResource, map[string]string{"resource": "members"}, wsParams, addMember, []string{"workspace", "email"}, false},
+		{"blok_invite_workspace_member", "Invite someone by email, valid for 7 days. SENDS an invitation email unless silent is true. Requires workspace admin. Use only when the user requests an invitation.", "POST", s.workspaceResource, map[string]string{"resource": "invites"}, wsParams, invite, []string{"workspace", "email"}, false},
 		{"blok_revoke_workspace_invite", "Revoke a pending workspace invitation. Requires workspace admin.", "DELETE", s.workspaceResource, map[string]string{"resource": "invites"}, map[string]string{"workspace": "slug", "inviteId": "id"}, managementFields("workspace", "inviteId"), []string{"workspace", "inviteId"}, false},
 		{"blok_list_join_requests", "List workspace join requests. Requires workspace admin.", "GET", s.workspaceResource, map[string]string{"resource": "join-requests"}, wsParams, managementFields("workspace"), wsRequired, false},
 		{"blok_approve_join_request", "Approve a pending request with member or viewer role (default member). Requires workspace admin.", "POST", s.workspaceResource, map[string]string{"resource": "join-requests", "action": "approve"}, map[string]string{"workspace": "slug", "requestId": "id"}, join, []string{"workspace", "requestId"}, false},
@@ -155,7 +159,7 @@ func (s *Service) registerMCPManagement(server *mcp.Server) {
 		}
 		schema := map[string]any{"type": "object", "properties": op.properties, "required": required, "additionalProperties": false}
 		readOnly := op.method == "GET"
-		destructive := !readOnly && op.name != "blok_create_teamspace" && op.name != "blok_create_workspace" && op.name != "blok_create_instance_user" && op.name != "blok_create_custom_emoji" && op.name != "blok_invite_workspace_member"
+		destructive := !readOnly && op.name != "blok_create_teamspace" && op.name != "blok_create_workspace" && op.name != "blok_create_instance_user" && op.name != "blok_create_custom_emoji" && op.name != "blok_invite_workspace_member" && op.name != "blok_add_workspace_member"
 		openWorld := op.name == "blok_invite_workspace_member"
 		server.AddTool(&mcp.Tool{Name: op.name, Description: op.description, InputSchema: schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return s.callManagement(ctx, req, op), nil

@@ -3,11 +3,14 @@ package cloud
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
 )
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}$`)
@@ -296,7 +299,90 @@ func (s *Service) members(w http.ResponseWriter, r *http.Request, ws Workspace) 
 	}
 	jsonOut(w, 200, map[string]any{"members": out})
 }
+// Grant access to someone who is not a member yet. Setting a workspace up —
+// filling person properties, assigning work — needs the team present before
+// anyone has signed in, and an invitation only becomes a membership at that
+// first sign-in. An address that already has an account joins straight away;
+// an unknown one is invited instead, with the same 201 either way, so whether
+// an email has an account here stays unobservable.
+func (s *Service) addMember(w http.ResponseWriter, r *http.Request, u identity, ws Workspace) {
+	var in struct {
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	email, e := normalizeEmail(in.Email)
+	if e != nil {
+		problem(w, 400, "Invalid email")
+		return
+	}
+	if in.Role == "" {
+		in.Role = "member"
+	}
+	// Invitations cannot carry the admin role, so neither can this: an admin is
+	// promoted afterwards. Otherwise the answer would differ for an address with
+	// an account and one without, which is exactly the leak this avoids.
+	if in.Role != "member" && in.Role != "viewer" {
+		problem(w, 400, "Invalid role")
+		return
+	}
+	if !s.rate(r.Context(), "invite:"+u.ID, 30) {
+		problem(w, 429, "Too many invitations")
+		return
+	}
+	tx, e := s.DB.Begin(r.Context())
+	if e != nil {
+		problem(w, 503, "Database unavailable")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var userID string
+	e = tx.QueryRow(r.Context(), "SELECT id FROM users WHERE email=$1", email).Scan(&userID)
+	if errors.Is(e, pgx.ErrNoRows) {
+		if _, e = tx.Exec(r.Context(), "INSERT INTO invites(id,workspace_id,email,role,expires_at) VALUES($1,$2,$3,$4,now()+interval '7 days')", opaque(), ws.ID, email, in.Role); e != nil {
+			problem(w, 500, "Invitation failed")
+			return
+		}
+		if tx.Commit(r.Context()) != nil {
+			problem(w, 500, "Invitation failed")
+			return
+		}
+		jsonOut(w, 201, map[string]any{"ok": true, "added": false, "invited": true, "sent": false})
+		return
+	}
+	if e != nil {
+		problem(w, 503, "Database unavailable")
+		return
+	}
+	tag, e := tx.Exec(r.Context(), "INSERT INTO memberships(workspace_id,user_id,role) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", ws.ID, userID, in.Role)
+	if e != nil {
+		problem(w, 500, "Could not add member")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		problem(w, 409, "Already a member")
+		return
+	}
+	// A pending invitation for the same address would be replayed at their first
+	// sign-in and could overwrite the role just chosen here.
+	if _, e = tx.Exec(r.Context(), "UPDATE invites SET status='accepted' WHERE workspace_id=$1 AND email=$2 AND status='pending'", ws.ID, email); e != nil {
+		problem(w, 500, "Could not add member")
+		return
+	}
+	if tx.Commit(r.Context()) != nil {
+		problem(w, 500, "Could not add member")
+		return
+	}
+	jsonOut(w, 201, map[string]any{"ok": true, "added": true, "invited": false})
+}
+
 func (s *Service) mutateMember(w http.ResponseWriter, r *http.Request, u identity, ws Workspace, id string) {
+	if r.Method == "POST" && id == "" {
+		s.addMember(w, r, u, ws)
+		return
+	}
 	if (r.Method != "PATCH" && r.Method != "DELETE") || id == "" {
 		problem(w, 405, "Method not allowed")
 		return
