@@ -208,15 +208,16 @@ body[data-blok-theme="light"] [data-desktop-floating-toc] {
 /* Only the scrollport bleeds to the canvas edges. Its padding keeps the
    unscrolled columns aligned with the page's text and database toolbar.
    Two places hold a depth-0 database: the page itself, and the body of a row
-   opened as a full page, which nests it under the page tool and the row body.
-   The chains stay explicit so a database inside a column, a callout or a peek
-   keeps the text column's width. */
+   opened as a full page. The second is the peek rendered inside its parent
+   database, so it is anchored on [data-blok-database-full-page] (set only in
+   full mode) and [data-blok-database-row-body] rather than on a chain of its
+   fourteen ancestors. The `>` steps from the row body keep a database inside a
+   column or a callout at the text column's width. */
 [data-desktop-document] > [data-desktop-editor] > [data-blok-interface]
   > [data-blok-redactor] > [data-blok-element] > [data-blok-element-content]
   > [data-blok-database-wrapper] > [data-blok-database-board-container]:has(> [data-blok-database-table]),
-[data-desktop-document] > [data-desktop-editor] > [data-blok-interface]
-  > [data-blok-redactor] > [data-blok-element] > [data-blok-element-content]
-  > [data-blok-tool] > [data-blok-database-row-body] > [data-blok-element] > [data-blok-element-content]
+[data-desktop-document] [data-blok-database-full-page] [data-blok-database-row-body]
+  > [data-blok-element] > [data-blok-element-content]
   > [data-blok-database-wrapper] > [data-blok-database-board-container]:has(> [data-blok-database-table]) {
   overflow: visible !important;
   margin-inline: 0;
@@ -226,9 +227,8 @@ body[data-blok-theme="light"] [data-desktop-floating-toc] {
   > [data-blok-redactor] > [data-blok-element] > [data-blok-element-content]
   > [data-blok-database-wrapper] > [data-blok-database-board-container] > [data-blok-database-table]
   > [data-blok-database-table-scroller],
-[data-desktop-document] > [data-desktop-editor] > [data-blok-interface]
-  > [data-blok-redactor] > [data-blok-element] > [data-blok-element-content]
-  > [data-blok-tool] > [data-blok-database-row-body] > [data-blok-element] > [data-blok-element-content]
+[data-desktop-document] [data-blok-database-full-page] [data-blok-database-row-body]
+  > [data-blok-element] > [data-blok-element-content]
   > [data-blok-database-wrapper] > [data-blok-database-board-container] > [data-blok-database-table]
   > [data-blok-database-table-scroller] {
   box-sizing: border-box;

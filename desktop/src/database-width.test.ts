@@ -76,8 +76,8 @@ it('gives a row body database the same canvas width as a root one', async () => 
   const page = await browser.newPage({ viewport: { width: 1440, height: 800 } });
 
   try {
-    // A row opened as a full page nests its database two levels deeper: the page
-    // tool, then the row body. Same depth-0 database, same canvas treatment.
+    // A row opened as a full page is the peek itself, rendered inside its parent
+    // database: wrapper[full-page] > drawer > row > row body > the row's database.
     await page.setContent(`<style>${shell}</style><style>${databaseStyles}</style><style>
       [data-desktop-page-canvas] { width: 100%; overflow-x: auto; --max-width-content: 720px; }
       [data-blok-interface] { --blok-editor-gutter-start: 56px; }
@@ -88,15 +88,23 @@ it('gives a row body database the same canvas width as a root one', async () => 
       <div data-desktop-editor><div data-blok-interface><div data-blok-redactor>
         <div data-blok-element><div data-blok-element-content data-text-column>Text</div></div>
         <div data-blok-element><div data-blok-element-content>
-          <div data-blok-tool><div data-blok-nested-blocks data-blok-database-row-body>
-            <div data-blok-element><div data-blok-element-content data-database-content>
-              <div data-blok-database-wrapper><div data-blok-database-board-container>
-                <div data-blok-database-table><div data-blok-database-table-scroller>
-                  <div data-blok-database-table-grid>Table</div>
+          <div data-blok-database-wrapper data-blok-database-full-page>
+            <div data-blok-database-drawer data-peek-mode="full" data-open><div data-blok-database-drawer-content>
+              <div data-blok-database-drawer-editor>
+                <div data-blok-element><div data-blok-element-content>
+                  <div data-blok-tool="database-row"><div data-blok-nested-blocks data-blok-database-row-body>
+                    <div data-blok-element data-blok-depth="0"><div data-blok-element-content data-database-content>
+                      <div data-blok-database-wrapper><div data-blok-database-board-container>
+                        <div data-blok-database-table><div data-blok-database-table-scroller>
+                          <div data-blok-database-table-grid>Table</div>
+                        </div></div>
+                      </div></div>
+                    </div></div>
+                  </div></div>
                 </div></div>
-              </div></div>
+              </div>
             </div></div>
-          </div></div>
+          </div>
         </div></div>
       </div></div></div>
     </article></div>`);
