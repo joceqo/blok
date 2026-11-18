@@ -28,7 +28,7 @@ export function mountMcpSettings(content: HTMLElement, client: CloudClient, opti
   endpoint.append(endpointLabel, url, copyUrl);
   const name = document.createElement('input'); name.setAttribute('data-desktop-mcp-name', ''); name.type = 'text'; name.maxLength = 80; name.placeholder = 'Nom du client (ex. Codex)'; name.setAttribute('aria-label', 'Nom du jeton MCP'); styleTextField(name);
   const form = document.createElement('form'); form.setAttribute('data-desktop-mcp-create', '');
-  const lifetime = document.createElement('select'); lifetime.setAttribute('data-desktop-mcp-lifetime', ''); lifetime.setAttribute('aria-label', 'Durée de validité du jeton'); styleTextField(lifetime);
+  const lifetime = document.createElement('select'); lifetime.setAttribute('data-desktop-mcp-lifetime', ''); lifetime.setAttribute('aria-label', 'Durée de validité du jeton');
   for (const [value, text] of LIFETIMES) { const option = document.createElement('option'); option.value = value; option.textContent = text; lifetime.append(option); }
   lifetime.value = '90d';
   const lifetimeLabel = document.createElement('label'); lifetimeLabel.textContent = 'Durée de validité'; lifetimeLabel.append(lifetime);

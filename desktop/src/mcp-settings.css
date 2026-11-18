@@ -8,6 +8,9 @@
 [data-desktop-mcp-create] { display: flex; align-items: flex-end; gap: 12px; margin: 24px 0 0; }
 [data-desktop-mcp-create] label { display: grid; flex: 1; max-width: 320px; min-width: 0; gap: 8px; font-size: 13px; color: var(--desktop-ink); }
 [data-desktop-mcp-create] [data-desktop-mcp-name] { width: 100%; margin: 0; min-height: 34px; }
+/* A select is not a text field, so it cannot borrow [data-blok-field]; it matches it here. */
+[data-desktop-mcp-create] label:has([data-desktop-mcp-lifetime]) { flex: none; max-width: 170px; }
+[data-desktop-mcp-create] [data-desktop-mcp-lifetime] { width: 100%; margin: 0; min-height: 34px; box-sizing: border-box; padding: 5px 10px; border: 1px solid var(--desktop-border); border-radius: 7px; background: var(--desktop-hover); color: var(--desktop-ink); font: inherit; font-size: 14px; }
 [data-desktop-mcp-panel] [data-desktop-mcp-primary] { min-height: 34px; background: var(--blok-color-accent, #2383e2); color: #fff; border-color: transparent; }
 [data-desktop-mcp-panel] [data-desktop-mcp-primary]:hover { filter: brightness(.94); }
 [data-desktop-mcp-panel] button:disabled { cursor: wait; opacity: .55; }
