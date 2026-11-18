@@ -71,6 +71,8 @@ interface EmojiPickerOptions {
   curated?: boolean;
   /** How far the picker starts before the anchor's start edge, in px. Defaults to 8. */
   startInset?: number;
+  /** Centred under the anchor instead, as Notion's database Edit icon picker (notion-motion.md Round 67 §1). */
+  centred?: boolean;
   /** No Random and no Remove: the pick is the whole job, as for a reaction. */
   pickOnly?: boolean;
   /** Image emojis scoped to the workspace that owns this picker. */
@@ -194,6 +196,8 @@ export class EmojiPicker {
   private readonly _inline: boolean;
   private readonly _curated: boolean;
   private readonly _startInset: number;
+  private readonly _centred: boolean;
+  private _removeButton: HTMLButtonElement | null = null;
   private readonly _pickOnly: boolean;
   private readonly _label: string | undefined;
   private _localeData: EmojiLocaleData | null = null;
@@ -271,6 +275,7 @@ export class EmojiPicker {
     this._inline = options.inline ?? false;
     this._curated = options.curated ?? !this._inline;
     this._startInset = options.startInset ?? 8;
+    this._centred = options.centred === true;
     this._pickOnly = options.pickOnly ?? false;
     this._label = options.label;
     this.customEmojis = options.customEmojis;
@@ -338,7 +343,7 @@ export class EmojiPicker {
   public async open(
     anchor: HTMLElement,
     anchorRect?: DOMRect,
-    handlers?: Pick<EmojiPickerOptions, 'onSelect' | 'onRemove'> & { current?: string }
+    handlers?: Pick<EmojiPickerOptions, 'onSelect' | 'onRemove'> & { current?: string; removable?: boolean }
   ): Promise<void> {
     const active = document.activeElement;
 
@@ -359,6 +364,7 @@ export class EmojiPicker {
         this.showStageIdle();
       }).catch(() => undefined);
     }
+    if (this._removeButton !== null) this._removeButton.hidden = handlers?.removable === false;
 
     // Focus inside the picker means it is being reopened for another anchor:
     // close() must then fall back to that anchor, not to the hidden picker.
@@ -664,6 +670,7 @@ export class EmojiPicker {
       'transition-colors duration-100 cursor-pointer',
     ].join(' ');
     removeBtn.innerHTML = IconTrash;
+    this._removeButton = removeBtn;
     removeBtn.addEventListener('click', () => {
       this.onRemove();
       this.close();
@@ -2219,9 +2226,10 @@ export class EmojiPicker {
     const preferredTop = above ? rect.top - height - 4 : rect.bottom + 4;
     const top = Math.max(8, Math.min(preferredTop, viewportHeight - height - 8));
     // Starts before the anchor's start edge: its right edge in RTL.
-    const preferredLeft = getElementDirection(this._element) === 'rtl'
+    const startLeft = getElementDirection(this._element) === 'rtl'
       ? rect.right + this._startInset - width
       : rect.left - this._startInset;
+    const preferredLeft = this._centred ? rect.left + (rect.width - width) / 2 : startLeft;
     const left = Math.max(8, Math.min(preferredLeft, viewportWidth - width - 8));
 
     this._element.style.top = `${top}px`;
