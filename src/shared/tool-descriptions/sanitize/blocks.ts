@@ -199,6 +199,8 @@ export const databaseCommentSanitize = (): SanitizerConfig => {
     authorId: PLAINTEXT,
     authorName: PLAINTEXT,
     propertyId: PLAINTEXT,
+    mentions: PLAINTEXT,
+    attachments: PLAINTEXT,
   };
 };
 

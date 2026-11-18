@@ -5,8 +5,11 @@ import { PopoverEvent } from '@/types/utils/popover/popover-event';
 import { isAnnotationType } from '../../shared/annotation-blocks';
 import { DATABASE_MENU_CLASS } from './database-group-menu';
 import { openDatabaseConfirm } from './database-confirm-dialog';
-import { createCommentsPanel, type CommentsPanel } from './database-comments-panel';
+import { createCommentsPanel, type CommentsPanel, type CommentsPanelOptions } from './database-comments-panel';
 import { BuiltInComments, type CommentAuthor, type StoredComment, type StoredThread } from './database-comments-store';
+import type { MentionPerson } from './database-comment-mention-menu';
+import type { PageConfig } from '../page/types';
+import { searchVisiblePages } from '../page/search-pages';
 
 export interface BuiltInCommentsUiOptions {
   api: API;
@@ -15,6 +18,8 @@ export interface BuiltInCommentsUiOptions {
   me: () => string | null;
   personName: (id: string) => string | undefined;
   personAvatar?: (id: string) => string | undefined;
+  /** The host's people, for the "@" menu. */
+  people?: () => readonly MentionPerson[] | undefined;
   /** `permissions.can('comment')`. */
   permitted: () => boolean;
   /** The editor is read-only: threads are read, never written. */
@@ -144,7 +149,7 @@ export class BuiltInCommentsUi {
         return;
       }
       // Shows no thread, so the composer always starts a new one.
-      const panel = this.panel(rowId, undefined, () => []);
+      const panel = this.panel(rowId, undefined, () => [], true);
 
       box.replaceChildren(panel.element);
       state.release = () => {
@@ -234,7 +239,7 @@ export class BuiltInCommentsUi {
     return button;
   }
 
-  private panel(rowId: string, propertyId: string | undefined, shown?: () => StoredThread[]): CommentsPanel {
+  private panel(rowId: string, propertyId: string | undefined, shown?: () => StoredThread[], blurOnEscape = false): CommentsPanel {
     const { api } = this.options;
     const canComment = !this.options.readOnly();
     const threads = shown ?? ((): StoredThread[] => this.store.threads(rowId)
@@ -249,9 +254,13 @@ export class BuiltInCommentsUi {
       viewerAvatar: () => { const id = this.options.me(); return id ? this.options.personAvatar?.(id) : undefined; },
       isOwn: (comment) => this.isOwn(comment),
       viewerName: () => this.author().authorName ?? api.i18n.t('tools.database.commentAnonymous'),
-      onAdd: (text) => { this.store.add(rowId, text, propertyId); },
-      onReply: (threadId, text) => { this.store.reply(threadId, text); },
-      onEdit: (id, text) => this.store.edit(id, text),
+      onAdd: (draft) => { this.store.add(rowId, draft, propertyId); },
+      onReply: (threadId, draft) => { this.store.reply(threadId, draft); },
+      onEdit: (id, draft) => this.store.edit(id, draft),
+      people: () => this.options.people?.() ?? [],
+      ...this.pageLevers(),
+      ...(canComment ? this.fileUploader() : {}),
+      blurOnEscape,
       onResolve: (threadId) => this.store.resolve(threadId, true),
       onDelete: async (id) => {
         const confirmed = await openDatabaseConfirm({
@@ -271,6 +280,37 @@ export class BuiltInCommentsUi {
     this.panels.add(panel);
 
     return panel;
+  }
+
+  /** Attach file uploads through the host's file uploader; without one there is no Attach file. */
+  private fileUploader(): Pick<CommentsPanelOptions, 'uploadFile'> {
+    const uploader = this.options.api.uploader;
+
+    if (uploader === undefined || !uploader.isConfigured('file', 'uploadByFile')) return {};
+
+    return {
+      uploadFile: (file) => uploader.uploadByFile(file, { kind: 'file', tool: 'database' })
+        .then((asset) => ({ url: asset.url, name: asset.fileName ?? file.name })),
+    };
+  }
+
+  /** The page tool's search, link and open, for the "@" menu and page chips. */
+  private pageLevers(): Pick<CommentsPanelOptions, 'searchPages' | 'pageHref' | 'openPage'> {
+    const page = this.options.api.tools.getBlockTools().find((tool) => tool.name === 'page')?.settings as PageConfig | undefined;
+
+    if (page === undefined) return {};
+
+    return {
+      ...(page.search === undefined ? {} : { searchPages: (query: string) => searchVisiblePages(page, query) }),
+      pageHref: (pageId: string) => {
+        try {
+          return page.href?.(pageId);
+        } catch {
+          return undefined;
+        }
+      },
+      ...(page.open === undefined ? {} : { openPage: (pageId: string, event: MouseEvent) => page.open?.(pageId, { event }) }),
+    };
   }
 
   private popoverSurface(element: HTMLElement): { container?: HTMLElement } {
