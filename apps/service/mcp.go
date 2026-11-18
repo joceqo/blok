@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -115,6 +116,40 @@ func (s *Service) mcpIdentity(r *http.Request) (identity, error) {
 	return u, err
 }
 
+// A token that never expires still carries an expiry: the column is NOT NULL
+// and all four lookups filter on `expires_at>now()`, so a far sentinel keeps
+// one code path instead of making nullability a special case everywhere.
+const neverExpires = 100 * 365 * 24 * time.Hour
+
+// Only the offered durations are accepted. An unknown code is refused rather
+// than falling back to the default, so a typo cannot mint a longer credential.
+func tokenLifetime(code string) (time.Duration, bool) {
+	const day = 24 * time.Hour
+	switch code {
+	case "":
+		return 90 * day, true
+	case "1d":
+		return day, true
+	case "7d":
+		return 7 * day, true
+	case "30d":
+		return 30 * day, true
+	case "90d":
+		return 90 * day, true
+	case "1y":
+		return 365 * day, true
+	case "never":
+		return neverExpires, true
+	}
+	return 0, false
+}
+
+// Postgres reads a plain second count as an interval; no string formatting of
+// a duration can drift from what tokenLifetime returned.
+func intervalOf(d time.Duration) string {
+	return strconv.FormatInt(int64(d/time.Second), 10) + " seconds"
+}
+
 func (s *Service) mcpTokens(w http.ResponseWriter, r *http.Request) {
 	u, ok := s.require(w, r)
 	if !ok {
@@ -150,7 +185,8 @@ func (s *Service) mcpTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Label string `json:"label"`
+		Label     string `json:"label"`
+		ExpiresIn string `json:"expiresIn"`
 	}
 	if !body(w, r, &in) {
 		return
@@ -158,6 +194,11 @@ func (s *Service) mcpTokens(w http.ResponseWriter, r *http.Request) {
 	in.Label = strings.TrimSpace(in.Label)
 	if in.Label == "" || len(in.Label) > 80 {
 		problem(w, 400, "Invalid token name")
+		return
+	}
+	lifetime, ok := tokenLifetime(in.ExpiresIn)
+	if !ok {
+		problem(w, 400, "Invalid token lifetime")
 		return
 	}
 	if !s.rate(r.Context(), "mcp-token:"+u.ID, 10) {
@@ -175,7 +216,7 @@ func (s *Service) mcpTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	token := opaque()
 	var created, expires time.Time
-	err := s.DB.QueryRow(r.Context(), `INSERT INTO mcp_tokens(id,user_id,label,expires_at) VALUES($1,$2,$3,now()+interval '90 days') RETURNING created_at,expires_at`, hash(token), u.ID, in.Label).Scan(&created, &expires)
+	err := s.DB.QueryRow(r.Context(), `INSERT INTO mcp_tokens(id,user_id,label,expires_at) VALUES($1,$2,$3,now()+$4::interval) RETURNING created_at,expires_at`, hash(token), u.ID, in.Label, intervalOf(lifetime)).Scan(&created, &expires)
 	if err != nil {
 		problem(w, 503, "Could not create token")
 		return
@@ -212,7 +253,9 @@ func (s *Service) rotateMCPToken(w http.ResponseWriter, r *http.Request) {
 	token := opaque()
 	var label string
 	var created, expires time.Time
-	err := s.DB.QueryRow(r.Context(), `UPDATE mcp_tokens SET id=$1,created_at=now(),expires_at=now()+interval '90 days',last_used_at=NULL WHERE id=$2 AND user_id=$3 AND expires_at>now() RETURNING label,created_at,expires_at`, hash(token), r.PathValue("id"), u.ID).Scan(&label, &created, &expires)
+	// Rotating replaces the secret, not the policy: the new token keeps exactly
+	// the lifetime the old one was created with.
+	err := s.DB.QueryRow(r.Context(), `UPDATE mcp_tokens SET id=$1,expires_at=now()+(expires_at-created_at),created_at=now(),last_used_at=NULL WHERE id=$2 AND user_id=$3 AND expires_at>now() RETURNING label,created_at,expires_at`, hash(token), r.PathValue("id"), u.ID).Scan(&label, &created, &expires)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			problem(w, 404, "Token not found")

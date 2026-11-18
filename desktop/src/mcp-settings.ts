@@ -4,11 +4,22 @@ import './mcp-settings.css';
 
 interface McpToken { id: string; label: string; createdAt: string; expiresAt: string; lastUsedAt: string | null }
 
+const LIFETIMES: [string, string][] = [['1d','1 jour'],['7d','7 jours'],['30d','30 jours'],['90d','90 jours'],['1y','1 an'],['never','N’expire pas']];
+/** The service gives a non-expiring token a far sentinel; past this, say so rather than print the year. */
+const NEVER_AFTER_YEARS = 50;
+function expiryText(expiresAt: string): string {
+  const date = new Date(expiresAt);
+  if (Number.isNaN(date.getTime())) return 'Expiration inconnue';
+  return date.getTime() - Date.now() > NEVER_AFTER_YEARS * 365 * 24 * 3600 * 1000
+    ? 'N’expire pas'
+    : `Expire le ${date.toLocaleDateString('fr-FR')}`;
+}
+
 export function mountMcpSettings(content: HTMLElement, client: CloudClient, options: {embedded?: boolean} = {}): void {
   const panel = document.createElement('section'); panel.setAttribute('data-desktop-mcp-panel', '');
   const heading = document.createElement(options.embedded ? 'h2' : 'h1'); heading.setAttribute(options.embedded ? 'data-desktop-settings-section' : 'data-desktop-settings-title', ''); heading.textContent = 'Accès MCP';
   const help = document.createElement('p'); help.setAttribute('data-desktop-settings-intro', '');
-  help.textContent = 'Connectez Codex ou un autre client MCP à vos espaces avec vos propres droits. Le jeton est affiché une seule fois et expire après 90 jours.';
+  help.textContent = 'Connectez Codex ou un autre client MCP à vos espaces avec vos propres droits. Le jeton est affiché une seule fois ; vous choisissez sa durée de validité.';
   const endpoint = document.createElement('div'); endpoint.setAttribute('data-desktop-mcp-endpoint', '');
   const endpointLabel = document.createElement('span'); endpointLabel.textContent = 'Adresse du serveur';
   const url = document.createElement('code'); url.textContent = `${client.origin}/mcp`;
@@ -17,6 +28,10 @@ export function mountMcpSettings(content: HTMLElement, client: CloudClient, opti
   endpoint.append(endpointLabel, url, copyUrl);
   const name = document.createElement('input'); name.setAttribute('data-desktop-mcp-name', ''); name.type = 'text'; name.maxLength = 80; name.placeholder = 'Nom du client (ex. Codex)'; name.setAttribute('aria-label', 'Nom du jeton MCP'); styleTextField(name);
   const form = document.createElement('form'); form.setAttribute('data-desktop-mcp-create', '');
+  const lifetime = document.createElement('select'); lifetime.setAttribute('data-desktop-mcp-lifetime', ''); lifetime.setAttribute('aria-label', 'Durée de validité du jeton'); styleTextField(lifetime);
+  for (const [value, text] of LIFETIMES) { const option = document.createElement('option'); option.value = value; option.textContent = text; lifetime.append(option); }
+  lifetime.value = '90d';
+  const lifetimeLabel = document.createElement('label'); lifetimeLabel.textContent = 'Durée de validité'; lifetimeLabel.append(lifetime);
   const nameLabel = document.createElement('label'); nameLabel.textContent = 'Nom du client'; nameLabel.append(name);
   const create = document.createElement('button'); create.type = 'submit'; create.className = 'blok-button'; create.setAttribute('data-desktop-mcp-primary', ''); create.setAttribute('data-desktop-settings-copy', ''); create.textContent = 'Créer un jeton';
   const status = document.createElement('p'); status.setAttribute('role', 'status'); status.setAttribute('data-desktop-mcp-status', '');
@@ -45,7 +60,7 @@ export function mountMcpSettings(content: HTMLElement, client: CloudClient, opti
         const row = document.createElement('div'); row.setAttribute('data-desktop-mcp-token', '');
         const text = document.createElement('div'); text.setAttribute('data-desktop-mcp-token-info', '');
         const label = document.createElement('strong'); label.textContent = token.label;
-        const expiry = document.createElement('span'); expiry.textContent = `Expire le ${new Date(token.expiresAt).toLocaleDateString('fr-FR')}`;
+        const expiry = document.createElement('span'); expiry.textContent = expiryText(token.expiresAt);
         text.append(label, expiry);
         const actions = document.createElement('span'); actions.setAttribute('data-desktop-mcp-actions', '');
         const rotate = document.createElement('button'); rotate.type = 'button'; rotate.className = 'blok-button'; rotate.setAttribute('data-desktop-settings-copy', ''); rotate.textContent = 'Renouveler';
@@ -72,13 +87,13 @@ export function mountMcpSettings(content: HTMLElement, client: CloudClient, opti
     if (!label) { status.textContent = 'Donnez un nom au jeton.'; name.focus(); return; }
     create.disabled = true; secret.replaceChildren(); secret.hidden = true;
     try {
-      const result = await client.request<{token: string}>('/api/mcp/tokens', {method: 'POST', body: JSON.stringify({label})});
+      const result = await client.request<{token: string}>('/api/mcp/tokens', {method: 'POST', body: JSON.stringify({label, expiresIn: lifetime.value})});
       if (!content.isConnected) return;
       showSecret(result.token); name.value = ''; status.textContent = 'Jeton créé.'; await refresh();
     } catch { status.textContent = 'Impossible de créer le jeton.'; }
     finally { create.disabled = false; }
   })(); });
-  form.append(nameLabel, create);
+  form.append(nameLabel, lifetimeLabel, create);
   panel.append(heading, help, endpoint, form, status, secret, listHeading, list);
   content.append(panel);
   void refresh();
