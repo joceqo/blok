@@ -129,3 +129,91 @@ func TestPagePublicIDCannotBeChangedByIndexMetadata(t *testing.T) {
 		t.Fatal("spoofed publicId persisted in editable metadata", raw)
 	}
 }
+
+func TestRowBodyURLResolvesItsAuthorizedSourceWithoutListingBody(t *testing.T) {
+	w := newReadsWorld(t)
+	w.page(t, "body", "public", visInherit)
+	if _, e := w.service.DB.Exec(w.ctx, `UPDATE pages SET metadata=metadata || '{"rowBodyOf":{"documentId":"public","rowId":"row-1"}}'::jsonb WHERE id='body'`); e != nil {
+		t.Fatal(e)
+	}
+	alias := w.publicID(t, "body")
+	for _, path := range []string{"/api/pages/resolve/" + alias, "/api/pages/resolve-id/body"} {
+		got := w.send(t, "GET", tokenAlice, path, nil, 200)
+		source, ok := got["rowBodyOf"].(map[string]any)
+		if !ok || source["documentId"] != "public" || source["rowId"] != "row-1" || len(source) != 2 {
+			t.Fatalf("row body source unavailable for navigation: %#v", got)
+		}
+		if got["pageId"] != "body" || got["publicId"] != alias {
+			t.Fatal("resolver changed the body identity", got)
+		}
+	}
+	got := w.send(t, "GET", tokenAlice, "/api/pages/resolve-id/public", nil, 200)
+	if _, ok := got["rowBodyOf"]; ok {
+		t.Fatal("ordinary page acquired row metadata", got)
+	}
+	index := w.send(t, "GET", tokenAlice, "/api/workspaces/equipe/index", nil, 200)
+	if listedIDs(t, index)["body"] {
+		t.Fatal("resolving a row body added it to the sidebar", index)
+	}
+}
+
+func TestRowBodyURLDoesNotRevealAnInaccessibleSource(t *testing.T) {
+	w := newReadsWorld(t)
+	w.page(t, "body", "prive", visInherit)
+	if _, e := w.service.DB.Exec(w.ctx, `UPDATE pages SET metadata=metadata || '{"rowBodyOf":{"documentId":"prive","rowId":"secret-row"}}'::jsonb WHERE id='body'`); e != nil {
+		t.Fatal(e)
+	}
+	alias := w.publicID(t, "body")
+	for _, path := range []string{"/api/pages/resolve/" + alias, "/api/pages/resolve-id/body"} {
+		w.send(t, "GET", tokenAlice, path, nil, 404)
+		w.send(t, "GET", tokenZoe, path, nil, 404)
+	}
+	// A direct grant to the body does not reveal its private parent or row ID.
+	if _, e := w.service.DB.Exec(w.ctx, `INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES('body','alice','view','bob')`); e != nil {
+		t.Fatal(e)
+	}
+	for _, path := range []string{"/api/pages/resolve/" + alias, "/api/pages/resolve-id/body"} {
+		got := w.send(t, "GET", tokenAlice, path, nil, 200)
+		if _, ok := got["rowBodyOf"]; ok {
+			t.Fatal("resolver disclosed inaccessible source metadata", got)
+		}
+	}
+}
+
+func TestRowBodyURLIgnoresInvalidOrUnavailableSources(t *testing.T) {
+	w := newReadsWorld(t)
+	w.page(t, "body", "public", visInherit)
+	if _, e := w.service.DB.Exec(w.ctx, `INSERT INTO workspaces(id,slug,name) VALUES('other','other','Other'); INSERT INTO memberships VALUES('other','alice','member')`); e != nil {
+		t.Fatal(e)
+	}
+	seedPage(t, w.ctx, w.service, "foreign", "other", "", visWorkspace)
+	for _, tc := range []struct {
+		name, metadata string
+	}{
+		{"missing row", `{"documentId":"public"}`},
+		{"wrong parent", `{"documentId":"prive","rowId":"r"}`},
+		{"foreign workspace", `{"documentId":"foreign","rowId":"r"}`},
+		{"malformed", `"invalid"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, e := w.service.DB.Exec(w.ctx, `UPDATE pages SET metadata=jsonb_set(metadata,'{rowBodyOf}',$1::jsonb) WHERE id='body'`, tc.metadata); e != nil {
+				t.Fatal(e)
+			}
+			got := w.send(t, "GET", tokenAlice, "/api/pages/resolve-id/body", nil, 200)
+			if _, ok := got["rowBodyOf"]; ok {
+				t.Fatal("resolver disclosed invalid source", got)
+			}
+		})
+	}
+	if _, e := w.service.DB.Exec(w.ctx, `UPDATE pages SET metadata=metadata || '{"rowBodyOf":{"documentId":"public","rowId":"r"}}'::jsonb WHERE id='body'; UPDATE pages SET trashed=true WHERE id='public'`); e != nil {
+		t.Fatal(e)
+	}
+	got := w.send(t, "GET", tokenAlice, "/api/pages/resolve-id/body", nil, 200)
+	if _, ok := got["rowBodyOf"]; ok {
+		t.Fatal("resolver disclosed a trashed source", got)
+	}
+	if _, e := w.service.DB.Exec(w.ctx, `UPDATE pages SET trashed=false,deleted=true WHERE id='public'`); e != nil {
+		t.Fatal(e)
+	}
+	w.send(t, "GET", tokenAlice, "/api/pages/resolve-id/body", nil, 404)
+}

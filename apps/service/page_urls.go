@@ -1,6 +1,7 @@
 package cloud
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"regexp"
@@ -35,15 +36,16 @@ func (s *Service) resolvePageURL(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(ctx)
 	var pageID, publicID, title string
+	var metadata []byte
 	var ws Workspace
 	predicate := "p.public_id=$1::uuid"
 	if legacy {
 		predicate = "p.id=$1"
 	}
-	e = tx.QueryRow(ctx, `SELECT p.id,p.public_id::text,coalesce(p.metadata->>'title',''),w.id,w.slug,w.name,m.role,w.icon
+	e = tx.QueryRow(ctx, `SELECT p.id,p.public_id::text,coalesce(p.metadata->>'title',''),p.metadata,w.id,w.slug,w.name,m.role,w.icon
  FROM pages p JOIN workspaces w ON w.id=p.workspace_id
  JOIN memberships m ON m.workspace_id=w.id AND m.user_id=$2
- WHERE `+predicate+` AND NOT p.deleted AND NOT p.trashed FOR SHARE OF w`, value, u.ID).Scan(&pageID, &publicID, &title, &ws.ID, &ws.Slug, &ws.Name, &ws.Role, &ws.Icon)
+ WHERE `+predicate+` AND NOT p.deleted AND NOT p.trashed FOR SHARE OF w`, value, u.ID).Scan(&pageID, &publicID, &title, &metadata, &ws.ID, &ws.Slug, &ws.Name, &ws.Role, &ws.Icon)
 	if errors.Is(e, pgx.ErrNoRows) {
 		problem(w, 404, "Page not found")
 		return
@@ -70,5 +72,31 @@ func (s *Service) resolvePageURL(w http.ResponseWriter, r *http.Request) {
 	if tsID != "" {
 		teamspaceID = tsID
 	}
-	jsonOut(w, 200, map[string]any{"pageId": pageID, "publicId": publicID, "title": title, "workspace": ws, "teamspaceId": teamspaceID})
+	response := map[string]any{"pageId": pageID, "publicId": publicID, "title": title, "workspace": ws, "teamspaceId": teamspaceID}
+	var source struct {
+		ParentID  string `json:"parentId"`
+		RowBodyOf struct {
+			DocumentID string `json:"documentId"`
+			RowID      string `json:"rowId"`
+		} `json:"rowBodyOf"`
+	}
+	if json.Unmarshal(metadata, &source) == nil && source.RowBodyOf.DocumentID != "" && source.RowBodyOf.RowID != "" && source.ParentID == source.RowBodyOf.DocumentID && source.ParentID != pageID {
+		// A grant on the body alone must not reveal its private source or row.
+		var liveSource bool
+		if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pages WHERE id=$1 AND workspace_id=$2 AND NOT deleted AND NOT trashed)`, source.ParentID, ws.ID).Scan(&liveSource); e != nil {
+			problem(w, 503, "Database unavailable")
+			return
+		}
+		if liveSource {
+			sourceLevel, failure := s.effectiveLevel(ctx, tx, u.ID, source.ParentID)
+			if failure != nil {
+				problem(w, 503, "Database unavailable")
+				return
+			}
+			if sourceLevel >= levelView {
+				response["rowBodyOf"] = map[string]string{"documentId": source.RowBodyOf.DocumentID, "rowId": source.RowBodyOf.RowID}
+			}
+		}
+	}
+	jsonOut(w, 200, response)
 }
