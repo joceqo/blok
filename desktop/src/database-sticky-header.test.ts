@@ -80,3 +80,101 @@ it('keeps the real, clickable header visible while the page and table scroll', a
     await page.close();
   }
 });
+
+it.each(['ltr', 'rtl'])('keeps padded frozen header columns aligned across pinning and horizontal scrolling (%s)', async (direction) => {
+  const page = await browser.newPage({ viewport: { width: 1200, height: 700 } });
+  try {
+    await page.setContent(`<style>${css}</style><style>
+      * { box-sizing: border-box; }
+      body { margin: 0; --blok-space-2: 8px; --blok-space-2-5: 10px; --blok-space-3: 12px; --blok-content-max-width: 800px; }
+      [data-desktop-page-canvas] { width: 1200px; height: 400px; overflow: auto; container-type: inline-size; }
+      [data-desktop-page-toolbar] { position: sticky; top: 0; height: 44px; z-index: 10; background: white; }
+      [data-blok-database-table] { margin-top: 150px; }
+      [data-blok-database-table-grid] { width: 1800px; }
+      [data-blok-database-table-column-header], [data-blok-database-table-cell] { width: 200px; }
+      [data-frozen] { inset-inline-start: var(--_blok-database-frozen-shift, 0px); }
+    </style><div data-desktop-page-canvas data-blok-interface><div data-desktop-page-toolbar>Page</div>
+      <div data-blok-database-table><div data-blok-database-table-scroller>
+        <div data-blok-database-table-grid><div data-blok-database-table-header>
+          <div data-blok-database-table-gutter>Gutter</div>
+          <div data-blok-database-table-column-header data-frozen data-frozen-edge>Frozen</div>
+          <div data-blok-database-table-column-header>Other</div>
+        </div><div data-blok-database-table-row>
+          <div data-blok-database-table-gutter>Gutter</div>
+          <div data-blok-database-table-cell data-frozen data-frozen-edge>Frozen body</div>
+          <div data-blok-database-table-cell>Other body</div>
+        </div><div style="height:1000px"></div></div>
+      </div></div></div>`);
+    await page.locator('html').evaluate((el, dir) => { el.dir = dir; }, direction);
+    await page.addScriptTag({ content: script });
+    await page.evaluate(() => {
+      const grid = document.querySelector<HTMLElement>('[data-blok-database-table-grid]');
+      const header = document.querySelector<HTMLElement>('[data-blok-database-table-header]');
+      const scroller = document.querySelector<HTMLElement>('[data-blok-database-table-scroller]');
+      if (grid === null || header === null || scroller === null) throw new Error('Missing table fixture');
+      const stickAt = Math.max(0, parseFloat(getComputedStyle(scroller).paddingInlineStart) - 30);
+      scroller.style.setProperty('--_blok-database-frozen-shift', `${-stickAt}px`);
+      scroller.addEventListener('scroll', () => {
+        scroller.toggleAttribute('data-scrolled', Math.abs(scroller.scrollLeft) !== 0 && Math.abs(scroller.scrollLeft) >= stickAt);
+        scroller.toggleAttribute('data-frozen-shadow', Math.abs(scroller.scrollLeft) >= stickAt + 5);
+      });
+      new (window as unknown as { DatabaseStickyHeader: new (...args: unknown[]) => unknown }).DatabaseStickyHeader(scroller, grid, header);
+    });
+    expect(await page.locator('[data-blok-database-table-scroller]').evaluate(el => getComputedStyle(el).paddingInlineStart)).toBe('200px');
+    const snapshots = [];
+    for (const scrollTop of [0, 220, 300, 0]) {
+      await page.locator('[data-desktop-page-canvas]').evaluate((el, y) => { el.scrollTop = y; }, scrollTop);
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      for (const scrollLeft of [0, 80, 169, 170, 171, 340, 120, 0]) {
+        await page.locator('[data-blok-database-table-scroller]').evaluate((el, x) => { el.scrollLeft = x; }, direction === 'rtl' ? -scrollLeft : scrollLeft);
+        await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        snapshots.push(await page.evaluate(() => {
+          const head = document.querySelector<HTMLElement>('[data-blok-database-table-column-header][data-frozen]');
+          const body = document.querySelector<HTMLElement>('[data-blok-database-table-cell][data-frozen]');
+          const movingHead = document.querySelector<HTMLElement>('[data-blok-database-table-column-header]:not([data-frozen])');
+          const movingBody = document.querySelector<HTMLElement>('[data-blok-database-table-cell]:not([data-frozen])');
+          if (head === null || body === null || movingHead === null || movingBody === null) throw new Error('Missing frozen cells');
+          const rect = head.getBoundingClientRect();
+          const hit = document.elementFromPoint(rect.left + 100, rect.top + 18);
+          return { head: rect.left, body: body.getBoundingClientRect().left, movingOffset: movingHead.getBoundingClientRect().left - movingBody.getBoundingClientRect().left, top: rect.top, clickable: hit?.closest('[data-blok-database-table-column-header]') === head };
+        }));
+      }
+    }
+    expect(snapshots.map(({ head, body }) => head - body)).toEqual(Array(32).fill(0));
+    expect(snapshots.map(({ movingOffset }) => movingOffset)).toEqual(Array(32).fill(0));
+    expect(snapshots.map(({ top }) => top)).toEqual([194, 44, 44, 194].flatMap(top => Array(8).fill(top)));
+    expect(snapshots.every(({ clickable }) => clickable)).toBe(true);
+
+    await page.locator('[data-desktop-page-canvas]').evaluate(el => { el.scrollTop = 220; });
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await page.evaluate(() => {
+      const port = document.querySelector<HTMLElement>('[data-blok-database-table-scroller]');
+      const head = document.querySelector<HTMLElement>('[data-blok-database-table-column-header]:not([data-frozen])');
+      const body = document.querySelector<HTMLElement>('[data-blok-database-table-cell]:not([data-frozen])');
+      if (port === null || head === null || body === null) throw new Error('Missing wheel fixture');
+      const state = { stop: false, samples: [] as { scroll: number; offset: number; top: number }[] };
+      (window as unknown as { wheelProbe: typeof state }).wheelProbe = state;
+      const sample = (): void => {
+        if (state.stop) return;
+        state.samples.push({ scroll: port.scrollLeft, offset: head.getBoundingClientRect().left - body.getBoundingClientRect().left, top: head.getBoundingClientRect().top });
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    await page.mouse.move(600, 150);
+    for (const delta of [160, 160, 160, -160, -160, -160]) {
+      await page.mouse.wheel(direction === 'rtl' ? -delta : delta, 0);
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    }
+    const wheelSamples = await page.evaluate(() => {
+      const probe = (window as unknown as { wheelProbe: { stop: boolean; samples: { scroll: number; offset: number; top: number }[] } }).wheelProbe;
+      probe.stop = true;
+      return probe.samples;
+    });
+    expect(wheelSamples.some(({ scroll }) => Math.abs(scroll) > 0)).toBe(true);
+    expect(wheelSamples.every(({ offset, top }) => offset === 0 && top === 44)).toBe(true);
+
+  } finally {
+    await page.close();
+  }
+});
