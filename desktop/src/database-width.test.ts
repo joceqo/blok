@@ -71,3 +71,43 @@ it('lets a root database fill the page canvas while its table scrolls locally', 
     await page.close();
   }
 });
+
+it('gives a row body database the same canvas width as a root one', async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 800 } });
+
+  try {
+    // A row opened as a full page nests its database two levels deeper: the page
+    // tool, then the row body. Same depth-0 database, same canvas treatment.
+    await page.setContent(`<style>${shell}</style><style>${databaseStyles}</style><style>
+      [data-desktop-page-canvas] { width: 100%; overflow-x: auto; --max-width-content: 720px; }
+      [data-blok-interface] { --blok-editor-gutter-start: 56px; }
+      [data-blok-redactor] { padding-inline-start: 56px; }
+      [data-blok-element-content] { max-width: 720px; margin-inline: auto; }
+      [data-blok-database-table-grid] { width: 2000px; height: 80px; }
+    </style><div data-desktop-page-canvas><article data-desktop-document>
+      <div data-desktop-editor><div data-blok-interface><div data-blok-redactor>
+        <div data-blok-element><div data-blok-element-content data-text-column>Text</div></div>
+        <div data-blok-element><div data-blok-element-content>
+          <div data-blok-tool><div data-blok-nested-blocks data-blok-database-row-body>
+            <div data-blok-element><div data-blok-element-content data-database-content>
+              <div data-blok-database-wrapper><div data-blok-database-board-container>
+                <div data-blok-database-table><div data-blok-database-table-scroller>
+                  <div data-blok-database-table-grid>Table</div>
+                </div></div>
+              </div></div>
+            </div></div>
+          </div></div>
+        </div></div>
+      </div></div></div>
+    </article></div>`);
+
+    const scroller = page.locator('[data-blok-database-table-scroller]');
+    const scrollBox = await scroller.boundingBox();
+
+    expect(scrollBox?.width).toBeCloseTo(1440, 0);
+    expect(scrollBox?.x).toBeCloseTo(0, 0);
+    expect(await page.locator('[data-desktop-page-canvas]').evaluate(el => el.scrollWidth)).toBe(1440);
+  } finally {
+    await page.close();
+  }
+});
