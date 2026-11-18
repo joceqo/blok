@@ -9883,6 +9883,18 @@ export class DatabaseTool implements BlockTool {
       ? ((hosted.databaseId === undefined || hosted.databaseId === this.block.id) && this.model.getRow(hosted.rowId) !== undefined ? hosted.rowId : null)
       : link?.full === true && this.model.getRow(link.rowId) !== undefined ? link.rowId : null;
 
+    // A page is a page however deep it sits. The route can name a database
+    // nested in one of our rows' bodies; this must be read before anything
+    // returns on "nothing wanted, nothing shown", and before the drawer closes
+    // — that drawer is what mounts the database able to open the row. Opening
+    // its row hands the trip to the nested database, which runs this same code.
+    const host = wanted === null ? this.hostingRow(hosted?.databaseId) : undefined;
+
+    if (host !== undefined) {
+      if (shownFull !== host) this.handleRowClick(host, 'full');
+
+      return;
+    }
     if (shownFull === wanted) return;
     if (link?.full === true && drawer?.hasFullPageChild(link.rowId)) return;
     if (wanted === null) {
@@ -9892,6 +9904,14 @@ export class DatabaseTool implements BlockTool {
     }
     this.handleRowClick(wanted, 'full');
   };
+
+  /** The row of this database whose body holds `databaseId`, if any. */
+  private hostingRow(databaseId: string | undefined): string | undefined {
+    if (databaseId === undefined || databaseId === this.dataId || databaseId === this.block.id) return undefined;
+    const row = this.nearestRow(this.api.blocks.getById(databaseId)?.parentId, new Set());
+
+    return row !== undefined && this.model.getRow(row) !== undefined ? row : undefined;
+  }
 
   private readonly handleDueVisibility = (): void => {
     // A sleeping laptop holds timers back; waking up checks at once.
@@ -12015,7 +12035,10 @@ export class DatabaseTool implements BlockTool {
     this.ensureCardDrawer(origin);
     // Already shown: a fresh lookup would drop the open editor unsaved. open() only switches the mode.
     const hosted = this.config.rowPages?.navigation?.current();
-    const hostRoute = hosted?.rowId === rowId && (hosted.databaseId === undefined || hosted.databaseId === this.block.id);
+    // The route points at this row, or at something inside its body: either way
+    // the URL already names where we are going, so opening must not navigate again.
+    const hostRoute = (hosted?.rowId === rowId && (hosted.databaseId === undefined || hosted.databaseId === this.block.id))
+      || this.hostingRow(hosted?.databaseId) === rowId;
     const navigates = explicit === 'full' && this.config.rowPages?.navigate !== undefined && !hostRoute;
 
     if (this.cardDrawer?.openRowId === rowId && !navigates) {
