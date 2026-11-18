@@ -197,3 +197,41 @@ it('opens version history after move and before trash in the page actions menu',
   expect(commands.map(node=>node.textContent)).toEqual(['Déplacer vers…','Historique des versions','Mettre à la corbeille']);
   commands[1]?.click();expect(onHistory).toHaveBeenCalledOnce();expect(menu?.hidden).toBe(true);toolbar.destroy();
 });
+
+it('filters page actions without accents and activates the result with the keyboard', () => {
+  const onMove=vi.fn();
+  const toolbar=createPageToolbar([{id:'p',title:'Page'}],false,vi.fn(),undefined,undefined,{onMove,onDuplicate:vi.fn(),onDelete:vi.fn()});
+  document.body.append(toolbar.element);
+  required(toolbar.element.querySelector<HTMLButtonElement>('[data-desktop-page-more]')).click();
+  const search=required(toolbar.element.querySelector<HTMLInputElement>('input[type="search"]'));
+  expect(document.activeElement).toBe(search);
+  search.value='deplacer'; search.dispatchEvent(new Event('input',{bubbles:true}));
+  const commands=[...toolbar.element.querySelectorAll<HTMLButtonElement>('[data-desktop-page-command]')].filter(button=>!button.hidden);
+  expect(commands.map(button=>button.textContent)).toEqual(['Déplacer vers…']);
+  search.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));
+  expect(document.activeElement).toBe(commands[0]);
+  commands[0].click();
+  expect(onMove).toHaveBeenCalledOnce();
+  expect(required(toolbar.element.querySelector<HTMLElement>('[data-desktop-page-menu]')).hidden).toBe(true);
+  toolbar.destroy();
+});
+
+it('copies from the action menu in read-only mode and shows an empty search without enabling edits', async () => {
+  const writeText=vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText}});
+  const toolbar=createPageToolbar([{id:'p',title:'Page'}],false,vi.fn(),undefined,undefined,{readOnly:true,pageUrl:()=> 'https://blok.example/p/page',onDelete:vi.fn()});
+  document.body.append(toolbar.element);
+  const more=required(toolbar.element.querySelector<HTMLButtonElement>('[data-desktop-page-more]'));
+  more.click();
+  expect(toolbar.element.querySelector('[data-danger]')).toBeNull();
+  expect(required(toolbar.element.querySelector<HTMLButtonElement>('[data-desktop-page-full-width]')).disabled).toBe(true);
+  const search=required(toolbar.element.querySelector<HTMLInputElement>('input[type="search"]'));
+  search.value='introuvable'; search.dispatchEvent(new Event('input',{bubbles:true}));
+  expect(required(toolbar.element.querySelector<HTMLElement>('[data-desktop-page-menu-empty]')).hidden).toBe(false);
+  more.click(); more.click();
+  expect(search.value).toBe('');
+  required(toolbar.element.querySelector<HTMLButtonElement>('[data-desktop-page-copy-action]')).click();
+  await vi.waitFor(()=>expect(writeText).toHaveBeenCalledWith('https://blok.example/p/page'));
+  expect(document.activeElement).toBe(more);
+  toolbar.destroy();
+});

@@ -1,3 +1,6 @@
+import { IconSearch, IconLink, IconCopy, IconPencil, IconArrowRightLine, IconClock, IconTrash, IconExpandFullscreen } from '../../src/components/icons';
+import { createPositionTracker } from '../../src/components/utils/popover/anchored-position';
+import { resolvePosition } from '../../src/components/utils/popover/popover-position';
 import { promoteToTopLayer, removeFromTopLayer } from '../../src/components/utils/top-layer';
 import { renderPageIcon } from '../../src/shell/page-icon';
 import { WORKSPACE_ROLES } from './access-vocabulary';
@@ -214,9 +217,32 @@ export function createPageToolbar(
   menu.setAttribute('role', 'dialog');
   menu.setAttribute('aria-label', 'Actions de la page');
   menu.hidden = true;
-  const heading = document.createElement('div');
-  heading.setAttribute('data-desktop-page-menu-heading', '');
-  heading.textContent = 'Actions de la page';
+  const icon = (svg: string): HTMLElement => {
+    const node = document.createElement('span');
+    node.setAttribute('data-desktop-page-action-icon', '');
+    node.setAttribute('aria-hidden', 'true');
+    node.innerHTML = svg.trim().replace(/>\s+</g, '><');
+    return node;
+  };
+  const searchBox = document.createElement('div');
+  searchBox.setAttribute('data-desktop-page-action-search', '');
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.placeholder = 'Rechercher une action…';
+  search.setAttribute('aria-label', 'Rechercher une action');
+  search.autocomplete = 'off';
+  search.spellcheck = false;
+  searchBox.append(icon(IconSearch), search);
+  const group = (name: string): HTMLElement => {
+    const section = document.createElement('div');
+    section.setAttribute('data-desktop-page-menu-group', '');
+    section.setAttribute('role', 'group');
+    section.setAttribute('aria-label', name);
+    return section;
+  };
+  const commandsGroup = group('Actions');
+  const appearanceGroup = group('Affichage');
+  const dangerGroup = group('Corbeille');
   const fullWidthButton = document.createElement('button');
   fullWidthButton.type = 'button';
   fullWidthButton.setAttribute('data-desktop-page-full-width', '');
@@ -227,43 +253,106 @@ export function createPageToolbar(
   label.textContent = 'Pleine largeur';
   const track = document.createElement('span');
   track.setAttribute('data-desktop-page-switch-track', '');
-  fullWidthButton.append(label, track);
+  fullWidthButton.append(icon(IconExpandFullscreen), label, track);
   fullWidthButton.disabled = options.readOnly === true;
-  menu.append(heading, fullWidthButton);
-  const commands = [
-    ['Renommer', options.onRename], ['Dupliquer', options.onDuplicate], ['Déplacer vers…', options.onMove], ['Historique des versions', options.onHistory], ['Mettre à la corbeille', options.onDelete],
-  ] as const;
-  for (const [title, run] of commands) {
-    if (!run || options.readOnly) continue;
+  appearanceGroup.append(fullWidthButton);
+  const entries: Array<{button: HTMLButtonElement; title: string}> = [];
+  const command = (title: string, svg: string, run: () => void, section: HTMLElement, attribute = 'data-desktop-page-command'): void => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.setAttribute('data-desktop-page-command', '');
-    if (title === 'Mettre à la corbeille') { button.setAttribute('data-danger', ''); button.style.borderTop = '1px solid var(--blok-border-primary, #8883)'; }
-    button.textContent = title;
-    button.addEventListener('click', () => { close(); run(); });
-    menu.append(button);
+    button.setAttribute(attribute, '');
+    const text = document.createElement('span');
+    text.textContent = title;
+    button.append(icon(svg), text);
+    if (section === dangerGroup) button.setAttribute('data-danger', '');
+    button.addEventListener('click', () => { close(true); run(); });
+    entries.push({button, title});
+    section.append(button);
+  };
+  command('Copier le lien', IconLink, () => copy.click(), commandsGroup, 'data-desktop-page-copy-action');
+  const commands = [
+    ['Renommer', IconPencil, options.onRename], ['Dupliquer', IconCopy, options.onDuplicate],
+    ['Déplacer vers…', IconArrowRightLine, options.onMove], ['Historique des versions', IconClock, options.onHistory],
+  ] as const;
+  for (const [title, svg, run] of commands) {
+    if (run && !options.readOnly) command(title, svg, run, commandsGroup);
   }
+  entries.push({button: fullWidthButton, title: 'Pleine largeur'});
+  if (options.onDelete && !options.readOnly) command('Mettre à la corbeille', IconTrash, options.onDelete, dangerGroup);
+  const empty = document.createElement('div');
+  empty.setAttribute('data-desktop-page-menu-empty', '');
+  empty.setAttribute('role', 'status');
+  empty.textContent = 'Aucune action trouvée';
+  empty.hidden = true;
+  menu.append(searchBox, commandsGroup, appearanceGroup, dangerGroup, empty);
   actions.append(more, menu);
   toolbar.append(identity, actions);
 
+  const reposition = (): void => {
+    if (menu.hidden) return;
+    const anchor = more.getBoundingClientRect();
+    const margin = 8;
+    const gap = 6;
+    const available = Math.max(anchor.top - margin - gap, window.innerHeight - anchor.bottom - margin - gap, 0);
+    menu.style.maxHeight = `${available}px`;
+    const bounds = menu.getBoundingClientRect();
+    const position = resolvePosition({
+      anchor, popoverSize: {width: bounds.width, height: bounds.height},
+      scopeBounds: new DOMRect(margin, margin, Math.max(0, window.innerWidth - margin * 2), Math.max(0, window.innerHeight - margin * 2)),
+      viewportSize: {width: window.innerWidth, height: window.innerHeight},
+      scrollOffset: {x: 0, y: 0}, offset: gap, alignEnd: true,
+      direction: getComputedStyle(more).direction === 'rtl' ? 'rtl' : 'ltr',
+    });
+    menu.style.left = `${position.left}px`;
+    menu.style.top = `${position.top}px`;
+  };
+  const tracker = createPositionTracker(menu, reposition, more);
+  const filter = (): void => {
+    const normalize = (value: string): string => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().trim();
+    const query = normalize(search.value);
+    for (const entry of entries) entry.button.hidden = !normalize(entry.title).includes(query);
+    for (const section of [commandsGroup, appearanceGroup, dangerGroup]) {
+      section.hidden = !entries.some(({button}) => section.contains(button) && !button.hidden);
+    }
+    empty.hidden = entries.some(({button}) => !button.hidden);
+    menu.scrollTop = 0;
+    reposition();
+  };
+  search.addEventListener('input', filter);
   const close = (restoreFocus = false): void => {
     if (menu.hidden) return;
+    tracker.detach();
     menu.hidden = true;
     removeFromTopLayer(menu);
     more.setAttribute('aria-expanded', 'false');
     document.removeEventListener('pointerdown', outside, true);
     document.removeEventListener('keydown', onKey, true);
-    if (restoreFocus) more.focus();
+    if (restoreFocus) more.focus({preventScroll: true});
   };
   const outside = (event: PointerEvent): void => {
-    if (event.target instanceof Node && actions.contains(event.target)) return;
+    if (event.target instanceof Node && (menu.contains(event.target) || more.contains(event.target))) return;
     close();
   };
   const onKey = (event: KeyboardEvent): void => {
     if (event.key === 'Tab') close();
     if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       close(true);
+      return;
+    }
+    const visible = entries.map(entry => entry.button).filter(button => !button.hidden && !button.disabled);
+    if (event.key === 'Enter' && document.activeElement === search) {
+      event.preventDefault();
+      visible[0]?.click();
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const index = visible.findIndex(button => button === document.activeElement);
+      const next = index < 0 ? (event.key === 'ArrowDown' ? 0 : visible.length - 1)
+        : (index + (event.key === 'ArrowDown' ? 1 : -1) + visible.length) % visible.length;
+      visible[next]?.focus({preventScroll: true});
+      visible[next]?.scrollIntoView?.({block: 'nearest'});
     }
   };
   more.addEventListener('click', () => {
@@ -272,15 +361,16 @@ export function createPageToolbar(
       return;
     }
     closeBreadcrumbMenu();
+    search.value = '';
+    filter();
     menu.hidden = false;
     promoteToTopLayer(menu);
-    const bounds = more.getBoundingClientRect();
-    menu.style.left = `${Math.max(8, Math.min(bounds.right - 280, window.innerWidth - 288))}px`;
-    menu.style.top = `${bounds.bottom + 6}px`;
+    reposition();
+    tracker.attach();
     more.setAttribute('aria-expanded', 'true');
     document.addEventListener('pointerdown', outside, true);
     document.addEventListener('keydown', onKey, true);
-    fullWidthButton.focus();
+    search.focus({preventScroll: true});
   });
   fullWidthButton.addEventListener('click', () => {
     state.fullWidth = !state.fullWidth;
