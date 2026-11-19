@@ -41,7 +41,10 @@ describe('createApp integration (no PostgreSQL)', () => {
   it('GET /health', async () => {
     const response = await appWithoutDb().request('http://localhost/health');
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ status: 'ok' });
+    await expect(response.json()).resolves.toEqual({
+      status: 'ok',
+      version: expect.any(String) as string,
+    });
   });
 
   it('responses include baseline security headers', async () => {
@@ -122,11 +125,29 @@ describe('createApp integration (no PostgreSQL)', () => {
     await expect(deleteResponse.json()).resolves.toEqual({ error: 'database_not_configured' });
   });
 
+  it('GET /api/workspaces/:workspaceId/audit returns 503 when DATABASE is not wired into createApp', async () => {
+    const workspaceId = '00000000-0000-0000-0000-000000000001';
+    const response = await appWithoutDb().request(
+      `http://localhost/api/workspaces/${workspaceId}/audit`,
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: 'database_not_configured' });
+  });
+
   it('GET /api/blok returns 503 when BLOK_SIDECAR_URL is unset', async () => {
     const response = await appWithoutDb().request('http://localhost/api/blok');
     expect(response.status).toBe(503);
     const body: { error?: string } = await response.json();
     expect(body.error).toBe('sidecar_not_configured');
+  });
+
+  it('GET /api/blok/sync/:docId returns 501 upgrade_required without WebSocket upgrade', async () => {
+    process.env.BLOK_SIDECAR_URL = 'http://127.0.0.1:4000';
+    const response = await appWithoutDb().request('http://localhost/api/blok/sync/my-doc');
+    expect(response.status).toBe(501);
+    const body: { error?: string; hint?: string } = await response.json();
+    expect(body.error).toBe('upgrade_required');
+    expect(body.hint).toContain('ws://127.0.0.1:4000/sync/my-doc');
   });
 
   it('GET /api/documents/:docId/state returns 503 when DATABASE is not wired into createApp', async () => {

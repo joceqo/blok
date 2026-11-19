@@ -1,4 +1,4 @@
-import { and, asc, count, eq } from 'drizzle-orm';
+import { and, asc, count, desc, eq, lt, or } from 'drizzle-orm';
 import { Hono } from 'hono';
 
 import type { DbVariables } from '@/middleware/db.js';
@@ -7,12 +7,18 @@ import { requireUser } from '@/middleware/require-user.js';
 import { requireWorkspaceRole, roleInWorkspace } from '@/http/workspace-access.js';
 import { withTransaction } from '@/db/transaction.js';
 import {
+  auditEvents,
   pages,
   workspaces,
   workspaceInvites,
   workspaceMembers,
   workspacePresets,
 } from '@/db/schema.js';
+import {
+  decodeTimeIdCursor,
+  encodeTimeIdCursor,
+  parseListPagination,
+} from '@/http/pagination.js';
 import {
   listWorkspacesForUser,
   memberRows,
@@ -29,6 +35,7 @@ import {
 } from '@/workspaces/preset-body.js';
 import { slugFromName, validateWorkspaceSlug } from '@/workspaces/slug.js';
 import { recordAuditEvent } from '@/audit/record-audit-event.js';
+import { serializeAuditEvent } from '@/audit/serialize-audit-event.js';
 import { findOrCreateUserByEmail } from '@/auth/users.js';
 import { normalizeEmail, isValidEmail } from '@/auth/codes.js';
 type Env = { Variables: DbVariables & SessionVariables };
@@ -385,6 +392,67 @@ workspaceRoutes.post(
     return context.json({ ok: true });
   },
 );
+
+workspaceRoutes.get('/api/workspaces/:workspaceId/audit', requireUser(), async (context) => {
+  const workspaceId = context.req.param('workspaceId');
+  const db = context.get('db');
+
+  await requireWorkspaceRole(db, context, workspaceId, 'share');
+
+  const pagination = parseListPagination(context.req.query());
+  const workspaceFilter = eq(auditEvents.workspaceId, workspaceId);
+
+  const baseSelect = db
+    .select({
+      id: auditEvents.id,
+      workspaceId: auditEvents.workspaceId,
+      userId: auditEvents.userId,
+      action: auditEvents.action,
+      metadata: auditEvents.metadata,
+      createdAt: auditEvents.createdAt,
+    })
+    .from(auditEvents);
+
+  if (!pagination.paginated) {
+    const rows = await baseSelect
+      .where(workspaceFilter)
+      .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id));
+    return context.json({ events: rows.map((row) => serializeAuditEvent(row)) });
+  }
+
+  let cursorFilter = workspaceFilter;
+  if (pagination.cursor !== undefined) {
+    let decoded: { at: Date; id: string };
+    try {
+      decoded = decodeTimeIdCursor(pagination.cursor);
+    } catch {
+      return context.json({ error: 'invalid_cursor' }, 400);
+    }
+    const beforeCursor = or(
+      lt(auditEvents.createdAt, decoded.at),
+      and(eq(auditEvents.createdAt, decoded.at), lt(auditEvents.id, decoded.id)),
+    );
+    cursorFilter = and(workspaceFilter, beforeCursor);
+  }
+
+  const rows = await baseSelect
+    .where(cursorFilter)
+    .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id))
+    .limit(pagination.limit + 1);
+
+  const hasMore = rows.length > pagination.limit;
+  const eventsPage = hasMore ? rows.slice(0, pagination.limit) : rows;
+  const last = eventsPage.at(-1);
+  const nextCursor =
+    hasMore && last !== undefined
+      ? encodeTimeIdCursor(last.createdAt, last.id)
+      : undefined;
+
+  return context.json({
+    events: eventsPage.map((row) => serializeAuditEvent(row)),
+    ...(nextCursor !== undefined ? { nextCursor } : {}),
+  });
+});
 
 workspaceRoutes.get('/api/workspaces/:workspaceId/presets', requireUser(), async (context) => {
   const workspaceId = context.req.param('workspaceId');

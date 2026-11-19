@@ -21,7 +21,7 @@ Readable scaffold for the **product** backend (`apps/service` in Go). This is **
 6. `src/db/transaction.ts` — `withTransaction` for multi-statement handlers
 7. `src/db/index.ts` — `drizzle(pool, { schema })`
 8. `src/permissions.ts` — pure permission matrix (port of `permissions.go` lot 1)
-9. `src/routes/blok.ts` — placeholder pour le sidecar `/api/blok`
+9. `src/routes/blok.ts` — sidecar HTTP proxy at `/api/blok/*`; `GET /api/blok/sync/:docId` answers `501 upgrade_required` (plain HTTP or upgrade) with a `ws:`/`wss:` hint to `BLOK_SIDECAR_URL` — live sockets are not reverse-proxied through this host yet
 
 ## Run locally
 
