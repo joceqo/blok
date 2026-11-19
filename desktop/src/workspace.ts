@@ -835,20 +835,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         if (parent) navigateRowAncestor(id, parent); else navigate(id);
       },
     });
-    const rowDrafts = ref.kind === 'remote' ? createRowBodyDrafts({
-      scope: workspaceKey(ref),
-      readOnly: documentId => readOnly(id) || readOnly(documentId),
-      createEditor: config => {
-        // Drafts have no collaboration or host persistence. Page creation must
-        // wait for the real body document, whose id does not exist yet.
-        const tools = {...nestedPageTools};
-        delete tools.page;
-        const database = tools.database as {class: typeof Database; config: Record<string, unknown>};
-        tools.database = {...database, config: {...database.config, rowPages: undefined}};
-        const draft = new Blok({...config, tools, dataModel: 'hierarchical', tabSync: false, theme: readAppearance()});
-        return {isReady:draft.isReady, save:()=>draft.save(), readOnly:draft.readOnly, destroy:()=>draft.destroy()};
-      },
-      create: async request => {
+    /**
+     * A row's page, created on demand. Shared with navigate: a Notion row is a
+     * page from the moment it exists, so opening one full page must give it one
+     * too, or its address can only ever name the row inside its database.
+     */
+    const createRowBody = async (request: {documentId: string; rowId: string; body: OutputData; operationId: string}): Promise<{pageId: string; publicId: string; parentId: string; rowId: string; revision: number}> => {
+
+        if (ref.kind !== 'remote') throw new Error('Les corps de lignes vivent sur un espace distant.');
         const source = request.documentId === id ? instance : rowPages?.mountedEditor(request.documentId);
         if (!source) throw new Error('La page source doit rester ouverte pendant cet enregistrement.');
         // The source row may itself be a just-created, unacknowledged block.
@@ -874,7 +868,21 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           }).catch(() => undefined);
         }
         return receipt;
+    };
+    const rowDrafts = ref.kind === 'remote' ? createRowBodyDrafts({
+      scope: workspaceKey(ref),
+      readOnly: documentId => readOnly(id) || readOnly(documentId),
+      createEditor: config => {
+        // Drafts have no collaboration or host persistence. Page creation must
+        // wait for the real body document, whose id does not exist yet.
+        const tools = {...nestedPageTools};
+        delete tools.page;
+        const database = tools.database as {class: typeof Database; config: Record<string, unknown>};
+        tools.database = {...database, config: {...database.config, rowPages: undefined}};
+        const draft = new Blok({...config, tools, dataModel: 'hierarchical', tabSync: false, theme: readAppearance()});
+        return {isReady:draft.isReady, save:()=>draft.save(), readOnly:draft.readOnly, destroy:()=>draft.destroy()};
       },
+      create: createRowBody,
       mountPage: (pageId, target) => {
         const mount = rowPages?.mount(pageId, target);
         const body = rowPages?.mountedEditor(pageId);
@@ -909,10 +917,22 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           if (!current()) return;
           const databaseId = context?.databaseId ?? instance.blocks.getById(rowId)?.parentId ?? undefined;
           let href = rowPageUrl('__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href,id) : pageUrl(id), rowId, databaseId);
-          if (context?.pageId) {
+          // A row opened full page is a page, so it gets one here if it has none
+          // yet: without it the address can only name the row inside its
+          // database, and a link to it would not survive the row moving.
+          let pageId = context?.pageId;
+
+          if (pageId === undefined && !readOnly(id)) {
+            // A row whose body still lives inline cannot have a page until that
+            // body moves (blokctl rows migrate); its old address stays valid.
+            pageId = await createRowBody({documentId: id, rowId, body: {blocks: []}, operationId: crypto.randomUUID()})
+              .then(receipt => receipt.pageId, () => undefined);
+            if (!current()) return;
+          }
+          if (pageId !== undefined) {
             const client = new CloudClient({origin:ref.server,...('__TAURI_INTERNALS__' in window ? {sessionAdapter:nativeSessionAdapter(ref.server)} : {})});
-            const resolved = await client.request<ResolvedPage>(`/api/pages/resolve-id/${encodeURIComponent(context.pageId)}`);
-            if (resolved.pageId !== context.pageId || resolved.rowBodyOf?.documentId !== id || resolved.rowBodyOf.rowId !== rowId || resolved.workspace.id !== ref.id || resolved.workspace.slug !== ref.workspaceId) throw new Error('Page indisponible.');
+            const resolved = await client.request<ResolvedPage>(`/api/pages/resolve-id/${encodeURIComponent(pageId)}`);
+            if (resolved.pageId !== pageId || resolved.rowBodyOf?.documentId !== id || resolved.rowBodyOf.rowId !== rowId || resolved.workspace.id !== ref.id || resolved.workspace.slug !== ref.workspaceId) throw new Error('Page indisponible.');
             if (!current()) return;
             rememberResolvedRowPage(location.origin,resolved);
             href = '__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href,resolved.pageId) : publicPageUrl(ref.server,resolved.title,resolved.publicId);
