@@ -51,9 +51,8 @@ CREATE TABLE IF NOT EXISTS pages (
 CREATE TABLE IF NOT EXISTS page_documents (
   page_id uuid PRIMARY KEY REFERENCES pages (id) ON DELETE CASCADE,
   doc_id text NOT NULL,
-  lineage text NOT NULL DEFAULT '',
-  sequence bigint NOT NULL DEFAULT 0,
-  updated_at timestamptz NOT NULL DEFAULT now()
+  lineage text,
+  sequence bigint
 );
 
 CREATE TABLE IF NOT EXISTS assets (
@@ -62,11 +61,4 @@ CREATE TABLE IF NOT EXISTS assets (
   byte_size bigint NOT NULL,
   storage_key text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS page_documents (
-  page_id uuid PRIMARY KEY REFERENCES pages (id) ON DELETE CASCADE,
-  doc_id text NOT NULL,
-  lineage text,
-  sequence bigint
 );
