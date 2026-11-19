@@ -10374,6 +10374,31 @@ textarea[data-blok-database-cell-input] {
   display: flex;
 }
 
+/* Chromium accepts a length but not calc() for overflow-clip-margin.
+   Resolve the themed gutter through a registered length before using it. */
+@property --_blok-database-row-clip-margin {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 86px;
+}
+
+/* Keep row DOM and native find/selection, but let the browser skip distant
+   row contents. Auto remembers the measured height after a row was visible.
+   Paint containment otherwise clips the controls outside the row's start edge;
+   engines without an expandable clip keep the existing rendering behavior. */
+@supports (content-visibility: auto) and (overflow-clip-margin: 1px) and (contain-intrinsic-block-size: auto 37px) {
+  [data-blok-database-table-row] {
+    content-visibility: auto;
+    contain-intrinsic-block-size: auto 37px;
+    --_blok-database-row-clip-margin: var(--blok-database-table-row-gutter);
+    overflow-clip-margin: var(--_blok-database-row-clip-margin);
+  }
+
+  [data-blok-database-table-row]:has(> [data-blok-database-table-cell][data-wrap]) {
+    contain-intrinsic-block-size: auto 58px;
+  }
+}
+
 /* Row selection halo: fades in over 200ms (research/08) and out over 200ms (notion-motion.md Round 16 §2).
    The fill stays put, so only the opacity moves. */
 [data-blok-database-table-row]::after {

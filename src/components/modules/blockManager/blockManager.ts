@@ -1868,7 +1868,7 @@ export class BlockManager extends Module {
      */
     const blokWrapper = block.holder.closest(`[${DATA_ATTR.editor}]`);
     const wrapper = this.Blok.UI.nodes.wrapper;
-    const isBlockBelongsToCurrentInstance = blokWrapper?.isEqualNode(wrapper);
+    const isBlockBelongsToCurrentInstance = blokWrapper === wrapper;
 
     if (!isBlockBelongsToCurrentInstance) {
       return undefined;

@@ -83,6 +83,7 @@ const createBlockStub = (options: BlockStubOptions): Block => {
     preservedData: options.preservedData ?? {},
     save: vi.fn(() => Promise.resolve(options.saveData === undefined ? undefined : { data: options.saveData })),
     call: vi.fn(),
+    renderIfVisible: vi.fn(),
     destroy: vi.fn(() => Promise.resolve()),
     setPlaceholder: vi.fn(),
   } as unknown as Block;
@@ -1002,6 +1003,21 @@ describe('BlockManager.setCurrentBlockByChildNode', () => {
 
     expect(harness.blockManager.setCurrentBlockByChildNode(harness.childNode)).toBeUndefined();
     expect(harness.updateCurrentInput).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a structurally identical editor as the same instance', () => {
+    const harness = createChildNodeHarness({});
+    const actual = harness.block.holder.parentElement;
+
+    if (actual === null) throw new Error('Missing fixture wrapper');
+    const clone = actual.cloneNode(true) as HTMLDivElement;
+    const modules = (harness.blockManager as unknown as { Blok: BlokModules }).Blok;
+
+    modules.UI.nodes.wrapper = clone;
+    expect(actual.isEqualNode(clone)).toBe(true);
+    expect(harness.blockManager.setCurrentBlockByChildNode(harness.childNode)).toBeUndefined();
+    expect(harness.updateCurrentInput).not.toHaveBeenCalled();
+    expect(harness.blockManager.currentBlockIndex).toBe(-1);
   });
 
   it('refuses a block whose holder sits outside any editor wrapper', () => {

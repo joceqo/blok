@@ -13571,6 +13571,17 @@ textarea[data-blok-database-cell-input] {
   display: flex;
 }
 
+[@supports (content-visibility: auto) and (overflow-clip-margin: 1px) and (contain-intrinsic-block-size: auto 37px)] [data-blok-database-table-row] {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 37px;
+  --_blok-database-row-clip-margin: var(--blok-database-table-row-gutter);
+  overflow-clip-margin: var(--_blok-database-row-clip-margin);
+}
+
+[@supports (content-visibility: auto) and (overflow-clip-margin: 1px) and (contain-intrinsic-block-size: auto 37px)] [data-blok-database-table-row]:has(> [data-blok-database-table-cell][data-wrap]) {
+  contain-intrinsic-block-size: auto 58px;
+}
+
 [data-blok-database-table-row]::after {
   content: '';
   position: absolute;
