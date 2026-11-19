@@ -29,6 +29,13 @@ export const syncCommentBadge = (
   anchor.setAttribute(ANCHOR, rowId);
   anchor.setAttribute(DATABASE, badges.databaseId);
   const count = badges.count(rowId);
+  const tableCell = anchor.closest<HTMLElement>('[role="gridcell"]');
+
+  // Reserve 8px per 12px tabular digit without measuring layout.
+  // The title reserves this width only at its end, keeping its final word
+  // and the inline count together when the column wraps.
+  if (count > 0) tableCell?.style.setProperty('--_blok-comment-width', `${26 + String(count).length * 8}px`);
+  else tableCell?.style.removeProperty('--_blok-comment-width');
   const next = anchor.nextElementSibling;
   const existing = next !== null && next.hasAttribute(BADGE) ? next : null;
 

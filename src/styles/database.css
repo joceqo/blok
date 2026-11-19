@@ -10698,7 +10698,8 @@ textarea[data-blok-database-cell-input] {
 /* notion-motion.md Round 27 §2, Round 28 §1: a narrow title column (database-table-view.ts fitOpen) shows a 30x24
    frame around a 26x20 button. The label stays, hidden, as the button's name. Only the inner button takes the
    pointer, so the fill stays inside it and a press on the 2px frame reaches the title cell, as in Notion. */
-[data-blok-database-table-open][data-compact] {
+[data-blok-database-table-open][data-compact],
+[data-blok-database-table-cell]:has(> [data-blok-database-table-title-content] > [data-blok-database-comment-badge]) > [data-blok-database-table-open] {
   inset-inline-end: var(--blok-space-1);
   justify-content: center;
   width: 30px;
@@ -10706,7 +10707,8 @@ textarea[data-blok-database-cell-input] {
   pointer-events: none;
 }
 
-[data-blok-database-table-open][data-compact] > span[aria-hidden="true"] {
+[data-blok-database-table-open][data-compact] > span[aria-hidden="true"],
+[data-blok-database-table-cell]:has(> [data-blok-database-table-title-content] > [data-blok-database-comment-badge]) > [data-blok-database-table-open] > span[aria-hidden="true"] {
   align-items: center;
   width: 26px;
   height: 20px;
@@ -10715,15 +10717,18 @@ textarea[data-blok-database-cell-input] {
   transition: background-color 20ms ease-in;
 }
 
-[data-blok-database-table-open][data-compact] > span[aria-hidden="true"]:hover {
+[data-blok-database-table-open][data-compact] > span[aria-hidden="true"]:hover,
+[data-blok-database-table-cell]:has(> [data-blok-database-table-title-content] > [data-blok-database-comment-badge]) > [data-blok-database-table-open] > span[aria-hidden="true"]:hover {
   background-color: var(--blok-database-table-header-hover-bg);
 }
 
-[data-blok-database-table-open][data-compact] > span[aria-hidden="true"]:active {
+[data-blok-database-table-open][data-compact] > span[aria-hidden="true"]:active,
+[data-blok-database-table-cell]:has(> [data-blok-database-table-title-content] > [data-blok-database-comment-badge]) > [data-blok-database-table-open] > span[aria-hidden="true"]:active {
   background-color: var(--blok-database-pressed-bg);
 }
 
-[data-blok-database-table-open][data-compact] > span:last-child {
+[data-blok-database-table-open][data-compact] > span:last-child,
+[data-blok-database-table-cell]:has(> [data-blok-database-table-title-content] > [data-blok-database-comment-badge]) > [data-blok-database-table-open] > span:last-child {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -10829,21 +10834,58 @@ textarea[data-blok-database-cell-input] {
   cursor: pointer;
 }
 
-/* The title value is block-level. Keep its badge on the same line instead
-   of adding a second line to every commented row. Long titles can still
-   shrink or wrap, while the icon and count retain their width. */
-[data-blok-database-table-cell][data-type="title"]:has(> [data-blok-database-comment-badge]) {
+/* Text and count share a line formatting context, separate from the page
+   icon. Wrapped titles put the count after their final line. */
+[data-blok-database-table-title-content] {
   display: flex;
-  align-items: flex-start;
+  min-height: 21px;
+  overflow: hidden;
+  line-height: 21px;
 }
 
-[data-blok-database-table-cell][data-type="title"]:has(> [data-blok-database-comment-badge]) > [data-blok-database-cell] {
-  flex: 0 1 auto;
+[data-blok-database-table-title-content] > [data-blok-database-cell] {
+  display: block;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-[data-blok-database-table-cell][data-type="title"]:has(> [data-blok-database-comment-badge]) > :is([data-blok-database-page-icon], [data-blok-database-page-icon-placeholder], [data-blok-database-subitem-toggle]) {
+/* Only the first line makes room for the compact hover action. Its slot
+   stays in place, so approaching the count never moves the click target. */
+[data-blok-database-table-cell]:has(> [data-blok-database-table-open]) > [data-blok-database-table-title-content]:has(> [data-blok-database-comment-badge])::before {
+  content: '';
+  order: 1;
   flex: none;
+  float: inline-end;
+  width: 34px;
+  height: 21px;
+}
+
+[data-blok-database-table-cell][data-wrap] > [data-blok-database-table-title-content] {
+  display: flow-root;
+  white-space: pre-wrap;
+}
+
+[data-blok-database-table-cell][data-wrap] > [data-blok-database-table-title-content] > [data-blok-database-cell] {
+  display: inline;
+  white-space: pre-wrap;
+}
+
+/* End padding belongs to the final text fragment; the zero-advance badge
+   paints over that padding rather than wrapping onto a line of its own. */
+[data-blok-database-table-cell][data-wrap] > [data-blok-database-table-title-content]:has(> [data-blok-database-comment-badge]) > [data-blok-database-cell] {
+  padding-inline-end: var(--_blok-comment-width);
+}
+
+[data-blok-database-table-title-content] > [data-blok-database-comment-badge] {
+  box-sizing: border-box;
+  width: var(--_blok-comment-width);
+  vertical-align: top;
+}
+
+[data-blok-database-table-cell][data-wrap] > [data-blok-database-table-title-content] > [data-blok-database-comment-badge] {
+  margin-inline-start: calc(-1 * var(--_blok-comment-width));
 }
 
 [data-blok-database-comment-badge]:hover {

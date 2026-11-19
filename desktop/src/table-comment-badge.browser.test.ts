@@ -38,7 +38,7 @@ it.each(['chromium','webkit'] as const)('keeps table comment badges beside title
       const table=new DatabaseTableView({readOnly:true,i18n,schema,titlePropertyId:'t',commentBadges:badges,
         openRow:id=>window.rowsOpened.push(id),
         view:{id:'v',name:'Table',type:'table',position:'a0',sorts:[],filters:[],properties:[{id:'t',visible:true,width:280,wrap}]},
-        rows:[{id:'commented',position:'a0',icon:'🏢',properties:{t:'Finsbury'}},{id:'plain',position:'a1',icon:'🏢',properties:{t:'Finsbury'}},{id:'long',position:'a2',icon:'🏢',properties:{t:'Fizzy Retail [A very long tenant name which wraps onto several lines]'}}]
+        rows:[{id:'commented',position:'a0',icon:'🏢',properties:{t:'Finsbury'}},{id:'plain',position:'a1',icon:'🏢',properties:{t:'Finsbury'}},{id:'long',position:'a2',icon:'🏢',properties:{t:'Fizzy Retail [A very long tenant name which wraps onto several lines]'}},{id:'medium',position:'a3',icon:'🏢',properties:{t:'Fizzy Retail [123 Pare Brise]'}}]
       });
       const host=document.createElement('section');host.setAttribute('data-example',String(wrap));host.append(table.createView());document.querySelector('[data-blok-database-wrapper]').append(host);
     }
@@ -56,19 +56,35 @@ it.each(['chromium','webkit'] as const)('keeps table comment badges beside title
       const badge=cell.querySelector<HTMLElement>('[data-blok-database-comment-badge]');
       if(!title)throw Error('Missing title');
       const box=cell.getBoundingClientRect(),text=title.getBoundingClientRect(),count=badge?.getBoundingClientRect();
-      return {height:box.height,titleY:text.y,badgeY:count?.y,badgeX:count?.x,titleWidth:text.width,badgeRight:count?.right,right:box.right,truncated:title.scrollWidth>title.clientWidth};
+      const range=document.createRange();
+      range.selectNodeContents(title);
+      const lines=Array.from(range.getClientRects()).filter(rect=>rect.width>0);
+      const lastLine=lines[lines.length-1];
+      return {height:box.height,titleY:text.y,lastLineY:lastLine?.y,lastLineRight:lastLine?.right,badgeY:count?.y,badgeX:count?.x,titleWidth:text.width,badgeRight:count?.right,right:box.right,truncated:title.scrollWidth>title.clientWidth};
     });
     for(const wrap of [false,true]) {
       const plain=await measure(wrap,'plain');
       const commented=await measure(wrap,'commented');
       expect(commented.height).toBeCloseTo(plain.height,0);
-      expect(commented.badgeY).toBeCloseTo(commented.titleY,0);
+      // Inline glyph bounds sit 2–2.3px below the 21px line box in these
+      // engines. Allow that font metric difference, never a whole new line.
+      expect(Math.abs(commented.badgeY! - commented.titleY)).toBeLessThan(3);
       const long=await measure(wrap,'long');
-      expect(long.badgeY).toBeCloseTo(long.titleY,0);
+      if (wrap) {
+        expect(long.badgeY).toBeGreaterThan(long.titleY + 20);
+        expect(Math.abs(long.badgeY! - long.lastLineY!)).toBeLessThan(3);
+        expect(long.badgeX).toBeGreaterThanOrEqual(long.lastLineRight! - 1);
+      } else expect(Math.abs(long.badgeY! - long.titleY)).toBeLessThan(3);
       expect(long.badgeRight).toBeLessThan(long.right);
       if(wrap)expect(long.height).toBeGreaterThan(plain.height);
       else {expect(long.height).toBeCloseTo(plain.height,0);expect(long.truncated).toBe(true);}
     }
+    // A nearly-full last line must carry its final word and count together,
+    // rather than leaving the count alone on a new line.
+    const medium = await measure(true, 'medium');
+    expect(Math.abs(medium.badgeY! - medium.lastLineY!)).toBeLessThan(3);
+    expect(medium.badgeX).toBeGreaterThanOrEqual(medium.lastLineRight! - 1);
+    expect(await page.locator('[data-example="true"] [data-row-id="medium"] [data-blok-database-cell]').textContent()).toBe('Fizzy Retail [123 Pare Brise]');
     // A hidden hover action must not consume the title's wrapping width.
     const wrappedWidth = await page.locator('[data-example="true"] [data-row-id="long"] [data-type="title"]').evaluate(cell => {
       const title = cell.querySelector<HTMLElement>('[data-blok-database-cell]')!;
@@ -86,7 +102,16 @@ it.each(['chromium','webkit'] as const)('keeps table comment badges beside title
       await page.mouse.move(990, 890);
       const beforeHover = await measure(wrap, 'long');
       await page.locator(`[data-example="${wrap}"] [data-row-id="long"]`).hover();
+      const action = await page.locator(`[data-example="${wrap}"] [data-row-id="long"] [data-blok-database-table-open]`).evaluate(open => {
+        const box = open.getBoundingClientRect(), cell = open.parentElement!.getBoundingClientRect();
+        return { right: box.right, cellRight: cell.right, width: box.width };
+      });
+      expect(action.cellRight - action.right).toBeGreaterThanOrEqual(3);
+      expect(action.cellRight - action.right).toBeLessThanOrEqual(5);
+      expect(action.width).toBeLessThanOrEqual(32);
       const afterHover = await measure(wrap, 'long');
+      expect(afterHover.height).toBeCloseTo(beforeHover.height, 0);
+      expect(afterHover.badgeY).toBeCloseTo(beforeHover.badgeY!, 0);
       expect(afterHover.badgeX).toBeCloseTo(beforeHover.badgeX!, 0);
       expect(afterHover.titleWidth).toBeCloseTo(beforeHover.titleWidth, 0);
       await page.screenshot({path:`/tmp/blok-table-comment-badge-${engine}-${wrap}.png`});
@@ -96,9 +121,15 @@ it.each(['chromium','webkit'] as const)('keeps table comment badges beside title
     expect(await page.evaluate(()=>Reflect.get(window,'rowsOpened'))).toEqual([]);
     await page.locator('[data-example="true"] [data-row-id="long"] [data-blok-database-table-open]').click();
     expect(await page.evaluate(()=>Reflect.get(window,'rowsOpened'))).toEqual(['long']);
+    await page.locator('[data-example="false"] [data-row-id="commented"]').hover();
     for(const count of [0,12]) {
       await page.evaluate(n=>Reflect.get(window,'setCount')(n),count);
       expect((await measure(false,'commented')).height).toBeCloseTo((await measure(false,'plain')).height,0);
+      if (count > 0) {
+        const action = page.locator('[data-example="false"] [data-row-id="commented"] [data-blok-database-table-open]');
+        expect(await action.evaluate(el => el.getBoundingClientRect().width)).toBeLessThanOrEqual(32);
+        await page.locator('[data-example="false"] [data-row-id="commented"] [data-blok-database-comment-badge]').click();
+      }
     }
   } finally {await browser.close();}
 },45000);

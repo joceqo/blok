@@ -92,37 +92,24 @@ const ROW_HALO_INSET = 8;
  * CSS, as the button's name. No layout (a hidden table) leaves it as it is.
  */
 const fitOpen = (open: HTMLElement): void => {
-  const cell = open.parentElement;
-  const bounds = cell?.getBoundingClientRect();
+  const room = open.parentElement?.getBoundingClientRect().width ?? 0;
 
-  if (cell === null || bounds === undefined || bounds.width === 0) return;
+  if (room === 0) return;
+  if (room < OPEN_LABEL_MIN_WIDTH) {
+    open.setAttribute('data-compact', '');
+
+    return;
+  }
   const { style } = open;
   const display = style.display;
 
-  style.removeProperty('inset-inline-end');
-  open.toggleAttribute('data-compact', bounds.width < OPEN_LABEL_MIN_WIDTH);
+  open.removeAttribute('data-compact');
   // Measured shown: row hover may not apply yet when the pointer arrives.
   style.display = 'inline-flex';
-  let button = open.getBoundingClientRect();
+  const width = open.getBoundingClientRect().width;
 
-  if (button.width + OPEN_INSET > bounds.width) {
-    open.setAttribute('data-compact', '');
-    button = open.getBoundingClientRect();
-  }
-
-  const badge = cell.querySelector<HTMLElement>(':scope > [data-blok-database-comment-badge]');
-  const count = badge?.getBoundingClientRect();
-
-  if (count !== undefined && button.left < count.right && button.right > count.left) {
-    // Keep the count still under the pointer. OPEN overlays the title only
-    // while hovered/selected, without reserving space that would wrap it.
-    const rtl = getComputedStyle(cell).direction === 'rtl';
-    const inset = (rtl ? count.right - bounds.left : bounds.right - count.left) + OPEN_INSET;
-
-    if (button.width + inset > bounds.width) open.setAttribute('data-compact', '');
-    style.insetInlineEnd = `${inset}px`;
-  }
   style.display = display;
+  open.toggleAttribute('data-compact', width + OPEN_INSET > room);
 };
 
 /** The OPEN pill on a row's title: a peek glyph and an empty label, which the caller fills. */
@@ -153,6 +140,7 @@ export const paintOpenButton = (button: HTMLElement, peeked: boolean, i18n: Pick
 
   button.toggleAttribute('data-peeked', peeked);
   if (label !== null) label.textContent = i18n.t(peeked ? 'tools.database.close' : 'tools.database.tableOpen');
+  button.title = peeked ? '' : i18n.t('tools.database.tableOpen');
   if (peeked) {
     onHover(button, i18n.t('tools.database.closeSidePeek'), { placement: 'top' });
   } else {
@@ -1433,6 +1421,15 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     }
     if (column.property.type === 'title' && this.options.commentBadges !== undefined) {
       syncCommentBadge(value, rowId, this.options.commentBadges, this.options.i18n, { tabIndex: -1 });
+      // Keep text and count in one inline formatting context. This lets the
+      // count follow the last text line, while the icon stays outside it.
+      const title = document.createElement('div');
+      const badge = value.nextElementSibling;
+
+      title.setAttribute('data-blok-database-table-title-content', '');
+      value.before(title);
+      title.append(value);
+      if (badge?.hasAttribute('data-blok-database-comment-badge')) title.append(badge);
     }
 
     if (column.property.type === 'title' && (this.handlers !== undefined || this.options.openRow !== undefined)) {
@@ -2504,7 +2501,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     const escaped = CSS.escape(propertyId);
     const cells = [
       ...gridEl.querySelectorAll<HTMLElement>(`[data-blok-database-table-column-header][data-property-id="${escaped}"] [data-blok-database-table-column-button]`),
-      ...gridEl.querySelectorAll<HTMLElement>(`[role="gridcell"][data-property-id="${escaped}"] > [data-blok-database-cell]`),
+      ...gridEl.querySelectorAll<HTMLElement>(`[role="gridcell"][data-property-id="${escaped}"] > :is([data-blok-database-cell], [data-blok-database-table-title-content])`),
     ];
     // The header button fills its column, so its current width is never less
     // than the column. Its max-content width is what the content needs.
