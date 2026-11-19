@@ -37,7 +37,7 @@ const JOURNAL_CONFIGURATIONS = ['Debug', 'Release'];
 
 // interop builds C# and Go, interop-rust builds Go and Rust, and both run only
 // INTEROP_SUITES: one directory, written by one server and served by the other.
-const TARGETS = ['csharp', 'go', 'interop', 'rust', 'interop-rust'];
+const TARGETS = ['csharp', 'go', 'interop', 'rust', 'interop-rust', 'node'];
 const INTEROP_TARGETS = ['interop', 'interop-rust'];
 
 const INTEROP_SUITES = ['journal-interop-contract'];
@@ -74,16 +74,16 @@ function selectedOptions(args) {
 
   const allowed = INTEROP_TARGETS.includes(target) ? INTEROP_SUITES : SUITES;
 
-  // Go and Rust have no Debug or Release choice here, so --configuration would mean nothing.
+  // Go, Rust and Node have no Debug or Release choice here, so --configuration would mean nothing.
   if (
     !TARGETS.includes(target) ||
-    ((target === 'go' || target === 'rust' || target === 'interop-rust') && configurationIndex >= 0) ||
+    ((target === 'go' || target === 'rust' || target === 'interop-rust' || target === 'node') && configurationIndex >= 0) ||
     (filterIndex >= 0 && (testNamePattern === undefined || testNamePattern === '')) ||
     !JOURNAL_CONFIGURATIONS.includes(configuration) ||
     suites.some((suite) => !allowed.includes(suite))
   ) {
     throw new Error(
-      'Usage: node scripts/test-server-conformance.mjs [--target csharp|go|interop|rust|interop-rust] ' +
+      'Usage: node scripts/test-server-conformance.mjs [--target csharp|go|interop|rust|interop-rust|node] ' +
       '[--suite NAME]... [--test-name-pattern PATTERN] [--configuration Debug|Release (csharp and interop)]',
     );
   }
@@ -227,6 +227,34 @@ async function buildRust(temporaryDirectory, executableSuffix) {
   return binaries;
 }
 
+function announceNode() {
+  console.log('Conformance binaries — node: ordinary bundle, and one with BLOK_CONFORMANCE=true.');
+}
+
+/**
+ * Two esbuild bundles via scripts/build-node-server.mjs (BLOK_CONFORMANCE define).
+ * Spawn bare `node`, never process.execPath — PATH='' must yield spawn node ENOENT
+ * so server-go-parity-law fail-fasts (P5).
+ */
+async function buildNode(temporaryDirectory) {
+  const dist = join(repositoryRoot, 'packages/server/node/dist');
+  const ordinary = join(temporaryDirectory, 'node-ordinary', 'blok-server.mjs');
+  const conformance = join(temporaryDirectory, 'node-conformance', 'blok-server.mjs');
+
+  announceNode();
+
+  await run('node', [join(repositoryRoot, 'scripts/build-node-server.mjs')], {
+    cwd: repositoryRoot,
+  });
+
+  await mkdir(dirname(ordinary), { recursive: true });
+  await mkdir(dirname(conformance), { recursive: true });
+  await copyFile(join(dist, 'blok-server.mjs'), ordinary);
+  await copyFile(join(dist, 'blok-server-conformance.mjs'), conformance);
+
+  return { ordinary, conformance };
+}
+
 function announceSuites(options) {
   const all = options.suites === SUITES || options.suites === INTEROP_SUITES;
   console.log(`Conformance suites: ${all ? 'all' : options.suites.join(', ')}.`);
@@ -241,6 +269,10 @@ function announce(options) {
   if (options.target === 'interop-rust') {
     announceGo();
     announceRust();
+    return;
+  }
+  if (options.target === 'node') {
+    announceNode();
     return;
   }
   if (options.target !== 'csharp') {
@@ -294,6 +326,7 @@ async function main() {
       interop: buildBoth,
       rust: (_options, ...rest) => buildRust(...rest),
       'interop-rust': (_options, ...rest) => buildGoAndRust(...rest),
+      node: (_options, temporaryDirectory) => buildNode(temporaryDirectory),
     };
     const binaries = await build[options.target](options, temporaryDirectory, executableSuffix);
 

@@ -1,0 +1,17 @@
+{
+  "name": "@bloklabs/server-node",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Blok server host — Node implementation (Kestrel wire parity)",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "bin": {
+    "blok-server": "bin/blok-server.mjs"
+  },
+  "files": [
+    "bin",
+    "dist"
+  ]
+}

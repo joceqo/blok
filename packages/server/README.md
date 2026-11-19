@@ -8,6 +8,8 @@ The npm binary, the Docker image and the NuGet packages all ship the C# server. 
 
 A Rust build is in progress in `packages/server/rust`. It ships nothing yet. Its README is `packages/server/rust/README.md`.
 
+A Node build is in progress in `packages/server/node`. It ships nothing yet. Its README is `packages/server/node/README.md`.
+
 Your documents stay yours. Your own app saves and loads them through a small endpoint, and that endpoint stays the record. With live collaboration on, the service keeps only a working copy of each open document. The copy lives in storage you point it at. Every few seconds, the service writes what people type back to your endpoint.
 
 Register an operation journal and that changes. The document keeps no working copy. The journal is where an edit becomes durable. Your endpoint's record is refreshed from a published checkpoint, on eviction and on drain, rather than on a timer. The packages include no database-block or MySQL integration; those follow this delivery migration.
