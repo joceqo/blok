@@ -77,6 +77,7 @@ func newVM() *goja.Runtime {
 	vm.SetMaxCallStackSize(MaxCallStackSize)
 	installLocaleCompare(vm)
 	installJSONParseDepth(vm)
+	installRevisionHash(vm)
 	return vm
 }
 

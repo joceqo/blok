@@ -29,4 +29,10 @@ const cyrb53 = (text: string): string => {
   return (4294967296 * (2097151 & hash.h2) + (hash.h1 >>> 0)).toString(16);
 };
 
-export const contentRevision = (doc: OutputData): string => `h${cyrb53(canonicalJson(doc))}`;
+export const contentRevision = (doc: OutputData): string => {
+  // Interpreted hosts may provide the identical UTF-16 algorithm natively.
+  // Browsers, Node and other hosts keep the portable implementation.
+  const native = (globalThis as { __blokCyrb53?: (text: string) => string }).__blokCyrb53;
+
+  return `h${(typeof native === 'function' ? native : cyrb53)(canonicalJson(doc))}`;
+};
