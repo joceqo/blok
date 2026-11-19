@@ -104,3 +104,13 @@ CREATE TABLE IF NOT EXISTS assets (
   storage_key text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS workspace_presets (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id uuid NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+  name text NOT NULL,
+  config jsonb NOT NULL DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS workspace_presets_workspace_id_idx ON workspace_presets (workspace_id);

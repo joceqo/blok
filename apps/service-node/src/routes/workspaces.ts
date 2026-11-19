@@ -1,4 +1,4 @@
-import { and, count, eq } from 'drizzle-orm';
+import { and, asc, count, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
 import type { DbVariables } from '@/middleware/db.js';
@@ -6,7 +6,13 @@ import type { SessionVariables } from '@/middleware/session.js';
 import { requireUser } from '@/middleware/require-user.js';
 import { requireWorkspaceRole, roleInWorkspace } from '@/http/workspace-access.js';
 import { withTransaction } from '@/db/transaction.js';
-import { pages, workspaces, workspaceInvites, workspaceMembers } from '@/db/schema.js';
+import {
+  pages,
+  workspaces,
+  workspaceInvites,
+  workspaceMembers,
+  workspacePresets,
+} from '@/db/schema.js';
 import {
   listWorkspacesForUser,
   memberRows,
@@ -16,6 +22,7 @@ import {
 import { canDeleteWorkspace } from '@/workspaces/can-delete-workspace.js';
 import { validateMemberRoleChange } from '@/workspaces/member-role-change.js';
 import { validateOwnershipTransfer } from '@/workspaces/ownership-transfer.js';
+import { parsePresetConfig } from '@/workspaces/preset-config.js';
 import { slugFromName, validateWorkspaceSlug } from '@/workspaces/slug.js';
 import { findOrCreateUserByEmail } from '@/auth/users.js';
 import { normalizeEmail, isValidEmail } from '@/auth/codes.js';
@@ -358,6 +365,76 @@ workspaceRoutes.post(
     return context.json({ ok: true });
   },
 );
+
+workspaceRoutes.get('/api/workspaces/:workspaceId/presets', requireUser(), async (context) => {
+  const workspaceId = context.req.param('workspaceId');
+  const db = context.get('db');
+
+  await requireWorkspaceRole(db, context, workspaceId, 'read');
+
+  const rows = await db
+    .select()
+    .from(workspacePresets)
+    .where(eq(workspacePresets.workspaceId, workspaceId))
+    .orderBy(asc(workspacePresets.createdAt));
+
+  return context.json({
+    presets: rows.map((row) => ({
+      id: row.id,
+      workspaceId: row.workspaceId,
+      name: row.name,
+      config: row.config,
+      createdAt: row.createdAt,
+    })),
+  });
+});
+
+workspaceRoutes.post('/api/workspaces/:workspaceId/presets', requireUser(), async (context) => {
+  const workspaceId = context.req.param('workspaceId');
+  const db = context.get('db');
+
+  await requireWorkspaceRole(db, context, workspaceId, 'edit');
+
+  const body: { name?: string; config?: unknown } = await context.req
+    .json<{ name?: string; config?: unknown }>()
+    .catch(() => ({}));
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (name.length === 0) {
+    return context.json({ error: 'invalid_request' }, 400);
+  }
+
+  const parsed = parsePresetConfig(body.config);
+  if (!parsed.ok) {
+    return context.json({ error: parsed.reason }, 400);
+  }
+
+  const inserted = await db
+    .insert(workspacePresets)
+    .values({
+      workspaceId,
+      name,
+      config: parsed.config,
+    })
+    .returning();
+
+  const preset = inserted[0];
+  if (preset === undefined) {
+    return context.json({ error: 'insert_failed' }, 500);
+  }
+
+  return context.json(
+    {
+      preset: {
+        id: preset.id,
+        workspaceId: preset.workspaceId,
+        name: preset.name,
+        config: preset.config,
+        createdAt: preset.createdAt,
+      },
+    },
+    201,
+  );
+});
 
 workspaceRoutes.delete(
   '/api/workspaces/:workspaceId/members/:userId',

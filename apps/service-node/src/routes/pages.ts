@@ -12,6 +12,7 @@ import { requireWorkspaceRole } from '@/http/workspace-access.js';
 import type { DbVariables } from '@/middleware/db.js';
 import { requireUser } from '@/middleware/require-user.js';
 import type { SessionVariables } from '@/middleware/session.js';
+import { duplicateTitle } from '@/pages/duplicate-title.js';
 import {
   buildPagesTree,
   wouldCreatePageCycle,
@@ -255,6 +256,53 @@ pageRoutes.patch('/api/pages/:pageId', requireUser(), async (context) => {
   }
 
   return context.json({ page });
+});
+
+pageRoutes.post('/api/pages/:pageId/duplicate', requireUser(), async (context) => {
+  const pageId = context.req.param('pageId');
+  const db = context.get('db');
+  const userId = context.get('userId');
+  if (userId === undefined) {
+    return context.json({ error: 'unauthenticated' }, 401);
+  }
+
+  const source = (await db.select().from(pages).where(eq(pages.id, pageId)).limit(1))[0];
+  if (source === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  const role = await memberRole(db, userId, source.workspaceId);
+  if (role === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+  try {
+    assertPageAction(role, 'edit');
+  } catch {
+    return context.json({ error: 'permission_denied' }, 403);
+  }
+
+  const title = duplicateTitle(source.title);
+
+  const created = await withTransaction(db, async (tx) => {
+    const inserted = await tx
+      .insert(pages)
+      .values({
+        workspaceId: source.workspaceId,
+        title,
+        parentId: source.parentId,
+        trashed: false,
+        updatedAt: new Date(),
+      })
+      .returning();
+
+    return inserted[0];
+  });
+
+  if (created === undefined) {
+    return context.json({ error: 'insert_failed' }, 500);
+  }
+
+  return context.json({ page: created }, 201);
 });
 
 pageRoutes.post('/api/pages/:pageId/move', requireUser(), async (context) => {

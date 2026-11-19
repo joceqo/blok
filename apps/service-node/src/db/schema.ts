@@ -10,6 +10,7 @@ import {
   bigint,
   boolean,
   index,
+  jsonb,
   pgTable,
   primaryKey,
   text,
@@ -17,6 +18,8 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
+
+import type { WorkspacePresetConfig } from '@/workspaces/preset-config.js';
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -130,3 +133,17 @@ export const assets = pgTable('assets', {
   storageKey: text('storage_key').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const workspacePresets = pgTable(
+  'workspace_presets',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    config: jsonb('config').$type<WorkspacePresetConfig>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('workspace_presets_workspace_id_idx').on(table.workspaceId)],
+);

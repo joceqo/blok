@@ -44,6 +44,12 @@ describe('createApp integration (no PostgreSQL)', () => {
     await expect(response.json()).resolves.toEqual({ status: 'ok' });
   });
 
+  it('responses include baseline security headers', async () => {
+    const response = await appWithoutDb().request('http://localhost/health');
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expect(response.headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin');
+  });
+
   it('GET /api/instance reflects env without a database URL', async () => {
     const response = await appWithoutDb().request('http://localhost/api/instance');
     expect(response.status).toBe(200);
@@ -76,6 +82,28 @@ describe('createApp integration (no PostgreSQL)', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Test' }),
     });
+    expect(postResponse.status).toBe(503);
+    await expect(postResponse.json()).resolves.toEqual({ error: 'database_not_configured' });
+  });
+
+  it('GET and POST workspace presets return 503 when DATABASE is not wired into createApp', async () => {
+    const app = appWithoutDb();
+    const workspaceId = '00000000-0000-0000-0000-000000000001';
+
+    const getResponse = await app.request(
+      `http://localhost/api/workspaces/${workspaceId}/presets`,
+    );
+    expect(getResponse.status).toBe(503);
+    await expect(getResponse.json()).resolves.toEqual({ error: 'database_not_configured' });
+
+    const postResponse = await app.request(
+      `http://localhost/api/workspaces/${workspaceId}/presets`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Editors', config: { read: 'guest', edit: 'member' } }),
+      },
+    );
     expect(postResponse.status).toBe(503);
     await expect(postResponse.json()).resolves.toEqual({ error: 'database_not_configured' });
   });

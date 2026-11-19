@@ -5,6 +5,7 @@ import { logger } from 'hono/logger';
 import type { Database } from '@/db/index.js';
 import { onError } from '@/middleware/error.js';
 import { dbMiddleware } from '@/middleware/db.js';
+import { securityHeadersMiddleware } from '@/middleware/security-headers.js';
 import { sessionMiddleware } from '@/middleware/session.js';
 import { assetRoutes } from '@/routes/assets.js';
 import { adminRoutes } from '@/routes/admin.js';
@@ -32,6 +33,7 @@ export function createApp(options: AppOptions): Hono {
   app.onError(onError);
   app.use('*', logger());
   app.use('*', cors({ credentials: true }));
+  app.use('*', securityHeadersMiddleware);
 
   app.route('/', healthRoutes);
   app.route('/', createInstanceRoutes({ database: options.database }));
