@@ -4,6 +4,9 @@ const CODE_DIGITS = 6;
 const CHALLENGE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+export const AUTH_CHALLENGE_RATE_LIMIT_MAX = 5;
+export const AUTH_CHALLENGE_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+
 export function normalizeEmail(raw: string): string {
   return raw.trim().toLowerCase();
 }
@@ -27,6 +30,18 @@ export function generateSessionToken(): string {
 
 export function challengeExpiresAt(now = Date.now()): Date {
   return new Date(now + CHALLENGE_TTL_MS);
+}
+
+/** Start of the rolling window for per-email challenge rate limits. */
+export function authChallengeRateLimitWindowStart(now = Date.now()): Date {
+  return new Date(now - AUTH_CHALLENGE_RATE_LIMIT_WINDOW_MS);
+}
+
+export function isAuthChallengeRateLimited(
+  recentCount: number,
+  max = AUTH_CHALLENGE_RATE_LIMIT_MAX,
+): boolean {
+  return recentCount >= max;
 }
 
 export function sessionExpiresAt(now = Date.now()): Date {

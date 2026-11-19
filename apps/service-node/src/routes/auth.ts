@@ -1,13 +1,15 @@
-import { and, eq, gt } from 'drizzle-orm';
+import { and, count, desc, eq, gt } from 'drizzle-orm';
 import { Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 
 import {
   SESSION_COOKIE,
+  authChallengeRateLimitWindowStart,
   challengeExpiresAt,
   generateLoginCode,
   generateSessionToken,
   hashSecret,
+  isAuthChallengeRateLimited,
   isValidEmail,
   normalizeEmail,
   sessionExpiresAt,
@@ -37,16 +39,23 @@ export function createAuthRoutes(): Hono<Env> {
       return context.json({ error: 'invalid_email' }, 400);
     }
 
+    const windowStart = authChallengeRateLimitWindowStart();
+    const recentCount = Number(
+      (
+        await db
+          .select({ value: count() })
+          .from(authChallenges)
+          .where(and(eq(authChallenges.email, email), gt(authChallenges.createdAt, windowStart)))
+      )[0]?.value ?? 0,
+    );
+    if (isAuthChallengeRateLimited(recentCount)) {
+      return context.json({ error: 'too_many_requests' }, 429);
+    }
+
     const code = generateLoginCode();
     const expiresAt = challengeExpiresAt();
 
-    await db
-      .insert(authChallenges)
-      .values({ email, codeHash: hashSecret(code), expiresAt })
-      .onConflictDoUpdate({
-        target: authChallenges.email,
-        set: { codeHash: hashSecret(code), expiresAt },
-      });
+    await db.insert(authChallenges).values({ email, codeHash: hashSecret(code), expiresAt });
 
     const mail = await sendAuthCode(email, code);
 
@@ -73,7 +82,8 @@ export function createAuthRoutes(): Hono<Env> {
     const rows = await db
       .select()
       .from(authChallenges)
-      .where(eq(authChallenges.email, email))
+      .where(and(eq(authChallenges.email, email), gt(authChallenges.expiresAt, now)))
+      .orderBy(desc(authChallenges.createdAt))
       .limit(1);
     const challenge = rows[0];
     if (

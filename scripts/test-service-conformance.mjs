@@ -15,7 +15,7 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const TARGETS = ['node', 'go'];
 
-const SUITES = ['harness-contract', 'api-contract'];
+const SUITES = ['harness-contract', 'api-contract', 'auth-contract'];
 
 function parseArgs(argv) {
   const args = [...argv];

@@ -12,10 +12,35 @@ CREATE TABLE IF NOT EXISTS users (
 ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name text;
 
 CREATE TABLE IF NOT EXISTS auth_challenges (
-  email varchar(320) PRIMARY KEY,
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  email varchar(320) NOT NULL,
   code_hash text NOT NULL,
-  expires_at timestamptz NOT NULL
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Migrate bootstrap tables that still use email as the primary key.
+ALTER TABLE auth_challenges ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE auth_challenges ADD COLUMN IF NOT EXISTS id uuid;
+UPDATE auth_challenges SET id = gen_random_uuid() WHERE id IS NULL;
+ALTER TABLE auth_challenges ALTER COLUMN id SET DEFAULT gen_random_uuid();
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'auth_challenges'::regclass
+      AND contype = 'p'
+      AND pg_get_constraintdef(oid) = 'PRIMARY KEY (email)'
+  ) THEN
+    ALTER TABLE auth_challenges DROP CONSTRAINT auth_challenges_pkey;
+    ALTER TABLE auth_challenges ALTER COLUMN id SET NOT NULL;
+    ALTER TABLE auth_challenges ADD PRIMARY KEY (id);
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS auth_challenges_email_idx ON auth_challenges (email);
+CREATE INDEX IF NOT EXISTS auth_challenges_email_created_at_idx ON auth_challenges (email, created_at);
 
 CREATE TABLE IF NOT EXISTS sessions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

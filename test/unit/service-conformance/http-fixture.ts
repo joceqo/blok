@@ -11,6 +11,12 @@ export interface HttpFixtureCase {
   method: string;
   path: string;
   expect: HttpFixtureExpect;
+  body?: unknown;
+  headers?: Record<string, string>;
+  /** In-process only: createApp({ database: undefined }). */
+  noDb?: boolean;
+  /** Requires BLOK_SERVICE_CONFORMANCE_URL (service with PostgreSQL). */
+  liveOnly?: boolean;
 }
 
 export interface HttpFixtureFile {

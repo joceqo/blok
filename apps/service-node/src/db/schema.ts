@@ -25,11 +25,20 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const authChallenges = pgTable('auth_challenges', {
-  email: varchar('email', { length: 320 }).primaryKey(),
-  codeHash: text('code_hash').notNull(),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-});
+export const authChallenges = pgTable(
+  'auth_challenges',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    email: varchar('email', { length: 320 }).notNull(),
+    codeHash: text('code_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('auth_challenges_email_idx').on(table.email),
+    index('auth_challenges_email_created_at_idx').on(table.email, table.createdAt),
+  ],
+);
 
 export const sessions = pgTable(
   'sessions',

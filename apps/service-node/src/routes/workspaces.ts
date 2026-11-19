@@ -15,6 +15,7 @@ import {
 } from '@/workspaces/membership.js';
 import { canDeleteWorkspace } from '@/workspaces/can-delete-workspace.js';
 import { validateMemberRoleChange } from '@/workspaces/member-role-change.js';
+import { validateOwnershipTransfer } from '@/workspaces/ownership-transfer.js';
 import { slugFromName, validateWorkspaceSlug } from '@/workspaces/slug.js';
 import { findOrCreateUserByEmail } from '@/auth/users.js';
 import { normalizeEmail, isValidEmail } from '@/auth/codes.js';
@@ -300,6 +301,61 @@ workspaceRoutes.patch(
     }
 
     return context.json({ ok: true, role: nextRole });
+  },
+);
+
+workspaceRoutes.post(
+  '/api/workspaces/:workspaceId/transfer-ownership',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const db = context.get('db');
+    const actorId = context.get('userId');
+    if (actorId === undefined) {
+      return context.json({ error: 'unauthenticated' }, 401);
+    }
+
+    const actorRole = await requireWorkspaceRole(db, context, workspaceId, 'share');
+
+    const body: { userId?: string } = await context.req
+      .json<{ userId?: string }>()
+      .catch(() => ({}));
+    const targetUserId = typeof body.userId === 'string' ? body.userId.trim() : '';
+    if (targetUserId.length === 0) {
+      return context.json({ error: 'invalid_request' }, 400);
+    }
+
+    const targetRole = await memberRole(db, targetUserId, workspaceId);
+    if (targetRole === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    const validation = validateOwnershipTransfer({
+      actorRole,
+      targetRole,
+      actorUserId: actorId,
+      targetUserId,
+    });
+    if (!validation.ok) {
+      return context.json({ error: validation.reason }, 403);
+    }
+
+    await withTransaction(db, async (tx) => {
+      await tx
+        .update(workspaceMembers)
+        .set({ role: 'owner' })
+        .where(
+          and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, targetUserId)),
+        );
+      await tx
+        .update(workspaceMembers)
+        .set({ role: 'admin' })
+        .where(
+          and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, actorId)),
+        );
+    });
+
+    return context.json({ ok: true });
   },
 );
 

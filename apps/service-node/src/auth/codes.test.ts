@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AUTH_CHALLENGE_RATE_LIMIT_WINDOW_MS,
+  authChallengeRateLimitWindowStart,
   generateLoginCode,
   hashSecret,
+  isAuthChallengeRateLimited,
   isValidEmail,
   normalizeEmail,
   sessionExpiresAt,
@@ -28,6 +31,27 @@ describe('auth codes', () => {
   it('hashes consistently', () => {
     expect(hashSecret('abc')).toBe(hashSecret('abc'));
     expect(hashSecret('abc')).not.toBe(hashSecret('abd'));
+  });
+
+  describe('authChallengeRateLimitWindowStart', () => {
+    it('is 15 minutes before now', () => {
+      const now = Date.UTC(2025, 5, 1, 12, 0, 0);
+      expect(authChallengeRateLimitWindowStart(now)).toEqual(
+        new Date(now - AUTH_CHALLENGE_RATE_LIMIT_WINDOW_MS),
+      );
+    });
+  });
+
+  describe('isAuthChallengeRateLimited', () => {
+    it('allows fewer than five recent challenges', () => {
+      expect(isAuthChallengeRateLimited(0)).toBe(false);
+      expect(isAuthChallengeRateLimited(4)).toBe(false);
+    });
+
+    it('blocks at five or more recent challenges', () => {
+      expect(isAuthChallengeRateLimited(5)).toBe(true);
+      expect(isAuthChallengeRateLimited(6)).toBe(true);
+    });
   });
 
   describe('sessionRefreshExpiresAt', () => {
