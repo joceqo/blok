@@ -147,3 +147,22 @@ export const workspacePresets = pgTable(
   },
   (table) => [index('workspace_presets_workspace_id_idx').on(table.workspaceId)],
 );
+
+export const auditEvents = pgTable(
+  'audit_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    action: text('action').notNull(),
+    metadata: jsonb('metadata').notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('audit_events_workspace_id_idx').on(table.workspaceId),
+    index('audit_events_user_id_idx').on(table.userId),
+    index('audit_events_created_at_idx').on(table.createdAt),
+  ],
+);

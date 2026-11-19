@@ -33,6 +33,25 @@ export function buildSidecarUrl(path: string, search = ''): string | undefined {
   return new URL(`${normalized}${search}`, `${base}/`).toString();
 }
 
+const SIDECAR_HEALTH_TIMEOUT_MS = 2_000;
+
+/** Lightweight liveness probe against the sidecar `GET /health`. */
+export async function checkSidecarReachable(): Promise<boolean> {
+  const target = buildSidecarUrl('health');
+  if (target === undefined) {
+    return false;
+  }
+  try {
+    const response = await fetch(target, {
+      method: 'GET',
+      signal: AbortSignal.timeout(SIDECAR_HEALTH_TIMEOUT_MS),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 export interface SidecarForwardOptions {
   /**
    * When false, only `accept`, `content-type`, and `authorization` are forwarded.

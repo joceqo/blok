@@ -114,3 +114,16 @@ CREATE TABLE IF NOT EXISTS workspace_presets (
 );
 
 CREATE INDEX IF NOT EXISTS workspace_presets_workspace_id_idx ON workspace_presets (workspace_id);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id uuid REFERENCES workspaces (id) ON DELETE SET NULL,
+  user_id uuid NOT NULL REFERENCES users (id),
+  action text NOT NULL,
+  metadata jsonb NOT NULL DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS audit_events_workspace_id_idx ON audit_events (workspace_id);
+CREATE INDEX IF NOT EXISTS audit_events_user_id_idx ON audit_events (user_id);
+CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events (created_at);

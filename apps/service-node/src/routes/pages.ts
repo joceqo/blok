@@ -1,7 +1,7 @@
 import { and, asc, eq, gt, or } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import { pages } from '@/db/schema.js';
+import { pageDocuments, pages } from '@/db/schema.js';
 import { withTransaction } from '@/db/transaction.js';
 import {
   decodeTimeIdCursor,
@@ -12,6 +12,7 @@ import { requireWorkspaceRole } from '@/http/workspace-access.js';
 import type { DbVariables } from '@/middleware/db.js';
 import { requireUser } from '@/middleware/require-user.js';
 import type { SessionVariables } from '@/middleware/session.js';
+import { duplicatePageDocumentBinding } from '@/pages/duplicate-page-document.js';
 import { duplicateTitle } from '@/pages/duplicate-title.js';
 import {
   buildPagesTree,
@@ -284,6 +285,10 @@ pageRoutes.post('/api/pages/:pageId/duplicate', requireUser(), async (context) =
   const title = duplicateTitle(source.title);
 
   const created = await withTransaction(db, async (tx) => {
+    const sourceBinding = (
+      await tx.select().from(pageDocuments).where(eq(pageDocuments.pageId, pageId)).limit(1)
+    )[0];
+
     const inserted = await tx
       .insert(pages)
       .values({
@@ -295,7 +300,17 @@ pageRoutes.post('/api/pages/:pageId/duplicate', requireUser(), async (context) =
       })
       .returning();
 
-    return inserted[0];
+    const createdPage = inserted[0];
+    if (createdPage === undefined) {
+      return undefined;
+    }
+
+    const documentBinding = duplicatePageDocumentBinding(sourceBinding, createdPage.id);
+    if (documentBinding !== undefined) {
+      await tx.insert(pageDocuments).values(documentBinding);
+    }
+
+    return createdPage;
   });
 
   if (created === undefined) {

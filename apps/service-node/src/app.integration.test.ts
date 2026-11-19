@@ -86,26 +86,40 @@ describe('createApp integration (no PostgreSQL)', () => {
     await expect(postResponse.json()).resolves.toEqual({ error: 'database_not_configured' });
   });
 
-  it('GET and POST workspace presets return 503 when DATABASE is not wired into createApp', async () => {
+  it('workspace preset routes return 503 when DATABASE is not wired into createApp', async () => {
     const app = appWithoutDb();
     const workspaceId = '00000000-0000-0000-0000-000000000001';
+    const presetId = '00000000-0000-0000-0000-000000000002';
+    const presetBase = `http://localhost/api/workspaces/${workspaceId}/presets`;
+    const presetOne = `${presetBase}/${presetId}`;
 
-    const getResponse = await app.request(
-      `http://localhost/api/workspaces/${workspaceId}/presets`,
-    );
-    expect(getResponse.status).toBe(503);
-    await expect(getResponse.json()).resolves.toEqual({ error: 'database_not_configured' });
+    const getList = await app.request(presetBase);
+    expect(getList.status).toBe(503);
+    await expect(getList.json()).resolves.toEqual({ error: 'database_not_configured' });
 
-    const postResponse = await app.request(
-      `http://localhost/api/workspaces/${workspaceId}/presets`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'Editors', config: { read: 'guest', edit: 'member' } }),
-      },
-    );
+    const getOne = await app.request(presetOne);
+    expect(getOne.status).toBe(503);
+    await expect(getOne.json()).resolves.toEqual({ error: 'database_not_configured' });
+
+    const postResponse = await app.request(presetBase, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Editors', config: { read: 'guest', edit: 'member' } }),
+    });
     expect(postResponse.status).toBe(503);
     await expect(postResponse.json()).resolves.toEqual({ error: 'database_not_configured' });
+
+    const patchResponse = await app.request(presetOne, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed' }),
+    });
+    expect(patchResponse.status).toBe(503);
+    await expect(patchResponse.json()).resolves.toEqual({ error: 'database_not_configured' });
+
+    const deleteResponse = await app.request(presetOne, { method: 'DELETE' });
+    expect(deleteResponse.status).toBe(503);
+    await expect(deleteResponse.json()).resolves.toEqual({ error: 'database_not_configured' });
   });
 
   it('GET /api/blok returns 503 when BLOK_SIDECAR_URL is unset', async () => {

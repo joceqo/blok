@@ -22,8 +22,13 @@ import {
 import { canDeleteWorkspace } from '@/workspaces/can-delete-workspace.js';
 import { validateMemberRoleChange } from '@/workspaces/member-role-change.js';
 import { validateOwnershipTransfer } from '@/workspaces/ownership-transfer.js';
-import { parsePresetConfig } from '@/workspaces/preset-config.js';
+import {
+  parsePresetCreateBody,
+  parsePresetPatchBody,
+  serializeWorkspacePreset,
+} from '@/workspaces/preset-body.js';
 import { slugFromName, validateWorkspaceSlug } from '@/workspaces/slug.js';
+import { recordAuditEvent } from '@/audit/record-audit-event.js';
 import { findOrCreateUserByEmail } from '@/auth/users.js';
 import { normalizeEmail, isValidEmail } from '@/auth/codes.js';
 type Env = { Variables: DbVariables & SessionVariables };
@@ -178,6 +183,10 @@ workspaceRoutes.patch('/api/workspaces/:workspaceId', requireUser(), async (cont
 workspaceRoutes.delete('/api/workspaces/:workspaceId', requireUser(), async (context) => {
   const workspaceId = context.req.param('workspaceId');
   const db = context.get('db');
+  const actorId = context.get('userId');
+  if (actorId === undefined) {
+    return context.json({ error: 'unauthenticated' }, 401);
+  }
 
   const actorRole = await requireWorkspaceRole(db, context, workspaceId, 'delete');
 
@@ -198,6 +207,11 @@ workspaceRoutes.delete('/api/workspaces/:workspaceId', requireUser(), async (con
   }
 
   await withTransaction(db, async (tx) => {
+    await recordAuditEvent(tx, {
+      userId: actorId,
+      workspaceId,
+      action: { kind: 'workspace_delete' },
+    });
     await tx.delete(workspaceInvites).where(eq(workspaceInvites.workspaceId, workspaceId));
     await tx.delete(workspaceMembers).where(eq(workspaceMembers.workspaceId, workspaceId));
     await tx.delete(workspaces).where(eq(workspaces.id, workspaceId));
@@ -348,6 +362,12 @@ workspaceRoutes.post(
     }
 
     await withTransaction(db, async (tx) => {
+      await recordAuditEvent(tx, {
+        userId: actorId,
+        workspaceId,
+        action: { kind: 'workspace_transfer_ownership' },
+        metadata: { targetUserId },
+      });
       await tx
         .update(workspaceMembers)
         .set({ role: 'owner' })
@@ -379,15 +399,37 @@ workspaceRoutes.get('/api/workspaces/:workspaceId/presets', requireUser(), async
     .orderBy(asc(workspacePresets.createdAt));
 
   return context.json({
-    presets: rows.map((row) => ({
-      id: row.id,
-      workspaceId: row.workspaceId,
-      name: row.name,
-      config: row.config,
-      createdAt: row.createdAt,
-    })),
+    presets: rows.map((row) => serializeWorkspacePreset(row)),
   });
 });
+
+workspaceRoutes.get(
+  '/api/workspaces/:workspaceId/presets/:presetId',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const presetId = context.req.param('presetId');
+    const db = context.get('db');
+
+    await requireWorkspaceRole(db, context, workspaceId, 'read');
+
+    const row = (
+      await db
+        .select()
+        .from(workspacePresets)
+        .where(
+          and(eq(workspacePresets.id, presetId), eq(workspacePresets.workspaceId, workspaceId)),
+        )
+        .limit(1)
+    )[0];
+
+    if (row === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    return context.json({ preset: serializeWorkspacePreset(row) });
+  },
+);
 
 workspaceRoutes.post('/api/workspaces/:workspaceId/presets', requireUser(), async (context) => {
   const workspaceId = context.req.param('workspaceId');
@@ -395,15 +437,8 @@ workspaceRoutes.post('/api/workspaces/:workspaceId/presets', requireUser(), asyn
 
   await requireWorkspaceRole(db, context, workspaceId, 'edit');
 
-  const body: { name?: string; config?: unknown } = await context.req
-    .json<{ name?: string; config?: unknown }>()
-    .catch(() => ({}));
-  const name = typeof body.name === 'string' ? body.name.trim() : '';
-  if (name.length === 0) {
-    return context.json({ error: 'invalid_request' }, 400);
-  }
-
-  const parsed = parsePresetConfig(body.config);
+  const raw: unknown = await context.req.json().catch(() => ({}));
+  const parsed = parsePresetCreateBody(raw);
   if (!parsed.ok) {
     return context.json({ error: parsed.reason }, 400);
   }
@@ -412,7 +447,7 @@ workspaceRoutes.post('/api/workspaces/:workspaceId/presets', requireUser(), asyn
     .insert(workspacePresets)
     .values({
       workspaceId,
-      name,
+      name: parsed.name,
       config: parsed.config,
     })
     .returning();
@@ -422,19 +457,66 @@ workspaceRoutes.post('/api/workspaces/:workspaceId/presets', requireUser(), asyn
     return context.json({ error: 'insert_failed' }, 500);
   }
 
-  return context.json(
-    {
-      preset: {
-        id: preset.id,
-        workspaceId: preset.workspaceId,
-        name: preset.name,
-        config: preset.config,
-        createdAt: preset.createdAt,
-      },
-    },
-    201,
-  );
+  return context.json({ preset: serializeWorkspacePreset(preset) }, 201);
 });
+
+workspaceRoutes.patch(
+  '/api/workspaces/:workspaceId/presets/:presetId',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const presetId = context.req.param('presetId');
+    const db = context.get('db');
+
+    await requireWorkspaceRole(db, context, workspaceId, 'edit');
+
+    const raw: unknown = await context.req.json().catch(() => ({}));
+    const parsed = parsePresetPatchBody(raw);
+    if (!parsed.ok) {
+      return context.json({ error: parsed.reason }, 400);
+    }
+
+    const updated = await db
+      .update(workspacePresets)
+      .set(parsed.updates)
+      .where(
+        and(eq(workspacePresets.id, presetId), eq(workspacePresets.workspaceId, workspaceId)),
+      )
+      .returning();
+
+    const preset = updated[0];
+    if (preset === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    return context.json({ preset: serializeWorkspacePreset(preset) });
+  },
+);
+
+workspaceRoutes.delete(
+  '/api/workspaces/:workspaceId/presets/:presetId',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const presetId = context.req.param('presetId');
+    const db = context.get('db');
+
+    await requireWorkspaceRole(db, context, workspaceId, 'edit');
+
+    const removed = await db
+      .delete(workspacePresets)
+      .where(
+        and(eq(workspacePresets.id, presetId), eq(workspacePresets.workspaceId, workspaceId)),
+      )
+      .returning({ id: workspacePresets.id });
+
+    if (removed[0] === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    return context.json({ ok: true });
+  },
+);
 
 workspaceRoutes.delete(
   '/api/workspaces/:workspaceId/members/:userId',
