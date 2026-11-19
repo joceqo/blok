@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JackUait/blok/packages/server/go/v2/blokagent"
 	"github.com/JackUait/blok/packages/server/go/v2/blokmcp"
 	"github.com/jackc/pgx/v5"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -35,9 +36,11 @@ func (s *Service) initMCP() error {
 		s.mcpTraceWriter = newMCPTraceWriter(s.saveMCPTiming)
 	}
 	attached, err := blokmcp.Embed(blokmcp.Options{
-		Rooms:     rooms,
-		Authorize: s.authorizeMCPDocument,
-		OnTiming:  s.recordMCPTiming,
+		Rooms:      rooms,
+		PageTitles: "page-map",
+		CreatePage: s.createMCPPageDocument,
+		Authorize:  s.authorizeMCPDocument,
+		OnTiming:   s.recordMCPTiming,
 	}, blokmcp.EmbedOptions{Caller: func(ctx context.Context, _ *mcp.CallToolRequest) (*blokmcp.CallerIdentity, error) {
 		u, ok := ctx.Value(mcpUserKey{}).(identity)
 		if !ok {
@@ -78,6 +81,34 @@ func (s *Service) initMCP() error {
 		sdk.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), mcpUserKey{}, u)))
 	})
 	return nil
+}
+
+// A page block links to a separate document. The block's parentId may be a
+// database row, but the document must inherit the containing room's workspace
+// and access, exactly as a page created by the editor does.
+func (s *Service) createMCPPageDocument(ctx context.Context, request blokagent.PageCreateRequest) (string, error) {
+	if request.Principal == "" || request.ParentDocumentID == "" {
+		return "", blokmcp.ErrPageRefused
+	}
+	var ws Workspace
+	err := s.DB.QueryRow(ctx, `SELECT w.id,w.slug,w.name FROM pages p JOIN workspaces w ON w.id=p.workspace_id WHERE p.id=$1 AND NOT p.deleted AND NOT p.trashed`, request.ParentDocumentID).Scan(&ws.ID, &ws.Slug, &ws.Name)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", blokmcp.ErrPageRefused
+	}
+	if err != nil {
+		return "", err
+	}
+	// createScopedPage checks membership, parent edit access and depth again in
+	// its transaction. Actor attribution and suggested ids never grant access.
+	created, err := s.createScopedPage(ctx, identity{ID: request.Principal}, ws, "Nouvelle page", request.ParentDocumentID, "", visInherit)
+	if err != nil {
+		var refused scopedPageRefusal
+		if errors.As(err, &refused) {
+			return "", blokmcp.ErrPageRefused
+		}
+		return "", err
+	}
+	return created.ID, nil
 }
 
 // La porte des outils d'édition MCP. Elle est distincte de celle du temps réel

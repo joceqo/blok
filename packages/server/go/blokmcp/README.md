@@ -144,11 +144,11 @@ options.CreatePage = func(ctx context.Context, request blokagent.PageCreateReque
 
 - The request has the open document (`ParentDocumentID`), the principal and agent actor that opened the handle, and an id Blok minted (`SuggestedPageID`) that you may use.
 - Blok then asks no `Authorize` about the new id, checks no emptiness, and saves nothing to it: you own it. Opening it later with `blok_open` goes through `Authorize` as usual.
-- Your id becomes the page block's `data.pageId`. It must be 1-512 code points of valid UTF-8, with no control characters (U+0000-U+001F, U+007F-U+009F), and not `.` or `..`. Your source must be able to open it.
-- `ErrPageRefused` (wrapped is fine) fails the insert with `FORBIDDEN` "You may not create a page document here." Nothing is saved.
+- Your id becomes the page block's `data.pageId`. It must be 1-512 code points of valid UTF-8, with no control characters (U+0000-U+001F, U+007F-U+009F), and not `.` or `..`. Your source or room document loader must be able to open it.
+- `ErrPageRefused` (wrapped is fine) fails the insert with `FORBIDDEN`. Nothing is saved.
 - Any other error, or an id that breaks the rules above, is logged in full to stderr. On the batch's first page the agent sees `SOURCE_UNAVAILABLE` "The host could not create the page.". After earlier pages the batch fails with `ORPHANED_SIDE_EFFECT`: `details.orphaned` lists the pages you made, and `details.cause` is `APPLY_FAILED` (or `FORBIDDEN` for a refusal). Delete those pages. A page the parent already links is left out.
 - Pages are made one at a time, before the batch runs, at most 25 per batch. A batch over that limit never calls you. Undo, redo and deleting a page block never call you.
-- `CreatePage` needs stored mode: with `Sync`, `Rooms` or no source the server refuses to start.
+- `CreatePage` accepts stored mode with a source, or embedded `Rooms` with no source. Both require `PageTitles: "page-map"`; remote `Sync` is not supported. Rooms never create documents implicitly: without this hook, page insertion is unavailable. Page rename and icon changes authorize the target document for the authenticated principal before writing its room.
 - `blok-mcp --create-page <url>` sets it to `CreatePageWebhook(url)`: `POST <url>` with `{"parentDocumentId","principal","actor":{"id","name","onBehalfOf"},"suggestedPageId"}`. A `200 {"pageId":"<id>"}` is the id, `200 {"pageId":null}` is a refusal, and anything else (another status, a redirect, a timeout after 10 s, a body without a string or null `pageId`) is an error.
 - In `blokagent`, a `PageCreator` that also implements `PageCreatorFor` gets `CreateFor` with the same request instead of `Create`. In a room the parent is the room's document id. As with `Create`, an empty id refuses.
 

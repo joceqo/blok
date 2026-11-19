@@ -128,12 +128,14 @@ Answer `Ok(Some(id))` with the new page's id, `Ok(None)` to refuse, or `Err` for
 
 - The id must be 1-512 code points, with no control character (Unicode Cc), and not `.` or `..`. Anything else, an empty id included, is a host error. (Blok.Server's executor still reads an empty id as a refusal.)
 - Blok does not authorize the new id, does not check that it is free, and does not save an empty page. You own it. A later `blok_open` of the id goes through `authorize` as usual.
-- A refusal fails the insert with `FORBIDDEN` "You may not create a page document here.", and nothing is saved.
+- A refusal fails the insert with `FORBIDDEN`, and nothing is saved.
 - An `Err` goes to stderr in full. On the first page the agent sees `SOURCE_UNAVAILABLE` "The host could not create the page." (retryable), and nothing is saved.
 - A failure, refusal or cancel after you made pages fails the batch with `ORPHANED_SIDE_EFFECT`. `details.orphaned` lists the pages you made; delete them. `details.cause` is `APPLY_FAILED` for your own failure, `FORBIDDEN` for a refusal, or `CANCELLED` (`retryable: false`, as Blok.Server answers it). A page the parent already links is never listed; with none left, the cause alone is the answer.
 - One batch makes at most 25 pages. Undo, redo and deleting a page block never call you. `page.rename` and `page.setIcon` save through the source as before.
 
-It works in stored mode with a source and `page_titles` "page-map" only. With `sync` or `rooms`, or without a source, the start is refused.
+It works with a stored source or embedded `Hooks::rooms`, with `page_titles` "page-map". Remote `sync` remains unsupported. When a creator is supplied, embedded rooms cannot be combined with a source or remote sync. Without an explicit host creator, rooms never create page documents.
+
+For rooms, the creator receives the authenticated MCP principal and parent document ID; the agent actor is attribution only. `page.rename` and `page.setIcon` resolve the child through `authorize(principal, page_id, true)` and update that child room. Creation must enforce workspace membership, quotas and ownership in the host callback.
 
 The webhook speaks Node's wire: `POST <url>` with `Content-Type: application/json` and the body `{"parentDocumentId","principal","actor":{"id","name","onBehalfOf"},"suggestedPageId"}` (`onBehalfOf` null when there is none). `200 {"pageId":"<id>"}` is the id; `200 {"pageId":null}` refuses. Any other status (201 and 3xx too, since redirects are not followed), a timeout (10 s), a network error or another body is a host error, never a refusal.
 

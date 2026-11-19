@@ -139,7 +139,7 @@ sealed class MyPages(MyDb db) : IBlokPageCreator
 }
 ```
 
-- It needs a document source and stored mode. With `SyncUrl`, `LiveRooms`, or no source, the server refuses to start. Without `page-map` it is never called.
+- It needs a stored document source or in-process `LiveRooms`. Remote `SyncUrl` cannot use the hook. Room creation requires `page-map` and no stored source; in stored mode, without `page-map` the hook is never called. In room mode, page edits resolve through the same room manager after checking the handle opener’s access; the creator’s `ResolveAsync` is not called.
 - Blok takes it from `BlokMcpOptions.PageCreator` only, never from the container, so an `IBlokPageCreator` you registered for Blok.Server's agent does not turn it on.
 - The request names the open document (`ParentDocumentId`), the principal that opened the handle, its agent actor, and a fresh Blok id you may use (`SuggestedPageId`).
 - Blok then does not run the per-document check on the new id, does not look at it, and saves nothing for it. Your source must load the new id. A later `blok_open` of it runs the check as usual.

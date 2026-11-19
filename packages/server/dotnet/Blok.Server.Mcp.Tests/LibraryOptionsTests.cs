@@ -149,7 +149,7 @@ public sealed class LibraryOptionsTests : IDisposable
   }
 
   [Fact]
-  public async Task APageCreatorNeedsStoredModeWithASource()
+  public async Task APageCreatorNeedsASourceOrHostedRoomsAndRefusesRemoteSync()
   {
     var creator = new HostPageCreatorTests.FakeCreator("host-1");
     var live = await Assert.ThrowsAsync<InvalidOperationException>(() => StartAsync(options =>
@@ -167,7 +167,6 @@ public sealed class LibraryOptionsTests : IDisposable
     }));
     var rooms = await Assert.ThrowsAsync<InvalidOperationException>(() => StartAsync(options =>
     {
-      options.FilesDirectory = dir;
       options.PageTitles = "page-map";
       options.PageCreator = creator;
       options.LiveRooms = true;
@@ -175,7 +174,34 @@ public sealed class LibraryOptionsTests : IDisposable
 
     Assert.Equal("--create-page works in stored mode only: it cannot be used with live rooms (--sync-url)", live.Message);
     Assert.Equal("--create-page needs a document source (--source): the agent opens each new page through it", noSource.Message);
-    Assert.Equal("BlokMcpOptions.PageCreator works in stored mode only: it cannot be used with LiveRooms.", rooms.Message);
+    Assert.Equal("BlokMcpOptions.LiveRooms needs AddBlokServer with CollabEnabled, so the app hosts the rooms.", rooms.Message);
+  }
+
+  [Fact]
+  public async Task AHostedRoomCreatorNeedsPageMapAndCannotUseAStoredSource()
+  {
+    var creator = new HostPageCreatorTests.FakeCreator("child");
+    var noPageMap = await Assert.ThrowsAsync<InvalidOperationException>(() => StartAsync(options =>
+    {
+      options.PageCreator = creator;
+      options.LiveRooms = true;
+    }));
+    var source = await Assert.ThrowsAsync<InvalidOperationException>(() => StartAsync(options =>
+    {
+      options.PageCreator = creator;
+      options.LiveRooms = true;
+      options.PageTitles = "page-map";
+      options.FilesDirectory = dir;
+    }));
+    var sourceWithoutCreator = await Assert.ThrowsAsync<InvalidOperationException>(() => StartAsync(options =>
+    {
+      options.LiveRooms = true;
+      options.FilesDirectory = dir;
+    }));
+    Assert.Equal("BlokMcpOptions.PageCreator with LiveRooms requires PageTitles = page-map.", noPageMap.Message);
+    Assert.Equal("BlokMcpOptions.PageCreator with LiveRooms cannot use a stored document source.", source.Message);
+    // Existing mixed-mode configuration still reaches room resolution (this test registers none).
+    Assert.Equal("BlokMcpOptions.LiveRooms needs AddBlokServer with CollabEnabled, so the app hosts the rooms.", sourceWithoutCreator.Message);
   }
 
   [Fact]

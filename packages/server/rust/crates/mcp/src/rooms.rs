@@ -4,15 +4,21 @@
 
 use std::sync::Arc;
 
-use blok_blokagent::{Actor, Cancel, Executor, Options};
+use blok_blokagent::{
+    Actor, Cancel, Error, Executor, HostFuture, Options, PageCreateRequest, PageCreator,
+    PageLocation, PageTarget,
+};
 use serde_json::{Value, json};
 
 use crate::errors::{Fault, HostError};
+use crate::options::Authorize;
 
 pub struct Rooms {
     executor: Arc<Executor>,
     options: Options,
     flags: Value,
+    page_creator: Option<Arc<dyn PageCreator>>,
+    authorize: Option<Arc<dyn Authorize>>,
 }
 
 /// What one room batch gave.
@@ -49,6 +55,18 @@ impl Rooms {
     /// `flags` are the start flags mcpSurface took: the room contract gets
     /// the same custom tools, overrides and comment switch.
     pub fn new(executor: Arc<Executor>, flags: &Value) -> Rooms {
+        Self::with_hooks(executor, flags, None, None)
+    }
+
+    pub(crate) fn with_hooks(
+        executor: Arc<Executor>,
+        flags: &Value,
+        page_creator: Option<Arc<dyn PageCreator>>,
+        authorize: Option<Arc<dyn Authorize>>,
+    ) -> Rooms {
+        let mut flags = flags.clone();
+        // This override affects live contracts only, including mixed hosts.
+        flags["liveCreatesPages"] = json!(page_creator.is_some());
         Rooms {
             executor,
             options: Options {
@@ -58,6 +76,8 @@ impl Rooms {
                 ..Options::default()
             },
             flags: flags.clone(),
+            page_creator,
+            authorize,
         }
     }
 
@@ -71,10 +91,36 @@ impl Rooms {
         write: bool,
         approval: Option<&Value>,
     ) -> Result<Ran, Fault> {
+        self.run_as(document_id, batch, actor, write, approval, "")
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn run_as(
+        &self,
+        document_id: &str,
+        batch: &Value,
+        actor: &Value,
+        write: bool,
+        approval: Option<&Value>,
+        principal: &str,
+    ) -> Result<Ran, Fault> {
         let mut mcp = self.flags.clone();
         mcp["mode"] = json!("live");
         mcp["write"] = json!(write);
+        let page_titles = self.flags.get("pageTitles").and_then(Value::as_str) == Some("page-map");
         let options = Options {
+            page_titles,
+            // The native executor prepares pages before its final write gate.
+            // Keep host side effects unavailable even to direct read-only runs.
+            page_target: (page_titles && write).then(|| {
+                Arc::new(RoomPages {
+                    creator: self.page_creator.clone(),
+                    authorize: self.authorize.clone(),
+                    principal: principal.to_owned(),
+                    parent: document_id.to_owned(),
+                }) as Arc<dyn PageTarget>
+            }),
             mcp_json: Some(mcp.to_string()),
             approval_json: approval.map(Value::to_string),
             ..self.options.clone()
@@ -89,7 +135,25 @@ impl Rooms {
                 Some(&options),
             )
             .await
-            .map_err(|err| Fault::Internal(format!("{err:?}")))?;
+            .map_err(|err| match err {
+                Error::Host(ref host) if host.is::<RoomPageError>() => {
+                    match host.downcast_ref::<RoomPageError>().expect("checked above") {
+                        RoomPageError::Failed => HostError::surface(
+                            "SOURCE_UNAVAILABLE",
+                            crate::create_page::HOST_PAGE_FAILED,
+                        )
+                        .into(),
+                        RoomPageError::Forbidden => {
+                            HostError::surface("FORBIDDEN", "You may not write this page document.")
+                                .into()
+                        }
+                    }
+                }
+                err if err.is_cancel() => {
+                    HostError::failure("CANCELLED", crate::create_page::CANCELLED).into()
+                }
+                err => Fault::Internal(format!("{err:?}")),
+            })?;
         Ok(Ran {
             head: parse_head(&execution.revision),
             result: execution.result_json,
@@ -104,8 +168,21 @@ impl Rooms {
         actor: &Value,
         write: bool,
     ) -> Result<(Value, Ran), Fault> {
+        self.read_as(document_id, view, actor, write, "").await
+    }
+
+    pub(crate) async fn read_as(
+        &self,
+        document_id: &str,
+        view: &Value,
+        actor: &Value,
+        write: bool,
+        principal: &str,
+    ) -> Result<(Value, Ran), Fault> {
         let batch = json!({ "commands": [{ "name": "doc.read", "args": view }] });
-        let ran = self.run(document_id, &batch, actor, write, None).await?;
+        let ran = self
+            .run_as(document_id, &batch, actor, write, None, principal)
+            .await?;
         let result: Value =
             serde_json::from_str(&ran.result).map_err(|e| Fault::Internal(e.to_string()))?;
         if result.get("ok") != Some(&Value::Bool(true)) {
@@ -114,6 +191,93 @@ impl Rooms {
         }
         let view = result.pointer("/results/0").cloned().unwrap_or(Value::Null);
         Ok((view, ran))
+    }
+}
+
+/// A room page target is scoped to the authenticated call, never the agent's
+/// attribution. Creation stays entirely in the embedding host's hands.
+struct RoomPages {
+    creator: Option<Arc<dyn PageCreator>>,
+    authorize: Option<Arc<dyn Authorize>>,
+    principal: String,
+    parent: String,
+}
+
+#[derive(Debug)]
+enum RoomPageError {
+    Failed,
+    Forbidden,
+}
+impl std::fmt::Display for RoomPageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Failed => crate::create_page::HOST_PAGE_FAILED,
+            Self::Forbidden => "You may not write this page document.",
+        })
+    }
+}
+impl std::error::Error for RoomPageError {}
+
+impl PageTarget for RoomPages {
+    fn resolve<'a>(
+        &'a self,
+        cancel: &'a Cancel,
+        page_id: &'a str,
+        _: &'a Actor,
+    ) -> HostFuture<'a, Option<PageLocation>> {
+        Box::pin(async move {
+            cancel.check()?;
+            if !crate::create_page::is_page_id(page_id) {
+                return Err(Error::Host(Box::new(RoomPageError::Forbidden)));
+            }
+            if let Some(authorize) = &self.authorize {
+                if !authorize
+                    .allows(self.principal.clone(), page_id.to_owned(), true)
+                    .await
+                {
+                    return Err(Error::Host(Box::new(RoomPageError::Forbidden)));
+                }
+            }
+            Ok(Some(PageLocation::Room {
+                doc_id: page_id.to_owned(),
+            }))
+        })
+    }
+
+    fn as_creator(&self) -> Option<&dyn PageCreator> {
+        self.creator.as_ref().map(|_| self as &dyn PageCreator)
+    }
+}
+
+impl PageCreator for RoomPages {
+    fn create<'a>(
+        &'a self,
+        cancel: &'a Cancel,
+        request: &'a PageCreateRequest,
+    ) -> HostFuture<'a, Option<String>> {
+        Box::pin(async move {
+            let Some(creator) = &self.creator else {
+                return Ok(None);
+            };
+            let mut request = request.clone();
+            request.principal = Some(self.principal.clone());
+            request.parent_document_id = Some(self.parent.clone());
+            match creator.create(cancel, &request).await {
+                Ok(None) => Ok(None),
+                Ok(Some(page_id)) if crate::create_page::is_page_id(&page_id) => Ok(Some(page_id)),
+                Ok(Some(page_id)) => {
+                    eprintln!(
+                        "blok-mcp: the host page creator answered no valid page id: {page_id:?}"
+                    );
+                    Err(Error::Host(Box::new(RoomPageError::Failed)))
+                }
+                Err(err) if err.is_cancel() => Err(err),
+                Err(err) => {
+                    eprintln!("blok-mcp: the host could not create a page: {err}");
+                    Err(Error::Host(Box::new(RoomPageError::Failed)))
+                }
+            }
+        })
     }
 }
 

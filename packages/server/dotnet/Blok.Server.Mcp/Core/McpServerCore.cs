@@ -676,7 +676,8 @@ internal sealed class McpServerCore : IAsyncDisposable
         return new RoomSession(
             bundle, rooms, documentId, write, flags, caller.Actor,
             McpJson.String(surface["contractRevision"]?["live"]) ?? string.Empty,
-            surface["liveUnavailableCommands"] as JsonArray);
+            surface["liveUnavailableCommands"] as JsonArray,
+            RoomPages(caller));
       }
       if (live is null)
       {
@@ -693,6 +694,50 @@ internal sealed class McpServerCore : IAsyncDisposable
 
     // A host's store acts for the caller that opened the handle, on every load and save.
     return await StoredSession.OpenAsync(bundle, source.ForCaller(caller), documentId, write, flags, caller.Actor, revision, pages, uploads, cancellationToken, caller);
+  }
+
+  // Bind page access to the handle opener, not the actor supplied to an agent command.
+  private Blok.Server.Agent.IBlokPageTarget? RoomPages(McpCaller caller)
+  {
+    if (config.PageTitles != "page-map") return null;
+    Func<string, CancellationToken, Task<bool>> allowed = (pageId, token) => AllowedAsync(caller, pageId, true, token);
+    return config.PageCreator is null
+        ? new RoomPageTarget(allowed)
+        : new RoomPageCreator(allowed, (parent, token) => CreateHostPageAsync(caller, parent, token));
+  }
+
+  private class RoomPageTarget(Func<string, CancellationToken, Task<bool>> allowed) : Blok.Server.Agent.IBlokPageTarget
+  {
+    public async ValueTask<Blok.Server.Agent.BlokPageLocation?> ResolveAsync(
+        string pageId, Blok.Server.Agent.BlokAgentActor actor, CancellationToken cancellationToken = default)
+    {
+      if (!PageIds.IsHostPageId(pageId) || !await allowed(pageId, cancellationToken))
+      {
+        throw McpHostError.Surface("FORBIDDEN", "You may not open this document with this access.");
+      }
+      return new Blok.Server.Agent.BlokPageLocation.Room(pageId);
+    }
+  }
+
+  private sealed class RoomPageCreator(
+      Func<string, CancellationToken, Task<bool>> allowed,
+      Func<string, CancellationToken, Task<string>> create) : RoomPageTarget(allowed), Blok.Server.Agent.IBlokPageCreator
+  {
+    public ValueTask<string?> CreateAsync(Blok.Server.Agent.BlokAgentActor actor, CancellationToken cancellationToken = default) =>
+        throw new InvalidOperationException("Creating a room page requires its parent document.");
+
+    public async ValueTask<string?> CreateAsync(Blok.Server.Agent.BlokPageCreateRequest request, CancellationToken cancellationToken = default)
+    {
+      try
+      {
+        return await create(request.ParentDocumentId ?? throw new InvalidOperationException("Missing parent document."), cancellationToken);
+      }
+      catch (McpHostError error) when (error.Code == "FORBIDDEN")
+      {
+        // The native executor reports refusal and any earlier created pages consistently.
+        return null;
+      }
+    }
   }
 
   private void TrackPageClose(Task closing)

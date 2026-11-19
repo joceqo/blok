@@ -134,6 +134,22 @@ describe('server runtime mcpSurface', () => {
     }
   };
 
+  it('honors an embedded room host that cannot create page documents', async () => {
+    const surface = await call('mcpSurface', {
+      pageTitles: 'page-map', sync: true, source: true, uploads: false, liveCreatesPages: false,
+    });
+    const expected = buildMcpContracts({ pageTitles: 'page-map', versionHistory: true, createsPages: false });
+
+    const stored = buildMcpContracts({ pageTitles: 'page-map', versionHistory: true, createsPages: true });
+
+    expect(surface.contractRevision).toEqual({ stored: stored.stored.revision, live: expected.live.revision });
+    const enabled = await call('mcpSurface', {
+      pageTitles: 'page-map', sync: true, source: true, uploads: false, liveCreatesPages: true,
+    });
+
+    expect(enabled.contractRevision).not.toEqual(surface.contractRevision);
+  });
+
   it.each(combos)('matches Node for %o', async (combo) => {
     expect(await call('mcpSurface', surfaceInput(combo))).toEqual(await nodeSurface(nodeOptions(combo)));
   });

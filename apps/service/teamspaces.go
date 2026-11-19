@@ -313,10 +313,16 @@ type createdScopedPage struct {
 	Revision    int64   `json:"revision"`
 }
 
+// scopedPageRefusal distinguishes expected validation/access refusals from
+// storage failures, without exposing database error text through page hooks.
+type scopedPageRefusal string
+
+func (e scopedPageRefusal) Error() string { return string(e) }
+
 func (s *Service) createScopedPage(ctx context.Context, u identity, ws Workspace, title, parent, tsID, visibility string) (createdScopedPage, error) {
 	out := createdScopedPage{Title: title, Workspace: ws.Slug}
 	if title == "" || len(title) > 4096 || (parent != "" && !pageIDPattern.MatchString(parent)) {
-		return out, errors.New("invalid title or parent")
+		return out, scopedPageRefusal("invalid title or parent")
 	}
 	tx, e := s.DB.Begin(ctx)
 	if e != nil {
@@ -327,44 +333,57 @@ func (s *Service) createScopedPage(ctx context.Context, u identity, ws Workspace
 		return out, e
 	}
 	var role string
-	if e = tx.QueryRow(ctx, `SELECT role FROM memberships WHERE workspace_id=$1 AND user_id=$2`, ws.ID, u.ID).Scan(&role); e != nil || capOf(role) < levelEdit {
-		return out, errors.New("write access required")
+	e = tx.QueryRow(ctx, `SELECT role FROM memberships WHERE workspace_id=$1 AND user_id=$2`, ws.ID, u.ID).Scan(&role)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return out, scopedPageRefusal("write access required")
+	}
+	if e != nil {
+		return out, e
+	}
+	if capOf(role) < levelEdit {
+		return out, scopedPageRefusal("write access required")
 	}
 	var rootTS *string
 	if parent != "" {
 		var exists bool
-		if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pages WHERE id=$1 AND workspace_id=$2 AND NOT deleted AND NOT trashed)`, parent, ws.ID).Scan(&exists); e != nil || !exists {
-			return out, errors.New("parent unavailable")
+		if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pages WHERE id=$1 AND workspace_id=$2 AND NOT deleted AND NOT trashed)`, parent, ws.ID).Scan(&exists); e != nil {
+			return out, e
+		}
+		if !exists {
+			return out, scopedPageRefusal("parent unavailable")
 		}
 		chain, e := s.chainOf(ctx, tx, u.ID, parent)
 		if e != nil {
 			return out, e
 		}
 		if len(chain) >= maxPageDepth {
-			return out, errors.New("maximum page depth reached")
+			return out, scopedPageRefusal("maximum page depth reached")
 		}
 		granted, e := s.effectiveLevel(ctx, tx, u.ID, parent)
-		if e != nil || granted < levelEdit {
-			return out, errors.New("parent unavailable")
+		if e != nil {
+			return out, e
+		}
+		if granted < levelEdit {
+			return out, scopedPageRefusal("parent unavailable")
 		}
 		inherited, e := s.pageTeamspace(ctx, tx, u.ID, parent)
 		if e != nil {
 			return out, e
 		}
 		if tsID != "" && tsID != inherited {
-			return out, errors.New("parent belongs to another teamspace")
+			return out, scopedPageRefusal("parent belongs to another teamspace")
 		}
 		tsID = inherited
 		if visibility == "" {
 			visibility = visInherit
 		}
 		if visibility != visInherit {
-			return out, errors.New("children must inherit")
+			return out, scopedPageRefusal("children must inherit")
 		}
 	} else {
 		if tsID != "" {
 			if !s.teamspaceWritable(ctx, tx, u.ID, ws.ID, tsID) {
-				return out, errors.New("teamspace write access required")
+				return out, scopedPageRefusal("teamspace write access required")
 			}
 			rootTS = &tsID
 		}
@@ -375,7 +394,7 @@ func (s *Service) createScopedPage(ctx context.Context, u identity, ws Workspace
 			}
 		}
 		if visibility != visPrivate && visibility != visWorkspace {
-			return out, errors.New("invalid root visibility")
+			return out, scopedPageRefusal("invalid root visibility")
 		}
 	}
 	if tsID != "" {

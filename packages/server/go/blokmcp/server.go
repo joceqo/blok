@@ -97,6 +97,9 @@ func buildServer(options, checked Options, runtime invoker) (*Server, error) {
 		"source":  options.hasSource(),
 		"uploads": options.Uploads != nil,
 	}
+	if options.Rooms != nil {
+		s.flags["liveCreatesPages"] = options.CreatePage != nil
+	}
 	if options.PageTitles != "" {
 		s.flags["pageTitles"] = options.PageTitles
 	}
@@ -183,13 +186,18 @@ func (s *Server) checkOptions(ctx context.Context, checked Options) error {
 	if err := json.Unmarshal(written, &options); err != nil {
 		return err
 	}
-	if checked.CreatePage != nil && checked.Rooms != nil {
-		return &ConfigError{Message: "CreatePage works in stored mode only: it cannot be used with Rooms"}
+	if checked.Rooms != nil && checked.CreatePage != nil {
+		if checked.Sync != nil || checked.hasSource() {
+			return &ConfigError{Message: "Rooms cannot be combined with Sync or a document source"}
+		}
+		if checked.PageTitles != "page-map" {
+			return &ConfigError{Message: "CreatePage requires PageTitles page-map"}
+		}
 	}
 	if checked.Authorize != nil {
 		options["authorize"] = json.RawMessage("true")
 	}
-	if checked.CreatePage != nil {
+	if checked.CreatePage != nil && checked.Rooms == nil {
 		options["createPage"] = json.RawMessage("true")
 	}
 	// HandleStore is not sent: the bundle checks only that a store has its

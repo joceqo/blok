@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use blok_blokagent::{Executor, Rooms};
+use blok_blokagent::{Cancel, Executor, HostFuture, PageCreateRequest, PageCreator, Rooms};
 use blok_collab::BoxFuture;
 use blok_collab_convert::{DocConverter, RuntimeHtmlReader};
 use blok_collab_docendpoint::{Loaded, Projection};
@@ -17,6 +17,7 @@ use blok_collab_workingset::{Set, Tag};
 use blok_jsjson::{Options as JsonOptions, Value as JsValue, parse_node};
 use blok_jsruntime::{Options as PoolOptions, Pool};
 use blok_mcp::bundle::Bundle;
+use blok_mcp::options::{AgentActor, Hooks};
 use blok_mcp::server::{Approval, Caller, Mcp, Outcome};
 use serde_json::{Value, json};
 
@@ -94,11 +95,30 @@ fn pool() -> Pool {
 }
 
 async fn mcp_on_rooms(journal_dir: &std::path::Path) -> Mcp {
+    mcp_on_rooms_with(journal_dir, Hooks::default(), false).await
+}
+
+async fn mcp_on_rooms_with(journal_dir: &std::path::Path, hooks: Hooks, page_titles: bool) -> Mcp {
+    mcp_on_rooms_document(
+        journal_dir,
+        hooks,
+        page_titles,
+        r#"{"blocks":[{"id":"p1","type":"paragraph","data":{"text":"Hello"}}]}"#,
+    )
+    .await
+}
+
+async fn mcp_on_rooms_document(
+    journal_dir: &std::path::Path,
+    mut hooks: Hooks,
+    page_titles: bool,
+    document: &str,
+) -> Mcp {
     let docs = Arc::new(HeldDocs::default());
-    docs.0.lock().unwrap().insert(
-        "doc".to_owned(),
-        r#"{"blocks":[{"id":"p1","type":"paragraph","data":{"text":"Hello"}}]}"#.to_owned(),
-    );
+    docs.0
+        .lock()
+        .unwrap()
+        .insert("doc".to_owned(), document.to_owned());
     let journal =
         Store::new(journal_dir.to_path_buf(), StoreOptions::default()).expect("a journal");
     let mut o = ManagerOptions::new(
@@ -114,15 +134,11 @@ async fn mcp_on_rooms(journal_dir: &std::path::Path) -> Mcp {
     o.operations = Some(Arc::new(LocalJournal(journal)));
     let manager = Manager::new(o);
     let executor = Arc::new(Executor::new_on_runtime(pool(), Some(Rooms::new(manager))));
-    let options = json!({ "transport": { "kind": "stdio" }, "auth": { "kind": "none" } });
-    Mcp::new(
-        Arc::new(Bundle::new(1).expect("a bundle")),
-        &options,
-        None,
-        Some(executor),
-    )
-    .await
-    .expect("an MCP server")
+    let options = json!({ "transport": { "kind": "stdio" }, "auth": { "kind": "none" }, "pageTitles": if page_titles { "page-map" } else { "off" } });
+    hooks.rooms = Some(executor);
+    Mcp::with_hooks(Arc::new(Bundle::new(1).expect("a bundle")), &options, hooks)
+        .await
+        .expect("an MCP server")
 }
 
 async fn call(mcp: &Mcp, name: &str, args: Value) -> Value {
@@ -447,4 +463,395 @@ async fn undoing_a_sharing_change_in_the_hosts_room_asks_and_a_yes_applies() {
     .await;
     assert_eq!(form_of(&read), json!({}), "{read}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[derive(Default)]
+struct PageHost {
+    asked: Mutex<Vec<PageCreateRequest>>,
+    refuse_after: Option<usize>,
+}
+
+impl PageCreator for PageHost {
+    fn create<'a>(
+        &'a self,
+        _: &'a Cancel,
+        request: &'a PageCreateRequest,
+    ) -> HostFuture<'a, Option<String>> {
+        let mut asked = self.asked.lock().unwrap();
+        asked.push(request.clone());
+        let at = asked.len();
+        let answer = if self.refuse_after.is_some_and(|limit| at > limit) {
+            None
+        } else {
+            Some(format!("child-{at}"))
+        };
+        Box::pin(async move { Ok(answer) })
+    }
+}
+
+fn page_insert(id: &str) -> Value {
+    json!({ "name": "block.insert", "args": { "type": "page", "id": id, "position": "end" } })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn room_page_creator_uses_the_principal_and_targets_authorized_child_rooms() {
+    let dir = TestDir::new();
+    let host = Arc::new(PageHost::default());
+    let checks = Arc::new(Mutex::new(Vec::new()));
+    let seen = checks.clone();
+    let hooks = Hooks {
+        page_creator: Some(host.clone()),
+        authorize: Some(Arc::new(
+            move |principal: String, id: String, write: bool| {
+                seen.lock().unwrap().push((principal, id, write));
+                async { true }
+            },
+        )),
+        agent_actor: Some(Arc::new(|_, _| AgentActor {
+            id: "custom-agent".into(),
+            name: "Agent".into(),
+            on_behalf_of: Some("not-the-principal".into()),
+            color: None,
+        })),
+        ..Hooks::default()
+    };
+    let mcp = mcp_on_rooms_document(dir.path(), hooks, true,
+        r#"{"blocks":[{"id":"db","type":"database","content":["row"],"data":{"title":"Sprints","schema":[],"views":[]}},{"id":"row","type":"database-row","parent":"db","content":[],"data":{"properties":{}}}]}"#).await;
+    let opened = call(
+        &mcp,
+        "blok_open",
+        json!({ "documentId": "doc", "write": true }),
+    )
+    .await;
+    let handle = opened["handle"].clone();
+    let description = call(
+        &mcp,
+        "blok_describe",
+        json!({ "handle": handle, "tool": "page" }),
+    )
+    .await;
+    assert_ne!(description["tool"]["insertable"], false, "{description}");
+    let mut insert = page_insert("link");
+    insert["args"]["parentId"] = json!("row");
+    let made = call(
+        &mcp,
+        "blok_execute",
+        json!({ "handle": handle, "commands": [insert] }),
+    )
+    .await;
+    assert_eq!(made["ok"], true, "{made}");
+    let asked = host.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].principal.as_deref(), Some("alice"));
+    assert_eq!(asked[0].parent_document_id.as_deref(), Some("doc"));
+    assert_eq!(asked[0].actor.id, "custom-agent");
+    assert!(!asked[0].suggested_page_id.is_empty());
+    let read = call(
+        &mcp,
+        "blok_read",
+        json!({ "handle": handle, "detail": "full" }),
+    )
+    .await;
+    assert!(
+        read["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["id"] == "link" && b["data"]["pageId"] == "child-1"),
+        "{read}"
+    );
+    for command in [
+        json!({ "name": "page.rename", "args": { "id": "link", "title": "Commits" } }),
+        json!({ "name": "page.setIcon", "args": { "id": "link", "icon": { "type": "emoji", "value": "📄" } } }),
+    ] {
+        let result = call(
+            &mcp,
+            "blok_execute",
+            json!({ "handle": handle, "commands": [command] }),
+        )
+        .await;
+        assert_eq!(result["ok"], true, "{result}");
+    }
+    let child = call(
+        &mcp,
+        "blok_open",
+        json!({ "documentId": "child-1", "view": { "detail": "full" } }),
+    )
+    .await;
+    let child = call(&mcp, "blok_read", json!({ "handle": child["handle"] })).await;
+    assert_eq!(child["page"]["title"], "Commits", "{child}");
+    assert_eq!(
+        child["page"]["icon"],
+        json!({ "type": "emoji", "value": "📄" }),
+        "{child}"
+    );
+    assert_eq!(
+        checks
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, id, w)| p == "alice" && id == "child-1" && *w)
+            .count(),
+        2
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn room_page_creation_refuses_read_only_and_reports_orphaned_pages() {
+    let dir = TestDir::new();
+    let host = Arc::new(PageHost {
+        refuse_after: Some(1),
+        ..PageHost::default()
+    });
+    let mcp = mcp_on_rooms_with(
+        dir.path(),
+        Hooks {
+            page_creator: Some(host.clone()),
+            ..Hooks::default()
+        },
+        true,
+    )
+    .await;
+    let opened = call(&mcp, "blok_open", json!({ "documentId": "doc" })).await;
+    let denied = call(
+        &mcp,
+        "blok_execute",
+        json!({ "handle": opened["handle"], "commands": [page_insert("readonly")] }),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], "READ_ONLY", "{denied}");
+    assert!(host.asked.lock().unwrap().is_empty());
+    let opened = call(
+        &mcp,
+        "blok_open",
+        json!({ "documentId": "doc", "write": true }),
+    )
+    .await;
+    let handle = opened["handle"].clone();
+    let orphan = call(
+        &mcp,
+        "blok_execute",
+        json!({ "handle": handle, "commands": [page_insert("one"), page_insert("two")] }),
+    )
+    .await;
+    assert_eq!(orphan["error"]["code"], "ORPHANED_SIDE_EFFECT", "{orphan}");
+    assert_eq!(
+        orphan["error"]["details"]["orphaned"][0]["prepared"]["pageId"], "child-1",
+        "{orphan}"
+    );
+    let denied = call(
+        &mcp,
+        "blok_execute",
+        json!({ "handle": handle, "commands": [page_insert("three")] }),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], "FORBIDDEN", "{denied}");
+    let read = call(
+        &mcp,
+        "blok_read",
+        json!({ "handle": handle, "detail": "full" }),
+    )
+    .await;
+    assert_eq!(read["blocks"].as_array().unwrap().len(), 1, "{read}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rooms_without_a_host_creator_do_not_advertise_page_creation() {
+    let dir = TestDir::new();
+    let mcp = mcp_on_rooms_with(dir.path(), Hooks::default(), true).await;
+    let opened = call(
+        &mcp,
+        "blok_open",
+        json!({ "documentId": "doc", "write": true }),
+    )
+    .await;
+    let description = call(
+        &mcp,
+        "blok_describe",
+        json!({ "handle": opened["handle"], "tool": "page" }),
+    )
+    .await;
+    assert_eq!(description["tool"]["insertable"], false, "{description}");
+    let result = call(
+        &mcp,
+        "blok_execute",
+        json!({ "handle": opened["handle"], "commands": [page_insert("page")] }),
+    )
+    .await;
+    assert_eq!(result["ok"], false, "{result}");
+    let read = call(
+        &mcp,
+        "blok_read",
+        json!({ "handle": opened["handle"], "detail": "full" }),
+    )
+    .await;
+    assert_eq!(read["blocks"].as_array().unwrap().len(), 1, "{read}");
+}
+
+struct TestDir(std::path::PathBuf);
+impl TestDir {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "blok-mcp-room-pages-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn room_page_target_refuses_an_inaccessible_child_without_mutation() {
+    let dir = TestDir::new();
+    let host = Arc::new(PageHost::default());
+    let mcp = mcp_on_rooms_with(
+        dir.path(),
+        Hooks {
+            page_creator: Some(host),
+            authorize: Some(Arc::new(
+                |principal: String, id: String, write: bool| async move {
+                    principal == "alice" && (id == "doc" || !write)
+                },
+            )),
+            ..Hooks::default()
+        },
+        true,
+    )
+    .await;
+    let opened = call(
+        &mcp,
+        "blok_open",
+        json!({ "documentId": "doc", "write": true }),
+    )
+    .await;
+    let handle = opened["handle"].clone();
+    let made = call(
+        &mcp,
+        "blok_execute",
+        json!({ "handle": handle, "commands": [page_insert("link")] }),
+    )
+    .await;
+    assert_eq!(made["ok"], true, "{made}");
+    let denied = call(&mcp, "blok_execute", json!({ "handle": handle, "commands": [{ "name": "page.rename", "args": { "id": "link", "title": "Secret" } }] })).await;
+    assert_eq!(denied["error"]["code"], "FORBIDDEN", "{denied}");
+    let child = call(&mcp, "blok_open", json!({ "documentId": "child-1" })).await;
+    let read = call(&mcp, "blok_read", json!({ "handle": child["handle"] })).await;
+    assert!(read["page"].get("title").is_none(), "{read}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_only_parent_denies_before_the_host_creator_runs() {
+    let dir = TestDir::new();
+    let host = Arc::new(PageHost::default());
+    let mcp = mcp_on_rooms_with(
+        dir.path(),
+        Hooks {
+            page_creator: Some(host.clone()),
+            authorize: Some(Arc::new(|_: String, _: String, write: bool| async move {
+                !write
+            })),
+            ..Hooks::default()
+        },
+        true,
+    )
+    .await;
+    let denied = call(
+        &mcp,
+        "blok_open",
+        json!({ "documentId": "doc", "write": true }),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], "FORBIDDEN", "{denied}");
+    assert!(host.asked.lock().unwrap().is_empty());
+}
+
+struct BrokenPageHost(bool);
+impl PageCreator for BrokenPageHost {
+    fn create<'a>(
+        &'a self,
+        _: &'a Cancel,
+        _: &'a PageCreateRequest,
+    ) -> HostFuture<'a, Option<String>> {
+        Box::pin(async move {
+            if self.0 {
+                Ok(Some("..".into()))
+            } else {
+                Err(blok_blokagent::Error::Host("secret host failure".into()))
+            }
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn room_page_creation_sanitizes_host_errors_and_rejects_invalid_ids() {
+    for invalid_id in [false, true] {
+        let dir = TestDir::new();
+        let mcp = mcp_on_rooms_with(
+            dir.path(),
+            Hooks {
+                page_creator: Some(Arc::new(BrokenPageHost(invalid_id))),
+                ..Hooks::default()
+            },
+            true,
+        )
+        .await;
+        let opened = call(
+            &mcp,
+            "blok_open",
+            json!({ "documentId": "doc", "write": true }),
+        )
+        .await;
+        let result = call(
+            &mcp,
+            "blok_execute",
+            json!({ "handle": opened["handle"], "commands": [page_insert("link")] }),
+        )
+        .await;
+        assert_eq!(result["error"]["code"], "SOURCE_UNAVAILABLE", "{result}");
+        assert!(!result.to_string().contains("secret"), "{result}");
+        let read = call(
+            &mcp,
+            "blok_read",
+            json!({ "handle": opened["handle"], "detail": "full" }),
+        )
+        .await;
+        assert_eq!(read["blocks"].as_array().unwrap().len(), 1, "{read}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn room_page_creator_requires_page_map_and_an_unambiguous_room_owner() {
+    for extra in [
+        json!({ "pageTitles": "off" }),
+        json!({ "sync": { "url": "ws://127.0.0.1:9/sync" } }),
+        json!({ "source": { "kind": "files", "dir": "/tmp/unused-room-page-source" } }),
+    ] {
+        let mut options = json!({ "transport": { "kind": "stdio" }, "auth": { "kind": "none" }, "pageTitles": "page-map" });
+        options
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let hooks = Hooks {
+            rooms: Some(Arc::new(Executor::new_on_runtime(pool(), None))),
+            page_creator: Some(Arc::new(PageHost::default())),
+            ..Hooks::default()
+        };
+        let result = Mcp::build(Arc::new(Bundle::new(1).unwrap()), &options, hooks).await;
+        assert!(
+            matches!(result, Err(blok_mcp::server::BuildError::Config(_))),
+            "invalid room options must be rejected: {options}"
+        );
+    }
 }

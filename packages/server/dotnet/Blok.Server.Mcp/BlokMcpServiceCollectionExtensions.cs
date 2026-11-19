@@ -236,10 +236,16 @@ public static class BlokMcpServiceCollectionExtensions
     {
       throw new InvalidOperationException("Set BlokMcpOptions.SyncUrl or LiveRooms, not both.");
     }
-    // The creator replaces only the stored create, so a room would still make Blok's own pages.
     if (options.PageCreator is not null && options.LiveRooms)
     {
-      throw new InvalidOperationException("BlokMcpOptions.PageCreator works in stored mode only: it cannot be used with LiveRooms.");
+      if (options.PageTitles != "page-map")
+      {
+        throw new InvalidOperationException("BlokMcpOptions.PageCreator with LiveRooms requires PageTitles = page-map.");
+      }
+      if (source)
+      {
+        throw new InvalidOperationException("BlokMcpOptions.PageCreator with LiveRooms cannot use a stored document source.");
+      }
     }
     // Node's checkOptionSafety over HTTP: OAuth says who calls, not which documents they may open.
     if (hook is null && !hostDecides && !options.AllowEveryCallerEveryDocument)
@@ -345,7 +351,7 @@ public static class BlokMcpServiceCollectionExtensions
     {
       check["sync"] = new JsonObject { ["url"] = sync.OriginalString };
     }
-    if (options.PageCreator is not null)
+    if (options.PageCreator is not null && !options.LiveRooms)
     {
       check["createPage"] = true;
     }

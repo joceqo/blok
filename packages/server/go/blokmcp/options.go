@@ -58,8 +58,8 @@ type Options struct {
 	DocumentSource DocumentSource `json:"-"`
 
 	// CreatePage, when set, makes the document of each page block the
-	// agent inserts (stored mode with PageTitles "page-map" and a source;
-	// with Sync, Rooms or no source it is refused at start). It gets the
+	// agent inserts with PageTitles "page-map": stored mode with a source,
+	// or in-process Rooms. Remote Sync is not supported. It gets the
 	// open document, the handle's opener and a suggested id, and answers
 	// the new page id: 1-512 code points, valid UTF-8, no control
 	// characters, not "." or "..". Return ErrPageRefused to refuse (the

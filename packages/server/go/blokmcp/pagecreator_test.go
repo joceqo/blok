@@ -311,8 +311,8 @@ func TestTheHostIsNotAskedPastTheLimitOrOnUndo(t *testing.T) {
 	}
 }
 
-// A page creator needs stored mode with a source.
-func TestAPageCreatorIsRefusedWithoutStoredMode(t *testing.T) {
+// A page creator needs a source or in-process rooms, never a mix of both.
+func TestAPageCreatorRefusesUnsupportedHosts(t *testing.T) {
 	create := func(context.Context, blokagent.PageCreateRequest) (string, error) { return "", nil }
 	dir := t.TempDir()
 	for name, options := range map[string]Options{

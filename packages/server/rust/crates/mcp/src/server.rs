@@ -481,7 +481,7 @@ pub(crate) async fn option_refusal(
     if authorize {
         checked["authorize"] = Value::Bool(true);
     }
-    if hooks.page_creator.is_some() {
+    if hooks.page_creator.is_some() && hooks.rooms.is_none() {
         checked["createPage"] = Value::Bool(true);
     }
     // No handleStore here: the bundle only checks that a host store has
@@ -589,11 +589,22 @@ impl Mcp {
         if let Some(refusal) = option_refusal(&bundle, options, &hooks).await? {
             return Err(BuildError::Config(refusal));
         }
-        // The bundle sees no rooms in the options; they are live rooms too.
-        if hooks.page_creator.is_some() && hooks.rooms.is_some() {
-            return Err(BuildError::Config(
-                "--create-page works in stored mode only: it cannot be used with live rooms (hooks.rooms)".to_owned(),
-            ));
+        // Embedded rooms provide their own page target; a remote sync or
+        // stored source cannot also own those documents.
+        if hooks.rooms.is_some() && hooks.page_creator.is_some() {
+            if opt(options, "sync").is_some()
+                || hooks.source.is_some()
+                || opt(options, "source").is_some()
+            {
+                return Err(BuildError::Config(
+                    "hooks.rooms cannot be combined with sync or a document source".to_owned(),
+                ));
+            }
+            if str_of(options, "pageTitles") != Some("page-map") {
+                return Err(BuildError::Config(
+                    "hooks.page_creator with rooms needs pageTitles: page-map".to_owned(),
+                ));
+            }
         }
         if let Some(root) = hooks.uploads.as_ref().and_then(|u| u.root.as_ref()) {
             crate::uploads::check_root(root).map_err(BuildError::Config)?;
@@ -613,6 +624,8 @@ impl Mcp {
         }
         if rooms.is_some() {
             flags["sync"] = Value::Bool(true);
+            // Stored handles retain their source-backed creation capability.
+            flags["liveCreatesPages"] = Value::Bool(page_creator.is_some());
         }
         if custom.is_some() {
             flags["source"] = Value::Bool(true);
@@ -694,6 +707,9 @@ impl Mcp {
                 )))
             }
         };
+        let rooms = rooms.map(|executor| {
+            Rooms::with_hooks(executor, &flags, page_creator.clone(), authorize.clone())
+        });
         Ok(Mcp {
             bundle,
             surface,
@@ -716,7 +732,7 @@ impl Mcp {
             page_creator,
             live_shared,
             live,
-            rooms: rooms.map(|executor| Rooms::new(executor, &flags)),
+            rooms,
             flags,
         })
     }
@@ -2140,11 +2156,12 @@ impl Mcp {
         // Loads the room, as Node's open waits for the room to sync.
         let view_args = step.get("view").cloned();
         let (view, ran) = rooms
-            .read(
+            .read_as(
                 document_id,
                 view_args.as_ref().unwrap_or(&json!({})),
                 actor,
                 write,
+                &caller.principal,
             )
             .await?;
         if cancelled() {
@@ -2195,6 +2212,7 @@ impl Mcp {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn on_room(
         &self,
         document_id: &str,
@@ -2203,6 +2221,7 @@ impl Mcp {
         actor: &Value,
         client_name: &str,
         approval: &Approval,
+        caller: &Caller,
     ) -> Result<Outcome, Fault> {
         let rooms = self
             .rooms
@@ -2215,11 +2234,12 @@ impl Mcp {
         match str_of(call, "name") {
             Some("blok_read") => {
                 let (view, _) = rooms
-                    .read(
+                    .read_as(
                         document_id,
                         call.get("view").unwrap_or(&json!({})),
                         actor,
                         room.write,
+                        &caller.principal,
                     )
                     .await?;
                 Ok(Outcome::Answer(answer(&view)))
@@ -2265,7 +2285,14 @@ impl Mcp {
                     asking["replies"] = replies.clone();
                 }
                 let ran = rooms
-                    .run(document_id, &batch, actor, room.write, Some(&asking))
+                    .run_as(
+                        document_id,
+                        &batch,
+                        actor,
+                        room.write,
+                        Some(&asking),
+                        &caller.principal,
+                    )
                     .await?;
                 let result: Value = serde_json::from_str(&ran.result)
                     .map_err(|e| Fault::Internal(e.to_string()))?;
@@ -2342,8 +2369,16 @@ impl Mcp {
             }
             Session::Room(room) => {
                 let (actor, client_name) = self.actor(caller).await?;
-                self.on_room(&document_id, room, &call, &actor, &client_name, approval)
-                    .await
+                self.on_room(
+                    &document_id,
+                    room,
+                    &call,
+                    &actor,
+                    &client_name,
+                    approval,
+                    caller,
+                )
+                .await
             }
             Session::Remote(room) => {
                 let (actor, client_name) = self.actor(caller).await?;

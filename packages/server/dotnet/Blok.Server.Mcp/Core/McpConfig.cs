@@ -67,7 +67,7 @@ internal sealed class McpConfig
   /// <summary>The library's uploader hook; the CLI has none.</summary>
   internal BlokMcpUploads? Uploads { get; init; }
 
-  /// <summary>The host's page creator (BlokMcpOptions.PageCreator, --create-page): stored mode only.</summary>
+  /// <summary>The host's page creator (BlokMcpOptions.PageCreator, --create-page): stored or in-process room mode.</summary>
   internal Blok.Server.Agent.IBlokPageCreator? PageCreator { get; init; }
 
   /// <summary>Where stored handles live (BlokMcpOptions.HandleStore, --handle-store); null keeps them in this process.</summary>
@@ -155,6 +155,10 @@ internal sealed class McpConfig
     }
     flags["sync"] = Live;
     flags["source"] = Source is not null;
+    if (Rooms is not null)
+    {
+      flags["liveCreatesPages"] = PageCreator is not null;
+    }
     flags["uploads"] = Uploads is not null;
     if (Comments == false)
     {

@@ -17,7 +17,8 @@ internal sealed class RoomSession(
     JsonObject flags,
     JsonObject actor,
     string contractRevision,
-    JsonArray? unavailableCommands) : IHandleSession
+    JsonArray? unavailableCommands,
+    IBlokPageTarget? pages = null) : IHandleSession
 {
   private readonly JsonObject mcp = Handle(flags, write);
 
@@ -54,6 +55,10 @@ internal sealed class RoomSession(
     var options = new BlokAgentOptions
     {
       Mcp = (JsonObject)mcp.DeepClone(),
+      PageTitles = pages is not null,
+      // Native page preparation runs before the final room write gate. A read-only
+      // handle must expose neither creation nor cross-document writes to that phase.
+      PageTarget = write ? pages : null,
       Approval = approval is null ? null : new JsonObject
       {
         ["capabilities"] = approval.Capabilities?.DeepClone(),

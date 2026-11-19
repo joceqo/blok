@@ -54,6 +54,26 @@ Integration tests create and drop a unique PostgreSQL schema. They use an in-mem
 
 The API contract is in [API.md](API.md). Administrators can attach an optional plain-text invitation note of up to 2,000 Unicode characters; the note is delivered in the email and is not stored with the invitation. Tickets contain a session digest rather than a reusable bearer token. This permits immediate rechecking of logout, session expiry and membership/role changes, including established WebSockets. Logout, role changes, member removal and workspace index changes trigger Blok `RecheckAccess` immediately; an observed-document sweep rechecks expiry every five seconds and closes denied live sockets. Journal actor identifiers therefore represent sessions; they are not stable user profile identifiers.
 
+## Creating subpages through MCP
+
+The hosted service enables page-map support for its in-process collaborative rooms.
+`block.insert` with `type: "page"` creates a separate document through the same
+workspace-scoped path as the editor. Its document parent is the containing room;
+its block parent may be a database row. The new document inherits the parent's
+workspace and access. Membership, edit access and maximum page depth are checked
+again during creation. A read-only handle cannot create documents.
+
+Insert the page block, then use `page.rename` on that block to name it (for example,
+“Commits”). Read its `data.pageId` and open that document with `blok_open` to populate
+it. For a separated row body, open the row's body document first; the old row block
+is not a parent in that separate document. `blok_create_page` continues to take a
+document parent, never a row block id. No data migration is required for this feature.
+
+Creation spans documents, so a failed batch can report `ORPHANED_SIDE_EFFECT` with
+already-created page ids. Inspect those ids before retrying; do not blindly create
+duplicates. Standalone hosts must explicitly supply their page-creation hook when
+using embedded rooms; page-map alone does not grant document creation.
+
 ## Diagnosing slow MCP calls on the Go host
 
 Set `BLOK_MCP_TIMING=1` in the deployment environment and recreate the `app`

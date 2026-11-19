@@ -367,7 +367,7 @@ fn creator() -> Hooks {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_creator_needs_stored_mode_with_a_source() {
+async fn a_creator_rejects_remote_sync_and_a_missing_document_owner() {
     let dir = temp_dir("start");
     let mut live = options(&dir);
     live["sync"] = json!({ "url": "ws://127.0.0.1:9/sync" });
@@ -422,9 +422,9 @@ async fn the_cli_checks_and_keeps_create_page() {
     );
 }
 
-// The engine sees no rooms in the options, so Blok refuses this itself.
+// In-process rooms and a stored source cannot serve the same MCP host.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_creator_with_the_hosts_own_rooms_is_refused() {
+async fn a_creator_with_rooms_and_a_stored_source_is_refused() {
     let dir = temp_dir("rooms");
     let pool = blok_jsruntime::Pool::new(blok_jsruntime::Options {
         pool_size: Some(1),
@@ -439,7 +439,7 @@ async fn a_creator_with_the_hosts_own_rooms_is_refused() {
     };
     assert_eq!(
         start_refusal(options(&dir), hooks).await,
-        "--create-page works in stored mode only: it cannot be used with live rooms (hooks.rooms)"
+        "hooks.rooms cannot be combined with sync or a document source"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

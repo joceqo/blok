@@ -466,10 +466,47 @@ func (s *Service) document(w http.ResponseWriter, r *http.Request) {
 			problem(w, 400, "Invalid sequence")
 			return
 		}
-		var version int64
-		e = s.DB.QueryRow(r.Context(), `UPDATE pages SET content=$2,version=version+1,lineage=$3,sequence=$4 WHERE id=$1 AND (lineage IS NULL OR lineage<>$3 OR sequence IS NULL OR sequence<=$4::numeric) RETURNING version`, id, raw, lineage, sequence).Scan(&version)
+		tx, e := s.DB.Begin(r.Context())
+		if e != nil {
+			problem(w, 503, "Database unavailable")
+			return
+		}
+		defer tx.Rollback(r.Context())
+		// Index writes lock the workspace before its pages. Use the same order
+		// so a title projection and an index save cannot overwrite each other.
+		var workspaceID string
+		e = tx.QueryRow(r.Context(), `SELECT w.id FROM workspaces w JOIN pages p ON p.workspace_id=w.id WHERE p.id=$1 FOR UPDATE OF w`, id).Scan(&workspaceID)
 		if e != nil {
 			problem(w, 409, "Document missing or projection stale")
+			return
+		}
+		var version int64
+		var titleChanged bool
+		// An inactive page can be renamed through index metadata alone. Only
+		// a changed document title supersedes that name; a body-only save must
+		// not restore the older title still present in the room document.
+		e = tx.QueryRow(r.Context(), `WITH previous AS (
+			SELECT id,metadata,content FROM pages WHERE id=$1 FOR UPDATE
+		) UPDATE pages p SET content=$2,version=p.version+1,lineage=$3,sequence=$4,
+			metadata=CASE WHEN jsonb_typeof($2::jsonb->'title')='string'
+				AND previous.content->'title' IS DISTINCT FROM $2::jsonb->'title'
+				THEN p.metadata || jsonb_build_object('title',coalesce(nullif(btrim($2::jsonb->>'title'),''),'Nouvelle page'))
+				ELSE p.metadata END
+		FROM previous WHERE p.id=previous.id
+			AND (p.lineage IS NULL OR p.lineage<>$3 OR p.sequence IS NULL OR p.sequence<=$4::numeric)
+		RETURNING p.version,p.metadata IS DISTINCT FROM previous.metadata`, id, raw, lineage, sequence).Scan(&version, &titleChanged)
+		if e != nil {
+			problem(w, 409, "Document missing or projection stale")
+			return
+		}
+		if titleChanged {
+			if _, e = tx.Exec(r.Context(), `UPDATE workspaces SET revision=revision+1 WHERE id=$1`, workspaceID); e != nil {
+				problem(w, 503, "Save failed")
+				return
+			}
+		}
+		if e = tx.Commit(r.Context()); e != nil {
+			problem(w, 503, "Save failed")
 			return
 		}
 		jsonOut(w, 200, map[string]string{"version": fmt.Sprint(version)})

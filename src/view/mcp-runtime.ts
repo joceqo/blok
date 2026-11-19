@@ -44,6 +44,7 @@ export const contractFlagsOf = (input: Input): McpContractFlags => {
     manifest,
     overrides,
     pageTitles: oneOf(input.pageTitles, ['off', 'page-map'] as const),
+    ...(typeof input.liveCreatesPages === 'boolean' && { liveCreatesPages: input.liveCreatesPages }),
     ...(isStringArrayRecord(input.richTextFields) && { richTextFields: input.richTextFields }),
     sync: input.sync === true,
     source: input.source === true,

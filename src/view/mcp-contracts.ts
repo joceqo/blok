@@ -17,6 +17,8 @@ export interface McpContractInput {
   pageTitles: 'off' | 'page-map';
   /** blok-mcp can create page documents, so a page block inserts in both contracts. */
   createsPages?: boolean;
+  /** Embedded rooms may differ from the stored document source. */
+  liveCreatesPages?: boolean;
   richTextFields?: Record<string, string[]>;
   /** A sync URL is set: live handles read the room's version history. */
   versionHistory?: boolean;
@@ -28,6 +30,8 @@ export interface McpContractInput {
 
 /** One mode's contract. Both modes get the same inputs; only the runtime tag differs. */
 const setupFor = (input: McpContractInput, runtime: 'node' | 'node-live'): ReturnType<typeof createHeadlessAgentSetup> => {
+  const createsPages = runtime === 'node-live' ? (input.liveCreatesPages ?? input.createsPages) : input.createsPages;
+
   // With a sync URL every handle is live (resolveMode), so the listed stored contract may name the history reads too.
   const services: HostService[] = [
     ...(input.pageTitles === 'page-map' ? ['pageBackend' as const] : []),
@@ -40,7 +44,7 @@ const setupFor = (input: McpContractInput, runtime: 'node' | 'node-live'): Retur
     overrides: input.overrides,
     services,
     runtime,
-    ...(input.createsPages === true && input.pageTitles === 'page-map' && { prepares: ['page'] }),
+    ...(createsPages === true && input.pageTitles === 'page-map' && { prepares: ['page'] }),
     // The sync server's history restores too.
     ...(input.versionHistory === true && { restores: true }),
     ...(input.uploadsFiles === true && { uploadsFiles: true }),
@@ -68,6 +72,8 @@ export const buildMcpContracts = (input: McpContractInput): McpContracts => {
 
 /** What blok-mcp was started with, as far as its contracts care. */
 export interface McpContractFlags {
+  /** Embedded room creation is explicit; stored source capability is unchanged. */
+  liveCreatesPages?: boolean;
   manifest?: BlokCustomToolsFile;
   overrides?: ManifestOverrides;
   pageTitles?: 'off' | 'page-map';
@@ -90,6 +96,7 @@ const contractInputOf = (flags: McpContractFlags): McpContractInput => {
     pageTitles,
     // Stored saves the new document through the source; live joins its room once (opener.createPage).
     createsPages: pageTitles === 'page-map' && (flags.sync || flags.source),
+    liveCreatesPages: flags.liveCreatesPages,
     richTextFields: flags.richTextFields,
     versionHistory: flags.sync,
     uploadsFiles: flags.uploads,

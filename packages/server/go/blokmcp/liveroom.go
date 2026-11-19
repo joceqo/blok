@@ -39,7 +39,7 @@ func (s *Server) roomReadOnly(ctx context.Context) (map[string]bool, error) {
 	}
 	load, cancel := context.WithTimeout(context.WithoutCancel(ctx), contractLoadTimeout)
 	defer cancel()
-	written, err := s.options.Rooms.RoomContract(load, s.agentOptions())
+	written, err := s.options.Rooms.RoomContract(load, s.agentOptions(nil))
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +62,7 @@ func (s *Server) roomReadOnly(ctx context.Context) (map[string]bool, error) {
 
 // agentOptions are the executor options the start options imply, with the
 // MCP's own live contract.
-func (s *Server) agentOptions() *blokagent.Options {
+func (s *Server) agentOptions(who *caller) *blokagent.Options {
 	options := &blokagent.Options{DisableBuiltInComments: s.options.Comments != nil && !*s.options.Comments}
 	if len(s.options.Manifest) > 0 {
 		text := string(s.options.Manifest)
@@ -71,6 +71,14 @@ func (s *Server) agentOptions() *blokagent.Options {
 	if len(s.options.Overrides) > 0 {
 		text := string(s.options.Overrides)
 		options.OverridesJSON = &text
+	}
+	options.PageTitles = s.pageMap()
+	if options.PageTitles {
+		target := roomPageTarget{server: s, who: who}
+		options.PageTarget = target
+		if s.options.CreatePage != nil {
+			options.PageTarget = roomPageCreator{roomPageTarget: target}
+		}
 	}
 	return options
 }
@@ -121,9 +129,17 @@ func (r *roomSession) run(ctx context.Context, call *callContext, batch json.Raw
 		text := string(written)
 		approval = &text
 	}
-	written, _, asked, err := agentbridge.RoomCall(ctx, r.server.options.Rooms, r.documentID, string(batch), blokActor(call.actor), r.server.agentOptions(), &mcp, approval)
+	written, _, asked, err := agentbridge.RoomCall(ctx, r.server.options.Rooms, r.documentID, string(batch), blokActor(call.actor), r.server.agentOptions(call.who), &mcp, approval)
 	if err != nil {
-		return "", roomResult{}, nil, err
+		failure, converted := r.server.agentErrorOf(ctx, err)
+		if converted != nil {
+			return "", roomResult{}, nil, converted
+		}
+		answer, marshalErr := marshal(map[string]any{"ok": false, "warnings": []any{}, "error": failure})
+		if marshalErr != nil {
+			return "", roomResult{}, nil, marshalErr
+		}
+		written = string(answer)
 	}
 	if asked != nil {
 		var ask askedQuestion
