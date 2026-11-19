@@ -10829,6 +10829,42 @@ textarea[data-blok-database-cell-input] {
   cursor: pointer;
 }
 
+/* The title value is block-level. Keep its badge on the same line instead
+   of adding a second line to every commented row. Long titles can still
+   shrink or wrap, while the icon and count retain their width. */
+[data-blok-database-table-cell][data-type="title"]:has(> [data-blok-database-comment-badge]) {
+  display: flex;
+  align-items: flex-start;
+}
+
+[data-blok-database-table-cell][data-type="title"]:has(> [data-blok-database-comment-badge]) > [data-blok-database-cell] {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+[data-blok-database-table-cell][data-type="title"]:has(> [data-blok-database-comment-badge]) > :is([data-blok-database-page-icon], [data-blok-database-page-icon-placeholder], [data-blok-database-subitem-toggle]) {
+  flex: none;
+}
+
+/* Reserve OPEN's actual width so it cannot cover a long title's count, or
+   move the count out from under the pointer when the row becomes hovered. */
+[data-blok-database-table-cell][data-type="title"]:has(> [data-blok-database-comment-badge]) > [data-blok-database-table-open] {
+  position: relative;
+  inset: auto;
+  display: inline-flex;
+  flex: none;
+  margin-inline-start: auto;
+  margin-block: -1.5px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+[data-blok-database-table-row]:hover > [data-blok-database-table-cell][data-type="title"]:has(> [data-blok-database-comment-badge]) > [data-blok-database-table-open],
+[data-blok-database-table-cell][data-blok-database-table-cell-anchor]:has(> [data-blok-database-comment-badge]) > [data-blok-database-table-open] {
+  visibility: visible;
+  pointer-events: auto;
+}
+
 [data-blok-database-comment-badge]:hover {
   background-color: var(--blok-database-hover-bg);
 }
