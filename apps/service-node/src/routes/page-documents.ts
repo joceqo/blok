@@ -8,6 +8,7 @@ import type { DbVariables } from '@/middleware/db.js';
 import { requireUser } from '@/middleware/require-user.js';
 import { assertPageAction } from '@/permissions.js';
 import type { SessionVariables } from '@/middleware/session.js';
+import { resolvePageDocumentPostBind } from '@/pages/page-document-post-bind.js';
 import { memberRole } from '@/workspaces/membership.js';
 
 type Env = { Variables: DbVariables & SessionVariables };
@@ -111,20 +112,12 @@ pageDocumentRoutes.post('/api/pages/:pageId/document', requireUser(), async (con
       .json<{ docId?: string; lineage?: string | null; sequence?: string | number | null }>()
       .catch(() => ({}));
 
-  const docId = typeof body.docId === 'string' ? body.docId.trim() : '';
-  if (docId.length === 0) {
-    return context.json({ error: 'invalid_doc_id' }, 400);
+  const resolved = resolvePageDocumentPostBind(body);
+  if (!resolved.ok) {
+    return context.json({ error: resolved.error }, 400);
   }
 
-  const lineage = typeof body.lineage === 'string' ? body.lineage : null;
-  const sequence =
-    body.sequence === null || body.sequence === undefined
-      ? null
-      : (parseSequence(body.sequence) ?? null);
-
-  if (body.sequence !== undefined && body.sequence !== null && sequence === null) {
-    return context.json({ error: 'invalid_sequence' }, 400);
-  }
+  const { docId, lineage, sequence } = resolved;
 
   const inserted = await db
     .insert(pageDocuments)
