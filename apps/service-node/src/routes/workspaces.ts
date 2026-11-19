@@ -6,7 +6,7 @@ import type { SessionVariables } from '../middleware/session.js';
 import { requireUser } from '../middleware/require-user.js';
 import { requireWorkspaceRole, roleInWorkspace } from '../http/workspace-access.js';
 import { withTransaction } from '../db/transaction.js';
-import { workspaces, workspaceMembers, users } from '../db/schema.js';
+import { workspaces, workspaceMembers } from '../db/schema.js';
 import {
   listWorkspacesForUser,
   memberRows,
@@ -14,6 +14,7 @@ import {
   memberRole,
 } from '../workspaces/membership.js';
 import { slugFromName } from '../workspaces/slug.js';
+import { findOrCreateUserByEmail } from '../auth/users.js';
 import { normalizeEmail, isValidEmail } from '../auth/codes.js';
 type Env = { Variables: DbVariables & SessionVariables };
 
@@ -144,11 +145,9 @@ workspaceRoutes.post('/api/workspaces/:workspaceId/members', requireUser(), asyn
     return context.json({ error: 'invalid_request' }, 400);
   }
 
-  const invited = (
-    await db.select().from(users).where(eq(users.email, email)).limit(1)
-  )[0];
+  const invited = await findOrCreateUserByEmail(db, email);
   if (invited === undefined) {
-    return context.json({ error: 'user_not_found' }, 404);
+    return context.json({ error: 'user_create_failed' }, 500);
   }
 
   try {

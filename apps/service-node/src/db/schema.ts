@@ -67,9 +67,9 @@ export const pages = pgTable('pages', {
 
 /** Large counters (Go uses numeric(20,0) → string in pg). */
 export const assets = pgTable('assets', {
-  id: uuid('id').primaryKey(),
+  id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').notNull(),
   byteSize: bigint('byte_size', { mode: 'bigint' }).notNull(),
   storageKey: text('storage_key').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });

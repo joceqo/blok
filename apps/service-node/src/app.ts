@@ -6,10 +6,13 @@ import type { Database } from './db/index.js';
 import { onError } from './middleware/error.js';
 import { dbMiddleware } from './middleware/db.js';
 import { sessionMiddleware } from './middleware/session.js';
+import { assetRoutes } from './routes/assets.js';
 import { adminRoutes } from './routes/admin.js';
 import { createAuthRoutes } from './routes/auth.js';
 import { createBlokRoutes } from './routes/blok.js';
+import { createDocumentsRoutes } from './routes/documents.js';
 import { healthRoutes } from './routes/health.js';
+import { instanceRoutes } from './routes/instance.js';
 import { pageRoutes } from './routes/pages.js';
 import { workspaceRoutes } from './routes/workspaces.js';
 
@@ -25,7 +28,9 @@ export function createApp(options: AppOptions): Hono {
   app.use('*', cors({ credentials: true }));
 
   app.route('/', healthRoutes);
+  app.route('/', instanceRoutes);
   app.route('/', createBlokRoutes());
+  app.route('/', createDocumentsRoutes());
 
   if (options.database !== undefined) {
     const api = new Hono();
@@ -34,6 +39,7 @@ export function createApp(options: AppOptions): Hono {
     api.route('/', createAuthRoutes());
     api.route('/', workspaceRoutes);
     api.route('/', pageRoutes);
+    api.route('/', assetRoutes);
     api.route('/', adminRoutes);
     app.route('/', api);
   } else {

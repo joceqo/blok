@@ -12,7 +12,9 @@ import {
   normalizeEmail,
   sessionExpiresAt,
 } from '../auth/codes.js';
+import { findOrCreateUserByEmail } from '../auth/users.js';
 import { authChallenges, sessions, users } from '../db/schema.js';
+import { sendAuthCode } from '../mail/smtp.js';
 import type { DbVariables } from '../middleware/db.js';
 import type { SessionVariables } from '../middleware/session.js';
 
@@ -43,11 +45,9 @@ export function createAuthRoutes(): Hono<Env> {
         set: { codeHash: hashSecret(code), expiresAt },
       });
 
-    if (process.env.AUTH_LOG_CODE === '1') {
-      console.error(`[auth] login code for ${email}: ${code}`);
-    }
+    const mail = await sendAuthCode(email, code);
 
-    const payload: Record<string, unknown> = { ok: true, delivered: false };
+    const payload: Record<string, unknown> = { ok: true, delivered: mail.sent };
     if (exposeCode) {
       payload.devCode = code;
     }
@@ -83,13 +83,7 @@ export function createAuthRoutes(): Hono<Env> {
 
     await db.delete(authChallenges).where(eq(authChallenges.email, email));
 
-    let user = (
-      await db.select().from(users).where(eq(users.email, email)).limit(1)
-    )[0];
-    if (user === undefined) {
-      const inserted = await db.insert(users).values({ email }).returning();
-      user = inserted[0];
-    }
+    const user = await findOrCreateUserByEmail(db, email);
     if (user === undefined) {
       return context.json({ error: 'user_create_failed' }, 500);
     }

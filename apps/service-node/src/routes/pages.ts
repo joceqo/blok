@@ -7,6 +7,10 @@ import { requireWorkspaceRole } from '../http/workspace-access.js';
 import type { DbVariables } from '../middleware/db.js';
 import { requireUser } from '../middleware/require-user.js';
 import type { SessionVariables } from '../middleware/session.js';
+import {
+  buildPagesTree,
+  wouldCreatePageCycle,
+} from '../pages/tree.js';
 import { assertPageAction } from '../permissions.js';
 import { memberRole } from '../workspaces/membership.js';
 
@@ -36,6 +40,32 @@ pageRoutes.get('/api/workspaces/:workspaceId/pages', requireUser(), async (conte
 
   return context.json({ pages: rows });
 });
+
+pageRoutes.get(
+  '/api/workspaces/:workspaceId/pages/tree',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const db = context.get('db');
+
+    await requireWorkspaceRole(db, context, workspaceId, 'read');
+
+    const rows = await db
+      .select({
+        id: pages.id,
+        title: pages.title,
+        parentId: pages.parentId,
+        trashed: pages.trashed,
+        updatedAt: pages.updatedAt,
+      })
+      .from(pages)
+      .where(and(eq(pages.workspaceId, workspaceId), eq(pages.trashed, false)))
+      .orderBy(asc(pages.title));
+
+    const tree = buildPagesTree(rows);
+    return context.json({ tree });
+  },
+);
 
 pageRoutes.get('/api/pages/:pageId', requireUser(), async (context) => {
   const pageId = context.req.param('pageId');
@@ -160,4 +190,107 @@ pageRoutes.patch('/api/pages/:pageId', requireUser(), async (context) => {
   }
 
   return context.json({ page });
+});
+
+pageRoutes.post('/api/pages/:pageId/move', requireUser(), async (context) => {
+  const pageId = context.req.param('pageId');
+  const db = context.get('db');
+
+  const body: { parentId?: string | null; workspaceId?: string } = await context.req
+    .json<{ parentId?: string | null; workspaceId?: string }>()
+    .catch(() => ({}));
+
+  const workspaceId =
+    typeof body.workspaceId === 'string' && body.workspaceId.length > 0
+      ? body.workspaceId
+      : undefined;
+  if (workspaceId === undefined) {
+    return context.json({ error: 'invalid_workspace' }, 400);
+  }
+
+  await requireWorkspaceRole(db, context, workspaceId, 'move');
+
+  const existing = (await db.select().from(pages).where(eq(pages.id, pageId)).limit(1))[0];
+  if (existing === undefined || existing.workspaceId !== workspaceId) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  const parentId =
+    body.parentId === null || body.parentId === undefined ? null : body.parentId;
+
+  if (parentId !== null) {
+    const parent = (
+      await db
+        .select()
+        .from(pages)
+        .where(and(eq(pages.id, parentId), eq(pages.workspaceId, workspaceId)))
+        .limit(1)
+    )[0];
+    if (parent === undefined) {
+      return context.json({ error: 'invalid_parent' }, 400);
+    }
+  }
+
+  const workspacePages = await db
+    .select({ id: pages.id, parentId: pages.parentId })
+    .from(pages)
+    .where(eq(pages.workspaceId, workspaceId));
+
+  if (wouldCreatePageCycle(pageId, parentId, workspacePages)) {
+    return context.json({ error: 'cycle' }, 400);
+  }
+
+  const updated = await db
+    .update(pages)
+    .set({ parentId, updatedAt: new Date() })
+    .where(eq(pages.id, pageId))
+    .returning();
+  const page = updated[0];
+  if (page === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  return context.json({ page });
+});
+
+pageRoutes.delete('/api/pages/:pageId', requireUser(), async (context) => {
+  const pageId = context.req.param('pageId');
+  const db = context.get('db');
+  const userId = context.get('userId');
+  if (userId === undefined) {
+    return context.json({ error: 'unauthenticated' }, 401);
+  }
+
+  const existing = (await db.select().from(pages).where(eq(pages.id, pageId)).limit(1))[0];
+  if (existing === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  const role = await memberRole(db, userId, existing.workspaceId);
+  if (role === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+  try {
+    assertPageAction(role, 'delete');
+  } catch {
+    return context.json({ error: 'permission_denied' }, 403);
+  }
+
+  const child = (
+    await db
+      .select({ id: pages.id })
+      .from(pages)
+      .where(eq(pages.parentId, pageId))
+      .limit(1)
+  )[0];
+  if (child !== undefined) {
+    return context.json({ error: 'has_children' }, 400);
+  }
+
+  const removed = await db.delete(pages).where(eq(pages.id, pageId)).returning({ id: pages.id });
+  if (removed[0] === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  return context.json({ deleted: pageId });
 });
