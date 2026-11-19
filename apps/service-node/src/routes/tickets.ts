@@ -1,9 +1,13 @@
+import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import { blokTicket } from '@/tickets/hmac.js';
+import { pageDocuments, pages } from '@/db/schema.js';
 import type { DbVariables } from '@/middleware/db.js';
 import { requireUser } from '@/middleware/require-user.js';
 import type { SessionVariables } from '@/middleware/session.js';
+import { canMintTicketForDoc } from '@/tickets/can-mint-ticket-for-doc.js';
+import { blokTicket } from '@/tickets/hmac.js';
+import { memberRole } from '@/workspaces/membership.js';
 
 type Env = { Variables: DbVariables & SessionVariables };
 
@@ -41,6 +45,34 @@ ticketRoutes.post('/api/tickets/blok', requireUser(), async (context) => {
     typeof body.ttlSeconds === 'number' && Number.isInteger(body.ttlSeconds) && body.ttlSeconds > 0
       ? body.ttlSeconds
       : undefined;
+
+  if (doc !== undefined) {
+    const db = context.get('db');
+    const binding = (
+      await db
+        .select({ workspaceId: pages.workspaceId })
+        .from(pageDocuments)
+        .innerJoin(pages, eq(pageDocuments.pageId, pages.id))
+        .where(eq(pageDocuments.docId, doc))
+        .limit(1)
+    )[0];
+
+    const role =
+      binding === undefined ? undefined : await memberRole(db, userId, binding.workspaceId);
+
+    const gate = canMintTicketForDoc({
+      hasBinding: binding !== undefined,
+      role,
+      write,
+    });
+
+    if (!gate.ok) {
+      if (gate.reason === 'permission_denied') {
+        return context.json({ error: 'permission_denied' }, 403);
+      }
+      return context.json({ error: gate.reason }, 404);
+    }
+  }
 
   try {
     const ticket = blokTicket(secret, {

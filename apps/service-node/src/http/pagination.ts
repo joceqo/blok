@@ -21,6 +21,7 @@ export function clampListLimit(raw: string | undefined): number | undefined {
 
 export function parseListPagination(
   searchParams: URLSearchParams | Record<string, string | undefined>,
+  defaultLimit: number = DEFAULT_LIST_LIMIT,
 ): ListPaginationQuery {
   const get = (key: 'limit' | 'cursor'): string | undefined => {
     if (searchParams instanceof URLSearchParams) {
@@ -37,7 +38,7 @@ export function parseListPagination(
   const paginated = hasLimit || hasCursor;
 
   const clamped = clampListLimit(rawLimit);
-  const limit = clamped ?? DEFAULT_LIST_LIMIT;
+  const limit = clamped ?? defaultLimit;
 
   return {
     paginated,

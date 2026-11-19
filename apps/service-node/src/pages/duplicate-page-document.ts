@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 /** Row fields copied from page_documents when duplicating a page. */
 export type PageDocumentBindingSource = {
   pageId: string;
@@ -16,20 +18,30 @@ export type PageDocumentBindingInsert = {
 /**
  * Builds a page_documents row for a duplicated page when the source page is bound.
  *
- * Limitation: doc_id (and lineage/sequence) are copied as-is — the duplicate does not
- * receive its own collaboration document yet; both pages reference the same doc.
+ * The duplicate gets a new `doc_id` (fresh collaboration document). Optionally records
+ * provenance in `lineage` as `fork-of:<source doc_id>` and resets `sequence` to 0.
  */
 export function duplicatePageDocumentBinding(
   source: PageDocumentBindingSource | undefined,
   newPageId: string,
+  newDocId: string = randomUUID(),
 ): PageDocumentBindingInsert | undefined {
   if (source === undefined) {
     return undefined;
   }
   return {
     pageId: newPageId,
-    docId: source.docId,
-    lineage: source.lineage,
-    sequence: source.sequence,
+    docId: newDocId,
+    lineage: `fork-of:${source.docId}`,
+    sequence: 0n,
+  };
+}
+
+export function formatPageDocumentBinding(binding: PageDocumentBindingInsert) {
+  return {
+    pageId: binding.pageId,
+    docId: binding.docId,
+    lineage: binding.lineage,
+    sequence: binding.sequence === null ? null : binding.sequence.toString(),
   };
 }

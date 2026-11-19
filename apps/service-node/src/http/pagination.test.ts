@@ -35,6 +35,14 @@ describe('parseListPagination', () => {
     });
   });
 
+  it('uses a custom default limit when limit is absent but paginated', () => {
+    expect(parseListPagination(new URLSearchParams('cursor=abc'), 50)).toEqual({
+      paginated: true,
+      limit: 50,
+      cursor: 'abc',
+    });
+  });
+
   it('parses both limit and cursor together', () => {
     expect(parseListPagination(new URLSearchParams('limit=10&cursor=xyz'))).toEqual({
       paginated: true,

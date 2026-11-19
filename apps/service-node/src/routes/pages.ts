@@ -12,7 +12,10 @@ import { requireWorkspaceRole } from '@/http/workspace-access.js';
 import type { DbVariables } from '@/middleware/db.js';
 import { requireUser } from '@/middleware/require-user.js';
 import type { SessionVariables } from '@/middleware/session.js';
-import { duplicatePageDocumentBinding } from '@/pages/duplicate-page-document.js';
+import {
+  duplicatePageDocumentBinding,
+  formatPageDocumentBinding,
+} from '@/pages/duplicate-page-document.js';
 import { duplicateTitle } from '@/pages/duplicate-title.js';
 import { PAGE_SEARCH_LIMIT, searchQueryValid } from '@/pages/search-query.js';
 import {
@@ -344,14 +347,22 @@ pageRoutes.post('/api/pages/:pageId/duplicate', requireUser(), async (context) =
       await tx.insert(pageDocuments).values(documentBinding);
     }
 
-    return createdPage;
+    return { page: createdPage, documentBinding };
   });
 
   if (created === undefined) {
     return context.json({ error: 'insert_failed' }, 500);
   }
 
-  return context.json({ page: created }, 201);
+  return context.json(
+    {
+      page: created.page,
+      ...(created.documentBinding !== undefined
+        ? { document: formatPageDocumentBinding(created.documentBinding) }
+        : {}),
+    },
+    201,
+  );
 });
 
 pageRoutes.post('/api/pages/:pageId/move', requireUser(), async (context) => {

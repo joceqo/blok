@@ -1,7 +1,8 @@
-import { and, asc, eq, gt, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lt, or } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import { users, workspaces } from '@/db/schema.js';
+import { serializeAuditEvent } from '@/audit/serialize-audit-event.js';
+import { auditEvents, users, workspaces } from '@/db/schema.js';
 import {
   decodeTimeIdCursor,
   encodeTimeIdCursor,
@@ -13,6 +14,8 @@ import { requireUser } from '@/middleware/require-user.js';
 import type { SessionVariables } from '@/middleware/session.js';
 
 type Env = { Variables: DbVariables & SessionVariables };
+
+const ADMIN_AUDIT_DEFAULT_LIMIT = 50;
 
 /**
  * Admin routes — mirror Go flat style: `GET /api/admin/users/{id}`.
@@ -96,4 +99,57 @@ adminRoutes.get('/api/admin/workspaces', async (context) => {
     .orderBy(asc(workspaces.createdAt));
 
   return context.json({ workspaces: rows });
+});
+
+adminRoutes.get('/api/admin/audit', async (context) => {
+  const db = context.get('db');
+  const pagination = parseListPagination(context.req.query(), ADMIN_AUDIT_DEFAULT_LIMIT);
+
+  const baseSelect = db
+    .select({
+      id: auditEvents.id,
+      workspaceId: auditEvents.workspaceId,
+      userId: auditEvents.userId,
+      action: auditEvents.action,
+      metadata: auditEvents.metadata,
+      createdAt: auditEvents.createdAt,
+    })
+    .from(auditEvents);
+
+  if (!pagination.paginated) {
+    const rows = await baseSelect.orderBy(desc(auditEvents.createdAt), desc(auditEvents.id));
+    return context.json({ events: rows.map((row) => serializeAuditEvent(row)) });
+  }
+
+  let cursorFilter: ReturnType<typeof and> | undefined;
+  if (pagination.cursor !== undefined) {
+    let decoded: { at: Date; id: string };
+    try {
+      decoded = decodeTimeIdCursor(pagination.cursor);
+    } catch {
+      return context.json({ error: 'invalid_cursor' }, 400);
+    }
+    cursorFilter = or(
+      lt(auditEvents.createdAt, decoded.at),
+      and(eq(auditEvents.createdAt, decoded.at), lt(auditEvents.id, decoded.id)),
+    );
+  }
+
+  const paged = cursorFilter !== undefined ? baseSelect.where(cursorFilter) : baseSelect;
+  const rows = await paged
+    .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id))
+    .limit(pagination.limit + 1);
+
+  const hasMore = rows.length > pagination.limit;
+  const eventsPage = hasMore ? rows.slice(0, pagination.limit) : rows;
+  const last = eventsPage.at(-1);
+  const nextCursor =
+    hasMore && last !== undefined
+      ? encodeTimeIdCursor(last.createdAt, last.id)
+      : undefined;
+
+  return context.json({
+    events: eventsPage.map((row) => serializeAuditEvent(row)),
+    ...(nextCursor !== undefined ? { nextCursor } : {}),
+  });
 });

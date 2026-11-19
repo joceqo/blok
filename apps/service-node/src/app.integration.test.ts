@@ -134,6 +134,12 @@ describe('createApp integration (no PostgreSQL)', () => {
     await expect(response.json()).resolves.toEqual({ error: 'database_not_configured' });
   });
 
+  it('GET /api/admin/audit returns 503 when DATABASE is not wired into createApp', async () => {
+    const response = await appWithoutDb().request('http://localhost/api/admin/audit');
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: 'database_not_configured' });
+  });
+
   it('GET /api/workspaces/:workspaceId/export returns 503 when DATABASE is not wired into createApp', async () => {
     const workspaceId = '00000000-0000-0000-0000-000000000001';
     const response = await appWithoutDb().request(

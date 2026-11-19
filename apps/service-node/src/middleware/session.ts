@@ -2,7 +2,7 @@ import { getCookie } from 'hono/cookie';
 import { createMiddleware } from 'hono/factory';
 import { and, eq, gt } from 'drizzle-orm';
 
-import { SESSION_COOKIE, hashSecret } from '@/auth/codes.js';
+import { hashSecret, sessionCookieName } from '@/auth/codes.js';
 import type { Database } from '@/db/index.js';
 import { sessions } from '@/db/schema.js';
 
@@ -14,7 +14,7 @@ export function sessionMiddleware(db: Database) {
   return createMiddleware<{ Variables: SessionVariables }>(async (context, next) => {
     let userId = process.env.DEV_USER_ID;
 
-    const token = getCookie(context, SESSION_COOKIE);
+    const token = getCookie(context, sessionCookieName());
     if (token !== undefined && token.length > 0) {
       const now = new Date();
       const row = (

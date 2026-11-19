@@ -2,11 +2,12 @@ import { Hono } from 'hono';
 import { setCookie } from 'hono/cookie';
 
 import {
-  SESSION_COOKIE,
   generateSessionToken,
   hashSecret,
   isValidEmail,
   normalizeEmail,
+  sessionCookieName,
+  sessionCookieSetOptions,
   sessionExpiresAt,
 } from '@/auth/codes.js';
 import { findOrCreateUserByEmail } from '@/auth/users.js';
@@ -73,13 +74,7 @@ export function createSetupRoutes(): Hono<Env> {
         return context.json({ error: 'session_create_failed' }, 500);
       }
 
-      setCookie(context, SESSION_COOKIE, token, {
-        httpOnly: true,
-        path: '/',
-        sameSite: 'Lax',
-        secure: process.env.COOKIE_SECURE === '1',
-        maxAge: 30 * 24 * 60 * 60,
-      });
+      setCookie(context, sessionCookieName(), token, sessionCookieSetOptions());
     }
 
     return context.json({

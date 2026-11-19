@@ -1,13 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   AUTH_CHALLENGE_RATE_LIMIT_WINDOW_MS,
+  SESSION_COOKIE,
   authChallengeRateLimitWindowStart,
   generateLoginCode,
   hashSecret,
   isAuthChallengeRateLimited,
   isValidEmail,
   normalizeEmail,
+  sessionCookieDeleteOptions,
+  sessionCookieName,
+  sessionCookieSetOptions,
   sessionExpiresAt,
   sessionRefreshExpiresAt,
 } from './codes.js';
@@ -51,6 +55,67 @@ describe('auth codes', () => {
     it('blocks at five or more recent challenges', () => {
       expect(isAuthChallengeRateLimited(5)).toBe(true);
       expect(isAuthChallengeRateLimited(6)).toBe(true);
+    });
+  });
+
+  describe('sessionCookieName', () => {
+    const prior = process.env.COOKIE_SECURE;
+
+    afterEach(() => {
+      if (prior === undefined) {
+        delete process.env.COOKIE_SECURE;
+      } else {
+        process.env.COOKIE_SECURE = prior;
+      }
+    });
+
+    it('uses the plain name when COOKIE_SECURE is not 1', () => {
+      delete process.env.COOKIE_SECURE;
+      expect(sessionCookieName()).toBe(SESSION_COOKIE);
+
+      process.env.COOKIE_SECURE = '0';
+      expect(sessionCookieName()).toBe(SESSION_COOKIE);
+    });
+
+    it('uses __Host- prefix when COOKIE_SECURE=1', () => {
+      process.env.COOKIE_SECURE = '1';
+      expect(sessionCookieName()).toBe(`__Host-${SESSION_COOKIE}`);
+    });
+  });
+
+  describe('session cookie options', () => {
+    const prior = process.env.COOKIE_SECURE;
+
+    afterEach(() => {
+      if (prior === undefined) {
+        delete process.env.COOKIE_SECURE;
+      } else {
+        process.env.COOKIE_SECURE = prior;
+      }
+    });
+
+    it('marks secure and uses path / when COOKIE_SECURE=1', () => {
+      process.env.COOKIE_SECURE = '1';
+      const setOpts = sessionCookieSetOptions();
+      expect(setOpts.secure).toBe(true);
+      expect(setOpts.path).toBe('/');
+      expect(setOpts.httpOnly).toBe(true);
+      expect(setOpts.sameSite).toBe('Lax');
+      expect(sessionCookieDeleteOptions()).toEqual({
+        path: '/',
+        secure: true,
+        sameSite: 'Lax',
+      });
+    });
+
+    it('is not secure when COOKIE_SECURE is not 1', () => {
+      delete process.env.COOKIE_SECURE;
+      expect(sessionCookieSetOptions().secure).toBe(false);
+      expect(sessionCookieDeleteOptions()).toEqual({
+        path: '/',
+        secure: false,
+        sameSite: 'Lax',
+      });
     });
   });
 

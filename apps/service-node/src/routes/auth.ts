@@ -3,7 +3,6 @@ import { Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 
 import {
-  SESSION_COOKIE,
   authChallengeRateLimitWindowStart,
   challengeExpiresAt,
   generateLoginCode,
@@ -12,6 +11,9 @@ import {
   isAuthChallengeRateLimited,
   isValidEmail,
   normalizeEmail,
+  sessionCookieDeleteOptions,
+  sessionCookieName,
+  sessionCookieSetOptions,
   sessionExpiresAt,
   sessionRefreshExpiresAt,
 } from '@/auth/codes.js';
@@ -116,30 +118,25 @@ export function createAuthRoutes(): Hono<Env> {
       return context.json({ error: 'session_create_failed' }, 500);
     }
 
-    setCookie(context, SESSION_COOKIE, token, {
-      httpOnly: true,
-      path: '/',
-      sameSite: 'Lax',
-      secure: process.env.COOKIE_SECURE === '1',
-      maxAge: 30 * 24 * 60 * 60,
-    });
+    setCookie(context, sessionCookieName(), token, sessionCookieSetOptions());
 
     return context.json({ ok: true, user: { id: user.id, email: user.email } });
   });
 
   authRoutes.post('/api/auth/logout', async (context) => {
     const db = context.get('db');
-    const token = context.req.raw.headers.get('cookie')?.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`))?.[1];
+    const cookieName = sessionCookieName();
+    const token = context.req.raw.headers.get('cookie')?.match(new RegExp(`${cookieName}=([^;]+)`))?.[1];
     if (token !== undefined) {
       await db.delete(sessions).where(eq(sessions.tokenHash, hashSecret(token)));
     }
-    deleteCookie(context, SESSION_COOKIE, { path: '/' });
+    deleteCookie(context, cookieName, sessionCookieDeleteOptions());
     return context.json({ ok: true });
   });
 
   authRoutes.post('/api/auth/refresh-session', requireUser(), async (context) => {
     const db = context.get('db');
-    const token = getCookie(context, SESSION_COOKIE);
+    const token = getCookie(context, sessionCookieName());
     if (token === undefined || token.length === 0) {
       return context.json({ error: 'unauthenticated' }, 401);
     }

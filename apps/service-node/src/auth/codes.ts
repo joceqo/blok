@@ -60,4 +60,42 @@ export function sessionRefreshExpiresAt(
   return sessionExpiresAt(now);
 }
 
+/** Base session cookie name (non-`__Host-` deployments). */
 export const SESSION_COOKIE = 'blok_session';
+
+/**
+ * Runtime session cookie name. When `COOKIE_SECURE=1`, the name is prefixed with
+ * `__Host-` so browsers treat it as host-only (requires `Secure`, `Path=/`, no `Domain`).
+ */
+export function sessionCookieName(): string {
+  return process.env.COOKIE_SECURE === '1' ? `__Host-${SESSION_COOKIE}` : SESSION_COOKIE;
+}
+
+const SESSION_COOKIE_MAX_AGE_SEC = 30 * 24 * 60 * 60;
+
+export function sessionCookieSetOptions(): {
+  httpOnly: true;
+  path: '/';
+  sameSite: 'Lax';
+  secure: boolean;
+  maxAge: number;
+} {
+  const secure = process.env.COOKIE_SECURE === '1';
+  return {
+    httpOnly: true,
+    path: '/',
+    sameSite: 'Lax',
+    secure,
+    maxAge: SESSION_COOKIE_MAX_AGE_SEC,
+  };
+}
+
+/** Options for `deleteCookie` — must match the attributes used when the cookie was set. */
+export function sessionCookieDeleteOptions(): {
+  path: '/';
+  secure: boolean;
+  sameSite: 'Lax';
+} {
+  const { path, secure, sameSite } = sessionCookieSetOptions();
+  return { path, secure, sameSite };
+}
