@@ -1826,6 +1826,21 @@
   transform: none;
 }
 
+/* Opaque sticky/frozen table cells must match the nearest row-page surface.
+   Carry that surface through nested editor interfaces, which reset the public
+   table tokens, then resolve it on each nested database wrapper. */
+[data-blok-database-drawer]:is([data-peek-mode="side"], [data-peek-mode="center"]) {
+  --_blok-database-surface: var(--blok-database-peek-bg);
+}
+
+[data-blok-database-drawer][data-peek-mode="full"] {
+  --_blok-database-surface: var(--blok-bg-primary);
+}
+
+[data-blok-database-drawer] [data-blok-database-wrapper] {
+  --blok-database-table-bg: var(--_blok-database-surface);
+}
+
 /* research/22 §10: a 12px col-resize handle on the inner edge. Hover changes nothing (r30 B24). */
 [data-blok-database-peek-resize] {
   position: absolute;
