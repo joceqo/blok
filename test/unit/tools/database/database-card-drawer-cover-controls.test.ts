@@ -408,3 +408,52 @@ describe('row page cover reposition', () => {
     drawer.destroy();
   });
 });
+
+/**
+ * A page's "Add a cover" puts one on straight away; a row's opened a picker
+ * instead, and one with no gallery at that — the host's gallery reached the
+ * drawer's options and stopped there.
+ */
+describe('adding a cover to a row', () => {
+  const GALLERY = [{ label: 'Gradients', items: [{ label: 'Dusk', url: 'https://example.com/dusk.png' }] }];
+  const bare: DatabaseRow = { id: 'row-1', position: 'a0', properties: { 'p-title': 'Card' } };
+
+  afterEach(() => {
+    PopoverRegistry.resetForTests();
+    document.body.innerHTML = '';
+  });
+
+  it('puts a cover on at once, as a page does, instead of asking first', () => {
+    const onCoverChange = vi.fn();
+    const drawer = new DatabaseCardDrawer(createOptions({ onCoverChange, coverGallery: GALLERY }));
+
+    drawer.open(bare);
+    q<HTMLButtonElement>('[data-blok-database-drawer-add-cover]')?.click();
+
+    expect(onCoverChange).toHaveBeenCalledWith('row-1', 'https://example.com/dusk.png');
+    expect(q('[data-role="audio-cover-picker"]')).toBeNull();
+    drawer.destroy();
+  });
+
+  it('shows the host gallery in the picker Change opens', () => {
+    const drawer = new DatabaseCardDrawer(createOptions({ coverGallery: GALLERY }));
+
+    drawer.open(ROW);
+    q<HTMLButtonElement>('[data-blok-database-drawer-change-cover]')?.click();
+
+    expect(q('[data-role="audio-cover-picker"] .blok-cover-gallery')).not.toBeNull();
+    drawer.destroy();
+  });
+
+  it('still asks when the host has no gallery to offer', () => {
+    const onCoverChange = vi.fn();
+    const drawer = new DatabaseCardDrawer(createOptions({ onCoverChange }));
+
+    drawer.open(bare);
+    q<HTMLButtonElement>('[data-blok-database-drawer-add-cover]')?.click();
+
+    expect(onCoverChange).not.toHaveBeenCalled();
+    expect(q('[data-role="audio-cover-picker"]')).not.toBeNull();
+    drawer.destroy();
+  });
+});

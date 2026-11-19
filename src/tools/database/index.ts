@@ -11402,6 +11402,7 @@ export class DatabaseTool implements BlockTool {
           this.rerenderView({ keepDrawer: true });
         },
         uploadCover: this.coverUploader(),
+        ...(this.config.coverGallery !== undefined ? { coverGallery: this.config.coverGallery } : {}),
         onIconChange: (rowId, icon) => {
           if (!writable()) return;
           const row = this.api.blocks.getChildren(this.dataId).find((child) => child.id === rowId);

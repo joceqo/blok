@@ -1645,7 +1645,7 @@ export class DatabaseCardDrawer {
       add.setAttribute('data-blok-database-drawer-add-cover', '');
       add.innerHTML = IconImage;
       add.append(this.label('tools.database.addCover'));
-      add.addEventListener('click', () => this.openCover(row.id, add));
+      add.addEventListener('click', () => this.addCover(row.id, add));
       head.appendChild(add);
     }
     if (this.customizable) {
@@ -1937,6 +1937,24 @@ export class DatabaseCardDrawer {
     }
   }
 
+  /**
+   * "Add a cover" puts one on straight away, the way a page's own button does,
+   * rather than asking which one first. Without a gallery to draw from there
+   * is nothing to put on, so the picker opens instead.
+   */
+  private addCover(rowId: string, button: HTMLElement): void {
+    const onCoverChange = this.onCoverChange;
+    const items = (this.coverGallery ?? []).flatMap((group) => [...group.items]);
+    const pick = items[Math.floor(Math.random() * items.length)]?.url;
+
+    if (this.readOnly || onCoverChange === undefined || pick === undefined) {
+      this.openCover(rowId, button);
+
+      return;
+    }
+    onCoverChange(rowId, pick);
+  }
+
   /** The shared cover picker (upload or link), anchored on the cover button. */
   private openCover(rowId: string, anchor: HTMLElement, trigger: HTMLElement = anchor): void {
     const onCoverChange = this.onCoverChange;
@@ -1949,6 +1967,7 @@ export class DatabaseCardDrawer {
       anchor,
       trigger,
       ...(this.i18n !== undefined ? { i18n: this.i18n } : {}),
+      ...(this.coverGallery !== undefined ? { gallery: this.coverGallery } : {}),
       onUrl: (url) => {
         if (safeImageSrc(url) === null) {
           picker.setError(this.label('tools.database.coverInvalid'));
