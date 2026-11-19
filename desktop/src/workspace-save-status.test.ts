@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createWorkspaceSaveStatus } from './workspace-save-status';
 
 const saved = { state: 'saved' as const, pendingOperations: 0, pendingBytes: 0, quarantinedOperations: 0 };
@@ -98,5 +98,75 @@ describe('workspace save feedback', () => {
     expect(status.element.textContent).toBe('Enregistrement impossible');
     status.saved('document');
     expect(status.element.textContent).toBe('Sur cet appareil');
+  });
+});
+
+
+describe('quiet workspace save indicator', () => {
+  afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+
+  it('keeps rapid edits compact without claiming they are already saved', () => {
+    vi.useFakeTimers();
+    const status = createWorkspaceSaveStatus(true, true);
+    status.connection({status: 'connected', save: saved});
+    const icon = status.element.querySelector('svg');
+    expect(icon).not.toBeNull();
+    for (let i = 0; i < 10; i++) {
+      status.connection({status: 'connected', save: pending});
+      expect(status.element.hasAttribute('data-sync-compact')).toBe(true);
+      expect(status.element.getAttribute('aria-label')).toContain('Synchronisation');
+      expect(status.element.getAttribute('aria-live')).toBe('off');
+      vi.advanceTimersByTime(120);
+      status.connection({status: 'connected', save: saved});
+      vi.advanceTimersByTime(80);
+      expect(status.element.hasAttribute('data-sync-busy')).toBe(false);
+      expect(status.element.querySelector('svg')).toBe(icon);
+    }
+  });
+
+  it('shows activity only for a sustained wait, despite repeated pending events', () => {
+    vi.useFakeTimers();
+    const status = createWorkspaceSaveStatus(true, true);
+    status.connection({status: 'connected', save: saved});
+    status.connection({status: 'connected', save: pending});
+    vi.advanceTimersByTime(600);
+    status.connection({status: 'connected', save: pending});
+    vi.advanceTimersByTime(399);
+    expect(status.element.hasAttribute('data-sync-busy')).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(status.element.hasAttribute('data-sync-busy')).toBe(true);
+    expect(status.element.hasAttribute('data-sync-compact')).toBe(true);
+    status.connection({status: 'connected', save: saved});
+    expect(status.element.hasAttribute('data-sync-busy')).toBe(false);
+  });
+
+  it('immediately exposes offline and failure text and cancels queued animation', () => {
+    vi.useFakeTimers();
+    const status = createWorkspaceSaveStatus(true, true);
+    status.connection({status: 'connected', save: pending});
+    vi.advanceTimersByTime(100);
+    status.online(false);
+    expect(status.element.hasAttribute('data-sync-compact')).toBe(false);
+    expect(status.element.textContent).toBe('Hors-ligne · non enregistré');
+    expect(status.element.getAttribute('aria-live')).toBe('polite');
+    vi.advanceTimersByTime(1200);
+    expect(status.element.hasAttribute('data-sync-busy')).toBe(false);
+    status.error(new Error('private'), 'Accès retiré');
+    expect(status.element.hasAttribute('data-sync-compact')).toBe(false);
+    expect(status.element.textContent).toBe('Accès refusé');
+  });
+
+  it('cancels delayed activity on page reset and workspace disposal', () => {
+    vi.useFakeTimers();
+    const status = createWorkspaceSaveStatus(true, true);
+    status.connection({status: 'connected', save: pending});
+    vi.advanceTimersByTime(900);
+    status.resetPage();
+    vi.advanceTimersByTime(100);
+    expect(status.element.hasAttribute('data-sync-busy')).toBe(false);
+    status.dispose();
+    vi.advanceTimersByTime(2000);
+    expect(status.element.hasAttribute('data-sync-busy')).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

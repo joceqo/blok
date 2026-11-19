@@ -1629,7 +1629,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       if (sessions.disposed) return;
       unmountRemoteAssets?.();
       rowPresentation.observer?.disconnect(); rowPresentation.dispose();
-      lifetime.abort(); unsubscribeSidebar(); memberProfiles?.destroy();
+      lifetime.abort(); saveStatus.dispose(); unsubscribeSidebar(); memberProfiles?.destroy();
       if (sessions.reconnectTimer !== undefined) window.clearInterval(sessions.reconnectTimer);
       ws.closeSearch?.(); ws.assistant.destroy();
       sessions.disposed = true; ws.selection++; ws.generation++;
