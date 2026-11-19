@@ -1647,6 +1647,16 @@ export interface DatabaseRowPages {
   };
   /** A host can copy a stable row route instead of the current peek's URL. */
   href?(rowId: string, context: { databaseId: string; pageId?: string }): string;
+  /**
+   * A row that owns a page owns its cover too: the host stores it with that
+   * page, where its page shell reads it. The row block keeps a cover only
+   * until the page exists, and `read` falling back to it loses nothing.
+   */
+  cover?: {
+    read(pageId: string): { cover?: string; position?: number } | undefined;
+    /** `cover: null` removes it with its position; an absent key stays as it was. */
+    write(pageId: string, patch: { cover?: string | null; position?: number }): void;
+  };
 }
 
 /** View fields a person can change for themselves before "Save for everyone". */

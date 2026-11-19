@@ -3419,14 +3419,26 @@ export class DatabaseTool implements BlockTool {
           templateIds.add(child.id);
         }
 
+        const pageId = typeof rowData?.pageId === 'string' && rowData.pageId.length > 0 ? rowData.pageId : undefined;
+        // A row page's cover lives with the page, which is where the host's
+        // page shell reads it: the peek must read it there too, or the two
+        // show different covers. A block cover stays visible until the page
+        // has one, so a cover set before the page existed is never lost.
+        const pageCover = pageId === undefined ? undefined : this.config.rowPages?.cover?.read(pageId);
+        const blockCover = typeof rowData?.cover === 'string' && rowData.cover !== '' ? rowData.cover : undefined;
+        const cover = pageCover?.cover ?? blockCover;
+        const coverPosition = pageCover?.cover !== undefined
+          ? pageCover.position
+          : (typeof rowData?.coverPosition === 'number' ? rowData.coverPosition : undefined);
+
         return {
           id: child.id,
           position: rowData?.position ?? '',
           properties,
-          ...(typeof rowData?.pageId === 'string' && rowData.pageId.length > 0 ? { pageId: rowData.pageId } : {}),
+          ...(pageId !== undefined ? { pageId } : {}),
           ...(typeof rowData?.icon === 'string' && rowData.icon !== '' ? { icon: rowData.icon } : {}),
-          ...(typeof rowData?.cover === 'string' && rowData.cover !== '' ? { cover: rowData.cover } : {}),
-          ...(typeof rowData?.coverPosition === 'number' ? { coverPosition: rowData.coverPosition } : {}),
+          ...(cover !== undefined ? { cover } : {}),
+          ...(coverPosition !== undefined ? { coverPosition } : {}),
           ...(typeof rowData?.fullWidth === 'boolean' ? { fullWidth: rowData.fullWidth } : {}),
           ...(rowData?.reminders !== undefined ? { reminders: rowData.reminders } : {}),
           ...(Object.keys(reactions).length > 0 ? { reactions } : {}),
@@ -9436,6 +9448,24 @@ export class DatabaseTool implements BlockTool {
     return [...this.templates];
   }
 
+  /**
+   * Sends a cover change to the row's own page when it has one. False means
+   * the row has no page yet, or the host owns no cover channel, and the row
+   * block keeps the cover as before.
+   */
+  private writeRowPageCover(rowId: string, patch: { cover?: string | null; position?: number }): boolean {
+    const channel = this.config.rowPages?.cover;
+    const pageId = this.rowOrTemplate(rowId)?.pageId;
+
+    if (channel === undefined || pageId === undefined) return false;
+    channel.write(pageId, patch);
+    this.syncRowsFromBlocks();
+    this.cardDrawer?.syncOpenRow(this.rowOrTemplate(rowId));
+    this.rerenderView({ keepDrawer: true });
+
+    return true;
+  }
+
   private rowOrTemplate(rowId: string): DatabaseRow | undefined {
     return this.model.getRow(rowId) ?? this.templates.find((template) => template.id === rowId);
   }
@@ -11351,6 +11381,7 @@ export class DatabaseTool implements BlockTool {
         onEscapeClose: (rowId) => this.dropFreshRow(rowId),
         onCoverChange: (rowId, cover) => {
           if (!writable()) return;
+          if (this.writeRowPageCover(rowId, { cover })) return;
           const row = this.api.blocks.getChildren(this.dataId).find((child) => child.id === rowId);
 
           row?.call('updateCover', { cover });
@@ -11361,6 +11392,7 @@ export class DatabaseTool implements BlockTool {
         },
         onCoverPositionChange: (rowId, position) => {
           if (!writable()) return;
+          if (this.writeRowPageCover(rowId, { position })) return;
           const row = this.api.blocks.getChildren(this.dataId).find((child) => child.id === rowId);
 
           row?.call('updateCoverPosition', { position });

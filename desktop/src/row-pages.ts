@@ -16,6 +16,7 @@ export interface DesktopRowPagesOptions {
   navigate?: DatabaseRowPages['navigate'];
   navigation?: DatabaseRowPages['navigation'];
   href?: DatabaseRowPages['href'];
+  cover?: DatabaseRowPages['cover'];
   snapshot?: DatabaseRowPages['snapshot'];
   mountEmpty?: DatabaseRowPages['mountEmpty'];
   hasDraft?: DatabaseRowPages['hasDraft'];
@@ -154,6 +155,7 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
     ...(options.navigate ? {navigate: options.navigate} : {}),
     ...(options.navigation ? {navigation: options.navigation} : {}),
     ...(options.href ? {href: options.href} : {}),
+    ...(options.cover ? {cover: options.cover} : {}),
     ...(options.snapshot ? {snapshot: options.snapshot} : {}),
     ...(options.mountEmpty ? {mountEmpty: options.mountEmpty} : {}),
     ...(options.hasDraft ? {hasDraft: options.hasDraft} : {}),

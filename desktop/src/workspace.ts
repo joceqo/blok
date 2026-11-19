@@ -49,6 +49,7 @@ import {
   welcomePageId,
 } from './welcome-seed';
 import { COVER_GALLERY, readCoverFile, createAddCoverButton, createPageCover, isPageCover, trackPageHeaderHover, type PageCover } from './cover';
+import { createRowPageCoverChannel } from './row-page-cover';
 import { mountAgentAssistant, type AgentAssistantHandle } from '@blok/agent-assistant';
 import { bindAssistantButton, createAssistantButton, createWorkspaceAssistant } from './assistant';
 import { readAiPageSource } from './ai-page-source';
@@ -891,6 +892,12 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       } : {}),
       navigation: hostedRowNavigation(id),
       href: (rowId, context) => rowPageUrl(pageUrl(id), rowId, context.databaseId),
+      cover: createRowPageCoverChannel({
+        page: pageId => ws.index?.pages.find(item => item.id === pageId),
+        readOnly,
+        save: saveManifest,
+        refresh: pageId => { if (ws.currentId === pageId) ws.refreshPagePresentation?.(); },
+      }),
       navigate: (rowId, context) => {
         const requestedFrom = location.href;
         const requestedRoute = routeRevision;
