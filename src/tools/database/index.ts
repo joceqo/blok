@@ -14280,6 +14280,21 @@ export class DatabaseTool implements BlockTool {
     const scrollSelector = '[data-blok-database-board], [data-blok-database-table-scroller]';
     const oldBoardArea = this.boardContainer.querySelector<HTMLElement>(scrollSelector);
     const savedScrollLeft = oldBoardArea?.scrollLeft ?? 0;
+    // WebKit can reset an ancestor scrollport when the table beneath an open
+    // peek is replaced. Keep the host's place in the same task, before paint;
+    // a delayed restore would also undo a user's subsequent scroll.
+    const parentScroll: Array<{ element: HTMLElement; top: number; left: number }> = [];
+
+    if (options.keepDrawer === true && this.cardDrawer?.isOpen === true && this.cardDrawer.openMode !== 'full') {
+      for (let element: HTMLElement | null = this.boardContainer; element !== null; element = element.parentElement) {
+        const top = element.scrollTop;
+        const left = element.scrollLeft;
+
+        if (top !== 0 || left !== 0) {
+          parentScroll.push({ element, top, left });
+        }
+      }
+    }
     const formDraft = this.view instanceof DatabaseFormView ? this.view.captureDraft() : undefined;
     const titleDraft = this.view instanceof DatabaseBoardView ? this.view.captureTitleDraft() : null;
 
@@ -14326,5 +14341,9 @@ export class DatabaseTool implements BlockTool {
     this.wireView(newBoardWrapper);
     this.controls.refresh();
     this.propertyMenu?.followLiveHeader();
+    for (const { element, top, left } of parentScroll) {
+      if (element.scrollTop !== top) element.scrollTop = top;
+      if (element.scrollLeft !== left) element.scrollLeft = left;
+    }
   }
 }
