@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, count, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
 import type { DbVariables } from '@/middleware/db.js';
@@ -6,13 +6,14 @@ import type { SessionVariables } from '@/middleware/session.js';
 import { requireUser } from '@/middleware/require-user.js';
 import { requireWorkspaceRole, roleInWorkspace } from '@/http/workspace-access.js';
 import { withTransaction } from '@/db/transaction.js';
-import { workspaces, workspaceMembers } from '@/db/schema.js';
+import { pages, workspaces, workspaceInvites, workspaceMembers } from '@/db/schema.js';
 import {
   listWorkspacesForUser,
   memberRows,
   parseWorkspaceRole,
   memberRole,
 } from '@/workspaces/membership.js';
+import { canDeleteWorkspace } from '@/workspaces/can-delete-workspace.js';
 import { validateMemberRoleChange } from '@/workspaces/member-role-change.js';
 import { slugFromName, validateWorkspaceSlug } from '@/workspaces/slug.js';
 import { findOrCreateUserByEmail } from '@/auth/users.js';
@@ -164,6 +165,37 @@ workspaceRoutes.patch('/api/workspaces/:workspaceId', requireUser(), async (cont
   } catch {
     return context.json({ error: 'slug_taken_or_failed' }, 409);
   }
+});
+
+workspaceRoutes.delete('/api/workspaces/:workspaceId', requireUser(), async (context) => {
+  const workspaceId = context.req.param('workspaceId');
+  const db = context.get('db');
+
+  const actorRole = await requireWorkspaceRole(db, context, workspaceId, 'delete');
+
+  const countRow = (
+    await db
+      .select({ value: count() })
+      .from(pages)
+      .where(eq(pages.workspaceId, workspaceId))
+  )[0];
+  const pageCount = Number(countRow?.value ?? 0);
+
+  const validation = canDeleteWorkspace({ actorRole, pageCount });
+  if (!validation.ok) {
+    if (validation.reason === 'has_content') {
+      return context.json({ error: 'has_content' }, 409);
+    }
+    return context.json({ error: 'permission_denied' }, 403);
+  }
+
+  await withTransaction(db, async (tx) => {
+    await tx.delete(workspaceInvites).where(eq(workspaceInvites.workspaceId, workspaceId));
+    await tx.delete(workspaceMembers).where(eq(workspaceMembers.workspaceId, workspaceId));
+    await tx.delete(workspaces).where(eq(workspaces.id, workspaceId));
+  });
+
+  return context.json({ ok: true });
 });
 
 workspaceRoutes.get('/api/workspaces/:workspaceId/members', requireUser(), async (context) => {

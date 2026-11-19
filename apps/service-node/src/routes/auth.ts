@@ -1,6 +1,6 @@
-import { eq, gt } from 'drizzle-orm';
+import { and, eq, gt } from 'drizzle-orm';
 import { Hono } from 'hono';
-import { deleteCookie, setCookie } from 'hono/cookie';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 
 import {
   SESSION_COOKIE,
@@ -11,12 +11,14 @@ import {
   isValidEmail,
   normalizeEmail,
   sessionExpiresAt,
+  sessionRefreshExpiresAt,
 } from '@/auth/codes.js';
 import { toUserJson } from '@/auth/serialize-user.js';
 import { findOrCreateUserByEmail } from '@/auth/users.js';
 import { authChallenges, sessions, users } from '@/db/schema.js';
 import { sendAuthCode } from '@/mail/smtp.js';
 import type { DbVariables } from '@/middleware/db.js';
+import { requireUser } from '@/middleware/require-user.js';
 import type { SessionVariables } from '@/middleware/session.js';
 
 type Env = { Variables: DbVariables & SessionVariables };
@@ -122,6 +124,36 @@ export function createAuthRoutes(): Hono<Env> {
       await db.delete(sessions).where(eq(sessions.tokenHash, hashSecret(token)));
     }
     deleteCookie(context, SESSION_COOKIE, { path: '/' });
+    return context.json({ ok: true });
+  });
+
+  authRoutes.post('/api/auth/refresh-session', requireUser(), async (context) => {
+    const db = context.get('db');
+    const token = getCookie(context, SESSION_COOKIE);
+    if (token === undefined || token.length === 0) {
+      return context.json({ error: 'unauthenticated' }, 401);
+    }
+
+    const now = new Date();
+    const row = (
+      await db
+        .select({ expiresAt: sessions.expiresAt })
+        .from(sessions)
+        .where(and(eq(sessions.tokenHash, hashSecret(token)), gt(sessions.expiresAt, now)))
+        .limit(1)
+    )[0];
+    if (row === undefined) {
+      return context.json({ error: 'unauthenticated' }, 401);
+    }
+
+    const nextExpiresAt = sessionRefreshExpiresAt(row.expiresAt, now.getTime());
+    if (nextExpiresAt !== undefined) {
+      await db
+        .update(sessions)
+        .set({ expiresAt: nextExpiresAt })
+        .where(eq(sessions.tokenHash, hashSecret(token)));
+    }
+
     return context.json({ ok: true });
   });
 

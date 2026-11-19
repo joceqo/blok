@@ -33,4 +33,16 @@ export function sessionExpiresAt(now = Date.now()): Date {
   return new Date(now + SESSION_TTL_MS);
 }
 
+/** Extend session expiry when more than half the standard session TTL remains; otherwise leave unchanged. */
+export function sessionRefreshExpiresAt(
+  currentExpiresAt: Date,
+  now = Date.now(),
+): Date | undefined {
+  const remainingMs = currentExpiresAt.getTime() - now;
+  if (remainingMs <= SESSION_TTL_MS / 2) {
+    return undefined;
+  }
+  return sessionExpiresAt(now);
+}
+
 export const SESSION_COOKIE = 'blok_session';

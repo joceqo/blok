@@ -6,6 +6,7 @@ import { storybookTest } from '@storybook/addon-vitest/vitest-plugin';
 import { playwright } from '@vitest/browser-playwright';
 import angular from '@analogjs/vite-plugin-angular';
 import { enableJsdomWebStorageGuard } from './scripts/jsdom-webstorage-guard.mjs';
+import { vitestServiceNodeAlias } from './scripts/vitest-service-node-alias.mjs';
 const dirname = typeof __dirname !== 'undefined' ? __dirname : path.dirname(fileURLToPath(import.meta.url));
 const cliPkg = JSON.parse(readFileSync(path.resolve(dirname, 'packages/cli/package.json'), 'utf-8')) as { version: string };
 
@@ -27,6 +28,7 @@ const DIST_TESTS = [
 
 // More info at: https://storybook.js.org/docs/next/writing-tests/integrations/vitest-addon
 export default defineConfig({
+  plugins: [vitestServiceNodeAlias()],
   define: {
     __CLI_VERSION__: JSON.stringify(cliPkg.version),
     // Vue runtime feature flags. The Vue adapter is authored as render functions
