@@ -572,6 +572,7 @@ func (s *Service) document(w http.ResponseWriter, r *http.Request) {
 			problem(w, 409, "Document missing or projection stale")
 			return
 		}
+		projection, guardProjection := r.Context().Value(placementProjectionKey{}).(placementProjection)
 		var version int64
 		var titleChanged bool
 		// An inactive page can be renamed through index metadata alone. Only
@@ -586,7 +587,8 @@ func (s *Service) document(w http.ResponseWriter, r *http.Request) {
 				ELSE p.metadata END
 		FROM previous WHERE p.id=previous.id
 			AND (p.lineage IS NULL OR p.lineage<>$3 OR p.sequence IS NULL OR p.sequence<=$4::numeric)
-		RETURNING p.version,p.metadata IS DISTINCT FROM previous.metadata`, id, raw, lineage, sequence).Scan(&version, &titleChanged)
+			AND (NOT $5::boolean OR p.lineage IS NOT DISTINCT FROM $6::text OR p.lineage=$3)
+		RETURNING p.version,p.metadata IS DISTINCT FROM previous.metadata`, id, raw, lineage, sequence, guardProjection, projection.PreviousLineage).Scan(&version, &titleChanged)
 		if e != nil {
 			problem(w, 409, "Document missing or projection stale")
 			return

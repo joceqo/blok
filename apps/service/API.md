@@ -63,24 +63,68 @@ The field does not replace the document `parentId` used for inheritance and move
 
 ## Hosted MCP
 
-`blok_move_page` accepts `{workspace, pageId, parentId}` to reparent an existing
-page with its subtree. `parentId:null` moves it to the root of its current
-teamspace (or workspace). An optional `teamspaceId`, only with a null parent,
-explicitly chooses another teamspace or the workspace root (`null`). The REST
-equivalent is `POST /api/workspaces/:slug/pages/:pageID/move` with the same body
-minus workspace/pageId. Both return `{id, parentId, teamspaceId, revision}`.
+`blok_move_page` accepts `{workspace, pageId, parentId, parentRowId?}` to
+reparent an existing page with its subtree. `parentId:null` moves it to the root
+of its current teamspace (or workspace). An optional `teamspaceId`, only with a
+null parent, explicitly chooses another teamspace or the workspace root (`null`).
+The REST equivalent is `POST /api/workspaces/:slug/pages/:pageID/move` with the
+same body minus workspace/pageId. Both return
+`{id, parentId, teamspaceId, revision}`.
 
-Moving requires full access to every page in the subtree and edit access to the
-new parent. Crossing teamspace boundaries also requires source teamspace
-management and destination teamspace write access. IDs, content, history, files,
-explicit visibility and direct shares are preserved. Inherited permissions follow
-the new parent; the mover retains full access through a direct share. Detaching
-an inherited page freezes its former effective visibility rather than publishing
-private content. The page is appended after existing siblings. Cycles, missing
-or trashed destinations, and trees deeper than 64 pages are refused atomically.
-The workspace lock serializes moves with index and permission writes; a changed
-move increments the revision and rechecks live sessions. Identical retries do
-not change the revision. No page is recreated and no full index is submitted.
+To use a database row as parent, pass its containing document as `parentId` and
+the row block ID as `parentRowId`. Row IDs are document-local and can repeat in
+copied documents; the service never searches the workspace for a bare row ID.
+An inline row receives the actual `page` block as a child. For a migrated row,
+the service checks the two-way `row.data.pageId` / `rowBodyOf` link and puts the
+page block at the separate body's root. Passing that body's document ID directly
+as `parentId` has the same meaning. A hidden row-body document cannot itself be
+moved away from its owner; move its child pages instead.
+
+Moving requires full access to every page in the subtree, edit access to the new
+parent, and edit access to the former containing document when removing its page
+pointer. Full access to a child alone does not authorize edits to its parent.
+Crossing teamspace boundaries also requires source teamspace management and
+destination teamspace write access. IDs, document content, history, files,
+visibility and direct shares are preserved. The page pointer's data, icon,
+tunes and stamps are carried across; ambiguous multiple owning pointers are
+refused. Inherited permissions follow the new parent, with full access retained
+for the mover. Detaching an inherited page keeps its former effective visibility.
+Cycles, missing/trashed destinations and depth over 64 pages are rejected.
+
+Metadata changes are transactional. Moving a structural pointer between live
+collaboration documents is a **durable, resumable copy-before-remove operation**,
+not a transaction spanning rooms and PostgreSQL. The service saves a plan before
+editing, uses `/state` heads with `If-Match` and stable edit idempotency keys,
+verifies the copied pointer before removing the original, and checks that removal
+actually took effect. It preserves complete source pointer snapshots in the plan.
+Changes to either pointer or a document's lineage stop the operation for review.
+An interrupted operation may temporarily retain both locations; the original page
+document is never recreated or deleted. Repeat the same move to resume. A different
+destination is refused while that page has an unfinished placement.
+
+Recovery errors retain safe fields under `error.details`: `pageId`, `operationId`,
+`requestId`, `parentId`, `parentRowId`, and `retry` when available. Do not blindly
+retry a changed-pointer/lineage conflict. The live room is authoritative; successful
+placement publishes its exact durable snapshot through the existing guarded
+projection handler before returning, so the next index/list resolves row ancestry
+immediately. Ordinary journal edits still use normal checkpoint projection.
+The final metadata transaction increments the workspace revision once and rechecks
+live access. A repeated completed move is a no-op. No full index is submitted.
+
+`blok_create_page` accepts
+`{workspace, title, parentId?, parentRowId?, requestId?, teamspaceId?, visibility?}`.
+The row parent rules above apply. Use a unique `requestId` (up to 200 characters)
+when a retry must not create another page: the receipt is bound to the actor,
+workspace and exact creation arguments. Replaying it returns the same page and
+creation receipt, even after a subsequent move; changed arguments are rejected.
+If placement is interrupted after document creation, the error identifies the
+retained `pageId`. Retry creation with the same `requestId`, or resume with
+`blok_move_page` and that page ID/destination. Without `requestId`, repeating a
+creation is a new creation, so use the returned page ID for recovery.
+
+Service schema version 13 adds `page_placements` and `page_create_requests`.
+Normal service startup applies these additive tables; there is no row-body data
+migration to run for this API change.
 
 `blok_delete_page` accepts `{workspace, pageId}` and moves the page and all its
 descendants to the workspace trash. It returns `{id, trashed:true, affectedPages,
@@ -108,7 +152,7 @@ rights return 403. MCP tokens remain confined to `/mcp`.
 - DELETE `/api/mcp/tokens/:id` → `{ok:true}`. Only the owner may revoke a token; revocation takes effect on the next MCP request.
 - POST `/api/mcp/tokens/:id/rotate` → `{id,label,token,createdAt,expiresAt}`. Atomically invalidates the old token and returns a fresh one, shown only once. Only the owner may rotate it.
 
-Alongside Blok's document editing tools, the host serves `blok_list_workspaces`, `blok_list_pages` (`{workspace:slug}`), and `blok_create_page` (`{workspace:slug,title,parentId?:pageID}`). Creating a page updates its workspace index and creates an empty document atomically. Viewers may list/read but cannot create or edit; nonmembers cannot list pages. `blok_list_pages` and the document editing tools apply page permissions: a token carries its owner's access and nothing more. The MCP endpoint is served by the existing Go app and reverse proxy, with no additional published port.
+Alongside Blok's document editing tools, the host serves `blok_list_workspaces`, `blok_list_pages` (`{workspace:slug}`), and `blok_create_page` (arguments and row-placement recovery described above). Creating the document and its creation receipt is atomic; attaching its page block to a row uses the durable placement protocol. Viewers may list/read but cannot create or edit; nonmembers cannot list pages. `blok_list_pages` and the document editing tools apply page permissions: a token carries its owner's access and nothing more. The MCP endpoint is served by the existing Go app and reverse proxy, with no additional published port.
 
 ### MCP administration and custom emoji
 

@@ -59,7 +59,7 @@ func (s *Service) initMCP() error {
 		server.AddTool(&mcp.Tool{Name: "blok_list_workspaces", Description: "List workspaces available to the signed-in user.", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)}, s.mcpListWorkspaces)
 		server.AddTool(&mcp.Tool{Name: "blok_list_teamspaces", Description: "List real closed teamspaces nested in a workspace; metadata does not grant content access.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"includeArchived":{"type":"boolean"}},"required":["workspace"]}`)}, s.mcpListTeamspaces)
 		server.AddTool(&mcp.Tool{Name: "blok_list_pages", Description: "List pages in a workspace by slug. parentId is the containing document used for storage and access. When present, location.blockId in location.blockDocumentId identifies the structural parent; location.documentId is the visible routing root and location.rows is its authorized row breadcrumb path; location.rows carries each rowId, databaseId and documentId. It is a read-only projection, not a destination argument for create/move.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"}},"required":["workspace"]}`)}, s.mcpListPages)
-		server.AddTool(&mcp.Tool{Name: "blok_create_page", Description: "Create a page. Root pages are private by default; with teamspaceId roots are shared only with that teamspace. Children inherit parent access. Use visibility=workspace explicitly for a shared root. Members and admins may create pages.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"title":{"type":"string"},"parentId":{"type":"string"},"teamspaceId":{"type":"string"},"visibility":{"type":"string","enum":["private","workspace","inherit"]}},"required":["workspace","title"]}`)}, s.mcpCreatePage)
+		server.AddTool(&mcp.Tool{Name: "blok_create_page", Description: "Create a page. To create inside a database row, use parentId=containing document ID and parentRowId=row block ID. Migrated body document IDs also work directly. Use a stable requestId to retry safely without creating duplicates; changed arguments with the same key are refused. An interrupted placement returns recovery details with pageId. Root pages are private by default; with teamspaceId roots are shared only with that teamspace. Children inherit parent access. Use visibility=workspace explicitly for a shared root. Members and admins may create pages.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"title":{"type":"string"},"parentId":{"type":"string"},"parentRowId":{"type":"string","minLength":1,"maxLength":256},"requestId":{"type":"string","minLength":1,"maxLength":200},"teamspaceId":{"type":"string"},"visibility":{"type":"string","enum":["private","workspace","inherit"]}},"required":["workspace","title"]}`)}, s.mcpCreatePage)
 		server.AddTool(&mcp.Tool{Name: "blok_upload_image", Description: "Upload a private workspace image (PNG, JPEG, GIF or WebP, up to 5 MiB). Returns a persistent /files/ URL to use in document content. Requires workspace write access.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"dataUrl":{"type":"string"}},"required":["workspace","dataUrl"],"additionalProperties":false}`)}, s.mcpUploadImage)
 		if err := attached.Attach(server); err != nil {
 			return nil
@@ -370,17 +370,41 @@ func (s *Service) mcpListPages(ctx context.Context, req *mcp.CallToolRequest) (*
 }
 
 func (s *Service) mcpCreatePage(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var args struct{ Workspace, Title, ParentID, TeamspaceID, Visibility string }
+	var args struct{ Workspace, Title, ParentID, ParentRowID, RequestID, TeamspaceID, Visibility string }
 	if json.Unmarshal(req.Params.Arguments, &args) != nil {
-		return mcpError("Invalid arguments"), nil
+		return managementFailure(400, "Invalid arguments"), nil
 	}
 	ws, ok := s.mcpWorkspace(ctx, args.Workspace)
 	if !ok {
-		return mcpError("Workspace unavailable"), nil
+		return managementFailure(404, "Workspace unavailable"), nil
 	}
-	out, e := s.createScopedPage(ctx, ctx.Value(mcpUserKey{}).(identity), ws, args.Title, args.ParentID, args.TeamspaceID, args.Visibility)
+	u := ctx.Value(mcpUserKey{}).(identity)
+	if len(args.ParentRowID) > 256 || len(args.RequestID) > 200 {
+		return managementFailure(400, "Invalid parentRowId or requestId"), nil
+	}
+	target, e := s.resolvePlacementTarget(ctx, u, ws.ID, args.ParentID, args.ParentRowID)
 	if e != nil {
-		return mcpError(e.Error()), nil
+		return managementFailure(placementStatus(e), e.Error()), nil
+	}
+	options := pageCreatePlacement{RequestID: args.RequestID, Digest: placementRequestDigest(args.Title, args.ParentID, args.ParentRowID, args.TeamspaceID, args.Visibility)}
+	if target.Row != "" {
+		options.Target = &target
+		options.Plan, e = s.planPlacement(ctx, u, "", "", args.Title, target)
+		if e != nil {
+			return managementFailure(placementStatus(e), e.Error()), nil
+		}
+	}
+	out, e := s.createScopedPage(ctx, u, ws, args.Title, target.Document, args.TeamspaceID, args.Visibility, options)
+	if e != nil {
+		return managementFailure(placementStatus(e), e.Error()), nil
+	}
+	out, e = s.finishCreatedPlacement(ctx, u, ws, out)
+	if e != nil {
+		details := map[string]any{"pageId": out.ID, "requestId": args.RequestID, "parentId": args.ParentID, "parentRowId": args.ParentRowID, "retry": "Repeat create with the same requestId, or blok_move_page with this pageId and destination"}
+		if plan, loadErr := s.loadPlacement(ctx, s.DB, out.ID); loadErr == nil && plan != nil {
+			details["operationId"] = plan.Operation
+		}
+		return managementFailureWithDetails(placementStatus(e), e.Error(), details), nil
 	}
 	return mcpText(out), nil
 }

@@ -89,6 +89,7 @@ func (s *Service) managementOperations() []managementOperation {
 	pageRequired := []string{"workspace", "pageId"}
 	move := managementFields("workspace", "pageId")
 	move["parentId"] = map[string]any{"type": []string{"string", "null"}, "minLength": 1, "description": "Destination parent page ID, or null to move to the root of the current teamspace/workspace."}
+	move["parentRowId"] = map[string]any{"type": "string", "minLength": 1, "maxLength": 256, "description": "Optional database row block ID inside parentId; the document ID is required because row IDs may repeat across copied documents."}
 	move["teamspaceId"] = map[string]any{"type": []string{"string", "null"}, "minLength": 1, "description": "Optional, only with parentId:null: destination teamspace ID, or null for the workspace root. Omit to keep the current teamspace."}
 	visibility := managementFields("workspace", "pageId")
 	visibility["visibility"] = enumField("private", "workspace", "inherit")
@@ -98,7 +99,7 @@ func (s *Service) managementOperations() []managementOperation {
 	emoji["dataUrl"] = map[string]any{"type": "string", "description": "PNG/JPEG/GIF/WebP base64 data URL, up to 2 MiB. Provide this OR url."}
 	emoji["url"] = map[string]any{"type": "string", "description": "An existing /files/ image owned by this workspace (not a private page asset), or an external HTTPS image URL. Never store an expiring signed URL."}
 	return []managementOperation{
-		{"blok_move_page", "Move an existing page and its subtree without recreating content or changing IDs. Requires full access to every page in the subtree and edit access to the destination parent. Preserves explicit visibility and direct shares; inherited access follows the destination, with full access retained for the mover. Cross-teamspace moves also require source teamspace management and destination membership/write access. Rejects cycles, trashed destinations and excessive depth. Returns id, parentId, teamspaceId and revision; repeating the same move is a no-op.", "POST", s.workspaceResource, map[string]string{"resource": "pages", "action": "move"}, pageParams, move, []string{"workspace", "pageId", "parentId"}, false},
+		{"blok_move_page", "Move an existing page and its subtree without recreating content or changing IDs. To nest inside a database row, use parentId=containing document ID plus parentRowId=row block ID; a migrated body document ID also works directly. Moves actual page pointers with durable copy-before-remove recovery, and refuses moving a row body away from its owner. Source container edit access is required to remove its pointer. Repeat the same destination after interruption; recovery details identify the retained page. Requires full access to every page in the subtree and edit access to the destination parent. Preserves explicit visibility and direct shares; inherited access follows the destination, with full access retained for the mover. Cross-teamspace moves also require source teamspace management and destination membership/write access. Rejects cycles, trashed destinations and excessive depth. Returns id, parentId, teamspaceId and revision; repeating the same move is a no-op.", "POST", s.workspaceResource, map[string]string{"resource": "pages", "action": "move"}, pageParams, move, []string{"workspace", "pageId", "parentId"}, false},
 		{"blok_list_custom_emojis", "List this workspace's custom emoji registry: IDs, names and persistent image URLs. Members including viewers may read it. Uploaded images remain private.", "GET", s.workspaceResource, map[string]string{"resource": "emojis"}, wsParams, managementFields("workspace"), wsRequired, false},
 		{"blok_create_custom_emoji", "Register a named custom emoji from dataUrl OR url. Requires workspace member/admin. Names normalize to lowercase; duplicates conflict. Uploads up to 2 MiB; no SVG. Returns a permanent URL for page.icon={type:'image',url}; 401 on an unauthenticated fetch is not proof of rendering.", "POST", s.workspaceResource, map[string]string{"resource": "emojis"}, wsParams, emoji, []string{"workspace", "name"}, false},
 		{"blok_rename_custom_emoji", "Rename an emoji registry entry while preserving its ID, image and existing page icons. Requires its creator with workspace edit rights or a workspace admin.", "PATCH", s.workspaceResource, map[string]string{"resource": "emojis"}, map[string]string{"workspace": "slug", "emojiId": "id"}, managementFields("workspace", "emojiId", "name"), []string{"workspace", "emojiId", "name"}, false},
@@ -252,22 +253,36 @@ func (s *Service) callManagement(ctx context.Context, req *mcp.CallToolRequest, 
 	}
 	if response.status >= 400 {
 		message := http.StatusText(response.status)
-		if object, ok := out.(map[string]any); ok {
-			if detail, ok := object["error"].(string); ok {
-				message = detail
-			}
+		object, _ := out.(map[string]any)
+		if detail, ok := object["error"].(string); ok {
+			message = detail
 		}
-		return managementFailure(response.status, message)
+		return managementFailureWithDetails(response.status, message, object)
 	}
 	return mcpText(out)
 }
 
 func managementFailure(status int, message string) *mcp.CallToolResult {
+	return managementFailureWithDetails(status, message, nil)
+}
+
+// Only public placement recovery fields may cross the HTTP-to-MCP bridge.
+func managementFailureWithDetails(status int, message string, details map[string]any) *mcp.CallToolResult {
 	code := map[int]string{400: "INVALID_ARGUMENT", 401: "UNAUTHENTICATED", 403: "FORBIDDEN", 404: "NOT_FOUND", 409: "CONFLICT", 429: "RATE_LIMITED"}[status]
 	if code == "" {
 		code = "SERVICE_ERROR"
 	}
-	result := mcpText(map[string]any{"status": status, "error": map[string]string{"code": code, "message": message}})
+	publicDetails := map[string]any{}
+	for _, key := range []string{"pageId", "operationId", "requestId", "retry", "parentId", "parentRowId"} {
+		if value, ok := details[key]; ok {
+			publicDetails[key] = value
+		}
+	}
+	failure := map[string]any{"code": code, "message": message}
+	if len(publicDetails) > 0 {
+		failure["details"] = publicDetails
+	}
+	result := mcpText(map[string]any{"status": status, "error": failure})
 	result.IsError = true
 	return result
 }

@@ -87,9 +87,9 @@ function editorAt(index: number) {
   if (!editor) throw new Error(`Missing editor ${index}`);
   return editor;
 }
-async function go(id: string): Promise<void> {
+async function go(id: string, title = id): Promise<void> {
   history.replaceState(null, '', `/?page=${id}`); workspace.onRoute();
-  await vi.waitFor(() => expect(document.title).toBe(id));
+  await vi.waitFor(() => expect(document.title).toBe(title));
 }
 it('reuses a rendered page on A → B → A, with only the visible editor accepting input', async () => {
   const first = editorAt(0);
@@ -586,4 +586,42 @@ it('creates subpages in the physical row body document, preserving explicit pare
   await config?.create?.({pageId:'child3',title:'Child 3',parentId:'a'});
   expect(server.writes.at(-1)?.pages.filter(page => page.id.startsWith('child')).map(page => [page.id,page.parentId])).toEqual([['child1','body1'],['child2','body1'],['child3','a']]);
   mounted?.destroy();
+});
+
+it('follows an MCP reparent between rows on the open page without rebuilding its editor', async () => {
+  const parent = (rowId: string, title: string) => ({documentId:'a',blockDocumentId:'a',blockId:rowId,rows:[{documentId:'a',rowId,databaseId:'db',title}]});
+  const server = await startRemote(location.origin, [
+    {id:'a',title:'a',parentId:null},
+    {id:'b',title:'Commits',parentId:'a',location:parent('row1','Sprint #1')},
+  ]);
+  await go('b', 'Commits');
+  const editor = editorAt(1);
+  const crumbs = () => [...document.querySelectorAll('[data-desktop-page-breadcrumb-item]')].map(element => element.textContent);
+  expect(crumbs()).toEqual(['a','Sprint #1','Commits']);
+  server.index.pages = server.index.pages.map(page => page.id === 'b' ? {...page,location:parent('row2','Sprint #2')} : page);
+  window.dispatchEvent(new Event('focus'));
+  await vi.waitFor(() => expect(crumbs()).toEqual(['a','Sprint #2','Commits']));
+  expect(editor.destroyed).toBe(false);
+  expect(editor.holder.isConnected).toBe(true);
+  expect(server.writes).toEqual([]);
+  document.querySelector<HTMLButtonElement>('[data-desktop-page-breadcrumb-item][data-page-id="row2"] button')?.click();
+  await vi.waitFor(() => expect(new URL(location.href).searchParams.get('row')).toBe('row2'));
+  expect(new URL(location.href).searchParams.get('page')).toBe('a');
+});
+
+it('clears row ancestry after an MCP move to the workspace root, including a warm reopen', async () => {
+  const server = await startRemote(location.origin, [
+    {id:'a',title:'a',parentId:null},
+    {id:'b',title:'Commits',parentId:'a',location:{documentId:'a',blockId:'row1',rows:[{documentId:'a',rowId:'row1',databaseId:'db',title:'Sprint #1'}]}},
+  ]);
+  await go('b', 'Commits');
+  const crumbs = () => [...document.querySelectorAll('[data-desktop-page-breadcrumb-item]')].map(element => element.textContent);
+  expect(crumbs()).toEqual(['a','Sprint #1','Commits']);
+  server.index.pages = server.index.pages.map(page => page.id === 'b' ? {id:'b',title:'Commits',parentId:null} : page);
+  window.dispatchEvent(new Event('focus'));
+  await vi.waitFor(() => expect(crumbs()).toEqual(['Commits']));
+  await go('a');
+  await go('b', 'Commits');
+  expect(crumbs()).toEqual(['Commits']);
+  expect(server.writes).toEqual([]);
 });

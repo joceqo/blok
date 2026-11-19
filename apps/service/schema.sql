@@ -171,3 +171,24 @@ CREATE INDEX IF NOT EXISTS mcp_debug_traces_user_date ON mcp_debug_traces(user_i
 INSERT INTO schema_migrations(version) VALUES(11) ON CONFLICT DO NOTHING;
 
 INSERT INTO schema_migrations(version) VALUES(12) ON CONFLICT DO NOTHING;
+
+-- Durable copy-before-remove page pointer placement. A retry keeps the same
+-- pointer/operation IDs and never silently abandons an interrupted move.
+CREATE TABLE IF NOT EXISTS page_placements (
+  page_id text PRIMARY KEY REFERENCES pages(id) ON DELETE CASCADE,
+  plan jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS page_create_requests (
+  workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  request_id text NOT NULL,
+  digest text NOT NULL,
+  page_id text NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+  result jsonb NOT NULL,
+  operation_id text NOT NULL,
+  complete boolean NOT NULL DEFAULT false,
+  PRIMARY KEY(workspace_id,user_id,request_id)
+);
+
+INSERT INTO schema_migrations(version) VALUES(13) ON CONFLICT DO NOTHING;

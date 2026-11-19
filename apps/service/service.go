@@ -364,6 +364,16 @@ func (s *Service) CanWriteDocument(ctx context.Context, u blokserver.User, doc s
 	return s.authorizeDoc(ctx, documentSession(ctx, u.ID, doc), doc, true)
 }
 func (s *Service) authorizeDoc(ctx context.Context, session, doc string, write bool) (bool, error) {
+	// Only the service's in-process placement adapter can set this context.
+	// Recheck the actual browser session or MCP token on every room request.
+	if principal, ok := ctx.Value(placementIdentityKey{}).(identity); ok && principal.ID != "" && principal.Session == session {
+		var valid bool
+		err := s.DB.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE id=$1 AND user_id=$2 AND expires_at>now()) OR EXISTS(SELECT 1 FROM mcp_tokens WHERE id=$1 AND user_id=$2 AND expires_at>now())`, session, principal.ID).Scan(&valid)
+		if err != nil || !valid {
+			return false, err
+		}
+		return s.authorizeMCPDocument(ctx, principal.ID, doc, write)
+	}
 	// La corbeille ferme le temps réel sans être une permission : une page mise à
 	// la corbeille garde ses partages, elle n'est simplement plus éditable.
 	var trashed bool

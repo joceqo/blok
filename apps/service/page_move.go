@@ -1,15 +1,20 @@
 package cloud
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 )
 
-// Reparent one existing page atomically; descendants keep their IDs and links.
+// Reparent metadata transactionally; structural pointers use a resumable
+// copy-before-remove placement. Descendants keep their IDs and documents.
 func (s *Service) movePage(w http.ResponseWriter, r *http.Request, u identity, ws Workspace) {
 	var in struct {
 		ParentID    json.RawMessage `json:"parentId"`
-		TeamspaceID json.RawMessage `json:"teamspaceId"`
+		ParentRowID *string         `json:"parentRowId,omitempty"`
+		TeamspaceID json.RawMessage `json:"teamspaceId,omitempty"`
 	}
 	if !body(w, r, &in) {
 		return
@@ -24,6 +29,46 @@ func (s *Service) movePage(w http.ResponseWriter, r *http.Request, u identity, w
 		return
 	}
 	ctx := r.Context()
+	requestedParent, requestedRow := "", ""
+	if parent != nil {
+		requestedParent = *parent
+	}
+	if in.ParentRowID != nil {
+		if *in.ParentRowID == "" || len(*in.ParentRowID) > 256 || parent == nil {
+			problem(w, 400, "parentRowId requires its containing parentId")
+			return
+		}
+		requestedRow = *in.ParentRowID
+	}
+	target, err := s.resolvePlacementTarget(ctx, u, ws.ID, requestedParent, requestedRow)
+	if err != nil {
+		problem(w, placementStatus(err), err.Error())
+		return
+	}
+	if target.Document != "" {
+		parent = &target.Document
+	}
+	id := r.PathValue("id")
+	// Room snapshots can flush projections, which take the workspace lock.
+	// Prepare outside that lock, then bind the plan to unchanged metadata below.
+	priorPlan, planReadErr := s.loadPlacement(ctx, s.DB, id)
+	var preparedPlan *pagePlacement
+	var preparedSource string
+	var prepareErr error
+	if planReadErr == nil && (priorPlan == nil || priorPlan.Complete) {
+		granted, e := s.effectiveLevel(ctx, s.DB, u.ID, id)
+		if e != nil {
+			prepareErr = e
+		} else if granted >= levelFull {
+			var title string
+			e = s.DB.QueryRow(ctx, `SELECT coalesce(metadata->>'parentId',''),coalesce(metadata->>'title','') FROM pages WHERE id=$1 AND workspace_id=$2 AND NOT deleted AND NOT trashed`, id, ws.ID).Scan(&preparedSource, &title)
+			if e == nil {
+				preparedPlan, prepareErr = s.planPlacement(ctx, u, id, preparedSource, title, target)
+			} else {
+				prepareErr = e
+			}
+		}
+	}
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
 		problem(w, 503, "Database unavailable")
@@ -40,7 +85,6 @@ func (s *Service) movePage(w http.ResponseWriter, r *http.Request, u identity, w
 		problem(w, 500, "Move failed")
 		return
 	}
-	id := r.PathValue("id")
 	var live bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pages WHERE id=$1 AND workspace_id=$2 AND NOT deleted AND NOT trashed)`, id, ws.ID).Scan(&live); err != nil {
 		problem(w, 500, "Move failed")
@@ -52,6 +96,16 @@ func (s *Service) movePage(w http.ResponseWriter, r *http.Request, u identity, w
 	}
 	if levels[id] < levelFull {
 		problem(w, 403, "Full access required to move a page")
+		return
+	}
+	var sourceMeta locationMetadata
+	var sourceRaw []byte
+	if err = tx.QueryRow(ctx, `SELECT metadata FROM pages WHERE id=$1`, id).Scan(&sourceRaw); err != nil || json.Unmarshal(sourceRaw, &sourceMeta) != nil {
+		problem(w, 500, "Move failed")
+		return
+	}
+	if sourceMeta.RowBodyOf != nil {
+		problem(w, 409, "A row body cannot be detached from its owner row; move its child pages instead")
 		return
 	}
 	children := map[string][]string{}
@@ -145,10 +199,6 @@ func (s *Service) movePage(w http.ResponseWriter, r *http.Request, u identity, w
 	if targetTS != "" {
 		resultTS = &targetTS
 	}
-	if parents[id] == newParent && sourceTS == targetTS {
-		jsonOut(w, 200, map[string]any{"id": id, "parentId": parent, "teamspaceId": resultTS, "revision": revision})
-		return
-	}
 	// Validate the deepest descendant too, so moving a whole branch cannot
 	// exceed the permission resolver's depth bound and silently lose access.
 	parents[id] = newParent
@@ -161,6 +211,77 @@ func (s *Service) movePage(w http.ResponseWriter, r *http.Request, u identity, w
 			}
 			visited[p] = true
 		}
+	}
+	plan, err := s.loadPlacement(ctx, tx, id)
+	if err != nil {
+		problem(w, 503, "Could not read pending page placement")
+		return
+	}
+	if plan != nil && !plan.Complete {
+		if !samePlacementTarget(plan.Target, target) || plan.Source != sourceMeta.ParentID {
+			problem(w, 409, "Another page placement is pending; repeat its original destination first")
+			return
+		}
+	} else {
+		if planReadErr != nil {
+			problem(w, 503, "Could not read pending page placement")
+			return
+		}
+		if prepareErr != nil {
+			problem(w, placementStatus(prepareErr), prepareErr.Error())
+			return
+		}
+		if sourceMeta.ParentID != preparedSource || !samePlacementPlan(priorPlan, plan) {
+			attempt, _ := ctx.Value(placementPlanningRetryKey{}).(int)
+			if attempt >= 3 {
+				problem(w, 409, "Page moved repeatedly while preparing placement; retry")
+				return
+			}
+			if err = tx.Commit(ctx); err != nil {
+				problem(w, 503, "Could not restart page placement")
+				return
+			}
+			encoded, _ := json.Marshal(in)
+			r.Body = io.NopCloser(bytes.NewReader(encoded))
+			s.movePage(w, r.WithContext(context.WithValue(ctx, placementPlanningRetryKey{}, attempt+1)), u, ws)
+			return
+		}
+		plan = preparedPlan
+		if plan != nil {
+			if err = s.savePlacement(ctx, tx, id, plan); err != nil {
+				problem(w, 503, "Could not save page placement")
+				return
+			}
+			if err = tx.Commit(ctx); err != nil {
+				problem(w, 503, "Could not save page placement")
+				return
+			}
+			// Re-enter with the now-durable plan. No document edits happened before
+			// this commit; repeated calls reuse its pointer and operation IDs.
+			encoded, _ := json.Marshal(in)
+			r.Body = io.NopCloser(bytes.NewReader(encoded))
+			s.movePage(w, r, u, ws)
+			return
+		}
+	}
+	if plan == nil && sourceMeta.ParentID == newParent && sourceTS == targetTS {
+		jsonOut(w, 200, map[string]any{"id": id, "parentId": parent, "teamspaceId": resultTS, "revision": revision})
+		return
+	}
+	if plan != nil && ctx.Value(placementFinalizingKey{}) != plan.Operation {
+		if err = tx.Commit(ctx); err != nil {
+			problem(w, 503, "Could not prepare page placement")
+			return
+		}
+		if err = s.executePlacement(ctx, u, ws.ID, id, plan); err != nil {
+			jsonOut(w, placementStatus(err), map[string]any{"error": err.Error(), "pageId": id, "operationId": plan.Operation, "parentId": plan.Target.RequestedParent, "parentRowId": plan.Target.RequestedRow, "retry": "Repeat blok_move_page with this pageId and destination"})
+			return
+		}
+		encoded, _ := json.Marshal(in)
+		r.Body = io.NopCloser(bytes.NewReader(encoded))
+		r = r.WithContext(context.WithValue(ctx, placementFinalizingKey{}, plan.Operation))
+		s.movePage(w, r, u, ws)
+		return
 	}
 	visibility := nodes[id].Visibility
 	if parent == nil && visibility == visInherit {
@@ -191,6 +312,18 @@ func (s *Service) movePage(w http.ResponseWriter, r *http.Request, u identity, w
 	if err = tx.QueryRow(ctx, `UPDATE workspaces SET revision=revision+1 WHERE id=$1 RETURNING revision`, ws.ID).Scan(&revision); err != nil {
 		problem(w, 500, "Move failed")
 		return
+	}
+	if plan != nil {
+		plan.Complete = true
+		plan.Revision = revision
+		if _, err = tx.Exec(ctx, `UPDATE page_create_requests SET complete=true,result=jsonb_set(result,'{revision}',to_jsonb($3::bigint)) WHERE page_id=$1 AND operation_id=$2 AND NOT complete`, id, plan.Operation, revision); err != nil {
+			problem(w, 503, "Could not save creation receipt")
+			return
+		}
+		if err = s.savePlacement(ctx, tx, id, plan); err != nil {
+			problem(w, 503, "Could not finish page placement; repeat the same move")
+			return
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		problem(w, 500, "Move failed")

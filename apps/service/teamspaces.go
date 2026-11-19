@@ -305,12 +305,13 @@ func (s *Service) lastTeamspaceOwner(ctx context.Context, q querier, id, user st
 // Reuse one creation transaction for HTTP and MCP. Root teamspace assignment is
 // a column, never a caller-controlled field in arbitrary page metadata.
 type createdScopedPage struct {
-	ID          string  `json:"id"`
-	PublicID    string  `json:"publicId"`
-	Title       string  `json:"title"`
-	Workspace   string  `json:"workspace"`
-	TeamspaceID *string `json:"teamspaceId"`
-	Revision    int64   `json:"revision"`
+	placementComplete bool
+	ID                string  `json:"id"`
+	PublicID          string  `json:"publicId"`
+	Title             string  `json:"title"`
+	Workspace         string  `json:"workspace"`
+	TeamspaceID       *string `json:"teamspaceId"`
+	Revision          int64   `json:"revision"`
 }
 
 // scopedPageRefusal distinguishes expected validation/access refusals from
@@ -319,7 +320,7 @@ type scopedPageRefusal string
 
 func (e scopedPageRefusal) Error() string { return string(e) }
 
-func (s *Service) createScopedPage(ctx context.Context, u identity, ws Workspace, title, parent, tsID, visibility string) (createdScopedPage, error) {
+func (s *Service) createScopedPage(ctx context.Context, u identity, ws Workspace, title, parent, tsID, visibility string, placementOptions ...pageCreatePlacement) (createdScopedPage, error) {
 	out := createdScopedPage{Title: title, Workspace: ws.Slug}
 	if title == "" || len(title) > 4096 || (parent != "" && !pageIDPattern.MatchString(parent)) {
 		return out, scopedPageRefusal("invalid title or parent")
@@ -331,6 +332,36 @@ func (s *Service) createScopedPage(ctx context.Context, u identity, ws Workspace
 	defer tx.Rollback(ctx)
 	if e = tx.QueryRow(ctx, `SELECT revision FROM workspaces WHERE id=$1 FOR UPDATE`, ws.ID).Scan(&out.Revision); e != nil {
 		return out, e
+	}
+	var placement pageCreatePlacement
+	if len(placementOptions) > 0 {
+		placement = placementOptions[0]
+	}
+	if placement.RequestID != "" {
+		var digest string
+		var complete bool
+		var raw []byte
+		err := tx.QueryRow(ctx, `SELECT digest,result,complete FROM page_create_requests WHERE workspace_id=$1 AND user_id=$2 AND request_id=$3`, ws.ID, u.ID, placement.RequestID).Scan(&digest, &raw, &complete)
+		if err == nil {
+			if digest != placement.Digest {
+				return out, placementRefusal(409, "requestId already used with different arguments")
+			}
+			if json.Unmarshal(raw, &out) != nil {
+				return out, errors.New("invalid creation receipt")
+			}
+			out.placementComplete = complete
+			granted, err := s.effectiveLevel(ctx, tx, u.ID, out.ID)
+			if err != nil {
+				return out, err
+			}
+			if granted < levelFull {
+				return out, scopedPageRefusal("created page unavailable")
+			}
+			return out, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return out, err
+		}
 	}
 	var role string
 	e = tx.QueryRow(ctx, `SELECT role FROM memberships WHERE workspace_id=$1 AND user_id=$2`, ws.ID, u.ID).Scan(&role)
@@ -415,6 +446,26 @@ func (s *Service) createScopedPage(ctx context.Context, u identity, ws Workspace
 	}
 	if _, e = tx.Exec(ctx, `INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES($1,$2,'full',$2)`, out.ID, u.ID); e != nil {
 		return out, e
+	}
+	if placement.Plan != nil {
+		plan := *placement.Plan
+		plan.Source = parent
+		plan.SourceHead = plan.TargetHead
+		if err := s.savePlacement(ctx, tx, out.ID, &plan); err != nil {
+			return out, err
+		}
+	}
+	if placement.RequestID != "" {
+		receipt := out
+		receipt.Revision++
+		raw, _ := json.Marshal(receipt)
+		operation := ""
+		if placement.Plan != nil {
+			operation = placement.Plan.Operation
+		}
+		if _, e = tx.Exec(ctx, `INSERT INTO page_create_requests(workspace_id,user_id,request_id,digest,page_id,result,operation_id,complete) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, ws.ID, u.ID, placement.RequestID, placement.Digest, out.ID, raw, operation, placement.Plan == nil); e != nil {
+			return out, e
+		}
 	}
 	if _, e = tx.Exec(ctx, `UPDATE workspaces SET revision=revision+1 WHERE id=$1`, ws.ID); e != nil {
 		return out, e
