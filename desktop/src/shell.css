@@ -16,6 +16,7 @@ img[data-desktop-asset-loading] { visibility: hidden; }
 html, body, #app, [data-desktop-shell] { height: 100%; margin: 0; }
 [data-desktop-shell] {
   --desktop-sidebar-width: 260px;
+  --desktop-tabstrip-height: 40px;
   display: flex; flex-direction: column; overflow: hidden;
   background: var(--desktop-canvas); color: var(--desktop-ink);
 }
@@ -46,7 +47,7 @@ body[data-blok-theme="light"] [data-desktop-floating-toc] {
 [data-desktop-tabstrip] {
   position: sticky; top: 0; z-index: 10;
   display: flex; flex: none; align-items: stretch;
-  height: 40px; min-width: 0;
+  height: var(--desktop-tabstrip-height); min-width: 0;
   border-bottom: 1px solid var(--desktop-border);
   background: var(--desktop-strip); color: var(--desktop-muted);
   user-select: none;
@@ -208,6 +209,14 @@ body[data-blok-theme="light"] [data-desktop-floating-toc] {
   width: min(100%, 900px); min-height: 100%; margin-inline: auto; padding: 30px 64px 120px;
 }
 [data-desktop-page-canvas] { container-type: inline-size; }
+/* A promoted peek is positioned against the window, not the workspace.
+   Reserve the native tab strip for both its panel and its click shield,
+   including the shell retained while the side panel slides closed. */
+[data-desktop-shell] :is([data-blok-database-drawer], [data-blok-database-peek-backdrop], [data-blok-database-peek-exiting])[data-peek-mode="side"],
+[data-desktop-shell] :is([data-blok-database-drawer], [data-blok-database-peek-backdrop], [data-blok-database-peek-exiting])[data-peek-mode="side"][data-blok-top-layer][popover] {
+  top: var(--desktop-tabstrip-height);
+  height: calc(100dvh - var(--desktop-tabstrip-height));
+}
 /* Full-page rows share the canvas scrollport. The side/center peek's clipping
    must not cut off wide tables in their body, even when those tables already
    have the correct canvas-sized bounding box. */
