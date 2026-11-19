@@ -610,15 +610,66 @@ describe('DatabaseTableView', () => {
       expect(cell(root, 'r1', 'p-amount').getAttribute('data-type')).toBe('number');
     });
 
-    it('shows the load limit and a Load more button that raises it', () => {
+    it('appends more rows without rebuilding the table or replacing existing rows', () => {
       const many = Array.from({ length: 12 }, (_, i) => row(`r${String(i).padStart(2, '0')}`, `Row ${i}`));
       const { root, state, handlers } = mount({ rows: many, view: tableView({ loadLimit: 10 }) });
 
       expect(root.querySelectorAll('[data-blok-database-table-row]')).toHaveLength(10);
+      const firstRow = root.querySelector('[data-blok-database-table-row]');
       root.querySelector<HTMLElement>('[data-blok-database-table-load-more]')?.click();
 
       expect(state.loaded.get('')).toBe(20);
-      expect(handlers.rerender).toHaveBeenCalled();
+      expect(handlers.rerender).not.toHaveBeenCalled();
+      expect(root.querySelectorAll('[data-blok-database-table-row]')).toHaveLength(12);
+      expect(root.querySelector('[data-blok-database-table-row]')).toBe(firstRow);
+    });
+
+    it('loads two batches in place and keeps selection and new row controls live', () => {
+      const many = Array.from({ length: 25 }, (_, i) => row(`r${String(i).padStart(2, '0')}`, `Row ${i}`));
+      const { root, state, handlers } = mount({ rows: many, view: tableView({ loadLimit: 10 }) });
+      const original = root.querySelector('[data-blok-database-table-row]');
+
+      selectCell(root, 'r00', 'p-title');
+      const selection = structuredClone(state.selection);
+      for (const expected of [20, 25]) {
+        root.querySelector<HTMLElement>('[data-blok-database-table-load-more]')?.click();
+        expect(root.querySelectorAll('[data-blok-database-table-row]')).toHaveLength(expected);
+        expect(root.querySelector('[data-blok-database-table-row]')).toBe(original);
+        expect(state.selection).toEqual(selection);
+      }
+      expect(root.querySelector('[data-blok-database-table-load-more]')).toBeNull();
+      root.querySelector<HTMLElement>('[data-row-id="r24"] [data-blok-database-table-open]')?.click();
+      expect(handlers.openRow).toHaveBeenCalledWith('r24');
+      expect(handlers.rerender).not.toHaveBeenCalled();
+    });
+
+    it('loads only the requested group and moves nested add-child lines after newly shown descendants', () => {
+      const many = Array.from({ length: 12 }, (_, i) => row(`r${String(i).padStart(2, '0')}`, `Row ${i}`));
+      const other = row('other', 'Other');
+      const { root, state, handlers } = mount({
+        rows: [],
+        groups: [{ key: 'first', label: 'First', rows: many }, { key: 'second', label: 'Second', rows: [other] }],
+        view: tableView({ loadLimit: 10 }),
+        nesting: {
+          info: id => id === 'r09' ? { depth: 0, hasChildren: true, expanded: true }
+            : id === 'r10' || id === 'r11' ? { depth: 1, hasChildren: false, expanded: false } : undefined,
+          toggle: vi.fn(), addSubItem: vi.fn(),
+        },
+      });
+      const first = root.querySelector('[data-blok-database-table-group][data-group-key="first"]')!;
+      const original = first.querySelector('[data-row-id="r09"]');
+      const add = first.querySelector('[data-blok-database-add-subitem][data-parent-id="r09"]');
+      const otherNode = root.querySelector('[data-row-id="other"]');
+
+      first.querySelector<HTMLElement>('[data-blok-database-table-load-more]')?.click();
+      expect(first.querySelectorAll('[data-blok-database-table-row]')).toHaveLength(12);
+      expect(first.querySelector('[data-row-id="r09"]')).toBe(original);
+      expect(first.querySelector('[data-blok-database-add-subitem][data-parent-id="r09"]')).toBe(add);
+      expect(add?.previousElementSibling?.getAttribute('data-row-id')).toBe('r11');
+      expect(root.querySelector('[data-row-id="other"]')).toBe(otherNode);
+      expect(state.loaded.get('first')).toBe(20);
+      expect(state.loaded.has('second')).toBe(false);
+      expect(handlers.rerender).not.toHaveBeenCalled();
     });
 
     // notion-motion.md Round 29 §1: one full-width row, the ↓ icon and "Load more", then a ⋯ for the load limit.

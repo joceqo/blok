@@ -1124,26 +1124,7 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     body.setAttribute('role', 'rowgroup');
     body.setAttribute('data-blok-database-table-body', '');
     const shown = this.visibleCount(groupKey, rows.length);
-    // Open parents waiting for their "+ New sub-item" line, deepest last.
-    const open: Array<{ id: string; depth: number }> = [];
-    const closeTo = (depth: number): void => {
-      while (open.length > 0 && open[open.length - 1].depth >= depth) {
-        const parent = open.pop();
-
-        if (parent !== undefined) body.appendChild(this.createAddSubItem(parent.id, parent.depth + 1));
-      }
-    };
-
-    for (const row of rows.slice(0, shown)) {
-      const info = this.options.nesting?.info(row.id);
-
-      closeTo(info?.depth ?? 0);
-      body.appendChild(this.createRow(row, groupKey));
-      if (info?.expanded === true && this.editable && this.options.nesting?.addSubItem !== undefined) {
-        open.push({ id: row.id, depth: info.depth });
-      }
-    }
-    closeTo(0);
+    this.fillBodyRows(body, rows.slice(0, shown), groupKey);
     fragment.appendChild(body);
 
     if (rows.length === 0 && group === undefined && (this.options.view.filters.length > 0 || this.handlers?.searching?.() === true)) {
@@ -1174,6 +1155,73 @@ export class DatabaseTableView implements DatabaseViewRenderer {
     }
 
     return fragment;
+  }
+
+  /** Reconcile the visible prefix without detaching existing rows or cells.
+   * An expanded parent's add-child line may move after newly revealed children. */
+  private fillBodyRows(body: HTMLElement, rows: DatabaseRow[], groupKey: string): HTMLElement[] {
+    const existingRows = new Map<string, HTMLElement>();
+    const existingAdds = new Map<string, HTMLElement>();
+
+    for (const child of Array.from(body.children)) {
+      if (!(child instanceof HTMLElement)) continue;
+      const rowId = child.getAttribute('data-row-id');
+      const parentId = child.getAttribute('data-parent-id');
+
+      if (rowId !== null) existingRows.set(rowId, child);
+      else if (parentId !== null) existingAdds.set(parentId, child);
+    }
+    const added: HTMLElement[] = [];
+    let cursor: ChildNode | null = body.firstChild;
+    const place = (node: HTMLElement): void => {
+      if (node === cursor) cursor = cursor.nextSibling;
+      else body.insertBefore(node, cursor);
+    };
+    const open: Array<{ id: string; depth: number }> = [];
+    const closeTo = (depth: number): void => {
+      while (open.length > 0 && open[open.length - 1].depth >= depth) {
+        const parent = open.pop();
+
+        if (parent !== undefined) place(existingAdds.get(parent.id) ?? this.createAddSubItem(parent.id, parent.depth + 1));
+      }
+    };
+
+    for (const row of rows) {
+      const info = this.options.nesting?.info(row.id);
+
+      closeTo(info?.depth ?? 0);
+      let node = existingRows.get(row.id);
+
+      if (node === undefined) {
+        node = this.createRow(row, groupKey);
+        added.push(node);
+      }
+      place(node);
+      if (info?.expanded === true && this.editable && this.options.nesting?.addSubItem !== undefined) {
+        open.push({ id: row.id, depth: info.depth });
+      }
+    }
+    closeTo(0);
+
+    return added;
+  }
+
+  private loadMore(button: HTMLElement, groupKey: string): void {
+    const line = button.closest('[data-blok-database-table-load-more-row]');
+    const body = line?.previousElementSibling;
+    const rows = this.options.groups?.find(group => group.key === groupKey)?.rows ?? this.options.rows;
+
+    if (!(body instanceof HTMLElement) || !body.hasAttribute('data-blok-database-table-body')) return;
+    const next = this.visibleCount(groupKey, rows.length) + resolveLoadLimit(this.options.view);
+
+    this.state.loaded.set(groupKey, next);
+    const added = this.fillBodyRows(body, rows.slice(0, next), groupKey);
+
+    if (next >= rows.length) line?.remove();
+    // Grid keyboard navigation and row drag read the live DOM. Keep their
+    // instances and selection, repainting only chrome after the prefix grows.
+    this.grid?.paint();
+    for (const row of added) this.visiblePreparation?.observe(row);
   }
 
   /**
@@ -2118,11 +2166,10 @@ export class DatabaseTableView implements DatabaseViewRenderer {
 
       return;
     }
-    if (closest('[data-blok-database-table-load-more]') !== null) {
-      const total = this.options.groups?.find((g) => g.key === groupKey)?.rows.length ?? this.options.rows.length;
+    const loadMore = closest('[data-blok-database-table-load-more]');
 
-      this.state.loaded.set(groupKey, this.visibleCount(groupKey, total) + resolveLoadLimit(this.options.view));
-      handlers?.rerender();
+    if (loadMore !== null) {
+      this.loadMore(loadMore, groupKey);
 
       return;
     }
