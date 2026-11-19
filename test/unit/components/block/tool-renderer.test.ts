@@ -48,6 +48,92 @@ describe('ToolRenderer', () => {
     expect(holder.contains(mockRenderedElement)).toBe(true);
   });
 
+  it.each([false, true])('preserves deferred descendants as flat siblings while a slotless tool renders (async: %s)', async (asynchronous) => {
+    let resolveRender: (element: HTMLElement) => void = () => undefined;
+    if (asynchronous) toolInstance.render = vi.fn(() => new Promise<HTMLElement>(resolve => { resolveRender = resolve; }));
+    const holder = toolRenderer.compose(true);
+    const container = document.createElement('div');
+    const following = document.createElement('div');
+    const first = document.createElement('div');
+    const second = document.createElement('div');
+    first.setAttribute('data-blok-element', '');
+    second.setAttribute('data-blok-element', '');
+    holder.querySelector('[data-blok-nested-blocks]')?.append(first, second);
+    container.append(holder, following);
+
+    toolRenderer.renderDeferred(holder);
+
+    // Pending descendants stay in the row's DOM, in model order, so the
+    // sliced wake-up queue can still reach them during an async render.
+    expect([...container.children]).toEqual([holder, first, second, following]);
+    resolveRender(mockRenderedElement);
+    await toolRenderer.ready;
+    expect([...container.children]).toEqual([holder, first, second, following]);
+    expect(holder.querySelector('[data-blok-nested-blocks]')).toBeNull();
+  });
+
+  it.each([false, true])('restores deferred descendants when rendering fails (async: %s)', async (asynchronous) => {
+    toolInstance.render = vi.fn(() => {
+      if (asynchronous) return Promise.reject(new Error('unavailable'));
+      throw new Error('unavailable');
+    });
+    const holder = toolRenderer.compose(true);
+    const container = document.createElement('div');
+    const child = document.createElement('div');
+    const placeholder = holder.querySelector('[data-blok-nested-blocks]');
+    placeholder?.append(child);
+    container.append(holder);
+
+    if (asynchronous) {
+      toolRenderer.renderDeferred(holder);
+      await toolRenderer.ready;
+    } else expect(() => toolRenderer.renderDeferred(holder)).toThrow('unavailable');
+
+    expect(toolRenderer.deferred).toBe(true);
+    expect(placeholder?.parentElement).not.toBeNull();
+    expect(child.parentElement).toBe(placeholder);
+    expect([...container.children]).toEqual([holder]);
+  });
+
+  it('does not reclaim descendants after a pending renderer is destroyed', async () => {
+    let rejectRender: (error: Error) => void = () => undefined;
+    toolInstance.render = vi.fn(() => new Promise<HTMLElement>((_, reject) => { rejectRender = reject; }));
+    const holder = toolRenderer.compose(true);
+    const original = document.createElement('div');
+    const replacement = document.createElement('div');
+    const child = document.createElement('div');
+    holder.querySelector('[data-blok-nested-blocks]')?.append(child);
+    original.append(holder);
+    toolRenderer.renderDeferred(holder);
+    toolRenderer.destroy();
+    replacement.append(child);
+
+    rejectRender(new Error('late failure'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(child.parentElement).toBe(replacement);
+    expect(holder.contains(child)).toBe(false);
+  });
+
+  it('keeps a detached parent with children asleep until it has a home', async () => {
+    const holder = toolRenderer.compose(true);
+    const child = document.createElement('div');
+    const placeholder = holder.querySelector('[data-blok-nested-blocks]');
+    placeholder?.append(child);
+    toolRenderer.renderDeferred(holder);
+    expect(toolRenderer.deferred).toBe(true);
+    expect(holder.contains(child)).toBe(true);
+    expect(toolInstance.render).not.toHaveBeenCalled();
+
+    const fragment = document.createDocumentFragment();
+    fragment.append(holder);
+    toolRenderer.renderDeferred(holder);
+    await toolRenderer.ready;
+    expect([...fragment.children]).toEqual([holder, child]);
+    expect(toolRenderer.deferred).toBe(false);
+  });
+
   it('holds readiness at the registration barrier even without a rendered hook', async () => {
     let release: () => void = () => undefined;
     const barrier = new Promise<void>(resolve => { release = resolve; });

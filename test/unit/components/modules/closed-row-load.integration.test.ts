@@ -5,12 +5,11 @@ import { YBlockSerializer } from '../../../../src/components/modules/yjs/seriali
 import { Paragraph } from '../../../../src/tools/paragraph';
 import { DatabaseTool } from '../../../../src/tools/database';
 import { DatabaseRowTool } from '../../../../src/tools/database-row';
-import { resetViewportRender } from '../../../../src/components/utils/viewport-render';
 
 let core: Core | undefined;
 let server: DocumentStore | undefined;
 
-beforeEach(() => { vi.clearAllMocks(); resetViewportRender(); });
+beforeEach(() => { vi.clearAllMocks(); });
 afterEach(async () => {
   if (core) {
     Object.values(core.moduleInstances).forEach(module => (module as { markDestroyed?: () => void }).markDestroyed?.());
@@ -21,7 +20,7 @@ afterEach(async () => {
   server?.destroy();
   document.body.replaceChildren();
   vi.restoreAllMocks();
-  resetViewportRender();
+  vi.unstubAllGlobals();
 });
 
 it.each([false, true])('keeps closed bodies dormant after remote loading and switching readOnly to %s', async (readOnly) => {
@@ -66,3 +65,24 @@ it.each([false, true])('keeps closed bodies dormant after remote loading and swi
   expect(BlockManager.getBlockById('p1')?.holder.hasAttribute('data-blok-deferred-render')).toBe(true);
   expect((await Saver.save())?.blocks).toEqual(before?.blocks);
 }, 10_000);
+
+it.each([8, 160])('renders all %s ordinary page blocks after Yjs loading without requiring intersection callbacks', async (count) => {
+  // A canvas or sheet can be detached, clipped or scrolled while the batch
+  // mounts. Its actual content must not depend on a later viewport callback.
+  vi.stubGlobal('IntersectionObserver', class { observe() {} unobserve() {} disconnect() {} });
+  const blocks = Array.from({length:count}, (_, i) => ({id:`text-${i}`,type:'paragraph',data:{text:`Visible content ${i}`}}));
+  server = new DocumentStore(new YBlockSerializer());
+  server.fromJSON(blocks);
+  const holder = document.createElement('div');
+  document.body.append(holder);
+  core = new Core({holder,tools:{paragraph:Paragraph}});
+  await core.isReady;
+  const {BlockManager,YjsManager,Saver}=core.moduleInstances;
+  await BlockManager.clear(false);
+  YjsManager.applyRemoteUpdate(server.encodeStateAsUpdate());
+  await vi.waitFor(()=>expect(BlockManager.isSyncingFromYjs).toBe(false));
+  expect(holder.querySelectorAll('[data-blok-offscreen]')).toHaveLength(0);
+  expect(holder.querySelectorAll('[data-blok-deferred-render]')).toHaveLength(0);
+  expect(holder.textContent).toContain(`Visible content ${count-1}`);
+  expect((await Saver.save())?.blocks.map(block=>block.id)).toEqual(blocks.map(block=>block.id));
+}, 15000);

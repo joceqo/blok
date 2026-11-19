@@ -610,7 +610,18 @@ export class Block extends EventsDispatcher<BlockEvents> {
 
     if (this.toolRenderer.deferred) {
       if ([BlockToolAPI.UPDATED, BlockToolAPI.MOVED, 'beforeSave'].includes(methodName)) return;
-      if (methodName !== 'removed') this.ensureRendered();
+      if (methodName !== 'removed') {
+        this.ensureRendered();
+        if (this.toolRenderer.deferred) {
+          // A detached holder with children has no home yet. Preserve this
+          // operation until mounting can activate it; destruction leaves it
+          // deferred, so releasing ready during teardown cannot replay it.
+          void this.ready.then(() => {
+            if (!this.toolRenderer.deferred) this.call(methodName, params);
+          });
+          return;
+        }
+      }
     }
 
     try {
@@ -630,7 +641,7 @@ export class Block extends EventsDispatcher<BlockEvents> {
     try {
       this.renderDeferredWithoutCapture(() => {
         this.toolRenderer.renderDeferred(this.holder);
-        if (!this.toolRenderer.pending) this.call(BlockToolAPI.RENDERED);
+        if (!this.toolRenderer.deferred && !this.toolRenderer.pending) this.call(BlockToolAPI.RENDERED);
       });
     } catch (error) {
       log(`Unable to render deferred block «${this.id}»`, 'warn', error);

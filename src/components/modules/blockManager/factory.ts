@@ -18,7 +18,7 @@ import type { API } from '../api';
 
 import type { BlockOrigin } from '../../../../types';
 import type { ComposeBlockOptions } from './types';
-import { claimEagerRoot, countViewport, isAsleep, OFFSCREEN_ATTRIBUTE, sleepBlock } from '../../utils/viewport-render';
+import { countViewport } from '../../utils/viewport-render';
 
 /**
  * Dependencies needed by BlockFactory
@@ -72,10 +72,8 @@ export class BlockFactory {
       const name = live?.name ?? record?.get('type');
 
       if (name === 'database-row') {
-        // Temporary boot diagnostic: in production only 10 of the 657 blocks
-        // under a closed row defer, while the same check passes its unit test.
-        // That test mounts through the Renderer; a load goes through the Yjs
-        // replay instead. These counters say which branch the replay takes.
+        // Keep replay diagnostics: the parent may still exist only as a Yjs
+        // record while the batch is being composed.
         const hidden = live !== undefined && live.holder.classList.contains('hidden');
 
         countViewport(live === undefined ? 'rowParentMissing' : (hidden ? 'rowParentHidden' : 'rowParentVisible'));
@@ -89,61 +87,6 @@ export class BlockFactory {
     countViewport('closedRowNo');
 
     return false;
-  }
-
-  /**
-   * A block whose ancestor has no DOM yet must not draw either: its holder
-   * would be moved into the sleeping parent's placeholder and rendered for
-   * nobody. Walks parents exactly like `isClosedRowBody`, through live blocks
-   * first and the Yjs record when the block is not built yet.
-   * @param parentId - the block's parent, if it has one
-   * @returns whether some ancestor is still asleep
-   */
-  private hasSleepingAncestor(parentId: string | null | undefined): boolean {
-    const modules = this.dependencies.moduleInstances;
-    const seen = new Set<string>();
-    const cursor = { id: parentId };
-
-    while (typeof cursor.id === 'string' && !seen.has(cursor.id)) {
-      const id = cursor.id;
-
-      seen.add(id);
-      if (isAsleep(id)) return true;
-      const live = this.dependencies.getBlockById?.(id) ?? modules.BlockManager?.getBlockById?.(id);
-      const record = live === undefined ? modules.YjsManager?.getBlockById?.(id) : undefined;
-      const parent: unknown = live?.parentId ?? record?.get('parentId');
-
-      cursor.id = typeof parent === 'string' ? parent : undefined;
-    }
-
-    return false;
-  }
-
-  /**
-   * Whether this block may skip its first render because nobody can see it.
-   *
-   * A root past the first few screens sleeps; so does anything under a
-   * sleeper. A database row never does — its metadata stays live — and neither
-   * does pasted content, which the person is waiting to see.
-   * @param name - the tool's name
-   * @param parentId - the block's parent, if it has one
-   * @param origin - what produced the block
-   * @returns whether to leave the tool without DOM for now
-   */
-  private sleepsForViewport(name: string, parentId: string | null | undefined, origin: BlockOrigin | undefined): boolean {
-    if (name === 'database-row' || origin === 'paste') {
-      return false;
-    }
-
-    // Asked for EVERY block, and `claimEagerRoot` spends the budget, so it is
-    // asked once per root and never for a child.
-    if (parentId !== undefined && parentId !== null) {
-      countViewport('withParent');
-
-      return this.hasSleepingAncestor(parentId);
-    }
-
-    return !claimEagerRoot();
   }
 
   /**
@@ -225,14 +168,6 @@ export class BlockFactory {
       (migratedType, error) => log(`Migration for block «${migratedType}» threw; loading the block with its stored data instead.`, 'warn', error)
     ), resolveTool);
 
-    // Spends the eager-root budget, so it must run once per block, before the
-    // block exists — `shouldDeferRender` re-reads the answer from the set.
-    const viewportSleep = deferRender === undefined && this.sleepsForViewport(name, parentId, origin);
-
-    if (viewportSleep) {
-      sleepBlock(id);
-    }
-
     const block: Block = new Block({
       id,
       // Wire DTOs (e.g. Editor.js backends) may carry `data: null`; the
@@ -256,18 +191,14 @@ export class BlockFactory {
       // Paste waits for ready before onPaste can import its DOM; it must not
       // wait indefinitely behind a closed row.
       deferRender: name !== 'database-row' && origin !== 'paste'
-        && (deferRender ?? (this.isClosedRowBody(parentId) || viewportSleep)),
-      shouldDeferRender: () => this.isClosedRowBody(block.parentId)
-        || isAsleep(block.id) || this.hasSleepingAncestor(block.parentId),
+        && (deferRender ?? this.isClosedRowBody(parentId)),
+      shouldDeferRender: () => this.isClosedRowBody(block.parentId),
       renderDeferredWithoutCapture: (render) => this.dependencies.moduleInstances.YjsManager.transactWithoutCapture(() => {
         render();
         this.dependencies.moduleInstances.Renderer?.normalizeRenderedDom?.(block.holder);
       }),
       renderedBarrier,
     }, this.dependencies.eventsDispatcher);
-
-    // Stands in for the block's height until something scrolls near it.
-    if (viewportSleep) block.holder.setAttribute(OFFSCREEN_ATTRIBUTE, '');
 
     // Closed until its database explicitly opens it. This must already hold
     // while a large load is between composition and the database's hooks.

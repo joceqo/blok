@@ -635,20 +635,6 @@ span[data-blok-annotation]:hover::highlight(blok-annotation-open) {
 }
 
 /*
- * A block nobody has scrolled to yet: its tool has no DOM, so its holder is
- * nearly flat. Without a height to stand on, a whole document's worth of
- * sleepers collapses into one screen, every one of them reads as visible, and
- * they all wake at once — which is the same as never having deferred them.
- *
- * A guess, necessarily: the real height is only known once the block renders.
- * It is deliberately short, so the page errs on the side of waking a block
- * early rather than leaving a gap under the reader's scroll.
- */
-:where([data-blok-offscreen]) {
-  min-height: 320px;
-}
-
-/*
  * Reading-direction sign for transforms logical CSS cannot express. A custom
  * property inherits, so the NEAREST [dir] wins: a block's own dir beats the
  * editor's. `[dir="rtl"] x` alone would match any RTL ancestor.

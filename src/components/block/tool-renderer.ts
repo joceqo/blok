@@ -2,6 +2,7 @@ import type { BlockTool as IBlockTool , ToolConfig } from '../../../types';
 import { DATA_ATTR, TEST_ID } from '../constants';
 import { Dom as $ } from '../dom';
 import { log } from '../utils';
+import { moveElementAfter } from '../utils/html';
 
 import { StyleManager } from './style-manager';
 import type { TunesManager } from './tunes-manager';
@@ -170,19 +171,35 @@ export class ToolRenderer {
 
     if (!this.deferred || this.destroyed || content === null) return;
     const placeholder = this.toolRenderedElementInternal;
+    const children = Array.from(placeholder?.childNodes ?? []);
+    // There is no flat sibling home until the owner mounts this holder.
+    if (children.length > 0 && wrapper.parentNode === null) return;
+    // A sleeping slot is provisional. Park its holders beside the parent,
+    // in order, before removing it: slotless tools keep flat descendants,
+    // while real containers reclaim them through their rendered() hook.
+    // Keeping them in the row also lets the wake-up queue reach children
+    // while an asynchronous parent render is still pending.
+    for (const child of [...children].reverse()) {
+      if (wrapper.parentNode instanceof DocumentFragment) wrapper.after(child);
+      else moveElementAfter(child, wrapper);
+    }
+    const restore = (): void => {
+      this.deferred = true;
+      this.activatedDeferred = false;
+      this.toolRenderedElementInternal = placeholder;
+      wrapper.setAttribute('data-blok-deferred-render', '');
+      placeholder?.append(...children);
+      content.replaceChildren(...(placeholder === null ? [] : [placeholder]));
+    };
 
     this.deferred = false;
     this.activatedDeferred = true;
     wrapper.removeAttribute('data-blok-deferred-render');
     content.replaceChildren();
     try {
-      this.renderInto(content, wrapper);
+      this.renderInto(content, wrapper, restore);
     } catch (error) {
-      this.deferred = true;
-      this.activatedDeferred = false;
-      this.toolRenderedElementInternal = placeholder;
-      wrapper.setAttribute('data-blok-deferred-render', '');
-      content.replaceChildren(...(placeholder === null ? [] : [placeholder]));
+      restore();
       throw error;
     }
   }
@@ -191,12 +208,12 @@ export class ToolRenderer {
     if (!this.deferred && !this.pending && (this.renderedBarrier !== undefined || this.activatedDeferred)) this.renderedFromStore = true;
   }
 
-  private renderInto(content: HTMLElement, wrapper: HTMLDivElement): void {
+  private renderInto(content: HTMLElement, wrapper: HTMLDivElement, onFailure?: () => void): void {
     const pluginsContent = this.toolInstance.render();
 
     if (pluginsContent instanceof Promise) {
       this.pending = true;
-      this.handleAsyncRender(pluginsContent, content, wrapper);
+      this.handleAsyncRender(pluginsContent, content, wrapper, onFailure);
     } else this.handleSyncRender(pluginsContent, content, wrapper);
   }
 
@@ -251,7 +268,8 @@ export class ToolRenderer {
   private handleAsyncRender(
     pluginsContent: Promise<HTMLElement>,
     contentNode: HTMLElement,
-    wrapper: HTMLDivElement
+    wrapper: HTMLDivElement,
+    onFailure?: () => void
   ): void {
     pluginsContent
       .then((resolvedElement) => {
@@ -272,13 +290,8 @@ export class ToolRenderer {
       })
       .catch((error) => {
         this.pending = false;
-        if (this.activatedDeferred) {
-          this.deferred = true;
-          wrapper.setAttribute('data-blok-deferred-render', '');
-          const placeholder = this.toolRenderedElementInternal;
-
-          if (placeholder !== null) contentNode.replaceChildren(placeholder);
-        }
+        // A destroyed/replaced block must never reclaim its former children.
+        if (!this.destroyed) onFailure?.();
         log(`Tool render promise rejected: %o`, 'error', error);
         this.readyResolver?.();
       });

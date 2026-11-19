@@ -15,22 +15,12 @@ import { acceptsChildren, isChildToolAllowed } from '../../utils/child-tools';
 import { moveElementAfter, moveElementBefore, withBatchedMoves } from '../../utils/html';
 import { yieldToBrowser } from '../../utils/render-slices';
 import { beginDocumentMount, endDocumentMount } from '../../utils/document-mount';
-import { beginViewportPass, endViewportPass, observeSleepers, OFFSCREEN_ATTRIBUTE, sleepingBlocks } from '../../utils/viewport-render';
 
 /**
  * How long one activation run may hold the thread before handing it back.
  * Matches the renderer's own slice budget (`forEachRenderSlice`).
  */
 const ACTIVATION_BUDGET_MS = 8;
-
-/**
- * How many root blocks a load draws before the rest sleep.
- *
- * Measured on an 870-block page: 24 roots carry the other 846, and only the
- * first starts inside the first screen. Three covers the first screen on any
- * reasonable display without drawing what nobody is looking at.
- */
-const EAGER_ROOTS = 3;
 
 /** Below this, a batch is too small for slicing to be worth a yield. */
 const ACTIVATION_SLICE = 25;
@@ -2220,19 +2210,8 @@ export class BlockYjsSync {
     const previousSibling = new Map<string | null, string>();
 
     this.withAtomicOperation(() => {
-      // Pass 1 — create blocks and add to array (no DOM, no RENDERED)
+      // Pass 1 — compose detached blocks and add to array (no RENDERED)
       const created: Array<{ block: Block; targetIndex: number; parentId: string | undefined; placement: TreePlacement | undefined }> = [];
-
-      // Opened around COMPOSITION, because that is where a block decides
-      // whether to build its tool's DOM — a first attempt opened it around
-      // activation instead, by which time every block had already been
-      // composed eagerly and nothing ever slept.
-      //
-      // Only for a load of an empty view: a later batch of two blocks is
-      // something the person did, and must appear.
-      if (initialBatch) {
-        beginViewportPass(EAGER_ROOTS);
-      }
 
       for (const entry of toCreate) {
         // Against the live array: earlier entries of this batch are in it and
@@ -2283,7 +2262,6 @@ export class BlockYjsSync {
 
         created.push({ block, targetIndex, parentId: entry.parentId, placement });
       }
-      endViewportPass();
 
       // Read each parent's authoritative sibling order once after all of this
       // synchronous batch has landed, rather than rescanning it per child.
@@ -2343,9 +2321,6 @@ export class BlockYjsSync {
       } finally {
         endDocumentMount();
       }
-      // Sleepers are watched on this path too, or a load small enough to skip
-      // slicing would leave its later roots blank for ever.
-      this.watchSleepers();
     }, { extendThroughRAF: true });
   }
 
@@ -2446,35 +2421,6 @@ export class BlockYjsSync {
       // A slice that throws must not leave the editor mounting for ever.
       endDocumentMount();
     }
-    this.watchSleepers();
-  }
-
-  /**
-   * Watches the roots the load skipped, and draws each one as it nears the
-   * screen.
-   *
-   * NOT a loop that draws them all straight after the mount — that was the
-   * first version, and it moved the work without removing any: the load
-   * measured the same 9 s to the millisecond. A root nobody scrolls to is now
-   * never drawn.
-   *
-   * Waking a root wakes what is under it too, because `shouldDeferRender` asks
-   * whether an ancestor sleeps and this one no longer does.
-   */
-  private watchSleepers(): void {
-    const sleepers = [...sleepingBlocks()].flatMap((id) => {
-      const block = this.repository.getBlockById(id);
-
-      return block === undefined ? [] : [{ id, holder: block.holder }];
-    });
-
-    observeSleepers(sleepers, (id) => {
-      const block = this.repository.getBlockById(id);
-
-      // The reserved height goes with the placeholder it was standing in for.
-      block?.holder.removeAttribute(OFFSCREEN_ATTRIBUTE);
-      block?.renderIfVisible();
-    });
   }
 
   /**

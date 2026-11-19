@@ -131,6 +131,31 @@ describe('Yjs materialization keeps closed database row bodies dormant', () => {
     unsubscribe();
   });
 
+  it('replays an explicit tool call after a detached sleeping subtree is mounted', async () => {
+    await boot();
+    source().transactWithoutCapture(() => {
+      for (const entry of seed) source().addBlock(entry);
+    });
+    await ship();
+    const body = block('body');
+    const home = body.holder.parentElement;
+    if (home === null) throw new Error('Missing body home');
+    body.holder.remove();
+    const save = vi.spyOn(Paragraph.prototype, 'save').mockReturnValue({ text: 'saved' });
+
+    const explicit = { request: 'detached-call' };
+    body.call('save', explicit);
+    expect(save).not.toHaveBeenCalled();
+    expect(body.holder.contains(block('descendant').holder)).toBe(true);
+
+    home.append(body.holder);
+    body.ensureRendered();
+    await body.ready;
+    await Promise.resolve();
+    expect(save.mock.calls.filter(args => (args[0] as unknown) === explicit)).toHaveLength(1);
+    expect(block('descendant').holder.parentElement).toBe(home);
+  });
+
   it('keeps remote single adds, updates and deletes asleep, preserving only the latest body on opening', async () => {
     await boot();
     source().transactWithoutCapture(() => {
