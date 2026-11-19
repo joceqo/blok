@@ -28,6 +28,8 @@ export interface ServiceConfig {
   publicUrl: string | undefined;
   /** Path to schema.sql (applied on boot when DB is empty). */
   schemaSqlPath: string | undefined;
+  /** Upstream blok-server for `/api/blok` proxy. */
+  blokSidecarUrl: string | undefined;
 }
 
 export function loadConfig(): ServiceConfig {
@@ -43,5 +45,6 @@ export function loadConfig(): ServiceConfig {
     mailerHost: lookupOr('MAILER_HOST', 'SMTP_HOST'),
     publicUrl: lookup('PUBLIC_URL'),
     schemaSqlPath: lookup('SCHEMA_SQL_PATH'),
+    blokSidecarUrl: lookup('BLOK_SIDECAR_URL'),
   };
 }

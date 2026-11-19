@@ -5,7 +5,11 @@ import { pages } from '../db/schema.js';
 import { withTransaction } from '../db/transaction.js';
 import type { DbVariables } from '../middleware/db.js';
 import type { SessionVariables } from '../middleware/session.js';
-import { assertPageAction } from '../permissions.js';
+import { assertPageAction, type WorkspaceRole } from '../permissions.js';
+
+function workspaceRole(context: { get: (key: 'workspaceRole') => WorkspaceRole | undefined }): WorkspaceRole {
+  return context.get('workspaceRole') ?? 'guest';
+}
 
 type Env = {
   Variables: DbVariables & SessionVariables;
@@ -18,7 +22,7 @@ export const pageRoutes = new Hono<Env>();
 
 pageRoutes.get('/api/workspaces/:workspaceId/pages', async (context) => {
   const workspaceId = context.req.param('workspaceId');
-  const role = context.get('devRole');
+  const role = workspaceRole(context);
   assertPageAction(role, 'read');
 
   const db = context.get('db');
@@ -39,7 +43,7 @@ pageRoutes.get('/api/workspaces/:workspaceId/pages', async (context) => {
 
 pageRoutes.get('/api/pages/:pageId', async (context) => {
   const pageId = context.req.param('pageId');
-  const role = context.get('devRole');
+  const role = workspaceRole(context);
   assertPageAction(role, 'read');
 
   const db = context.get('db');
@@ -54,7 +58,7 @@ pageRoutes.get('/api/pages/:pageId', async (context) => {
 
 pageRoutes.post('/api/workspaces/:workspaceId/pages', async (context) => {
   const workspaceId = context.req.param('workspaceId');
-  const role = context.get('devRole');
+  const role = workspaceRole(context);
   assertPageAction(role, 'edit');
 
   const body: { title?: string; parentId?: string | null } = await context.req
@@ -88,7 +92,7 @@ pageRoutes.post('/api/workspaces/:workspaceId/pages', async (context) => {
 
 pageRoutes.patch('/api/pages/:pageId', async (context) => {
   const pageId = context.req.param('pageId');
-  const role = context.get('devRole');
+  const role = workspaceRole(context);
   assertPageAction(role, 'edit');
 
   const body: { title?: string; trashed?: boolean } = await context.req

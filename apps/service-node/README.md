@@ -33,7 +33,15 @@ export PORT=8080
 npm run dev
 ```
 
-`GET /health` → `{"status":"ok"}`. With `DATABASE_URL` set, `GET /api/workspaces` lists rows (needs tables from `schema.sql`).
+`GET /health` → `{"status":"ok"}`. With `DATABASE_URL` set:
+
+```bash
+APPLY_SCHEMA_ON_BOOT=1 DATABASE_URL=postgres://... npm run dev
+DEV_EXPOSE_AUTH_CODE=1 npm run dev   # returns devCode on request-code
+BLOK_SIDECAR_URL=http://127.0.0.1:4000 npm run dev   # proxies /api/blok/*
+```
+
+Auth flow: `POST /api/auth/request-code` → `POST /api/auth/verify-code` (sets `blok_session` cookie) → `GET /api/auth/me`.
 
 ## Scripts
 

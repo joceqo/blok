@@ -16,16 +16,32 @@ import {
 } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
-  id: uuid('id').primaryKey(),
-  email: varchar('email', { length: 320 }).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  id: uuid('id').primaryKey().defaultRandom(),
+  email: varchar('email', { length: 320 }).notNull().unique(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const authChallenges = pgTable('auth_challenges', {
+  email: varchar('email', { length: 320 }).primaryKey(),
+  codeHash: text('code_hash').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+});
+
+export const sessions = pgTable('sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  tokenHash: text('token_hash').notNull().unique(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const workspaces = pgTable('workspaces', {
-  id: uuid('id').primaryKey(),
+  id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
-  slug: varchar('slug', { length: 128 }).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  slug: varchar('slug', { length: 128 }).notNull().unique(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const workspaceMembers = pgTable('workspace_members', {

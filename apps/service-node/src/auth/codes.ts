@@ -1,0 +1,36 @@
+import { createHash, randomBytes, randomInt } from 'node:crypto';
+
+const CODE_DIGITS = 6;
+const CHALLENGE_TTL_MS = 10 * 60 * 1000;
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function normalizeEmail(raw: string): string {
+  return raw.trim().toLowerCase();
+}
+
+export function isValidEmail(email: string): boolean {
+  return email.length > 3 && email.length <= 320 && email.includes('@') && !/\s/.test(email);
+}
+
+export function generateLoginCode(): string {
+  const max = 10 ** CODE_DIGITS;
+  return String(randomInt(0, max)).padStart(CODE_DIGITS, '0');
+}
+
+export function hashSecret(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+export function generateSessionToken(): string {
+  return randomBytes(32).toString('base64url');
+}
+
+export function challengeExpiresAt(now = Date.now()): Date {
+  return new Date(now + CHALLENGE_TTL_MS);
+}
+
+export function sessionExpiresAt(now = Date.now()): Date {
+  return new Date(now + SESSION_TTL_MS);
+}
+
+export const SESSION_COOKIE = 'blok_session';

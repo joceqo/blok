@@ -1,27 +1,147 @@
+import { eq, gt } from 'drizzle-orm';
 import { Hono } from 'hono';
+import { deleteCookie, setCookie } from 'hono/cookie';
 
-/**
- * Auth (email code, sessions) — stubs until parity harness exists.
- * Go oracle: `apps/service` auth package.
- */
-export const authRoutes = new Hono();
+import {
+  SESSION_COOKIE,
+  challengeExpiresAt,
+  generateLoginCode,
+  generateSessionToken,
+  hashSecret,
+  isValidEmail,
+  normalizeEmail,
+  sessionExpiresAt,
+} from '../auth/codes.js';
+import { authChallenges, sessions, users } from '../db/schema.js';
+import type { DbVariables } from '../middleware/db.js';
+import type { SessionVariables } from '../middleware/session.js';
 
-authRoutes.post('/api/auth/request-code', async (context) => {
-  const body: { email?: string } = await context.req.json<{ email?: string }>().catch(() => ({}));
-  const email = typeof body.email === 'string' ? body.email.trim() : '';
-  if (email.length === 0 || !email.includes('@')) {
-    return context.json({ error: 'invalid_email' }, 400);
-  }
-  // TODO: persist challenge, send via SMTP using config.mailerHost
-  return context.json({ ok: true, delivered: false, reason: 'not_implemented' });
-});
+type Env = { Variables: DbVariables & SessionVariables };
 
-authRoutes.post('/api/auth/verify-code', async (context) => {
-  const body: { email?: string; code?: string } = await context.req
-    .json<{ email?: string; code?: string }>()
-    .catch(() => ({}));
-  if (body.code === undefined || body.email === undefined) {
-    return context.json({ error: 'invalid_request' }, 400);
-  }
-  return context.json({ error: 'not_implemented' }, 501);
-});
+const exposeCode =
+  process.env.DEV_EXPOSE_AUTH_CODE === '1' || process.env.NODE_ENV === 'development';
+
+export function createAuthRoutes(): Hono<Env> {
+  const authRoutes = new Hono<Env>();
+
+  authRoutes.post('/api/auth/request-code', async (context) => {
+    const db = context.get('db');
+    const body: { email?: string } = await context.req.json<{ email?: string }>().catch(() => ({}));
+    const email = typeof body.email === 'string' ? normalizeEmail(body.email) : '';
+    if (!isValidEmail(email)) {
+      return context.json({ error: 'invalid_email' }, 400);
+    }
+
+    const code = generateLoginCode();
+    const expiresAt = challengeExpiresAt();
+
+    await db
+      .insert(authChallenges)
+      .values({ email, codeHash: hashSecret(code), expiresAt })
+      .onConflictDoUpdate({
+        target: authChallenges.email,
+        set: { codeHash: hashSecret(code), expiresAt },
+      });
+
+    if (process.env.AUTH_LOG_CODE === '1') {
+      console.error(`[auth] login code for ${email}: ${code}`);
+    }
+
+    const payload: Record<string, unknown> = { ok: true, delivered: false };
+    if (exposeCode) {
+      payload.devCode = code;
+    }
+
+    return context.json(payload);
+  });
+
+  authRoutes.post('/api/auth/verify-code', async (context) => {
+    const db = context.get('db');
+    const body: { email?: string; code?: string } = await context.req
+      .json<{ email?: string; code?: string }>()
+      .catch(() => ({}));
+    const email = typeof body.email === 'string' ? normalizeEmail(body.email) : '';
+    const code = typeof body.code === 'string' ? body.code.trim() : '';
+    if (!isValidEmail(email) || code.length === 0) {
+      return context.json({ error: 'invalid_request' }, 400);
+    }
+
+    const now = new Date();
+    const rows = await db
+      .select()
+      .from(authChallenges)
+      .where(eq(authChallenges.email, email))
+      .limit(1);
+    const challenge = rows[0];
+    if (
+      challenge === undefined ||
+      challenge.expiresAt <= now ||
+      challenge.codeHash !== hashSecret(code)
+    ) {
+      return context.json({ error: 'invalid_code' }, 401);
+    }
+
+    await db.delete(authChallenges).where(eq(authChallenges.email, email));
+
+    let user = (
+      await db.select().from(users).where(eq(users.email, email)).limit(1)
+    )[0];
+    if (user === undefined) {
+      const inserted = await db.insert(users).values({ email }).returning();
+      user = inserted[0];
+    }
+    if (user === undefined) {
+      return context.json({ error: 'user_create_failed' }, 500);
+    }
+
+    const token = generateSessionToken();
+    const session = (
+      await db
+        .insert(sessions)
+        .values({
+          userId: user.id,
+          tokenHash: hashSecret(token),
+          expiresAt: sessionExpiresAt(),
+        })
+        .returning()
+    )[0];
+    if (session === undefined) {
+      return context.json({ error: 'session_create_failed' }, 500);
+    }
+
+    setCookie(context, SESSION_COOKIE, token, {
+      httpOnly: true,
+      path: '/',
+      sameSite: 'Lax',
+      secure: process.env.COOKIE_SECURE === '1',
+      maxAge: 30 * 24 * 60 * 60,
+    });
+
+    return context.json({ ok: true, user: { id: user.id, email: user.email } });
+  });
+
+  authRoutes.post('/api/auth/logout', async (context) => {
+    const db = context.get('db');
+    const token = context.req.raw.headers.get('cookie')?.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`))?.[1];
+    if (token !== undefined) {
+      await db.delete(sessions).where(eq(sessions.tokenHash, hashSecret(token)));
+    }
+    deleteCookie(context, SESSION_COOKIE, { path: '/' });
+    return context.json({ ok: true });
+  });
+
+  authRoutes.get('/api/auth/me', async (context) => {
+    const userId = context.get('userId');
+    if (userId === undefined) {
+      return context.json({ error: 'unauthenticated' }, 401);
+    }
+    const db = context.get('db');
+    const user = (await db.select().from(users).where(eq(users.id, userId)).limit(1))[0];
+    if (user === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+    return context.json({ user: { id: user.id, email: user.email } });
+  });
+
+  return authRoutes;
+}
