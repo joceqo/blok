@@ -442,6 +442,18 @@ describe('DatabaseCardDrawer shell', () => {
       return box.innerHTML;
     };
 
+    it('hides the whole toolbar on a full page: the shell already shows the trail and the browser already goes back', () => {
+      const drawer = new DatabaseCardDrawer(createOptions({ rowActions: () => actions }));
+
+      drawer.open(ROW, 'full');
+      const toolbar = document.querySelector('[data-blok-database-drawer-toolbar]');
+
+      expect(toolbar?.hasAttribute('hidden')).toBe(true);
+      drawer.open(ROW, 'side');
+      expect(document.querySelector('[data-blok-database-drawer-toolbar]')?.hasAttribute('hidden')).toBe(false);
+      drawer.destroy();
+    });
+
     it('groups close and expand, the mode, and the row steps, with Copy link before the star and "•••"', () => {
       const drawer = new DatabaseCardDrawer(createOptions({ rowActions: () => actions }));
 

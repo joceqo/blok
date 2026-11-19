@@ -2594,6 +2594,10 @@ export class DatabaseCardDrawer {
     // A full page has no mode switcher and no row steps (R17).
     drawer.querySelectorAll<HTMLElement>('[data-blok-database-peek-mode], [data-blok-database-peek-separator], [data-blok-database-peek-prev], [data-blok-database-peek-next]')
       .forEach((el) => el.toggleAttribute('hidden', mode === 'full'));
+    // And no toolbar at all: the shell above it already carries the trail to
+    // this row, so the drawer's own crumbs repeat it, and Back is the browser's
+    // job once the row is a page of its own.
+    drawer.querySelector<HTMLElement>('[data-blok-database-drawer-toolbar]')?.toggleAttribute('hidden', mode === 'full');
     this.syncCrumbs();
     this.syncCopyLinkButton();
     drawer.querySelector<HTMLElement>('[data-blok-database-peek-expand]')?.toggleAttribute('hidden', mode === 'full');
