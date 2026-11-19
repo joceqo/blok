@@ -4,31 +4,44 @@ export function mountRemoteAssets(server: string, resolve: (url: string) => Prom
   let alive = true;
   const canonical = new WeakMap<Element, Map<string, {original: string; resolved: string}>>();
   const pending = new WeakMap<Element, Set<string>>();
-  const privateUrl = (raw: string): boolean => {
-    try { const url = new URL(raw, location.href); return url.origin === server && url.pathname.startsWith('/files/') && !url.searchParams.has('grant'); } catch { return false; }
+  const serverOrigin = new URL(server).origin;
+  const privateUrl = (raw: string): string | null => {
+    try {
+      // Stored icons/avatars may be root-relative. In Tauri, location is the
+      // bundled application, not the server that owns the workspace's files.
+      const url = new URL(raw, serverOrigin);
+      return url.origin === serverOrigin && !url.username && !url.password && url.pathname.startsWith('/files/') && !url.searchParams.has('grant') ? url.href : null;
+    } catch { return null; }
   };
   // Binary previews and downloads fetch canonical URLs, unlike media elements.
   const fetchWithPrivateAssets: typeof fetch = async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    if (!privateUrl(url)) return originalFetch.call(window, input, init);
-    const signed = await resolve(url);
+    const asset = privateUrl(url);
+    if (!asset) return originalFetch.call(window, input, init);
+    const signed = await resolve(asset);
     return originalFetch.call(window, input instanceof Request ? new Request(signed, input) : signed, init);
   };
   window.fetch = fetchWithPrivateAssets;
   async function refresh(element: Element, attribute: string): Promise<void> {
     const raw = element.getAttribute(attribute);
-    if (!raw || !privateUrl(raw)) return;
+    const asset = raw && privateUrl(raw);
+    if (!raw || !asset) return;
     const inFlight = pending.get(element) ?? new Set<string>();
     if (inFlight.has(attribute)) return;
     pending.set(element, inFlight); inFlight.add(attribute);
     try {
-      const resolved = await resolve(raw);
+      const resolved = await resolve(asset);
       if (!alive || element.getAttribute(attribute) !== raw) return;
       const entries = canonical.get(element) ?? new Map();
       entries.set(attribute, {original: raw, resolved}); canonical.set(element, entries);
       element.setAttribute(attribute, resolved);
     } catch { /* Preserve canonical src; retry on the next render or media error. */ }
-    finally { inFlight.delete(attribute); }
+    finally {
+      inFlight.delete(attribute);
+      // A renderer may reuse an img while the first signature is in flight.
+      // Its mutation was skipped above; resolve the latest source now.
+      if (alive && element.getAttribute(attribute) !== raw) void refresh(element, attribute);
+    }
   }
   function scan(element: Element): void {
     for (const node of [element, ...element.querySelectorAll('img,video,audio,source,a[href]')]) {
@@ -62,7 +75,7 @@ export function mountRemoteAssets(server: string, resolve: (url: string) => Prom
     const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null;
     if (!anchor || opening.has(anchor)) return;
     const known = canonical.get(anchor)?.get('href');
-    const original = privateUrl(anchor.href) ? anchor.href : known && known.resolved === anchor.href ? known.original : null;
+    const original = privateUrl(anchor.getAttribute('href') ?? '') ?? (known && known.resolved === anchor.href ? privateUrl(known.original) : null);
     if (!original) return;
     event.preventDefault();
     const before = anchor.href;
