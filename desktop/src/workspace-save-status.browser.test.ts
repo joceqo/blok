@@ -6,7 +6,7 @@ import { createServer, type ViteDevServer } from 'vite';
 import { chromium, webkit, type Page } from 'playwright';
 import type { createWorkspaceSaveStatus } from './workspace-save-status';
 
-type FixtureWindow = Window & {
+type FixtureWindow = typeof window & {
   indicator: ReturnType<typeof createWorkspaceSaveStatus>;
   updateSave: (state: 'pending' | 'saved') => void;
 };
