@@ -10,6 +10,9 @@
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 * { box-sizing: border-box; }
+/* Keep the icon's space without painting WebKit's broken-image badge while
+   its private URL is authorized and the image bytes arrive. */
+img[data-desktop-asset-loading] { visibility: hidden; }
 html, body, #app, [data-desktop-shell] { height: 100%; margin: 0; }
 [data-desktop-shell] {
   --desktop-sidebar-width: 260px;

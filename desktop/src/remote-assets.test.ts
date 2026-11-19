@@ -8,6 +8,84 @@ const signed = `${canonical}?grant=short-lived`;
 const cleanups: Array<()=>void> = [];
 afterEach(() => { cleanups.splice(0).forEach((fn)=>fn()); document.body.replaceChildren(); vi.restoreAllMocks(); });
 describe('native private media transport', () => {
+  it('shares a pending signature between a table icon, peek icon and binary preview', async () => {
+    let finish!: (value: string) => void;
+    const resolve = vi.fn(() => new Promise<string>((done) => { finish = done; }));
+    const original = vi.spyOn(window, 'fetch').mockResolvedValue(new Response('asset'));
+    const table = document.createElement('img');
+    table.src = '/files/image.png';
+    document.body.append(table);
+    cleanups.push(mountRemoteAssets(server, resolve));
+    const peek = document.createElement('img');
+    peek.src = canonical;
+    document.body.append(peek);
+    await new Promise((done) => setTimeout(done, 0));
+    expect(resolve).toHaveBeenCalledTimes(1);
+    finish(signed);
+    await vi.waitFor(() => expect(peek.src).toBe(signed));
+    expect(table.src).toBe(signed);
+    await window.fetch(canonical);
+    expect(original).toHaveBeenCalledWith(signed, undefined);
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+  it('hides the provisional broken image until the authorized image has loaded, without hiding external images', async () => {
+    let finish!: (value: string) => void;
+    const img = document.createElement('img');
+    img.src = '/files/image.png';
+    const external = document.createElement('img');
+    external.src = 'https://external.org/image.png';
+    document.body.append(img, external);
+    cleanups.push(mountRemoteAssets(server, () => new Promise((done) => { finish = done; })));
+    expect(img.hasAttribute('data-desktop-asset-loading')).toBe(true);
+    expect(external.hasAttribute('data-desktop-asset-loading')).toBe(false);
+    img.dispatchEvent(new Event('load')); // A stale event cannot reveal the provisional source.
+    expect(img.hasAttribute('data-desktop-asset-loading')).toBe(true);
+    finish(signed);
+    await vi.waitFor(() => expect(img.src).toBe(signed));
+    expect(img.hasAttribute('data-desktop-asset-loading')).toBe(true);
+    Object.defineProperty(img, 'naturalWidth', { value: 64 });
+    img.dispatchEvent(new Event('load'));
+    expect(img.hasAttribute('data-desktop-asset-loading')).toBe(false);
+  });
+  it('renews cached signatures before their server expiry', async () => {
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    vi.spyOn(window, 'fetch').mockResolvedValue(new Response('asset'));
+    const resolve = vi.fn(async () => `${signed}&expires=${Math.floor(now / 1000) + 20}`);
+    cleanups.push(mountRemoteAssets(server, resolve));
+    await window.fetch(canonical);
+    clock.mockReturnValue(now + 10_000);
+    await window.fetch(canonical);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    clock.mockReturnValue(now + 21_000);
+    await window.fetch(canonical);
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+  it('releases pending image state on teardown and ignores a late signature', async () => {
+    let finish!: (value: string) => void;
+    const img = document.createElement('img');
+    img.src = '/files/image.png';
+    document.body.append(img);
+    const destroy = mountRemoteAssets(server, () => new Promise((done) => { finish = done; }));
+    expect(img.hasAttribute('data-desktop-asset-loading')).toBe(true);
+    destroy();
+    expect(img.hasAttribute('data-desktop-asset-loading')).toBe(false);
+    finish(signed);
+    await new Promise((done) => setTimeout(done, 0));
+    expect(img.getAttribute('src')).toBe('/files/image.png');
+  });
+  it('does not leave an image hidden if its source changes to an external URL while signing', async () => {
+    let finish!: (value: string) => void;
+    const img = document.createElement('img');
+    img.src = '/files/image.png';
+    document.body.append(img);
+    cleanups.push(mountRemoteAssets(server, () => new Promise((done) => { finish = done; })));
+    img.src = 'https://external.org/new.png';
+    await vi.waitFor(() => expect(img.hasAttribute('data-desktop-asset-loading')).toBe(false));
+    finish(signed);
+    await new Promise((done) => setTimeout(done, 0));
+    expect(img.src).toBe('https://external.org/new.png');
+  });
   it('resolves stored relative custom icons and avatars against the workspace server', async () => {
     const icon = document.createElement('span');
     renderPageIcon(icon, '/files/image.png');

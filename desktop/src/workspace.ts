@@ -126,7 +126,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   };
   const emojis = customEmojiStore(ref);
   const pageIcon = (value: string) => /^(https?:|data:image\/|\/files\/)/i.test(value) ? {type: 'image' as const, url: value} : {type: 'emoji' as const, value};
-  if (ref.kind === 'remote' && '__TAURI_INTERNALS__' in window) mountRemoteAssets(ref.server, repository.assetUrl);
+  const unmountRemoteAssets = ref.kind === 'remote' && '__TAURI_INTERNALS__' in window ? mountRemoteAssets(ref.server, repository.assetUrl) : undefined;
   // L'interface ne savait dire qu'une chose : cet espace est-il en lecture seule ?
   // Elle dit désormais : cette page-ci l'est-elle. Le niveau vient de l'index, et
   // se réévalue à chaque fois qu'il est reçu.
@@ -1627,6 +1627,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     },
     destroy() {
       if (sessions.disposed) return;
+      unmountRemoteAssets?.();
       rowPresentation.observer?.disconnect(); rowPresentation.dispose();
       lifetime.abort(); unsubscribeSidebar(); memberProfiles?.destroy();
       if (sessions.reconnectTimer !== undefined) window.clearInterval(sessions.reconnectTimer);
