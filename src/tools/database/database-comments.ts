@@ -111,6 +111,7 @@ export class BuiltInCommentsUi {
 
   /** The row page's "Comments" section (research/12 §3): threads, then an always-shown composer. */
   public section(rowId: string): HTMLElement {
+    this.releaseDetachedPanels();
     const section = document.createElement('section');
     const label = document.createElement('div');
     const panel = this.panel(rowId, undefined);
@@ -189,10 +190,7 @@ export class BuiltInCommentsUi {
     this.redraw = setTimeout(() => {
       this.redraw = null;
       // A row page that closed took its section out of the page.
-      [...this.panels].filter((panel) => !panel.element.isConnected).forEach((panel) => {
-        panel.destroy();
-        this.panels.delete(panel);
-      });
+      this.releaseDetachedPanels();
       this.panels.forEach((panel) => panel.refresh());
       // A feed redraw replaced its cards, and their boxes with them.
       [...this.boxes].forEach(([element, box]) => {
@@ -207,6 +205,13 @@ export class BuiltInCommentsUi {
       this.options.onChange();
     }, 0);
   };
+
+  private releaseDetachedPanels(): void {
+    [...this.panels].filter((panel) => !panel.element.isConnected).forEach((panel) => {
+      panel.destroy();
+      this.panels.delete(panel);
+    });
+  }
 
   /** "1 reply" or "N replies", then the latest comment's time; opens the thread. */
   private feedSummary(rowId: string, comments: StoredComment[]): HTMLElement {

@@ -578,6 +578,7 @@ export class DatabaseCardDrawer {
   private readonly customEmojis: CardDrawerOptions['customEmojis'];
   private readonly backlinks: CardDrawerOptions['backlinks'];
   private readonly comments: CardDrawerOptions['comments'];
+  private commentsSection: HTMLElement | null = null;
   private readonly onCommentProperty: CardDrawerOptions['onCommentProperty'];
   private readonly notify: CardDrawerOptions['notify'];
   /** The open "Linked to this page" list; it shares the mode menu's slot. */
@@ -981,9 +982,7 @@ export class DatabaseCardDrawer {
     });
     content.appendChild(titleInput);
 
-    const comments = this.comments?.(row.id) ?? null;
-
-    if (comments !== null) content.appendChild(comments);
+    this.renderComments(content, row.id);
 
     // --- Divider ---
     const divider = document.createElement('hr');
@@ -1163,6 +1162,11 @@ export class DatabaseCardDrawer {
 
     this.drawer.querySelector('[data-blok-database-drawer-page-head]')?.replaceWith(this.buildPageHead(row));
     this.syncCrumbs();
+    const content = this.drawer.querySelector<HTMLElement>('[data-blok-database-drawer-content]');
+
+    // The panel's thread reader and submit callbacks capture a row ID. Replace
+    // it immediately, before yielding the new row's properties/body to a frame.
+    if (content !== null) this.renderComments(content, row.id);
 
     // Reinitialize editor
     const editorHolder = this.drawer.querySelector<HTMLElement>('[data-blok-database-drawer-editor]');
@@ -1175,6 +1179,14 @@ export class DatabaseCardDrawer {
       this.mountRowBodyAfterPaint(nextHolder, row, true);
     }
     if (editorHolder === null) this.renderRegions(row);
+  }
+
+  private renderComments(content: HTMLElement, rowId: string): void {
+    this.commentsSection?.remove();
+    this.commentsSection = this.comments?.(rowId) ?? null;
+    if (this.commentsSection !== null) {
+      content.insertBefore(this.commentsSection, content.querySelector(':scope > hr'));
+    }
   }
 
   close(options?: { navigate?: boolean }): void {

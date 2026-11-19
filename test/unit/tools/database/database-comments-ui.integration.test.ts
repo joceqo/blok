@@ -55,7 +55,7 @@ if (typeof document.elementFromPoint !== 'function') {
 let editor: TestEditor | undefined;
 let holder: HTMLDivElement | undefined;
 
-const make = async (config: Record<string, unknown> = {}, companions = true): Promise<TestEditor> => {
+const make = async (config: Record<string, unknown> = {}, companions = true, blocks = doc()): Promise<TestEditor> => {
   editor = new Blok({
     holder,
     dataModel: 'hierarchical',
@@ -64,7 +64,7 @@ const make = async (config: Record<string, unknown> = {}, companions = true): Pr
       database: { class: DatabaseTool, config },
       ...(companions ? { 'database-row': DatabaseRowTool, 'database-comment': DatabaseCommentTool } : {}),
     },
-    data: { blocks: doc() },
+    data: { blocks },
   } as never) as unknown as TestEditor;
   await editor.isReady;
   await quiet();
@@ -117,6 +117,47 @@ describe('built-in database comments', () => {
     holder?.remove();
     document.body.innerHTML = '';
     vi.restoreAllMocks();
+  });
+
+  it('switches threads and the composer target when navigating between rows in the same peek', async () => {
+    const blocks = doc();
+
+    blocks[0]!.content = ['r1', 'r2', 'r3'];
+    blocks.push(
+      { id: 'r2', type: 'database-row', parent: 'db', data: { properties: { t: 'Two' }, position: 'a1' } },
+      { id: 'r3', type: 'database-row', parent: 'db', data: { properties: { t: 'Three' }, position: 'a2' } },
+    );
+    await make({}, true, blocks);
+    holder?.querySelector<HTMLElement>('[data-row-id="r1"] [data-blok-database-table-open]')?.click();
+    await quiet();
+    await send('Only on One');
+    const firstSection = holder?.querySelector('[data-blok-database-comments-section]');
+    const input = composerInput()!;
+
+    input.value = 'Unsent draft for One';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    holder?.querySelector<HTMLElement>('[data-blok-database-peek-next]')?.click();
+    // Even before deferred details/body mount, the old composer must be gone.
+    expect(firstSection?.isConnected).toBe(false);
+    await quiet();
+    expect(holder?.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]')?.value).toBe('Two');
+    expect(holder?.querySelector('[data-blok-database-comment-text]')).toBeNull();
+    expect(composerInput()?.value).toBe('');
+    await send('Only on Two');
+    expect(await savedComments()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ parent: 'r1', data: expect.objectContaining({ text: 'Only on One' }) }),
+      expect.objectContaining({ parent: 'r2', data: expect.objectContaining({ text: 'Only on Two' }) }),
+    ]));
+    holder?.querySelector<HTMLElement>('[data-blok-database-peek-next]')?.click();
+    await quiet();
+    expect(holder?.querySelector('[data-blok-database-comment-text]')).toBeNull();
+    holder?.querySelector<HTMLElement>('[data-blok-database-peek-prev]')?.click();
+    await quiet();
+    expect(holder?.querySelector('[data-blok-database-comment-text]')?.textContent).toBe('Only on Two');
+    holder?.querySelector<HTMLElement>('[data-blok-database-peek-prev]')?.click();
+    await quiet();
+    expect(holder?.querySelector('[data-blok-database-comment-text]')?.textContent).toBe('Only on One');
+    expect(holder?.querySelectorAll('[data-blok-database-comments-section]')).toHaveLength(1);
   });
 
   it('the row menu\'s Comment opens a composer that writes a thread on that row, then a badge shows its count', async () => {
