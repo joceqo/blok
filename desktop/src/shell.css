@@ -212,8 +212,8 @@ body[data-blok-theme="light"] [data-desktop-floating-toc] {
 /* A promoted peek is positioned against the window, not the workspace.
    Reserve the native tab strip for both its panel and its click shield,
    including the shell retained while the side panel slides closed. */
-[data-desktop-shell] :is([data-blok-database-drawer], [data-blok-database-peek-backdrop], [data-blok-database-peek-exiting])[data-peek-mode="side"],
-[data-desktop-shell] :is([data-blok-database-drawer], [data-blok-database-peek-backdrop], [data-blok-database-peek-exiting])[data-peek-mode="side"][data-blok-top-layer][popover] {
+[data-desktop-native] [data-desktop-shell] :is([data-blok-database-drawer], [data-blok-database-peek-backdrop], [data-blok-database-peek-exiting])[data-peek-mode="side"],
+[data-desktop-native] [data-desktop-shell] :is([data-blok-database-drawer], [data-blok-database-peek-backdrop], [data-blok-database-peek-exiting])[data-peek-mode="side"][data-blok-top-layer][popover] {
   top: var(--desktop-tabstrip-height);
   height: calc(100dvh - var(--desktop-tabstrip-height));
 }

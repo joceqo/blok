@@ -19,6 +19,10 @@ startBootProfile();
 
 const root = document.querySelector('#app');
 const native = '__TAURI_INTERNALS__' in window;
+// Only the native build owns a tab strip the window manager draws around; on the
+// web the same strip is page chrome, and a side sheet has no reason to start
+// below it. Styles that reserve it key off this marker (shell.css).
+if (native) document.documentElement.setAttribute('data-desktop-native', '');
 if (native) mountPeekDiagnostics();
 
 function manageSectionFromParams(params: URLSearchParams): 'invites' | 'members' | undefined {
