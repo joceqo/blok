@@ -1,9 +1,11 @@
+import type { API } from '../../types';
 import type { BlokConfig } from '../../types/configs';
 import type { DatabaseRowPages } from '../../types/tools/database';
 import { measurePeek, peekProfileFor } from '../../src/components/utils/peek-profile';
 
 /** Only the editor surface needed by a mounted row body. */
 export interface RowPageEditor {
+  blocks?: API['blocks'];
   isReady: Promise<unknown>;
   readOnly: { set(state: boolean): Promise<boolean> };
   saver: { flush(): Promise<unknown> };
@@ -29,6 +31,7 @@ export interface DesktopRowPagesOptions {
 }
 
 export interface DesktopRowPages extends DatabaseRowPages {
+  mountedEditor(pageId: string): RowPageEditor | undefined;
   flush(): Promise<void>;
   destroy(): void;
 }
@@ -173,6 +176,9 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
       }
     },
     isReady(pageId) { return idle.get(pageId)?.ready === true; },
+    mountedEditor(pageId) {
+      return [...mounts].find(entry => entry.pageId === pageId && entry.active && !entry.disposed)?.editor;
+    },
 
     mount(pageId, holder) {
       if (destroyed) throw new Error('Row pages host has been destroyed');

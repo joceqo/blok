@@ -1,3 +1,5 @@
+import type { PageLocation } from './storage';
+import type { RowLocationStep } from './row-route';
 import type { CloudClient, CloudSession, CloudWorkspace } from './cloud/client';
 export type PageDestination = {kind:'public';id:string}|{kind:'legacy';id:string}|{kind:'invalid'}|{kind:'none'};
 const UUID='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
@@ -24,22 +26,35 @@ export function pageNavigationUrl(destination: string, currentHref = location.hr
   if (new URL(currentHref).searchParams.get('profile') === '1') url.searchParams.set('profile', '1');
   return url;
 }
-export interface ResolvedPage {pageId:string;publicId:string;title:string;workspace:CloudWorkspace;teamspaceId:string|null;rowBodyOf?:{documentId:string;rowId:string}}
-export interface RowPageDestination {documentId:string;rowId:string;databaseId?:string;pageId?:string}
+export interface ResolvedPage {pageId:string;publicId:string;title:string;workspace:CloudWorkspace;teamspaceId:string|null;rowBodyOf?:{documentId:string;rowId:string};location?:PageLocation}
+export interface RowPageDestination {documentId:string;rowId:string;databaseId?:string;pageId?:string;steps?:RowLocationStep[]}
 // Resolver context is transient. Internal row bodies never become sidebar pages.
-const resolvedRows=new Map<string,RowPageDestination>();
+const resolvedRows=new Map<string,{route:RowPageDestination;bodyDocumentId:string}>();
 export function rememberResolvedRowPage(origin:string,page:ResolvedPage):void {
   const keys=[`${origin}|public|${page.publicId.toLowerCase()}`,`${origin}|legacy|${page.pageId}`];
-  for(const key of keys){
-    if(page.rowBodyOf)resolvedRows.set(key,{...page.rowBodyOf,pageId:page.pageId});
-    else resolvedRows.delete(key);
+  if (!page.rowBodyOf) { keys.forEach(key => resolvedRows.delete(key)); return; }
+  const steps=page.location?.rows.map(({documentId,rowId,databaseId})=>({documentId,rowId,databaseId}));
+  const route:RowPageDestination={...page.rowBodyOf,pageId:page.pageId};
+  if(page.location && steps?.length){
+    route.documentId=page.location.documentId;
+    route.steps=steps;
+    route.databaseId=steps.at(-1)?.databaseId;
   }
+  keys.forEach(key => resolvedRows.set(key,{route,bodyDocumentId:page.pageId}));
 }
 export function rowPageDestination(href:string):RowPageDestination|null {
   const url=new URL(href,location.href),destination=pageDestination(url.href);
-  if(destination.kind==='public' || destination.kind==='legacy'){
-    const resolved=resolvedRows.get(`${url.origin}|${destination.kind}|${destination.id}`);
-    if(resolved)return {...resolved};
+  const resolved = destination.kind==='public' || destination.kind==='legacy'
+    ? resolvedRows.get(`${url.origin}|${destination.kind}|${destination.id}`) : undefined;
+  if(resolved){
+    const rowId=url.searchParams.get('row'),databaseId=url.searchParams.get('database');
+    if(rowId && resolved.route.steps){
+      return {documentId:resolved.route.documentId,rowId,...(databaseId ? {databaseId} : {}),steps:[
+        ...resolved.route.steps,
+        {documentId:resolved.bodyDocumentId,rowId,...(databaseId ? {databaseId} : {})},
+      ]};
+    }
+    return {...resolved.route};
   }
   const rowId=url.searchParams.get('row'),documentId=pageIdForHref(url.href);
   if(!rowId || !documentId)return null;

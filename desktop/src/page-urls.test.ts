@@ -77,3 +77,17 @@ describe('library routes', () => {
   expect(workspaceSwitchUrl('https://example.org/?library=recent', false)).toBe('https://example.org/');
  });
 });
+
+it('routes a row inside a separated body through its visible ancestor on reload', () => {
+  const publicId = '88888888-8888-4888-8888-888888888888';
+  const resolved = {pageId:'body-nested', publicId, title:'Sprint', workspace:{id:'w',slug:'w',name:'W',role:'admin' as const},teamspaceId:null,
+    rowBodyOf:{documentId:'host',rowId:'sprint'},
+    location:{documentId:'host',blockId:'sprint',rows:[{documentId:'host',rowId:'sprint',databaseId:'sprints',title:'Sprint'}]}};
+  rememberResolvedRowPage(location.origin, resolved);
+  expect(rowPageDestination(`${location.origin}/p/sprint-${publicId}?row=task&database=tasks`)).toEqual({
+    documentId:'host',rowId:'task',databaseId:'tasks',steps:[
+      {documentId:'host',rowId:'sprint',databaseId:'sprints'},
+      {documentId:'body-nested',rowId:'task',databaseId:'tasks'},
+    ],
+  });
+});

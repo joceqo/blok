@@ -58,7 +58,7 @@ func (s *Service) initMCP() error {
 		s.registerMCPDebugTraces(server)
 		server.AddTool(&mcp.Tool{Name: "blok_list_workspaces", Description: "List workspaces available to the signed-in user.", InputSchema: json.RawMessage(`{"type":"object","properties":{}}`)}, s.mcpListWorkspaces)
 		server.AddTool(&mcp.Tool{Name: "blok_list_teamspaces", Description: "List real closed teamspaces nested in a workspace; metadata does not grant content access.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"includeArchived":{"type":"boolean"}},"required":["workspace"]}`)}, s.mcpListTeamspaces)
-		server.AddTool(&mcp.Tool{Name: "blok_list_pages", Description: "List pages in a workspace by slug.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"}},"required":["workspace"]}`)}, s.mcpListPages)
+		server.AddTool(&mcp.Tool{Name: "blok_list_pages", Description: "List pages in a workspace by slug. parentId is the containing document used for storage and access. When present, location.blockId in location.blockDocumentId identifies the structural parent; location.documentId is the visible routing root and location.rows is its authorized row breadcrumb path; location.rows carries each rowId, databaseId and documentId. It is a read-only projection, not a destination argument for create/move.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"}},"required":["workspace"]}`)}, s.mcpListPages)
 		server.AddTool(&mcp.Tool{Name: "blok_create_page", Description: "Create a page. Root pages are private by default; with teamspaceId roots are shared only with that teamspace. Children inherit parent access. Use visibility=workspace explicitly for a shared root. Members and admins may create pages.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"title":{"type":"string"},"parentId":{"type":"string"},"teamspaceId":{"type":"string"},"visibility":{"type":"string","enum":["private","workspace","inherit"]}},"required":["workspace","title"]}`)}, s.mcpCreatePage)
 		server.AddTool(&mcp.Tool{Name: "blok_upload_image", Description: "Upload a private workspace image (PNG, JPEG, GIF or WebP, up to 5 MiB). Returns a persistent /files/ URL to use in document content. Requires workspace write access.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"dataUrl":{"type":"string"}},"required":["workspace","dataUrl"],"additionalProperties":false}`)}, s.mcpUploadImage)
 		if err := attached.Attach(server); err != nil {
@@ -360,6 +360,11 @@ func (s *Service) mcpListPages(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 	if rows.Err() != nil {
 		return mcpError("Could not list pages"), nil
+	}
+	rows.Close()
+	locations := newPageLocationReader(ctx, s, s.DB, ctx.Value(mcpUserKey{}).(identity).ID, ws.ID)
+	if err = locations.decorate(pages); err != nil {
+		return mcpError("Could not list page locations"), nil
 	}
 	return mcpText(map[string]any{"pages": pages}), nil
 }

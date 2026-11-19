@@ -1,7 +1,8 @@
+import type { BlockAPI } from '../../types';
 import type { BlokConfig } from '../../types/configs';
 import type { DatabaseRowPages } from '../../types/tools/database';
 import { createDesktopRowPages, type DesktopRowPages } from './row-pages';
-import { openRowRoute, rowRoutePath, type RowRouteStep } from './row-route';
+import { openRowLocation, openRowRoute, rowRoutePath, type RowRouteStep } from './row-route';
 import {createPageHistoryApi} from './page-history-api';
 import type {createPageHistory} from './page-history';
 import { createPagePresence } from './page-presence';
@@ -187,6 +188,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     id: string;
     page: DesktopPage;
     editor: Blok;
+    rowPages?: DesktopRowPages;
     permission: string;
     active: boolean;
     ready: boolean;
@@ -291,11 +293,30 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     onRoute();
   };
   const rowPresentation = { session: null as PageSession | null, databaseId: '', rowId: '', steps: [] as RowRouteStep[], pending: null as AbortController | null, parentScroll: 0, observer: null as MutationObserver | null, dispose: () => {}, refresh: () => {} };
-  const navigateRowAncestor = (documentId: string, step: RowRouteStep): void => {
-    const parentUrl = '__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href,documentId) : pageUrl(documentId);
-    history.pushState(null, '', pageNavigationUrl(rowPageUrl(parentUrl, step.row.id, step.database.id)));
-    onRoute();
+  const rowCrumbNavigation = {request: 0};
+  const navigateRow = (documentId: string, rowId: string, databaseId: string): void => {
+    const request = ++rowCrumbNavigation.request;
+    const requestedHref = location.href;
+    const requestedRoute = routeRevision;
+    const current = (): boolean => !sessions.disposed && request === rowCrumbNavigation.request && requestedRoute === routeRevision && location.href === requestedHref;
+    void (async () => {
+      const target = {href: '__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href, documentId) : pageUrl(documentId)};
+      // A body is not a sidebar document. Resolve its owner before following a
+      // row inside it, so routing can mount the whole chain of body editors.
+      if (ref.kind === 'remote' && !ws.index?.pages.some(page => page.id === documentId)) {
+        const client = new CloudClient({origin:ref.server,...('__TAURI_INTERNALS__' in window ? {sessionAdapter:nativeSessionAdapter(ref.server)} : {})});
+        const resolved = await client.request<ResolvedPage>(`/api/pages/resolve-id/${encodeURIComponent(documentId)}`);
+        if (!current()) return;
+        if (resolved.pageId !== documentId || !resolved.rowBodyOf || resolved.workspace.id !== ref.id || resolved.workspace.slug !== ref.workspaceId) throw new Error('Page indisponible.');
+        rememberResolvedRowPage(location.origin, resolved);
+        target.href = '__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href, documentId) : publicPageUrl(ref.server, resolved.title, resolved.publicId);
+      }
+      if (!current()) return;
+      history.pushState(null, '', pageNavigationUrl(rowPageUrl(target.href, rowId, databaseId)));
+      onRoute();
+    })().catch(error => { if (current()) showError(error, 'document'); });
   };
+  const navigateRowAncestor = (documentId: string, step: RowRouteStep): void => navigateRow(step.documentId ?? documentId, step.row.id, step.database.id);
   let clearingRowPresentation = false;
   const clearRowPresentation = (): void => {
     rowPresentation.pending?.abort(); rowPresentation.pending = null;
@@ -319,28 +340,45 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (sessions.disposed || sessions.current !== session || location.href !== href) return;
     const route = rowPageDestination(href);
     if (!route) { clearRowPresentation(); return; }
-    const row = session.editor.blocks.getById(route.rowId);
-    const databaseId = route.databaseId ?? row?.parentId;
-    const database = databaseId ? session.editor.blocks.getById(databaseId) : undefined;
-    const data: Array<{pageId?: string}> = [];
-    row?.call('readData', {receive: (value: {pageId?: string}) => { data.push(value); }});
-    if (!row || row.name !== 'database-row' || !database || database.name !== 'database' || row.parentId !== database.id || (route.pageId && (data[0] ?? row.preservedData)?.pageId !== route.pageId)) {
-      clearRowPresentation(); showUnavailablePage(); return;
-    }
-    if (rowPresentation.session !== session || rowPresentation.databaseId !== databaseId) clearRowPresentation();
     const opening = rowPresentation.session !== session || rowPresentation.rowId !== route.rowId;
+    if (rowPresentation.session !== session || rowPresentation.databaseId !== route.databaseId || route.steps) clearRowPresentation();
     if (rowPresentation.session === null) rowPresentation.parentScroll = ws.pageCanvas.scrollTop;
-    rowPresentation.session = session; rowPresentation.databaseId = database.id; rowPresentation.rowId = route.rowId;
     const pending = new AbortController();
     rowPresentation.pending?.abort(); rowPresentation.pending = pending;
+    rowPresentation.session = session; rowPresentation.rowId = route.rowId;
     const current = (): boolean => !pending.signal.aborted && !sessions.disposed && sessions.current === session && location.href === href;
+    const resolved = {row: undefined as BlockAPI | undefined, database: undefined as BlockAPI | undefined, steps: [] as RowRouteStep[]};
     try {
-      rowPresentation.steps = rowRoutePath(session.editor.blocks, row, database);
-      await openRowRoute(session.editor.blocks, row, database, pending.signal);
+      if (route.steps) {
+        resolved.steps = await openRowLocation(id, session.editor.blocks, route.steps, bodyId => session.rowPages?.mountedEditor(bodyId), pending.signal, steps => { if (current()) rowPresentation.steps = steps; });
+        const last = resolved.steps.at(-1);
+        resolved.row = last?.row; resolved.database = last?.database;
+      } else {
+        resolved.row = session.editor.blocks.getById(route.rowId) ?? undefined;
+        const databaseId = route.databaseId ?? resolved.row?.parentId;
+        resolved.database = databaseId ? session.editor.blocks.getById(databaseId) ?? undefined : undefined;
+      }
+      if (!current()) return;
+      const {row, database} = resolved;
+      const data: Array<{pageId?: string}> = [];
+      row?.call('readData', {receive: (value: {pageId?: string}) => { data.push(value); }});
+      if (!row || row.name !== 'database-row' || !database || database.name !== 'database' || row.parentId !== database.id || (route.pageId && (data[0] ?? row.preservedData)?.pageId !== route.pageId)) {
+        clearRowPresentation(); showUnavailablePage(); return;
+      }
+      if (!route.steps) {
+        resolved.steps = rowRoutePath(session.editor.blocks, row, database);
+        rowPresentation.steps = resolved.steps;
+        await openRowRoute(session.editor.blocks, row, database, pending.signal);
+      }
+      if (!current()) return;
+      rowPresentation.steps = resolved.steps;
+      rowPresentation.session = session; rowPresentation.databaseId = database.id; rowPresentation.rowId = route.rowId;
     } catch (error) {
       if (current()) { clearRowPresentation(); showUnavailablePage(); throw error; }
       return;
     }
+    const {database} = resolved;
+    if (!database) return;
     if (!current()) return;
     if (opening) { ws.pageCanvas.scrollTop = 0; window.scrollTo({top:0,left:0,behavior:'instant'}); }
     // A held source mounts its row in the visible owner database's wrapper.
@@ -351,7 +389,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         ?? editorSurface.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]')?.value;
       if (!title) return;
       document.title = title;
-      const parent = breadcrumbs(id).map(crumb => ({...crumb, onOpen: () => navigate(crumb.id)}));
+      const parent = breadcrumbs(id).map(crumb => ({...crumb, onOpen: crumb.onOpen ?? (() => navigate(crumb.id))}));
       const ancestors = rowPresentation.steps.slice(0, -1).map(step => {
         const schema = step.database.preservedData?.schema as Array<{id:string;type:string}> | undefined;
         const titleId = schema?.find(property => property.type === 'title')?.id;
@@ -460,13 +498,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const pages = ws.index.pages;
     const byId = new Map(pages.map((page) => [page.id, page]));
     const seen = new Set<string>();
-    const trail: ShellPage[] = [];
+    const trail: DesktopPage[] = [];
     const trailState = { page: byId.get(pageId) };
 
     while (trailState.page && !seen.has(trailState.page.id)) {
       trail.unshift(trailState.page);
       seen.add(trailState.page.id);
-      trailState.page = trailState.page.parentId ? byId.get(trailState.page.parentId) : undefined;
+      const parentId = trailState.page.location?.documentId ?? trailState.page.parentId;
+      trailState.page = parentId ? byId.get(parentId) : undefined;
     }
     const choicesFor = (parentId: string | null, selectedId: string, visited: Set<string> = new Set()): PageBreadcrumbChoice[] =>
       pages.filter((candidate) => candidate.parentId === parentId && !visited.has(candidate.id)).map((candidate) => {
@@ -479,12 +518,18 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           onOpen: () => navigate(candidate.id),
         };
       });
-    return trail.map((item, position) => ({
-      id: item.id, title: item.title, icon: item.icon,
-      ...(position < trail.length - 1 ? { onOpen: () => navigate(item.id) } : {}),
-      menuHeading: breadcrumbMenuHeading(item.parentId, byId),
-      menu: choicesFor(item.parentId, item.id),
-    }));
+    return trail.flatMap((item, position): PageBreadcrumbItem[] => [
+      ...(item.location?.rows ?? []).map(row => ({
+        id: row.rowId, title: row.title, icon: row.icon,
+        onOpen: () => navigateRow(row.documentId, row.rowId, row.databaseId),
+      })),
+      {
+        id: item.id, title: item.title, icon: item.icon,
+        ...(position < trail.length - 1 ? { onOpen: () => navigate(item.id) } : {}),
+        menuHeading: breadcrumbMenuHeading(item.parentId, byId),
+        menu: choicesFor(item.parentId, item.id),
+      },
+    ]);
   };
   const showError = (error: unknown, source = 'operation'): void => {
     // Un retrait d'accès ferme la session en moins de cinq secondes côté
@@ -571,6 +616,19 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       await previous.flush();
     }
     if (sessions.disposed || ws.selection !== request) return;
+    // A new page can be opened before the next manifest poll. The outgoing
+    // document has now flushed its link; resolve ancestry without delaying paint.
+    if (ref.kind === 'remote' && page.parentId && !page.location) {
+      const parentId = page.parentId;
+      const client = new CloudClient({origin:ref.server,...('__TAURI_INTERNALS__' in window ? {sessionAdapter:nativeSessionAdapter(ref.server)} : {})});
+      void client.request<ResolvedPage>(`/api/pages/resolve-id/${encodeURIComponent(id)}`).then(resolved => {
+        if (sessions.disposed || ws.selection !== request || resolved.pageId !== id || resolved.workspace.id !== ref.id || resolved.workspace.slug !== ref.workspaceId) return;
+        const target = ws.index?.pages.find(candidate => candidate.id === id);
+        if (!target || target.parentId !== parentId || !resolved.location) return;
+        target.location = resolved.location;
+        if (ws.currentId === id) { ws.pageToolbar?.setBreadcrumbs(breadcrumbs(id)); rowPresentation.refresh(); }
+      }).catch(() => undefined); // Optional navigation metadata; offline page editing remains available.
+    }
     ws.index.activeId = id;
     if (ref.kind === 'local') saveManifest();
     ws.frame.setActiveShortcut(null);
@@ -761,19 +819,23 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       } finally { sync.localWrites--; updatePending(); }
     };
     let rowNavigationRequest = 0;
+    const hostedRowNavigation = (documentId: string): NonNullable<DatabaseRowPages['navigation']> => ({
+      current: () => {
+        const route = rowPageDestination(location.href);
+        if (clearingRowPresentation || !life.active || route?.documentId !== id) return null;
+        const rootRow = documentId === id ? route : undefined;
+        const hosted = route.steps ? route.steps.filter(step => step.documentId === documentId).at(-1) : rootRow;
+        return hosted ? {rowId:hosted.rowId,...(hosted.databaseId ? {databaseId:hosted.databaseId} : {})} : null;
+      },
+      back: () => {
+        if (!life.active) return;
+        const parent = rowPresentation.session?.id === id ? rowPresentation.steps.at(-2) : undefined;
+        if (parent) navigateRowAncestor(id, parent); else navigate(id);
+      },
+    });
     const rowPages: DesktopRowPages | undefined = ref.kind === 'remote' ? createDesktopRowPages({
       retainEditors: 2,
-      navigation: {
-        current: () => {
-          const route = rowPageDestination(location.href);
-          return !clearingRowPresentation && life.active && route?.documentId === id ? {rowId:route.rowId,...(route.databaseId ? {databaseId:route.databaseId} : {})} : null;
-        },
-        back: () => {
-          if (!life.active) return;
-          const parent = rowPresentation.session?.id === id ? rowPresentation.steps.at(-2) : undefined;
-          if (parent) navigateRowAncestor(id, parent); else navigate(id);
-        },
-      },
+      navigation: hostedRowNavigation(id),
       href: (rowId, context) => rowPageUrl(pageUrl(id), rowId, context.databaseId),
       navigate: (rowId, context) => {
         const requestedFrom = location.href;
@@ -811,7 +873,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           comments = mountPageComments({holder: config.holder, editor: body, author: () => commentAuthor(ref), canComment: () => !disposed && !readOnly(id) && !readOnly(config.collaboration?.doc ?? '')});
           config.holder.append(comments.action, comments.element);
         });
-        return {isReady: ready, readOnly: body.readOnly, saver: body.saver, destroy() {
+        return {isReady: ready, blocks: body.blocks, readOnly: body.readOnly, saver: body.saver, destroy() {
           if (disposed) return;
           disposed = true; comments?.destroy(); body.destroy();
         }};
@@ -824,7 +886,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       onError: error => showError(error, 'document'),
       editorConfig: (bodyId): Omit<BlokConfig, 'holder' | 'readOnly'> => ({
         loader: { delay: 0, minVisible: 0, skeleton: ['paragraph', 'paragraph', 'paragraph'] },
-        tools: nestedPageTools,
+        tools: {
+          ...nestedPageTools,
+          page: {class: Page, config: {...pageConfig, create: async (input: Parameters<NonNullable<PageConfig['create']>>[0]) => pageConfig.create?.({...input, parentId: input.parentId ?? bodyId})}},
+          database: {class: Database, config: {
+            ...(nestedPageTools.database as {config: Record<string, unknown>}).config,
+            rowPages: {...nestedRowPages, navigation: hostedRowNavigation(bodyId)},
+          }},
+        },
         theme: readAppearance(),
         documentId: `${workspaceKey(ref)}:${bodyId}`,
         server: `${ref.server}/api/blok`,
@@ -970,7 +1039,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     };
     const connectionState = { value: undefined as Parameters<typeof saveStatus.connection>[0] | undefined };
     const session: PageSession = {
-      id, page, editor: instance, permission: pagePermission(id),
+      id, page, editor: instance, rowPages, permission: pagePermission(id),
       get active() { return life.active; }, set active(value) { life.active = value; },
       get ready() { return life.ready; }, set ready(value) { life.ready = value; },
       get destroyed() { return life.destroyed; }, set destroyed(value) { life.destroyed = value; },

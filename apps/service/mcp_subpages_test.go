@@ -28,6 +28,9 @@ func TestMCPSubpageInRowInheritsDocumentWorkspaceAndAccess(t *testing.T) {
 				if _, err := w.service.DB.Exec(w.ctx, `UPDATE pages SET metadata=metadata || '{"rowBodyOf":{"documentId":"prive","rowId":"sprint"}}'::jsonb WHERE id=$1`, parent); err != nil {
 					t.Fatal(err)
 				}
+				if _, err := w.service.DB.Exec(w.ctx, `UPDATE pages SET content='{"blocks":[{"id":"db","type":"database","data":{},"content":["sprint"]},{"id":"sprint","type":"database-row","parent":"db","data":{"properties":{},"pageId":"sprint-body"},"content":[]}]}'::jsonb WHERE id='prive'`); err != nil {
+					t.Fatal(err)
+				}
 				content = `{"blocks":[]}`
 			}
 			if _, err := w.service.DB.Exec(w.ctx, `UPDATE pages SET content=$2 WHERE id=$1`, parent, content); err != nil {
@@ -104,6 +107,14 @@ func TestMCPSubpageInRowInheritsDocumentWorkspaceAndAccess(t *testing.T) {
 				page := rawPage.(map[string]any)
 				if page["id"] == child {
 					found = true
+					loc, ok := page["location"].(map[string]any)
+					if !ok || loc["documentId"] != "prive" || len(loc["rows"].([]any)) != 1 {
+						t.Fatalf("real MCP subpage lost row parent: %v", page)
+					}
+					if loc["rows"].([]any)[0].(map[string]any)["rowId"] != "sprint" {
+						t.Fatal(loc)
+					}
+
 					if page["title"] != "Commits" {
 						t.Fatalf("desktop link title: %v", page)
 					}

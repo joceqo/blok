@@ -14,7 +14,7 @@ const equal = (a: unknown, b: unknown): boolean => {
 type Entry = {page: DesktopPage; place: 'pages' | 'trash'};
 function entries(index: WorkspaceIndex): Map<string, Entry> {
   const clean = (page: DesktopPage): DesktopPage => {
-    const value = {...page} as DesktopPage & {position?: unknown}; delete value.position; return value;
+    const value = {...page} as DesktopPage & {position?: unknown}; delete value.position; delete value.location; return value;
   };
   return new Map([...index.pages.map((page): [string,Entry] => [page.id,{page:clean(page),place:'pages'}]), ...(index.trash ?? []).map((page): [string,Entry] => [page.id,{page:clean(page),place:'trash'}])]);
 }
@@ -68,17 +68,29 @@ export function mergeWorkspaceIndex(base: WorkspaceIndex, local: WorkspaceIndex,
     }
     result.set(id,{page:page as unknown as DesktopPage,place:mine.place === old.place ? other.place : mine.place});
   }
-  const values = [...result.values()];
+  // The server owns containment. A rename/reorder must not overwrite a more
+  // recent row move, nor conflict with the refreshed projection of that move.
+  const remotePages = new Map([...remote.pages, ...(remote.trash ?? [])].map(page => [page.id, page]));
+  const values = [...result.values()].map(entry => {
+    const remotePage = remotePages.get(entry.page.id);
+    const location = remotePage && remotePage.parentId === entry.page.parentId ? remotePage.location : undefined;
+    return location ? {...entry, page: {...entry.page, location}} : entry;
+  });
   const pages = mergeOrder(base.pages,local.pages,remote.pages,values.filter((entry)=>entry.place === 'pages').map((entry)=>entry.page));
   const trash = mergeOrder(base.trash ?? [],local.trash ?? [],remote.trash ?? [],values.filter((entry)=>entry.place === 'trash').map((entry)=>entry.page));
   const byId = new Map(pages.map((page) => [page.id, page]));
-  for (const page of pages) {
+  pages.forEach(page => {
     const visited = new Set<string>([page.id]);
-    let parentId = page.parentId;
-    while (parentId !== null) {
-      if (visited.has(parentId) || !byId.has(parentId)) throw new WorkspaceConflictError();
-      visited.add(parentId); parentId = byId.get(parentId)!.parentId;
+    const ancestor = {id: page.location?.documentId ?? page.parentId};
+    while (ancestor.id !== null) {
+      if (visited.has(ancestor.id)) throw new WorkspaceConflictError();
+      const parent = byId.get(ancestor.id);
+      // The server checks the full hierarchy of bodies omitted from the index.
+      if (!parent && remote.access?.[ancestor.id]) break;
+      if (!parent) throw new WorkspaceConflictError();
+      visited.add(ancestor.id);
+      ancestor.id = parent.location?.documentId ?? parent.parentId;
     }
-  }
-  return {pages,trash,activeId: pages.some((page)=>page.id === local.activeId) ? local.activeId : pages[0]?.id ?? ''};
+  });
+  return {pages,trash,...(remote.access ? {access: remote.access} : {}),activeId: pages.some((page)=>page.id === local.activeId) ? local.activeId : pages[0]?.id ?? ''};
 }

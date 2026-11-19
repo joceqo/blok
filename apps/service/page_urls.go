@@ -98,5 +98,17 @@ func (s *Service) resolvePageURL(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	var locationMeta locationMetadata
+	if json.Unmarshal(metadata, &locationMeta) == nil {
+		locations := newPageLocationReader(ctx, s, tx, u.ID, ws.ID)
+		location, failure := locations.location(&locationMeta)
+		if failure != nil {
+			problem(w, 503, "Database unavailable")
+			return
+		}
+		if location != nil {
+			response["location"] = location
+		}
+	}
 	jsonOut(w, 200, response)
 }

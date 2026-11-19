@@ -103,6 +103,30 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 			problem(w, 500, "Read failed")
 			return
 		}
+		locations := newPageLocationReader(r.Context(), s, tx, u.ID, ws.ID)
+		if e = locations.decorate(pages); e != nil {
+			problem(w, 500, "Read failed")
+			return
+		}
+		for i, raw := range pages {
+			var meta locationMetadata
+			if json.Unmarshal(raw, &meta) != nil {
+				continue
+			}
+			detached, failure := locations.hiddenParentUnavailable(meta.ParentID)
+			if failure != nil {
+				problem(w, 500, "Read failed")
+				return
+			}
+			if detached {
+				pages[i], failure = detachParent(raw)
+				if failure != nil {
+					problem(w, 500, "Read failed")
+					return
+				}
+				access[meta.ID].(map[string]any)["sharedRoot"] = true
+			}
+		}
 		jsonOut(w, 200, map[string]any{"pages": pages, "trash": trash, "revision": revision, "access": access})
 		return
 	}
@@ -137,6 +161,7 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 	}
 	for _, entry := range all {
 		p := entry.page
+		delete(p, "location") // Read-only block-tree projection.
 		id, _ := p["id"].(string)
 		parent, _ := p["parentId"].(string)
 		if !validPageMetadata(p) || ids[id] || p["rowBodyOf"] != nil {
@@ -145,10 +170,6 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 		}
 		ids[id] = true
 		parents[id] = parent
-	}
-	if !validParents(parents) {
-		problem(w, 400, "Invalid parent hierarchy (missing parent or cycle)")
-		return
 	}
 	tx, e := s.DB.Begin(r.Context())
 	if e != nil {
@@ -178,6 +199,77 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 	known, order, e := currentIndex(r.Context(), tx, ws.ID)
 	if e != nil {
 		problem(w, 500, "Save failed")
+		return
+	}
+	// Hidden row documents are deliberately absent from the sidebar index. A
+	// child may retain one as its storage parent; validate against server-owned
+	// links, never a client-provided location projection.
+	hiddenRows, e := tx.Query(r.Context(), `SELECT id,coalesce(metadata->>'parentId','') FROM pages WHERE workspace_id=$1 AND NOT deleted AND NOT trashed AND metadata ? 'rowBodyOf'`, ws.ID)
+	if e != nil {
+		problem(w, 500, "Save failed")
+		return
+	}
+	hiddenParents := map[string]string{}
+	for hiddenRows.Next() {
+		var id, parent string
+		if e = hiddenRows.Scan(&id, &parent); e != nil {
+			break
+		}
+		if levels[id] >= levelView {
+			hiddenParents[id] = parent
+		}
+	}
+	if e == nil {
+		e = hiddenRows.Err()
+	}
+	hiddenRows.Close()
+	if e != nil {
+		problem(w, 500, "Save failed")
+		return
+	}
+	locations := newPageLocationReader(r.Context(), s, tx, u.ID, ws.ID)
+	for _, entry := range all {
+		parent, _ := entry.page["parentId"].(string)
+		real := realParents[entry.id()]
+		if parent != "" || real == "" {
+			continue
+		}
+		detached, failure := locations.hiddenParentUnavailable(real)
+		if failure != nil {
+			problem(w, 500, "Save failed")
+			return
+		}
+		if detached {
+			// Index roundtrips cannot implicitly move a detached shared root.
+			// Explicit moves still go through the permission-checked move API.
+			entry.page["parentId"] = real
+			parents[entry.id()] = real
+		}
+	}
+	validTree := true
+	for _, entry := range all {
+		parent, _ := entry.page["parentId"].(string)
+		for parent != "" {
+			if _, exists := parents[parent]; exists {
+				break
+			}
+			ancestor, exists := hiddenParents[parent]
+			if !exists {
+				validTree = false
+				break
+			}
+			parents[parent] = ancestor
+			if ancestor != "" && levels[ancestor] < levelView && !ids[ancestor] {
+				// The visible index stops here, while realParents retains the
+				// full server-owned chain for access checks and persistence.
+				parents[parent] = ""
+				break
+			}
+			parent = ancestor
+		}
+	}
+	if !validTree || !validParents(parents) {
+		problem(w, 400, "Invalid parent hierarchy (missing parent or cycle)")
 		return
 	}
 	// Internal row pages belong to their source, never to a sidebar replacement.

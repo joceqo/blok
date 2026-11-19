@@ -870,7 +870,10 @@ export class DatabaseCardDrawer {
       const page = openPeek.drawer;
       const editor = this.wrapper.closest('[data-blok-editor]');
 
-      if (page !== null && page !== this && (page.mode === 'full' || nested) && editor !== null && page.wrapper.closest('[data-blok-editor]') === editor) {
+      // A lazy row body has its own Blok editor. DOM containment still owns
+      // the child peek; closing its parent would detach that editor mid-open.
+      if (page !== null && page !== this && editor !== null && (nested
+        || (page.mode === 'full' && page.wrapper.closest('[data-blok-editor]') === editor))) {
         this.parentPage = page;
         page.childPeek = this;
       } else {

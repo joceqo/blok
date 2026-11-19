@@ -69,6 +69,19 @@ it. For a separated row body, open the row's body document first; the old row bl
 is not a parent in that separate document. `blok_create_page` continues to take a
 document parent, never a row block id. No data migration is required for this feature.
 
+For subpages inside rows, the index, URL resolver and `blok_list_pages` also
+return a read-only `location`: the visible host `documentId`, the immediate
+`blockId` and its owning `blockDocumentId`, and ordered `rows` containing each
+ancestor's document, row, database, title and optional icon. This is derived from
+the saved block tree, including validated links through separated row bodies;
+existing content needs no migration. A private ancestor is never exposed through
+a directly shared child. `parentId` still denotes the storage/permission parent.
+Do not send a row ID to document-parent creation/move tools. Insert a page
+**block** under a row, or move that block within its containing document, using
+block commands. Moving a document between storage parents remains a separate
+page-management operation. The frontend uses
+`location` for row breadcrumbs and routes, not to create duplicate sidebar pages.
+
 Creation spans documents, so a failed batch can report `ORPHANED_SIDE_EFFECT` with
 already-created page ids. Inspect those ids before retrying; do not blindly create
 duplicates. Standalone hosts must explicitly supply their page-creation hook when

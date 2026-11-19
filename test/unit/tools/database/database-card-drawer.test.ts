@@ -56,6 +56,27 @@ const createOptions = (overrides: Partial<CardDrawerOptions> = {}): CardDrawerOp
 });
 
 describe('DatabaseCardDrawer', () => {
+  it.each([true, false])('keeps a containing page alive across editor boundaries only when nested=%s', nested => {
+    const outerEditor=document.createElement('div'), innerEditor=document.createElement('div');
+    outerEditor.setAttribute('data-blok-editor',''); innerEditor.setAttribute('data-blok-editor','');
+    const outerWrapper=document.createElement('div'), innerWrapper=document.createElement('div');
+    outerEditor.append(outerWrapper); innerEditor.append(innerWrapper); document.body.append(outerEditor);
+    const hostRows=(id:string) => ({lookup:async()=>null,copyFromLegacy:vi.fn(),reconcileLegacy:vi.fn(),mount:()=>({destroy:vi.fn()}),navigation:{current:()=>({rowId:id}),back:vi.fn()}});
+    const outerOptions=createOptions({wrapper:outerWrapper,rowPages:hostRows('outer')});
+    const outer=new DatabaseCardDrawer(outerOptions);
+    const inner=new DatabaseCardDrawer(createOptions({wrapper:innerWrapper,rowPages:hostRows('inner')}));
+    try {
+      outer.open(makeRow({id:'outer'}),'full');
+      const body=outerWrapper.querySelector('[data-blok-database-drawer-editor]');
+      if (!body) throw new Error('Missing parent body');
+      if (nested) body.append(innerEditor); else document.body.append(innerEditor);
+      inner.open(makeRow({id:'inner'}),'full');
+      expect(outer.isOpen).toBe(nested);
+      expect(inner.isOpen).toBe(true);
+      expect(innerWrapper.isConnected).toBe(true);
+      expect(outerOptions.onClose).toHaveBeenCalledTimes(nested ? 0 : 1);
+    } finally { inner.destroy(); outer.destroy(); innerEditor.remove(); outerEditor.remove(); }
+  });
   it('uses the host full-page route for its row title, properties and parent breadcrumb without adding a hash entry', async () => {
     const back = vi.fn();
     const wrapper = document.createElement('div');

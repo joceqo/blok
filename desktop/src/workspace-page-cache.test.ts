@@ -1,3 +1,4 @@
+import type { PageConfig } from '../../types/tools/page';
 import type { DatabaseRowPages } from '../../types/tools/database';
 import type { BlockAPI } from '../../types';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -6,7 +7,7 @@ import type { WorkspaceIndex } from './storage';
 import type { createPageFrame } from '@blok/sidebar';
 import type * as SidebarModule from '@blok/sidebar';
 type PageFrameOptions = Parameters<typeof createPageFrame>[0];
-const state = vi.hoisted(() => ({ editors: [] as Array<{ holder: HTMLElement; data: unknown; collaboration?: {offline?: boolean; offlineScope?: string}; rowPages(): DatabaseRowPages | undefined; configuredReadOnly(): boolean; rename(title: string): void; destroyed: boolean; flush: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> }>, sidebarAction: null as PageFrameOptions['onAction'] | null, rowCalls: [] as Array<{rowId: string; mode: string}>, rowBodies: {} as Record<string,string> }));
+const state = vi.hoisted(() => ({ editors: [] as Array<{ holder: HTMLElement; isReady: Promise<void>; data: unknown; pageConfig(): PageConfig | undefined; collaboration?: {offline?: boolean; offlineScope?: string}; rowPages(): DatabaseRowPages | undefined; configuredReadOnly(): boolean; rename(title: string): void; destroyed: boolean; flush: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> }>, sidebarAction: null as PageFrameOptions['onAction'] | null, rowCalls: [] as Array<{rowId: string; mode: string}>, rowBodies: {} as Record<string,string> }));
 vi.mock('@bloklabs/core/full', () => ({ allTools: {}, Blok: class {
   isReady: Promise<void>;
   data: unknown;
@@ -14,13 +15,14 @@ vi.mock('@bloklabs/core/full', () => ({ allTools: {}, Blok: class {
   collaboration?: {offline?: boolean; offlineScope?: string};
   holder: HTMLElement;
   titleText = '';
-  constructor(private config: { tools?: {database?: {config?: {rowPages?: DatabaseRowPages}}}; collaboration?: {offline?: boolean; offlineScope?: string}; holder: HTMLElement; readOnly?: boolean; pageTitle?: { onChange(title: string, change: {source: 'user' | 'remote'}): void }; persistence?: { load(): Promise<unknown>; save(data: unknown): Promise<void> } }) {
+  constructor(private config: { tools?: {page?: {config?: PageConfig}; database?: {config?: {rowPages?: DatabaseRowPages}}}; collaboration?: {offline?: boolean; offlineScope?: string}; holder: HTMLElement; readOnly?: boolean; pageTitle?: { onChange(title: string, change: {source: 'user' | 'remote'}): void }; persistence?: { load(): Promise<unknown>; save(data: unknown): Promise<void> } }) {
     this.holder = config.holder;
     this.collaboration = config.collaboration;
     const redactor = document.createElement('div'); redactor.dataset.blokRedactor = ''; this.holder.append(redactor);
     state.editors.push(this);
     this.isReady = Promise.resolve(config.persistence?.load()).then(data => { this.data = data; });
   }
+  pageConfig(): PageConfig | undefined { return this.config.tools?.page?.config; }
   rowPages(): DatabaseRowPages | undefined { return this.config.tools?.database?.config?.rowPages; }
   readOnly = { set: vi.fn(async () => true) };
   width = { set: vi.fn() };
@@ -127,16 +129,17 @@ function requestBody(body: BodyInit | null | undefined): unknown {
   return JSON.parse(body) as unknown;
 }
 
-async function startRemote(remoteOrigin = location.origin): Promise<{ index: WorkspaceIndex; writes: WorkspaceIndex[] }> {
+async function startRemote(remoteOrigin = location.origin, pages: WorkspaceIndex['pages'] = ['a', 'b'].map(id => ({id, title: id, parentId: null})), extraAccess: WorkspaceIndex['access'] = {}): Promise<{ index: WorkspaceIndex; writes: WorkspaceIndex[]; locations: Record<string, unknown> }> {
   workspace.destroy();
   document.body.replaceChildren();
   state.editors.length = 0;
   const server = {
     index: {
-      pages: ['a', 'b'].map(id => ({id, title: id, parentId: null})), activeId: 'a',
-      access: {a: {level: 'full' as const}, b: {level: 'full' as const}},
+      pages, activeId: 'a',
+      access: {...Object.fromEntries(pages.map(page => [page.id, {level:'full' as const}])), ...extraAccess},
     } as WorkspaceIndex,
     writes: [] as WorkspaceIndex[],
+    locations: {} as Record<string, unknown>,
   };
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const inputUrl = typeof input === 'string' || input instanceof URL ? input : input.url;
@@ -155,6 +158,7 @@ async function startRemote(remoteOrigin = location.origin): Promise<{ index: Wor
       if (server.index.access) server.index.access[copy.id] = {level: 'full'};
       return Response.json({});
     }
+    if (url.pathname.includes('/resolve-id/') && (url.pathname.split('/').at(-1) ?? '') in server.locations) return Response.json(server.locations[url.pathname.split('/').at(-1) ?? '']);
     if (url.pathname.includes('/resolve-id/')) return Response.json({pageId:'body',publicId:'77777777-7777-7777-7777-777777777777',title:'Row',workspace:{id:'remote-cache',slug:'cache-test',name:'Remote',role:'admin'},teamspaceId:null,rowBodyOf:{documentId:'a',rowId:'row-body'}});
     if (url.pathname.endsWith('/teamspaces')) return Response.json({teamspaces: []});
     return Response.json({});
@@ -406,7 +410,7 @@ it('retains nested row body editors while falling back to core full-page navigat
   const nested=editorAt(1).rowPages();
   expect(nested?.mount).toBeTypeOf('function');
   expect(nested?.navigate).toBeUndefined();
-  expect(nested?.navigation).toBeUndefined();
+  expect(nested?.navigation?.current()).toBeNull();
   expect(nested?.href).toBeUndefined();
   mounted?.destroy();holder.remove();
 });
@@ -487,4 +491,99 @@ it('opens nested rows through workspace routing and returns to their parent usin
   await vi.waitFor(() => expect(document.title).toBe('Parent'));
   expect(new URL(location.href).searchParams.get('row')).toBe(parent.id);
   expect(location.origin).not.toBe('https://native-server.example');
+});
+
+it.each(['a','hidden-body'])('keeps five row ancestors in a subpage trail (storage parent %s) and opens the clicked row', async (storageParent) => {
+  const rows = Array.from({length: 5}, (_, index) => ({documentId:'a', rowId:`row${index + 1}`, databaseId:'db', title:`Sprint ${index + 1}`}));
+  await startRemote(location.origin, [
+    {id:'a',title:'a',parentId:null},
+    Object.assign({id:'b',title:'b',parentId:storageParent}, {location:{documentId:'a',blockId:'row5',rows}}),
+    {id:'c',title:'c',parentId:'b'},
+  ]);
+  await go('b');
+  const crumbs = () => [...document.querySelectorAll('[data-desktop-page-breadcrumb-item]')].map(element => element.textContent);
+  expect(crumbs()).toEqual(['a', ...rows.map(row => row.title), 'b']);
+  await go('c');
+  expect(crumbs()).toEqual(['a', ...rows.map(row => row.title), 'b', 'c']);
+  const row = document.querySelector<HTMLButtonElement>('[data-desktop-page-breadcrumb-item][data-page-id="row3"] button');
+  expect(row).not.toBeNull();
+  row?.click();
+  await vi.waitFor(() => expect(new URL(location.href).searchParams.get('row')).toBe('row3'));
+  expect(new URL(location.href).searchParams.get('page')).toBe('a');
+  expect(new URL(location.href).searchParams.get('database')).toBe('db');
+  await vi.waitFor(() => expect(state.rowCalls.at(-1)).toMatchObject({rowId:'row3', mode:'full'}));
+});
+
+it('refreshes a just-created subpage location without waiting for the manifest poll', async () => {
+  const server = await startRemote(location.origin, [{id:'a',title:'a',parentId:null},{id:'b',title:'b',parentId:'a'}]);
+  server.locations.b = {pageId:'b',publicId:'88888888-8888-8888-8888-888888888888',title:'b',workspace:{id:'remote-cache',slug:'cache-test'},location:{documentId:'a',blockId:'row1',rows:[{documentId:'a',rowId:'row1',databaseId:'db',title:'Sprint 1'}]}};
+  await go('b');
+  await vi.waitFor(() => expect([...document.querySelectorAll('[data-desktop-page-breadcrumb-item]')].map(element => element.textContent)).toEqual(['a','Sprint 1','b']));
+  expect(server.writes).toEqual([]);
+  editorAt(1).rename('Renamed');
+  await vi.waitFor(() => expect(server.writes.length).toBeGreaterThan(0));
+  await vi.waitFor(() => expect([...document.querySelectorAll('[data-desktop-page-breadcrumb-item]')].map(element => element.textContent)).toEqual(['a','Sprint 1','Renamed']));
+  server.locations.b = {}; // A later resolver failure must not discard the confirmed ancestry.
+  await go('a');
+  history.replaceState(null, '', '/?page=b'); workspace.onRoute();
+  await vi.waitFor(() => expect(document.title).toBe('Renamed'));
+  expect([...document.querySelectorAll('[data-desktop-page-breadcrumb-item]')].map(element => element.textContent)).toEqual(['a','Sprint 1','Renamed']);
+});
+
+it('ignores a late body resolver after leaving its row breadcrumb', async () => {
+  await startRemote(location.origin, [
+    {id:'a',title:'a',parentId:null},
+    Object.assign({id:'b',title:'b',parentId:'a'}, {location:{documentId:'a',blockId:'row2',rows:[{documentId:'a',rowId:'row1',databaseId:'db',title:'Sprint'},{documentId:'body',rowId:'row2',databaseId:'db',title:'Task'}]}}),
+  ]);
+  await go('b');
+  const pending: {finish?: (response: Response) => void} = {};
+  const original = vi.mocked(fetch).getMockImplementation();
+  vi.mocked(fetch).mockImplementation((input, init) => {
+    const href = input instanceof Request ? input.url : String(input);
+    if (href.endsWith('/resolve-id/body')) return new Promise<Response>(resolve => { pending.finish = resolve; });
+    if (!original) throw new Error('Missing fetch implementation');
+    return original(input, init);
+  });
+  document.querySelector<HTMLButtonElement>('[data-desktop-page-breadcrumb-item][data-page-id="row2"] button')?.click();
+  await vi.waitFor(() => expect(pending.finish).toBeDefined());
+  await go('a');
+  pending.finish?.(Response.json({pageId:'body',publicId:'77777777-7777-7777-7777-777777777777',title:'Sprint',workspace:{id:'remote-cache',slug:'cache-test'},rowBodyOf:{documentId:'a',rowId:'row1'}}));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(new URL(location.href).searchParams.get('page')).toBe('a');
+  expect(new URL(location.href).searchParams.has('row')).toBe(false);
+  expect(document.title).toBe('a');
+});
+
+it.each(['root','body'])('keeps each host on its own row while routing across documents (%s)', async (scope) => {
+  await startRemote();
+  const {rememberResolvedRowPage} = await import('./page-urls');
+  rememberResolvedRowPage(location.origin, {
+    pageId:'body2',publicId:'99999999-9999-9999-9999-999999999999',title:'Nested',workspace:{id:'remote-cache',slug:'cache-test',name:'Remote',role:'admin'},teamspaceId:null,
+    rowBodyOf:{documentId:'body1',rowId:'row2'},
+    location:{documentId:'a',blockId:'row2',rows:[{documentId:'a',rowId:'row1',databaseId:'db',title:'Sprint'},{documentId:'body1',rowId:'row2',databaseId:'nested-db',title:'Task'}]},
+  });
+  history.replaceState(null, '', '/?page=body2');
+  if (scope === 'root') {
+    expect(editorAt(0).rowPages()?.navigation?.current()).toEqual({rowId:'row1',databaseId:'db'});
+  } else {
+    const holder = document.createElement('div'); document.body.append(holder);
+    const mounted = editorAt(0).rowPages()?.mount('body1', holder);
+    await editorAt(1).isReady;
+    expect(editorAt(1).rowPages()?.navigation?.current()).toEqual({rowId:'row2',databaseId:'nested-db'});
+    mounted?.destroy();
+  }
+});
+
+it('creates subpages in the physical row body document, preserving explicit parent choices', async () => {
+  const server = await startRemote(location.origin, [{id:'a',title:'a',parentId:null}], {body1:{level:'full'}});
+  const holder = document.createElement('div'); document.body.append(holder);
+  const mounted = editorAt(0).rowPages()?.mount('body1', holder);
+  await editorAt(1).isReady;
+  const config = editorAt(1).pageConfig();
+  expect(config?.create).toBeDefined();
+  await config?.create?.({pageId:'child1',title:'Child 1'});
+  await config?.create?.({pageId:'child2',title:'Child 2'});
+  await config?.create?.({pageId:'child3',title:'Child 3',parentId:'a'});
+  expect(server.writes.at(-1)?.pages.filter(page => page.id.startsWith('child')).map(page => [page.id,page.parentId])).toEqual([['child1','body1'],['child2','body1'],['child3','a']]);
+  mounted?.destroy();
 });

@@ -4,7 +4,15 @@ import type { PageCover } from './cover';
 import type { DateDisplay } from '@blok/date-editor';
 import type { PageAccessMap } from './page-access';
 
-export type DesktopPage = ShellPage & { createdAt?: string; updatedAt?: string; initialVisibility?: 'private'; cover?: PageCover; coverPosition?: number; fullWidth?: boolean; titleDate?: string; titleDateDisplay?: DateDisplay; titleDateSuffix?: string };
+/** Read-only projection of the containing block tree; never editable page metadata. */
+export interface PageLocation {
+  documentId: string;
+  blockId: string;
+  blockDocumentId?: string;
+  rows: Array<{documentId: string; rowId: string; databaseId: string; title: string; icon?: string}>;
+}
+
+export type DesktopPage = ShellPage & { location?: PageLocation; createdAt?: string; updatedAt?: string; initialVisibility?: 'private'; cover?: PageCover; coverPosition?: number; fullWidth?: boolean; titleDate?: string; titleDateDisplay?: DateDisplay; titleDateSuffix?: string };
 
 export interface WorkspaceIndex {
   pages: DesktopPage[];

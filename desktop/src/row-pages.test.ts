@@ -305,3 +305,20 @@ it('flushes active bodies through the existing saver and destroys all mounts on 
   await h.pages.flush();
   expect(h.editor.saver.flush).toHaveBeenCalledTimes(1);
 });
+
+it('only exposes active row-body editors for navigation, never speculative or parked editors', async () => {
+  const h = harness(2);
+  try {
+    h.pages.prepare?.('body');
+    h.ready.resolve();
+    await Promise.resolve();
+    expect(h.pages.mountedEditor('body')).toBeUndefined();
+    const mount=h.pages.mount('body',document.createElement('div'));
+    expect(h.pages.mountedEditor('body')).toBe(h.editor);
+    mount.destroy();
+    expect(h.pages.mountedEditor('body')).toBeUndefined();
+    h.pages.mount('body',document.createElement('div'));
+    expect(h.pages.mountedEditor('body')).toBe(h.editor);
+  } finally { h.pages.destroy(); }
+  expect(h.pages.mountedEditor('body')).toBeUndefined();
+});

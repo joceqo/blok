@@ -50,6 +50,17 @@ Page permissions. Each page carries a `visibility` of `inherit`, `private` or `w
 
 Workspace = `{id,slug,name,role}`. A fresh instance starts with zero workspaces; optional `BOOTSTRAP_WORKSPACE_SLUG` / `BOOTSTRAP_WORKSPACE_NAME` (with `BOOTSTRAP_ADMIN_EMAIL`) may seed one at startup.
 
+## Structural page location
+
+Workspace index entries, page URL resolution and MCP page listings may include
+`location: {documentId, blockDocumentId, blockId, rows}` for pages nested in database
+rows. `documentId` is the visible host used to start navigation; `blockDocumentId`
+and `blockId` identify the immediate containing block. Each ordered row entry is
+`{documentId, rowId, databaseId, title, icon?}`. The server derives this projection
+from saved blocks and checks access to each document. Invalid, ambiguous or
+inaccessible ancestry is omitted. Index writes ignore client-supplied `location`.
+The field does not replace the document `parentId` used for inheritance and moves.
+
 ## Hosted MCP
 
 `blok_move_page` accepts `{workspace, pageId, parentId}` to reparent an existing
