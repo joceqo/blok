@@ -3,29 +3,25 @@ import { Hono } from 'hono';
 
 import { pages } from '../db/schema.js';
 import { withTransaction } from '../db/transaction.js';
+import { requireWorkspaceRole } from '../http/workspace-access.js';
 import type { DbVariables } from '../middleware/db.js';
+import { requireUser } from '../middleware/require-user.js';
 import type { SessionVariables } from '../middleware/session.js';
-import { assertPageAction, type WorkspaceRole } from '../permissions.js';
-
-function workspaceRole(context: { get: (key: 'workspaceRole') => WorkspaceRole | undefined }): WorkspaceRole {
-  return context.get('workspaceRole') ?? 'guest';
-}
+import { assertPageAction } from '../permissions.js';
+import { memberRole } from '../workspaces/membership.js';
 
 type Env = {
   Variables: DbVariables & SessionVariables;
 };
 
-/**
- * Pages in a workspace — same flat style as Go (`GET /api/pages/:id`, tree via parent_id).
- */
 export const pageRoutes = new Hono<Env>();
 
-pageRoutes.get('/api/workspaces/:workspaceId/pages', async (context) => {
+pageRoutes.get('/api/workspaces/:workspaceId/pages', requireUser(), async (context) => {
   const workspaceId = context.req.param('workspaceId');
-  const role = workspaceRole(context);
-  assertPageAction(role, 'read');
-
   const db = context.get('db');
+
+  await requireWorkspaceRole(db, context, workspaceId, 'read');
+
   const rows = await db
     .select({
       id: pages.id,
@@ -41,25 +37,38 @@ pageRoutes.get('/api/workspaces/:workspaceId/pages', async (context) => {
   return context.json({ pages: rows });
 });
 
-pageRoutes.get('/api/pages/:pageId', async (context) => {
+pageRoutes.get('/api/pages/:pageId', requireUser(), async (context) => {
   const pageId = context.req.param('pageId');
-  const role = workspaceRole(context);
-  assertPageAction(role, 'read');
-
   const db = context.get('db');
+  const userId = context.get('userId');
+  if (userId === undefined) {
+    return context.json({ error: 'unauthenticated' }, 401);
+  }
+
   const rows = await db.select().from(pages).where(eq(pages.id, pageId)).limit(1);
   const page = rows[0];
   if (page === undefined) {
     return context.json({ error: 'not_found' }, 404);
   }
 
+  const role = await memberRole(db, userId, page.workspaceId);
+  if (role === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+  try {
+    assertPageAction(role, 'read');
+  } catch {
+    return context.json({ error: 'permission_denied' }, 403);
+  }
+
   return context.json({ page });
 });
 
-pageRoutes.post('/api/workspaces/:workspaceId/pages', async (context) => {
+pageRoutes.post('/api/workspaces/:workspaceId/pages', requireUser(), async (context) => {
   const workspaceId = context.req.param('workspaceId');
-  const role = workspaceRole(context);
-  assertPageAction(role, 'edit');
+  const db = context.get('db');
+
+  await requireWorkspaceRole(db, context, workspaceId, 'edit');
 
   const body: { title?: string; parentId?: string | null } = await context.req
     .json<{ title?: string; parentId?: string | null }>()
@@ -67,7 +76,19 @@ pageRoutes.post('/api/workspaces/:workspaceId/pages', async (context) => {
   const title = typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim() : 'Untitled';
   const parentId = body.parentId === null || body.parentId === undefined ? null : body.parentId;
 
-  const db = context.get('db');
+  if (parentId !== null) {
+    const parent = (
+      await db
+        .select()
+        .from(pages)
+        .where(and(eq(pages.id, parentId), eq(pages.workspaceId, workspaceId)))
+        .limit(1)
+    )[0];
+    if (parent === undefined) {
+      return context.json({ error: 'invalid_parent' }, 400);
+    }
+  }
+
   const created = await withTransaction(db, async (tx) => {
     const inserted = await tx
       .insert(pages)
@@ -90,27 +111,44 @@ pageRoutes.post('/api/workspaces/:workspaceId/pages', async (context) => {
   return context.json({ page: created }, 201);
 });
 
-pageRoutes.patch('/api/pages/:pageId', async (context) => {
+pageRoutes.patch('/api/pages/:pageId', requireUser(), async (context) => {
   const pageId = context.req.param('pageId');
-  const role = workspaceRole(context);
-  assertPageAction(role, 'edit');
+  const db = context.get('db');
+  const userId = context.get('userId');
+  if (userId === undefined) {
+    return context.json({ error: 'unauthenticated' }, 401);
+  }
+
+  const existing = (await db.select().from(pages).where(eq(pages.id, pageId)).limit(1))[0];
+  if (existing === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  const role = await memberRole(db, userId, existing.workspaceId);
+  if (role === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
 
   const body: { title?: string; trashed?: boolean } = await context.req
     .json<{ title?: string; trashed?: boolean }>()
     .catch(() => ({}));
-  const db = context.get('db');
 
   const patch: { title?: string; trashed?: boolean; updatedAt: Date } = {
     updatedAt: new Date(),
   };
   if (typeof body.title === 'string') {
+    try {
+      assertPageAction(role, 'edit');
+    } catch {
+      return context.json({ error: 'permission_denied' }, 403);
+    }
     patch.title = body.title.trim();
   }
   if (typeof body.trashed === 'boolean') {
-    if (body.trashed) {
-      assertPageAction(role, 'trash');
-    } else {
-      assertPageAction(role, 'restore');
+    try {
+      assertPageAction(role, body.trashed ? 'trash' : 'restore');
+    } catch {
+      return context.json({ error: 'permission_denied' }, 403);
     }
     patch.trashed = body.trashed;
   }
