@@ -1767,6 +1767,39 @@ describe('DatabaseCardDrawer', () => {
       expect(onClose).not.toHaveBeenCalled();
     });
 
+    it('keeps the next row open when its property redraws during the press', async () => {
+      const rows = [makeRow(), makeRow({ id: 'row-2', properties: { 'prop-title': 'Next card' } })];
+      const schema = [makePropertyDef({ id: 'note', name: 'Note', type: 'text' })];
+      const options = createOptions({
+        schema,
+        onPropertyValueChange: vi.fn(),
+        adjacentRow: (id, direction) => rows[rows.findIndex(row => row.id === id) + direction],
+      });
+      document.body.append(options.wrapper);
+      const drawer = new DatabaseCardDrawer(options);
+
+      try {
+        drawer.open(rows[0]);
+        options.wrapper.querySelector<HTMLButtonElement>('[data-blok-database-peek-next]')?.click();
+        await vi.waitFor(() => expect(options.wrapper.querySelector('[data-blok-database-drawer-prop-value]')).not.toBeNull());
+        const field = options.wrapper.querySelector<HTMLElement>('[data-blok-database-drawer-prop-value]');
+
+        if (field === null) throw new Error('Missing property');
+        // A synchronous refresh can replace the pressed node before the
+        // document's outside-press listener receives the same event.
+        field.addEventListener('mousedown', () => drawer.syncOpenRow(rows[1]), { once: true });
+        field.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+
+        expect(drawer.isOpen).toBe(true);
+        expect(drawer.openRowId).toBe('row-2');
+        expect(options.onClose).not.toHaveBeenCalled();
+        expect(field.isConnected).toBe(false);
+      } finally {
+        drawer.destroy();
+        options.wrapper.remove();
+      }
+    });
+
     it('does NOT close when mousedown fires inside a popover portaled to document.body', () => {
       const onClose = vi.fn();
       const options = createOptions({ onClose });
@@ -1795,6 +1828,30 @@ describe('DatabaseCardDrawer', () => {
       } finally {
         drawer.destroy();
         document.body.removeChild(popover);
+      }
+    });
+
+    it('keeps the sheet open when a portaled property option removes itself during the press', () => {
+      const options = createOptions();
+      document.body.append(options.wrapper);
+      const drawer = new DatabaseCardDrawer(options);
+      const popover = document.createElement('div');
+      const option = document.createElement('button');
+
+      popover.setAttribute('data-blok-popover', '');
+      popover.append(option);
+      document.body.append(popover);
+      try {
+        drawer.open(makeRow());
+        option.addEventListener('mousedown', () => option.remove(), { once: true });
+        option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, composed: true }));
+
+        expect(drawer.isOpen).toBe(true);
+        expect(options.onClose).not.toHaveBeenCalled();
+      } finally {
+        drawer.destroy();
+        options.wrapper.remove();
+        popover.remove();
       }
     });
 

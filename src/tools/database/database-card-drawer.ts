@@ -1085,10 +1085,15 @@ export class DatabaseCardDrawer {
     this.outsideClickHandler = (e: MouseEvent): void => {
       if (openPeek.drawer !== this) return;
       const target = e.target as Node | null;
+      // A property refresh or a dismissed picker can detach the pressed node
+      // before this document listener runs. Its original event path still
+      // identifies the surface the user actually pressed.
+      const path = e.composedPath();
 
       if (
-        (target && drawer.contains(target))
+        path.includes(drawer) || (target && drawer.contains(target))
         || this.mode === 'full'
+        || path.some(node => node instanceof Node && this.builder?.contains(node) === true)
         || (target !== null && this.builder?.contains(target) === true)
       ) {
         return;
@@ -1101,7 +1106,7 @@ export class DatabaseCardDrawer {
        * and close the drawer. Database dialogs mark their backdrop with
        * data-blok-popover too.
        */
-      if (target instanceof Element && target.closest('[data-blok-popover], [data-blok-popover-opened], [data-blok-emoji-picker], [data-blok-emoji-picker-backdrop], [data-role="audio-cover-picker"]') !== null) {
+      if (path.some(node => node instanceof Element && node.matches('[data-blok-popover], [data-blok-popover-opened], [data-blok-emoji-picker], [data-blok-emoji-picker-backdrop], [data-role="audio-cover-picker"]'))) {
         return;
       }
 
@@ -1110,12 +1115,12 @@ export class DatabaseCardDrawer {
        * tab to switch views would be treated as an outside click and
        * close the drawer before switchView() runs.
        */
-      if (target instanceof Element && target.closest('[data-blok-database-tab-bar]') !== null) {
+      if (path.some(node => node instanceof Element && node.matches('[data-blok-database-tab-bar]'))) {
         return;
       }
 
       // The tab bar's "N more…" list mounts on body too.
-      if (target !== null && this.tabsOverflow?.contains(target) === true) {
+      if (path.some(node => node instanceof Node && this.tabsOverflow?.contains(node) === true)) {
         return;
       }
 
