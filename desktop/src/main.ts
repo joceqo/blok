@@ -1,3 +1,4 @@
+import { mountPeekDiagnostics } from './peek-diagnostics';
 import { startBootProfile } from './boot-profile';
 import { cacheAccountProfile } from './account-profile';
 import './editor.css';
@@ -18,6 +19,7 @@ startBootProfile();
 
 const root = document.querySelector('#app');
 const native = '__TAURI_INTERNALS__' in window;
+if (native) mountPeekDiagnostics();
 
 function manageSectionFromParams(params: URLSearchParams): 'invites' | 'members' | undefined {
   if (!params.get('manage')) return undefined;

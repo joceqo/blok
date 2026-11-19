@@ -918,7 +918,7 @@ export class DatabaseCardDrawer {
     closeBtn.type = 'button';
     closeBtn.setAttribute('data-blok-database-drawer-close', '');
     closeBtn.addEventListener('click', () => {
-      this.close();
+      this.close({ reason: 'close-button' });
     });
     toolbar.append(closeBtn, ...this.createHeaderControls());
 
@@ -1069,7 +1069,7 @@ export class DatabaseCardDrawer {
       const rowId = this.currentRowId;
 
       markEscapeConsumed(e);
-      this.close();
+      this.close({ reason: 'escape' });
       if (rowId !== null) {
         this.onEscapeClose?.(rowId);
       }
@@ -1124,7 +1124,7 @@ export class DatabaseCardDrawer {
         return;
       }
 
-      this.close();
+      this.close({ reason: 'outside-press' });
     };
     document.addEventListener('mousedown', this.outsideClickHandler);
 
@@ -1194,7 +1194,12 @@ export class DatabaseCardDrawer {
     }
   }
 
-  close(options?: { navigate?: boolean }): void {
+  close(options?: { navigate?: boolean; reason?: string }): void {
+    if (this.drawer !== null) {
+      document.dispatchEvent(new CustomEvent('blok:peek-close', { detail: {
+        reason: options?.reason ?? 'programmatic', mode: this.mode, stack: new Error().stack,
+      } }));
+    }
     this.peekProfile?.finish('closed');
     this.childPeek?.close(options);
     const wasOpen = this.drawer !== null;
@@ -2695,7 +2700,7 @@ export class DatabaseCardDrawer {
       });
       backdrop.addEventListener('click', event => {
         if (event.target !== backdrop) return;
-        event.preventDefault(); event.stopPropagation(); this.close();
+        event.preventDefault(); event.stopPropagation(); this.close({ reason: 'backdrop' });
       });
       drawer.before(backdrop);
       this.backdrop = backdrop;
@@ -2847,7 +2852,7 @@ export class DatabaseCardDrawer {
     }
 
     if (row === undefined) {
-      this.close();
+      this.close({ reason: 'row-missing' });
 
       return;
     }

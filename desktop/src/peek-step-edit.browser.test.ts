@@ -23,6 +23,8 @@ it.each([['chromium','side'], ['webkit','side'], ['chromium','center'], ['webkit
   const page = await browser.newPage({ viewport: { width: 1512, height: 828 } });
   const script = `
     import { Blok } from '../src/blok.ts';
+    import { mountPeekDiagnostics } from '/src/peek-diagnostics.ts';
+    mountPeekDiagnostics();
     import { Paragraph } from '../src/tools/paragraph/index.ts';
     import { DatabaseTool } from '../src/tools/database/index.ts';
     import { DatabaseRowTool } from '../src/tools/database-row/index.ts';
@@ -30,6 +32,7 @@ it.each([['chromium','side'], ['webkit','side'], ['chromium','center'], ['webkit
     const view = {id:'v',name:'Table',type:'table',position:'a0',sorts:[],filters:[],properties:schema.map(p=>({id:p.id,visible:true,width:600})),openPagesIn:'${mode}'};
     const rows = Array.from({length:80},(_,i)=>({id:'r'+i,type:'database-row',parent:'db',data:{properties:{t:'Tenant '+i,emoji:''},position:'a'+String(i).padStart(3,'0')}}));
     const editor = new Blok({holder:document.querySelector('[data-desktop-editor]'),dataModel:'hierarchical',tools:{paragraph:Paragraph,database:DatabaseTool,'database-row':DatabaseRowTool},data:{blocks:[
+      {id:'intro',type:'paragraph',data:{text:'Host page introduction'}},
       {id:'db',type:'database',content:rows.map(r=>r.id),data:{title:'Tenants',schema,views:[view],activeViewId:'v'}},...rows
     ]}});
     window.editor=editor;editor.isReady.then(()=>window.ready=true);
@@ -48,6 +51,14 @@ it.each([['chromium','side'], ['webkit','side'], ['chromium','center'], ['webkit
     await row.locator('[data-blok-database-table-open]').click();
     const drawer=page.locator('[data-blok-database-drawer][data-open]');
     const title=drawer.locator('[data-blok-database-drawer-title]');
+    const firstValue=drawer.locator('[data-blok-database-drawer-prop-value][data-property-id="emoji"]');
+    await firstValue.click();
+    await drawer.locator('[data-blok-database-row-empty]').click();
+    await drawer.locator('[data-blok-database-row-body] [contenteditable="true"]').waitFor({state:'visible'});
+    await firstValue.click();
+    await expect.poll(()=>drawer.count()).toBe(1);
+    await page.locator('[data-blok-database-cell-input="text"][aria-label="emoji"]:focus').press('Escape');
+
     for (const [direction, rowNumber] of [['next',31],['next',32],['prev',31],['prev',30]] as const) {
       await drawer.locator(`[data-blok-database-peek-${direction}]`).click();
       await expect.poll(()=>title.inputValue()).toBe('Tenant '+rowNumber);
@@ -59,5 +70,17 @@ it.each([['chromium','side'], ['webkit','side'], ['chromium','center'], ['webkit
       await expect.poll(()=>drawer.count()).toBe(1);
       expect(await title.inputValue()).toBe('Tenant '+rowNumber);
     }
+    // Finish the last editor before testing the peek's own dismissal. A click
+    // with a cell popover open first belongs to that popover's outside handling.
+    await page.locator('[data-blok-database-cell-input="text"][aria-label="emoji"]:focus').press('Enter');
+    await expect.poll(()=>firstValue.textContent()).toContain('Edited 30');
+    await page.locator('[data-blok-database-peek-backdrop]').click({position:{x:5,y:5}});
+    await expect.poll(()=>drawer.count()).toBe(0);
+    const closures=await page.evaluate(()=>JSON.parse(localStorage.getItem('blok:peek-dismissals') ?? '[]'));
+    expect(closures).toHaveLength(1);
+    expect(closures[0]).toMatchObject({reason:'backdrop',mode});
+  } catch (error) {
+    console.error('Peek dismissal diagnostics',await page.evaluate(()=>localStorage.getItem('blok:peek-dismissals')));
+    throw error;
   } finally {await browser.close();}
 },45000);
