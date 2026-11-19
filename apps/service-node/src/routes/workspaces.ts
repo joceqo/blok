@@ -38,6 +38,7 @@ import { recordAuditEvent } from '@/audit/record-audit-event.js';
 import { serializeAuditEvent } from '@/audit/serialize-audit-event.js';
 import { findOrCreateUserByEmail } from '@/auth/users.js';
 import { normalizeEmail, isValidEmail } from '@/auth/codes.js';
+import { buildWorkspaceExportManifest } from '@/workspaces/export-manifest.js';
 type Env = { Variables: DbVariables & SessionVariables };
 
 export const workspaceRoutes = new Hono<Env>();
@@ -225,6 +226,49 @@ workspaceRoutes.delete('/api/workspaces/:workspaceId', requireUser(), async (con
   });
 
   return context.json({ ok: true });
+});
+
+workspaceRoutes.get('/api/workspaces/:workspaceId/export', requireUser(), async (context) => {
+  const workspaceId = context.req.param('workspaceId');
+  const db = context.get('db');
+
+  await requireWorkspaceRole(db, context, workspaceId, 'delete');
+
+  const workspace = (
+    await db.select().from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1)
+  )[0];
+  if (workspace === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  const [members, pageRows, presetRows] = await Promise.all([
+    memberRows(db, workspaceId),
+    db
+      .select({
+        id: pages.id,
+        title: pages.title,
+        parentId: pages.parentId,
+        trashed: pages.trashed,
+        updatedAt: pages.updatedAt,
+      })
+      .from(pages)
+      .where(eq(pages.workspaceId, workspaceId))
+      .orderBy(asc(pages.title)),
+    db
+      .select()
+      .from(workspacePresets)
+      .where(eq(workspacePresets.workspaceId, workspaceId))
+      .orderBy(asc(workspacePresets.createdAt)),
+  ]);
+
+  const manifest = buildWorkspaceExportManifest({
+    workspace,
+    members,
+    pages: pageRows,
+    presets: presetRows,
+  });
+
+  return context.json(manifest);
 });
 
 workspaceRoutes.get('/api/workspaces/:workspaceId/members', requireUser(), async (context) => {
@@ -432,7 +476,11 @@ workspaceRoutes.get('/api/workspaces/:workspaceId/audit', requireUser(), async (
       lt(auditEvents.createdAt, decoded.at),
       and(eq(auditEvents.createdAt, decoded.at), lt(auditEvents.id, decoded.id)),
     );
-    cursorFilter = and(workspaceFilter, beforeCursor);
+    const combined = beforeCursor === undefined ? undefined : and(workspaceFilter, beforeCursor);
+    if (combined === undefined) {
+      return context.json({ error: 'invalid_cursor' }, 400);
+    }
+    cursorFilter = combined;
   }
 
   const rows = await baseSelect

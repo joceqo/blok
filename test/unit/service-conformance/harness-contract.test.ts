@@ -13,5 +13,5 @@ it('node app serves health', async () => {
   const response = await fetch(new URL('/health', base).toString());
 
   expect(response.status).toBe(200);
-  await expect(response.json()).resolves.toEqual({ status: 'ok' });
+  await expect(response.json()).resolves.toMatchObject({ status: 'ok', version: expect.any(String) });
 });

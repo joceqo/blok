@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, or } from 'drizzle-orm';
+import { and, asc, eq, gt, ilike, or } from 'drizzle-orm';
 import { Hono } from 'hono';
 
 import { pageDocuments, pages } from '@/db/schema.js';
@@ -14,6 +14,7 @@ import { requireUser } from '@/middleware/require-user.js';
 import type { SessionVariables } from '@/middleware/session.js';
 import { duplicatePageDocumentBinding } from '@/pages/duplicate-page-document.js';
 import { duplicateTitle } from '@/pages/duplicate-title.js';
+import { PAGE_SEARCH_LIMIT, searchQueryValid } from '@/pages/search-query.js';
 import {
   buildPagesTree,
   wouldCreatePageCycle,
@@ -85,6 +86,39 @@ pageRoutes.get('/api/workspaces/:workspaceId/pages', requireUser(), async (conte
     pages: pagesPage,
     ...(nextCursor !== undefined ? { nextCursor } : {}),
   });
+});
+
+pageRoutes.get('/api/workspaces/:workspaceId/pages/search', requireUser(), async (context) => {
+  const workspaceId = context.req.param('workspaceId');
+  const db = context.get('db');
+
+  await requireWorkspaceRole(db, context, workspaceId, 'read');
+
+  const validated = searchQueryValid(context.req.query('q'));
+  if (!validated.ok) {
+    return context.json({ error: validated.reason }, 400);
+  }
+
+  const rows = await db
+    .select({
+      id: pages.id,
+      title: pages.title,
+      parentId: pages.parentId,
+      trashed: pages.trashed,
+      updatedAt: pages.updatedAt,
+    })
+    .from(pages)
+    .where(
+      and(
+        eq(pages.workspaceId, workspaceId),
+        eq(pages.trashed, false),
+        ilike(pages.title, `%${validated.query}%`),
+      ),
+    )
+    .orderBy(asc(pages.title))
+    .limit(PAGE_SEARCH_LIMIT);
+
+  return context.json({ pages: rows });
 });
 
 pageRoutes.get('/api/workspaces/:workspaceId/pages/trash', requireUser(), async (context) => {

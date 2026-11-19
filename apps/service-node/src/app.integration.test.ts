@@ -134,6 +134,15 @@ describe('createApp integration (no PostgreSQL)', () => {
     await expect(response.json()).resolves.toEqual({ error: 'database_not_configured' });
   });
 
+  it('GET /api/workspaces/:workspaceId/export returns 503 when DATABASE is not wired into createApp', async () => {
+    const workspaceId = '00000000-0000-0000-0000-000000000001';
+    const response = await appWithoutDb().request(
+      `http://localhost/api/workspaces/${workspaceId}/export`,
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: 'database_not_configured' });
+  });
+
   it('GET /api/blok returns 503 when BLOK_SIDECAR_URL is unset', async () => {
     const response = await appWithoutDb().request('http://localhost/api/blok');
     expect(response.status).toBe(503);
