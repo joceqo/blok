@@ -48,10 +48,25 @@ CREATE TABLE IF NOT EXISTS pages (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS page_documents (
+  page_id uuid PRIMARY KEY REFERENCES pages (id) ON DELETE CASCADE,
+  doc_id text NOT NULL,
+  lineage text NOT NULL DEFAULT '',
+  sequence bigint NOT NULL DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS assets (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id uuid NOT NULL,
   byte_size bigint NOT NULL,
   storage_key text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS page_documents (
+  page_id uuid PRIMARY KEY REFERENCES pages (id) ON DELETE CASCADE,
+  doc_id text NOT NULL,
+  lineage text,
+  sequence bigint
 );

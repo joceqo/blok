@@ -13,7 +13,9 @@ import { createBlokRoutes } from './routes/blok.js';
 import { createDocumentsRoutes } from './routes/documents.js';
 import { healthRoutes } from './routes/health.js';
 import { instanceRoutes } from './routes/instance.js';
+import { pageDocumentRoutes } from './routes/page-documents.js';
 import { pageRoutes } from './routes/pages.js';
+import { ticketRoutes } from './routes/tickets.js';
 import { workspaceRoutes } from './routes/workspaces.js';
 
 export interface AppOptions {
@@ -39,6 +41,8 @@ export function createApp(options: AppOptions): Hono {
     api.route('/', createAuthRoutes());
     api.route('/', workspaceRoutes);
     api.route('/', pageRoutes);
+    api.route('/', pageDocumentRoutes);
+    api.route('/', ticketRoutes);
     api.route('/', assetRoutes);
     api.route('/', adminRoutes);
     app.route('/', api);

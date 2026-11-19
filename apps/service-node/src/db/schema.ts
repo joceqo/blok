@@ -66,6 +66,16 @@ export const pages = pgTable('pages', {
 });
 
 /** Large counters (Go uses numeric(20,0) → string in pg). */
+export const pageDocuments = pgTable('page_documents', {
+  pageId: uuid('page_id')
+    .primaryKey()
+    .references(() => pages.id, { onDelete: 'cascade' }),
+  docId: text('doc_id').notNull(),
+  lineage: text('lineage').notNull().default(''),
+  sequence: bigint('sequence', { mode: 'bigint' }).notNull().default(0n),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const assets = pgTable('assets', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').notNull(),
