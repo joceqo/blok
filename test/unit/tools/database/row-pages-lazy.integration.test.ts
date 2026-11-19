@@ -147,3 +147,44 @@ it('duplicates an external body into independent inline blocks without opening t
     expect(pages.mount).not.toHaveBeenCalled();
   } finally { delete (pages as DatabaseRowPages & {snapshot?: unknown}).snapshot; }
 });
+
+
+it('offers a host draft for a new empty row without inserting body blocks in the parent document', async () => {
+  const destroy = vi.fn();
+  const mountEmpty = vi.fn((_rowId: string, target: HTMLElement) => { target.textContent = 'Local unsaved body'; return { destroy }; });
+  Object.assign(pages, { mountEmpty });
+  try {
+    await make({ emptyInline: true });
+    expect(mountEmpty).not.toHaveBeenCalled();
+    await open('r1');
+    expect(mountEmpty).toHaveBeenCalledExactlyOnceWith('r1', expect.any(HTMLElement));
+    const saved = await editor?.save();
+    expect(saved?.blocks.filter(block => block.parent === 'r1')).toEqual([]);
+    expect(pages.copyFromLegacy).not.toHaveBeenCalled();
+    await open('r2');
+    expect(destroy).toHaveBeenCalledTimes(1);
+  } finally { Reflect.deleteProperty(pages, 'mountEmpty'); }
+});
+
+it('keeps the pending draft when pageId arrives before the body acknowledgement', async () => {
+  const destroy = vi.fn();
+  const mountEmpty = vi.fn((_rowId: string, target: HTMLElement) => { target.textContent = 'Unacknowledged text'; return {destroy}; });
+  Object.assign(pages, {mountEmpty,hasDraft:()=>true});
+  try {
+    await make({emptyInline:true}); await open('r1');
+    await editor!.blocks.update('r1',{properties:{t:'First'},position:'a0',pageId:'allocated-before-ack'});
+    await quiet();
+    expect(destroy).not.toHaveBeenCalled();
+    expect(pages.mount).not.toHaveBeenCalled();
+    expect(holder.textContent).toContain('Unacknowledged text');
+  } finally { Reflect.deleteProperty(pages,'mountEmpty'); Reflect.deleteProperty(pages,'hasDraft'); }
+});
+
+it('never offers the empty draft path for a row with existing inline content', async () => {
+  const mountEmpty = vi.fn(); Object.assign(pages,{mountEmpty});
+  try {
+    await make({inline:true}); await open('r1');
+    expect(mountEmpty).not.toHaveBeenCalled();
+    expect(holder.textContent).toContain('current inline body');
+  } finally { Reflect.deleteProperty(pages,'mountEmpty'); }
+});

@@ -1604,7 +1604,11 @@ export interface DatabaseRowPages {
     body: OutputData;
     acceptedBody: OutputData;
   }): Promise<DatabaseRowPageReceipt>;
-  mount(pageId: string, holder: HTMLElement): { destroy(): void };
+  mount(pageId: string, holder: HTMLElement): { destroy(): void; focus?(): void };
+  /** An isolated local editor for a truly empty row; the host allocates on first content. */
+  mountEmpty?(rowId: string, holder: HTMLElement): { destroy(): void; focus?(): void };
+  /** Retain an unacknowledged local draft even when the row's pageId arrives first. */
+  hasDraft?(rowId: string): boolean;
   /** Start a row page while its visible row is hovered; keep only a bounded host cache. */
   prepare?(pageId: string, options?: { ifRoom?: boolean }): void;
   /** True when a prepared page can be mounted without a loading frame. */

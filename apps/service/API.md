@@ -126,6 +126,47 @@ Service schema version 13 adds `page_placements` and `page_create_requests`.
 Normal service startup applies these additive tables; there is no row-body data
 migration to run for this API change.
 
+`blok_open_row_body` accepts `{workspace, pageId, rowId}`. `pageId` is the
+**physical document containing the database-row block**; row IDs alone are not
+globally unique. This explicit write intent creates/reuses its separate body
+and returns `{pageId, publicId, parentId, rowId, revision}`. Open the returned
+body with `blok_open`, then use `blok_execute` normally. Commands remain atomic
+within one document: there is no implicit cross-document batch routing. For a
+nested row, call this tool with the containing body's document ID. Looking up
+or opening a row in the UI does not itself allocate a document.
+
+The session-authenticated equivalent is
+`POST /api/workspaces/:slug/pages/:id/row-body` with `{rowId}`. A native/web editor
+can also submit `{rowId, body: OutputData, operationId}` for the first real
+content from its isolated draft. Persist the draft and a unique operation ID
+before sending; retries must use the same immutable payload. The endpoint
+appends those blocks, preserves existing peer content, and acknowledges only
+after live journal edits and projection succeed. It never replaces a body.
+Existing block-ID collisions, changed arguments for the same operation ID,
+changed ownership, and document resets are conflicts requiring review. Operation
+receipts are scoped to the actor, source document, row, and payload. A lost
+response or interrupted receipt can be retried without duplicate blocks.
+
+Bodies require edit access to the source and inherit its access/teamspace via
+the parent chain; their creator receives no independent grant. Existing bodies
+must match both the row's `pageId` and the body's `rowBodyOf`. Templates and any
+existing inline content—including empty paragraphs and legacy rich-text
+bodies—are refused with 409 and left untouched. Row comment threads stay in the
+source. Use the separately operated **offline migration** for existing content;
+this endpoint only separates future empty rows safely while peers are online.
+
+Drafts are limited to 512 KiB and 2,000 blocks, with stable unique IDs and a
+self-contained acyclic parent tree. Nonzero flat `indent` currently returns
+409 because the native incremental edit port cannot preserve it; retain the
+local draft rather than discarding indentation. Standard parent/child nesting
+and tunes are supported. Errors may return the retained `pageId`,
+`operationId`, `parentId`, `parentRowId`, and recovery instructions. Do not
+allocate another body after an interrupted request.
+
+Service schema version 14 adds `row_body_creations` and `row_body_drafts` for
+these durable receipts. Normal startup applies the additive tables. This is
+not the offline migration of existing row content.
+
 `blok_delete_page` accepts `{workspace, pageId}` and moves the page and all its
 descendants to the workspace trash. It returns `{id, trashed:true, affectedPages,
 revision}`. This is recoverable deletion: content, journal, files, shares and

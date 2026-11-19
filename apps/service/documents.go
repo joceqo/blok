@@ -416,6 +416,10 @@ func (s *Service) page(w http.ResponseWriter, r *http.Request, u identity, ws Wo
 		s.trashPage(w, r, u, ws)
 		return
 	}
+	if r.Method == http.MethodPost && r.PathValue("action") == "row-body" {
+		s.openRowBody(w, r, u, ws)
+		return
+	}
 	if r.Method == http.MethodPost && r.PathValue("action") == "move" {
 		s.movePage(w, r, u, ws)
 		return

@@ -17,6 +17,8 @@ export interface DesktopRowPagesOptions {
   navigation?: DatabaseRowPages['navigation'];
   href?: DatabaseRowPages['href'];
   snapshot?: DatabaseRowPages['snapshot'];
+  mountEmpty?: DatabaseRowPages['mountEmpty'];
+  hasDraft?: DatabaseRowPages['hasDraft'];
   lookup: DatabaseRowPages['lookup'];
   copyFromLegacy: DatabaseRowPages['copyFromLegacy'];
   reconcileLegacy: DatabaseRowPages['reconcileLegacy'];
@@ -153,6 +155,8 @@ export function createDesktopRowPages(options: DesktopRowPagesOptions): DesktopR
     ...(options.navigation ? {navigation: options.navigation} : {}),
     ...(options.href ? {href: options.href} : {}),
     ...(options.snapshot ? {snapshot: options.snapshot} : {}),
+    ...(options.mountEmpty ? {mountEmpty: options.mountEmpty} : {}),
+    ...(options.hasDraft ? {hasDraft: options.hasDraft} : {}),
     lookup: input => options.lookup(input),
     copyFromLegacy: input => options.copyFromLegacy(input),
     reconcileLegacy: input => options.reconcileLegacy(input),

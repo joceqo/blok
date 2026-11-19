@@ -2,6 +2,7 @@ import type { BlockAPI } from '../../types';
 import type { BlokConfig } from '../../types/configs';
 import type { DatabaseRowPages } from '../../types/tools/database';
 import { createDesktopRowPages, type DesktopRowPages } from './row-pages';
+import { createRowBodyDrafts } from './row-body-draft';
 import { openRowLocation, openRowRoute, rowRoutePath, type RowRouteStep } from './row-route';
 import {createPageHistoryApi} from './page-history-api';
 import type {createPageHistory} from './page-history';
@@ -833,8 +834,61 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         if (parent) navigateRowAncestor(id, parent); else navigate(id);
       },
     });
+    const rowDrafts = ref.kind === 'remote' ? createRowBodyDrafts({
+      scope: workspaceKey(ref),
+      readOnly: documentId => readOnly(id) || readOnly(documentId),
+      createEditor: config => {
+        // Drafts have no collaboration or host persistence. Page creation must
+        // wait for the real body document, whose id does not exist yet.
+        const tools = {...nestedPageTools};
+        delete tools.page;
+        const database = tools.database as {class: typeof Database; config: Record<string, unknown>};
+        tools.database = {...database, config: {...database.config, rowPages: undefined}};
+        const draft = new Blok({...config, tools, dataModel: 'hierarchical', tabSync: false, theme: readAppearance()});
+        return {isReady:draft.isReady, save:()=>draft.save(), readOnly:draft.readOnly, destroy:()=>draft.destroy()};
+      },
+      create: async request => {
+        const source = request.documentId === id ? instance : rowPages?.mountedEditor(request.documentId);
+        if (!source) throw new Error('La page source doit rester ouverte pendant cet enregistrement.');
+        // The source row may itself be a just-created, unacknowledged block.
+        await source.saver.flush();
+        const client = new CloudClient({origin:ref.server,...('__TAURI_INTERNALS__' in window ? {sessionAdapter:nativeSessionAdapter(ref.server)} : {})});
+        const receipt = await client.request<{pageId:string;publicId:string;parentId:string;rowId:string;revision:number}>(
+          `/api/workspaces/${encodeURIComponent(ref.workspaceId)}/pages/${encodeURIComponent(request.documentId)}/row-body`,
+          {method:'POST',body:JSON.stringify({rowId:request.rowId,body:request.body,operationId:request.operationId})},
+        );
+        await refreshRemoteManifest();
+        if (readOnly(receipt.pageId)) throw new Error('Les droits de la nouvelle page ne sont pas encore disponibles. Réessayez.');
+        // A side peek leaves the main route alone. A full row may acquire its
+        // canonical URL without reopening the view or destroying its draft.
+        const route = rowPageDestination(location.href);
+        const physical = route?.steps?.at(-1)?.documentId ?? route?.documentId;
+        if (route?.rowId === request.rowId && physical === request.documentId) {
+          void client.request<ResolvedPage>(`/api/pages/resolve-id/${encodeURIComponent(receipt.pageId)}`).then(resolved => {
+            const current = rowPageDestination(location.href);
+            if (life.destroyed || current?.rowId !== request.rowId || (current.steps?.at(-1)?.documentId ?? current.documentId) !== request.documentId) return;
+            rememberResolvedRowPage(location.origin, resolved);
+            const href = '__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href,receipt.pageId) : publicPageUrl(ref.server,resolved.title,resolved.publicId);
+            history.replaceState(history.state, '', pageNavigationUrl(href));
+          }).catch(() => undefined);
+        }
+        return receipt;
+      },
+      mountPage: (pageId, target) => {
+        const mount = rowPages?.mount(pageId, target);
+        const body = rowPages?.mountedEditor(pageId);
+        if (!mount || !body) throw new Error('La page créée ne peut pas encore être ouverte.');
+        return {...mount, ready:body.isReady.then(()=>body.saver.flush())};
+      },
+    }) : undefined;
+    const refreshRowDraftPermissions = (): void => rowDrafts?.refreshPermissions();
+    rowPermissionWatchers.add(refreshRowDraftPermissions);
     const rowPages: DesktopRowPages | undefined = ref.kind === 'remote' ? createDesktopRowPages({
       retainEditors: 2,
+      ...(rowDrafts ? {
+        mountEmpty: (rowId: string, target: HTMLElement) => rowDrafts.mount(id, rowId, target),
+        hasDraft: (rowId: string) => rowDrafts.hasDraft(id, rowId),
+      } : {}),
       navigation: hostedRowNavigation(id),
       href: (rowId, context) => rowPageUrl(pageUrl(id), rowId, context.databaseId),
       navigate: (rowId, context) => {
@@ -891,7 +945,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           page: {class: Page, config: {...pageConfig, create: async (input: Parameters<NonNullable<PageConfig['create']>>[0]) => pageConfig.create?.({...input, parentId: input.parentId ?? bodyId})}},
           database: {class: Database, config: {
             ...(nestedPageTools.database as {config: Record<string, unknown>}).config,
-            rowPages: {...nestedRowPages, navigation: hostedRowNavigation(bodyId)},
+            rowPages: {...nestedRowPages, navigation: hostedRowNavigation(bodyId), ...(rowDrafts ? {
+              mountEmpty: (rowId: string, target: HTMLElement) => rowDrafts.mount(bodyId, rowId, target),
+              hasDraft: (rowId: string) => rowDrafts.hasDraft(bodyId, rowId),
+            } : {})},
           }},
         },
         theme: readAppearance(),
@@ -1077,11 +1134,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         life.destroyed = true; life.active = false;
         historyView.value?.destroy();
         unwatchProfile(); pagePresence?.destroy();
-        rowPages?.destroy();
+        rowPermissionWatchers.delete(refreshRowDraftPermissions);
+        rowDrafts?.destroy(); rowPages?.destroy();
         toolbar.destroy(); instance.destroy();
         session.nodes = [];
       },
       async flush() {
+        await rowDrafts?.flush();
         await rowPages?.flush();
         await instance.saver.flush();
         if (ref.kind === 'local' && !readOnly(id)) await saveLocalData(await instance.save());

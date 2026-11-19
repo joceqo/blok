@@ -192,3 +192,26 @@ CREATE TABLE IF NOT EXISTS page_create_requests (
 );
 
 INSERT INTO schema_migrations(version) VALUES(13) ON CONFLICT DO NOTHING;
+
+-- Lazy bodies for future empty rows. Allocation and immutable edit plans are
+-- durable before linking a row or accepting an isolated client draft.
+CREATE TABLE IF NOT EXISTS row_body_creations (
+ document_id text NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+ row_id text NOT NULL,
+ body_id text NOT NULL UNIQUE REFERENCES pages(id) ON DELETE CASCADE,
+ plan jsonb NOT NULL,
+ complete boolean NOT NULL DEFAULT false,
+ PRIMARY KEY(document_id,row_id)
+);
+CREATE TABLE IF NOT EXISTS row_body_drafts (
+ user_id text NOT NULL REFERENCES users(id),
+ document_id text NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+ row_id text NOT NULL,
+ operation_id text NOT NULL,
+ digest text NOT NULL,
+ body_id text NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+ plan jsonb NOT NULL,
+ complete boolean NOT NULL DEFAULT false,
+ PRIMARY KEY(document_id,row_id,operation_id)
+);
+INSERT INTO schema_migrations(version) VALUES(14) ON CONFLICT DO NOTHING;

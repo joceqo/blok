@@ -338,6 +338,8 @@ export interface CardDrawerOptions {
   rowBody?: {
     /** Whether the row is available as a live inline body beside host pages. */
     has?(rowId: string): boolean;
+    /** No inline children or legacy body; comments do not count as body content. */
+    isEmpty?(rowId: string): boolean;
     attach(rowId: string, host: HTMLElement): boolean;
     detach(rowId: string): void;
     /** Enter on the title: the highlighted template pick, otherwise the caret in the body (adding its first paragraph when empty). */
@@ -710,7 +712,9 @@ export class DatabaseCardDrawer {
   private editorInitVersion = 0;
   private warnedNoEditor = false;
   private blokInstance: BlokInstance | null = null;
-  private pageMount: { destroy(): void } | null = null;
+  private pageMount: { destroy(): void; focus?(): void } | null = null;
+
+  private draftRowId: string | null = null;
   /** The page the holder shows or failed to mount. Kept while a peer's save drops `pageId`. */
   private mountedPageId: string | undefined = undefined;
   private readonly pendingBodyRows = new Set<string>();
@@ -970,6 +974,10 @@ export class DatabaseCardDrawer {
         return;
       }
       e.preventDefault();
+      if (!this.readOnly && this.pageMount?.focus !== undefined) {
+        this.pageMount.focus();
+        return;
+      }
       // "Press Enter to continue with an empty page".
       if (!this.readOnly && this.attachedBodyRowId !== null) {
         this.rowBody?.start(this.attachedBodyRowId);
@@ -2887,6 +2895,14 @@ export class DatabaseCardDrawer {
       return;
     }
 
+    if (this.draftRowId === row.id) {
+      if (this.rowPages?.hasDraft?.(row.id) !== false || (row.pageId === undefined && this.rowBody?.isEmpty?.(row.id) === true)) return;
+      const draftHolder = this.drawer.querySelector<HTMLElement>('[data-blok-database-drawer-editor]');
+      this.pageMount?.destroy(); this.pageMount = null; this.draftRowId = null;
+      if (draftHolder !== null) { draftHolder.replaceChildren(); this.mountRowBodyAfterPaint(draftHolder,row,true); }
+      return;
+    }
+
     if (this.attachedBodyRowId === row.id && (this.rowPages === undefined || row.pageId === undefined)) {
       return;
     }
@@ -4587,6 +4603,7 @@ export class DatabaseCardDrawer {
     this.detachBody();
     this.pageMount?.destroy();
     this.pageMount = null;
+    this.draftRowId = null;
     this.mountedPageId = undefined;
     if (this.blokInstance) {
       const instance = this.blokInstance;
@@ -4714,6 +4731,16 @@ export class DatabaseCardDrawer {
     const initVersion = ++this.editorInitVersion;
 
     editorHolder.toggleAttribute('inert', this.pendingBodyRows.has(row.id));
+    if (this.rowPages?.mountEmpty !== undefined && (this.rowPages.hasDraft?.(row.id) === true
+      || (row.pageId === undefined && this.rowBody?.isEmpty?.(row.id) === true))) {
+      this.draftRowId = row.id;
+      try {
+        this.pageMount = this.rowPages.mountEmpty(row.id, editorHolder);
+      } catch {
+        this.showPageFailure(editorHolder);
+      }
+      return;
+    }
     if (row.pageId !== undefined && this.rowPages !== undefined) {
       // Set even when mounting fails, so a later sync does not retry it.
       this.mountedPageId = row.pageId;

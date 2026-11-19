@@ -11320,6 +11320,13 @@ export class DatabaseTool implements BlockTool {
         savedOptionsOf: (propertyId) => this.model.getProperty(propertyId)?.config?.options,
         rowBody: {
           has: (rowId) => this.api.blocks.getById?.(rowId) != null,
+          isEmpty: (rowId) => {
+            const row = this.rowOrTemplate(rowId);
+            const schema = this.model.getSchema();
+
+            return row !== undefined && row.template !== true && this.api.blocks.getChildren(rowId).every(isAnnotationBlock)
+              && (rowDescription(row, schema, schema.find(property => property.type === 'richText')?.id)?.blocks.length ?? 0) === 0;
+          },
           attach: (rowId, host) => {
             if (!writable()) host.setAttribute('inert', '');
 
