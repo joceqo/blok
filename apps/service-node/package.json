@@ -7,6 +7,9 @@
   "engines": {
     "node": ">=20.19.0"
   },
+  "imports": {
+    "@/*": "./dist/*"
+  },
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",

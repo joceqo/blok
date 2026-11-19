@@ -9,7 +9,12 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "declaration": false,
-    "types": ["node"]
+    "ignoreDeprecations": "6.0",
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src/**/*.ts"],
   "exclude": ["src/**/*.test.ts"]

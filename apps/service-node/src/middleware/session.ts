@@ -2,9 +2,9 @@ import { getCookie } from 'hono/cookie';
 import { createMiddleware } from 'hono/factory';
 import { and, eq, gt } from 'drizzle-orm';
 
-import { SESSION_COOKIE, hashSecret } from '../auth/codes.js';
-import type { Database } from '../db/index.js';
-import { sessions } from '../db/schema.js';
+import { SESSION_COOKIE, hashSecret } from '@/auth/codes.js';
+import type { Database } from '@/db/index.js';
+import { sessions } from '@/db/schema.js';
 
 export type SessionVariables = {
   userId: string | undefined;

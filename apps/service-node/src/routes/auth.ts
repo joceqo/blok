@@ -11,12 +11,13 @@ import {
   isValidEmail,
   normalizeEmail,
   sessionExpiresAt,
-} from '../auth/codes.js';
-import { findOrCreateUserByEmail } from '../auth/users.js';
-import { authChallenges, sessions, users } from '../db/schema.js';
-import { sendAuthCode } from '../mail/smtp.js';
-import type { DbVariables } from '../middleware/db.js';
-import type { SessionVariables } from '../middleware/session.js';
+} from '@/auth/codes.js';
+import { toUserJson } from '@/auth/serialize-user.js';
+import { findOrCreateUserByEmail } from '@/auth/users.js';
+import { authChallenges, sessions, users } from '@/db/schema.js';
+import { sendAuthCode } from '@/mail/smtp.js';
+import type { DbVariables } from '@/middleware/db.js';
+import type { SessionVariables } from '@/middleware/session.js';
 
 type Env = { Variables: DbVariables & SessionVariables };
 
@@ -134,7 +135,7 @@ export function createAuthRoutes(): Hono<Env> {
     if (user === undefined) {
       return context.json({ error: 'not_found' }, 404);
     }
-    return context.json({ user: { id: user.id, email: user.email } });
+    return context.json({ user: toUserJson(user) });
   });
 
   return authRoutes;

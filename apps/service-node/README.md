@@ -43,6 +43,10 @@ BLOK_SIDECAR_URL=http://127.0.0.1:4000 npm run dev   # proxies /api/blok/*
 
 Auth flow: `POST /api/auth/request-code` → `POST /api/auth/verify-code` (sets `blok_session` cookie) → `GET /api/auth/me`.
 
+## Imports
+
+Cross-module paths use the `@/` alias (`package.json` `imports` → `dist/` at runtime; `tsconfig` `paths` → `src/` for typecheck and `tsx`/`vitest`). Same directory keeps `./foo.js`; never `../../`.
+
 ## Scripts
 
 - `npm run dev` — `tsx watch src/main.ts`

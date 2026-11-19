@@ -1,14 +1,14 @@
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import type { Database } from '../db/index.js';
-import { pageDocuments, pages } from '../db/schema.js';
-import { requireWorkspaceRole } from '../http/workspace-access.js';
-import type { DbVariables } from '../middleware/db.js';
-import { requireUser } from '../middleware/require-user.js';
-import { assertPageAction } from '../permissions.js';
-import type { SessionVariables } from '../middleware/session.js';
-import { memberRole } from '../workspaces/membership.js';
+import type { Database } from '@/db/index.js';
+import { pageDocuments, pages } from '@/db/schema.js';
+import { requireWorkspaceRole } from '@/http/workspace-access.js';
+import type { DbVariables } from '@/middleware/db.js';
+import { requireUser } from '@/middleware/require-user.js';
+import { assertPageAction } from '@/permissions.js';
+import type { SessionVariables } from '@/middleware/session.js';
+import { memberRole } from '@/workspaces/membership.js';
 
 type Env = { Variables: DbVariables & SessionVariables };
 

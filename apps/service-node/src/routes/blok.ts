@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 
-import { forwardToSidecar } from '../sidecar/client.js';
+import { forwardToSidecar } from '@/sidecar/client.js';
 
 /**
  * Collaboration sidecar at `/api/blok` — reverse proxy when `BLOK_SIDECAR_URL` is set.

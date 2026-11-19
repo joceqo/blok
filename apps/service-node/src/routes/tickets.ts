@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 
-import { blokTicket } from '../tickets/hmac.js';
-import type { DbVariables } from '../middleware/db.js';
-import { requireUser } from '../middleware/require-user.js';
-import type { SessionVariables } from '../middleware/session.js';
+import { blokTicket } from '@/tickets/hmac.js';
+import type { DbVariables } from '@/middleware/db.js';
+import { requireUser } from '@/middleware/require-user.js';
+import type { SessionVariables } from '@/middleware/session.js';
 
 type Env = { Variables: DbVariables & SessionVariables };
 

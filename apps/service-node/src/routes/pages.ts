@@ -1,18 +1,23 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, gt, or } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import { pages } from '../db/schema.js';
-import { withTransaction } from '../db/transaction.js';
-import { requireWorkspaceRole } from '../http/workspace-access.js';
-import type { DbVariables } from '../middleware/db.js';
-import { requireUser } from '../middleware/require-user.js';
-import type { SessionVariables } from '../middleware/session.js';
+import { pages } from '@/db/schema.js';
+import { withTransaction } from '@/db/transaction.js';
+import {
+  decodeTimeIdCursor,
+  encodeTimeIdCursor,
+  parseListPagination,
+} from '@/http/pagination.js';
+import { requireWorkspaceRole } from '@/http/workspace-access.js';
+import type { DbVariables } from '@/middleware/db.js';
+import { requireUser } from '@/middleware/require-user.js';
+import type { SessionVariables } from '@/middleware/session.js';
 import {
   buildPagesTree,
   wouldCreatePageCycle,
-} from '../pages/tree.js';
-import { assertPageAction } from '../permissions.js';
-import { memberRole } from '../workspaces/membership.js';
+} from '@/pages/tree.js';
+import { assertPageAction } from '@/permissions.js';
+import { memberRole } from '@/workspaces/membership.js';
 
 type Env = {
   Variables: DbVariables & SessionVariables;
@@ -21,6 +26,66 @@ type Env = {
 export const pageRoutes = new Hono<Env>();
 
 pageRoutes.get('/api/workspaces/:workspaceId/pages', requireUser(), async (context) => {
+  const workspaceId = context.req.param('workspaceId');
+  const db = context.get('db');
+
+  await requireWorkspaceRole(db, context, workspaceId, 'read');
+
+  const pagination = parseListPagination(context.req.query());
+  const workspaceFilter = and(eq(pages.workspaceId, workspaceId), eq(pages.trashed, false));
+
+  const baseSelect = db
+    .select({
+      id: pages.id,
+      title: pages.title,
+      parentId: pages.parentId,
+      trashed: pages.trashed,
+      updatedAt: pages.updatedAt,
+    })
+    .from(pages);
+
+  if (!pagination.paginated) {
+    const rows = await baseSelect
+      .where(workspaceFilter)
+      .orderBy(asc(pages.title));
+    return context.json({ pages: rows });
+  }
+
+  let cursorFilter = workspaceFilter;
+  if (pagination.cursor !== undefined) {
+    let decoded: { at: Date; id: string };
+    try {
+      decoded = decodeTimeIdCursor(pagination.cursor);
+    } catch {
+      return context.json({ error: 'invalid_cursor' }, 400);
+    }
+    const afterCursor = or(
+      gt(pages.updatedAt, decoded.at),
+      and(eq(pages.updatedAt, decoded.at), gt(pages.id, decoded.id)),
+    );
+    cursorFilter = and(workspaceFilter, afterCursor);
+  }
+
+  const rows = await baseSelect
+    .where(cursorFilter)
+    .orderBy(asc(pages.updatedAt), asc(pages.id))
+    .limit(pagination.limit + 1);
+
+  const hasMore = rows.length > pagination.limit;
+  const pagesPage = hasMore ? rows.slice(0, pagination.limit) : rows;
+  const last = pagesPage.at(-1);
+  const nextCursor =
+    hasMore && last !== undefined
+      ? encodeTimeIdCursor(last.updatedAt, last.id)
+      : undefined;
+
+  return context.json({
+    pages: pagesPage,
+    ...(nextCursor !== undefined ? { nextCursor } : {}),
+  });
+});
+
+pageRoutes.get('/api/workspaces/:workspaceId/pages/trash', requireUser(), async (context) => {
   const workspaceId = context.req.param('workspaceId');
   const db = context.get('db');
 
@@ -35,8 +100,8 @@ pageRoutes.get('/api/workspaces/:workspaceId/pages', requireUser(), async (conte
       updatedAt: pages.updatedAt,
     })
     .from(pages)
-    .where(and(eq(pages.workspaceId, workspaceId), eq(pages.trashed, false)))
-    .orderBy(asc(pages.title));
+    .where(and(eq(pages.workspaceId, workspaceId), eq(pages.trashed, true)))
+    .orderBy(asc(pages.updatedAt));
 
   return context.json({ pages: rows });
 });

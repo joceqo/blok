@@ -1,11 +1,12 @@
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import { assets } from '../db/schema.js';
-import { requireWorkspaceRole } from '../http/workspace-access.js';
-import type { DbVariables } from '../middleware/db.js';
-import { requireUser } from '../middleware/require-user.js';
-import type { SessionVariables } from '../middleware/session.js';
+import { toAssetJson } from '@/assets/serialize.js';
+import { assets } from '@/db/schema.js';
+import { requireWorkspaceRole } from '@/http/workspace-access.js';
+import type { DbVariables } from '@/middleware/db.js';
+import { requireUser } from '@/middleware/require-user.js';
+import type { SessionVariables } from '@/middleware/session.js';
 
 type Env = { Variables: DbVariables & SessionVariables };
 
@@ -74,16 +75,53 @@ assetRoutes.post('/api/workspaces/:workspaceId/assets', requireUser(), async (co
     return context.json({ error: 'insert_failed' }, 500);
   }
 
-  return context.json(
-    {
-      asset: {
-        id: asset.id,
-        workspaceId: asset.workspaceId,
-        storageKey: asset.storageKey,
-        byteSize: asset.byteSize.toString(),
-        createdAt: asset.createdAt,
-      },
-    },
-    201,
-  );
+  return context.json({ asset: toAssetJson(asset) }, 201);
 });
+
+assetRoutes.get(
+  '/api/workspaces/:workspaceId/assets/:assetId',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const assetId = context.req.param('assetId');
+    const db = context.get('db');
+
+    await requireWorkspaceRole(db, context, workspaceId, 'read');
+
+    const row = (
+      await db
+        .select()
+        .from(assets)
+        .where(and(eq(assets.id, assetId), eq(assets.workspaceId, workspaceId)))
+        .limit(1)
+    )[0];
+    if (row === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    return context.json({ asset: toAssetJson(row) });
+  },
+);
+
+assetRoutes.delete(
+  '/api/workspaces/:workspaceId/assets/:assetId',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const assetId = context.req.param('assetId');
+    const db = context.get('db');
+
+    await requireWorkspaceRole(db, context, workspaceId, 'edit');
+
+    const removed = await db
+      .delete(assets)
+      .where(and(eq(assets.id, assetId), eq(assets.workspaceId, workspaceId)))
+      .returning({ id: assets.id });
+
+    if (removed[0] === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    return context.json({ ok: true });
+  },
+);

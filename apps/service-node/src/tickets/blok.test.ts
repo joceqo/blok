@@ -1,18 +1,9 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { loadTicketsConformanceFixture } from '@/testing/tickets-fixture.js';
 import { blokTicket } from './blok.js';
 
-const fixturePath = join(
-  dirname(fileURLToPath(import.meta.url)),
-  '../../../../test/unit/server-conformance/fixtures/tickets.json',
-);
-const fixtures = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
-  secret: string;
-  compatible: string;
-};
+const fixtures = loadTicketsConformanceFixture();
 
 afterEach(() => {
   vi.useRealTimers();

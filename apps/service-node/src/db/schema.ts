@@ -6,9 +6,12 @@
  */
 
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
+  index,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uuid,
@@ -18,6 +21,7 @@ import {
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: varchar('email', { length: 320 }).notNull().unique(),
+  displayName: text('display_name'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -27,15 +31,19 @@ export const authChallenges = pgTable('auth_challenges', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 });
 
-export const sessions = pgTable('sessions', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  tokenHash: text('token_hash').notNull().unique(),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const sessions = pgTable(
+  'sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('sessions_token_hash_idx').on(table.tokenHash)],
+);
 
 export const workspaces = pgTable('workspaces', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -44,26 +52,56 @@ export const workspaces = pgTable('workspaces', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const workspaceMembers = pgTable('workspace_members', {
-  workspaceId: uuid('workspace_id')
-    .notNull()
-    .references(() => workspaces.id),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id),
-  role: varchar('role', { length: 32 }).notNull(),
-});
+export const workspaceMembers = pgTable(
+  'workspace_members',
+  {
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    role: varchar('role', { length: 32 }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.workspaceId, table.userId] }),
+    index('workspace_members_user_id_idx').on(table.userId),
+  ],
+);
 
-export const pages = pgTable('pages', {
+export const workspaceInvites = pgTable('workspace_invites', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id')
     .notNull()
-    .references(() => workspaces.id),
-  title: text('title').notNull(),
-  parentId: uuid('parent_id'),
-  trashed: boolean('trashed').notNull().default(false),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+    .references(() => workspaces.id, { onDelete: 'cascade' }),
+  email: varchar('email', { length: 320 }).notNull(),
+  role: varchar('role', { length: 32 }).notNull(),
+  invitedBy: uuid('invited_by')
+    .notNull()
+    .references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  acceptedAt: timestamp('accepted_at', { withTimezone: true }),
 });
+
+export const pages = pgTable(
+  'pages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+    title: text('title').notNull(),
+    parentId: uuid('parent_id').references((): AnyPgColumn => pages.id, {
+      onDelete: 'set null',
+    }),
+    trashed: boolean('trashed').notNull().default(false),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index('pages_workspace_id_idx').on(table.workspaceId),
+    index('pages_parent_id_idx').on(table.parentId),
+  ],
+);
 
 /** Binds a page to its collaboration document id (editor sync). */
 export const pageDocuments = pgTable('page_documents', {

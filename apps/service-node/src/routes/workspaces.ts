@@ -1,21 +1,22 @@
 import { and, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import type { DbVariables } from '../middleware/db.js';
-import type { SessionVariables } from '../middleware/session.js';
-import { requireUser } from '../middleware/require-user.js';
-import { requireWorkspaceRole, roleInWorkspace } from '../http/workspace-access.js';
-import { withTransaction } from '../db/transaction.js';
-import { workspaces, workspaceMembers } from '../db/schema.js';
+import type { DbVariables } from '@/middleware/db.js';
+import type { SessionVariables } from '@/middleware/session.js';
+import { requireUser } from '@/middleware/require-user.js';
+import { requireWorkspaceRole, roleInWorkspace } from '@/http/workspace-access.js';
+import { withTransaction } from '@/db/transaction.js';
+import { workspaces, workspaceMembers } from '@/db/schema.js';
 import {
   listWorkspacesForUser,
   memberRows,
   parseWorkspaceRole,
   memberRole,
-} from '../workspaces/membership.js';
-import { slugFromName } from '../workspaces/slug.js';
-import { findOrCreateUserByEmail } from '../auth/users.js';
-import { normalizeEmail, isValidEmail } from '../auth/codes.js';
+} from '@/workspaces/membership.js';
+import { validateMemberRoleChange } from '@/workspaces/member-role-change.js';
+import { slugFromName, validateWorkspaceSlug } from '@/workspaces/slug.js';
+import { findOrCreateUserByEmail } from '@/auth/users.js';
+import { normalizeEmail, isValidEmail } from '@/auth/codes.js';
 type Env = { Variables: DbVariables & SessionVariables };
 
 export const workspaceRoutes = new Hono<Env>();
@@ -30,10 +31,16 @@ workspaceRoutes.post('/api/workspaces', requireUser(), async (context) => {
     .json<{ name?: string; slug?: string }>()
     .catch(() => ({}));
   const name = typeof body.name === 'string' && body.name.trim().length > 0 ? body.name.trim() : 'Workspace';
-  const slug =
-    typeof body.slug === 'string' && body.slug.trim().length > 0
-      ? body.slug.trim().toLowerCase()
-      : slugFromName(name);
+  let slug: string;
+  if (typeof body.slug === 'string' && body.slug.trim().length > 0) {
+    const validation = validateWorkspaceSlug(body.slug);
+    if (!validation.ok) {
+      return context.json({ error: validation.reason }, 400);
+    }
+    slug = validation.slug;
+  } else {
+    slug = slugFromName(name);
+  }
 
   const db = context.get('db');
   try {
@@ -66,6 +73,28 @@ workspaceRoutes.get('/api/workspaces', requireUser(), async (context) => {
   return context.json({ workspaces: rows });
 });
 
+workspaceRoutes.get('/api/workspaces/by-slug/:slug', requireUser(), async (context) => {
+  const slug = context.req.param('slug');
+  const userId = context.get('userId');
+  if (userId === undefined) {
+    return context.json({ error: 'unauthenticated' }, 401);
+  }
+
+  const db = context.get('db');
+  const rows = await db.select().from(workspaces).where(eq(workspaces.slug, slug)).limit(1);
+  const workspace = rows[0];
+  if (workspace === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  const role = await memberRole(db, userId, workspace.id);
+  if (role === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  return context.json({ workspace: { ...workspace, role } });
+});
+
 workspaceRoutes.get('/api/workspaces/:workspaceId', requireUser(), async (context) => {
   const workspaceId = context.req.param('workspaceId');
   const userId = context.get('userId');
@@ -94,23 +123,47 @@ workspaceRoutes.patch('/api/workspaces/:workspaceId', requireUser(), async (cont
 
   await requireWorkspaceRole(db, context, workspaceId, 'share');
 
-  const body: { name?: string } = await context.req.json<{ name?: string }>().catch(() => ({}));
-  if (typeof body.name !== 'string' || body.name.trim().length === 0) {
-    return context.json({ error: 'invalid_name' }, 400);
+  const body: { name?: string; slug?: string } = await context.req
+    .json<{ name?: string; slug?: string }>()
+    .catch(() => ({}));
+
+  const updates: { name?: string; slug?: string } = {};
+  if (body.name !== undefined) {
+    if (typeof body.name !== 'string' || body.name.trim().length === 0) {
+      return context.json({ error: 'invalid_name' }, 400);
+    }
+    updates.name = body.name.trim();
+  }
+  if (body.slug !== undefined) {
+    if (typeof body.slug !== 'string') {
+      return context.json({ error: 'invalid_slug' }, 400);
+    }
+    const validation = validateWorkspaceSlug(body.slug);
+    if (!validation.ok) {
+      return context.json({ error: validation.reason }, 400);
+    }
+    updates.slug = validation.slug;
+  }
+  if (updates.name === undefined && updates.slug === undefined) {
+    return context.json({ error: 'invalid_request' }, 400);
   }
 
-  const updated = await db
-    .update(workspaces)
-    .set({ name: body.name.trim() })
-    .where(eq(workspaces.id, workspaceId))
-    .returning();
+  try {
+    const updated = await db
+      .update(workspaces)
+      .set(updates)
+      .where(eq(workspaces.id, workspaceId))
+      .returning();
 
-  const workspace = updated[0];
-  if (workspace === undefined) {
-    return context.json({ error: 'not_found' }, 404);
+    const workspace = updated[0];
+    if (workspace === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    return context.json({ workspace });
+  } catch {
+    return context.json({ error: 'slug_taken_or_failed' }, 409);
   }
-
-  return context.json({ workspace });
 });
 
 workspaceRoutes.get('/api/workspaces/:workspaceId/members', requireUser(), async (context) => {
@@ -162,6 +215,61 @@ workspaceRoutes.post('/api/workspaces/:workspaceId/members', requireUser(), asyn
 
   return context.json({ ok: true }, 201);
 });
+
+workspaceRoutes.patch(
+  '/api/workspaces/:workspaceId/members/:userId',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const targetUserId = context.req.param('userId');
+    const db = context.get('db');
+
+    const actorRole = await requireWorkspaceRole(db, context, workspaceId, 'share');
+
+    const body: { role?: string } = await context.req.json<{ role?: string }>().catch(() => ({}));
+    const nextRole = typeof body.role === 'string' ? parseWorkspaceRole(body.role) : undefined;
+    if (nextRole === undefined) {
+      return context.json({ error: 'invalid_request' }, 400);
+    }
+
+    const targetRole = await memberRole(db, targetUserId, workspaceId);
+    if (targetRole === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    const ownerRows = await db
+      .select({ userId: workspaceMembers.userId })
+      .from(workspaceMembers)
+      .where(
+        and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.role, 'owner')),
+      );
+    const ownerCount = ownerRows.length;
+
+    const validation = validateMemberRoleChange({
+      actorRole,
+      targetRole,
+      nextRole,
+      ownerCount,
+    });
+    if (!validation.ok) {
+      return context.json({ error: validation.reason }, 403);
+    }
+
+    const updated = await db
+      .update(workspaceMembers)
+      .set({ role: nextRole })
+      .where(
+        and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, targetUserId)),
+      )
+      .returning();
+
+    if (updated[0] === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    return context.json({ ok: true, role: nextRole });
+  },
+);
 
 workspaceRoutes.delete(
   '/api/workspaces/:workspaceId/members/:userId',

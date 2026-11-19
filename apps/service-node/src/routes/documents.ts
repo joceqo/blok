@@ -1,21 +1,40 @@
 import { Hono } from 'hono';
 
-import { forwardToSidecar } from '../sidecar/client.js';
+import { mintDocumentStateAuthorization } from '@/documents/ticket-forward.js';
+import type { SessionVariables } from '@/middleware/session.js';
+import { forwardToSidecar } from '@/sidecar/client.js';
+
+type Env = { Variables: SessionVariables };
 
 /**
  * Product document routes — HTTP sync state via the collaboration sidecar.
  * WebSocket upgrade for live sync stays on `/api/blok/sync/:docId`.
  */
-export function createDocumentsRoutes(): Hono {
-  const documentsRoutes = new Hono();
+export function createDocumentsRoutes(): Hono<Env> {
+  const documentsRoutes = new Hono<Env>();
 
-  documentsRoutes.get('/api/documents/:docId/state', (context) => {
+  documentsRoutes.get('/api/documents/:docId/state', async (context) => {
     const docId = context.req.param('docId');
-    return forwardToSidecar(
-      `/sync/${docId}/state`,
-      context.req.raw,
-      new URL(context.req.url),
-    );
+    const incomingAuth = context.req.header('authorization');
+
+    let request = context.req.raw;
+    if (incomingAuth === undefined || incomingAuth.length === 0) {
+      const userId = context.get('userId');
+      if (userId !== undefined) {
+        const auth = mintDocumentStateAuthorization(userId, docId);
+        if (auth === undefined) {
+          return context.json({ error: 'blok_secret_not_configured' }, 503);
+        }
+        const headers = new Headers(context.req.raw.headers);
+        headers.set('authorization', auth);
+        request = new Request(context.req.raw.url, {
+          method: context.req.method,
+          headers,
+        });
+      }
+    }
+
+    return forwardToSidecar(`/sync/${docId}/state`, request, new URL(context.req.url));
   });
 
   return documentsRoutes;

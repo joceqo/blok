@@ -4,10 +4,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createApp } from './app.js';
-import { loadConfig } from './config.js';
-import { applySchemaIfPresent } from './db/apply-schema.js';
-import { createDb } from './db/index.js';
-import { createPool } from './db/pool.js';
+import { loadConfig } from '@/config.js';
+import { applySchemaIfPresent } from '@/db/apply-schema.js';
+import { createDb } from '@/db/index.js';
+import { createPool } from '@/db/pool.js';
 
 const config = loadConfig();
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
