@@ -56,7 +56,7 @@ it.each(['chromium','webkit'] as const)('keeps table comment badges beside title
       const badge=cell.querySelector<HTMLElement>('[data-blok-database-comment-badge]');
       if(!title)throw Error('Missing title');
       const box=cell.getBoundingClientRect(),text=title.getBoundingClientRect(),count=badge?.getBoundingClientRect();
-      return {height:box.height,titleY:text.y,badgeY:count?.y,badgeRight:count?.right,right:box.right,truncated:title.scrollWidth>title.clientWidth};
+      return {height:box.height,titleY:text.y,badgeY:count?.y,badgeX:count?.x,titleWidth:text.width,badgeRight:count?.right,right:box.right,truncated:title.scrollWidth>title.clientWidth};
     });
     for(const wrap of [false,true]) {
       const plain=await measure(wrap,'plain');
@@ -69,10 +69,26 @@ it.each(['chromium','webkit'] as const)('keeps table comment badges beside title
       if(wrap)expect(long.height).toBeGreaterThan(plain.height);
       else {expect(long.height).toBeCloseTo(plain.height,0);expect(long.truncated).toBe(true);}
     }
+    // A hidden hover action must not consume the title's wrapping width.
+    const wrappedWidth = await page.locator('[data-example="true"] [data-row-id="long"] [data-type="title"]').evaluate(cell => {
+      const title = cell.querySelector<HTMLElement>('[data-blok-database-cell]')!;
+      const open = cell.querySelector<HTMLElement>('[data-blok-database-table-open]')!;
+      const before = title.getBoundingClientRect().width;
+      open.style.display = 'none';
+      const withoutAction = title.getBoundingClientRect().width;
+      open.style.removeProperty('display');
+      return { before, withoutAction };
+    });
+    expect(wrappedWidth.before).toBeCloseTo(wrappedWidth.withoutAction, 0);
     await page.locator('[data-example="false"] [data-row-id="commented"] [data-blok-database-comment-badge]').click();
     for(const wrap of [false,true]) {
       const longBadge=page.locator(`[data-example="${wrap}"] [data-row-id="long"] [data-blok-database-comment-badge]`);
+      await page.mouse.move(990, 890);
+      const beforeHover = await measure(wrap, 'long');
       await page.locator(`[data-example="${wrap}"] [data-row-id="long"]`).hover();
+      const afterHover = await measure(wrap, 'long');
+      expect(afterHover.badgeX).toBeCloseTo(beforeHover.badgeX!, 0);
+      expect(afterHover.titleWidth).toBeCloseTo(beforeHover.titleWidth, 0);
       await page.screenshot({path:`/tmp/blok-table-comment-badge-${engine}-${wrap}.png`});
       await longBadge.click({timeout:4000});
     }

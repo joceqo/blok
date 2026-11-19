@@ -92,24 +92,37 @@ const ROW_HALO_INSET = 8;
  * CSS, as the button's name. No layout (a hidden table) leaves it as it is.
  */
 const fitOpen = (open: HTMLElement): void => {
-  const room = open.parentElement?.getBoundingClientRect().width ?? 0;
+  const cell = open.parentElement;
+  const bounds = cell?.getBoundingClientRect();
 
-  if (room === 0) return;
-  if (room < OPEN_LABEL_MIN_WIDTH) {
-    open.setAttribute('data-compact', '');
-
-    return;
-  }
+  if (cell === null || bounds === undefined || bounds.width === 0) return;
   const { style } = open;
   const display = style.display;
 
-  open.removeAttribute('data-compact');
+  style.removeProperty('inset-inline-end');
+  open.toggleAttribute('data-compact', bounds.width < OPEN_LABEL_MIN_WIDTH);
   // Measured shown: row hover may not apply yet when the pointer arrives.
   style.display = 'inline-flex';
-  const width = open.getBoundingClientRect().width;
+  let button = open.getBoundingClientRect();
 
+  if (button.width + OPEN_INSET > bounds.width) {
+    open.setAttribute('data-compact', '');
+    button = open.getBoundingClientRect();
+  }
+
+  const badge = cell.querySelector<HTMLElement>(':scope > [data-blok-database-comment-badge]');
+  const count = badge?.getBoundingClientRect();
+
+  if (count !== undefined && button.left < count.right && button.right > count.left) {
+    // Keep the count still under the pointer. OPEN overlays the title only
+    // while hovered/selected, without reserving space that would wrap it.
+    const rtl = getComputedStyle(cell).direction === 'rtl';
+    const inset = (rtl ? count.right - bounds.left : bounds.right - count.left) + OPEN_INSET;
+
+    if (button.width + inset > bounds.width) open.setAttribute('data-compact', '');
+    style.insetInlineEnd = `${inset}px`;
+  }
   style.display = display;
-  open.toggleAttribute('data-compact', width + OPEN_INSET > room);
 };
 
 /** The OPEN pill on a row's title: a peek glyph and an empty label, which the caller fills. */
