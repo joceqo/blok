@@ -247,3 +247,15 @@ Deux issues :
    que le shell ne sait pas afficher les propriétés d'une ligne : il faudrait
    un canal par lequel la base les monte dans un hôte fourni par le shell,
    l'inverse du sens actuel.
+
+## La présence montre trois pastilles différentes pour une seule personne (2026-11-20)
+
+Sur une même page, le même compte apparaît trois fois avec trois apparences :
+la pastille de la barre de page (qui lit bien la photo du compte), et deux
+pastilles à initiales, de couleurs différentes, à côté du bloc base. Trois
+sources d'avatar et de couleur qui ne se parlent pas.
+
+À vérifier d'abord : qui fournit l'avatar dans chaque cas — `createPagePresence`
+(desktop/src/workspace.ts) pour la barre, et la présence du tool base pour les
+deux autres. L'image existe côté serveur et le compte la référence, donc ce sont
+les lecteurs qui divergent, pas la donnée.
