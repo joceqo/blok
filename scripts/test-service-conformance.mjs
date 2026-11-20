@@ -19,6 +19,7 @@ const SUITES = [
   'harness-contract',
   'api-contract',
   'auth-contract',
+  'setup-contract',
   'workspaces-contract',
   'pages-contract',
   'tickets-contract',

@@ -12,6 +12,7 @@ import { requireWorkspaceRole } from '@/http/workspace-access.js';
 import type { DbVariables } from '@/middleware/db.js';
 import { requireUser } from '@/middleware/require-user.js';
 import type { SessionVariables } from '@/middleware/session.js';
+import { canPurgeTrashedPage } from '@/pages/can-purge-trashed-page.js';
 import {
   duplicatePageDocumentBinding,
   formatPageDocumentBinding,
@@ -424,6 +425,45 @@ pageRoutes.post('/api/pages/:pageId/move', requireUser(), async (context) => {
   }
 
   return context.json({ page });
+});
+
+pageRoutes.delete('/api/pages/:pageId/purge', requireUser(), async (context) => {
+  const pageId = context.req.param('pageId');
+  const db = context.get('db');
+  const userId = context.get('userId');
+  if (userId === undefined) {
+    return context.json({ error: 'unauthenticated' }, 401);
+  }
+
+  const existing = (await db.select().from(pages).where(eq(pages.id, pageId)).limit(1))[0];
+  if (existing === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  const role = await memberRole(db, userId, existing.workspaceId);
+  if (role === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  const gate = canPurgeTrashedPage({ actorRole: role, trashed: existing.trashed });
+  if (!gate.ok) {
+    if (gate.reason === 'permission_denied') {
+      return context.json({ error: 'permission_denied' }, 403);
+    }
+    return context.json({ error: 'not_trashed' }, 400);
+  }
+
+  const purged = await withTransaction(db, async (tx) => {
+    await tx.delete(pageDocuments).where(eq(pageDocuments.pageId, pageId));
+    const removed = await tx.delete(pages).where(eq(pages.id, pageId)).returning({ id: pages.id });
+    return removed[0];
+  });
+
+  if (purged === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  return context.json({ purged: pageId });
 });
 
 pageRoutes.delete('/api/pages/:pageId', requireUser(), async (context) => {

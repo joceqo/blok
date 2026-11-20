@@ -40,6 +40,11 @@ export function createBlokRoutes(): Hono {
     return forwardToSidecar(stripped, context.req.raw, incoming);
   };
 
+  blokRoutes.get('/api/blok/unfurl', (context) => {
+    const incoming = new URL(context.req.url);
+    return forwardToSidecar('/unfurl', context.req.raw, incoming, { passThroughHeaders: true });
+  });
+
   blokRoutes.get('/api/blok/sync/:docId', (context) => {
     const docId = context.req.param('docId');
     const hint = syncWebSocketHint(docId);

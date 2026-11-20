@@ -166,3 +166,32 @@ export const auditEvents = pgTable(
     index('audit_events_created_at_idx').on(table.createdAt),
   ],
 );
+
+export const teamspaces = pgTable(
+  'teamspaces',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('teamspaces_workspace_id_idx').on(table.workspaceId)],
+);
+
+export const teamspaceMembers = pgTable(
+  'teamspace_members',
+  {
+    teamspaceId: uuid('teamspace_id')
+      .notNull()
+      .references(() => teamspaces.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.teamspaceId, table.userId] }),
+    index('teamspace_members_user_id_idx').on(table.userId),
+  ],
+);

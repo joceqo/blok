@@ -125,6 +125,38 @@ describe('createApp integration (no PostgreSQL)', () => {
     await expect(deleteResponse.json()).resolves.toEqual({ error: 'database_not_configured' });
   });
 
+  it('teamspace routes return 503 when DATABASE is not wired into createApp', async () => {
+    const app = appWithoutDb();
+    const workspaceId = '00000000-0000-0000-0000-000000000001';
+    const teamspaceId = '00000000-0000-0000-0000-000000000002';
+    const teamspaceBase = `http://localhost/api/workspaces/${workspaceId}/teamspaces`;
+    const membersUrl = `${teamspaceBase}/${teamspaceId}/members`;
+
+    const getList = await app.request(teamspaceBase);
+    expect(getList.status).toBe(503);
+    await expect(getList.json()).resolves.toEqual({ error: 'database_not_configured' });
+
+    const postTeamspace = await app.request(teamspaceBase, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Design' }),
+    });
+    expect(postTeamspace.status).toBe(503);
+    await expect(postTeamspace.json()).resolves.toEqual({ error: 'database_not_configured' });
+
+    const getMembers = await app.request(membersUrl);
+    expect(getMembers.status).toBe(503);
+    await expect(getMembers.json()).resolves.toEqual({ error: 'database_not_configured' });
+
+    const postMember = await app.request(membersUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: '00000000-0000-0000-0000-000000000003' }),
+    });
+    expect(postMember.status).toBe(503);
+    await expect(postMember.json()).resolves.toEqual({ error: 'database_not_configured' });
+  });
+
   it('GET /api/workspaces/:workspaceId/audit returns 503 when DATABASE is not wired into createApp', async () => {
     const workspaceId = '00000000-0000-0000-0000-000000000001';
     const response = await appWithoutDb().request(

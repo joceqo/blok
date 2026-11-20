@@ -11,6 +11,9 @@ function lookup(name: string): string | undefined {
   return value;
 }
 
+/** Matches blok-server / `blokTicket` minimum (32). */
+const MIN_BLOK_SECRET_LENGTH = 32;
+
 /** Go: `LookupEnv` — `MAILER_HOST=""` must not fall through to `SMTP_HOST`. */
 function lookupOr(other: string, fallback: string): string | undefined {
   const primary = lookup(other);
@@ -37,6 +40,13 @@ export function loadConfig(): ServiceConfig {
   const port = Number(portRaw);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`invalid PORT: ${portRaw}`);
+  }
+
+  const blokSecret = lookup('BLOK_SECRET');
+  if (blokSecret !== undefined && blokSecret.length < MIN_BLOK_SECRET_LENGTH) {
+    throw new Error(
+      `BLOK_SECRET must be at least ${MIN_BLOK_SECRET_LENGTH} characters (got ${blokSecret.length})`,
+    );
   }
 
   return {

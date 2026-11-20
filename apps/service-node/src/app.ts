@@ -21,6 +21,7 @@ import { pageSyncRoutes } from '@/routes/page-sync.js';
 import { pageRoutes } from '@/routes/pages.js';
 import { inviteRoutes } from '@/routes/invites.js';
 import { ticketRoutes } from '@/routes/tickets.js';
+import { teamspaceRoutes } from '@/routes/teamspaces.js';
 import { workspaceRoutes } from '@/routes/workspaces.js';
 
 export interface AppOptions {
@@ -47,6 +48,7 @@ export function createApp(options: AppOptions): Hono {
     api.route('/', createAuthRoutes());
     api.route('/', createUserRoutes());
     api.route('/', workspaceRoutes);
+    api.route('/', teamspaceRoutes);
     api.route('/', inviteRoutes);
     api.route('/', pageRoutes);
     api.route('/', pageDocumentRoutes);
