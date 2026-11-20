@@ -1,9 +1,4 @@
-import {
-  defaultPublicUrl,
-  resolveRateLimitPerMinute,
-  validatePublicUrl,
-  validateRateLimit,
-} from './args/public-url.ts';
+import { validatePublicUrl, validateRateLimit } from './args/public-url.ts';
 import { parseHostArguments } from './args/parse.ts';
 import { createHostHandler } from './host/app.ts';
 import { defaultConfig, listen, parseIp, Server, shutdownSignal } from './http/index.ts';
@@ -35,14 +30,12 @@ async function run(): Promise<number> {
     print(`${parsed.err}${NEWLINE}${USAGE}`);
     return 2;
   }
-  const rateLimitPerMinute = resolveRateLimitPerMinute(parsed.auth, parsed.rateLimitPerMinute);
-  const rateLimitErr = validateRateLimit(rateLimitPerMinute);
+  const rateLimitErr = validateRateLimit(parsed.rateLimitPerMinute);
   if (rateLimitErr !== undefined) {
     print(`blok-server refused to start: ${rateLimitErr}${NEWLINE}`);
     return 1;
   }
-  const publicUrl = parsed.publicUrl ?? defaultPublicUrl(parsed.listen);
-  const publicUrlErr = validatePublicUrl(publicUrl);
+  const publicUrlErr = validatePublicUrl(parsed.publicUrl);
   if (publicUrlErr !== undefined) {
     print(`blok-server refused to start: ${publicUrlErr}${NEWLINE}`);
     return 1;
@@ -57,7 +50,7 @@ async function run(): Promise<number> {
   }
   const http = new Server(createHostHandler({
     version: VERSION,
-    unfurlDisabled: parsed.noUnfurl,
+    unfurlDisabled: parsed.unfurlDisabled,
     storageDirectory: parsed.storageDirectory,
   }), defaultConfig());
   const shuttingDown = shutdownSignal();
