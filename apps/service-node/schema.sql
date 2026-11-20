@@ -84,8 +84,11 @@ CREATE TABLE IF NOT EXISTS pages (
   title text NOT NULL,
   parent_id uuid REFERENCES pages (id) ON DELETE SET NULL,
   trashed boolean NOT NULL DEFAULT false,
+  sort_index integer NOT NULL DEFAULT 0,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS sort_index integer NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS pages_workspace_id_idx ON pages (workspace_id);
 CREATE INDEX IF NOT EXISTS pages_parent_id_idx ON pages (parent_id);
@@ -102,6 +105,14 @@ CREATE TABLE IF NOT EXISTS assets (
   workspace_id uuid NOT NULL,
   byte_size bigint NOT NULL,
   storage_key text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS workspace_images (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id uuid NOT NULL,
+  storage_key text NOT NULL,
+  byte_size bigint NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 

@@ -8,6 +8,7 @@ import { dbMiddleware } from '@/middleware/db.js';
 import { securityHeadersMiddleware } from '@/middleware/security-headers.js';
 import { sessionMiddleware } from '@/middleware/session.js';
 import { assetRoutes } from '@/routes/assets.js';
+import { workspaceImageRoutes } from '@/routes/workspace-images.js';
 import { adminRoutes } from '@/routes/admin.js';
 import { createAuthRoutes } from '@/routes/auth.js';
 import { createUserRoutes } from '@/routes/users.js';
@@ -56,6 +57,7 @@ export function createApp(options: AppOptions): Hono {
     api.route('/', createDocumentsRoutes());
     api.route('/', ticketRoutes);
     api.route('/', assetRoutes);
+    api.route('/', workspaceImageRoutes);
     api.route('/', adminRoutes);
     app.route('/', api);
   } else {

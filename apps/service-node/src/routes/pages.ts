@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, ilike, inArray, or } from 'drizzle-orm';
+import { and, asc, eq, gt, ilike, inArray, isNull, or } from 'drizzle-orm';
 import { Hono } from 'hono';
 
 import { pageDocuments, pages } from '@/db/schema.js';
@@ -19,12 +19,14 @@ import {
 } from '@/pages/duplicate-page-document.js';
 import { duplicateTitle } from '@/pages/duplicate-title.js';
 import { PAGE_SEARCH_LIMIT, searchQueryValid } from '@/pages/search-query.js';
-import {
-  buildPagesTree,
-  wouldCreatePageCycle,
-} from '@/pages/tree.js';
+import { buildPagesTree } from '@/pages/tree.js';
 import { pageReadCollaborators } from '@/pages/page-collaborators.js';
+import { reparentPage } from '@/pages/page-reparent.js';
 import { validateRestorePageIds } from '@/pages/validate-restore-page-ids.js';
+import {
+  sortIndicesAfterReorder,
+  validateReorder,
+} from '@/pages/validate-reorder.js';
 import { assertPageAction } from '@/permissions.js';
 import { memberRole, memberRows } from '@/workspaces/membership.js';
 
@@ -49,6 +51,7 @@ pageRoutes.get('/api/workspaces/:workspaceId/pages', requireUser(), async (conte
       title: pages.title,
       parentId: pages.parentId,
       trashed: pages.trashed,
+      sortIndex: pages.sortIndex,
       updatedAt: pages.updatedAt,
     })
     .from(pages);
@@ -56,7 +59,7 @@ pageRoutes.get('/api/workspaces/:workspaceId/pages', requireUser(), async (conte
   if (!pagination.paginated) {
     const rows = await baseSelect
       .where(workspaceFilter)
-      .orderBy(asc(pages.title));
+      .orderBy(asc(pages.sortIndex), asc(pages.title));
     return context.json({ pages: rows });
   }
 
@@ -111,6 +114,7 @@ pageRoutes.get('/api/workspaces/:workspaceId/pages/search', requireUser(), async
       title: pages.title,
       parentId: pages.parentId,
       trashed: pages.trashed,
+      sortIndex: pages.sortIndex,
       updatedAt: pages.updatedAt,
     })
     .from(pages)
@@ -121,7 +125,7 @@ pageRoutes.get('/api/workspaces/:workspaceId/pages/search', requireUser(), async
         ilike(pages.title, `%${validated.query}%`),
       ),
     )
-    .orderBy(asc(pages.title))
+    .orderBy(asc(pages.sortIndex), asc(pages.title))
     .limit(PAGE_SEARCH_LIMIT);
 
   return context.json({ pages: rows });
@@ -170,6 +174,7 @@ pageRoutes.get('/api/workspaces/:workspaceId/pages/trash', requireUser(), async 
       title: pages.title,
       parentId: pages.parentId,
       trashed: pages.trashed,
+      sortIndex: pages.sortIndex,
       updatedAt: pages.updatedAt,
     })
     .from(pages)
@@ -194,11 +199,12 @@ pageRoutes.get(
         title: pages.title,
         parentId: pages.parentId,
         trashed: pages.trashed,
+        sortIndex: pages.sortIndex,
         updatedAt: pages.updatedAt,
       })
       .from(pages)
       .where(and(eq(pages.workspaceId, workspaceId), eq(pages.trashed, false)))
-      .orderBy(asc(pages.title));
+      .orderBy(asc(pages.sortIndex), asc(pages.title));
 
     const tree = buildPagesTree(rows);
     return context.json({ tree });
@@ -453,39 +459,107 @@ pageRoutes.post('/api/pages/:pageId/move', requireUser(), async (context) => {
   const parentId =
     body.parentId === null || body.parentId === undefined ? null : body.parentId;
 
-  if (parentId !== null) {
-    const parent = (
-      await db
-        .select()
-        .from(pages)
-        .where(and(eq(pages.id, parentId), eq(pages.workspaceId, workspaceId)))
-        .limit(1)
-    )[0];
-    if (parent === undefined) {
-      return context.json({ error: 'invalid_parent' }, 400);
-    }
+  const result = await reparentPage(db, pageId, workspaceId, parentId);
+  if (!result.ok) {
+    const status = result.reason === 'not_found' ? 404 : 400;
+    return context.json({ error: result.reason }, status);
   }
 
-  const workspacePages = await db
-    .select({ id: pages.id, parentId: pages.parentId })
-    .from(pages)
-    .where(eq(pages.workspaceId, workspaceId));
+  return context.json({ page: result.page });
+});
 
-  if (wouldCreatePageCycle(pageId, parentId, workspacePages)) {
-    return context.json({ error: 'cycle' }, 400);
-  }
+pageRoutes.post('/api/pages/:pageId/reparent', requireUser(), async (context) => {
+  const pageId = context.req.param('pageId');
+  const db = context.get('db');
 
-  const updated = await db
-    .update(pages)
-    .set({ parentId, updatedAt: new Date() })
-    .where(eq(pages.id, pageId))
-    .returning();
-  const page = updated[0];
-  if (page === undefined) {
+  const body: { parentId?: string | null } = await context.req
+    .json<{ parentId?: string | null }>()
+    .catch(() => ({}));
+
+  const existing = (await db.select().from(pages).where(eq(pages.id, pageId)).limit(1))[0];
+  if (existing === undefined) {
     return context.json({ error: 'not_found' }, 404);
   }
 
-  return context.json({ page });
+  await requireWorkspaceRole(db, context, existing.workspaceId, 'move');
+
+  const parentId =
+    body.parentId === null || body.parentId === undefined ? null : body.parentId;
+
+  const result = await reparentPage(db, pageId, existing.workspaceId, parentId);
+  if (!result.ok) {
+    const status = result.reason === 'not_found' ? 404 : 400;
+    return context.json({ error: result.reason }, status);
+  }
+
+  return context.json({ page: result.page });
+});
+
+pageRoutes.post('/api/pages/:pageId/reorder', requireUser(), async (context) => {
+  const pageId = context.req.param('pageId');
+  const db = context.get('db');
+
+  const body: unknown = await context.req.json().catch(() => ({}));
+
+  const existing = (await db.select().from(pages).where(eq(pages.id, pageId)).limit(1))[0];
+  if (existing === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  await requireWorkspaceRole(db, context, existing.workspaceId, 'move');
+
+  if (existing.trashed) {
+    return context.json({ error: 'trashed' }, 400);
+  }
+
+  const siblingParentFilter =
+    existing.parentId === null
+      ? isNull(pages.parentId)
+      : eq(pages.parentId, existing.parentId);
+
+  const siblings = await db
+    .select({
+      id: pages.id,
+      sortIndex: pages.sortIndex,
+    })
+    .from(pages)
+    .where(
+      and(
+        eq(pages.workspaceId, existing.workspaceId),
+        eq(pages.trashed, false),
+        siblingParentFilter,
+      ),
+    );
+
+  const validated = validateReorder(
+    pageId,
+    body,
+    siblings.map((row) => ({ id: row.id, sortIndex: row.sortIndex })),
+  );
+  if (!validated.ok) {
+    return context.json({ error: validated.reason }, 400);
+  }
+
+  const nextIndices = sortIndicesAfterReorder(pageId, validated.afterPageId, siblings);
+  const now = new Date();
+
+  const updated = await withTransaction(db, async (tx) => {
+    for (const [id, sortIndex] of nextIndices) {
+      await tx
+        .update(pages)
+        .set({ sortIndex, updatedAt: now })
+        .where(eq(pages.id, id));
+    }
+    return (
+      await tx.select().from(pages).where(eq(pages.id, pageId)).limit(1)
+    )[0];
+  });
+
+  if (updated === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  return context.json({ page: updated });
 });
 
 pageRoutes.delete('/api/pages/:pageId/purge', requireUser(), async (context) => {

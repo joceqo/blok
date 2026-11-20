@@ -2,10 +2,15 @@
  * Black-box product API conformance: HTTP suites against apps/service-node,
  * with Go as the future oracle and recorded fixtures (plan §2.1).
  *
- *   node scripts/test-service-conformance.mjs [--target node|go] [--suite NAME]...
+ *   node scripts/test-service-conformance.mjs [--target node|go] [--suite NAME]... [--update]
  *
  * Today only --target node runs Vitest suites under test/unit/service-conformance/.
  * Go is refused until the oracle harness and fixtures exist.
+ *
+ * Recording (not wired yet): against a live Node service with PostgreSQL, run
+ *   node scripts/test-service-conformance.mjs --target node --suite <file-base> --update
+ * to rewrite cases in test/unit/service-conformance/fixtures/<file-base>.json from
+ * the oracle responses (mirrors scripts/test-mcp-conformance.mjs --update).
  */
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
@@ -32,19 +37,28 @@ function parseArgs(argv) {
   const targetIndex = args.indexOf('--target');
   const target = targetIndex >= 0 ? args[targetIndex + 1] : 'node';
   const suites = args.flatMap((arg, index) => (arg === '--suite' ? [args[index + 1]] : []));
+  const update = args.includes('--update');
 
   const usage =
-    'Usage: node scripts/test-service-conformance.mjs [--target node|go] [--suite NAME]...';
+    'Usage: node scripts/test-service-conformance.mjs [--target node|go] [--suite NAME]... [--update]';
 
   if (
     !TARGETS.includes(target) ||
-    suites.some((suite) => !SUITES.includes(suite))
+    suites.some((suite) => !SUITES.includes(suite)) ||
+    (update && target !== 'node')
   ) {
     console.error(`${usage}\n`);
     process.exit(1);
   }
 
-  return { target, suites: suites.length > 0 ? suites : SUITES };
+  return { target, suites: suites.length > 0 ? suites : SUITES, update };
+}
+
+function refuseUpdateNotWired() {
+  console.log(
+    'service conformance: --update is not wired yet — fixtures under test/unit/service-conformance/fixtures/ are hand-authored for now.',
+  );
+  process.exit(0);
 }
 
 function announce(options) {
@@ -104,6 +118,11 @@ function runNodeTarget(options) {
 }
 
 const options = parseArgs(process.argv.slice(2));
+
+if (options.update) {
+  refuseUpdateNotWired();
+}
+
 announce(options);
 
 if (options.target === 'go') {

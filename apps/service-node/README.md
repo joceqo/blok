@@ -129,6 +129,8 @@ Mounted in `src/app.ts`. Paths are flat (Go-style). `:id` / `:workspaceId` are U
 | DELETE | `/api/pages/:pageId` | user | |
 | POST | `/api/pages/:pageId/duplicate` | user | |
 | POST | `/api/pages/:pageId/move` | user | |
+| POST | `/api/pages/:pageId/reparent` | user | Same validation as move; workspace from page |
+| POST | `/api/pages/:pageId/reorder` | user | `{ afterPageId?: string \| null }` among siblings |
 | GET | `/api/pages/:pageId/document` | user | Page body snapshot |
 | POST | `/api/pages/:pageId/document` | user | |
 | PATCH | `/api/pages/:pageId/document` | user | |

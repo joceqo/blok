@@ -1,5 +1,5 @@
 {
-  "description": "Auth and protected API HTTP shapes. noDb cases run in-process with createApp({ database: undefined }) — unmounted /api/* returns 503 database_not_configured (verify-code never reaches invalid_request validation). liveOnly cases need BLOK_SERVICE_CONFORMANCE_URL against a running service with PostgreSQL (request-code invalid_email, verify-code invalid_request, session cookie absent on /api/auth/me and /api/workspaces).",
+  "description": "Auth and protected API HTTP shapes. noDb cases run in-process with createApp({ database: undefined }) — unmounted /api/* returns 503 database_not_configured (request-code never reaches invalid_email validation; verify-code never reaches invalid_request validation). liveOnly cases need BLOK_SERVICE_CONFORMANCE_URL against a running service with PostgreSQL (request-code invalid_email → 400, verify-code invalid_request → 400, session cookie absent on /api/auth/me and /api/workspaces → 401).",
   "cases": [
     {
       "name": "POST /api/auth/request-code (invalid email)",
@@ -50,6 +50,21 @@
         "status": 401,
         "body": {
           "error": "unauthenticated"
+        }
+      }
+    },
+    {
+      "name": "POST /api/auth/request-code (invalid email, no DB)",
+      "method": "POST",
+      "path": "/api/auth/request-code",
+      "body": {
+        "email": "not-an-email"
+      },
+      "noDb": true,
+      "expect": {
+        "status": 503,
+        "body": {
+          "error": "database_not_configured"
         }
       }
     },

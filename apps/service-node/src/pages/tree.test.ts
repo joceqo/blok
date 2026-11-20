@@ -17,6 +17,7 @@ function row(
     title,
     parentId,
     trashed: false,
+    sortIndex: 0,
     updatedAt: new Date('2026-01-01T00:00:00.000Z'),
   };
 }
@@ -44,7 +45,16 @@ describe('buildPagesTree', () => {
     expect(aOne?.children.map((n) => n.id)).toEqual(['grand-a1']);
   });
 
-  it('sorts siblings by title', () => {
+  it('sorts siblings by sortIndex then title', () => {
+    const tree = buildPagesTree([
+      row('a', 'Alpha', null),
+      { ...row('b', 'Beta', null), sortIndex: 1 },
+      { ...row('c', 'Gamma', null), sortIndex: 2 },
+    ]);
+    expect(tree.map((n) => n.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('sorts siblings by title when sortIndex ties', () => {
     const tree = buildPagesTree([
       row('z', 'Zulu', null),
       row('a', 'Alpha', null),

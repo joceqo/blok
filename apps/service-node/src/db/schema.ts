@@ -10,6 +10,7 @@ import {
   bigint,
   boolean,
   index,
+  integer,
   jsonb,
   pgTable,
   primaryKey,
@@ -107,6 +108,7 @@ export const pages = pgTable(
       onDelete: 'set null',
     }),
     trashed: boolean('trashed').notNull().default(false),
+    sortIndex: integer('sort_index').notNull().default(0),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
   },
   (table) => [
@@ -131,6 +133,14 @@ export const assets = pgTable('assets', {
   workspaceId: uuid('workspace_id').notNull(),
   byteSize: bigint('byte_size', { mode: 'bigint' }).notNull(),
   storageKey: text('storage_key').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const workspaceImages = pgTable('workspace_images', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').notNull(),
+  storageKey: text('storage_key').notNull(),
+  byteSize: bigint('byte_size', { mode: 'bigint' }).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

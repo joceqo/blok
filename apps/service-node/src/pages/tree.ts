@@ -3,6 +3,7 @@ export interface PageTreeRow {
   title: string;
   parentId: string | null;
   trashed: boolean;
+  sortIndex: number;
   updatedAt: Date;
 }
 
@@ -17,7 +18,11 @@ export interface PageTreeNode {
 
 const DEFAULT_MAX_DEPTH = 64;
 
-function compareByTitle(a: PageTreeRow, b: PageTreeRow): number {
+function compareSiblings(a: PageTreeRow, b: PageTreeRow): number {
+  const byIndex = a.sortIndex - b.sortIndex;
+  if (byIndex !== 0) {
+    return byIndex;
+  }
   return a.title.localeCompare(b.title);
 }
 
@@ -45,7 +50,7 @@ export function buildPagesTree(rows: PageTreeRow[]): PageTreeNode[] {
   }
 
   for (const bucket of childrenByParent.values()) {
-    bucket.sort(compareByTitle);
+    bucket.sort(compareSiblings);
   }
 
   const buildNode = (row: PageTreeRow): PageTreeNode => {
