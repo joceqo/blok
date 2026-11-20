@@ -3,3 +3,29 @@
 [data-desktop-row-page] > article > [data-desktop-editor] > [data-desktop-page-comments] {
   display: none;
 }
+
+/*
+  Une ligne ouverte en pleine page est une page : sa couverture tient toute la
+  largeur, comme celle de n'importe quelle page. Le tiroir vit pourtant dans la
+  colonne de texte du document hôte, et sa couverture, posée en absolu sur lui,
+  s'arrêtait donc aux bords de cette colonne — 716 px au milieu de 1252.
+  Mesuré : la colonne libérée, la couverture couvre la page, et le contenu du
+  tiroir garde sa propre largeur de lecture (il la fixe lui-même, database.css).
+  La gouttière des poignées n'a plus lieu d'être : en pleine page le seul bloc
+  affiché est le tiroir.
+*/
+[data-desktop-row-page] > article[data-desktop-document] {
+  max-inline-size: none;
+  inline-size: 100%;
+  padding-inline: 0;
+}
+
+[data-desktop-row-page] [data-blok-database-wrapper],
+[data-desktop-row-page] [data-blok-element-content] {
+  max-inline-size: none;
+  margin-inline: 0;
+}
+
+[data-desktop-row-page] [data-blok-redactor] {
+  padding-inline-start: 0;
+}
