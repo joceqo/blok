@@ -5,7 +5,13 @@ import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { inGroup, Router, type RouteHandler } from '../route/router.ts';
 import { methodNotAllowed, notFound, writePlain } from '../route/respond.ts';
+import { LocalStore } from '../blob/local.ts';
+import { deleteHandler } from './delete.ts';
+import { fileBytesHandler } from './file-bytes.ts';
+import { guardRequest } from './guard.ts';
+import { localFileHandler } from './local-file.ts';
 import type { HostAppOptions } from './options.ts';
+import { uploadHandler } from './upload.ts';
 
 function isSingleSegment(doc: string): boolean {
   const lower = doc.toLowerCase();
@@ -61,8 +67,21 @@ function disallow(allow: string): RouteHandler {
   return (request, response) => methodNotAllowed(request, response, allow);
 }
 
+function guarded(options: HostAppOptions, requireWrite: boolean, handler: RouteHandler): RouteHandler {
+  return async (request, response, values) => {
+    if (!(await guardRequest(options, request, response, requireWrite))) {
+      return;
+    }
+    await handler(request, response, values);
+  };
+}
+
 function shell(router: Router, pattern: string, method: string, handler: RouteHandler, options: HostAppOptions): void {
-  router.handle(pattern, [method], handler);
+  const requireWrite = method !== 'GET' && method !== 'HEAD';
+  const methods = method === 'GET' && !pattern.includes('/sync/')
+    ? [method, 'HEAD']
+  : [method];
+  router.handle(pattern, methods, guarded(options, requireWrite, handler));
   router.handle(pattern, ['OPTIONS'], preflightHandler(method, options.allowedOrigins));
   let allow = `${method}, OPTIONS`;
   if (method === 'POST') {
@@ -89,9 +108,6 @@ async function healthHandler(options: HostAppOptions, request: Request, response
   await response.write(new TextEncoder().encode(body));
 }
 
-async function localFileHandler(request: Request, response: ResponseWriter): Promise<void> {
-  await notFound(request, response);
-}
 
 async function stateHandler(options: HostAppOptions, request: Request, response: ResponseWriter, values: Record<string, string>): Promise<void> {
   const doc = values.doc ?? '';
@@ -162,14 +178,35 @@ export function buildRouter(options: HostAppOptions): Router {
   const router = new Router();
   const patternPrefix = prefix.replace(/\/+$/, '');
 
-  const hasLocalFiles = options.storageDirectory !== '' && options.publicPath !== '';
-  if (hasLocalFiles) {
+  const hasStorage = options.storageDirectory !== '';
+  const store = hasStorage ? new LocalStore(options.storageDirectory, options.publicUrl) : undefined;
+
+  const hasLocalFiles = hasStorage && options.publicPath !== '';
+  if (hasLocalFiles && store) {
     const pattern = options.publicPath === '/' ? '/{fileName}' : `${options.publicPath}/{fileName}`;
-    router.handle(pattern, ['GET', 'HEAD'], localFileHandler);
+    router.handle(pattern, ['GET', 'HEAD'], (request, response, values) =>
+      localFileHandler(options, store, request, response, values.fileName ?? ''));
   }
 
   router.handle(`${patternPrefix}/health`, ['GET', 'HEAD'], (request, response) => healthHandler(options, request, response));
   router.handle(`${patternPrefix}/health`, undefined, disallow('GET, HEAD'));
+
+  if (options.fileBytesEnabled) {
+    shell(router, `${patternPrefix}/file-bytes`, 'GET', (request, response) =>
+      fileBytesHandler(options, store, request, response), options);
+  }
+
+  if (hasStorage && store) {
+    shell(router, `${patternPrefix}/upload`, 'POST', (request, response) =>
+      uploadHandler(store, options.maxUploadBytes, request, response), options);
+    shell(router, `${patternPrefix}/delete`, 'POST', (request, response) =>
+      deleteHandler(store, request, response), options);
+    if (options.unfurlEnabled) {
+      shell(router, `${patternPrefix}/upload-by-url`, 'POST', async (request, response) => {
+        await writePlain(request, response, 400, 'malformed upload\n');
+      }, options);
+    }
+  }
 
   if (options.unfurlEnabled) {
     shell(router, `${patternPrefix}/unfurl`, 'GET', stubUnfurl, options);

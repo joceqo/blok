@@ -27,4 +27,10 @@ describe('@fast parseHostArguments', () => {
     expect(parsed.err).toBe('');
     expect(parsed.allowedOrigins).toEqual(['https://a.test', 'https://b.test']);
   });
+
+  it('rejects rich-text fields with a repeated key', () => {
+    const parsed = parseHostArguments(['--rich-text-fields', '{"a":["x"],"a":["y"]}'], false);
+    expect(parsed.err).toContain('invalid value');
+    expect(parsed.err).toContain('rich-text-fields');
+  });
 });

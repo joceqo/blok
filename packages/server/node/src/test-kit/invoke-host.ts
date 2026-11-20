@@ -1,7 +1,13 @@
 import type { Socket } from 'node:net';
 
+import { mkdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { createHostHandler } from '../host/app.ts';
 import type { HostAppOptions } from '../host/options.ts';
+import { RateLimiter } from '../host/rate-limit.ts';
+import { DefaultBlockedPolicy, OutboundFetcher } from '../outbound/fetcher.ts';
 import { Body, BodyState, FramingTag } from '../http/body.ts';
 import { defaultConfig } from '../http/config.ts';
 import { Deadline, Exchange, Framing, Limits, sendWire } from '../http/exchange.ts';
@@ -18,20 +24,30 @@ export interface InvokeHostRequest {
   method: string;
   path: string;
   headers?: Record<string, string>;
+  body?: Uint8Array | string;
 }
 
-export function defaultTestHostOptions(): HostAppOptions {
+export function defaultTestHostOptions(storageDirectory?: string): HostAppOptions {
+  const directory = storageDirectory ?? mkdtempSync(join(tmpdir(), 'blok-node-fast-'));
+  mkdirSync(directory, { recursive: true });
   return {
     version: 'dev',
+    auth: 'none',
+    secret: '',
     unfurlDisabled: false,
     unfurlEnabled: true,
-    storageDirectory: './blok-uploads',
+    storageDirectory: directory,
     publicPath: '/',
     publicUrl: 'http://127.0.0.1:4000/',
     maxUploadBytes: 30_000_000,
     collabEnabled: false,
     docEndpoint: '',
     allowedOrigins: [],
+    fileBytesEnabled: false,
+    fileBytesMaxBytes: 100 << 20,
+    filesCors: false,
+    fetcher: new OutboundFetcher(new DefaultBlockedPolicy()),
+    rateLimiter: new RateLimiter(0),
   };
 }
 
@@ -39,9 +55,13 @@ async function runHandlerOnce(
   handler: ReturnType<typeof createHostHandler>,
   head: Head,
   socket: Socket,
+  body?: Uint8Array,
 ): Promise<void> {
   const config = defaultConfig();
   const inbound = Inbound.start(socket);
+  if (body !== undefined && body.length > 0) {
+    socket.push(Buffer.from(body));
+  }
   const { sender: cancel, receiver: cancelReceiver } = watchChannel(false);
   const { sender: expired, receiver: expiredReceiver } = watchChannel(false);
   const limits = new Mutex(new Limits(config.maxRequestBody, undefined));
@@ -60,7 +80,22 @@ async function runHandlerOnce(
       expired: expiredReceiver,
       inbound,
     }),
-    body: new AsyncMutex(new BodyState({ tag: FramingTag.Empty }, 0, head.headers.len())),
+    body: new AsyncMutex(
+      new BodyState(
+        (() => {
+          const lengthRaw = head.headers.get('content-length');
+          if (lengthRaw !== undefined) {
+            const length = Number(lengthRaw);
+            if (Number.isFinite(length) && length > 0) {
+              return { tag: FramingTag.Length, remaining: length };
+            }
+          }
+          return { tag: FramingTag.Empty };
+        })(),
+        0,
+        head.headers.len(),
+      ),
+    ),
     limits,
     deadline: new Mutex(new Deadline()),
     left: new Mutex(undefined),
@@ -108,6 +143,10 @@ function buildHead(input: InvokeHostRequest): Head {
   for (const [name, value] of Object.entries(input.headers ?? {})) {
     headers.set(name, value);
   }
+  if (input.body !== undefined) {
+    const body = typeof input.body === 'string' ? new TextEncoder().encode(input.body) : input.body;
+    headers.set('Content-Length', String(body.length));
+  }
   return {
     method: input.method,
     target: input.path,
@@ -127,6 +166,11 @@ export async function invokeHost(
 ): Promise<ParsedHttpResponse> {
   const handler = createHostHandler(options);
   const { socket, drain } = createCollectingSocket();
-  await runHandlerOnce(handler, buildHead(input), socket);
+  const body = input.body === undefined
+    ? undefined
+    : typeof input.body === 'string'
+      ? new TextEncoder().encode(input.body)
+      : input.body;
+  await runHandlerOnce(handler, buildHead(input), socket, body);
   return parseHttpResponse(drain());
 }

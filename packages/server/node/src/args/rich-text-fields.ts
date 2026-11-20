@@ -89,6 +89,9 @@ function hasTopLevelDuplicateKey(text: string): boolean {
         }
         depth -= 1;
         index += 1;
+        if (depth === 0) {
+          break;
+        }
         continue;
       }
       if (depth === 0 && ch === ',') {

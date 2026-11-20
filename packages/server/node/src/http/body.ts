@@ -494,7 +494,7 @@ async function fail(
   if (error === BodyError.Overflow || error === BodyError.BadTrailer) {
     if (answer && !routeSet) {
       await exchange.refuseUnhandled();
-    } else {
+    } else if (!routeSet) {
       const wire = (await exchange.wire.lock()).get();
       wire.close = true;
     }
@@ -502,7 +502,7 @@ async function fail(
   if (status !== undefined) {
     if (answer && !routeSet) {
       await exchange.refuse(status);
-    } else {
+    } else if (!routeSet) {
       const wire = (await exchange.wire.lock()).get();
       wire.close = true;
     }
