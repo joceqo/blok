@@ -28,7 +28,7 @@ import { createDefaultSchema, createDefaultView, freePropertyName, newView } fro
 import { positionBetween } from '../../shared/database/positions';
 import { createSeedDefinition } from '../../shared/database/seed-layouts';
 import type { ViewCreateConfig } from '../../shared/database/schema-ops';
-import { applyViewChanges } from '../../shared/database/view-changes';
+import { applyViewChanges, regroupedViews } from '../../shared/database/view-changes';
 import { lastRowKey, pinnedRowOrders } from '../../shared/database/row-order';
 import type { ViewChanges } from '../../shared/database/view-changes';
 
@@ -239,6 +239,9 @@ export class DatabaseModel {
     };
 
     this.schema = this.schema.filter((p) => p.id !== propertyId);
+    // A view grouped by it would keep naming an id the schema no longer has,
+    // and every row would fall into one nameless group.
+    this.views = regroupedViews(this.views, this.schema, propertyId) ?? this.views;
     this.deletedProperties = { ...this.deletedProperties, [propertyId]: deleted };
     this.deletedSlot = true;
 

@@ -22,7 +22,7 @@ import {
   isListValueType,
   newView,
 } from '../database/schema-ops';
-import { applyViewChanges, GROUPABLE_TYPES, groupByChange, layoutChange, subGroupByChange, withEntryIds } from '../database/view-changes';
+import { applyViewChanges, GROUPABLE_TYPES, groupByChange, layoutChange, regroupedViews, subGroupByChange, withEntryIds } from '../database/view-changes';
 import { DATE_VALUE_FORMAT, parseDateValue } from '../database/date-value';
 import { isOutputData, isPlaceValue, isVerificationValue } from '../database/tier3-values';
 import { isFileValue, isReadOnlyType, personIdsOf } from '../database/value-helpers';
@@ -2121,8 +2121,14 @@ const deleteProperty: ToolActionImpl<{ propertyId: string }> = {
       ...(ctx.actorId !== undefined && ctx.actorId !== '' ? { deletedBy: ctx.actorId } : {}),
     };
 
+    const schema = state.schema.filter((_, i) => i !== index);
+    // A view grouped by this property would point at an id the schema no
+    // longer has, and every row would land in one nameless group.
+    const views = regroupedViews(state.views, schema, property.id);
+
     ctx.update(block.id, {
-      schema: state.schema.filter((_, i) => i !== index),
+      schema,
+      ...(views === undefined ? {} : { views }),
       deletedProperties: { ...deletedPropertiesOf(block, state), [property.id]: deleted },
     });
 

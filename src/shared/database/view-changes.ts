@@ -76,6 +76,42 @@ export const subGroupByChange = (
   return { subGroupBy: property.id, subGroupSettings: { hideEmptyGroups: true } };
 };
 
+/**
+ * The views, rewritten, after a property leaves the schema. A view grouped by
+ * that property has to move: a groupBy naming an id the schema no longer holds
+ * leaves every row in one nameless group, which is what people saw. It takes
+ * the first select-like property it can, else the first groupable one, else it
+ * loses its grouping — the same order layoutChange uses to seed a board.
+ *
+ * `schema` is the schema WITHOUT the departing property. Sub-grouping follows
+ * the same rule, except it never falls back: a board with no sub-group is an
+ * ordinary board, so dropping it is the honest outcome.
+ */
+export const regroupedViews = (
+  views: readonly DatabaseViewConfig[],
+  schema: readonly PropertyDefinition[],
+  removedPropertyId: string
+): DatabaseViewConfig[] | undefined => {
+  if (!views.some((view) => view.groupBy === removedPropertyId || view.subGroupBy === removedPropertyId)) return undefined;
+  const groupable = (p: PropertyDefinition): boolean => p.type !== 'title' && GROUPABLE_TYPES.includes(p.type);
+  const heir = (schema.find((p) => OPTION_GROUP_TYPES.includes(p.type)) ?? schema.find(groupable))?.id;
+
+  return views.map((view) => {
+    if (view.groupBy !== removedPropertyId && view.subGroupBy !== removedPropertyId) return view;
+    const { groupBy, groupSettings, subGroupBy, subGroupSettings, ...rest } = view;
+    const keptGroup = groupBy === removedPropertyId ? heir : groupBy;
+    const keptSubGroup = subGroupBy === removedPropertyId ? undefined : subGroupBy;
+
+    return {
+      ...rest,
+      // Settings describe the old grouping; carrying them onto another
+      // property would hide bands nobody asked to hide.
+      ...(keptGroup === undefined ? {} : { groupBy: keptGroup, ...(groupBy === keptGroup && groupSettings !== undefined ? { groupSettings } : {}) }),
+      ...(keptSubGroup === undefined ? {} : { subGroupBy: keptSubGroup, ...(subGroupSettings !== undefined ? { subGroupSettings } : {}) }),
+    };
+  });
+};
+
 /** The name Add view gives each layout; stored in English and shown translated (database-localization.ts). */
 export const DEFAULT_VIEW_NAMES: Readonly<Partial<Record<ViewType, string>>> = {
   table: DATABASE_DEFAULT_TEXT.viewTypeTable,
