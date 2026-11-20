@@ -82,13 +82,20 @@ func (s *Service) blokHandler(next http.Handler) http.Handler {
 func (s *Service) assetAllowed(r *http.Request, session, name string) bool {
 	var document *string
 	var member bool
-	e := s.DB.QueryRow(r.Context(), `SELECT a.document_id, EXISTS(SELECT 1 FROM memberships m JOIN sessions s ON s.user_id=m.user_id WHERE m.workspace_id=a.workspace_id AND s.id=$2 AND s.expires_at>now()) FROM assets a WHERE a.name=$1`, name, session).Scan(&document, &member)
+	// The caller is a live session or a live MCP token; both name one member.
+	e := s.DB.QueryRow(r.Context(), `SELECT a.document_id, EXISTS(
+		SELECT 1 FROM memberships m WHERE m.workspace_id=a.workspace_id AND m.user_id = COALESCE(
+			(SELECT user_id FROM sessions WHERE id=$2 AND expires_at>now()),
+			(SELECT user_id FROM mcp_tokens WHERE id=$2 AND expires_at>now())))
+		FROM assets a WHERE a.name=$1`, name, session).Scan(&document, &member)
 	if e != nil || !member {
 		return false
 	}
 	if document == nil {
 		return true
 	}
+	// A page's file follows that page's permissions, and those are read per
+	// session: a token stops at the workspace's common files.
 	granted, e := s.effectiveLevelForSession(r.Context(), s.DB, session, *document)
 	return e == nil && granted >= levelView
 }
@@ -130,6 +137,11 @@ func (s *Service) file(w http.ResponseWriter, r *http.Request, next http.Handler
 	name := path.Base(r.URL.Path)
 	session := ""
 	if u, e := s.session(r); e == nil {
+		session = u.Session
+	} else if u, e := s.mcpIdentity(r); e == nil {
+		// A member's own token reads every document of their workspace; refusing
+		// them its emojis made importing one impossible without a browser.
+		// assetAllowed keeps a page's file behind that page's permissions.
 		session = u.Session
 	} else {
 		q := r.URL.Query()
