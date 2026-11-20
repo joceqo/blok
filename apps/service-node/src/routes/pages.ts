@@ -23,9 +23,10 @@ import {
   buildPagesTree,
   wouldCreatePageCycle,
 } from '@/pages/tree.js';
+import { pageReadCollaborators } from '@/pages/page-collaborators.js';
 import { validateRestorePageIds } from '@/pages/validate-restore-page-ids.js';
 import { assertPageAction } from '@/permissions.js';
-import { memberRole } from '@/workspaces/membership.js';
+import { memberRole, memberRows } from '@/workspaces/membership.js';
 
 type Env = {
   Variables: DbVariables & SessionVariables;
@@ -229,6 +230,34 @@ pageRoutes.get('/api/pages/:pageId', requireUser(), async (context) => {
   }
 
   return context.json({ page });
+});
+
+pageRoutes.get('/api/pages/:pageId/collaborators', requireUser(), async (context) => {
+  const pageId = context.req.param('pageId');
+  const db = context.get('db');
+  const userId = context.get('userId');
+  if (userId === undefined) {
+    return context.json({ error: 'unauthenticated' }, 401);
+  }
+
+  const rows = await db.select().from(pages).where(eq(pages.id, pageId)).limit(1);
+  const page = rows[0];
+  if (page === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+
+  const role = await memberRole(db, userId, page.workspaceId);
+  if (role === undefined) {
+    return context.json({ error: 'not_found' }, 404);
+  }
+  try {
+    assertPageAction(role, 'read');
+  } catch {
+    return context.json({ error: 'permission_denied' }, 403);
+  }
+
+  const members = await memberRows(db, page.workspaceId);
+  return context.json({ collaborators: pageReadCollaborators(members) });
 });
 
 pageRoutes.post('/api/workspaces/:workspaceId/pages', requireUser(), async (context) => {

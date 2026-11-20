@@ -23,20 +23,28 @@ Readable scaffold for the **product** backend (`apps/service` in Go). This is **
 8. `src/permissions.ts` — pure permission matrix (port of `permissions.go` lot 1)
 9. `src/routes/blok.ts` — sidecar HTTP proxy at `/api/blok/*`; `GET /api/blok/sync/:docId` answers `501 upgrade_required` (plain HTTP or upgrade) with a `ws:`/`wss:` hint to `BLOK_SIDECAR_URL` — live sockets are not reverse-proxied through this host yet
 
-## Run locally
+## Dev with Postgres
+
+PostgreSQL 16 via Docker Compose (app still runs on the host):
 
 ```bash
 cd apps/service-node
-npm ci          # after lockfile exists: npm install
-export DATABASE_URL=postgres://user:pass@127.0.0.1:5432/blok
-export PORT=8080
+docker compose -f docker-compose.dev.yml up -d
+cp .env.example .env
+npm ci          # or npm install
 npm run dev
 ```
 
-`GET /health` → `{"status":"ok","version":"…"}`. With `DATABASE_URL` set:
+`docker-compose.dev.yml` publishes Postgres on `127.0.0.1:5432` with user/password/database `blok` / `blok` / `blok`. `.env.example` sets `PORT=8080`, `DATABASE_URL` to that instance, and `APPLY_SCHEMA_ON_BOOT=1` so the first boot applies `schema.sql` when the DB is empty.
+
+Stop the database: `docker compose -f docker-compose.dev.yml down` (add `-v` to drop the volume).
+
+## Run locally
+
+`GET /health` → `{"status":"ok","version":"…"}`. With `DATABASE_URL` set (see `.env.example`):
 
 ```bash
-APPLY_SCHEMA_ON_BOOT=1 DATABASE_URL=postgres://... npm run dev
+npm run dev
 DEV_EXPOSE_AUTH_CODE=1 npm run dev   # returns devCode on request-code
 BLOK_SIDECAR_URL=http://127.0.0.1:4000 npm run dev   # proxies /api/blok/*
 ```

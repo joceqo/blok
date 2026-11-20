@@ -11,20 +11,39 @@ export type ParsedTeamspaceMemberAddBody =
   | { ok: true; userId: string }
   | { ok: false; reason: TeamspaceBodyErrorReason };
 
+export type ParsedTeamspacePatchBody =
+  | { ok: true; name: string }
+  | { ok: false; reason: TeamspaceBodyErrorReason };
+
+export type ParsedTeamspaceMemberUserIdParam =
+  | { ok: true; userId: string }
+  | { ok: false; reason: TeamspaceBodyErrorReason };
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function parseTeamspaceCreateBody(value: unknown): ParsedTeamspaceCreateBody {
+function parseNonBlankName(value: unknown): string | undefined {
   if (!isRecord(value)) {
-    return { ok: false, reason: 'invalid_request' };
+    return undefined;
   }
-
   const name = typeof value.name === 'string' ? value.name.trim() : '';
-  if (name.length === 0) {
+  return name.length > 0 ? name : undefined;
+}
+
+export function parseTeamspaceCreateBody(value: unknown): ParsedTeamspaceCreateBody {
+  const name = parseNonBlankName(value);
+  if (name === undefined) {
     return { ok: false, reason: 'invalid_request' };
   }
+  return { ok: true, name };
+}
 
+export function parseTeamspacePatchBody(value: unknown): ParsedTeamspacePatchBody {
+  const name = parseNonBlankName(value);
+  if (name === undefined) {
+    return { ok: false, reason: 'invalid_request' };
+  }
   return { ok: true, name };
 }
 
@@ -39,6 +58,14 @@ export function parseTeamspaceMemberAddBody(value: unknown): ParsedTeamspaceMemb
   }
 
   return { ok: true, userId };
+}
+
+export function parseTeamspaceMemberUserIdParam(userId: string): ParsedTeamspaceMemberUserIdParam {
+  const trimmed = userId.trim();
+  if (!UUID_RE.test(trimmed)) {
+    return { ok: false, reason: 'invalid_request' };
+  }
+  return { ok: true, userId: trimmed };
 }
 
 export function serializeTeamspace(row: {

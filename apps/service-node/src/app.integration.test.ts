@@ -130,7 +130,9 @@ describe('createApp integration (no PostgreSQL)', () => {
     const workspaceId = '00000000-0000-0000-0000-000000000001';
     const teamspaceId = '00000000-0000-0000-0000-000000000002';
     const teamspaceBase = `http://localhost/api/workspaces/${workspaceId}/teamspaces`;
-    const membersUrl = `${teamspaceBase}/${teamspaceId}/members`;
+    const teamspaceOne = `${teamspaceBase}/${teamspaceId}`;
+    const membersUrl = `${teamspaceOne}/members`;
+    const memberOne = `${membersUrl}/00000000-0000-0000-0000-000000000003`;
 
     const getList = await app.request(teamspaceBase);
     expect(getList.status).toBe(503);
@@ -144,6 +146,18 @@ describe('createApp integration (no PostgreSQL)', () => {
     expect(postTeamspace.status).toBe(503);
     await expect(postTeamspace.json()).resolves.toEqual({ error: 'database_not_configured' });
 
+    const patchTeamspace = await app.request(teamspaceOne, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed' }),
+    });
+    expect(patchTeamspace.status).toBe(503);
+    await expect(patchTeamspace.json()).resolves.toEqual({ error: 'database_not_configured' });
+
+    const deleteTeamspace = await app.request(teamspaceOne, { method: 'DELETE' });
+    expect(deleteTeamspace.status).toBe(503);
+    await expect(deleteTeamspace.json()).resolves.toEqual({ error: 'database_not_configured' });
+
     const getMembers = await app.request(membersUrl);
     expect(getMembers.status).toBe(503);
     await expect(getMembers.json()).resolves.toEqual({ error: 'database_not_configured' });
@@ -155,6 +169,10 @@ describe('createApp integration (no PostgreSQL)', () => {
     });
     expect(postMember.status).toBe(503);
     await expect(postMember.json()).resolves.toEqual({ error: 'database_not_configured' });
+
+    const deleteMember = await app.request(memberOne, { method: 'DELETE' });
+    expect(deleteMember.status).toBe(503);
+    await expect(deleteMember.json()).resolves.toEqual({ error: 'database_not_configured' });
   });
 
   it('GET /api/workspaces/:workspaceId/audit returns 503 when DATABASE is not wired into createApp', async () => {

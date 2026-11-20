@@ -15,6 +15,8 @@ import {
 import {
   parseTeamspaceCreateBody,
   parseTeamspaceMemberAddBody,
+  parseTeamspaceMemberUserIdParam,
+  parseTeamspacePatchBody,
   serializeTeamspace,
 } from '@/workspaces/teamspace-body.js';
 
@@ -80,6 +82,65 @@ teamspaceRoutes.post('/api/workspaces/:workspaceId/teamspaces', requireUser(), a
 
   return context.json({ teamspace: serializeTeamspace(teamspace) }, 201);
 });
+
+teamspaceRoutes.patch(
+  '/api/workspaces/:workspaceId/teamspaces/:teamspaceId',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const teamspaceId = context.req.param('teamspaceId');
+    const db = context.get('db');
+
+    await requireWorkspaceRole(db, context, workspaceId, 'edit');
+
+    const teamspace = await loadTeamspaceInWorkspace(db, workspaceId, teamspaceId);
+    if (teamspace === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    const raw: unknown = await context.req.json().catch(() => ({}));
+    const parsed = parseTeamspacePatchBody(raw);
+    if (!parsed.ok) {
+      return context.json({ error: parsed.reason }, 400);
+    }
+
+    const updated = await db
+      .update(teamspaces)
+      .set({ name: parsed.name })
+      .where(and(eq(teamspaces.id, teamspaceId), eq(teamspaces.workspaceId, workspaceId)))
+      .returning();
+
+    const row = updated[0];
+    if (row === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    return context.json({ teamspace: serializeTeamspace(row) });
+  },
+);
+
+teamspaceRoutes.delete(
+  '/api/workspaces/:workspaceId/teamspaces/:teamspaceId',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const teamspaceId = context.req.param('teamspaceId');
+    const db = context.get('db');
+
+    await requireWorkspaceRole(db, context, workspaceId, 'edit');
+
+    const removed = await db
+      .delete(teamspaces)
+      .where(and(eq(teamspaces.id, teamspaceId), eq(teamspaces.workspaceId, workspaceId)))
+      .returning({ id: teamspaces.id });
+
+    if (removed[0] === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    return context.json({ ok: true });
+  },
+);
 
 teamspaceRoutes.get(
   '/api/workspaces/:workspaceId/teamspaces/:teamspaceId/members',
@@ -177,5 +238,43 @@ teamspaceRoutes.post(
       },
       201,
     );
+  },
+);
+
+teamspaceRoutes.delete(
+  '/api/workspaces/:workspaceId/teamspaces/:teamspaceId/members/:userId',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const teamspaceId = context.req.param('teamspaceId');
+    const db = context.get('db');
+
+    await requireWorkspaceRole(db, context, workspaceId, 'edit');
+
+    const parsedUserId = parseTeamspaceMemberUserIdParam(context.req.param('userId'));
+    if (!parsedUserId.ok) {
+      return context.json({ error: parsedUserId.reason }, 400);
+    }
+
+    const teamspace = await loadTeamspaceInWorkspace(db, workspaceId, teamspaceId);
+    if (teamspace === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    const removed = await db
+      .delete(teamspaceMembers)
+      .where(
+        and(
+          eq(teamspaceMembers.teamspaceId, teamspaceId),
+          eq(teamspaceMembers.userId, parsedUserId.userId),
+        ),
+      )
+      .returning({ userId: teamspaceMembers.userId });
+
+    if (removed[0] === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    return context.json({ ok: true });
   },
 );
