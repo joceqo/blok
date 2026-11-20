@@ -240,6 +240,8 @@ async function serveLocalFile(
   const parsed = parseRanges(rangeHeader, size);
   if (parsed === 'invalid') {
     const body = 'invalid range\n';
+    response.headersMut().remove('accept-ranges');
+    response.headersMut().remove('last-modified');
     response.headersMut().set('Content-Type', 'text/plain; charset=utf-8');
     response.headersMut().set('Content-Length', String(body.length));
     response.setStatus(416);
@@ -255,6 +257,8 @@ async function serveLocalFile(
       return;
     }
     const body = 'invalid range: failed to overlap\n';
+    response.headersMut().remove('accept-ranges');
+    response.headersMut().remove('last-modified');
     response.headersMut().set('Content-Type', 'text/plain; charset=utf-8');
     response.headersMut().set('Content-Length', String(body.length));
     response.headersMut().set('Content-Range', `bytes */${info.size}`);

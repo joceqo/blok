@@ -1,61 +1,69 @@
+import { AsyncMutex } from '../http/sync.ts';
+
 export const POOL_SIZE = 4;
 const PER_CALLER = 2;
 
-class ConcurrencyPool {
-  private inFlight = 0;
-  private readonly queue: Array<() => void> = [];
+class Semaphore {
+  private permits: number;
+  private readonly waiting: Array<() => void> = [];
+  private readonly gate = new AsyncMutex(undefined);
 
-  constructor(private readonly capacity: number) {}
+  constructor(capacity: number) {
+    this.permits = capacity;
+  }
+
+  private releaseCallback(): () => void {
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      void this.release();
+    };
+  }
+
+  private async release(): Promise<void> {
+    const guard = await this.gate.lock();
+    const wake = this.waiting.shift();
+    if (wake) {
+      guard.release();
+      wake();
+      return;
+    }
+    this.permits += 1;
+    guard.release();
+  }
 
   async acquire(deadlineMs: number): Promise<() => void> {
-    if (this.inFlight < this.capacity) {
-      this.inFlight += 1;
-      let released = false;
-      return () => {
-        if (released) {
-          return;
-        }
-        released = true;
-        this.inFlight -= 1;
-        const wake = this.queue.shift();
-        if (wake) {
-          this.inFlight += 1;
-          wake();
-        }
-      };
+    const guard = await this.gate.lock();
+    if (this.permits > 0) {
+      this.permits -= 1;
+      guard.release();
+      return this.releaseCallback();
     }
-    return new Promise((resolve, reject) => {
+    guard.release();
+    await new Promise<void>((resolve, reject) => {
       const delay = Math.max(0, deadlineMs - Date.now());
       const timer = setTimeout(() => {
-        const index = this.queue.indexOf(wake);
+        const index = this.waiting.indexOf(wake);
         if (index >= 0) {
-          this.queue.splice(index, 1);
+          this.waiting.splice(index, 1);
         }
         reject(new Error('timed out'));
       }, delay);
       const wake = (): void => {
         clearTimeout(timer);
-        let released = false;
-        resolve(() => {
-          if (released) {
-            return;
-          }
-          released = true;
-          this.inFlight -= 1;
-          const next = this.queue.shift();
-          if (next) {
-            this.inFlight += 1;
-            next();
-          }
-        });
+        resolve();
       };
-      this.queue.push(wake);
+      this.waiting.push(wake);
     });
+    return this.releaseCallback();
   }
 }
 
 class CallerLanes {
-  private readonly lanes = new Map<string, ConcurrencyPool>();
+  private readonly lanes = new Map<string, Semaphore>();
 
   async enter(caller: string, deadlineMs: number): Promise<() => void> {
     if (caller === '') {
@@ -63,7 +71,7 @@ class CallerLanes {
     }
     let lane = this.lanes.get(caller);
     if (!lane) {
-      lane = new ConcurrencyPool(PER_CALLER);
+      lane = new Semaphore(PER_CALLER);
       this.lanes.set(caller, lane);
     }
     return lane.acquire(deadlineMs);
@@ -71,8 +79,8 @@ class CallerLanes {
 }
 
 export class OutboundPermits {
-  private readonly checks = new ConcurrencyPool(POOL_SIZE);
-  private readonly uploads = new ConcurrencyPool(POOL_SIZE);
+  private readonly checks = new Semaphore(POOL_SIZE);
+  private readonly uploads = new Semaphore(POOL_SIZE);
   private readonly checkCallers = new CallerLanes();
   private readonly uploadCallers = new CallerLanes();
 

@@ -168,7 +168,7 @@ function rawRequest(
 ): Promise<{ status: number; body: Buffer }> {
   const proxy = resolveEnvironmentProxy(url);
   if (proxy !== undefined) {
-    return requestThroughProxy(url, method, headers, body);
+    return requestThroughProxy(url, method, headers, body, proxy);
   }
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);

@@ -234,6 +234,14 @@ export function buildRouter(options: HostAppOptions): Router {
     shell(router, `${patternPrefix}/sync/{doc}/reset`, 'POST', stubNoContent, options);
     shell(router, `${patternPrefix}/sync/{doc}/edit`, 'POST', async (request, response, values) => {
       const doc = values.doc ?? '';
+      const body = request.bodyMut();
+      if (body !== undefined) {
+        try {
+          await body.readToEnd([]);
+        } catch {
+          return;
+        }
+      }
       if (isSingleSegment(doc) && collabRooms !== undefined) {
         await collabRooms.touchOnEdit(doc);
       }
