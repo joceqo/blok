@@ -1586,6 +1586,30 @@ const setRowValues: ToolActionImpl<{ rowId: string; values: Record<string, unkno
   },
 };
 
+/**
+ * A row's icon and cover sit beside its properties, and the editor lets a person
+ * set both. setRowValues writes properties only, so copying a database left
+ * every row bare and the only way through was block.update, which writes past
+ * the tool instead of asking it.
+ */
+const setRowIcon: ToolActionImpl<{ rowId: string; icon?: string | null; cover?: string | null; coverPosition?: number }> = {
+  run: (ctx, args) => {
+    const { dataId } = rowHome(ctx);
+    const row = rowBlocksOf(ctx, dataId).find(candidate => candidate.id === args.rowId)
+      ?? ctx.fail('PRECONDITION_FAILED', `Block ${args.rowId} is not a row of this database.`);
+    // A cleared cover takes its position along: a position alone would frame nothing.
+    const clearing = args.cover === null;
+
+    ctx.update(row.id, {
+      ...(args.icon === undefined ? {} : { icon: args.icon ?? undefined }),
+      ...(args.cover === undefined ? {} : { cover: args.cover ?? undefined }),
+      ...(clearing ? { coverPosition: undefined } : args.coverPosition === undefined ? {} : { coverPosition: args.coverPosition }),
+    });
+
+    return undefined;
+  },
+};
+
 /** As DatabaseTool.unlinkDeletedRow: the row leaves the relations of this database that point at it, and their other sides. */
 const unlinkRow = (ctx: ToolActionContext, databaseId: string, schema: PropertyDefinition[], rowId: string): void => {
   const values = liveValues(ctx, databaseId, rowId) ?? {};
@@ -2306,7 +2330,7 @@ const changePropertyType: ToolActionImpl<{ propertyId: string; type: PropertyTyp
 export const DATABASE_ACTION_HANDLERS: Readonly<Record<string, ToolActionImpl>> = {
   create, addView, renameView, duplicateView, deleteView, moveView, updateView, setLayout, setLock,
   addProperty, addOption, renameOption, moveOption, deleteOption,
-  addRow, moveRow, setRowValues, deleteRow, applyTemplate, duplicateRow, moveRowTo,
+  addRow, moveRow, setRowValues, setRowIcon, deleteRow, applyTemplate, duplicateRow, moveRowTo,
   updateProperty, duplicateProperty, deleteProperty, restoreProperty, deletePropertyPermanently, recolorOption,
   addTemplate, setDefaultTemplate, setTemplateRepeat, changePropertyType, submitForm, pressButton,
 };

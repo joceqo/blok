@@ -1130,6 +1130,14 @@ export const DATABASE_ACTIONS: ToolActionDeclaration[] = [
     mirrors: ['menu:database/database-row-edit-property-*', 'menu:database/database-bulk-edit-*'],
   },
   {
+    name: 'setRowIcon',
+    summary: 'Set a row\'s icon, its cover, or the cover\'s vertical framing. What you leave out stays.',
+    guidance: 'icon is an emoji or an image URL, as a page icon takes. null clears the icon or the cover; clearing a cover drops its framing too. coverPosition is a percentage, 0 at the top and 100 at the bottom. Properties go through setRowValues; this writes what sits beside them.',
+    target: 'block',
+    args: closed({ rowId: ROW_ID, icon: { type: ['string', 'null'] }, cover: { type: ['string', 'null'] }, coverPosition: { type: 'number', minimum: 0, maximum: 100 } }, ['rowId']),
+    mirrors: ['menu:database/database-row-icon', 'menu:database/database-row-cover'],
+  },
+  {
     name: 'pressButton',
     summary: 'Press a button property on a row, as a click on its cell does: the button\'s steps run in order.',
     guidance: 'propertyId is a button property; rowId is a row of this database. Its edits, added pages and inserted blocks are written as your own edits, with the same checks as setRowValues, addRow and block.insert; a step that names a property or database that is not there refuses the whole press. Each "Show confirmation" asks the person first, with the button\'s own text. A press that calls the host (a callback, a notification) asks the person first too, showing what the host would get. If they say no, or nobody can be asked, nothing is pressed; a yes covers only the steps they saw. The host steps run once the writes land. Opening a page or a link stays the person\'s: your press opens nothing. Editor only. Runs alone in its batch.',
