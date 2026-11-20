@@ -1,3 +1,5 @@
+import { csQuote, parseBaseZeroInt64 } from './numbers.ts';
+
 export interface ParsedHostArgs {
   help: boolean;
   err: string;
@@ -5,6 +7,10 @@ export interface ParsedHostArgs {
   auth: string;
   noUnfurl: boolean;
   storageDirectory: string;
+  /** Set when `--rate-limit` was passed; otherwise absent for ticket/default handling in main. */
+  rateLimitPerMinute?: number;
+  /** Set when `--public-url` was passed; otherwise absent for listen-based default in main. */
+  publicUrl?: string;
 }
 
 const DEFAULT_LISTEN = '127.0.0.1:4000';
@@ -12,7 +18,17 @@ const DEFAULT_AUTH = 'none';
 const DEFAULT_STORAGE_DIRECTORY = './blok-uploads';
 
 function isValueFlag(name: string): boolean {
-  return name === 'listen' || name === 'auth' || name === 'storage-dir';
+  return (
+    name === 'listen'
+    || name === 'auth'
+    || name === 'storage-dir'
+    || name === 'public-url'
+    || name === 'rate-limit'
+  );
+}
+
+function parseError(name: string, value: string): string {
+  return `invalid value ${csQuote(value)} for flag -${name}: parse error`;
 }
 
 export function parseHostArguments(argv: string[], conformanceBuild: boolean): ParsedHostArgs {
@@ -20,6 +36,8 @@ export function parseHostArguments(argv: string[], conformanceBuild: boolean): P
   let auth = DEFAULT_AUTH;
   let noUnfurl = false;
   let storageDirectory = DEFAULT_STORAGE_DIRECTORY;
+  let rateLimitPerMinute: number | undefined;
+  let publicUrl: string | undefined;
   let help = false;
   let err = '';
   const conformanceOnly = /^--conformance-/;
@@ -64,6 +82,18 @@ export function parseHostArguments(argv: string[], conformanceBuild: boolean): P
       case 'storage-dir':
         storageDirectory = value;
         break;
+      case 'public-url':
+        publicUrl = value;
+        break;
+      case 'rate-limit': {
+        const parsed = parseBaseZeroInt64(value);
+        if (parsed === undefined) {
+          err = parseError(name, value);
+        } else {
+          rateLimitPerMinute = parsed;
+        }
+        break;
+      }
       default:
         err = `flag provided but not defined: -${name}`;
         break;
@@ -72,5 +102,14 @@ export function parseHostArguments(argv: string[], conformanceBuild: boolean): P
       break;
     }
   }
-  return { help, err, listen, auth, noUnfurl, storageDirectory };
+  return {
+    help,
+    err,
+    listen,
+    auth,
+    noUnfurl,
+    storageDirectory,
+    rateLimitPerMinute,
+    publicUrl,
+  };
 }

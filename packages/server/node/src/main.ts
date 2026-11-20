@@ -1,3 +1,9 @@
+import {
+  defaultPublicUrl,
+  resolveRateLimitPerMinute,
+  validatePublicUrl,
+  validateRateLimit,
+} from './args/public-url.ts';
 import { parseHostArguments } from './args/parse.ts';
 import { createHostHandler } from './host/app.ts';
 import { defaultConfig, listen, parseIp, Server, shutdownSignal } from './http/index.ts';
@@ -28,6 +34,18 @@ async function run(): Promise<number> {
   if (parsed.err.length > 0) {
     print(`${parsed.err}${NEWLINE}${USAGE}`);
     return 2;
+  }
+  const rateLimitPerMinute = resolveRateLimitPerMinute(parsed.auth, parsed.rateLimitPerMinute);
+  const rateLimitErr = validateRateLimit(rateLimitPerMinute);
+  if (rateLimitErr !== undefined) {
+    print(`blok-server refused to start: ${rateLimitErr}${NEWLINE}`);
+    return 1;
+  }
+  const publicUrl = parsed.publicUrl ?? defaultPublicUrl(parsed.listen);
+  const publicUrlErr = validatePublicUrl(publicUrl);
+  if (publicUrlErr !== undefined) {
+    print(`blok-server refused to start: ${publicUrlErr}${NEWLINE}`);
+    return 1;
   }
   let servers;
   try {
