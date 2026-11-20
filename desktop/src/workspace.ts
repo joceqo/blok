@@ -1230,15 +1230,28 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     return 'pending';
   };
 
+  /** A workspace with no page at all has no way back, so the last one stays. */
+  const lastPageRefusal = 'Cette page est la dernière de l’espace. Créez-en une autre avant de la supprimer.';
   const deletePage = (page: DesktopPage): void => {
-    if (!ws.index || ws.index.pages.length === 1) return;
+    if (!ws.index) return;
+    if (ws.index.pages.length === 1) {
+      // Returning in silence looked like a broken button: the menu closed and
+      // the page stayed, with nothing said.
+      showError(new Error(lastPageRefusal), 'delete');
+
+      return;
+    }
     const removed = new Set([page.id]);
     const removeState = { previous: -1 };
     while (removeState.previous !== removed.size) {
       removeState.previous = removed.size;
       ws.index.pages.forEach((item) => { if (item.parentId && removed.has(item.parentId)) removed.add(item.id); });
     }
-    if (removed.size === ws.index.pages.length) return;
+    if (removed.size === ws.index.pages.length) {
+      showError(new Error(lastPageRefusal), 'delete');
+
+      return;
+    }
     ws.index.trash = [...(ws.index.trash ?? []), ...ws.index.pages.filter((item) => removed.has(item.id))];
     ws.index.pages = ws.index.pages.filter((item) => !removed.has(item.id));
     removed.forEach(dropCachedPage);
@@ -1491,10 +1504,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       markWelcomeSeeded(key);
       return welcomePage.id;
     }
+    // Rolling back in silence drops the person on "this workspace is empty"
+    // right after their pages flashed on screen, with nothing to explain it.
     index.pages = index.pages.filter((page) => !docs.pages.some((item) => item.id === page.id));
     ws.frame.setPages(withSections(index.pages), index.activeId);
     saveManifest();
     try { await ws.saveOrder; } catch { /* keep empty */ }
+    showError(new Error('Les pages de bienvenue n’ont pas pu être créées. Créez une page pour commencer.'), 'welcome');
+
     return null;
   }
 

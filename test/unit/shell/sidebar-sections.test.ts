@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createPageFrame } from '../../../src/shell/sidebar';
+import { createPageFrame, teamspacesSectionState } from '../../../src/shell/sidebar';
 import type { ShellPage } from '../../../src/shell/sidebar';
 
 const page = (id: string, over: Partial<ShellPage> = {}): ShellPage => ({ id, title: id, parentId: null, ...over });
@@ -227,5 +227,27 @@ describe('the teamspaces section', () => {
     document.body.append(frame.element);
 
     expect(headings()).toContain('Espaces d’équipe');
+  });
+});
+
+/**
+ * One decision, three painters. They disagreed, so the heading appeared before
+ * the teamspace list had loaded and vanished once it came back empty.
+ */
+describe('teamspacesSectionState', () => {
+  const base = { teams: [], loaded: true, commonPages: 0, status: null, workspaceRow: false };
+
+  it('hides the section while the list has not loaded', () => {
+    expect(teamspacesSectionState({ ...base, loaded: false }).show).toBe(false);
+  });
+
+  it('hides it when the list came back empty', () => {
+    expect(teamspacesSectionState(base).show).toBe(false);
+  });
+
+  it('shows it for a teamspace, for shared pages, and for a status worth saying', () => {
+    expect(teamspacesSectionState({ ...base, teams: [{ id: 't' }] }).show).toBe(true);
+    expect(teamspacesSectionState({ ...base, commonPages: 2 }).show).toBe(true);
+    expect(teamspacesSectionState({ ...base, status: 'Chargement…' })).toEqual({ show: true, emptyMessage: 'Chargement…' });
   });
 });

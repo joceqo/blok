@@ -184,6 +184,28 @@ function matches(pages: ShellPage[], page: ShellPage, needle: string): boolean {
   return childrenOf(pages, page.id).some((child) => matches(pages, child, needle));
 }
 
+
+/**
+ * Whether the teamspaces section is drawn at all, and what it says when empty.
+ * Three painters draw this section; they disagreed, so the heading appeared
+ * before the list had loaded and vanished once it came back empty — a flash on
+ * every refresh. A workspace with no teamspace shows no section, as in Notion.
+ */
+export function teamspacesSectionState(input: {
+  teams: ReadonlyArray<{ id: string }>;
+  loaded: boolean;
+  commonPages: number;
+  status: string | null;
+  workspaceRow: boolean;
+}): { show: boolean; emptyMessage: string | null } {
+  if (input.teams.length > 0) return { show: true, emptyMessage: input.status };
+  if (input.status !== null) return { show: true, emptyMessage: input.status };
+  if (input.commonPages > 0 || input.workspaceRow) return { show: true, emptyMessage: null };
+  // Not loaded yet is not "none": drawing the heading now only to remove it
+  // a moment later is the flash itself.
+  return { show: false, emptyMessage: null };
+}
+
 export function createPageFrame(options: PageFrameOptions): PageFrame {
   const view: { pages: ShellPage[]; activeId: string; query: string } = {
     pages: options.pages,
@@ -514,11 +536,12 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
       if (section.id === 'teamspaces') {
         const teams = options.teamspaces ?? [];
         const commonPages = roots.filter(page => page.section === 'workspace');
-        // A workspace with no teamspace has nothing to put here, and an empty
-        // heading reads as a place where something went missing. Notion shows
-        // no section either until the first teamspace exists.
-        if (teams.length === 0 && commonPages.length === 0 && !options.teamspace
-          && (options.teamspaceStatus?.() ?? null) === null) return;
+        const state = teamspacesSectionState({
+          teams, loaded: options.teamspaces !== undefined, commonPages: commonPages.length,
+          status: options.teamspaceStatus?.() ?? null, workspaceRow: !!options.teamspace,
+        });
+
+        if (!state.show) return;
         const group = appendSection('Espaces d’équipe', 'teamspaces');
         if (collapsed.has('teamspaces')) return;
         teams.filter(team => !needle || roots.some(page => page.section === `teamspace:${team.id}`)).forEach(team => {
@@ -622,7 +645,9 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     // something went missing, and Notion shows none until the first one exists.
     // A status (loading, refused) still deserves to be said out loud.
     const teamspaceStatus=options.teamspaceStatus?.() ?? null;
-    if(teams.length || (needle==='' && teamspaceStatus!==null)){
+    const teamspaceState=teamspacesSectionState({teams,loaded:options.teamspaces!==undefined,
+      commonPages:0,status:teamspaceStatus,workspaceRow:false});
+    if(teamspaceState.show && (teams.length || needle==='')){
       const group=appendSection('Espaces d’équipe','teamspaces');
       if(!collapsed.has('teamspaces')){
         teams.forEach(team=>appendTeamspace(group,team,roots.filter(page=>page.section===`teamspace:${team.id}`),needle));
