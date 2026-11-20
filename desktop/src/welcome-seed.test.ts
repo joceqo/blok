@@ -150,3 +150,19 @@ describe('sample database fixture', () => {
     expect(options.every((option) => typeof option.position === 'string')).toBe(true);
   });
 });
+
+/**
+ * A new teamspace is empty: the pages that teach Blok belong to the person who
+ * just signed up, not to their colleagues. Seeding them into the workspace
+ * section put three pages in front of a whole team before anyone wrote a word.
+ */
+describe('where the welcome pages land', () => {
+  it('puts every welcome page in the private section', () => {
+    const docs = buildWelcomeDocuments('w1');
+
+    expect(docs.pages).not.toHaveLength(0);
+    for (const page of docs.pages) {
+      expect(page.initialVisibility).toBe('private');
+    }
+  });
+});

@@ -73,6 +73,15 @@ type Workspace struct {
 	Icon *string `json:"icon"`
 }
 
+
+// allowedOrigins is what the Blok engine compares a request's Origin against,
+// by exact match. The service trims a trailing slash before its own comparison,
+// so PUBLIC_URL must arrive trimmed here too: otherwise "https://host/" admits
+// every ordinary API call and refuses every collaboration socket.
+func allowedOrigins(c Config) []string {
+	return append([]string{strings.TrimRight(c.PublicURL, "/")}, c.AllowedOrigins...)
+}
+
 func opaque() string {
 	b := make([]byte, 32)
 	if _, e := rand.Read(b); e != nil {
@@ -165,7 +174,7 @@ func New(ctx context.Context, c Config) (*Service, error) {
 	}
 	s.aiClient = newAIClient(c.AITransport)
 	auth := "ticket"
-	s.Blok, e = blokserver.New(blokserver.Options{Auth: &auth, Secret: c.TicketSecret, PublicURL: strings.TrimRight(c.PublicURL, "/") + "/files", AllowedOrigins: append([]string{c.PublicURL}, c.AllowedOrigins...), StorageDirectory: filepath.Join(c.DataDirectory, "uploads"), CollabEnabled: true, CollabJournal: true, CollabDirectory: filepath.Join(c.DataDirectory, "collab"), DocEndpoint: strings.TrimRight(c.InternalURL, "/") + "/internal/documents", DocEndpointAuth: "Bearer " + c.InternalSecret, Authorization: s, Logger: slog.Default(), RateLimitPerMinute: 600})
+	s.Blok, e = blokserver.New(blokserver.Options{Auth: &auth, Secret: c.TicketSecret, PublicURL: strings.TrimRight(c.PublicURL, "/") + "/files", AllowedOrigins: allowedOrigins(c), StorageDirectory: filepath.Join(c.DataDirectory, "uploads"), CollabEnabled: true, CollabJournal: true, CollabDirectory: filepath.Join(c.DataDirectory, "collab"), DocEndpoint: strings.TrimRight(c.InternalURL, "/") + "/internal/documents", DocEndpointAuth: "Bearer " + c.InternalSecret, Authorization: s, Logger: slog.Default(), RateLimitPerMinute: 600})
 	if e != nil {
 		return fail(e)
 	}

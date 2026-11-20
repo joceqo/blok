@@ -232,10 +232,12 @@ export function buildWelcomeDocuments(workspaceId: string): WelcomeDocuments {
     ],
   };
 
+  // These pages teach Blok to the person who just signed up; they are not the
+  // team's. A new teamspace stays empty until someone puts something in it.
   const pages: DesktopPage[] = [
-    { id: welcomeId, title: welcome.title, icon: '👋', parentId: null },
-    { id: rightsId, title: rights.title, icon: '🔑', parentId: welcomeId },
-    { id: tasksId, title: tasks.title, icon: '✅', parentId: null },
+    { id: welcomeId, title: welcome.title, icon: '👋', parentId: null, initialVisibility: 'private' },
+    { id: rightsId, title: rights.title, icon: '🔑', parentId: welcomeId, initialVisibility: 'private' },
+    { id: tasksId, title: tasks.title, icon: '✅', parentId: null, initialVisibility: 'private' },
   ];
 
   const documents = [
