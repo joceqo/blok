@@ -2,13 +2,13 @@ import { BodyError } from '../http/body.ts';
 import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { ErrForeign } from '../blob/key.ts';
-import type { LocalStore } from '../blob/local.ts';
+import type { BlobStore } from '../blob/store.ts';
 import { isJsonContentType } from '../mediatype/index.ts';
 import { readEnvelopeJson } from './envelope.ts';
 import { writePlain } from '../route/respond.ts';
 
 export async function deleteHandler(
-  store: LocalStore,
+  store: BlobStore,
   request: Request,
   response: ResponseWriter,
 ): Promise<void> {

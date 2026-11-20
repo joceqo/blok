@@ -8,6 +8,7 @@ import { ResponseWriter } from '../http/response.ts';
 import { inGroup, Router, type RouteHandler } from '../route/router.ts';
 import { methodNotAllowed, notFound, writePlain } from '../route/respond.ts';
 import { LocalStore } from '../blob/local.ts';
+import type { BlobStore } from '../blob/store.ts';
 import { deleteHandler } from './delete.ts';
 import { fileBytesHandler } from './file-bytes.ts';
 import { guardRequest } from './guard.ts';
@@ -183,8 +184,11 @@ export function buildRouter(options: HostAppOptions): Router {
     ? new CollabRooms(options.docEndpoint, options.docEndpointAuth, options.collabLog)
     : undefined;
 
-  const hasStorage = options.storageDirectory !== '';
-  const store = hasStorage ? new LocalStore(options.storageDirectory, options.publicUrl) : undefined;
+  const store: BlobStore | undefined = options.blobStore
+    ?? (options.storageDirectory !== ''
+      ? new LocalStore(options.storageDirectory, options.publicUrl)
+      : undefined);
+  const hasStorage = store !== undefined;
 
   const hasLocalFiles = hasStorage && options.publicPath !== '';
   if (hasLocalFiles && store) {

@@ -1,3 +1,4 @@
+import type { BlobStore } from '../blob/store.ts';
 import type { CollabLog } from '../collab/log.ts';
 import type { OutboundFetcher } from '../outbound/fetcher.ts';
 import { RateLimiter } from './rate-limit.ts';
@@ -25,4 +26,5 @@ export interface HostAppOptions {
   rateLimitPerMinute: number;
   loopbackHostCheck: boolean;
   allowedHostNames: string[];
+  blobStore?: BlobStore;
 }

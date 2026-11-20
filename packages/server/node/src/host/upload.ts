@@ -3,7 +3,7 @@ import { BodyError } from '../http/body.ts';
 import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { extension } from '../blob/key.ts';
-import type { LocalStore } from '../blob/local.ts';
+import type { BlobStore } from '../blob/store.ts';
 import { boundaryFromContentType } from '../mediatype/index.ts';
 import { fileNameFromDisposition, sanitizeWireContentType } from './disposition.ts';
 import { writePlain } from '../route/respond.ts';
@@ -192,7 +192,7 @@ function parseMultipart(
 }
 
 export async function uploadHandler(
-  store: LocalStore,
+  store: BlobStore,
   maxUploadBytes: number,
   request: Request,
   response: ResponseWriter,
@@ -231,7 +231,7 @@ export async function uploadHandler(
   }
   let url: string;
   try {
-    url = await store.put(extension(parsed.fileName), Buffer.from(parsed.content));
+    url = await store.put(extension(parsed.fileName), Buffer.from(parsed.content), parsed.mimeType);
   } catch {
     await writePlain(request, response, 502, 'upload failed\n');
     return;

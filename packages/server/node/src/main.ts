@@ -4,6 +4,9 @@ import { parseHostArguments } from './args/parse.ts';
 import { validateHostStartup } from './args/validate-startup.ts';
 import { createHostHandler } from './host/app.ts';
 import { collabLogger } from './collab/log.ts';
+import { LocalStore } from './blob/local.ts';
+import { S3Store } from './blob/s3.ts';
+import type { BlobStore } from './blob/store.ts';
 import { defaultMaxUpload } from './host/upload.ts';
 import { hostNames } from './host/host-check.ts';
 import { RateLimiter } from './host/rate-limit.ts';
@@ -77,6 +80,20 @@ async function run(): Promise<number> {
       ? new ExactOriginPolicy(conformance.origin, conformance.port)
       : new DefaultBlockedPolicy(),
   );
+  let blobStore: BlobStore | undefined;
+  if (parsed.s3Bucket !== '') {
+    blobStore = new S3Store({
+      endpoint: parsed.s3Endpoint,
+      region: parsed.s3Region,
+      bucket: parsed.s3Bucket,
+      accessKey: parsed.s3AccessKey,
+      secretKey: parsed.s3SecretKey,
+      publicUrl: parsed.s3BucketUrl,
+      addressing: parsed.s3Addressing,
+    });
+  } else if (parsed.storageDirectory !== '') {
+    blobStore = new LocalStore(parsed.storageDirectory, parsed.publicUrl);
+  }
   const http = new Server(createHostHandler({
     version: VERSION,
     auth: parsed.auth,
@@ -100,6 +117,7 @@ async function run(): Promise<number> {
     rateLimitPerMinute: parsed.rateLimitPerMinute,
     loopbackHostCheck: true,
     allowedHostNames: hostNames(parsed.allowedOrigins, parsed.publicUrl),
+    blobStore,
   }), defaultConfig());
   const shuttingDown = shutdownSignal();
   const serving = http.serveStd(servers);

@@ -3,14 +3,15 @@ import { link, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { ErrForeign, extension, keyFromPublicUrl, newKey } from './key.ts';
+import type { BlobStore } from './store.ts';
 
-export class LocalStore {
+export class LocalStore implements BlobStore {
   constructor(
     readonly directory: string,
     readonly publicUrl: string,
   ) {}
 
-  async put(ext: string, content: Buffer): Promise<string> {
+  async put(ext: string, content: Buffer, _mimeType?: string): Promise<string> {
     await mkdir(this.directory, { recursive: true, mode: 0o777 });
     const key = newKey(ext);
     const finalPath = join(this.directory, key);
