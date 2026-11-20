@@ -236,7 +236,8 @@ export function buildWelcomeDocuments(workspaceId: string): WelcomeDocuments {
   // team's. A new teamspace stays empty until someone puts something in it.
   const pages: DesktopPage[] = [
     { id: welcomeId, title: welcome.title, icon: '👋', parentId: null, initialVisibility: 'private' },
-    { id: rightsId, title: rights.title, icon: '🔑', parentId: welcomeId, initialVisibility: 'private' },
+    // A child inherits its parent's visibility; asking for private here is refused.
+    { id: rightsId, title: rights.title, icon: '🔑', parentId: welcomeId },
     { id: tasksId, title: tasks.title, icon: '✅', parentId: null, initialVisibility: 'private' },
   ];
 

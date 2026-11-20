@@ -157,12 +157,17 @@ describe('sample database fixture', () => {
  * section put three pages in front of a whole team before anyone wrote a word.
  */
 describe('where the welcome pages land', () => {
-  it('puts every welcome page in the private section', () => {
+  it('asks for private creation on the roots only, because a child inherits', () => {
     const docs = buildWelcomeDocuments('w1');
+    const roots = docs.pages.filter(page => page.parentId === null);
+    const children = docs.pages.filter(page => page.parentId !== null);
 
-    expect(docs.pages).not.toHaveLength(0);
-    for (const page of docs.pages) {
-      expect(page.initialVisibility).toBe('private');
-    }
+    expect(roots).not.toHaveLength(0);
+    expect(children).not.toHaveLength(0);
+    // The server refuses initialVisibility on a child ("Private creation
+    // requires a root page") and rejects the whole index write, which rolls the
+    // seed back and leaves the workspace empty.
+    for (const page of roots) expect(page.initialVisibility).toBe('private');
+    for (const page of children) expect(page.initialVisibility).toBeUndefined();
   });
 });
