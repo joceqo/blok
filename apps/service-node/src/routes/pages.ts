@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, ilike, or } from 'drizzle-orm';
+import { and, asc, eq, gt, ilike, inArray, or } from 'drizzle-orm';
 import { Hono } from 'hono';
 
 import { pageDocuments, pages } from '@/db/schema.js';
@@ -23,6 +23,7 @@ import {
   buildPagesTree,
   wouldCreatePageCycle,
 } from '@/pages/tree.js';
+import { validateRestorePageIds } from '@/pages/validate-restore-page-ids.js';
 import { assertPageAction } from '@/permissions.js';
 import { memberRole } from '@/workspaces/membership.js';
 
@@ -124,6 +125,37 @@ pageRoutes.get('/api/workspaces/:workspaceId/pages/search', requireUser(), async
 
   return context.json({ pages: rows });
 });
+
+pageRoutes.post(
+  '/api/workspaces/:workspaceId/pages/restore',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const db = context.get('db');
+
+    await requireWorkspaceRole(db, context, workspaceId, 'restore');
+
+    const body: unknown = await context.req.json().catch(() => undefined);
+    const validated = validateRestorePageIds(body);
+    if (!validated.ok) {
+      return context.json({ error: validated.reason }, 400);
+    }
+
+    const restored = await db
+      .update(pages)
+      .set({ trashed: false, updatedAt: new Date() })
+      .where(
+        and(
+          eq(pages.workspaceId, workspaceId),
+          eq(pages.trashed, true),
+          inArray(pages.id, validated.pageIds),
+        ),
+      )
+      .returning({ id: pages.id });
+
+    return context.json({ restored: restored.map((row) => row.id) });
+  },
+);
 
 pageRoutes.get('/api/workspaces/:workspaceId/pages/trash', requireUser(), async (context) => {
   const workspaceId = context.req.param('workspaceId');

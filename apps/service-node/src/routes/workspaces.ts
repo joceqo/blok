@@ -26,6 +26,7 @@ import {
   memberRole,
 } from '@/workspaces/membership.js';
 import { canDeleteWorkspace } from '@/workspaces/can-delete-workspace.js';
+import { canLeaveWorkspace } from '@/workspaces/can-leave-workspace.js';
 import { validateMemberRoleChange } from '@/workspaces/member-role-change.js';
 import { validateOwnershipTransfer } from '@/workspaces/ownership-transfer.js';
 import {
@@ -625,6 +626,50 @@ workspaceRoutes.delete(
         and(eq(workspacePresets.id, presetId), eq(workspacePresets.workspaceId, workspaceId)),
       )
       .returning({ id: workspacePresets.id });
+
+    if (removed[0] === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    return context.json({ ok: true });
+  },
+);
+
+workspaceRoutes.delete(
+  '/api/workspaces/:workspaceId/members/me',
+  requireUser(),
+  async (context) => {
+    const workspaceId = context.req.param('workspaceId');
+    const db = context.get('db');
+    const actorId = context.get('userId');
+    if (actorId === undefined) {
+      return context.json({ error: 'unauthenticated' }, 401);
+    }
+
+    const actorRole = await memberRole(db, actorId, workspaceId);
+    if (actorRole === undefined) {
+      return context.json({ error: 'not_found' }, 404);
+    }
+
+    const ownerRows = await db
+      .select({ userId: workspaceMembers.userId })
+      .from(workspaceMembers)
+      .where(
+        and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.role, 'owner')),
+      );
+    const ownerCount = ownerRows.length;
+
+    const validation = canLeaveWorkspace({ memberRole: actorRole, ownerCount });
+    if (!validation.ok) {
+      return context.json({ error: validation.reason }, 403);
+    }
+
+    const removed = await db
+      .delete(workspaceMembers)
+      .where(
+        and(eq(workspaceMembers.workspaceId, workspaceId), eq(workspaceMembers.userId, actorId)),
+      )
+      .returning({ userId: workspaceMembers.userId });
 
     if (removed[0] === undefined) {
       return context.json({ error: 'not_found' }, 404);

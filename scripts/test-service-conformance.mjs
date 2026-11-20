@@ -23,6 +23,7 @@ const SUITES = [
   'workspaces-contract',
   'pages-contract',
   'tickets-contract',
+  'admin-contract',
 ];
 
 function parseArgs(argv) {
