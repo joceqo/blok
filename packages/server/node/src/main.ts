@@ -1,4 +1,4 @@
-import { validatePublicUrl, validateRateLimit } from './args/public-url.ts';
+import { publicPathFromUrl, validatePublicUrl, validateRateLimit } from './args/public-url.ts';
 import { parseHostArguments } from './args/parse.ts';
 import { createHostHandler } from './host/app.ts';
 import { defaultConfig, listen, parseIp, Server, shutdownSignal } from './http/index.ts';
@@ -51,7 +51,12 @@ async function run(): Promise<number> {
   const http = new Server(createHostHandler({
     version: VERSION,
     unfurlDisabled: parsed.unfurlDisabled,
+    unfurlEnabled: !parsed.unfurlDisabled,
     storageDirectory: parsed.storageDirectory,
+    publicPath: publicPathFromUrl(parsed.publicUrl),
+    collabEnabled: parsed.collabEnabled,
+    docEndpoint: parsed.docEndpoint,
+    allowedOrigins: parsed.allowedOrigins,
   }), defaultConfig());
   const shuttingDown = shutdownSignal();
   const serving = http.serveStd(servers);

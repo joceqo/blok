@@ -50,6 +50,21 @@ export function resolveRateLimitPerMinute(
   return auth === 'ticket' ? DEFAULT_TICKET_RATE_LIMIT : 0;
 }
 
+/** Path prefix for local files, mirroring blokserver options localPublicPath. */
+export function publicPathFromUrl(publicUrl: string): string {
+  const trimmed = publicUrl.trim();
+  if (trimmed === '/' || (trimmed.startsWith('/') && !trimmed.startsWith('//'))) {
+    const path = trimmed.replace(/\/+$/, '');
+    return path === '' ? '/' : path;
+  }
+  try {
+    const pathname = new URL(trimmed).pathname.replace(/\/+$/, '');
+    return pathname === '' ? '/' : pathname;
+  } catch {
+    return '';
+  }
+}
+
 export function validatePublicUrl(publicUrl: string): string | undefined {
   if (publicUrl.includes('?') || publicUrl.includes('#')) {
     return `PublicUrl must not contain a query or fragment (got ${csQuote(publicUrl)})`;
