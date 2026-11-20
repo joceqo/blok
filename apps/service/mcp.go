@@ -61,6 +61,7 @@ func (s *Service) initMCP() error {
 		server.AddTool(&mcp.Tool{Name: "blok_list_pages", Description: "List pages in a workspace by slug. parentId is the containing document used for storage and access. When present, location.blockId in location.blockDocumentId identifies the structural parent; location.documentId is the visible routing root and location.rows is its authorized row breadcrumb path; location.rows carries each rowId, databaseId and documentId. It is a read-only projection, not a destination argument for create/move.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"}},"required":["workspace"]}`)}, s.mcpListPages)
 		server.AddTool(&mcp.Tool{Name: "blok_create_page", Description: "Create a page. To create inside a database row, use parentId=containing document ID and parentRowId=row block ID. Migrated body document IDs also work directly. Use a stable requestId to retry safely without creating duplicates; changed arguments with the same key are refused. An interrupted placement returns recovery details with pageId. Root pages are private by default; with teamspaceId roots are shared only with that teamspace. Children inherit parent access. Use visibility=workspace explicitly for a shared root. Members and admins may create pages.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"title":{"type":"string"},"parentId":{"type":"string"},"parentRowId":{"type":"string","minLength":1,"maxLength":256},"requestId":{"type":"string","minLength":1,"maxLength":200},"teamspaceId":{"type":"string"},"visibility":{"type":"string","enum":["private","workspace","inherit"]}},"required":["workspace","title"]}`)}, s.mcpCreatePage)
 		server.AddTool(&mcp.Tool{Name: "blok_upload_image", Description: "Upload a private workspace image (PNG, JPEG, GIF or WebP, up to 5 MiB). Returns a persistent /files/ URL to use in document content. Requires workspace write access.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"dataUrl":{"type":"string"}},"required":["workspace","dataUrl"],"additionalProperties":false}`)}, s.mcpUploadImage)
+		server.AddTool(&mcp.Tool{Name: "blok_upload_file", Description: "Upload a private workspace file (" + strings.Join(UploadableFileExtensions(), ", ") + ", up to 25 MiB). fileName gives the extension and names the file card. Returns a persistent /files/ URL, the name and the size. Pictures go through blok_upload_image. Requires workspace write access.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"dataUrl":{"type":"string"},"fileName":{"type":"string"}},"required":["workspace","dataUrl","fileName"],"additionalProperties":false}`)}, s.mcpUploadFile)
 		if err := attached.Attach(server); err != nil {
 			return nil
 		}
@@ -429,6 +430,27 @@ func (s *Service) mcpUploadImage(ctx context.Context, req *mcp.CallToolRequest) 
 		return mcpError("Could not save image"), nil
 	}
 	return mcpText(map[string]string{"url": imageURL}), nil
+}
+
+func (s *Service) mcpUploadFile(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var args struct {
+		Workspace string `json:"workspace"`
+		DataURL   string `json:"dataUrl"`
+		FileName  string `json:"fileName"`
+	}
+	if json.Unmarshal(req.Params.Arguments, &args) != nil {
+		return mcpError("Invalid arguments"), nil
+	}
+	ws, ok := s.mcpWorkspace(ctx, args.Workspace)
+	if !ok || ws.Role == "viewer" {
+		return mcpError("Write access required"), nil
+	}
+	url, size, err := s.storeWorkspaceFile(ctx, ws, args.DataURL, args.FileName, maxWorkspaceFile)
+	if err != nil {
+		return mcpError("Send a base64 data URL named with one of: " + strings.Join(UploadableFileExtensions(), ", ")), nil
+	}
+
+	return mcpText(map[string]any{"url": url, "fileName": args.FileName, "size": size}), nil
 }
 
 func (s *Service) mcpListTeamspaces(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

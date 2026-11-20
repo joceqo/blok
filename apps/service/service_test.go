@@ -3,6 +3,7 @@ package cloud
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"golang.org/x/net/websocket"
@@ -475,6 +476,37 @@ func TestCloudIntegration(t *testing.T) {
 			t.Fatal("MCP upload accepted invalid input")
 		}
 	}
+	// A document holds files too, not only pictures: a CSV of leave days had no
+	// way in without a browser.
+	csv := "data:text/csv;base64," + base64.StdEncoding.EncodeToString([]byte("nom;prenom\nMIORIN;DAVID\n"))
+	file := mcpCall(adminMCP, "blok_upload_file", map[string]any{"workspace": "tousambassadeurs", "dataUrl": csv, "fileName": "conges.csv"}, 200)
+	if file["error"] != nil || file["result"].(map[string]any)["isError"] == true {
+		t.Fatal("MCP file upload failed", file)
+	}
+	var uploadedFile struct {
+		URL      string `json:"url"`
+		FileName string `json:"fileName"`
+		Size     int    `json:"size"`
+	}
+	if json.Unmarshal([]byte(file["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)), &uploadedFile) != nil {
+		t.Fatal("MCP file upload returned no payload")
+	}
+	if !strings.HasPrefix(uploadedFile.URL, "/files/") || !strings.HasSuffix(uploadedFile.URL, ".csv") || uploadedFile.FileName != "conges.csv" || uploadedFile.Size == 0 {
+		t.Fatal("MCP file upload did not describe the stored file", uploadedFile)
+	}
+	request("GET", "/api/assets/url?url="+url.QueryEscape(uploadedFile.URL), admin, nil, 200)
+	request("GET", "/api/assets/url?url="+url.QueryEscape(uploadedFile.URL), other, nil, 403)
+	for _, args := range []map[string]any{
+		{"workspace": "tousambassadeurs", "dataUrl": csv, "fileName": "page.html"},
+		{"workspace": "tousambassadeurs", "dataUrl": "https://example.test/conges.csv", "fileName": "conges.csv"},
+		{"workspace": "tousambassadeurs", "dataUrl": csv},
+		{"workspace": "missing", "dataUrl": csv, "fileName": "conges.csv"},
+	} {
+		if mcpCall(adminMCP, "blok_upload_file", args, 200)["result"].(map[string]any)["isError"] != true {
+			t.Fatal("MCP file upload accepted invalid input", args)
+		}
+	}
+
 	viewerMCP := request("POST", "/api/mcp/tokens", viewer, map[string]any{"label": "Viewer upload test"}, 201)["token"].(string)
 	for _, token := range []string{otherMCP, viewerMCP} {
 		result := mcpCall(token, "blok_upload_image", map[string]any{"workspace": "tousambassadeurs", "dataUrl": tinyPNG}, 200)
