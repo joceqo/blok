@@ -13,6 +13,11 @@ export type SidebarAction =
   | { id: string; type: 'rename'; title: string }
   | { id: string; type: 'duplicate' | 'delete' | 'move' | 'wiki' | 'open-tab' | 'open-window' | 'open-peek' }
   | { id: string; type: 'offline'; on: boolean };
+export interface SidebarMoveTarget { parentId: string | null; teamspaceId?: string | null }
+export interface SidebarPageMoves {
+  destinations(id: string): SidebarMoveTarget[];
+  move(id: string, target: SidebarMoveTarget): void;
+}
 export interface SidebarTeamspace {id:string;name:string;icon?:string|null;canCreate:boolean}
 
 export interface PageFrame {
@@ -33,6 +38,7 @@ export function createPageFrame(options: {
   /** L'espace courant, rendu comme une ligne sous « Espaces » plutôt qu'un titre. */
   teamspace?: { name: string };
   teamspaces?: SidebarTeamspace[];
+  pageMoves?: SidebarPageMoves;
   teamspaceStatus?: () => string | null;
   onCreateTeamspacePage?: (id:string) => void;
   onManageTeamspaces?: () => void;

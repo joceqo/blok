@@ -25,3 +25,21 @@ describe('real teamspace sidebar',()=>{
   expect(frame.element.querySelector('[data-blok-sidebar-teamspace-pages=empty]')?.textContent).not.toContain('Partagé directement');
  });
 });
+
+it('drops a private page onto a team heading using the selected team id', () => {
+  const destination = { parentId: null, teamspaceId: 'tech' };
+  const move = vi.fn();
+  const frame = createPageFrame({ pages: [{ id: 'tenants', title: 'Tenants', parentId: null, section: 'Privé' }],
+    activeId: 'tenants', teamspaces: [{ id: 'tech', name: 'Tech', canCreate: true }],
+    pageMoves: { destinations: () => [destination], move }, onOpen: vi.fn(), onCreate: vi.fn() });
+  document.body.append(frame.element);
+  const source = must(frame.element.querySelector<HTMLElement>('[data-blok-sidebar-link][title="Tenants"]'));
+  const team = must(frame.element.querySelector<HTMLElement>('[data-blok-sidebar-teamspace="tech"]'));
+  expect(source.draggable).toBe(true);
+  team.dispatchEvent(new Event('drop', { cancelable: true }));
+  expect(move).not.toHaveBeenCalled();
+  source.dispatchEvent(new Event('dragstart', { bubbles: true }));
+  expect(team.dispatchEvent(new Event('dragover', { cancelable: true }))).toBe(false);
+  team.dispatchEvent(new Event('drop', { cancelable: true }));
+  expect(move).toHaveBeenCalledWith('tenants', destination);
+});

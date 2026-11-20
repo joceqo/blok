@@ -139,7 +139,7 @@ export function openPageCreation(options: {
 export function openPageMove(options: {
   title: string;
   destinations: () => MoveDestination[];
-  onMove: (parentId: string | null) => Promise<void>;
+  onMove: (destination: MoveDestination) => Promise<void>;
 }): () => void {
   const modal = dialog('Déplacer vers');
   modal.surface.setAttribute('data-navigation-move', '');
@@ -151,19 +151,19 @@ export function openPageMove(options: {
   const results = node('div', 'data-navigation-results');
   const empty = node('p', 'data-navigation-empty'); empty.setAttribute('role', 'status');
   const error = node('p', 'data-navigation-move-error'); error.setAttribute('role', 'alert'); error.hidden = true;
-  const footer = node('div', 'data-navigation-help', 'Les accès hérités suivent la destination. Les partages explicites sont conservés. · Entrée déplacer · Échap fermer');
+  const footer = node('div', 'data-navigation-help', 'Les accès hérités suivent la destination. La visibilité privée et les partages explicites sont conservés. · Entrée déplacer · Échap fermer');
   modal.surface.append(caption, header, results, empty, error, footer);
   let selected = 0;
   let matches: MoveDestination[] = [];
   let pending = false;
   let disposed = false;
-  const choose = async (parentId: string | null): Promise<void> => {
+  const choose = async (destination: MoveDestination): Promise<void> => {
     if (pending) return;
-    if (!options.destinations().some(item => item.parentId === parentId)) { render(); return; }
+    if (!options.destinations().some(item => item.parentId === destination.parentId && item.teamspaceId === destination.teamspaceId)) { render(); return; }
     pending = true; error.hidden = true; input.disabled = true;
     modal.surface.setAttribute('aria-busy', 'true');
     results.querySelectorAll<HTMLButtonElement>('button').forEach(button => { button.disabled = true; });
-    try { await options.onMove(parentId); modal.close(); }
+    try { await options.onMove(destination); modal.close(); }
     catch (cause) {
       if (disposed) return;
       error.textContent = cause instanceof Error ? cause.message : 'Le déplacement a échoué. Réessayez.';
@@ -189,7 +189,7 @@ export function openPageMove(options: {
       const labels = node('span', 'data-navigation-result-labels');
       labels.append(node('span', 'data-navigation-result-title', destination.title), node('small', 'data-navigation-result-path', destination.path));
       button.append(icon(destination.icon), labels);
-      button.addEventListener('click', () => { void choose(destination.parentId); });
+      button.addEventListener('click', () => { void choose(destination); });
       results.append(button);
     }
     empty.hidden = matches.length > 0;
@@ -203,7 +203,7 @@ export function openPageMove(options: {
       event.preventDefault(); selected = Math.max(0, Math.min(matches.length - 1, selected + (event.key === 'ArrowDown' ? 1 : -1))); highlight();
       if (document.activeElement !== input) results.querySelector<HTMLButtonElement>('[data-selected]')?.focus();
     } else if (event.key === 'Enter' && document.activeElement === input && matches[selected]) {
-      event.preventDefault(); void choose(matches[selected].parentId);
+      event.preventDefault(); void choose(matches[selected]);
     }
   });
   render(); modal.open(input, () => { disposed = true; });

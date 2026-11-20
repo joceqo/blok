@@ -53,6 +53,6 @@ export function groupPagesBySection<T extends { id: string }>(pages: T[], access
 /** The effective teamspace comes from access metadata, never a client page label. */
 export function sidebarSectionOf(access: PageAccessEntry | undefined): string {
   const section=sectionOf(access);
-  if(section==='workspace' && access?.teamspaceId)return `teamspace:${access.teamspaceId}`;
+  if(access?.teamspaceId && !access.sharedRoot)return `teamspace:${access.teamspaceId}`;
   return sectionNames[section];
 }

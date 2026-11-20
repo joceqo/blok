@@ -62,9 +62,9 @@ describe('sidebar sections', () => {
 
 
 describe('backend teamspace section boundary',()=>{
- it('uses the effective teamspace for common pages while preserving private and directly shared roots',()=>{
+ it('groups accessible teamspace roots by location and keeps detached shares in Shared',()=>{
   expect(sidebarSectionOf(entry({visibility:'workspace',teamspaceId:'product'}))).toBe('teamspace:product');
-  expect(sidebarSectionOf(entry({visibility:'private',teamspaceId:'product'}))).toBe('Privé');
+  expect(sidebarSectionOf(entry({visibility:'private',teamspaceId:'product'}))).toBe('teamspace:product');
   expect(sidebarSectionOf(entry({visibility:'workspace',teamspaceId:'product',sharedRoot:true}))).toBe('Partagé');
   expect(sidebarSectionOf(entry({visibility:'workspace',teamspaceId:null}))).toBe('workspace');
  });

@@ -90,10 +90,10 @@ export function workspaceRepository(workspace: WorkspaceRef) {
       if (ref.kind !== 'remote') throw new Error('Remote operation only');
       await request(`${base}/pages/${encodeURIComponent(source)}/duplicate`, {method: 'POST', body: JSON.stringify(page)});
     },
-    async movePage(id: string, parentId: string | null): Promise<void> {
+    async movePage(id: string, parentId: string | null, teamspaceId?: string | null): Promise<void> {
       if (ref.kind !== 'remote') throw new Error('Remote operation only');
       try {
-        await request(`${base}/pages/${encodeURIComponent(id)}/move`, {method: 'POST', body: JSON.stringify({parentId})});
+        await request(`${base}/pages/${encodeURIComponent(id)}/move`, {method: 'POST', body: JSON.stringify({parentId, teamspaceId})});
       } catch (error) {
         if (error instanceof RepositoryHttpError) {
           if (error.status === 403 || error.status === 404) throw new Error('Vous n’avez plus les droits nécessaires pour déplacer cette page ou l’une de ses sous-pages.');

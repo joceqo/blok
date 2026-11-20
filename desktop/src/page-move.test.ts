@@ -31,7 +31,7 @@ it('searches destinations and moves with the keyboard without closing until save
   if (!input) return;
   input.value = 'destination'; input.dispatchEvent(new Event('input'));
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  expect(onMove).toHaveBeenCalledWith('target');
+  expect(onMove).toHaveBeenCalledWith(expect.objectContaining({ parentId: 'target' }));
   expect(input.disabled).toBe(true);
   expect(document.querySelector('[data-navigation-dialog]')).not.toBeNull();
   resolve?.(); await vi.waitFor(() => expect(document.querySelector('[data-navigation-dialog]')).toBeNull());
@@ -55,4 +55,27 @@ it('allows a directly controlled shared root to move to the real workspace root'
   const options = { pages, sourceId: 'source', canEdit: () => true, canMove: () => true,
     teamspaceOf: () => null, rootLabel: 'Équipe', isSharedRoot: (id: string) => id === 'source' };
   expect(moveDestinations(options).map(item => item.parentId)).toEqual([null, 'target', 'readonly']);
+});
+
+it('offers writable teams to a private root and checks management when leaving a team', () => {
+  const settings = { pages, sourceId: 'source', rootLabel: 'Nexenture', canMove: () => true, canEdit: () => true,
+    teamspaceOf: (id: string) => id === 'target' ? 'tech' : null,
+    teamspaces: [{ id: 'tech', name: 'Tech', canCreate: true }, { id: 'other', name: 'Produit', canCreate: false }] };
+  expect(moveDestinations(settings)).toContainEqual(expect.objectContaining({ parentId: null, teamspaceId: 'tech' }));
+  expect(moveDestinations(settings)).toContainEqual(expect.objectContaining({ parentId: 'target', path: 'Tech' }));
+  expect(moveDestinations(settings).some(item => item.teamspaceId === 'other')).toBe(false);
+  expect(moveDestinations({ ...settings, sourceId: 'target' })).toEqual([]);
+});
+
+it('revalidates the selected team when another team also has a null parent', () => {
+  const onMove = vi.fn();
+  const tech = { parentId: null, teamspaceId: 'tech', title: 'Tech', path: 'Espace d’équipe' };
+  const product = { ...tech, teamspaceId: 'product', title: 'Produit' };
+  let available = [tech, product];
+  openPageMove({ title: 'Tenants', destinations: () => available, onMove });
+  available = [product];
+  document.querySelector<HTMLButtonElement>('[data-navigation-result]')?.click();
+  expect(onMove).not.toHaveBeenCalled();
+  document.querySelector<HTMLButtonElement>('[data-navigation-result]')?.click();
+  expect(onMove).toHaveBeenCalledWith(product);
 });

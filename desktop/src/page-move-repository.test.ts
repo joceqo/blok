@@ -24,3 +24,10 @@ it('explains permission refusal instead of presenting it as a server outage', as
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 403 })));
   await expect(workspaceRepository(remote).movePage('source', null)).rejects.toThrow('droits nécessaires');
 });
+
+it('sends the destination teamspace when moving a private root', async () => {
+  const request = vi.fn().mockResolvedValue(Response.json({ revision: 2 }));
+  vi.stubGlobal('fetch', request);
+  await workspaceRepository(remote).movePage('tenants', null, 'tech');
+  expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({ parentId: null, teamspaceId: 'tech' });
+});

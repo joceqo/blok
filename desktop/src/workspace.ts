@@ -28,7 +28,7 @@ import { createEmptyWorkspaceState } from './workspace-empty';
 import { mountRemoteAssets } from './remote-assets';
 import { Blok, allTools, type OutputData } from '@bloklabs/core/full';
 import { Audio, Bookmark, File, Video, Callout, Code, Database, DatabaseComment, DatabaseRow, Divider, Image, Page, Quote, Table, TableOfContents, Toggle, type PageConfig } from '@bloklabs/core/tools';
-import { createPageFrame, type PageFrame, type ShellPage, type SidebarAction, type SidebarTeamspace } from '@blok/sidebar';
+import { createPageFrame, type PageFrame, type ShellPage, type SidebarAction, type SidebarTeamspace, type SidebarMoveTarget } from '@blok/sidebar';
 import { type DesktopPage, type WorkspaceIndex } from './storage';
 import { workspaceRepository } from './workspace-repository';
 import { pageAccess } from './page-access';
@@ -107,7 +107,7 @@ function adoptRemoteFields(live: DesktopPage, remote: DesktopPage): void {
 export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (id: string, icon: string) => void, options: { ref?: WorkspaceRef } = {}): Workspace {
   const ref = Object.freeze({... (options.ref ?? activeWorkspace())});
   const identity = { name: ref.name };
-  const sidebarTeamspaces:SidebarTeamspace[]=[];
+  const sidebarTeamspaces:(SidebarTeamspace & { canManage: boolean })[]=[];
   const teamspacesState={refreshing:false,pending:0,error:'Chargement…' as string|null};
   const teamspacesApi=ref.kind==='remote' ? teamspaceClient(new CloudClient({origin:ref.server,...('__TAURI_INTERNALS__' in window ? {sessionAdapter:nativeSessionAdapter(ref.server)} : {})}),ref.workspaceId) : null;
   const memberProfiles=teamspacesApi ? createMemberProfiles({workspaceName:identity.name,members:signal=>teamspacesApi.workspaceMembers(signal)}) : null;
@@ -1331,9 +1331,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   };
 
   const destinationsFor = (id: string) => {
-    const teamspaceId = ws.index?.access?.[id]?.teamspaceId ?? null;
-    const rootLabel = sidebarTeamspaces.find(team => team.id === teamspaceId)?.name ?? identity.name;
-    return moveDestinations({ pages: ws.index?.pages ?? [], sourceId: id, rootLabel,
+    return moveDestinations({ pages: ws.index?.pages ?? [], sourceId: id, rootLabel: identity.name, teamspaces: sidebarTeamspaces,
       canEdit: pageId => ws.access.canEdit(pageId),
       canMove: pageId => ref.kind === 'local' || ws.access.canShare(pageId),
       isSharedRoot: pageId => ws.access.isSharedRoot(pageId),
@@ -1356,15 +1354,15 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       throw error;
     }
   };
-  const movePage = async (id: string, parentId: string | null): Promise<void> => {
-    if (!ws.index || ws.metadataAction || !destinationsFor(id).some(item => item.parentId === parentId)) throw new Error('Cette destination n’est plus autorisée.');
+  const movePage = async (id: string, {parentId, teamspaceId}: SidebarMoveTarget): Promise<void> => {
+    if (!ws.index || ws.metadataAction || !destinationsFor(id).some(item => item.parentId === parentId && item.teamspaceId === teamspaceId)) throw new Error('Cette destination n’est plus autorisée.');
     const wasInert = ws.frame.element.inert;
     ws.frame.element.inert = true;
     ws.metadataAction = true;
     try {
       await flushRemoteBeforeAction({ id, type: 'move' });
       if (ref.kind === 'remote') {
-        await repository.movePage(id, parentId);
+        await repository.movePage(id, parentId, teamspaceId);
         const refreshed = await repository.loadIndex();
         refreshed.activeId = refreshed.pages.some(page => page.id === ws.currentId) ? ws.currentId : refreshed.activeId;
         adoptIndex(refreshed);
@@ -1382,7 +1380,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       if (!ws.index || readOnly(command.id)) return;
       const page = ws.index.pages.find(item => item.id === command.id);
       if (!page) return;
-      openPageMove({ title: page.title, destinations: () => destinationsFor(page.id), onMove: parentId => movePage(page.id, parentId) });
+      openPageMove({ title: page.title, destinations: () => destinationsFor(page.id), onMove: target => movePage(page.id, target) });
       return;
     }
     if (command.type !== 'open-tab' && readOnly(command.id)) return;
@@ -1409,7 +1407,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     try {
       const result=await teamspacesApi.list();
       teamspacesState.error=null;
-      sidebarTeamspaces.splice(0,sidebarTeamspaces.length,...result.teamspaces.filter(team=>!!team.myRole && !team.archived).map(team=>({id:team.id,name:team.name,icon:team.icon,canCreate:ref.kind==='remote' && ref.role!=='viewer'})));
+      sidebarTeamspaces.splice(0,sidebarTeamspaces.length,...result.teamspaces.filter(team=>!!team.myRole && !team.archived).map(team=>({id:team.id,name:team.name,icon:team.icon,canManage:team.canManage,canCreate:ref.kind==='remote' && ref.role!=='viewer'})));
       if(ws.index)ws.frame.setPages(withSections(ws.index.pages),ws.currentId);
     }catch(error){
       teamspacesState.error=`Espaces d’équipe indisponibles : ${error instanceof Error ? error.message : 'réessayez depuis les paramètres'}`;
@@ -1428,6 +1426,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     onRecentsChange: (ids) => { library.recents = ids; recentPages.save(ids); refreshLibrary(); },
     onCreateNote: canCreateUnder(null) ? () => { void createNote().catch(showError); } : undefined,
     onLibrary: () => navigateLibrary('all'),
+    pageMoves: { destinations: destinationsFor, move: (id, target) => { void movePage(id, target).catch(showError); } },
     onOpen: (id) => navigate(id),
     onCreate: (parentId) => chooseNewPage(parentId),
     onCreatePrivate: ref.kind === 'remote' ? () => chooseNewPage(null, true) : undefined,

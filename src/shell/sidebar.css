@@ -746,3 +746,8 @@ button[data-blok-sidebar-search]:hover { background: var(--blok-item-hover-bg); 
   outline: 2px solid var(--blok-text-primary);
   outline-offset: -2px;
 }
+
+[data-blok-sidebar] [data-blok-sidebar-drop-target] {
+  outline: 2px solid var(--blok-color-blue, #3783df);
+  outline-offset: -2px;
+}

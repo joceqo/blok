@@ -26,6 +26,11 @@ export interface ShellPage {
   section?: string;
 }
 
+export interface SidebarMoveTarget { parentId: string | null; teamspaceId?: string | null }
+export interface SidebarPageMoves {
+  destinations(id: string): SidebarMoveTarget[];
+  move(id: string, target: SidebarMoveTarget): void;
+}
 export interface SidebarTeamspace {id:string;name:string;icon?:string|null;canCreate:boolean}
 
 export interface PageFrame {
@@ -56,6 +61,7 @@ export interface PageFrameOptions {
   /** L'espace courant, rendu comme une ligne sous « Espaces » plutôt qu'un titre. */
   teamspace?: { name: string };
   teamspaces?: SidebarTeamspace[];
+  pageMoves?: SidebarPageMoves;
   teamspaceStatus?: () => string | null;
   onCreateTeamspacePage?: (id:string) => void;
   onManageTeamspaces?: () => void;
@@ -660,9 +666,34 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     appendRoots('Autres pages accessibles','accessible',roots.filter(page=>!!page.section && !['workspace','Privé','Partagé'].includes(page.section) && !known.has(page.section)));
   }
 
+  let pageDrag: { id: string; targets: SidebarMoveTarget[] } | null = null;
+
+  function enableDrop(row: HTMLElement, target: SidebarMoveTarget): void {
+    if (!options.pageMoves) return;
+    const accepts = (): boolean => pageDrag?.targets.some(item =>
+      item.parentId === target.parentId && item.teamspaceId === target.teamspaceId) === true;
+    row.addEventListener('dragover', event => {
+      if (!accepts()) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      row.setAttribute('data-blok-sidebar-drop-target', '');
+    });
+    row.addEventListener('dragleave', event => {
+      if (!(event.relatedTarget instanceof Node) || !row.contains(event.relatedTarget)) row.removeAttribute('data-blok-sidebar-drop-target');
+    });
+    row.addEventListener('drop', event => {
+      row.removeAttribute('data-blok-sidebar-drop-target');
+      if (!pageDrag || !accepts()) return;
+      event.preventDefault();
+      options.pageMoves?.move(pageDrag.id, target);
+      pageDrag = null;
+    });
+  }
+
   function appendTeamspace(group:HTMLElement,team:SidebarTeamspace,pages:ShellPage[],needle:string):void {
     const key=`teamspace:${team.id}`;
     const row=document.createElement('div');row.setAttribute('data-blok-sidebar-teamspace',team.id);
+    enableDrop(row, { parentId: null, teamspaceId: team.id });
     const toggle=document.createElement('button');toggle.type='button';toggle.setAttribute('aria-expanded',String(!collapsed.has(key)));toggle.setAttribute('aria-label',team.name);
     const mark=document.createElement('span');mark.setAttribute('data-blok-sidebar-teamspace-mark','');mark.setAttribute('aria-hidden','true');
     const icon=document.createElement('span');icon.textContent=team.icon || [...team.name][0]?.toLocaleUpperCase() || 'É';
@@ -849,6 +880,25 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     label.setAttribute('data-blok-sidebar-label', '');
     label.textContent = page.title;
     link.title = page.title;
+    if (options.pageMoves) {
+      enableDrop(row, { parentId: page.id });
+      if (options.canEdit?.(page.id) !== false) {
+        link.draggable = true;
+        link.addEventListener('dragstart', event => {
+          const targets = options.pageMoves?.destinations(page.id);
+          if (!targets?.length) { event.preventDefault(); return; }
+          pageDrag = { id: page.id, targets };
+          if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('application/x-blok-sidebar-page', page.id);
+          }
+        });
+        link.addEventListener('dragend', () => {
+          pageDrag = null;
+          sidebar.querySelectorAll('[data-blok-sidebar-drop-target]').forEach(item => item.removeAttribute('data-blok-sidebar-drop-target'));
+        });
+      }
+    }
     link.append(label);
     link.addEventListener('click', () => options.onOpen(page.id));
 
