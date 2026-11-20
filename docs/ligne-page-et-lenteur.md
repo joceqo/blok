@@ -220,3 +220,30 @@ Trois défauts :
    quarantaine, et il survit au rechargement.
 3. **Le message est trompeur** : « vérifiez votre accès à l'espace » alors que
    l'accès est intact et qu'il s'agit d'une condition de course au démarrage.
+
+## Une ligne en pleine page n'est pas dessinée comme une page (2026-11-20)
+
+`/p/tenants-…` et `/p/123-pare-brise-…` sont deux pages pour qui les ouvre. La
+seconde ne leur ressemble pas : couverture étroite au milieu de l'écran, icône
+géante qui déborde sous elle, « Personnaliser la disposition » en évidence.
+
+Ce n'est pas le gabarit de page : c'est le tiroir de la base, étiré.
+
+- `desktop/src/row-page-navigation.css` masque, quand l'adresse désigne une
+  ligne, la couverture du shell, les actions de la barre d'outils et les
+  commentaires de page — sinon ils feraient doublon avec ceux du tiroir.
+- `src/styles/database.css` (~2491) veut une couverture pleine largeur en mode
+  `full`, mais le tiroir vit dans l'article, donc dans la colonne de contenu :
+  `inset-inline: 0` s'arrête aux bords de cette colonne. Le commentaire du
+  fichier le dit : « Nothing in a full page's column knows the page width ».
+
+Deux issues :
+
+1. Habiller le tiroir en pleine page comme une page — il faut alors le sortir
+   de la colonne de contenu, ou donner à la couverture un ancrage qui connaît
+   la largeur de la page.
+2. Laisser le shell dessiner la page (couverture, icône, titre) et ne demander
+   à la ligne que ses propriétés. C'est la cible, et la pièce qui manque est
+   que le shell ne sait pas afficher les propriétés d'une ligne : il faudrait
+   un canal par lequel la base les monte dans un hôte fourni par le shell,
+   l'inverse du sens actuel.
