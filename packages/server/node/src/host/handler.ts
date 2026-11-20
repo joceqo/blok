@@ -1,7 +1,8 @@
 import type { Handler } from '../http/server.ts';
 import { ResponseWriter } from '../http/response.ts';
+import type { HostAppOptions } from './options.ts';
 
-export function createPhase0Handler(version: string, unfurlDisabled: boolean): Handler {
+export function createPhase0Handler({ version, unfurlDisabled }: HostAppOptions): Handler {
   return async (request, response) => {
     const path = request.path();
     if (unfurlDisabled && path === '/unfurl') {
