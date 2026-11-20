@@ -4,7 +4,7 @@ import { cacheAccountProfile } from './account-profile';
 import './editor.css';
 import '../../src/shell/sidebar.css';
 import './shell.css';
-import { activeWorkspace, activateWorkspace, initialWorkspace, rememberWorkspace, selectWorkspace, serverOrigin, type RemoteWorkspace } from './workspace-registry';
+import { activeWorkspace, activateWorkspace, initialWorkspace, pruneWorkspaces, rememberWorkspace, selectWorkspace, serverOrigin, type RemoteWorkspace } from './workspace-registry';
 import { nativeSessionAdapter } from './native-session';
 import { applyAppearance, readAppearance } from './settings';
 import { CloudClient, mountCloudGateway } from './cloud';
@@ -157,6 +157,9 @@ async function refreshRemoteMembership(
       return false;
     }
     cacheAccountProfile(selected, session.user);
+    // The session is the only moment this server says which workspaces it has.
+    // Without this, an entry outlives the workspace it names for good.
+    pruneWorkspaces(origin, session.workspaces.map((item) => item.id));
     rememberWorkspace({...selected, role: membership.role, name: membership.name, icon: membership.icon ?? null});
     return true;
   } catch {

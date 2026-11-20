@@ -39,6 +39,21 @@ export function rememberWorkspace(ref: WorkspaceRef): void {
   const all = listWorkspaces().filter((item) => workspaceKey(item) !== workspaceKey(ref));
   localStorage.setItem(KEY, JSON.stringify([...all, ref]));
 }
+/**
+ * Forget this server's workspaces that it no longer has. An entry outlives the
+ * workspace it names — a reinstall recreates them with new ids while the slug
+ * stays — so the switcher filled up with entries that open nothing. Other
+ * servers and the local workspace are never touched.
+ */
+export function pruneWorkspaces(server: string, liveIds: ReadonlyArray<string>): void {
+  const origin = serverOrigin(server);
+  const live = new Set(liveIds);
+  const kept = listWorkspaces().filter((item) =>
+    item.kind === 'local' || serverOrigin(item.server) !== origin || live.has(item.id));
+
+  localStorage.setItem(KEY, JSON.stringify(kept));
+}
+
 export function createLocalWorkspace(name: string): LocalWorkspace {
   const ref: LocalWorkspace = { kind: 'local', id: crypto.randomUUID(), name: name.trim().slice(0, 80) || 'Nouvel espace local' };
   rememberWorkspace(ref);
