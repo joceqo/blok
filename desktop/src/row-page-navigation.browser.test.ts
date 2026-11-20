@@ -51,10 +51,12 @@ it('expands a real row peek, edits its title/body and follows browser Back witho
     await page.waitForFunction(()=>Boolean((window as unknown as {ready?:boolean}).ready));
     await page.locator('[data-row-id="r1"]').hover();
     await page.locator('[data-row-id="r1"] [data-blok-database-table-open]').click();
+    const peek = await page.locator('[data-blok-database-drawer][data-peek-mode="side"]').elementHandle();
     await page.locator('[data-blok-database-peek-expand]').click();
     await expect.poll(()=>new URL(page.url()).searchParams.get('row')).toBe('r1');
     const drawer=page.locator('[data-blok-database-drawer][data-peek-mode="full"]');
     await expect.poll(()=>drawer.count()).toBe(1);
+    expect(await drawer.evaluate((full, previous) => full === previous, peek)).toBe(true);
     expect(new URL(page.url()).hash).toBe('');
     await drawer.locator('[data-blok-database-drawer-title]').fill('Sprint 14 edited');
     const body=drawer.locator('[data-blok-database-drawer-editor] [contenteditable="true"]').first();

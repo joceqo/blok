@@ -1620,6 +1620,8 @@ export interface DatabaseRowPages {
   navigate?(rowId: string, context?: { databaseId: string; pageId?: string }): void;
   /** The host owns full-page history; the database still owns row metadata. */
   navigation?: {
+    /** The host opens and closes the complete row path on browser Back and Forward. */
+    handlesPopstate?: boolean;
     current(): { rowId: string; databaseId?: string } | null;
     back(): void;
   };

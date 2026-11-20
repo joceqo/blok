@@ -9876,6 +9876,7 @@ export class DatabaseTool implements BlockTool {
   private readonly followRowPageHistory = (): void => {
     if (this.source !== undefined || this.destroyed) return;
     const link = readRowPageHash();
+    if (!link && this.config.rowPages?.navigation?.handlesPopstate) return;
     const hosted = this.config.rowPages?.navigation?.current();
     const drawer = this.cardDrawer;
     const shownFull = drawer?.isOpen === true && drawer.openMode === 'full' ? drawer.openRowId : null;
@@ -11413,10 +11414,12 @@ export class DatabaseTool implements BlockTool {
           this.cardDrawer?.syncOpenRow(this.rowOrTemplate(rowId));
         },
         onEditViewDefault: (anchor) => this.controls.openSettingsPage('layout', anchor),
-        // A `#rowId?full` link opens the row's page on load (openLinkedRow). A template has no such link.
-        rowLink: (rowId) => (this.model.getRow(rowId) === undefined
-          ? undefined
-          : `${window.location.href.split('#')[0]}#${encodeURIComponent(rowId)}?full`),
+        rowLink: (rowId) => {
+          const row = this.model.getRow(rowId);
+          if (!row) return undefined;
+          return this.config.rowPages?.href?.(rowId, {databaseId: this.dataId, pageId: row.pageId})
+            ?? `${window.location.href.split('#')[0]}#${encodeURIComponent(rowId)}?full`;
+        },
         pageFooter: (rowId) => rowMenuFooter({
           row: this.model.getRow(rowId),
           titlePropertyId: this.titlePropertyId(),
@@ -11428,7 +11431,7 @@ export class DatabaseTool implements BlockTool {
           const navigate = this.config.rowPages?.navigate;
 
           if (navigate === undefined) return false;
-          this.cardDrawer?.close({navigate:false});
+          // Keep this editor on screen while the host resolves its full-page route.
           const row = this.model.getRow(rowId);
           navigate(rowId, {databaseId: this.dataId, ...(row?.pageId ? {pageId: row.pageId} : {})});
 
@@ -12077,7 +12080,7 @@ export class DatabaseTool implements BlockTool {
     const mode = explicit ?? (this.cardDrawer?.isOpen === true ? this.cardDrawer.openMode : viewMode);
 
     if (mode === 'full' && this.config.rowPages?.navigate !== undefined && !hostRoute) {
-      this.cardDrawer?.close({navigate:false});
+      if (this.cardDrawer?.openRowId !== rowId) this.cardDrawer?.close({navigate:false});
       this.config.rowPages.navigate(rowId, {databaseId: this.dataId, ...(row.pageId ? {pageId: row.pageId} : {})});
 
       return;

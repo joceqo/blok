@@ -31,7 +31,7 @@ vi.mock('@bloklabs/core/full', () => ({ allTools: {}, Blok: class {
   toolbar = { close: vi.fn(), toggleBlockSettings: vi.fn(), toggleToolbox: vi.fn() };
   inlineToolbar = { close: vi.fn() };
   blocks = { getById: (id: string) => id === 'db' ? {
-    id, name: 'database', holder: this.holder,
+    id, name: 'database', holder: this.holder, preservedData: {schema:[{id:'title',type:'title'}]},
     call: (method: string, input?: {rowId: string; mode: string}) => {
       const old=this.holder.querySelector('[data-blok-database-drawer-title]');
       if (method === 'closeRow') { old?.remove(); return; }
@@ -42,7 +42,7 @@ vi.mock('@bloklabs/core/full', () => ({ allTools: {}, Blok: class {
     },
   } : id.startsWith('row') ? {
     id, parentId: 'db', name: 'database-row',
-    call: (_method: string, input: {receive(value:{pageId?:string}):void}) => input.receive({pageId:state.rowBodies[id]}),
+    call: (_method: string, input: {receive(value:{pageId?:string;properties?:Record<string,string>}):void}) => input.receive({pageId:state.rowBodies[id],properties:{title:id}}),
   } : undefined };
   on = vi.fn();
   configuredReadOnly(): boolean { return this.config.readOnly === true; }
@@ -331,6 +331,37 @@ it('expands a row into a reloadable host route and restores its parent without a
 });
 
 
+it('returns to the row and its scroll position after visiting its parent breadcrumb', async () => {
+  await startRemote();
+  const page = editorAt(0);
+  const canvas = page.holder.closest('article')?.parentElement;
+  if (!canvas) throw new Error('Missing page canvas');
+  page.rowPages()?.navigate?.('row-one', {databaseId:'db'});
+  await vi.waitFor(() => expect(document.title).toBe('row-one'));
+  const rowUrl = location.href;
+  canvas.scrollTop = 475;
+  const parent = document.querySelector<HTMLButtonElement>('[data-desktop-page-breadcrumb-item][data-page-id="a"] button');
+  expect(parent).not.toBeNull();
+  parent!.click();
+  await vi.waitFor(() => expect(document.title).toBe('a'));
+  const parentUrl = location.href;
+  const entries = history.length;
+  document.querySelector<HTMLButtonElement>('[data-desktop-page-breadcrumb-item] button[aria-current="page"]')!.click();
+  document.querySelector<HTMLButtonElement>('[data-desktop-breadcrumb-menu-item="a"]')!.click();
+  expect(history.length).toBe(entries);
+  const traverse = (direction: 'back' | 'forward') => new Promise<void>(resolve => {
+    window.addEventListener('popstate', () => { workspace.onRoute(); resolve(); }, {once:true});
+    history[direction]();
+  });
+  await traverse('back');
+  await vi.waitFor(() => expect(document.title).toBe('row-one'));
+  expect(location.href).toBe(rowUrl);
+  expect(canvas.scrollTop).toBe(475);
+  await traverse('forward');
+  await vi.waitFor(() => expect(document.title).toBe('a'));
+  expect(location.href).toBe(parentUrl);
+});
+
 it('opens a migrated body at its own public route, reloads its source row, and keeps parent page actions guarded', async () => {
   const server=await startRemote();
   state.rowBodies['row-body']='body';
@@ -401,18 +432,37 @@ it('uses a native same-origin route for an unmigrated row and a public URL when 
   expect(host?.href?.('row-native',{databaseId:'db'})).toBe('https://native-server.example/?page=a&row=row-native&database=db');
 });
 
-it('retains nested row body editors while falling back to core full-page navigation for their databases',async()=>{
-  await startRemote();
-  const host=editorAt(0).rowPages();
-  const holder=document.createElement('div');document.body.append(holder);
-  const mounted=host?.mount('body',holder);
-  await vi.waitFor(()=>expect(state.editors).toHaveLength(2));
-  const nested=editorAt(1).rowPages();
-  expect(nested?.mount).toBeTypeOf('function');
-  expect(nested?.navigate).toBeUndefined();
-  expect(nested?.navigation?.current()).toBeNull();
-  expect(nested?.href).toBeUndefined();
-  mounted?.destroy();holder.remove();
+it.each(['expand', 'legacy full link'])('routes a nested task through its physical sprint body (%s)', async (entry) => {
+  const server = await startRemote();
+  const publicId = '99999999-9999-9999-9999-999999999999';
+  state.rowBodies['row-sprint'] = 'sprint-body';
+  state.rowBodies['row-task'] = 'task-body';
+  server.locations['task-body'] = {
+    pageId:'task-body', publicId, title:'Task', workspace:{id:'remote-cache', slug:'cache-test'},
+    rowBodyOf:{documentId:'sprint-body', rowId:'row-task'},
+    location:{documentId:'a', rows:[
+      {documentId:'a', databaseId:'db', rowId:'row-sprint', title:'Sprint'},
+      {documentId:'sprint-body', databaseId:'db', rowId:'row-task', title:'Task'},
+    ]},
+  };
+  const holder = document.createElement('div'); document.body.append(holder);
+  const mounted = editorAt(0).rowPages()?.mount('sprint-body', holder);
+  await editorAt(1).isReady;
+  const nested = editorAt(1).rowPages();
+  const context = {databaseId:'db', pageId:'task-body'};
+  expect(nested?.href?.('row-task', context)).toBe(location.origin+'/?page=task-body');
+  expect(nested?.href?.('row-inline', {databaseId:'db'})).toBe(location.origin+'/?page=sprint-body&row=row-inline&database=db');
+  if (entry === 'legacy full link') history.replaceState(null, '', '/?page=sprint-body#row-task?full');
+  const historyLength = history.length;
+  nested?.navigate?.('row-task', context);
+  await vi.waitFor(() => expect(location.pathname).toBe('/p/task-'+publicId));
+  expect(location.hash).toBe('');
+  expect(history.length).toBe(historyLength + (entry === 'expand' ? 1 : 0));
+  expect(nested?.navigation?.current()).toEqual({databaseId:'db',rowId:'row-task'});
+  await vi.waitFor(() => expect(document.title).toBe('row-task'));
+  const trail = [...document.querySelectorAll('[data-desktop-page-breadcrumb-item]')].map(crumb => crumb.textContent);
+  expect(trail).toEqual(['a', 'row-sprint', 'row-task']);
+  mounted?.destroy();
 });
 
 it('opens nested rows through workspace routing and returns to their parent using native breadcrumbs and Back', async () => {
@@ -435,6 +485,7 @@ it('opens nested rows through workspace routing and returns to their parent usin
   const child = block('row-child', 'database-row', childDatabase.id, {properties: {title: 'Child'}});
   surface.append(root.holder);
   root.holder.append(parent.holder);
+  parent.holder.setAttribute('data-blok-editor', '');
   parent.holder.append(childDatabase.holder);
   childDatabase.holder.append(child.holder);
   const graph = new Map([root, parent, childDatabase, child].map(item => [item.id, item]));
@@ -458,7 +509,7 @@ it('opens nested rows through workspace routing and returns to their parent usin
     const content = document.createElement('div'); content.setAttribute('data-blok-database-drawer-content', '');
     const heading = document.createElement('textarea'); heading.setAttribute('data-blok-database-drawer-title', ''); heading.value = title;
     const body = document.createElement('div'); body.setAttribute('data-blok-database-drawer-editor', '');
-    content.append(heading, body); drawer.append(content); database.holder.append(drawer); body.append(row.holder);
+    content.append(heading, body); drawer.append(content); surface.append(drawer); body.append(row.holder);
     drawers.set(database.id, drawer);
     if (database === childDatabase) drawers.get(root.id)?.setAttribute('data-blok-database-full-page', '');
   });

@@ -881,7 +881,7 @@ export class DatabaseCardDrawer {
         this.parentPage = page;
         page.childPeek = this;
       } else {
-        page?.close();
+        page?.close({navigate:false});
       }
     }
     openPeek.drawer = this;
@@ -2713,7 +2713,8 @@ export class DatabaseCardDrawer {
 
   private syncTakeover(): void {
     if (this.mode === 'full' && this.drawer !== null && this.currentRowId !== null) {
-      if (this.isHostPage()) this.takeover.resume(this.parentPage?.drawer ?? this.wrapper);
+      // A hosted drawer may repaint while its route is leaving. Only the host writes its URL.
+      if ((this.rowPages?.navigate && this.rowPages.navigation) || this.isHostPage()) this.takeover.resume(this.parentPage?.drawer ?? this.wrapper);
       else this.takeover.enter(this.currentRowId, this.parentPage?.drawer ?? this.wrapper);
     } else {
       this.takeover.leave();

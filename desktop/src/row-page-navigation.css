@@ -40,3 +40,29 @@
 [data-desktop-row-page] > article[data-desktop-document] > [data-desktop-editor] > [data-blok-interface] {
   --blok-editor-gutter-start: 0px;
 }
+
+/* On a direct row link the outer editor loads the parent table first.
+   The row's own body placeholder stays inside the drawer, below its header. */
+[data-desktop-row-page] > article > [data-desktop-editor] > [data-blok-interface] > [data-blok-loading-skeleton] {
+  visibility: hidden;
+}
+
+[data-desktop-row-page]:has(> article > [data-desktop-editor] > [data-blok-interface] > [data-blok-loading-skeleton])
+  > [data-desktop-page-toolbar] [data-desktop-page-breadcrumbs] ol::after {
+  content: '';
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-inline-start: 6px;
+  border: 2px solid var(--desktop-border);
+  border-inline-end-color: var(--desktop-muted);
+  border-radius: 50%;
+}
+
+@keyframes desktop-row-loading { to { transform: rotate(1turn); } }
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-desktop-row-page] > [data-desktop-page-toolbar] [data-desktop-page-breadcrumbs] ol::after {
+    animation: desktop-row-loading 800ms linear infinite;
+  }
+}

@@ -112,7 +112,7 @@ async function boot(root: HTMLElement): Promise<void> {
       rememberPageLinks(location.origin,origin,[{id:resolved.pageId,title:resolved.title,publicId:resolved.publicId}]);
       rememberResolvedRowPage(location.origin,resolved);
       const url=native ? legacyPageUrl(location.href,resolved.pageId) : publicPageUrl(origin,resolved.title,resolved.publicId);
-      history.replaceState(null,'',restoredPageNavigationUrl(url));
+      history.replaceState(history.state,'',restoredPageNavigationUrl(url));
     }catch{showUnavailable(root);return;}
   }else{
     if (explicitGateway || (!native && selected.kind === 'local' && params.get('local') !== '1')) {await showGateway();return;}

@@ -189,6 +189,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     id: string;
     page: DesktopPage;
     editor: Blok;
+    holder: HTMLElement;
     rowPages?: DesktopRowPages;
     permission: string;
     active: boolean;
@@ -289,13 +290,24 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if(ref.kind==='local' || '__TAURI_INTERNALS__' in window){url.pathname='/';url.searchParams.set('page',id);}
     url.searchParams.delete('library');
     url.searchParams.delete('row'); url.searchParams.delete('database'); url.hash = '';
-    if (replace) history.replaceState(null, '', url);
-    else history.pushState(null, '', url);
-    onRoute();
+    if (!replace && url.href === location.href) return;
+    enterPageUrl(url, replace);
   };
   const rowPresentation = { session: null as PageSession | null, databaseId: '', rowId: '', steps: [] as RowRouteStep[], pending: null as AbortController | null, parentScroll: 0, observer: null as MutationObserver | null, dispose: () => {}, refresh: () => {} };
+  // The editor scrolls inside its canvas. Chrome only remembers the window's scroll offset.
+  const enterPageUrl = (url: URL, replace: boolean): void => {
+    if (replace) {
+      history.replaceState(history.state, '', url);
+    } else {
+      if (!('__TAURI_INTERNALS__' in window)) {
+        history.replaceState({...history.state, blokCanvasScrollTop: ws.pageCanvas.scrollTop}, '');
+      }
+      history.pushState(null, '', url);
+    }
+    onRoute();
+  };
   const rowCrumbNavigation = {request: 0};
-  const navigateRow = (documentId: string, rowId: string, databaseId: string): void => {
+  const navigateRow = (documentId: string, rowId: string, databaseId?: string, replace = false): void => {
     const request = ++rowCrumbNavigation.request;
     const requestedHref = location.href;
     const requestedRoute = routeRevision;
@@ -313,20 +325,23 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         target.href = '__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href, documentId) : publicPageUrl(ref.server, resolved.title, resolved.publicId);
       }
       if (!current()) return;
-      history.pushState(null, '', pageNavigationUrl(rowPageUrl(target.href, rowId, databaseId)));
-      onRoute();
+      const url = pageNavigationUrl(rowPageUrl(target.href, rowId, databaseId));
+      enterPageUrl(url, replace);
     })().catch(error => { if (current()) showError(error, 'document'); });
   };
   const navigateRowAncestor = (documentId: string, step: RowRouteStep): void => navigateRow(step.documentId ?? documentId, step.row.id, step.database.id);
   let clearingRowPresentation = false;
+  const closeRowSteps = (from: number): void => {
+    clearingRowPresentation = true;
+    try { for (const step of rowPresentation.steps.splice(from).reverse()) step.database.call('closeRow'); }
+    finally { clearingRowPresentation = false; }
+  };
   const clearRowPresentation = (): void => {
     rowPresentation.pending?.abort(); rowPresentation.pending = null;
     rowPresentation.observer?.disconnect(); rowPresentation.observer = null;
     rowPresentation.dispose(); rowPresentation.dispose = () => {};
     rowPresentation.refresh = () => {};
-    clearingRowPresentation = true;
-    try { for (const step of [...rowPresentation.steps].reverse()) step.database.call('closeRow'); }
-    finally { clearingRowPresentation = false; }
+    closeRowSteps(0);
     if (rowPresentation.session && sessions.current === rowPresentation.session) {
       ws.pageCanvas.scrollTop = rowPresentation.parentScroll;
       document.title = rowPresentation.session.page.title;
@@ -340,9 +355,28 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     await session.editor.isReady;
     if (sessions.disposed || sessions.current !== session || location.href !== href) return;
     const route = rowPageDestination(href);
-    if (!route) { clearRowPresentation(); return; }
+    const savedTop = history.state?.blokCanvasScrollTop;
+    if (!route) {
+      clearRowPresentation();
+      if (typeof savedTop === 'number') ws.pageCanvas.scrollTop = savedTop;
+      return;
+    }
     const opening = rowPresentation.session !== session || rowPresentation.rowId !== route.rowId;
-    if (rowPresentation.session !== session || rowPresentation.databaseId !== route.databaseId || route.steps) clearRowPresentation();
+    // Keep the common ancestors mounted when moving down or back up the breadcrumb trail.
+    if (rowPresentation.session !== session) {
+      clearRowPresentation();
+    } else if (route.steps) {
+      const destination = route.steps;
+      const firstChanged = rowPresentation.steps.findIndex((step, index) => {
+        const target = destination[index];
+        return !target || target.rowId !== step.row.id || target.documentId !== (step.documentId ?? id)
+          || (target.databaseId !== undefined && target.databaseId !== step.database.id);
+      });
+      if (firstChanged === 0) clearRowPresentation();
+      else if (firstChanged > 0) closeRowSteps(firstChanged);
+    } else if (rowPresentation.databaseId !== route.databaseId) {
+      clearRowPresentation();
+    }
     if (rowPresentation.session === null) rowPresentation.parentScroll = ws.pageCanvas.scrollTop;
     const pending = new AbortController();
     rowPresentation.pending?.abort(); rowPresentation.pending = pending;
@@ -381,13 +415,16 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const {database} = resolved;
     if (!database) return;
     if (!current()) return;
-    if (opening) { ws.pageCanvas.scrollTop = 0; window.scrollTo({top:0,left:0,behavior:'instant'}); }
-    // A held source mounts its row in the visible owner database's wrapper.
-    const editorSurface = database.holder.closest<HTMLElement>('[data-blok-editor]') ?? database.holder;
+    if (opening) {
+      ws.pageCanvas.scrollTop = typeof savedTop === 'number' ? savedTop : 0;
+      window.scrollTo({top:0,left:0,behavior:'instant'});
+    }
+    // Full-page drawers are attached to the outer page even when the database lives in a nested editor.
+    const editorSurface = session.holder;
     const refresh = (): void => {
       if (sessions.current !== session || location.href !== href) return;
       const title = editorSurface.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer][data-peek-mode="full"]:not([data-blok-database-full-page]) > [data-blok-database-drawer-content] [data-blok-database-drawer-title]')?.value
-        ?? editorSurface.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]')?.value;
+        ?? database.holder.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]')?.value;
       if (!title) return;
       document.title = title;
       const parent = breadcrumbs(id).map(crumb => ({...crumb, onOpen: crumb.onOpen ?? (() => navigate(crumb.id))}));
@@ -821,6 +858,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     };
     let rowNavigationRequest = 0;
     const hostedRowNavigation = (documentId: string): NonNullable<DatabaseRowPages['navigation']> => ({
+      handlesPopstate: true,
       current: () => {
         const route = rowPageDestination(location.href);
         if (clearingRowPresentation || !life.active || route?.documentId !== id) return null;
@@ -874,7 +912,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       createEditor: config => {
         // Drafts have no collaboration or host persistence. Page creation must
         // wait for the real body document, whose id does not exist yet.
-        const tools = {...nestedPageTools};
+        const tools = {...pageTools};
         delete tools.page;
         const database = tools.database as {class: typeof Database; config: Record<string, unknown>};
         tools.database = {...database, config: {...database.config, rowPages: undefined}};
@@ -891,49 +929,57 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     }) : undefined;
     const refreshRowDraftPermissions = (): void => rowDrafts?.refreshPermissions();
     rowPermissionWatchers.add(refreshRowDraftPermissions);
-    const rowPages: DesktopRowPages | undefined = ref.kind === 'remote' ? createDesktopRowPages({
-      retainEditors: 2,
-      ...(rowDrafts ? {
-        mountEmpty: (rowId: string, target: HTMLElement) => rowDrafts.mount(id, rowId, target),
-        hasDraft: (rowId: string) => rowDrafts.hasDraft(id, rowId),
-      } : {}),
-      navigation: hostedRowNavigation(id),
-      href: (rowId, context) => rowPageUrl(pageUrl(id), rowId, context.databaseId),
+    // A task inside a sprint belongs to the sprint body, even when both are open over the root table.
+    const navigationFor = (documentId: string): Pick<DatabaseRowPages, 'href' | 'navigate' | 'navigation'> => ref.kind !== 'remote' ? {} : ({
+      navigation: hostedRowNavigation(documentId),
+      href: (rowId, context) => context.pageId ? pageUrl(context.pageId) : rowPageUrl(pageUrl(documentId), rowId, context.databaseId),
       navigate: (rowId, context) => {
         const requestedFrom = location.href;
         const requestedRoute = routeRevision;
+        const replace = location.hash === `#${encodeURIComponent(rowId)}?full`;
         const request = ++rowNavigationRequest;
         const current = (): boolean => life.active && !life.destroyed && location.href === requestedFrom && requestedRoute === routeRevision && request === rowNavigationRequest;
         void (async () => {
           await rowPages?.flush();
           await instance.saver.flush();
           if (!current()) return;
-          const databaseId = context?.databaseId ?? instance.blocks.getById(rowId)?.parentId ?? undefined;
-          let href = rowPageUrl('__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href,id) : pageUrl(id), rowId, databaseId);
+          const source = documentId === id ? instance : rowPages?.mountedEditor(documentId);
+          const databaseId = context?.databaseId ?? source?.blocks?.getById(rowId)?.parentId ?? undefined;
+          let href = rowPageUrl('__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href,documentId) : pageUrl(documentId), rowId, databaseId);
           // A row opened full page is a page, so it gets one here if it has none
           // yet: without it the address can only name the row inside its
           // database, and a link to it would not survive the row moving.
           let pageId = context?.pageId;
 
-          if (pageId === undefined && !readOnly(id)) {
+          if (pageId === undefined && !readOnly(id) && !readOnly(documentId)) {
             // A row whose body still lives inline cannot have a page until that
             // body moves (blokctl rows migrate); its old address stays valid.
-            pageId = await createRowBody({documentId: id, rowId, body: {blocks: []}, operationId: crypto.randomUUID()})
+            pageId = await createRowBody({documentId, rowId, body: {blocks: []}, operationId: crypto.randomUUID()})
               .then(receipt => receipt.pageId, () => undefined);
             if (!current()) return;
           }
           if (pageId !== undefined) {
             const client = new CloudClient({origin:ref.server,...('__TAURI_INTERNALS__' in window ? {sessionAdapter:nativeSessionAdapter(ref.server)} : {})});
             const resolved = await client.request<ResolvedPage>(`/api/pages/resolve-id/${encodeURIComponent(pageId)}`);
-            if (resolved.pageId !== pageId || resolved.rowBodyOf?.documentId !== id || resolved.rowBodyOf.rowId !== rowId || resolved.workspace.id !== ref.id || resolved.workspace.slug !== ref.workspaceId) throw new Error('Page indisponible.');
+            if (resolved.pageId !== pageId || resolved.rowBodyOf?.documentId !== documentId || resolved.rowBodyOf.rowId !== rowId || resolved.workspace.id !== ref.id || resolved.workspace.slug !== ref.workspaceId) throw new Error('Page indisponible.');
             if (!current()) return;
             rememberResolvedRowPage(location.origin,resolved);
             href = '__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href,resolved.pageId) : publicPageUrl(ref.server,resolved.title,resolved.publicId);
+          } else if (documentId !== id) {
+            navigateRow(documentId, rowId, databaseId, replace);
+            return;
           }
-          history.pushState(null, '', pageNavigationUrl(href));
-          onRoute();
+          enterPageUrl(pageNavigationUrl(href), replace);
         })().catch(error => { if (current()) showError(error, 'document'); });
       },
+    });
+    const rowPages: DesktopRowPages | undefined = ref.kind === 'remote' ? createDesktopRowPages({
+      retainEditors: 2,
+      ...(rowDrafts ? {
+        mountEmpty: (rowId: string, target: HTMLElement) => rowDrafts.mount(id, rowId, target),
+        hasDraft: (rowId: string) => rowDrafts.hasDraft(id, rowId),
+      } : {}),
+      ...navigationFor(id),
       snapshot: async bodyId => { await rowPages?.flush(); return repository.readLivePage(bodyId); },
       lookup: async () => null,
       copyFromLegacy: async () => { throw new Error('Row bodies are moved by offline maintenance'); },
@@ -968,11 +1014,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       editorConfig: (bodyId): Omit<BlokConfig, 'holder' | 'readOnly'> => ({
         loader: { delay: 0, minVisible: 0, skeleton: ['paragraph', 'paragraph', 'paragraph'] },
         tools: {
-          ...nestedPageTools,
+          ...pageTools,
           page: {class: Page, config: {...pageConfig, create: async (input: Parameters<NonNullable<PageConfig['create']>>[0]) => pageConfig.create?.({...input, parentId: input.parentId ?? bodyId})}},
           database: {class: Database, config: {
-            ...(nestedPageTools.database as {config: Record<string, unknown>}).config,
-            rowPages: {...nestedRowPages, navigation: hostedRowNavigation(bodyId), ...(rowDrafts ? {
+            ...(pageTools.database as {config: Record<string, unknown>}).config,
+            rowPages: {...rowPages, ...navigationFor(bodyId), ...(rowDrafts ? {
               mountEmpty: (rowId: string, target: HTMLElement) => rowDrafts.mount(bodyId, rowId, target),
               hasDraft: (rowId: string) => rowDrafts.hasDraft(bodyId, rowId),
             } : {})},
@@ -992,9 +1038,6 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       }),
     }) : undefined;
     const pageTools: NonNullable<BlokConfig['tools']> = { ...desktopTools, database: {class: Database, config: {...(rowPages ? {rowPages} : {}), people: { me: () => commentAuthor(ref).authorId, ...(memberProfiles ? { openProfile: (userId: string) => { void memberProfiles.open(userId); } } : {}), list: async () => { if(memberProfiles)return (await memberProfiles.list()).map(member=>({id:member.id,name:profileDisplayName(member.name,member.email),...(member.avatarUrl ? {avatarUrl:member.avatarUrl} : {})})); const author = commentAuthor(ref); return [{ id: author.authorId, get name() { return commentAuthor(ref).authorName; }, get avatarUrl() { return commentAuthor(ref).avatarUrl; } }]; } }, customEmojis: () => emojis.list(), coverGallery: COVER_GALLERY, uploadCover: (file: globalThis.File) => readCoverFile(file).then(repository.uploadImage)}}, page: { class: Page, config: { ...pageConfig } } };
-    const nestedRowPages: DatabaseRowPages | undefined = rowPages ? {...rowPages} : undefined;
-    if (nestedRowPages) { delete nestedRowPages.navigate; delete nestedRowPages.navigation; delete nestedRowPages.href; }
-    const nestedPageTools: NonNullable<BlokConfig['tools']> = {...pageTools, database: {class:Database, config:{...(pageTools.database as {config:Record<string,unknown>}).config,...(nestedRowPages ? {rowPages:nestedRowPages} : {})}}};
     const instance = new Blok({
       holder,
       readOnly: readOnly(id),
@@ -1123,7 +1166,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     };
     const connectionState = { value: undefined as Parameters<typeof saveStatus.connection>[0] | undefined };
     const session: PageSession = {
-      id, page, editor: instance, rowPages, permission: pagePermission(id),
+      id, page, editor: instance, holder, rowPages, permission: pagePermission(id),
       get active() { return life.active; }, set active(value) { life.active = value; },
       get ready() { return life.ready; }, set ready(value) { life.ready = value; },
       get destroyed() { return life.destroyed; }, set destroyed(value) { life.destroyed = value; },

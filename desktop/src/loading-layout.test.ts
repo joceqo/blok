@@ -47,3 +47,33 @@ it.each([900, 480])('holds the covered page skeleton in place while icon and bod
     }
   } finally {await page.close();}
 });
+
+it('shows row-route loading beside the breadcrumb and lets the mounted row show its own skeleton', async () => {
+  const page = await browser.newPage({reducedMotion: 'reduce'});
+  try {
+    await page.setContent(`<style>${styles}\n${readFileSync('src/row-page-navigation.css', 'utf8')}</style>
+      <main data-desktop-page-canvas data-desktop-row-page>
+        <div data-desktop-page-toolbar><nav data-desktop-page-breadcrumbs><ol><li>Sprint #1</li></ol></nav></div>
+        <article data-desktop-document><div data-desktop-editor><div data-blok-interface="blok">
+          <div data-blok-loading-skeleton><div data-blok-skeleton-bar="heading"></div></div>
+          <div data-blok-redactor><div data-blok-database-drawer-editor></div></div>
+        </div></div></article>
+      </main>`);
+    const loader = page.locator('[data-desktop-editor] > [data-blok-interface] > [data-blok-loading-skeleton]');
+    const crumb = page.locator('ol');
+    const indicator = () => crumb.evaluate(el => getComputedStyle(el, '::after').content);
+    expect(await loader.isVisible()).toBe(false);
+    expect(await indicator()).toBe('""');
+    expect(await crumb.evaluate(el => getComputedStyle(el, '::after').animationName)).toBe('none');
+
+    const canvas = page.locator('main');
+    await canvas.evaluate(el => el.removeAttribute('data-desktop-row-page'));
+    expect(await loader.isVisible()).toBe(true);
+    expect(await indicator()).toBe('none');
+
+    await canvas.evaluate(el => el.setAttribute('data-desktop-row-page', ''));
+    await loader.evaluate(el => document.querySelector('[data-blok-database-drawer-editor]')!.append(el));
+    expect(await page.locator('[data-blok-database-drawer-editor] [data-blok-loading-skeleton]').isVisible()).toBe(true);
+    expect(await indicator()).toBe('none');
+  } finally { await page.close(); }
+});
