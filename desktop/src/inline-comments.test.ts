@@ -54,7 +54,7 @@ describe('selected-passage discussions', () => {
     expect(code.innerHTML).toBe(html);
     expect(document.activeElement?.tagName).toBe('TEXTAREA');
     send('Explain this code');
-    expect(state.add).toHaveBeenCalledWith(null, 'Explain this code', undefined, expect.objectContaining({ segments: [expect.objectContaining({ blockId: 'p', quote: 'const a = 1;\nconst b = 2;' })] }));
+    expect(state.add).toHaveBeenCalledWith(null, expect.objectContaining({ text: 'Explain this code' }), undefined, expect.objectContaining({ segments: [expect.objectContaining({ blockId: 'p', quote: 'const a = 1;\nconst b = 2;' })] }));
     expect(code.innerHTML).toBe(html);
   });
   it('hides the code selection action when the selection collapses or permission is absent', () => {
@@ -87,7 +87,7 @@ describe('selected-passage discussions', () => {
     expect(document.querySelector('[data-inline-comment-quote]')?.textContent).toBe('Explain this passage');
     expect(document.activeElement?.tagName).toBe('TEXTAREA');
     send('What does it mean?');
-    expect(state.add).toHaveBeenCalledWith(null, 'What does it mean?', undefined, expect.objectContaining({segments: [expect.objectContaining({blockId: 'p', quote: 'Explain this passage'})]}));
+    expect(state.add).toHaveBeenCalledWith(null, expect.objectContaining({ text: 'What does it mean?' }), undefined, expect.objectContaining({segments: [expect.objectContaining({blockId: 'p', quote: 'Explain this passage'})]}));
     expect(holder.querySelector('p')?.innerHTML).toBe('Explain this passage');
     expect(close).toHaveBeenCalled();
   });
@@ -120,5 +120,87 @@ describe('selected-passage discussions', () => {
     controller.destroy();
     expect(document.querySelector('[data-inline-comments-layer]')).toBeNull();
     expect(events.off).toHaveBeenCalledWith('block changed', expect.any(Function));
+  });
+});
+
+// A badge sits in the page margin and a highlight sits on the text. Both are
+// painted in the overlay layer's own coordinates, which scroll with the page,
+// so the browser moves them with the content instead of them being repainted
+// one frame late behind it.
+describe('annotation overlay geometry', () => {
+  type Box = { left: number; top: number; width: number; height: number };
+  const boxes = new Map<Element, Box>();
+  const viewport = { scrolled: 0 };
+  const ZERO: Box = { left: 0, top: 0, width: 0, height: 0 };
+  const measure = (box: Box): DOMRect => {
+    const left = box.left; const top = box.top - viewport.scrolled;
+    return { x: left, y: top, left, top, right: left + box.width, bottom: top + box.height,
+      width: box.width, height: box.height, toJSON: () => null };
+  };
+  const boxFor = (node: Node): Box => {
+    for (let element = node instanceof Element ? node : node.parentElement; element; element = element.parentElement) {
+      const box = boxes.get(element); if (box) return box;
+    }
+    return ZERO;
+  };
+  const frame = (): Promise<void> => new Promise(resolve => { requestAnimationFrame(() => resolve()); });
+  beforeEach(() => {
+    viewport.scrolled = 0; boxes.clear();
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) { return measure(boxes.get(this) ?? ZERO); });
+    Range.prototype.getBoundingClientRect = function (this: Range): DOMRect { return measure(boxFor(this.startContainer)); };
+    Range.prototype.getClientRects = function (this: Range): DOMRectList { return [this.getBoundingClientRect()] as unknown as DOMRectList; };
+  });
+  afterEach(() => {
+    delete (Range.prototype as Partial<Range>).getBoundingClientRect;
+    delete (Range.prototype as Partial<Range>).getClientRects;
+  });
+  // The window is 1024x768: the clamp against its right edge stays out of the way.
+  function mountTable(): { holder: HTMLElement } {
+    state.threads = [{ id: 'sondage-1', data: { text: 'Et le retour ?', createdAt: 1,
+      anchor: { segments: [{ blockId: 'sondage', field: 0, start: 0, quote: 'Vote une fois, sans retour possible', prefix: '', suffix: '' }] } }, replies: [] }];
+    const holder = document.createElement('div');
+    holder.innerHTML = `<div data-blok-id="table"><table><tbody><tr>
+      <td><div data-blok-id="sondage"><p contenteditable="true">Vote une fois, sans retour possible</p></div></td>
+      <td><div data-blok-id="quiz"><p contenteditable="true">Répond à la question posée</p></div></td>
+    </tr></tbody></table></div>`;
+    document.body.append(holder);
+    const editor = { blocks: {}, tools: {}, events: { on: vi.fn(), off: vi.fn() }, i18n: { t: (s: string) => s } };
+    handles.push(mountInlineComments({ holder, editor: editor as never, author: () => ({ authorId: 'me', authorName: 'Moi' }), canComment: () => true }));
+    // The layer closes the editor's content, so its origin sits below the fold.
+    boxes.set(required(holder.querySelector('[data-inline-comments-paint]')), { left: 100, top: 1000, width: 0, height: 0 });
+    boxes.set(required(holder.querySelector('[data-blok-id="table"]')), { left: 140, top: 280, width: 760, height: 120 });
+    boxes.set(required(holder.querySelector('[data-blok-id="sondage"]')), { left: 150, top: 300, width: 340, height: 40 });
+    boxes.set(required(holder.querySelector('[data-blok-id="quiz"]')), { left: 500, top: 300, width: 340, height: 40 });
+    return { holder };
+  }
+  it('hangs a badge annotated in a table cell in the page margin, clear of the next cell', async () => {
+    mountTable();
+    await frame();
+    const badge = required(document.querySelector<HTMLElement>('[data-inline-comment-badge]'));
+    const left = parseFloat(badge.style.left) + 100; // layer origin -> window
+    expect(left).toBeGreaterThanOrEqual(840); // never over the neighbouring cell's text
+    expect(left).toBe(908); // the table's right edge, plus the gutter
+  });
+  it('paints badge and highlight in content coordinates and leaves them untouched by a page scroll', async () => {
+    mountTable();
+    await frame();
+    const badge = required(document.querySelector<HTMLElement>('[data-inline-comment-badge]'));
+    const mark = required(document.querySelector<HTMLElement>('[data-inline-comment-highlight]'));
+    expect(badge.style.top).toBe('-700px'); // 300 (the text) - 1000 (the layer), not the window's 300
+    expect(mark.style.top).toBe('-700px');
+    viewport.scrolled = 320; // the page scrolls: content and layer move together
+    document.dispatchEvent(new Event('scroll'));
+    await frame();
+    expect(document.querySelector('[data-inline-comment-badge]')).toBe(badge); // nothing repainted
+    expect(badge.style.top).toBe('-700px');
+    expect(mark.style.top).toBe('-700px');
+  });
+  it('repaints when a scroller inside the editor slides the text under the overlay', async () => {
+    const { holder } = mountTable();
+    await frame();
+    const badge = required(document.querySelector<HTMLElement>('[data-inline-comment-badge]'));
+    required(holder.querySelector('table')).dispatchEvent(new Event('scroll'));
+    await frame();
+    expect(document.querySelector('[data-inline-comment-badge]')).not.toBe(badge);
   });
 });

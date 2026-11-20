@@ -74,7 +74,7 @@ describe('page comment controls', () => {
   });
   it('adds a page thread and checks current permission again when sending', () => {
     const permission = { value: true }; mount(permission);
-    send('Hello'); expect(state.add).toHaveBeenCalledWith(null, 'Hello');
+    send('Hello'); expect(state.add).toHaveBeenCalledWith(null, expect.objectContaining({ text: 'Hello' }));
     permission.value = false; send('No longer allowed'); expect(state.add).toHaveBeenCalledTimes(1);
   });
   it('shows threads without a composer or editing controls to a viewer', () => {

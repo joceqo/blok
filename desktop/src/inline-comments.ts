@@ -42,7 +42,7 @@ export function mountInlineComments(options: {
   layer.setAttribute('data-blok-mutation-free', 'true');
   layer.setAttribute('data-blok-keyboard-owner', '');
   (holder.querySelector('[data-blok-editor]') ?? holder).append(layer);
-  const paint = document.createElement('div'); layer.append(paint);
+  const paint = document.createElement('div'); paint.setAttribute('data-inline-comments-paint', ''); layer.append(paint);
   const element = button('Tous les commentaires', MessageSquare);
   element.setAttribute('data-inline-comments-open', '');
   const state = {
@@ -192,6 +192,16 @@ export function mountInlineComments(options: {
     }
     schedule();
   }
+  /** A badge hangs in the page margin, so it follows the OUTERMOST block: the
+   *  right edge of a block inside a table cell is the next cell, not margin. */
+  function columnRight(node: Node): number | undefined {
+    const outermost = (block: Element): Element => {
+      const parent = block.parentElement?.closest('[data-blok-id]');
+      return parent && holder.contains(parent) ? outermost(parent) : block;
+    };
+    const block = (node instanceof Element ? node : node.parentElement)?.closest('[data-blok-id]');
+    return block && holder.contains(block) ? outermost(block).getBoundingClientRect().right : undefined;
+  }
   function positionPanel(): void {
     if (!state.panel) return;
     const anchor = state.pending ?? threads().find(item => item.id === state.selected)?.data.anchor;
@@ -199,42 +209,45 @@ export function mountInlineComments(options: {
     const top = rect ? Math.max(64, Math.min(rect.top - 12, innerHeight - state.panel.offsetHeight - 20)) : 90;
     state.panel.style.top = `${top}px`;
   }
-  function drawHighlights(id: string, ranges: Range[]): void {
+  function drawHighlights(id: string, ranges: Range[], origin: DOMRect): void {
     const rects = ranges.flatMap(range => Array.from(range.getClientRects?.() ?? []));
     for (const rect of rects) {
-      if (!rect.width || !rect.height || rect.bottom < 0 || rect.top > innerHeight) continue;
+      if (!rect.width || !rect.height) continue;
       const mark = document.createElement('span'); mark.setAttribute('data-inline-comment-highlight', id);
       mark.dataset.active = String(id === state.selected || id === 'draft');
-      Object.assign(mark.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` }); paint.append(mark);
+      Object.assign(mark.style, { left: `${rect.left - origin.left}px`, top: `${rect.top - origin.top}px`, width: `${rect.width}px`, height: `${rect.height}px` }); paint.append(mark);
     }
   }
   function draw(): void {
     state.frame = 0; if (state.destroyed) return;
-    positionCodeAction();
-    positionPanel();
     paint.replaceChildren();
+    // Measured against the layer's own box, which travels with the content:
+    // the browser then scrolls the overlay, so nothing is ever a frame late.
+    const origin = paint.getBoundingClientRect();
+    positionCodeAction(origin);
+    positionPanel();
     const all = threads(); const open = all.filter(item => !item.data.resolved);
     element.title = `Tous les commentaires (${open.length} ouverts)`;
     element.setAttribute('aria-label', element.title);
-    const badges = new Map<string, { ids: string[]; rect: DOMRect; right: number }>();
+    const badges = new Map<string, { ids: string[]; left: number; top: number }>();
     const targets = state.pending ? [...open, { id: 'draft', data: { anchor: state.pending } }] : open;
     for (const item of targets) {
       const anchor = item.data.anchor; if (!anchor) continue;
       const ranges = resolveCommentAnchor(holder, anchor); if (!ranges) continue;
-      drawHighlights(item.id, ranges);
+      drawHighlights(item.id, ranges, origin);
       if (item.id === 'draft') continue;
-      const rect = ranges[0].getBoundingClientRect?.(); if (!rect || !rect.height || rect.bottom < 0 || rect.top > innerHeight) continue;
-      const first = anchor.segments[0].blockId;
-      const node = ranges[0].startContainer;
-      const block = (node instanceof Element ? node : node.parentElement)?.closest('[data-blok-id]');
-      const existing = badges.get(first);
+      const rect = ranges[0].getBoundingClientRect?.(); if (!rect || !rect.height) continue;
+      const left = Math.min(innerWidth - 58, (columnRight(ranges[0].startContainer) ?? rect.right) + 8);
+      // One badge per margin slot: two cells of a table row share the same line.
+      const slot = `${Math.round(left)}:${Math.round(rect.top)}`;
+      const existing = badges.get(slot);
       if (existing) existing.ids.push(item.id);
-      else badges.set(first, { ids: [item.id], rect, right: block?.getBoundingClientRect().right ?? rect.right });
+      else badges.set(slot, { ids: [item.id], left: left - origin.left, top: rect.top - origin.top });
     }
-    for (const { ids, rect, right } of badges.values()) {
+    for (const { ids, left, top } of badges.values()) {
       const badge = button(`${ids.length} discussion${ids.length > 1 ? 's' : ''}`, MessageSquare);
       badge.setAttribute('data-inline-comment-badge', ''); badge.append(document.createTextNode(String(ids.length)));
-      Object.assign(badge.style, { left: `${Math.min(innerWidth - 58, right + 8)}px`, top: `${rect.top}px` });
+      Object.assign(badge.style, { left: `${left}px`, top: `${top}px` });
       badge.addEventListener('click', () => {
         // Repeated clicks cycle discussions attached to this block.
         openThread(ids[(ids.indexOf(state.selected ?? '') + 1) % ids.length]);
@@ -251,12 +264,12 @@ export function mountInlineComments(options: {
   function clearCodeAction(): void {
     state.codeAction?.remove(); state.codeAction = null; state.codeSelection = null;
   }
-  function positionCodeAction(): void {
+  function positionCodeAction(origin = paint.getBoundingClientRect()): void {
     if (!state.codeAction || !state.codeSelection) return;
     const rect = state.codeSelection.getBoundingClientRect?.();
     if (!rect) return;
-    state.codeAction.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - state.codeAction.offsetWidth - 8))}px`;
-    state.codeAction.style.top = `${Math.max(8, rect.top - state.codeAction.offsetHeight - 8)}px`;
+    state.codeAction.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - state.codeAction.offsetWidth - 8)) - origin.left}px`;
+    state.codeAction.style.top = `${Math.max(8, rect.top - state.codeAction.offsetHeight - 8) - origin.top}px`;
   }
   // Code keeps the core formatting toolbar disabled. This host action only
   // captures a quote; it never inserts markup into the Prism/plain-text field.
@@ -303,7 +316,10 @@ export function mountInlineComments(options: {
   holder.addEventListener('click', clickPassage);
   document.addEventListener('keydown', keydown);
   document.addEventListener('selectionchange', codeSelectionChanged);
-  document.addEventListener('scroll', schedule, true); window.addEventListener('resize', schedule);
+  // Overlay and content share the page's scroll box and move together, so only
+  // a scroller INSIDE the editor — a table's own — changes what was painted.
+  const scrolled = (event: Event) => { if (event.target instanceof Node && holder.contains(event.target)) schedule(); };
+  document.addEventListener('scroll', scrolled, true); window.addEventListener('resize', schedule);
   const profileChanged = (): void => { if (state.panel) { saveDraft(); renderPanel(); } };
   const stopProfile = watchLocalProfile(profileChanged);
   editor.events.on('block changed', refresh);
@@ -317,7 +333,7 @@ export function mountInlineComments(options: {
     clearCodeAction();
     cancelAnimationFrame(state.frame); observer.disconnect(); state.discussion?.destroy(); layer.remove(); element.remove();
     holder.removeEventListener(REQUEST, request); holder.removeEventListener('click', clickPassage);
-    document.removeEventListener('keydown', keydown); document.removeEventListener('selectionchange', codeSelectionChanged); document.removeEventListener('scroll', schedule, true); window.removeEventListener('resize', schedule);
+    document.removeEventListener('keydown', keydown); document.removeEventListener('selectionchange', codeSelectionChanged); document.removeEventListener('scroll', scrolled, true); window.removeEventListener('resize', schedule);
     stopProfile();
     editor.events.off('block changed', refresh); drafts.clear();
   } };
