@@ -512,9 +512,15 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
         return;
       }
       if (section.id === 'teamspaces') {
+        const teams = options.teamspaces ?? [];
+        const commonPages = roots.filter(page => page.section === 'workspace');
+        // A workspace with no teamspace has nothing to put here, and an empty
+        // heading reads as a place where something went missing. Notion shows
+        // no section either until the first teamspace exists.
+        if (teams.length === 0 && commonPages.length === 0 && !options.teamspace
+          && (options.teamspaceStatus?.() ?? null) === null) return;
         const group = appendSection('Espaces d’équipe', 'teamspaces');
         if (collapsed.has('teamspaces')) return;
-        const teams = options.teamspaces ?? [];
         teams.filter(team => !needle || roots.some(page => page.section === `teamspace:${team.id}`)).forEach(team => {
           appendTeamspace(group, team, selectSectionPages(roots.filter(page => page.section === `teamspace:${team.id}`), section), needle);
         });
@@ -612,12 +618,15 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     appendRoots('Privé','Privé',roots.filter(page=>page.section==='Privé'),needle==='' && !!options.onCreatePrivate);
     appendRoots('Partagé','Partagé',roots.filter(page=>page.section==='Partagé'));
     const teams=(options.teamspaces ?? []).filter(team=>needle==='' || roots.some(page=>page.section===`teamspace:${team.id}`));
-    if(teams.length || needle===''){
+    // No teamspace means no section: an empty heading reads as a place where
+    // something went missing, and Notion shows none until the first one exists.
+    // A status (loading, refused) still deserves to be said out loud.
+    const teamspaceStatus=options.teamspaceStatus?.() ?? null;
+    if(teams.length || (needle==='' && teamspaceStatus!==null)){
       const group=appendSection('Espaces d’équipe','teamspaces');
       if(!collapsed.has('teamspaces')){
         teams.forEach(team=>appendTeamspace(group,team,roots.filter(page=>page.section===`teamspace:${team.id}`),needle));
-        const status=options.teamspaceStatus?.();
-        if(!teams.length || status){const empty=document.createElement('p');empty.setAttribute('data-blok-sidebar-teamspaces-empty','');empty.textContent=status || 'Aucun espace d’équipe rejoint';group.append(empty);}
+        if(!teams.length || teamspaceStatus){const empty=document.createElement('p');empty.setAttribute('data-blok-sidebar-teamspaces-empty','');empty.textContent=teamspaceStatus || 'Aucun espace d’équipe rejoint';group.append(empty);}
       }
     }
     const known=new Set((options.teamspaces ?? []).map(team=>`teamspace:${team.id}`));

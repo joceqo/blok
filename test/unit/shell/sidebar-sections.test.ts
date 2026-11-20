@@ -198,3 +198,34 @@ it('offers private creation even before the first private page exists', () => {
   frame.element.querySelector<HTMLButtonElement>('[data-blok-sidebar-create-private]')!.click();
   expect(created).toBe(1);
 });
+
+/**
+ * Notion shows no section for something that does not exist yet: a workspace
+ * with no teamspace has no "Teamspaces" heading at all. Ours printed an empty
+ * heading under Privé, which reads as a place where something went missing.
+ */
+describe('the teamspaces section', () => {
+  it('stays hidden while no teamspace exists', () => {
+    // An empty list is not the same as no list: the host loaded the teamspaces
+    // and there are none. That is exactly a fresh workspace.
+    const frame = createPageFrame({
+      pages: [page('a', { section: 'private' })],
+      activeId: '', onOpen: () => {}, onCreate: () => {},
+      teamspaces: [],
+    });
+    document.body.append(frame.element);
+
+    expect(headings()).not.toContain('Espaces d’équipe');
+  });
+
+  it('appears as soon as there is a teamspace to show', () => {
+    const frame = createPageFrame({
+      pages: [page('a', { section: 'teamspace:t1' })],
+      activeId: '', onOpen: () => {}, onCreate: () => {},
+      teamspaces: [{ id: 't1', name: 'Produit' }],
+    });
+    document.body.append(frame.element);
+
+    expect(headings()).toContain('Espaces d’équipe');
+  });
+});
