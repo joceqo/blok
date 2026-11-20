@@ -1,5 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
+import { CollabRooms } from '../collab/rooms.ts';
 import { eqIgnoreAsciiCase, isFieldValue, trimChars, type Headers } from '../http/headers.ts';
 import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
@@ -178,6 +179,10 @@ export function buildRouter(options: HostAppOptions): Router {
   const router = new Router();
   const patternPrefix = prefix.replace(/\/+$/, '');
 
+  const collabRooms = options.collabEnabled && options.docEndpoint !== ''
+    ? new CollabRooms(options.docEndpoint, options.docEndpointAuth, options.collabLog)
+    : undefined;
+
   const hasStorage = options.storageDirectory !== '';
   const store = hasStorage ? new LocalStore(options.storageDirectory, options.publicUrl) : undefined;
 
@@ -220,7 +225,13 @@ export function buildRouter(options: HostAppOptions): Router {
     router.handle(`${patternPrefix}/sync/{doc}`, undefined, disallow('GET'));
 
     shell(router, `${patternPrefix}/sync/{doc}/reset`, 'POST', stubNoContent, options);
-    shell(router, `${patternPrefix}/sync/{doc}/edit`, 'POST', stubNoContent, options);
+    shell(router, `${patternPrefix}/sync/{doc}/edit`, 'POST', async (request, response, values) => {
+      const doc = values.doc ?? '';
+      if (isSingleSegment(doc) && collabRooms !== undefined) {
+        await collabRooms.touchOnEdit(doc);
+      }
+      await stubNoContent(request, response);
+    }, options);
     shell(router, `${patternPrefix}/sync/{doc}/state`, 'GET', (request, response, values) =>
       stateHandler(options, request, response, values), options);
     shell(router, `${patternPrefix}/sync/{doc}/history`, 'GET', stubNoContent, options);

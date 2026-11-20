@@ -42,6 +42,8 @@ export function defaultTestHostOptions(storageDirectory?: string): HostAppOption
     maxUploadBytes: 30_000_000,
     collabEnabled: false,
     docEndpoint: '',
+    docEndpointAuth: '',
+    collabLog: () => {},
     allowedOrigins: [],
     fileBytesEnabled: false,
     fileBytesMaxBytes: 100 << 20,

@@ -1,3 +1,4 @@
+import type { CollabLog } from '../collab/log.ts';
 import type { OutboundFetcher } from '../outbound/fetcher.ts';
 import { RateLimiter } from './rate-limit.ts';
 
@@ -13,6 +14,8 @@ export interface HostAppOptions {
   maxUploadBytes: number;
   collabEnabled: boolean;
   docEndpoint: string;
+  docEndpointAuth: string;
+  collabLog: CollabLog;
   allowedOrigins: string[];
   fileBytesEnabled: boolean;
   fileBytesMaxBytes: number;

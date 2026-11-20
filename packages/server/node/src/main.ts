@@ -3,6 +3,7 @@ import { parseConformanceArguments } from './args/conformance.ts';
 import { parseHostArguments } from './args/parse.ts';
 import { validateHostStartup } from './args/validate-startup.ts';
 import { createHostHandler } from './host/app.ts';
+import { collabLogger } from './collab/log.ts';
 import { defaultMaxUpload } from './host/upload.ts';
 import { RateLimiter } from './host/rate-limit.ts';
 import { defaultConfig, listen, parseIp, Server, shutdownSignal } from './http/index.ts';
@@ -87,6 +88,8 @@ async function run(): Promise<number> {
     maxUploadBytes: defaultMaxUpload(parsed.maxUploadBytes),
     collabEnabled: parsed.collabEnabled,
     docEndpoint: parsed.docEndpoint,
+    docEndpointAuth: parsed.docEndpointAuth,
+    collabLog: collabLogger(process.stderr),
     allowedOrigins: parsed.allowedOrigins,
     fileBytesEnabled,
     fileBytesMaxBytes,
