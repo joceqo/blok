@@ -958,7 +958,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         // reading body.readOnly here captures undefined. The row-page host then
         // threw on the first permission refresh, which failed the entry and took
         // the whole body out of the peek: an open drawer with an empty editor.
-        return {isReady: ready, blocks: body.blocks, readOnly: {set: (state: boolean) => body.readOnly.set(state)}, saver: body.saver, destroy() {
+        // Every one of these is read lazily for the same reason: blocks, readOnly
+        // and saver are all installed by exportAPI, so capturing them here hands
+        // the host three undefineds.
+        return {isReady: ready, get blocks() { return body.blocks; }, readOnly: {set: (state: boolean) => body.readOnly.set(state)}, saver: {flush: () => body.saver.flush()}, destroy() {
           if (disposed) return;
           disposed = true; comments?.destroy(); body.destroy();
         }};
