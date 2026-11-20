@@ -19,6 +19,10 @@ const FRAME_LIMITS = {
 };
 const MAX_OEMBED = 64 << 10;
 
+function rawQueryWithoutMark(query: string): string {
+  return query.startsWith('?') ? query.slice(1) : query;
+}
+
 function firstHeader(request: Request, name: string): string {
   return request.headers().get(name) ?? '';
 }
@@ -48,7 +52,7 @@ export async function frameCheckHandler(
   if (!response.headersMut().getAll('vary').some((v) => equalsOrdinalIgnoreCase(v, 'Origin'))) {
     response.headersMut().add('Vary', 'Origin');
   }
-  const target = queryFirst(request.query(), 'url');
+  const target = queryFirst(rawQueryWithoutMark(request.query()), 'url');
   if (target === '') {
     await writeJSON(request, response, 400, '{"verdict":"unknown"}\n');
     return;
@@ -69,7 +73,7 @@ export async function frameCheckHandler(
         origin: firstHeader(request, 'origin'),
         hasOrigin: request.headers().contains('origin'),
         secFetchSite: firstHeader(request, 'sec-fetch-site'),
-        embedder: queryFirst(request.query(), 'embedder'),
+        embedder: queryFirst(rawQueryWithoutMark(request.query()), 'embedder'),
         self: requestSelf(request),
       }, (origin) => originAllowed(origin, options.allowedOrigins));
       const framing: Array<{ name: string; value: string }> = [];

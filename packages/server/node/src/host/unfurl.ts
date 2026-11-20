@@ -7,6 +7,10 @@ import { fetchCaller, hopBudget } from './guard.ts';
 import type { HostAppOptions } from './options.ts';
 import { parseUnfurlMetadata } from '../unfurl/parse.ts';
 
+function dotnetRawQuery(query: string): string {
+  return query.startsWith('?') ? query.slice(1) : query;
+}
+
 async function writeJson(request: Request, response: ResponseWriter, status: number, body: string): Promise<void> {
   response.setStatus(status);
   response.headersMut().set('Content-Type', 'application/json');
@@ -21,8 +25,7 @@ export async function unfurlHandler(
   request: Request,
   response: ResponseWriter,
 ): Promise<void> {
-  const rawQuery = request.query();
-  const target = queryFirst(rawQuery.startsWith('?') ? rawQuery : `?${rawQuery}`, 'url');
+  const target = queryFirst(dotnetRawQuery(request.query()), 'url');
   if (target === '') {
     await writeJson(request, response, 400, '{"success":0}\n');
     return;
@@ -43,15 +46,14 @@ export async function unfurlHandler(
       const meta = parseUnfurlMetadata(fetched.body, fetched.finalUrl);
       const image = browserUrl(fetched.finalUrl, meta.image);
       const favicon = browserUrl(fetched.finalUrl, meta.favicon);
-      const metaRecord: Record<string, unknown> = {
-        image: image === '' ? {} : { url: image },
-      };
+      const metaRecord: Record<string, unknown> = {};
       if (meta.title !== '') {
         metaRecord.title = meta.title;
       }
       if (meta.description !== '') {
         metaRecord.description = meta.description;
       }
+      metaRecord.image = image === '' ? {} : { url: image };
       if (favicon !== '') {
         metaRecord.favicon = favicon;
       }

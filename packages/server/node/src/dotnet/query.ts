@@ -29,7 +29,7 @@ function decodeQueryPart(s: string): string {
 
 /** First value for a query key, ASP.NET Core ordering. */
 export function queryFirst(rawQuery: string, key: string): string {
-  let query = rawQuery.startsWith('?') ? rawQuery.slice(1) : rawQuery;
+  let query = rawQuery;
   for (; query !== ''; ) {
     let pair = query;
     const amp = query.indexOf('&');

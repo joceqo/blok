@@ -292,7 +292,8 @@ export async function fileBytesHandler(
   request: Request,
   response: ResponseWriter,
 ): Promise<void> {
-  const target = queryFirst(request.query(), 'url');
+  const q = request.query();
+  const target = queryFirst(q.startsWith('?') ? q.slice(1) : q, 'url');
   if (target === '') {
     await writePlain(request, response, 400, 'expected ?url=...\n');
     return;

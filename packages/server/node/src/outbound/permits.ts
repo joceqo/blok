@@ -2,66 +2,47 @@ const POOL_SIZE = 4;
 const PER_CALLER = 2;
 
 class Semaphore {
-  private inUse = 0;
-  private readonly queue: Array<{ resolve: (release: () => void) => void; reject: (e: Error) => void }> = [];
+  private slots: number;
+  private readonly queue: Array<(release: () => void) => void> = [];
 
-  constructor(readonly capacity: number) {}
-
-  tryAcquire(): (() => void) | undefined {
-    if (this.inUse < this.capacity) {
-      this.inUse += 1;
-      return () => {
-        this.inUse -= 1;
-        const next = this.queue.shift();
-        if (next) {
-          this.inUse += 1;
-          next.resolve(() => {
-            this.inUse -= 1;
-            const n = this.queue.shift();
-            if (n) {
-              this.inUse += 1;
-              n.resolve(() => this.releaseOne());
-            }
-          });
-        }
-      };
-    }
-    return undefined;
+  constructor(capacity: number) {
+    this.slots = capacity;
   }
 
-  private releaseOne(): void {
-    this.inUse -= 1;
-    const next = this.queue.shift();
-    if (next) {
-      this.inUse += 1;
-      next.resolve(() => this.releaseOne());
-    }
-  }
-
-  acquire(deadlineMs: number): Promise<() => void> {
-    const direct = this.tryAcquire();
-    if (direct) {
-      return Promise.resolve(direct);
+  async acquire(deadlineMs: number): Promise<() => void> {
+    if (this.slots > 0) {
+      this.slots -= 1;
+      return () => this.signal();
     }
     return new Promise((resolve, reject) => {
-      const wait = Date.now() + Math.max(0, deadlineMs - Date.now());
-      const timer = setTimeout(() => reject(new Error('timed out')), wait);
-      this.queue.push({
-        resolve: (release) => {
-          clearTimeout(timer);
-          resolve(release);
-        },
-        reject: (err) => {
-          clearTimeout(timer);
-          reject(err);
-        },
-      });
+      const delay = Math.max(0, deadlineMs - Date.now());
+      const timer = setTimeout(() => {
+        const index = this.queue.indexOf(wake);
+        if (index >= 0) {
+          this.queue.splice(index, 1);
+        }
+        reject(new Error('timed out'));
+      }, delay);
+      const wake = (release: () => void): void => {
+        clearTimeout(timer);
+        resolve(release);
+      };
+      this.queue.push(wake);
     });
+  }
+
+  private signal(): void {
+    const next = this.queue.shift();
+    if (next) {
+      next(() => this.signal());
+    } else {
+      this.slots += 1;
+    }
   }
 }
 
 class CallerLanes {
-  private readonly lanes = new Map<string, { sem: Semaphore; users: number }>();
+  private readonly lanes = new Map<string, Semaphore>();
 
   async enter(caller: string, deadlineMs: number): Promise<() => void> {
     if (caller === '') {
@@ -69,18 +50,10 @@ class CallerLanes {
     }
     let lane = this.lanes.get(caller);
     if (!lane) {
-      lane = { sem: new Semaphore(PER_CALLER), users: 0 };
+      lane = new Semaphore(PER_CALLER);
       this.lanes.set(caller, lane);
     }
-    lane.users += 1;
-    const releaseSlot = await lane.sem.acquire(deadlineMs);
-    return () => {
-      releaseSlot();
-      lane!.users -= 1;
-      if (lane!.users === 0) {
-        this.lanes.delete(caller);
-      }
-    };
+    return lane.acquire(deadlineMs);
   }
 }
 

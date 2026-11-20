@@ -12,8 +12,7 @@ export function readBounded(
   for (const line of headers['content-encoding'] ?? []) {
     const tokens = encodingTokens(line);
     if (tokens === undefined) {
-      encodings = [];
-      break;
+      continue;
     }
     encodings.push(...tokens);
   }
@@ -30,7 +29,11 @@ export function readBounded(
       return Buffer.from(prefix);
     }
     try {
-      return decodeBody(encodings[0]!, prefix);
+      const decoded = decodeBody(encodings[0]!, prefix);
+      if (decoded.length > maxBytes) {
+        throw new OutboundError(OutboundFailure.TooLarge);
+      }
+      return decoded;
     } catch (error) {
       if (error instanceof DecodeError) {
         throw new OutboundError(OutboundFailure.UnsupportedContentEncoding);
@@ -44,12 +47,17 @@ export function readBounded(
   if (identity) {
     return Buffer.from(raw);
   }
+  let decoded: Buffer;
   try {
-    return decodeBody(encodings[0]!, raw);
+    decoded = decodeBody(encodings[0]!, raw);
   } catch (error) {
     if (error instanceof DecodeError) {
       throw new OutboundError(OutboundFailure.UnsupportedContentEncoding);
     }
     throw error;
   }
+  if (decoded.length > maxBytes) {
+    throw new OutboundError(OutboundFailure.TooLarge);
+  }
+  return decoded;
 }
