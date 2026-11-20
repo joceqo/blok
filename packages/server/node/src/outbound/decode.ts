@@ -1,6 +1,7 @@
 import {
   brotliDecompressSync,
   constants,
+  createBrotliDecompress,
   gunzipSync,
   inflateRawSync,
   inflateSync,
@@ -107,6 +108,14 @@ function longestUnzip(buf: Buffer): Buffer {
   return best;
 }
 
+function quietBrotliError(e: unknown): boolean {
+  if (typeof e === 'object' && e !== null && 'code' in e && (e as { code: string }).code === 'Z_BUF_ERROR') {
+    return true;
+  }
+  const msg = e instanceof Error ? e.message : '';
+  return msg.includes('excessive input') || msg.includes('unexpected end') || msg.includes('Invalid UTF8');
+}
+
 function longestBrotli(buf: Buffer): Buffer {
   if (buf.length === 0) {
     return buf;
@@ -120,11 +129,14 @@ function longestBrotli(buf: Buffer): Buffer {
       best = brotliDecompressSync(buf.subarray(0, mid));
       lo = mid + 1;
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : '';
-      if (msg.includes('excessive input') && mid < buf.length) {
-        best = brotliDecompressSync(buf.subarray(0, mid));
-        lo = mid + 1;
-        continue;
+      if (quietBrotliError(e) && mid < buf.length) {
+        try {
+          best = brotliDecompressSync(buf.subarray(0, mid));
+          lo = mid + 1;
+          continue;
+        } catch {
+          // keep searching
+        }
       }
       hi = mid - 1;
     }
@@ -299,12 +311,48 @@ export function decodeBr(buf: Buffer): Buffer {
   try {
     return brotliDecompressSync(buf);
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : '';
-    if (msg.includes('excessive input') || msg.includes('unexpected end')) {
-      return longestBrotli(buf);
+    if (quietBrotliError(e)) {
+      const quiet = longestBrotli(buf);
+      if (quiet.length > 0) {
+        return quiet;
+      }
     }
     throw new DecodeError();
   }
+}
+
+export async function decodeBrQuiet(buf: Buffer): Promise<Buffer> {
+  if (buf.length === 0) {
+    return buf;
+  }
+  try {
+    return brotliDecompressSync(buf);
+  } catch {
+    // truncated streams may need the quiet decoder below
+  }
+  const parts: Buffer[] = [];
+  const d = createBrotliDecompress();
+  let brotliError: unknown;
+  d.on('data', (chunk) => {
+    parts.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  });
+  d.on('error', (e) => {
+    brotliError = e;
+  });
+  await new Promise<void>((resolve) => {
+    const done = (): void => {
+      resolve();
+    };
+    d.once('end', done);
+    d.once('close', done);
+    d.once('error', done);
+    d.end(buf);
+  });
+  const out = Buffer.concat(parts);
+  if (out.length > 0 && (brotliError === undefined || quietBrotliError(brotliError))) {
+    return out;
+  }
+  throw new DecodeError();
 }
 
 export function decodeBody(encoding: string, raw: Buffer): Buffer {

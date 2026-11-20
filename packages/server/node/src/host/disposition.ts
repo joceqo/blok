@@ -75,18 +75,27 @@ function validUtf8Prefix(bytes: Uint8Array): number {
 function decodeUtf8(bytes: Uint8Array): string {
   let out = '';
   let at = 0;
+  const decoder = new TextDecoder('utf-8', { fatal: true });
   while (at < bytes.length) {
     const slice = bytes.subarray(at);
-    try {
-      const text = new TextDecoder('utf-8', { fatal: true }).decode(slice);
-      const firstRune = text.codePointAt(0) ?? 0;
-      const used = firstRune <= 0xffff ? (firstRune > 0x7ff ? 3 : firstRune > 0x7f ? 2 : 1) : 4;
-      out += text.slice(0, firstRune <= 0xffff ? 1 : 2);
-      at += used;
-    } catch {
-      out += '\uFFFD';
-      at += validUtf8Prefix(slice);
+    let used = 0;
+  let piece = '';
+    for (let tryLen = Math.min(4, slice.length); tryLen >= 1; tryLen -= 1) {
+      try {
+        piece = decoder.decode(slice.subarray(0, tryLen));
+        used = tryLen;
+        break;
+      } catch {
+        continue;
+      }
     }
+    if (used === 0) {
+      out += '\uFFFD';
+      at += 1;
+      continue;
+    }
+    out += piece;
+    at += used;
   }
   return out;
 }

@@ -5,7 +5,7 @@ import { extension } from '../blob/key.ts';
 import type { LocalStore } from '../blob/local.ts';
 import { isJsonContentType, sanitizeWire } from '../mediatype/index.ts';
 import { readEnvelopeJson } from './envelope.ts';
-import { hopBudget } from './guard.ts';
+import { fetchCaller, hopBudget } from './guard.ts';
 import type { HostAppOptions } from './options.ts';
 import { writePlain } from '../route/respond.ts';
 import { unescapeDataString } from '../dotnet/unescape.ts';
@@ -110,6 +110,7 @@ export async function uploadByUrlHandler(
       maxRedirects: 5,
       hop: hopBudget(options, request),
       upload: true,
+      caller: fetchCaller(options, request),
     });
   } catch {
     if (!request.isCancelled()) {

@@ -36,9 +36,7 @@ function originAllowed(origin: string, allowedOrigins: string[]): boolean {
 }
 
 function remoteKey(request: Request): string {
-  const addr = request.remoteAddr ?? '0.0.0.0';
-  const port = request.remotePort ?? 0;
-  return `${addr}:${port}`;
+  return request.remoteAddr ?? '0.0.0.0';
 }
 
 export function fetchCaller(options: HostAppOptions, request: Request): string {

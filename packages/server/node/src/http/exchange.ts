@@ -120,6 +120,36 @@ export class Exchange {
     wireGuard.release();
   }
 
+  async refusePlain(status: number, body: string, chunked = false): Promise<void> {
+    const wireGuard = await this.wire.lock();
+    const wire = wireGuard.get();
+    wire.close = true;
+    if (wire.started || wire.hijacked || wire.finished) {
+      wireGuard.release();
+      return;
+    }
+    wire.started = true;
+    wire.hostOwned = true;
+    const bytes = new TextEncoder().encode(body);
+    const connection = this.requestClose ? 'Connection: close\r\n' : '';
+    const encoding = chunked ? 'Transfer-Encoding: chunked\r\n' : `Content-Length: ${bytes.length}\r\n`;
+    let head = `HTTP/1.1 ${status} ${reasonPhrase(status)}\r\nContent-Type: text/plain; charset=utf-8\r\n${encoding}${connection}Date: ${httpDate(Date.now())}\r\n`;
+    if (this.config.serverHeader !== undefined) {
+      head += `Server: ${this.config.serverHeader}\r\n`;
+    }
+    head += '\r\n';
+    const payload = chunked
+      ? Buffer.concat([
+        Buffer.from(head, 'utf8'),
+        Buffer.from(`${bytes.length.toString(16)}\r\n`),
+        bytes,
+        Buffer.from('\r\n0\r\n\r\n'),
+      ])
+      : Buffer.concat([Buffer.from(head, 'utf8'), bytes]);
+    await sendWire(wire, payload);
+    wireGuard.release();
+  }
+
   async refuseUnhandled(): Promise<void> {
     const wireGuard = await this.wire.lock();
     const wire = wireGuard.get();

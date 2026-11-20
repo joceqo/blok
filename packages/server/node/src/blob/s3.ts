@@ -1,6 +1,8 @@
 import { createHmac, createHash } from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
+import { resolveEnvironmentProxy } from './environment-proxy.ts';
+import { requestThroughProxy } from './s3-proxy-request.ts';
 import { absoluteUri } from '../dotnet/absolute-uri.ts';
 import { sanitizeWire } from '../mediatype/index.ts';
 import { ErrForeign, keyFromPublicUrl, newKey, normalizeExtension } from './key.ts';
@@ -164,6 +166,10 @@ function rawRequest(
   headers: Record<string, string>,
   body?: Buffer,
 ): Promise<{ status: number; body: Buffer }> {
+  const proxy = resolveEnvironmentProxy(url);
+  if (proxy !== undefined) {
+    return requestThroughProxy(url, method, headers, body);
+  }
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const transport = parsed.protocol === 'https:' ? https : http;

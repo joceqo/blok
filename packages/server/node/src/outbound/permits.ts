@@ -1,18 +1,28 @@
-const POOL_SIZE = 4;
+export const POOL_SIZE = 4;
 const PER_CALLER = 2;
 
-class Semaphore {
-  private slots: number;
-  private readonly queue: Array<(release: () => void) => void> = [];
+class ConcurrencyPool {
+  private inFlight = 0;
+  private readonly queue: Array<() => void> = [];
 
-  constructor(capacity: number) {
-    this.slots = capacity;
-  }
+  constructor(private readonly capacity: number) {}
 
   async acquire(deadlineMs: number): Promise<() => void> {
-    if (this.slots > 0) {
-      this.slots -= 1;
-      return () => this.signal();
+    if (this.inFlight < this.capacity) {
+      this.inFlight += 1;
+      let released = false;
+      return () => {
+        if (released) {
+          return;
+        }
+        released = true;
+        this.inFlight -= 1;
+        const wake = this.queue.shift();
+        if (wake) {
+          this.inFlight += 1;
+          wake();
+        }
+      };
     }
     return new Promise((resolve, reject) => {
       const delay = Math.max(0, deadlineMs - Date.now());
@@ -23,26 +33,29 @@ class Semaphore {
         }
         reject(new Error('timed out'));
       }, delay);
-      const wake = (release: () => void): void => {
+      const wake = (): void => {
         clearTimeout(timer);
-        resolve(release);
+        let released = false;
+        resolve(() => {
+          if (released) {
+            return;
+          }
+          released = true;
+          this.inFlight -= 1;
+          const next = this.queue.shift();
+          if (next) {
+            this.inFlight += 1;
+            next();
+          }
+        });
       };
       this.queue.push(wake);
     });
   }
-
-  private signal(): void {
-    const next = this.queue.shift();
-    if (next) {
-      next(() => this.signal());
-    } else {
-      this.slots += 1;
-    }
-  }
 }
 
 class CallerLanes {
-  private readonly lanes = new Map<string, Semaphore>();
+  private readonly lanes = new Map<string, ConcurrencyPool>();
 
   async enter(caller: string, deadlineMs: number): Promise<() => void> {
     if (caller === '') {
@@ -50,7 +63,7 @@ class CallerLanes {
     }
     let lane = this.lanes.get(caller);
     if (!lane) {
-      lane = new Semaphore(PER_CALLER);
+      lane = new ConcurrencyPool(PER_CALLER);
       this.lanes.set(caller, lane);
     }
     return lane.acquire(deadlineMs);
@@ -58,8 +71,8 @@ class CallerLanes {
 }
 
 export class OutboundPermits {
-  private readonly checks = new Semaphore(POOL_SIZE);
-  private readonly uploads = new Semaphore(POOL_SIZE);
+  private readonly checks = new ConcurrencyPool(POOL_SIZE);
+  private readonly uploads = new ConcurrencyPool(POOL_SIZE);
   private readonly checkCallers = new CallerLanes();
   private readonly uploadCallers = new CallerLanes();
 
@@ -67,10 +80,20 @@ export class OutboundPermits {
     const callers = upload ? this.uploadCallers : this.checkCallers;
     const pool = upload ? this.uploads : this.checks;
     const leaveCaller = await callers.enter(caller, deadlineMs);
-    const releasePool = await pool.acquire(deadlineMs);
-    return () => {
-      releasePool();
+    try {
+      const releasePool = await pool.acquire(deadlineMs);
+      let done = false;
+      return () => {
+        if (done) {
+          return;
+        }
+        done = true;
+        releasePool();
+        leaveCaller();
+      };
+    } catch (error) {
       leaveCaller();
-    };
+      throw error;
+    }
   }
 }

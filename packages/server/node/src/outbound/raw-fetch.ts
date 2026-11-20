@@ -96,7 +96,7 @@ export function rawGet(port: number, path: string, range?: ByteRange): Promise<R
     const value = range.end < 0 ? `bytes=${range.start}-` : `bytes=${range.start}-${range.end}`;
     request += `Range: ${value}\r\n`;
   }
-  request += 'Connection: close\r\n\r\n';
+  request += '\r\n';
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     const socket = net.createConnection({ host: '127.0.0.1', port });

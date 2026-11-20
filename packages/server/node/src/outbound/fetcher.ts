@@ -54,6 +54,8 @@ export interface OutboundPolicy {
 }
 
 export class ExactOriginPolicy implements OutboundPolicy {
+  readonly exactOrigin = true;
+
   constructor(
     readonly origin: string,
     readonly port: number,
@@ -86,6 +88,8 @@ export class ExactOriginPolicy implements OutboundPolicy {
 }
 
 export class DefaultBlockedPolicy implements OutboundPolicy {
+  readonly exactOrigin = false;
+
   validate(): URL {
     throw new OutboundError(OutboundFailure.Blocked);
   }
@@ -157,16 +161,24 @@ function encoded(headers: Record<string, string[]>): boolean {
   return false;
 }
 
-const globalPermits = new OutboundPermits();
-
 export class OutboundFetcher {
+  private readonly permits = new OutboundPermits();
+
   constructor(readonly policy: OutboundPolicy) {}
 
   async get(raw: string, limits: FetchLimits, signal?: AbortSignal): Promise<FetchResponse> {
     const deadline = Date.now() + limits.timeoutMs;
-    const release = await globalPermits.acquire(limits.upload === true, limits.caller ?? '', deadline);
+    const releasePermit = await this.permits.acquire(limits.upload === true, limits.caller ?? '', deadline);
+    let released = false;
+    const release = (): void => {
+      if (released) {
+        return;
+      }
+      released = true;
+      releasePermit();
+    };
     try {
-      if (this.policy instanceof ExactOriginPolicy) {
+      if (this.policy.exactOrigin === true) {
         return await this.getConformance(raw, limits, release, deadline);
       }
       return await this.getNetwork(raw, limits, release, deadline, signal);
@@ -221,7 +233,7 @@ export class OutboundFetcher {
       const contentLength = lengthHeader === undefined ? undefined : Number.parseInt(lengthHeader, 10);
       let body: Buffer;
       try {
-        body = readBounded(
+        body = await readBounded(
           response.body,
           Number.isFinite(contentLength) ? contentLength : undefined,
           response.headers,

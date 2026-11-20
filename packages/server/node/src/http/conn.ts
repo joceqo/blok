@@ -187,12 +187,9 @@ async function runExchange(
     extensions: new Extensions(),
   });
   const response = new ResponseWriter(exchange);
-  const oversize = framing.tag === FramingTag.Length && framing.remaining > config.maxRequestBody;
   const deadlineAt = config.requestTimeoutMs === undefined ? undefined : Date.now() + config.requestTimeoutMs;
   try {
-    if (oversize) {
-      await exchange.refuse(413);
-    } else if (deadlineAt !== undefined) {
+    if (deadlineAt !== undefined) {
       await Promise.race([
         shared.handler(request, response),
         new Promise<void>((_, reject) => setTimeout(() => reject(new Error('timeout')), Math.max(0, deadlineAt - Date.now()))),
@@ -201,9 +198,7 @@ async function runExchange(
       await shared.handler(request, response);
     }
   } catch {
-    if (!oversize) {
-      await exchange.refuseUnhandled();
-    }
+    await exchange.refuseUnhandled();
   } finally {
     response.dropState();
   }

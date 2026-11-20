@@ -1,13 +1,13 @@
-import { DecodeError, decodeBody, encodingTokens } from './decode.ts';
+import { DecodeError, decodeBody, decodeBrQuiet, encodingTokens } from './decode.ts';
 import { OutboundFailure, OutboundError } from './fetcher.ts';
 
-export function readBounded(
+export async function readBounded(
   raw: Buffer,
   contentLength: number | undefined,
   headers: Record<string, string[]>,
   maxBytes: number,
   truncate: boolean,
-): Buffer {
+): Promise<Buffer> {
   let encodings: string[] = [];
   for (const line of headers['content-encoding'] ?? []) {
     const tokens = encodingTokens(line);
@@ -29,7 +29,9 @@ export function readBounded(
       return Buffer.from(prefix);
     }
     try {
-      const decoded = decodeBody(encodings[0]!, prefix);
+      const decoded = encodings[0]!.toLowerCase() === 'br'
+        ? await decodeBrQuiet(prefix)
+        : decodeBody(encodings[0]!, prefix);
       if (decoded.length > maxBytes) {
         throw new OutboundError(OutboundFailure.TooLarge);
       }
@@ -49,7 +51,11 @@ export function readBounded(
   }
   let decoded: Buffer;
   try {
-    decoded = decodeBody(encodings[0]!, raw);
+    if (encodings[0]!.toLowerCase() === 'br') {
+      decoded = await decodeBrQuiet(raw);
+    } else {
+      decoded = decodeBody(encodings[0]!, raw);
+    }
   } catch (error) {
     if (error instanceof DecodeError) {
       throw new OutboundError(OutboundFailure.UnsupportedContentEncoding);

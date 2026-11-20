@@ -64,8 +64,11 @@ export async function frameCheckHandler(
       hop: hopBudget(options, request),
       caller: fetchCaller(options, request),
     });
+    let fetchedReleased = false;
     try {
       if (fetched.statusCode < 200 || fetched.statusCode > 299) {
+        fetched.release();
+        fetchedReleased = true;
         await writeJSON(request, response, 200, '{"verdict":"unknown"}\n');
         return;
       }
@@ -84,12 +87,25 @@ export async function frameCheckHandler(
       }
       const verdict = frameVerdict(fetched.finalUrl, embedder, framing);
       let body = `{"verdict":${JSON.stringify(verdict)},"link":${JSON.stringify(fetched.finalUrl)}`;
-      const oEmbedURL = parseUnfurlMetadata(fetched.body, fetched.finalUrl).oembed;
+      const meta = parseUnfurlMetadata(fetched.body, fetched.finalUrl);
+      let oEmbedURL = meta.oembed;
+      if (oEmbedURL !== '' && !oEmbedURL.includes('://')) {
+        try {
+          oEmbedURL = new URL(oEmbedURL, fetched.finalUrl).href;
+        } catch {
+          oEmbedURL = '';
+        }
+      }
       const redirects = fetched.redirects;
-      fetched.release();
       const remaining = FRAME_LIMITS.timeoutMs - (Date.now() - started);
-      const oembed = await fetchOEmbed(options.fetcher, oEmbedURL, remaining, FRAME_LIMITS.maxRedirects - redirects,
-        hopBudget(options, request), fetchCaller(options, request));
+      const oembed = await fetchOEmbed(
+        options.fetcher,
+        oEmbedURL,
+        remaining,
+        FRAME_LIMITS.maxRedirects - redirects,
+        hopBudget(options, request),
+        fetchCaller(options, request),
+      );
       if (oembed !== undefined && !oembedEmpty(oembed)) {
         body = appendOembedJson(`${body}}`, oembed).replace(/}\s*$/, '}');
       } else {
@@ -100,9 +116,10 @@ export async function frameCheckHandler(
         return;
       }
       await writeJSON(request, response, 200, body);
-    } catch {
-      fetched.release();
-      throw new Error();
+    } finally {
+      if (!fetchedReleased) {
+        fetched.release();
+      }
     }
   } catch {
     if (request.isCancelled()) {
@@ -123,13 +140,18 @@ async function fetchOEmbed(
   if (url === '' || remainingMs <= 0 || redirects < 0 || !hop()) {
     return undefined;
   }
-  const fetched = await fetcher.get(url, {
-    timeoutMs: remainingMs,
-    maxBytes: MAX_OEMBED,
-    maxRedirects: redirects,
-    hop,
-    caller,
-  });
+  let fetched;
+  try {
+    fetched = await fetcher.get(url, {
+      timeoutMs: remainingMs,
+      maxBytes: MAX_OEMBED,
+      maxRedirects: redirects,
+      hop,
+      caller,
+    });
+  } catch {
+    return undefined;
+  }
   try {
     if (fetched.statusCode < 200 || fetched.statusCode > 299) {
       return undefined;

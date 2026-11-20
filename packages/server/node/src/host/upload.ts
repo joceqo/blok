@@ -1,3 +1,9 @@
+import { createWriteStream } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+
 import type { Body } from '../http/body.ts';
 import { BodyError } from '../http/body.ts';
 import type { Request } from '../http/request.ts';
@@ -5,30 +11,73 @@ import { ResponseWriter } from '../http/response.ts';
 import { extension } from '../blob/key.ts';
 import type { BlobStore } from '../blob/store.ts';
 import { boundaryFromContentType } from '../mediatype/index.ts';
+import { escapeJsonString } from '../dotnet/json-string.ts';
 import { fileNameFromDisposition, sanitizeWireContentType } from './disposition.ts';
 import { writePlain } from '../route/respond.ts';
 
 const DEFAULT_MAX_UPLOAD = 33_554_432;
 const MAX_MULTIPART_SECTIONS = 1000;
 
-async function readAll(body: Body): Promise<Uint8Array> {
+async function writeChunk(write: ReturnType<typeof createWriteStream>, slice: Uint8Array): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const ok = write.write(slice, (err) => (err ? reject(err) : undefined));
+    if (ok) {
+      resolve();
+    } else {
+      write.once('drain', resolve);
+    }
+  });
+}
+
+async function spoolBody(body: Body): Promise<{ path: string; data: Uint8Array }> {
+  const path = join(tmpdir(), `.blok-upload-${randomBytes(16).toString('hex')}`);
+  const write = createWriteStream(path, { flags: 'wx', mode: 0o600 });
   const chunks: Uint8Array[] = [];
+  const chunk = new Uint8Array(16 << 10);
   try {
-    await body.readToEnd(chunks);
+    for (;;) {
+      const n = await body.read(chunk);
+      if (n === 0) {
+        break;
+      }
+      const slice = chunk.slice(0, n);
+      chunks.push(slice);
+      await writeChunk(write, slice);
+    }
+    await new Promise<void>((resolve, reject) => {
+      write.end(() => resolve());
+      write.on('error', reject);
+    });
+    const total = chunks.reduce((sum, part) => sum + part.length, 0);
+    const data = new Uint8Array(total);
+    let at = 0;
+    for (const part of chunks) {
+      data.set(part, at);
+      at += part.length;
+    }
+    return { path, data };
   } catch (error) {
+    write.destroy();
+    await rm(path, { force: true }).catch(() => undefined);
     if (error === BodyError.TooLarge) {
       throw error;
     }
     throw BodyError.Malformed;
   }
-  const total = chunks.reduce((sum, part) => sum + part.length, 0);
-  const out = new Uint8Array(total);
-  let at = 0;
-  for (const part of chunks) {
-    out.set(part, at);
-    at += part.length;
+}
+
+function uploadEnvelope(url: string, fileName: string, size: number, mimeType: string): string {
+  const parts = [`"url":${escapeJsonString(url)}`];
+  if (fileName !== '') {
+    parts.push(`"fileName":${escapeJsonString(fileName)}`);
   }
-  return out;
+  if (size !== 0) {
+    parts.push(`"size":${size}`);
+  }
+  if (mimeType !== '') {
+    parts.push(`"mimeType":${escapeJsonString(mimeType)}`);
+  }
+  return `{${parts.join(',')}}\n`;
 }
 
 function hexDigit(c: number): number | undefined {
@@ -209,10 +258,13 @@ export async function uploadHandler(
     await writePlain(request, response, 400, 'malformed upload\n');
     return;
   }
-  let data: Uint8Array;
+  let spool: { path: string; data: Uint8Array };
   try {
-    data = await readAll(body);
+    spool = await spoolBody(body);
   } catch (error) {
+    if (request.isCancelled()) {
+      return;
+    }
     if (error === BodyError.TooLarge) {
       await writePlain(request, response, 413, 'file too large\n');
       return;
@@ -220,37 +272,31 @@ export async function uploadHandler(
     await writePlain(request, response, 400, 'malformed upload\n');
     return;
   }
-  const parsed = parseMultipart(data, boundary);
-  if (parsed === 'malformed') {
-    await writePlain(request, response, 400, 'malformed upload\n');
-    return;
-  }
-  if (!parsed) {
-    await writePlain(request, response, 400, 'missing file field\n');
-    return;
-  }
-  let url: string;
   try {
-    url = await store.put(extension(parsed.fileName), Buffer.from(parsed.content), parsed.mimeType);
-  } catch {
-    await writePlain(request, response, 502, 'upload failed\n');
-    return;
-  }
-  const envelope: Record<string, string | number> = { url };
-  if (parsed.fileName !== '') {
-    envelope.fileName = parsed.fileName;
-  }
-  if (parsed.content.length !== 0) {
-    envelope.size = parsed.content.length;
-  }
-  if (parsed.mimeType !== '') {
-    envelope.mimeType = parsed.mimeType;
-  }
-  const payload = JSON.stringify(envelope) + '\n';
-  response.headersMut().set('Content-Type', 'application/json');
-  await response.start(200);
-  if (request.method() !== 'HEAD') {
-    await response.write(new TextEncoder().encode(payload));
+    const parsed = parseMultipart(spool.data, boundary);
+    if (parsed === 'malformed') {
+      await writePlain(request, response, 400, 'malformed upload\n');
+      return;
+    }
+    if (!parsed) {
+      await writePlain(request, response, 400, 'missing file field\n');
+      return;
+    }
+    let url: string;
+    try {
+      url = await store.put(extension(parsed.fileName), Buffer.from(parsed.content), parsed.mimeType);
+    } catch {
+      await writePlain(request, response, 502, 'upload failed\n');
+      return;
+    }
+    const payload = uploadEnvelope(url, parsed.fileName, parsed.content.length, parsed.mimeType);
+    response.headersMut().set('Content-Type', 'application/json');
+    await response.start(200);
+    if (request.method() !== 'HEAD') {
+      await response.write(new TextEncoder().encode(payload));
+    }
+  } finally {
+    await rm(spool.path, { force: true }).catch(() => undefined);
   }
 }
 
