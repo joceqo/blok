@@ -18950,6 +18950,10 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   animation: blok-database-confirm-fade 200ms ease both;
 }
 
+[data-blok-database-drilldown][data-blok-top-layer][popover] {
+  inset: 0;
+}
+
 [data-blok-database-drilldown-panel] {
   display: flex;
   flex-direction: column;
@@ -18959,6 +18963,7 @@ label[data-blok-database-color-rule-box]:has([data-blok-database-color-rule-pref
   border-radius: var(--blok-radius-dialog);
   background-color: var(--blok-database-confirm-bg);
   box-shadow: var(--blok-database-confirm-shadow);
+  color: var(--blok-database-ink);
 }
 
 [data-blok-database-drilldown-header] {

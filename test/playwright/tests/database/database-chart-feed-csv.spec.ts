@@ -226,20 +226,38 @@ test.describe('chart view', () => {
     await expect(tooltip).toContainText('2');
   });
 
-  test('drills down into a group and opens a row from it', async ({ page }) => {
+  test('centers the dark chart drilldown and opens a row in side peek', async ({ page }) => {
     await mount(page, blocks({ type: 'chart', groupBy: 'p-status', groupSettings: { hideEmptyGroups: true } }));
+    await page.evaluate(() => window.blokInstance?.theme.set('dark'));
 
     await hit(page, 'o-done').click();
-    const dialog = page.getByRole('dialog');
+    const dialog = page.getByRole('dialog', { name: 'Done' });
 
     await expect(dialog).toBeVisible();
+    const centerOffset = await dialog.evaluate((element) => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+
+      return {
+        x: x + width / 2 - window.innerWidth / 2,
+        y: y + height / 2 - window.innerHeight / 2,
+      };
+    });
+
+    expect(centerOffset.x).toBeCloseTo(0, 0);
+    expect(centerOffset.y).toBeCloseTo(0, 0);
+    await expect(dialog.getByText('Done', { exact: true })).toHaveCSS('color', 'rgb(240, 239, 237)');
+    await expect(dialog.getByText('2 pages', { exact: true })).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Ship' })).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Rest' })).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Write, edit' })).toHaveCount(0);
 
     await dialog.getByRole('button', { name: 'Ship' }).click();
-    await expect(page.locator('[data-blok-database-drilldown]')).toHaveCount(0);
-    await expect(page.locator('[data-blok-database-drawer], [data-blok-database-peek]').first()).toBeVisible();
+    await expect(dialog).toBeHidden();
+    const drawer = page.locator('[data-blok-database-drawer]');
+
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toHaveAttribute('data-peek-mode', 'side');
+    await expect(drawer.locator('[data-blok-database-drawer-title]')).toHaveValue('Ship');
   });
 
   test('a legend click hides a series for this session and writes nothing', async ({ page }) => {
@@ -365,7 +383,10 @@ test.describe('chart view', () => {
 
     await expect(mark(page, 'o-todo')).toBeVisible();
     await hit(page, 'o-todo').click();
-    await expect(page.getByRole('dialog').getByRole('button', { name: 'Write, edit' })).toBeVisible();
+    const dialog = page.getByRole('dialog', { name: 'Todo' });
+
+    await expect(dialog.getByText('1 page', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Write, edit' })).toBeVisible();
   });
 });
 

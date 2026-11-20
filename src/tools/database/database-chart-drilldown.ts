@@ -46,7 +46,9 @@ export const openChartDrilldown = (options: ChartDrilldownOptions): { close: () 
   counter.next += 1;
   title.id = `blok-database-drilldown-${counter.next}`;
   title.textContent = options.title;
-  count.textContent = i18n.t('tools.database.chartDrilldownCount', { count: options.rows.length });
+  count.textContent = options.rows.length === 1
+    ? i18n.t('tools.database.relationLimitOne')
+    : i18n.t('tools.database.chartDrilldownCount', { count: options.rows.length });
   close.type = 'button';
   close.innerHTML = IconCross;
   close.setAttribute('aria-label', i18n.t('tools.database.chartDrilldownClose'));
