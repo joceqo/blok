@@ -954,7 +954,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           comments = mountPageComments({holder: config.holder, editor: body, author: () => commentAuthor(ref), canComment: () => !disposed && !readOnly(id) && !readOnly(config.collaboration?.doc ?? '')});
           config.holder.append(comments.action, comments.element);
         });
-        return {isReady: ready, blocks: body.blocks, readOnly: body.readOnly, saver: body.saver, destroy() {
+        // Blok installs its API in exportAPI, after the constructor returns, so
+        // reading body.readOnly here captures undefined. The row-page host then
+        // threw on the first permission refresh, which failed the entry and took
+        // the whole body out of the peek: an open drawer with an empty editor.
+        return {isReady: ready, blocks: body.blocks, readOnly: {set: (state: boolean) => body.readOnly.set(state)}, saver: body.saver, destroy() {
           if (disposed) return;
           disposed = true; comments?.destroy(); body.destroy();
         }};

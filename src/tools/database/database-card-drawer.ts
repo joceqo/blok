@@ -4753,6 +4753,7 @@ export class DatabaseCardDrawer {
     this.cancelPendingBodyMount();
     const initVersion = ++this.editorInitVersion;
 
+
     editorHolder.toggleAttribute('inert', this.pendingBodyRows.has(row.id));
     if (this.rowPages?.mountEmpty !== undefined && (this.rowPages.hasDraft?.(row.id) === true
       || (row.pageId === undefined && this.rowBody?.isEmpty?.(row.id) === true))) {
