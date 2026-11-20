@@ -5,6 +5,7 @@ import { validateHostStartup } from './args/validate-startup.ts';
 import { createHostHandler } from './host/app.ts';
 import { collabLogger } from './collab/log.ts';
 import { defaultMaxUpload } from './host/upload.ts';
+import { hostNames } from './host/host-check.ts';
 import { RateLimiter } from './host/rate-limit.ts';
 import { defaultConfig, listen, parseIp, Server, shutdownSignal } from './http/index.ts';
 import { DefaultBlockedPolicy, ExactOriginPolicy, OutboundFetcher } from './outbound/fetcher.ts';
@@ -96,6 +97,9 @@ async function run(): Promise<number> {
     filesCors,
     fetcher,
     rateLimiter: new RateLimiter(parsed.rateLimitPerMinute),
+    rateLimitPerMinute: parsed.rateLimitPerMinute,
+    loopbackHostCheck: true,
+    allowedHostNames: hostNames(parsed.allowedOrigins, parsed.publicUrl),
   }), defaultConfig());
   const shuttingDown = shutdownSignal();
   const serving = http.serveStd(servers);

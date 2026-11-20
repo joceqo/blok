@@ -14,7 +14,7 @@ export class ListenError extends Error {
 
 export function splitHostPort(hostport: string): [string, string] {
   const fail = (why: string) => {
-    throw new ListenError(`address ${hostport}: ${why}`);
+    throw new ListenError(`listen tcp: address ${hostport}: ${why}`);
   };
   const colon = hostport.lastIndexOf(':');
   if (colon < 0) {

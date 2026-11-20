@@ -1,4 +1,5 @@
 import { unescapeDataString } from '../dotnet/unescape.ts';
+import { sanitizeWire } from '../mediatype/index.ts';
 
 const CHARSET_CODE_PAGES: Record<string, number> = {
   'ansi_x3.4-1968': 20127, 'ansi_x3.4-1986': 20127, ascii: 20127, cp367: 20127,
@@ -316,6 +317,5 @@ export function fileNameFromDisposition(disposition: string): string | undefined
 }
 
 export function sanitizeWireContentType(value: string): string {
-  const media = value.split(';')[0]?.trim() ?? '';
-  return media;
+  return sanitizeWire(value);
 }

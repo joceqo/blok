@@ -22,4 +22,7 @@ export interface HostAppOptions {
   filesCors: boolean;
   fetcher: OutboundFetcher;
   rateLimiter: RateLimiter;
+  rateLimitPerMinute: number;
+  loopbackHostCheck: boolean;
+  allowedHostNames: string[];
 }

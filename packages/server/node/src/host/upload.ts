@@ -4,23 +4,12 @@ import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { extension } from '../blob/key.ts';
 import type { LocalStore } from '../blob/local.ts';
+import { boundaryFromContentType } from '../mediatype/index.ts';
 import { fileNameFromDisposition, sanitizeWireContentType } from './disposition.ts';
 import { writePlain } from '../route/respond.ts';
 
 const DEFAULT_MAX_UPLOAD = 33_554_432;
 const MAX_MULTIPART_SECTIONS = 1000;
-
-function boundaryFromContentType(value: string): string | undefined {
-  const match = /boundary=([^;\s]+|"[^"]+")/i.exec(value);
-  if (!match) {
-    return undefined;
-  }
-  let raw = match[1] ?? '';
-  if (raw.startsWith('"') && raw.endsWith('"')) {
-    raw = raw.slice(1, -1);
-  }
-  return raw.length > 0 ? raw : undefined;
-}
 
 async function readAll(body: Body): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
@@ -40,6 +29,86 @@ async function readAll(body: Body): Promise<Uint8Array> {
     at += part.length;
   }
   return out;
+}
+
+function hexDigit(c: number): number | undefined {
+  if (c >= 0x30 && c <= 0x39) {
+    return c - 0x30;
+  }
+  if (c >= 0x41 && c <= 0x46) {
+    return c - 0x41 + 10;
+  }
+  if (c >= 0x61 && c <= 0x66) {
+    return c - 0x61 + 10;
+  }
+  return undefined;
+}
+
+function decodeQuotedPrintable(data: Uint8Array): Uint8Array | undefined {
+  const decoded: number[] = [];
+  const pushLine = (raw: Buffer, hasLf: boolean, hasCr: boolean): boolean => {
+    if (raw.length > 4096) {
+      return false;
+    }
+    let content = raw.length;
+    while (content > 0 && (raw[content - 1] === 0x0a || raw[content - 1] === 0x0d || raw[content - 1] === 0x20 || raw[content - 1] === 0x09)) {
+      content -= 1;
+    }
+    let appendEnding = hasLf;
+    let body = raw.subarray(0, content);
+    if (body.length > 0 && body[body.length - 1] === 0x3d) {
+      appendEnding = false;
+      body = body.subarray(0, body.length - 1);
+      let suffix = body.length;
+      while (suffix < raw.length && (raw[suffix] === 0x20 || raw[suffix] === 0x09)) {
+        suffix += 1;
+      }
+      const startsLineEnding = suffix < raw.length
+        && (raw[suffix] === 0x0a || (raw[suffix] === 0x0d && suffix + 1 < raw.length && raw[suffix + 1] === 0x0a));
+      if (!startsLineEnding) {
+        return false;
+      }
+    }
+    for (let i = 0; i < body.length; i += 1) {
+      const c = body[i]!;
+      if (c === 0x3d && i + 2 < body.length) {
+        const hi = hexDigit(body[i + 1]!);
+        const lo = hexDigit(body[i + 2]!);
+        if (hi !== undefined && lo !== undefined) {
+          decoded.push(hi << 4 | lo);
+          i += 2;
+          continue;
+        }
+      }
+      if (c === 0x3d || (c !== 0x09 && c !== 0x0d && c !== 0x0a && c < 0x80 && (c < 0x20 || c > 0x7e))) {
+        return false;
+      }
+      decoded.push(c);
+    }
+    if (appendEnding) {
+      if (hasCr) {
+        decoded.push(0x0d);
+      }
+      decoded.push(0x0a);
+    }
+    return true;
+  };
+  const input = Buffer.from(data);
+  let start = 0;
+  for (let i = 0; i <= input.length; i += 1) {
+    if (i < input.length && input[i] !== 0x0a) {
+      continue;
+    }
+    const hasLf = i < input.length;
+    const end = hasLf && i > start && input[i - 1] === 0x0d ? i - 1 : i;
+    const hasCr = hasLf && i > start && input[i - 1] === 0x0d;
+    const line = input.subarray(start, end);
+    if (!pushLine(line, hasLf, hasCr)) {
+      return undefined;
+    }
+    start = i + 1;
+  }
+  return Uint8Array.from(decoded);
 }
 
 function headerValue(headers: string, name: string): string {
@@ -65,7 +134,7 @@ function parseMultipart(
   const end = `--${boundary}--`;
   const start = text.indexOf(delimiter);
   if (start < 0) {
-    return undefined;
+    return 'malformed';
   }
   let at = start + delimiter.length;
   if (text[at] === 0x0d && text[at + 1] === 0x0a) {
@@ -74,6 +143,7 @@ function parseMultipart(
     at += 1;
   }
   let sections = 0;
+  let filePart: { fileName: string; content: Uint8Array; mimeType: string } | undefined;
   for (;;) {
     if (text.subarray(at, at + end.length).equals(Buffer.from(end))) {
       break;
@@ -84,27 +154,41 @@ function parseMultipart(
     }
     const headerEnd = text.indexOf('\r\n\r\n', at);
     if (headerEnd < 0) {
-      return undefined;
+      return 'malformed';
     }
     const headers = text.subarray(at, headerEnd).toString('latin1');
     const bodyStart = headerEnd + 4;
     const next = text.indexOf(`\r\n${delimiter}`, bodyStart);
     if (next < 0) {
-      return undefined;
+      return 'malformed';
     }
+    const afterDelimiter = next + 2 + delimiter.length;
+    const isClose = text[afterDelimiter] === 0x2d && text[afterDelimiter + 1] === 0x2d;
     const part = text.subarray(bodyStart, next);
+    const encoding = headerValue(headers, 'content-transfer-encoding').toLowerCase();
+    let content = new Uint8Array(part);
+    if (encoding === 'quoted-printable') {
+      const decoded = decodeQuotedPrintable(content);
+      if (decoded === undefined) {
+        return 'malformed';
+      }
+      content = decoded;
+    }
     const disposition = headerValue(headers, 'content-disposition');
     const fileName = fileNameFromDisposition(disposition);
-    if (fileName !== undefined && fileName.length > 0) {
+    if (fileName !== undefined) {
       const mimeType = sanitizeWireContentType(headerValue(headers, 'content-type'));
-      return { fileName, content: new Uint8Array(part), mimeType };
+      filePart = { fileName, content, mimeType };
     }
-    at = next + 2 + delimiter.length;
+    if (isClose) {
+      break;
+    }
+    at = afterDelimiter;
     if (text[at] === 0x0d && text[at + 1] === 0x0a) {
       at += 2;
     }
   }
-  return undefined;
+  return filePart;
 }
 
 export async function uploadHandler(
@@ -152,11 +236,13 @@ export async function uploadHandler(
     await writePlain(request, response, 502, 'upload failed\n');
     return;
   }
-  const envelope: Record<string, string | number> = {
-    url,
-    fileName: parsed.fileName,
-    size: parsed.content.length,
-  };
+  const envelope: Record<string, string | number> = { url };
+  if (parsed.fileName !== '') {
+    envelope.fileName = parsed.fileName;
+  }
+  if (parsed.content.length !== 0) {
+    envelope.size = parsed.content.length;
+  }
   if (parsed.mimeType !== '') {
     envelope.mimeType = parsed.mimeType;
   }

@@ -2,7 +2,9 @@ import http from 'node:http';
 import https from 'node:https';
 import { URL } from 'node:url';
 
+import { OutboundPermits } from './permits.ts';
 import { rawGet } from './raw-fetch.ts';
+import { readBounded } from './read-body.ts';
 
 export const USER_AGENT = 'blok-server (+https://blokeditor.com)';
 
@@ -12,6 +14,7 @@ export enum OutboundFailure {
   TimedOut = 'TimedOut',
   TooManyRedirects = 'TooManyRedirects',
   RateLimited = 'RateLimited',
+  UnsupportedContentEncoding = 'UnsupportedContentEncoding',
 }
 
 export class OutboundError extends Error {
@@ -42,6 +45,7 @@ export interface FetchResponse {
   contentType: string;
   finalUrl: string;
   headers: Record<string, string[]>;
+  redirects: number;
   release(): void;
 }
 
@@ -116,6 +120,20 @@ function isRedirect(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
+function headerText(value: string): string {
+  const bytes = Buffer.from(value, 'latin1');
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return bytes.toString('utf8');
+  } catch {
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 1) {
+      out += String.fromCharCode(bytes[i]!);
+    }
+    return out;
+  }
+}
+
 function headerLines(headers: http.IncomingHttpHeaders): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const [name, value] of Object.entries(headers)) {
@@ -139,14 +157,102 @@ function encoded(headers: Record<string, string[]>): boolean {
   return false;
 }
 
+const globalPermits = new OutboundPermits();
+
 export class OutboundFetcher {
   constructor(readonly policy: OutboundPolicy) {}
 
   async get(raw: string, limits: FetchLimits, signal?: AbortSignal): Promise<FetchResponse> {
-    if (this.policy instanceof ExactOriginPolicy) {
-      return this.getConformance(raw, limits, signal);
-    }
     const deadline = Date.now() + limits.timeoutMs;
+    const release = await globalPermits.acquire(limits.upload === true, limits.caller ?? '', deadline);
+    try {
+      if (this.policy instanceof ExactOriginPolicy) {
+        return await this.getConformance(raw, limits, release, deadline);
+      }
+      return await this.getNetwork(raw, limits, release, deadline, signal);
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
+  private async getConformance(
+    raw: string,
+    limits: FetchLimits,
+    release: () => void,
+    deadline: number,
+  ): Promise<FetchResponse> {
+    let redirects = 0;
+    let current = raw;
+    let base: URL | undefined;
+    for (;;) {
+      if (Date.now() > deadline) {
+        throw new OutboundError(OutboundFailure.TimedOut);
+      }
+      const target = this.policy.validate(current, base);
+      const path = `${target.pathname}${target.search}`;
+      let response: Awaited<ReturnType<typeof rawGet>>;
+      try {
+        response = await rawGet(Number(target.port), path, limits.range);
+      } catch (error) {
+        if (error instanceof OutboundError) {
+          throw error;
+        }
+        throw new OutboundError(OutboundFailure.Blocked);
+      }
+      const location = headerText(response.headers.location?.[0] ?? '');
+      if (isRedirect(response.statusCode) && location !== '') {
+        if (redirects >= limits.maxRedirects) {
+          throw new OutboundError(OutboundFailure.TooManyRedirects);
+        }
+        if (limits.hop !== undefined && !limits.hop()) {
+          throw new OutboundError(OutboundFailure.RateLimited);
+        }
+        base = target;
+        try {
+          current = new URL(location, target).href;
+        } catch {
+          throw new OutboundError(OutboundFailure.Blocked);
+        }
+        redirects += 1;
+        continue;
+      }
+      const lengthHeader = response.headers['content-length']?.[0];
+      const contentLength = lengthHeader === undefined ? undefined : Number.parseInt(lengthHeader, 10);
+      let body: Buffer;
+      try {
+        body = readBounded(
+          response.body,
+          Number.isFinite(contentLength) ? contentLength : undefined,
+          response.headers,
+          limits.maxBytes,
+          limits.truncate === true,
+        );
+      } catch (error) {
+        if (error instanceof OutboundError && error.failure === OutboundFailure.UnsupportedContentEncoding) {
+          throw error;
+        }
+        throw error;
+      }
+      return {
+        statusCode: response.statusCode,
+        body: new Uint8Array(body),
+        contentType: response.headers['content-type']?.[0]?.split(';')[0]?.trim() ?? '',
+        finalUrl: target.href,
+        headers: response.headers,
+        redirects,
+        release,
+      };
+    }
+  }
+
+  private async getNetwork(
+    raw: string,
+    limits: FetchLimits,
+    release: () => void,
+    deadline: number,
+    signal?: AbortSignal,
+  ): Promise<FetchResponse> {
     let redirects = 0;
     let current = raw;
     let base: URL | undefined;
@@ -193,7 +299,7 @@ export class OutboundFetcher {
         req.end();
       });
       const headerMap = headerLines(response.headers);
-      const location = response.headers.location ?? '';
+      const location = headerText(response.headers.location ?? '');
       if (isRedirect(response.statusCode ?? 0) && location !== '') {
         response.resume();
         if (redirects >= limits.maxRedirects) {
@@ -203,62 +309,23 @@ export class OutboundFetcher {
           throw new OutboundError(OutboundFailure.RateLimited);
         }
         base = target;
-        current = location;
+        try {
+          current = new URL(location, target).href;
+        } catch {
+          throw new OutboundError(OutboundFailure.Blocked);
+        }
         redirects += 1;
         continue;
       }
       const body = await readResponseBody(response, limits.maxBytes, limits.truncate === true);
-      const released = { done: false };
       return {
         statusCode: response.statusCode ?? 0,
         body,
         contentType: String(response.headers['content-type'] ?? '').split(';')[0]?.trim() ?? '',
         finalUrl: target.href,
         headers: headerMap,
-        release() {
-          released.done = true;
-        },
-      };
-    }
-  }
-
-  private async getConformance(raw: string, limits: FetchLimits, signal?: AbortSignal): Promise<FetchResponse> {
-    if (signal?.aborted) {
-      throw signal.reason ?? new OutboundError(OutboundFailure.TimedOut);
-    }
-    let redirects = 0;
-    let current = raw;
-    let base: URL | undefined;
-    for (;;) {
-      const target = this.policy.validate(current, base);
-      const path = `${target.pathname}${target.search}`;
-      const response = await rawGet(Number(target.port), path, limits.range);
-      const location = response.headers.location?.[0] ?? '';
-      if (isRedirect(response.statusCode) && location !== '') {
-        if (redirects >= limits.maxRedirects) {
-          throw new OutboundError(OutboundFailure.TooManyRedirects);
-        }
-        if (limits.hop !== undefined && !limits.hop()) {
-          throw new OutboundError(OutboundFailure.RateLimited);
-        }
-        base = target;
-        current = new URL(location, target).href;
-        redirects += 1;
-        continue;
-      }
-      if (response.body.length > limits.maxBytes && !limits.truncate) {
-        throw new OutboundError(OutboundFailure.TooLarge);
-      }
-      const body = limits.truncate
-        ? response.body.subarray(0, limits.maxBytes)
-        : response.body;
-      return {
-        statusCode: response.statusCode,
-        body: new Uint8Array(body),
-        contentType: response.headers['content-type']?.[0]?.split(';')[0]?.trim() ?? '',
-        finalUrl: target.href,
-        headers: response.headers,
-        release() {},
+        redirects,
+        release,
       };
     }
   }

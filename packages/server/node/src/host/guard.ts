@@ -1,10 +1,12 @@
-import { eqIgnoreAsciiCase, isFieldValue } from '../http/headers.ts';
+import { equalsOrdinalIgnoreCase } from '../dotnet/ordinal.ts';
+import { isFieldValue } from '../http/headers.ts';
 import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { verifyTicket } from '../auth/ticket.ts';
 import { RateLimiter } from './rate-limit.ts';
 import type { HostAppOptions } from './options.ts';
 import { writePlain } from '../route/respond.ts';
+import { hostAllowed } from './host-check.ts';
 
 const rateKeys = new WeakMap<Request, string>();
 
@@ -26,7 +28,7 @@ function originAllowed(origin: string, allowedOrigins: string[]): boolean {
     return false;
   }
   for (const candidate of allowedOrigins) {
-    if (eqIgnoreAsciiCase(candidate.trim(), origin)) {
+    if (equalsOrdinalIgnoreCase(candidate.trim(), origin)) {
       return true;
     }
   }
@@ -39,17 +41,33 @@ function remoteKey(request: Request): string {
   return `${addr}:${port}`;
 }
 
+export function fetchCaller(options: HostAppOptions, request: Request): string {
+  if (options.rateLimitPerMinute <= 0) {
+    return '';
+  }
+  return rateKeyFromRequest(request);
+}
+
 export async function guardRequest(
   options: HostAppOptions,
   request: Request,
   response: ResponseWriter,
   requireWrite: boolean,
 ): Promise<boolean> {
+  const host = firstHeader(request, 'host');
+  if (
+    options.loopbackHostCheck
+    && options.auth !== 'ticket'
+    && !hostAllowed(host, options.allowedHostNames)
+  ) {
+    await writePlain(request, response, 421, 'host not allowed\n');
+    return false;
+  }
   const origin = requestOrigin(request);
   const allowed = originAllowed(origin, options.allowedOrigins);
   const hasOrigin = request.headers().contains('origin');
   const secFetchSite = firstHeader(request, 'sec-fetch-site');
-  const required = options.auth === 'ticket' || hasOrigin || eqIgnoreAsciiCase(secFetchSite, 'cross-site');
+  const required = options.auth === 'ticket' || hasOrigin || equalsOrdinalIgnoreCase(secFetchSite, 'cross-site');
   if (required && !allowed) {
     await writePlain(request, response, 403, 'origin not allowed\n');
     return false;
@@ -61,7 +79,10 @@ export async function guardRequest(
   let key = `addr:${remoteKey(request)}`;
   if (options.auth === 'ticket') {
     const authorization = firstHeader(request, 'authorization');
-    const pass = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+    let pass = authorization;
+    if (pass.startsWith('Bearer ')) {
+      pass = pass.slice(7);
+    }
     if (pass === '') {
       await writePlain(request, response, 401, 'missing pass\n');
       return false;

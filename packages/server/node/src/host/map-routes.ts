@@ -1,6 +1,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import { CollabRooms } from '../collab/rooms.ts';
+import { equalsOrdinalIgnoreCase } from '../dotnet/ordinal.ts';
 import { eqIgnoreAsciiCase, isFieldValue, trimChars, type Headers } from '../http/headers.ts';
 import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
@@ -12,6 +13,9 @@ import { fileBytesHandler } from './file-bytes.ts';
 import { guardRequest } from './guard.ts';
 import { localFileHandler } from './local-file.ts';
 import type { HostAppOptions } from './options.ts';
+import { frameCheckHandler } from './frame-check.ts';
+import { unfurlHandler } from './unfurl.ts';
+import { uploadByUrlHandler } from './upload-by-url.ts';
 import { uploadHandler } from './upload.ts';
 
 function isSingleSegment(doc: string): boolean {
@@ -24,7 +28,7 @@ function originAllowed(origin: string, allowedOrigins: string[]): boolean {
     return false;
   }
   for (const candidate of allowedOrigins) {
-    if (eqIgnoreAsciiCase(trimChars(candidate, ' \t'), origin)) {
+    if (equalsOrdinalIgnoreCase(trimChars(candidate, ' \t'), origin)) {
       return true;
     }
   }
@@ -140,10 +144,6 @@ async function stubNoContent(request: Request, response: ResponseWriter): Promis
   await response.start(204);
 }
 
-async function stubUnfurl(request: Request, response: ResponseWriter): Promise<void> {
-  await notFound(request, response);
-}
-
 function loadDocText(endpoint: string, doc: string): Promise<string> {
   const base = new URL(endpoint.endsWith('/') ? endpoint : `${endpoint}/`);
   const prefix = base.pathname.replace(/\/$/, '');
@@ -206,16 +206,19 @@ export function buildRouter(options: HostAppOptions): Router {
       uploadHandler(store, options.maxUploadBytes, request, response), options);
     shell(router, `${patternPrefix}/delete`, 'POST', (request, response) =>
       deleteHandler(store, request, response), options);
-    if (options.unfurlEnabled) {
-      shell(router, `${patternPrefix}/upload-by-url`, 'POST', async (request, response) => {
-        await writePlain(request, response, 400, 'malformed upload\n');
-      }, options);
+    if (options.unfurlEnabled && store) {
+      shell(router, `${patternPrefix}/upload-by-url`, 'POST', (request, response) =>
+        uploadByUrlHandler(store, options, request, response), options);
     }
   }
 
   if (options.unfurlEnabled) {
-    shell(router, `${patternPrefix}/unfurl`, 'GET', stubUnfurl, options);
-    shell(router, `${patternPrefix}/frame-check`, 'GET', stubUnfurl, options);
+    shell(router, `${patternPrefix}/unfurl`, 'GET', (request, response) =>
+      unfurlHandler(options, request, response), options);
+    shell(router, `${patternPrefix}/frame-check`, 'GET', (request, response) =>
+      frameCheckHandler(options, request, response), options);
+    router.handle(`${patternPrefix}/frame-check`, ['POST'], (request, response) =>
+      methodNotAllowed(request, response, 'GET, HEAD, OPTIONS'));
   }
 
   if (options.collabEnabled) {

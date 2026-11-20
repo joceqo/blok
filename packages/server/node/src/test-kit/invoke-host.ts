@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 import { createHostHandler } from '../host/app.ts';
 import type { HostAppOptions } from '../host/options.ts';
+import { hostNames } from '../host/host-check.ts';
 import { RateLimiter } from '../host/rate-limit.ts';
 import { DefaultBlockedPolicy, OutboundFetcher } from '../outbound/fetcher.ts';
 import { Body, BodyState, FramingTag } from '../http/body.ts';
@@ -50,6 +51,9 @@ export function defaultTestHostOptions(storageDirectory?: string): HostAppOption
     filesCors: false,
     fetcher: new OutboundFetcher(new DefaultBlockedPolicy()),
     rateLimiter: new RateLimiter(0),
+    rateLimitPerMinute: 0,
+    loopbackHostCheck: false,
+    allowedHostNames: hostNames([], 'http://127.0.0.1:4000/'),
   };
 }
 

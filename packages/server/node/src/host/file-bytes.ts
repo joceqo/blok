@@ -11,7 +11,7 @@ import {
 } from '../outbound/fetcher.ts';
 import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
-import { hopBudget } from './guard.ts';
+import { fetchCaller, hopBudget } from './guard.ts';
 import type { HostAppOptions } from './options.ts';
 import { writePlain } from '../route/respond.ts';
 
@@ -200,6 +200,7 @@ async function probePdf(
     maxRedirects: 5,
     truncate: true,
     hop: hopBudget(options, request),
+    caller: fetchCaller(options, request),
     range: { start: 0, end: PDF_CHECK_BYTES - 1 },
   });
   try {
@@ -229,9 +230,10 @@ async function serveRemotePdf(
       timeoutMs: 120_000,
       maxBytes: FILE_BYTES_ANSWER_BYTES,
       maxRedirects: 5,
-      hop: hopBudget(options, request),
-      upload: true,
-      range: byteRange,
+    hop: hopBudget(options, request),
+    caller: fetchCaller(options, request),
+    upload: true,
+    range: byteRange,
     });
     const extent = upstreamExtent(fetched);
     if (

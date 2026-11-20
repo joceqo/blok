@@ -3,13 +3,9 @@ import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { ErrForeign } from '../blob/key.ts';
 import type { LocalStore } from '../blob/local.ts';
+import { isJsonContentType } from '../mediatype/index.ts';
 import { readEnvelopeJson } from './envelope.ts';
 import { writePlain } from '../route/respond.ts';
-
-function isJsonContentType(value: string): boolean {
-  const media = value.split(';')[0]?.trim().toLowerCase() ?? '';
-  return media === 'application/json' || media.endsWith('+json');
-}
 
 export async function deleteHandler(
   store: LocalStore,
