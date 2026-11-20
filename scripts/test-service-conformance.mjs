@@ -21,6 +21,7 @@ const SUITES = [
   'auth-contract',
   'setup-contract',
   'workspaces-contract',
+  'teamspaces-contract',
   'pages-contract',
   'tickets-contract',
   'admin-contract',

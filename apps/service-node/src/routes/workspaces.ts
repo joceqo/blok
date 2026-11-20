@@ -34,6 +34,10 @@ import {
   parsePresetPatchBody,
   serializeWorkspacePreset,
 } from '@/workspaces/preset-body.js';
+import {
+  resolveWorkspaceSlugAvailability,
+  workspaceSlugIsTaken,
+} from '@/workspaces/slug-availability.js';
 import { slugFromName, validateWorkspaceSlug } from '@/workspaces/slug.js';
 import { recordAuditEvent } from '@/audit/record-audit-event.js';
 import { serializeAuditEvent } from '@/audit/serialize-audit-event.js';
@@ -94,6 +98,20 @@ workspaceRoutes.get('/api/workspaces', requireUser(), async (context) => {
   const db = context.get('db');
   const rows = await listWorkspacesForUser(db, userId);
   return context.json({ workspaces: rows });
+});
+
+workspaceRoutes.get('/api/workspaces/check-slug', requireUser(), async (context) => {
+  const db = context.get('db');
+  const raw = context.req.query('slug') ?? '';
+  const validation = validateWorkspaceSlug(raw);
+  const availability = resolveWorkspaceSlugAvailability(
+    validation,
+    validation.ok ? await workspaceSlugIsTaken(db, validation.slug) : false,
+  );
+  if (availability.status === 'invalid') {
+    return context.json({ error: availability.reason }, 400);
+  }
+  return context.json({ available: availability.available });
 });
 
 workspaceRoutes.get('/api/workspaces/by-slug/:slug', requireUser(), async (context) => {
