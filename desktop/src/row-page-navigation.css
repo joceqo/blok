@@ -26,6 +26,17 @@
   margin-inline: 0;
 }
 
-[data-desktop-row-page] [data-blok-redactor] {
-  padding-inline-start: 0;
+/*
+  Seule la gouttière de l'éditeur HÔTE tombe : c'est elle qui décalait le
+  tiroir, donc sa couverture, de 56 px. Celle de l'éditeur du tiroir reste —
+  database.css tire ce dernier de -53 px, et ces deux valeurs ensemble posent
+  le corps sur la même ligne que les propriétés au-dessus de lui. Annuler le
+  padding de TOUS les redactors de la page prenait aussi la sienne, et le
+  corps pendait d'une gouttière entière à gauche de ses propres propriétés.
+  La variable plutôt que le padding : un hôte qui déclare la sienne garde la
+  main, et le tiroir redéclare la sienne sur lui-même, donc il n'hérite pas
+  de ce zéro.
+*/
+[data-desktop-row-page] > article[data-desktop-document] > [data-desktop-editor] > [data-blok-interface] {
+  --blok-editor-gutter-start: 0px;
 }
