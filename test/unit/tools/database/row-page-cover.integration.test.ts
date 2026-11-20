@@ -96,7 +96,7 @@ const hostPages = (covers: Map<string, { cover?: string; position?: number }> = 
     mount: vi.fn(() => ({ destroy: vi.fn() })),
     cover: {
       read: (pageId: string) => covers.get(pageId),
-      write: vi.fn((pageId: string, patch: { cover?: string | null; position?: number }) => {
+      write: vi.fn((pageId: string, patch: { cover?: string | null; position?: number }): boolean => {
         const current = covers.get(pageId) ?? {};
 
         if (patch.cover === null) covers.delete(pageId);
@@ -106,6 +106,8 @@ const hostPages = (covers: Map<string, { cover?: string; position?: number }> = 
           ...(patch.position !== undefined ? { position: patch.position } : {}),
           ...(patch.cover !== undefined ? { position: undefined } : {}),
         });
+
+        return true;
       }),
     },
   },

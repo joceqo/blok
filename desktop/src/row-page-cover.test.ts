@@ -55,6 +55,19 @@ describe('a row page keeps its cover in the workspace manifest, with the page', 
     expect(pages[0].coverPosition).toBeUndefined();
   });
 
+  it('reports failure when there is no page record, so the row keeps its cover', () => {
+    const { channel, save } = setup([]);
+
+    expect(channel.write('absente', { cover: 'https://example.com/b.png' })).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('reports success when it wrote', () => {
+    const { channel } = setup([{ id: 'p', title: 'Row', parentId: null }]);
+
+    expect(channel.write('p', { cover: 'https://example.com/b.png' })).toBe(true);
+  });
+
   it('refuses a page this person may only read', () => {
     const { channel, pages, save } = setup([{ id: 'p', title: 'Row', parentId: null }], () => true);
 

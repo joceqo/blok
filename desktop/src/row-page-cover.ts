@@ -32,7 +32,10 @@ export function createRowPageCoverChannel(options: RowPageCoverOptions): NonNull
     write(pageId, patch) {
       const page = options.page(pageId);
 
-      if (page === undefined || options.readOnly(pageId)) return;
+      // A row body is deliberately absent from the sidebar index (service
+      // documents.go), so there is no page record to write on. Saying so lets
+      // the database keep the cover on the row block instead of losing it.
+      if (page === undefined || options.readOnly(pageId)) return false;
       if (patch.cover !== undefined) {
         // A new image is framed from its own centre, as the page shell's own picker does.
         if (patch.cover === null) delete page.cover;
@@ -42,6 +45,8 @@ export function createRowPageCoverChannel(options: RowPageCoverOptions): NonNull
       if (patch.position !== undefined) page.coverPosition = patch.position;
       options.save();
       options.refresh(pageId);
+
+      return true;
     },
   };
 }

@@ -9458,7 +9458,7 @@ export class DatabaseTool implements BlockTool {
     const pageId = this.rowOrTemplate(rowId)?.pageId;
 
     if (channel === undefined || pageId === undefined) return false;
-    channel.write(pageId, patch);
+    if (!channel.write(pageId, patch)) return false;
     this.syncRowsFromBlocks();
     this.cardDrawer?.syncOpenRow(this.rowOrTemplate(rowId));
     this.rerenderView({ keepDrawer: true });

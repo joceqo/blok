@@ -1654,8 +1654,12 @@ export interface DatabaseRowPages {
    */
   cover?: {
     read(pageId: string): { cover?: string; position?: number } | undefined;
-    /** `cover: null` removes it with its position; an absent key stays as it was. */
-    write(pageId: string, patch: { cover?: string | null; position?: number }): void;
+    /**
+     * `cover: null` removes it with its position; an absent key stays as it
+     * was. False means the host has nowhere to put it — a row body is absent
+     * from the page index — and the row block keeps the cover instead.
+     */
+    write(pageId: string, patch: { cover?: string | null; position?: number }): boolean;
   };
 }
 
