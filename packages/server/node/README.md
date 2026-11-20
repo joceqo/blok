@@ -14,15 +14,20 @@ Produces `packages/server/node/dist/blok-server` (ordinary) and `dist/blok-serve
 
 ## Test
 
-```bash
-yarn vitest --project server-node
-```
-
-Or from this package:
+**Fast (in-process, Vitest + Zod 4)** — low memory, for routes and CLI parse:
 
 ```bash
-yarn vitest --config vitest.config.ts
+cd packages/server/node && npm install && npm test
 ```
+
+**Slow (conformance, spawn)** — parity with Go/C#/Rust:
+
+```bash
+node scripts/build-node-server.mjs
+node scripts/test-server-conformance.mjs --target node
+```
+
+Filter one suite: `--suite routing-contract`. Files named `*.fast.test.ts` are the fast tier only.
 
 ## Known divergences (planned; see `docs/plans/server-node-nifty-zebra.md`)
 

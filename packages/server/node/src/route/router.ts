@@ -52,7 +52,7 @@ export class Router {
       await badRequest(response);
       return;
     }
-    const path = targetPath(target);
+    const path = request.path();
     const decoded = decodeKeepingSlash(path);
     if (decoded.includes('\0')) {
       await badRequest(response);

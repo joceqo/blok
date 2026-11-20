@@ -13,5 +13,14 @@
   "files": [
     "bin",
     "dist"
-  ]
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:fast": "vitest run --dir src"
+  },
+  "devDependencies": {
+    "vitest": "5.0.5",
+    "zod": "^4.1.12"
+  }
 }
