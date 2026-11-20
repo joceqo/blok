@@ -1,64 +1,59 @@
-import { AsyncMutex } from '../http/sync.ts';
+import { Mutex, lock } from '../http/sync.ts';
 
 export const POOL_SIZE = 4;
 const PER_CALLER = 2;
 
 class Semaphore {
-  private permits: number;
-  private readonly waiting: Array<() => void> = [];
-  private readonly gate = new AsyncMutex(undefined);
+  private slots: number;
+  private readonly queue: Array<(release: () => void) => void> = [];
+  private readonly mutex = new Mutex(undefined);
 
   constructor(capacity: number) {
-    this.permits = capacity;
-  }
-
-  private releaseCallback(): () => void {
-    let released = false;
-    return () => {
-      if (released) {
-        return;
-      }
-      released = true;
-      void this.release();
-    };
-  }
-
-  private async release(): Promise<void> {
-    const guard = await this.gate.lock();
-    const wake = this.waiting.shift();
-    if (wake) {
-      guard.release();
-      wake();
-      return;
-    }
-    this.permits += 1;
-    guard.release();
+    this.slots = capacity;
   }
 
   async acquire(deadlineMs: number): Promise<() => void> {
-    const guard = await this.gate.lock();
-    if (this.permits > 0) {
-      this.permits -= 1;
-      guard.release();
-      return this.releaseCallback();
-    }
-    guard.release();
-    await new Promise<void>((resolve, reject) => {
-      const delay = Math.max(0, deadlineMs - Date.now());
-      const timer = setTimeout(() => {
-        const index = this.waiting.indexOf(wake);
-        if (index >= 0) {
-          this.waiting.splice(index, 1);
+    const release = await new Promise<() => void>((resolve, reject) => {
+      const tryAcquire = (): void => {
+        const guard = lock(this.mutex);
+        if (this.slots > 0) {
+          this.slots -= 1;
+          guard.get();
+          resolve(() => this.signal());
+          return;
         }
-        reject(new Error('timed out'));
-      }, delay);
-      const wake = (): void => {
-        clearTimeout(timer);
-        resolve();
+        guard.get();
+        const delay = Math.max(0, deadlineMs - Date.now());
+        const timer = setTimeout(() => {
+          const g = lock(this.mutex);
+          const index = this.queue.findIndex((wake) => wake === wakeFn);
+          if (index >= 0) {
+            this.queue.splice(index, 1);
+          }
+          g.get();
+          reject(new Error('timed out'));
+        }, delay);
+        const wakeFn = (releaseSlot: () => void): void => {
+          clearTimeout(timer);
+          resolve(releaseSlot);
+        };
+        this.queue.push(wakeFn);
       };
-      this.waiting.push(wake);
+      tryAcquire();
     });
-    return this.releaseCallback();
+    return release;
+  }
+
+  private signal(): void {
+    const guard = lock(this.mutex);
+    const next = this.queue.shift();
+    if (next) {
+      guard.get();
+      next(() => this.signal());
+      return;
+    }
+    this.slots += 1;
+    guard.get();
   }
 }
 
@@ -105,3 +100,6 @@ export class OutboundPermits {
     }
   }
 }
+
+/** One pool per process, as in C# DI singleton and Go/Rust shared Fetcher slots. */
+export const sharedOutboundPermits = new OutboundPermits();

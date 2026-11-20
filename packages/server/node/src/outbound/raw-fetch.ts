@@ -11,6 +11,11 @@ export interface RawResponse {
   body: Buffer;
 }
 
+export interface RawGet {
+  promise: Promise<RawResponse>;
+  cancel(): Promise<void>;
+}
+
 function parseHeaders(block: string): Record<string, string[]> {
   const headers: Record<string, string[]> = {};
   for (const line of block.split('\r\n')) {
@@ -90,34 +95,65 @@ function decodeChunked(data: Buffer): Buffer {
   return Buffer.concat(chunks);
 }
 
-export function rawGet(port: number, path: string, range?: ByteRange): Promise<RawResponse> {
+export function rawGet(port: number, path: string, range?: ByteRange): RawGet {
   let request = `GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUser-Agent: ${USER_AGENT}\r\n`;
   if (range !== undefined) {
     const value = range.end < 0 ? `bytes=${range.start}-` : `bytes=${range.start}-${range.end}`;
     request += `Range: ${value}\r\n`;
   }
   request += '\r\n';
-  return new Promise((resolve, reject) => {
+  const socket = net.createConnection({ host: '127.0.0.1', port });
+  let settled = false;
+  const promise = new Promise<RawResponse>((resolve, reject) => {
     const chunks: Buffer[] = [];
-    const socket = net.createConnection({ host: '127.0.0.1', port });
-    socket.on('error', reject);
+    socket.on('error', (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(error);
+    });
     socket.on('data', (chunk) => {
       chunks.push(chunk);
       if (Buffer.concat(chunks).length > MAX_RESPONSE_HEAD + (8 << 20)) {
         socket.destroy();
-        reject(new OutboundError(OutboundFailure.TooLarge));
+        if (!settled) {
+          settled = true;
+          reject(new OutboundError(OutboundFailure.TooLarge));
+        }
       }
     });
     socket.on('end', () => {
+      if (settled) {
+        return;
+      }
       try {
         const buffer = Buffer.concat(chunks);
         const parsed = readHead(buffer);
         const body = readBody(buffer, parsed.headersEnd, parsed.headers);
+        settled = true;
         resolve({ statusCode: parsed.statusCode, headers: parsed.headers, body });
       } catch (error) {
+        settled = true;
         reject(error);
       }
     });
     socket.end(request);
   });
+  return {
+    promise,
+    cancel(): Promise<void> {
+      if (settled) {
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => {
+        const onClose = (): void => {
+          socket.off('close', onClose);
+          resolve();
+        };
+        socket.once('close', onClose);
+        socket.destroy();
+      });
+    },
+  };
 }

@@ -2,7 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { URL } from 'node:url';
 
-import { OutboundPermits } from './permits.ts';
+import { sharedOutboundPermits } from './permits.ts';
 import { rawGet } from './raw-fetch.ts';
 import { readBounded } from './read-body.ts';
 
@@ -162,14 +162,13 @@ function encoded(headers: Record<string, string[]>): boolean {
 }
 
 export class OutboundFetcher {
-  private readonly permits = new OutboundPermits();
-
   constructor(readonly policy: OutboundPolicy) {}
 
   async get(raw: string, limits: FetchLimits, signal?: AbortSignal): Promise<FetchResponse> {
     const deadline = Date.now() + limits.timeoutMs;
-    const releasePermit = await this.permits.acquire(limits.upload === true, limits.caller ?? '', deadline);
+    const releasePermit = await sharedOutboundPermits.acquire(limits.upload === true, limits.caller ?? '', deadline);
     let released = false;
+    let cancelRaw: (() => Promise<void>) | undefined;
     const release = (): void => {
       if (released) {
         return;
@@ -179,10 +178,13 @@ export class OutboundFetcher {
     };
     try {
       if (this.policy.exactOrigin === true) {
-        return await this.getConformance(raw, limits, release, deadline);
+        return await this.getConformance(raw, limits, release, deadline, (cancel) => {
+          cancelRaw = cancel;
+        });
       }
       return await this.getNetwork(raw, limits, release, deadline, signal);
     } catch (error) {
+      await cancelRaw?.();
       release();
       throw error;
     }
@@ -193,6 +195,7 @@ export class OutboundFetcher {
     limits: FetchLimits,
     release: () => void,
     deadline: number,
+    onRawGet: (cancel: () => Promise<void>) => void,
   ): Promise<FetchResponse> {
     let redirects = 0;
     let current = raw;
@@ -203,9 +206,11 @@ export class OutboundFetcher {
       }
       const target = this.policy.validate(current, base);
       const path = `${target.pathname}${target.search}`;
-      let response: Awaited<ReturnType<typeof rawGet>>;
+      let response: Awaited<ReturnType<typeof rawGet>['promise']>;
       try {
-        response = await rawGet(Number(target.port), path, limits.range);
+        const fetch = rawGet(Number(target.port), path, limits.range);
+        onRawGet(() => fetch.cancel());
+        response = await fetch.promise;
       } catch (error) {
         if (error instanceof OutboundError) {
           throw error;
