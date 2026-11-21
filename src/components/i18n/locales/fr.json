@@ -2290,6 +2290,7 @@
   "tools.database.chartSortXDescending": "Axe X décroissant",
   "tools.database.chartSortYAscending": "Axe Y croissant",
   "tools.database.chartSortYDescending": "Axe Y décroissant",
+  "tools.database.chartRowLimit": "Lignes incluses (ordre de la vue)",
   "tools.database.chartOmitZero": "Masquer les valeurs nulles",
   "tools.database.chartCumulative": "Cumulatif",
   "tools.database.chartColor": "Palette de couleurs",

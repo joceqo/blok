@@ -2027,11 +2027,9 @@ describe('main.css split — cascade-preserving equivalence', () => {
     const PRESENCE_INK_FACES_BYTES = 4_973;
     // table-of-contents.css: the block is never the browser's scroll anchor (measured table-of-contents.css growth).
     const TOC_NO_SCROLL_ANCHOR_BYTES = 459;
-    // Measured row containment + typed gutter clip margin; excludes existing drift.
-    const DATABASE_ROW_CONTAINMENT_BYTES = 1_082;
-    // Fork additions against ffe3c76d3: custom emojis, cover gallery, date mentions
-    // and hiding the page header while the loading skeleton is active.
-    const DESKTOP_INTEGRATION_BYTES = 2_758;
+    // Net fork CSS over upstream 372a76087: database +7341, audio +1568, emoji +685,
+    // main +543, date mentions +381, loading +221 and presence -774 bytes.
+    const FORK_DESKTOP_BYTES = 9_965;
     // popover-animation.css + colors.css: the block menu's quiet look and its four tokens (measured growth of both files).
     const BLOCK_MENU_QUIET_BYTES = 4_325;
     // link-picker.css + colors.css + slash-search.css: the link field's shelf, heading outline, three tokens, and the declared-scroller rules (measured growth).
@@ -2687,7 +2685,7 @@ describe('main.css split — cascade-preserving equivalence', () => {
       + VIDEO_HANDLE_CLEARANCE_BYTES
       + PRESENCE_INK_FACES_BYTES
       + TOC_NO_SCROLL_ANCHOR_BYTES
-      + DATABASE_ROW_CONTAINMENT_BYTES
+      + FORK_DESKTOP_BYTES
       + EMOJI_FILTER_KEYS_HIGHLIGHT_BYTES
       + EMOJI_FILTER_KEYS_HOVER_BYTES
       + BLOCK_MENU_QUIET_BYTES

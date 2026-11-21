@@ -2274,6 +2274,7 @@
   "tools.database.chartSortXDescending": "X axis descending",
   "tools.database.chartSortYAscending": "Y axis ascending",
   "tools.database.chartSortYDescending": "Y axis descending",
+  "tools.database.chartRowLimit": "Rows included (view order)",
   "tools.database.chartOmitZero": "Omit zero values",
   "tools.database.chartCumulative": "Cumulative",
   "tools.database.chartColor": "Color palette",

@@ -42,7 +42,7 @@ describe('chartLayoutItems', () => {
 
   it('offers the column chart rows', () => {
     expect(names(items())).toEqual([
-      'chart-type', 'chart-x', 'chart-y', 'chart-group-by', 'chart-sort', 'chart-omit-zero',
+      'chart-type', 'chart-x', 'chart-y', 'chart-group-by', 'chart-sort', 'chart-row-limit', 'chart-omit-zero',
       'chart-color', 'chart-height', 'chart-grid-lines', 'chart-axis-names', 'chart-data-labels', 'chart-legend',
     ]);
   });
@@ -66,7 +66,7 @@ describe('chartLayoutItems', () => {
   });
 
   it('keeps only what a number chart uses', () => {
-    expect(names(items({ chartType: 'number' }))).toEqual(['chart-type', 'chart-y', 'chart-color']);
+    expect(names(items({ chartType: 'number' }))).toEqual(['chart-type', 'chart-y', 'chart-row-limit', 'chart-color']);
   });
 
   it('writes the picked chart type', () => {
@@ -108,6 +108,12 @@ describe('chartLayoutItems', () => {
   it('flips a switch row', () => {
     const update = vi.fn();
 
+    const limit = byName(items({}, update), 'chart-row-limit');
+
+    byName(limit?.children?.items ?? [], 'chart-row-limit-3')?.onActivate?.();
+    expect(update).toHaveBeenCalledWith({ chartRowLimit: 3 });
+    byName(limit?.children?.items ?? [], 'chart-row-limit-all')?.onActivate?.();
+    expect(update).toHaveBeenCalledWith({ chartRowLimit: undefined });
     byName(items({ chartOmitZero: true }, update), 'chart-omit-zero')?.onActivate?.();
     expect(update).toHaveBeenCalledWith({ chartOmitZero: false });
   });

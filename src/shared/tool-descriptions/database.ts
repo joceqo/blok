@@ -768,6 +768,7 @@ export const DATABASE_DATA = {
             description: 'Chart: the Y axis, "count" or "<calculation>:<property id>" such as "sum:p1". Default count.',
           },
           chartSort: { type: 'string', enum: ['manual', 'xAscending', 'xDescending', 'yAscending', 'yDescending'], description: 'Chart: bar order. Default manual (the group order).' },
+          chartRowLimit: { type: 'integer', minimum: 1, description: 'Chart: first N rows in view sort order after filters and search, before grouping. Unset means all rows.' },
           chartOmitZero: { type: 'boolean', description: 'Chart: drop groups whose value is zero. Default false.' },
           chartCumulative: { type: 'boolean', description: 'Chart: running total. Applies only to count or sum with chartSort xAscending. Default false.' },
           chartColor: {

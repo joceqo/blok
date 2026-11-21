@@ -965,6 +965,8 @@ export interface DatabaseViewConfig {
   chartMeasure?: ChartMeasure;
   /** Chart. Default 'manual'. */
   chartSort?: ChartSort;
+  /** First matching rows in the view's sort order, before measuring or grouping. Unset means all rows. */
+  chartRowLimit?: number;
   /** Chart: drop groups whose value is zero. Default false. */
   chartOmitZero?: boolean;
   /** Chart: running total, only for Count or Sum with `chartSort` 'xAscending'. Default false. */
@@ -1064,7 +1066,7 @@ export type DatabaseViewSettingKey =
   | 'cardSize' | 'cardPreview' | 'fitImage' | 'cardLayout' | 'directTitleEdit' | 'calendarBy' | 'calendarRange' | 'showWeekends' | 'showAuthorByline'
   | 'timelineBy' | 'timelineEndBy' | 'timelineZoom' | 'timelineCenter' | 'showTimelineTable' | 'tableProperties' | 'arrowsBy'
   | 'toolbarMinimized'
-  | 'chartType' | 'chartMeasure' | 'chartSort' | 'chartOmitZero' | 'chartCumulative' | 'chartColor' | 'chartHeight'
+  | 'chartType' | 'chartMeasure' | 'chartSort' | 'chartRowLimit' | 'chartOmitZero' | 'chartCumulative' | 'chartColor' | 'chartHeight'
   | 'chartGridLines' | 'chartAxisNames' | 'chartDataLabels' | 'chartSmooth' | 'chartGradient' | 'chartCenterValue' | 'chartLegend'
   | 'subItemsDisplay' | 'subItemsFilter'
   | Tier3ViewSettingKey;

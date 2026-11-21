@@ -4438,6 +4438,11 @@
                 ],
                 "description": "Chart: bar order. Default manual (the group order)."
               },
+              "chartRowLimit": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Chart: first N rows in view sort order after filters and search, before grouping. Unset means all rows."
+              },
               "chartOmitZero": {
                 "type": "boolean",
                 "description": "Chart: drop groups whose value is zero. Default false."

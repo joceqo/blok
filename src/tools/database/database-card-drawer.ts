@@ -35,7 +35,7 @@ import { openCoverPicker, validateCoverFile } from '../audio/cover-picker';
 import { downloadImage } from '../image/download';
 import { loadSheet } from '../../components/utils/lazy-styles';
 import { trackCoverDrag } from '../../components/utils/cover-drag';
-import type { CoverPickerHandle } from '../audio/cover-picker';
+import type { CoverPickerHandle, OpenCoverPickerOptions } from '../audio/cover-picker';
 import { safeHref, safeImageSrc } from '../../components/utils/sanitize-url';
 import { isEscapeConsumed, markEscapeConsumed } from '../../components/utils/consumed-escape';
 import { getElementDirection, logicalArrow } from '../../components/utils/direction';
@@ -2291,7 +2291,8 @@ export class DatabaseCardDrawer {
     shell.setAttribute('aria-hidden', 'true');
     shell.setAttribute('data-open', '');
     shell.style.width = `${drawer.getBoundingClientRect().width}px`;
-    drawer.after(shell);
+    // A side peek lives inside its backdrop, which full-page mode removes.
+    (this.backdrop ?? drawer).after(shell);
     promoteToTopLayer(shell);
     // Read layout so the slide starts from the open place.
     void shell.getBoundingClientRect();

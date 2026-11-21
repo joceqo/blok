@@ -141,6 +141,21 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe('chart view', () => {
+  test('limits rows after filtering and sorting, and drills into the same rows', async ({ page }) => {
+    await mount(page, blocks({
+      type: 'chart', groupBy: 'p-status', chartMeasure: 'sum:p-points', chartRowLimit: 1,
+      filters: [{ propertyId: 'p-points', operator: 'less_than', value: 5 }],
+      sorts: [{ propertyId: 'p-points', direction: 'asc' }],
+    }));
+
+    await expect(page.locator('[data-blok-database-chart-mark]')).toHaveCount(1);
+    await hit(page, 'o-done').click();
+    const dialog = page.getByRole('dialog');
+
+    await expect(dialog).toContainText('Rest');
+    await expect(dialog).not.toContainText('Ship');
+  });
+
   test('rescales signed axes when a legend series is hidden', async ({ page }) => {
     await mount(page, blocks({
       type: 'chart', groupBy: 'p-status', subGroupBy: 'p-owner', chartMeasure: 'sum:p-points',

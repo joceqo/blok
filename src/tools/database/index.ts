@@ -6616,10 +6616,16 @@ export class DatabaseTool implements BlockTool {
   }
 
   /** Each group's rows from the view query. X groups drop the view's hidden groups; series keep all. */
-  private chartGroups(view: DatabaseViewConfig, propertyId: string, series: boolean, search = this.controls.search): ChartGroupInput[] {
+  private chartGroups(view: DatabaseViewConfig, propertyId: string, series: boolean, search = this.controls.search, included?: ReadonlySet<string>): ChartGroupInput[] {
     const grouped: DatabaseViewConfig = series
       ? { ...view, groupBy: propertyId, groupSettings: view.subGroupSettings }
       : { ...view, groupBy: propertyId };
+    // A filter or search narrows the axis as well as its values. A view may
+    // explicitly keep empty categories for comparison across charts.
+    if (grouped.groupSettings?.hideEmptyGroups === undefined
+      && (grouped.filters.length > 0 || grouped.filterTree !== undefined || search.trim() !== '')) {
+      grouped.groupSettings = { ...grouped.groupSettings, hideEmptyGroups: true };
+    }
     const optionGroup = this.isOptionGroup(propertyId);
     const options = series ? this.groupOptions(propertyId, grouped, search) : this.shownGroupOptions(propertyId, grouped, search);
     // Date and number keys do not collate in value order ("range:out", "rel:today"): rank them the way the model sorts them.
@@ -6628,13 +6634,20 @@ export class DatabaseTool implements BlockTool {
       : new Map(this.groupOptions(propertyId, { ...grouped, groupSettings: { ...grouped.groupSettings, sort: 'ascending', hideEmptyGroups: false } })
         .map((option, index) => [option.id, String(index).padStart(6, '0')]));
 
-    return options.map((option) => ({
-      key: option.id,
-      label: option.label,
-      sortKey: rank === undefined ? option.label : rank.get(option.id) ?? option.id,
-      ...(option.color !== undefined ? { color: option.color } : {}),
-      rows: this.model.queryRows({ view: grouped, group: option.id, search }).rows,
-    }));
+    return options.flatMap((option) => {
+      const matching = this.model.queryRows({ view: grouped, group: option.id, search }).rows;
+      const rows = included === undefined ? matching : matching.filter((row) => included.has(row.id));
+
+      if (included !== undefined && rows.length === 0) return [];
+
+      return [{
+        key: option.id,
+        label: option.label,
+        sortKey: rank === undefined ? option.label : rank.get(option.id) ?? option.id,
+        ...(option.color !== undefined ? { color: option.color } : {}),
+        rows,
+      }];
+    });
   }
 
   private renderChartView(titlePropId: string, viewConfig: DatabaseViewConfig): HTMLDivElement {
@@ -6657,14 +6670,19 @@ export class DatabaseTool implements BlockTool {
     const settings = resolveChartSettings(viewConfig, schema);
     const axis = this.chartAxis(viewConfig, schema);
     const hidden = new Set(context === undefined ? this.chartHidden.get(viewConfig.id) : context.state.chartHidden);
+    const limit = viewConfig.chartRowLimit;
+    const limitedRows = limit !== undefined && Number.isSafeInteger(limit) && limit > 0
+      ? this.model.queryRows({ view: viewConfig, search, limit }).rows
+      : undefined;
+    const included = limitedRows === undefined ? undefined : new Set(limitedRows.map((row) => row.id));
     const groups: ChartGroupInput[] = axis === undefined || settings.type === 'number'
-      ? [{ key: '', label: viewConfig.name, sortKey: '', rows: this.model.queryRows({ view: viewConfig, search }).rows }]
-      : this.chartGroups(viewConfig, axis.id, false, search);
+      ? [{ key: '', label: viewConfig.name, sortKey: '', rows: limitedRows ?? this.model.queryRows({ view: viewConfig, search }).rows }]
+      : this.chartGroups(viewConfig, axis.id, false, search, included);
     const subId = viewConfig.subGroupBy;
     const hasSeries = subId !== undefined && subId !== axis?.id && schema.some((p) => p.id === subId && GROUPABLE_TYPES.includes(p.type))
       && (settings.type === 'column' || settings.type === 'bar' || settings.type === 'line');
     const series: ChartSeriesInput[] = hasSeries
-      ? this.chartGroups(viewConfig, subId, true, search).map((group) => ({ key: group.key, label: group.label, rowIds: new Set(group.rows.map((row) => row.id)) }))
+      ? this.chartGroups(viewConfig, subId, true, search, included).map((group) => ({ key: group.key, label: group.label, rowIds: new Set(group.rows.map((row) => row.id)) }))
       : [];
     const data = foldChartData(
       buildChartData({ groups, series, measure: settings.measure, schema, sort: settings.sort, omitZero: settings.omitZero, cumulative: settings.cumulative, hidden }),

@@ -85,6 +85,13 @@ export const chartLayoutItems = (
         choice(`chart-group-by-${p.id}`, p.name, view.subGroupBy === p.id, () => update({ subGroupBy: p.id }))),
     ]),
     !isNumber && enumPage('chart-sort', 'chartSort', CHART_SORTS, s.sort, (v) => `tools.database.chartSort${capital(v)}`, 'chartSort'),
+    page('chart-row-limit', t('chartRowLimit'), [
+      choice('chart-row-limit-all', t('relationLimitNone'), view.chartRowLimit === undefined, () => update({ chartRowLimit: undefined })),
+      ...[3, 6, 12, 25, 50, 100].map((limit) => choice(
+        `chart-row-limit-${limit}`, i18n.t('tools.database.settingsLoadLimitPages', { count: limit }),
+        view.chartRowLimit === limit, () => update({ chartRowLimit: limit })
+      )),
+    ]),
     !isNumber && switchRow('chart-omit-zero', 'chartOmitZero', s.omitZero, 'chartOmitZero'),
     hasAxes && s.sort === 'xAscending' && (s.measure.kind === 'count' || s.measure.fn === 'sum')
       && switchRow('chart-cumulative', 'chartCumulative', s.cumulative, 'chartCumulative'),

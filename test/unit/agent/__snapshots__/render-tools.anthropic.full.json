@@ -70,7 +70,7 @@
   },
   {
     "name": "blok_execute",
-    "description": "Run a batch of commands. Either all of them land or none do. Use block ids from blok_read. To add several text blocks at once (headings, paragraphs, lists, code), use one markdown.insert. Call blok_describe for a command's arguments. Its result lists the changed blocks with their data as they now read, so you can check your work without blok_read.",
+    "description": "Run commands as one atomic batch. Use block ids from blok_read. To add several text blocks at once (headings, paragraphs, lists, code), use one markdown.insert. Call blok_describe for a command's arguments. Its result lists the changed blocks with their data as they now read, so you can check your work without blok_read.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -2330,6 +2330,58 @@
                 "type": "object",
                 "properties": {
                   "name": {
+                    "const": "database.setRowIcon"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "rowId"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "rowId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Id of a database-row child block."
+                      },
+                      "icon": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "cover": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "coverPosition": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100
+                      },
+                      "id": {
+                        "type": "string",
+                        "description": "Id of the block to act on."
+                      }
+                    }
+                  },
+                  "ref": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "args"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "name": {
                     "const": "database.setRowValues"
                   },
                   "args": {
@@ -4091,6 +4143,18 @@
                                   "yDescending"
                                 ],
                                 "description": "Chart: bar order. Default manual (the group order)."
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "chartRowLimit": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Chart: first N rows in view sort order after filters and search, before grouping. Unset means all rows."
                               },
                               {
                                 "type": "null"
