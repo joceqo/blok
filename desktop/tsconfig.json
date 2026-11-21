@@ -1,0 +1,47 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "types": [
+      "node",
+      "vite/client"
+    ],
+    "paths": {
+      "@bloklabs/core/full": [
+        "../types/full.d.ts"
+      ],
+      "@bloklabs/core/tools": [
+        "../types/tools-entry.d.ts"
+      ],
+      "@blok/sidebar": [
+        "./src/sidebar-contract.d.ts"
+      ],
+      "@blok/date-editor": [
+        "./src/date-editor-contract.d.ts"
+      ],
+      "@blok/modal-dialog": [
+        "./src/modal-dialog-contract.d.ts"
+      ],
+      "@blok/popover": [
+        "./src/popover-contract.d.ts"
+      ],
+      "@blok/agent-assistant": [
+        "./src/agent-assistant-contract.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "src"
+  ]
+}
