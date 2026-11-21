@@ -1,0 +1,183 @@
+/* Host provider settings. Selected and default states use neutral ink, never blue. */
+
+[data-blok-agent-settings][hidden] {
+  display: none;
+}
+
+[data-blok-agent-settings] {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(3px);
+  color: var(--blok-text-primary, black);
+  font-family: var(--blok-font-family, var(--blok-font-sans));
+}
+
+[data-blok-agent-settings-card] {
+  width: min(620px, 100%);
+  max-height: min(720px, 100%);
+  overflow: auto;
+  padding: 26px 28px 22px;
+  background: var(--blok-popover-bg, #fff);
+  border: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.16));
+  border-radius: var(--blok-radius-dialog);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.2);
+}
+
+[data-blok-agent-settings-head] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.12));
+}
+
+[data-blok-agent-settings-head] h2,
+[data-blok-agent-settings] h3 {
+  margin: 0;
+  color: var(--blok-text-primary, black);
+  font-weight: 600;
+}
+
+[data-blok-agent-settings-head] h2 {
+  font-size: 21px;
+  letter-spacing: -0.02em;
+}
+
+[data-blok-agent-settings] h3 {
+  margin-top: 22px;
+  font-size: 15px;
+}
+
+[data-blok-agent-settings] p {
+  margin: 6px 0 0;
+  color: var(--blok-text-secondary, #646a79);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+[data-blok-agent-settings] [data-blok-agent-row] p:first-child {
+  margin: 0;
+  color: var(--blok-text-primary, black);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+[data-blok-agent-row] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-top: 10px;
+  padding: 16px;
+  border: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.12));
+  border-radius: var(--blok-radius-surface);
+  background: color-mix(in srgb, var(--blok-popover-bg, #fff) 95%, var(--blok-text-primary, black) 5%);
+}
+
+[data-blok-agent-actions] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-blok-agent-settings] button,
+[data-blok-agent-actions] label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 31px;
+  padding: 6px 10px;
+  border: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.16));
+  border-radius: var(--blok-radius-control);
+  background: transparent;
+  color: var(--blok-text-primary, black);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+[data-blok-agent-settings-head] button {
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  min-height: 0;
+  padding: 0;
+  border-color: transparent;
+  color: var(--blok-text-secondary, #646a79);
+  font-size: 24px;
+  line-height: 1;
+}
+
+[data-blok-agent-actions] label {
+  background: var(--blok-popover-bg, #fff);
+}
+
+[data-blok-agent-actions] input {
+  margin: 0;
+  accent-color: #d95f4b;
+}
+
+[data-blok-agent-settings] button:hover,
+[data-blok-agent-actions] label:hover {
+  background: var(--blok-item-hover-bg, rgba(55, 53, 47, 0.06));
+}
+
+[data-blok-agent-settings] button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+[data-blok-agent-settings] button:focus-visible,
+[data-blok-agent-settings] input:focus-visible {
+  outline: 2px solid var(--blok-focus-ring);
+  outline-offset: 1px;
+}
+
+[data-blok-agent-default] {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: var(--blok-radius-pill);
+  background: var(--blok-icon-active-bg, rgba(55, 53, 47, 0.1));
+  color: var(--blok-text-primary, black);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+[data-blok-agent-login] {
+  margin-top: 12px;
+  color: var(--blok-text-primary, black);
+}
+
+[data-blok-agent-login] p {
+  color: var(--blok-text-primary, black);
+}
+
+[data-blok-agent-login] pre {
+  margin: 8px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  background: var(--blok-code-bg, var(--blok-bg-light, #f6f5f4));
+  color: var(--blok-text-primary, black);
+  border-radius: var(--blok-radius-field);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+[data-blok-agent-note] {
+  margin-top: 20px;
+  padding: 11px 12px;
+  border-radius: var(--blok-radius-field);
+  background: color-mix(in srgb, var(--blok-popover-bg, #fff) 95%, var(--blok-text-primary, black) 5%);
+}
