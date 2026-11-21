@@ -8364,6 +8364,7 @@ button[data-blok-database-board-lane-count]:hover {
 }
 
 [data-blok-database-tab-overflow-dropdown][data-blok-top-layer][popover] {
+  background-color: var(--blok-database-popover-bg);
   width: 290px;
   padding: var(--blok-space-1);
   max-height: 50vh;

@@ -95,6 +95,31 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe('database view overflow list', () => {
+
+  for (const theme of ['light', 'dark'] as const) {
+    test(`the view menu has an opaque ${theme} surface over the database`, async ({ page }) => {
+      await mount(page);
+      await page.evaluate((mode) => window.blokInstance?.theme.set(mode), theme);
+      const list = await openList(page);
+
+      const colors = await list.evaluate((menu) => {
+        const sample = document.createElement('span');
+
+        sample.style.backgroundColor = 'var(--blok-database-popover-bg)';
+        menu.appendChild(sample);
+        const expected = getComputedStyle(sample).backgroundColor;
+
+        sample.remove();
+
+        return { actual: getComputedStyle(menu).backgroundColor, expected };
+      });
+
+      expect(colors.expected).toMatch(/^rgb\(/);
+      expect(colors.actual).toBe(colors.expected);
+      await rowOf(list, 'Third').click();
+      await expect(page.getByRole('tab', { name: 'Third' })).toHaveAttribute('aria-selected', 'true');
+    });
+  }
   test('the current view stays a tab, after the leading ones, and the list still marks it (research/21 §2)', async ({ page }) => {
     await mount(page, 'v6');
     await setWidth(page, 700);

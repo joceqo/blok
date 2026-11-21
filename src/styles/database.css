@@ -4454,11 +4454,12 @@ button[data-blok-database-board-lane-count]:hover {
   pointer-events: none;
 }
 
-/* The list opens in the top layer; its reset would drop this width and padding. */
+/* This menu paints its own surface over the native popover reset. */
 [data-blok-database-tab-overflow-dropdown][data-blok-top-layer][popover] {
+  background-color: var(--blok-database-popover-bg);
   width: 290px;
   padding: var(--blok-space-1);
-  /* notion-motion.md Round 38 §5: capped at 50vh; the list scrolls under the search. */
+  /* Round 38 §5: scroll below search. */
   max-height: 50vh;
   display: flex;
   flex-direction: column;
