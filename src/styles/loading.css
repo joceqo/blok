@@ -17,6 +17,12 @@
   opacity: 0;
 }
 
+/* The title is a sibling of the redactor. Hide its placeholder during loading;
+   the handoff then fades the ready header and body in together. */
+[data-blok-loading] > [data-blok-page-header] {
+  visibility: hidden;
+}
+
 /* The overlay box IS the content column. Insets mirror the redactor gutter
    padding, max-width and margins mirror [data-blok-element-content]
    (max-w-blok-content mx-auto + the content-align rules in main.css). The
