@@ -326,6 +326,7 @@
   inset: auto;
   flex-direction: column;
   width: 248px;
+  box-sizing: border-box;
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
   overflow-y: auto;
@@ -348,6 +349,7 @@
 }
 
 [data-blok-sidebar-menu] [role="menu"] {
+  outline: none;
   display: flex;
   flex-direction: column;
 }

@@ -131,6 +131,25 @@ describe('page sidebar row', () => {
     expect(css).toMatch(/\[data-blok-sidebar-menu\]:popover-open\s*\{[^}]*display:\s*flex/);
   });
 
+  it('places the actions beside the trigger and flips when the trigger moves near the right edge', () => {
+    mount();
+    const trigger = row('Home').querySelector<HTMLButtonElement>('[data-blok-sidebar-more]')!;
+    const menu = menuOf('Home');
+    const bounds = vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue(new DOMRect(180, 300, 24, 24));
+    Object.defineProperties(menu, { offsetWidth: { value: 248 }, offsetHeight: { value: 200 } });
+
+    trigger.click();
+    expect(menu.style.left).toBe('208px');
+    expect(menu.style.top).toBe('212px');
+
+    bounds.mockReturnValue(new DOMRect(window.innerWidth - 48, 300, 24, 24));
+    window.dispatchEvent(new Event('resize'));
+    expect(menu.style.left).toBe(`${window.innerWidth - 48 - 248 - 4}px`);
+
+    menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it('indents each level by 8px', () => {
     mount();
 

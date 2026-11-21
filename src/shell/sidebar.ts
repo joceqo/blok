@@ -7,6 +7,7 @@ import { renderPageIcon } from './page-icon';
  * document, and the plus button asks the host to create one.
  */
 
+import { createPositionTracker, positionFixedAnchored } from '../components/utils/popover/anchored-position';
 import { onHover } from '../components/utils/tooltip';
 import { isPromotedToTopLayer, promoteToTopLayer, removeFromTopLayer } from '../components/utils/top-layer';
 
@@ -123,16 +124,13 @@ const ICONS = {
 
 const ADD_HINT = 'Ajouter une sous-page';
 const MORE_HINT = 'Actions de la page';
-const MENU_WIDTH = 248;
+const MENU_VIEWPORT_MARGIN = 8;
 
-const dismissers = new Map<HTMLElement, (event: PointerEvent) => void>();
+const menuCleanups = new WeakMap<HTMLElement, () => void>();
 
 function closeMenu(menu: HTMLElement): void {
-  const dismiss = dismissers.get(menu);
-  if (dismiss !== undefined) {
-    document.removeEventListener('pointerdown', dismiss, true);
-    dismissers.delete(menu);
-  }
+  menuCleanups.get(menu)?.();
+  menuCleanups.delete(menu);
   menu.parentElement?.querySelector('[data-blok-sidebar-more]')?.setAttribute('aria-expanded', 'false');
   removeFromTopLayer(menu);
 }
@@ -145,7 +143,23 @@ function openMenu(menu: HTMLElement, anchor: HTMLElement): void {
     if (target instanceof Node && (menu.contains(target) || anchor.contains(target))) return;
     closeMenu(menu);
   };
-  dismissers.set(menu, dismiss);
+  const reposition = (): void => {
+    if (!anchor.isConnected) {
+      closeMenu(menu);
+      return;
+    }
+    const { left } = positionFixedAnchored(menu, anchor, { side: 'right', align: 'center', overlap: -4 });
+    // Both sides can be too narrow in a compact window.
+    const maxLeft = window.innerWidth - menu.offsetWidth - MENU_VIEWPORT_MARGIN;
+    menu.style.left = `${Math.max(MENU_VIEWPORT_MARGIN, Math.min(left - window.scrollX, maxLeft))}px`;
+  };
+  const tracker = createPositionTracker(menu, reposition, anchor);
+  menuCleanups.set(menu, () => {
+    tracker.detach();
+    document.removeEventListener('pointerdown', dismiss, true);
+  });
+  reposition();
+  tracker.attach();
   document.addEventListener('pointerdown', dismiss, true);
 }
 
@@ -927,21 +941,19 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     menu.setAttribute('data-blok-sidebar-menu', '');
     const list = document.createElement('div');
     list.setAttribute('role', 'menu');
+    list.tabIndex = -1;
     list.setAttribute('aria-label', MORE_HINT);
     appendPageMenu(list, menu, link, page);
     menu.append(list);
-    more.addEventListener('click', () => {
+    more.addEventListener('click', (event) => {
       if (isPromotedToTopLayer(menu)) {
         closeMenu(menu);
         return;
       }
-      const rect = more.getBoundingClientRect();
-      menu.style.top = `${rect.bottom + 4}px`;
-      menu.style.left = `${Math.max(8, Math.min(rect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8))}px`;
       tree.querySelectorAll<HTMLElement>('[data-blok-sidebar-menu]').forEach((other) => { if (other !== menu) closeMenu(other); });
       openMenu(menu, more);
-      menu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - menu.getBoundingClientRect().height - 8))}px`;
-      list.querySelector<HTMLButtonElement>('button')?.focus();
+      const focusTarget = event.detail === 0 ? list.querySelector<HTMLButtonElement>('button:not(:disabled)') : list;
+      focusTarget?.focus({ preventScroll: true });
     });
 
     menu.addEventListener('keydown', (event) => {
@@ -952,7 +964,10 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
         if (event.key === 'Escape') { event.preventDefault(); more.focus(); }
       } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
         event.preventDefault();
-        const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+        let next = 0;
+        if (event.key === 'End') next = buttons.length - 1;
+        if (event.key === 'ArrowUp') next = current > 0 ? current - 1 : buttons.length - 1;
+        if (event.key === 'ArrowDown') next = (current + 1) % buttons.length;
         buttons[next]?.focus();
       }
     });

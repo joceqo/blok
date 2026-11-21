@@ -188,7 +188,7 @@ const MANUAL_POSITION_CLASSIFICATIONS: Record<string, string> = {
   'tools/table/table-row-col-drag.ts': 'Fixed ghost follows pointer coordinates while the local drop indicator uses table offsets.',
   'tools/video/controls.ts': 'Settings menu converts the gear rect into an offset local to the video figure, re-run on open and resize.',
   'components/modules/assistant/live-preview.ts': 'Ask AI preview boxes sit in the editor wrapper (position: relative) at the anchor holder\'s rect minus the wrapper rect; the assistant module calls relayout() on capture scroll, resize and each committed batch.',
-  'shell/sidebar.ts': 'The page menu popover is placed once from its button rect when it opens and removed from hit testing when it closes; it does not follow scroll.',
+  'shell/sidebar.ts': 'Clamps the tracked side placement to the viewport when neither side has room for the page menu.',
 };
 
 /** Dynamic property setters remain exact review points, never silent escapes. */
@@ -217,6 +217,7 @@ const DYNAMIC_STYLE_ACCESS_CLASSIFICATIONS: Record<string, string> = {
 };
 
 const SHARED_POSITION_CALL_CLASSIFICATIONS: Record<string, string> = {
+  'shell/sidebar.ts': 'Tracks the sidebar action button and opens the page menu beside it using fixed placement.',
   'components/utils/popover/anchored-position.ts': 'Defines the shared document and fixed coordinate-space placement adapters.',
   'components/utils/overflow-list.ts': 'Uses shared fixed anchored placement and continuous position tracking.',
   'components/utils/popover/popover-desktop.ts': 'Uses shared boundary resolution and position tracking for root popovers.',
