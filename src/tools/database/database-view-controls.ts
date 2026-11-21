@@ -76,7 +76,7 @@ export interface ViewControlsHost {
   /** A linked view: its lock reads "Lock views". */
   linked?: () => boolean;
   /** The block's "Show data source titles" (Layout page). */
-  dataSourceTitles?: { shown: () => boolean; toggle: () => void };
+  dataSourceTitles?: { shown: () => boolean; toggle: () => void; views?: () => number };
   duplicateView: () => void;
   deleteView: () => void;
   copyViewLink: () => void;
@@ -85,6 +85,8 @@ export interface ViewControlsHost {
   /** "Manage in Calendar": only when the host gave `config.calendar`. */
   manageInCalendar?: { label: string; onClick: () => void };
   groups: (sub: boolean) => ViewGroupEntry[];
+  /** Moves a group from View settings › Group, as a board column drop does. */
+  moveGroup?: ViewSettingsContext['moveGroup'];
   /** Redraws the active view after a personal edit or a search. */
   rerender: () => void;
   /** The active gallery or calendar view's layout rows. */
@@ -175,12 +177,15 @@ const SEARCH_CLOSE_FALLBACK_MS = 250;
 const hasTransition = (el: HTMLElement): boolean =>
   getComputedStyle(el).transitionDuration.split(',').some((part) => parseFloat(part) > 0);
 
+/** notion-motion.md Round 86 §1 #7 (r86-n-tip-sort.raw): a toolbar hint sits above its button, 6 clear. */
+const TOOLBAR_HINT = { placement: 'top', gap: 6 } as const;
+
 /** A 28px toolbar button that holds only an icon; its aria-label names it, and so does its hover hint. */
 const iconButton = (testId: string, label: string, icon: string): HTMLButtonElement => {
   const el = button(testId, label, { icon });
 
   el.setAttribute('data-blok-database-toolbar-icon', '');
-  onHover(el, label);
+  onHover(el, label, TOOLBAR_HINT);
 
   return el;
 };
@@ -289,6 +294,7 @@ export class DatabaseViewControls {
     this.automationsButton = iconButton('database-toolbar-automations', this.t('automationTitle'), IconBolt);
     this.autofillButton = iconButton('database-toolbar-autofill', this.t('aiAutofill'), IconWand);
     this.searchButton = iconButton('database-toolbar-search', this.t('searchLabel'), IconSearch);
+    this.searchButton.setAttribute('data-blok-database-toolbar-search', '');
     this.settingsButton = iconButton('database-toolbar-settings', this.t('settingsTitle'), IconSliders);
     this.settingsButton.setAttribute('data-blok-database-toolbar-settings', '');
     this.fullPageLink = this.createFullPageLink();
@@ -308,7 +314,6 @@ export class DatabaseViewControls {
     this.searchInput.setAttribute('data-blok-testid', 'database-search-input');
 
     this.filterButton.addEventListener('click', () => this.toggleFilterBar());
-    onHover(this.minimizeButton, this.t('filterBarMinimize'));
     this.minimizeButton.addEventListener('pointerdown', (event) => {
       if (this.searchShown()) event.preventDefault();
     });
@@ -322,7 +327,6 @@ export class DatabaseViewControls {
     this.expandButton = iconButton('database-toolbar-expand', this.host.i18n.t('tools.toggle.ariaLabelExpand'), IconChevronDoubleRight);
     this.expandButton.setAttribute('data-blok-database-toolbar-expand', '');
     this.expandButton.hidden = true;
-    onHover(this.expandButton, this.host.i18n.t('tools.toggle.ariaLabelExpand'));
     this.expandButton.addEventListener('click', () => {
       // The controls fade in once; a later show of one of them stays instant.
       // Marked first: the host's redraw lays out, and the fade only starts if the mark is on then.
@@ -339,7 +343,8 @@ export class DatabaseViewControls {
     this.sortButton.addEventListener('click', () => this.openSort());
     this.automationsButton.addEventListener('click', () => this.openSettings(this.automationsButton, 'automations'));
     this.autofillButton.addEventListener('click', () => this.openSettings(this.autofillButton, 'autofill'));
-    this.settingsButton.addEventListener('click', () => this.openSettings(this.settingsButton, 'root'));
+    // notion-motion.md Round 95 §1 #6: the Settings button lands on Close, as tab menu › Edit view does.
+    this.settingsButton.addEventListener('click', () => this.openSettings(this.settingsButton, 'edit'));
     this.searchButton.addEventListener('click', () => this.showSearch());
     this.searchClear = button('database-search-clear', this.t('searchClear'), { icon: IconCross });
     this.searchClear.setAttribute('data-blok-database-search-clear', '');
@@ -396,7 +401,7 @@ export class DatabaseViewControls {
     link.setAttribute('data-blok-database-toolbar-full-page', '');
     link.setAttribute('aria-label', label);
     link.innerHTML = IconExpandDiagonal;
-    onHover(link, label);
+    onHover(link, label, TOOLBAR_HINT);
     link.addEventListener('click', (event) => {
       event.preventDefault();
       open();
@@ -698,12 +703,11 @@ export class DatabaseViewControls {
     }));
   }
 
-  /** Group from a column header: groups by that property, then shows the group settings. */
-  groupBy(propertyId: string, anchor: HTMLElement): void {
+  /** Group from a column header: only groups, no settings page (notion-motion.md Round 93 §1 #1). */
+  groupBy(propertyId: string): void {
     const property = this.host.schema().find((p) => p.id === propertyId);
 
     this.host.updateView(property === undefined ? { groupBy: propertyId } : groupByChange(this.host.savedView(), property));
-    this.openSettings(anchor, 'group');
   }
 
   /** A row menu's Layout or Property visibility: that page, under the settings button while it is on screen. */
@@ -977,6 +981,7 @@ export class DatabaseViewControls {
       copyViewLink: () => this.host.copyViewLink(),
       ...(this.host.manageInCalendar !== undefined ? { manageInCalendar: this.host.manageInCalendar } : {}),
       groups: (sub) => this.host.groups(sub),
+      ...(this.host.moveGroup !== undefined ? { moveGroup: this.host.moveGroup } : {}),
       people: () => this.host.people?.() ?? [],
       ...(this.host.relatedRows !== undefined ? { relatedRows: this.host.relatedRows } : {}),
       ...(this.host.thisPageDatabase !== undefined ? { thisPageDatabase: this.host.thisPageDatabase } : {}),
@@ -1020,7 +1025,8 @@ export class DatabaseViewControls {
 
   private openPill(filterId: string, anchor: HTMLElement): void {
     this.panel?.close();
-    this.panel = openFilterChip(anchor, this.settingsContext(), filterId, () => this.panelClosed(anchor));
+    // notion-motion.md Round 86 §1 #12: after "Add to advanced filter" the advanced panel stays open at its chip.
+    this.panel = openFilterChip(anchor, this.settingsContext(), filterId, () => this.panelClosed(anchor), undefined, () => this.openAdvanced(anchor));
     anchor.setAttribute('data-popover-open', '');
   }
 
@@ -1046,6 +1052,8 @@ export class DatabaseViewControls {
     this.openPropertyPicker(anchor, 'database-filter-picker', FILTERABLE_TYPES, (property) => this.filterBy(property.id, anchor), {
       placeholder: this.t('filterByPlaceholder'),
       kind: 'filter',
+      // notion-motion.md Round 89 §1 #9: it stops 8 from the window bottom. The sort picker's is unread.
+      verticalMargin: 8,
       // notion-motion.md Round 10 "Add filter picker": a property already filtered is left out.
       used: this.view()?.filters.map((filter) => filter.propertyId) ?? [],
       footer: (close) => panelRow({
@@ -1088,7 +1096,10 @@ export class DatabaseViewControls {
       },
     };
 
-    this.panel = openAdvancedFilter(anchor, ctx, (escape) => this.panelClosed(anchor, escape));
+    // notion-motion.md Round 83 §5 (r83-n-af-one.raw): from the toolbar, focus stays on its Filter button.
+    const focusHost = fallback === this.filterButton ? this.filterButton : undefined;
+
+    this.panel = openAdvancedFilter(anchor, ctx, (escape) => this.panelClosed(anchor, escape), undefined, focusHost);
     anchor.setAttribute('data-popover-open', '');
   }
 
@@ -1103,6 +1114,7 @@ export class DatabaseViewControls {
       footer?: (close: () => void) => HTMLElement;
       used?: string[];
       kind?: 'filter' | 'sort';
+      verticalMargin?: number;
     }
   ): DatabasePanel {
     const panel = propertyPicker({

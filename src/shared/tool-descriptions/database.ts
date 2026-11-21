@@ -787,7 +787,7 @@ export const DATABASE_DATA = {
           groupOrder: {
             type: 'object',
             additionalProperties: { type: 'string' },
-            description: 'This view\'s own manual group order: option id to a fractional key, compared with option positions. An option without a key uses its position.',
+            description: 'This view\'s own manual group order: option id to a fractional key, compared with option positions. An option without a key uses its position. Status: an option without a key goes last; a column drop writes this order and sets the group sort to manual.',
           },
           hiddenGroups: GROUP_REFS,
           collapsedGroups: GROUP_REFS,
@@ -1024,7 +1024,7 @@ export const DATABASE_ACTIONS: ToolActionDeclaration[] = [
     name: 'updateView',
     summary: 'Change a view\'s saved settings: filters, sorts, grouping, calculations, columns, card, calendar, timeline, chart, map, form texts and form sharing. It applies for everyone.',
     guidance: 'Only the keys in changes change. Each key replaces its whole value, so read the view first: to hide one column, send the full properties list with that entry visible false. form is the exception: its keys merge into the saved form. null removes a key (not form). '
-      + 'Setting groupBy, even to the current property, turns groupSettings.hideEmptyGroups on; the current property also drops groupSettings.sort to its default and clears hiddenGroups (sub-group entries stay); grouping by another property resets groupSettings (subGroupBy: subGroupSettings) to that type\'s defaults. Settings sent in changes win. A filter or sort without an id gets one. '
+      + 'Setting groupBy, even to the current property, turns groupSettings.hideEmptyGroups on; the current property also drops groupSettings.sort to its default and clears hiddenGroups (sub-group entries stay); setting subGroupBy, even to the current property, turns subGroupSettings.hideEmptyGroups on; re-picking the current subGroupBy also drops subGroupSettings.sort and clears the "sub:" hiddenGroups; grouping by another property resets groupSettings (subGroupBy: subGroupSettings) to that type\'s defaults. Settings sent in changes win. A filter or sort without an id gets one. '
       + 'Change the layout type with database.setLayout. A change to who can fill out a form (form closed, public, anonymous, submissionAccess) asks the person first, '
       + 'and public, anonymous and submissionAccess work only where the host shares forms (else COMMAND_UNAVAILABLE, reason host); calendarSync is not writable. '
       + 'naming each change; on APPROVAL_REQUIRED nothing in the batch was applied: send the rest without it and do not ask again unless the person asks.',

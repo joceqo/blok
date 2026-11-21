@@ -293,8 +293,13 @@ export const openMenu = (
   const popover = new PopoverDesktop(at === undefined ? params : { ...params, position: at.position, positionContext: at.positionContext });
 
   // notion-motion.md Round 12: Escape closes one layer of a calculation menu at a time.
-  if (options.kind === 'calc') {
+  // Round 86 §1 #1: the row handle menu's submenu too.
+  if (options.kind === 'calc' || options.kind === 'row' || options.kind === 'handle') {
     popover.escapeClosesSubmenuFirst = true;
+  }
+  // notion-motion.md Round 85c §1: Escape removes the row handle menu at once; other closes still fade.
+  if (options.kind === 'row' || options.kind === 'handle') {
+    popover.escapeClosesAtOnce = true;
   }
   popover.nestedOpenDelay = DATABASE_SUBMENU_OPEN_DELAY_MS;
   popover.alignEnd = options.alignEnd === true;
@@ -375,7 +380,8 @@ export const headerViewItems = (ctx: HeaderMenuContext): PopoverItemParams[] => 
       item('database-header-filter', 'tools.database.tableFilter', ctx.onFilter, IconFilter),
       // notion-live-7/80-menu-text.png: Sort shows a "›"; it opens the two sort choices.
       { ...item('database-header-sort', 'tools.database.tableSort', ctx.onSort, IconSort), chevron: true },
-      ...(groupable ? [item('database-header-group', 'tools.database.tableGroup', ctx.onGroup, IconGroup)] : []),
+      // notion-motion.md Round 93 §1 #1: Group opens nothing, so the row closes the menu itself.
+      ...(groupable ? [{ ...item('database-header-group', 'tools.database.tableGroup', ctx.onGroup, IconGroup), closeOnActivate: true }] : []),
       calculate,
     ]
     : [];
@@ -408,10 +414,14 @@ export const headerViewItems = (ctx: HeaderMenuContext): PopoverItemParams[] => 
     items.push(item('database-header-hide', 'tools.database.tableHide', ctx.onHide, IconEyeSlash));
   }
   // Notion offers no wrap toggle on a checkbox or a button column. Round 29 §2: each state has its own glyph.
+  // Round 94 §1 #5: a click closes the menu.
   if (property.type !== 'checkbox' && property.type !== 'button') {
-    items.push(ctx.wrapped
-      ? item('database-header-unwrap', 'tools.database.tableUnwrap', () => ctx.onWrap(false), IconArrowRightLine)
-      : item('database-header-wrap', 'tools.database.tableWrap', () => ctx.onWrap(true), IconUTurnLeft));
+    items.push({
+      ...(ctx.wrapped
+        ? item('database-header-unwrap', 'tools.database.tableUnwrap', () => ctx.onWrap(false), IconArrowRightLine)
+        : item('database-header-wrap', 'tools.database.tableWrap', () => ctx.onWrap(true), IconUTurnLeft)),
+      closeOnActivate: true,
+    });
   }
   items.push(
     item('database-header-insert-left', 'tools.database.tableInsertLeft', () => ctx.onInsert('left'), IconColumnInsertLeft),

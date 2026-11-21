@@ -129,6 +129,27 @@ export interface DatabaseTimelineViewOptions {
 }
 
 const DRAG_THRESHOLD = 4;
+
+const pillFormat = (locale: string): Intl.DateTimeFormat => new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' });
+
+/**
+ * notion-motion.md Round 89 §1 #1: "Nov 16 – 20", plain spaces round the en dash (some Intl builds give thin ones).
+ * Round 90 §1 #5: across a year "Dec 25 – Jan 7", no years; Intl would add them.
+ */
+const pillText = (span: EventSpan, locale: string): string => {
+  const format = pillFormat(locale);
+
+  return span.start.slice(0, 4) === span.end.slice(0, 4)
+    ? format.formatRange(toLocalDate(span.start), toLocalDate(span.end)).replace(/\u2009/g, ' ')
+    : `${format.format(toLocalDate(span.start))} \u2013 ${format.format(toLocalDate(span.end))}`;
+};
+/** notion-motion.md Round 90 §1 #4, #6: a split pill is 4 wider than the span at each end (176 over a 14-day, 168 Quarter span). */
+const SPLIT_PILL_OVERHANG = 4;
+/**
+ * notion-motion.md Round 91 §1 #2: a pill splits only over a span this wide. Notion kept a 96.3 span compact and split a 108.4 one;
+ * the exact switch between them is unread, so this is the middle.
+ */
+const SPLIT_PILL_MIN_SPAN = 102;
 const DAY_MINUTES = 24 * 60;
 /** notion-motion.md Round 71 §3: a day-zoom bar starts 2px into its first day and stops 1px short of its last (851.4 in a day from 849.4, 37 wide). */
 const BAR_START = 2;
@@ -141,14 +162,23 @@ const FAR_BAR_TRIM = 3;
 const FAR_BAR_MIN = 11;
 /** findings C07: Notion's "+ New" made a 5-day bar. */
 const NEW_BAR_DAYS = 5;
+/** notion-motion.md Round 90 §1 #2: the lane ghost's days at each zoom. Hours and Day draw a timed ghost instead. */
+const NEW_BAR_DAYS_BY_ZOOM: Partial<Record<TimelineZoom, number>> = { week: 1, bi_week: 3, month: 5, quarter: 14, year: 28, '5_years': 140 };
+/** notion-motion.md Round 88 §1 #5, Round 89 §1 #2: zooms whose bar pill names its days. */
+const LABELLED_PILL: ReadonlySet<TimelineZoom> = new Set(['quarter', 'year', '5_years']);
 /** notion-motion.md Round 48 A9: at Day zoom Notion's "+ New" made a 3-hour bar (6:30 PM → 9:30 PM). */
 const NEW_BAR_DAY_ZOOM_MINUTES = 3 * 60;
+/** notion-motion.md Round 90 §1 #2: the Hours ghost is 1 hour. */
+const HOUR_MINUTES = 60;
 /** Within this share of either canvas end, a scroll redraws around a new centre. */
 const EDGE_SHARE = 0.1;
 /** notion-motion.md Round 48 A2-A4: zooms whose labels and today circle sit on start lines, with month lines in the body. */
 const ON_START_LINE: ReadonlySet<TimelineZoom> = new Set(['quarter', 'year', '5_years']);
+const FULL_DATE: Intl.DateTimeFormatOptions = { month: 'long', day: 'numeric', year: 'numeric' };
+/** notion-motion.md Round 48 A1: Hours and Day name the whole date ("November 16, 2026"). */
 const TOOLBAR_LABEL_PARTS: Partial<Record<TimelineZoom, Intl.DateTimeFormatOptions>> = {
-  hours: { month: 'long', day: 'numeric', year: 'numeric' },
+  hours: FULL_DATE,
+  day: FULL_DATE,
   '5_years': { year: 'numeric' },
 };
 /** Zooms whose days are wide enough to shade weekends one by one. */
@@ -448,14 +478,14 @@ export class DatabaseTimelineView implements DatabaseViewRenderer {
    */
   private newBar(day?: string, time?: string): BarWrite {
     if (day !== undefined && time !== undefined) {
-      return newTimedBarWrite(`${day}T${time}`, NEW_BAR_DAY_ZOOM_MINUTES, this.options.endPropertyId !== undefined);
+      return newTimedBarWrite(`${day}T${time}`, this.zoom === 'hours' ? HOUR_MINUTES : NEW_BAR_DAY_ZOOM_MINUTES, this.options.endPropertyId !== undefined);
     }
     const viewport = this.scroller?.clientWidth ?? 0;
     const start = day ?? (viewport > 0
       ? addDays(visibleRange({ scrollStart: this.scrollStart, viewport, windowStart: this.window.start, zoom: this.zoom }).first, 1)
       : this.options.today);
 
-    return newBarWrite(start, NEW_BAR_DAYS, this.options.endPropertyId !== undefined);
+    return newBarWrite(start, day === undefined ? NEW_BAR_DAYS : NEW_BAR_DAYS_BY_ZOOM[this.zoom] ?? NEW_BAR_DAYS, this.options.endPropertyId !== undefined);
   }
 
   /** notion-motion.md Round 49 B8: a Day-zoom "No date" pick is 3 hours from the chart's centre, floored to 15 minutes. */
@@ -467,8 +497,7 @@ export class DatabaseTimelineView implements DatabaseViewRenderer {
   }
 
   private monthLabel(day: string): string {
-    // notion-motion.md Round 35 Part B: Hours zoom names the whole date ("November 15, 2026").
-    // Round 48 A1 (fitted to four reads): Quarter and Year name the week under the left edge by its Monday; 5 Years names the year alone.
+    // notion-motion.md Round 48 A1 (fitted to four reads): Quarter and Year name the week under the left edge by its Monday; 5 Years names the year alone.
     const parts = TOOLBAR_LABEL_PARTS[this.zoom] ?? { month: 'long', year: 'numeric' };
     const unitStart = this.zoom === 'quarter' || this.zoom === 'year' ? startOfWeek(day, 1) : day;
 
@@ -728,7 +757,7 @@ export class DatabaseTimelineView implements DatabaseViewRenderer {
 
   private placeGhost(ghost: HTMLElement, x: number): void {
     const day = this.dayAt(x);
-    const time = this.zoom === 'day' ? this.slotAt(this.canvasOffset(x), day) : undefined;
+    const time = BY_TIME.has(this.zoom) ? this.slotAt(this.canvasOffset(x), day, this.zoom === 'hours' ? HOUR_MINUTES : SNAP_MINUTES) : undefined;
 
     if (this.drag?.active === true || (ghost.getAttribute('data-day') === day && ghost.getAttribute('data-time') === (time ?? null))) {
       return;
@@ -750,13 +779,20 @@ export class DatabaseTimelineView implements DatabaseViewRenderer {
     }
     ghost.style.setProperty('inset-inline-start', `${geometry.offset}px`);
     ghost.style.setProperty('width', `${geometry.width}px`);
-    this.showRange(span, barGeometry(span, this.window.start, this.zoom), true);
+    // notion-motion.md Round 90 §1 #4: the ghost's pill names its days as a bar's does. Hours and Day show no pill.
+    if (BY_TIME.has(this.zoom)) {
+      return;
+    }
+    this.showRange(span, barGeometry(span, this.window.start, this.zoom), true, true);
   }
 
-  /** The 15-minute slot at a canvas offset, floored, as `HH:mm` (notion-motion.md Round 49 B7, B8). */
-  private slotAt(offset: number, day: string): string {
+  /**
+   * The slot at a canvas offset, floored, as `HH:mm`: 15 minutes (notion-motion.md Round 49 B7, B8).
+   * The Hours ghost takes whole hours: Notion's snap there is unread.
+   */
+  private slotAt(offset: number, day: string, step = SNAP_MINUTES): string {
     const minutes = (offset - daysBetween(this.window.start, day) * this.dayWidth) / (this.dayWidth / DAY_MINUTES);
-    const slot = Math.min(Math.max(Math.floor(minutes / SNAP_MINUTES) * SNAP_MINUTES, 0), DAY_MINUTES - SNAP_MINUTES);
+    const slot = Math.min(Math.max(Math.floor(minutes / step) * step, 0), DAY_MINUTES - step);
     const pad = (n: number): string => String(n).padStart(2, '0');
 
     return `${pad(Math.floor(slot / 60))}:${pad(slot % 60)}`;
@@ -1704,7 +1740,7 @@ export class DatabaseTimelineView implements DatabaseViewRenderer {
     }
     // The pill spans whole days, whatever inset the bar has. Round 51 §4: an Hours edge drag has none.
     if (this.zoom !== 'day' && !(this.zoom === 'hours' && drag.mode !== 'move')) {
-      this.showRange(span, this.zoom === 'hours' ? { offset, width } : barGeometry(span, this.window.start, this.zoom));
+      this.showRange(span, this.zoom === 'hours' ? { offset, width } : barGeometry(span, this.window.start, this.zoom), false, true);
     }
     if (drag.mode !== 'move') {
       this.showDayReadout(barEl, drag.mode, span, values);
@@ -1726,7 +1762,7 @@ export class DatabaseTimelineView implements DatabaseViewRenderer {
     if (this.drag?.active === true || row === undefined || span === null || this.zoom === 'day') {
       return;
     }
-    this.showRange(span, this.zoom === 'hours' ? this.geometryOf(span, this.valuesOf(row)) : barGeometry(span, this.window.start, this.zoom), true);
+    this.showRange(span, this.zoom === 'hours' ? this.geometryOf(span, this.valuesOf(row)) : barGeometry(span, this.window.start, this.zoom), true, true);
   };
 
   private readonly onPointerOut = (event: PointerEvent): void => {
@@ -1738,21 +1774,51 @@ export class DatabaseTimelineView implements DatabaseViewRenderer {
     }
   };
 
-  /** findings C15: a pill over the dragged range's day numbers; its first and last day in ink. */
-  private showRange(span: EventSpan, { offset, width }: { offset: number; width: number }, hover = false): void {
+  /**
+   * findings C15: a pill over the dragged range's day numbers; its first and last day in ink.
+   * notion-motion.md Round 88 §1 #5, Round 89 §1 #1-#2: at Quarter, Year and 5 Years a bar's pill names its days instead.
+   * Round 90 §1 #4, #6, Round 91 §1 #2: over a wide span the pill is span + 8 with the first day at the left and the last at the right.
+   * A compact pill is at least span + 8 wide.
+   */
+  private showRange(span: EventSpan, { offset, width }: { offset: number; width: number }, hover = false, named = false): void {
     const header = this.root?.querySelector('[data-blok-database-timeline-header]');
 
     if (header === null || header === undefined) {
       return;
     }
     const pill = header.querySelector<HTMLElement>('[data-blok-database-timeline-range]') ?? document.createElement('div');
+    const label = named && LABELLED_PILL.has(this.zoom);
 
     pill.setAttribute('data-blok-database-timeline-range', '');
+    pill.setAttribute('aria-hidden', 'true');
     pill.toggleAttribute('data-hover', hover);
+    pill.toggleAttribute('data-label', label);
+    pill.removeAttribute('data-split');
+    pill.textContent = label ? pillText(span, resolveLocale(this.options.locale)) : '';
     pill.style.insetInlineStart = `${offset}px`;
-    pill.style.width = `${width}px`;
+    pill.style.width = label ? '' : `${width}px`;
+    pill.style.minWidth = '';
     if (!pill.isConnected) {
       header.prepend(pill);
+    }
+    const splitWidth = width + 2 * SPLIT_PILL_OVERHANG;
+
+    // The compact width is read before min-width is set; a split needs the compact text to fit, so its two days cannot meet.
+    if (label && span.end !== span.start && width >= SPLIT_PILL_MIN_SPAN && pill.getBoundingClientRect().width <= splitWidth) {
+      const format = pillFormat(resolveLocale(this.options.locale));
+      const ends = [span.start, span.end].map((day) => {
+        const end = document.createElement('span');
+
+        end.textContent = format.format(toLocalDate(day));
+
+        return end;
+      });
+
+      pill.setAttribute('data-split', '');
+      pill.replaceChildren(...ends);
+      pill.style.width = `${splitWidth}px`;
+    } else if (label) {
+      pill.style.minWidth = `${splitWidth}px`;
     }
     header.querySelectorAll('[data-blok-database-timeline-units] > [data-day]').forEach((label) => {
       const day = label.getAttribute('data-day');
@@ -1840,19 +1906,22 @@ export class DatabaseTimelineView implements DatabaseViewRenderer {
 
     const deltaDays = daysBetween(drag.grabDay, drag.overDay);
     const deltaMinutes = snapMinutes((drag.overPx - drag.grabPx) / (this.dayWidth / DAY_MINUTES));
+    const span = timelineSpan(values.start, values.end);
+    // A handle sticks out past the bar, so the pressed day may not be the edge's own day (notion-motion.md Round 91 §1 #1).
+    const edgeDay = span === null || drag.mode === 'move' ? drag.overDay : addDays(span[drag.mode], deltaDays);
 
     // notion-motion.md Round 48 A9: Day zoom moves snap to 15 minutes. Round 49 B6: so does a timed bar's resize. Round 50 §3: an all-day one turns timed.
     if (this.zoom === 'day' && drag.mode === 'move') {
       return moveBarByMinutes(values, deltaMinutes);
     }
     if (!BY_TIME.has(this.zoom)) {
-      return drag.mode === 'move' ? moveBar(values, deltaDays) : resizeBar(values, drag.mode, drag.overDay);
+      return drag.mode === 'move' ? moveBar(values, deltaDays) : resizeBar(values, drag.mode, edgeDay);
     }
 
     return drag.mode === 'move'
       ? moveBar(values, deltaDays, deltaMinutes)
       : resizeBarByMinutes(values, drag.mode, deltaMinutes)
-        ?? (this.zoom === 'day' ? resizeAllDayByMinutes(values, drag.mode, deltaMinutes) : resizeBar(values, drag.mode, drag.overDay));
+        ?? (this.zoom === 'day' ? resizeAllDayByMinutes(values, drag.mode, deltaMinutes) : resizeBar(values, drag.mode, edgeDay));
   }
 
   private valuesAfter(drag: BarDrag): BarValues | null {

@@ -142,6 +142,13 @@ export abstract class PopoverAbstract<Nodes extends PopoverNodes = PopoverNodes>
       }, true);
     }
 
+    // An item can show or hide its own list (the link field does), which no
+    // scroll or filter reports. The list's box changes size, so measure then.
+    if (this.nodes.items && typeof ResizeObserver !== 'undefined') {
+      this.itemsResizeObserver = new ResizeObserver(() => this.updateScrollbar());
+      this.itemsResizeObserver.observe(this.nodes.items);
+    }
+
     // Drag-to-scroll on the custom scrollbar thumb (parity with a native bar).
     if (this.nodes.scrollbarThumb) {
       this.listeners.on(this.nodes.scrollbarThumb, 'pointerdown', (event: Event) => {
@@ -297,6 +304,22 @@ export abstract class PopoverAbstract<Nodes extends PopoverNodes = PopoverNodes>
    */
   public arrowLeftClosesSubmenu = true;
 
+  /** Opt-in, with animateClose: an Escape close skips the close motion; other closes keep it. */
+  public escapeClosesAtOnce = false;
+
+  /** True only inside {@link hideOnEscape}. */
+  private hidingOnEscape = false;
+
+  /** Closes for an Escape press: at once when {@link escapeClosesAtOnce} is set. */
+  public hideOnEscape(): void {
+    this.hidingOnEscape = this.escapeClosesAtOnce;
+    try {
+      this.hide();
+    } finally {
+      this.hidingOnEscape = false;
+    }
+  }
+
   /**
    * Escape's first step: closes the deepest open submenu when opted in.
    * @returns true when a submenu was closed
@@ -312,7 +335,7 @@ export abstract class PopoverAbstract<Nodes extends PopoverNodes = PopoverNodes>
     const mountTarget = this.nodes.popover;
     const alreadyClosing = this.closing !== null;
     const isPromoted = mountTarget !== null && supportsPopoverAPI() && isPromotedToTopLayer(mountTarget);
-    const animates = isPromoted && !alreadyClosing && this.params.animateClose === true && !prefersReducedMotion();
+    const animates = isPromoted && !alreadyClosing && this.params.animateClose === true && !this.hidingOnEscape && !prefersReducedMotion();
 
     if (animates) {
       // Hide now, so the UA's own close steps run at once; the attribute and
@@ -507,6 +530,8 @@ export abstract class PopoverAbstract<Nodes extends PopoverNodes = PopoverNodes>
     this.items.forEach(item => item.destroy());
     this.listeners.removeAll();
     this.search?.destroy();
+    this.itemsResizeObserver?.disconnect();
+    this.itemsResizeObserver = null;
 
     if (this.scrollActivityTimeout !== null) {
       clearTimeout(this.scrollActivityTimeout);
@@ -1086,6 +1111,8 @@ export abstract class PopoverAbstract<Nodes extends PopoverNodes = PopoverNodes>
    * Active scrollbar-thumb drag session, or null when not dragging.
    */
   private scrollbarDrag: { pointerId: number; startY: number; startScrollTop: number } | null = null;
+
+  private itemsResizeObserver: ResizeObserver | null = null;
 
   /**
    * Sizes and positions the custom scrollbar thumb from the items' scroll
