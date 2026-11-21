@@ -573,6 +573,9 @@ export class DatabaseCardDrawer {
   private modeMeasureTimer: number | null = null;
   private titleFocusAfterPaint: { title: HTMLTextAreaElement; previous: Element | null } | null = null;
   private peekProfile: PeekProfile | undefined;
+
+  /** The empty panel sliding out over a full page opened from a side peek. */
+  private shell: HTMLElement | null = null;
   private readonly onEditViewDefault: CardDrawerOptions['onEditViewDefault'];
   private readonly rowLink: CardDrawerOptions['rowLink'];
   private readonly onExpand: CardDrawerOptions['onExpand'];
@@ -1213,6 +1216,7 @@ export class DatabaseCardDrawer {
     }
     this.peekProfile?.finish('closed');
     this.childPeek?.close(options);
+    this.dropShell();
     const wasOpen = this.drawer !== null;
     const hosted = this.isHostPage();
     // The side peek slides out with its body still in it; the body goes back
@@ -1295,6 +1299,7 @@ export class DatabaseCardDrawer {
     this.peekProfile?.finish('closed');
     this.cancelOpenerFocus();
     this.childPeek?.destroy();
+    this.dropShell();
     this.events?.off('i18n:changed', this.followOuterDirection);
     this.pageScroll.unlock();
     this.stopWatchingPins();
@@ -1751,6 +1756,8 @@ export class DatabaseCardDrawer {
       class: DATABASE_MENU_CLASS,
       animateClose: true,
       trigger: anchor,
+      // notion-motion.md Round 56 §8: the list touches the button's bottom.
+      offset: 0,
       width: 'auto',
       // Notion's list is 500 wide; a phone keeps a 16px gutter.
       minWidth: `${Math.max(0, Math.min(500, window.innerWidth - 32))}px`,
@@ -2056,7 +2063,8 @@ export class DatabaseCardDrawer {
     };
 
     if (this.emojiPicker === null) {
-      this.emojiPicker = new EmojiPicker({ ...handlers, i18n, locale: i18n.getLocale(), curated: false, customEmojis: this.customEmojis, onCustomSelect: url => { if (this.currentRowId) this.onIconChange?.(this.currentRowId, url); } });
+      // notion-motion.md Round 68 §3: 408x390 centred under the icon; focus stays in Filter.
+      this.emojiPicker = new EmojiPicker({ ...handlers, i18n, locale: i18n.getLocale(), curated: false, customEmojis: this.customEmojis, onCustomSelect: url => { if (this.currentRowId) this.onIconChange?.(this.currentRowId, url); }, centred: true, filterKeys: true, size: { width: 408, height: 390 } });
     }
     const element = this.emojiPicker.getElement();
 
@@ -2262,9 +2270,36 @@ export class DatabaseCardDrawer {
     if (rowId !== null && this.onExpand?.(rowId) === true) {
       return;
     }
-    // The editor already exists. Reposition it in this interaction instead of
-    // hiding it for a close animation and exposing the old table in between.
+    const drawer = this.drawer;
+    const wasFull = this.mode === 'full';
+
+    // notion-motion.md Round 72 §4: Notion paints the full page at once, under its empty panel sliding out.
+    if (drawer !== null && this.mode === 'side' && drawer.hasAttribute('data-open') && !prefersReducedMotion()) {
+      this.slideOutShell(drawer);
+    }
     this.switchMode('full');
+    // notion-motion.md Round 72 §4: the centre peek lands with the caret at the end of the title too.
+    if (!wasFull) this.focusTitleEnd();
+  }
+
+  /** An empty copy of the side peek's panel, sliding out over the full page. */
+  private slideOutShell(drawer: HTMLElement): void {
+    this.dropShell();
+    const shell = document.createElement('div');
+
+    shell.setAttribute('data-blok-database-drawer-shell', '');
+    shell.setAttribute('aria-hidden', 'true');
+    shell.setAttribute('data-open', '');
+    shell.style.width = `${drawer.getBoundingClientRect().width}px`;
+    drawer.after(shell);
+    promoteToTopLayer(shell);
+    // Read layout so the slide starts from the open place.
+    void shell.getBoundingClientRect();
+    shell.removeAttribute('data-open');
+    this.shell = shell;
+    afterSlide(shell, () => {
+      if (this.shell === shell) this.dropShell();
+    });
   }
 
   private releaseParentPage(): void {
@@ -2292,6 +2327,22 @@ export class DatabaseCardDrawer {
       element.scrollLeft = left;
     }
     this.parentScroll = [];
+  }
+
+  private dropShell(): void {
+    if (this.shell === null) return;
+    removeFromTopLayer(this.shell);
+    this.shell.remove();
+    this.shell = null;
+  }
+
+  /** notion-motion.md Round 71 §5, Round 72 §4: the full page opens with the caret at the end of the title. */
+  private focusTitleEnd(): void {
+    const title = this.drawer?.querySelector<HTMLTextAreaElement>('[data-blok-database-drawer-title]');
+
+    if (title === null || title === undefined) return;
+    title.focus({ preventScroll: true });
+    title.setSelectionRange(title.value.length, title.value.length);
   }
 
   private switchMode(mode: OpenPagesIn): void {
@@ -2587,11 +2638,8 @@ export class DatabaseCardDrawer {
     if (mode === 'side' && drawer.hasAttribute('data-open')) {
       this.narrowPeekHost();
     }
-    if (mode === 'center') {
-      this.widenPeekHost();
-    } else if (mode !== 'side') {
-      this.releasePeekHost();
-    }
+    // A full page widens like a centre peek; with no host marked, this releases at once.
+    if (mode !== 'side') this.widenPeekHost();
 
     const close = drawer.querySelector<HTMLElement>('[data-blok-database-drawer-close]');
 
