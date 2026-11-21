@@ -1,5 +1,6 @@
 import './cloud.css';
 import {WORKSPACE_ROLES} from '../access-vocabulary';
+import {brandedTitle} from '../tab-identity';
 import {styleTextField} from '../ui/controls';
 import {CloudApiError, CloudClient, type CloudInstance, type CloudSession, type CloudSessionAdapter, type CloudWorkspace, type CloudWorkspaceStatus} from './client';
 import {mountCreateWorkspace} from './create-workspace';
@@ -270,11 +271,11 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     const welcome = state.instance?.name ? `Bienvenue sur\n${state.instance.name}.` : 'Bienvenue.';
     main.append(node('span', 'Votre espace de travail partagé', 'data-cloud-eyebrow'), node('h1', codeStep ? 'Consultez votre boîte mail.' : welcome));
     main.append(node('p', codeStep ? `Saisissez le code envoyé à ${state.email}. Il est valable 10 minutes.` : 'Retrouvez votre équipe, partagez vos connaissances et faites avancer vos projets.', 'data-cloud-muted'));
-    const form = node('form');
+    const form = node('form', undefined, 'data-cloud-stack');
     const input = field(form, codeStep ? 'Code de connexion' : 'Adresse e-mail', codeStep ? 'text' : 'email', codeStep ? 'code' : 'email', codeStep ? '' : state.email);
     input.autocomplete = codeStep ? 'one-time-code' : 'email';
     if (codeStep) { input.inputMode = 'numeric'; input.pattern = '[0-9]{6}'; input.maxLength = 6; }
-    const submit = button(codeStep ? 'Se connecter' : 'Continuer par e-mail', () => {}, true); submit.type = 'submit'; form.append(submit);
+    const submit = button(codeStep ? 'Se connecter' : 'Continuer par e-mail', () => {}, true); submit.type = 'submit'; submit.setAttribute('data-cloud-block', ''); form.append(submit);
     form.addEventListener('submit', event => {
       event.preventDefault();
       void run(async () => {
@@ -400,10 +401,11 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
   async function boot(): Promise<void> {
     routers.boot();
     try {
-      // Never trust a cached setupRequired: re-check before rendering setup (plan §9.2).
+      // Nothing is cached at boot — one read is the read. The re-check that
+      // matters is in refresh(), which re-reads while the setup route is open
+      // so a claim completed in another tab stops showing the assistant.
       state.instance = await client.instance();
-      state.instance = await client.instance();
-      if (state.instance.name) document.title = `${state.instance.name} — Connexion`;
+      document.title = brandedTitle('Connexion', state.instance.name);
       if (state.instance.setupRequired) {
         routers.setup();
         return;

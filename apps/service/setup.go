@@ -3,14 +3,11 @@ package cloud
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -18,13 +15,11 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const setupTokenFile = "setup-token"
-
 // bootstrapInstance applies §5.1 after the schema (and optional bootstrap
-// workspace) exist. AdminEmail never touches memberships. Returns whether a
-// setup token must be minted or kept on disk after the surrounding transaction
-// commits.
-func (s *Service) bootstrapInstance(ctx context.Context, tx pgx.Tx) (needSetupToken bool, err error) {
+// workspace) exist. AdminEmail never touches memberships. Returns whether the
+// instance is still waiting for its first-run setup, so the caller can say so
+// in the start-up log.
+func (s *Service) bootstrapInstance(ctx context.Context, tx pgx.Tx) (setupRequired bool, err error) {
 	if _, err = tx.Exec(ctx, `
 		UPDATE instance_settings SET default_workspace_id=(SELECT id FROM workspaces)
 		 WHERE default_workspace_id IS NULL AND (SELECT count(*) FROM workspaces)=1`); err != nil {
@@ -38,9 +33,16 @@ func (s *Service) bootstrapInstance(ctx context.Context, tx pgx.Tx) (needSetupTo
 		if _, err = tx.Exec(ctx, `INSERT INTO users(id,email) VALUES($1,$2) ON CONFLICT(email) DO NOTHING`, opaque(), email); err != nil {
 			return false, err
 		}
+		// Only when the instance has nobody left. ON CONFLICT cannot protect a
+		// revocation here the way it protects a demoted membership: revoking
+		// DELETEs the row, so there is nothing to conflict with and the address
+		// would be reinstated on every restart. The variable exists so an
+		// instance is never left without an administrator — not so the .env can
+		// quietly undo a deliberate removal. Use `blokctl admin grant` to add one.
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO instance_admins(user_id)
 			SELECT id FROM users WHERE email=$1
+			  AND NOT EXISTS(SELECT 1 FROM instance_admins)
 			ON CONFLICT DO NOTHING`, email); err != nil {
 			return false, err
 		}
@@ -117,65 +119,6 @@ func (s *Service) bootstrapInstance(ctx context.Context, tx pgx.Tx) (needSetupTo
 	return false, nil
 }
 
-func (s *Service) ensureSetupToken(ctx context.Context) error {
-	if _, e := s.SetupToken(ctx, false); e != nil {
-		return e
-	}
-	slog.Info("setup required", "url", strings.TrimRight(s.Config.PublicURL, "/"))
-	return nil
-}
-
-// SetupToken returns the first-run setup token. When regenerate is false it
-// reuses the on-disk token if still valid; otherwise it mints a new one.
-// Fails once setup has completed.
-func (s *Service) SetupToken(ctx context.Context, regenerate bool) (string, error) {
-	var completed pgtype.Timestamptz
-	if e := s.DB.QueryRow(ctx, `SELECT setup_completed_at FROM instance_settings WHERE id`).Scan(&completed); e != nil {
-		return "", e
-	}
-	if completed.Valid {
-		return "", errors.New("setup already completed")
-	}
-	path := filepath.Join(s.Config.DataDirectory, setupTokenFile)
-	if !regenerate {
-		if raw, e := os.ReadFile(path); e == nil {
-			token := strings.TrimSpace(string(raw))
-			if token != "" {
-				var ok bool
-				if e = s.DB.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM setup_tokens WHERE digest=$1)`, hash(token)).Scan(&ok); e != nil {
-					return "", e
-				}
-				if ok {
-					return token, nil
-				}
-			}
-		}
-	}
-	if e := os.MkdirAll(s.Config.DataDirectory, 0700); e != nil {
-		return "", e
-	}
-	token := opaque()
-	tx, e := s.DB.Begin(ctx)
-	if e != nil {
-		return "", e
-	}
-	defer tx.Rollback(ctx)
-	if _, e = tx.Exec(ctx, `DELETE FROM setup_tokens`); e != nil {
-		return "", e
-	}
-	if _, e = tx.Exec(ctx, `INSERT INTO setup_tokens(digest) VALUES($1)`, hash(token)); e != nil {
-		return "", e
-	}
-	if e = tx.Commit(ctx); e != nil {
-		return "", e
-	}
-	if e = os.WriteFile(path, []byte(token+"\n"), 0600); e != nil {
-		return "", e
-	}
-	_ = os.Chmod(path, 0600)
-	return token, nil
-}
-
 // EmailTest sends a delivery probe and returns the mail backend name.
 func (s *Service) EmailTest(ctx context.Context, email string) (string, error) {
 	_ = ctx
@@ -190,33 +133,50 @@ func (s *Service) EmailTest(ctx context.Context, email string) (string, error) {
 	return backend, nil
 }
 
-func (s *Service) setupTokenValid(ctx context.Context, tx pgx.Tx, token string) (bool, error) {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return false, nil
+// firstWorkspaceName and firstWorkspaceSlug derive the space the assistant
+// creates, from the administrator's address. Nobody has anything to name at
+// setup time; Notion derives it the same way and lets you rename afterwards.
+func firstWorkspaceName(email string) string {
+	local := email
+	if at := strings.LastIndex(email, "@"); at > 0 {
+		local = email[:at]
 	}
-	digest := hash(token)
-	rows, e := tx.Query(ctx, `SELECT digest FROM setup_tokens`)
-	if e != nil {
-		return false, e
+	return "Espace de " + local
+}
+
+func firstWorkspaceSlug(email string) string {
+	local := email
+	if at := strings.LastIndex(email, "@"); at > 0 {
+		local = email[:at]
 	}
-	defer rows.Close()
-	matched := false
-	for rows.Next() {
-		var stored string
-		if e = rows.Scan(&stored); e != nil {
-			return false, e
+	var b strings.Builder
+	for _, r := range strings.ToLower(local) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
 		}
-		if subtle.ConstantTimeCompare([]byte(stored), []byte(digest)) == 1 {
-			matched = true
-		}
 	}
-	return matched, rows.Err()
+	slug := strings.Trim(b.String(), "-")
+	for strings.Contains(slug, "--") {
+		slug = strings.ReplaceAll(slug, "--", "-")
+	}
+	if slug == "" {
+		return "espace"
+	}
+	// slugPattern wants at least two characters and a leading alphanumeric.
+	if len(slug) < 2 {
+		return slug + "-espace"
+	}
+	if len(slug) > 63 {
+		slug = strings.Trim(slug[:63], "-")
+	}
+	return slug
 }
 
 func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Token             string `json:"token"`
 		Email             string `json:"email"`
 		Name              string `json:"name"`
 		InstanceName      string `json:"instanceName"`
@@ -265,10 +225,6 @@ func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "Invalid workspaceCreation")
 		return
 	}
-	if workspaceCreation == "disabled" && in.Workspace == nil {
-		problem(w, 400, "First workspace required when creation is disabled")
-		return
-	}
 	if in.Workspace != nil {
 		if !slugPattern.MatchString(in.Workspace.Slug) || len(strings.TrimSpace(in.Workspace.Name)) < 1 || utf8.RuneCountInString(in.Workspace.Name) > 120 {
 			problem(w, 400, "Invalid workspace")
@@ -298,16 +254,6 @@ func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
 		problem(w, 409, "Setup already completed")
 		return
 	}
-	ok, e := s.setupTokenValid(r.Context(), tx, in.Token)
-	if e != nil {
-		problem(w, 500, "Setup unavailable")
-		return
-	}
-	if !ok {
-		problem(w, 403, "Invalid setup token")
-		return
-	}
-
 	userID := opaque()
 	e = tx.QueryRow(r.Context(), `
 		INSERT INTO users(id,email,name) VALUES($1,$2,$3)
@@ -323,10 +269,16 @@ func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var workspaceID *string
+	// The claim always leaves exactly one space, so an instance can never land
+	// on an empty selector — and `workspace_creation=disabled` can never brick
+	// a fresh install.
+	wsSlug, wsName := firstWorkspaceSlug(email), firstWorkspaceName(email)
 	if in.Workspace != nil {
-		wsName := strings.TrimSpace(in.Workspace.Name)
+		wsSlug, wsName = in.Workspace.Slug, strings.TrimSpace(in.Workspace.Name)
+	}
+	{
 		id := opaque()
-		if _, e = tx.Exec(r.Context(), `INSERT INTO workspaces(id,slug,name) VALUES($1,$2,$3)`, id, in.Workspace.Slug, wsName); e != nil {
+		if _, e = tx.Exec(r.Context(), `INSERT INTO workspaces(id,slug,name) VALUES($1,$2,$3)`, id, wsSlug, wsName); e != nil {
 			problem(w, 409, "Slug already used")
 			return
 		}
@@ -356,18 +308,11 @@ func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "Could not complete setup")
 		return
 	}
-	if _, e = tx.Exec(r.Context(), `DELETE FROM setup_tokens`); e != nil {
-		problem(w, 500, "Could not complete setup")
-		return
-	}
-	if e = tx.Commit(r.Context()); e != nil {
-		problem(w, 500, "Could not complete setup")
-		return
-	}
-	_ = os.Remove(filepath.Join(s.Config.DataDirectory, setupTokenFile))
-	_ = s.refreshSettings(r.Context())
 
-	// Possession of the mailbox still has to be proved — no session here.
+	// Possession of the mailbox still has to be proved — no session here. The
+	// code goes out BEFORE the commit: a typo or a dead relay must leave the
+	// instance claimable, token intact. Committing first would spend the setup
+	// on an address nobody can reach, with no way back but shell access.
 	if e = s.issueLoginCode(r.Context(), email, ip); e != nil {
 		if errors.Is(e, errLoginRateLimited) {
 			problem(w, 429, "Too many attempts; try again later")
@@ -376,6 +321,11 @@ func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
 		problem(w, 503, "Email delivery unavailable")
 		return
 	}
+	if e = tx.Commit(r.Context()); e != nil {
+		problem(w, 500, "Could not complete setup")
+		return
+	}
+	_ = s.refreshSettings(r.Context())
 	jsonOut(w, 200, map[string]any{"ok": true})
 }
 
@@ -410,7 +360,6 @@ func (s *Service) deliverLoginCode(ctx context.Context, email string) error {
 
 func (s *Service) setupEmailTest(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Token string `json:"token"`
 		Email string `json:"email"`
 	}
 	if !body(w, r, &in) {
@@ -422,6 +371,14 @@ func (s *Service) setupEmailTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	backend := s.Config.mailBackend()
+
+	// Before the token check, so a guess consumes the quota — claimSetup
+	// already orders it this way.
+	ip := s.clientIP(r)
+	if !s.rate(r.Context(), "setup-email-test:"+ip, 10) {
+		problem(w, 429, "Too many attempts; try again later")
+		return
+	}
 
 	tx, e := s.DB.Begin(r.Context())
 	if e != nil {
@@ -440,25 +397,11 @@ func (s *Service) setupEmailTest(w http.ResponseWriter, r *http.Request) {
 		problem(w, 403, "Setup already completed")
 		return
 	}
-	ok, e := s.setupTokenValid(r.Context(), tx, in.Token)
-	if e != nil {
-		problem(w, 500, "Setup unavailable")
-		return
-	}
-	if !ok {
-		problem(w, 403, "Invalid setup token")
-		return
-	}
 	if e = tx.Commit(r.Context()); e != nil {
 		problem(w, 500, "Setup unavailable")
 		return
 	}
 
-	ip := s.clientIP(r)
-	if !s.rate(r.Context(), "setup-email-test:"+ip, 10) {
-		problem(w, 429, "Too many attempts; try again later")
-		return
-	}
 	if e = s.send(email, "Test de livraison Blok", fmt.Sprintf("Ceci est un e-mail de test depuis %s.\nSi vous le recevez, la livraison fonctionne.", s.Config.PublicURL)); e != nil {
 		jsonOut(w, 503, map[string]any{"error": e.Error(), "backend": backend})
 		return

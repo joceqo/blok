@@ -115,17 +115,18 @@ func New(ctx context.Context, c Config) (*Service, error) {
 		}
 	}
 	// bootstrap_markers is unused since instance admins (§5.1); keep the empty table.
-	needSetupToken, e := s.bootstrapInstance(ctx, tx)
+	setupRequired, e := s.bootstrapInstance(ctx, tx)
 	if e != nil {
 		return fail(e)
 	}
 	if e = tx.Commit(ctx); e != nil {
 		return fail(e)
 	}
-	if needSetupToken {
-		if e = s.ensureSetupToken(ctx); e != nil {
-			return fail(e)
-		}
+	if setupRequired {
+		// Say it plainly at every start: until someone completes the assistant,
+		// whoever reaches this URL first becomes the administrator.
+		slog.Warn("setup required: the first visitor to this address will claim this instance",
+			"url", strings.TrimRight(c.PublicURL, "/")+"/")
 	}
 	if e = os.MkdirAll(filepath.Join(c.DataDirectory, "uploads"), 0700); e != nil {
 		return fail(e)
@@ -276,6 +277,7 @@ func (s *Service) routes() {
 	s.mux.HandleFunc("POST /api/setup/email-test", s.setupEmailTest)
 	s.mux.HandleFunc("GET /api/admin/settings", s.getAdminSettings)
 	s.mux.HandleFunc("PATCH /api/admin/settings", s.patchAdminSettings)
+	s.mux.HandleFunc("GET /api/admin/health", s.adminHealth)
 	s.mux.HandleFunc("GET /api/admin/users", s.listAdminUsers)
 	s.mux.HandleFunc("POST /api/admin/users", s.createAdminUser)
 	s.mux.HandleFunc("PATCH /api/admin/users/{id}", s.patchAdminUser)
