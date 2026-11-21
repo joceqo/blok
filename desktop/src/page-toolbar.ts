@@ -1,5 +1,6 @@
 import { promoteToTopLayer, removeFromTopLayer } from '../../src/components/utils/top-layer';
 import { renderPageIcon } from '../../src/shell/page-icon';
+import { WORKSPACE_ROLES } from './access-vocabulary';
 export interface PageToolbar {
   element: HTMLElement;
   setBreadcrumbs(items: PageBreadcrumbItem[]): void;
@@ -64,7 +65,14 @@ export function createPageToolbar(
     onDelete?: () => void;
   } = {},
 ): PageToolbar {
-  let closeSharing: (() => void) | void;
+  const sharing = { close: undefined as (() => void) | void };
+  const layout = { fullWidth };
+  const crumb = { active: null as HTMLButtonElement | null };
+  const trailState = { items: breadcrumbs.map((item) => ({ ...item })) };
+  const feedbackState = {
+    timer: undefined as ReturnType<typeof setTimeout> | undefined,
+    disposed: false,
+  };
   const toolbar = document.createElement('div');
   toolbar.setAttribute('data-desktop-page-toolbar', '');
   if (onToggleSidebar) {
@@ -86,21 +94,23 @@ export function createPageToolbar(
   local.setAttribute('data-desktop-page-local', '');
   local.title = 'Cette page est enregistrée sur cet appareil';
   local.append(glyph(['M2.5 3.5h11v8h-11z', 'M5.5 13.5h5']), document.createTextNode('Sur cet appareil'));
-  if (options.workspaceName) {
+  const workspaceName = options.workspaceName;
+  const workspacePages = options.workspacePages;
+  if (workspaceName) {
     const workspace = document.createElement('button');
     workspace.type = 'button';
     workspace.setAttribute('data-desktop-page-workspace', '');
-    workspace.title = options.workspaceName;
+    workspace.title = workspaceName;
     workspace.append(glyph(['M2 7 8 2l6 5', 'M4 6v7h3V9h2v4h3V6']));
     const name = document.createElement('span');
-    name.textContent = options.workspaceName;
+    name.textContent = workspaceName;
     workspace.append(name);
-    if (options.workspacePages) {
+    if (workspacePages) {
       workspace.setAttribute('aria-haspopup', 'menu');
       workspace.setAttribute('aria-expanded', 'false');
       workspace.addEventListener('click', () => openBreadcrumbMenu({
-        id: 'workspace', title: options.workspaceName!, menuHeading: options.workspaceName,
-        menu: options.workspacePages!(),
+        id: 'workspace', title: workspaceName, menuHeading: workspaceName,
+        menu: workspacePages(),
       }, workspace));
     }
     const separator = document.createElement('span');
@@ -112,7 +122,7 @@ export function createPageToolbar(
   if (options.readOnly) {
     const badge = document.createElement('span');
     badge.setAttribute('data-desktop-page-readonly', '');
-    badge.textContent = 'Lecture seule';
+    badge.textContent = WORKSPACE_ROLES.viewer;
     identity.append(badge);
   }
 
@@ -127,7 +137,7 @@ export function createPageToolbar(
     share.textContent = 'Partager';
     share.setAttribute('aria-haspopup', 'dialog');
     share.setAttribute('aria-expanded', 'false');
-    share.addEventListener('click', () => { close(); closeBreadcrumbMenu(); closeSharing = onShare(share); });
+    share.addEventListener('click', () => { close(); closeBreadcrumbMenu(); sharing.close = onShare(share); });
     actions.append(share);
   }
   const copy = document.createElement('button');
@@ -141,10 +151,8 @@ export function createPageToolbar(
   feedback.setAttribute('data-desktop-page-feedback', '');
   feedback.setAttribute('role', 'status');
   feedback.hidden = true;
-  let feedbackTimer: ReturnType<typeof setTimeout> | undefined;
-  let disposed = false;
   const resetFeedback = (): void => {
-    clearTimeout(feedbackTimer);
+    clearTimeout(feedbackState.timer);
     feedback.hidden = true;
     feedback.textContent = '';
     copy.replaceChildren(linkIcon());
@@ -156,22 +164,22 @@ export function createPageToolbar(
     copy.disabled = true;
     const url = new URL(location.href);
     url.pathname = '/'; url.search = ''; url.hash = '';
-    const id = items.at(-1)?.id;
+    const id = trailState.items.at(-1)?.id;
     if (id) url.searchParams.set('page', id);
     void (async () => {
       try {
         await navigator.clipboard.writeText(id ? options.pageUrl?.(id) ?? url.href : url.href);
-        if (disposed) return;
+        if (feedbackState.disposed) return;
         feedback.textContent = 'Lien copié';
         copy.replaceChildren(glyph(['M3 8l3 3 7-7']));
         copy.title = 'Lien copié';
       } catch {
-        if (disposed) return;
+        if (feedbackState.disposed) return;
         feedback.textContent = 'Copie impossible : vérifiez l’autorisation du presse-papiers.';
         copy.title = 'La copie a échoué';
       } finally { copy.disabled = false; }
       feedback.hidden = false;
-      feedbackTimer = setTimeout(resetFeedback, 4000);
+      feedbackState.timer = setTimeout(resetFeedback, 4000);
     })();
   });
   actions.append(copy, feedback);
@@ -180,9 +188,10 @@ export function createPageToolbar(
   favorite.setAttribute('data-desktop-page-favorite', '');
   favorite.append(glyph(['M8 1.8 9.7 6.1l4.6.4-3.5 2.9 1.1 4.5L8 11.5 4.1 13.9l1.1-4.5L1.7 6.5l4.6-.4Z']));
   const setFavorite = (value: boolean): void => {
+    const label = value ? 'Retirer des favoris' : 'Ajouter aux favoris';
     favorite.setAttribute('aria-pressed', String(value));
-    favorite.setAttribute('aria-label', value ? 'Retirer des favoris' : 'Ajouter aux favoris');
-    favorite.title = favorite.getAttribute('aria-label')!;
+    favorite.setAttribute('aria-label', label);
+    favorite.title = label;
   };
   setFavorite(options.favorite === true);
   favorite.addEventListener('click', () => {
@@ -211,7 +220,7 @@ export function createPageToolbar(
   fullWidthButton.setAttribute('data-desktop-page-full-width', '');
   fullWidthButton.setAttribute('role', 'switch');
   fullWidthButton.setAttribute('aria-label', 'Pleine largeur');
-  fullWidthButton.setAttribute('aria-checked', String(fullWidth));
+  fullWidthButton.setAttribute('aria-checked', String(layout.fullWidth));
   const label = document.createElement('span');
   label.textContent = 'Pleine largeur';
   const track = document.createElement('span');
@@ -272,9 +281,9 @@ export function createPageToolbar(
     fullWidthButton.focus();
   });
   fullWidthButton.addEventListener('click', () => {
-    fullWidth = !fullWidth;
-    fullWidthButton.setAttribute('aria-checked', String(fullWidth));
-    onFullWidthChange(fullWidth);
+    layout.fullWidth = !layout.fullWidth;
+    fullWidthButton.setAttribute('aria-checked', String(layout.fullWidth));
+    onFullWidthChange(layout.fullWidth);
   });
   const breadcrumbMenu = document.createElement('div');
   breadcrumbMenu.setAttribute('data-desktop-breadcrumb-menu', '');
@@ -282,21 +291,20 @@ export function createPageToolbar(
   breadcrumbMenu.setAttribute('aria-label', 'Naviguer entre les pages');
   breadcrumbMenu.hidden = true;
   toolbar.append(breadcrumbMenu);
-  let activeCrumb: HTMLButtonElement | null = null;
   const closeBreadcrumbMenu = (restoreFocus = false): void => {
     if (breadcrumbMenu.hidden) return;
     breadcrumbMenu.hidden = true;
     removeFromTopLayer(breadcrumbMenu);
-    activeCrumb?.setAttribute('aria-expanded', 'false');
-    if (restoreFocus) activeCrumb?.focus();
-    activeCrumb = null;
+    crumb.active?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) crumb.active?.focus();
+    crumb.active = null;
     document.removeEventListener('pointerdown', outsideBreadcrumbMenu, true);
     document.removeEventListener('keydown', onBreadcrumbKey, true);
     window.removeEventListener('resize', onBreadcrumbResize);
   };
   const outsideBreadcrumbMenu = (event: PointerEvent): void => {
     if (event.target instanceof Node &&
-      (breadcrumbMenu.contains(event.target) || activeCrumb?.contains(event.target))) return;
+      (breadcrumbMenu.contains(event.target) || crumb.active?.contains(event.target))) return;
     closeBreadcrumbMenu();
   };
   const onBreadcrumbKey = (event: KeyboardEvent): void => {
@@ -314,7 +322,7 @@ export function createPageToolbar(
   };
   const onBreadcrumbResize = (): void => closeBreadcrumbMenu();
   const openBreadcrumbMenu = (item: PageBreadcrumbItem, anchor: HTMLButtonElement): void => {
-    if (activeCrumb === anchor && !breadcrumbMenu.hidden) {
+    if (crumb.active === anchor && !breadcrumbMenu.hidden) {
       closeBreadcrumbMenu();
       return;
     }
@@ -395,18 +403,17 @@ export function createPageToolbar(
     breadcrumbMenu.style.top = `${bounds.bottom + 6}px`;
     breadcrumbMenu.hidden = false;
     promoteToTopLayer(breadcrumbMenu);
-    activeCrumb = anchor;
+    crumb.active = anchor;
     anchor.setAttribute('aria-expanded', 'true');
     document.addEventListener('pointerdown', outsideBreadcrumbMenu, true);
     document.addEventListener('keydown', onBreadcrumbKey, true);
     window.addEventListener('resize', onBreadcrumbResize);
   };
-  let items = breadcrumbs.map((item) => ({ ...item }));
   const paint = (): void => {
     closeBreadcrumbMenu();
     const list = document.createElement('ol');
 
-    items.forEach((item, index) => {
+    trailState.items.forEach((item, index) => {
       if (index > 0) {
         const separator = document.createElement('li');
 
@@ -416,7 +423,7 @@ export function createPageToolbar(
         list.append(separator);
       }
       const entry = document.createElement('li');
-      const current = index === items.length - 1;
+      const current = index === trailState.items.length - 1;
       const content = document.createElement(item.menu || item.onOpen ? 'button' : 'span');
       const iconNode = document.createElement('span');
       const titleNode = document.createElement('span');
@@ -451,19 +458,25 @@ export function createPageToolbar(
   paint();
 
   const updateCurrent = (change: Partial<Pick<PageBreadcrumbItem, 'title' | 'icon'>>): void => {
-    const current = items.at(-1);
+    const current = trailState.items.at(-1);
 
     if (!current) return;
-    items = [...items.slice(0, -1), { ...current, ...change }];
+    trailState.items = [...trailState.items.slice(0, -1), { ...current, ...change }];
     paint();
   };
 
   return {
     element: toolbar,
-    setBreadcrumbs(value) { resetFeedback(); items = value.map((item) => ({ ...item })); paint(); },
+    setBreadcrumbs(value) { resetFeedback(); trailState.items = value.map((item) => ({ ...item })); paint(); },
     setTitle(value) { updateCurrent({ title: value }); },
     setIcon(value) { updateCurrent({ icon: value }); },
     setFavorite,
-    destroy() { disposed = true; clearTimeout(feedbackTimer); closeSharing?.(); close(); closeBreadcrumbMenu(); },
+    destroy() {
+      feedbackState.disposed = true;
+      clearTimeout(feedbackState.timer);
+      sharing.close?.();
+      close();
+      closeBreadcrumbMenu();
+    },
   };
 }
