@@ -7,6 +7,9 @@ import { createAddCoverButton, createPageCover, isCoverId, trackPageHeaderHover,
 import { mountAgentAssistant, type AgentAssistantHandle } from '../../src/shell/agent-assistant';
 import { bindAssistantButton, createAssistantButton, inspectNativeProvider, nativeAgentModel, selectedProvider } from './assistant';
 import { createPageToolbar, type PageBreadcrumbChoice, type PageBreadcrumbItem, type PageToolbar } from './page-toolbar';
+import { bindTitleDateMention, titleDateLabel, type TitleDateMentionBinding } from './title-date-mention';
+import { createFloatingToc, type FloatingToc } from './floating-toc';
+import type { DateDisplayChange } from '@blok/date-editor';
 
 const desktopTools = {
   ...defaultTools,
@@ -48,8 +51,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   let pageCanvas: HTMLElement;
   let footer: HTMLElement;
   let pageToolbar: PageToolbar | null = null;
+  let titleDateMention: TitleDateMentionBinding | null = null;
+  let floatingToc: FloatingToc | null = null;
   let currentId = '';
   let generation = 0;
+  let dateTimer: number | null = null;
   let saveOrder = Promise.resolve();
   const pageListeners = new Map<string, Set<() => void>>();
   const status = document.createElement('div');
@@ -69,6 +75,39 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (!index) return;
     const snapshot = JSON.stringify(index);
     saveOrder = saveOrder.then(() => writeFile('index', snapshot)).catch(showError);
+  };
+  const refreshDateTitles = (): void => {
+    if (!index) return;
+    let changed = false;
+    for (const page of index.pages) {
+      if (!page.titleDate) continue;
+      const display = titleDateLabel(page.titleDate, new Date(), page.titleDateDisplay);
+      const label = display === null ? null : `@${display}${page.titleDateSuffix ?? ''}`;
+      if (label === null || label === page.title) continue;
+      page.title = label;
+      changed = true;
+      notifyPage(page.id);
+    }
+    if (!changed) return;
+    frame.setPages(index.pages, index.activeId);
+    pageToolbar?.setBreadcrumbs(breadcrumbs(currentId));
+    const active = index.pages.find((page) => page.id === currentId);
+    if (active?.titleDate && editor) {
+      editor.title.set(active.title, { record: false });
+      titleDateMention?.refresh();
+      document.title = active.title;
+    }
+    saveManifest();
+  };
+  const scheduleDateRefresh = (): void => {
+    if (dateTimer !== null) window.clearTimeout(dateTimer);
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    dateTimer = window.setTimeout(() => {
+      dateTimer = null;
+      refreshDateTitles();
+      scheduleDateRefresh();
+    }, midnight.getTime() - now.getTime() + 50);
   };
   const notifyPage = (id: string): void => { pageListeners.get(id)?.forEach((listener) => listener()); };
   const breadcrumbs = (pageId: string): PageBreadcrumbItem[] => {
@@ -160,6 +199,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   };
   const select = (id: string): void => {
     if (!index) return;
+    refreshDateTitles();
     const page = index.pages.find((item) => item.id === id);
     if (!page) return;
     const selectedPage = page;
@@ -176,6 +216,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     coverRowObserver?.disconnect();
     coverRowObserver = null;
     pageToolbar?.destroy();
+    floatingToc?.destroy();
+    floatingToc = null;
+    titleDateMention?.destroy();
+    titleDateMention = null;
     editor?.destroy();
     editor = null;
     status.textContent = 'Ouverture de la page…';
@@ -245,10 +289,22 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       theme: readAppearance(),
       pageTitle: {
         placeholder: 'Nouvelle page',
-        onChange(title) {
+        onChange(title, change) {
           if (generation !== turn || !index) return;
           const next = title.trim() || 'Nouvelle page';
+          if (page.titleDate && change.source === 'user') {
+            const label = titleDateLabel(page.titleDate, new Date(), page.titleDateDisplay);
+            const prefix = label === null ? '' : `@${label}`;
+            const token = holder.querySelector('[data-desktop-title-date-token]');
+            if (token && next.startsWith(prefix)) page.titleDateSuffix = next.slice(prefix.length);
+            else {
+              page.titleDate = undefined;
+              page.titleDateDisplay = undefined;
+              page.titleDateSuffix = undefined;
+            }
+          }
           page.title = next;
+          holder.querySelector<HTMLElement>('[data-blok-page-title]')?.toggleAttribute('data-desktop-title-date', !!page.titleDate);
           toolbar.setBreadcrumbs(breadcrumbs(id));
           notifyPage(id);
           document.title = next;
@@ -276,8 +332,44 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     instance.width.set(page.fullWidth === true ? 'full' : 'narrow');
     void instance.isReady.then(() => {
       if (generation !== turn) return;
+      const redactor = holder.querySelector<HTMLElement>('[data-blok-redactor]');
+      if (redactor) floatingToc = createFloatingToc(pageCanvas, redactor);
       attachCoverAction();
-      if (!instance.title.get()) instance.title.set(page.title, { record: false });
+      if (!instance.title.get() || page.titleDate) instance.title.set(page.title, { record: false });
+      const title = holder.querySelector<HTMLElement>('[data-blok-page-title]');
+      if (title) {
+        const updateDateTitle = (): void => {
+          const label = page.titleDate ? titleDateLabel(page.titleDate, new Date(), page.titleDateDisplay) : null;
+          const next = label === null ? 'Nouvelle page' : `@${label}${page.titleDateSuffix ?? ''}`;
+          page.title = next;
+          instance.title.set(next);
+          if (page.titleDate) title.setAttribute('data-desktop-title-date', page.titleDate);
+          else title.removeAttribute('data-desktop-title-date');
+          saveManifest();
+        };
+        titleDateMention = bindTitleDateMention(title, {
+          getDate: () => page.titleDate,
+          getDisplay: () => page.titleDateDisplay ?? {},
+          setDate: (value) => {
+            if (!page.titleDate || value === null) page.titleDateSuffix = undefined;
+            page.titleDate = value ?? undefined;
+            if (value === null) page.titleDateDisplay = undefined;
+            updateDateTitle();
+          },
+          setDisplay: (change: DateDisplayChange) => {
+            const display = { ...page.titleDateDisplay };
+            if ('dateFormat' in change) display.dateFormat = change.dateFormat;
+            if ('timeFormat' in change) display.timeFormat = change.timeFormat;
+            if ('timeZone' in change) {
+              if (change.timeZone === null) delete display.timeZone;
+              else display.timeZone = change.timeZone;
+            }
+            page.titleDateDisplay = display;
+            updateDateTitle();
+          },
+          i18n: instance.i18n,
+        });
+      }
       syncPageIcon(page, instance.title.icon.get());
       toolbar.setBreadcrumbs(breadcrumbs(id));
       document.title = page.title;
@@ -291,11 +383,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (!page) return;
     if (command.type === 'rename') {
       page.title = command.title;
+      page.titleDate = undefined;
+      page.titleDateDisplay = undefined;
+      page.titleDateSuffix = undefined;
       notifyPage(page.id);
       if (currentId === page.id) editor?.title.set(command.title);
       else pageToolbar?.setBreadcrumbs(breadcrumbs(currentId));
     } else if (command.type === 'duplicate') {
-      const copy: DesktopPage = { ...page, id: crypto.randomUUID(), title: `${page.title} (copie)` };
+      const copy: DesktopPage = { ...page, id: crypto.randomUUID(), title: `${page.title} (copie)`, titleDate: undefined, titleDateDisplay: undefined, titleDateSuffix: undefined };
       index.pages.push(copy);
       saveManifest();
       void readFile(page.id).then(async (raw) => {
@@ -384,8 +479,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     async start() {
       try {
         index = await loadIndex();
+        refreshDateTitles();
         frame.setPages(index.pages, index.activeId);
         onRoute();
+        scheduleDateRefresh();
+        window.addEventListener('focus', refreshDateTitles);
       } catch (error) { showError(error); }
     },
     onRoute,
