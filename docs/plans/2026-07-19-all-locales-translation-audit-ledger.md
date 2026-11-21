@@ -442,75 +442,75 @@ locale returns to `pending`.
 
 | Locale | First-pass reviewer | First-pass dictionary SHA-256 | Second-pass reviewer | Second-pass dictionary SHA-256 |
 |---|---|---|---|---|
-| `am` | `root-global554-callers` | `sha256:f5ac56707ee0d65baa1d5c4dbf01d2b225fa2ce4f32770849ef714b57915249c` | `root-global554-linguistic` | `sha256:f5ac56707ee0d65baa1d5c4dbf01d2b225fa2ce4f32770849ef714b57915249c` |
-| `ar` | `root-global554-callers` | `sha256:660102abd5c254e699cef54c1bc70cdc1f8a32a780e50bc1c643df4aeeefd592` | `root-global554-linguistic` | `sha256:660102abd5c254e699cef54c1bc70cdc1f8a32a780e50bc1c643df4aeeefd592` |
-| `az` | `root-global554-callers` | `sha256:1b64c5f003093151afcc8a5b2fba44f32cc685158f10fa1b3546696932d58df0` | `root-global554-linguistic` | `sha256:1b64c5f003093151afcc8a5b2fba44f32cc685158f10fa1b3546696932d58df0` |
-| `bg` | `root-global554-callers` | `sha256:83d992234fe3b1f0df2b289cacbf843744e3f58c3b70d875e2fcfc759fa4867b` | `root-global554-linguistic` | `sha256:83d992234fe3b1f0df2b289cacbf843744e3f58c3b70d875e2fcfc759fa4867b` |
-| `bn` | `root-global554-callers` | `sha256:6eae0667e6eeee567af5bfc2fc4c22a21e630e76b27283cce60f2c8ecfd1a8e4` | `root-global554-linguistic` | `sha256:6eae0667e6eeee567af5bfc2fc4c22a21e630e76b27283cce60f2c8ecfd1a8e4` |
-| `bs` | `root-global554-callers` | `sha256:79f520d8e97a7c12382a4bba040e8c11a5e57913fb5ce5d0891549b7324dd018` | `root-global554-linguistic` | `sha256:79f520d8e97a7c12382a4bba040e8c11a5e57913fb5ce5d0891549b7324dd018` |
-| `cs` | `root-global554-callers` | `sha256:0692bbd3e3dcd9ed6cc2ba6d01fc5574b1dc39ebbf46744aa7139293b2f16e06` | `root-global554-linguistic` | `sha256:0692bbd3e3dcd9ed6cc2ba6d01fc5574b1dc39ebbf46744aa7139293b2f16e06` |
-| `da` | `root-global554-callers` | `sha256:6eb0fb5309a3e1be576c6365e94e02fa1e613d2b06c7c1aa3604d9c040de61dd` | `root-global554-linguistic` | `sha256:6eb0fb5309a3e1be576c6365e94e02fa1e613d2b06c7c1aa3604d9c040de61dd` |
-| `de` | `root-global554-callers` | `sha256:533069401ab3cb428d3a378061b3f2f5b32218a1545f20a51f7a739f950d6a27` | `root-global554-linguistic` | `sha256:533069401ab3cb428d3a378061b3f2f5b32218a1545f20a51f7a739f950d6a27` |
-| `dv` | `root-global554-callers` | `sha256:c98849ce5462e46ad08a05db277739d7811f2edbd387e99abfe1fe3ccc644382` | `root-global554-linguistic` | `sha256:c98849ce5462e46ad08a05db277739d7811f2edbd387e99abfe1fe3ccc644382` |
-| `el` | `root-global554-callers` | `sha256:71d14d0acc38e7a8a83044c42ed791b8d64361386410638f6e1a110dc8a15427` | `root-global554-linguistic` | `sha256:71d14d0acc38e7a8a83044c42ed791b8d64361386410638f6e1a110dc8a15427` |
-| `en` | `root-global554-callers` | `sha256:cf948cc6b96824ab565fca79117b40cbb7c65aca3f8a2083eae63129d746b173` | `root-global554-linguistic` | `sha256:cf948cc6b96824ab565fca79117b40cbb7c65aca3f8a2083eae63129d746b173` |
-| `es` | `root-global554-callers` | `sha256:87617dc19e80f1d060d7e5a2bcc4341c0fcba9c0d3fabcc16aa02e182945c54b` | `root-global554-linguistic` | `sha256:87617dc19e80f1d060d7e5a2bcc4341c0fcba9c0d3fabcc16aa02e182945c54b` |
-| `et` | `root-global554-callers` | `sha256:0b2dc8d8aefe5c5550a9058811bbe620644a98c126031c907a1fac3dc7229ea4` | `root-global554-linguistic` | `sha256:0b2dc8d8aefe5c5550a9058811bbe620644a98c126031c907a1fac3dc7229ea4` |
-| `fa` | `root-global554-callers` | `sha256:3a23ed1512e1e03412306fa814176b54f12702133a5437ff46e51553bd57956e` | `root-global554-linguistic` | `sha256:3a23ed1512e1e03412306fa814176b54f12702133a5437ff46e51553bd57956e` |
-| `fi` | `root-global554-callers` | `sha256:cd180e69e8eda3b2c292cb4be66d18d83bed56fd330b18927dacf299877c4dd7` | `root-global554-linguistic` | `sha256:cd180e69e8eda3b2c292cb4be66d18d83bed56fd330b18927dacf299877c4dd7` |
-| `fil` | `root-global554-callers` | `sha256:085535d47383d3754b37f867dc3db1e0ba0597a50e04f90bfb99aa81e3387a2d` | `root-global554-linguistic` | `sha256:085535d47383d3754b37f867dc3db1e0ba0597a50e04f90bfb99aa81e3387a2d` |
-| `fr` | `root-global554-callers` | `sha256:3cd195383dc2612816dcd9cf54869757537c0e1a423105acd5e19e13ca775477` | `root-global554-linguistic` | `sha256:3cd195383dc2612816dcd9cf54869757537c0e1a423105acd5e19e13ca775477` |
-| `gu` | `root-global554-callers` | `sha256:f8b7101d58e00ac0e35e8c3361fed235b164a693f4c87a24cb93e41774a60fa4` | `root-global554-linguistic` | `sha256:f8b7101d58e00ac0e35e8c3361fed235b164a693f4c87a24cb93e41774a60fa4` |
-| `he` | `root-global554-callers` | `sha256:f29d0fc81e403c5f96bdd92e404bec2deecbe225298edf78f9a9c7add9845eec` | `root-global554-linguistic` | `sha256:f29d0fc81e403c5f96bdd92e404bec2deecbe225298edf78f9a9c7add9845eec` |
-| `hi` | `root-global554-callers` | `sha256:2f394688ab3d71c597d573945e407a08b561aa76501cebd0861e8229b18c7871` | `root-global554-linguistic` | `sha256:2f394688ab3d71c597d573945e407a08b561aa76501cebd0861e8229b18c7871` |
-| `hr` | `root-global554-callers` | `sha256:8c24b73532487cba002bb04ba7df724b8b44e90e4670a7416f0c40fe55b0b9c4` | `root-global554-linguistic` | `sha256:8c24b73532487cba002bb04ba7df724b8b44e90e4670a7416f0c40fe55b0b9c4` |
-| `hu` | `root-global554-callers` | `sha256:c4cd53e123336709fc602840a8a0be5734470c6d9de37b85fbd2f4408ece70ae` | `root-global554-linguistic` | `sha256:c4cd53e123336709fc602840a8a0be5734470c6d9de37b85fbd2f4408ece70ae` |
-| `hy` | `root-global554-callers` | `sha256:a888a0641a42f71b6dacbcbc6387750db7293a42b2b250f8e45dfca83f7e6226` | `root-global554-linguistic` | `sha256:a888a0641a42f71b6dacbcbc6387750db7293a42b2b250f8e45dfca83f7e6226` |
-| `id` | `root-global554-linguistic` | `sha256:eb82be18bc0a38783568af0c9b2b4d8ad3f87c6fb24fe9e3f92f81b7c23ea5a3` | `root-global554-crosscheck` | `sha256:eb82be18bc0a38783568af0c9b2b4d8ad3f87c6fb24fe9e3f92f81b7c23ea5a3` |
-| `it` | `root-global554-linguistic` | `sha256:568efd9d67d3facd44f69af070bbc61613635da563c4771f0da8e769f2a21adf` | `root-global554-crosscheck` | `sha256:568efd9d67d3facd44f69af070bbc61613635da563c4771f0da8e769f2a21adf` |
-| `ja` | `root-global554-linguistic` | `sha256:7d3a34f94d6679152e344fc2e282c372990d7161867e4c25c9fa18478871a09f` | `root-global554-crosscheck` | `sha256:7d3a34f94d6679152e344fc2e282c372990d7161867e4c25c9fa18478871a09f` |
-| `ka` | `root-global554-linguistic` | `sha256:6c286a7fa560d557ece8e449fc3119afaac798602649a8d245cd6dff333feff8` | `root-global554-crosscheck` | `sha256:6c286a7fa560d557ece8e449fc3119afaac798602649a8d245cd6dff333feff8` |
-| `km` | `root-global554-linguistic` | `sha256:63247bb59a7b4ad138e753ac04270ebac0175dd15fd0225d8b20c25247e31d6f` | `root-global554-crosscheck` | `sha256:63247bb59a7b4ad138e753ac04270ebac0175dd15fd0225d8b20c25247e31d6f` |
-| `kn` | `root-global554-linguistic` | `sha256:4d3c74df7fd020c0b7252b33ca42f316b458d9a4c4130350becb2b048f808b99` | `root-global554-crosscheck` | `sha256:4d3c74df7fd020c0b7252b33ca42f316b458d9a4c4130350becb2b048f808b99` |
-| `ko` | `root-global554-linguistic` | `sha256:ef272b8bbb8cc830157ca56371a2a74ebd839069001aca7e9dcbcf4c3c3c8f00` | `root-global554-crosscheck` | `sha256:ef272b8bbb8cc830157ca56371a2a74ebd839069001aca7e9dcbcf4c3c3c8f00` |
-| `ku` | `root-global554-linguistic` | `sha256:e843aca94eb3b18f9f79c8299c948062f310fa7d193e9591c09b00cd28a82188` | `root-global554-crosscheck` | `sha256:e843aca94eb3b18f9f79c8299c948062f310fa7d193e9591c09b00cd28a82188` |
-| `lo` | `root-global554-linguistic` | `sha256:c1ce74b27add76f7b34943e84fd82d9407849775e839140298aa48516cf93baf` | `root-global554-crosscheck` | `sha256:c1ce74b27add76f7b34943e84fd82d9407849775e839140298aa48516cf93baf` |
-| `lt` | `root-global554-linguistic` | `sha256:dd4d000ced9d99456edde02ecb625abeb0c92deac8696679bcbf7d2af4755979` | `root-global554-crosscheck` | `sha256:dd4d000ced9d99456edde02ecb625abeb0c92deac8696679bcbf7d2af4755979` |
-| `lv` | `root-global554-linguistic` | `sha256:ba7711a7816096fa109681d5512ca00979260443ad48a7a6aa58f0e37f6372af` | `root-global554-crosscheck` | `sha256:ba7711a7816096fa109681d5512ca00979260443ad48a7a6aa58f0e37f6372af` |
-| `mk` | `root-global554-linguistic` | `sha256:ec8ca8b33630b3bf61f5a739d083d3d76196fed21c30c787aa2381cbbcc106dc` | `root-global554-crosscheck` | `sha256:ec8ca8b33630b3bf61f5a739d083d3d76196fed21c30c787aa2381cbbcc106dc` |
-| `ml` | `root-global554-linguistic` | `sha256:538bef6c1f91cacd57be910fc7a5669241ffddafdf719e7ba853e1d530edd867` | `root-global554-crosscheck` | `sha256:538bef6c1f91cacd57be910fc7a5669241ffddafdf719e7ba853e1d530edd867` |
-| `mn` | `root-global554-linguistic` | `sha256:2a8f78b109b2eaf72b7cddaa57975d19721d7e951e369c515e065fa72a86229e` | `root-global554-crosscheck` | `sha256:2a8f78b109b2eaf72b7cddaa57975d19721d7e951e369c515e065fa72a86229e` |
-| `mr` | `root-global554-linguistic` | `sha256:b45b7c697176101243c9963f267072752676e8c315a83d0b9c63dc1f67cbdb46` | `root-global554-crosscheck` | `sha256:b45b7c697176101243c9963f267072752676e8c315a83d0b9c63dc1f67cbdb46` |
-| `ms` | `root-global554-linguistic` | `sha256:38a9f891f889c3a0399e00f53fbe3ad9b6f38a30a3200415a8da6264139bdcd7` | `root-global554-crosscheck` | `sha256:38a9f891f889c3a0399e00f53fbe3ad9b6f38a30a3200415a8da6264139bdcd7` |
-| `my` | `root-global554-linguistic` | `sha256:0200fc1d2966e1d32688d167c4f5133b5ef3a54c0dbdeba1abae09eb455a0236` | `root-global554-crosscheck` | `sha256:0200fc1d2966e1d32688d167c4f5133b5ef3a54c0dbdeba1abae09eb455a0236` |
-| `ne` | `root-global554-linguistic` | `sha256:c38b915d50c0d7253abd2a228234944ed9957e716ab4d8295b59173592916348` | `root-global554-crosscheck` | `sha256:c38b915d50c0d7253abd2a228234944ed9957e716ab4d8295b59173592916348` |
-| `nl` | `root-global554-linguistic` | `sha256:24a2fd984ea44836a0a88f4922df60f4e5892eec51af1bf9042523daa0bb4588` | `root-global554-crosscheck` | `sha256:24a2fd984ea44836a0a88f4922df60f4e5892eec51af1bf9042523daa0bb4588` |
-| `no` | `root-global554-linguistic` | `sha256:7235789048589e33e2c7cfe4fb2c2dcea9908bcdb55de0c9134cce6ba43eeab0` | `root-global554-crosscheck` | `sha256:7235789048589e33e2c7cfe4fb2c2dcea9908bcdb55de0c9134cce6ba43eeab0` |
-| `pa` | `root-global554-linguistic` | `sha256:c1757af01cabdb8eb285458158c0b2e206d0a8892f29a069a13cc8ca6961d10c` | `root-global554-crosscheck` | `sha256:c1757af01cabdb8eb285458158c0b2e206d0a8892f29a069a13cc8ca6961d10c` |
-| `pl` | `root-global554-linguistic` | `sha256:86e28650f78e763dfe32dd23ab70fd017067275b576b03116bae22db13e8b825` | `root-global554-crosscheck` | `sha256:86e28650f78e763dfe32dd23ab70fd017067275b576b03116bae22db13e8b825` |
-| `ps` | `root-global554-linguistic` | `sha256:58baa74ca940bbeefdd24ae2bd8a340ec1537c4b154cd9b3500554686bcacfc8` | `root-global554-crosscheck` | `sha256:58baa74ca940bbeefdd24ae2bd8a340ec1537c4b154cd9b3500554686bcacfc8` |
-| `pt` | `root-global554-callers` | `sha256:8ea93fd1557da32555530d2eb778adf813fc33a492c421f9b8d00d33e6356da3` | `root-global554-crosscheck` | `sha256:8ea93fd1557da32555530d2eb778adf813fc33a492c421f9b8d00d33e6356da3` |
-| `ro` | `root-global554-callers` | `sha256:fcdba4c6247a374c87cbefa04ff261ce619dba3da0c1528b489f0914e5513770` | `root-global554-crosscheck` | `sha256:fcdba4c6247a374c87cbefa04ff261ce619dba3da0c1528b489f0914e5513770` |
-| `ru` | `root-global554-callers` | `sha256:9a63cf637cb27a31a2860c130d9f5945377b83367769f0226910a0a02c7ecaa9` | `root-global554-crosscheck` | `sha256:9a63cf637cb27a31a2860c130d9f5945377b83367769f0226910a0a02c7ecaa9` |
-| `sd` | `root-global554-callers` | `sha256:3f3066c8fdd53b77ff1c25f352cf288b6eb084dadc1d60e5edd3fdad943bcded` | `root-global554-crosscheck` | `sha256:3f3066c8fdd53b77ff1c25f352cf288b6eb084dadc1d60e5edd3fdad943bcded` |
-| `si` | `root-global554-callers` | `sha256:3e10d156f6c5810bb5aab27379f3bb8af010290b6cd0fbbe5aa89a95ec536b53` | `root-global554-crosscheck` | `sha256:3e10d156f6c5810bb5aab27379f3bb8af010290b6cd0fbbe5aa89a95ec536b53` |
-| `sk` | `root-global554-callers` | `sha256:b96803a525f14612eb8a0358f17093b792e7f44a6246915f73678e0e2f7a4948` | `root-global554-crosscheck` | `sha256:b96803a525f14612eb8a0358f17093b792e7f44a6246915f73678e0e2f7a4948` |
-| `sl` | `root-global554-callers` | `sha256:b491ca96da44494cd271b52a8c86a6c2512116f18674b2baf1c66d952c43bb63` | `root-global554-crosscheck` | `sha256:b491ca96da44494cd271b52a8c86a6c2512116f18674b2baf1c66d952c43bb63` |
-| `sq` | `root-global554-callers` | `sha256:4452c569c83c38b70398df3fe3da4e3730f4cd0f7ca439bd2d4d5a4609dd139e` | `root-global554-crosscheck` | `sha256:4452c569c83c38b70398df3fe3da4e3730f4cd0f7ca439bd2d4d5a4609dd139e` |
-| `sr` | `root-global554-callers` | `sha256:0fea51ab01e4932cc496cd6386a259168e2609073993db2ffe3bfca355115693` | `root-global554-crosscheck` | `sha256:0fea51ab01e4932cc496cd6386a259168e2609073993db2ffe3bfca355115693` |
-| `sv` | `root-global554-callers` | `sha256:e4796e366526dda3d031ae3b970cc70b1203257541f78789aa5e29536156ee70` | `root-global554-crosscheck` | `sha256:e4796e366526dda3d031ae3b970cc70b1203257541f78789aa5e29536156ee70` |
-| `sw` | `root-global554-callers` | `sha256:e09fd9798ca3c46ec5693268d26a221affbee31b44b3003d595464c18cc63ed9` | `root-global554-crosscheck` | `sha256:e09fd9798ca3c46ec5693268d26a221affbee31b44b3003d595464c18cc63ed9` |
-| `ta` | `root-global554-callers` | `sha256:7fbf6f91f3953bd3acbac2901aafe167014bfc19059384dc0fd9fc0523f91f98` | `root-global554-crosscheck` | `sha256:7fbf6f91f3953bd3acbac2901aafe167014bfc19059384dc0fd9fc0523f91f98` |
-| `te` | `root-global554-callers` | `sha256:5f7ac43d3d7bf54c40c09ba244d26441426d819059584d0e2cd8769bebf3e07d` | `root-global554-crosscheck` | `sha256:5f7ac43d3d7bf54c40c09ba244d26441426d819059584d0e2cd8769bebf3e07d` |
-| `th` | `root-global554-callers` | `sha256:66bf1ac252a67d68b3b555b757ba25e94c350febedf2c6e562099b695f756caf` | `root-global554-crosscheck` | `sha256:66bf1ac252a67d68b3b555b757ba25e94c350febedf2c6e562099b695f756caf` |
-| `tr` | `root-global554-callers` | `sha256:90de96fbf5bb6786c5ea43f3f172cdf966574890e3de6f63bf715ad3efe2c181` | `root-global554-crosscheck` | `sha256:90de96fbf5bb6786c5ea43f3f172cdf966574890e3de6f63bf715ad3efe2c181` |
-| `ug` | `root-global554-callers` | `sha256:c7fd41e70498c4fb11da98910a284af8a04efc8e8a6e951de7bf7027016638bd` | `root-global554-crosscheck` | `sha256:c7fd41e70498c4fb11da98910a284af8a04efc8e8a6e951de7bf7027016638bd` |
-| `uk` | `root-global554-callers` | `sha256:1e4dfa4ed1bc1e3517a09dfc18c27e1af9e373af583a3b58744e416f4b175f62` | `root-global554-crosscheck` | `sha256:1e4dfa4ed1bc1e3517a09dfc18c27e1af9e373af583a3b58744e416f4b175f62` |
-| `ur` | `root-global554-callers` | `sha256:3625f31562c9e0e816c5793577f780b45de91f9dd894addc4253d861c90ba856` | `root-global554-crosscheck` | `sha256:3625f31562c9e0e816c5793577f780b45de91f9dd894addc4253d861c90ba856` |
-| `vi` | `root-global554-callers` | `sha256:1460f05999a564c6e5df6e798f7a9fae6bfb6abb20c29a84168aa00bc7bdcff6` | `root-global554-crosscheck` | `sha256:1460f05999a564c6e5df6e798f7a9fae6bfb6abb20c29a84168aa00bc7bdcff6` |
-| `yi` | `root-global554-callers` | `sha256:3ff238f104668e324232799dbb14a0599a8b4ef1b02a27745ffed8518321e138` | `root-global554-crosscheck` | `sha256:3ff238f104668e324232799dbb14a0599a8b4ef1b02a27745ffed8518321e138` |
-| `zh` | `root-global554-callers` | `sha256:216aaf7f8fca8146f468804c7c11eae0b775a8ea6e087ed95c56186e4f5a6215` | `root-global554-crosscheck` | `sha256:216aaf7f8fca8146f468804c7c11eae0b775a8ea6e087ed95c56186e4f5a6215` |
-| `zh-TW` | `root-global554-callers` | `sha256:84c14d15ca5e4c4ebcb2ec02a776d31820c851f06694c61c57a8040405fbc3c1` | `root-global554-crosscheck` | `sha256:84c14d15ca5e4c4ebcb2ec02a776d31820c851f06694c61c57a8040405fbc3c1` |
+| `am` | `root-global554-callers` | `sha256:cc461080c58e7b97f624a1bd3434db1abd72ee522e57b52606fff2c62cc0a880` | `root-global554-linguistic` | `sha256:cc461080c58e7b97f624a1bd3434db1abd72ee522e57b52606fff2c62cc0a880` |
+| `ar` | `root-global554-callers` | `sha256:09d5526d9f333165a5d2b55a4185df1dce148fb13ed78d66626c41110107871b` | `root-global554-linguistic` | `sha256:09d5526d9f333165a5d2b55a4185df1dce148fb13ed78d66626c41110107871b` |
+| `az` | `root-global554-callers` | `sha256:db4951aa2d7c092e9615287c85d0a7385449ed39c98ab74e54493f8ed899b5a5` | `root-global554-linguistic` | `sha256:db4951aa2d7c092e9615287c85d0a7385449ed39c98ab74e54493f8ed899b5a5` |
+| `bg` | `root-global554-callers` | `sha256:c0742fd01c6209f5549b095b89658ecbbdeec5449c65116ab5648e344e0d3105` | `root-global554-linguistic` | `sha256:c0742fd01c6209f5549b095b89658ecbbdeec5449c65116ab5648e344e0d3105` |
+| `bn` | `root-global554-callers` | `sha256:951a1fd758ad692b53ecae273e64ef664af2fb85b5273587061866dcd7be92a9` | `root-global554-linguistic` | `sha256:951a1fd758ad692b53ecae273e64ef664af2fb85b5273587061866dcd7be92a9` |
+| `bs` | `root-global554-callers` | `sha256:02dd03c7b1ee71f6f86cf5458cad8b962ca413d4d1ace4cae646aeab6846b6f4` | `root-global554-linguistic` | `sha256:02dd03c7b1ee71f6f86cf5458cad8b962ca413d4d1ace4cae646aeab6846b6f4` |
+| `cs` | `root-global554-callers` | `sha256:39bd180ee9c1c5719a619c944beb989664fb162481992b2421414a24442d4bad` | `root-global554-linguistic` | `sha256:39bd180ee9c1c5719a619c944beb989664fb162481992b2421414a24442d4bad` |
+| `da` | `root-global554-callers` | `sha256:f837cd494e0fbcc0a914409fb4f7b6990bf5ed729331d9f533a444ef960bd065` | `root-global554-linguistic` | `sha256:f837cd494e0fbcc0a914409fb4f7b6990bf5ed729331d9f533a444ef960bd065` |
+| `de` | `root-global554-callers` | `sha256:9249b673d51f4c8b3cbd00756bdcf67b782b6b3073af2a44e9dbd005e4d86297` | `root-global554-linguistic` | `sha256:9249b673d51f4c8b3cbd00756bdcf67b782b6b3073af2a44e9dbd005e4d86297` |
+| `dv` | `root-global554-callers` | `sha256:8e07569e52255cdca6f448d8e5553b59bd0f57e0d2ab1a5cdb56807a6122cb4f` | `root-global554-linguistic` | `sha256:8e07569e52255cdca6f448d8e5553b59bd0f57e0d2ab1a5cdb56807a6122cb4f` |
+| `el` | `root-global554-callers` | `sha256:46cdbaa7685eb0f432f5ed6e44c6cad0192fee9594e76ac21f4555ce5b743945` | `root-global554-linguistic` | `sha256:46cdbaa7685eb0f432f5ed6e44c6cad0192fee9594e76ac21f4555ce5b743945` |
+| `en` | `root-global554-callers` | `sha256:ca07a224c226832a2cae74a7c726e38cecc4d4433e7f096ba2b64845d288b1a6` | `root-global554-linguistic` | `sha256:ca07a224c226832a2cae74a7c726e38cecc4d4433e7f096ba2b64845d288b1a6` |
+| `es` | `root-global554-callers` | `sha256:bd8c0759d8c9aa1eecee0abd6f053c8baff1d2478947e5325c24d3801750c89f` | `root-global554-linguistic` | `sha256:bd8c0759d8c9aa1eecee0abd6f053c8baff1d2478947e5325c24d3801750c89f` |
+| `et` | `root-global554-callers` | `sha256:ac4e2d71faa94ea92223274c54adc2fcba01be55daf453d68f5342eaf493d495` | `root-global554-linguistic` | `sha256:ac4e2d71faa94ea92223274c54adc2fcba01be55daf453d68f5342eaf493d495` |
+| `fa` | `root-global554-callers` | `sha256:946f11619a601b907a90c7fdbbe257f248dec67cc48ea4e9c7e1d362e6e0b3ca` | `root-global554-linguistic` | `sha256:946f11619a601b907a90c7fdbbe257f248dec67cc48ea4e9c7e1d362e6e0b3ca` |
+| `fi` | `root-global554-callers` | `sha256:6dfccfe07f18adf54d6aa8b88d7c389188879e4f84eadddc3f3f3bdfd8f4e46e` | `root-global554-linguistic` | `sha256:6dfccfe07f18adf54d6aa8b88d7c389188879e4f84eadddc3f3f3bdfd8f4e46e` |
+| `fil` | `root-global554-callers` | `sha256:668d1e9d3e287843d7ebc68e8a87f610c31312d6212adb0424348b9dad3ae199` | `root-global554-linguistic` | `sha256:668d1e9d3e287843d7ebc68e8a87f610c31312d6212adb0424348b9dad3ae199` |
+| `fr` | `root-global554-callers` | `sha256:9493b25c7230bfd12a0c458be47912f9c9fabf36729fb721cfe4f812c37e8d03` | `root-global554-linguistic` | `sha256:9493b25c7230bfd12a0c458be47912f9c9fabf36729fb721cfe4f812c37e8d03` |
+| `gu` | `root-global554-callers` | `sha256:74e84f3353aa81f6628620ce1389dfef002d8a5cf12161c160059a3a5d3539bf` | `root-global554-linguistic` | `sha256:74e84f3353aa81f6628620ce1389dfef002d8a5cf12161c160059a3a5d3539bf` |
+| `he` | `root-global554-callers` | `sha256:fe812d35e303f526bafc4ada2b5062bc5dcaea2eb9bd2f1dac0520ec74c57eba` | `root-global554-linguistic` | `sha256:fe812d35e303f526bafc4ada2b5062bc5dcaea2eb9bd2f1dac0520ec74c57eba` |
+| `hi` | `root-global554-callers` | `sha256:759edfc1e9e4a4ef3d91245f2c8b80f57ec3f3dd8ebe2fd66000780a179c04ec` | `root-global554-linguistic` | `sha256:759edfc1e9e4a4ef3d91245f2c8b80f57ec3f3dd8ebe2fd66000780a179c04ec` |
+| `hr` | `root-global554-callers` | `sha256:e8520fcbc2012d305a452e7bd5f3595c20cce7e355d35b8f84d85ec79d432e0f` | `root-global554-linguistic` | `sha256:e8520fcbc2012d305a452e7bd5f3595c20cce7e355d35b8f84d85ec79d432e0f` |
+| `hu` | `root-global554-callers` | `sha256:2cc8437fc5f48a70c0c5172da36d0a303141fa255680097bc8e027bbde494718` | `root-global554-linguistic` | `sha256:2cc8437fc5f48a70c0c5172da36d0a303141fa255680097bc8e027bbde494718` |
+| `hy` | `root-global554-callers` | `sha256:dd82c771ede47de494280d9fb67c4eb5961df30039907703078ac1e7840dda0f` | `root-global554-linguistic` | `sha256:dd82c771ede47de494280d9fb67c4eb5961df30039907703078ac1e7840dda0f` |
+| `id` | `root-global554-linguistic` | `sha256:3b13382192b1c79cc4c38e1e2ccb010b1d7c1197f88eee8804f8e5379df2131e` | `root-global554-crosscheck` | `sha256:3b13382192b1c79cc4c38e1e2ccb010b1d7c1197f88eee8804f8e5379df2131e` |
+| `it` | `root-global554-linguistic` | `sha256:bf1feb4d0a59d06f3cda99440f47a873e5942c3612e8661ced4a2e180bc59ea9` | `root-global554-crosscheck` | `sha256:bf1feb4d0a59d06f3cda99440f47a873e5942c3612e8661ced4a2e180bc59ea9` |
+| `ja` | `root-global554-linguistic` | `sha256:c29c76c0ced471a6ec740e25e7efdabb08d49640212e8c9b9212dccde3092148` | `root-global554-crosscheck` | `sha256:c29c76c0ced471a6ec740e25e7efdabb08d49640212e8c9b9212dccde3092148` |
+| `ka` | `root-global554-linguistic` | `sha256:e99942bc8d3b912844444442ed8d274d6e81dd9ca21f769438df15a4ab20bf12` | `root-global554-crosscheck` | `sha256:e99942bc8d3b912844444442ed8d274d6e81dd9ca21f769438df15a4ab20bf12` |
+| `km` | `root-global554-linguistic` | `sha256:1c17b1490bb356f13894049b5edd4fb2b82e29f79050a4edd024d1b17428d103` | `root-global554-crosscheck` | `sha256:1c17b1490bb356f13894049b5edd4fb2b82e29f79050a4edd024d1b17428d103` |
+| `kn` | `root-global554-linguistic` | `sha256:04e6ae93048a739002f20ba5a6d9ada899c6cdb4b476d0081768c16730421fe7` | `root-global554-crosscheck` | `sha256:04e6ae93048a739002f20ba5a6d9ada899c6cdb4b476d0081768c16730421fe7` |
+| `ko` | `root-global554-linguistic` | `sha256:3614882bdd69b4b2d776de95421b6b01cd1c5da00867c60ccc2a11ed46de73f9` | `root-global554-crosscheck` | `sha256:3614882bdd69b4b2d776de95421b6b01cd1c5da00867c60ccc2a11ed46de73f9` |
+| `ku` | `root-global554-linguistic` | `sha256:3ebb0d1bbc1b9288269c72d127163da832dfbaa4373591bd416af5fd3c9804f5` | `root-global554-crosscheck` | `sha256:3ebb0d1bbc1b9288269c72d127163da832dfbaa4373591bd416af5fd3c9804f5` |
+| `lo` | `root-global554-linguistic` | `sha256:338fa1f73eb6030588b240d27f7fc3df48d1cc10ee4433fc8fae7e5035682e39` | `root-global554-crosscheck` | `sha256:338fa1f73eb6030588b240d27f7fc3df48d1cc10ee4433fc8fae7e5035682e39` |
+| `lt` | `root-global554-linguistic` | `sha256:166a031522d046ab88f61fdb2d67aae88aba3287399ff6bd51ea938bdb3905ab` | `root-global554-crosscheck` | `sha256:166a031522d046ab88f61fdb2d67aae88aba3287399ff6bd51ea938bdb3905ab` |
+| `lv` | `root-global554-linguistic` | `sha256:44597afe256e7a09a46331bc4d449e5f9ca18b5f4cdfdea449c08c785863b868` | `root-global554-crosscheck` | `sha256:44597afe256e7a09a46331bc4d449e5f9ca18b5f4cdfdea449c08c785863b868` |
+| `mk` | `root-global554-linguistic` | `sha256:2534d021749d0d9c2363c2052fa63556c4dd84442704e1a8f4f62540707fae93` | `root-global554-crosscheck` | `sha256:2534d021749d0d9c2363c2052fa63556c4dd84442704e1a8f4f62540707fae93` |
+| `ml` | `root-global554-linguistic` | `sha256:13ca43b16894aa2a3c1afd0227b6b61df580ef2ae3acea8f3cf56d389d462774` | `root-global554-crosscheck` | `sha256:13ca43b16894aa2a3c1afd0227b6b61df580ef2ae3acea8f3cf56d389d462774` |
+| `mn` | `root-global554-linguistic` | `sha256:de6fae3f37ae6520a5f0eb6d0989deb1ba7a9d872bee7c4acab21ea0bc6d4879` | `root-global554-crosscheck` | `sha256:de6fae3f37ae6520a5f0eb6d0989deb1ba7a9d872bee7c4acab21ea0bc6d4879` |
+| `mr` | `root-global554-linguistic` | `sha256:15cac10d0af7033b8a1cb140597e6f77a80191e1997f603023bf0a023dd69f6c` | `root-global554-crosscheck` | `sha256:15cac10d0af7033b8a1cb140597e6f77a80191e1997f603023bf0a023dd69f6c` |
+| `ms` | `root-global554-linguistic` | `sha256:8f35b2713552a321e19a2e4c6452b0da8b6398bc6365091c131de788d4ee8a05` | `root-global554-crosscheck` | `sha256:8f35b2713552a321e19a2e4c6452b0da8b6398bc6365091c131de788d4ee8a05` |
+| `my` | `root-global554-linguistic` | `sha256:c1b1d17a78a58b5e0d77dabf9efef0029b68df3d764089d8012b1409751a9aa3` | `root-global554-crosscheck` | `sha256:c1b1d17a78a58b5e0d77dabf9efef0029b68df3d764089d8012b1409751a9aa3` |
+| `ne` | `root-global554-linguistic` | `sha256:df8e2b49ea7975a177dacfab4581e860702096dd1b2472860fd4f9ca9e228fe4` | `root-global554-crosscheck` | `sha256:df8e2b49ea7975a177dacfab4581e860702096dd1b2472860fd4f9ca9e228fe4` |
+| `nl` | `root-global554-linguistic` | `sha256:3c8e9bcc7f31aed35d6888881f585d7fa99f7378caf08397ae6a216bb4ed6e6e` | `root-global554-crosscheck` | `sha256:3c8e9bcc7f31aed35d6888881f585d7fa99f7378caf08397ae6a216bb4ed6e6e` |
+| `no` | `root-global554-linguistic` | `sha256:2b9a4c225eeb88bc99af8545f9fd33a74e030ad28c45f64ef4039aa596caf7a8` | `root-global554-crosscheck` | `sha256:2b9a4c225eeb88bc99af8545f9fd33a74e030ad28c45f64ef4039aa596caf7a8` |
+| `pa` | `root-global554-linguistic` | `sha256:cd09148b46a62b72eca3930f513029daebe1b1e5f807c95f95f84fc3d0b40761` | `root-global554-crosscheck` | `sha256:cd09148b46a62b72eca3930f513029daebe1b1e5f807c95f95f84fc3d0b40761` |
+| `pl` | `root-global554-linguistic` | `sha256:4028a67f49177b9a4145a7f93e56d09e2cdab86451ec384131de5ec74f9e7936` | `root-global554-crosscheck` | `sha256:4028a67f49177b9a4145a7f93e56d09e2cdab86451ec384131de5ec74f9e7936` |
+| `ps` | `root-global554-linguistic` | `sha256:3aef1bf6313fea3242e9637a557f50b6eff678e7f10c4d7a5e7f99aeadbed9d1` | `root-global554-crosscheck` | `sha256:3aef1bf6313fea3242e9637a557f50b6eff678e7f10c4d7a5e7f99aeadbed9d1` |
+| `pt` | `root-global554-callers` | `sha256:92b730ab8be69b90f3f65dfa980c967c7c91b2efd77ffd01efd0ba2077dda5dd` | `root-global554-crosscheck` | `sha256:92b730ab8be69b90f3f65dfa980c967c7c91b2efd77ffd01efd0ba2077dda5dd` |
+| `ro` | `root-global554-callers` | `sha256:646e2a560f940ab9500f81a5cf0d3f76d448a1e4438e37c8dc6afd620dac8d3b` | `root-global554-crosscheck` | `sha256:646e2a560f940ab9500f81a5cf0d3f76d448a1e4438e37c8dc6afd620dac8d3b` |
+| `ru` | `root-global554-callers` | `sha256:14f4ca2e0619a0fbf9bddce42223eaec97740ff932e5b2898d46d3bc7a4bbcc6` | `root-global554-crosscheck` | `sha256:14f4ca2e0619a0fbf9bddce42223eaec97740ff932e5b2898d46d3bc7a4bbcc6` |
+| `sd` | `root-global554-callers` | `sha256:10e047d64dffd7ea97e01d36585def88dd2f36e3c7a391f193b59bdcd4c24158` | `root-global554-crosscheck` | `sha256:10e047d64dffd7ea97e01d36585def88dd2f36e3c7a391f193b59bdcd4c24158` |
+| `si` | `root-global554-callers` | `sha256:416a3fc969f2ee979a0cc602444d8ebec962fae14068e6b48b0a132ff0097bc8` | `root-global554-crosscheck` | `sha256:416a3fc969f2ee979a0cc602444d8ebec962fae14068e6b48b0a132ff0097bc8` |
+| `sk` | `root-global554-callers` | `sha256:3248d903bb8f31a483ab8ca64ef4a88dfb20e3b99afd2c084a5ea8032a363859` | `root-global554-crosscheck` | `sha256:3248d903bb8f31a483ab8ca64ef4a88dfb20e3b99afd2c084a5ea8032a363859` |
+| `sl` | `root-global554-callers` | `sha256:b3ed9268e0cd7c603c8b196b02d5fda92937e8fc39968170c4274a206685bed1` | `root-global554-crosscheck` | `sha256:b3ed9268e0cd7c603c8b196b02d5fda92937e8fc39968170c4274a206685bed1` |
+| `sq` | `root-global554-callers` | `sha256:55ec4a150987c4a0bc7dec1aa2b7ca7c34a55d1286aa5cee02c22f4e88d158c0` | `root-global554-crosscheck` | `sha256:55ec4a150987c4a0bc7dec1aa2b7ca7c34a55d1286aa5cee02c22f4e88d158c0` |
+| `sr` | `root-global554-callers` | `sha256:58a8e4d01ed302050c3f0591f1c1a0b8e27921eade75ae0b8523d27f0d1531fb` | `root-global554-crosscheck` | `sha256:58a8e4d01ed302050c3f0591f1c1a0b8e27921eade75ae0b8523d27f0d1531fb` |
+| `sv` | `root-global554-callers` | `sha256:fd287407f1a7dafb25a326dce453ea3a7bc974772586bf14a34856df67d1aa4f` | `root-global554-crosscheck` | `sha256:fd287407f1a7dafb25a326dce453ea3a7bc974772586bf14a34856df67d1aa4f` |
+| `sw` | `root-global554-callers` | `sha256:79a65c8c31cd6fdd553771e35041458f7218ad8393497fc1722a3ebc28903e8b` | `root-global554-crosscheck` | `sha256:79a65c8c31cd6fdd553771e35041458f7218ad8393497fc1722a3ebc28903e8b` |
+| `ta` | `root-global554-callers` | `sha256:e44a5c3007fbe23e4b9c2980782f64c07f34de90e0ac92eee168cd3df8fdc9aa` | `root-global554-crosscheck` | `sha256:e44a5c3007fbe23e4b9c2980782f64c07f34de90e0ac92eee168cd3df8fdc9aa` |
+| `te` | `root-global554-callers` | `sha256:4647acbce8490146b31b2f847e01a8634d7a58d97be299be11270072f73a28d6` | `root-global554-crosscheck` | `sha256:4647acbce8490146b31b2f847e01a8634d7a58d97be299be11270072f73a28d6` |
+| `th` | `root-global554-callers` | `sha256:9b4ddc5023edb326b03cc9363f29c598b703dfc7f6de708f14085a2117d70d84` | `root-global554-crosscheck` | `sha256:9b4ddc5023edb326b03cc9363f29c598b703dfc7f6de708f14085a2117d70d84` |
+| `tr` | `root-global554-callers` | `sha256:1d61f60d43bb1da92035056479ac1654d27f3a736ecc577e5371517961413d39` | `root-global554-crosscheck` | `sha256:1d61f60d43bb1da92035056479ac1654d27f3a736ecc577e5371517961413d39` |
+| `ug` | `root-global554-callers` | `sha256:b1321fed029083d397faf601373ee582cbb36900800acb0e317c3a340a101625` | `root-global554-crosscheck` | `sha256:b1321fed029083d397faf601373ee582cbb36900800acb0e317c3a340a101625` |
+| `uk` | `root-global554-callers` | `sha256:14fc3063b204bcb76d0fff1ddd04602559f47e33dfe5ed3654aeb8059207220a` | `root-global554-crosscheck` | `sha256:14fc3063b204bcb76d0fff1ddd04602559f47e33dfe5ed3654aeb8059207220a` |
+| `ur` | `root-global554-callers` | `sha256:9555e2c941cd2d4f111aceab12e9ffc4b44947fef09d63867fce2b75b1d82a82` | `root-global554-crosscheck` | `sha256:9555e2c941cd2d4f111aceab12e9ffc4b44947fef09d63867fce2b75b1d82a82` |
+| `vi` | `root-global554-callers` | `sha256:82183f47eb3d0bfe5a28c4d3fbb06c44d69eac5e2d5343e7fe8b0232b6c111bd` | `root-global554-crosscheck` | `sha256:82183f47eb3d0bfe5a28c4d3fbb06c44d69eac5e2d5343e7fe8b0232b6c111bd` |
+| `yi` | `root-global554-callers` | `sha256:c230e1dc5018ab19441d4b2a687bf08c47efb9c6bf99ef06e05752d3cbe537fb` | `root-global554-crosscheck` | `sha256:c230e1dc5018ab19441d4b2a687bf08c47efb9c6bf99ef06e05752d3cbe537fb` |
+| `zh` | `root-global554-callers` | `sha256:f10917f205439c0d6492fc186390aae8ef22803087562947a4ba1b49d2bcc373` | `root-global554-crosscheck` | `sha256:f10917f205439c0d6492fc186390aae8ef22803087562947a4ba1b49d2bcc373` |
+| `zh-TW` | `root-global554-callers` | `sha256:5a16f4551450801119e82d2648b36615aa91902bb87eac8764c3ed35b035f012` | `root-global554-crosscheck` | `sha256:5a16f4551450801119e82d2648b36615aa91902bb87eac8764c3ed35b035f012` |
 
 ## 546-Key Recently-Used Label Migration
 
@@ -634,6 +634,82 @@ cases pass. The complete 2,543-case guideline contract and live 546-key,
 208-static-reference checker also pass. The nine localized values that now
 exactly equal English `Link` are recorded as sourced established-loanword
 retentions.
+
+## Web Page Link Label Addition
+
+`tools.link.webPage` is a new key in all 69 dictionaries. `getLinkTypeInfo`
+and `LINK_KINDS` in `src/components/inline-tools/inline-tool-link.ts` use it
+for web addresses: HTTP(S), protocol-relative URLs, plain domains and paths.
+Other schemes such as `tel:`, `sms:` and `ftp:` keep the generic catch-all
+`tools.link.webLink`.
+
+The English value is `Link to web page`. In 67 localized dictionaries the
+value is the one `tools.link.webLink` held at `e4372627^`, before
+`F-en-080` and `F-global-006` made that key generic. A direct comparison of
+the 69 current values against that commit matches 68 of them, English
+included. Bosnian is the exception: its old value was already the generic
+`Veza`, so `Veza ka web stranici` was newly written, modelled on Serbian
+`Веза ка веб страници` and the `F-bs-085` row. No native speaker has
+reviewed the Bosnian value.
+
+No reviewer named in this ledger has inspected the new bytes. The Reviewed
+Dictionary Digests rows were rehashed to the current files without a new
+first or second pass, and the locale rows keep their earlier status, as
+earlier key additions were recorded. This addition has had no review under
+Evidence Reset Rules 1 and 2. No value of the new key exactly equals English,
+so it adds no retention row.
+
+The same change reworded English `tools.link.keepTyping` from
+`Keep typing to add a link` to `Keep typing to add link`, as the product
+owner asked. No other dictionary changed for it, and the English digest row
+was rehashed again without a new pass.
+
+## Phone And Email Link Labels
+
+`tools.link.phoneNumber` is a new key in all 69 dictionaries. `getLinkTypeInfo`
+in `src/components/inline-tools/inline-tool-link.ts` uses it for `tel:` links.
+English reads `Link to phone number` and Russian `Ссылка на номер телефона`.
+The other 67 dictionaries hold a copy of their own
+`tools.database.starterPhoneNumber` value ("Phone number"), which is accurate
+but does not carry the "Link to" wording.
+
+The same change reworded `tools.link.emailAddress` in English to
+`Link to email address` and in Russian to `Ссылка на адрес электронной почты`,
+as the product owner asked. The other dictionaries keep "Email address".
+
+No reviewer named in this ledger has inspected the new bytes. The Reviewed
+Dictionary Digests rows were rehashed to the current files without a new first
+or second pass.
+
+Filipino `tools.link.emailAddress` (`Email address`) no longer equals the
+English value, so its retention row `R-fil-012` was removed.
+
+## Link Refusal Reasons
+
+`tools.link.invalidSpaces`, `tools.link.invalidUnsafe` and
+`tools.link.invalidKind` are new keys in all 69 dictionaries.
+`invalidReasonKey` in `src/components/inline-tools/inline-tool-link.ts` picks
+one of them as the gray reason line under the `tools.link.invalidLink` title:
+a space inside the address, a `javascript:`, `data:` or `vbscript:` address,
+or any other kind the editor does not accept, such as `file:`, `ftp:` and app
+links.
+
+English reads `An address cannot have spaces`, `This link is not safe to open`
+and `Only web, email and phone links work`. The English and Russian values
+were written by the product owner's assistant. The other 67 translations were
+machine-written in this change, modelled on each dictionary's own
+`tools.link.invalidLink` wording for link. No native speaker has reviewed them.
+
+The same change reworded `tools.link.jumpToSection` in English from
+`Jump to section` to `Link to section` and in Russian from
+`Перейти к разделу` to `Ссылка на раздел`, as the product owner asked. The
+other 67 dictionaries keep their earlier "go to section" value.
+
+No reviewer named in this ledger has inspected the new bytes. The Reviewed
+Dictionary Digests rows of all 69 dictionaries were rehashed to the current
+files without a new first or second pass. No value of the three new keys
+exactly equals English, and no dictionary held the old English
+`Jump to section`, so no retention row was added or removed.
 
 ## 539-Key Clear-Formatting Schema Migration
 
@@ -15912,7 +15988,6 @@ locale and UI context.
 | `R-fil-009` | `fil` | `tools.code.previewTab` | established loanword | `Preview` is established Filipino product language and precisely labels the rendered-output tab. | [Google Ads Help — Filipino preview terminology](https://support.google.com/google-ads/answer/14078207?hl=fil) |
 | `R-fil-010` | `fil` | `toolNames.video` | established loanword | `Video` is the established unchanged Filipino media noun and the natural concise toolbox label. | [Google Ads Help — Filipino video terminology](https://support.google.com/google-ads/answer/14078207?hl=fil) |
 | `R-fil-011` | `fil` | `toolNames.audio` | established loanword | `Audio` is the established unchanged Filipino media noun and the natural concise toolbox label. | [YouTube Premium Help — Filipino audio terminology](https://support.google.com/youtube/answer/6308116?hl=fil) |
-| `R-fil-012` | `fil` | `tools.link.emailAddress` | established loanword | `Email address` is established Filipino product terminology and is the natural label for the email-link destination field. | [Gmail Help — Filipino email terminology](https://support.google.com/mail/answer/8494?hl=fil) |
 | `R-fil-013` | `fil` | `tools.code.autoDetected` | established loanword | `auto` is established compact Filipino technical UI language and labels the automatically detected code language without ambiguity. | [Google Chrome Help — Filipino automatic-language terminology](https://support.google.com/chrome/answer/173424?hl=fil) |
 | `R-fil-014` | `fil` | `tools.image.altButton` | acronym | `Alt` is the conventional compact alternative-text label; the surrounding Filipino dialog supplies the full context. | [Google Accessibility Help — Filipino alternative text](https://support.google.com/accessibility/android/answer/7158690?hl=fil) |
 | `R-fil-016` | `fil` | `tools.image.cropRatio1to1` | universal notation | `1:1` is language-independent aspect-ratio notation and requires no Filipino translation. | [W3C CSS Sizing — aspect ratios](https://www.w3.org/TR/css-sizing-4/#aspect-ratio) |
@@ -18059,6 +18134,7 @@ locale and UI context.
 | `R-fi-049` | `fi` | `tools.database.starterOptionEffortRed` | universal notation | “red” is the literal option name the measured Notion template ships (research/33 §3.13); it is template data, kept as served. | [research/33 §3.13](2026-10-09-database-notion-parity/research/33-notion-round12.md) |
 | `R-fi-050` | `fi` | `tools.database.starterOptionLogo` | established loanword | Finnish 'logo' is the everyday native word for a company logo. | [Wiktionary: logo (Finnish)](https://en.wiktionary.org/wiki/logo#Finnish) |
 | `R-fi-051` | `fi` | `tools.database.rowCounts` | universal notation | `{words}, {characters}` holds only runtime placeholders and a comma; Finnish joins the two count phrases with a comma, as its own `tools.database.rowWordCount` already does. | [`rowFooter` runtime composition](../../src/tools/database/database-table-menus.ts) |
+| `R-fi-052` | `fi` | `tools.database.numberFormat.nigerian_naira` | established cognate | Finnish names the NGN currency "Nigerian naira" (genitive of Nigeria + naira), spelled like English; the code (NGN) follows as in every format label. | [Unicode CLDR — fi currencies.json (NGN)](https://github.com/unicode-org/cldr-json/blob/main/cldr-json/cldr-numbers-full/main/fi/currencies.json) |
 | `R-fil-090` | `fil` | `tools.database.starterOptionAccount` | universal notation | “@Account{number}” is a sample social media handle; an @-handle is written the same in every locale. | [Mention (blogging) – Wikipedia](https://en.wikipedia.org/wiki/Mention_(blogging)) |
 | `R-fil-091` | `fil` | `tools.database.starterEventRow1` | product-brand | “Make with Notion” is the proper name of Notion’s conference, written the same in every locale. | [Make with Notion](https://makewithnotion.com/) |
 | `R-fil-092` | `fil` | `tools.database.starterOptionVideo` | established loanword | Tagalog/Filipino 'video' is an attested loanword used as the everyday word, and the fil locale already uses 'Video' for this same label. | [Wiktionary: video (Tagalog)](https://en.wiktionary.org/wiki/video#Tagalog) |
@@ -18465,6 +18541,8 @@ locale and UI context.
 | `R-nl-104` | `nl` | `tools.database.viewTypeDashboard` | established loanword | "Dashboard" is the Dutch noun for this view (Van Dale); the locale already uses it in `tools.database.dashboardUnavailable`. | [Wiktionary: dashboard (Dutch)](https://en.wiktionary.org/wiki/dashboard#Dutch) |
 | `R-nl-105` | `nl` | `title.coverLink` | established loanword | `Link` is the standard Dutch tab label for an image link. | [Notion — Afbeeldingen, bestanden en media](https://www.notion.com/nl/help/images-files-and-media) |
 | `R-nl-106` | `nl` | `tools.database.rowCounts` | universal notation | `{words}, {characters}` holds only runtime placeholders and a comma; Dutch joins the two count phrases with a comma, as its own `tools.database.rowWordCount` already does. | [`rowFooter` runtime composition](../../src/tools/database/database-table-menus.ts) |
+| `R-nl-107` | `nl` | `tools.database.numberFormat.vietnamese_dong` | established cognate | Dutch names the VND currency "Vietnamese dong" (adjective Vietnamese + dong), spelled like English; the code (VND) follows as in every format label. | [Unicode CLDR — nl currencies.json (VND)](https://github.com/unicode-org/cldr-json/blob/main/cldr-json/cldr-numbers-full/main/nl/currencies.json) |
+| `R-nl-108` | `nl` | `tools.database.settingsFiltersTitle` | established loanword | Dutch writes the plural of "filter" as "filters", the same as English; the locale already uses it in "Filters bewerken" (`tools.database.tableEditFilters`). | [en.wiktionary.org](https://en.wiktionary.org/wiki/filter#Dutch) |
 | `R-no-052` | `no` | `tools.database.starterOptionAccount` | universal notation | “@Account{number}” is a sample social media handle; an @-handle is written the same in every locale. | [Mention (blogging) – Wikipedia](https://en.wikipedia.org/wiki/Mention_(blogging)) |
 | `R-no-053` | `no` | `tools.database.starterFormat` | established cognate | "Format" is the standard Norwegian Bokmål noun (et format). | [Wiktionary: format (Norwegian Bokmål)](https://en.wiktionary.org/wiki/format#Norwegian_Bokmål) |
 | `R-no-054` | `no` | `tools.database.starterOptionWebinar` | established loanword | Norwegian uses "webinar" (et webinar) for an online seminar. | [Wiktionary: webinar (Norwegian Bokmål)](https://en.wiktionary.org/wiki/webinar#Norwegian_Bokmål) |

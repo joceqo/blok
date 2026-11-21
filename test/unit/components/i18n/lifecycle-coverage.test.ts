@@ -302,7 +302,7 @@ const getLifecycle = (): ReturnType<typeof deriveLifecycle> => {
 };
 
 describe('current English catalog lifecycle coverage', () => {
-  it('rebuilds a disjoint 2255 + 146 + 607 + 12 closure for all 3020 keys', () => {
+  it('rebuilds a disjoint 2260 + 146 + 610 + 12 closure for all 3028 keys', () => {
     const { lifecycle } = getLifecycle();
     const counts = Object.fromEntries(
       ([
@@ -316,7 +316,7 @@ describe('current English catalog lifecycle coverage', () => {
       ])
     );
 
-    expect(lifecycle.size).toBe(3020);
+    expect(lifecycle.size).toBe(3028);
     expect(counts).toEqual({
       // tools.callout.editIcon moved finite-dynamic -> executable-literal when
       // the callout emoji button stopped being named by the emoji glyph and
@@ -589,7 +589,10 @@ describe('current English catalog lifecycle coverage', () => {
       // +2: the database block's Delete prompt calls trashDatabaseConfirm and its description by literal.
       // +2: Duplicate's submenu calls blockSettings.duplicateWithContent and duplicateWithoutContent by literal.
       // +3: the form builder calls formDeleteOption, formCheckboxLabelPlaceholder and formDropdownHint by literal.
-      'executable-literal': 2255,
+      // +1: the link field calls tools.link.webPage by literal for web addresses.
+      // +3: the link field calls its three refusal reasons (tools.link.invalidSpaces, invalidUnsafe, invalidKind) by literal.
+      // -1: tools.database.groupWeekOf, now that a week group reads Intl's day range; still shipped.
+      'executable-literal': 2260,
       // +10: the tabs block calls its 9 tools.tabs.* keys and toolbox.preview.tabs by literal.
       // toolNames.page moved here from finite-dynamic when the page-reference picker called it directly.
       // -5: tools.video.back/on/off/speedDecrease/speedIncrease left i18nLabel
@@ -710,7 +713,9 @@ describe('current English catalog lifecycle coverage', () => {
       // +1: tools.database.turnIntoPage, via the database block menu's prefix.
       // +2: trashDataSourcesConfirmDescription_one/_other, the database Delete prompt's plural text for 2+ data sources.
       // +6: the database Locked button's label, Re-lock, both unlock rows and its two hint lines, via the tools.database. prefix.
-      'registered-namespace-compatible': 607,
+      // +1: tools.database.subGroupBy, the Sub-group page's "Sub-group by", via the panel's prefix.
+      // +1: tools.database.groupWeekOf, above.
+      'registered-namespace-compatible': 610,
       // +1: Settings › Group's pin button names itself with groupPin through the panel's tools.database. prefix.
       // +1: tools.database.galleryFitImage, above. +1: tools.database.timelineEndBy, above.
       // +2: tools.database.rowLastEditedBy and rowWordCount, above.

@@ -70,16 +70,11 @@ describe('database gallery and calendar styles', () => {
     expect(ruleBody('[data-blok-database-gallery-card]')).not.toContain('padding-block-end');
   });
 
-  // A row stretches to its tallest item (L12), so the "+ New page" tile takes the card's preview height.
-  it('sizes the "+ New page" tile like a card of the same size', () => {
-    expect(ruleBody('[data-blok-database-gallery-new]::before')).toContain('padding-block-start: var(--blok-database-gallery-new-height, calc(56.25% + 38.5px))');
-    expect(ruleBody('[data-blok-database-gallery][data-card-size="medium"]')).toContain('--blok-database-gallery-new-height: calc(146.25px + 38.5px)');
-  });
-
-  // notion-motion.md Round 24 §4 Gallery (r24-gal-empty.png): with no cards the tile is 338×40, not card height.
-  it('draws the "+ New page" tile 40px tall when its grid has no cards', () => {
-    expect(ruleBody('[data-blok-database-gallery-grid][data-empty] > [data-blok-database-gallery-new]')).toContain('block-size: 40px');
-    expect(ruleBody('[data-blok-database-gallery-grid][data-empty] > [data-blok-database-gallery-new]::before')).toContain('content: none');
+  // notion-motion.md Round 86 §1 #4, Round 24 §4: alone on its row the tile is 40 tall; a row with cards stretches it (L12).
+  it('sizes the "+ New page" tile 40px tall and lets its row stretch it', () => {
+    expect(ruleBody('[data-blok-database-gallery-new]')).toContain('min-block-size: 40px');
+    expect(css).not.toContain('[data-blok-database-gallery-new]::before');
+    expect(css).not.toContain('--blok-database-gallery-new-height');
   });
 
   // notion-motion.md Round 24 §4 Gallery: the "+ New page" tile's hover fill comes in over 20ms ease-in.
@@ -106,7 +101,7 @@ describe('database gallery and calendar styles', () => {
   });
 
   // findings-listgallery L14: the "+ New page" tile is a card-size tile with the card ring, 15px gray.
-  it('draws the "+ New page" tile at card height with the card ring', () => {
+  it('draws the "+ New page" tile with the card ring', () => {
     const tile = ruleBody('[data-blok-database-gallery-new]');
 
     expect(tile).toContain('box-shadow: 0 0 0 1px var(--blok-database-gallery-new-ring)');
@@ -126,8 +121,6 @@ describe('database gallery and calendar styles', () => {
     expect(ruleBody('[data-blok-database-gallery-new] svg')).toContain('inline-size: 15px');
     expect(ruleBody('[data-blok-database-gallery-new] svg')).toContain('block-size: 15px');
     expect(ruleBody('[data-blok-database-gallery-new]')).toContain('gap: var(--blok-space-1-5)');
-    // The ::before spacer takes no gap, or the glyph and words shift off centre.
-    expect(ruleBody('[data-blok-database-gallery-new]::before')).toContain('margin-inline-end: calc(-1 * var(--blok-space-1-5))');
   });
 
   // notion-motion.md Round 81 §2 (r81-n-gallery-newpage.raw): Notion's centred group starts -6 and its glyph -1,
@@ -155,6 +148,15 @@ describe('database gallery and calendar styles', () => {
     expect(ruleBody('[data-blok-database-calendar-event]')).toMatch(/min-block-size:\s*28px/);
     expect(ruleBody('[data-blok-database-calendar-event-title]')).toMatch(/font-weight:\s*600/);
     expect(ruleBody('[data-blok-database-calendar-day][data-today] [data-blok-database-calendar-day-number]')).toContain('var(--blok-database-today)');
+  });
+
+  // notion-motion.md Round 87 §1 #10 (r87-n-week-light.raw): today's circle is 24 with no padding, so a two-digit day stays 24 wide.
+  // The min 24 lets a wider label ("20日") grow. Today on a 1st (a "Nov 1" label) is unmeasured and keeps its padded pill.
+  it('draws today\'s circle at least 24, with no padding on a day number', () => {
+    const today = '[data-blok-database-calendar-day][data-today] [data-blok-database-calendar-day-number]';
+
+    expect(ruleBody(today)).toMatch(/min-inline-size:\s*24px/);
+    expect(ruleBody(`${today}:not([data-month-start])`)).toMatch(/padding-inline:\s*0/);
   });
 
   // notion-motion.md Round 25 §5: wrapped, every card is 40 tall (46 slot) and its title is two 17px lines at most.
@@ -571,6 +573,35 @@ describe('Round 45 gallery, calendar and settings panel', () => {
   it('sets layout tile labels at 11px and the "Card layout" label at 500', () => {
     expect(ruleBody('[data-blok-database-layout-tile]')).toMatch(/font-size:\s*11px/);
     expect(ruleBody('[data-blok-database-card-layout-label]')).toMatch(/font-weight:\s*500/);
+  });
+
+  // notion-motion.md Round 89 §1 #8 (r89-n-layout.raw, r89-n-layout-boxes.raw): tiles 56.5 tall, pad 6, glyph at +10,
+  // label text at +35.5, top-aligned, r6, a 1px inset ring; the first tile 54 below the page top.
+  it('draws Layout tiles like Notion\'s: top-aligned, pad 6, r6, an inset ring', () => {
+    const tile = ruleBody('[data-blok-database-layout-tile]');
+
+    expect(tile).toMatch(/justify-content:\s*flex-start/);
+    expect(tile).toMatch(/block-size:\s*56\.5px/);
+    expect(tile).toMatch(/padding:\s*var\(--blok-space-1-5\)/);
+    expect(tile).toMatch(/line-height:\s*16\.5px/);
+    expect(tile).toMatch(/border-radius:\s*var\(--blok-radius-control\)/);
+    expect(tile).toMatch(/border:\s*none/);
+    expect(tile).toMatch(/box-shadow:\s*var\(--blok-database-layout-tile-ring\) 0 0 0 1px inset/);
+    expect(ruleBody('[data-blok-database-layout-tile-glyph]')).toMatch(/margin-block-start:\s*var\(--blok-space-1\)/);
+    expect(ruleBody('[data-blok-database-layout-tiles]')).toMatch(/margin-block-start:\s*var\(--blok-space-2-75\)/);
+  });
+
+  // Round 90 §1 #8: light ring rgb(230,229,227) (r89-n-layout.raw); dark rgb(56,56,54) already matched Blok's ring.
+  it('rings Layout tiles with Notion\'s light ring and keeps the dark one', () => {
+    const values = [...css.matchAll(/--blok-database-layout-tile-ring:\s*([^;]+);/g)].map((m) => m[1].trim());
+
+    expect(values).toEqual(['rgb(230, 229, 227)', 'rgba(255, 255, 243, 0.082)', 'rgba(255, 255, 243, 0.082)']);
+  });
+
+  // Round 90 §2 (r90-n-dark-layout.raw): label text at + 35.5, Blok + 35. §3: hover is `background 0.02s ease-in`.
+  it('sets the Layout label half a pixel lower and fades the hover fill in 0.02s', () => {
+    expect(ruleBody('[data-blok-database-layout-tile]')).toMatch(/transition:\s*background 0\.02s ease-in/);
+    expect(ruleBody('[data-blok-database-layout-tile-glyph] + span')).toMatch(/top:\s*0\.5px/);
   });
 });
 

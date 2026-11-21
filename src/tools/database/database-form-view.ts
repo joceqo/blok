@@ -1274,6 +1274,7 @@ export class DatabaseFormView implements DatabaseViewRenderer {
       besideFlip: true,
       testId: 'database-form-select-type',
       width: 290,
+      surfaceClass: 'blok-database-form-type-menu',
       backLabel: i18n.t('tools.database.peekBack'),
       onClose: () => {
         if (anchor.hasAttribute('data-blok-database-form-slot')) anchor.remove();
@@ -1288,16 +1289,22 @@ export class DatabaseFormView implements DatabaseViewRenderer {
             : this.options.schema.filter((property) => isAutoQuestion(property) && !asked.has(property.id));
           const rows: HTMLElement[] = existing.length === 0 ? [] : [
             panelLabel(i18n.t('tools.database.formExistingProperties')),
-            ...existing.map((property) => panelRow({
-              label: property.name,
-              description: i18n.t(propertyTypeMeta(property.type).labelKey),
-              icon: propertyTypeMeta(property.type).icon,
-              testId: `database-form-existing-${property.id}`,
-              onClick: () => {
-                panel.close();
-                this.options.showQuestion?.(property.id);
-              },
-            })),
+            ...existing.map((property) => {
+              const row = panelRow({
+                label: property.name,
+                description: i18n.t(propertyTypeMeta(property.type).labelKey),
+                icon: propertyTypeMeta(property.type).icon,
+                testId: `database-form-existing-${property.id}`,
+                onClick: () => {
+                  panel.close();
+                  this.options.showQuestion?.(property.id);
+                },
+              });
+
+              row.setAttribute('data-blok-database-form-existing-row', '');
+
+              return row;
+            }),
           ];
 
           return [

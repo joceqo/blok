@@ -1911,6 +1911,76 @@ describe('main.css split — cascade-preserving equivalence', () => {
     const DATABASE_R199_BYTES = 927;
     // Lane r202: Round 81 small look items (grouped list header, card menu search, No date pitch, gallery tools, Calculate chevrons, Month chevron, menu icon ink). Net database.css growth against origin/main.
     const DATABASE_R202_BYTES = 4524;
+    // Lane r205: Round 82 small look items (card menu chevrons, board card tools, header menu outline, grouped list header). Net database.css growth against origin/main.
+    const DATABASE_R205_BYTES = 1620;
+    // Lane r204: Round 82 Group page, every group eye in the strong grey and group names at 500 (Status at 400). Net database.css growth against origin/main.
+    const DATABASE_R204_BYTES = 135;
+    // Lane r208: the row page comment composer (Round 83 §7): input 560, tools shown with focus. Net database.css growth against origin/main.
+    const DATABASE_R208_BYTES = 1824;
+    // Lane r206: Round 83 date fields 36 apart, the time zone search 12 in, the advanced filter's "Where" in 14px dark ink. Net database.css growth against origin/main.
+    const DATABASE_R206_BYTES = 381;
+    // Lane r207: Round 83 Number format's "Filter formats…" field at 14px. Net database.css growth against origin/main.
+    const DATABASE_R207_BYTES = 240;
+    // Lane r210: Round 84b time zone list 48 down, headings spaced like Notion's sections. Net database.css growth against origin/main.
+    const DATABASE_R210_BYTES = 741;
+    // Lane r211: Round 84b grouped list Status pill at 400, its header spacing, full page title gap, timeline link dot. Net database.css growth against origin/main.
+    const DATABASE_R211_BYTES = 442;
+    // Lane r209: Round 84b §3 a 14x14 checkbox before each checkbox group name on the Group page. Net database.css growth against origin/main.
+    const DATABASE_R209_BYTES = 321;
+    // Lane r214: Round 66 §4 Favorite and full page top bar buttons at radius 6, Round 81 §1 rule ink. Net database.css growth against origin/main.
+    const DATABASE_R214_BYTES = 281;
+    // Lane r213: Round 83 §5 advanced filter group ring and the 20px Add filter rule plus. Net database.css growth against origin/main.
+    const DATABASE_R213_BYTES = 388;
+    // Lane r215: Round 85c §2 checkbox group headers on the board and list (no pill, the box 3px in). Net database.css growth against origin/main.
+    const DATABASE_R215_BYTES = 510;
+    // Lane r218: Round 53 §8a "No place" 70vh cap and Round 72 §5 feed byline/title boxes. Net database.css growth against origin/main.
+    const DATABASE_R218_BYTES = 621;
+    // Lane r217: Round 64 §6 1px more between list groups, Round 52 §1 default cursor while a list row drags. Net database.css growth against origin/main.
+    const DATABASE_R217_BYTES = 408;
+    // Lane r212: Round 84b §1 a long value in the fixed 300 Edit property flyout is cut with an ellipsis. Net database.css growth against origin/main.
+    const DATABASE_R212_BYTES = 712;
+    // Lane r220: Round 86 §1 the row menu's submenu fades out with no scale, Date format fades and scales in. Net database.css growth against origin/main.
+    const DATABASE_R220_BYTES = 833;
+    // Lane r224: Round 47 A3 the mid-drag timeline pill runs 4px past each end; Round 52 / 65 §4 Select type rows at + 12, no scale. Net database.css growth against origin/main.
+    const DATABASE_R224_BYTES = 746;
+    // Lane r223: Round 83 §7 pointer over a row page property's name cell, Round 72 §4 empty panel sliding out over a full page. Net database.css growth against origin/main.
+    const DATABASE_R223_BYTES = 705;
+    // Lane r226: Round 87 §1 #3, #4 Time format and Timezone open motion, #5 Edit property value rows, #10 today circle. Net database.css growth against origin/main.
+    const DATABASE_R226_BYTES = 2477;
+    // Lane r229: R59 §8 toolbar Search and Settings glyphs at 18px, R83 §5 filter ⋯ note. Net database.css growth against origin/main.
+    const DATABASE_R229_BYTES = 408;
+    // Lane r228: Round 47 §B7 wrapped table rows at 21 per line + 15. Net database.css growth against origin/main.
+    const DATABASE_R228_BYTES = 130;
+    // Lane r231: Round 88 §1 #7 Select type opens at once and its slot fades, #8 Select type row boxes and steps, #5 Quarter date pill. Net database.css growth against origin/main.
+    const DATABASE_R231_BYTES = 1412;
+    // Lane r232: Round 88 §1 #1 Date format open motion, #3 Number rule value row, #4 Filters page header. Net database.css growth against origin/main.
+    const DATABASE_R232_BYTES = 1207;
+    // Lane r235: Round 89 §1 #3 Quarter "+ New" ghost crosshair. Net database.css growth against origin/main.
+    const DATABASE_R235_BYTES = 206;
+    // Lane r236: Round 89 §1 #5 Select type existing-property tiles, R88 §1 #8 new-question glyph 20, #8 Layout tiles. Net database.css growth against origin/main.
+    const DATABASE_R236_BYTES = 767;
+    // Lane r239: Round 90 §1 #8 Layout tile ring, #9 #13 Select type row insets, #10 dark tiles, §3 Layout tile hover. Net database.css growth against origin/main.
+    const DATABASE_R239_BYTES = 886;
+    // Lane r238: Round 90 §1 #3 ghost crosshair at every zoom (a shrink), #4/#6 split date pill. Net database.css growth against origin/main.
+    const DATABASE_R238_BYTES = 191;
+    // Lane r241: Round 52 §4 active chip hover/open fill, "+ Filter" offset, sort rule slide. Net database.css growth against origin/main.
+    const DATABASE_R241_BYTES = 1285;
+    // Lane r250: Round 92 §1 #7 Show as divider inset, Bar tile track, dark tile labels. Net database.css growth against origin/main.
+    const DATABASE_R250_BYTES = 819;
+    // Lane r248: Round 92 §1 #3 #4 property and group list slide, group drag handles. Net database.css growth against origin/main.
+    const DATABASE_R248_BYTES = 1445;
+    // Lane r253: Round 93 §1 #5 Change type list height and fade. Net database.css growth against origin/main.
+    const DATABASE_R253_BYTES = 496;
+    // Lane r256: Round 94 §1 #6 no ring round the Edit property list after a submenu Escape. Net database.css growth against origin/main.
+    const DATABASE_R256_BYTES = 408;
+    // Lane r260: Round 95 §1 #8 the list row's keyboard ring sits outside the row. Net database.css growth against origin/main.
+    const DATABASE_R260_BYTES = 1098;
+    // Lane r262: Round 96 §1 #4 #5 the list row's focus fill and dark ring blue. Net database.css growth against origin/main.
+    const DATABASE_R262_BYTES = 219;
+    // Lane r257: Round 94 §1 #7 a hidden title row, §2 the selection bar at the database top. Net database.css growth against origin/main.
+    const DATABASE_R257_BYTES = 660;
+    // Lane r264: Round 97 §1 #4 the one-view selection bar at the database top, 8px left of the title. Net database.css growth against origin/main.
+    const DATABASE_R264_BYTES = 161;
     // colors.css: --blok-block-control, the neutral grey of "+" and the drag handle, in three themes.
     const BLOCK_CONTROL_GREY_BYTES = 186;
     // tables.css: the open size card covers a column grip held on the full-screen header line.
@@ -2560,6 +2630,41 @@ describe('main.css split — cascade-preserving equivalence', () => {
       + DATABASE_R198_BYTES
       + DATABASE_R199_BYTES
       + DATABASE_R202_BYTES
+      + DATABASE_R205_BYTES
+      + DATABASE_R204_BYTES
+      + DATABASE_R208_BYTES
+      + DATABASE_R206_BYTES
+      + DATABASE_R207_BYTES
+      + DATABASE_R210_BYTES
+      + DATABASE_R211_BYTES
+      + DATABASE_R209_BYTES
+      + DATABASE_R214_BYTES
+      + DATABASE_R213_BYTES
+      + DATABASE_R215_BYTES
+      + DATABASE_R218_BYTES
+      + DATABASE_R217_BYTES
+      + DATABASE_R212_BYTES
+      + DATABASE_R220_BYTES
+      + DATABASE_R224_BYTES
+      + DATABASE_R223_BYTES
+      + DATABASE_R226_BYTES
+      + DATABASE_R229_BYTES
+      + DATABASE_R228_BYTES
+      + DATABASE_R231_BYTES
+      + DATABASE_R232_BYTES
+      + DATABASE_R235_BYTES
+      + DATABASE_R236_BYTES
+      + DATABASE_R239_BYTES
+      + DATABASE_R238_BYTES
+      + DATABASE_R241_BYTES
+      + DATABASE_R250_BYTES
+      + DATABASE_R248_BYTES
+      + DATABASE_R253_BYTES
+      + DATABASE_R256_BYTES
+      + DATABASE_R260_BYTES
+      + DATABASE_R262_BYTES
+      + DATABASE_R257_BYTES
+      + DATABASE_R264_BYTES
       + CODE_PREVIEW_TAB_BYTES
       + POPOVER_THUMB_GUTTER_BYTES
       + ANNOTATION_UNDERLINE_BYTES

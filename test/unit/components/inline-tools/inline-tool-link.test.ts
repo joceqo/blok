@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
-import { IconLink, IconPage, IconTable } from '../../../../src/components/icons';
+import { IconGlobe, IconLink, IconPage, IconPhone, IconTable, IconTableOfContents } from '../../../../src/components/icons';
 
 import defaultDictionary from '../../../../src/components/i18n/locales/en.json';
 import { LinkInlineTool } from '../../../../src/components/inline-tools/inline-tool-link';
@@ -115,6 +115,12 @@ const ENGLISH_LINK_TRANSLATIONS: Record<string, string> = {
   'tools.link.emailAddress': defaultDictionary['tools.link.emailAddress'],
   'tools.link.jumpToSection': defaultDictionary['tools.link.jumpToSection'],
   'tools.link.webLink': defaultDictionary['tools.link.webLink'],
+  'tools.link.webPage': defaultDictionary['tools.link.webPage'],
+  'tools.link.phoneNumber': defaultDictionary['tools.link.phoneNumber'],
+  'tools.link.invalidLink': defaultDictionary['tools.link.invalidLink'],
+  'tools.link.invalidSpaces': defaultDictionary['tools.link.invalidSpaces'],
+  'tools.link.invalidUnsafe': defaultDictionary['tools.link.invalidUnsafe'],
+  'tools.link.invalidKind': defaultDictionary['tools.link.invalidKind'],
   'tools.link.recent': defaultDictionary['tools.link.recent'],
   'tools.link.onThisPage': defaultDictionary['tools.link.onThisPage'],
   'tools.database.moveToPages': defaultDictionary['tools.database.moveToPages'],
@@ -423,9 +429,9 @@ describe('LinkInlineTool', () => {
     expect(input.getAttribute('aria-invalid')).toBe('true');
     expect(error).not.toBeNull();
     expect(error?.hidden).toBe(false);
-    // trim(): the decorative warning icon's SVG markup contributes formatting
-    // whitespace to textContent; the announced message is what matters.
-    expect(error?.textContent?.trim()).toBe('tools.link.invalidLink');
+    // The title, then the reason: both are announced.
+    expect(error?.querySelector('[data-link-error-title]')?.textContent).toBe('Invalid link');
+    expect(error?.querySelector('[data-link-error-reason]')?.textContent).toBe('An address cannot have spaces');
     expect(error?.id).toBeTruthy();
     expect(input.getAttribute('aria-describedby')).toContain(error?.id ?? '');
   });
@@ -750,6 +756,11 @@ describe('LinkInlineTool', () => {
       },
       {
         value: 'https://example.com',
+        key: 'tools.link.webPage',
+        translation: 'Lien vers une page web',
+      },
+      {
+        value: 'sms:+15551234567',
         key: 'tools.link.webLink',
         translation: 'Lien',
       },
@@ -766,13 +777,35 @@ describe('LinkInlineTool', () => {
 
     it.each([
       'https://example.com',
-      'ftp://files.example.com',
-      'tel:+15551234567',
-      'sms:+15551234567',
+      'HTTP://example.com',
       '//cdn.example.com/file.js',
       '/docs/getting-started',
       'example.com',
-    ])('uses the generic English link label for %s', value => {
+      'localhost:3000/docs',
+    ])('says a web address leads to a web page: %s', value => {
+      const { tool } = createTool();
+      const itemWrapper = (tool.render() as unknown as LinkToolRenderResult).children.items[0].element;
+
+      (tool as unknown as { updateSuggestion(v: string): void }).updateSuggestion(value);
+
+      const typeEl = itemWrapper.querySelector('[data-link-suggestion-type]');
+
+      expect(typeEl?.textContent).toBe('Link to web page');
+    });
+
+    it.each(['tel:+15551234567', 'TEL:911'])('says %s is a link to a phone number', value => {
+      const { tool } = createTool();
+      const itemWrapper = (tool.render() as unknown as LinkToolRenderResult).children.items[0].element;
+
+      (tool as unknown as { updateSuggestion(v: string): void }).updateSuggestion(value);
+
+      expect(itemWrapper.querySelector('[data-link-suggestion-type]')?.textContent).toBe('Link to phone number');
+    });
+
+    it.each([
+      'ftp://files.example.com',
+      'sms:+15551234567',
+    ])('keeps the plain link label for %s, which is no web page', value => {
       const { tool } = createTool();
       const itemWrapper = (tool.render() as unknown as LinkToolRenderResult).children.items[0].element;
 
@@ -803,7 +836,7 @@ describe('LinkInlineTool', () => {
 
       expect(chip?.classList.contains('hidden')).toBe(false);
       expect(urlEl?.textContent).toBe('https://example.com');
-      expect(typeEl?.textContent).toBe('Link');
+      expect(typeEl?.textContent).toBe('Link to web page');
     });
 
     it('hides chip when input is cleared', () => {
@@ -818,7 +851,7 @@ describe('LinkInlineTool', () => {
       expect(chip?.classList.contains('hidden')).toBe(true);
     });
 
-    it('labels mailto: links as Email address', () => {
+    it('labels mailto: links as a link to an email address', () => {
       const { tool } = createTool();
       const wrapper = tool.render() as unknown as LinkToolRenderResult;
       const itemWrapper = wrapper.children.items[0].element;
@@ -827,7 +860,7 @@ describe('LinkInlineTool', () => {
 
       const typeEl = itemWrapper.querySelector('[data-link-suggestion-type]');
 
-      expect(typeEl?.textContent).toBe('Email address');
+      expect(typeEl?.textContent).toBe('Link to email address');
     });
 
     it('shows invalid label and disables row for incomplete URLs', () => {
@@ -839,7 +872,7 @@ describe('LinkInlineTool', () => {
       const typeEl = itemWrapper.querySelector('[data-link-suggestion-type]');
       const row = itemWrapper.querySelector('[data-link-suggestion-row]');
 
-      expect(typeEl?.textContent).toBe('Keep typing to add a link');
+      expect(typeEl?.textContent).toBe('Keep typing to add link');
       expect(row?.className).toContain('pointer-events-none');
     });
 
@@ -852,11 +885,11 @@ describe('LinkInlineTool', () => {
       const typeEl = itemWrapper.querySelector('[data-link-suggestion-type]');
       const row = itemWrapper.querySelector('[data-link-suggestion-row]');
 
-      expect(typeEl?.textContent).toBe('Link');
+      expect(typeEl?.textContent).toBe('Link to web page');
       expect(row?.className).toContain('cursor-pointer');
     });
 
-    it('labels anchor links as Jump to section', () => {
+    it('labels anchor links as a link to a section', () => {
       const { tool } = createTool();
       const wrapper = tool.render() as unknown as LinkToolRenderResult;
       const itemWrapper = wrapper.children.items[0].element;
@@ -865,42 +898,98 @@ describe('LinkInlineTool', () => {
 
       const typeEl = itemWrapper.querySelector('[data-link-suggestion-type]');
 
-      expect(typeEl?.textContent).toBe('Jump to section');
+      expect(typeEl?.textContent).toBe('Link to section');
     });
 
-    it('shows the enter-key hint only when the URL is confirmable', () => {
+    it.each([
+      ['tel:+15551234567', IconPhone],
+      ['TEL:911', IconPhone],
+      ['sms:+15551234567', IconGlobe],
+      ['telegram.org', IconGlobe],
+    ])('draws the sign for %s: a telephone for a phone number only', (value, svg) => {
       const { tool } = createTool();
       const itemWrapper = (tool.render() as unknown as LinkToolRenderResult).children.items[0].element;
-      const update = tool as unknown as { updateSuggestion(v: string): void };
+      const expected = document.createElement('span');
 
-      update.updateSuggestion('asd');
+      expected.innerHTML = svg;
+      (tool as unknown as { updateSuggestion(v: string): void }).updateSuggestion(value);
 
-      const hint = itemWrapper.querySelector<HTMLElement>('[data-link-suggestion-enter-hint]');
-
-      expect(hint).not.toBeNull();
-      // Incomplete URL: pressing Enter would fail, so the hint must not promise it.
-      expect(hint?.classList.contains('hidden')).toBe(true);
-
-      update.updateSuggestion('https://example.com');
-
-      expect(hint?.classList.contains('hidden')).toBe(false);
+      expect(itemWrapper.querySelector('[data-link-suggestion-icon]')?.innerHTML).toBe(expected.innerHTML);
     });
 
-    it('shows the suggestion icon and the enter-key hint as bare glyphs, with no chip behind them', () => {
+    it('is the row alone: no line above it and no Enter mark in it', () => {
+      const { tool } = createTool();
+      const itemWrapper = (tool.render() as unknown as LinkToolRenderResult).children.items[0].element;
+
+      (tool as unknown as { updateSuggestion(v: string): void }).updateSuggestion('https://example.com');
+
+      const suggestion = itemWrapper.querySelector('[data-link-suggestion]');
+
+      expect(Array.from(suggestion?.children ?? []).map((child) => child.hasAttribute('data-link-suggestion-row'))).toEqual([true]);
+      expect(itemWrapper.querySelector('[data-link-suggestion-enter-hint]')).toBeNull();
+      expect(suggestion?.querySelectorAll('svg')).toHaveLength(1);
+    });
+
+    it.each([
+      ['https://example.com', true],
+      ['mailto:a@b.co', true],
+      ['exam', false],
+      ['https://', false],
+    ])('lights the row for %s only when it can be added: %s', (value, lit) => {
+      const { tool } = createTool();
+      const itemWrapper = (tool.render() as unknown as LinkToolRenderResult).children.items[0].element;
+
+      (tool as unknown as { updateSuggestion(v: string): void }).updateSuggestion(value);
+
+      const classes = itemWrapper.querySelector('[data-link-suggestion-row]')?.className.split(' ') ?? [];
+
+      expect(classes.includes('bg-item-hover-bg')).toBe(lit);
+    });
+
+    it('marks a section link with the contents sign and says where it leads', () => {
+      const { tool } = createTool();
+      const itemWrapper = (tool.render() as unknown as LinkToolRenderResult).children.items[0].element;
+      const expected = document.createElement('span');
+
+      expected.innerHTML = IconTableOfContents;
+      (tool as unknown as { updateSuggestion(v: string): void }).updateSuggestion('#pricing');
+
+      expect(itemWrapper.querySelector('[data-link-suggestion-icon]')?.innerHTML).toBe(expected.innerHTML);
+      expect(itemWrapper.querySelector('[data-link-suggestion-type]')?.textContent).toBe('Link to section');
+    });
+
+    it.each([
+      ['https://google .com', 'An address cannot have spaces'],
+      ['javascript:alert(1)', 'This link is not safe to open'],
+      ['data:text/html,hi', 'This link is not safe to open'],
+      ['file:///Users/me/notes.pdf', 'Only web, email and phone links work'],
+      ['ftp://files.example.com', 'Only web, email and phone links work'],
+    ])('says why %s is refused, under "Invalid link"', (value, reason) => {
+      const { tool } = createTool();
+      const wrapper = (tool.render() as unknown as LinkToolRenderResult).children.items[0].element;
+      const input = getInputFromWrapper(wrapper);
+
+      input.value = value;
+      (tool as unknown as { enterPressed(event: KeyboardEvent): void }).enterPressed(createEnterEventStubs() as unknown as KeyboardEvent);
+
+      const error = wrapper.querySelector<HTMLElement>('[data-blok-link-tool-error]');
+
+      expect(error?.querySelector('[data-link-error-reason]')?.textContent).toBe(reason);
+      expect(error?.querySelector('[data-link-error-title]')?.textContent).toBe('Invalid link');
+      expect(error?.hidden).toBe(false);
+    });
+
+    it('shows the suggestion icon as a bare glyph, with no chip behind it', () => {
       const { tool } = createTool();
       const itemWrapper = (tool.render() as unknown as LinkToolRenderResult).children.items[0].element;
 
       (tool as unknown as { updateSuggestion(v: string): void }).updateSuggestion('https://example.com');
 
       const icon = itemWrapper.querySelector<HTMLElement>('[data-link-suggestion-icon]');
-      const hint = itemWrapper.querySelector<HTMLElement>('[data-link-suggestion-enter-hint]');
 
       expect(icon?.className).toContain('size-6');
       expect(icon?.className).not.toContain('bg-popover-icon-bg');
       expect(icon?.className).not.toContain('rounded-md');
-      expect(hint?.className).toContain('size-5');
-      expect(hint?.className).not.toContain('bg-popover-icon-bg');
-      expect(hint?.className).not.toContain('rounded-md');
     });
 
     it('prefills the URL field and suppresses the suggestion chip when editing an existing link', () => {
@@ -965,6 +1054,65 @@ describe('LinkInlineTool', () => {
       expect(input.getAttribute('aria-invalid')).toBe('true');
       expect(notifier.show).not.toHaveBeenCalled();
       expect(insertLinkSpy).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['Enter', (tool: unknown): void => (tool as { enterPressed(event: KeyboardEvent): void }).enterPressed(createEnterEventStubs() as unknown as KeyboardEvent)],
+      ['a click on the row', (tool: unknown): void => (tool as { confirmLink(): void }).confirmLink()],
+    ])('drops the spaces around a pasted address instead of refusing it, on %s', (_name, confirm) => {
+      const { tool } = createTool();
+      const renderResult = tool.render() as unknown as LinkToolRenderResult;
+      const input = getInputFromWrapper(renderResult.children.items[0].element);
+      const insertLinkSpy = vi.spyOn(tool as unknown as { insertLink(link: string): void }, 'insertLink');
+
+      input.value = ' \thttps://google.com/page \n';
+
+      confirm(tool);
+
+      expect(insertLinkSpy).toHaveBeenCalledWith('https://google.com/page');
+      expect(input.hasAttribute('aria-invalid')).toBe(false);
+    });
+
+    it.each([
+      ['localhost:3000/docs', 'http://localhost:3000/docs'],
+      ['example.com:8080', 'http://example.com:8080'],
+      ['192.168.0.1:8080?x=1', 'http://192.168.0.1:8080?x=1'],
+    ])('reads %s as a site with a port and adds the protocol, instead of refusing it', (typed, href) => {
+      const { tool } = createTool();
+      const renderResult = tool.render() as unknown as LinkToolRenderResult;
+      const input = getInputFromWrapper(renderResult.children.items[0].element);
+      const insertLinkSpy = vi.spyOn(tool as unknown as { insertLink(link: string): void }, 'insertLink');
+
+      input.value = typed;
+      (tool as unknown as { enterPressed(event: KeyboardEvent): void }).enterPressed(createEnterEventStubs() as unknown as KeyboardEvent);
+
+      expect(insertLinkSpy).toHaveBeenCalledWith(href);
+      expect(input.hasAttribute('aria-invalid')).toBe(false);
+    });
+
+    it.each(['tel:911', 'sms:12345', 'mailto:1'])('leaves %s alone: a short number after a known kind is no port', (typed) => {
+      const { tool } = createTool();
+      const renderResult = tool.render() as unknown as LinkToolRenderResult;
+      const input = getInputFromWrapper(renderResult.children.items[0].element);
+      const insertLinkSpy = vi.spyOn(tool as unknown as { insertLink(link: string): void }, 'insertLink');
+
+      input.value = typed;
+      (tool as unknown as { enterPressed(event: KeyboardEvent): void }).enterPressed(createEnterEventStubs() as unknown as KeyboardEvent);
+
+      expect(insertLinkSpy).toHaveBeenCalledWith(typed);
+    });
+
+    it('still refuses an address that can run code, port-like or not', () => {
+      const { tool } = createTool();
+      const renderResult = tool.render() as unknown as LinkToolRenderResult;
+      const input = getInputFromWrapper(renderResult.children.items[0].element);
+      const insertLinkSpy = vi.spyOn(tool as unknown as { insertLink(link: string): void }, 'insertLink');
+
+      input.value = 'javascript:alert(1)';
+      (tool as unknown as { enterPressed(event: KeyboardEvent): void }).enterPressed(createEnterEventStubs() as unknown as KeyboardEvent);
+
+      expect(insertLinkSpy).not.toHaveBeenCalled();
+      expect(input.getAttribute('aria-invalid')).toBe('true');
     });
 
     it('confirmLink does nothing silently for incomplete URLs', () => {
@@ -2498,7 +2646,7 @@ describe('LinkInlineTool', () => {
 
       expect(kindSection(itemWrapper)?.hidden).toBe(false);
       expect(kindRows(itemWrapper).map((row) => row.querySelector('[data-link-kind-title]')?.textContent)).toEqual([
-        defaultDictionary['tools.link.webLink'],
+        defaultDictionary['tools.link.webPage'],
         defaultDictionary['tools.link.emailAddress'],
       ]);
       expect(kindRows(itemWrapper).map((row) => row.getAttribute('data-link-kind-prefix'))).toEqual(['https://', 'mailto:']);

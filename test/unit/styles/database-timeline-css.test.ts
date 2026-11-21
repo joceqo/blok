@@ -133,6 +133,14 @@ describe('database timeline styles', () => {
     expect(Number(offset?.[1]) - 10).toBeGreaterThanOrEqual(6);
   });
 
+  // notion-motion.md Round 84b §5 (r84-n-tl-dot.raw): the 8px ring's centre is 10 past the bar's end (+47 on a 37 bar),
+  // the hit box starts 6 past it, and the 2px line runs from 1px inside the bar's end to the ring.
+  it('centres the link ring 10px past the bar and runs the line up to it', () => {
+    expect(ruleBody('[data-blok-database-timeline-link-handle]::after')).toContain('inset-inline-start: 0');
+    expect(ruleBody('[data-blok-database-timeline-link-handle]::before')).toContain('inset-inline-end: 100%');
+    expect(ruleBody('[data-blok-database-timeline-link-handle]::before')).toContain('inline-size: 7px');
+  });
+
   // findings C19/C20 (r26 §4d, r33 §4.6): no line under the toolbar; a near-white canvas with a bottom line.
   it('draws no line under the toolbar, and fills the canvas with a line under it', () => {
     expect(ruleBody('[data-blok-database-timeline-body]')).not.toContain('border-block-start');
@@ -274,6 +282,50 @@ describe('database timeline styles', () => {
     expect(pill).toMatch(/margin-inline-start:\s*calc\(-1 \* var\(--blok-space-1\)\)/);
     expect(pill).toMatch(/padding-inline:\s*var\(--blok-space-1\)/);
     expect(pill).toMatch(/box-sizing:\s*content-box/);
+  });
+
+  // notion-motion.md Round 47 A3 (Month): mid-drag the pill is span + 8 too, 48 for a day. Hours moves are unread.
+  it('runs the mid-drag pill 4px past each end, outside Hours', () => {
+    // The :is() list has commas, so ruleBody's selector split cannot find it.
+    const selector = '[data-blok-database-timeline]:not([data-zoom="hours"]):is([data-dragging="move"], [data-dragging="start"], [data-dragging="end"]) [data-blok-database-timeline-range]';
+    const pill = Array.from(css.matchAll(/([^{}]+)\{([^{}]*)\}/g)).find((match) => (match[1] ?? '').includes(selector))?.[2] ?? '';
+
+    expect(pill).toMatch(/margin-inline-start:\s*calc\(-1 \* var\(--blok-space-1\)\)/);
+    expect(pill).toMatch(/padding-inline:\s*var\(--blok-space-1\)/);
+    expect(pill).toMatch(/box-sizing:\s*content-box/);
+  });
+
+  // notion-motion.md Round 88 §1 #5: the Quarter date pill, padding 0 6, 12/400 ink, its left 6 before the bar (the bar sits 2 into its day).
+  it('draws the Quarter date pill fitted to its 12px text, 4 before the day', () => {
+    const selector = '[data-blok-database-timeline] [data-blok-database-timeline-header] [data-blok-database-timeline-range][data-label]';
+    const pill = ruleBody(selector);
+    const drag = css.indexOf('[data-blok-database-timeline]:not([data-zoom="hours"]):is([data-dragging="move"]');
+
+    expect(pill).toMatch(/padding-inline:\s*var\(--blok-space-1-5\)/);
+    expect(pill).toMatch(/margin-inline-start:\s*calc\(-1 \* var\(--blok-space-1\)\)/);
+    expect(pill).toMatch(/font-size:\s*12px/);
+    expect(pill).toMatch(/font-weight:\s*400/);
+    expect(pill).toMatch(/line-height:\s*22px/);
+    expect(pill).toMatch(/color:\s*var\(--blok-database-timeline-text\)/);
+    expect(pill).toMatch(/white-space:\s*nowrap/);
+    // Same specificity as the mid-drag rule, so it must come after it.
+    expect(css.indexOf(`${selector} {`)).toBeGreaterThan(drag);
+  });
+
+  // notion-motion.md Round 90 §1 #4, #6: a split pill is span + 8 wide (the view sets it), first day at + 6, last day 6 from its end.
+  it('spreads a split date pill\'s two days to its ends, its width counting the pads', () => {
+    const pill = ruleBody('[data-blok-database-timeline] [data-blok-database-timeline-header] [data-blok-database-timeline-range][data-split]');
+
+    expect(pill).toMatch(/box-sizing:\s*border-box/);
+    expect(pill).toMatch(/display:\s*flex/);
+    expect(pill).toMatch(/justify-content:\s*space-between/);
+  });
+
+  // notion-motion.md Round 91 §1 #2: a compact pill is at least span + 8 wide; the view's min-width counts the pads.
+  it('counts the pads in a named date pill\'s width', () => {
+    const pill = ruleBody('[data-blok-database-timeline] [data-blok-database-timeline-header] [data-blok-database-timeline-range][data-label]');
+
+    expect(pill).toMatch(/box-sizing:\s*border-box/);
   });
 
   it('hides an off-screen arrow that the view marks hidden', () => {
@@ -456,6 +508,12 @@ describe('"+ New" lane (Round 24)', () => {
 
   it('hides the label while the lane is hovered', () => {
     expect(ruleBody('[data-blok-database-timeline-new-lane]:hover [data-blok-database-timeline-new]')).toMatch(/opacity:\s*0/);
+  });
+
+  // notion-motion.md Round 90 §1 #3: Notion's ghost shows a crosshair at all 8 zooms.
+  it('shows a crosshair over the ghost bar at every zoom', () => {
+    expect(ruleBody('[data-blok-database-timeline-new-ghost]')).toMatch(/cursor:\s*crosshair/);
+    expect(css).not.toMatch(/\[data-zoom="quarter"\] \[data-blok-database-timeline-new-ghost\]/);
   });
 
   it('draws the ghost bar 34 tall, radius 6, in the 0.06 fill, fading in over 200ms ease-out', () => {

@@ -17,6 +17,8 @@ export interface CellPopoverOptions {
    * `'page'`: a full-page database's side panel, from under `dockRow` to the window bottom (research/35 §2.3).
    */
   docked?: boolean | 'page';
+  /** With `docked: true`: opens this far under the anchor instead of level with its top. */
+  dockGap?: number;
   /** With `docked: 'page'`: the toolbar row the panel starts under. */
   dockRow?: HTMLElement;
   /** A menu-like panel (DatabasePanel), not a cell editor: Notion's menu corner (database.css). */
@@ -35,6 +37,10 @@ export interface CellPopoverOptions {
   aside?: { side: 'left' | 'right'; gap: number; flip?: boolean };
   /** Opens above the anchor, `gap` over it, when it fits there and not below. */
   flip?: boolean;
+  /** With `flip`: the space over the anchor when above, when it is not `gap`. */
+  flipGap?: number;
+  /** Moves the box this far along x from the anchor's left. */
+  shiftX?: number;
   /**
    * The anchor is a zero-size point: the top-left on it, or above it, its bottom there, when only that fits.
    * No entrance motion (database.css).
@@ -46,6 +52,8 @@ export interface CellPopoverOptions {
   alignEnd?: boolean;
   /** Below the anchor: what the popover follows on scroll, when the anchor may be redrawn away while open. */
   positionContext?: HTMLElement;
+  /** Focus may sit here, outside the popover, without closing it. */
+  focusHost?: HTMLElement;
   /** Escape pressed while open. The owner decides: close, or step back a panel. */
   onEscape: () => void;
   /** The popover closed itself: an outside press, or focus moved away. */
@@ -99,16 +107,16 @@ const PANEL_GAP = 8;
  * panel that would run past the window slides up to stay inside it, as view
  * settings does (side-by-side-v1.md "Filter / Sort popovers").
  */
-const fitPlacement = (anchor: HTMLElement, gap = PANEL_GAP, flip = false, verticalMargin?: number, context = anchor): Pick<PopoverDesktopParams, 'cover' | 'viewportMargin' | 'coverFlipOffset' | 'coverVerticalMargin'> & { position: DOMRect; positionContext: HTMLElement } => {
+const fitPlacement = (anchor: HTMLElement, gap = PANEL_GAP, flip = false, verticalMargin?: number, context = anchor, flipGap = gap, shiftX = 0): Pick<PopoverDesktopParams, 'cover' | 'viewportMargin' | 'coverFlipOffset' | 'coverVerticalMargin'> & { position: DOMRect; positionContext: HTMLElement } => {
   const rect = anchor.getBoundingClientRect();
 
   return {
     cover: true,
     viewportMargin: COVER_VIEWPORT_MARGIN,
-    position: new DOMRect(rect.x, rect.bottom + gap, rect.width, 0),
+    position: new DOMRect(rect.x + shiftX, rect.bottom + gap, rect.width, 0),
     positionContext: context,
-    // Above, its bottom sits `gap` over the anchor's top (r21-cc-date-val.raw, r21-cc-add3.raw).
-    ...(flip ? { coverFlipOffset: rect.height + 2 * gap } : {}),
+    // Above, its bottom sits `flipGap` over the anchor's top (r21-cc-date-val.raw, r21-cc-add3.raw).
+    ...(flip ? { coverFlipOffset: rect.height + gap + flipGap } : {}),
     ...(verticalMargin !== undefined ? { coverVerticalMargin: verticalMargin } : {}),
   };
 };
@@ -211,12 +219,16 @@ export class CellPopover {
     const { aside, beside, besideOf, besideFlipWidth } = this.options;
     const below = (): ReturnType<typeof fitPlacement> | ReturnType<typeof besidePlacement> => (beside !== undefined
       ? besidePlacement(besideOf ?? anchor, beside, besideFlipWidth)
-      : fitPlacement(anchor, this.options.point === true ? 0 : this.options.gap, this.options.point === true || this.options.flip === true, this.options.verticalMargin, this.options.positionContext));
+      : fitPlacement(anchor, this.options.point === true ? 0 : this.options.gap, this.options.point === true || this.options.flip === true, this.options.verticalMargin, this.options.positionContext, this.options.flipGap, this.options.shiftX));
     const fit = aside !== undefined ? asidePlacement(aside) : below();
     const coverOrFit = cover === true || cover === 'value' ? coverPlacement(anchor, cover === 'value', cover === true && this.options.below === true) : fit;
     const docks = {
       page: () => dockPlacement(anchor, (this.options.dockRow ?? anchor).getBoundingClientRect().bottom, 0),
-      card: () => dockPlacement(anchor, anchor.getBoundingClientRect().top, DOCK_VIEWPORT_MARGIN),
+      card: () => {
+        const rect = anchor.getBoundingClientRect();
+
+        return dockPlacement(anchor, this.options.dockGap === undefined ? rect.top : rect.bottom + this.options.dockGap, DOCK_VIEWPORT_MARGIN);
+      },
     };
     const dock = docked === 'page' ? docks.page : docks.card;
     const placement = docked === undefined || docked === false ? coverOrFit : dock();
@@ -224,6 +236,8 @@ export class CellPopover {
 
     this.popover = popover;
     popover.alignEnd = this.options.alignEnd === true;
+    // Not flippable, so this only tells the registry's focus-out check; no aria-activedescendant is written.
+    if (this.options.focusHost !== undefined) popover.setActiveDescendantHost(this.options.focusHost);
     popover.on(PopoverEvent.Closed, () => {
       if (this.popover === popover) {
         this.teardown();

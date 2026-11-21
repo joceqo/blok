@@ -311,7 +311,8 @@ test.describe('dependencies', () => {
     await expect(page.locator('[data-blok-database-timeline-arrow][data-from="b"][data-to="c"]')).toHaveCount(1);
   });
 
-  // tlhover.png (Gamma): a 2px line from the bar's end into an 8px ring with a 2px stroke, ring 5px past the bar.
+  // tlhover.png (Gamma): a 2px line from the bar's end into an 8px ring with a 2px stroke.
+  // notion-motion.md Round 84b §5: the ring starts 6 past the bar, its centre 10 past.
   test('a hovered bar shows Notion\'s "–o" connector at its end', async ({ page }) => {
     await page.clock.setFixedTime(new Date('2026-10-09T12:00:00'));
     await mount(page, blocks());
@@ -335,8 +336,8 @@ test.describe('dependencies', () => {
     });
 
     expect(drawn.ring).toEqual(['8px', '8px', '2px', 'rgb(173, 169, 163)', 'none']);
-    expect(drawn.ringStart).toBeCloseTo(5, 0);
-    expect(drawn.line).toEqual(['6px', '2px', 'rgb(173, 169, 163)', 'none']);
+    expect(drawn.ringStart).toBeCloseTo(6, 0);
+    expect(drawn.line).toEqual(['7px', '2px', 'rgb(173, 169, 163)', 'none']);
     expect(drawn.lineStart).toBeCloseTo(-1, 0);
     expect(drawn.own).toEqual(['0px', 'rgba(0, 0, 0, 0)']);
   });
@@ -464,7 +465,8 @@ test.describe('linked view, research 20', () => {
     expect(((await savedRow(page, 'db-1')).schema as Array<{ type: string; databaseLocked?: boolean }>).find((p) => p.type === 'title')?.databaseLocked).toBeUndefined();
   });
 
-  test('"Show data source title" off hides the "↗ Tasks" title, keeps the add-view "+", and saves on the view', async ({ page }) => {
+  // notion-motion.md Round 97 §1 #5: one setting for the linked block, saved on the block.
+  test('"Show data source title" off hides the "↗ Tasks" title, keeps the add-view "+", and saves on the block', async ({ page }) => {
     await mount(page, [...source(), linkedBlock()]);
     const link = page.getByRole('link', { name: 'Tasks' });
 
@@ -480,7 +482,8 @@ test.describe('linked view, research 20', () => {
 
     await expect(link).toBeHidden();
     await expect(page.locator('[data-blok-database-add-view]').nth(1)).toBeAttached();
-    await expect.poll(async () => ((await savedRow(page, 'linked-1')).views as Array<{ showDataSourceTitle?: boolean }>)[0].showDataSourceTitle).toBe(false);
+    await expect.poll(async () => (await savedRow(page, 'linked-1')).hideDataSourceTitles).toBe(true);
+    expect(((await savedRow(page, 'linked-1')).views as Array<{ showDataSourceTitle?: boolean }>)[0].showDataSourceTitle).toBeUndefined();
     // The source's own title stays.
     await expect(page.locator('[data-blok-database-title][contenteditable="true"]')).toBeVisible();
   });

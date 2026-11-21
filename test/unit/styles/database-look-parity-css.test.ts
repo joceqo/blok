@@ -39,6 +39,11 @@ describe('view tabs (research/07:45-50, 222)', () => {
     expect(ruleBody('[data-blok-database-tab] svg')).toContain('width: 20px');
   });
 
+  it('show the pointer cursor at rest and while dragged (notion-motion.md Round 85c §3)', () => {
+    expect(ruleBody('[data-blok-database-tab]')).toContain('cursor: pointer');
+    expect(ruleBody('[data-blok-database-tab-bar][data-dragging] [data-blok-database-tab]')).not.toContain('cursor:');
+  });
+
   it('take the 0.076 pressed fill while their menu is open (notion-motion.md Round 27 §3)', () => {
     expect(ruleBody('[data-blok-database-tab][aria-expanded="true"]')).toContain('background-color: var(--blok-database-button-pressed-bg)');
     expect(tokenValues('--blok-database-button-pressed-bg')[0]).toBe('rgba(33, 27, 23, 0.076)');
@@ -79,6 +84,14 @@ describe('toolbar Filter and Sort (research/07:53)', () => {
 
     expect(body).toContain('padding: var(--blok-space-1)');
     expect(ruleBody('[data-blok-database-view-toolbar] [data-blok-database-toolbar-icon] svg')).toMatch(/width: 20px;\s*height: 20px/);
+  });
+
+  // notion-motion.md R59 §8: Notion's Search ink is 12.5x12.5 and Settings 13x11. At 20px Blok's are 15x15
+  // and 14x15; at 18px they measure 13x13 and 13x14 (Settings' sliders stay taller than wide).
+  it('draw Search and Settings at 18px so their ink matches Notion\'s', () => {
+    for (const button of ['[data-blok-database-toolbar-search]', '[data-blok-database-toolbar-settings]']) {
+      expect(ruleBody(`[data-blok-database-view-toolbar] ${button} svg`)).toMatch(/width: 18px;\s*height: 18px/);
+    }
   });
 });
 
@@ -237,6 +250,11 @@ describe('row page peek in dark (research/21 §1m)', () => {
   it('puts the side peek\'s first property 9px under the title, 8 more with 5 or more properties', () => {
     expect(ruleBody('[data-blok-database-drawer][data-peek-mode="side"] [data-blok-database-drawer-title]')).toContain('margin-bottom: 9px');
     expect(ruleBody('[data-blok-database-drawer][data-peek-mode="side"] [data-blok-database-drawer-props-spaced]')).toContain('padding-top: var(--blok-space-2)');
+  });
+
+  // notion-motion.md Round 84b §9 (r84-n-fullpage.raw): h1 156 + 48, first property row at 212.
+  it('puts a full page\'s first property 8px under the title', () => {
+    expect(ruleBody('[data-blok-database-drawer][data-peek-mode="full"] [data-blok-database-drawer-title]')).toContain('margin-bottom: var(--blok-space-2)');
   });
 
   it('inks the title in the database ink: rgb(44, 44, 43) light (research/26 §1e), rgb(240, 239, 237) dark', () => {
@@ -454,6 +472,11 @@ describe('row page property drag handle', () => {
   const head = '[data-blok-database-drawer-prop-row]:not([data-blok-database-drawer-pin]) > [data-blok-database-drawer-prop-head]';
   const hoveredHead = '[data-blok-database-drawer-prop-row]:not([data-blok-database-drawer-pin]):hover > [data-blok-database-drawer-prop-head]';
   const overIcon = '[data-blok-database-drawer-prop-handle]:has(+ [data-blok-database-drawer-prop-icon])';
+
+  // notion-motion.md Round 83 §7: Notion's name cell reads cursor pointer; only the handle reads grab.
+  it('points over the name cell when it opens the property menu', () => {
+    expect(ruleBody(`${head} > [data-blok-database-drawer-prop-label][role="button"]::before`)).toContain('cursor: pointer');
+  });
 
   it('is hidden at rest, so touch screens never get one', () => {
     expect(ruleBody('[data-blok-database-drawer-prop-handle]')).toContain('display: none');
@@ -732,6 +755,12 @@ describe('map view chrome', () => {
     // Notion's 6 sides; the shared field's 1px border adds one.
     expect(field).toContain('padding-inline: var(--blok-space-1-5)');
     expect(field).toContain('font-size: 14px');
+  });
+
+  // Round 53 §8a: Notion's "No place" list caps at 70vh (501.9 in a 717 window), not the editors' window height.
+  it('caps the "No place" list at 70vh', () => {
+    expect(ruleBody("[data-blok-popover-custom-class~='blok-database-map-no-place-menu'] [data-blok-popover-container]"))
+      .toContain('--max-height: 70vh');
   });
 
   it('holds Add pin in a 28px white pill, radius 6, padding 2, 8 in from the corner', () => {

@@ -503,6 +503,89 @@ describe('form builder question card (research/21 §1k)', () => {
     expect(tokenValues('--blok-database-form-type-frame')[0]).toBe('rgba(84, 72, 49, 0.15)');
   });
 
+  // notion-motion.md Round 52 and Round 65 §4: rows 266 wide at the panel's + 12, and no scale on open.
+  it('insets Select type rows 8 inside the panel padding, and opens the panel with no scale', () => {
+    const row = ruleBody('[data-blok-database-form-type-row]');
+
+    expect(row).toContain('width: auto');
+    expect(row).toContain('margin-inline: var(--blok-space-2)');
+    expect(ruleBody("[data-blok-popover][data-blok-popover-custom-class~='blok-database-form-type-menu']:not([data-blok-popover-opened='true']) [data-blok-popover-container]")).toContain('transform: none');
+    const scale = database.indexOf("[data-blok-popover-custom-class~='blok-database-cell-editor']:not([data-blok-popover-opened='true']) [data-blok-popover-container] {");
+    const none = database.indexOf("[data-blok-popover][data-blok-popover-custom-class~='blok-database-form-type-menu']:not([data-blok-popover-opened='true']) [data-blok-popover-container]");
+
+    // Same specificity as the scale rule, so it must come after it.
+    expect(none).toBeGreaterThan(scale);
+  });
+
+  // notion-motion.md Round 88 §1 #7: Notion's Select type panel has no transition; only the empty slot fades, 200ms ease-out.
+  it('opens Select type at once, and fades in the empty slot instead', () => {
+    const fade = database.indexOf("[data-blok-popover][data-blok-popover-custom-class~='blok-database-cell-editor'] [data-blok-popover-container] {");
+    const none = database.indexOf("[data-blok-popover][data-blok-popover-custom-class~='blok-database-form-type-menu'] [data-blok-popover-container] {");
+
+    expect(ruleBody("[data-blok-popover][data-blok-popover-custom-class~='blok-database-form-type-menu'] [data-blok-popover-container]")).toContain('transition: none');
+    // Same specificity as the fade rule, so it must come after it.
+    expect(none).toBeGreaterThan(fade);
+    expect(ruleBody('[data-blok-database-form-slot]')).toContain('transition: opacity 200ms ease-out');
+    const starting = [...database.matchAll(/@starting-style\s*\{\s*([^{}]+)\{([^{}]*)\}\s*\}/g)]
+      .filter((match) => match[1].trim() === '[data-blok-database-form-slot]');
+
+    expect(starting.map((match) => match[2].trim())).toEqual(['opacity: 0;']);
+  });
+
+  // notion-motion.md Round 88 §1 #8: existing-property rows 266 x 45.6 at + 12; rows in both sections 1 apart.
+  it('insets existing-property rows like the new-question rows, 45.6 tall, and steps every row 1px apart', () => {
+    const existing = ruleBody('[data-blok-database-form-existing-row]');
+
+    expect(existing).toContain('width: auto');
+    expect(existing).toContain('margin-inline: var(--blok-space-2)');
+    expect(existing).toContain('min-height: 45.6px');
+    expect(ruleBody('[data-blok-database-form-existing-row] + [data-blok-database-form-existing-row]')).toContain('margin-block-start: var(--blok-space-0-25)');
+    expect(ruleBody('[data-blok-database-form-type-row] + [data-blok-database-form-type-row]')).toContain('margin-block-start: var(--blok-space-0-25)');
+  });
+
+  // notion-motion.md Round 89 §1 #5 (r89-n-formtype-existing.raw): an existing-property row has a 32 tile at +6
+  // (white, r4, 1px frame) around a 19.2 glyph, and its text at +46.
+  it('frames the existing-property glyph in a 32px tile 6 in from the row edge', () => {
+    const tile = ruleBody('[data-blok-database-form-existing-row] > [data-blok-database-panel-icon]');
+
+    expect(ruleBody('[data-blok-database-form-existing-row]')).toContain('padding-inline-start: var(--blok-space-1-5)');
+    expect(tile).toContain('inline-size: 32px');
+    expect(tile).toContain('block-size: 32px');
+    expect(tile).toContain('border: 1px solid var(--blok-database-form-type-frame)');
+    expect(tile).toContain('border-radius: var(--blok-radius-control-sm)');
+    expect(tile).toContain('background-color: var(--blok-database-form-type-bg)');
+    expect(ruleBody('[data-blok-database-form-existing-row] > [data-blok-database-panel-icon] svg')).toContain('width: 19.2px');
+  });
+
+  // notion-motion.md Round 88 §1 #8, Round 89 §5 (r89-n-formtype.raw): new-question glyphs are 20, not 16.
+  it('draws the new-question glyph 20px', () => {
+    const svg = ruleBody('[data-blok-database-form-type-row] > [data-blok-database-panel-icon] svg');
+
+    expect(svg).toContain('width: 20px');
+    expect(svg).toContain('height: 20px');
+  });
+
+  // notion-motion.md Round 90 §1 #9 (r90-n-dark-formtype.raw): a new-question row's tile sits at + 6 and its name
+  // text at + 13.6, as in the existing-property rows; Blok read + 8 and + 12.6.
+  it('puts the new-question tile 6 in from the row edge and its name 1px lower', () => {
+    expect(ruleBody('[data-blok-database-form-type-row]')).toContain('padding-inline-start: var(--blok-space-1-5)');
+    expect(ruleBody('[data-blok-database-form-type-row] > [data-blok-database-panel-label]')).toContain('top: 1px');
+  });
+
+  // Round 90 §1 #13 (r89-n-formtype-existing.raw via R90 table): name + 6, type + 23.8; Blok read + 5, + 22.8.
+  it('drops the existing-property text 1px', () => {
+    expect(ruleBody('[data-blok-database-form-existing-row] > [data-blok-database-panel-text]')).toContain('top: 1px');
+  });
+
+  // Round 90 §1 #10 (r90-n-dark-formtype.raw): dark tiles are rgba(255,255,255,0.03) in a 1px rgba(255,255,255,0.094) frame.
+  it('fills Select type tiles from their own token, with Notion\'s dark fill and frame', () => {
+    const tile = ruleBody('[data-blok-database-form-type-row] > [data-blok-database-panel-icon]');
+
+    expect(tile).toContain('background-color: var(--blok-database-form-type-bg)');
+    expect(tokenValues('--blok-database-form-type-bg')).toEqual(['#ffffff', 'rgba(255, 255, 255, 0.03)', 'rgba(255, 255, 255, 0.03)']);
+    expect(tokenValues('--blok-database-form-type-frame')).toEqual(['rgba(84, 72, 49, 0.15)', 'rgba(255, 255, 255, 0.094)', 'rgba(255, 255, 255, 0.094)']);
+  });
+
   // The view box clips; the "+" sits left of the column, so the form bleeds into the gutter as the table does.
   it('the view box bleeds into the gutter for a form, so the "+" is not clipped', () => {
     expect(ruleBody('[data-blok-database-board-container]:has(> [data-blok-database-table], > [data-blok-database-list], > [data-blok-database-form])'))

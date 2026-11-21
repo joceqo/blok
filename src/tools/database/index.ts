@@ -14,7 +14,7 @@ import { HistoryDraftsCommit, type HistoryDraftsCommitPayload } from '../../comp
 import type { HistoryStep } from '../../../types/api/history';
 import type { AutofillSettings, ButtonAction, ButtonCallbackAction, ButtonSendNotificationAction, DatabaseAdapter, DatabaseData, DatabaseIcon, FilterConfig, DatabaseSavedAutomations, DatabaseConfig, DatabaseFormSubmission, DatabasePerson, DatabaseRow, DatabaseRowData, DatabaseRowMeta, OpenPagesIn, FormSettings, PropertyDefinition, PropertySettingsV2, PropertyType, DatabaseSourceRef, DatabaseLinkedSourceSnapshot, RelationRole, RelationSettings, TemplateRepeat, ViewType, SelectOption, DatabaseViewConfig, DeletedPropertyDefinition, PropertyValue, DatabasePermissionAction, DashboardWidget, DashboardRow, PageVisibility, DatabaseBacklink, DateReminderOffset, DatabaseMapLngLat, PlaceValue, LoadLimit, ViewCalculation } from './types';
 import { countFilterRules } from './filter-tree';
-import { adapterRowValues, assignUniqueIds, createDefaultStatusOptions, createDefaultStatusSettings, personIdsOf, readPropertyValue, statusGroupsOf, isListValueType, withEmptyLists, isReadOnlyType } from './property-values';
+import { adapterRowValues, assignUniqueIds, createDefaultStatusOptions, createDefaultStatusSettings, orderedStatusOptions, personIdsOf, readPropertyValue, statusGroupsOf, isListValueType, withEmptyLists, isReadOnlyType } from './property-values';
 import { isOutputData, isPlaceValue } from './tier3-values';
 import { DatabaseHostLevers } from './database-host-levers';
 import { DatabaseFormView, isAutoQuestion } from './database-form-view';
@@ -191,8 +191,9 @@ import type { DataSourceChoice, ViewGroupEntry, StarterRow, ViewSettingsAction, 
 import { openFilterList } from './database-view-settings-panel';
 import type { DatabasePanel } from './database-panel';
 import { registerGroupToggle } from './database-group-toggle';
-import { GROUPABLE_TYPES, defaultGroupSort, groupValueForKey } from './group-keys';
+import { GROUPABLE_TYPES, defaultGroupSort, groupValueForKey, statusSortedOptions, statusViewOrder } from './group-keys';
 import { resolveRowColors, withGroupFlags } from './view-data';
+import { checkboxGroupName } from './database-group-checkbox';
 import { groupLabel } from './database-group-labels';
 import { buildChartData, foldChartData } from './chart-data';
 import type { ChartGroupInput, ChartPoint, ChartSeriesInput } from './chart-data';
@@ -381,6 +382,22 @@ const seedWins = <T extends DatabaseData | undefined>(data: T): T => {
 
 /** Groups a board shows before "Load more groups" (research/08). */
 const BOARD_GROUP_PAGE = 10;
+
+/** Items a drop focuses (notion-motion.md Round 94 §1 #3, Round 95 §1 #5). */
+const LANDED_FOCUS_ITEM = '[data-blok-database-card], [data-blok-database-list-row], [data-blok-database-calendar-event], [data-blok-database-gallery-card]';
+
+/**
+ * notion-motion.md Round 93 §1 #2: a row or card drop clears a caret left in page text and focus goes to body.
+ * The selection keys skip an Escape aimed at text, so a kept caret would keep the item picked.
+ * Drop only: a cancelled drag keeps the caret.
+ */
+const releaseCaret = (): void => {
+  const active = document.activeElement;
+
+  if (!(active instanceof HTMLElement) || !(active.isContentEditable || active.matches('input, textarea'))) return;
+  window.getSelection()?.removeAllRanges();
+  active.blur();
+};
 
 /**
  * Under the button with its start edge on the button's, as before, but through the cover clamp:
@@ -910,7 +927,7 @@ export class DatabaseTool implements BlockTool {
   /** The rows an undo just unpicked: the next paint fades their tint out once. */
   private leavingRowIds: readonly string[] = [];
   /** What an undo does to the selection, applied once its redraw is done. */
-  private undoPick: { restored: string[]; edited: boolean; redone: boolean; step?: HistoryStep; atUndo?: string[] } | null = null;
+  private undoPick: { restored: string[]; edited: boolean; redone: boolean; moved?: boolean; step?: HistoryStep; atUndo?: string[] } | null = null;
   private undoPickTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Per row-edit step: the row pick when it was recorded, the pick its undo replaced,
@@ -1863,15 +1880,14 @@ export class DatabaseTool implements BlockTool {
     const titleEl = this.titleElement;
 
     if (titleEl === null) return;
-    const saved = this.shownView();
 
-    // "Show data source title" (research/20 §1f, R-2022-03-15). The title row stays: it can hold the add-view "+".
-    const hidden = this.fullPage || this.dataSourceTitlesHidden
-      || (this.linked && saved !== undefined && this.controls.effective(saved).showDataSourceTitle === false);
+    // "Show data source title" (research/20 §1f, R-2022-03-15).
+    const hidden = this.fullPage || this.sourceTitlesHidden;
     const source = this.linked ? this : this.activeSource();
 
     titleEl.hidden = hidden || source !== this;
     this.paintSourceTitle(source === this ? undefined : source, hidden);
+    this.syncTitleRowShown();
     if (!this.linked || this.source === undefined) return;
     const missing = this.sourceMissing();
     const live = missing || this.source.documentId !== undefined ? undefined : this.databaseTitleOf(this.source.databaseId);
@@ -2528,7 +2544,6 @@ export class DatabaseTool implements BlockTool {
     boardContainer.setAttribute('data-blok-database-board-container', '');
     // Every view's own buttons (calendar nav, board column menus, feed actions) take Enter as a click.
     boardContainer.setAttribute(DATA_ATTR.keyboardOwner, '');
-    boardContainer.style.overflow = 'hidden';
     boardContainer.style.position = 'relative';
     this.boardContainer = boardContainer;
     wrapper.appendChild(boardContainer);
@@ -2826,7 +2841,7 @@ export class DatabaseTool implements BlockTool {
       closeOnActivate: true,
       onActivate: (): void => void this.turnIntoPage(),
     }];
-    const editIcon: MenuConfigItem[] = locked || !this.titleEditable() || this.dataSourceTitlesHidden ? [] : [{
+    const editIcon: MenuConfigItem[] = locked || !this.titleEditable() || this.sourceTitlesHidden ? [] : [{
       icon: IconEmojiSmile,
       title: this.api.i18n.t('tools.database.tableEditIcon'),
       name: 'database-edit-icon',
@@ -2841,7 +2856,7 @@ export class DatabaseTool implements BlockTool {
       isActive: (): boolean => this.structureLocked(),
       onActivate: (): void => this.setDatabaseLocked(!this.structureLocked()),
     }];
-    const rename: MenuConfigItem[] = locked || !this.titleEditable() || this.dataSourceTitlesHidden ? [] : [{
+    const rename: MenuConfigItem[] = locked || !this.titleEditable() || this.sourceTitlesHidden ? [] : [{
       icon: IconPencil,
       title: t('renameView'),
       name: 'database-rename',
@@ -3661,8 +3676,9 @@ export class DatabaseTool implements BlockTool {
   /**
    * notion-motion.md Round 63 §1 (table): an undone row delete selects the
    * row. Round 65 §2: an undone cell edit brings back the pick recorded with
-   * it, and its redo the pick the undo replaced. A reorder writes only the
-   * position, and its undo keeps the selection.
+   * it, and its redo the pick the undo replaced. A reorder follows the same
+   * rule: its drop picks the row, so undo picks it and redo clears it (table:
+   * Round 63 §1; Board, List and Gallery: Round 92 §1).
    */
   private noteUndoPick(capture: BlockReplayCapture): void {
     const native = capture.native;
@@ -3675,9 +3691,15 @@ export class DatabaseTool implements BlockTool {
     if (this.linked && this.sourceMissing()) return;
     const restored = capture.origin === 'undo' && capture.type === 'add';
 
-    if (!restored && (capture.type !== 'update' || !capture.changes.some((change) => change.path[0] === 'properties'))) return;
+    const type = this.shownView()?.type;
+    // Other views' reorders are unmeasured.
+    const moved = capture.type === 'update' && (type === 'table' || type === 'board' || type === 'list' || type === 'gallery')
+      && capture.changes.some((change) => change.path[0] === 'position');
+
+    if (!restored && !moved && (capture.type !== 'update' || !capture.changes.some((change) => change.path[0] === 'properties'))) return;
     const pick = this.undoPick ?? { restored: [], edited: false, redone: false };
 
+    if (moved) pick.moved = true;
     if (restored) pick.restored.push(capture.blockId);
     else if (capture.origin === 'undo') pick.edited = true;
     else pick.redone = true;
@@ -3710,7 +3732,7 @@ export class DatabaseTool implements BlockTool {
       const next = live(record.recorded);
 
       this.stepPicks.set(pick.step, { recorded: record.recorded, undone: pick.atUndo ?? [], applied: next });
-      this.landPick(next, false);
+      this.landPick(next, false, pick.moved === true);
 
       return;
     }
@@ -3721,7 +3743,7 @@ export class DatabaseTool implements BlockTool {
 
     // A pick made since the undo stays.
     if (record?.undone === undefined || record.applied === undefined || !sameIds(current, record.applied)) return;
-    this.landPick(live(record.undone), false);
+    this.landPick(live(record.undone), false, pick.moved === true);
   }
 
   /**
@@ -3729,8 +3751,9 @@ export class DatabaseTool implements BlockTool {
    * Round 65 §2, a List or Gallery; a Board card comes back unpicked, and the
    * other views are unmeasured. An undone delete only adds its rows.
    * Round 66 §3: a Calendar edit's pick too; its undone delete is unmeasured.
+   * Round 92 §1: a Board card's reorder picks it too.
    */
-  private landPick(rowIds: string[], restoring: boolean): void {
+  private landPick(rowIds: string[], restoring: boolean, moved = false): void {
     if (this.view instanceof DatabaseTableView) {
       this.view.pickAfterUndo(rowIds);
 
@@ -3738,7 +3761,7 @@ export class DatabaseTool implements BlockTool {
     }
     const type = this.shownView()?.type;
 
-    if (type !== 'list' && type !== 'gallery' && (type !== 'calendar' || restoring)) return;
+    if (type !== 'list' && type !== 'gallery' && (type !== 'calendar' || restoring) && (type !== 'board' || !moved)) return;
     const before = restoring ? [] : [...this.rowSelection];
 
     this.landedRowIds = rowIds.filter((id) => !before.includes(id));
@@ -5133,6 +5156,17 @@ export class DatabaseTool implements BlockTool {
   }
 
   /**
+   * The user picks a view. Saved and synced, but not an undo step (Notion).
+   * Only for a bare switch: one that follows an edit would carry that edit out of the history.
+   */
+  private showView(viewId: string): void {
+    if (viewId === this.activeViewId) return;
+    this.switchView(viewId);
+    // Before the view's DOM mutations reach the block, or that tracked save writes it first.
+    this.block.dispatchChange({ derived: true });
+  }
+
+  /**
    * The rebuilt bar starts with the old tab still painted active and the new one
    * blank, then drops both marks so the 100ms background transition in
    * database.css plays (research/08). The body already swapped in one frame.
@@ -5710,6 +5744,23 @@ export class DatabaseTool implements BlockTool {
       }
     }
     this.syncTitleRowFold(single);
+    this.syncTitleRowShown();
+  }
+
+  /**
+   * notion-motion.md Round 94 §1 #7: with several views and no title to show, the row goes and the tabs move up.
+   * One view keeps it: it holds the view toolbar.
+   */
+  private syncTitleRowShown(): void {
+    const row = this.titleRowElement;
+
+    if (row === null) return;
+    const titled = [this.titleElement, this.sourceTitleElement].some((el) => el !== null && !el.hidden);
+
+    const hidden = !titled && !row.hasAttribute('data-single-view');
+
+    // Only on a change: an attribute write is a mutation, even with the same value.
+    if (row.hidden !== hidden) row.hidden = hidden;
   }
 
   /** One view: the title row folds its toolbar as the view bar does (peek-top.png). */
@@ -5750,9 +5801,30 @@ export class DatabaseTool implements BlockTool {
     return action === undefined ? {} : { onEditLayout: action.onClick };
   }
 
+  /**
+   * "Show data source titles" is one setting per block (notion-motion.md Round 97 §1 #5).
+   * A linked block once saved it per view: those read as hidden only when every view hid it.
+   */
+  private get sourceTitlesHidden(): boolean {
+    const views = this.model.getViews();
+
+    return this.dataSourceTitlesHidden
+      || (this.linked && views.length > 0 && views.every((view) => view.showDataSourceTitle === false));
+  }
+
   private toggleDataSourceTitles(): void {
     if (this.readOnly || this.structureLocked()) return;
-    this.dataSourceTitlesHidden = !this.dataSourceTitlesHidden;
+    const hide = !this.sourceTitlesHidden;
+
+    this.dataSourceTitlesHidden = hide;
+    // Showing again drops the old per-view values, or they would keep it hidden.
+    if (!hide) {
+      this.model.getViews().filter((view) => view.showDataSourceTitle === false)
+        .forEach((view) => {
+          this.model.updateView(view.id, { showDataSourceTitle: undefined });
+          void this.sync.syncUpdateView({ viewId: view.id, changes: { showDataSourceTitle: undefined } });
+        });
+    }
     this.block.dispatchChange();
     this.paintLinkedTitle();
     this.rebuildTabBar();
@@ -5762,7 +5834,7 @@ export class DatabaseTool implements BlockTool {
     return new DatabaseTabBar({
       views: localizeDatabaseViews(this.model.getTabViews(), this.api.i18n),
       activeViewId: this.activeViewId,
-      onTabClick: (viewId) => this.switchView(viewId),
+      onTabClick: (viewId) => this.showView(viewId),
       onAddView: (type) => this.addViewWithSettings(type),
       onRename: (viewId, name) => this.renameView(viewId, name),
       onDuplicate: (viewId) => this.duplicateViewWithSettings(viewId),
@@ -5784,7 +5856,7 @@ export class DatabaseTool implements BlockTool {
         this.tabDisplay.set(display);
         this.rebuildTabBar();
       },
-      dataSourceTitlesHidden: this.dataSourceTitlesHidden,
+      dataSourceTitlesHidden: this.sourceTitlesHidden,
       // A full-page database never shows its title, so there is nothing to toggle.
       ...(this.readOnly || this.structureLocked() || this.fullPage ? {} : { onDataSourceTitlesToggle: () => this.toggleDataSourceTitles() }),
       // The bar hides it while read-only or locked; it flips in place (setReadOnly), so this is not gated here.
@@ -7109,7 +7181,10 @@ export class DatabaseTool implements BlockTool {
             this.calendarDropDay = landedOn;
             this.rerenderView({ keepDrawer: true });
             this.calendarDropDay = undefined;
-            if (landedOn !== undefined) this.landRow(rowId);
+            if (landedOn !== undefined) {
+              this.landRow(rowId);
+              this.focusLandedItem(rowId, landedOn);
+            }
           }
         },
         navigate: (anchor, focus) => {
@@ -7339,7 +7414,13 @@ export class DatabaseTool implements BlockTool {
       name: `database-timeline-zoom-${zoom}`,
       title: this.api.i18n.t(timelineZoomLabelKey(zoom)),
       isActive: zoom === current,
-      onActivate: () => this.updateActiveView({ timelineZoom: zoom }),
+      // notion-motion.md Round 90 §1 #1: a pick closes the menu, focus back on the zoom button.
+      closeOnActivate: true,
+      onActivate: () => {
+        this.updateActiveView({ timelineZoom: zoom });
+        // Focus was in the menu, so a redraw that replaced the button could not hand focus to its twin.
+        (anchor.isConnected ? anchor : this.boardContainer?.querySelector<HTMLElement>('[data-blok-database-timeline-zoom]'))?.focus({ preventScroll: true });
+      },
     })), undefined, { minWidth: '180px' });
   }
 
@@ -7397,10 +7478,11 @@ export class DatabaseTool implements BlockTool {
     const reorder = (): SelectOption[] => property?.type === 'status'
       ? [...listed].reverse()
       : [...listed].sort((x, y) => x.label.localeCompare(y.label) * (sort === 'descending' ? -1 : 1));
-    // research/31 §8: a view's own manual order. Status keeps its workflow order.
+    // research/31 §8: a view's own manual order. A Status board reads it under Manual only (notion-motion.md Round 95 §1 #1).
     const order = sort === 'manual' && property?.type !== 'status' ? view?.groupOrder : undefined;
     const keyOf = (option: SelectOption): string => order?.[option.id] ?? option.position;
-    const manual = order === undefined ? listed : [...listed].sort((x, y) => (keyOf(x) < keyOf(y) ? -1 : 1));
+    const sorted = order === undefined ? listed : [...listed].sort((x, y) => (keyOf(x) < keyOf(y) ? -1 : 1));
+    const manual = property?.type === 'status' && statusBy !== 'group' && sort === 'manual' ? statusViewOrder(listed, view?.groupOrder) : sorted;
     const options = inOrder ? manual : reorder();
     const stored = view?.noValueGroupPosition;
     const index = stored === undefined || !inOrder ? -1 : options.findIndex((option) => keyOf(option) > stored);
@@ -7531,7 +7613,7 @@ export class DatabaseTool implements BlockTool {
       linked: () => owner.linked,
       // The tab menu's switch: the main toolbar only, and not on a full page, where the title never shows.
       ...(context === undefined && !this.fullPage ? {
-        dataSourceTitles: { shown: () => !this.dataSourceTitlesHidden, toggle: () => this.toggleDataSourceTitles() },
+        dataSourceTitles: { shown: () => !this.sourceTitlesHidden, toggle: () => this.toggleDataSourceTitles(), views: () => this.model.getTabViews().length },
       } : {}),
       noDate: () => {
         if (context !== undefined) return undefined;
@@ -7555,6 +7637,16 @@ export class DatabaseTool implements BlockTool {
         previewForm: () => this.openFormPreview(this.activeViewId),
       } : {}),
       groups: (sub) => this.groupEntries(sub),
+      // notion-motion.md Round 92 §1 #4: the Group page moves a group as a board column drop does.
+      ...(context === undefined ? {
+        moveGroup: {
+          enabled: () => this.groupsMovable(),
+          move: (key: string, beforeKey: string | null, afterKey: string | null) => {
+            this.handleGroupDrop({ optionId: key, beforeOptionId: beforeKey, afterOptionId: afterKey });
+            this.rerenderView({ keepDrawer: true });
+          },
+        },
+      } : {}),
       rerender: () => context === undefined ? this.rerenderView({ keepDrawer: true }) : context.redraw(),
       // The source draws the view, so it holds the layout rows, the export and the row page layout.
       layoutItems: () => data().layoutItems(),
@@ -7685,6 +7777,30 @@ export class DatabaseTool implements BlockTool {
     }
   }
 
+  /** The group property's name when its groups are checkbox states (a formula's result counts), for the box-and-name label. */
+  private checkboxGroupProperty(groupBy: string | undefined): string | undefined {
+    const property = localizeDatabaseSchema(this.model.getSchema(), this.api.i18n).find((p) => p.id === groupBy);
+
+    return property !== undefined && this.computedValues.valueProperty(property).type === 'checkbox' ? property.name : undefined;
+  }
+
+  /**
+   * A drop would show: the view groups by options of its own data, in their saved order (manual, or a Status in its
+   * workflow order), as a board column drag needs. A Status grouped by its groups has no options to move.
+   */
+  private groupsMovable(): boolean {
+    const view = this.shownView();
+    const property = view?.groupBy === undefined ? undefined : this.model.getProperty(view.groupBy);
+
+    if (view === undefined || property === undefined || !this.isOptionGroup(property.id) || this.readOnly || this.structureLocked() || this.activeSource() !== this) return false;
+    const sort = view.groupSettings?.sort ?? defaultGroupSort(property.type);
+
+    // notion-motion.md Round 95 §1 #1: a Status drop under any sort turns it to Manual. The Group page list under Descending is inferred from the board.
+    if (property.type === 'status') return view.groupByStatus !== 'group';
+
+    return sort === 'manual';
+  }
+
   private groupEntries(sub: boolean): ViewGroupEntry[] {
     const saved = this.shownView();
 
@@ -7699,12 +7815,14 @@ export class DatabaseTool implements BlockTool {
 
     const property = data.model.getProperty(groupBy);
     const pills = property !== undefined && OPTION_GROUP_TYPES.includes(property.type);
+    const checkboxName = this.checkboxGroupProperty(groupBy);
 
     return data.groupOptions(groupBy, grouped, this.controls.search).map((option) => ({
       key: option.id,
       label: option.label,
       count: counts.get(option.id) ?? 0,
       ...(pills ? { pill: () => createGroupPill(option, property) } : {}),
+      ...(checkboxName !== undefined && option.id !== NO_VALUE_GROUP_KEY ? { pill: () => checkboxGroupName(option.id === 'true', checkboxName, option.label) } : {}),
     }));
   }
 
@@ -7744,8 +7862,8 @@ export class DatabaseTool implements BlockTool {
   }
 
   /** "Edit view" or "Rename" on a tab: show that view, then its settings. */
-  private editView(viewId: string, anchor: HTMLElement, start: 'root' | 'rename' | 'source' = 'root'): void {
-    this.switchView(viewId);
+  private editView(viewId: string, anchor: HTMLElement, start: 'edit' | 'rename' | 'source' = 'edit'): void {
+    this.showView(viewId);
     const tab = this.element?.querySelector<HTMLElement>(`[data-blok-database-tab][data-view-id="${CSS.escape(viewId)}"]`);
 
     this.controls.openSettings(tab?.isConnected === true ? tab : anchor, start);
@@ -7836,11 +7954,14 @@ export class DatabaseTool implements BlockTool {
       return groupCalculationText(calculation, rows.filter(inShownLane), localSchema, editorLocale(this.api.i18n), shownOf);
     };
 
+    const checkboxGroup = this.checkboxGroupProperty(groupByPropId);
+
     this.view = new DatabaseBoardView({
       readOnly: this.readOnly,
       structureLocked: this.structureLocked(),
       i18n: this.api.i18n,
       options,
+      ...(checkboxGroup !== undefined ? { checkboxGroup } : {}),
       getRows: (optionId, subKey) => {
         const rows = groups.get(optionId) ?? [];
 
@@ -8078,7 +8199,7 @@ export class DatabaseTool implements BlockTool {
   }
 
   /** Inline edit of a board card property (Notion 2022-08-25): the cell editor, no page. */
-  private editCardProperty(rowId: string, propertyId: string, anchor: HTMLElement, afterClose?: () => void, context?: NativeWidgetContext, atPoint = false): void {
+  private editCardProperty(rowId: string, propertyId: string, anchor: HTMLElement, afterClose?: () => void, context?: NativeWidgetContext, atPoint = false, listChip = false): void {
     const property = localizeDatabaseSchema(this.model.getSchema(), this.api.i18n).find((p) => p.id === propertyId);
     const row = this.model.getRow(rowId);
 
@@ -8094,6 +8215,7 @@ export class DatabaseTool implements BlockTool {
       readOnly: false,
       options: this.model.getProperty(propertyId)?.config?.options ?? [],
       ...(atPoint ? { atPoint } : {}),
+      ...(listChip ? { listChip } : {}),
       ...(reminder !== undefined ? { reminder } : {}),
       ...(property.type === 'date'
         ? { onReminderChange: (next: DateReminderOffset | null) => { if (context === undefined || context.writable()) this.commitReminder(rowId, propertyId, next); } }
@@ -8852,7 +8974,7 @@ export class DatabaseTool implements BlockTool {
     } else if (action === 'sort') {
       controls.sortBy(propertyId, anchor);
     } else if (!(context?.owner ?? this).structureLocked()) {
-      controls.groupBy(propertyId, anchor);
+      controls.groupBy(propertyId);
     }
   }
 
@@ -10006,6 +10128,11 @@ export class DatabaseTool implements BlockTool {
     const groupBy = view?.groupBy;
 
     if (this.readOnly || (context !== undefined && !context.writable())) return;
+    releaseCaret();
+    // notion-motion.md Round 92 §1: a Gallery drop picks the card, before the write so its undo picks it again.
+    const gallery = context === undefined && this.view instanceof DatabaseGalleryView;
+
+    if (gallery) this.selectRows([rowId]);
     if (groupBy !== undefined && groupKey !== fromGroupKey) {
       this.cardDragFromOptionId = fromGroupKey;
       const value = this.droppedGroupValue(groupBy, rowId, groupKey, view);
@@ -10016,6 +10143,10 @@ export class DatabaseTool implements BlockTool {
     this.placeRow(view, rowId, afterRowId, beforeRowId, context?.owner);
     if (context === undefined) this.rerenderView({ keepDrawer: true });
     else context.redraw();
+    if (gallery) {
+      this.landRow(rowId);
+      this.focusLandedItem(rowId);
+    }
   }
 
   /** Same as the drawer: a label the user kept goes back as the saved (unlocalized) one. */
@@ -10068,7 +10199,7 @@ export class DatabaseTool implements BlockTool {
       ...this.commentBadgeLever(),
       locale: editorLocale(this.api.i18n),
       onPropertyEdit: (rowId: string, propertyId: string, anchor: HTMLElement) =>
-        this.editCardProperty(rowId, propertyId, anchor, () => this.focusListProperty(rowId, propertyId, context), context),
+        this.editCardProperty(rowId, propertyId, anchor, () => this.focusListProperty(rowId, propertyId, context), context, false, true),
       onNewBelow: (rowId: string, groupKey: string | null) => this.addListRowBelow(rowId, groupKey, context),
       onOpenRow: (rowId: string) => (context === undefined ? this.handleRowClick(rowId) : context.openRow(rowId)),
       ...(context === undefined && !this.readOnly ? { lassoRows: (rowIds: string[]) => this.selectRows(rowIds) } : {}),
@@ -10092,10 +10223,13 @@ export class DatabaseTool implements BlockTool {
         const options = this.shownGroupOptions(groupByPropId, viewConfig, (context?.controls ?? this.controls).search);
         const groups = new Map(options.map((option) => [option.id, query(option.id, option.id)]));
 
+        const checkboxGroup = this.checkboxGroupProperty(groupByPropId);
+
         return new DatabaseListView({
           ...common,
           rows: [],
           options,
+          ...(checkboxGroup !== undefined ? { checkboxGroup } : {}),
           getRows: (optionId) => nest(groups.get(optionId)?.rows ?? []),
           getTotal: (optionId) => groups.get(optionId)?.total ?? 0,
           collapsedGroupIds: new Set((viewConfig.collapsedGroups ?? []).map((group) => group.id)),
@@ -11514,8 +11648,15 @@ export class DatabaseTool implements BlockTool {
       return;
     }
 
+    releaseCaret();
+    // notion-motion.md Round 94 §1 #2: the dropped row shows no bar, as on a board or calendar.
+    this.barlessRowId = rowId;
+    // Picked before the write, so the step records it and its undo picks the row again.
+    this.selectRows([rowId]);
     this.placeRow(this.shownView(), rowId, afterRowId, beforeRowId);
     this.rerenderView();
+    this.landRow(rowId);
+    this.focusLandedItem(rowId);
   }
 
   /**
@@ -11589,26 +11730,34 @@ export class DatabaseTool implements BlockTool {
     if (groupByPropId === undefined) {
       return;
     }
+    releaseCaret();
 
+    // notion-motion.md Round 95 §1 #4: only a drop in its own column focuses the card; one into another column leaves body.
+    const fromRow = this.model.getRow(rowId);
+    const sameGroup = fromRow !== undefined
+      && this.model.groupKeysOf(groupByPropId, { statusBy: viewConfig?.groupByStatus, settings: viewConfig?.groupSettings })(fromRow).includes(toOptionId);
     const subGroupBy = viewConfig?.subGroupBy;
-    const subChange: Record<string, PropertyValue> = subGroupBy !== undefined && subGroupBy !== groupByPropId && result.toSubGroup !== undefined
-      ? { [subGroupBy]: this.droppedSubGroupValue(subGroupBy, rowId, result.toSubGroup) }
+    const toSubGroup = subGroupBy !== undefined && subGroupBy !== groupByPropId ? result.toSubGroup : undefined;
+    const subChange: Record<string, PropertyValue> = subGroupBy !== undefined && toSubGroup !== undefined
+      ? { [subGroupBy]: this.droppedSubGroupValue(subGroupBy, rowId, toSubGroup) }
       : {};
+    // notion-motion.md Round 96 §1 #3: a drop into another lane of the same column leaves body too.
+    const sameLane = subGroupBy === undefined || toSubGroup === undefined || (fromRow !== undefined
+      && this.model.groupKeysOf(subGroupBy, { settings: viewConfig?.subGroupSettings ?? {} })(fromRow).includes(toSubGroup));
+    const focusCard = sameGroup && sameLane;
 
     // notion-motion.md Round 13: a sorted board never asks and never writes a place.
     // The card takes the new group's value and lands where the sort puts it, so a
     // drop inside its own group snaps back. Either way it is left picked.
     if (viewConfig !== undefined && this.controls.effective(viewConfig).sorts.length > 0) {
-      const row = this.model.getRow(rowId);
       const sortedChanges = { ...this.changedValues(rowId, subChange) };
-      const sameGroup = row !== undefined
-        && this.model.groupKeysOf(groupByPropId, { statusBy: viewConfig.groupByStatus, settings: viewConfig.groupSettings })(row).includes(toOptionId);
 
       if (!sameGroup) {
         Object.assign(sortedChanges, this.changedValues(rowId, { [groupByPropId]: this.droppedGroupValue(groupByPropId, rowId, toOptionId) }));
       }
       this.writeRowValues(rowId, sortedChanges);
       this.landRow(rowId);
+      if (focusCard) this.focusLandedItem(rowId);
 
       return;
     }
@@ -11616,12 +11765,15 @@ export class DatabaseTool implements BlockTool {
     const value = this.droppedGroupValue(groupByPropId, rowId, toOptionId);
     const changes: Record<string, PropertyValue> = { [groupByPropId]: value, ...subChange };
 
+    // Picked before the write, so the step records it and its undo picks the card again.
+    this.selectRows([rowId]);
     this.placeRow(viewConfig, rowId, afterRowId, beforeRowId, this, {
       write: () => this.updateRowBlock(rowId, changes),
       sync: () => this.sync.syncUpdateRow({ rowId, properties: changes }),
     });
     this.rerenderView();
     this.landRow(rowId);
+    if (focusCard) this.focusLandedItem(rowId);
   }
 
   /** The sorts this person sees: their own (D4) or the saved ones. */
@@ -11815,8 +11967,14 @@ export class DatabaseTool implements BlockTool {
       return;
     }
 
+    if (prop.type === 'status') {
+      if (viewConfig !== undefined) this.dropStatusColumn(prop, viewConfig, result);
+
+      return;
+    }
+
     // A view with its own group order moves the column there only; the options keep their positions.
-    const order = viewConfig?.groupOrder !== undefined && prop.type !== 'status' ? viewConfig.groupOrder : undefined;
+    const order = viewConfig?.groupOrder;
     // Keep the stored array in position order so every later reader (add-column,
     // neighbour lookup) sees the same order the board renders in.
     const options = prop.config.options
@@ -11862,6 +12020,49 @@ export class DatabaseTool implements BlockTool {
   /**
    * Moves a column element to a new position in the DOM without full re-render.
    */
+  /**
+   * notion-motion.md Round 94 §1 #1: a Status column drop, inside or across status groups, reorders this view only;
+   * the options and status groups stay as they are. Every drop rewrites the view's whole order from the drawn
+   * columns, so options that had no key yet get one.
+   * Round 95 §1 #1: the drop also turns the group sort to Manual, in the same write (one undo step). Measured on a
+   * Descending board; on an Ascending board it is inferred (Board 1's sort was not read before its drop).
+   */
+  private dropStatusColumn(prop: PropertyDefinition, view: DatabaseViewConfig, { optionId, beforeOptionId, afterOptionId }: GroupDragResult): void {
+    const sort = view.groupSettings?.sort ?? defaultGroupSort(prop.type);
+
+    if (view.groupByStatus === 'group') {
+      return;
+    }
+    const shown = statusSortedOptions(orderedStatusOptions(prop), sort, view.groupOrder);
+
+    if (!shown.some((o) => o.id === optionId)) {
+      return;
+    }
+    const keys = shown.reduce<string[]>((all) => [...all, DatabaseModel.positionBetween(all.at(-1) ?? null, null)], []);
+    const order: Record<string, string> = Object.fromEntries(shown.map((o, i) => [o.id, keys[i]]));
+    // The no-value group keeps its place among the re-keyed options. A descending board draws it last.
+    const stored = view.noValueGroupPosition;
+    const found = stored === undefined || sort === 'descending' ? -1 : shown.findIndex((o) => o.position > stored);
+    const at = found === -1 ? keys.length : found;
+    const remapped = stored === undefined ? undefined : DatabaseModel.positionBetween(keys[at - 1] ?? null, keys[at] ?? null);
+    // A drop right after the no-value group pins it just past the other options, as a Select board does.
+    const pinned = afterOptionId === NO_VALUE_GROUP_KEY ? DatabaseModel.positionBetween(keys.filter((_, i) => shown[i].id !== optionId).at(-1) ?? null, null) : undefined;
+    const noValue = remapped ?? pinned;
+    const keyOf = (id: string | null): string | null => {
+      if (id === NO_VALUE_GROUP_KEY) return noValue ?? null;
+
+      return id === null ? null : order[id] ?? null;
+    };
+
+    order[optionId] = DatabaseModel.positionBetween(keyOf(afterOptionId), keyOf(beforeOptionId));
+    this.writeView(view.id, {
+      groupOrder: order,
+      groupSettings: { ...view.groupSettings, sort: 'manual' },
+      ...(noValue === undefined ? {} : { noValueGroupPosition: noValue }),
+    });
+    this.moveColumnInDom(optionId, beforeOptionId);
+  }
+
   private moveColumnInDom(optionId: string, beforeOptionId: string | null): void {
     const boardEl = this.viewRoot()?.querySelector<HTMLElement>('[data-blok-database-board]');
 
@@ -12065,17 +12266,45 @@ export class DatabaseTool implements BlockTool {
     this.landedRowIds = [];
   }
 
+  /**
+   * notion-motion.md Round 94 §1 #3, Round 95 §1 #4–5: a List, Calendar or Gallery drop, or a Board drop in the card's own column,
+   * focuses the dropped item, with no range.
+   * A table drop leaves focus on body (Round 93), and so does a Timeline drop (Round 95 §2).
+   * `day`: a calendar event split across weeks takes focus on the part in that day's week.
+   */
+  private focusLandedItem(rowId: string, day?: string): void {
+    const root = this.viewRoot();
+    const id = CSS.escape(rowId);
+    const items = [...root?.querySelectorAll<HTMLElement>(`:is(${LANDED_FOCUS_ITEM})[data-row-id="${id}"]`) ?? []];
+    const item = items.find((el) => day !== undefined && el.closest('[data-blok-database-calendar-week]')?.querySelector(`[data-day="${CSS.escape(day)}"]`) != null) ?? items[0];
+
+    if (item === undefined) return;
+    // List rows keep one tabbable item, so Tab and the arrows go on from here. Board and gallery cards are all tabbable.
+    if (item.matches('[data-blok-database-list-row]')) {
+      root?.querySelectorAll<HTMLElement>('[data-blok-database-list-row]').forEach((el) => el.setAttribute('tabindex', el === item ? '0' : '-1'));
+    }
+    item.focus({ preventScroll: true });
+    // A range from before the drag outlives focus (and jsdom's focus adds one); Notion leaves none.
+    window.getSelection()?.removeAllRanges();
+  }
+
   private clearRowSelection(): void {
     this.rowSelection.clear();
     this.selectionAnchor = null;
     this.paintRowSelection();
   }
 
-  /** The view toolbar row: the selection bar takes its place (research/08). With one view that is the title row. */
+  /**
+   * The selection bar sits on the first chrome row shown (notion-motion.md Round 93 §1 #4, Round 94 §2):
+   * the title row, or the tab row when there is no title row.
+   */
   private selectionBarSlot(): HTMLElement | null {
-    const owner = this.viewOwner();
+    const element = this.viewOwner().element;
+    const titleRow = element?.querySelector<HTMLElement>(':scope > [data-blok-database-title-row]') ?? null;
 
-    return owner.element?.querySelector<HTMLElement>(':scope > [data-blok-database-title-row][data-single-view], :scope > [data-blok-database-view-bar]') ?? null;
+    if (titleRow !== null && !titleRow.hidden) return titleRow;
+
+    return element?.querySelector<HTMLElement>(':scope > [data-blok-database-view-bar]') ?? null;
   }
 
   /** Where this block's shown view is drawn. */
