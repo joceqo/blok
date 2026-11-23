@@ -187,6 +187,19 @@ export interface OperationStore {
   /** Drops `updates` and `meta`. Never touches `outbox` or `quarantine`. */
   clearAdoptable: () => Promise<void>;
 
+  /**
+   * Abandons quarantined work, and returns how many rows went.
+   *
+   * Every sweep spares the quarantine on purpose — it holds what the server
+   * refused, and dropping it unasked would lose what someone typed. But nothing
+   * could empty it either, so one refused operation pinned the editor on an
+   * error for good. This is the deliberate way out, and the caller owes the
+   * person the choice: the rows are gone for real.
+   *
+   * Never touches `outbox`: work still on its way is not work refused.
+   */
+  clearQuarantine: () => Promise<number>;
+
   close: () => Promise<void>;
 }
 
@@ -1122,6 +1135,32 @@ export const createOperationStore = (options: OperationStoreOptions): OperationS
       notify();
 
       return counter.moved;
+    }),
+
+    clearQuarantine: async () => enqueue(async () => {
+      const db = state.db;
+
+      if (db === null) {
+        const gone = state.memoryQuarantined;
+        state.memoryQuarantined = 0;
+        return gone;
+      }
+
+      const [readStore] = idb.transact(db, [QUARANTINE_STORE], 'readonly');
+      const rows: unknown[] = await idb.getAll(readStore);
+      if (rows.length === 0) {
+        return 0;
+      }
+      const [writeStore] = idb.transact(db, [QUARANTINE_STORE]);
+
+      // On oncomplete, as every write here: a cleared request that never
+      // commits would report work abandoned while it is still on disk.
+      await commitTogether(writeStore.transaction, () => {
+        writeStore.clear();
+      });
+      state.memoryQuarantined = 0;
+      notify();
+      return rows.length;
     }),
 
     stats: async () => {

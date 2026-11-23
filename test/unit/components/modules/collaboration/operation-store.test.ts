@@ -1667,4 +1667,41 @@ describe('collaboration — operation store', () => {
       expect((await factory.databases()).map((entry) => entry.name).sort()).toEqual([ DB_NAME, legacyName ].sort());
     });
   });
+
+  /**
+   * Quarantine is preserved by every sweep on purpose: it holds work the server
+   * refused, and dropping it silently would lose what someone typed. But nothing
+   * could ever empty it either, so a single refused operation pinned the editor
+   * on "Enregistrement interrompu" for good — four days, in production, for an
+   * empty paragraph. Abandoning has to be possible; it just has to be asked for.
+   */
+  describe('abandoning quarantined work', () => {
+    it('empties the quarantine on request and leaves the outbox alone', async () => {
+      const store = storeWith({});
+
+      await store.open();
+      await store.recordSession(tagWith(LINEAGE_A), false, 'v2');
+      await store.appendLocal(updateWith('block-1', 'one'));
+      expect(await store.quarantineLineage(LINEAGE_A, 'read-only', updateWith('block-9', 'recovery'))).toBe(1);
+      expect((await store.stats()).quarantinedOperations).toBeGreaterThan(0);
+
+      await store.recordSession(tagWith(LINEAGE_B), false, 'v2');
+      const kept = await store.appendLocal(updateWith('block-2', 'two'));
+
+      expect(await store.clearQuarantine()).toBeGreaterThan(0);
+      expect((await store.stats()).quarantinedOperations).toBe(0);
+      // The one thing it must never do: take pending work with it.
+      expect((await store.oldestPending())?.operationId).toBe(kept.operationId);
+    });
+
+    it('is harmless when there is nothing to abandon', async () => {
+      const store = storeWith({});
+
+      await store.open();
+      await store.recordSession(tagWith(LINEAGE_A), false, 'v2');
+
+      expect(await store.clearQuarantine()).toBe(0);
+      expect((await store.stats()).quarantinedOperations).toBe(0);
+    });
+  });
 });
