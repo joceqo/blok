@@ -104,6 +104,22 @@ func errorReportingID() string {
 	return hex.EncodeToString(raw)
 }
 
+// errorReportingSeverity maps slog levels onto Sentry's vocabulary. slog's own
+// names do not match: "WARN" is not "warning", and a collector that cannot read
+// the level falls back to error — which would mark every 404 as a fault.
+func errorReportingSeverity(level slog.Level) string {
+	switch {
+	case level >= slog.LevelError:
+		return "error"
+	case level >= slog.LevelWarn:
+		return "warning"
+	case level >= slog.LevelInfo:
+		return "info"
+	default:
+		return "debug"
+	}
+}
+
 func errorReportingEvent(record slog.Record, attrs []slog.Attr, environment, host string) errorReport {
 	extra := map[string]string{}
 	tags := map[string]string{}
@@ -129,7 +145,7 @@ func errorReportingEvent(record slog.Record, attrs []slog.Attr, environment, hos
 		EventID:     errorReportingID(),
 		Timestamp:   record.Time.UTC().Format(time.RFC3339Nano),
 		Platform:    "go",
-		Level:       strings.ToLower(record.Level.String()),
+		Level:       errorReportingSeverity(record.Level),
 		Logger:      "blok-service",
 		Environment: environment,
 		ServerName:  host,

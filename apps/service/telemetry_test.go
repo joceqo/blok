@@ -260,3 +260,18 @@ func TestInstallErrorReportingDoesNotDeadlockTheDefaultLogger(t *testing.T) {
 		flush()
 	}
 }
+
+// Sentry's vocabulary is fatal/error/warning/info/debug. slog says "WARN", which
+// GlitchTip does not recognise and silently promotes to error — every 404 then
+// looks like a fault.
+func TestErrorReportingUsesSentryLevelNames(t *testing.T) {
+	for level, want := range map[slog.Level]string{
+		slog.LevelError: "error", slog.LevelWarn: "warning",
+		slog.LevelInfo: "info", slog.LevelDebug: "debug",
+	} {
+		event := errorReportingEvent(slog.Record{Message: "m", Level: level, Time: time.Unix(0, 0).UTC()}, nil, "production", "host")
+		if event.Level != want {
+			t.Fatalf("%s reported as %q, want %q", level, event.Level, want)
+		}
+	}
+}
