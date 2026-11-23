@@ -231,3 +231,32 @@ func TestErrorReportingPutsAttributesInTags(t *testing.T) {
 		t.Fatalf("extra should still carry everything: %v", event.Extra)
 	}
 }
+
+// Wrapping slog's default handler deadlocks the process on its first log line.
+//
+// slog.SetDefault redirects the standard log package into slog, and slog's
+// default handler writes THROUGH that same log package. Wrapping it closes the
+// loop on log.Logger's non-reentrant mutex: the first line blocks forever, the
+// server never reaches ListenAndServe, and nothing is ever printed to say so.
+// This shipped and took down a deployment.
+func TestInstallErrorReportingDoesNotDeadlockTheDefaultLogger(t *testing.T) {
+	previous := slog.Default()
+	defer slog.SetDefault(previous)
+
+	for _, dsn := range []string{"", "https://abc123@glitchtip.example.com/7"} {
+		t.Setenv("ERROR_REPORTING_DSN", dsn)
+		slog.SetDefault(previous)
+		flush := InstallErrorReporting(ConfigFromEnv())
+		logged := make(chan struct{})
+		go func() {
+			slog.Info("service listening", "address", ":8080")
+			close(logged)
+		}()
+		select {
+		case <-logged:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("logging deadlocked with DSN %q", dsn)
+		}
+		flush()
+	}
+}

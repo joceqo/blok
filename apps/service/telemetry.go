@@ -246,12 +246,27 @@ func newErrorReportingHandler(next slog.Handler, dsn, environment, host string, 
 // Called before anything else builds a logger: the service passes
 // slog.Default() down, so wrapping it here is what reaches every component.
 func InstallErrorReporting(c Config) func() {
+	// Off means untouched. Returning early also keeps the log format identical
+	// for every deployment that never sets a DSN.
+	if strings.TrimSpace(c.ErrorReportingDSN) == "" {
+		return func() {}
+	}
 	environment := "production"
 	if c.Development {
 		environment = "development"
 	}
 	host, _ := os.Hostname()
-	handler, flush := newErrorReportingHandler(slog.Default().Handler(), c.ErrorReportingDSN, environment, host, errorReportingLevel(c.ErrorReportingLevel))
+	// NEVER wrap slog.Default().Handler(). slog's default handler writes through
+	// the standard log package, and SetDefault redirects that package back into
+	// slog — wrapping it closes the loop on log.Logger's non-reentrant mutex and
+	// the first line logged blocks forever. slog guards this for its own default
+	// handler by type-asserting it, and a wrapper defeats that guard. So the base
+	// here writes straight to stderr and never re-enters the log package.
+	base := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
+	handler, flush := newErrorReportingHandler(base, c.ErrorReportingDSN, environment, host, errorReportingLevel(c.ErrorReportingLevel))
+	if handler == base {
+		return func() {} // Malformed DSN: leave logging exactly as it was.
+	}
 	slog.SetDefault(slog.New(handler))
 	return flush
 }
