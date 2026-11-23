@@ -5,6 +5,19 @@ import { loadIndex, readFile, writeFile, type WorkspaceIndex } from './storage';
 import { nativeSessionAdapter } from './native-session';
 import type { WorkspaceRef } from './workspace-registry';
 class RepositoryHttpError extends Error { constructor(public status: number) { super(`Serveur indisponible (${status})`); } }
+/**
+ * The server already holds a document for this page.
+ *
+ * Not a failure: `seed` fills a page exactly once, so this is the server
+ * answering that the workspace was initialized before — by someone else, or by
+ * this account on another device.
+ */
+export class DocumentAlreadyInitializedError extends Error {
+  public constructor(public readonly pageId: string) {
+    super(`Le document « ${pageId} » existe déjà sur le serveur.`);
+    this.name = 'DocumentAlreadyInitializedError';
+  }
+}
 const snapshot = (index: WorkspaceIndex): WorkspaceIndex => JSON.parse(JSON.stringify(index)) as WorkspaceIndex;
 /** A repository owns one immutable identity, including all queued writes. */
 export function workspaceRepository(workspace: WorkspaceRef) {
@@ -84,7 +97,12 @@ export function workspaceRepository(workspace: WorkspaceRef) {
     },
     async seedPage(id: string, document: unknown): Promise<void> {
       if (ref.kind !== 'remote') throw new Error('Remote operation only');
-      await request(`${base}/pages/${encodeURIComponent(id)}/seed`, {method: 'POST', body: JSON.stringify({document})});
+      try {
+        await request(`${base}/pages/${encodeURIComponent(id)}/seed`, {method: 'POST', body: JSON.stringify({document})});
+      } catch (error) {
+        if (error instanceof RepositoryHttpError && error.status === 409) throw new DocumentAlreadyInitializedError(id);
+        throw error;
+      }
     },
     async duplicatePage(source: string, page: {id: string; title: string; parentId: string | null}): Promise<void> {
       if (ref.kind !== 'remote') throw new Error('Remote operation only');

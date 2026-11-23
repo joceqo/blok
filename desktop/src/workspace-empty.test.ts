@@ -50,3 +50,21 @@ describe('empty remote workspace', () => {
     expect(gettingStarted).toHaveBeenCalledOnce();
   });
 });
+
+/**
+ * A member who joins a workspace sees only what is shared with them. With
+ * nothing shared yet, "Cet espace est vide. Créez votre première page." is
+ * false — the workspace is full, they simply cannot see it. They keep every
+ * way to create a page; only the sentence changes.
+ */
+it('says nothing is shared, without taking away the ability to create', () => {
+  const element = createEmptyWorkspaceState(false, () => undefined, { nothingShared: true });
+  expect(element.querySelector('[role="status"]')?.textContent).toContain('partagée');
+  expect(element.querySelector('[data-desktop-empty-create]')).not.toBeNull();
+
+  const viewer = createEmptyWorkspaceState(true, () => undefined, { nothingShared: true });
+  expect(viewer.querySelector('[data-desktop-empty-create]')).toBeNull();
+
+  const fresh = createEmptyWorkspaceState(false, () => undefined, {});
+  expect(fresh.querySelector('[role="status"]')?.textContent).toContain('vide');
+});

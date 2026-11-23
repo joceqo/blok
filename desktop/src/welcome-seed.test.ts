@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { DocumentAlreadyInitializedError } from './workspace-repository';
 import {
   buildWelcomeDocuments,
   seedWelcomeDocuments,
@@ -121,7 +122,25 @@ describe('seedWelcomeDocuments ordering', () => {
       flushOrder: async () => { calls.push('flush'); },
       seedDocument: async () => { throw new Error('seed refused'); },
     });
-    expect(ok).toBe(false);
+    expect(ok).toBe('failed');
+    expect(calls).not.toContain('publish:welcome-acme');
+  });
+
+  /**
+   * A member who joins a workspace sees an index filtered to what they may
+   * read. With nothing shared yet that index is empty, which the client used to
+   * read as "brand new workspace" — so it re-seeded pages that already existed
+   * and the server refused with 409. The refusal is the answer, not a fault.
+   */
+  it('separates an already-initialized workspace from a real failure', async () => {
+    const calls: string[] = [];
+    const outcome = await seedWelcomeDocuments({
+      docs: buildWelcomeDocuments('acme'),
+      publishPages: (selectId) => { calls.push(`publish:${selectId ?? 'none'}`); },
+      flushOrder: async () => { calls.push('flush'); },
+      seedDocument: async () => { throw new DocumentAlreadyInitializedError('welcome-acme'); },
+    });
+    expect(outcome).toBe('already-initialized');
     expect(calls).not.toContain('publish:welcome-acme');
   });
 });

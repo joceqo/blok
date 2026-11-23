@@ -2,6 +2,7 @@ import { newView, createDefaultStatusOptions, createDefaultStatusSettings } from
 import type { PropertyDefinition } from '../../types/tools/database';
 import { PAGE_LEVELS, WORKSPACE_ROLES } from './access-vocabulary';
 import type { DesktopPage } from './storage';
+import { DocumentAlreadyInitializedError } from './workspace-repository';
 
 /** Deterministic welcome page id so concurrent empty opens merge-dedupe. */
 export function welcomePageId(workspaceId: string): string {
@@ -17,6 +18,9 @@ export function welcomeRightsPageId(workspaceId: string): string {
 export function welcomeTasksPageId(workspaceId: string): string {
   return `welcome-tasks-${workspaceId}`;
 }
+
+/** What came of a seed attempt. 'already-initialized' is a normal outcome. */
+export type WelcomeSeedOutcome = 'seeded' | 'already-initialized' | 'failed';
 
 export function welcomeSeedStorageKey(workspaceKey: string): string {
   return `blok:desktop:welcome-seeded:${workspaceKey}`;
@@ -274,18 +278,22 @@ export interface SeedWelcomeOptions {
  * So: publish the pages without selecting any, flush so the rows exist, seed
  * every document, and only then open the welcome page.
  */
-export async function seedWelcomeDocuments(options: SeedWelcomeOptions): Promise<boolean> {
+export async function seedWelcomeDocuments(options: SeedWelcomeOptions): Promise<WelcomeSeedOutcome> {
   const welcome = options.docs.pages[0];
-  if (!welcome) return false;
+  if (!welcome) return 'failed';
   options.publishPages(null);
   try {
     await options.flushOrder();
     for (const { pageId, document } of options.docs.documents) {
       await options.seedDocument(pageId, document);
     }
-  } catch {
-    return false;
+  } catch (error) {
+    // The server refusing because the document already exists is an answer, not
+    // a fault: this workspace was seeded before, by someone whose pages this
+    // account cannot see. Telling them "the welcome pages could not be created"
+    // would blame them for an access they were never granted.
+    return error instanceof DocumentAlreadyInitializedError ? 'already-initialized' : 'failed';
   }
   options.publishPages(welcome.id);
-  return true;
+  return 'seeded';
 }

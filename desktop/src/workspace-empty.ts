@@ -1,6 +1,11 @@
 /** Empty remote spaces stay empty until a member explicitly creates a page — unless welcome seed runs first. */
 
 export interface EmptyWorkspaceExtras {
+  /**
+   * The workspace holds pages this account cannot see. Says so instead of
+   * calling the workspace empty, and keeps every way to create a page.
+   */
+  nothingShared?: boolean;
   onTemplate?: () => void;
   onInvite?: () => void;
   onImport?: () => void;
@@ -17,7 +22,7 @@ export function createEmptyWorkspaceState(
   element.setAttribute('data-desktop-empty', '');
   const message = document.createElement('p');
   message.setAttribute('role', 'status');
-  message.textContent = viewer
+  message.textContent = viewer || extras.nothingShared === true
     ? 'Aucune page n’est partagée avec vous pour le moment'
     : 'Cet espace est vide. Créez votre première page.';
   element.append(message);

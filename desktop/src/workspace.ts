@@ -1513,6 +1513,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   ws.frame.element.setAttribute('data-desktop-workspace', '');
   ws.frame.element.toggleAttribute('data-desktop-read-only', ws.access.readOnlyWorkspace);
 
+  /** Set when the server reports this workspace was already initialized. */
+  const welcomeState = { nothingShared: false };
   async function seedWelcomeWorkspace(): Promise<string | null> {
     if (!ws.index || ws.access.readOnlyWorkspace) return null;
     const workspaceId = ref.kind === 'remote' ? ref.workspaceId : ref.id;
@@ -1527,7 +1529,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (!welcomePage) return null;
     // Captured so the callbacks below keep the non-null narrowing from the guard.
     const index = ws.index;
-    const seeded = await seedWelcomeDocuments({
+    const outcome = await seedWelcomeDocuments({
       docs,
       publishPages: (selectId) => {
         for (const page of docs.pages) {
@@ -1542,7 +1544,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         else await repository.writePage(pageId, JSON.stringify(document));
       },
     });
-    if (seeded) {
+    if (outcome === 'seeded') {
       markWelcomeSeeded(key);
       return welcomePage.id;
     }
@@ -1552,6 +1554,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.frame.setPages(withSections(index.pages), index.activeId);
     saveManifest();
     try { await ws.saveOrder; } catch { /* keep empty */ }
+    if (outcome === 'already-initialized') {
+      // The workspace is not new — this account simply sees none of it. Blaming
+      // the person for a creation that never had to happen told them the wrong
+      // thing entirely; marking it seeded also stops this retrying on every open.
+      markWelcomeSeeded(key);
+      welcomeState.nothingShared = true;
+      return null;
+    }
     showError(new Error('Les pages de bienvenue n’ont pas pu être créées. Créez une page pour commencer.'), 'welcome');
 
     return null;
@@ -1584,6 +1594,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.frame.element.append(status);
     saveStatus.resetPage();
     ws.pageCanvas.replaceChildren(createEmptyWorkspaceState(ws.access.readOnlyWorkspace, () => createPage(), {
+      nothingShared: welcomeState.nothingShared,
       onTemplate: () => chooseNewPage(),
       onInvite: () => {
         ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', { detail: 'invites' }));
