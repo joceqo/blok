@@ -316,3 +316,35 @@ func TestRecordedResponseCanBeUnwrapped(t *testing.T) {
 		t.Fatal("Unwrap must return the writer underneath")
 	}
 }
+
+// The status alone does not say which page carried the dead parentId. The
+// refusal body does, and without it the collector shows a 400 with nothing to
+// act on — the detail only ever reached the browser's network tab.
+func TestFailedResponsesCarryTheRefusalDetail(t *testing.T) {
+	var lines []string
+	previous := slog.Default()
+	defer slog.SetDefault(previous)
+	slog.SetDefault(slog.New(slog.NewTextHandler(
+		writerFunc(func(p []byte) (int, error) { lines = append(lines, string(p)); return len(p), nil }),
+		&slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	handler := logFailedResponses(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		problem(w, 400, `Invalid parent hierarchy: page "p1" names parent "ghost", which does not exist`)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPut, "/api/workspaces/equipe/index", nil))
+
+	joined := strings.Join(lines, "")
+	if !strings.Contains(joined, "ghost") || !strings.Contains(joined, `page \"p1\"`) && !strings.Contains(joined, "p1") {
+		t.Fatalf("the refusal detail must reach the log: %s", joined)
+	}
+}
+
+// A successful response body must never be copied anywhere.
+func TestSuccessfulResponsesAreNotCaptured(t *testing.T) {
+	recorded := &recordedResponse{ResponseWriter: httptest.NewRecorder()}
+	recorded.WriteHeader(200)
+	_, _ = recorded.Write([]byte(`{"secret":"document content"}`))
+	if recorded.detail.Len() != 0 {
+		t.Fatalf("captured %q from a successful response", recorded.detail.String())
+	}
+}

@@ -295,7 +295,13 @@ func InstallErrorReporting(c Config) func() {
 type recordedResponse struct {
 	http.ResponseWriter
 	status int
+	// The first bytes of a refusal body, and only a refusal: it names what the
+	// status cannot. A success body is document content and is never copied.
+	detail bytes.Buffer
 }
+
+// Enough for a refusal sentence, far too little for a document.
+const refusalDetailLimit = 512
 
 func (r *recordedResponse) WriteHeader(status int) {
 	if r.status == 0 {
@@ -307,6 +313,9 @@ func (r *recordedResponse) WriteHeader(status int) {
 func (r *recordedResponse) Write(p []byte) (int, error) {
 	if r.status == 0 {
 		r.status = http.StatusOK
+	}
+	if r.status >= 400 && r.detail.Len() < refusalDetailLimit {
+		r.detail.Write(p[:min(len(p), refusalDetailLimit-r.detail.Len())])
 	}
 	return r.ResponseWriter.Write(p)
 }
@@ -353,6 +362,7 @@ func logFailedResponses(next http.Handler) http.Handler {
 		// The status is in the message so the collector groups by it; the path
 		// stays a tag, since one issue per document id would be pure noise.
 		slog.Log(r.Context(), level, fmt.Sprintf("request refused with %d", recorded.status),
-			"status", recorded.status, "method", r.Method, "path", r.URL.Path)
+			"status", recorded.status, "method", r.Method, "path", r.URL.Path,
+			"detail", strings.TrimSpace(recorded.detail.String()))
 	})
 }
