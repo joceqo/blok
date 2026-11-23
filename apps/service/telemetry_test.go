@@ -275,3 +275,44 @@ func TestErrorReportingUsesSentryLevelNames(t *testing.T) {
 		}
 	}
 }
+
+// One title for every refusal piles 4xx and 5xx into a single issue: 339 events
+// deep, with no way to find the 500 among the 401s. The status belongs in the
+// message so the collector groups by it. The path does not — one issue per
+// document id would be useless noise.
+func TestFailedResponsesGroupByStatus(t *testing.T) {
+	var lines []string
+	previous := slog.Default()
+	defer slog.SetDefault(previous)
+	slog.SetDefault(slog.New(slog.NewTextHandler(
+		writerFunc(func(p []byte) (int, error) { lines = append(lines, string(p)); return len(p), nil }),
+		&slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	handler := logFailedResponses(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		problem(w, 500, "Seeding failed")
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/workspaces/x/pages/y/seed", nil))
+
+	joined := strings.Join(lines, "")
+	if !strings.Contains(joined, `msg="request refused with 500"`) {
+		t.Fatalf("the status must be in the message, not only in a tag: %s", joined)
+	}
+	if strings.Contains(joined, `msg="request refused with 500 /api`) {
+		t.Fatalf("the path must stay out of the message: %s", joined)
+	}
+}
+
+// A wrapper that hides Unwrap breaks http.NewResponseController for everything
+// it does not reimplement — SetReadDeadline, EnableFullDuplex. The sync socket
+// reaches for those.
+func TestRecordedResponseCanBeUnwrapped(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	recorded := &recordedResponse{ResponseWriter: recorder}
+	unwrapper, ok := interface{}(recorded).(interface{ Unwrap() http.ResponseWriter })
+	if !ok {
+		t.Fatal("recordedResponse must expose Unwrap")
+	}
+	if unwrapper.Unwrap() != http.ResponseWriter(recorder) {
+		t.Fatal("Unwrap must return the writer underneath")
+	}
+}

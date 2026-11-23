@@ -311,6 +311,13 @@ func (r *recordedResponse) Write(p []byte) (int, error) {
 	return r.ResponseWriter.Write(p)
 }
 
+// Unwrap lets http.NewResponseController reach the writer underneath for every
+// capability this type does not reimplement. Without it the controller stops
+// here and answers ErrNotSupported.
+func (r *recordedResponse) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 func (r *recordedResponse) Flush() {
 	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
@@ -343,7 +350,9 @@ func logFailedResponses(next http.Handler) http.Handler {
 		if recorded.status >= 500 {
 			level = slog.LevelError
 		}
-		slog.Log(r.Context(), level, "request refused",
+		// The status is in the message so the collector groups by it; the path
+		// stays a tag, since one issue per document id would be pure noise.
+		slog.Log(r.Context(), level, fmt.Sprintf("request refused with %d", recorded.status),
 			"status", recorded.status, "method", r.Method, "path", r.URL.Path)
 	})
 }
