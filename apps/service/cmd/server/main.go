@@ -13,8 +13,13 @@ import (
 )
 
 func main() {
+	// Installed before run() so a failure to start is reported too, and flushed
+	// again on that path because os.Exit skips every deferred call.
+	flushReports := cloud.InstallErrorReporting(cloud.ConfigFromEnv())
+	defer flushReports()
 	if e := run(); e != nil {
 		slog.Error("service failed", "error", e)
+		flushReports()
 		os.Exit(1)
 	}
 }

@@ -22,6 +22,10 @@ type Config struct {
 	SMTPRootCAs                                      *x509.CertPool
 	SMTPDialContext                                  func(context.Context, string, string) (net.Conn, error)
 	ResendAPIKey, MailFrom, DevelopmentMailDirectory string
+	// Sentry-compatible collector for error logs. Empty leaves reporting off.
+	ErrorReportingDSN string
+	// "warn" also reports 4xx; anything else reports errors only.
+	ErrorReportingLevel string
 	AllowedOrigins                                   []string
 	TrustedProxyCIDRs                                []string
 	Development                                      bool
@@ -64,6 +68,8 @@ func ConfigFromEnv() Config {
 		AllowedOrigins:               strings.FieldsFunc(os.Getenv("ALLOWED_ORIGINS"), func(r rune) bool { return r == ',' }),
 		ResendAPIKey:                 os.Getenv("RESEND_API_KEY"), MailFrom: os.Getenv("MAIL_FROM"),
 		DevelopmentMailDirectory: os.Getenv("DEV_MAIL_DIRECTORY"), Development: os.Getenv("APP_ENV") == "development",
+		ErrorReportingDSN:        strings.TrimSpace(os.Getenv("ERROR_REPORTING_DSN")),
+		ErrorReportingLevel:      strings.TrimSpace(os.Getenv("ERROR_REPORTING_LEVEL")),
 	}
 }
 func (c Config) validate() error {

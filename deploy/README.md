@@ -167,6 +167,36 @@ Si elle échoue après avoir commencé, conserve la sauvegarde et inspecte les l
 En gardant le même domaine et les secrets, les liens et identités restent cohérents. Changer aussi le domaine nécessite de migrer les URL absolues des pièces jointes.
 Les certificats sont gérés par le proxy existant ; les données locales Tauri d'un ordinateur ne font pas partie de la sauvegarde serveur.
 
+## Rapport d'erreurs (GlitchTip / Sentry)
+
+Le service peut envoyer ses erreurs à un collecteur compatible Sentry. C'est éteint
+par défaut : il suffit de renseigner le DSN et de redéployer, sans toucher au code.
+
+```bash
+# dans .env, à côté des autres secrets
+ERROR_REPORTING_DSN=https://<clé>@glitchtip.exemple.com/<numéro-de-projet>
+```
+
+Ce qui part : tout ce qui est déjà journalisé au niveau `error`, avec son message,
+son horodatage, l'environnement et le nom de la machine. Le rapport enveloppe le
+journal existant — aucun appel n'est à ajouter dans le code lorsqu'une nouvelle
+erreur apparaît.
+
+Ce qui ne part jamais : toute donnée dont la clé contient `token`, `secret`, `key`,
+`password`, `authorization`, `cookie`, `email`, `dsn` ou `credential`. Le rapport
+n'élargit donc pas ce que le journal expose déjà.
+
+Toute réponse refusée est journalisée avec sa méthode, son chemin et son statut :
+les 5xx au niveau `error` (donc rapportées), les 4xx au niveau `warn`. Pour faire
+remonter aussi les 4xx — utile pour traquer un conflit précis — passer
+`ERROR_REPORTING_LEVEL=warn`. À laisser vide le reste du temps : les 401 et 404
+sont du trafic ordinaire et noieraient le reste.
+
+Un DSN vide ou mal formé laisse la journalisation strictement inchangée plutôt que
+d'installer un rapporteur à moitié. L'envoi se fait hors du traitement des requêtes,
+est abandonné au-delà de quatre envois simultanés, et n'est jamais journalisé
+lui-même — rapporter un échec de rapport bouclerait.
+
 ## Vérifications de développement
 
 L'API est documentée dans `apps/service/API.md`. Les tests Go avec PostgreSQL et les tests navigateur utilisent uniquement un collecteur local d'e-mails : aucun envoi réel n'est nécessaire.

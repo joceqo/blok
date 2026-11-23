@@ -257,7 +257,9 @@ func (s *Service) require(w http.ResponseWriter, r *http.Request) (identity, boo
 	return u, true
 }
 func (s *Service) Handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Every refused response is journalled here, where the method and path are
+	// still in hand — `problem` receives neither.
+	return logFailedResponses(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.RemoteAddr = net.JoinHostPort(s.clientIP(r), "0")
 		if s.draining.Load() && !strings.HasPrefix(r.URL.Path, "/internal/documents/") {
 			problem(w, 503, "Service draining")
@@ -293,7 +295,7 @@ func (s *Service) Handler() http.Handler {
 			return
 		}
 		s.mux.ServeHTTP(w, r)
-	})
+	}))
 }
 func (s *Service) routes() {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
