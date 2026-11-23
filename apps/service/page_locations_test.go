@@ -252,3 +252,34 @@ func TestPageLocationIndexCreatesNewChildUnderAccessibleHiddenBody(t *testing.T)
 		t.Fatalf("wrong new page parent: %s %s %v", parent, workspace, err)
 	}
 }
+
+func TestIndexRoundTripWithTrashedRowBodyParent(t *testing.T) {
+	w := newReadsWorld(t)
+	w.page(t, "body", "public", visInherit)
+	w.page(t, "child", "body", visInherit)
+	w.page(t, "other", "", visWorkspace)
+	if _, err := w.service.DB.Exec(w.ctx, `UPDATE pages SET metadata=metadata || '{"rowBodyOf":{"documentId":"public","rowId":"row"}}'::jsonb WHERE id='body'`); err != nil {
+		t.Fatal(err)
+	}
+	w.send(t, "DELETE", tokenAlice, "/api/workspaces/equipe/pages/public", nil, 200)
+	const path = "/api/workspaces/equipe/index"
+	index := w.send(t, "GET", tokenAlice, path, nil, 200)
+	pageFromList(t, index, "other")["title"] = "Updated title"
+	payload := map[string]any{"pages": index["pages"], "trash": index["trash"], "revision": index["revision"]}
+	// A new page cannot claim the omitted parent, even if it is sent in trash.
+	trash := index["trash"].([]any)
+	for _, bucket := range []string{"pages", "trash"} {
+		bad := map[string]any{"pages": index["pages"], "trash": trash, "revision": index["revision"]}
+		bad[bucket] = append(append([]any{}, bad[bucket].([]any)...), entry("new-child", "body"))
+		w.send(t, "PUT", tokenAlice, path, bad, 400)
+	}
+	w.send(t, "PUT", tokenAlice, path, payload, 200)
+	fresh := w.send(t, "GET", tokenAlice, path, nil, 200)
+	if pageFromList(t, fresh, "other")["title"] != "Updated title" {
+		t.Fatal("unrelated page edit was not saved")
+	}
+	var retained bool
+	if err := w.service.DB.QueryRow(w.ctx, `SELECT trashed AND NOT deleted AND metadata->>'parentId'='body' FROM pages WHERE id='child'`).Scan(&retained); err != nil || !retained {
+		t.Fatalf("expected to retain the child's original trash location: %v", err)
+	}
+}

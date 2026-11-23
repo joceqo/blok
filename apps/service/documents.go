@@ -204,18 +204,25 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 	// Hidden row documents are deliberately absent from the sidebar index. A
 	// child may retain one as its storage parent; validate against server-owned
 	// links, never a client-provided location projection.
-	hiddenRows, e := tx.Query(r.Context(), `SELECT id,coalesce(metadata->>'parentId','') FROM pages WHERE workspace_id=$1 AND NOT deleted AND NOT trashed AND metadata ? 'rowBodyOf'`, ws.ID)
+	hiddenRows, e := tx.Query(r.Context(), `SELECT id,coalesce(metadata->>'parentId',''),trashed FROM pages WHERE workspace_id=$1 AND NOT deleted AND metadata ? 'rowBodyOf'`, ws.ID)
 	if e != nil {
 		problem(w, 500, "Save failed")
 		return
 	}
 	hiddenParents := map[string]string{}
+	trashedBodies := map[string]bool{}
 	for hiddenRows.Next() {
 		var id, parent string
-		if e = hiddenRows.Scan(&id, &parent); e != nil {
+		var trashed bool
+		if e = hiddenRows.Scan(&id, &parent, &trashed); e != nil {
 			break
 		}
-		if levels[id] >= levelView {
+		if levels[id] < levelView {
+			continue
+		}
+		if trashed {
+			trashedBodies[id] = true
+		} else {
 			hiddenParents[id] = parent
 		}
 	}
@@ -253,6 +260,14 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 	missingParent, missingChild := "", ""
 	for _, entry := range all {
 		parent, _ := entry.page["parentId"].(string)
+		// The trash still has its physical tree. Its internal row bodies are
+		// omitted from GET /index, even when their child pages are returned.
+		// Accept the existing edge only in trash. Keep the stored parent intact
+		// and stop this visible-tree walk at the omitted body.
+		if entry.trashed && trashedBodies[parent] && realParents[entry.id()] == parent {
+			parents[entry.id()] = ""
+			continue
+		}
 		for parent != "" {
 			if _, exists := parents[parent]; exists {
 				break
