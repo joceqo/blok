@@ -91,6 +91,9 @@ type errorReport struct {
 	ServerName  string             `json:"server_name"`
 	Message     errorReportMessage `json:"message"`
 	Extra       map[string]string  `json:"extra"`
+	// Tags are what GlitchTip shows on the issue and filters on. Extra alone
+	// does not come back out, so the fields worth searching live here too.
+	Tags map[string]string `json:"tags"`
 }
 
 func errorReportingID() string {
@@ -103,11 +106,17 @@ func errorReportingID() string {
 
 func errorReportingEvent(record slog.Record, attrs []slog.Attr, environment, host string) errorReport {
 	extra := map[string]string{}
+	tags := map[string]string{}
 	add := func(attr slog.Attr) {
 		if attr.Key == "" || errorReportingRedacts(attr.Key) {
 			return
 		}
-		extra[attr.Key] = attr.Value.String()
+		value := attr.Value.String()
+		extra[attr.Key] = value
+		// Kept short: a tag is an index key, not a place for a payload.
+		if len(value) <= 200 {
+			tags[attr.Key] = value
+		}
 	}
 	for _, attr := range attrs {
 		add(attr)
@@ -126,6 +135,7 @@ func errorReportingEvent(record slog.Record, attrs []slog.Attr, environment, hos
 		ServerName:  host,
 		Message:     errorReportMessage{Formatted: record.Message},
 		Extra:       extra,
+		Tags:        tags,
 	}
 }
 

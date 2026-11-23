@@ -210,3 +210,24 @@ func TestErrorReportingThresholdCanIncludeWarnings(t *testing.T) {
 		t.Fatalf("expected the warning to be reported, got %d reports", count)
 	}
 }
+
+// GlitchTip surfaces tags in the issue view and lets you filter on them; the
+// first live event proved "extra" alone does not come back. Status, method and
+// path are the whole point of the report, so they travel as tags too.
+func TestErrorReportingPutsAttributesInTags(t *testing.T) {
+	record := slog.Record{Message: "request refused", Level: slog.LevelError, Time: time.Unix(0, 0).UTC()}
+	record.Add("status", 409, "method", "POST", "path", "/api/workspaces/nexenture/pages/x/seed", "token", "s3cr3t")
+	event := errorReportingEvent(record, nil, "production", "host-1")
+	if event.Tags["status"] != "409" || event.Tags["method"] != "POST" {
+		t.Fatalf("tags = %v", event.Tags)
+	}
+	if event.Tags["path"] != "/api/workspaces/nexenture/pages/x/seed" {
+		t.Fatalf("path missing from tags: %v", event.Tags)
+	}
+	if _, leaked := event.Tags["token"]; leaked {
+		t.Fatalf("redaction must apply to tags as well: %v", event.Tags)
+	}
+	if event.Extra["status"] != "409" {
+		t.Fatalf("extra should still carry everything: %v", event.Extra)
+	}
+}
