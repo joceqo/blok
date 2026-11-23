@@ -247,6 +247,10 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 		}
 	}
 	validTree := true
+	// Named on refusal: "missing parent" without the id leaves the client with
+	// nothing to look for, and the page carrying it is the only way to find the
+	// stale entry it is still holding.
+	missingParent, missingChild := "", ""
 	for _, entry := range all {
 		parent, _ := entry.page["parentId"].(string)
 		for parent != "" {
@@ -256,6 +260,7 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 			ancestor, exists := hiddenParents[parent]
 			if !exists {
 				validTree = false
+				missingParent, missingChild = parent, entry.id()
 				break
 			}
 			parents[parent] = ancestor
@@ -269,6 +274,10 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 		}
 	}
 	if !validTree || !validParents(parents) {
+		if missingParent != "" {
+			problem(w, 400, fmt.Sprintf("Invalid parent hierarchy: page %q names parent %q, which does not exist", missingChild, missingParent))
+			return
+		}
 		problem(w, 400, "Invalid parent hierarchy (missing parent or cycle)")
 		return
 	}
