@@ -2,7 +2,7 @@
 //! enqueue; one pump owns every write, and the receive loop never sends.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -118,7 +118,8 @@ struct Queue {
 }
 
 pub struct SocketMember {
-    can_write: bool,
+    can_write: AtomicBool,
+    recheck_write: Option<Recheck>,
     accepts_control_frames: bool,
     max_queued_bytes: i64,
     close_grace: Duration,
@@ -137,9 +138,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl SocketMember {
+    pub(crate) fn with_write_check(mut self, check: Option<Recheck>) -> Self {
+        self.recheck_write = check;
+        self
+    }
+
     pub fn new(options: MemberOptions) -> Self {
         Self {
-            can_write: options.can_write,
+            can_write: AtomicBool::new(options.can_write),
+            recheck_write: None,
             accepts_control_frames: options.accepts_control_frames,
             max_queued_bytes: options.max_queued_bytes,
             close_grace: if options.close_grace.is_zero() {
@@ -396,7 +403,7 @@ impl SocketMember {
 
 impl Member for SocketMember {
     fn can_write(&self) -> bool {
-        self.can_write
+        self.can_write.load(Ordering::Acquire)
     }
 
     fn accepts_control_frames(&self) -> bool {
@@ -412,10 +419,19 @@ impl Member for SocketMember {
     }
 
     fn recheck_access(&self) -> BoxFuture<'_, Result<bool, Error>> {
-        match &self.recheck {
-            Some(recheck) => recheck(),
-            None => Box::pin(async { Ok(true) }),
-        }
+        Box::pin(async move {
+            if let Some(read) = &self.recheck {
+                if !read().await? {
+                    return Ok(false);
+                }
+            }
+            let Some(check) = &self.recheck_write else {
+                return Ok(true);
+            };
+            let write = check().await?;
+            let was_writer = self.can_write.swap(write, Ordering::AcqRel);
+            Ok(!was_writer || write)
+        })
     }
 
     /// Admits a frame while the backlog queued BEFORE it is within budget,

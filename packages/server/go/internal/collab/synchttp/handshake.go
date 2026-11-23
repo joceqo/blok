@@ -37,12 +37,13 @@ type rejected struct {
 
 // accepted is past the door. principal "" is uncapped; actor "" is none.
 type accepted struct {
-	subProtocol string
-	canWrite    bool
-	principal   string
-	actor       string
-	source      collab.OperationSource
-	user        auth.User
+	subProtocol    string
+	canWrite       bool
+	writePermitted bool
+	principal      string
+	actor          string
+	source         collab.OperationSource
+	user           auth.User
 	// hasUser is false when no user reached the request at all.
 	hasUser bool
 }
@@ -127,13 +128,14 @@ func (e *Endpoint) admit(r *http.Request, doc string) (handshakeResult, string) 
 		source = collab.SourceClientV2
 	}
 	return accepted{
-		subProtocol: subProtocol,
-		canWrite:    canWrite,
-		principal:   principal,
-		actor:       deriveActor(ticketUser, user, hasUser),
-		source:      source,
-		user:        user,
-		hasUser:     hasUser,
+		subProtocol:    subProtocol,
+		canWrite:       canWrite,
+		writePermitted: canWrite,
+		principal:      principal,
+		actor:          deriveActor(ticketUser, user, hasUser),
+		source:         source,
+		user:           user,
+		hasUser:        hasUser,
 	}, key
 }
 

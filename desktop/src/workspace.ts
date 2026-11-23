@@ -279,7 +279,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   // WebKit keeps `:hover` latched on a node moved under the cursor. See trackPageHeaderHover.
   trackPageHeaderHover(document);
   const pageListeners = new Map<string, Set<() => void>>();
-  const saveStatus = createWorkspaceSaveStatus(ref.kind === 'remote');
+  const saveStatus = createWorkspaceSaveStatus(ref.kind === 'remote', navigator.onLine, () => ws.editor?.saver);
   const status = saveStatus.element;
   const sync = { localWrites: 0, remoteConnection: 'connecting' };
   const updatePending = (): void => saveStatus.pending(ws.pendingManifests + sync.localWrites + teamspacesState.pending);

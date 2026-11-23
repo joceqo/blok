@@ -3,7 +3,18 @@ import {OutputData} from '../data-formats/output-data';
 /**
  * Describes Blok`s saver API
  */
+export interface QuarantineReview {
+  /** Highest quarantine key included in this review. */
+  through: number;
+  entries: Array<{ reason: string; count: number }>;
+  /** Readable contents of the most recent available recovery copy. */
+  preview?: string;
+}
+
 export interface Saver {
+  inspectQuarantine(): Promise<QuarantineReview>;
+  /** Discard only the reviewed rows, after confirmation. */
+  clearQuarantine(through: number): Promise<number>;
   /**
    * Saves Blok's data and returns promise with it
    *

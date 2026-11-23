@@ -1,5 +1,7 @@
 import * as Y from 'yjs';
 
+import type { QuarantineReview } from '../../../../types/api/saver';
+
 import * as idb from './idb';
 import type { QuarantineFilter, SessionProtocol, WorkingSetTag } from './types';
 
@@ -187,6 +189,10 @@ export interface OperationStore {
   /** Drops `updates` and `meta`. Never touches `outbox` or `quarantine`. */
   clearAdoptable: () => Promise<void>;
 
+  inspectQuarantine: () => Promise<QuarantineReview & { snapshot?: Uint8Array }>;
+  /** Move eligible operations back to the same outbox positions in one transaction. */
+  retryReadOnly: (lineage: string) => Promise<Uint8Array[]>;
+
   /**
    * Abandons quarantined work, and returns how many rows went.
    *
@@ -198,7 +204,7 @@ export interface OperationStore {
    *
    * Never touches `outbox`: work still on its way is not work refused.
    */
-  clearQuarantine: () => Promise<number>;
+  clearQuarantine: (through?: number) => Promise<number>;
 
   close: () => Promise<void>;
 }
@@ -439,7 +445,8 @@ export const createOperationStore = (options: OperationStoreOptions): OperationS
     rows: number;
     memory: PendingOperation[];
     memoryOrder: number;
-    memoryQuarantined: number;
+    memoryQuarantined: Array<{ key: number; reason: string; operation: PendingOperation }>;
+    quarantineKey: number;
     retained: PendingOperation[];
     appends: number;
     poisoned: boolean;
@@ -455,7 +462,8 @@ export const createOperationStore = (options: OperationStoreOptions): OperationS
     rows: 0,
     memory: [],
     memoryOrder: 0,
-    memoryQuarantined: 0,
+    memoryQuarantined: [],
+    quarantineKey: 0,
     retained: [],
     appends: 0,
     poisoned: false,
@@ -1075,12 +1083,12 @@ export const createOperationStore = (options: OperationStoreOptions): OperationS
       const db = state.db;
 
       if (db === null) {
-        const moved = state.memory.filter(moves).length;
-
+        const moved = state.memory.filter(moves);
+        for (const operation of moved) {
+          state.memoryQuarantined.push({ key: ++state.quarantineKey, reason, operation });
+        }
         state.memory = state.memory.filter((row) => !moves(row));
-        state.memoryQuarantined += moved;
-
-        return moved;
+        return moved.length;
       }
 
       const [outboxStore, quarantineStore] = idb.transact(db, [OUTBOX_STORE, QUARANTINE_STORE]);
@@ -1114,11 +1122,8 @@ export const createOperationStore = (options: OperationStoreOptions): OperationS
             if (row !== null && moves(row)) {
               quarantineStore.add({
                 kind: 'operation',
-                lineage,
+                ...row,
                 reason,
-                operationId: row.operationId,
-                localOrder: row.localOrder,
-                bytes: row.bytes,
                 quarantinedAt,
               });
               cursor.delete();
@@ -1137,30 +1142,106 @@ export const createOperationStore = (options: OperationStoreOptions): OperationS
       return counter.moved;
     }),
 
-    clearQuarantine: async () => enqueue(async () => {
+    retryReadOnly: async (lineage) => enqueue(async () => {
+      requireOpen();
+      if (state.lineage !== lineage || state.protocol !== 'v2' || state.poisoned || state.storageUnavailable) return [];
       const db = state.db;
-
       if (db === null) {
-        const gone = state.memoryQuarantined;
-        state.memoryQuarantined = 0;
-        return gone;
+        const retry = state.memoryQuarantined.filter(({ reason, operation }) =>
+          reason === 'read-only' && operation.lineage === lineage && operation.format === SUPPORTED_FORMAT);
+        const keys = new Set(retry.map(row => row.key));
+        state.memoryQuarantined = state.memoryQuarantined.filter(row => !keys.has(row.key));
+        for (const row of retry) state.memory.push(row.operation);
+        state.memory.sort((left, right) => left.localOrder - right.localOrder);
+        return retry.map(row => row.operation.bytes);
       }
 
-      const [readStore] = idb.transact(db, [QUARANTINE_STORE], 'readonly');
-      const rows: unknown[] = await idb.getAll(readStore);
-      if (rows.length === 0) {
-        return 0;
-      }
-      const [writeStore] = idb.transact(db, [QUARANTINE_STORE]);
-
-      // On oncomplete, as every write here: a cleared request that never
-      // commits would report work abandoned while it is still on disk.
-      await commitTogether(writeStore.transaction, () => {
-        writeStore.clear();
+      const [quarantine, outbox, updates] = idb.transact(db, [QUARANTINE_STORE, OUTBOX_STORE, UPDATES_STORE]);
+      const recovered: Uint8Array[] = [];
+      await commitTogether(quarantine.transaction, fail => {
+        const walk = quarantine.openCursor();
+        walk.onsuccess = () => {
+          try {
+            const cursor = walk.result;
+            if (!cursor) return;
+            const row = cursor.value;
+            // Older read-only quarantines omitted the format and creation time.
+            // The refusal belongs to this v2 lineage. Never submit a recovery snapshot.
+            if (row?.kind === 'operation' && row.reason === 'read-only' && row.lineage === lineage
+              && (row.format === undefined || row.format === SUPPORTED_FORMAT)) {
+              const operation = toPendingOperation(row.localOrder, {
+                ...row, format: SUPPORTED_FORMAT, createdAt: row.createdAt ?? row.quarantinedAt,
+              });
+              if (operation && /^[0-9a-f]{32}$/.test(operation.operationId) && isReplayable(operation.bytes)) {
+                outbox.add(operation, operation.localOrder);
+                updates.add({ lineage, bytes: operation.bytes });
+                cursor.delete();
+                recovered.push(operation.bytes);
+              }
+            }
+            cursor.continue();
+          } catch (error) {
+            fail(error);
+          }
+        };
       });
-      state.memoryQuarantined = 0;
-      notify();
-      return rows.length;
+      if (recovered.length) {
+        state.rows += recovered.length;
+        notify();
+      }
+      return recovered;
+    }),
+
+    inspectQuarantine: async () => enqueue(async () => {
+      requireOpen();
+      const db = state.db;
+      const counts = new Map<string, number>();
+      let through = 0;
+      let snapshot: Uint8Array | undefined;
+      const count = (reason: string): void => { counts.set(reason, (counts.get(reason) ?? 0) + 1); };
+      if (db === null) {
+        through = state.quarantineKey;
+        for (const row of state.memoryQuarantined) count(row.reason);
+      } else {
+        const [store] = idb.transact(db, [QUARANTINE_STORE], 'readonly');
+        const batches = new Set<string>();
+        for (const { k, v } of await idb.getAllKeysValues(store)) {
+          const row = v as { kind?: string; reason?: string; lineage?: string; quarantinedAt?: number; bytes?: unknown } | null;
+          if (typeof k === 'number') through = Math.max(through, k);
+          if (!row) continue;
+          const batch = JSON.stringify([row.lineage, row.reason, row.quarantinedAt]);
+          if (row.kind === 'operation') {
+            count(row.reason ?? 'unknown');
+            batches.add(batch);
+          } else if (row.kind === 'snapshot' && batches.has(batch)) {
+            const bytes = toBytes(row.bytes);
+            if (bytes?.length) snapshot = bytes;
+          }
+        }
+      }
+      return { through, snapshot, entries: Array.from(counts, ([reason, n]) => ({ reason, count: n })) };
+    }),
+
+    clearQuarantine: async (through = Number.MAX_SAFE_INTEGER) => enqueue(async () => {
+      requireOpen();
+      if (!Number.isSafeInteger(through) || through < 0) throw new Error('Invalid quarantine key');
+      const db = state.db;
+      if (db === null) {
+        const before = state.memoryQuarantined.length;
+        state.memoryQuarantined = state.memoryQuarantined.filter(row => row.key > through);
+        return before - state.memoryQuarantined.length;
+      }
+
+      const [store] = idb.transact(db, [QUARANTINE_STORE]);
+      const range = IDBKeyRange.upperBound(through);
+      let removed = 0;
+      await commitTogether(store.transaction, () => {
+        const count = store.count(range);
+        count.onsuccess = () => { removed = count.result; };
+        store.delete(range);
+      });
+      if (removed) notify();
+      return removed;
     }),
 
     stats: async () => {
@@ -1171,7 +1252,7 @@ export const createOperationStore = (options: OperationStoreOptions): OperationS
         return {
           pendingOperations: state.memory.length + state.retained.length,
           pendingBytes: state.memory.reduce((total, row) => total + row.bytes.byteLength, 0) + retainedBytes,
-          quarantinedOperations: state.memoryQuarantined,
+          quarantinedOperations: state.memoryQuarantined.length,
           appendInFlight: state.appends > 0,
           storageUnavailable: state.storageUnavailable,
           updateLost: state.poisoned,

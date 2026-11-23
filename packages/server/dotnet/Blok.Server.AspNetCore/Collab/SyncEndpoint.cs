@@ -114,18 +114,14 @@ internal static class SyncEndpoint
     {
       Func<CancellationToken, ValueTask<bool>>? recheckAccess = null;
 
+      Func<CancellationToken, ValueTask<bool>>? recheckWrite = null;
       if (context.RequestServices.GetService<IBlokAuthorization>() is { } authorization)
       {
-        recheckAccess = async cancellationToken =>
+        recheckAccess = ct => authorization.CanReadDocumentAsync(accepted.User, doc, ct);
+        if (accepted.WritePermitted)
         {
-          if (!await authorization.CanReadDocumentAsync(accepted.User, doc, cancellationToken))
-          {
-            return false;
-          }
-
-          return !accepted.CanWrite ||
-              await authorization.CanWriteDocumentAsync(accepted.User, doc, cancellationToken);
-        };
+          recheckWrite = ct => authorization.CanWriteDocumentAsync(accepted.User, doc, ct);
+        }
       }
 
       var member = new SyncSocketMember(
@@ -137,7 +133,8 @@ internal static class SyncEndpoint
               context.RequestServices.GetRequiredService<TimeProvider>()),
           actorId: accepted.ActorId,
           protocolSource: accepted.ProtocolSource,
-          recheckAccess: recheckAccess);
+          recheckAccess: recheckAccess,
+          recheckWrite: recheckWrite);
       CollabJoinResult join;
 
       // Join before the upgrade: a draining server can still answer 503,

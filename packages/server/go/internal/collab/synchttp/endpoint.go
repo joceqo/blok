@@ -116,20 +116,16 @@ func (e *Endpoint) serve(w http.ResponseWriter, r *http.Request, doc string, a a
 	}
 	defer lease.Release()
 
-	var recheck func(context.Context) (bool, error)
+	var recheck, recheckWrite func(context.Context) (bool, error)
 	if hook := e.config.Authorization; hook != nil {
-		// C# rechecks with the handshake's principal; here that is the
-		// request's values, under the recheck's own cancellation.
 		values := context.WithoutCancel(r.Context())
 		recheck = func(ctx context.Context) (bool, error) {
-			ctx = requestValues{Context: ctx, values: values}
-			if ok, err := hook.CanReadDocument(ctx, a.user, doc); err != nil || !ok {
-				return false, err
+			return hook.CanReadDocument(requestValues{Context: ctx, values: values}, a.user, doc)
+		}
+		if a.writePermitted {
+			recheckWrite = func(ctx context.Context) (bool, error) {
+				return hook.CanWriteDocument(requestValues{Context: ctx, values: values}, a.user, doc)
 			}
-			if !a.canWrite {
-				return true, nil
-			}
-			return hook.CanWriteDocument(ctx, a.user, doc)
 		}
 	}
 	member := NewSocketMember(MemberOptions{
@@ -140,6 +136,7 @@ func (e *Endpoint) serve(w http.ResponseWriter, r *http.Request, doc string, a a
 		ActorID:              a.actor,
 		ProtocolSource:       a.source,
 		Recheck:              recheck,
+		RecheckWrite:         recheckWrite,
 	})
 
 	// Join before the upgrade: a draining server can still answer 503, and

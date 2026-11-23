@@ -35,6 +35,7 @@ internal sealed record SyncRejected(string? SubProtocol, SyncCloseFrame Close) :
 internal sealed record SyncAccepted(
     string? SubProtocol,
     bool CanWrite,
+    bool WritePermitted,
     string? Principal,
     string? ActorId,
     CollabOperationSource ProtocolSource,
@@ -211,6 +212,7 @@ internal sealed class SyncHandshake(
     return new SyncAccepted(
         candidate.SubProtocol,
         canWrite,
+        candidate.CanWrite,
         candidate.Principal,
         candidate.ActorId,
         candidate.ProtocolSource,

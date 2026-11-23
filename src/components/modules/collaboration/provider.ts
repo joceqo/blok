@@ -345,6 +345,9 @@ export function createCollabProvider(options: CollabProviderOptions): CollabProv
     lastActivitySentAt: null,
   };
 
+  // One automatic fresh ticket per refusal episode. A second denial stays reviewable.
+  let refreshedReadOnly = false;
+
   /** True once this continuation belongs to a connection nobody is waiting for. */
   const isStale = (generation: number): boolean => state.destroyed || generation !== state.generation;
 
@@ -837,7 +840,7 @@ export function createCollabProvider(options: CollabProviderOptions): CollabProv
     const socket = state.socket;
 
     // Everything below belongs to the connection that started the pass.
-    if (isStale(generation) || state.phase !== 'ready' || socket === null) {
+    if (isStale(generation) || state.phase !== 'ready' || socket === null || options.canSubmitOperations?.() === false) {
       return false;
     }
 
@@ -901,6 +904,7 @@ export function createCollabProvider(options: CollabProviderOptions): CollabProv
 
     if (
       options.outbox === undefined ||
+      options.canSubmitOperations?.() === false ||
       state.socket === null ||
       state.phase !== 'ready' ||
       state.protocol !== 'v2' ||
@@ -958,7 +962,7 @@ export function createCollabProvider(options: CollabProviderOptions): CollabProv
   const handleResync = (stateVector: Uint8Array): void => {
     const outbox = options.outbox;
 
-    if (state.residual !== 'requested') {
+    if (state.residual !== 'requested' || options.canSubmitOperations?.() === false) {
       state.resyncOwed = true;
       drain();
 
@@ -1039,6 +1043,7 @@ export function createCollabProvider(options: CollabProviderOptions): CollabProv
       state.ackTimer = clearTimer(state.ackTimer);
     }
 
+    refreshedReadOnly = false;
     options.onOperationAcknowledged?.(frame.serverSequence);
 
     const generation = state.generation;
@@ -1057,6 +1062,13 @@ export function createCollabProvider(options: CollabProviderOptions): CollabProv
         logLabeled(`collaboration could not delete an acknowledged operation of ${docId}`, 'error', thrown);
       }
     );
+  };
+
+  const refreshAfterRefusal = (): void => {
+    if (!state.rebuild || state.phase !== 'ready' || state.destroyed) return;
+    state.forceTicketRefresh = true;
+    teardownGeneration(true);
+    scheduleReconnect(undefined, 'refreshing access after an operation was refused');
   };
 
   /**
@@ -1103,7 +1115,13 @@ export function createCollabProvider(options: CollabProviderOptions): CollabProv
     // the rejected one, so sending them alone would apply a dependent edit the
     // server has no base for.
     state.rebuild = true;
-    void quarantineTail(lineage, frame.code);
+    const generation = state.generation;
+    void quarantineTail(lineage, frame.code).then(moved => {
+      if (moved && !isStale(generation) && frame.code === 'read-only' && options.ticketSource && !refreshedReadOnly) {
+        refreshedReadOnly = true;
+        refreshAfterRefusal();
+      }
+    });
   };
 
   const markSynced = (): void => {
@@ -1689,6 +1707,7 @@ export function createCollabProvider(options: CollabProviderOptions): CollabProv
   const unhookCommitted = options.outbox?.onCommitted(() => drain()) ?? null;
 
   return {
+    refreshAfterRefusal,
     connect: (): void => {
       if (state.destroyed || state.phase === 'terminal') {
         return;

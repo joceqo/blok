@@ -60,6 +60,26 @@ describe('workspace save feedback', () => {
     expect(status.element.textContent).toBe('Enregistrement interrompu');
   });
 
+  it('drops an old page’s pending quarantine review when navigating', async () => {
+    const clearQuarantine = vi.fn();
+    type Review = { through: number; entries: { reason: string; count: number }[] };
+    let finish!: (value: Review) => void;
+    const review = new Promise<Review>(resolve => { finish = resolve; });
+    const status = createWorkspaceSaveStatus(true, true, () => ({
+      inspectQuarantine: () => review, clearQuarantine,
+    }));
+    status.connection({ status: 'connected', save: { ...saved, state: 'quarantined', quarantinedOperations: 1 } });
+    expect(status.element.textContent).toContain('1 modification refusée');
+    status.element.querySelector('button')!.click();
+    status.resetPage();
+    finish({ through: 1, entries: [{ reason: 'read-only', count: 1 }] });
+    await review;
+    expect(status.element.querySelector('button')).toBeNull();
+    expect(document.querySelector('dialog')).toBeNull();
+    expect(clearQuarantine).not.toHaveBeenCalled();
+    status.dispose();
+  });
+
   it('preserves access refusal explanations without exposing the original error', () => {
     const status = createWorkspaceSaveStatus(true, true);
     status.error(new Error('private server details'), 'Vous n’avez plus accès à cette page.');

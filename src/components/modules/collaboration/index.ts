@@ -1,11 +1,14 @@
 import type { BlokConfig, OutputBlockData } from '../../../../types';
 import type { CollaborationStatusChangedPayload } from '../../../../types/events/editor-events';
+import type { QuarantineReview } from '../../../../types/api/saver';
 import type { ModuleConfig } from '../../../types-internal/module-config';
 import { Module } from '../../__module';
 import { CollaborationStatusChanged } from '../../events';
 import { createTicketSource, readTicketClaims, type TicketRequest } from '../../utils/access-pass';
 import { logLabeled } from '../../utils/logger';
 
+import { DocumentStore } from '../yjs/document-store';
+import { YBlockSerializer } from '../yjs/serializer';
 import { readCaretPosition } from './caret-position';
 import { buildParticipants } from './participants';
 import {
@@ -88,15 +91,6 @@ const COLLAB_STATE_ATTR = 'data-blok-collab';
  * is already gone. Past this point the edit is given up rather than the tab.
  */
 const INFLIGHT_WRITE_GRACE_MS = 2000;
-
-/**
- * Whether a connection ticket grants writes. Only an explicit `write: false`
- * denies: a ticket without the claim, or one we cannot read, leaves the editor
- * editable — the server enforces the grant regardless, and refusing to let
- * someone type because we could not parse their ticket is the worse failure.
- * @param token - the raw ticket the host's endpoint minted
- */
-const grantsWrite = (token: string): boolean => readTicketClaims(token)?.write !== false;
 
 /**
  * Turns the `server` option into the document's sync URL.
@@ -243,6 +237,9 @@ export class Collaboration extends Module {
 
   /** A denied ticket, or a no-ticket headless copy without a write grant. */
   private writeDenied = false;
+  private ticketAllowsRecovery = false;
+  private awaitingRoomCopy = false;
+  private recoveryPending: Promise<void> | undefined;
 
   /** What the host passed as `config.data`, shown read-only while offline. */
   private lastKnown: OutputBlockData[] = [];
@@ -264,6 +261,30 @@ export class Collaboration extends Module {
    * still has to hold.
    */
   private store: OperationStore | null = null;
+
+  public async inspectQuarantine(): Promise<QuarantineReview> {
+    if (!this.store) return { through: 0, entries: [] };
+    const { through, entries, snapshot } = await this.store.inspectQuarantine();
+    if (!snapshot) return { through, entries };
+    const copy = new DocumentStore(new YBlockSerializer());
+    try {
+      copy.applyRemoteUpdate(snapshot);
+      return { through, entries, preview: JSON.stringify(copy.toJSON(), null, 2) };
+    } catch {
+      // A damaged recovery copy must still allow reviewing and discarding the rows.
+      return { through, entries };
+    } finally {
+      copy.destroy();
+    }
+  }
+
+  public async clearQuarantine(through: number): Promise<number> {
+    if (!Number.isSafeInteger(through) || through < 0) throw new Error('Review the quarantine before discarding it');
+    const removed = await this.store?.clearQuarantine(through) ?? 0;
+    if (!this.isDestroyed && this.awaitingRoomCopy) this.provider?.refreshAfterRefusal();
+    await this.refreshSave();
+    return removed;
+  }
 
   /** Flush deferred typing before a host changes page, then await durable receipt.
    * @param timeoutMs - maximum wait; a timeout leaves the current editor intact
@@ -296,7 +317,7 @@ export class Collaboration extends Module {
       }
       const stats = await this.store?.stats();
       const state = stats === undefined ? undefined : this.saveStateOf(stats).state;
-      if (state === 'saved') {
+      if (state === 'saved' && !this.recoveryPending) {
         return;
       }
       if (state === 'blocked' || state === 'quarantined') {
@@ -482,7 +503,7 @@ export class Collaboration extends Module {
   public get isEditingBlocked(): boolean {
     return this.settings !== null
       && (!(this.firstSynced || this.cacheAdopted) || this.writeDenied || this.terminal
-        || this.durabilityLost || this.retainedUnderV1);
+        || this.awaitingRoomCopy || this.durabilityLost || this.retainedUnderV1);
   }
 
   /**
@@ -554,6 +575,8 @@ export class Collaboration extends Module {
           // The copy holds the refused write, and a reload that adopted it
           // would send it again. The quarantine keeps its own snapshot.
           if (this.quarantineRejected) {
+            this.awaitingRoomCopy = true;
+            void this.applyArbitration();
             this.cacheSeeded = false;
             this.captured(store.clearAdoptable());
           }
@@ -561,7 +584,10 @@ export class Collaboration extends Module {
 
           return moved;
         }),
-      onCommitted: (listener) => store.onCommitted(listener),
+      onCommitted: (listener) => store.onCommitted(() => {
+        listener();
+        void this.refreshSave();
+      }),
     };
   }
 
@@ -929,6 +955,7 @@ export class Collaboration extends Module {
       // retired. It is also what makes the provider offer v2 at all.
       outbox: this.store === null ? undefined : this.outboxSeam(this.store),
       keepsLocalCopy: settings.offline,
+      canSubmitOperations: () => !this.writeDenied && !this.awaitingRoomCopy && !this.recoveryPending,
       onOperationAcknowledged: (serverSequence) => {
         this.serverSequence = serverSequence;
       },
@@ -1258,6 +1285,7 @@ export class Collaboration extends Module {
     // teardown write (a tool discarding its draft) must not reach the store,
     // which has dropped the old lineage and would block editing for good.
     this.firstSynced = false;
+    this.awaitingRoomCopy = false;
     // The cached rows belong to the lineage that was just discarded. Dropping
     // them here is what stops the next boot adopting a dead room's history.
     this.cacheAdopted = false;
@@ -1304,7 +1332,10 @@ export class Collaboration extends Module {
     // hand the rejected ticket straight back.
     return async (request?: TicketRequest): Promise<string> => {
       const token = await mint(request);
-      const denied = !grantsWrite(token);
+      const write = readTicketClaims(token)?.write;
+      // Only an explicit denial blocks typing; replay requires an explicit grant.
+      const denied = write === false;
+      this.ticketAllowsRecovery = write === true;
 
       if (denied !== this.writeDenied) {
         this.writeDenied = denied;
@@ -1362,8 +1393,8 @@ export class Collaboration extends Module {
     // updates it has nowhere to route.
     const hold = this.applyDurabilityHold(status, priorProtocol);
 
-    if (hold !== undefined) {
-      await hold;
+    if (hold !== undefined || this.recoveryPending) {
+      await Promise.all([hold, this.recoveryPending]);
 
       if (this.isDestroyed) {
         return;
@@ -1457,7 +1488,24 @@ export class Collaboration extends Module {
     // No-ticket sync carries no write grant, so keep a headless copy marked.
     const headlessDownload = this.writeDenied && this.settings?.ticketEndpoint === undefined;
 
-    this.captured(store.recordSession(tag, this.writeDenied, this.protocol, snapshot, undefined, headlessDownload));
+    const recorded = store.recordSession(tag, this.writeDenied, this.protocol, snapshot, undefined, headlessDownload);
+    if (this.protocol === 'v2' && this.ticketAllowsRecovery && !this.awaitingRoomCopy && !this.durabilityLost) {
+      const generation = this.resetGeneration;
+      // Queue behind recordSession and ahead of edits from connected listeners.
+      const recovery = store.retryReadOnly(tag.lineage);
+      const pending = Promise.all([recorded, recovery]).then(([, updates]) => {
+        if (this.isDestroyed || this.resetGeneration !== generation || this.provider?.tag?.lineage !== tag.lineage) return;
+        for (const update of updates) this.Blok.YjsManager.applyRemoteUpdate(update, CACHE_ORIGIN);
+      }).catch(thrown => this.loseDurability(thrown)).finally(() => {
+        if (this.recoveryPending === pending) {
+          this.recoveryPending = undefined;
+          if (!this.isDestroyed) this.provider?.drain();
+        }
+      });
+      this.recoveryPending = pending;
+    } else {
+      this.captured(recorded);
+    }
 
     this.cacheSeeded = true;
   }

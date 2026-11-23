@@ -36,6 +36,7 @@ pub(crate) enum HandshakeResult {
 pub(crate) struct Accepted {
     pub sub_protocol: String,
     pub can_write: bool,
+    pub write_permitted: bool,
     pub principal: String,
     pub actor: String,
     pub source: OperationSource,
@@ -167,6 +168,7 @@ impl Endpoint {
             HandshakeResult::Accepted(Accepted {
                 sub_protocol: sub_protocol.to_owned(),
                 can_write,
+                write_permitted: can_write,
                 principal,
                 actor,
                 source,

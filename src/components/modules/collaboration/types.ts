@@ -305,6 +305,8 @@ export interface CollabProviderOptions {
   docId: string;
   /** The doc + awareness seam this provider synchronises. */
   yjs: CollabDocSeam;
+  /** Whether the current session may drain this identity's shared outbox. */
+  canSubmitOperations?: () => boolean;
   /** Mints connection tickets; omit for a server that needs none. */
   ticketSource?: CollabTicketSource;
   /** Opens the transport; defaults to the global `WebSocket`. */
@@ -378,6 +380,8 @@ export interface CollabProviderOptions {
 export interface CollabProvider {
   /** Start connecting. Idempotent while a connection is live or pending. */
   connect(): void;
+  /** Rebuild from the server after the host has handled a final refusal. */
+  refreshAfterRefusal(): void;
   /** Stop for good: close the socket, unhook the seam, cancel every timer. */
   destroy(): void;
 

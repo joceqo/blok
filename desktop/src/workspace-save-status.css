@@ -55,3 +55,11 @@
     order: 3; flex-basis: 100%;
   }
 }
+
+[data-quarantine-review] {
+  max-width: min(420px, 85vw); padding: 20px; border: 1px solid GrayText;
+  border-radius: 8px; background: Canvas; color: CanvasText; font: inherit;
+}
+[data-quarantine-review]::backdrop { background: #0006; }
+[data-quarantine-review] button + button { margin-inline-start: 8px; }
+[data-quarantine-review] pre { max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
