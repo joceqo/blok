@@ -15,7 +15,8 @@ export class SaverAPI extends Module {
   public get methods(): Saver {
     return {
       save: (): Promise<OutputData> => this.save(),
-      inspectQuarantine: () => this.Blok.Collaboration.inspectQuarantine(),
+      inspectQuarantine: includePreview => this.Blok.Collaboration.inspectQuarantine(includePreview),
+      retryQuarantineAccess: () => this.Blok.Collaboration.retryQuarantineAccess(),
       clearQuarantine: (through) => this.Blok.Collaboration.clearQuarantine(through),
       flush: (timeoutMs?: number): Promise<void> => this.Blok.Collaboration.flush(timeoutMs),
     };

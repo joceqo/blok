@@ -3032,10 +3032,11 @@ describe('collaboration — sync-first load', () => {
 
     it.each([false, true])('replays a stored read-only refusal only on a writable v2 connection (write=%s)', async (write) => {
       vi.stubGlobal('indexedDB', new IDBFactory());
-      const pass = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, write }));
-      vi.stubGlobal('fetch', vi.fn(async () => ({
-        ok: true, json: async () => ({ ticket: `header.${pass}.signature` }),
-      })));
+      let granted = write;
+      vi.stubGlobal('fetch', vi.fn(async () => {
+        const pass = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, write: granted }));
+        return { ok: true, json: async () => ({ ticket: `header.${pass}.signature` }) };
+      }));
       const probe = createOperationStore(storeOptions());
       await probe.open();
       await probe.recordSession({ format: 2, epoch: 0, lineage: LINEAGE }, false, 'v2');
@@ -3048,11 +3049,15 @@ describe('collaboration — sync-first load', () => {
 
       const { harness, seen } = await watched({ offline: true, ticket: '/tickets' });
       await waitFor(() => harness.sockets.length === 1, 'ticket');
-      const socket = firstSync(harness, [], V2);
+      let socket = firstSync(harness, [], V2);
       if (!write) {
         await waitFor(() => states(seen).includes('quarantined'), 'read-only refusal retained');
         expect(operationOn(socket)).toBeUndefined();
-        return;
+        await waitFor(() => seen.at(-1)?.status === 'connected', 'read-only admission ready');
+        granted = true;
+        expect(harness.core.moduleInstances.API.methods.saver.retryQuarantineAccess()).toBe(true);
+        await waitFor(() => harness.sockets.length === 2, 'new ticket after access grant', 6000);
+        socket = firstSync(harness, [], V2);
       }
       await waitFor(() => operationOn(socket)?.operationId === edit.operationId, 'recovered operation');
       expect(operationOn(socket)?.update).toEqual(edit.bytes);
@@ -3084,8 +3089,16 @@ describe('collaboration — sync-first load', () => {
       await waitFor(() => seen.at(-1)?.save?.state === 'quarantined', 'second denial');
       await new Promise(resolve => setTimeout(resolve, 1500));
       expect(harness.sockets).toHaveLength(2);
-      expect((await harness.core.moduleInstances.API.methods.saver.inspectQuarantine()).entries)
-        .toEqual([{ reason: 'read-only', count: 1 }]);
+      const saver = harness.core.moduleInstances.API.methods.saver;
+      expect(await saver.inspectQuarantine(false)).toMatchObject({ entries: [{ reason: 'read-only', count: 1 }] });
+      expect(saver.retryQuarantineAccess()).toBe(true);
+      expect(saver.retryQuarantineAccess()).toBe(false);
+      await waitFor(() => harness.sockets.length === 3, 'manual access check', 6000);
+      expect(mint).toHaveBeenCalledTimes(3);
+      const retried = firstSync(harness, [{ id: 'b1', type: 'paragraph', data: { text: 'server copy' } }], V2);
+      await waitFor(() => operationOn(retried)?.operationId === rejection.operationId, 'manually retried operation');
+      retried.deliver({ type: 'acknowledgement', lineage: LINEAGE, operationId: rejection.operationId, serverSequence: '2' });
+      await waitFor(() => seen.at(-1)?.save?.state === 'saved', 'manual recovery acknowledged');
     }, 20_000);
 
     it('connected may report pending', async () => {

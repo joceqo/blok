@@ -279,7 +279,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   // WebKit keeps `:hover` latched on a node moved under the cursor. See trackPageHeaderHover.
   trackPageHeaderHover(document);
   const pageListeners = new Map<string, Set<() => void>>();
-  const saveStatus = createWorkspaceSaveStatus(ref.kind === 'remote', navigator.onLine, () => ws.editor?.saver);
+  const saveStatus = createWorkspaceSaveStatus(ref.kind === 'remote', navigator.onLine, () => ws.editor?.saver, {
+    pageId: () => ws.currentId,
+    retry: ref.kind === 'remote' ? async source => {
+      if (source === 'refresh') { await refreshRemoteManifest(); return; }
+      if (ws.manifestFailed && !ws.pendingManifests && !ws.metadataAction) saveManifest();
+      await ws.saveOrder;
+    } : undefined,
+  });
   const status = saveStatus.element;
   const sync = { localWrites: 0, remoteConnection: 'connecting' };
   const updatePending = (): void => saveStatus.pending(ws.pendingManifests + sync.localWrites + teamspacesState.pending);
@@ -327,7 +334,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       if (!current()) return;
       const url = pageNavigationUrl(rowPageUrl(target.href, rowId, databaseId));
       enterPageUrl(url, replace);
-    })().catch(error => { if (current()) showError(error, 'document'); });
+    })().catch(error => { if (current()) showError(error, 'navigation', documentId); });
   };
   const navigateRowAncestor = (documentId: string, step: RowRouteStep): void => navigateRow(step.documentId ?? documentId, step.row.id, step.database.id);
   let clearingRowPresentation = false;
@@ -569,12 +576,12 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       },
     ]);
   };
-  const showError = (error: unknown, source = 'operation'): void => {
+  const showError = (error: unknown, source = 'operation', pageId?: string): void => {
     // Un retrait d'accès ferme la session en moins de cinq secondes côté
     // serveur. Le présenter comme une panne d'enregistrement laisserait croire
     // à un incident, et pousserait à réessayer pour rien.
     const refusal = describeAccessLoss(error);
-    saveStatus.error(error, refusal, source);
+    saveStatus.error(error, refusal, source, pageId);
   };
   const iconValue = (icon: ReturnType<Blok['title']['icon']['get']>): string | undefined => {
     if (icon?.type === 'emoji') return icon.value;
@@ -714,6 +721,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           historyView.value?.refreshActors();
         }).catch(()=>undefined);
         await historyView.value.open();
+        saveStatus.saved('history', id);
       } finally { historyView.opening = false; }
     };
     sync.remoteConnection = 'connecting';
@@ -760,10 +768,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         title?.focus();
         if (title) { const range = document.createRange(); range.selectNodeContents(title); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range); }
       },
-      onMove: ref.kind === 'local' || ws.access.canShare(id) ? () => { if (!rowPageDestination(location.href)) void action({ id, type: 'move' }).catch(showError); } : undefined,
-      onHistory: ref.kind === 'remote' ? () => { if (!rowPageDestination(location.href)) void openHistory().catch(showError); } : undefined,
-      onDuplicate: () => { if (!rowPageDestination(location.href)) void action({ id, type: 'duplicate' }).catch(showError); },
-      onDelete: () => { if (!rowPageDestination(location.href)) void action({ id, type: 'delete' }).catch(showError); },
+      onMove: ref.kind === 'local' || ws.access.canShare(id) ? () => { if (!rowPageDestination(location.href)) void action({ id, type: 'move' }).catch(error => showError(error, 'move', id)); } : undefined,
+      onHistory: ref.kind === 'remote' ? () => { if (!rowPageDestination(location.href)) void openHistory().catch(error => showError(error, 'history', id)); } : undefined,
+      onDuplicate: () => { if (!rowPageDestination(location.href)) void action({ id, type: 'duplicate' }).catch(error => showError(error, 'duplicate', id)); },
+      onDelete: () => { if (!rowPageDestination(location.href)) void action({ id, type: 'delete' }).catch(error => showError(error, 'delete', id)); },
     });
     const pagePresence = ref.kind === 'remote' ? createPagePresence({
       self: () => ({ id: ref.accountId, ...readAccountIdentity(ref) }),
@@ -853,7 +861,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           saveManifest();
         }
         persisted.content = signature;
-        if (life.active) saveStatus.saved('document');
+        if (life.active) saveStatus.saved('document', id);
       } finally { sync.localWrites--; updatePending(); }
     };
     let rowNavigationRequest = 0;
@@ -970,7 +978,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
             return;
           }
           enterPageUrl(pageNavigationUrl(href), replace);
-        })().catch(error => { if (current()) showError(error, 'document'); });
+        })().catch(error => { if (current()) showError(error, 'navigation', documentId); });
       },
     });
     const rowPages: DesktopRowPages | undefined = ref.kind === 'remote' ? createDesktopRowPages({
@@ -1010,7 +1018,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         rowPermissionWatchers.add(changed);
         return () => { rowPermissionWatchers.delete(changed); };
       },
-      onError: error => showError(error, 'document'),
+      onError: error => showError(error, 'document', id),
       editorConfig: (bodyId): Omit<BlokConfig, 'holder' | 'readOnly'> => ({
         loader: { delay: 0, minVisible: 0, skeleton: ['paragraph', 'paragraph', 'paragraph'] },
         tools: {
@@ -1094,7 +1102,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           return data;
         },
         save: saveLocalData,
-        onError: (error) => showError(error, 'document'),
+        onError: (error) => showError(error, 'document', id),
       } }),
     });
     ws.editor = instance;
@@ -1151,6 +1159,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       syncPageIcon(page, instance.title.icon.get(), ref.kind === 'local', true);
       toolbar.setBreadcrumbs(breadcrumbs(id));
       document.title = page.title;
+      saveStatus.saved('navigation', id);
       saveStatus.ready();
       if (connectionState.value && ref.kind === 'remote') saveStatus.connection(connectionState.value);
       if (connectionState.value) pagePresence?.update(connectionState.value);
@@ -1245,7 +1254,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         }
       });
       mountPresentation();
-    }).catch(error => { const active = life.active; session.destroy(); if (active) showError(error); });
+    }).catch(error => { const active = life.active; session.destroy(); if (active) showError(error, 'navigation', id); });
   };
 
   const duplicatePage = async (page: DesktopPage): Promise<'navigated' | 'pending'> => {
@@ -1256,6 +1265,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       await repository.duplicatePage(page.id, copy);
       const refreshed = adoptIndex(await repository.loadIndex());
       ws.frame.setPages(withSections(refreshed.pages), refreshed.activeId);
+      saveStatus.saved('duplicate', page.id);
       navigate(copy.id);
       return 'navigated';
     }
@@ -1268,8 +1278,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         const data = JSON.parse(raw) as OutputData;
         await repository.writePage(copy.id, JSON.stringify({ ...data, id: copy.id, title: copy.title }));
       }
+      saveStatus.saved('duplicate', page.id);
       navigate(copy.id);
-    }).catch(showError);
+    }).catch(error => showError(error, 'duplicate', page.id));
     return 'pending';
   };
 
@@ -1280,7 +1291,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (ws.index.pages.length === 1) {
       // Returning in silence looked like a broken button: the menu closed and
       // the page stayed, with nothing said.
-      showError(new Error(lastPageRefusal), 'delete');
+      saveStatus.error(new Error(lastPageRefusal), lastPageRefusal, 'delete', page.id);
 
       return;
     }
@@ -1291,7 +1302,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       ws.index.pages.forEach((item) => { if (item.parentId && removed.has(item.parentId)) removed.add(item.id); });
     }
     if (removed.size === ws.index.pages.length) {
-      showError(new Error(lastPageRefusal), 'delete');
+      saveStatus.error(new Error(lastPageRefusal), lastPageRefusal, 'delete', page.id);
 
       return;
     }
@@ -1372,6 +1383,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       ws.pageToolbar?.setBreadcrumbs(breadcrumbs(ws.currentId));
       ws.refreshPagePresentation?.();
       refreshLibrary();
+      saveStatus.saved('move', id);
       if (!ws.index.pages.some(page => page.id === ws.currentId)) onRoute();
     } finally { ws.frame.element.inert = wasInert; ws.metadataAction = false; }
   };
@@ -1380,7 +1392,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       if (!ws.index || readOnly(command.id)) return;
       const page = ws.index.pages.find(item => item.id === command.id);
       if (!page) return;
-      openPageMove({ title: page.title, destinations: () => destinationsFor(page.id), onMove: target => movePage(page.id, target) });
+      openPageMove({ title: page.title, destinations: () => destinationsFor(page.id), onMove: async target => {
+        try { await movePage(page.id, target); }
+        catch (error) { showError(error, 'move', page.id); throw error; }
+      } });
       return;
     }
     if (command.type !== 'open-tab' && readOnly(command.id)) return;
@@ -1398,6 +1413,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       else return;
       ws.frame.setPages(withSections(ws.index.pages), library.dispose ? '' : ws.index.activeId);
       saveManifest();
+      if (command.type === 'rename' || !ws.index.pages.some(item => item.id === page.id)) {
+        void ws.saveOrder.then(() => saveStatus.saved(command.type, page.id)).catch(() => undefined);
+      }
     } finally { ws.frame.element.inert = wasInert; ws.metadataAction = false; }
   };
 
@@ -1424,9 +1442,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     pages: [], activeId: '',
     recentIds: recentPages.ids,
     onRecentsChange: (ids) => { library.recents = ids; recentPages.save(ids); refreshLibrary(); },
-    onCreateNote: canCreateUnder(null) ? () => { void createNote().catch(showError); } : undefined,
+    onCreateNote: canCreateUnder(null) ? () => { void createNote().catch(error => showError(error, 'create')); } : undefined,
     onLibrary: () => navigateLibrary('all'),
-    pageMoves: { destinations: destinationsFor, move: (id, target) => { void movePage(id, target).catch(showError); } },
+    pageMoves: { destinations: destinationsFor, move: (id, target) => { void movePage(id, target).catch(error => showError(error, 'move', id)); } },
     onOpen: (id) => navigate(id),
     onCreate: (parentId) => chooseNewPage(parentId),
     onCreatePrivate: ref.kind === 'remote' ? () => chooseNewPage(null, true) : undefined,
@@ -1437,7 +1455,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     onManageTeamspaces: ref.kind==='remote' ? ()=>ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-teamspace',{detail:{}})) : undefined,
     onCreateTeamspacePage: (id)=>chooseNewPage(null,false,id),
     onTeamspaceMenu: (_anchor,id)=>{if(id)ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-teamspace',{detail:{id}}));},
-    onAction: (command) => { void action(command).catch(showError); },
+    onAction: (command) => { void action(command).catch(error => showError(error, command.type, command.id)); },
     pageUrl,
     availableActions: ['rename', 'duplicate', 'move', 'delete', 'open-tab'],
     canEdit: (id) => !readOnly(id),
@@ -1656,7 +1674,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       loadChildren: pageId => repository.readPageOutline(pageId),
       onOpenBlock: (pageId, blockId) => { library.target = { pageId, blockId }; navigate(pageId); },
       canCreate: canCreateUnder(null), onOpen: navigate,
-      onCreateNote: () => { void createNote().catch(showError); }, onCreate: () => chooseNewPage(null),
+      onCreateNote: () => { void createNote().catch(error => showError(error, 'create')); }, onCreate: () => chooseNewPage(null),
     });
     document.title = brandedTitle('Bibliothèque');
     ws.pageCanvas.scrollTop = 0;
@@ -1669,7 +1687,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       if(ws.editor){await ws.editor.isReady;await ws.editor.saver.flush();}
       await ws.saveOrder;
       if(location.href===destination)location.reload();
-    })().catch(showError).finally(()=>{routeLoad.pending=false;ws.pageCanvas.removeAttribute('aria-busy');});
+    })().catch(error => showError(error, 'navigation')).finally(()=>{routeLoad.pending=false;ws.pageCanvas.removeAttribute('aria-busy');});
   };
 
   function showUnavailablePage(): void {
@@ -1692,7 +1710,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (category !== null) {
       void showLibrary(category).catch(error => {
         if (ws.currentId && libraryCategoryForHref(location.href) !== null) navigate(ws.currentId, true);
-        showError(error);
+        showError(error, 'library');
       });
       return;
     }
@@ -1706,7 +1724,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       }
       clearRowPresentation(); showUnavailablePage(); return;
     }
-    if(!ws.index.pages.length){void showEmptyWorkspace().catch(showError);return;}
+    if(!ws.index.pages.length){void showEmptyWorkspace().catch(error => showError(error, 'library'));return;}
     const target=found?.id ?? ws.index.activeId;
     if (id !== target) {
       navigate(target, true);
@@ -1718,7 +1736,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         const url = pageNavigationUrl(ref.kind==='remote' && !('__TAURI_INTERNALS__' in window) ? pageUrl(ws.currentId) : location.href); if(ref.kind==='local' || '__TAURI_INTERNALS__' in window)url.searchParams.set('page', ws.currentId);
         history.replaceState(null, '', url);
       }
-      showError(error);
+      showError(error, 'navigation', target);
     });
   }
 
@@ -1789,7 +1807,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           if(database)await repository.seedPage(created.id,{title:created.title,blocks:[{type:'database',data:{initialView:'table',fullPage:true}}]});
           ws.metadataAction=false;
           await refreshRemoteManifest();navigate(created.id);
-        }catch(error){showError(error);}finally{ws.metadataAction=false;ws.frame.element.inert=wasInert;teamspacesState.pending--;updatePending();}
+        }catch(error){showError(error, 'create');}finally{ws.metadataAction=false;ws.frame.element.inert=wasInert;teamspacesState.pending--;updatePending();}
       })();return;
     }
     const page: DesktopPage = { ...(ref.kind === 'local' ? { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : {}), id: crypto.randomUUID(), title: database ? 'Nouvelle base de données' : 'Nouvelle page', parentId, ...(privatePage ? { initialVisibility: 'private' as const } : {}) };
@@ -1804,7 +1822,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       }
       if (ref.kind==='remote') await refreshRemoteManifest();
       navigate(page.id);
-    }).catch(showError);
+    }).catch(error => showError(error, 'create', page.id));
   }
 
   return {
@@ -1838,7 +1856,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           sessions.reconnectTimer = window.setInterval(reconnect, 15_000);
           window.addEventListener('beforeunload', (event) => { if (ws.pendingManifests > 0 || ws.manifestFailed) event.preventDefault(); }, { signal: lifetime.signal });
         }
-      } catch (error) { showError(error); }
+      } catch (error) { showError(error, 'startup'); }
     },
     async flush() {
       const wasInert = ws.frame.element.inert;

@@ -1064,11 +1064,13 @@ export function createCollabProvider(options: CollabProviderOptions): CollabProv
     );
   };
 
-  const refreshAfterRefusal = (): void => {
-    if (!state.rebuild || state.phase !== 'ready' || state.destroyed) return;
+  const refreshAfterRefusal = (requestFreshAccess = false): boolean => {
+    if (state.phase !== 'ready' || state.destroyed) return false;
+    if (requestFreshAccess ? !options.ticketSource || state.protocol !== 'v2' : !state.rebuild) return false;
     state.forceTicketRefresh = true;
     teardownGeneration(true);
     scheduleReconnect(undefined, 'refreshing access after an operation was refused');
+    return true;
   };
 
   /**

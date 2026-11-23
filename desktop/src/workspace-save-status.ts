@@ -2,12 +2,20 @@ import type { CollaborationStatusChangedPayload } from '../../types/events/edito
 
 import type { Saver } from '../../types/api/saver';
 
-type QuarantineActions = Pick<Saver, 'inspectQuarantine' | 'clearQuarantine'>;
+import { actionLabel, diagnosticContext, dismissibleAction, failureMetadata, openDiagnostic, syncReport,
+  type DiagnosticControl, type Failure } from './save-diagnostic';
+
+interface DiagnosticOptions {
+  pageId(): string;
+  retry?(source: 'manifest' | 'refresh'): Promise<void>;
+}
+
+type QuarantineActions = Pick<Saver, 'inspectQuarantine' | 'clearQuarantine'> & Partial<Pick<Saver, 'retryQuarantineAccess'>>;
 const BUSY_DELAY_MS = 1000;
 
 /** Presentation only: remote edits remain in the editor's in-memory queue. */
 export function createWorkspaceSaveStatus(remote: boolean, online = navigator.onLine,
-  recovery?: () => QuarantineActions | undefined) {
+  recovery?: () => QuarantineActions | undefined, options?: DiagnosticOptions) {
   const element = document.createElement('span');
   element.setAttribute('data-desktop-status', '');
   element.setAttribute('role', 'status');
@@ -55,7 +63,39 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
     ready: boolean;
     disposed: boolean;
   } = { connection: 'connecting', online, pending: 0, ready: false, disposed: false };
-  const failures = new Map<string, { label: string; detail: string; network: boolean }>();
+  const failures = new Map<string, { label: string; detail: string; network: boolean; record: Failure }>();
+  const recent: Array<Failure & { endedAt: string; outcome: 'confirmed' | 'dismissed' }> = [];
+  const keyFor = (source: string, pageId?: string) => JSON.stringify([source,
+    ['manifest', 'refresh', 'welcome'].includes(source) ? null : pageId ?? (options?.pageId() || null)]);
+  const finishFailure = (key: string, outcome: 'confirmed' | 'dismissed'): void => {
+    const entry = failures.get(key);
+    if (!entry) return;
+    recent.push({ ...entry.record, endedAt: new Date().toISOString(), outcome });
+    if (recent.length > 12) recent.shift();
+    failures.delete(key);
+  };
+  const visibleFailures = () => [...failures.values()].filter(({ record }) =>
+    record.source !== 'document' || record.pageId === (options?.pageId() || null));
+  let socket: Pick<CollaborationStatusChangedPayload, 'error' | 'code' | 'retryInMs'> = {};
+  let sequenceObservedAt: string | undefined;
+  const diagnostic = () => ({
+    ...diagnosticContext(), pageId: options?.pageId() || null, storage: remote ? 'remote' : 'local',
+    online: model.online, connection: remote ? model.connection : undefined, ...socket,
+    pendingWorkspaceWrites: model.pending, sync: syncReport(model.save, sequenceObservedAt),
+    failures: [...failures.values()].map(({ record }) => ({ ...record })), recent: [...recent],
+  });
+  let diagnosticPanel: HTMLDialogElement | undefined;
+  let diagnosticGeneration = 0;
+  const inspect = document.createElement('button');
+  inspect.type = 'button';
+  inspect.setAttribute('data-diagnostic-trigger', '');
+  inspect.setAttribute('aria-label', 'Diagnostic de synchronisation');
+  const closeDiagnostic = (): void => {
+    diagnosticGeneration++;
+    diagnosticPanel?.remove();
+    diagnosticPanel = undefined;
+    inspect.disabled = false;
+  };
 
   const clearBusy = (): void => {
     clearTimeout(model.busyTimer);
@@ -65,7 +105,7 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
 
   const getPresentation = () => {
     const { connection, save, pending, ready } = model;
-    const recordedFailures = [...failures.values()];
+    const recordedFailures = visibleFailures();
     const failure = recordedFailures.find((item) => !item.network) ?? recordedFailures.at(-1);
     if (failure && !failure.network) {
       return { state: 'error', label: failure.label, detail: failure.detail };
@@ -129,6 +169,10 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
       review.remove();
       if (dialog) closeReview();
     }
+    if (options) {
+      inspect.textContent = alert ? 'Diagnostic' : '';
+      if (inspect.parentElement !== element) element.append(inspect);
+    }
     if (element.title !== detail) element.title = detail;
     const accessibleLabel = `${label}. ${detail}`;
     if (element.getAttribute('aria-label') !== accessibleLabel) element.setAttribute('aria-label', accessibleLabel);
@@ -143,6 +187,50 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
         element.setAttribute('data-sync-busy', '');
       }, BUSY_DELAY_MS);
     }
+  };
+  inspect.onclick = async () => {
+    if (inspect.disabled || diagnosticPanel) return;
+    inspect.disabled = true;
+    const generation = diagnosticGeneration;
+    const report = diagnostic();
+    const controls: DiagnosticControl[] = [];
+    const active = visibleFailures();
+    const failure = active.find(item => !item.network) ?? active.at(-1);
+    const source = failure?.record.source;
+    const failureKey = failure ? keyFor(failure.record.source, failure.record.pageId ?? undefined) : '';
+    const stillCurrent = () => generation === diagnosticGeneration && failures.get(failureKey) === failure;
+    const retry = options?.retry;
+    if (failure && retry && (source === 'manifest' || source === 'refresh')) {
+      controls.push({ label: 'Réessayer', run: async () => {
+        if (stillCurrent()) await retry(source);
+        return failures.has(keyFor(source)) ? 'Le problème persiste. Rouvrez le diagnostic pour voir le dernier état.' : 'Opération confirmée.';
+      } });
+    } else if (source && failure && dismissibleAction(source)) {
+      controls.push({ label: 'Masquer cette alerte', run: () => {
+        if (!stillCurrent()) return 'Cette alerte a déjà changé.';
+        finishFailure(failureKey, 'dismissed');
+        paint();
+        return 'Alerte masquée. Vérifiez le résultat de l’action dans la page.';
+      } });
+    }
+    const { label, detail } = getPresentation();
+    let quarantine: Record<string, number> | undefined;
+    if ((model.save?.quarantinedOperations ?? 0) > 0) {
+      try {
+        const snapshot = await recovery?.()?.inspectQuarantine(false);
+        if (snapshot) {
+          quarantine = {};
+          for (const { reason, count } of snapshot.entries) {
+            const category = ['read-only', 'lineage-mismatch', 'lineage-reset', 'oversized-update', 'stale-lineage', 'stale-format'].includes(reason) ? reason : 'autre';
+            quarantine[category] = (quarantine[category] ?? 0) + count;
+          }
+        }
+      } catch { /* Counts from the collaboration event remain available. */ }
+    }
+    if (generation !== diagnosticGeneration) return;
+    diagnosticPanel = openDiagnostic(label + '. ' + detail, { ...report, quarantine }, controls, () => {
+      if (generation === diagnosticGeneration) { closeDiagnostic(); inspect.focus(); }
+    });
   };
   review.onclick = async () => {
     const actions = recovery?.();
@@ -195,6 +283,20 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
         copy.append(label, blocks);
         panel.append(copy);
       }
+      if (actions.retryQuarantineAccess && entries.some(entry => entry.reason === 'read-only')) {
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.textContent = 'Revérifier mon accès';
+        retry.onclick = () => {
+          if (actions.retryQuarantineAccess?.()) {
+            retry.disabled = true;
+            explanation.textContent = 'Vérification en cours. Les modifications compatibles seront renvoyées si vous avez accès en écriture.';
+          } else {
+            explanation.textContent = 'La connexion ne permet pas encore de revérifier votre accès. Vos modifications restent en quarantaine.';
+          }
+        };
+        panel.append(retry);
+      }
       panel.append(explanation, keep, discard);
       document.body.append(panel);
       panel.showModal();
@@ -210,13 +312,23 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
   paint();
   return {
     element,
+    diagnostic,
     connection(event?: Partial<CollaborationStatusChangedPayload>) {
-      if (event?.status) model.connection = event.status;
+      if (event?.status) {
+        model.connection = event.status;
+        socket = { error: event.error, code: event.code, retryInMs: event.retryInMs };
+      }
+      if (event?.save && event.save.serverSequence !== model.save?.serverSequence) {
+        sequenceObservedAt = event.save.serverSequence === undefined ? undefined : new Date().toISOString();
+      }
       if (event?.save) model.save = event.save;
       // A connection event cannot acknowledge a failed metadata save.
       paint();
     },
     resetPage() {
+      closeDiagnostic();
+      socket = {};
+      sequenceObservedAt = undefined;
       closeReview();
       clearBusy();
       model.connection = 'connecting';
@@ -227,17 +339,26 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
     ready() { model.ready = true; paint(); },
     online(value: boolean) { model.online = value; paint(); },
     pending(value: number) { model.pending = value; paint(); },
-    error(error: unknown, refusal?: string | null, source = 'operation') {
-      failures.set(source, {
-        label: refusal ? 'Accès refusé' : 'Enregistrement impossible',
-        detail: refusal ?? (remote
+    error(error: unknown, refusal?: string | null, source = 'operation', pageId?: string) {
+      const key = keyFor(source, pageId);
+      const previous = failures.get(key)?.record;
+      const now = new Date().toISOString();
+      const metadata = failureMetadata(error);
+      failures.set(key, {
+        record: { source, pageId: pageId ?? (options?.pageId() || null), firstAt: previous?.firstAt ?? now,
+          lastAt: now, attempts: (previous?.attempts ?? 0) + 1, ...metadata },
+        label: actionLabel(source) ?? (refusal ? 'Accès refusé' : 'Enregistrement impossible'),
+        detail: refusal ?? (dismissibleAction(source)
+          ? 'Vérifiez le résultat de cette action dans la page avant de la relancer.'
+          : source === 'refresh' ? 'La liste des pages n’a pas pu être actualisée.'
+          : remote
           ? 'Le serveur n’a pas confirmé l’enregistrement. Gardez cette page ouverte et réessayez après le rétablissement de la connexion.'
           : 'L’enregistrement sur cet appareil a échoué. Gardez cette page ouverte et vérifiez l’espace disponible.'),
-        network: remote && !refusal && error instanceof TypeError,
+        network: remote && !refusal && !dismissibleAction(source) && metadata.kind === 'network',
       });
       paint();
     },
-    saved(source = 'operation') { failures.delete(source); paint(); },
-    dispose() { closeReview(); model.disposed = true; clearBusy(); },
+    saved(source = 'operation', pageId?: string) { finishFailure(keyFor(source, pageId), 'confirmed'); paint(); },
+    dispose() { closeDiagnostic(); closeReview(); model.disposed = true; clearBusy(); },
   };
 }

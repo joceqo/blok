@@ -50,6 +50,14 @@ describe('workspace save feedback', () => {
     expect(status.element.textContent).toBe('Enregistré');
   });
 
+  it('reports an unexpected TypeError without labelling the browser offline', () => {
+    const status = createWorkspaceSaveStatus(true, true);
+    status.error(new TypeError('Cannot read private information'), null, 'manifest');
+    expect(status.element.getAttribute('data-sync-state')).toBe('error');
+    expect(status.diagnostic().failures[0]?.kind).toBe('TypeError');
+    expect(JSON.stringify(status.diagnostic())).not.toContain('private information');
+  });
+
   it('shows terminal and blocked states as errors even when the browser is offline', () => {
     const status = createWorkspaceSaveStatus(true, false);
     status.connection({ status: 'error', save: saved });
@@ -78,6 +86,24 @@ describe('workspace save feedback', () => {
     expect(document.querySelector('dialog')).toBeNull();
     expect(clearQuarantine).not.toHaveBeenCalled();
     status.dispose();
+  });
+
+  it('tracks a failed action independently from acknowledged text, then resolves only that action', () => {
+    const status = createWorkspaceSaveStatus(true, true, undefined, { pageId: () => 'page-a' });
+    const requestId = 'a'.repeat(32);
+    status.error(Object.assign(new Error('secret page text'), { status: 409, requestId }), null, 'move', 'page-b');
+    status.connection({ status: 'connected', participants: [], reason: 'private socket detail',
+      save: { ...saved, serverSequence: '42' } });
+    const report = status.diagnostic();
+    expect(report.pageId).toBe('page-a');
+    expect(report.failures).toMatchObject([{ source: 'move', pageId: 'page-b', httpStatus: 409, requestId }]);
+    expect(report.sync).toMatchObject({ state: 'saved', serverSequence: '42' });
+    expect(JSON.stringify(report)).not.toMatch(/secret page text|private socket detail/);
+    status.saved('move', 'page-c');
+    expect(status.diagnostic().failures).toHaveLength(1);
+    status.saved('move', 'page-b');
+    expect(status.diagnostic().failures).toEqual([]);
+    expect(status.element.getAttribute('data-sync-state')).toBe('saved');
   });
 
   it('preserves access refusal explanations without exposing the original error', () => {
