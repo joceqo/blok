@@ -104,8 +104,8 @@ successful append the room broadcasts the update, then acknowledges its sequence
 failure it closes the room and releases the journal so a supervisor can restart it from disk.
 
 The preview implements sync, operation acknowledgement/rejection, reconnect and replay on one
-seeded document. Presence, HTTP edits, automatic document seeding, checkpoint rotation, snapshot
-projection and multi-workspace routing are outside this preview. Each changed operation rechecks
+seeded document. Presence, HTTP edits, checkpoint rotation and multi-workspace routing are outside this preview.
+The product projection mode below adds seeding and snapshot persistence. Each changed operation rechecks
 the journal in full and is intended for small local documents. A workspace rollout requires
 workspace-scoped ticket issuance and live ACL callbacks, exclusive ownership of each selected
 journal across Go and Node, snapshot persistence, and an explicit proxy route for the selected
@@ -130,15 +130,50 @@ and page on incoming frames, before broadcasting updates, and once per second wh
 keeps the write ceiling from the original ticket across later permission changes. A revoked
 or expired session closes with code 4403. A new connection requires a valid upgrade ticket.
 
-The document ID and seeded directory are supplied together by the operator. This mode keeps
-the standalone preview's routing and performance limits. A workspace rollout still needs a
-trusted document-to-journal mapping, seeding from canonical state, projection to the product
-database, presence and ownership transfer between the current and new collaboration hosts.
-Routing and socket selection are explicit deployment work. The original shell does not
-automatically send sockets here.
+With only the ACL service configured, the operator supplies a document ID and its seeded directory.
+The shell deployment controls which pages reach this process and which host owns their writes.
 
 The acceptance scenario in `test/shell-room-acl.mjs` is run by the Go integration test
 `TestNodeRoomAgainstCanonicalACL`. Build the room first, set `TEST_DATABASE_URL` and
 `BLOK_TEST_NODE_ROOM_SCENARIO` to the script's absolute path, then run the Go test. It
 creates a private PostgreSQL schema and tests two clients against real short-lived Go tickets
 and live page-share changes.
+
+
+### Persist one shell page to the product database
+
+For a page exclusively routed to Node, set both private service origins and the shared
+`INTERNAL_SECRET`. The projection endpoint must support exact version, lineage and sequence
+preconditions. Pass the collaboration **root directory** used by the Go host for that page.
+
+```sh
+BLOK_ROOM_CLOUD_ORIGIN=http://shell:8080 \
+BLOK_ROOM_PROJECTION_ORIGIN=http://service-node:8090 \
+npm run --silent journal:room -- /data/collab "$pageId" http://localhost:18098 18102
+```
+
+The room maps the page ID to `<sha256(id)>.journal` and holds the same filesystem lock as Go.
+Deploy the page's routing and write fence on the product host before starting the room.
+`GET /healthz` returns the active document ID and backend after startup has reconciled journal
+and projection. `ALLOWED_ORIGINS` accepts additional comma-separated browser and Tauri
+origins. The socket listens on loopback by default. Set `BLOK_ROOM_LISTEN_HOST=0.0.0.0`
+only inside a private network behind an authenticating shell proxy.
+
+A new page receives a sealed format-2 baseline built with the editor's serializer. The
+original snapshot must round-trip through it without loss. Unsupported JSON numbers, legacy
+working-set files and a database lineage with a missing journal stop startup. Existing Go
+journals require a readable format-2 state whose corresponding prefix matches PostgreSQL.
+The room retains outer snapshot metadata and refuses updates with unprojectable roots,
+host-owned history values or unrecognized block and page fields.
+
+For each changed operation, the room validates its candidate snapshot, appends and fsyncs
+the journal, updates the product database with exact preconditions, and fsyncs its local
+projection receipt before broadcasting and acknowledging. A restart reconciles a committed
+journal entry with a missed database write or a lost receipt. Retrying the operation ID
+then returns its durable sequence. A conflicting canonical revision stops the room for
+operator reconciliation and leaves both the existing database content and the journal
+available for inspection.
+
+The opt-in socket/storage test uses a temporary schema. Build both services first and run
+`SHELL_TEST_DATABASE_URL=postgres:///test node --test test/page-projection.mjs` from this
+package. To test a separate product checkout, set `BLOK_SHELL_TEST_ROOT` to its root.

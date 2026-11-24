@@ -23,7 +23,13 @@ try {
       const port = Number(rawPort);
       if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error('Invalid preview port');
       const authorize = shellOrigin === undefined ? signedRoomTickets(secret) : shellRoomTickets(shellOrigin, process.env.INTERNAL_SECRET ?? '');
-      const room = await startJournalRoom({directory,documentId,allowedOrigins:new Set([origin]),port,authorize});
+      const projectionOrigin = process.env.BLOK_ROOM_PROJECTION_ORIGIN;
+      if (projectionOrigin && !shellOrigin) throw new Error('Canonical storage requires cloud authorization');
+      const projection = projectionOrigin ? { origin:projectionOrigin, secret:process.env.INTERNAL_SECRET ?? '' } : undefined;
+      const additional = (process.env.ALLOWED_ORIGINS ?? '').split(',').map(s=>s.trim()).filter(Boolean);
+      const listenHost = process.env.BLOK_ROOM_LISTEN_HOST ?? '127.0.0.1';
+      if (!['127.0.0.1','0.0.0.0'].includes(listenHost) || listenHost==='0.0.0.0' && !shellOrigin) throw new Error('Invalid room listen address');
+      const room = await startJournalRoom({directory,documentId,allowedOrigins:new Set([origin,...additional]),port,authorize,listenHost,projection});
       console.log(room.url);
       const stop = () => { void room.close().catch(err => { console.error(err.message); process.exitCode=1; }); };
       process.once('SIGTERM',stop);
