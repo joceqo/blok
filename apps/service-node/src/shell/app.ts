@@ -32,8 +32,11 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     }
     if (c.req.method === 'OPTIONS') {
       c.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-      c.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      c.header('Access-Control-Allow-Methods', 'GET, HEAD, PUT, DELETE, OPTIONS');
       return c.body(null, 204);
+    }
+    if (!origin && !['GET', 'HEAD'].includes(c.req.method) && c.req.header('Sec-Fetch-Site') === 'cross-site') {
+      return c.json({ error: 'Cross-site write refused' }, 403);
     }
     await next();
   });
