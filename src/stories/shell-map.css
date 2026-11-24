@@ -1,0 +1,20 @@
+.shell-screen-map {
+  box-sizing: border-box;
+  max-width: 780px;
+  min-height: 100%;
+  margin: auto;
+  padding: 48px clamp(20px, 5vw, 48px);
+  color: #292824;
+  background: #fff;
+  font: 15px/1.5 Inter, system-ui, sans-serif;
+}
+.shell-screen-map h1 { margin: 0 0 22px; font-size: clamp(28px, 5vw, 36px); line-height: 1.15; letter-spacing: -.04em; }
+.shell-screen-map input { box-sizing: border-box; width: 100%; padding: 9px 12px; border: 1px solid #d8d7d2; border-radius: 6px; background: #fff; color: inherit; font: inherit; }
+.shell-screen-map :focus-visible { outline: 2px solid #2869ab; outline-offset: 2px; }
+.shell-screen-map section { margin-top: 32px; }
+.shell-screen-map h2 { margin: 0; font-size: 19px; }
+.shell-screen-map ul { margin: 6px 0 0; padding: 0; list-style: none; }
+.shell-screen-map li { padding: 12px 0; border-bottom: 1px solid #e8e7e3; }
+.shell-screen-map li p { margin: 2px 0 0; color: #63625d; font-size: 14px; }
+.shell-screen-map li div { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 4px; }
+.shell-screen-map a { color: #295988; text-underline-offset: 3px; font-size: 14px; }

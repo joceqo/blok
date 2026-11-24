@@ -4,6 +4,7 @@ import { openModalDialog, type ModalDialogHandle } from '@blok/modal-dialog';
 import { PopoverDesktop } from '@blok/popover';
 import { CloudClient } from './cloud/client';
 import { nativeSessionAdapter } from './native-session';
+import { createNotificationTrigger } from './cloud/notification-trigger';
 import { mountWorkspaceMembers, openWorkspaceInvitation } from './cloud/workspace-settings';
 import { activeWorkspace, listWorkspaces, createLocalWorkspace, workspaceKey, rememberWorkspace } from './workspace-registry';
 import { dataDirectory } from './storage';
@@ -183,8 +184,7 @@ function actionButton(attribute: string, label: string, kind: MenuIcon): HTMLBut
   return button;
 }
 
-export function createDesktopFooter(onThemeChange: (mode: Appearance) => void): HTMLElement {
-  const currentWorkspace = activeWorkspace();
+export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, currentWorkspace = activeWorkspace()): HTMLElement {
   const native = '__TAURI_INTERNALS__' in window;
   const admin = currentWorkspace.kind === 'remote' && currentWorkspace.role === 'admin';
   const client = currentWorkspace.kind === 'remote' ? new CloudClient({origin: currentWorkspace.server, sessionAdapter: native ? nativeSessionAdapter(currentWorkspace.server) : undefined}) : null;
@@ -211,6 +211,12 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void): 
   switcher.setAttribute('aria-expanded', 'false');
   switcher.append(el('span', 'data-desktop-avatar', 'B'), el('span', 'data-desktop-switcher-name', 'Espace local'), chevron());
   footer.append(switcher);
+  if (client && currentWorkspace.kind === 'remote') {
+    const inbox = createNotificationTrigger({client, slug: currentWorkspace.workspaceId,
+      onManageRequests: admin ? () => openSettings('members', 'requests') : undefined,
+    });
+    footer.append(inbox.element);
+  }
 
   const menu = el('div', 'data-desktop-footer-menu');
   menu.setAttribute('role', 'menu');
@@ -539,7 +545,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void): 
   const closeSettings = (): void => { ui.modal?.close(); };
   close.addEventListener('click', closeSettings);
 
-  const showPanel = (panel: SettingsPanel): void => {
+  const showPanel = (panel: SettingsPanel, initialTab?: 'requests'): void => {
     for (const [name, tab] of panelTabs) {
       tab.setAttribute('aria-current', panel === name ? 'page' : 'false');
     }
@@ -586,7 +592,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void): 
     if (panel === 'members' && admin && client && currentWorkspace.kind === 'remote') {
       content.append(el('h1', 'data-desktop-settings-title', 'Membres'));
       main.append(content);
-      ui.members = mountWorkspaceMembers(content, {client, slug: currentWorkspace.workspaceId, onInvite: () => openInvitation(dialog)});
+      ui.members = mountWorkspaceMembers(content, {client, slug: currentWorkspace.workspaceId, initialTab, onInvite: () => openInvitation(dialog)});
       return;
     }
     if (panel === 'account' && currentWorkspace.kind === 'remote') {
@@ -688,10 +694,10 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void): 
   emojiTab.addEventListener('click', () => showPanel('emojis'));
   connectionsTab.addEventListener('click', () => showPanel('connections'));
   membersTab.addEventListener('click', () => { if (admin) showPanel('members'); });
-  const openSettings = (panel: SettingsPanel): void => {
+  const openSettings = (panel: SettingsPanel, initialTab?: 'requests'): void => {
     closeMenu();
     search.value = ''; filterNav();
-    showPanel(panel);
+    showPanel(panel, initialTab);
     switcher.focus();
     overlay.hidden = false;
     ui.modal = openModalDialog({

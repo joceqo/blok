@@ -5,6 +5,7 @@ import {styleTextField} from '../ui/controls';
 import {CloudApiError, CloudClient, type CloudInstance, type CloudSession, type CloudSessionAdapter, type CloudWorkspace, type CloudWorkspaceStatus} from './client';
 import {mountCreateWorkspace} from './create-workspace';
 import {mountInviteScreen, type InviteContext} from './invite';
+import {createNotificationTrigger} from './notification-trigger';
 import {mountJoinWorkspace} from './join';
 import {mountSetupAssistant} from './setup';
 import {mountUnreachable, parseServerOrigin} from './unreachable';
@@ -26,6 +27,7 @@ export type CloudGatewayRoute =
   | 'join';
 
 export interface CloudGatewayOptions {
+  client?: CloudClient;
   apiOrigin?: string;
   sessionAdapter?: CloudSessionAdapter;
   allowLocal?: boolean;
@@ -77,7 +79,7 @@ function readInviteFromLocation(): InviteContext | null {
 }
 
 export async function mountCloudGateway(root: HTMLElement, options: CloudGatewayOptions): Promise<CloudGateway> {
-  const client = new CloudClient({origin:options.apiOrigin, sessionAdapter:options.sessionAdapter});
+  const client = options.client ?? new CloudClient({origin:options.apiOrigin, sessionAdapter:options.sessionAdapter});
   const view = node('div', undefined, 'data-cloud-gateway'); view.setAttribute('data-blok-interface','');
   root.replaceChildren(view);
   const state: {
@@ -103,7 +105,13 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     view.setAttribute('data-cloud-route', next);
   }
 
+  let selectedJoinSlug: string | undefined;
+  let applicantInbox: ReturnType<typeof createNotificationTrigger> | undefined;
+
   function frame(next: CloudGatewayRoute): HTMLElement {
+    applicantInbox?.destroy();
+    applicantInbox = undefined;
+    selectedJoinSlug = undefined;
     setRoute(next);
     view.replaceChildren();
     const header = node('header');
@@ -248,7 +256,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       frame: () => frame('join'),
       run,
       showError: error,
-      onJoined: () => list(),
+      onRequested: (slug) => list(slug),
       onCancel: () => { void run(list); },
     });
   }
@@ -345,10 +353,9 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     details.append(serverForm); main.append(details);
   }
 
-  async function list(): Promise<void> {
+  async function list(requestedSlug = state.instance?.defaultWorkspace?.slug): Promise<void> {
     const active = await client.session();
-    const defaultWorkspace = state.instance?.defaultWorkspace;
-    const status = defaultWorkspace ? await client.workspace(defaultWorkspace.slug) : null;
+    const status = requestedSlug ? await client.workspace(requestedSlug) : null;
     if (!state.alive) return;
     state.session = active; client.currentSession = active;
     const main = frame('spaces');
@@ -372,7 +379,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
   function joinSection(main: HTMLElement, workspace: CloudWorkspaceStatus): void {
     const section = node('section', undefined, 'data-cloud-section'); section.append(node('h2', workspace.name));
     if (workspace.joinStatus === 'pending') {
-      const status = node('div', undefined, 'data-cloud-status'); status.setAttribute('role', 'status'); status.append(node('strong', 'Votre demande est en attente'), node('p', 'Un administrateur doit valider votre accès. Vous pourrez ensuite ouvrir cet espace.')); section.append(status, button('Actualiser le statut', () => run(list)));
+      const status = node('div', undefined, 'data-cloud-status'); status.setAttribute('role', 'status'); status.append(node('strong', 'Votre demande est en attente'), node('p', 'Un administrateur doit valider votre accès. Vous pourrez ensuite ouvrir cet espace.')); section.append(status, button('Actualiser le statut', () => run(() => list(workspace.slug))));
     } else if (workspace.joinStatus === 'rejected') {
       const status = node('div', undefined, 'data-cloud-status'); status.append(node('strong', 'Votre demande n’a pas été acceptée'), node('p', 'Contactez un administrateur de cet espace pour en savoir plus.')); section.append(status);
     } else {
@@ -381,6 +388,11 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
         state.pendingInvite = null;
         routers.join();
       }, true));
+    }
+    if (workspace.joinStatus === 'pending' || workspace.joinStatus === 'rejected') {
+      selectedJoinSlug = workspace.slug;
+      applicantInbox = createNotificationTrigger({ client, slug: workspace.slug });
+      section.append(applicantInbox.element);
     }
     main.append(section);
   }
@@ -445,7 +457,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
 
   await boot();
   return {
-    destroy() { state.alive = false; view.remove(); },
+    destroy() { state.alive = false; applicantInbox?.destroy(); view.remove(); },
     async refresh() {
       if (!state.alive) return;
       await run(async () => {
@@ -453,7 +465,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
           state.instance = await client.instance();
           if (state.instance.setupRequired) return;
         }
-        if (state.session) await list();
+        if (state.session) await list(selectedJoinSlug);
         else login();
       });
     },

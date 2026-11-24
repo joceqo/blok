@@ -39,6 +39,28 @@ describe('cloud gateway', () => {
     await mountCloudGateway(document.body, {onOpenWorkspace:open});
     expect(document.body.textContent).toContain('Votre demande n’a pas été acceptée'); expect(open).not.toHaveBeenCalled();
   });
+  it('lets an applicant read a decision for the workspace they looked up', async () => {
+    stubFetch(async url => {
+      if (url.endsWith('/api/session')) return response({user,workspaces:[]});
+      if (url.endsWith('/api/workspaces/second/notifications')) return response({notifications:[
+        {id:'decision', type:'join_rejected', actorName:'Admin', readAt:null, createdAt:'2026-11-01T12:00:00Z'},
+      ], unreadCount:1});
+      if (url.endsWith('/api/workspaces/second')) return response({...workspace,slug:'second',name:'Second',role:null,joinStatus:'rejected'});
+      return response({...workspace,role:null,joinStatus:null});
+    });
+    const gateway = await mountCloudGateway(document.body, {onOpenWorkspace:vi.fn()});
+    try {
+      click('Rejoindre un espace');
+      const slug = must(document.querySelector<HTMLInputElement>('#cloud-join-slug'));
+      slug.value = 'second';
+      must(slug.form).requestSubmit();
+      await vi.waitFor(() => expect(document.querySelector('h2')?.textContent).toBe('Second'));
+      await gateway.refresh();
+      expect(document.querySelector('h2')?.textContent).toBe('Second');
+      must(document.querySelector<HTMLButtonElement>('[data-inbox-trigger]')).click();
+      await vi.waitFor(() => expect(document.querySelector('[data-inbox-dialog]')?.textContent).toContain('Votre demande d’accès a été refusée.'));
+    } finally { gateway.destroy(); }
+  });
   it('shows the dedicated unreachable screen when the instance fetch fails', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('offline')));
     await mountCloudGateway(document.body,{onOpenWorkspace:vi.fn()});

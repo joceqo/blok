@@ -33,6 +33,7 @@ describe('desktop sidebar footer', () => {
     const onThemeChange = vi.fn();
     const footer = createDesktopFooter(onThemeChange);
     root.append(footer);
+    expect(footer.querySelector('[data-inbox-trigger]')).toBeNull();
 
     const switcher = footer.querySelector('[data-desktop-switcher]') as HTMLButtonElement;
     switcher.click();
@@ -87,6 +88,21 @@ function remoteFooter(role: 'admin'|'member'|'viewer' = 'admin'): HTMLElement {
   return footer;
 }
 describe('workspace menu hierarchy',()=>{
+  it('opens member settings on the access requests tab from an admin notification', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async resource => {
+      const data = String(resource).endsWith('/notifications')
+        ? {notifications:[{id:'1', type:'join_requested', actorName:'Alex', createdAt:'2026-11-01T12:00:00Z', readAt:null}], unreadCount:1}
+        : {user:{id:'user',email:'admin@example.test'},workspaces:[]};
+      return new Response(JSON.stringify(data));
+    });
+    try {
+      const footer = remoteFooter();
+      must(footer.querySelector<HTMLButtonElement>('[data-inbox-trigger]')).click();
+      await vi.waitFor(() => expect(document.querySelector('[data-inbox-dialog]')?.textContent).toContain('Alex'));
+      must([...document.querySelectorAll<HTMLButtonElement>('[data-inbox-dialog] button')].find(b => b.textContent === 'Voir les demandes')).click();
+      expect(childUi.mount).toHaveBeenCalledWith(expect.any(HTMLElement),expect.objectContaining({slug:'acme',initialTab:'requests'}));
+    } finally { fetch.mockRestore(); }
+  });
   it('shows three primary admin actions and account-grouped workspaces without browser local data controls',()=>{
     const footer=remoteFooter();const menu=must(footer.querySelector('[data-desktop-footer-menu]'));
     const primary=[...menu.children].filter((node)=>node.getAttribute('role')==='menuitem');

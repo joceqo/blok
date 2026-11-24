@@ -8,6 +8,7 @@ import { createHostedAi } from './hosted-ai.ts';
 import { createHostedMcp } from './hosted-mcp.ts';
 import { createShellAssets } from './assets.ts';
 import { instanceAdmin } from './instance-admin.ts';
+import { workspaceNotifications } from './notifications.ts';
 import { workspaceDirectory } from './workspace-directory.ts';
 import { pagePurgeRoutes, roomPurger } from './page-purge.ts';
 import { roomTickets } from './room-tickets.ts';
@@ -69,6 +70,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   app.route('/api/mcp/tokens', createMcpTokens(pool));
   app.route('/api/auth', createRequestCode(pool, secret, createLoginMail(), process.env.TRUSTED_PROXY_CIDRS ?? ''));
   app.route('/api/auth', createShellAuth(pool, secret, () => recheckLiveSessions(secret)));
+  app.route('/api/workspaces/:slug/notifications', workspaceNotifications(pool));
   app.route('/api/workspaces/:slug/search', createWorkspaceSearch(pool));
   app.route('/api/workspaces/:slug/teamspaces', createShellTeamspaces(pool));
 

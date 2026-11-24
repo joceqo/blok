@@ -9,7 +9,7 @@ export interface JoinWorkspaceOptions {
   frame(): HTMLElement;
   run(action: () => Promise<void>): Promise<void>;
   showError(reason: unknown): void;
-  onJoined(): void | Promise<void>;
+  onRequested(slug: string): void | Promise<void>;
   onCancel(): void;
 }
 
@@ -73,27 +73,15 @@ export function mountJoinWorkspace(options: JoinWorkspaceOptions): void {
         statusBox.hidden = false;
         return;
       }
-      if (workspace.joinStatus === 'pending') {
-        statusBox.replaceChildren(
-          el('strong', { text: 'Votre demande est en attente' }),
-          el('p', { text: 'Un administrateur doit valider votre accès.' }),
-        );
-        statusBox.hidden = false;
-        return;
-      }
-      if (workspace.joinStatus === 'rejected') {
-        statusBox.replaceChildren(
-          el('strong', { text: 'Votre demande n’a pas été acceptée' }),
-          el('p', { text: 'Contactez un administrateur de cet espace pour en savoir plus.' }),
-        );
-        statusBox.hidden = false;
+      if (workspace.joinStatus === 'pending' || workspace.joinStatus === 'rejected') {
+        await options.onRequested(value);
         return;
       }
       await options.client.request(`/api/workspaces/${encodeURIComponent(value)}/join-requests`, {
         method: 'POST',
         body: JSON.stringify({ message: message.value.trim() }),
       });
-      await options.onJoined();
+      await options.onRequested(value);
     });
   });
 
