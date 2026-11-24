@@ -1,27 +1,13 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { assetKey, isAssetKey, mediaOrigin, removeAssetFile } from './asset-storage.ts';
+export { assetKey } from './asset-storage.ts';
 import { Hono, type Context } from 'hono';
 import type { PgPool } from '../db/pool.ts';
 import { verifyBlokTicket } from '../tickets/hmac.ts';
 import { roomPass } from '../tickets/room-pass.ts';
 import { documentAccess } from './room-tickets.ts';
 import { sessionDigest } from './session.ts';
-import { createWorkspaceMedia, uploadDirectory } from './workspace-media.ts';
-
-const generatedKey = /^[0-9a-f]{32}(?:\.[a-z0-9]{1,15})?$/;
-
-export function assetKey(raw: string, publicURL: string) {
-  try {
-    const base = new URL(publicURL);
-    const url = new URL(raw, base);
-    const name = url.pathname.slice('/files/'.length);
-    if (url.origin === base.origin && url.pathname.startsWith('/files/') && generatedKey.test(name))
-      return name;
-  } catch {
-    /* malformed URL */
-  }
-}
+import { createWorkspaceMedia } from './workspace-media.ts';
 
 function grant(secret: string, session: string, name: string, expires: string) {
   return createHmac('sha256', secret)
@@ -95,11 +81,11 @@ function privateResponse(response: Response) {
   return new Response(response.body, { status: response.status, headers });
 }
 
-export function createShellAssets(pool: PgPool, secret: string, mediaHost = 'http://127.0.0.1:18103') {
+export function createShellAssets(pool: PgPool, secret: string, mediaHost = mediaOrigin) {
   const app = new Hono();
   const publicURL = process.env.PUBLIC_URL || 'http://localhost:8080';
   const ticketSecret = process.env.TICKET_SECRET ?? '';
-  app.route('/', createWorkspaceMedia(pool));
+  app.route('/', createWorkspaceMedia(pool, mediaHost));
   app.get('/api/assets/url', async (c) => {
     const session = sessionDigest(c);
     if (
@@ -132,7 +118,7 @@ export function createShellAssets(pool: PgPool, secret: string, mediaHost = 'htt
     if (c.req.method !== 'GET' && c.req.method !== 'HEAD')
       return c.json({ error: 'Method not allowed' }, 405);
     const name = c.req.param('name');
-    if (!generatedKey.test(name)) return c.json({ error: 'Asset not found' }, 404);
+    if (!isAssetKey(name)) return c.json({ error: 'Asset not found' }, 404);
     let session = sessionDigest(c);
     if (
       !session ||
@@ -185,7 +171,7 @@ export function createShellAssets(pool: PgPool, secret: string, mediaHost = 'htt
       const current = await documentAccess(client, claims.user, doc);
       if (!current.write || current.workspace !== access.workspace) {
         await client.query('ROLLBACK');
-        await rm(join(uploadDirectory(), name), { force: true });
+        await removeAssetFile(name, mediaHost);
         return c.json({ error: 'Document access refused' }, 403);
       }
       await client.query('INSERT INTO assets(name,workspace_id,document_id) VALUES($1,$2,$3)', [
@@ -197,7 +183,7 @@ export function createShellAssets(pool: PgPool, secret: string, mediaHost = 'htt
     } catch (error) {
       await client.query('ROLLBACK');
       if (!(await client.query('SELECT 1 FROM assets WHERE name=$1', [name])).rowCount)
-        await rm(join(uploadDirectory(), name), { force: true });
+        await removeAssetFile(name, mediaHost);
       throw error;
     } finally {
       client.release();

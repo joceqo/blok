@@ -6,7 +6,7 @@ import { CloudClient } from './cloud/client';
 import { nativeSessionAdapter } from './native-session';
 import { createNotificationTrigger } from './cloud/notification-trigger';
 import { mountWorkspaceMembers, openWorkspaceInvitation } from './cloud/workspace-settings';
-import { activeWorkspace, listWorkspaces, createLocalWorkspace, workspaceKey, rememberWorkspace } from './workspace-registry';
+import { activeWorkspace, listWorkspaces, createLocalWorkspace, workspaceKey, rememberWorkspace, LOCAL_SERVER_ORIGIN } from './workspace-registry';
 import { dataDirectory } from './storage';
 import corePackage from '../../package.json';
 import appPackage from '../package.json';
@@ -319,7 +319,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     popup.show();
   };
   help.addEventListener('click', () => { openHelp(); });
-  const emitCloud = (section: 'settings' | 'invites' | 'account'): void => {
+  const emitCloud = (section: 'settings' | 'invites' | 'account' | 'local-server'): void => {
     closeMenu();
     footer.dispatchEvent(new CustomEvent('blok:desktop-connect-cloud', {bubbles: true, detail: {section}}));
   };
@@ -579,6 +579,15 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
       const manage = actionButton('data-desktop-settings-copy', client ? 'Gérer les comptes' : 'Se connecter', 'profile');
       manage.addEventListener('click', () => { closeSettings(); emitCloud('account'); });
       accounts.append(labels, manage); content.append(accounts);
+      if (native && (currentWorkspace.kind === 'local' || currentWorkspace.server !== LOCAL_SERVER_ORIGIN)) {
+        const server = el('section', 'data-desktop-connections-accounts');
+        const info = el('div', 'data-desktop-settings-row-labels');
+        info.append(el('strong', 'data-desktop-settings-row-title', 'Serveur sur cet ordinateur'),
+          el('span', 'data-desktop-settings-row-help', LOCAL_SERVER_ORIGIN + ' · Docker'));
+        const open = actionButton('data-desktop-settings-copy', 'Ouvrir le serveur local', 'connections');
+        open.addEventListener('click', () => { closeSettings(); emitCloud('local-server'); });
+        server.append(info, open); content.append(server);
+      }
       main.append(content);
       if (client) mountMcpSettings(content, client, {embedded: true});
       return;

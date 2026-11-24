@@ -1,6 +1,6 @@
 import { queryFirst } from '../dotnet/query.ts';
 import { keyFromPublicUrl } from '../blob/key.ts';
-import type { LocalStore } from '../blob/local.ts';
+import type { ReadableBlobStore } from '../blob/store.ts';
 import {
   OutboundFailure,
   encoded,
@@ -120,17 +120,21 @@ function writePdfHead(
 }
 
 async function serveStoredPdf(
-  store: LocalStore,
+  store: ReadableBlobStore,
   options: HostAppOptions,
   key: string,
   byteRange: ByteRange | undefined,
   request: Request,
   response: ResponseWriter,
 ): Promise<void> {
-  let info: Awaited<ReturnType<LocalStore['fileStat']>>;
+  let info: Awaited<ReturnType<ReadableBlobStore['fileStat']>>;
   try {
     info = await store.fileStat(key);
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      await writePlain(request, response, 502, 'storage unavailable\n');
+      return;
+    }
     await writePlain(request, response, 404, 'not found\n');
     return;
   }
@@ -288,7 +292,7 @@ async function serveRemotePdf(
 
 export async function fileBytesHandler(
   options: HostAppOptions,
-  store: LocalStore | undefined,
+  store: ReadableBlobStore | undefined,
   request: Request,
   response: ResponseWriter,
 ): Promise<void> {
@@ -299,7 +303,7 @@ export async function fileBytesHandler(
     return;
   }
   const byteRange = requestedRange(request);
-  if (store !== undefined && options.storageDirectory !== '') {
+  if (store !== undefined) {
     const key = keyFromPublicUrl(options.publicUrl, target);
     if (key !== undefined) {
       await serveStoredPdf(store, options, key, byteRange, request, response);

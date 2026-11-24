@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mediaOrigin, writeImage, removeAssetFile } from './asset-storage.ts';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { PoolClient } from 'pg';
@@ -11,7 +10,7 @@ import { readWorkspaceScope, WorkspaceError } from './workspace-scope.ts';
 const imageLimit = 5 << 20;
 const emojiLimit = 2 << 20;
 
-function imageExtension(bytes: Buffer) {
+function imageExtension(bytes: Buffer): [string, string] | undefined {
   if (bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) return ['png', 'png'];
   if (bytes.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex'))) return ['jpeg', 'jpg'];
   const signature = bytes.toString('latin1', 0, 6);
@@ -39,24 +38,19 @@ export function decodeWorkspaceImage(raw: string, limit = imageLimit) {
   return { bytes, extension: kind[1] };
 }
 
-export const uploadDirectory = () => join(process.env.DATA_DIRECTORY ?? './data', 'uploads');
-
 export async function storeWorkspaceImage(
   db: Pick<PoolClient, 'query'>,
   workspaceId: string,
   dataURL: string,
   limit = imageLimit,
+  host = mediaOrigin,
 ) {
   const { bytes, extension } = decodeWorkspaceImage(dataURL, limit);
-  const name = randomBytes(16).toString('hex') + '.' + extension;
-  const directory = uploadDirectory();
-  const path = join(directory, name);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await writeFile(path, bytes, { flag: 'wx', mode: 0o600 });
+  const name = await writeImage(bytes, extension, host);
   try {
     await db.query('INSERT INTO assets(name,workspace_id) VALUES($1,$2)', [name, workspaceId]);
   } catch (error) {
-    await rm(path, { force: true });
+    await removeAssetFile(name, host);
     throw error;
   }
   return '/files/' + name;
@@ -73,7 +67,7 @@ function isRemoteImage(value: string) {
   }
 }
 
-export function createWorkspaceMedia(pool: PgPool) {
+export function createWorkspaceMedia(pool: PgPool, host = mediaOrigin) {
   const app = new Hono();
   app.onError((error, c) => {
     if (error instanceof WorkspaceError) return c.json({ error: error.message }, error.status);
@@ -121,7 +115,7 @@ export function createWorkspaceMedia(pool: PgPool) {
         if (!body || typeof body !== 'object' || Array.isArray(body))
           throw new WorkspaceError(400, 'Invalid JSON');
         if (!emoji) {
-          ownedFile = await storeWorkspaceImage(client, ws, body.dataUrl);
+          ownedFile = await storeWorkspaceImage(client, ws, body.dataUrl, imageLimit, host);
           await client.query('COMMIT');
           return c.json({ url: ownedFile }, 201);
         }
@@ -137,7 +131,7 @@ export function createWorkspaceMedia(pool: PgPool) {
         if (typeof url !== 'string' || typeof dataUrl !== 'string' || !!url === !!dataUrl)
           throw new WorkspaceError(400, 'Provide one image upload or HTTPS URL');
         if (url && !isRemoteImage(url)) throw new WorkspaceError(400, 'Image URL must use HTTPS');
-        if (dataUrl) ownedFile = await storeWorkspaceImage(client, ws, dataUrl, emojiLimit);
+        if (dataUrl) ownedFile = await storeWorkspaceImage(client, ws, dataUrl, emojiLimit, host);
         const result = await client.query(
           `INSERT INTO workspace_emojis(id,workspace_id,name,url,created_by)
         VALUES($1,$2,$3,$4,$5) RETURNING id,name,url,created_by AS "createdBy",created_at AS "createdAt"`,
@@ -151,7 +145,7 @@ export function createWorkspaceMedia(pool: PgPool) {
           // COMMIT may have reached PostgreSQL even if its acknowledgement was lost.
           const name = ownedFile.slice('/files/'.length);
           if (!(await client.query('SELECT 1 FROM assets WHERE name=$1', [name])).rowCount)
-            await rm(join(uploadDirectory(), name), { force: true });
+            await removeAssetFile(name, host);
         }
         if ((error as { code?: string }).code === '23505')
           throw new WorkspaceError(409, 'An emoji with this name already exists');

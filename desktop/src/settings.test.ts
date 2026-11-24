@@ -57,6 +57,19 @@ describe('desktop sidebar footer', () => {
     expect(dialog.parentElement?.hasAttribute('hidden')).toBe(true);
   });
 
+  it('opens the Docker server through native connections without changing the standalone workspace', () => {
+    Reflect.set(window, '__TAURI_INTERNALS__', {invoke: vi.fn().mockResolvedValue('/tmp/workspace')});
+    const footer = createDesktopFooter(vi.fn());
+    document.body.append(footer);
+    const change = vi.fn();
+    footer.addEventListener('blok:desktop-connect-cloud', change);
+    must(footer.querySelector<HTMLButtonElement>('[data-desktop-switcher]')).click();
+    must([...footer.querySelectorAll<HTMLButtonElement>('[role=menuitem]')].find(el => el.textContent === 'Paramètres')).click();
+    must([...document.querySelectorAll<HTMLButtonElement>('[data-desktop-settings-nav-item]')].find(el => el.textContent === 'Connexions')).click();
+    must([...document.querySelectorAll<HTMLButtonElement>('button')].find(el => el.textContent === 'Ouvrir le serveur local')).click();
+    expect(change).toHaveBeenCalledWith(expect.objectContaining({detail:{section:'local-server'}}));
+  });
+
   it('shows a local profile and AI provider settings', async () => {
     const root = document.createElement('div');
     root.setAttribute('data-desktop-shell', '');

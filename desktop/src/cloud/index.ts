@@ -193,6 +193,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       onRetry: () => boot(),
       onServerChange: options.onServerChange,
     });
+    appendLocalOpen(state.currentMain, 'Ouvrir un espace local');
   }
 
   function invite(): void {

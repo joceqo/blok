@@ -1,4 +1,5 @@
 import { createHmac, createHash } from 'node:crypto';
+import { Readable } from 'node:stream';
 import http from 'node:http';
 import https from 'node:https';
 import { resolveEnvironmentProxy } from './environment-proxy.ts';
@@ -6,7 +7,8 @@ import { requestThroughProxy } from './s3-proxy-request.ts';
 import { absoluteUri } from '../dotnet/absolute-uri.ts';
 import { sanitizeWire } from '../mediatype/index.ts';
 import { ErrForeign, keyFromPublicUrl, newKey, normalizeExtension } from './key.ts';
-import type { BlobStore } from './store.ts';
+import type { BlobStore, ReadableBlobStore } from './store.ts';
+import { LocalStore } from './local.ts';
 
 const EMPTY_HASH = createHash('sha256').update('').digest('hex');
 const ERROR_BODY_LIMIT = 512;
@@ -249,5 +251,73 @@ export class S3Store implements BlobStore {
     }
     const detail = response.body.subarray(0, ERROR_BODY_LIMIT).toString('utf8').trim();
     throw new Error(`blobstore: s3 ${method} returned ${response.status}: ${detail}`);
+  }
+}
+
+// The hosted service exposes only its authorized /files URL. Old workspaces
+// may have files on disk, with the exact same URL format as new S3 objects.
+export class PrivateS3Store extends S3Store implements ReadableBlobStore {
+  constructor(options: S3StoreOptions, private readonly legacy?: LocalStore) {
+    super(options);
+  }
+
+  private async legacyFile(key: string) {
+    try {
+      return await this.legacy?.fileStat(key);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+
+  private async read(method: 'HEAD' | 'GET', key: string, range?: {start:number; end:number}) {
+    const target = resolveTarget(this.options, key);
+    const headers = sign(method, target.path, target.host, this.options.region,
+      this.options.accessKey, this.options.secretKey, '', EMPTY_HASH, new Date());
+    if (range) headers.Range = `bytes=${range.start}-${range.end}`;
+    const response = await fetch(target.url, {method, headers, redirect:'error', signal:AbortSignal.timeout(60_000)});
+    if (response.status !== (range ? 206 : 200)) {
+      await response.body?.cancel();
+      throw Object.assign(new Error('Private object read failed'), { code: response.status === 404 ? 'ENOENT' : 'EIO' });
+    }
+    return response;
+  }
+
+  async checkBucket(): Promise<void> {
+    await this.read('HEAD', '');
+  }
+
+  async fileStat(key: string) {
+    const disk = await this.legacyFile(key);
+    if (disk) return disk;
+    const response = await this.read('HEAD', key);
+    const size = Number(response.headers.get('content-length'));
+    const mtimeMs = Date.parse(response.headers.get('last-modified') ?? '');
+    if (!response.headers.has('content-length') || !Number.isSafeInteger(size) || size < 0 || !Number.isFinite(mtimeMs))
+      throw new Error('Invalid private object metadata');
+    return { size, mtimeMs, isDirectory: () => false };
+  }
+
+  openReadStream(key: string, range?: {start:number; end:number}): Readable {
+    return Readable.from(this.bytes(key, range));
+  }
+
+  private async *bytes(key: string, range?: {start:number; end:number}) {
+    if (this.legacy && await this.legacyFile(key)) {
+      yield* this.legacy.openReadStream(key, range);
+      return;
+    }
+    const response = await this.read('GET', key, range);
+    if (!response.body) throw new Error('Missing private object body');
+    for await (const bytes of response.body) yield Buffer.from(bytes);
+  }
+
+  override async deleteByUrl(url: string): Promise<void> {
+    const key = keyFromPublicUrl(this.options.publicUrl, url);
+    if (key === undefined) throw ErrForeign;
+    if (this.legacy && await this.legacyFile(key)) {
+      await this.legacy.deleteByUrl(url);
+      return;
+    }
+    await super.deleteByUrl(url);
   }
 }

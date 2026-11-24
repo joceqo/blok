@@ -156,12 +156,13 @@ function buildHead(input: InvokeHostRequest): Head {
     const body = typeof input.body === 'string' ? new TextEncoder().encode(input.body) : input.body;
     headers.set('Content-Length', String(body.length));
   }
+  const queryStart = input.path.indexOf('?');
   return {
     method: input.method,
     target: input.path,
     form: TargetForm.Origin,
-    path: input.path,
-    query: '',
+    path: queryStart < 0 ? input.path : input.path.slice(0, queryStart),
+    query: queryStart < 0 ? '' : input.path.slice(queryStart),
     version: Version.Http11,
     headers,
     headerBytes: 0,
