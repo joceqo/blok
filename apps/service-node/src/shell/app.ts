@@ -2,6 +2,8 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 
+import { registerIndexWrite } from './index-write.js';
+import { createAccessRecheck } from './recheck-access.js';
 import type { PgPool } from '../db/pool.js';
 import { readProjectionHeaders, saveProjection } from './projection.js';
 import { loadWorkspaceIndex } from './workspace-index.js';
@@ -9,7 +11,7 @@ import { loadSession, loadVisiblePage, sessionDigest } from './session.js';
 
 const digest = (input: string) => createHash('sha256').update(input).digest();
 
-export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>) {
+export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>, recheckAccess = createAccessRecheck(secret)) {
   if (secret.length < 32) throw new Error('INTERNAL_SECRET must have at least 32 characters');
   const expected = digest('Bearer ' + secret);
   const app = new Hono();
@@ -51,6 +53,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     if (!session) return c.json({ error: 'Sign in required' }, 401);
     return c.json(c.req.path === '/api/session' ? session : { workspaces: session.workspaces });
   });
+  registerIndexWrite(app, pool, recheckAccess);
   app.get('/api/workspaces/:slug/index', async (c) => {
     const key = sessionDigest(c);
     if (!key) return c.json({ error: 'Sign in required' }, 401);
