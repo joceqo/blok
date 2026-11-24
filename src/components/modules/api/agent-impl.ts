@@ -49,6 +49,7 @@ export interface AgentHost {
 
 /** One assistant prompt, checked and placed by the facade when ask() was called. */
 export interface AskInput {
+  scope?: AbortSignal;
   prompt: string;
   options: AgentAskOptions;
   place: UserPlace;
@@ -152,6 +153,7 @@ export class AgentCore extends Module {
   }
 
   public ask(input: AskInput): AgentRun {
+    input.scope?.throwIfAborted();
     const { prompt, options, place, base, picked = () => undefined, hooks = {}, internal } = input;
     const assistant = this.config.agent?.assistant;
 
@@ -171,6 +173,7 @@ export class AgentCore extends Module {
 
     return createAgentRun(composeFirstMessage(prompt, place.text, turn.read, place.blockIds), {
       turn,
+      scope: input.scope,
       model: assistant.model,
       maxSteps: assistant.maxSteps ?? DEFAULT_MAX_STEPS,
       thinking,
