@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PgPool } from '../db/pool.js';
 import { createShellApp } from './app.js';
-import { shellMemberId } from './teamspaces.js';
+import { parseUserId } from '../models/User.js';
 
 describe('shell teamspace directory', () => {
   it('accepts canonical opaque IDs and earlier UUIDs', () => {
     for (const id of ['AZ_u-7', 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11']) {
-      expect(shellMemberId(' ' + id + ' ')).toBe(id);
+      expect(parseUserId(' ' + id + ' ')).toBe(id);
     }
-    for (const input of ['', ' ', 'a/b', null, {}, 12]) expect(shellMemberId(input)).toBeUndefined();
+    for (const input of ['', ' ', 'a/b', null, {}, 12]) expect(parseUserId(input)).toBeUndefined();
   });
 
   it('requires a session and supports the native POST and PATCH preflight', async () => {
