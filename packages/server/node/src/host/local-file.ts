@@ -1,11 +1,12 @@
-import { createReadStream, type ReadStream } from 'node:fs';
+import type { Readable } from 'node:stream';
 import { randomBytes } from 'node:crypto';
 
 import { eqIgnoreAsciiCase, isFieldValue } from '../http/headers.ts';
 import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { isGenerated } from '../blob/key.ts';
-import { contentTypeFor, type LocalStore } from '../blob/local.ts';
+import { contentTypeFor } from '../blob/local.ts';
+import type { ReadableBlobStore } from '../blob/store.ts';
 import type { HostAppOptions } from './options.ts';
 import { writePlain } from '../route/respond.ts';
 
@@ -165,7 +166,7 @@ function ifRangeMatches(request: Request, modifiedMs: number): boolean {
 
 export async function localFileHandler(
   options: HostAppOptions,
-  store: LocalStore,
+  store: ReadableBlobStore,
   request: Request,
   response: ResponseWriter,
   fileName: string,
@@ -181,7 +182,7 @@ export async function localFileHandler(
 
 async function serveLocalFile(
   options: HostAppOptions,
-  store: LocalStore,
+  store: ReadableBlobStore,
   request: Request,
   response: ResponseWriter,
   fileName: string,
@@ -198,10 +199,11 @@ async function serveLocalFile(
     await writePlain(request, response, 404, '404 page not found\n');
     return;
   }
-  let info: Awaited<ReturnType<LocalStore['fileStat']>>;
+  let info: Awaited<ReturnType<ReadableBlobStore['fileStat']>>;
   try {
     info = await store.fileStat(fileName);
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     await writePlain(request, response, 404, '404 page not found\n');
     return;
   }
@@ -319,7 +321,7 @@ async function serveLocalFile(
 async function pipelineStream(
   request: Request,
   response: ResponseWriter,
-  stream: ReadStream,
+  stream: Readable,
 ): Promise<void> {
   try {
     for await (const chunk of stream) {

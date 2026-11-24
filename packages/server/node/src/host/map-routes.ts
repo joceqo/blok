@@ -8,8 +8,9 @@ import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { inGroup, Router, type RouteHandler } from '../route/router.ts';
 import { methodNotAllowed, notFound, writePlain } from '../route/respond.ts';
+import { PrivateS3Store } from '../blob/s3.ts';
 import { LocalStore } from '../blob/local.ts';
-import type { BlobStore } from '../blob/store.ts';
+import { readableStore, type BlobStore } from '../blob/store.ts';
 import { deleteHandler } from './delete.ts';
 import { fileBytesHandler } from './file-bytes.ts';
 import { guardRequest } from './guard.ts';
@@ -107,6 +108,10 @@ function shell(router: Router, pattern: string, method: string, handler: RouteHa
 
 async function healthHandler(options: HostAppOptions, request: Request, response: ResponseWriter): Promise<void> {
   const method = request.method();
+  if (options.blobStore instanceof PrivateS3Store) {
+    try { await options.blobStore.checkBucket(); }
+    catch { await writePlain(request, response, 503, 'private storage unavailable\n'); return; }
+  }
   response.headersMut().set('Content-Type', 'application/json');
   if (method === 'head') {
     response.headersMut().set('Content-Length', '0');
@@ -169,11 +174,11 @@ export function buildRouter(options: HostAppOptions): Router {
       : undefined);
   const hasStorage = store !== undefined;
 
-  const hasLocalFiles = hasStorage && options.publicPath !== '';
-  if (hasLocalFiles && store) {
+  const reader = readableStore(store);
+  if (reader && options.publicPath !== '') {
     const pattern = options.publicPath === '/' ? '/{fileName}' : `${options.publicPath}/{fileName}`;
     router.handle(pattern, ['GET', 'HEAD'], (request, response, values) =>
-      localFileHandler(options, store, request, response, values.fileName ?? ''));
+      localFileHandler(options, reader, request, response, values.fileName ?? ''));
   }
 
   router.handle(`${patternPrefix}/health`, ['GET', 'HEAD'], (request, response) => healthHandler(options, request, response));
@@ -181,7 +186,7 @@ export function buildRouter(options: HostAppOptions): Router {
 
   if (options.fileBytesEnabled) {
     shell(router, `${patternPrefix}/file-bytes`, 'GET', (request, response) =>
-      fileBytesHandler(options, store, request, response), options);
+      fileBytesHandler(options, reader, request, response), options);
   }
 
   if (hasStorage && store) {
@@ -225,10 +230,9 @@ export function buildRouter(options: HostAppOptions): Router {
     shell(router, `${patternPrefix}/sync/{doc}/history/changes`, 'GET', unsupported, options);
   }
 
-  const groupNotFound: RouteHandler = (request, response) => notFound(request, response);
   router.fallback = async (request, response) => {
     if (inGroup(request, prefix)) {
-      await groupNotFound(request, response);
+      await notFound(request, response);
       return;
     }
     await notFound(request, response);

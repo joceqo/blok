@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { access, constants, stat } from 'node:fs/promises';
-import { join } from 'node:path';
 import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { getConnInfo } from '@hono/node-server/conninfo';
@@ -15,6 +14,7 @@ import { generateLoginCode, hashSecret } from '../auth/codes.ts';
 import { hashPassword, validPassword } from './password.ts';
 import { sessionDigest } from './session.ts';
 
+import { mediaOrigin, uploadDirectory } from './asset-storage.ts';
 import { readInstanceSettings, updateInstanceSettings } from './instance-settings.ts';
 
 const userFields = `u.id,u.email,u.name,u.created_at AS "createdAt",
@@ -110,10 +110,13 @@ export function instanceAdmin(pool: PgPool, secret: string, recheck: ()=>Promise
     return c.json({ok:true,backend});
   });
   router.get('/api/admin/health',async c=>{
-    const uploads=join(process.env.DATA_DIRECTORY??'./data','uploads');
-    const files=await stat(uploads).then(async info=>{await access(uploads,constants.W_OK); return info.isDirectory();}).catch(()=>false);
+    const s3 = !!process.env.BLOK_S3_BUCKET;
+    const uploads = uploadDirectory();
+    const files = s3
+      ? await fetch(mediaOrigin+'/health', {method:'HEAD', signal:AbortSignal.timeout(3000)}).then(r=>r.ok).catch(()=>false)
+      : await stat(uploads).then(async info=>{await access(uploads,constants.W_OK); return info.isDirectory();}).catch(()=>false);
     const backend=mailBackend();
-    return c.json({database:{ok:true,detail:'Joignable'},files:{ok:files,detail:files?'Volume accessible en écriture':'Volume indisponible'},mail:{ok:!!backend,backend,detail:backend?'Configuré':'Aucun backend configuré'}});
+    return c.json({database:{ok:true,detail:'Joignable'},files:{ok:files,detail:s3 ? (files?'Stockage S3 accessible':'Stockage S3 indisponible') : (files?'Volume accessible en écriture':'Volume indisponible')},mail:{ok:!!backend,backend,detail:backend?'Configuré':'Aucun backend configuré'}});
   });
   router.on('GET',['/api/admin/users','/api/admin/workspaces'],async c=>{
     const integer=(key:string,def:number,max:number)=>{const v=c.req.query(key); return v && /^\d+$/.test(v)?Math.min(Number(v),max):def;};

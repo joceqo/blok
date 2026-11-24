@@ -18,6 +18,7 @@ const groups: { title: string; screens: Screen[] }[] = [
     ] },
     { name: 'Choisir ou rejoindre un espace', path: 'Après connexion · liste des espaces, création, invitation et demande d’accès' },
     { name: 'Travailler hors ligne', path: 'Tauri · menu des espaces → espace local' },
+    { name: 'Serveur Docker local', path: 'Tauri → Paramètres → Connexions → Ouvrir le serveur local' },
     { name: 'Serveur injoignable', path: 'Connexion · réessayer ou changer de serveur' },
   ] },
   { title: 'Naviguer dans un espace', screens: [

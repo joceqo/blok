@@ -1,7 +1,7 @@
 import './editor.css';
 import '../../src/shell/sidebar.css';
 import './shell.css';
-import { activeWorkspace, initialWorkspace, rememberWorkspace, selectWorkspace, serverOrigin, type RemoteWorkspace } from './workspace-registry';
+import { activeWorkspace, initialWorkspace, LOCAL_SERVER_ORIGIN, rememberWorkspace, selectWorkspace, serverOrigin, type RemoteWorkspace } from './workspace-registry';
 import { nativeSessionAdapter } from './native-session';
 import { applyAppearance, readAppearance } from './settings';
 import { CloudClient, mountCloudGateway } from './cloud';
@@ -105,6 +105,7 @@ async function boot(root: HTMLElement): Promise<void> {
     void flushDesktop().then(() => {
       const url = new URL(location.href);
       url.searchParams.set('cloud', '1');
+      if (native && section === 'local-server') url.searchParams.set('server', LOCAL_SERVER_ORIGIN);
       url.searchParams.delete('page');
       url.searchParams.delete('manage');
       url.searchParams.delete('section');

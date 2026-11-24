@@ -4,6 +4,7 @@ export type RemoteWorkspace = { kind: 'remote'; id: string; name: string; server
 export type WorkspaceRef = LocalWorkspace | RemoteWorkspace;
 const KEY = 'blok:desktop:workspaces:v1';
 const ACTIVE = 'blok:desktop:active-workspace:v1';
+export const LOCAL_SERVER_ORIGIN = 'http://localhost:18150';
 export const initialWorkspace: LocalWorkspace = { kind: 'local', id: 'default', name: 'Espace local' };
 export function serverOrigin(value: string): string {
   const url = new URL(value);

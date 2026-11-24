@@ -3,6 +3,20 @@
 Ce déploiement sert le navigateur et les clients Tauri sur ton domaine HTTPS.
 nginx sert l’interface web et transmet les requêtes aux services TypeScript. PostgreSQL 17 conserve les données du shell. Le proxy du VPS termine HTTPS.
 
+## Serveur personnel sur cet ordinateur
+
+Depuis le dépôt Blok, démarre Docker puis lance `./deploy/local.sh install`. Cette première installation prépare les images. Ouvre ensuite [Blok local](http://localhost:18150), ou dans Tauri **Paramètres → Connexions → Ouvrir le serveur local**. Crée ton espace et ton mot de passe. Le navigateur et Tauri utilisent le même compte et voient les mêmes pages.
+
+| Commande | Effet |
+| --- | --- |
+| `./deploy/local.sh start` | Démarre les images déjà installées, y compris sans accès Internet |
+| `./deploy/local.sh stop` | Arrête les services et conserve les données |
+| `./deploy/local.sh status` | Affiche l’état des conteneurs |
+
+PostgreSQL conserve le catalogue et les droits, le service Node de collaboration conserve le journal des pages et SeaweedFS stocke les pièces jointes dans un bucket S3 privé. Ces volumes Docker sont propres au projet `blok-tauri-local`. Seule l’interface Blok écoute sur un port de la machine. Conserve les volumes et le fichier de secrets `~/.config/blok/blok-tauri-local/compose.env` (sous `XDG_CONFIG_HOME` si défini).
+
+L’espace autonome de Tauri conserve ses documents dans le répertoire de données de l’application. Le serveur Docker dispose de son propre espace. Les fonctions faisant appel à un fournisseur distant, comme certains modèles IA, nécessitent toujours l’accès à ce fournisseur.
+
 ## Démonstration sur ton ordinateur
 
 ```sh

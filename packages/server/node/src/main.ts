@@ -5,7 +5,7 @@ import { validateHostStartup } from './args/validate-startup.ts';
 import { createHostHandler } from './host/app.ts';
 import { collabLogger } from './collab/log.ts';
 import { LocalStore } from './blob/local.ts';
-import { S3Store } from './blob/s3.ts';
+import { PrivateS3Store, S3Store } from './blob/s3.ts';
 import type { BlobStore } from './blob/store.ts';
 import { defaultMaxUpload } from './host/upload.ts';
 import { hostNames } from './host/host-check.ts';
@@ -53,6 +53,18 @@ async function run(): Promise<number> {
     print(`${parsed.err}${NEWLINE}${USAGE}`);
     return 2;
   }
+  const privateBucket = !parsed.s3Bucket && process.env.BLOK_S3_BUCKET;
+  if (privateBucket) {
+    parsed.s3Bucket = privateBucket;
+    parsed.s3Endpoint = process.env.BLOK_S3_ENDPOINT ?? '';
+    parsed.s3Region = process.env.BLOK_S3_REGION || 'us-east-1';
+    parsed.s3BucketUrl = parsed.publicUrl;
+    parsed.s3Addressing = process.env.BLOK_S3_ADDRESSING || 'path';
+    if (parsed.auth !== 'ticket' || !/^(?:127\.0\.0\.1|\[::1\]):/.test(parsed.listen)) {
+      print('Private asset storage requires ticket authentication and a loopback media listener behind the shell');
+      return 1;
+    }
+  }
   const startupErr = validateHostStartup(parsed);
   if (startupErr !== undefined) {
     print(`blok-server refused to start: ${startupErr}`);
@@ -82,7 +94,7 @@ async function run(): Promise<number> {
   );
   let blobStore: BlobStore | undefined;
   if (parsed.s3Bucket !== '') {
-    blobStore = new S3Store({
+    const config = {
       endpoint: parsed.s3Endpoint,
       region: parsed.s3Region,
       bucket: parsed.s3Bucket,
@@ -90,7 +102,9 @@ async function run(): Promise<number> {
       secretKey: parsed.s3SecretKey,
       publicUrl: parsed.s3BucketUrl,
       addressing: parsed.s3Addressing,
-    });
+    };
+    blobStore = privateBucket ? new PrivateS3Store(config, parsed.storageDirectory
+      ? new LocalStore(parsed.storageDirectory, parsed.publicUrl) : undefined) : new S3Store(config);
   } else if (parsed.storageDirectory !== '') {
     blobStore = new LocalStore(parsed.storageDirectory, parsed.publicUrl);
   }

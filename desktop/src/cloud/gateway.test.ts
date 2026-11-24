@@ -69,6 +69,15 @@ describe('cloud gateway', () => {
     expect(document.querySelector('input[type="email"]')).toBeNull();
     expect([...document.querySelectorAll('button')].some(item => item.textContent === 'Réessayer')).toBe(true);
   });
+  it('offers the Docker startup command and the standalone workspace when the native local server is down', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('offline')));
+    const onOpenLocal = vi.fn();
+    await mountCloudGateway(document.body, {apiOrigin:'http://localhost:18150', allowLocal:true, onOpenLocal, onOpenWorkspace:vi.fn()});
+    expect(document.querySelector('h1')?.textContent).toBe('Serveur local injoignable');
+    expect(document.body.textContent).toContain('./deploy/local.sh start');
+    click('Ouvrir un espace local');
+    expect(onOpenLocal).toHaveBeenCalledOnce();
+  });
   it('routes setupRequired to the setup assistant and never shows the login form', async () => {
     const fetch = vi.fn(async (url: string) => {
       if (String(url).endsWith('/api/instance')) return response({...instance, setupRequired:true, defaultWorkspace:null});

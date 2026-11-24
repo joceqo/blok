@@ -1,3 +1,4 @@
+import { LOCAL_SERVER_ORIGIN } from '../workspace-registry';
 import { button, el, field } from '../ui/dom';
 
 export interface UnreachableOptions {
@@ -33,14 +34,13 @@ export function parseServerOrigin(value: string): string {
 export function mountUnreachable(options: UnreachableOptions): void {
   const main = options.frame();
   main.setAttribute('data-cloud-narrow', '');
-  main.append(
-    el('span', { text: 'Connexion', attribute: 'data-cloud-eyebrow' }),
-    el('h1', { text: 'Serveur injoignable' }),
-    el('p', {
-      text: 'Vérifiez l’adresse du serveur et votre connexion, puis réessayez.',
-      attribute: 'data-cloud-muted',
-    }),
-  );
+  const local = options.currentOrigin === LOCAL_SERVER_ORIGIN;
+  main.append(el('h1', { text: local ? 'Serveur local injoignable' : 'Serveur injoignable' }));
+  if (local) {
+    main.append(el('p', { children: ['Démarrez Docker, puis lancez ', el('code', { text: './deploy/local.sh start' }), ' depuis le dépôt Blok. Pour la première installation, utilisez ', el('code', { text: './deploy/local.sh install' }), '.'] }));
+  } else {
+    main.append(el('p', { text: 'Vérifiez l’adresse du serveur et votre connexion, puis réessayez.', attribute: 'data-cloud-muted' }));
+  }
   main.append(button({
     label: 'Réessayer',
     primary: true,

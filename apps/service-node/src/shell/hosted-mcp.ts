@@ -4,6 +4,7 @@ import { bodyLimit } from 'hono/body-limit';
 import type { PgPool } from '../db/pool.ts';
 import { documentAccess } from './room-tickets.ts';
 import { loadIndexPages, workspaceIndex } from './workspace-index.ts';
+import { removeAssetFile } from './asset-storage.ts';
 import { storeWorkspaceImage } from './workspace-media.ts';
 import { WorkspaceError } from './workspace-scope.ts';
 import type { Role } from './page-level.ts';
@@ -37,6 +38,7 @@ export function mcpBackend(pool: PgPool) {
     if (!/^mcp:[a-f0-9]{64}$/.test(principal)) return denied('Invalid token');
     const db = await pool.connect();
     let committed = false;
+    let uploaded: string | undefined;
     try {
       await db.query('BEGIN');
       const {rows:[account]} = await db.query<{user_id:string}>('SELECT user_id FROM mcp_tokens WHERE id=$1 AND expires_at>now() FOR SHARE',[principal.slice(4)]);
@@ -60,6 +62,7 @@ export function mcpBackend(pool: PgPool) {
       if (name === 'blok_upload_image') {
         if (typeof args.dataUrl !== 'string') return denied('Image required');
         const url = await storeWorkspaceImage(db,ws.id,args.dataUrl);
+        uploaded = url.slice('/files/'.length);
         await db.query('COMMIT');
         committed = true;
         return text({url});
@@ -85,7 +88,13 @@ export function mcpBackend(pool: PgPool) {
       if (error instanceof WorkspaceError) return denied(error.message);
       throw error;
     } finally {
-      try { if (!committed) await db.query('ROLLBACK'); } finally { db.release(); }
+      try {
+        if (!committed) {
+          await db.query('ROLLBACK');
+          if (uploaded && !(await db.query('SELECT 1 FROM assets WHERE name=$1', [uploaded])).rowCount)
+            await removeAssetFile(uploaded);
+        }
+      } finally { db.release(); }
     }
   }
   return {authorize,call};

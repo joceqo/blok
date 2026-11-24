@@ -2,7 +2,7 @@ import { BodyError } from '../http/body.ts';
 import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { extension } from '../blob/key.ts';
-import type { LocalStore } from '../blob/local.ts';
+import type { BlobStore } from '../blob/store.ts';
 import { isJsonContentType, sanitizeWire } from '../mediatype/index.ts';
 import { readEnvelopeJson } from './envelope.ts';
 import { fetchCaller, hopBudget } from './guard.ts';
@@ -72,7 +72,7 @@ function uploadJson(
 }
 
 export async function uploadByUrlHandler(
-  store: LocalStore,
+  store: BlobStore,
   options: HostAppOptions,
   request: Request,
   response: ResponseWriter,
