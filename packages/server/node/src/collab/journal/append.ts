@@ -149,15 +149,36 @@ async function appendHeld(root: string, hold: FileHandle, request: AppendRequest
   } finally { doc.destroy(); }
 }
 
-/** Keep the Go-compatible lease until all scheduled commits settle and close() resolves. */
-export async function acquireJournalWriter(directory: string) {
-  if (process.platform !== 'darwin' && process.platform !== 'linux') throw new Error('Journal writing requires macOS or Linux flock');
-  const root = resolve(directory);
-  if (!(await lstat(join(root, MANIFEST_FILE_NAME))).isFile()) throw new Error('Expected an existing journal manifest');
+export class DocumentPurged extends Error {}
+export class UnreadableJournalData extends Error {}
+
+export async function assertNotPurged(directory: string) {
+  try { await lstat(join(directory, 'purged')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+  throw new DocumentPurged('Document permanently purged');
+}
+
+export async function acquireJournalLock(root: string) {
+  if (!(await lstat(root)).isDirectory()) throw new Error('Expected a regular journal directory');
   const hold = await open(join(root, 'lock'), constants.O_RDWR | constants.O_NOFOLLOW | constants.O_CREAT, 0o600);
   try {
     await lockDocument(hold);
     await sameFile(join(root, 'lock'), hold);
+  } catch (error) {
+    await hold.close();
+    throw error;
+  }
+  return hold;
+}
+
+/** Keep the Go-compatible lease until all scheduled commits settle and close() resolves. */
+export async function acquireJournalWriter(directory: string) {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') throw new Error('Journal writing requires macOS or Linux flock');
+  const root = resolve(directory);
+  const hold = await acquireJournalLock(root);
+  try {
+    await assertNotPurged(root);
+    if (!(await lstat(join(root, MANIFEST_FILE_NAME))).isFile()) throw new Error('Expected an existing journal manifest');
   } catch (error) {
     await hold.close();
     throw error;
@@ -175,6 +196,7 @@ export async function acquireJournalWriter(directory: string) {
       return schedule(async () => {
         const report = await inspectJournal(root, onUpdate, onRecord);
         const { manifest, journal } = report;
+        if (manifest?.seeded && ['corrupt','missing'].includes(report.integrity)) throw new UnreadableJournalData(report.issue ?? 'Unreadable journal records');
         if (!manifest || !journal || report.state !== 'seeded' || !['ok','incomplete'].includes(report.integrity)) {
           throw new Error('Cannot recover journal: ' + (report.issue ?? report.state));
         }

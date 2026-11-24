@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, open, rename, rm, lstat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import type { Baseline } from './legacy-working-set.ts';
 
 // Publish all bootstrap files together. A crash before rename leaves only a
@@ -52,7 +52,7 @@ export async function initializePage(
 ) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const target = pageDirectory(root, pageId);
-  const temp = await mkdtemp(join(root, '.seed-'));
+  const temp = await mkdtemp(join(root, '.seed-' + basename(target,'.journal') + '-'));
   try {
     const frame = baseline.frames;
     const base = Buffer.alloc(24 + frame.length);

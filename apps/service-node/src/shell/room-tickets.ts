@@ -5,10 +5,12 @@ import type { PgPool } from '../db/pool.ts';
 import { blokTicket } from '../tickets/hmac.ts';
 import { roomPass } from '../tickets/room-pass.ts';
 import { canEditPage, resolvePageLevel, type Role, type Visibility } from './page-level.ts';
+import { publicMcpActor } from './agent-identity.ts';
 import { sessionDigest } from './session.ts';
 
 interface Decision {
   authenticated: boolean;
+  actor: string | null;
   workspace: string | null;
   role: Role | null;
   visible: boolean;
@@ -19,12 +21,13 @@ interface Decision {
 // Each live check reads the session, page, its inherited ACL and workspace role
 // at a single PostgreSQL snapshot. The optional route slug resolves before the
 // membership filter. Constrain every ancestor to this workspace.
-async function access(db: Pick<PoolClient, 'query'>, session: string, doc: string, slug?: string) {
+export async function documentAccess(db: Pick<PoolClient, 'query'>, session: string, doc: string, slug?: string) {
   const {
     rows: [decision],
   } = await db.query<Decision>(
     `WITH RECURSIVE account AS (
        SELECT user_id FROM sessions WHERE id=$1 AND expires_at>now()
+       UNION ALL SELECT user_id FROM mcp_tokens WHERE starts_with($1,'mcp:') AND id=substring($1 FROM 5) AND expires_at>now()
      ), workspace AS (
        SELECT id FROM workspaces WHERE $3::text IS NOT NULL AND (slug=$3 OR id=$3)
        UNION ALL SELECT workspace_id FROM pages WHERE $3::text IS NULL AND id=$2
@@ -42,7 +45,7 @@ async function access(db: Pick<PoolClient, 'query'>, session: string, doc: strin
        FROM pages p JOIN chain c ON p.id=c.parent AND p.workspace_id=c.workspace_id
        WHERE c.depth+1<64 AND NOT p.deleted
      )
-     SELECT EXISTS(SELECT FROM account) AS authenticated, (SELECT id FROM scope) AS workspace,
+     SELECT EXISTS(SELECT FROM account) AS authenticated, (SELECT user_id FROM account) AS actor, (SELECT id FROM scope) AS workspace,
        (SELECT role FROM member) AS role, EXISTS(SELECT FROM chain) AS visible,
        coalesce((SELECT visibility FROM chain WHERE visibility<>'inherit' ORDER BY depth LIMIT 1),'private') AS visibility,
        coalesce((SELECT max(array_position(ARRAY['view','edit','full'],s.level)-1)
@@ -70,7 +73,7 @@ export function roomTickets(pool: PgPool, ticketSecret: string) {
     let committed = false;
     try {
       await client.query('BEGIN');
-      const decision = await access(client, session, doc, slug);
+      const decision = await documentAccess(client, session, doc, slug);
       if (!decision.authenticated) return c.json({ error: 'Sign in required' }, 401);
       if (slug && !decision.workspace) return c.json({ error: 'Workspace not found' }, 404);
       if (slug && !decision.role) return c.json({ error: 'Workspace membership required' }, 403);
@@ -121,19 +124,24 @@ export function roomTickets(pool: PgPool, ticketSecret: string) {
       const claims = ticket ? roomPass(ticketSecret, ticket, documentId) : undefined;
       if (ticket && !claims) return c.json({ error: 'Valid document ticket required' }, 401);
       const digest: string = claims?.user ?? session;
-      if (!/^[a-fA-F0-9]{64}$/.test(digest))
+      if (!/^(?:mcp:)?[a-fA-F0-9]{64}$/.test(digest))
         return c.json({ error: 'Invalid room authorization request' }, 400);
-      const decision = await access(pool, digest, documentId);
+      const decision = await documentAccess(pool, digest, documentId);
       if (!decision.read) return c.json({ read: false, write: false });
+      // documentAccess matched the digest to a currently valid credential and workspace member.
+      const agent = digest.startsWith('mcp:');
+      const actorId = agent ? publicMcpActor(digest) : decision.actor;
+      const recordNote = agent ? {kind:'agent',onBehalfOf:decision.actor} : {kind:'person'};
       if (claims)
         return c.json({
           read: true,
+          actorId, recordNote,
           write: decision.write && claims.write,
           workspaceId: decision.workspace,
           session: digest,
           ticketWrite: claims.write,
         });
-      return c.json({ read: true, write: decision.write, workspaceId: decision.workspace });
+      return c.json({ read: true, actorId, recordNote, write: decision.write, workspaceId: decision.workspace });
     },
   );
   return router;

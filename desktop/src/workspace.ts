@@ -15,6 +15,7 @@ import { WorkspaceConflictError } from './workspace-merge';
 import { documentSyncStatus } from './document-sync-status';
 import { pageAccess } from './page-access';
 import { CloudApiError } from './cloud/client';
+import { openRemoteTrash } from './cloud/trash';
 import { openTeamspaces } from './cloud/teamspaces';
 import { openPageSharing } from './cloud/page-sharing';
 import { groupPagesBySection, sectionNames } from './page-section';
@@ -198,6 +199,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   status.textContent = 'Ouverture des pages…';
 
   let closeTeamspaces: (() => void) | undefined;
+  let closeTrash: (() => void) | undefined;
   const pageFromUrl = (): string | null => new URL(location.href).searchParams.get('page');
   const navigate = (id: string, replace = false): void => {
     const url = new URL(location.href);
@@ -857,11 +859,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       });
     } : undefined,
     onTeamspaceMenu: (anchor) => {
-      const menuState = { requestedPanel: undefined as 'invites' | 'general' | undefined, settled: false };
+      const menuState = { requestedPanel: undefined as 'invites' | 'general' | 'trash' | undefined, settled: false };
       const menu = new PopoverDesktop({ trigger: anchor, autoFocusFirstItem: true,
         items: [
           ...(ref.kind === 'remote' && ref.role === 'admin' ? [{ name: 'invite', title: 'Inviter des membres', closeOnActivate: true,
             onActivate: () => { menuState.requestedPanel = 'invites'; } }] : []),
+          ...(ref.kind === 'remote' ? [{ name: 'trash', title: 'Corbeille', closeOnActivate: true,
+            onActivate: () => { menuState.requestedPanel = 'trash'; } }] : []),
           { name: 'settings', title: 'Paramètres de l’espace', closeOnActivate: true,
             onActivate: () => { menuState.requestedPanel = 'general'; } },
         ],
@@ -874,7 +878,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         // Release the menu's focus manager before handing focus to a modal.
         queueMicrotask(() => {
           menu.destroy();
-          if (menuState.requestedPanel) ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', { detail: menuState.requestedPanel }));
+          if (menuState.requestedPanel === 'trash' && ref.kind === 'remote') {
+            closeTrash?.();
+            closeTrash = openRemoteTrash(ref, () => ws.saveOrder, refreshRemoteManifest);
+          } else if (menuState.requestedPanel) ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', { detail: menuState.requestedPanel }));
         });
       });
       menu.show();
@@ -1031,6 +1038,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
 
   function onRoute(): void {
     closeTeamspaces?.();
+    closeTrash?.();
+    closeTrash = undefined;
     if (!ws.index) return;
     if (!ws.index.pages.length) { void showEmptyWorkspace().catch(showError); return; }
     const id = pageFromUrl();

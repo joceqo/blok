@@ -1,17 +1,17 @@
-# Blok cloud host (Node) — Hono + Drizzle
+# Blok product backend for the web and desktop shell
 
-Readable scaffold for the **product** backend (`apps/service` in Go). This is **not** the collaboration sidecar (`packages/server/node` uses a custom HTTP stack for Kestrel parity).
+The TypeScript service in `src/shell` serves accounts, workspaces, permissions, hosted AI and MCP, and persists documents in PostgreSQL. The collaboration and media processes run the Node host in `packages/server/node`.
 
 ## Desktop shell backend
 
-The desktop shell uses the PostgreSQL schema in `apps/service/schema.sql`, initialized by the Go service. The shell entry point runs against that database and serves the following requests.
+On startup the shell applies the canonical `apps/service/schema.sql` inside a transaction under a PostgreSQL advisory lock. The same entry point serves the web and Tauri clients.
 
 | Request | Purpose |
 | --- | --- |
-| `POST /api/auth/request-code`, `/verify-code`, `/logout` | Issue and verify a code or close a session. The private mail transport uses the configured Go sender. |
+| `POST /api/auth/request-code`, `/verify-code`, `/logout` | Issue and verify a code or close a session. The Node transport delivers via SMTP, Resend or the development mailbox. |
 | `GET/POST /api/workspaces/:slug/invites` and `DELETE .../invites/:id` | List, deliver and revoke workspace invitations. |
 | `POST /api/workspaces/:slug/search` | Find accessible pages by title or saved block text. |
-| `GET/POST /api/mcp/tokens`, `DELETE /api/mcp/tokens/:id`, `POST /api/mcp/tokens/:id/rotate` | List, issue, revoke and rotate the signed-in account’s MCP tokens. The Go MCP endpoint checks the same PostgreSQL records on each request. |
+| `GET/POST /api/mcp/tokens`, `DELETE /api/mcp/tokens/:id`, `POST /api/mcp/tokens/:id/rotate` | List, issue, revoke and rotate the signed-in account’s MCP tokens. The hosted Node MCP endpoint checks live token and workspace permissions. |
 | `GET /api/session` and `GET /api/workspaces` | Load the signed-in user and memberships with a browser cookie or native bearer token. |
 | `GET /api/workspaces/:slug/index` | Read the page tree, trash, access levels and workspace revision from one database snapshot. |
 | `PUT /api/workspaces/:slug/index` | Create, rename, reorder, move, trash or remove pages in one transaction, conditional on the last observed workspace revision. |
@@ -23,13 +23,26 @@ The desktop shell uses the PostgreSQL schema in `apps/service/schema.sql`, initi
 | `GET/PUT /internal/documents/:id` | Load or persist a collaboration projection using the service credential and document revision. |
 | `GET /healthz` | Check PostgreSQL connectivity. |
 
-Run `npm ci && npm run build && npm run start:shell` from this directory. Set `DATABASE_URL`, `INTERNAL_SECRET`, `PUBLIC_URL` and, for native clients, `ALLOWED_ORIGINS`. Set the Go service's `INTERNAL_URL` to the Node service's private address. A missing or stale write version can produce a 409. A retry of an already stored journal projection returns its existing version.
+From the repository root run `./deploy/demo.sh start` for a working shell, mailbox and PostgreSQL instance. The deployment builds the API, collaboration, media, MCP and web images from `deploy/Dockerfile` with the repository root as build context. See the [deployment guide](../../deploy/README.md).
+
+To develop the API process alone against a development PostgreSQL database, run the following from `apps/service-node`. Keep the two secrets consistent across API restarts and all participating processes.
+
+```sh
+npm ci
+export DATABASE_URL=postgres://blok:blok@127.0.0.1:5432/blok
+export PUBLIC_URL=http://localhost:8081 PORT=8081
+export INTERNAL_SECRET="$(openssl rand -hex 32)"
+export TICKET_SECRET="$(openssl rand -hex 32)"
+export DATA_DIRECTORY="$PWD/data" APP_ENV=development
+export DEV_MAIL_DIRECTORY="$DATA_DIRECTORY/mail"
+npm run dev
+```
+
+`npm run dev` watches `src/shell/main.ts`. For compiled code run `npm run build && npm start`, which executes `dist/shell/main.js`. `GET /healthz` checks database connectivity. Use the Docker deployment for uploads, live editing and the bundled MCP runtime. For native clients configure their webview origins with `ALLOWED_ORIGINS`.
 
 The shell sends `{ revision, pages, trash }` when saving its sidebar and receives `{ revision }` after a successful write. An outdated revision returns 409. Invisible pages and read-only metadata survive a partial index. Private creation gives the author full access in the same transaction. An existing tombstone reserves its page ID.
 
-After committing, Node asks the journal host at `127.0.0.1:8080` to recheck open collaboration connections. Enable index and page sharing writes only with the product version that serves the authenticated `/internal/workspaces/:id/recheck-access` callback. A callback failure returns 503 after the transaction has committed; reload the index to recover its current revision.
-
-The standard Docker demo still uses Go for mail delivery, instance administration, tickets, live WebSockets and the operation journal. Live state can lead the PostgreSQL projection until a checkpoint, room eviction or shutdown flushes the journal. Keep the internal callback private. The standalone development API documented below uses its own schema and database.
+After a sharing or membership change, the service calls the Node room listener at `127.0.0.1:18102/internal/room/recheck-access`. If a callback fails after the database transaction commits, the shell receives HTTP 503 and can reload the committed revision. Live changes remain in the durable collaboration journal while the PostgreSQL projection catches up.
 
 Run the focused shell tests with `npm test -- src/shell`. Set `SHELL_TEST_DATABASE_URL` to include the PostgreSQL checks. They create and remove a unique schema in that database.
 
@@ -41,7 +54,11 @@ SHELL_TEST_DATABASE_URL=postgresql://localhost/blok_test \
 npm test -- src/shell/app.integration.test.ts
 ```
 
-## Stack
+## Historical prototype (`src/main.ts`)
+
+The following sections describe the separate Drizzle prototype and its schema. Its routes differ from the deployed shell. To run that prototype explicitly use `npx tsx src/main.ts` in a separate development database.
+
+### Stack
 
 | Layer | Choice |
 | --- | --- |
@@ -62,7 +79,7 @@ npm test -- src/shell/app.integration.test.ts
 8. `src/permissions.ts` — pure permission matrix (port of `permissions.go` lot 1)
 9. `src/routes/blok.ts` — sidecar HTTP proxy at `/api/blok/*`; `GET /api/blok/sync/:docId` answers `501 upgrade_required` (plain HTTP or upgrade) with a `ws:`/`wss:` hint to `BLOK_SIDECAR_URL` — live sockets are not reverse-proxied through this host yet
 
-## Dev with Postgres
+### Prototype database
 
 PostgreSQL 16 via Docker Compose (app still runs on the host):
 
@@ -71,21 +88,21 @@ cd apps/service-node
 docker compose -f docker-compose.dev.yml up -d
 cp .env.example .env
 npm ci          # or npm install
-npm run dev
+npx tsx src/main.ts
 ```
 
 `docker-compose.dev.yml` publishes Postgres on `127.0.0.1:5432` with user/password/database `blok` / `blok` / `blok`. `.env.example` sets `PORT=8080`, `DATABASE_URL` to that instance, and `APPLY_SCHEMA_ON_BOOT=1` so the first boot applies `schema.sql` when the DB is empty.
 
 Stop the database: `docker compose -f docker-compose.dev.yml down` (add `-v` to drop the volume).
 
-## Run locally
+### Running the prototype
 
 `GET /health` → `{"status":"ok","version":"…"}`. With `DATABASE_URL` set (see `.env.example`):
 
 ```bash
-npm run dev
-DEV_EXPOSE_AUTH_CODE=1 npm run dev   # returns devCode on request-code
-BLOK_SIDECAR_URL=http://127.0.0.1:4000 npm run dev   # proxies /api/blok/*
+npx tsx src/main.ts
+DEV_EXPOSE_AUTH_CODE=1 npx tsx src/main.ts   # returns devCode on request-code
+BLOK_SIDECAR_URL=http://127.0.0.1:4000 npx tsx src/main.ts   # proxies /api/blok/*
 ```
 
 Without `DATABASE_URL`, `GET|POST /api/*` (except `/health`, `/api/instance`, `/api/blok/*`) → `503 database_not_configured`.
@@ -210,8 +227,8 @@ Write local module imports with their source extension, for example `import type
 
 ## Scripts
 
-- `npm run dev` — `tsx watch src/main.ts`
-- `npm run start` — compiled `dist/main.js`
+- `npm run dev` — `tsx watch src/shell/main.ts`
+- `npm start` — compiled `dist/shell/main.js`
 - `npm run build` — `tsc`
 - `npm run test` — vitest
 
@@ -219,4 +236,6 @@ No `drizzle-kit generate` / `migrate` in scripts (schema stays `schema.sql`-driv
 
 ## Relation to `packages/server/node`
 
-Sidecar = editor HTTP (upload, sync, unfurl). **This** app = accounts, workspaces, pages in PostgreSQL. Later it will embed the sidecar in-process or proxy to it.
+The deployment starts `app`, `room` and `media` from one Node image. The API owns permissions and the PostgreSQL schema. The room owns the document journal and its WebSockets. The media host serves file operations on a private loopback port behind the shell’s access checks.
+
+The API build also bundles the hosted MCP server from the workspace. Install the root JavaScript dependencies for a source build. Both Dockerfile paths use the repository root as the build context, e.g. `docker build -f deploy/Dockerfile --target service .`.

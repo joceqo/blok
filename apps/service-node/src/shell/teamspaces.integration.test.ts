@@ -27,9 +27,9 @@ describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema
     await admin.query('CREATE SCHEMA ' + schema);
     const sql = await readFile(new URL('../../../service/schema.sql', import.meta.url), 'utf8');
     await db.query(sql);
-    await db.query(sql); // The Go service reapplies the entire schema on startup.
-    const versions = await db.query('SELECT max(version) AS current FROM schema_migrations');
-    expect(versions.rows).toEqual([{ current: 7 }]);
+    await db.query(sql); // Bootstrap reapplies the canonical migrations on startup.
+    const versions = await db.query('SELECT version FROM schema_migrations WHERE version IN (6,7,8) ORDER BY version');
+    expect(versions.rows).toEqual([{ version: 6 }, { version: 7 }, { version: 8 }]);
     await db.query(`INSERT INTO users(id,email) SELECT id,id || '@test.invalid' FROM unnest(ARRAY['member','admin','reader','outsider']) id;
       INSERT INTO workspaces(id,slug,name) VALUES ('w','demo','Demo'),('z','other','Other');
       INSERT INTO memberships VALUES ('w','admin','admin'),('w','member','member'),('w','reader','viewer'),('z','outsider','member')`);

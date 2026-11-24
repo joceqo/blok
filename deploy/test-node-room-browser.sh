@@ -9,7 +9,7 @@ case "$option" in
 Usage: deploy/test-node-room-browser.sh [--workspace] [--keep]
 Starts an isolated local Docker demo and runs two headless Chromium editors.
 Install the root JS dependencies and the Playwright Chromium browser first.
---workspace exercises all documents of one workspace, a new page and isolation from a second workspace.
+--workspace exercises two workspaces on Node, creation of a new page and refusal of a ticket for the wrong document.
 It defaults to 18124 (web), 18125 (mail), and 172.30.214.
 --keep leaves the document, accounts and Docker volumes available for manual testing.
 Override DEMO_WEB_PORT, DEMO_MAIL_PORT and DEMO_NETWORK_PREFIX if their defaults
@@ -52,5 +52,5 @@ finish() {
 }
 trap finish EXIT
 node -e "require.resolve('@playwright/test')"
-./deploy/demo.sh compose up -d --wait --wait-timeout 180 --build postgres node app web mailbox
+./deploy/demo.sh compose up -d --wait --wait-timeout 180 --build postgres app room media web mailbox
 node desktop/src/cloud/node-room-browser-smoke.mjs

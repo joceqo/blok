@@ -1,7 +1,7 @@
 # Blok self-host
 
 Ce déploiement sert le navigateur et les clients Tauri sur ton domaine HTTPS.
-Il comprend Caddy (interface + proxy HTTP interne), le service Go et PostgreSQL 17. Le proxy déjà présent sur le VPS termine HTTPS. Un seul service Go doit utiliser le volume de collaboration.
+nginx sert l’interface web et transmet les requêtes aux services TypeScript. PostgreSQL 17 conserve les données du shell. Le proxy du VPS termine HTTPS.
 
 ## Démonstration sur ton ordinateur
 
@@ -16,43 +16,23 @@ Chaque connexion envoie un code neuf dans cette boîte locale. Aucun e-mail rée
 `./deploy/demo.sh stop` arrête la démo sans effacer les données ; `./deploy/demo.sh status` affiche les conteneurs.
 Cette pile distincte (`blok-local`) est limitée à l'ordinateur via `127.0.0.1`. La boîte mail donne accès aux codes : elle est uniquement destinée à la démonstration locale. Le déploiement public ci-dessous utilise ton relais SMTP et ne contient pas ce service.
 
-### Confier la synchronisation d’une page ou d’un workspace au serveur Node
+### Services Node de la démo
 
-Dans la démo démarrée, ouvrez la page et relevez son identifiant dans `?page=…`. Depuis la racine du dépôt :
+Tous les workspaces et leurs nouvelles pages utilisent Node dès le démarrage. Le navigateur et Tauri conservent les mêmes URL de page. Une seule instance du service `room` doit détenir les journaux du volume `state`.
 
-```sh
-deploy/demo.sh room-enable ID_DE_PAGE
-deploy/demo.sh compose ps room
-deploy/demo.sh compose restart room
-deploy/demo.sh room-disable
-```
-
-Pour utiliser Node sur tout un workspace, lancez `deploy/demo.sh room-enable-workspace SLUG`. La démo résout le slug en identifiant canonique au moment de l’activation : le renommage du workspace ne change pas le propriétaire des rooms. Les pages créées ensuite sont attribuées au même serveur. Les tickets continuent de respecter les droits de chaque utilisateur sur chaque page. `room-disable` rend l’ensemble à Go après arrêt des deux hôtes et vérification des verrous de tous les journaux du volume, y compris ceux créés après l’activation.
-
-L’activation construit les images depuis les sources du checkout, termine les écritures Go en cours, puis démarre Node sur le même journal persistant. La page conserve son URL et le fournisseur WebSocket du shell. Sur l’upgrade de cette page, l’en-tête `X-Blok-Collaboration: node` indique le serveur choisi. Les pages hors de la sélection continuent sur Go. Une interruption de la room ferme la connexion de cette page jusqu’à la reprise de Node.
-
-La désactivation arrête la room, vérifie sa sortie et la libération du verrou de journal, puis redémarre Go. Le changement de propriétaire redémarre les services locaux et interrompt brièvement les connexions de la démo. Utilisez `room-disable` avant de choisir une autre page. La duplication en direct, les actions MCP sur le document et les routes d’historique Go sont indisponibles pour les pages confiées à Node pendant cet essai. Une page déjà ouverte sous Go doit avoir un journal que Node peut vérifier contre sa projection PostgreSQL. Une divergence empêche l’ouverture sur Node. Si un ancien déploiement BKW2 utilise ce volume, arrêtez-le avant l’activation : son ancien moteur peut écrire sans prendre le verrou de journal. En cas de format refusé ou de projection incohérente, lancez `room-disable` pour reprendre avec Go et examiner les fichiers d’origine.
-
-La sélection est conservée à côté de `deploy/.env.demo`. Pour une deuxième démo, utilisez un `DEMO_ENV_FILE` distinct ainsi que `COMPOSE_PROJECT_NAME`, `DEMO_WEB_PORT`, `DEMO_MAIL_PORT` et `DEMO_NETWORK_PREFIX` dédiés. Les opérations suivantes doivent utiliser les mêmes valeurs. Le service de room, les callbacks de projection et le secret interne restent sur le réseau interne.
-
-### Backend Node et synchronisation dans la démo
-
-Le démarrage ci-dessus construit le shell, le service Node et le service de compatibilité Go. Ils utilisent la même base PostgreSQL et les mêmes identifiants, sessions et droits que le shell existant. Go initialise le schéma de la base. Son journal de collaboration reste sur le volume `state`.
-
-| Opération dans le shell | Service de la démo |
+| Service | Responsabilité |
 | --- | --- |
-| Lire la session, les espaces, l’arborescence et le contenu enregistré d’une page | Node |
-| Écrire et relire en base le document issu du journal | Node, sur la boucle locale partagée avec Go |
-| Recevoir des changements en direct et les rejouer après reconnexion | Node pour la page ou le workspace activé, Go hors de la sélection |
-| Émettre un ticket de collaboration | Node lorsque le mode page ou workspace est activé, Go dans la démo par défaut |
-| Vérifier les droits pendant une connexion | Le service TypeScript pour les rooms Node, le service Go pour ses propres rooms |
-| Connexion par code, déconnexion, invitations, équipes, rattachement des pages, rôles, partages et arborescence | Node |
-| Recherche de pages pour l’assistant | Node, sur le titre et le texte enregistré des pages accessibles |
-| Livraison du courrier, appels au fournisseur IA distant, administration d’instance et fichiers | Go |
+| `app` | Comptes, courrier, workspaces, permissions, tickets, métadonnées, projections PostgreSQL et autorisation des accès aux fichiers |
+| `room` | Connexions WebSocket, journal durable des modifications et reprise après reconnexion |
+| `media` | Import, stockage et lecture des pièces jointes via l’API authentifiée |
+| `web` | Interface du shell et routage HTTP |
 
-Pour un essai à côté d’une démo déjà ouverte, choisis un nom de projet, deux ports libres et un préfixe réseau libre avant le démarrage. Conserve ces variables pour les commandes `status`, `logs` et `stop` de cette seconde pile.
+Pour observer une reconnexion, ouvre une page sur deux navigateurs puis lance `./deploy/demo.sh compose restart room`. Les journaux et les documents sont conservés dans les volumes Docker. Un ancien journal BKW2 doit être au format éditeur 2 et cohérent avec PostgreSQL pour être importé. Arrête le processus de l’ancienne installation avant de transférer ses données.
+
+Pour démarrer une démo distincte, utilise un fichier d’environnement, un nom de projet, deux ports et un préfixe réseau disponibles.
 
 ```sh
+export DEMO_ENV_FILE=/tmp/blok-node-review.env
 export COMPOSE_PROJECT_NAME=blok-node-review
 export DEMO_WEB_PORT=18098 DEMO_MAIL_PORT=18099 DEMO_NETWORK_PREFIX=172.30.91
 ./deploy/demo.sh start
@@ -103,30 +83,45 @@ sudo docker compose ps
 sudo docker compose logs --tail 100 app web
 ```
 
-Le proxy existant gère le certificat HTTPS public. Caddy écoute en HTTP sur le port 80 du conteneur, publié uniquement sur `127.0.0.1:18088`. `PUBLIC_URL` reste l’adresse HTTPS du domaine. Vérifie la pile depuis le VPS avec `curl http://127.0.0.1:18088/healthz`.
+Le proxy existant gère le certificat HTTPS public. nginx écoute en HTTP sur le port 80 du conteneur, publié uniquement sur `127.0.0.1:18088`. `PUBLIC_URL` reste l’adresse HTTPS du domaine. Vérifie la pile depuis le VPS avec `curl http://127.0.0.1:18088/healthz`.
 Sans `BOOTSTRAP_ADMIN_EMAIL`, le premier démarrage ouvre l'assistant de setup : ouvrez l'adresse de l'instance, saisissez le nom de l'instance, votre nom et votre adresse, et l'espace de départ. Il n'y a pas de jeton à aller chercher.
 
 > **Configurez l'instance tout de suite après l'avoir démarrée.** Tant que l'assistant n'a pas été complété, **la première personne qui atteint cette adresse revendique l'instance** et en devient l'administratrice. La revendication n'ouvre aucune session — un code de connexion part à l'adresse saisie, donc il faut en contrôler la boîte — mais ne laissez pas une instance fraîche exposée sans la configurer. Le service le rappelle dans ses logs à chaque démarrage tant que le setup est en attente.
  Avec cette variable seule, l'adresse devient administrateur d'instance sans membership d'espace. Le couple `BOOTSTRAP_WORKSPACE_*` (avec l'admin) sème un espace et une membership admin une fois chacun (`ON CONFLICT DO NOTHING` — une rétrogradation volontaire survit au redémarrage).
 
-Si le réseau Docker `172.30.87.0/24` existe déjà, change ensemble `BLOK_NETWORK_SUBNET`, `BLOK_NETWORK_DYNAMIC_RANGE` et `CADDY_IP` dans `.env`. L'adresse fixe de Caddy doit rester hors de la plage dynamique.
-Seul Caddy est un proxy de confiance ; PostgreSQL et le service Go n'exposent aucun port sur le VPS.
+Si le réseau Docker `172.30.87.0/24` existe déjà, change ensemble `BLOK_NETWORK_SUBNET`, `BLOK_NETWORK_DYNAMIC_RANGE` et `CADDY_IP` dans `.env`. L'adresse fixe de nginx doit rester hors de la plage dynamique.
+Seul nginx est un proxy de confiance ; les ports PostgreSQL et Node sont internes au réseau Compose.
 
 ## Utiliser des images préconstruites
 
-`compose.images.yaml` lance les mêmes trois services sans aucune compilation et sans checkout du code. Charge d’abord les images Blok adaptées à l’architecture du VPS avec `docker load`, puis utilise ce fichier comme `compose.yaml`. Renseigne `APP_IMAGE` et `WEB_IMAGE` avec les tags chargés dans `.env` ; les deux services utilisent `pull_policy: never`. PostgreSQL utilise toujours l’image officielle.
-
-Le paquet d'images préconstruites est en **linux/amd64 (x86_64)**. Il contient `images.tar`, `compose.yaml`, `.env.example`, `prepare.sh` et les scripts de sauvegarde/restauration. Après extraction :
+Les services `app`, `room` et `media` utilisent la même image Node. Le shell web utilise sa propre image nginx. Pour préparer un paquet depuis ce checkout sur une machine équipée de Docker Buildx, choisis l’architecture de destination.
 
 ```sh
-cd blok-vps-amd64
-./prepare.sh
-nano .env
-sudo docker load -i images.tar
-sudo docker compose up -d --wait --wait-timeout 180
+./deploy/package-images.sh ./blok-vps-amd64 linux/amd64
 ```
 
-Le script `prepare.sh` crée les secrets, sans démarrer les conteneurs. Renseigne ton adresse administrateur et l’authentification du relais SMTP avant le lancement. Les données ne font pas partie de l’archive d’images : les volumes sont créés au premier démarrage. Docker Engine avec Compose v2 est nécessaire ; [installation officielle sur Debian](https://docs.docker.com/engine/install/debian/).
+Pour un VPS ARM, passe `linux/arm64`. Le répertoire de sortie contient les deux images Docker dans `images.tar`, le fichier Compose autonome, les tags dans `.env.example`, le commit source et les scripts d’exploitation. Copie-le sur le VPS, puis lance les commandes suivantes dans ce répertoire. La première exécution de `install.sh` génère le fichier `.env`.
+
+```sh
+docker load -i images.tar
+./install.sh
+nano .env
+./install.sh
+```
+
+PostgreSQL utilise l’image officielle. Conserve le paquet correspondant à chaque sauvegarde.
+
+### Administration depuis le serveur
+
+Le CLI TypeScript permet d’intervenir avec un accès administrateur au conteneur, y compris lorsqu’une connexion au shell est impossible.
+
+```sh
+./deploy/stack.sh exec app blokctl admin list
+./deploy/stack.sh exec app blokctl admin grant admin@example.com
+./deploy/stack.sh exec app blokctl settings show
+./deploy/stack.sh exec app blokctl settings set signup-policy=invite
+./deploy/stack.sh exec app blokctl email test admin@example.com
+```
 
 ## Membres et administration
 
@@ -143,7 +138,7 @@ Dans l'éditeur, le menu de l'espace ouvre **Paramètres** dans une dialog avec 
 | Membre | Lecture et modification des pages de l'espace |
 | Lecteur | Lecture des pages de l'espace |
 
-Le dernier administrateur ne peut pas être retiré ou rétrogradé. Les permissions portent sur tout l'espace ; il n'y a pas encore de partage privé par page ni de console super-administrateur inter-espaces.
+Le dernier administrateur du workspace conserve son rôle. Le partage d’une page privée se gère sur cette page. L’administration d’instance se gère séparément dans les paramètres du serveur.
 Le schéma de gestion des membres s'inspire du parcours [Paramètres → Membres de Notion](https://www.notion.com/help/add-members-admins-guests-and-groups), avec des rôles simplifiés.
 
 ## Tauri et espaces locaux
@@ -168,7 +163,6 @@ npm run tauri --prefix desktop -- build
 | --- | --- |
 | `blok-cloud_postgres` | Utilisateurs, sessions, espaces, rôles, index des pages, projections du contenu et clés OpenAI chiffrées |
 | `blok-cloud_state` | Journal durable de collaboration `/data/collab`, fichiers joints `/data/uploads` et clé de chiffrement `/data/ai-key` |
-| `blok-cloud_caddy_data` | État du Caddy interne (le certificat public est géré par le proxy existant) |
 
 Les images contiennent le programme. Les volumes contiennent les données et survivent à leur remplacement.
 **La base seule ne suffit pas à sauvegarder les documents : conserve aussi le volume `state`.**
@@ -182,10 +176,10 @@ Ne lance pas `docker compose down -v` sur une installation à conserver.
 ./deploy/upgrade.sh
 ```
 
-La sauvegarde arrête brièvement le service Go pour vider les écritures, vérifie son arrêt propre, exporte PostgreSQL et archive `/data`, puis redémarre le service.
+La sauvegarde arrête d’abord les accès publics, puis laisse la collaboration terminer ses écritures avec l’API disponible. Elle arrête ensuite les médias et l’API, vérifie leurs codes de sortie, exporte PostgreSQL et archive `/data`. Les services actifs avant la sauvegarde redémarrent ensuite.
 Elle écrit `deploy/backups/<date>/` avec `database.dump`, `state.tar.gz`, le commit et les images utilisés, et un marqueur `complete`.
 Copie ce dossier hors du VPS et conserve séparément `.env`. Les sauvegardes incluent des sessions et des données privées : garde-les privées.
-Le script de mise à jour sauvegarde d'abord, construit les images puis remplace les conteneurs. Il ne fait pas de `git pull` ni de choix de branche à ta place.
+Le script de mise à jour construit les images pendant que la version en cours répond. Il sauvegarde ensuite le serveur, garde les écritures arrêtées et démarre la nouvelle version. Il ne fait pas de `git pull` ni de choix de branche à ta place.
 
 Le schéma PostgreSQL est initialisé et mis à niveau dans une transaction au démarrage, avec verrou contre les démarrages concurrents.
 Pour les futures évolutions, ajoute des migrations compatibles aux versions de schéma ; ne remplace jamais les volumes pour mettre le code à jour.
@@ -193,9 +187,9 @@ Une image ancienne n'est pas nécessairement compatible avec un schéma plus ré
 
 ## Changer de VPS / restauration
 
-1. Fais une sauvegarde finale sur l'ancien VPS. Arrête ensuite `app web` et garde-les arrêtés pour éviter deux installations divergentes.
+1. Fais une sauvegarde finale sur l'ancien VPS. Arrête ensuite les services avec `./deploy/stack.sh stop web room media app` et garde-les arrêtés pour éviter deux installations divergentes.
 2. Copie le dossier de sauvegarde complet et `.env` vers le nouveau VPS. Récupère le commit indiqué dans `source-commit`.
-3. Construis les images, sans lancer le service Go, puis restaure :
+3. Construis ou charge les images dans la destination vide, puis restaure.
 
 ```sh
 ./deploy/stack.sh build --pull
@@ -211,7 +205,7 @@ Les certificats sont gérés par le proxy existant ; les données locales Tauri 
 
 ## Vérifications de développement
 
-L'API est documentée dans `apps/service/API.md`. Les tests Go avec PostgreSQL et les tests navigateur utilisent uniquement un collecteur local d'e-mails : aucun envoi réel n'est nécessaire.
+L'API est documentée dans `apps/service/API.md`. Les tests rapides Node et du shell se lancent avec `npm test`. La recette Docker à deux navigateurs se lance à la demande avec `./deploy/test-node-room-browser.sh --workspace`.
 Le collecteur exige explicitement `APP_ENV=development` et `DEV_MAIL_DIRECTORY`; il est interdit en production.
 Le scénario navigateur est `desktop/src/cloud/browser-e2e.mjs` (voir ses variables au début du fichier).
 

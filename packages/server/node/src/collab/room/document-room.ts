@@ -4,6 +4,7 @@ import { applyUpdate, Doc, encodeStateAsUpdate, encodeStateVector } from 'yjs';
 import { decode, encode } from '../../../../../../src/components/modules/collaboration/sync-wire.ts';
 import type { SyncWireFrame } from '../../../../../../src/components/modules/collaboration/types.ts';
 import { historyRequest, type HistoryRequest } from './history.ts';
+import { writeRecordNote } from './record-notes.ts';
 import { RoomPresence } from './presence.ts';
 import { preparePageStorage, type PageStorage } from './page-storage.ts';
 import { acquireJournalWriter, MAX_APPEND_BYTES } from '../journal/append.ts';
@@ -59,11 +60,13 @@ export async function openDocumentRoom(options: RoomOptions) {
     if (peer.ws.readyState === WebSocket.OPEN) peer.ws.close(4403, 'forbidden');
     return null;
   }
-  function stop() {
+  function stop(reason?: {code:number;message:string}) {
     if (closing) return closing;
     stopping = true;
     clearInterval(timer);
-    for (const peer of peers) peer.ws.terminate();
+    for (const peer of peers) {
+      if (reason) peer.ws.close(reason.code,reason.message); else peer.ws.terminate();
+    }
     closing = (async () => {
       await queue;
       await writer.close();
@@ -108,6 +111,11 @@ export async function openDocumentRoom(options: RoomOptions) {
           update, actorId:identity.actorId ?? identity.id, source, digest });
         if (receipt.outcome !== 'committed') throw new Error('Held journal changed');
         head = receipt.sequence;
+        // A note is auxiliary metadata. Its failure must never discard or reject a durable edit.
+        if (identity.actorId || identity.id) {
+          await writeRecordNote(storage?.directory ?? options.directory, tag.lineage, head, operationId,
+            identity.recordNote ?? {kind:'person'}).catch(() => console.warn('Could not persist collaboration record note'));
+        }
         if (storage && data) await storage.publish(head,data);
         applyUpdate(doc,update);
         operations.set(operationId,{digest,sequence:head});

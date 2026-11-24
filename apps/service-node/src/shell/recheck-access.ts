@@ -1,23 +1,15 @@
-// The shell and the process that owns the live collaboration sockets share
-// a network namespace. The internal credential may only travel over loopback.
+// All rooms share a listener. Recheck every connected identity on membership,
+// sharing or session changes; an inactive socket also loses its permissions.
 export function createAccessRecheck(secret: string) {
-  return async (workspaceId: string): Promise<void> => {
-    await recheck(secret, '/internal/workspaces/' + encodeURIComponent(workspaceId) + '/recheck-access');
-  };
+  return async (_workspaceId: string): Promise<void> => recheckLiveSessions(secret);
 }
 
-export function recheckLiveSessions(secret: string) {
-  return recheck(secret, '/internal/sessions/recheck-access');
-}
-
-async function recheck(secret: string, path: string) {
-  const response = await fetch(new URL(path, 'http://127.0.0.1:8080'), {
+export async function recheckLiveSessions(secret: string) {
+  const response = await fetch(new URL('http://127.0.0.1:18102/internal/room/recheck-access'), {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + secret },
     redirect: 'error',
     signal: AbortSignal.timeout(15_000),
   });
-  if (response.status !== 204) {
-    throw new Error('Live collaboration access recheck failed with status ' + response.status);
-  }
+  if (response.status !== 204) throw new Error('Live collaboration access recheck failed with status '+response.status);
 }

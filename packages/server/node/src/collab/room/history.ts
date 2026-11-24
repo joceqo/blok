@@ -11,6 +11,9 @@ import {
   restoreTouchesLocked,
 } from '../../../../../../src/shared/agent/approval.ts';
 import { DocSnapshot } from '../../../../../../src/shared/agent/snapshot.ts';
+import { HistoryChangeWindow, maxHistoryChangeRecords, type ChangePoint } from './history-change-window.ts';
+import { changeQuery, databaseChangeDetails } from './database-changes.ts';
+import { readRecordNotes, recordActor, type HistoryActor } from './record-notes.ts';
 import { timeHistory } from './history-time.ts';
 import { deleteArchivedLineage, historyLineages, type HistoryLineage } from './history-lineages.ts';
 import { inspectJournal } from '../journal/inspect.ts';
@@ -23,6 +26,7 @@ interface Version {
   startedAt: number | null;
   savedAt: number | null;
   actors: string[];
+  actorKinds: HistoryActor[];
 }
 interface Request {
   asJSON?: boolean;
@@ -36,12 +40,15 @@ export type HistoryRequest = Request;
 type Page = Record<string, unknown> & OutputData;
 type Result = { status: number; body?: unknown; headers?: Record<string, string> };
 
-function changeSet(before: Page, after: Page) {
+function changeSet(before: Page, after: Page, properties = false) {
   const diff = diffOutput(before, after, { htmlToSegments: htmlToSegmentsNode });
   const blocks = [
     ...diff.added.map((after) => ({ kind: 'added', id: after.id, type: after.type, after })),
     ...diff.removed.map((before) => ({ kind: 'removed', id: before.id, type: before.type, before })),
-    ...diff.changed.map(({ before, after, id }) => ({ kind: 'changed', id, type: after.type, before, after })),
+    ...diff.changed.map(({ before, after, id }) => ({
+      kind: 'changed', id, type: after.type, before, after,
+      ...(properties && databaseChangeDetails(after.type, before, after)),
+    })),
     ...diff.moved.map(({ before, after, id }) => ({ kind: 'moved', id, type: after.type, before, after })),
   ];
   const page = ['title', 'icon', 'cover'].filter((key) => !isDeepStrictEqual(before[key], after[key]));
@@ -105,6 +112,7 @@ export async function historyRequest(input: {
   const through = point ? BigInt(point) : head;
   if (selected.current && through > head) return { status: 404 };
   const q = url.searchParams;
+  const { properties, blockId } = changeQuery(q);
   const group = q.get('group');
   if (list && (q.getAll('group').length > 1 || (group !== null && !['1', '15', '60'].includes(group))))
     return { status: 400 };
@@ -117,7 +125,8 @@ export async function historyRequest(input: {
   )
     return { status: 400 };
   const versions: Version[] = [];
-  const rows: unknown[] = [];
+  const rows = new HistoryChangeWindow();
+  let oldestRead: ChangePoint | undefined;
   const replay = new Doc();
   const publicHead = (sequence: bigint) => ({
     'Blok-Doc-Lineage': tag.lineage,
@@ -146,14 +155,16 @@ export async function historyRequest(input: {
   try {
     let previousActor: string | null = null;
     let prior: Page | undefined;
+    let noted: HistoryActor | undefined;
     let actor: string | null = null,
       time = 0;
     const floor = changes ? BigInt(since) : 0n;
-    // Bound expensive before/after projections to the most recent 64 requested records.
-    const start = changes && through - floor > 64n ? through - 64n : floor;
+    const maxRecords = BigInt(maxHistoryChangeRecords);
+    const start = changes && through - floor > maxRecords ? through - maxRecords : floor;
     async function readLineage(entry: HistoryLineage) {
       const lineage = entry.manifest.lineage;
       const grouped: Version[] = [];
+      const notes = list || changes ? await readRecordNotes(directory,lineage) : new Map();
       previousActor = null;
       const info = await inspectJournal(
         directory,
@@ -162,18 +173,21 @@ export async function historyRequest(input: {
           if (changes && frame.sequence > start) prior = project(replay);
           applyUpdate(replay, frame.update);
           if (changes && frame.sequence > start && prior) {
-            const change = changeSet(prior, project(replay));
-            if (q.has('block')) {
-              change.blocks = change.blocks.filter((b) => b.id === q.get('block'));
+            const point = { lineage, sequence: Number(frame.sequence), committedAt: time };
+            oldestRead ??= point;
+            const change = changeSet(prior, project(replay), properties);
+            if (blockId !== undefined) {
+              change.blocks = change.blocks.filter((b) => b.id === blockId);
               change.page = [];
               if (!change.blocks.length) return;
             }
-            rows.push({ sequence: Number(frame.sequence), committedAt: time, actor, ...change });
+            rows.add(point, { sequence: point.sequence, committedAt: time, actor, actors: noted ? [noted] : [], ...change });
           }
         },
         (record) => {
           time = Number((record.committedAtTicks - 621355968000000000n) / 10000n);
           actor = publicActor(record.actorId);
+          noted = recordActor(notes,record,actor);
           if (!list) return;
           const gap = group ? Number(group) * 60000 : 120000;
           const span = group ? Number(group) * 60000 : 600000;
@@ -189,13 +203,14 @@ export async function historyRequest(input: {
               sequence: Number(record.sequence),
               startedAt: time,
               savedAt: time,
-              actors: [],
+              actors: [], actorKinds: [],
             };
             grouped.push(current);
           }
           current.savedAt = time;
           current.sequence = Number(record.sequence);
           if (actor && !current.actors.includes(actor)) current.actors.push(actor);
+          if (noted && !current.actorKinds.some(entry => entry.id === noted!.id)) current.actorKinds.push(noted);
           previousActor = actor;
         },
         true,
@@ -205,12 +220,17 @@ export async function historyRequest(input: {
         throw new Error('Inconsistent history');
       if (list) {
         const createdAt = entry.createdAt ?? grouped[0]?.startedAt ?? null;
+        for (const version of grouped) {
+          // An older occurrence of this actor may predate note recording.
+          const byId = new Map(version.actorKinds.map(note => [note.id, note]));
+          version.actorKinds = version.actors.flatMap(id => byId.get(id) ?? []);
+        }
         versions.push(...grouped.reverse(), {
           lineage,
           sequence: 0,
           startedAt: createdAt,
           savedAt: createdAt,
-          actors: [],
+          actors: [], actorKinds: [],
         });
       }
       return info.journal.durableThrough;
@@ -241,11 +261,7 @@ export async function historyRequest(input: {
       return {
         status: 200,
         headers,
-        body: {
-          changes: rows,
-          truncated: start > floor,
-          ...(start > floor && { olderEnd: { lineage, sequence: Number(start + 1n) } }),
-        },
+        body: rows.result(start > floor ? oldestRead : undefined, false),
       };
     let target = project(replay);
     if (!restore) {

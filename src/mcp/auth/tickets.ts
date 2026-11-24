@@ -33,7 +33,7 @@ export const createTicketProvider = (
 ) => async (request: TicketRequest): Promise<CollabTicketSource> => {
   if (config.kind === 'secret') {
     const mint: CollabTicketSource = async () =>
-      blokTicket(config.secret, { user: request.actorId, doc: request.documentId, write: request.write, ttlSeconds: TTL_SECONDS });
+      blokTicket(config.secret, { user: config.subject === 'principal' ? request.principal : request.actorId, doc: request.documentId, write: request.write, ttlSeconds: TTL_SECONDS });
 
     await mint();
 
