@@ -1,11 +1,11 @@
 import { and, asc, count, desc, eq, lt, or } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import type { DbVariables } from '@/middleware/db.js';
-import type { SessionVariables } from '@/middleware/session.js';
-import { requireUser } from '@/middleware/require-user.js';
-import { requireWorkspaceRole, roleInWorkspace } from '@/http/workspace-access.js';
-import { withTransaction } from '@/db/transaction.js';
+import type { DbVariables } from '../middleware/db.ts';
+import type { SessionVariables } from '../middleware/session.ts';
+import { requireUser } from '../middleware/require-user.ts';
+import { requireWorkspaceRole, roleInWorkspace } from '../http/workspace-access.ts';
+import { withTransaction } from '../db/transaction.ts';
 import {
   auditEvents,
   pages,
@@ -13,37 +13,37 @@ import {
   workspaceInvites,
   workspaceMembers,
   workspacePresets,
-} from '@/db/schema.js';
+} from '../db/schema.ts';
 import {
   decodeTimeIdCursor,
   encodeTimeIdCursor,
   parseListPagination,
-} from '@/http/pagination.js';
+} from '../http/pagination.ts';
 import {
   listWorkspacesForUser,
   memberRows,
   parseWorkspaceRole,
   memberRole,
-} from '@/workspaces/membership.js';
-import { canDeleteWorkspace } from '@/workspaces/can-delete-workspace.js';
-import { canLeaveWorkspace } from '@/workspaces/can-leave-workspace.js';
-import { validateMemberRoleChange } from '@/workspaces/member-role-change.js';
-import { validateOwnershipTransfer } from '@/workspaces/ownership-transfer.js';
+} from '../workspaces/membership.ts';
+import { canDeleteWorkspace } from '../workspaces/can-delete-workspace.ts';
+import { canLeaveWorkspace } from '../workspaces/can-leave-workspace.ts';
+import { validateMemberRoleChange } from '../workspaces/member-role-change.ts';
+import { validateOwnershipTransfer } from '../workspaces/ownership-transfer.ts';
 import {
   parsePresetCreateBody,
   parsePresetPatchBody,
   serializeWorkspacePreset,
-} from '@/workspaces/preset-body.js';
+} from '../workspaces/preset-body.ts';
 import {
   resolveWorkspaceSlugAvailability,
   workspaceSlugIsTaken,
-} from '@/workspaces/slug-availability.js';
-import { slugFromName, validateWorkspaceSlug } from '@/workspaces/slug.js';
-import { recordAuditEvent } from '@/audit/record-audit-event.js';
-import { serializeAuditEvent } from '@/audit/serialize-audit-event.js';
-import { findOrCreateUserByEmail } from '@/auth/users.js';
-import { normalizeEmail, isValidEmail } from '@/auth/codes.js';
-import { buildWorkspaceExportManifest } from '@/workspaces/export-manifest.js';
+} from '../workspaces/slug-availability.ts';
+import { slugFromName, validateWorkspaceSlug } from '../workspaces/slug.ts';
+import { recordAuditEvent } from '../audit/record-audit-event.ts';
+import { serializeAuditEvent } from '../audit/serialize-audit-event.ts';
+import { findOrCreateUserByEmail } from '../auth/users.ts';
+import { normalizeEmail, isValidEmail } from '../auth/codes.ts';
+import { buildWorkspaceExportManifest } from '../workspaces/export-manifest.ts';
 type Env = { Variables: DbVariables & SessionVariables };
 
 export const workspaceRoutes = new Hono<Env>();

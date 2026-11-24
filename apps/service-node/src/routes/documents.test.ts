@@ -1,19 +1,19 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 
-import type { SessionVariables } from '@/middleware/session.js';
-import { verifyBlokTicket } from '@/tickets/hmac.js';
+import type { SessionVariables } from '../middleware/session.ts';
+import { verifyBlokTicket } from '../tickets/hmac.ts';
 
 const forwardToSidecar = vi.hoisted(() => vi.fn(async () => new Response('ok', { status: 200 })));
 
-vi.mock('@/sidecar/client.js', () => ({
+vi.mock('../sidecar/client.ts', () => ({
   forwardToSidecar,
   sidecarNotConfiguredResponse: () =>
     Response.json({ error: 'sidecar_not_configured' }, { status: 503 }),
   buildSidecarUrl: () => 'http://127.0.0.1:4000/sync/doc-1/state',
 }));
 
-import { createDocumentsRoutes } from './documents.js';
+import { createDocumentsRoutes } from './documents.ts';
 
 type Env = { Variables: SessionVariables };
 

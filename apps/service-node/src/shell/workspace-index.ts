@@ -1,7 +1,7 @@
-import type { PgPool } from '../db/pool.js';
+import type { PgPool } from '../db/pool.ts';
 
-import { levels, resolvePageLevel, type Level, type Role, type Visibility } from './page-level.js';
-export type { Role } from './page-level.js';
+import { levels, resolvePageLevel, type Level, type Role, type Visibility } from './page-level.ts';
+export type { Role } from './page-level.ts';
 
 
 export interface IndexPage {
@@ -22,7 +22,7 @@ interface Standing {
 
 // These are the same chains, role ceiling and sidebar labels used by Go's
 // workspaceStandings. Build them from metadata alone, never document bodies.
-export function workspaceIndex(rows: IndexPage[], role: Role, revision: number) {
+export function pageStandings(rows: IndexPage[], role: Role) {
   const byId = new Map(rows.map((row) => [row.id, row]));
   const access: Record<string, Standing> = Object.create(null);
   for (const page of rows) {
@@ -44,6 +44,11 @@ export function workspaceIndex(rows: IndexPage[], role: Role, revision: number) 
     const level = resolvePageLevel(role, first ?? 'private', granted);
     if (level) access[page.id] = { level, visibility, shared };
   }
+  return access;
+}
+
+export function workspaceIndex(rows: IndexPage[], role: Role, revision: number) {
+  const access = pageStandings(rows, role);
   const pages: IndexPage['metadata'][] = [];
   const trash: IndexPage['metadata'][] = [];
   for (const page of rows) {

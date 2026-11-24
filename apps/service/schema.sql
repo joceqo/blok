@@ -94,3 +94,15 @@ CREATE TABLE IF NOT EXISTS teamspace_members (
 );
 CREATE INDEX IF NOT EXISTS teamspace_members_user ON teamspace_members(workspace_id, user_id);
 INSERT INTO schema_migrations(version) VALUES(6) ON CONFLICT DO NOTHING;
+
+CREATE UNIQUE INDEX IF NOT EXISTS pages_workspace_id_id ON pages(workspace_id,id);
+CREATE TABLE IF NOT EXISTS teamspace_pages (
+  workspace_id text NOT NULL,
+  teamspace_id text NOT NULL,
+  page_id text NOT NULL,
+  PRIMARY KEY (workspace_id,teamspace_id,page_id),
+  FOREIGN KEY (workspace_id,teamspace_id) REFERENCES teamspaces(workspace_id,id) ON DELETE CASCADE,
+  FOREIGN KEY (workspace_id,page_id) REFERENCES pages(workspace_id,id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS teamspace_pages_page ON teamspace_pages(workspace_id,page_id);
+INSERT INTO schema_migrations(version) VALUES(7) ON CONFLICT DO NOTHING;

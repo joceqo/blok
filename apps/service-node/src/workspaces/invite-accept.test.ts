@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { inviteEmailMatchesUser, validateInviteAccept } from './invite-accept.js';
+import { inviteEmailMatchesUser, validateInviteAccept } from './invite-accept.ts';
 
 describe('inviteEmailMatchesUser', () => {
   it('matches after normalization', () => {

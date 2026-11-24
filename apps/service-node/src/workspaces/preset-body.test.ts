@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parsePresetCreateBody, parsePresetPatchBody } from './preset-body.js';
+import { parsePresetCreateBody, parsePresetPatchBody } from './preset-body.ts';
 
 describe('parsePresetCreateBody', () => {
   it('accepts name and config', () => {

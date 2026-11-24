@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createShellApp } from './app.js';
+import { createShellApp } from './app.ts';
 
 const databaseUrl = process.env.SHELL_TEST_DATABASE_URL;
 describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema', () => {
@@ -29,7 +29,7 @@ describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema
     await db.query(sql);
     await db.query(sql); // The Go service reapplies the entire schema on startup.
     const versions = await db.query('SELECT max(version) AS current FROM schema_migrations');
-    expect(versions.rows).toEqual([{ current: 6 }]);
+    expect(versions.rows).toEqual([{ current: 7 }]);
     await db.query(`INSERT INTO users(id,email) SELECT id,id || '@test.invalid' FROM unnest(ARRAY['member','admin','reader','outsider']) id;
       INSERT INTO workspaces(id,slug,name) VALUES ('w','demo','Demo'),('z','other','Other');
       INSERT INTO memberships VALUES ('w','admin','admin'),('w','member','member'),('w','reader','viewer'),('z','outsider','member')`);
@@ -80,6 +80,48 @@ describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema
     expect((await call(path+'/reader','DELETE')).status).toBe(404);
     expect((await call('/'+id,'DELETE')).status).toBe(200);
     expect((await db.query('SELECT 1 FROM teamspace_members WHERE teamspace_id=$1',[id])).rowCount).toBe(0);
+  });
+
+  it('attaches and detaches an existing page without changing its rights or document', async () => {
+    const team = await create('Design');
+    const pages = '/' + team + '/pages';
+    await db.query(`INSERT INTO pages(id,workspace_id,metadata,visibility) VALUES
+      ('private-folder','w','{}','private'),
+      ('design-note','w','{"title":"Design notes","parentId":"private-folder"}','inherit'),
+      ('other-note','z','{}','workspace');
+      INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES('private-folder','member','edit','admin')`);
+    const link = pages + '/design-note';
+    expect((await call(link,'PUT')).status).toBe(200);
+    expect((await call(link,'PUT')).status).toBe(200);
+    expect(await (await call(pages)).json()).toEqual({pages:[{id:'design-note',title:'Design notes'}]});
+    expect(await (await call(pages,'GET',undefined,'reader')).json()).toEqual({pages:[]});
+    expect((await call(link,'PUT',undefined,'admin')).status).toBe(404);
+    expect((await call(pages+'/other-note','PUT')).status).toBe(404);
+    await db.query("UPDATE page_shares SET level='view' WHERE page_id='private-folder'");
+    expect((await call(link,'DELETE')).status).toBe(403);
+    await db.query("UPDATE pages SET trashed=true WHERE id='design-note'");
+    expect(await (await call(pages)).json()).toEqual({pages:[]});
+    await db.query("UPDATE pages SET trashed=false WHERE id='design-note'; UPDATE page_shares SET level='edit' WHERE page_id='private-folder'");
+    expect((await call(link,'DELETE')).status).toBe(200);
+    expect((await call(link,'DELETE')).status).toBe(200);
+    expect(await (await call(pages)).json()).toEqual({pages:[]});
+    expect((await db.query("SELECT id FROM pages WHERE id='design-note' AND NOT deleted")).rowCount).toBe(1);
+    await expect(db.query('INSERT INTO teamspace_pages VALUES($1,$2,$3)', ['w',team,'other-note'])).rejects.toMatchObject({ code:'23503' });
+  });
+
+  it('searches persisted text under current page permissions before returning excerpts', async () => {
+    await db.query(`INSERT INTO pages(id,workspace_id,metadata,content,visibility) VALUES
+      ('g1','w','{"title":"Recette"}','{"blocks":[{"data":{"text":"Le budget approuvé est de trente euros"}}]}','workspace'),
+      ('g2','w','{"title":"Finances privées"}','{"blocks":[{"data":{"text":"Budget confidentiel"}}]}','private'),
+      ('g3','z','{"title":"Budget autre équipe"}','{}','workspace')`);
+    const lookup = () => app.request('/api/workspaces/demo/search', {
+      method:'POST', headers:{Authorization:'Bearer reader'}, body:JSON.stringify({query:'Quel est le budget ?'}) });
+    const list = async () => { const response = await lookup(); expect(response.status).toBe(200); return (await response.json()).sources; };
+    expect(await list()).toEqual([{id:'g1',title:'Recette',excerpt:expect.stringContaining('trente euros')}]);
+    await db.query("INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES('g2','reader','view','admin')");
+    expect((await list()).map((s: {id:string}) => s.id).sort()).toEqual(['g1','g2']);
+    await db.query("DELETE FROM page_shares WHERE page_id='g2'; UPDATE pages SET trashed=true WHERE id='g1'");
+    expect(await list()).toEqual([]);
   });
 
   it('enforces both workspace relations even on direct SQL writes', async () => {

@@ -16,6 +16,25 @@ Chaque connexion envoie un code neuf dans cette boîte locale. Aucun e-mail rée
 `./deploy/demo.sh stop` arrête la démo sans effacer les données ; `./deploy/demo.sh status` affiche les conteneurs.
 Cette pile distincte (`blok-local`) est limitée à l'ordinateur via `127.0.0.1`. La boîte mail donne accès aux codes : elle est uniquement destinée à la démonstration locale. Le déploiement public ci-dessous utilise ton relais SMTP et ne contient pas ce service.
 
+### Confier la synchronisation d’une page ou d’un workspace au serveur Node
+
+Dans la démo démarrée, ouvrez la page et relevez son identifiant dans `?page=…`. Depuis la racine du dépôt :
+
+```sh
+deploy/demo.sh room-enable ID_DE_PAGE
+deploy/demo.sh compose ps room
+deploy/demo.sh compose restart room
+deploy/demo.sh room-disable
+```
+
+Pour utiliser Node sur tout un workspace, lancez `deploy/demo.sh room-enable-workspace SLUG`. La démo résout le slug en identifiant canonique au moment de l’activation : le renommage du workspace ne change pas le propriétaire des rooms. Les pages créées ensuite sont attribuées au même serveur. Les tickets continuent de respecter les droits de chaque utilisateur sur chaque page. `room-disable` rend l’ensemble à Go après arrêt des deux hôtes et vérification des verrous de tous les journaux du volume, y compris ceux créés après l’activation.
+
+L’activation construit les images depuis les sources du checkout, termine les écritures Go en cours, puis démarre Node sur le même journal persistant. La page conserve son URL et le fournisseur WebSocket du shell. Sur l’upgrade de cette page, l’en-tête `X-Blok-Collaboration: node` indique le serveur choisi. Les pages hors de la sélection continuent sur Go. Une interruption de la room ferme la connexion de cette page jusqu’à la reprise de Node.
+
+La désactivation arrête la room, vérifie sa sortie et la libération du verrou de journal, puis redémarre Go. Le changement de propriétaire redémarre les services locaux et interrompt brièvement les connexions de la démo. Utilisez `room-disable` avant de choisir une autre page. La duplication en direct, les actions MCP sur le document et les routes d’historique Go sont indisponibles pour les pages confiées à Node pendant cet essai. Une page déjà ouverte sous Go doit avoir un journal que Node peut vérifier contre sa projection PostgreSQL. Une divergence empêche l’ouverture sur Node. Si un ancien déploiement BKW2 utilise ce volume, arrêtez-le avant l’activation : son ancien moteur peut écrire sans prendre le verrou de journal. En cas de format refusé ou de projection incohérente, lancez `room-disable` pour reprendre avec Go et examiner les fichiers d’origine.
+
+La sélection est conservée à côté de `deploy/.env.demo`. Pour une deuxième démo, utilisez un `DEMO_ENV_FILE` distinct ainsi que `COMPOSE_PROJECT_NAME`, `DEMO_WEB_PORT`, `DEMO_MAIL_PORT` et `DEMO_NETWORK_PREFIX` dédiés. Les opérations suivantes doivent utiliser les mêmes valeurs. Le service de room, les callbacks de projection et le secret interne restent sur le réseau interne.
+
 ### Backend Node et synchronisation dans la démo
 
 Le démarrage ci-dessus construit le shell, le service Node et le service de compatibilité Go. Ils utilisent la même base PostgreSQL et les mêmes identifiants, sessions et droits que le shell existant. Go initialise le schéma de la base. Son journal de collaboration reste sur le volume `state`.
@@ -24,8 +43,12 @@ Le démarrage ci-dessus construit le shell, le service Node et le service de com
 | --- | --- |
 | Lire la session, les espaces, l’arborescence et le contenu enregistré d’une page | Node |
 | Écrire et relire en base le document issu du journal | Node, sur la boucle locale partagée avec Go |
-| Recevoir des changements en direct, les rejouer après reconnexion, émettre les tickets | Go |
-| Connexion par e-mail, modification de l’arborescence, partage, administration et fichiers | Go |
+| Recevoir des changements en direct et les rejouer après reconnexion | Node pour la page ou le workspace activé, Go hors de la sélection |
+| Émettre un ticket de collaboration | Node lorsque le mode page ou workspace est activé, Go dans la démo par défaut |
+| Vérifier les droits pendant une connexion | Le service TypeScript pour les rooms Node, le service Go pour ses propres rooms |
+| Connexion par code, déconnexion, invitations, équipes, rattachement des pages, rôles, partages et arborescence | Node |
+| Recherche de pages pour l’assistant | Node, sur le titre et le texte enregistré des pages accessibles |
+| Livraison du courrier, appels au fournisseur IA distant, administration d’instance et fichiers | Go |
 
 Pour un essai à côté d’une démo déjà ouverte, choisis un nom de projet, deux ports libres et un préfixe réseau libre avant le démarrage. Conserve ces variables pour les commandes `status`, `logs` et `stop` de cette seconde pile.
 

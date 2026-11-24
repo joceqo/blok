@@ -9,13 +9,15 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "declaration": false,
-    "ignoreDeprecations": "6.0",
-    "types": ["node"],
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["./src/*"]
-    }
+    "types": [
+      "node"
+    ],
+    "rewriteRelativeImportExtensions": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/**/*.test.ts"]
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts"
+  ]
 }

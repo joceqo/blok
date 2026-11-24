@@ -31,6 +31,7 @@ All paths relative to configured HTTPS API origin. JSON errors `{error:string}`.
 - GET `/api/workspaces/:slug/invites` → `{invites:[{id,email,role,status,expiresAt}]}` (admin).
 - POST `/api/workspaces/:slug/invites` `{email,role?:"member"|"viewer",message?:string}` → `{ok:true}`. The optional message is a plain-text delivery note limited to 2,000 Unicode characters; it is included in the email and is not retained in the invitation record. Sends invitation email containing app link; verified email's pending invitations auto-accept on login. No token in URL.
 - DELETE `/api/workspaces/:slug/invites/:inviteID` → `{ok:true}` (admin revoke).
+- In the Node shell deployment, administrators create, list and revoke invitations through these same routes. A new invitation has status `delivering` until the mail transport confirms delivery. Only `pending` invitations can be accepted at sign-in. A failed delivery has status `delivery-failed`. Administrators can revoke an interrupted `delivering` entry and issue a fresh invitation. The optional note goes only to the mail transport.
 - GET `/api/workspaces/:slug/index` → `{pages:DesktopPage[],trash:DesktopPage[],revision:number,access:Record<pageID,{level:"view"|"edit"|"full",sharedRoot?:true}>}`. Only pages the caller may view are listed. A listed page whose parent is not visible is returned with `parentId:null` and `access[id].sharedRoot=true`; it is detached for display only and keeps its real parent server side.
 - PUT `/api/workspaces/:slug/index` `{pages,trash,revision}` → `{revision:number}` (CAS; 409 on stale revision; member/admin). Page IDs unique across service. New IDs create empty documents. The body is partial by construction — a caller can only send what they can see — so an omitted page is tombstoned **only** when the caller resolves to `edit` or above on it; anything else keeps its content and its relative rank. Naming a known page the caller cannot view answers 403. A page returned detached by GET (`sharedRoot`) keeps its real parent unless the body names a different one, which stays a deliberate move. A new page is created `workspace` at the root and `inherit` under a parent; the index never rewrites an existing page's visibility. Content goes through Blok collaboration, not this API.
 - GET `/api/workspaces/:slug/pages/:pageID` → OutputData or null (read projected checkpoint; current live state via Blok `/state`). A page the caller may not view answers 404, never 403: a 403 would confirm that the page exists.
@@ -77,6 +78,7 @@ All AI routes require current workspace membership. Personal credentials belong 
 - DELETE `/api/workspaces/:slug/ai/credentials?scope=personal|workspace` → `{ok:true}`. Removes the key and selected model together. Shared deletion requires administrator privileges.
 - GET `/api/workspaces/:slug/ai/models?scope=personal|workspace` → `{models:[{id:string}],source:"personal"|"workspace"}`. Explicit shared scope requires an administrator. Omit scope to list the caller's effective credential's models, including shared models used by members. The catalog is sorted/deduplicated and removes obvious non-text families. Catalog access does not guarantee Responses compatibility; unsupported models produce a sanitized error.
 - POST `/api/workspaces/:slug/ai/respond` `{model?:string,system:string,messages:[{role:"user"|"assistant",content:string}]}` → `{text:string,model:string,source:"personal"|"workspace"}`. Uses the effective key and its saved model unless an explicit model is provided. No default model is chosen automatically. Prompts/conversation content are not persisted by this host.
+- POST `/api/workspaces/:slug/ai/editor-respond` accepts the editor's stateless Responses payload with `model`, `instructions`, `input` and `tools`. Members can request up to three document functions (`blok_read`, `blok_describe`, `blok_execute`). The response carries typed `output` items, including function calls. Send the assistant output and the editor's matching `function_call_output` in the next request. Text, refusal, message phase and encrypted reasoning survive the round trip. The editor executes approved operations locally. Both AI routes share the per-user quota and concurrency limit. Editor requests allow 512 KiB and 256 history items. The proxy fixes `store` and `stream` to false and caps generation at 4096 tokens.
 
 Limits: 32 messages, 16 KiB of instructions, 64 KiB total input text, 4,096 generated tokens (including reasoning), 64 KiB returned text, 60-second response timeout, two simultaneous response requests per account and 30 provider requests per minute per account (model listings included). Rate limits survive login/session changes and restarts. Incomplete generation returns an explicit French error; provider bodies, errors and keys are never echoed or logged. Error codes include 400 invalid input/model, 403 insufficient permissions, 409 no configured key, 422 provider rejection, 429 rate/usage limit, 502 provider/incomplete output and 504 timeout/cancellation.
 
@@ -94,3 +96,23 @@ Workspace members can read custom emoji; members and administrators can upload i
 Uploads accept base64 data URLs whose declared type matches the detected PNG/JPEG/GIF/WebP bytes. SVG and other active content are rejected. Both image and emoji routes accept a workspace ID in place of its slug. Page cover metadata can retain a gallery key, an uploaded asset URL, or an HTTPS image URL.
 
 Private page creation: a new root page in `PUT /api/workspaces/:slug/index` may include `initialVisibility: "private"`. The server atomically creates it as private and grants its author full access. This transient field is not stored and cannot change the visibility of an existing page; use the page access endpoint for existing pages.
+
+### Tickets et admission de la room Node
+
+Dans le profil de migration Docker, Caddy dirige les deux routes GET de ticket vers
+`BLOK_SHELL_TICKET_UPSTREAM=node:8081`. La valeur par défaut `app:8080` conserve
+la signature par Go. Les deux services utilisent le même `TICKET_SECRET`. Chaque
+ticket porte le digest de session, l'ID de page, le droit d'écriture et une
+échéance de 60 secondes. Le service marque `pages.admission_started` avant de
+répondre. Un ticket produit par Node est utilisable par Go et réciproquement.
+
+La room utilise `BLOK_ROOM_CLOUD_ORIGIN=http://127.0.0.1:8081` pour appeler
+`POST /internal/room-access` avec `Authorization: Bearer <INTERNAL_SECRET>`.
+Une décision positive contient `workspaceId`, l'identifiant canonique de l'espace
+de la page. Une admission par ticket retourne aussi `session` et `ticketWrite`.
+Les vérifications d'une session établie relisent les droits courants sur PostgreSQL.
+La room conserve le plafond du ticket initial. Une décision négative retourne
+`{"read":false,"write":false}`. Caddy bloque cet endpoint sur l'entrée publique.
+
+Les en-têtes `X-Blok-Ticket-Backend: node` et `X-Blok-Access-Backend: node`
+identifient respectivement une réponse de ticket et une décision privée.

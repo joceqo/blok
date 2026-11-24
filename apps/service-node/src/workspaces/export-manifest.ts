@@ -1,6 +1,6 @@
-import { serializeWorkspacePreset } from '@/workspaces/preset-body.js';
-import type { WorkspacePresetConfig } from '@/workspaces/preset-config.js';
-import { parseWorkspaceRole } from '@/workspaces/membership.js';
+import { serializeWorkspacePreset } from './preset-body.ts';
+import type { WorkspacePresetConfig } from './preset-config.ts';
+import { parseWorkspaceRole } from './membership.ts';
 
 export type WorkspaceExportPage = {
   id: string;

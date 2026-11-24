@@ -1,4 +1,4 @@
-import { canWorkspaceRole, type WorkspaceRole } from '@/permissions.js';
+import { canWorkspaceRole, type WorkspaceRole } from '../permissions.ts';
 
 export type CanMintTicketForDocInput = {
   hasBinding: boolean;

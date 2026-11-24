@@ -1,12 +1,12 @@
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import { normalizeDisplayName } from '@/auth/display-name.js';
-import { toUserJson } from '@/auth/serialize-user.js';
-import { users } from '@/db/schema.js';
-import type { DbVariables } from '@/middleware/db.js';
-import { requireUser } from '@/middleware/require-user.js';
-import type { SessionVariables } from '@/middleware/session.js';
+import { normalizeDisplayName } from '../auth/display-name.ts';
+import { toUserJson } from '../auth/serialize-user.ts';
+import { users } from '../db/schema.ts';
+import type { DbVariables } from '../middleware/db.ts';
+import { requireUser } from '../middleware/require-user.ts';
+import type { SessionVariables } from '../middleware/session.ts';
 
 type Env = { Variables: DbVariables & SessionVariables };
 

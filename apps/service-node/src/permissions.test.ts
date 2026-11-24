@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { assertPageAction, canWorkspaceRole } from './permissions.js';
+import { assertPageAction, canWorkspaceRole } from './permissions.ts';
 
 describe('permissions', () => {
   it('lets members edit but not delete pages', () => {

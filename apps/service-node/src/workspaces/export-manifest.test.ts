@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildWorkspaceExportManifest } from '@/workspaces/export-manifest.js';
+import { buildWorkspaceExportManifest } from './export-manifest.ts';
 
 describe('buildWorkspaceExportManifest', () => {
   const createdAt = new Date('2026-03-15T12:00:00.000Z');

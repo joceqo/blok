@@ -398,6 +398,21 @@
 
 [data-blok-agent-composer] > [data-blok-chat-composer] { width: 100%; }
 
+[data-blok-agent-edit-page] {
+  display: block;
+  margin: 8px 3px 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--blok-text-secondary, #646a79);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+[data-blok-agent-edit-page]:hover { text-decoration: underline; }
+[data-blok-agent-edit-page][hidden] { display: none; }
+
 [data-blok-agent-providers-empty] {
   margin: 8px 3px 0;
   color: var(--blok-text-secondary, #646a79);
@@ -421,3 +436,7 @@
 [data-blok-agent-panel][data-blok-agent-mode="full"] [data-blok-agent-suggestions] [data-blok-chat-suggestion] {
   width: auto;
 }
+
+[data-blok-workspace-search] { display: flex; align-items: center; gap: .4em; font-size: .8rem; }
+[data-blok-answer-sources] { display: flex; flex-wrap: wrap; gap: .5em; margin-block: .4em; }
+[data-blok-answer-sources] button { font: inherit; cursor: pointer; }

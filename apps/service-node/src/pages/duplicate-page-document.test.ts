@@ -4,7 +4,7 @@ import {
   duplicatePageDocumentBinding,
   formatPageDocumentBinding,
   type PageDocumentBindingSource,
-} from './duplicate-page-document.js';
+} from './duplicate-page-document.ts';
 
 describe('duplicatePageDocumentBinding', () => {
   const source: PageDocumentBindingSource = {

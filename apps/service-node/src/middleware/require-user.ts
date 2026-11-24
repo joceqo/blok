@@ -1,6 +1,6 @@
 import { createMiddleware } from 'hono/factory';
 
-import type { SessionVariables } from './session.js';
+import type { SessionVariables } from './session.ts';
 
 export function requireUser() {
   return createMiddleware<{ Variables: SessionVariables }>(async (context, next) => {

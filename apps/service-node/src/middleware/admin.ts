@@ -1,6 +1,6 @@
 import { createMiddleware } from 'hono/factory';
 
-import type { SessionVariables } from './session.js';
+import type { SessionVariables } from './session.ts';
 
 function adminUserIds(): Set<string> {
   const raw = process.env.ADMIN_USER_IDS;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canLeaveWorkspace } from '@/workspaces/can-leave-workspace.js';
+import { canLeaveWorkspace } from './can-leave-workspace.ts';
 
 describe('canLeaveWorkspace', () => {
   it('allows non-owners to leave', () => {

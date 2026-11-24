@@ -1,10 +1,10 @@
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { PoolClient } from 'pg';
-import type { PgPool } from '../db/pool.js';
-import { levels, resolvePageLevel, type Level, type Visibility } from './page-level.js';
-import { WorkspaceError, readWorkspaceScope } from './workspace-scope.js';
-import { sessionDigest } from './session.js';
+import type { PgPool } from '../db/pool.ts';
+import { levels, resolvePageLevel, type Level, type Visibility } from './page-level.ts';
+import { WorkspaceError, readWorkspaceScope } from './workspace-scope.ts';
+import { sessionDigest } from './session.ts';
 
 type PageVisibility = Visibility | 'inherit';
 type Mutation =

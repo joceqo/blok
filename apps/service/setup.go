@@ -351,11 +351,47 @@ func (s *Service) deliverLoginCode(ctx context.Context, email string) error {
 	if e != nil {
 		return errLoginRateLimited
 	}
-	if e = s.send(email, "Votre code de connexion Blok", fmt.Sprintf("Votre code de connexion : %s\n\nIl expire dans 10 minutes. Si vous n’avez pas demandé ce code, ignorez cet email.\n%s", code, s.Config.PublicURL)); e != nil {
+	if e = s.sendLoginCode(email, code); e != nil {
 		s.DB.Exec(ctx, "DELETE FROM login_codes WHERE email=$1 AND digest=$2", email, hash(email+":"+code+":"+s.Config.InternalSecret))
 		return e
 	}
 	return nil
+}
+
+func (s *Service) sendLoginCode(email, code string) error {
+	return s.send(email, "Votre code de connexion Blok", fmt.Sprintf("Votre code de connexion : %s\n\nIl expire dans 10 minutes. Si vous n’avez pas demandé ce code, ignorez cet email.\n%s", code, s.Config.PublicURL))
+}
+
+// The Node auth service owns the challenge. The mail process only delivers an
+// active code and always uses the configured sender, URL and login template.
+func (s *Service) deliverStoredLoginCode(w http.ResponseWriter, r *http.Request) {
+	if !internalAuth(r, s.Config.InternalSecret) {
+		problem(w, 401, "Internal authorization required")
+		return
+	}
+	var in struct {
+		Email string `json:"email"`
+		Code  string `json:"code"`
+	}
+	if !body(w, r, &in) {
+		return
+	}
+	email, err := normalizeEmail(in.Email)
+	if err != nil || len(in.Code) != 6 || strings.Trim(in.Code, "0123456789") != "" {
+		problem(w, 400, "Invalid login mail")
+		return
+	}
+	var active bool
+	err = s.DB.QueryRow(r.Context(), "SELECT EXISTS(SELECT FROM login_codes WHERE email=$1 AND digest=$2 AND expires_at>now() AND attempts<5)", email, hash(email+":"+in.Code+":"+s.Config.InternalSecret)).Scan(&active)
+	if err != nil || !active {
+		problem(w, 409, "Login code unavailable")
+		return
+	}
+	if err = s.sendLoginCode(email, in.Code); err != nil {
+		problem(w, 503, "Email delivery unavailable")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Service) setupEmailTest(w http.ResponseWriter, r *http.Request) {

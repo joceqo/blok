@@ -45,7 +45,7 @@ export function blokTicket(secret: string, claims: BlokTicketClaims): string {
 /**
  * Verifies signature and header; returns parsed claims or throws.
  */
-export function verifyBlokTicket(secret: string, token: string): VerifiedBlokTicket {
+export function authenticatedTicketPayload(secret: string, token: string): string {
   if (secret.length < MIN_SECRET_LENGTH) {
     throw new Error(`verifyBlokTicket: the secret must be at least ${MIN_SECRET_LENGTH} characters`);
   }
@@ -64,15 +64,19 @@ export function verifyBlokTicket(secret: string, token: string): VerifiedBlokTic
     throw new Error('verifyBlokTicket: non-canonical header');
   }
 
+  const isSegment = (part: string) => part.length > 0 && part.length % 4 !== 1 && /^[A-Za-z0-9_-]+$/.test(part);
+  if (!isSegment(payloadB64) || !isSegment(signatureB64)) throw new Error('verifyBlokTicket: malformed token');
   const signing = `${headerB64}.${payloadB64}`;
-  const expected = createHmac('sha256', secret).update(signing).digest('base64url');
-  const a = Buffer.from(signatureB64, 'utf-8');
-  const b = Buffer.from(expected, 'utf-8');
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+  const expected = createHmac('sha256', secret).update(signing).digest();
+  const supplied = Buffer.from(signatureB64, 'base64url');
+  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
     throw new Error('verifyBlokTicket: invalid signature');
   }
+  return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(payloadB64, 'base64url'));
+}
 
-  const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8')) as {
+export function verifyBlokTicket(secret: string, token: string): VerifiedBlokTicket {
+  const payload = JSON.parse(authenticatedTicketPayload(secret, token)) as {
     user?: unknown;
     doc?: unknown;
     write?: unknown;

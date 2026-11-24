@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 
-import type { PgPool } from './pool.js';
+import type { PgPool } from './pool.ts';
 
 /**
  * Applies schema.sql when SCHEMA_SQL_PATH (or default beside package) is set.

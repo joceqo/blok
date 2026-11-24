@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { DISPLAY_NAME_MAX_LEN, normalizeDisplayName } from './display-name.js';
+import { DISPLAY_NAME_MAX_LEN, normalizeDisplayName } from './display-name.ts';
 
 describe('normalizeDisplayName', () => {
   it('trims and keeps non-empty values', () => {

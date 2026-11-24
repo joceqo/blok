@@ -16,14 +16,14 @@ import {
   sessionCookieSetOptions,
   sessionExpiresAt,
   sessionRefreshExpiresAt,
-} from '@/auth/codes.js';
-import { toUserJson } from '@/auth/serialize-user.js';
-import { findOrCreateUserByEmail } from '@/auth/users.js';
-import { authChallenges, sessions, users } from '@/db/schema.js';
-import { sendAuthCode } from '@/mail/smtp.js';
-import type { DbVariables } from '@/middleware/db.js';
-import { requireUser } from '@/middleware/require-user.js';
-import type { SessionVariables } from '@/middleware/session.js';
+} from '../auth/codes.ts';
+import { toUserJson } from '../auth/serialize-user.ts';
+import { findOrCreateUserByEmail } from '../auth/users.ts';
+import { authChallenges, sessions, users } from '../db/schema.ts';
+import { sendAuthCode } from '../mail/smtp.ts';
+import type { DbVariables } from '../middleware/db.ts';
+import { requireUser } from '../middleware/require-user.ts';
+import type { SessionVariables } from '../middleware/session.ts';
 
 type Env = { Variables: DbVariables & SessionVariables };
 

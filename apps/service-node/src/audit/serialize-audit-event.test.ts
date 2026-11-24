@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { serializeAuditEvent } from '@/audit/serialize-audit-event.js';
+import { serializeAuditEvent } from './serialize-audit-event.ts';
 
 describe('serializeAuditEvent', () => {
   it('maps an audit_events row to the list API wire shape', () => {

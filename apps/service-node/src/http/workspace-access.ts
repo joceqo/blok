@@ -1,9 +1,9 @@
 import type { Context } from 'hono';
 
-import type { Database } from '@/db/index.js';
-import { WorkspaceNotFoundError } from '@/errors.js';
-import { assertPageAction, PermissionDeniedError, type WorkspaceRole } from '@/permissions.js';
-import { memberRole } from '@/workspaces/membership.js';
+import type { Database } from '../db/index.ts';
+import { WorkspaceNotFoundError } from '../errors.ts';
+import { assertPageAction, PermissionDeniedError, type WorkspaceRole } from '../permissions.ts';
+import { memberRole } from '../workspaces/membership.ts';
 
 export async function roleInWorkspace(
   db: Database,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { MIN_PAGE_SEARCH_QUERY_LENGTH, searchQueryValid } from './search-query.js';
+import { MIN_PAGE_SEARCH_QUERY_LENGTH, searchQueryValid } from './search-query.ts';
 
 describe('searchQueryValid', () => {
   it('accepts trimmed queries at least two characters', () => {

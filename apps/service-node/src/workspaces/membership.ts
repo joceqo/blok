@@ -1,8 +1,8 @@
 import { and, asc, eq } from 'drizzle-orm';
 
-import type { Database } from '@/db/index.js';
-import { users, workspaceMembers, workspaces } from '@/db/schema.js';
-import type { WorkspaceRole } from '@/permissions.js';
+import type { Database } from '../db/index.ts';
+import { users, workspaceMembers, workspaces } from '../db/schema.ts';
+import type { WorkspaceRole } from '../permissions.ts';
 
 const ROLES: WorkspaceRole[] = ['owner', 'admin', 'member', 'guest'];
 

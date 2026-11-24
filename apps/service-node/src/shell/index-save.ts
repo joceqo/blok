@@ -1,5 +1,6 @@
-import type { IndexPage, Role } from './workspace-index.js';
-import { workspaceIndex } from './workspace-index.js';
+import { canEditPage } from './page-level.ts';
+import type { IndexPage, Role } from './workspace-index.ts';
+import { workspaceIndex } from './workspace-index.ts';
 
 type Page = Record<string, unknown> & { id: string; title: string; parentId?: string | null };
 type Incoming = { meta: Page; trashed: boolean };
@@ -70,7 +71,7 @@ export function parseIndex(body: unknown): SaveIndex {
 export function planIndexSave(current: IndexPage[], role: Role, incoming: Incoming[]) {
   const { access } = workspaceIndex(current, role, 0);
   const byId = new Map(current.map(row => [row.id, row]));
-  const writable = (id: string) => access[id]?.level === 'edit' || access[id]?.level === 'full';
+  const writable = (id: string) => canEditPage(access[id]?.level);
   const sent = new Set(incoming.map(entry => entry.meta.id));
   const removed = current.filter(row => writable(row.id) && !sent.has(row.id)).map(row => row.id);
   const behind = new Map<string, string[]>();

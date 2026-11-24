@@ -9,12 +9,12 @@ import {
   sessionCookieName,
   sessionCookieSetOptions,
   sessionExpiresAt,
-} from '@/auth/codes.js';
-import { findOrCreateUserByEmail } from '@/auth/users.js';
-import { sessions } from '@/db/schema.js';
-import type { DbVariables } from '@/middleware/db.js';
-import { canRunFirstAdminSetup, needsSetup } from '@/setup/status.js';
-import { countUsers } from '@/setup/user-count.js';
+} from '../auth/codes.ts';
+import { findOrCreateUserByEmail } from '../auth/users.ts';
+import { sessions } from '../db/schema.ts';
+import type { DbVariables } from '../middleware/db.ts';
+import { canRunFirstAdminSetup, needsSetup } from '../setup/status.ts';
+import { countUsers } from '../setup/user-count.ts';
 
 type Env = { Variables: DbVariables };
 

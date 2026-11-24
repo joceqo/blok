@@ -1,17 +1,17 @@
 import { and, asc, desc, eq, gt, lt, or } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import { serializeAuditEvent } from '@/audit/serialize-audit-event.js';
-import { auditEvents, users, workspaces } from '@/db/schema.js';
+import { serializeAuditEvent } from '../audit/serialize-audit-event.ts';
+import { auditEvents, users, workspaces } from '../db/schema.ts';
 import {
   decodeTimeIdCursor,
   encodeTimeIdCursor,
   parseListPagination,
-} from '@/http/pagination.js';
-import { requireAdmin } from '@/middleware/admin.js';
-import type { DbVariables } from '@/middleware/db.js';
-import { requireUser } from '@/middleware/require-user.js';
-import type { SessionVariables } from '@/middleware/session.js';
+} from '../http/pagination.ts';
+import { requireAdmin } from '../middleware/admin.ts';
+import type { DbVariables } from '../middleware/db.ts';
+import { requireUser } from '../middleware/require-user.ts';
+import type { SessionVariables } from '../middleware/session.ts';
 
 type Env = { Variables: DbVariables & SessionVariables };
 

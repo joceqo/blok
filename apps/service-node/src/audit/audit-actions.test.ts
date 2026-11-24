@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatAuditAction } from '@/audit/audit-actions.js';
+import { formatAuditAction } from './audit-actions.ts';
 
 describe('formatAuditAction', () => {
   it('maps workspace delete', () => {

@@ -463,6 +463,15 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 			return
 		}
 	}
+	owned, err := s.nodeOwnsRoom(r.Context(), source)
+	if err != nil {
+		problem(w, 503, "Room ownership unavailable")
+		return
+	}
+	if owned {
+		problem(w, 409, "Live duplication is unavailable for the Node room")
+		return
+	}
 	if _, e := s.DB.Exec(r.Context(), "UPDATE pages SET admission_started=true WHERE id=$1", source); e != nil {
 		problem(w, 503, "Database unavailable")
 		return
@@ -574,6 +583,10 @@ func (s *Service) seed(w http.ResponseWriter, r *http.Request, u identity, ws Wo
 	}
 	if granted < levelEdit {
 		problem(w, 403, "Write access required")
+		return
+	}
+	if s.Config.NodeRoomPage != "" && s.Config.NodeRoomPage == r.PathValue("id") {
+		problem(w, 409, "Seed this page before assigning it to the Node room")
 		return
 	}
 	var doc map[string]any

@@ -1,10 +1,10 @@
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { PoolClient } from 'pg';
-import type { PgPool } from '../db/pool.js';
-import type { Role } from './page-level.js';
-import { sessionDigest } from './session.js';
-import { WorkspaceError, readWorkspaceScope } from './workspace-scope.js';
+import type { PgPool } from '../db/pool.ts';
+import type { Role } from './page-level.ts';
+import { sessionDigest } from './session.ts';
+import { WorkspaceError, readWorkspaceScope } from './workspace-scope.ts';
 
 function parseRole(body: unknown): Role {
   const role = body && typeof body === 'object' && 'role' in body && body.role;

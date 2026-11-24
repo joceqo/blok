@@ -1,9 +1,9 @@
 import { eq } from 'drizzle-orm';
 
-import type { Database } from '@/db/index.js';
-import { workspaces } from '@/db/schema.js';
+import type { Database } from '../db/index.ts';
+import { workspaces } from '../db/schema.ts';
 
-import { type WorkspaceSlugValidation } from './slug.js';
+import { type WorkspaceSlugValidation } from './slug.ts';
 
 export type WorkspaceSlugAvailability =
   | { status: 'invalid'; reason: 'invalid_slug' | 'slug_too_short' | 'slug_too_long' }

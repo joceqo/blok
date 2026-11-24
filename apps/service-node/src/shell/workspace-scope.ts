@@ -1,5 +1,5 @@
 import type { PoolClient } from 'pg';
-import type { Role } from './page-level.js';
+import type { Role } from './page-level.ts';
 
 export class WorkspaceError extends Error {
   constructor(readonly status: 400 | 401 | 403 | 404 | 409, message: string) { super(message); }

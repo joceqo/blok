@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { projectionDecision, readProjectionHeaders, type ProjectionHead } from './projection.js';
+import { projectionDecision, readProjectionHeaders, type ProjectionHead } from './projection.ts';
 
 const stored: ProjectionHead = { version: '3', lineage: 'first', sequence: '10' };
 
@@ -28,6 +28,18 @@ describe('shell projection concurrency', () => {
   it('handles a journal recovery before the version read returns', () => {
     expect(projectionDecision(stored, { ...stored, version: '', sequence: '11' }, false)).toBe('write');
     expect(projectionDecision({ version: '0', sequence: null, lineage: null }, { ...stored, version: '' }, false)).toBe('write');
+  });
+
+  it('requires complete explicit head metadata for strict writers', () => {
+    const headers = new Headers({'Blok-Doc-If-Match':'exact','Blok-Doc-Lineage':'first','Blok-Doc-Sequence':'1','Blok-Doc-Version':'0'});
+    expect(readProjectionHeaders(headers)).toBeUndefined();
+    headers.set('Blok-Doc-Expected-Lineage','');
+    headers.set('Blok-Doc-Expected-Sequence','');
+    expect(readProjectionHeaders(headers)?.expected).toEqual({lineage:null,sequence:null});
+    headers.set('Blok-Doc-Expected-Sequence','1');
+    expect(readProjectionHeaders(headers)).toBeUndefined();
+    headers.delete('Blok-Doc-If-Match');
+    expect(readProjectionHeaders(headers)).toBeUndefined();
   });
 
   it('reads unsigned sequence numbers without losing precision', () => {

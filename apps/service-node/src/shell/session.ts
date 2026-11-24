@@ -1,7 +1,9 @@
+import type { User } from '../models/User.ts';
+import type { WorkspaceMembership } from '../models/Workspace.ts';
 import { createHash } from 'node:crypto';
 import type { Context } from 'hono';
 import { getCookie } from 'hono/cookie';
-import type { PgPool } from '../db/pool.js';
+import type { PgPool } from '../db/pool.ts';
 
 export function sessionDigest(context: Context): string | undefined {
   const auth = context.req.header('Authorization');
@@ -10,8 +12,8 @@ export function sessionDigest(context: Context): string | undefined {
 }
 
 // Read all session fields from one PostgreSQL snapshot, including role changes.
-export async function loadSession(pool: PgPool, digest: string) {
-  return (await pool.query(
+export async function loadSession(pool: Pick<PgPool, 'query'>, digest: string) {
+  return (await pool.query<{ user: User; workspaces: WorkspaceMembership[]; supportEmail: string }>(
     `SELECT jsonb_build_object('id',u.id,'email',u.email,'name',u.name,
                                'instanceAdmin',ia.user_id IS NOT NULL) AS "user",
             coalesce((SELECT jsonb_agg(jsonb_build_object('id',w.id,'slug',w.slug,'name',w.name,

@@ -6,7 +6,7 @@ import {
   parseTeamspaceMemberUserIdParam,
   parseTeamspacePatchBody,
   serializeTeamspace,
-} from '@/workspaces/teamspace-body.js';
+} from './teamspace-body.ts';
 
 describe('parseTeamspaceCreateBody', () => {
   it('accepts a non-blank name', () => {

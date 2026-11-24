@@ -13,6 +13,7 @@ import { RepositoryHttpError, workspaceRepository } from './workspace-repository
 import { WorkspaceConflictError } from './workspace-merge';
 import { documentSyncStatus } from './document-sync-status';
 import { pageAccess } from './page-access';
+import { CloudApiError } from './cloud/client';
 import { openTeamspaces } from './cloud/teamspaces';
 import { openPageSharing } from './cloud/page-sharing';
 import { groupPagesBySection, sectionNames } from './page-section';
@@ -31,6 +32,8 @@ import {
 } from './welcome-seed';
 import { COVER_GALLERY, readCoverFile, createAddCoverButton, createPageCover, isPageCover, trackPageHeaderHover, type PageCover } from './cover';
 import { mountAgentAssistant, type AgentAssistantHandle } from '@blok/agent-assistant';
+import { createAiClient, selectionKey } from './ai-client';
+import { pageEditorAssistant } from './editor-assistant';
 import { bindAssistantButton, createAssistantButton, createWorkspaceAssistant } from './assistant';
 import { createPageToolbar, type PageBreadcrumbChoice, type PageBreadcrumbItem, type PageToolbar } from './page-toolbar';
 import { bindTitleDateMention, titleDateLabel, type TitleDateMentionBinding } from './title-date-mention';
@@ -146,9 +149,24 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     movingPage: false,
     closeSearch: undefined,
   };
+  const ai = createAiClient(ref);
+  let editAssistant: ReturnType<typeof pageEditorAssistant> | undefined;
+  const activeEditable = (): boolean => !!ws.currentId && ws.currentId === pageFromUrl() &&
+    ws.frame.element.isConnected && !ws.frame.element.inert && ws.access.canEdit(ws.currentId);
   const adoptIndex = (value: WorkspaceIndex): WorkspaceIndex => {
+    const wasEditable = ws.access.canEdit(ws.currentId);
     ws.index = value;
     ws.access = pageAccess(ref, value.access);
+    const editable = ws.access.canEdit(ws.currentId);
+    if (ws.currentId && wasEditable !== editable) {
+      if (!editable) editAssistant?.cancel();
+      const editor = ws.editor;
+      if (editor) void editor.isReady.then(() => {
+        if (ws.editor === editor) return editor.readOnly.set(!ws.access.canEdit(ws.currentId));
+      }).catch(showError);
+      ws.frame.element.toggleAttribute('data-desktop-read-only', !editable);
+      ws.assistant.refreshPageActions();
+    }
     return value;
   };
   /**
@@ -177,6 +195,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   status.setAttribute('role', 'status');
   status.textContent = 'Ouverture des pages…';
 
+  let closeTeamspaces: (() => void) | undefined;
   const pageFromUrl = (): string | null => new URL(location.href).searchParams.get('page');
   const navigate = (id: string, replace = false): void => {
     const url = new URL(location.href);
@@ -219,12 +238,12 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     });
     void ws.saveOrder.catch(() => undefined);
   };
-  const refreshRemoteManifest = async (): Promise<void> => {
+  const refreshRemoteManifest = async (signal?: AbortSignal): Promise<void> => {
     if (ref.kind !== 'remote' || !ws.index || ws.pendingManifests > 0 || ws.manifestFailed || ws.refreshingManifest || ws.metadataAction) return;
     ws.refreshingManifest = true;
     const original = ws.index;
     try {
-      const updated = await repository.refreshIndex(() => ws.pendingManifests === 0 && !ws.manifestFailed && !ws.metadataAction && ws.index === original);
+      const updated = await repository.refreshIndex(() => !signal?.aborted && ws.pendingManifests === 0 && !ws.manifestFailed && !ws.metadataAction && ws.index === original, signal);
       if (!updated) return;
       updated.activeId = updated.pages.some((page) => page.id === ws.currentId) ? ws.currentId : updated.activeId;
       // Retain the live page object: title/cover callbacks close over it.
@@ -240,7 +259,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       for (const id of new Set([...original.pages.map((page) => page.id), ...ws.index.pages.map((page) => page.id)])) notifyPage(id);
       ws.refreshPagePresentation?.();
       if (!ws.index.pages.some((page) => page.id === ws.currentId)) onRoute();
-    } catch (error) { if (!ws.manifestFailed) showError(error); }
+    } catch (error) { if (!signal?.aborted && !ws.manifestFailed) showError(error); }
     finally { ws.refreshingManifest = false; }
   };
   const refreshDateTitles = (): void => {
@@ -405,6 +424,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (!ws.index) return;
     refreshDateTitles();
     const request = ++ws.selection;
+    if (ws.currentId !== id) {
+      editAssistant?.cancel();
+      ws.assistant.refreshPageActions();
+    }
     if (ws.currentId !== id && ref.kind === 'remote') {
       if (ws.editor) { await ws.editor.isReady; await ws.editor.saver.flush(); }
       if (ws.selection !== request) return;
@@ -547,8 +570,12 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.refreshPagePresentation = () => { applyFullWidth(); renderCover(); ws.titleDateMention?.refresh(); };
     ws.pageCanvas.replaceChildren(toolbar.element, article);
     renderCover();
+    editAssistant = pageEditorAssistant(ai,
+      () => ws.generation === turn && activeEditable(),
+      () => localStorage.getItem(selectionKey(ref)));
     const instance = new Blok({
       holder,
+      agent: ws.access.readOnlyWorkspace ? undefined : editAssistant.agent,
       readOnly: readOnly(id),
       tools: { ...desktopTools, database: {class: Database, config: {customEmojis: () => emojis.list(), coverGallery: COVER_GALLERY, uploadCover: (file: globalThis.File) => readCoverFile(file).then(repository.uploadImage)}}, page: { class: Page, config: { ...pageConfig } } },
       theme: readAppearance(),
@@ -600,6 +627,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       } }),
     });
     ws.editor = instance;
+    ws.assistant.refreshPageActions();
     instance.width.set(page.fullWidth === true ? 'full' : 'narrow');
     void instance.isReady.then(() => {
       if (ws.generation !== turn) return;
@@ -804,7 +832,21 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       ws.closeSearch?.();
       ws.closeSearch = openPageSearch({ workspaceName: ref.name, pages: () => ws.index?.pages ?? [], onOpen: navigate, recentIds });
     },
-    onTeamspaces: ref.kind === 'remote' ? () => openTeamspaces(ref) : undefined,
+    onTeamspaces: ref.kind === 'remote' ? () => {
+      closeTeamspaces?.();
+      closeTeamspaces = openTeamspaces(ref, {
+        pages: () => ws.index?.pages ?? [],
+        canEdit: (id) => ws.access.canEdit(id),
+        open: async (id, signal) => {
+          const visible = () => ws.index?.pages.some((page) => page.id === id);
+          if (!visible()) { await ws.saveOrder; signal.throwIfAborted(); await refreshRemoteManifest(signal); }
+          signal.throwIfAborted();
+          if (!visible()) throw new CloudApiError(404, 'Page indisponible');
+          navigate(id);
+        },
+        onClose: () => { closeTeamspaces = undefined; },
+      });
+    } : undefined,
     onTeamspaceMenu: (anchor) => {
       const menuState = { requestedPanel: undefined as 'invites' | 'general' | undefined, settled: false };
       const menu = new PopoverDesktop({ trigger: anchor, autoFocusFirstItem: true,
@@ -840,8 +882,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   });
   ws.frame.element.append(status);
   ws.assistant = mountAgentAssistant({
+    workspaceSearch: ref.kind === 'remote' ? { find: repository.searchSources, open: navigate } : undefined,
     getPageText: () => ws.pageCanvas.querySelector('[data-desktop-document]')?.textContent?.slice(0, 100_000) ?? '',
     openSettings: () => ws.footer.dispatchEvent(new Event('blok:desktop-open-ai-settings')),
+    editPage: {
+      available: () => !!editAssistant?.agent && activeEditable(),
+      open: () => { if (activeEditable()) ws.editor?.agent.openAssistant(); },
+    },
     ...createWorkspaceAssistant(ref),
   });
   ws.pageCanvas = ws.assistant.editorSlot;
@@ -919,6 +966,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   }
 
   async function showEmptyWorkspace(): Promise<void> {
+    editAssistant?.cancel();
+    editAssistant = undefined;
+    ws.assistant.refreshPageActions();
     if (ws.editor) {
       await ws.editor.isReady;
       if (ref.kind === 'remote') await ws.editor.saver.flush();
@@ -971,6 +1021,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   }
 
   function onRoute(): void {
+    closeTeamspaces?.();
     if (!ws.index) return;
     if (!ws.index.pages.length) { void showEmptyWorkspace().catch(showError); return; }
     const id = pageFromUrl();
@@ -986,6 +1037,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       if (ws.currentId && pageFromUrl() !== ws.currentId) {
         const url = new URL(location.href); url.searchParams.set('page', ws.currentId);
         history.replaceState(null, '', url);
+        ws.assistant.refreshPageActions();
       }
       showError(error);
     });
@@ -1051,6 +1103,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       } catch (error) { showError(error); }
     },
     async flush() {
+      editAssistant?.cancel();
       const wasInert = ws.frame.element.inert;
       ws.frame.element.inert = true;
       try {

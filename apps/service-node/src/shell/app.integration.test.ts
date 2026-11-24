@@ -2,7 +2,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createShellApp } from './app.js';
+import { createRequestCode, trustedClientIP } from './request-code.ts';
+import { createShellAuth } from './auth.ts';
+import { createShellApp } from './app.ts';
+import { saveProjection } from './projection.ts';
 
 // Opt in with a development PostgreSQL URL. Only this suite's schema is used.
 const databaseUrl = process.env.SHELL_TEST_DATABASE_URL;
@@ -46,6 +49,97 @@ describe.skipIf(!databaseUrl)('shell routes on the deployed PostgreSQL schema', 
     expect(await ws.json()).toEqual({ workspaces: [{ id: 'w', name: 'Demo', role: 'viewer', slug: 'demo' }] });
   });
 
+  describe('canonical login codes', () => {
+    const email = 'new.account@example.test';
+    const code = '002431';
+    const verify = (email: string, code: string, client?: string) => app.request('/api/auth/verify-code', {
+      method: 'POST', body: JSON.stringify({ email, code, client }),
+    });
+    const issue = (email: string) => db.query(`INSERT INTO login_codes(email,digest,expires_at)
+      VALUES($1,$2,now()+interval '5 minutes') ON CONFLICT(email) DO UPDATE SET
+      digest=excluded.digest,expires_at=excluded.expires_at,attempts=0`,
+      [email, createHash('sha256').update(email + ':' + code + ':' + secret).digest('hex')]);
+
+    it('enforces current admission and consumes an invitation and challenge exactly once', async () => {
+      await db.query("UPDATE instance_settings SET signup_policy='invite'");
+      await issue(email);
+      expect((await verify(email, code)).status).toBe(401);
+      await db.query(`INSERT INTO invites(id,workspace_id,email,role,expires_at)
+        VALUES('auth-invite','w',$1,'viewer',now()+interval '1 hour')`, [email]);
+      const results = await Promise.all([verify(email.toUpperCase(), code, 'desktop'), verify(email, code, 'desktop')]);
+      expect(results.map(r => r.status).sort()).toEqual([200,401]);
+      const success = results.find(r => r.status === 200)!;
+      expect(success.headers.get('Set-Cookie')).toBeNull();
+      const signed = await success.json();
+      expect(signed.workspaces).toEqual([{ id:'w', slug:'demo', name:'Demo', role:'viewer' }]);
+      expect((await app.request('/api/session', { headers: { Authorization:'Bearer ' + signed.token } })).status).toBe(200);
+      expect((await db.query("SELECT status FROM invites WHERE id='auth-invite'")).rows[0].status).toBe('accepted');
+    });
+
+    it('invalidates the session before confirming the live access check, including on retry', async () => {
+      const token = randomUUID();
+      const digest = createHash('sha256').update(token).digest('hex');
+      await db.query("INSERT INTO sessions(id,user_id,expires_at) VALUES($1,'m',now()+interval '1 hour')", [digest]);
+      let rechecks = 0;
+      const auth = createShellAuth(db, secret, async () => {
+        expect((await db.query('SELECT id FROM sessions WHERE id=$1', [digest])).rowCount).toBe(0);
+        rechecks++;
+      });
+      for (let i=0; i<2; i++) {
+        const response = await auth.request('/logout', {method:'POST', headers:{Cookie:'blok_session=' + token}});
+        expect(response.status).toBe(200);
+        expect(response.headers.get('Set-Cookie')).toMatch(/Max-Age=0/);
+      }
+      expect(rechecks).toBe(2);
+      expect((await app.request('/api/session', { headers: { Authorization:'Bearer ' + token } })).status).toBe(401);
+    });
+
+    it('charges the real network peer, enforces mail cooldown and removes undelivered challenges', async () => {
+      const ip = trustedClientIP('172.30.91.3/32');
+      expect(ip('::ffff:172.30.91.3','198.51.100.42, 192.0.2.1')).toBe('192.0.2.1');
+      expect(ip('192.0.2.1','198.51.100.42')).toBe('192.0.2.1');
+      const sent: string[] = [];
+      const router = createRequestCode(db, secret, {
+        normalize: async email => email.trim().toLowerCase(),
+        deliver: async (email, code) => {
+          if (email === 'unavailable@sample.test') throw new Error('Offline mail');
+          sent.push(code);
+        },
+      },'172.30.91.3/32');
+      const submit = (email: string) => router.request('/request-code', {
+        method:'POST',body:JSON.stringify({email}),headers:{'X-Forwarded-For':'198.51.100.42'},
+      }, { incoming:{ socket:{ remoteAddress:'::ffff:172.30.91.3' } } });
+      await db.query("UPDATE instance_settings SET signup_policy='invite'");
+      expect((await submit('unknown@sample.test')).status).toBe(200);
+      expect(sent).toEqual([]);
+      await db.query("UPDATE instance_settings SET signup_policy='open'");
+      const email = 'request.code@sample.test';
+      expect((await submit(email)).status).toBe(200);
+      expect((await submit(email)).status).toBe(429);
+      expect(sent).toHaveLength(1);
+      expect((await verify(email, sent[0]!)).status).toBe(200);
+      expect((await submit('unavailable@sample.test')).status).toBe(503);
+      expect((await db.query("SELECT FROM login_codes WHERE email='unavailable@sample.test'")).rowCount).toBe(0);
+      expect((await db.query("SELECT count FROM email_rate_limits WHERE key='login-ip:198.51.100.42'")).rows[0].count).toBe(4);
+    });
+
+    it('bounds guesses, rechecks exact signup domains and issues an HttpOnly browser cookie', async () => {
+      const allowed = 'browser@sample.test';
+      const refused = 'browser@other.sample.test';
+      await db.query("UPDATE instance_settings SET signup_policy='domain',signup_domains=ARRAY['sample.test']");
+      await issue(refused);
+      expect((await verify(refused, code)).status).toBe(401);
+      await issue(allowed);
+      for (let i=0; i<5; i++) expect((await verify(allowed, 'abcdef')).status).toBe(401);
+      expect((await verify(allowed, code)).status).toBe(401);
+      await issue(allowed);
+      const result = await verify(allowed, code);
+      expect(result.status).toBe(200);
+      expect(result.headers.get('Set-Cookie')).toMatch(/blok_session=.*HttpOnly/);
+      expect(await result.json()).not.toHaveProperty('token');
+    });
+  });
+
   it('reads public pages, honors ancestor shares, and hides private pages again on revocation', async () => {
     const read = (id: string) => app.request('/api/workspaces/demo/pages/' + id, { headers });
     expect((await read('public')).status).toBe(200);
@@ -86,7 +180,42 @@ describe.skipIf(!databaseUrl)('shell routes on the deployed PostgreSQL schema', 
     const winner = bodies[statuses.indexOf(200)]!;
     expect(await (await put(winner)).json()).toEqual({ version: '1' });
     const stored = await app.request(path, { headers: journal });
-    expect((await stored.text()).replaceAll(' ', '')).toBe(`{"data":${winner},"version":"1"}`);
+    expect((await stored.text()).replaceAll(' ', '')).toBe(`{"data":${winner},"version":"1","lineage":"L","sequence":"1"}`);
+  });
+
+  it('fences both projection writers by the canonical workspace of a newly created page', async () => {
+    await db.query(`INSERT INTO workspaces(id,slug,name) VALUES('other-room','w','Other');
+      INSERT INTO pages(id,workspace_id,metadata) VALUES ('selected-new','w','{}'),('outside-new','other-room','{}')`);
+    const data = '{"blocks":[]}';
+    const go = {version:'0',lineage:null,sequence:null};
+    const node = {version:'0',lineage:'lineage',sequence:'0',expected:{lineage:null,sequence:null}};
+    expect(await saveProjection(db,'selected-new',data,go,'w')).toBeUndefined();
+    expect(await saveProjection(db,'outside-new',data,node,'w')).toBeUndefined();
+    expect(await saveProjection(db,'selected-new',data,node,'w')).toBe('1');
+    expect(await saveProjection(db,'outside-new',data,go,'w')).toBe('1');
+  });
+
+  it('checks the exact journal head under the row lock and preserves the winning content', async () => {
+    const id = randomUUID();
+    const path = '/internal/documents/' + id;
+    const auth = {Authorization: 'Bearer ' + secret};
+    await db.query("INSERT INTO pages(id,workspace_id,metadata) VALUES($1,'w','{}')", [id]);
+    const outgoing = { ...auth, 'Blok-Doc-Version':'0', 'Blok-Doc-Lineage':'first', 'Blok-Doc-Sequence':'1',
+      'Blok-Doc-If-Match':'exact', 'Blok-Doc-Expected-Lineage':'', 'Blok-Doc-Expected-Sequence':'' };
+    const put = (headers: Record<string,string>, body: string) => app.request(path, {method:'PUT', headers, body});
+    const writes = await Promise.all(['first client','second client'].map(text => put(outgoing, JSON.stringify({text}))));
+    expect(writes.map(r => r.status).sort()).toEqual([200,409]);
+    const read = await app.request(path,{headers:auth});
+    expect(read.headers.get('Blok-Doc-Version')).toBe('1');
+    expect(read.headers.get('Blok-Doc-Lineage')).toBe('first');
+    expect(read.headers.get('Blok-Doc-Sequence')).toBe('1');
+    const winner = await read.json();
+    expect(winner).toMatchObject({version:'1',lineage:'first',sequence:'1'});
+    const next = {...outgoing,'Blok-Doc-Version':'1','Blok-Doc-Sequence':'2','Blok-Doc-Expected-Lineage':'first','Blok-Doc-Expected-Sequence':'1'};
+    expect((await put({...next,'Blok-Doc-Expected-Sequence':'0'},'{}')).status).toBe(409);
+    expect((await put({...next,'Blok-Doc-Lineage':'different'},'{}')).status).toBe(409);
+    expect(await (await app.request(path,{headers:auth})).json()).toEqual(winner);
+    expect((await put(next,'{"text":"second edit"}')).status).toBe(200);
   });
 
   describe('workspace index writes', () => {

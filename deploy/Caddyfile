@@ -3,6 +3,13 @@
   handle /internal/* {
     respond 404
   }
+  @shellTickets {
+    method GET HEAD
+    path_regexp shellTickets ^/api/(blok-ticket|workspaces/[^/]+/ticket)$
+  }
+  handle @shellTickets {
+    reverse_proxy {$BLOK_SHELL_TICKET_UPSTREAM:app:8080}
+  }
   @shellReads {
     method GET HEAD
     path_regexp shellReads ^/api/(session|workspaces|workspaces/[^/]+/(index|members|pages/[^/]+(/access)?))$
@@ -24,6 +31,41 @@
   handle @shellDelete {
     reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
   }
+  @shellAuth {
+    method POST
+    path /api/auth/request-code /api/auth/verify-code /api/auth/logout
+  }
+  handle @shellAuth {
+    reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
+  }
+  @mcpTokenReads {
+    method GET HEAD
+    path /api/mcp/tokens
+  }
+  handle @mcpTokenReads {
+    reverse_proxy {$BLOK_SHELL_READ_UPSTREAM:app:8080}
+  }
+  @mcpTokenWrites {
+    method OPTIONS POST DELETE
+    path_regexp mcpTokenWrites ^/api/mcp/tokens(/[^/]+(/rotate)?)?$
+  }
+  handle @mcpTokenWrites {
+    reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
+  }
+  @workspaceSearch {
+    method POST
+    path_regexp workspaceSearch ^/api/workspaces/[^/]+/search$
+  }
+  handle @workspaceSearch {
+    reverse_proxy {$BLOK_SHELL_READ_UPSTREAM:app:8080}
+  }
+  @invites {
+    method GET HEAD OPTIONS POST DELETE
+    path_regexp invites ^/api/workspaces/[^/]+/invites(/[^/]+)?$
+  }
+  handle @invites {
+    reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
+  }
   @membership {
     method PATCH DELETE
     path_regexp membership ^/api/workspaces/[^/]+/members/[^/]+$
@@ -32,8 +74,8 @@
     reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
   }
   @teamspaces {
-    method GET HEAD OPTIONS POST PATCH DELETE
-    path_regexp teamspaces ^/api/workspaces/[^/]+/teamspaces(/[^/]+(/members(/[^/]+)?)?)?$
+    method GET HEAD OPTIONS POST PUT PATCH DELETE
+    path_regexp teamspaces ^/api/workspaces/[^/]+/teamspaces(/[^/]+(/(members|pages)(/[^/]+)?)?)?$
   }
   handle @teamspaces {
     reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}

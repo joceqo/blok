@@ -1,17 +1,17 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import { findOrCreateUserByEmail } from '@/auth/users.js';
-import { isValidEmail, normalizeEmail } from '@/auth/codes.js';
-import type { DbVariables } from '@/middleware/db.js';
-import type { SessionVariables } from '@/middleware/session.js';
-import { requireUser } from '@/middleware/require-user.js';
-import { requireWorkspaceRole } from '@/http/workspace-access.js';
-import { users, workspaceInvites, workspaceMembers } from '@/db/schema.js';
-import { withTransaction } from '@/db/transaction.js';
-import { parseWorkspaceRole } from '@/workspaces/membership.js';
-import { validateInviteAccept } from '@/workspaces/invite-accept.js';
-import { sendWorkspaceInviteEmail } from '@/mail/smtp.js';
+import { findOrCreateUserByEmail } from '../auth/users.ts';
+import { isValidEmail, normalizeEmail } from '../auth/codes.ts';
+import type { DbVariables } from '../middleware/db.ts';
+import type { SessionVariables } from '../middleware/session.ts';
+import { requireUser } from '../middleware/require-user.ts';
+import { requireWorkspaceRole } from '../http/workspace-access.ts';
+import { users, workspaceInvites, workspaceMembers } from '../db/schema.ts';
+import { withTransaction } from '../db/transaction.ts';
+import { parseWorkspaceRole } from '../workspaces/membership.ts';
+import { validateInviteAccept } from '../workspaces/invite-accept.ts';
+import { sendWorkspaceInviteEmail } from '../mail/smtp.ts';
 
 type Env = { Variables: DbVariables & SessionVariables };
 

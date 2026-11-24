@@ -1,7 +1,7 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
 
-import type { PgPool } from './pool.js';
-import * as schema from './schema.js';
+import type { PgPool } from './pool.ts';
+import * as schema from './schema.ts';
 
 export type Database = ReturnType<typeof createDb>;
 

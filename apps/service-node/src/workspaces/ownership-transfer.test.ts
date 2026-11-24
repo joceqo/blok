@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { validateOwnershipTransfer } from '@/workspaces/ownership-transfer.js';
+import { validateOwnershipTransfer } from './ownership-transfer.ts';
 
 describe('validateOwnershipTransfer', () => {
   it('allows owner to transfer to an admin', () => {

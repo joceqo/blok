@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseWorkspaceRole } from './membership.js';
+import { parseWorkspaceRole } from './membership.ts';
 
 describe('parseWorkspaceRole', () => {
   it('accepts known roles', () => {

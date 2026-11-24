@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { slugFromName, validateWorkspaceSlug } from './slug.js';
+import { slugFromName, validateWorkspaceSlug } from './slug.ts';
 
 describe('validateWorkspaceSlug', () => {
   it('accepts a lowercase slug', () => {

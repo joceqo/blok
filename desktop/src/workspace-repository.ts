@@ -22,6 +22,11 @@ export function workspaceRepository(workspace: WorkspaceRef) {
   }
   return {
     ref,
+    async searchSources(query: string, signal: AbortSignal) {
+      return (await request<{ sources: {id: string; title: string; excerpt: string}[] }>(`${base}/search`, {
+        method: 'POST', body: JSON.stringify({query}), signal,
+      })).sources;
+    },
     async loadIndex(): Promise<WorkspaceIndex> {
       if (ref.kind === 'local') return loadIndex(ref);
       const value = await request<WorkspaceIndex & { revision: number }>(`${base}/index`);
@@ -37,9 +42,9 @@ export function workspaceRepository(workspace: WorkspaceRef) {
       if (!entry) throw new Error('Page not found');
       return entry;
     },
-    async refreshIndex(accept: () => boolean): Promise<WorkspaceIndex | null> {
+    async refreshIndex(accept: () => boolean, signal?: AbortSignal): Promise<WorkspaceIndex | null> {
       if (ref.kind !== 'remote') return null;
-      const value = await request<WorkspaceIndex & {revision: number}>(`${base}/index`);
+      const value = await request<WorkspaceIndex & {revision: number}>(`${base}/index`, {signal});
       // A focus refresh can finish after our PUT has already committed. Its older
       // snapshot would rewind both the sidebar and the next conditional write.
       if (!accept() || (revision !== null && value.revision < revision)) return null;

@@ -5,7 +5,7 @@ import {
   collectDescendantIds,
   type PageTreeRow,
   wouldCreatePageCycle,
-} from './tree.js';
+} from './tree.ts';
 
 function row(
   id: string,

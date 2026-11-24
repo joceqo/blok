@@ -7,13 +7,10 @@
   "engines": {
     "node": ">=20.19.0"
   },
-  "imports": {
-    "@/*": "./dist/*"
-  },
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
-    "build": "tsc && tsc-alias",
+    "build": "tsc",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "start:shell": "node dist/shell/main.js"
@@ -22,12 +19,12 @@
     "@hono/node-server": "^1.19.6",
     "drizzle-orm": "^0.44.7",
     "hono": "^4.10.6",
+    "jsonc-parser": "3.3.1",
     "pg": "^8.16.3"
   },
   "devDependencies": {
     "@types/node": "^22.19.1",
     "@types/pg": "^8.15.6",
-    "tsc-alias": "^1.9.10",
     "tsx": "^4.20.6",
     "typescript": "^6.0.3",
     "vitest": "^5.0.5"

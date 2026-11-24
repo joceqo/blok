@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canRunFirstAdminSetup, needsSetup } from '@/setup/status.js';
+import { canRunFirstAdminSetup, needsSetup } from './status.ts';
 
 describe('needsSetup', () => {
   it('is true when there are no users', () => {

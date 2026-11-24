@@ -252,16 +252,17 @@ yarn lint    # ESLint + TypeScript
 
 ### Product tests
 
-Use the Node version in `.nvmrc`. Install the root editor dependencies and the two product packages once per checkout, or again when their lockfiles change.
+Use the Node version in `.nvmrc`. Install the root editor dependencies and the three product packages once per checkout, or again when their lockfiles change.
 
 ```bash
 yarn install --immutable
 npm ci --prefix desktop
 npm ci --prefix apps/service-node
+npm ci --prefix packages/server/node
 npm test
 ```
 
-`npm test` runs the desktop shell and Node service unit tests in parallel with up to four Vitest workers in total. They cover page permissions, validation, workspace merging, persistence and UI behaviour. The command uses installed dependencies. Tests named `*.integration.test.ts` belong to the opt-in tier. To select one area, run `npm run test:desktop` or `npm run test:service`. Both accept Vitest file filters after `--`.
+`npm test` runs the desktop shell, Node service and collaboration room tests in parallel with up to four Vitest workers in total. They cover page permissions, validation, workspace merging, persistence and UI behaviour. The command uses installed dependencies. Tests named `*.integration.test.ts` belong to the opt-in tier. To select one area, run `npm run test:desktop`, `npm run test:service` or `npm run test:room`. All three accept Vitest file filters after `--`.
 
 | On-demand checks | Command |
 | --- | --- |

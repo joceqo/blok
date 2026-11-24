@@ -1,13 +1,13 @@
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import { pageDocuments, pages } from '@/db/schema.js';
-import type { DbVariables } from '@/middleware/db.js';
-import { requireUser } from '@/middleware/require-user.js';
-import type { SessionVariables } from '@/middleware/session.js';
-import { canMintTicketForDoc } from '@/tickets/can-mint-ticket-for-doc.js';
-import { blokTicket } from '@/tickets/hmac.js';
-import { memberRole } from '@/workspaces/membership.js';
+import { pageDocuments, pages } from '../db/schema.ts';
+import type { DbVariables } from '../middleware/db.ts';
+import { requireUser } from '../middleware/require-user.ts';
+import type { SessionVariables } from '../middleware/session.ts';
+import { canMintTicketForDoc } from '../tickets/can-mint-ticket-for-doc.ts';
+import { blokTicket } from '../tickets/hmac.ts';
+import { memberRole } from '../workspaces/membership.ts';
 
 type Env = { Variables: DbVariables & SessionVariables };
 

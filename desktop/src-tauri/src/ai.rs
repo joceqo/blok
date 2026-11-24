@@ -13,6 +13,8 @@ const KEYCHAIN_SERVICE: &str = "dev.notiooon.blok.ai";
 const KEYCHAIN_ACCOUNT: &str = "openai-personal";
 const MODELS_URL: &str = "https://api.openai.com/v1/models";
 const RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
+mod editor_request;
+
 const MAX_INPUT: usize = 64 * 1024;
 const MAX_SYSTEM: usize = 16 * 1024;
 const MAX_MESSAGES: usize = 32;
@@ -453,6 +455,24 @@ pub async fn ai_local_respond(
 ) -> Result<AiResponse, String> {
     let config = credential()?;
     let body = local_request(&config, &model, &system, &messages)?;
+    parse_response(&send_response(config, body, run_id, &state).await?)
+}
+
+#[tauri::command]
+pub async fn ai_local_editor_respond(
+    request: Value,
+    run_id: String,
+    state: tauri::State<'_, LocalAiRuns>,
+) -> Result<Value, String> {
+    let body = editor_request::body(&request)?;
+    let config = credential()?;
+    if config.api_key.is_empty() {
+        return Err("Ajoutez d’abord votre clé API OpenAI.".into());
+    }
+    send_response(config, body, run_id, &state).await
+}
+
+async fn send_response(config: Credential, body: Value, run_id: String, state: &LocalAiRuns) -> Result<Value, String> {
     let (cancelled, _guard) = state.register(run_id)?;
     let client = http_client()?;
     // Cancellation drops the HTTP future and connection; store:false is set in the payload.
@@ -462,7 +482,7 @@ pub async fn ai_local_respond(
         result = async {
             let response = client.post(RESPONSES_URL).bearer_auth(&config.api_key).json(&body).send().await
                 .map_err(|_| "Impossible de joindre OpenAI ou délai de réponse dépassé.")?;
-            parse_response(&bounded_json(response).await?)
+            bounded_json(response).await
         } => result,
     }
 }

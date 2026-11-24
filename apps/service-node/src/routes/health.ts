@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 
-import { readServiceVersion } from '@/setup/version.js';
+import { readServiceVersion } from '../setup/version.ts';
 
 export const healthRoutes = new Hono();
 

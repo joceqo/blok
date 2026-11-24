@@ -9,6 +9,21 @@ afterEach(()=>{mounted.splice(0).forEach(handle=>handle.destroy());document.body
 function mount(options: Parameters<typeof mountAgentAssistant>[0]) {const handle=mountAgentAssistant(options);mounted.push(handle);document.body.append(handle.element);handle.open();return handle;}
 function ask(handle:AgentAssistantHandle,text='Question'){const field=handle.element.querySelector<HTMLTextAreaElement>('textarea')!;field.value=text;field.dispatchEvent(new Event('input',{bubbles:true}));handle.element.querySelector('form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));}
 describe('host assistant provider adapters',()=>{
+  it('opens the editor separately from chat and immediately hides the action on permission loss', async()=>{
+    const editPage={available:vi.fn(()=>true),open:vi.fn()};
+    const handle=mount({getPageText:()=>'',openSettings:vi.fn(),editPage,listProviders:async()=>[{id:'openai:test',label:'OpenAI'}]});
+    await handle.refreshProviders();
+    const edit=handle.element.querySelector<HTMLButtonElement>('[data-blok-agent-edit-page]')!;
+    expect(edit.hidden).toBe(false);
+    edit.click();
+    expect(editPage.open).toHaveBeenCalledOnce();
+    expect(handle.element.querySelector<HTMLElement>('[data-blok-agent-panel]')!.hidden).toBe(true);
+    editPage.available.mockReturnValue(false);
+    handle.refreshPageActions();
+    expect(edit.hidden).toBe(true);
+    edit.click();
+    expect(editPage.open).toHaveBeenCalledOnce();
+  });
   it('keeps opaque model IDs through composer selection and renders the captured provider label',async()=>{
     const response: AgentModel=vi.fn(async()=>({content:[{type:'text',text:'OpenAI answer'}],stop_reason:'end_turn'}));
     const modelFor=vi.fn(()=>response), selected=vi.fn();
@@ -54,4 +69,25 @@ describe('host assistant provider adapters',()=>{
     const handle=mount({getPageText:()=>'',openSettings:()=>undefined,listProviders:async()=>{throw new Error('Session expirée');}});await handle.refreshProviders();
     expect(handle.element.querySelector<HTMLButtonElement>('[data-blok-chat-provider-trigger]')!.disabled).toBe(true);expect(handle.element.textContent).toContain('Session expirée');
   });
+});
+
+it('sends only fresh search results, links the source page and omits sourced turns from later requests', async () => {
+  const find = vi.fn().mockResolvedValue([{id:'p1', title:'Budget', excerpt:'Trente euros'}]);
+  const open = vi.fn();
+  const model = vi.fn<AgentModel>().mockResolvedValue({content:[{type:'text',text:'Trente [1]'}],stop_reason:'end_turn'});
+  const handle = mount({ getPageText:()=>'Page active', openSettings:()=>{}, workspaceSearch:{find,open},
+    listProviders:async()=>[{id:'model',label:'Modèle'}], modelFor:()=>model });
+  const toggle = handle.element.querySelector<HTMLInputElement>('[data-blok-workspace-search] input')!;
+  toggle.checked = true;
+  await handle.refreshProviders();
+  ask(handle, 'Quel budget ?');
+  await vi.waitFor(() => expect(handle.element.querySelector('[data-blok-answer-sources] button')).toBeTruthy());
+  expect(find).toHaveBeenCalledWith('Quel budget ?', expect.any(AbortSignal));
+  expect(JSON.stringify(model.mock.calls[0]![0].messages)).toContain('Trente euros');
+  handle.element.querySelector<HTMLButtonElement>('[data-blok-answer-sources] button')!.click();
+  expect(open).toHaveBeenCalledWith('p1');
+  toggle.checked = false;
+  ask(handle, 'Autre question');
+  await vi.waitFor(() => expect(model).toHaveBeenCalledTimes(2));
+  expect(JSON.stringify(model.mock.calls[1]![0].messages)).not.toContain('Trente');
 });

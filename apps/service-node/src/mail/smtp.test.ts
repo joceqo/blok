@@ -25,7 +25,7 @@ describe('sendWorkspaceInviteEmail', () => {
 
   it('no-ops with sent:false when mailer host is unset', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { sendWorkspaceInviteEmail } = await import('./smtp.js');
+    const { sendWorkspaceInviteEmail } = await import('./smtp.ts');
 
     const result = await sendWorkspaceInviteEmail('invitee@example.com', 'invite-id', 'ws-id');
 
@@ -37,7 +37,7 @@ describe('sendWorkspaceInviteEmail', () => {
     process.env.AUTH_LOG_CODE = '1';
     process.env.PUBLIC_URL = 'https://app.example';
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { sendWorkspaceInviteEmail } = await import('./smtp.js');
+    const { sendWorkspaceInviteEmail } = await import('./smtp.ts');
 
     await sendWorkspaceInviteEmail('invitee@example.com', 'invite-id', 'ws-id');
 
@@ -76,7 +76,7 @@ describe('sendAuthCode', () => {
 
   it('no-ops with sent:false when mailer host is unset', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { sendAuthCode } = await import('./smtp.js');
+    const { sendAuthCode } = await import('./smtp.ts');
 
     const result = await sendAuthCode('user@example.com', '123456');
 
@@ -87,7 +87,7 @@ describe('sendAuthCode', () => {
   it('logs the code when AUTH_LOG_CODE=1 and host is unset', async () => {
     process.env.AUTH_LOG_CODE = '1';
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const { sendAuthCode } = await import('./smtp.js');
+    const { sendAuthCode } = await import('./smtp.ts');
 
     await sendAuthCode('user@example.com', '654321');
 

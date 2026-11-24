@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveWorkspaceSlugAvailability } from './slug-availability.js';
-import { validateWorkspaceSlug } from './slug.js';
+import { resolveWorkspaceSlugAvailability } from './slug-availability.ts';
+import { validateWorkspaceSlug } from './slug.ts';
 
 describe('resolveWorkspaceSlugAvailability', () => {
   it('reports available when slug is valid and unused', () => {

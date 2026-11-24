@@ -1,4 +1,4 @@
-import type { Database } from './index.js';
+import type { Database } from './index.ts';
 
 type TxDb = Parameters<Parameters<Database['transaction']>[0]>[0];
 

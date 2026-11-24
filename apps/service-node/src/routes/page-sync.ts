@@ -1,14 +1,14 @@
 import { eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import type { Database } from '@/db/index.js';
-import { pageDocuments, pages } from '@/db/schema.js';
-import { requireWorkspaceRole } from '@/http/workspace-access.js';
-import type { DbVariables } from '@/middleware/db.js';
-import { requireUser } from '@/middleware/require-user.js';
-import type { SessionVariables } from '@/middleware/session.js';
-import { mintDocumentStateAuthorization } from '@/documents/ticket-forward.js';
-import { forwardToSidecar } from '@/sidecar/client.js';
+import type { Database } from '../db/index.ts';
+import { pageDocuments, pages } from '../db/schema.ts';
+import { requireWorkspaceRole } from '../http/workspace-access.ts';
+import type { DbVariables } from '../middleware/db.ts';
+import { requireUser } from '../middleware/require-user.ts';
+import type { SessionVariables } from '../middleware/session.ts';
+import { mintDocumentStateAuthorization } from '../documents/ticket-forward.ts';
+import { forwardToSidecar } from '../sidecar/client.ts';
 
 type Env = { Variables: DbVariables & SessionVariables };
 

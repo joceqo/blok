@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 
-import { loadConfig } from '@/config.js';
-import type { Database } from '@/db/index.js';
-import { checkSidecarReachable } from '@/sidecar/client.js';
-import { readServiceVersion } from '@/setup/version.js';
-import { countUsers } from '@/setup/user-count.js';
+import { loadConfig } from '../config.ts';
+import type { Database } from '../db/index.ts';
+import { checkSidecarReachable } from '../sidecar/client.ts';
+import { readServiceVersion } from '../setup/version.ts';
+import { countUsers } from '../setup/user-count.ts';
 
 export interface InstanceStatus {
   ready: boolean;

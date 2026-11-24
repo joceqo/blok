@@ -8,6 +8,10 @@ The desktop shell uses the PostgreSQL schema in `apps/service/schema.sql`, initi
 
 | Request | Purpose |
 | --- | --- |
+| `POST /api/auth/request-code`, `/verify-code`, `/logout` | Issue and verify a code or close a session. The private mail transport uses the configured Go sender. |
+| `GET/POST /api/workspaces/:slug/invites` and `DELETE .../invites/:id` | List, deliver and revoke workspace invitations. |
+| `POST /api/workspaces/:slug/search` | Find accessible pages by title or saved block text. |
+| `GET/POST /api/mcp/tokens`, `DELETE /api/mcp/tokens/:id`, `POST /api/mcp/tokens/:id/rotate` | List, issue, revoke and rotate the signed-in account’s MCP tokens. The Go MCP endpoint checks the same PostgreSQL records on each request. |
 | `GET /api/session` and `GET /api/workspaces` | Load the signed-in user and memberships with a browser cookie or native bearer token. |
 | `GET /api/workspaces/:slug/index` | Read the page tree, trash, access levels and workspace revision from one database snapshot. |
 | `PUT /api/workspaces/:slug/index` | Create, rename, reorder, move, trash or remove pages in one transaction, conditional on the last observed workspace revision. |
@@ -15,7 +19,7 @@ The desktop shell uses the PostgreSQL schema in `apps/service/schema.sql`, initi
 | `GET/PUT /api/workspaces/:slug/pages/:id/access` | Read effective permissions or change page visibility. |
 | `PUT/DELETE /api/workspaces/:slug/pages/:id/shares/:target` | Grant, update or revoke a direct share for a workspace member. |
 | `GET /api/workspaces/:slug/members` and `PATCH/DELETE /api/workspaces/:slug/members/:userId` | List workspace members, change a role, or remove a member and their grants. |
-| `/api/workspaces/:slug/teamspaces` | List and manage teams and team memberships in the workspace. |
+| `/api/workspaces/:slug/teamspaces` | List and manage teams, their members and linked pages. |
 | `GET/PUT /internal/documents/:id` | Load or persist a collaboration projection using the service credential and document revision. |
 | `GET /healthz` | Check PostgreSQL connectivity. |
 
@@ -25,7 +29,7 @@ The shell sends `{ revision, pages, trash }` when saving its sidebar and receive
 
 After committing, Node asks the journal host at `127.0.0.1:8080` to recheck open collaboration connections. Enable index and page sharing writes only with the product version that serves the authenticated `/internal/workspaces/:id/recheck-access` callback. A callback failure returns 503 after the transaction has committed; reload the index to recover its current revision.
 
-The Go service continues to own login, workspace administration, tickets, WebSockets and the operation journal. Live state can lead the PostgreSQL projection until a checkpoint, room eviction or shutdown flushes the journal. Keep the internal callback private. The standalone development API documented below uses its own schema and database.
+The standard Docker demo still uses Go for mail delivery, instance administration, tickets, live WebSockets and the operation journal. Live state can lead the PostgreSQL projection until a checkpoint, room eviction or shutdown flushes the journal. Keep the internal callback private. The standalone development API documented below uses its own schema and database.
 
 Run the focused shell tests with `npm test -- src/shell`. Set `SHELL_TEST_DATABASE_URL` to include the PostgreSQL checks. They create and remove a unique schema in that database.
 
@@ -202,7 +206,7 @@ All under `/api/admin/*`: signed-in user + `requireAdmin` (`ADMIN_USER_IDS` when
 
 ## Imports
 
-Cross-module paths use the `@/` alias (`package.json` `imports` → `dist/` at runtime; `tsconfig` `paths` → `src/` for typecheck and `tsx`/`vitest`). Same directory keeps `./foo.js`; never `../../`.
+Write local module imports with their source extension, for example `import type { User } from '../models/User.ts'`. This package's TypeScript compiler rewrites those paths to `.js` in `dist/` for Node's ESM runtime. Run `npm run build` to compile both entry points.
 
 ## Scripts
 

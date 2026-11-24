@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parsePresetConfig } from './preset-config.js';
+import { parsePresetConfig } from './preset-config.ts';
 
 describe('parsePresetConfig (read/edit roles)', () => {
   it('accepts valid read and edit workspace roles', () => {

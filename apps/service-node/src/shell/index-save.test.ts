@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseIndex, planIndexSave } from './index-save.js';
-import type { IndexPage } from './workspace-index.js';
+import { parseIndex, planIndexSave } from './index-save.ts';
+import type { IndexPage } from './workspace-index.ts';
 
 const meta = (id: string, parentId: string | null = null) => ({ id, title: id, parentId });
 const row = (id: string, fields: Partial<IndexPage> = {}): IndexPage => ({

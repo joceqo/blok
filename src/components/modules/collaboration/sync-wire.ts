@@ -856,7 +856,7 @@ function peekVarUint(arr: Uint8Array, pos: number): VarUintPeek | null {
     return null;
   }
 
-  if (terminator === MAX_VARUINT_BYTES - 1 && (window[terminator] & 0x7f) > 1) {
+  if (terminator === MAX_VARUINT_BYTES - 1 && (window[terminator]! & 0x7f) > 1) {
     return null;
   }
 

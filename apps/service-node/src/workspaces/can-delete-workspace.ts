@@ -1,4 +1,4 @@
-import type { WorkspaceRole } from '@/permissions.js';
+import type { WorkspaceRole } from '../permissions.ts';
 
 export type CanDeleteWorkspaceInput = {
   actorRole: WorkspaceRole;

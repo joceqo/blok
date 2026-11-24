@@ -1,4 +1,4 @@
-import { normalizeEmail } from '@/auth/codes.js';
+import { normalizeEmail } from '../auth/codes.ts';
 
 export type InviteAcceptBlockReason = 'already_accepted' | 'email_mismatch';
 

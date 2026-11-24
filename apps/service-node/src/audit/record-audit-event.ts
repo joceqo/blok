@@ -1,7 +1,7 @@
-import type { Database } from '@/db/index.js';
-import { auditEvents } from '@/db/schema.js';
+import type { Database } from '../db/index.ts';
+import { auditEvents } from '../db/schema.ts';
 
-import { formatAuditAction, type AuditActionInput } from '@/audit/audit-actions.js';
+import { formatAuditAction, type AuditActionInput } from './audit-actions.ts';
 
 type DbExecutor = Pick<Database, 'insert'>;
 

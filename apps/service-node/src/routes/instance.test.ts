@@ -5,7 +5,7 @@ const fetchMock = vi.hoisted(() => vi.fn<typeof fetch>());
 
 vi.stubGlobal('fetch', fetchMock);
 
-import { createInstanceRoutes } from './instance.js';
+import { createInstanceRoutes } from './instance.ts';
 
 describe('GET /api/instance', () => {
   let savedSidecarUrl: string | undefined;

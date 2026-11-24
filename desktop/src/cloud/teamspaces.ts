@@ -7,6 +7,13 @@ import { CloudApiError, CloudClient } from './client';
 import './workspace-settings.css';
 import './teamspaces.css';
 
+interface TeamPage { id: string; title: string }
+export interface TeamPageNavigation {
+  pages(): readonly TeamPage[];
+  canEdit(id: string): boolean;
+  open(id: string, signal: AbortSignal): Promise<void>;
+  onClose?(): void;
+}
 interface Teamspace { id: string; name: string }
 interface Member { userId: string; email: string }
 
@@ -27,14 +34,14 @@ function errorMessage(cause: unknown): string {
   if (!(cause instanceof CloudApiError)) return 'La demande a échoué. Réessayez.';
   if (cause.status === 401) return 'Votre session a expiré. Reconnectez-vous pour continuer.';
   if (cause.status === 403) return 'Vos droits ne permettent plus cette action. Actualisez les espaces.';
-  if (cause.status === 404) return 'Cette équipe ou ce membre est introuvable. Actualisez les espaces.';
+  if (cause.status === 404) return 'Cet élément est introuvable ou son accès a changé. Actualisez les espaces.';
   if (cause.status === 409) return 'Cette personne fait déjà partie de l’équipe. Actualisez les membres.';
   if (cause.message === 'not_workspace_member') return 'Cette personne ne fait plus partie de l’espace de travail.';
   if (cause.status === 0) return cause.message;
   return 'Le serveur n’a pas pu terminer la demande. Réessayez.';
 }
 
-export function openTeamspaces(ref: RemoteWorkspace): void {
+export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigation): () => void {
   const client = new CloudClient({ origin: ref.server,
     sessionAdapter: '__TAURI_INTERNALS__' in window ? nativeSessionAdapter(ref.server) : undefined });
   const workspace = `/api/workspaces/${encodeURIComponent(ref.workspaceId)}`;
@@ -72,13 +79,14 @@ export function openTeamspaces(ref: RemoteWorkspace): void {
   let teams: Teamspace[] = [];
   let selected: Teamspace | undefined;
   let members: Member[] = [];
+  let peoplePanel = el('div');
   let picker: ChoiceControl<string> | undefined;
   let reading = new AbortController();
   let writing = false;
   let closed = false;
   const dialog = openModalDialog({ content: overlay, surface: panel, labelledBy: heading.id,
     initialFocus: () => close, onDismiss: () => dialog.close(),
-    onClose: () => { closed = true; reading.abort(); picker?.destroy(); },
+    onClose: () => { closed = true; reading.abort(); picker?.destroy(); navigation.onClose?.(); },
   });
 
   function startView(): AbortSignal {
@@ -112,7 +120,7 @@ export function openTeamspaces(ref: RemoteWorkspace): void {
     nav.replaceChildren(el('p', 'Chargement des espaces…'));
     try {
       if (refreshRole) {
-        const current = await client.workspace(ref.workspaceId);
+        const current = await client.workspace(ref.workspaceId, signal);
         if (signal.aborted) return;
         canManage = current.role === 'admin' || current.role === 'member';
       }
@@ -132,16 +140,18 @@ export function openTeamspaces(ref: RemoteWorkspace): void {
     const signal = startView();
     selected = team;
     renderNav();
-    detail.append(el('h3', team.name), el('p', 'Chargement des membres…'));
+    members = [];
+    renderTeam(team);
+    peoplePanel.replaceChildren(el('p', 'Chargement des membres…'));
     if (focus) detail.focus();
     try {
       const data = await client.request<{members: Member[]}>(url(team) + '/members', { signal });
       if (signal.aborted) return;
       members = data.members;
-      renderTeam(team);
+      renderMembers(team);
     } catch (cause) {
       if (signal.aborted) return;
-      detail.replaceChildren(el('h3', team.name)); showError(cause);
+      peoplePanel.replaceChildren(); showError(cause);
     }
   }
   async function mutate<T>(path: string, method: string, body: object | undefined, done: (value: T) => void): Promise<void> {
@@ -149,16 +159,17 @@ export function openTeamspaces(ref: RemoteWorkspace): void {
     writing = true; nav.inert = true; detail.inert = true; error.hidden = true;
     panel.setAttribute('aria-busy', 'true');
     let result: T;
+    const signal = reading.signal;
     try {
-      result = await client.request<T>(path, { method, body: body ? JSON.stringify(body) : undefined });
+      result = await client.request<T>(path, { method, signal, body: body ? JSON.stringify(body) : undefined });
     } catch (cause) {
-      showError(cause);
+      if (!signal.aborted) showError(cause);
       return;
     } finally {
       writing = false; nav.inert = false; detail.inert = false;
       panel.removeAttribute('aria-busy');
     }
-    if (!closed) done(result);
+    if (!signal.aborted) done(result);
   }
   function nameForm(team?: Teamspace): void {
     if (writing || !canManage) return;
@@ -190,7 +201,7 @@ export function openTeamspaces(ref: RemoteWorkspace): void {
     if (writing || !canManage) return;
     startView();
     const cancel = action('Annuler', () => { void openTeam(team, true); });
-    detail.append(el('h3', `Supprimer « ${team.name} » ?`), el('p', 'La liste des membres de cette équipe sera supprimée.'),
+    detail.append(el('h3', `Supprimer « ${team.name} » ?`), el('p', 'Ses membres et ses liens vers les pages seront retirés. Les pages resteront dans l’espace de travail.'),
       cancel, action('Confirmer la suppression', () => {
         void mutate(url(team), 'DELETE', undefined, () => { selected = undefined; void loadDirectory(); });
       }));
@@ -204,23 +215,111 @@ export function openTeamspaces(ref: RemoteWorkspace): void {
       controls.append(action('Renommer', () => nameForm(team)), action('Supprimer', () => removeForm(team)));
       detail.append(controls);
     }
-    detail.append(el('h4', `Membres (${members.length})`));
-    if (!members.length) detail.append(el('p', 'Aucun membre dans cette équipe.'));
+    peoplePanel = el('div');
+    peoplePanel.className = 'teamspaces-content';
+    detail.append(teamPages(team, reading.signal), peoplePanel);
+    renderMembers(team);
+  }
+  function renderMembers(team: Teamspace): void {
+    peoplePanel.replaceChildren();
+    peoplePanel.append(el('h4', `Membres (${members.length})`));
+    if (!members.length) peoplePanel.append(el('p', 'Aucun membre dans cette équipe.'));
     const list = el('ul');
     for (const member of members) {
       const row = el('li'); row.append(el('span', member.email));
       if (canManage) {
         const remove = action('Retirer', () => {
           void mutate(url(team) + '/members/' + encodeURIComponent(member.userId), 'DELETE', undefined, () => {
-            members = members.filter((item) => item.userId !== member.userId); renderTeam(team); detail.focus();
+            members = members.filter((item) => item.userId !== member.userId); renderMembers(team); detail.focus();
           });
         });
         remove.setAttribute('aria-label', `Retirer ${member.email} de l’équipe`); row.append(remove);
       }
       list.append(row);
     }
-    detail.append(list);
-    if (canManage) detail.append(action('Ajouter un membre', () => { void addForm(team); }));
+    peoplePanel.append(list);
+    if (canManage) peoplePanel.append(action('Ajouter un membre', () => { void addForm(team); }));
+  }
+  function teamPages(team: Teamspace, signal: AbortSignal): HTMLElement {
+    const region = el('div');
+    region.className = 'teamspaces-content';
+    region.setAttribute('role', 'region');
+    region.setAttribute('aria-label', 'Pages de l’équipe');
+    const path = url(team) + '/pages';
+    let attached: TeamPage[] = [];
+    let pagePicker: ChoiceControl<string> | undefined;
+    signal.addEventListener('abort', () => pagePicker?.destroy(), {once: true});
+
+    function editable(id: string): boolean {
+      return canManage && navigation.canEdit(id);
+    }
+    async function openPage(id: string): Promise<void> {
+      try {
+        await navigation.open(id, signal);
+        if (!signal.aborted) dialog.close();
+      } catch (cause) {
+        if (!signal.aborted) showError(cause);
+      }
+    }
+    function writeLink(id: string, method: 'PUT' | 'DELETE'): void {
+      if (signal.aborted) return;
+      if (!editable(id) || !navigation.pages().some((page) => page.id === id)) { showError(new CloudApiError(403, '')); return; }
+      void mutate(path + '/' + encodeURIComponent(id), method, undefined, () => { void load(); });
+    }
+    function choosePage(): void {
+      const linked = new Set(attached.map((page) => page.id));
+      const candidates = navigation.pages().filter(({id}) => !linked.has(id) && editable(id));
+      region.replaceChildren(el('h4', 'Rattacher une page'));
+      const cancel = action('Annuler', render);
+      if (!candidates.length) {
+        region.append(el('p', 'Aucune autre page modifiable à rattacher.'), cancel); cancel.focus(); return;
+      }
+      const submit = action('Rattacher', () => { if (pagePicker?.value) writeLink(pagePicker.value, 'PUT'); }, true);
+      submit.disabled = true;
+      pagePicker = createChoice({ label: 'Choisir une page', value: '', searchable: true,
+        options: [{value: '', label: 'Rechercher une page…', disabled: true},
+          ...candidates.map((page) => ({ value: page.id, label: page.title || 'Sans titre' }))],
+        onChange: () => { submit.disabled = false; },
+      });
+      const controls = el('div'); controls.className = 'teamspaces-actions'; controls.append(cancel, submit);
+      region.append(pagePicker.element, el('p', 'Les droits de cette page se gèrent dans son menu Partager.'), controls);
+      pagePicker.element.focus();
+    }
+    function render(): void {
+      pagePicker?.destroy(); pagePicker = undefined;
+      region.replaceChildren(el('h4', `Pages de l’équipe (${attached.length})`));
+      if (!attached.length) region.append(el('p', 'Aucune page accessible rattachée à cette équipe.'));
+      const list = el('ul');
+      for (const page of attached) {
+        const row = el('li');
+        const title = page.title || 'Sans titre';
+        const open = action(title, () => { void openPage(page.id); });
+        open.className = 'teamspaces-page'; row.append(open);
+        if (editable(page.id)) {
+          const detach = action('Détacher', () => writeLink(page.id, 'DELETE'));
+          detach.setAttribute('aria-label', `Détacher ${title} de l’équipe`); row.append(detach);
+        }
+        list.append(row);
+      }
+      region.append(list);
+      if (canManage) region.append(action('Rattacher une page', choosePage));
+    }
+    async function load(): Promise<void> {
+      pagePicker?.destroy(); pagePicker = undefined;
+      region.replaceChildren(el('h4', 'Pages de l’équipe'), el('p', 'Chargement des pages…'));
+      try {
+        const data = await client.request<{pages: TeamPage[]}>(path, {signal});
+        if (signal.aborted) return;
+        attached = data.pages;
+        render();
+      } catch (cause) {
+        if (signal.aborted) return;
+        region.replaceChildren(el('h4', 'Pages de l’équipe'), el('p', errorMessage(cause)),
+          action('Actualiser les pages', () => { void load(); }));
+      }
+    }
+    void load();
+    return region;
   }
   async function addForm(team: Teamspace): Promise<void> {
     if (writing || !canManage) return;
@@ -256,4 +355,5 @@ export function openTeamspaces(ref: RemoteWorkspace): void {
     }
   }
   void loadDirectory();
+  return () => dialog.close();
 }

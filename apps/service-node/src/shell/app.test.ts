@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PgPool } from '../db/pool.js';
-import { createShellApp } from './app.js';
+import type { PgPool } from '../db/pool.ts';
+import { createShellApp } from './app.ts';
 
 const secret = 's'.repeat(32);
 const origins = new Set(['https://example.test', 'tauri://localhost']);
@@ -19,6 +19,14 @@ describe('shell API admission', () => {
     expect((await app.request('/api/session')).status).toBe(401);
     expect((await app.request('/api/workspaces/demo/members')).status).toBe(401);
     expect((await app.request('/api/workspaces/demo/members/target', { method: 'DELETE' })).status).toBe(401);
+  });
+
+  it('requires an account session on every MCP token-management route', async () => {
+    for (const [method,path] of [['GET',''],['POST',''],['POST','/key/rotate'],['DELETE','/key']] as const) {
+      const response = await app.request('/api/mcp/tokens'+path, {method});
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({error:'Sign in required'});
+    }
   });
 
   it('separates native and foreign origins', async () => {
@@ -44,11 +52,22 @@ describe('shell API admission', () => {
     expect((await put('{}')).status).toBe(413);
   });
 
+  it('rejects a legacy writer for the page assigned to a Node room', async () => {
+    vi.stubEnv('BLOK_NODE_ROOM_PAGE', 'selected');
+    try {
+      const api = createShellApp(unused, secret, origins);
+      const response = await api.request('/internal/documents/selected', {method:'PUT',headers:{ Authorization:'Bearer '+secret },body:'{}'});
+      expect(response.status).toBe(409);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('returns stored numeric JSON lexemes unchanged to the collaboration engine', async () => {
-    const db = { query: vi.fn().mockResolvedValue({ rows: [{ content: '{"id":9007199254740993}', version: '1' }] }) };
+    const db = { query: vi.fn().mockResolvedValue({ rows: [{ content: '{"id":9007199254740993}', version: '1', lineage: null, sequence: null }] }) };
     const withPage = createShellApp(db as unknown as PgPool, secret, origins);
     const res = await withPage.request('/internal/documents/p', { headers: { Authorization: 'Bearer ' + secret } });
-    expect(await res.text()).toBe('{"data":{"id":9007199254740993},"version":"1"}');
+    expect(await res.text()).toBe('{"data":{"id":9007199254740993},"version":"1","lineage":null,"sequence":null}');
     expect(res.headers.get('cache-control')).toBe('no-store');
   });
 });

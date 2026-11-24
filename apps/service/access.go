@@ -90,24 +90,46 @@ func (s *Service) isObserved(doc string) bool {
 	defer s.observedMu.Unlock()
 	return s.observed[doc] > 0
 }
-func (s *Service) recheckObserved(ctx context.Context) {
+func (s *Service) recheckObserved(ctx context.Context) error {
 	s.observedMu.Lock()
 	docs := make([]string, 0, len(s.observed))
 	for doc := range s.observed {
 		docs = append(docs, doc)
 	}
 	s.observedMu.Unlock()
+	var result error
 	for _, doc := range docs {
-		if ctx.Err() != nil {
-			return
+		if err := ctx.Err(); err != nil {
+			return errors.Join(result, err)
 		}
-		s.recheckDocument(ctx, doc)
+		result = errors.Join(result, s.recheckDocument(ctx, doc))
 	}
+	return result
+}
+
+func (s *Service) recheckSessionAccess(w http.ResponseWriter, r *http.Request) {
+	if !internalAuth(r, s.Config.InternalSecret) {
+		problem(w, http.StatusUnauthorized, "Internal authorization required")
+		return
+	}
+	if err := s.recheckObserved(r.Context()); err != nil {
+		problem(w, http.StatusServiceUnavailable, "Collaboration access recheck failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Service) recheckDocument(ctx context.Context, doc string) error {
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	_, err := s.Blok.RecheckAccess(bounded, doc)
+	owned, err := s.nodeOwnsRoom(bounded, doc)
+	if err != nil {
+		return err
+	}
+	if owned {
+		err = s.recheckNodeRoom(bounded, doc)
+	} else {
+		_, err = s.Blok.RecheckAccess(bounded, doc)
+	}
 	if err != nil && ctx.Err() == nil {
 		slog.Error("collaboration access recheck failed", "document", doc, "error", err)
 	}

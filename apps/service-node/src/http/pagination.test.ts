@@ -8,7 +8,7 @@ import {
   decodeTimeIdCursor,
   encodeTimeIdCursor,
   parseListPagination,
-} from '@/http/pagination.js';
+} from './pagination.ts';
 
 describe('parseListPagination', () => {
   it('is not paginated when limit and cursor are absent', () => {

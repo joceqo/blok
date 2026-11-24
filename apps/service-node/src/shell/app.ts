@@ -2,21 +2,31 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 
-import { registerIndexWrite } from './index-write.js';
-import type { PgPool } from '../db/pool.js';
-import { createWorkspaceMembers } from './workspace-members.js';
-import { createPageSharing } from './page-sharing.js';
-import { createAccessRecheck } from './recheck-access.js';
-import { readProjectionHeaders, saveProjection } from './projection.js';
-import { createShellTeamspaces } from './teamspaces.js';
-import { loadWorkspaceIndex } from './workspace-index.js';
-import { loadSession, loadVisiblePage, sessionDigest } from './session.js';
+import { roomTickets } from './room-tickets.ts';
+import { createMcpTokens } from './mcp-tokens.ts';
+import { createLoginMail, createRequestCode } from './request-code.ts';
+import { createShellAuth } from './auth.ts';
+import { registerIndexWrite } from './index-write.ts';
+import type { PgPool } from '../db/pool.ts';
+import { createInviteMail } from './invite-mail.ts';
+import { createWorkspaceInvites } from './workspace-invites.ts';
+import { createWorkspaceMembers } from './workspace-members.ts';
+import { createPageSharing } from './page-sharing.ts';
+import { createAccessRecheck, recheckLiveSessions } from './recheck-access.ts';
+import { type ProjectionHead, readProjectionHeaders, saveProjection } from './projection.ts';
+import { createWorkspaceSearch } from './workspace-search.ts';
+import { createShellTeamspaces } from './teamspaces.ts';
+import { loadWorkspaceIndex } from './workspace-index.ts';
+import { loadSession, loadVisiblePage, sessionDigest } from './session.ts';
 
 const digest = (input: string) => createHash('sha256').update(input).digest();
 
-export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>, recheckAccess = createAccessRecheck(secret)) {
+export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>, recheckAccess = createAccessRecheck(secret), inviteMail = createInviteMail(secret)) {
   if (secret.length < 32) throw new Error('INTERNAL_SECRET must have at least 32 characters');
   const expected = digest('Bearer ' + secret);
+  const nodeRoomPage = process.env.BLOK_NODE_ROOM_PAGE;
+  const nodeRoomWorkspace = process.env.BLOK_NODE_ROOM_WORKSPACE;
+  if (nodeRoomPage && nodeRoomWorkspace) throw new Error('Select one room ownership mode');
   const app = new Hono();
   app.onError((error, context) => {
     console.error('[shell-backend]', error.name);
@@ -46,6 +56,10 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     await next();
   });
 
+  app.route('/api/mcp/tokens', createMcpTokens(pool));
+  app.route('/api/auth', createRequestCode(pool, secret, createLoginMail(secret), process.env.TRUSTED_PROXY_CIDRS ?? ''));
+  app.route('/api/auth', createShellAuth(pool, secret, () => recheckLiveSessions(secret)));
+  app.route('/api/workspaces/:slug/search', createWorkspaceSearch(pool));
   app.route('/api/workspaces/:slug/teamspaces', createShellTeamspaces(pool));
 
   app.get('/healthz', async (c) => {
@@ -77,34 +91,47 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     return c.body(page.content, 200, { 'Content-Type': 'application/json' });
   });
 
+  app.route('/api/workspaces/:slug/invites', createWorkspaceInvites(pool, inviteMail));
   app.route('/api/workspaces/:slug/members', createWorkspaceMembers(pool, recheckAccess));
   app.route('/api/workspaces/:slug/pages', createPageSharing(pool, recheckAccess));
 
-  app.use('/internal/documents/*', async (c, next) => {
+  app.use('/internal/*', async (c, next) => {
     if (!timingSafeEqual(expected, digest(c.req.header('Authorization') ?? ''))) {
       return c.json({ error: 'Internal authorization required' }, 401);
     }
     await next();
   });
+  const ticketSecret = process.env.TICKET_SECRET;
+  if (ticketSecret) app.route('/', roomTickets(pool, ticketSecret));
   app.get('/internal/documents/:id', async (c) => {
-    const { rows } = await pool.query<{ content: string; version: string }>(
-      "SELECT coalesce(content::text,'null') AS content, version::text FROM pages WHERE id=$1", [c.req.param('id')],
+    const { rows } = await pool.query<ProjectionHead & { content: string }>(
+      "SELECT coalesce(content::text,'null') AS content, version::text, lineage, sequence::text FROM pages WHERE id=$1", [c.req.param('id')],
     );
     const row = rows[0];
     if (!row) return c.json({ error: 'Document not found' }, 404);
     // Keep jsonb numbers intact instead of round-tripping user data through JS floats.
-    return c.body(`{"data":${row.content},"version":${JSON.stringify(row.version)}}`, 200, { 'Content-Type': 'application/json' });
+    c.header('Blok-Doc-Version', row.version);
+    if (row.lineage !== null && row.sequence !== null) {
+      c.header('Blok-Doc-Lineage', row.lineage);
+      c.header('Blok-Doc-Sequence', row.sequence);
+    }
+    const { content, ...metadata } = row;
+    const payload = `{"data":${content},"version":${JSON.stringify(metadata.version)},"lineage":${JSON.stringify(metadata.lineage)},"sequence":${JSON.stringify(metadata.sequence)}}`;
+    return c.body(payload, 200, { 'Content-Type': 'application/json' });
   });
   app.put('/internal/documents/:id', bodyLimit({ maxSize: 64 * 1024 * 1024, onError: (c) => c.json({ error: 'Document too large' }, 413) }), async (c) => {
     const head = readProjectionHeaders(c.req.raw.headers);
     if (!head) return c.json({ error: 'Invalid projection headers' }, 400);
+    if (nodeRoomPage && c.req.param('id') === nodeRoomPage && !head.expected) {
+      return c.json({ error: 'Node room requires an exact projection head' }, 409);
+    }
     const json = await c.req.text();
     try {
       JSON.parse(json);
     } catch {
       return c.json({ error: 'Invalid document' }, 400);
     }
-    const version = await saveProjection(pool, c.req.param('id'), json, head);
+    const version = await saveProjection(pool, c.req.param('id'), json, head, nodeRoomWorkspace);
     if (version === undefined) return c.json({ error: 'Document missing or projection stale' }, 409);
     return c.json({ version });
   });

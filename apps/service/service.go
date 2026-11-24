@@ -302,7 +302,12 @@ func (s *Service) routes() {
 	s.mux.HandleFunc("/api/workspaces/{slug}/{resource}/{id}/{action}/{target}", s.workspaceResource)
 	s.mux.HandleFunc("GET /api/blok-ticket", s.getTicket)
 	s.mux.HandleFunc("/internal/documents/{id}", s.document)
+	s.mux.HandleFunc("POST /internal/auth/login-mail", s.deliverStoredLoginCode)
+	s.mux.HandleFunc("POST /internal/sessions/recheck-access", s.recheckSessionAccess)
+	s.mux.HandleFunc("POST /internal/room-access", s.roomAccess)
 	s.mux.HandleFunc("POST /internal/workspaces/{id}/recheck-access", s.recheckWorkspaceAccess)
+	s.mux.HandleFunc("POST /internal/invitations/normalize", s.validateInvitationAddress)
+	s.mux.HandleFunc("POST /internal/invitations/{id}/mail", s.deliverStagedInvitation)
 	// Blok's own local-file branch bypasses its auth wrapper; explicitly guard it here.
 	blok := s.Blok.Handler("/api/blok")
 	s.mux.Handle("/api/blok/", s.blokHandler(blok))
@@ -335,31 +340,37 @@ func (s *Service) workspaces(ctx context.Context, uid string) ([]Workspace, erro
 	return out, rows.Err()
 }
 func (s *Service) CanReadDocument(ctx context.Context, u blokserver.User, doc string) (bool, error) {
+	if owned, err := s.nodeOwnsRoom(ctx, doc); err != nil || owned {
+		return false, err
+	}
 	return s.authorizeDoc(ctx, u.ID, doc, false)
 }
 func (s *Service) CanWriteDocument(ctx context.Context, u blokserver.User, doc string) (bool, error) {
+	if owned, err := s.nodeOwnsRoom(ctx, doc); err != nil || owned {
+		return false, err
+	}
 	return s.authorizeDoc(ctx, u.ID, doc, true)
 }
 func (s *Service) authorizeDoc(ctx context.Context, session, doc string, write bool) (bool, error) {
-	// La corbeille ferme le temps réel sans être une permission : une page mise à
-	// la corbeille garde ses partages, elle n'est simplement plus éditable.
-	var trashed bool
-	e := s.DB.QueryRow(ctx, `SELECT trashed FROM pages WHERE id=$1 AND NOT deleted`, doc).Scan(&trashed)
-	if errors.Is(e, pgx.ErrNoRows) {
-		return false, nil
-	}
-	if e != nil || trashed {
-		return false, e
-	}
-	granted, e := s.effectiveLevelForSession(ctx, s.DB, session, doc)
-	if e != nil {
-		return false, e
-	}
+	granted, err := s.documentSessionLevel(ctx, s.DB, session, doc)
 	if write {
-		return granted >= levelEdit, nil
+		return granted >= levelEdit, err
 	}
-	return granted >= levelView, nil
+	return granted >= levelView, err
 }
+
+func (s *Service) documentSessionLevel(ctx context.Context, q querier, session, doc string) (level, error) {
+	var trashed bool
+	e := q.QueryRow(ctx, `SELECT trashed FROM pages WHERE id=$1 AND NOT deleted`, doc).Scan(&trashed)
+	if errors.Is(e, pgx.ErrNoRows) || trashed {
+		return levelNone, nil
+	}
+	if e != nil {
+		return levelNone, e
+	}
+	return s.effectiveLevelForSession(ctx, q, session, doc)
+}
+
 func internalAuth(r *http.Request, secret string) bool {
 	return subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+secret)) == 1
 }

@@ -59,7 +59,11 @@ func (s *Service) ticketIdentity(r *http.Request) (session, doc string, write bo
 	return claims.User, claims.Doc, claims.Write, true
 }
 func (s *Service) blokHandler(next http.Handler) http.Handler {
+	nodeRoom := nodeRoomProxy()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.routeWorkspaceUpgrade(nodeRoom, w, r) {
+			return
+		}
 		// Blok independently checks cryptographic ticket validity. Gate every service
 		// route too: upload/delete/unfurl do not call document Authorization hooks.
 		session, doc, write, ok := s.ticketIdentity(r)
@@ -80,6 +84,9 @@ func (s *Service) blokHandler(next http.Handler) http.Handler {
 		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 			forget := s.observeDocument(doc)
 			defer forget()
+		}
+		if s.routeNodeRoom(nodeRoom, w, r, doc) {
+			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/delete") {
 			problem(w, 405, "Assets are retained for document history")

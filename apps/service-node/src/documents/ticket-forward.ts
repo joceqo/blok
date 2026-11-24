@@ -1,4 +1,4 @@
-import { blokTicket } from '@/tickets/hmac.js';
+import { blokTicket } from '../tickets/hmac.ts';
 
 /**
  * Mints a read-only sidecar pass for GET document state when the browser has a session but no Authorization header.
