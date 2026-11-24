@@ -13,9 +13,10 @@
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
-    "build": "tsc",
+    "build": "tsc && tsc-alias",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "start:shell": "node dist/shell/main.js"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.6",
@@ -26,6 +27,7 @@
   "devDependencies": {
     "@types/node": "^22.19.1",
     "@types/pg": "^8.15.6",
+    "tsc-alias": "^1.9.10",
     "tsx": "^4.20.6",
     "typescript": "^6.0.3",
     "vitest": "^5.0.5"

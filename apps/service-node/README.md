@@ -2,6 +2,32 @@
 
 Readable scaffold for the **product** backend (`apps/service` in Go). This is **not** the collaboration sidecar (`packages/server/node` uses a custom HTTP stack for Kestrel parity).
 
+## Desktop shell backend
+
+The desktop shell uses the PostgreSQL schema in `apps/service/schema.sql`, initialized by the Go service. The shell entry point runs against that database and serves the following requests.
+
+| Request | Purpose |
+| --- | --- |
+| `GET /api/session` and `GET /api/workspaces` | Load the signed-in user and memberships with a browser cookie or native bearer token. |
+| `GET /api/workspaces/:slug/index` | Read the page tree, trash, access levels and workspace revision from one database snapshot. |
+| `GET /api/workspaces/:slug/pages/:id` | Read the persisted page document with inherited visibility and grants. |
+| `GET/PUT /internal/documents/:id` | Load or persist a collaboration projection using the service credential and document revision. |
+| `GET /healthz` | Check PostgreSQL connectivity. |
+
+Run `npm ci && npm run build && npm run start:shell` from this directory. Set `DATABASE_URL`, `INTERNAL_SECRET`, `PUBLIC_URL` and, for native clients, `ALLOWED_ORIGINS`. Set the Go service's `INTERNAL_URL` to the Node service's private address. A missing or stale write version can produce a 409. A retry of an already stored journal projection returns its existing version.
+
+The Go service continues to own login, workspace mutations, ACL changes, tickets, WebSockets and the operation journal. Live state can lead the PostgreSQL projection until a checkpoint, room eviction or shutdown flushes the journal. Keep the internal callback private. The standalone development API documented below uses its own schema and database.
+
+Run the focused shell tests with `npm test -- src/shell`. Set `SHELL_TEST_DATABASE_URL` to include the PostgreSQL checks. They create and remove a unique schema in that database.
+
+The integration tests read `apps/service/schema.sql` from the product checkout by default. When developing the Node service on its standalone branch, point `SHELL_TEST_SCHEMA_PATH` at the canonical file in a sibling checkout of `integration/tout`. Run this from `apps/service-node` with a development database that permits creating schemas.
+
+```sh
+SHELL_TEST_SCHEMA_PATH=/absolute/path/to/blok-product/apps/service/schema.sql \
+SHELL_TEST_DATABASE_URL=postgresql://localhost/blok_test \
+npm test -- src/shell/app.integration.test.ts
+```
+
 ## Stack
 
 | Layer | Choice |
