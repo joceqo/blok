@@ -468,6 +468,15 @@ body[data-blok-theme="light"] [data-desktop-floating-toc] {
   [data-desktop-settings-main] { padding: 48px 20px; }
 }
 [data-desktop-status] { position: absolute; bottom: 12px; right: 16px; max-width: min(420px, calc(100% - 32px)); padding: 5px 9px; border-radius: var(--blok-radius-control, 6px); background: var(--desktop-canvas); color: var(--desktop-muted); font-size: 12px; z-index: 1; pointer-events: none; }
+[data-desktop-status] button {
+  pointer-events: auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
 [data-desktop-status]:empty { display: none; }
 [data-desktop-status][data-error] { color: #ff9c91; }
 
