@@ -59,7 +59,7 @@ describe('cloud gateway', () => {
     // by its own id rather than by the input type.
     expect(document.querySelector('#cloud-email')).toBeNull();
     expect(document.querySelector('#cloud-admin-email')).not.toBeNull();
-    expect(document.body.textContent).toContain('Bienvenue sur Blok');
+    expect(document.querySelector('h1')?.textContent).toBe('Créer votre espace');
     expect(document.body.textContent).not.toMatch(/Étape \d/);
     expect(document.body.textContent).not.toContain('Jeton');
     expect(document.body.textContent).not.toMatch(/Coming soon/i);
@@ -79,6 +79,10 @@ describe('cloud gateway', () => {
     vi.stubGlobal('fetch', fetch);
     const gateway = await mountCloudGateway(document.body, { onOpenWorkspace: vi.fn() });
     expect(document.querySelector('[data-cloud-route]')?.getAttribute('data-cloud-route')).toBe('setup');
+    const workspaceName = must(document.querySelector<HTMLInputElement>('#cloud-workspace-name'));
+    workspaceName.value = 'Mon équipe';
+    await gateway.refresh();
+    expect(document.querySelector<HTMLInputElement>('#cloud-workspace-name')?.value).toBe('Mon équipe');
     required = false;
     await gateway.refresh();
     await settle();

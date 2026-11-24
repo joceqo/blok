@@ -1,6 +1,6 @@
 import './cloud.css';
 import {WORKSPACE_ROLES} from '../access-vocabulary';
-import {brandedTitle} from '../tab-identity';
+import {BLOK_MARK_HREF, brandedTitle} from '../tab-identity';
 import {styleTextField} from '../ui/controls';
 import {CloudApiError, CloudClient, type CloudInstance, type CloudSession, type CloudSessionAdapter, type CloudWorkspace, type CloudWorkspaceStatus} from './client';
 import {mountCreateWorkspace} from './create-workspace';
@@ -108,14 +108,17 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     const header = node('header');
     const brandName = state.instance?.name?.trim() || 'Blok';
     const brand = node('div', undefined, 'data-cloud-brand');
-    brand.append(node('span', brandName.charAt(0).toLocaleUpperCase(), 'data-cloud-mark'), node('span', brandName));
+    const mark = node('img', undefined, 'data-cloud-mark');
+    mark.src = BLOK_MARK_HREF; mark.alt = '';
+    brand.append(mark, node('span', brandName));
     const nav = node('nav'); nav.setAttribute('aria-label', 'Compte');
     if (state.session) {
       nav.append(node('span', state.session.user.email, 'data-cloud-muted'), button('Changer de compte', () => run(async () => {await client.logout(); state.session = null; state.email = ''; login();})), button('Se déconnecter', () => run(async () => {await client.logout(); state.session = null; login();})));
     }
-    header.append(brand, nav);
+    header.append(brand);
+    if (nav.childElementCount) header.append(nav);
     state.currentMain = node('main');
-    view.append(header, state.currentMain, node('footer', 'Un espace commun pour les idées, les documents et les projets.'));
+    view.append(header, state.currentMain);
     return state.currentMain;
   }
 
@@ -148,22 +151,9 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       client,
       frame: () => frame('setup'),
       run,
-      showError: error,
-      hostPreview: (() => {
-        try {
-          if (client.origin) return new URL(client.origin).host;
-          return window.location.host;
-        } catch { return undefined; }
-      })(),
       onClaimed(claimedEmail) {
         state.email = claimedEmail;
         login(true);
-        const note = node('p', `Un code a été envoyé à ${claimedEmail}.`, 'data-cloud-note');
-        note.setAttribute('role', 'status');
-        // Insert above the form so the handoff from setup is explicit (plan §9.2).
-        const form = state.currentMain.querySelector('form');
-        if (form) state.currentMain.insertBefore(note, form);
-        else state.currentMain.append(note);
       },
     });
   }
@@ -268,9 +258,8 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
   function login(codeStep = false): void {
     if (!state.alive) return;
     const main = frame(codeStep ? 'login-code' : 'login-email'); main.setAttribute('data-cloud-narrow', '');
-    const welcome = state.instance?.name ? `Bienvenue sur\n${state.instance.name}.` : 'Bienvenue.';
-    main.append(node('span', 'Votre espace de travail partagé', 'data-cloud-eyebrow'), node('h1', codeStep ? 'Consultez votre boîte mail.' : welcome));
-    main.append(node('p', codeStep ? `Saisissez le code envoyé à ${state.email}. Il est valable 10 minutes.` : 'Retrouvez votre équipe, partagez vos connaissances et faites avancer vos projets.', 'data-cloud-muted'));
+    main.append(node('h1', codeStep ? 'Vérifiez votre e-mail' : 'Se connecter'));
+    if (codeStep) main.append(node('p', `Saisissez le code envoyé à ${state.email}. Il est valable 10 minutes.`, 'data-cloud-muted'));
     const form = node('form', undefined, 'data-cloud-stack');
     const input = field(form, codeStep ? 'Code de connexion' : 'Adresse e-mail', codeStep ? 'text' : 'email', codeStep ? 'code' : 'email', codeStep ? '' : state.email);
     input.autocomplete = codeStep ? 'one-time-code' : 'email';
@@ -299,7 +288,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
         status.setAttribute('role', 'status');
         state.currentMain.append(status);
       })), document.createTextNode(' '), button('Modifier l’adresse e-mail', () => login()));
-    } else main.append(node('p', 'Pas de mot de passe. Un code de connexion vous sera envoyé.', 'data-cloud-note'));
+    }
     appendLocalOpen(main, 'Continuer avec un espace local');
     serverSection(main);
   }
@@ -308,7 +297,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     const onServerChange = options.onServerChange;
     if (!onServerChange) return;
     const details = node('details', undefined, 'data-cloud-section');
-    details.append(node('summary', 'Se connecter à un autre serveur'));
+    details.append(node('summary', 'Changer de serveur'));
     const serverForm = node('form');
     const initialOrigin = client.origin || (window.location.protocol.startsWith('http') ? window.location.origin : '');
     const server = field(serverForm, 'Adresse du serveur', 'url', 'server', initialOrigin);
@@ -320,7 +309,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
         await onServerChange(parseServerOrigin(server.value.trim()));
       });
     });
-    details.append(node('p', 'Chaque serveur conserve ses propres comptes et espaces.', 'data-cloud-note'), serverForm); main.append(details);
+    details.append(serverForm); main.append(details);
   }
 
   async function list(): Promise<void> {
@@ -429,7 +418,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       await run(async () => {
         if (state.route === 'setup') {
           state.instance = await client.instance();
-          if (state.instance.setupRequired) { routers.setup(); return; }
+          if (state.instance.setupRequired) return;
         }
         if (state.session) await list();
         else login();

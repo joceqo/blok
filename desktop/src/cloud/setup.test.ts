@@ -21,104 +21,63 @@ describe('deriveWorkspaceSlug', () => {
 });
 
 describe('setup assistant', () => {
-  it('asks for a name and an address, and nothing else', async () => {
-    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => response({ok: true, backend: 'development'}));
+  function setup() {
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => response({ok: true}));
     vi.stubGlobal('fetch', fetch);
     const onClaimed = vi.fn();
-    const host = document.createElement('div');
-    document.body.append(host);
     mountSetupAssistant({
       client: new CloudClient({origin: 'http://blok.example.test'}),
-      frame: () => { host.replaceChildren(); return host; },
+      frame: () => document.body,
       run: async (action) => { await action(); },
-      showError: (reason) => { throw reason instanceof Error ? reason : new Error(String(reason)); },
       onClaimed,
     });
+    return {
+      fetch, onClaimed,
+      workspace: must(document.querySelector<HTMLInputElement>('#cloud-workspace-name')),
+      admin: must(document.querySelector<HTMLInputElement>('#cloud-admin-name')),
+      email: must(document.querySelector<HTMLInputElement>('#cloud-admin-email')),
+      form: must(document.querySelector('form')),
+    };
+  }
 
-    // One screen. No step counter, no instance name, no workspace, no policies:
-    // each has a default and a settings page.
-    expect(host.textContent).not.toMatch(/Étape \d/);
-    expect(host.querySelector('#cloud-instance-name')).toBeNull();
-    expect(host.querySelector('#cloud-workspace-name')).toBeNull();
-    expect(host.textContent).not.toContain('Qui peut entrer');
-    expect(host.textContent).toContain('Réglages → Instance');
-    expect(fetch).not.toHaveBeenCalled();
-
-    const adminName = must(host.querySelector<HTMLInputElement>('#cloud-admin-name'));
-    const email = must(host.querySelector<HTMLInputElement>('#cloud-admin-email'));
-    adminName.value = 'Alice';
+  it('claims the instance with the workspace name and hands the admin address to verification', async () => {
+    const {fetch, onClaimed, workspace, admin, email, form} = setup();
+    workspace.value = '  Bureau Études  ';
+    admin.value = ' Alice ';
     email.value = 'alice@example.test';
-    adminName.dispatchEvent(new Event('input'));
-    email.dispatchEvent(new Event('input'));
-
-    const verify = must([...host.querySelectorAll('button')].find((item) => item.textContent === 'Vérifier l’envoi'));
-    verify.click();
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
-    expect(JSON.parse(requestBody(fetch.mock.calls[0]?.[1]))).toMatchObject({email: 'alice@example.test'});
-
-    must(email.form).dispatchEvent(new Event('submit', {cancelable: true}));
-    await vi.waitFor(() => expect(onClaimed).toHaveBeenCalledWith('alice@example.test'));
-    const claimCall = fetch.mock.calls.find(([url]) => String(url).endsWith('/api/setup/claim'));
-    expect(JSON.parse(requestBody(claimCall?.[1]))).toEqual({
-      email: 'alice@example.test',
-      name: 'Alice',
+    form.requestSubmit();
+    await vi.waitFor(() => expect(onClaimed).toHaveBeenCalledWith(email.value));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = must(fetch.mock.calls[0]);
+    expect(url).toMatch(/\/api\/setup\/claim$/);
+    expect(JSON.parse(requestBody(init))).toEqual({
+      workspace: {name: 'Bureau Études', slug: 'bureau-etudes'},
+      name: 'Alice', email: email.value,
     });
   });
 
-  it('keeps a disabled Continuer disabled after run() finishes', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => response({ok: true, backend: 'development'})));
-    const client = new CloudClient();
-    const host = document.createElement('div');
-    document.body.append(host);
-    const runState = { gatewayButtons: [] as HTMLButtonElement[] };
-    const view = document.createElement('div');
-    document.body.append(view);
-
-    mountSetupAssistant({
-      client,
-      frame: () => {
-        host.replaceChildren();
-        const main = document.createElement('main');
-        host.append(main);
-        return main;
-      },
-      run: async (action) => {
-        runState.gatewayButtons = Array.from(host.querySelectorAll('button'));
-        const prior = runState.gatewayButtons.map((button) => button.disabled);
-        for (const button of runState.gatewayButtons) button.disabled = true;
-        try { await action(); }
-        finally {
-          for (const [index, button] of runState.gatewayButtons.entries()) {
-            button.disabled = prior[index] ?? false;
-          }
-        }
-      },
-      showError: () => {},
-      onClaimed: () => {},
-    });
-
-    // The submit starts disabled on empty fields, and a run() that disables every
-    // button must restore that state rather than resurrect it.
-    const finish = must([...host.querySelectorAll('button')].find((item) => item.textContent === 'Créer l’instance'));
-    const verify = must([...host.querySelectorAll('button')].find((item) => item.textContent === 'Vérifier l’envoi'));
-    expect(finish.disabled).toBe(true);
-    expect(verify.disabled).toBe(true);
-
-    const adminName = must(host.querySelector<HTMLInputElement>('#cloud-admin-name'));
-    const email = must(host.querySelector<HTMLInputElement>('#cloud-admin-email'));
-    adminName.value = 'Alice';
+  it('requires a nonblank workspace name within the server limit', () => {
+    const {fetch, workspace, admin, email, form} = setup();
     email.value = 'alice@example.test';
-    adminName.dispatchEvent(new Event('input'));
-    email.dispatchEvent(new Event('input'));
-    expect(finish.disabled).toBe(false);
+    admin.value = 'Alice';
+    for (const value of ['', '  ', 'é'.repeat(61)]) {
+      workspace.value = value;
+      workspace.dispatchEvent(new Event('input'));
+      form.requestSubmit();
+      expect(workspace.validity.valid).toBe(false);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
 
-    verify.click();
-    await vi.waitFor(() => expect(finish.disabled).toBe(false));
-
-    // Emptying the address disables both again.
-    email.value = '';
-    email.dispatchEvent(new Event('input'));
-    expect(finish.disabled).toBe(true);
-    expect(verify.disabled).toBe(true);
+  it('lets an administrator check mail delivery before claiming the workspace', async () => {
+    const {fetch, email, onClaimed} = setup();
+    const details = must(document.querySelector('details'));
+    expect(details.open).toBe(false);
+    details.open = true;
+    email.value = 'alice@example.test';
+    must(details.querySelector('button')).click();
+    await vi.waitFor(() => expect(details.querySelector('[role=status]')?.textContent).toContain(email.value));
+    expect(fetch.mock.calls[0]?.[0]).toMatch(/\/api\/setup\/email-test$/);
+    expect(onClaimed).not.toHaveBeenCalled();
   });
 });
