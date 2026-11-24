@@ -210,7 +210,7 @@ try {
     assert.equal(checks.workspaceId,selected);
     assert.equal(checks.foreignId,other);
     assert.deepEqual(checks.allowed,{read:true,write:true});
-    assert.equal(checks.foreignRoomAllowed,false);
+    assert.equal(checks.foreignRoomStatus,403,'The selected Node host must refuse a valid ticket for another workspace');
     const outsideContext = await browserContext(browsers[0],owner);
     const outsideTab = await roomTab(outsideContext,outsidePage,outsideName);
     await expect.poll(() => outsideTab.go.size,{timeout,message:'The other workspace must still upgrade through Go'}).toBeGreaterThan(0);
