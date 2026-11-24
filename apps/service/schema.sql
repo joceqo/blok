@@ -74,3 +74,23 @@ UPDATE instance_settings SET signup_policy='open', workspace_creation='anyone'
 UPDATE instance_settings SET default_workspace_id=(SELECT id FROM workspaces)
  WHERE default_workspace_id IS NULL AND (SELECT count(*) FROM workspaces)=1;
 INSERT INTO schema_migrations(version) VALUES(5) ON CONFLICT DO NOTHING;
+
+-- An entry in the directory never grants access to pages. Both sides of
+-- membership belong to the same workspace and expire with it.
+CREATE TABLE IF NOT EXISTS teamspaces (
+  id text PRIMARY KEY,
+  workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (workspace_id, id)
+);
+CREATE TABLE IF NOT EXISTS teamspace_members (
+  workspace_id text NOT NULL,
+  teamspace_id text NOT NULL,
+  user_id text NOT NULL,
+  PRIMARY KEY (workspace_id, teamspace_id, user_id),
+  FOREIGN KEY (workspace_id, teamspace_id) REFERENCES teamspaces(workspace_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (workspace_id, user_id) REFERENCES memberships(workspace_id, user_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS teamspace_members_user ON teamspace_members(workspace_id, user_id);
+INSERT INTO schema_migrations(version) VALUES(6) ON CONFLICT DO NOTHING;
