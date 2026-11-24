@@ -13,7 +13,7 @@ import (
 
 // expectedSchemaVersion is the highest version schema.sql inserts. Operate
 // refuses to open a database that has not been migrated that far.
-const expectedSchemaVersion = 6
+const expectedSchemaVersion = 7
 
 // ErrSchemaStale is returned by Operate when schema_migrations is behind.
 var ErrSchemaStale = errors.New("database schema is behind this blokctl; start the server to migrate first")
