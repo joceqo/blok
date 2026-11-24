@@ -24,6 +24,8 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   if (secret.length < 32) throw new Error('INTERNAL_SECRET must have at least 32 characters');
   const expected = digest('Bearer ' + secret);
   const nodeRoomPage = process.env.BLOK_NODE_ROOM_PAGE;
+  const nodeRoomWorkspace = process.env.BLOK_NODE_ROOM_WORKSPACE;
+  if (nodeRoomPage && nodeRoomWorkspace) throw new Error('Select one room ownership mode');
   const app = new Hono();
   app.onError((error, context) => {
     console.error('[shell-backend]', error.name);
@@ -126,7 +128,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     } catch {
       return c.json({ error: 'Invalid document' }, 400);
     }
-    const version = await saveProjection(pool, c.req.param('id'), json, head);
+    const version = await saveProjection(pool, c.req.param('id'), json, head, nodeRoomWorkspace);
     if (version === undefined) return c.json({ error: 'Document missing or projection stale' }, 409);
     return c.json({ version });
   });

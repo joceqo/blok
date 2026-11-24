@@ -60,16 +60,20 @@ export function projectionDecision(stored: ProjectionHead, incoming: ProjectionW
 }
 
 /** The lock makes the revision comparison and its update atomic across workers. */
-export async function saveProjection(pool: PgPool, id: string, json: string, head: ProjectionWrite) {
+export async function saveProjection(pool: PgPool, id: string, json: string, head: ProjectionWrite, nodeRoomWorkspace?: string) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { rows } = await client.query<ProjectionHead & { same: boolean }>(
-      `SELECT version::text, lineage, sequence::text, content IS NOT DISTINCT FROM $2::jsonb AS same
+    const { rows } = await client.query<ProjectionHead & { same: boolean; workspaceId: string }>(
+      `SELECT version::text, lineage, sequence::text, workspace_id AS "workspaceId", content IS NOT DISTINCT FROM $2::jsonb AS same
        FROM pages WHERE id=$1 FOR UPDATE`, [id, json],
     );
     const row = rows[0];
-    const decision = row && projectionDecision(row, head, row.same);
+    // The owning workspace is read under the same row lock as the CAS.
+    // Node uses exact heads; the Go writer uses the legacy callback.
+    const wrongWriter = nodeRoomWorkspace && row &&
+      (row.workspaceId === nodeRoomWorkspace) !== Boolean(head.expected);
+    const decision = row && !wrongWriter ? projectionDecision(row, head, row.same) : 'conflict';
     if (!row || decision === 'conflict') {
       await client.query('ROLLBACK');
       return undefined;

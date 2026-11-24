@@ -16,7 +16,7 @@ Chaque connexion envoie un code neuf dans cette boîte locale. Aucun e-mail rée
 `./deploy/demo.sh stop` arrête la démo sans effacer les données ; `./deploy/demo.sh status` affiche les conteneurs.
 Cette pile distincte (`blok-local`) est limitée à l'ordinateur via `127.0.0.1`. La boîte mail donne accès aux codes : elle est uniquement destinée à la démonstration locale. Le déploiement public ci-dessous utilise ton relais SMTP et ne contient pas ce service.
 
-### Confier la synchronisation d’une page au serveur Node
+### Confier la synchronisation d’une page ou d’un workspace au serveur Node
 
 Dans la démo démarrée, ouvrez la page et relevez son identifiant dans `?page=…`. Depuis la racine du dépôt :
 
@@ -27,9 +27,11 @@ deploy/demo.sh compose restart room
 deploy/demo.sh room-disable
 ```
 
+Pour utiliser Node sur tout un workspace, lancez `deploy/demo.sh room-enable-workspace SLUG`. La démo résout le slug en identifiant canonique au moment de l’activation : le renommage du workspace ne change pas le propriétaire des rooms. Les pages créées ensuite sont attribuées au même serveur. Les tickets continuent de respecter les droits de chaque utilisateur sur chaque page. `room-disable` rend l’ensemble à Go après arrêt des deux hôtes et vérification des verrous de tous les journaux du volume, y compris ceux créés après l’activation.
+
 L’activation construit les images depuis les sources du checkout, termine les écritures Go en cours, puis démarre Node sur le même journal persistant. La page conserve son URL et le fournisseur WebSocket du shell. Sur l’upgrade de cette page, l’en-tête `X-Blok-Collaboration: node` indique le serveur choisi. Les autres pages continuent sur Go. Une interruption de la room ferme la connexion de cette page jusqu’à la reprise de Node.
 
-La désactivation arrête la room, vérifie sa sortie et la libération du verrou de journal, puis redémarre Go. Le changement de propriétaire redémarre les services locaux et interrompt brièvement les connexions de la démo. Utilisez `room-disable` avant de choisir une autre page. La duplication en direct, les actions MCP sur le document et les routes d’historique Go sont indisponibles pour la page sélectionnée pendant cet essai.
+La désactivation arrête la room, vérifie sa sortie et la libération du verrou de journal, puis redémarre Go. Le changement de propriétaire redémarre les services locaux et interrompt brièvement les connexions de la démo. Utilisez `room-disable` avant de choisir une autre page. La duplication en direct, les actions MCP sur le document et les routes d’historique Go sont indisponibles pour les pages confiées à Node pendant cet essai. Une page déjà ouverte sous Go doit avoir un journal que Node peut vérifier contre sa projection PostgreSQL. Une divergence empêche l’ouverture sur Node.
 
 La sélection est conservée à côté de `deploy/.env.demo`. Pour une deuxième démo, utilisez un `DEMO_ENV_FILE` distinct ainsi que `COMPOSE_PROJECT_NAME`, `DEMO_WEB_PORT`, `DEMO_MAIL_PORT` et `DEMO_NETWORK_PREFIX` dédiés. Les opérations suivantes doivent utiliser les mêmes valeurs. Le service de room, les callbacks de projection et le secret interne restent sur le réseau interne.
 

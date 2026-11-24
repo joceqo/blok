@@ -1,11 +1,17 @@
-# Loaded by demo.sh only while one existing page is assigned to Node.
+# Loaded by demo.sh only while a page or a workspace is assigned to Node.
 services:
+  web:
+    environment:
+      BLOK_SHELL_TICKET_UPSTREAM: node:8081
   node:
     environment:
-      BLOK_NODE_ROOM_PAGE: ${BLOK_NODE_ROOM_PAGE:?Use demo.sh room-enable}
+      TICKET_SECRET: ${TICKET_SECRET:?Run demo.sh first}
+      BLOK_NODE_ROOM_PAGE: ${BLOK_NODE_ROOM_PAGE:-}
+      BLOK_NODE_ROOM_WORKSPACE: ${BLOK_NODE_ROOM_WORKSPACE:-}
   app:
     environment:
-      BLOK_NODE_ROOM_PAGE: ${BLOK_NODE_ROOM_PAGE:?Use demo.sh room-enable}
+      BLOK_NODE_ROOM_PAGE: ${BLOK_NODE_ROOM_PAGE:-}
+      BLOK_NODE_ROOM_WORKSPACE: ${BLOK_NODE_ROOM_WORKSPACE:-}
   room:
     image: ${COMPOSE_PROJECT_NAME:-blok-local}-room:local
     build:
@@ -16,9 +22,10 @@ services:
     network_mode: service:node
     restart: unless-stopped
     stop_grace_period: 90s
-    command: ["/data/collab", "${BLOK_NODE_ROOM_PAGE:?Use demo.sh room-enable}", "http://localhost:${DEMO_WEB_PORT:-8088}", "18102"]
+    command: ["/data/collab", "${BLOK_ROOM_TARGET:?Use demo.sh room-enable or room-enable-workspace}", "http://localhost:${DEMO_WEB_PORT:-8088}", "18102"]
     environment:
-      BLOK_ROOM_CLOUD_ORIGIN: http://127.0.0.1:8080
+      BLOK_NODE_ROOM_WORKSPACE: ${BLOK_NODE_ROOM_WORKSPACE:-}
+      BLOK_ROOM_CLOUD_ORIGIN: http://127.0.0.1:8081
       BLOK_ROOM_PROJECTION_ORIGIN: http://127.0.0.1:8081
       INTERNAL_SECRET: ${INTERNAL_SECRET:?Run demo.sh first}
       ALLOWED_ORIGINS: tauri://localhost,http://tauri.localhost,https://tauri.localhost
