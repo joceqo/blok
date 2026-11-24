@@ -96,3 +96,23 @@ Workspace members can read custom emoji; members and administrators can upload i
 Uploads accept base64 data URLs whose declared type matches the detected PNG/JPEG/GIF/WebP bytes. SVG and other active content are rejected. Both image and emoji routes accept a workspace ID in place of its slug. Page cover metadata can retain a gallery key, an uploaded asset URL, or an HTTPS image URL.
 
 Private page creation: a new root page in `PUT /api/workspaces/:slug/index` may include `initialVisibility: "private"`. The server atomically creates it as private and grants its author full access. This transient field is not stored and cannot change the visibility of an existing page; use the page access endpoint for existing pages.
+
+### Tickets et admission de la room Node
+
+Dans le profil de migration Docker, Caddy dirige les deux routes GET de ticket vers
+`BLOK_SHELL_TICKET_UPSTREAM=node:8081`. La valeur par défaut `app:8080` conserve
+la signature par Go. Les deux services utilisent le même `TICKET_SECRET`. Chaque
+ticket porte le digest de session, l'ID de page, le droit d'écriture et une
+échéance de 60 secondes. Le service marque `pages.admission_started` avant de
+répondre. Un ticket produit par Node est utilisable par Go et réciproquement.
+
+La room utilise `BLOK_ROOM_CLOUD_ORIGIN=http://127.0.0.1:8081` pour appeler
+`POST /internal/room-access` avec `Authorization: Bearer <INTERNAL_SECRET>`.
+Une décision positive contient `workspaceId`, l'identifiant canonique de l'espace
+de la page. Une admission par ticket retourne aussi `session` et `ticketWrite`.
+Les vérifications d'une session établie relisent les droits courants sur PostgreSQL.
+La room conserve le plafond du ticket initial. Une décision négative retourne
+`{"read":false,"write":false}`. Caddy bloque cet endpoint sur l'entrée publique.
+
+Les en-têtes `X-Blok-Ticket-Backend: node` et `X-Blok-Access-Backend: node`
+identifient respectivement une réponse de ticket et une décision privée.
