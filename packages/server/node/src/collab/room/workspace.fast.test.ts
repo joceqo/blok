@@ -16,9 +16,11 @@ it.skipIf(!['darwin','linux'].includes(process.platform))('opens only authorized
   const internalSecret = 'workspace-test'.repeat(3);
   const snapshots = new Map<string, { data: null; version: string; sequence: string | null; lineage: string | null }>();
   const loads = new Set<string>();
+  const unavailable = new Set(['temporarily-unavailable']);
   const projection = createServer((req,res) => {
     const id = req.url!.split('/').pop()!;
     if (req.headers.authorization !== 'Bearer '+internalSecret) { res.writeHead(403).end(); return; }
+    if (unavailable.has(id)) { res.writeHead(503).end(); return; }
     res.setHeader('Content-Type','application/json');
     if (req.method === 'GET') {
       loads.add(id);
@@ -77,6 +79,10 @@ it.skipIf(!['darwin','linux'].includes(process.platform))('opens only authorized
     const restored = await open('a');
     expect(restored.tag).toEqual(first.tag);
     expect(snapshots.get('a')?.version).toBe('1');
+    await expect(open('temporarily-unavailable')).rejects.toThrow('503');
+    unavailable.clear();
+    const recovered = await open('temporarily-unavailable');
+    expect(recovered.tag.lineage).not.toBe(other.tag.lineage);
     expect(other.ws.readyState).toBe(WebSocket.OPEN);
   } finally {
     for (const client of clients) client.terminate();
