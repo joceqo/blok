@@ -52,11 +52,11 @@ it('refuses lossy JSON and a missing journal for a known lineage', async () => {
   expect(() => seedUpdate({ blocks: [{ type: 'paragraph', data: { text: 'missing ID' } }] })).toThrow();
 });
 
-it('keeps a legacy Go working set and requires its existing lineage to be migrated first', async () => {
+it('keeps an unreadable legacy Go working set untouched', async () => {
   const workingSet = pageDirectory(root, 'page').slice(0, -'.journal'.length);
   await writeFile(workingSet, 'old Go working set');
   await expect(remote('{"version":"0","lineage":null,"sequence":null,"data":null}')).rejects.toThrow(
-    /existing Go working set/,
+    /Go working-set header/,
   );
   expect(await readFile(workingSet, 'utf8')).toBe('old Go working set');
 });

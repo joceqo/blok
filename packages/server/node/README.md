@@ -160,8 +160,8 @@ origins. The socket listens on loopback by default. Set `BLOK_ROOM_LISTEN_HOST=0
 only inside a private network behind an authenticating shell proxy.
 
 A new page receives a sealed format-2 baseline built with the editor's serializer. The
-original snapshot must round-trip through it without loss. Unsupported JSON numbers, legacy
-working-set files and a database lineage with a missing journal stop startup. Existing Go
+original snapshot must round-trip through it without loss. Unsupported JSON numbers and a database lineage without its journal or matching legacy
+working set stop startup. Existing Go
 journals require a readable format-2 state whose corresponding prefix matches PostgreSQL.
 The room retains outer snapshot metadata and refuses updates with unprojectable roots,
 host-owned history values or unrecognized block and page fields.
@@ -184,3 +184,27 @@ package. To test a separate product checkout, set `BLOK_SHELL_TEST_ROOT` to its 
 The product demo can give the Node host ownership of a whole workspace. The host starts a document room on the first authorized WebSocket, serializes concurrent opens of that page, and releases its journal lock after the last connection closes. Other pages have independent queues and leases. A reconnect waits for a draining writer before reopening the same journal.
 
 In workspace mode the CLI takes `<journal-root> --workspace <allowed-origin> [port]` and reads the canonical `BLOK_NODE_ROOM_WORKSPACE` ID. The product service must return that workspace ID when it verifies a ticket or rechecks a session. An unauthorized request cannot initialize a journal. This host supports 128 simultaneously resident pages, 32 WebSocket connections per page and 256 handshakes in flight. The other pages remain available on demand as rooms drain.
+
+
+### Import a local Go working set during a handoff
+
+Stop any legacy non-journal writer and transfer the page to the Node room. When the
+page has only the unsuffixed SHA-256 file, Node reads its Go `BKW2` header and framed
+Yjs log. It accepts editor format 2 with an epoch the wire protocol can represent.
+The materialized content must match the canonical product snapshot. The database
+must have either an unassigned lineage or the matching lineage at sequence zero.
+
+The room seals the original frame bytes in the sequence-zero baseline, carries forward
+the original epoch and lineage, and publishes the journal directory atomically. It
+leaves the legacy file in place. Known journals always reopen through their manifest.
+A damaged header, incomplete Yjs state, concurrent source replacement or conflicting
+canonical snapshot stops the import before publication. A legacy non-journal writer
+does not participate in the journal's flock and must stay stopped after handoff.
+
+The opt-in Go test `TestNodeImportsGoWorkingSetWithoutChangingItsIdentity` uses the actual
+Go codec to create a two-frame file, has Node append a dependent edit and project it to
+PostgreSQL, and lets Go reopen the journal to compare the complete original frames.
+Build the Node room and product service. Set `SHELL_TEST_DATABASE_URL` to a disposable
+PostgreSQL database and `BLOK_TEST_NODE_WORKING_SET` to the absolute path of
+`test/legacy-import.mjs` in this package, then run that test in Go's
+`internal/collab/journal` package.

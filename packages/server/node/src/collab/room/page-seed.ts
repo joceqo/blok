@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, open, rename, rm, lstat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import type { Baseline } from './legacy-working-set.ts';
 
 // Publish all bootstrap files together. A crash before rename leaves only a
 // private staging directory; a Go or Node creator with a populated target wins.
@@ -35,26 +36,25 @@ export async function existingDirectory(path: string) {
   }
 }
 
-async function checkLegacyWorkingSet(target: string) {
-  // Go imports the unsuffixed SHA-256 working-set file as its sequence-zero baseline.
-  try {
-    await lstat(target.slice(0, -'.journal'.length));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw error;
-  }
-  throw new Error('Migrate the existing Go working set to its journal before starting the room');
+export function newBaseline(update: Uint8Array): Baseline {
+  const frames = Buffer.alloc(4 + update.length);
+  frames.writeInt32LE(update.length);
+  frames.set(update, 4);
+  return { frames, epoch: 1n, lineage: randomBytes(16) };
 }
 
-export async function initializePage(root: string, pageId: string, update: Uint8Array, anchor: string) {
+export async function initializePage(
+  root: string,
+  pageId: string,
+  baseline: Baseline,
+  anchor: string,
+  verifyWorkingSet: () => Promise<void>,
+) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const target = pageDirectory(root, pageId);
-  await checkLegacyWorkingSet(target);
   const temp = await mkdtemp(join(root, '.seed-'));
   try {
-    const frame = Buffer.alloc(4 + update.length);
-    frame.writeInt32LE(update.length);
-    frame.set(update, 4);
+    const frame = baseline.frames;
     const base = Buffer.alloc(24 + frame.length);
     base.write('BKJB');
     base[4] = 1;
@@ -73,12 +73,13 @@ export async function initializePage(root: string, pageId: string, update: Uint8
     slot[5] = 1;
     for (const offset of [8, 16, 24, 68]) slot.writeBigUInt64LE(1n, offset);
     slot.writeInt32LE(2, 32);
-    slot.writeBigInt64LE(1n, 36);
-    slot.set(randomBytes(16), 44);
+    slot.writeBigInt64LE(baseline.epoch, 36);
+    slot.set(baseline.lineage, 44);
     slot.set(createHash('sha256').update(slot.subarray(0, 96)).digest(), 96);
     await writeSynced(join(temp, 'manifest'), slots);
     await writeSynced(join(temp, 'node-projection.json'), Buffer.from(anchor));
     await syncDirectory(temp);
+    await verifyWorkingSet();
     try {
       await rename(temp, target);
     } catch (err) {
