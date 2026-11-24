@@ -78,12 +78,12 @@ func (s *Service) blokHandler(next http.Handler) http.Handler {
 			problem(w, 403, "Document access refused")
 			return
 		}
-		if s.routeNodeRoom(nodeRoom, w, r, doc) {
-			return
-		}
 		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 			forget := s.observeDocument(doc)
 			defer forget()
+		}
+		if s.routeNodeRoom(nodeRoom, w, r, doc) {
+			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/delete") {
 			problem(w, 405, "Assets are retained for document history")

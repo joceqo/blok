@@ -20,6 +20,7 @@ func TestNodeRoomHasOneHost(t *testing.T) {
 		{"one", "GET", "/api/blok/sync/one", "websocket", true, 101},
 		{"one", "POST", "/api/blok/sync/one/edit", "", true, 409},
 		{"one", "GET", "/api/blok/sync/two", "websocket", true, 409},
+		{"two", "GET", "/api/blok/sync/one", "websocket", true, 403},
 		{"two", "GET", "/api/blok/sync/two", "websocket", false, 200},
 		{"one", "POST", "/api/blok/upload", "", false, 200},
 	} {

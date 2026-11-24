@@ -36,10 +36,17 @@ func nodeRoomProxy() *httputil.ReverseProxy {
 
 // A stopped or unreachable Node room must never fall back to the Go writer.
 func (s *Service) routeNodeRoom(proxy http.Handler, w http.ResponseWriter, r *http.Request, ticketDoc string) bool {
-	if !s.nodeOwnsRoom(ticketDoc) {
+	if s.Config.NodeRoomPage == "" {
 		return false
 	}
-	path := "/api/blok/sync/" + ticketDoc
+	path := "/api/blok/sync/" + s.Config.NodeRoomPage
+	if !s.nodeOwnsRoom(ticketDoc) {
+		if r.URL.Path == path || strings.HasPrefix(r.URL.Path, path+"/") {
+			problem(w, http.StatusForbidden, "Document access refused")
+			return true
+		}
+		return false
+	}
 	if r.URL.Path == path && r.Method == "GET" && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		proxy.ServeHTTP(w, r)
 		return true
