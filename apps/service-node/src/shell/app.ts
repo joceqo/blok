@@ -7,6 +7,7 @@ import type { PgPool } from '../db/pool.js';
 import { createPageSharing } from './page-sharing.js';
 import { createAccessRecheck } from './recheck-access.js';
 import { readProjectionHeaders, saveProjection } from './projection.js';
+import { createShellTeamspaces } from './teamspaces.js';
 import { loadWorkspaceIndex } from './workspace-index.js';
 import { loadSession, loadVisiblePage, sessionDigest } from './session.js';
 
@@ -35,7 +36,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     }
     if (c.req.method === 'OPTIONS') {
       c.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-      c.header('Access-Control-Allow-Methods', 'GET, HEAD, PUT, DELETE, OPTIONS');
+      c.header('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS');
       return c.body(null, 204);
     }
     if (!origin && !['GET', 'HEAD'].includes(c.req.method) && c.req.header('Sec-Fetch-Site') === 'cross-site') {
@@ -43,6 +44,8 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     }
     await next();
   });
+
+  app.route('/api/workspaces/:slug/teamspaces', createShellTeamspaces(pool));
 
   app.get('/healthz', async (c) => {
     await pool.query('SELECT 1');
