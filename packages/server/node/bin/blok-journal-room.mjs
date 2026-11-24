@@ -29,7 +29,8 @@ try {
       const additional = (process.env.ALLOWED_ORIGINS ?? '').split(',').map(s=>s.trim()).filter(Boolean);
       const listenHost = process.env.BLOK_ROOM_LISTEN_HOST ?? '127.0.0.1';
       if (!['127.0.0.1','0.0.0.0'].includes(listenHost) || listenHost==='0.0.0.0' && !shellOrigin) throw new Error('Invalid room listen address');
-      const room = await startJournalRoom({directory,documentId,allowedOrigins:new Set([origin,...additional]),port,authorize,listenHost,projection});
+      const room = await startJournalRoom({directory,documentId,allowedOrigins:new Set([origin,...additional]),port,authorize,listenHost,projection,
+        recheckSecret:shellOrigin ? process.env.INTERNAL_SECRET : undefined});
       console.log(room.url);
       const stop = () => { void room.close().catch(err => { console.error(err.message); process.exitCode=1; }); };
       process.once('SIGTERM',stop);

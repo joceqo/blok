@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { applyUpdate, Doc, encodeStateAsUpdate, encodeStateVector } from 'yjs';
@@ -20,6 +20,7 @@ export interface RoomOptions {
   port?: number;
   listenHost?: '127.0.0.1' | '0.0.0.0';
   projection?: { origin: string; secret: string };
+  recheckSecret?: string;
   allowedOrigins: ReadonlySet<string>;
   /** Verify ticket expiry, document scope and current read/write permissions. */
   authorize(ticket: string, documentId: string): Promise<RoomIdentity | null>;
@@ -66,7 +67,19 @@ export async function startJournalRoom(options: RoomOptions) {
   const doc = new Doc();
   const operations = new Map<string, { digest:Buffer; sequence:bigint }>();
   const peers = new Set<Peer>();
+  const recheckKey = options.recheckSecret && createHash('sha256').update('Bearer '+options.recheckSecret).digest();
   const http = createServer((req, res) => {
+    if (recheckKey && req.method === 'POST' && req.url === '/internal/room/recheck-access') {
+      const presented = createHash('sha256').update(req.headers.authorization ?? '').digest();
+      if (!timingSafeEqual(recheckKey, presented)) { res.writeHead(401).end(); return; }
+      if (stopping) { res.writeHead(503).end(); return; }
+      // Serialize the notification with existing writes. Re-read current permissions for idle peers too.
+      queue = queue.then(async () => {
+        await Promise.all(Array.from(peers, principal));
+        res.writeHead(stopping ? 503 : 204).end();
+      }).catch(() => { res.writeHead(503).end(); });
+      return;
+    }
     if (req.method === 'GET' && req.url === '/healthz' && !stopping) {
       res.writeHead(200, {'Content-Type':'application/json'}).end(JSON.stringify({backend:'node',documentId}));
     } else res.writeHead(404).end();

@@ -50,8 +50,9 @@ describe.skipIf(!['linux','darwin'].includes(process.platform))('isolated v2 Web
   let dir: string;
   let room: Awaited<ReturnType<typeof startJournalRoom>>;
   let revoked: Set<string>;
+  const recheckSecret = 'room-api-test'.repeat(3);
   async function listen() {
-    return startJournalRoom({ directory:dir, documentId:'preview-page',allowedOrigins:new Set([origin]),
+    return startJournalRoom({ directory:dir, documentId:'preview-page',recheckSecret,allowedOrigins:new Set([origin]),
       authorize: async token => ['editor','viewer'].includes(token) && !revoked.has(token) ? {id:token,write:token==='editor'} : null });
   }
   beforeEach(async () => {
@@ -113,6 +114,18 @@ describe.skipIf(!['linux','darwin'].includes(process.platform))('isolated v2 Web
     const a = await client(room.url,'editor');
     await a.sync();
   });
+  it('revalidates an idle connection on an authenticated access notification', async () => {
+    const viewer = await client(room.url, 'viewer');
+    await viewer.sync();
+    const url = new URL('/internal/room/recheck-access', room.url);
+    url.protocol = 'http:';
+    expect((await fetch(url,{method:'POST'})).status).toBe(401);
+    revoked.add('viewer');
+    const result = await fetch(url,{method:'POST', headers:{Authorization:'Bearer '+recheckSecret}});
+    expect(result.status).toBe(204);
+    expect(await viewer.closed).toBe(4403);
+  });
+
   it('refuses a foreign origin even with an authorized ticket', async () => {
     const ws = new WebSocket(room.url,['blok-sync.v2','editor'],{origin:'https://other.invalid'});
     await expect(new Promise<void>((ok,fail) => { ws.once('open',ok); ws.once('error',fail); })).rejects.toThrow('403');
