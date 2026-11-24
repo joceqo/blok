@@ -1,6 +1,7 @@
 package cloud
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -60,20 +61,20 @@ func (s *Service) initMCP() error {
 		server.AddTool(&mcp.Tool{Name: "blok_list_teamspaces", Description: "List real closed teamspaces nested in a workspace; metadata does not grant content access.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"includeArchived":{"type":"boolean"}},"required":["workspace"]}`)}, s.mcpListTeamspaces)
 		server.AddTool(&mcp.Tool{Name: "blok_list_pages", Description: "List pages in a workspace by slug. parentId is the containing document used for storage and access. When present, location.blockId in location.blockDocumentId identifies the structural parent; location.documentId is the visible routing root and location.rows is its authorized row breadcrumb path; location.rows carries each rowId, databaseId and documentId. It is a read-only projection, not a destination argument for create/move.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"}},"required":["workspace"]}`)}, s.mcpListPages)
 		server.AddTool(&mcp.Tool{Name: "blok_create_page", Description: "Create a page. To create inside a database row, use parentId=containing document ID and parentRowId=row block ID. Migrated body document IDs also work directly. Use a stable requestId to retry safely without creating duplicates; changed arguments with the same key are refused. An interrupted placement returns recovery details with pageId. Root pages are private by default; with teamspaceId roots are shared only with that teamspace. Children inherit parent access. Use visibility=workspace explicitly for a shared root. Members and admins may create pages.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"title":{"type":"string"},"parentId":{"type":"string"},"parentRowId":{"type":"string","minLength":1,"maxLength":256},"requestId":{"type":"string","minLength":1,"maxLength":200},"teamspaceId":{"type":"string"},"visibility":{"type":"string","enum":["private","workspace","inherit"]}},"required":["workspace","title"]}`)}, s.mcpCreatePage)
-		server.AddTool(&mcp.Tool{Name: "blok_upload_image", Description: "Upload a private workspace image (PNG, JPEG, GIF or WebP, up to 5 MiB). Returns a persistent /files/ URL to use in document content. Requires workspace write access.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"dataUrl":{"type":"string"}},"required":["workspace","dataUrl"],"additionalProperties":false}`)}, s.mcpUploadImage)
+		server.AddTool(&mcp.Tool{Name: "blok_upload_image", Description: "Upload a private workspace image from exactly one of dataUrl or public HTTPS url (PNG, JPEG, GIF or WebP sources up to 25 MiB, 48 megapixels, 16384 pixels per side). PNG is optimized losslessly without resizing; animation is preserved. Local files must be read by the client, for example scripts/blok-upload-image.mjs; never transcribe base64 by hand. Returns a persistent /files/ URL. Requires workspace write access.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"dataUrl":{"type":"string","minLength":1},"url":{"type":"string","minLength":1,"maxLength":4096}},"required":["workspace"],"oneOf":[{"required":["dataUrl"],"not":{"required":["url"]}},{"required":["url"],"not":{"required":["dataUrl"]}}],"additionalProperties":false}`)}, s.mcpUploadImage)
 		server.AddTool(&mcp.Tool{Name: "blok_upload_file", Description: "Upload a private workspace file (" + strings.Join(UploadableFileExtensions(), ", ") + ", up to 25 MiB). fileName gives the extension and names the file card. Returns a persistent /files/ URL, the name and the size. Pictures go through blok_upload_image. Requires workspace write access.", InputSchema: json.RawMessage(`{"type":"object","properties":{"workspace":{"type":"string"},"dataUrl":{"type":"string"},"fileName":{"type":"string"}},"required":["workspace","dataUrl","fileName"],"additionalProperties":false}`)}, s.mcpUploadFile)
 		if err := attached.Attach(server); err != nil {
 			return nil
 		}
 		return server
-	}, &mcp.StreamableHTTPOptions{Stateless: true, DisableLocalhostProtection: true})
+	}, &mcp.StreamableHTTPOptions{Stateless: true, DisableLocalhostProtection: true, MaxRequestBodyBytes: maxWorkspaceImageRequest})
 	s.mcpHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// MCP uses explicit bearer credentials. A browser cookie cannot grant an agent access.
 		if r.Header.Get("Origin") != "" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || len(r.Header.Get("Authorization")) <= len("Bearer ") {
 			problem(w, http.StatusUnauthorized, "Bearer token required")
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
+		r.Body = http.MaxBytesReader(w, r.Body, maxWorkspaceImageRequest)
 		u, err := s.mcpIdentity(r)
 		if err != nil {
 			problem(w, http.StatusUnauthorized, "Invalid or expired token")
@@ -414,19 +415,43 @@ func (s *Service) mcpUploadImage(ctx context.Context, req *mcp.CallToolRequest) 
 	var args struct {
 		Workspace string `json:"workspace"`
 		DataURL   string `json:"dataUrl"`
+		URL       string `json:"url"`
 	}
-	if json.Unmarshal(req.Params.Arguments, &args) != nil {
-		return mcpError("Invalid arguments"), nil
+	decoder := json.NewDecoder(bytes.NewReader(req.Params.Arguments))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&args) != nil || (args.DataURL == "") == (args.URL == "") {
+		return mcpError("Provide exactly one image dataUrl or public HTTPS url"), nil
 	}
 	ws, ok := s.mcpWorkspace(ctx, args.Workspace)
 	if !ok || ws.Role == "viewer" {
 		return mcpError("Write access required"), nil
 	}
-	if _, _, err := decodeWorkspaceImage(args.DataURL, maxWorkspaceImage); err != nil {
-		return mcpError("Use a PNG, JPEG, GIF or WebP image up to 5 MiB"), nil
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if args.URL != "" {
+		source, err := downloadWorkspaceImage(ctx, args.URL, s.imageClient, maxWorkspaceImage)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return mcpError("Image upload canceled"), nil
+			}
+			return mcpError("Could not import image: " + errRemoteWorkspaceImage.Error()), nil
+		}
+		args.DataURL = source
+		// Fetching is slower than a membership lookup. Recheck before publishing an
+		// asset if the user's workspace rights changed while the image downloaded.
+		ws, ok = s.mcpWorkspace(ctx, args.Workspace)
+		if !ok || ws.Role == "viewer" {
+			return mcpError("Write access required"), nil
+		}
 	}
 	imageURL, err := s.storeWorkspaceImage(ctx, ws, args.DataURL, maxWorkspaceImage)
 	if err != nil {
+		if errors.Is(err, ErrWorkspaceImage) {
+			return mcpError("Use a valid PNG, JPEG, GIF or WebP source up to 25 MiB: " + err.Error()), nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return mcpError("Image upload canceled"), nil
+		}
 		return mcpError("Could not save image"), nil
 	}
 	return mcpText(map[string]string{"url": imageURL}), nil

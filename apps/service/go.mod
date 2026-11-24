@@ -8,6 +8,7 @@ require (
 	github.com/JackUait/blok/packages/server/go/v2 v2.0.0
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/modelcontextprotocol/go-sdk v1.8.0
+	golang.org/x/image v0.47.0
 	golang.org/x/net v0.62.0
 )
 

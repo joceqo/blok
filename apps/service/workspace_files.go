@@ -14,8 +14,8 @@ import (
 )
 
 // A document carries files as well as pictures — a CSV of leave days, a PDF,
-// a spreadsheet — and MCP could upload none of them. 25 MiB is five times the
-// picture limit: a spreadsheet is not a thumbnail.
+// a spreadsheet — and MCP could upload none of them. File sources and image
+// sources each have a separate 25 MiB limit.
 const maxWorkspaceFile = 25 << 20
 
 // What /files/ will serve. Not a denylist: a type absent here is refused, so a

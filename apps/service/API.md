@@ -184,7 +184,33 @@ access after commit. A stale index save receives 409 and must reload first.
 Invisible/missing pages return 404; visible pages without the necessary edit
 rights return 403. MCP tokens remain confined to `/mcp`.
 
-`blok_upload_image` accepts `{workspace:slug,dataUrl}` for PNG, JPEG, GIF or WebP images up to 5 MiB. It requires workspace write access, stores the image in the existing persistent private asset volume, and returns `{url:"/files/..."}` for use in document content. Remote URLs and SVG are refused; the host never fetches the source.
+`blok_upload_image` accepts exactly one source: `{workspace:slug,dataUrl}` or
+`{workspace:slug,url:"https://..."}`. PNG, JPEG, GIF and WebP sources may be up to
+25 MiB, 48 megapixels and 16,384 pixels per side. Plain PNGs are optimized
+losslessly only when smaller, preserving dimensions and transparency. JPEG,
+GIF, WebP and PNGs carrying animation or presentation metadata remain unchanged.
+The private persistent result is `{url:"/files/..."}`. Workspace write access
+is required and checked again after an HTTPS download. The MCP transport and
+its SDK both allow a 36 MiB JSON envelope for base64 overhead.
+
+HTTPS imports require a public unauthenticated image, use pinned validated
+public DNS addresses, and refuse redirects, private/reserved addresses, SVG and
+unsupported content. Downloads have a 20-second timeout and a bounded byte read.
+The overall image MCP operation has a 30-second deadline. The caller's Bearer
+token and cookies are never sent to the image source.
+
+A remote MCP server cannot read a local `filePath`. Use the local client:
+
+```sh
+# Set BLOK_MCP_TOKEN in the environment to a dedicated MCP credential.
+BLOK_MCP_URL=https://blok.example.com/mcp node scripts/blok-upload-image.mjs equipe /path/to/dashboard.png
+```
+
+The client reads and encodes the file directly, calls `blok_upload_image`, and
+prints only the persistent `/files/` URL as JSON. No base64 transcription is
+needed. The same client supports `equipe --url https://...`. Existing `dataUrl`
+clients continue to work. MCP tokens remain confined to `/mcp`; they do not
+become REST session credentials.
 
 `POST /mcp` is a stateless Streamable HTTP MCP endpoint on the same HTTPS origin. Each caller must send `Authorization: Bearer <personal MCP token>`; browser cookies, native session tokens and cross-origin browser requests do not authorize MCP calls. A signed-in user creates and revokes dedicated tokens in **Mon compte → Accès MCP**. Tokens are displayed only at creation, hashed in PostgreSQL and expire after 90 days. Treat them as passwords. The MCP server checks the user's current workspace membership and role on each request and document operation.
 
@@ -246,7 +272,7 @@ The host calls only the fixed OpenAI [Responses endpoint](https://developers.ope
 
 Workspace members can read custom emoji; members and administrators can upload images and add emoji. Viewers cannot change them. Uploaded images live in the existing `DATA_DIRECTORY/uploads` volume, and asset ownership and emoji records persist in PostgreSQL. Files use the same workspace membership checks and session-bound grants as document assets.
 
-- POST `/api/workspaces/:slug/images` `{dataUrl}` → 201 `{url}`. Upload a PNG, JPEG, GIF or WebP image up to 5 MiB for a page cover. The returned `/files/...` URL is persistent; resolve it through `/api/assets/url` for native clients, and never persist the temporary signed grant in page metadata.
+- POST `/api/workspaces/:slug/images` `{dataUrl}` → 201 `{url}`. Upload a PNG, JPEG, GIF or WebP source up to 25 MiB (48 megapixels, 16,384 pixels per side); plain PNGs are optimized losslessly without resizing. The returned `/files/...` URL is persistent; resolve it through `/api/assets/url` for native clients, and never persist the temporary signed grant in page metadata.
 - GET `/api/workspaces/:slug/emojis` → `{emojis:[{id,name,url,createdBy,createdAt}]}` ordered by name.
 - POST `/api/workspaces/:slug/emojis` `{name,dataUrl}` or `{name,url}` → 201 `{id,name,url,createdBy,createdAt}`. Upload limit is 2 MiB; external image URLs must use HTTPS. An existing `/files/` upload may be reused only if it belongs to this workspace and is not bound to a page. Same-server asset URLs are normalized to a permanent path, discarding temporary grants. The host does not fetch external URLs. Names are normalized to lowercase and use 1–64 ASCII letters, digits, underscores or hyphens; the first character must be a letter or digit. Names are unique per workspace; duplicates return 409.
 - PATCH `/api/workspaces/:slug/emojis/:id` `{name}` → updated emoji. Creator with workspace edit rights or workspace administrator only; ID and image URL are preserved, duplicate names return 409.

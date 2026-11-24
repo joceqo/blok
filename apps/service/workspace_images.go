@@ -1,11 +1,18 @@
 package cloud
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,11 +21,13 @@ import (
 	"strings"
 	"time"
 
+	_ "golang.org/x/image/webp"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const maxWorkspaceImage = 5 << 20
+const maxWorkspaceImage = 25 << 20
 const maxEmojiImage = 2 << 20
 
 var emojiNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -31,8 +40,8 @@ type workspaceEmoji struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// Images are decoded locally, never fetched by the server. Disallow SVG and
-// arbitrary data URLs so uploaded images cannot introduce active content.
+// Decode image data URLs after transport validation. HTTPS imports use the
+// separate public-address fetcher; SVG and arbitrary data URLs stay refused.
 func decodeWorkspaceImage(raw string, limit int) ([]byte, string, error) {
 	if len(raw) > base64.StdEncoding.EncodedLen(limit)+128 {
 		return nil, "", errors.New("image too large")
@@ -51,6 +60,13 @@ func decodeWorkspaceImage(raw string, limit int) ([]byte, string, error) {
 	if !ok || header != "data:"+mime+";base64" {
 		return nil, "", errors.New("use PNG, JPEG, GIF or WebP")
 	}
+	config, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, "", errors.New("invalid image header")
+	}
+	if config.Width < 1 || config.Height < 1 || config.Width > maxWorkspaceImageDimension || config.Height > maxWorkspaceImageDimension || uint64(config.Width)*uint64(config.Height) > maxWorkspaceImagePixels {
+		return nil, "", errors.New("image dimensions exceed 16384 pixels per side or 48 megapixels")
+	}
 	return data, ext, nil
 }
 
@@ -60,7 +76,7 @@ func validRemoteImage(raw string) bool {
 }
 
 func (s *Service) storeWorkspaceImage(ctx context.Context, ws Workspace, raw string, limit int) (string, error) {
-	data, extension, err := decodeWorkspaceImage(raw, limit)
+	data, extension, err := prepareWorkspaceImage(ctx, raw, limit)
 	if err != nil {
 		return "", err
 	}
@@ -74,6 +90,9 @@ func (s *Service) storeWorkspaceImage(ctx context.Context, ws Workspace, raw str
 		return "", err
 	}
 	filename := filepath.Join(directory, name)
+	if err = ctx.Err(); err != nil {
+		return "", err
+	}
 	if err = os.WriteFile(filename, data, 0600); err != nil {
 		return "", err
 	}
@@ -96,16 +115,31 @@ func (s *Service) workspaceImage(w http.ResponseWriter, r *http.Request, ws Work
 	var in struct {
 		DataURL string `json:"dataUrl"`
 	}
-	if !body(w, r, &in) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxWorkspaceImageRequest)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&in); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			problem(w, http.StatusRequestEntityTooLarge, "Use an image source up to 25 MiB")
+		} else {
+			problem(w, 400, "Invalid JSON")
+		}
 		return
 	}
-	if _, _, err := decodeWorkspaceImage(in.DataURL, maxWorkspaceImage); err != nil {
-		problem(w, 400, "Use a PNG, JPEG, GIF or WebP image up to 5 MiB")
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		problem(w, 400, "Expected one JSON value")
 		return
 	}
 	imageURL, err := s.storeWorkspaceImage(r.Context(), ws, in.DataURL, maxWorkspaceImage)
 	if err != nil {
-		problem(w, 500, "Could not save image")
+		if errors.Is(err, ErrWorkspaceImage) {
+			problem(w, 400, fmt.Sprintf("Use a PNG, JPEG, GIF or WebP source up to 25 MiB: %v", err))
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			problem(w, http.StatusRequestTimeout, "Image upload canceled")
+		} else {
+			problem(w, 500, "Could not save image")
+		}
 		return
 	}
 	jsonOut(w, 201, map[string]string{"url": imageURL})
@@ -214,14 +248,14 @@ func (s *Service) emojis(w http.ResponseWriter, r *http.Request, u identity, ws 
 		in.URL = resolved
 	}
 	if in.DataURL != "" {
-		if _, _, err := decodeWorkspaceImage(in.DataURL, maxEmojiImage); err != nil {
-			problem(w, 400, "Use a PNG, JPEG, GIF or WebP emoji up to 2 MiB")
-			return
-		}
 		var err error
 		in.URL, err = s.storeWorkspaceImage(r.Context(), ws, in.DataURL, maxEmojiImage)
 		if err != nil {
-			problem(w, 500, "Could not save emoji image")
+			if errors.Is(err, ErrWorkspaceImage) {
+				problem(w, 400, "Use a PNG, JPEG, GIF or WebP emoji up to 2 MiB and within image dimension limits")
+			} else {
+				problem(w, 500, "Could not save emoji image")
+			}
 			return
 		}
 	}

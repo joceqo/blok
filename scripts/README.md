@@ -2,6 +2,38 @@
 
 This directory contains scripts for building, verifying, and releasing the Blok package.
 
+## Private image uploads
+
+[`blok-upload-image.mjs`](./blok-upload-image.mjs) uploads a local PNG, JPEG, GIF or
+WebP through the hosted `blok_upload_image` MCP tool. It reads and base64-encodes
+the file itself, so image bytes do not need to be copied into model-generated
+arguments. It accepts sources up to 25 MiB; the backend validates the actual
+image and applies its own dimension and processing limits.
+
+Set `BLOK_MCP_TOKEN` in the environment to a dedicated MCP token from
+**Mon compte → Accès MCP**, then run:
+
+```sh
+BLOK_MCP_URL=https://blok.example.com/mcp node scripts/blok-upload-image.mjs equipe /path/to/dashboard.png
+node scripts/blok-upload-image.mjs equipe /path/to/dashboard.png --server https://blok.example.com
+node scripts/blok-upload-image.mjs equipe --url https://images.example.com/dashboard.png --server https://blok.example.com
+```
+
+The output is only JSON containing the persistent `/files/` asset URL. The token
+and base64 are never printed or passed on the command line. The source file is
+not modified. `--url` uses the hosted MCP's HTTPS import support; a local path
+is always read by this client, never interpreted as a path on the remote server.
+The client accepts JSON or SSE responses, bounds the response size, times out
+unfinished requests and does not forward credentials through redirects. A
+server origin without a path is expanded to `/mcp`. HTTP is accepted only for
+local development on loopback hosts. Use `--help` for the full usage.
+
+Run its local transport tests without loading the editor test runner:
+
+```sh
+NODE_OPTIONS=--max-old-space-size=2048 node --test scripts/tests/blok-upload-image.test.mjs
+```
+
 ## Performance Tracking
 
 ### [`analyze-performance.mjs`](./analyze-performance.mjs)

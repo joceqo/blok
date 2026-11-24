@@ -36,6 +36,7 @@ type Service struct {
 	maintenanceGuard *pgxpool.Conn
 	aiCipher         cipher.AEAD
 	aiClient         *http.Client
+	imageClient      *http.Client
 	aiInFlight       map[string]int
 	aiMu             sync.Mutex
 	Config           Config
@@ -72,7 +73,6 @@ type Workspace struct {
 	Role string  `json:"role"`
 	Icon *string `json:"icon"`
 }
-
 
 // allowedOrigins is what the Blok engine compares a request's Origin against,
 // by exact match. The service trims a trailing slash before its own comparison,
@@ -173,6 +173,7 @@ func New(ctx context.Context, c Config) (*Service, error) {
 		return fail(e)
 	}
 	s.aiClient = newAIClient(c.AITransport)
+	s.imageClient = newWorkspaceImageHTTPClient(nil, nil)
 	auth := "ticket"
 	s.Blok, e = blokserver.New(blokserver.Options{Auth: &auth, Secret: c.TicketSecret, PublicURL: strings.TrimRight(c.PublicURL, "/") + "/files", AllowedOrigins: allowedOrigins(c), StorageDirectory: filepath.Join(c.DataDirectory, "uploads"), CollabEnabled: true, CollabJournal: true, CollabDirectory: filepath.Join(c.DataDirectory, "collab"), DocEndpoint: strings.TrimRight(c.InternalURL, "/") + "/internal/documents", DocEndpointAuth: "Bearer " + c.InternalSecret, Authorization: s, Logger: slog.Default(), RateLimitPerMinute: 600})
 	if e != nil {
@@ -190,6 +191,9 @@ func New(ctx context.Context, c Config) (*Service, error) {
 	return s, nil
 }
 func (s *Service) Close() {
+	if s.imageClient != nil {
+		s.imageClient.CloseIdleConnections()
+	}
 	s.stopSettingsSweep()
 	s.stopAccessSweep()
 	if s.MCP != nil {
