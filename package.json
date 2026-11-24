@@ -179,6 +179,7 @@
     "e2e:ui:safari": "playwright test --ui --project=webkit",
     "test": "node scripts/test-product.mjs",
     "test:desktop": "node scripts/test-product.mjs desktop",
+    "test:room": "node scripts/test-product.mjs room",
     "test:service": "node scripts/test-product.mjs service",
     "test:unit:all": "vitest run --project=unit --project=unit-angular",
     "test:watch": "vitest --project=unit --project=unit-angular",
