@@ -2,14 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { PoolClient } from 'pg';
-import type { PgPool } from '../db/pool.js';
-import { parseTeamspaceCreateBody, parseTeamspacePatchBody } from '../workspaces/teamspace-body.js';
-import { parseUserId } from '../models/User.js';
-import { canEditWorkspace, type WorkspaceRole } from '../models/Workspace.js';
-import { canEditPage } from './page-level.js';
-import { loadIndexPages, pageStandings } from './workspace-index.js';
-import { readWorkspaceScope, WorkspaceError } from './workspace-scope.js';
-import { sessionDigest } from './session.js';
+import type { PgPool } from '../db/pool.ts';
+import { parseTeamspaceCreateBody, parseTeamspacePatchBody } from '../workspaces/teamspace-body.ts';
+import { parseUserId } from '../models/User.ts';
+import { canEditWorkspace, type WorkspaceRole } from '../models/Workspace.ts';
+import { canEditPage } from './page-level.ts';
+import { loadIndexPages, pageStandings } from './workspace-index.ts';
+import { readWorkspaceScope, WorkspaceError } from './workspace-scope.ts';
+import { sessionDigest } from './session.ts';
 
 interface Scope {
   client: PoolClient;

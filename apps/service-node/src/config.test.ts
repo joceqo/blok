@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { loadConfig } from './config.js';
+import { loadConfig } from './config.ts';
 
 const CONFIG_ENV_KEYS = [
   'PORT',

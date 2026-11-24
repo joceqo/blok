@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { loadTicketsConformanceFixture } from '@/testing/tickets-fixture.js';
-import { blokTicket, verifyBlokTicket } from './hmac.js';
+import { loadTicketsConformanceFixture } from '../testing/tickets-fixture.ts';
+import { blokTicket, verifyBlokTicket } from './hmac.ts';
 
 const fixtures = loadTicketsConformanceFixture();
 const SECRET = fixtures.secret;

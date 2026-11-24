@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 
-import { forwardToSidecar, sidecarBaseUrl } from '@/sidecar/client.js';
+import { forwardToSidecar, sidecarBaseUrl } from '../sidecar/client.ts';
 
 function isWebSocketUpgrade(request: Request): boolean {
   return request.headers.get('upgrade')?.toLowerCase() === 'websocket';

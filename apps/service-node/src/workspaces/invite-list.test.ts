@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { filterPendingWorkspaceInvites, isPendingWorkspaceInvite } from '@/workspaces/invite-list.js';
+import { filterPendingWorkspaceInvites, isPendingWorkspaceInvite } from './invite-list.ts';
 
 describe('isPendingWorkspaceInvite', () => {
   it('is true when acceptedAt is null', () => {

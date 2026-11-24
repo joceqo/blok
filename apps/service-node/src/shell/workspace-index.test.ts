@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type IndexPage, workspaceIndex } from './workspace-index.js';
+import { type IndexPage, workspaceIndex } from './workspace-index.ts';
 
 function page(id: string, fields: Partial<IndexPage> = {}): IndexPage {
   return { id, metadata: { id }, trashed: false, visibility: 'workspace', share: null, shared: false, ...fields };

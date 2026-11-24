@@ -1,4 +1,4 @@
-import type { WorkspaceRole } from '../models/Workspace.js';
+import type { WorkspaceRole } from '../models/Workspace.ts';
 
 export const levels = ['view', 'edit', 'full'] as const;
 export type Level = typeof levels[number];

@@ -1,7 +1,7 @@
 import {
   parsePresetConfig,
   type WorkspacePresetConfig,
-} from '@/workspaces/preset-config.js';
+} from './preset-config.ts';
 
 export type PresetBodyErrorReason =
   | 'invalid_request'

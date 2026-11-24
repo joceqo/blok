@@ -1,4 +1,4 @@
-import type { PgPool } from '../db/pool.js';
+import type { PgPool } from '../db/pool.ts';
 
 export interface ProjectionHead {
   version: string;

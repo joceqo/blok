@@ -1,5 +1,5 @@
-import type { WorkspaceRole } from '@/permissions.js';
-import { parseWorkspaceRole } from '@/workspaces/membership.js';
+import type { WorkspaceRole } from '../permissions.ts';
+import { parseWorkspaceRole } from './membership.ts';
 
 const ROLE_KEYS = ['read', 'edit'] as const;
 

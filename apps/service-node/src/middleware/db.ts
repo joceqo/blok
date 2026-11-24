@@ -1,6 +1,6 @@
 import { createMiddleware } from 'hono/factory';
 
-import type { Database } from '@/db/index.js';
+import type { Database } from '../db/index.ts';
 
 export type DbVariables = {
   db: Database;

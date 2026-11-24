@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { toWorkspaceImageJson } from './serialize.js';
+import { toWorkspaceImageJson } from './serialize.ts';
 
 describe('toWorkspaceImageJson', () => {
   it('stringifies byteSize', () => {

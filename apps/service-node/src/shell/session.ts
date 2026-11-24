@@ -1,9 +1,9 @@
-import type { User } from '../models/User.js';
-import type { WorkspaceMembership } from '../models/Workspace.js';
+import type { User } from '../models/User.ts';
+import type { WorkspaceMembership } from '../models/Workspace.ts';
 import { createHash } from 'node:crypto';
 import type { Context } from 'hono';
 import { getCookie } from 'hono/cookie';
-import type { PgPool } from '../db/pool.js';
+import type { PgPool } from '../db/pool.ts';
 
 export function sessionDigest(context: Context): string | undefined {
   const auth = context.req.header('Authorization');

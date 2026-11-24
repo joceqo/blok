@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canMintTicketForDoc } from './can-mint-ticket-for-doc.js';
+import { canMintTicketForDoc } from './can-mint-ticket-for-doc.ts';
 
 describe('canMintTicketForDoc', () => {
   it('refuses when no page is bound to the doc id', () => {

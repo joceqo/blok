@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
-import { parseIndex, planIndexSave } from './index-save.js';
-import { workspaceIndex, type IndexPage, type Role } from './workspace-index.js';
+import { parseIndex, planIndexSave } from './index-save.ts';
+import { workspaceIndex, type IndexPage, type Role } from './workspace-index.ts';
 
 const cases = [
   ['admin', null, undefined], ['member', null, undefined], ['viewer', null, undefined],

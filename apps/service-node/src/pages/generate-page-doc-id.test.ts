@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { generatePageDocId } from './generate-page-doc-id.js';
-import { resolvePageDocumentPostBind } from './page-document-post-bind.js';
+import { generatePageDocId } from './generate-page-doc-id.ts';
+import { resolvePageDocumentPostBind } from './page-document-post-bind.ts';
 
 const uuidV4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

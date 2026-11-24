@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 
-import { mintDocumentStateAuthorization } from '@/documents/ticket-forward.js';
-import type { SessionVariables } from '@/middleware/session.js';
-import { forwardToSidecar } from '@/sidecar/client.js';
+import { mintDocumentStateAuthorization } from '../documents/ticket-forward.ts';
+import type { SessionVariables } from '../middleware/session.ts';
+import { forwardToSidecar } from '../sidecar/client.ts';
 
 type Env = { Variables: SessionVariables };
 

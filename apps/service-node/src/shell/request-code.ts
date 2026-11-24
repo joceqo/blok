@@ -2,10 +2,10 @@ import { BlockList, isIP } from 'node:net';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import type { PgPool } from '../db/pool.js';
-import { generateLoginCode, hashSecret } from '../auth/codes.js';
+import type { PgPool } from '../db/pool.ts';
+import { generateLoginCode, hashSecret } from '../auth/codes.ts';
 
-import { createInternalMailTransport } from './internal-mail.js';
+import { createInternalMailTransport } from './internal-mail.ts';
 
 export interface LoginMail {
   normalize(email: string): Promise<string | undefined>;

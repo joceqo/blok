@@ -1,4 +1,4 @@
-import { generatePageDocId } from './generate-page-doc-id.js';
+import { generatePageDocId } from './generate-page-doc-id.ts';
 
 export type PageDocumentPostBody = {
   docId?: string;

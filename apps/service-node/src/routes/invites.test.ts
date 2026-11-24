@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { filterPendingWorkspaceInvites } from '@/workspaces/invite-list.js';
+import { filterPendingWorkspaceInvites } from '../workspaces/invite-list.ts';
 
 describe('workspace invite list (pending filter)', () => {
   it('matches GET /api/workspaces/:id/invites semantics (pending only)', () => {

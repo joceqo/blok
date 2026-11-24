@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { healthRoutes } from './health.js';
+import { healthRoutes } from './health.ts';
 
 describe('GET /health', () => {
   let savedServiceVersion: string | undefined;

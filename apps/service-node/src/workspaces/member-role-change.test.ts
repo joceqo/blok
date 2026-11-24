@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { validateMemberRoleChange } from './member-role-change.js';
+import { validateMemberRoleChange } from './member-role-change.ts';
 
 describe('validateMemberRoleChange', () => {
   it('allows owner to promote a member', () => {

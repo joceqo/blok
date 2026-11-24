@@ -1,6 +1,6 @@
 import { serve } from '@hono/node-server';
-import { createPool } from '../db/pool.js';
-import { createShellApp } from './app.js';
+import { createPool } from '../db/pool.ts';
+import { createShellApp } from './app.ts';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL required');

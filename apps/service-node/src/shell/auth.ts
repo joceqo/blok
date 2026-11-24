@@ -2,9 +2,9 @@ import { timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { setCookie } from 'hono/cookie';
-import { generateSessionToken, hashSecret, normalizeEmail, SESSION_COOKIE } from '../auth/codes.js';
-import type { PgPool } from '../db/pool.js';
-import { loadSession, sessionDigest } from './session.js';
+import { generateSessionToken, hashSecret, normalizeEmail, SESSION_COOKIE } from '../auth/codes.ts';
+import type { PgPool } from '../db/pool.ts';
+import { loadSession, sessionDigest } from './session.ts';
 
 export function createShellAuth(pool: PgPool, secret: string, recheckSessions: () => Promise<void>) {
   const routes = new Hono();

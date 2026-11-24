@@ -1,4 +1,4 @@
-import { loadConfig } from '@/config.js';
+import { loadConfig } from '../config.ts';
 
 export type SendMailResult = { sent: boolean };
 

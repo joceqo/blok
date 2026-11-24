@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { duplicateTitle } from './duplicate-title.js';
+import { duplicateTitle } from './duplicate-title.ts';
 
 describe('duplicateTitle', () => {
   it('appends a spaced Copy suffix', () => {

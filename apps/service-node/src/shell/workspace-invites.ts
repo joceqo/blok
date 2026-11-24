@@ -1,10 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import type { PgPool } from '../db/pool.js';
-import { sessionDigest } from './session.js';
-import type { InviteMail } from './invite-mail.js';
-import { readWorkspaceScope, WorkspaceError } from './workspace-scope.js';
+import type { PgPool } from '../db/pool.ts';
+import { sessionDigest } from './session.ts';
+import type { InviteMail } from './invite-mail.ts';
+import { readWorkspaceScope, WorkspaceError } from './workspace-scope.ts';
 
 export function parseInvite(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new WorkspaceError(400, 'Invalid JSON');

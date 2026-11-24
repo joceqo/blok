@@ -3,11 +3,11 @@ import { serve } from '@hono/node-server';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createApp } from './app.js';
-import { loadConfig } from '@/config.js';
-import { applySchemaIfPresent } from '@/db/apply-schema.js';
-import { createDb } from '@/db/index.js';
-import { createPool } from '@/db/pool.js';
+import { createApp } from './app.ts';
+import { loadConfig } from './config.ts';
+import { applySchemaIfPresent } from './db/apply-schema.ts';
+import { createDb } from './db/index.ts';
+import { createPool } from './db/pool.ts';
 
 const config = loadConfig();
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');

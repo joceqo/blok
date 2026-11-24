@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { validateReorder, type ReorderSibling } from './validate-reorder.js';
+import { validateReorder, type ReorderSibling } from './validate-reorder.ts';
 
 const PAGE_A = 'a0000000-0000-4000-8000-000000000001';
 const PAGE_B = 'a0000000-0000-4000-8000-000000000002';

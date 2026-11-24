@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { loadTicketsConformanceFixture } from '@/testing/tickets-fixture.js';
-import { blokTicket } from './blok.js';
+import { loadTicketsConformanceFixture } from '../testing/tickets-fixture.ts';
+import { blokTicket } from './blok.ts';
 
 const fixtures = loadTicketsConformanceFixture();
 

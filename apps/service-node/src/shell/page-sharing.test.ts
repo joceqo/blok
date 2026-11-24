@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PgPool } from '../db/pool.js';
-import { resolvePageLevel, type Role } from './page-level.js';
-import { createShellApp } from './app.js';
+import type { PgPool } from '../db/pool.ts';
+import { resolvePageLevel, type Role } from './page-level.ts';
+import { createShellApp } from './app.ts';
 
 describe('levels used by the access sheet and sidebar', () => {
   it.each([

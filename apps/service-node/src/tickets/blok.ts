@@ -1,1 +1,1 @@
-export { blokTicket, verifyBlokTicket, type BlokTicketClaims, type VerifiedBlokTicket } from './hmac.js';
+export { blokTicket, verifyBlokTicket, type BlokTicketClaims, type VerifiedBlokTicket } from './hmac.ts';

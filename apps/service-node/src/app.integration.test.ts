@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createApp } from './app.js';
+import { createApp } from './app.ts';
 
 const CONFIG_ENV_KEYS = [
   'DATABASE_URL',

@@ -1,24 +1,24 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import type { Database } from '@/db/index.js';
-import type { DbVariables } from '@/middleware/db.js';
-import type { SessionVariables } from '@/middleware/session.js';
-import { requireUser } from '@/middleware/require-user.js';
-import { requireWorkspaceRole } from '@/http/workspace-access.js';
+import type { Database } from '../db/index.ts';
+import type { DbVariables } from '../middleware/db.ts';
+import type { SessionVariables } from '../middleware/session.ts';
+import { requireUser } from '../middleware/require-user.ts';
+import { requireWorkspaceRole } from '../http/workspace-access.ts';
 import {
   teamspaceMembers,
   teamspaces,
   users,
   workspaceMembers,
-} from '@/db/schema.js';
+} from '../db/schema.ts';
 import {
   parseTeamspaceCreateBody,
   parseTeamspaceMemberAddBody,
   parseTeamspaceMemberUserIdParam,
   parseTeamspacePatchBody,
   serializeTeamspace,
-} from '@/workspaces/teamspace-body.js';
+} from '../workspaces/teamspace-body.ts';
 
 type Env = { Variables: DbVariables & SessionVariables };
 

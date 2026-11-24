@@ -1,5 +1,5 @@
-import { canWorkspaceRole } from '@/permissions.js';
-import { parseWorkspaceRole } from '@/workspaces/membership.js';
+import { canWorkspaceRole } from '../permissions.ts';
+import { parseWorkspaceRole } from '../workspaces/membership.ts';
 
 export type PageCollaboratorRow = {
   userId: string;

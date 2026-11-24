@@ -1,7 +1,7 @@
-import type { PgPool } from '../db/pool.js';
+import type { PgPool } from '../db/pool.ts';
 
-import { levels, resolvePageLevel, type Level, type Role, type Visibility } from './page-level.js';
-export type { Role } from './page-level.js';
+import { levels, resolvePageLevel, type Level, type Role, type Visibility } from './page-level.ts';
+export type { Role } from './page-level.ts';
 
 
 export interface IndexPage {

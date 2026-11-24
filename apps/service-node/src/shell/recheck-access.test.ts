@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { createAccessRecheck } from './recheck-access.js';
+import { createAccessRecheck } from './recheck-access.ts';
 
 afterEach(() => vi.unstubAllGlobals());
 

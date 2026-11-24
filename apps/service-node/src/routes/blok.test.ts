@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createApp } from '@/app.js';
-import { syncWebSocketHint } from '@/routes/blok.js';
+import { createApp } from '../app.ts';
+import { syncWebSocketHint } from './blok.ts';
 
 const forwardToSidecar = vi.hoisted(() => vi.fn(async () => new Response('ok', { status: 200 })));
 
-vi.mock('@/sidecar/client.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/sidecar/client.js')>();
+vi.mock('../sidecar/client.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../sidecar/client.ts')>();
   return {
     ...actual,
     forwardToSidecar,
@@ -51,7 +51,7 @@ describe('GET /api/blok/unfurl', () => {
 
   it('returns 503 when BLOK_SIDECAR_URL is unset', async () => {
     const { forwardToSidecar: realForward } =
-      await vi.importActual<typeof import('@/sidecar/client.js')>('@/sidecar/client.js');
+      await vi.importActual<typeof import('../sidecar/client.ts')>('../sidecar/client.ts');
     forwardToSidecar.mockImplementation(realForward);
     delete process.env.BLOK_SIDECAR_URL;
 

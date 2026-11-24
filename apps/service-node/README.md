@@ -202,7 +202,7 @@ All under `/api/admin/*`: signed-in user + `requireAdmin` (`ADMIN_USER_IDS` when
 
 ## Imports
 
-Cross-module paths use the `@/` alias (`package.json` `imports` → `dist/` at runtime; `tsconfig` `paths` → `src/` for typecheck and `tsx`/`vitest`). Same directory keeps `./foo.js`; never `../../`.
+Write local module imports with their source extension, for example `import type { User } from '../models/User.ts'`. This package's TypeScript compiler rewrites those paths to `.js` in `dist/` for Node's ESM runtime. Run `npm run build` to compile both entry points.
 
 ## Scripts
 

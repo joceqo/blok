@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { createInviteMail } from './invite-mail.js';
-import { parseInvite } from './workspace-invites.js';
+import { createInviteMail } from './invite-mail.ts';
+import { parseInvite } from './workspace-invites.ts';
 
 describe('workspace invite fields', () => {
   it('keeps the delivery note and accepts the Go default role', () => {

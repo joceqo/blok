@@ -20,7 +20,7 @@ import {
   varchar,
 } from 'drizzle-orm/pg-core';
 
-import type { WorkspacePresetConfig } from '@/workspaces/preset-config.js';
+import type { WorkspacePresetConfig } from '../workspaces/preset-config.ts';
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),

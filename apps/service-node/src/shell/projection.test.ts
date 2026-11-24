@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { projectionDecision, readProjectionHeaders, type ProjectionHead } from './projection.js';
+import { projectionDecision, readProjectionHeaders, type ProjectionHead } from './projection.ts';
 
 const stored: ProjectionHead = { version: '3', lineage: 'first', sequence: '10' };
 

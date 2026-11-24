@@ -1,34 +1,34 @@
 import { and, asc, eq, gt, ilike, inArray, isNull, or } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import { pageDocuments, pages } from '@/db/schema.js';
-import { withTransaction } from '@/db/transaction.js';
+import { pageDocuments, pages } from '../db/schema.ts';
+import { withTransaction } from '../db/transaction.ts';
 import {
   decodeTimeIdCursor,
   encodeTimeIdCursor,
   parseListPagination,
-} from '@/http/pagination.js';
-import { requireWorkspaceRole } from '@/http/workspace-access.js';
-import type { DbVariables } from '@/middleware/db.js';
-import { requireUser } from '@/middleware/require-user.js';
-import type { SessionVariables } from '@/middleware/session.js';
-import { canPurgeTrashedPage } from '@/pages/can-purge-trashed-page.js';
+} from '../http/pagination.ts';
+import { requireWorkspaceRole } from '../http/workspace-access.ts';
+import type { DbVariables } from '../middleware/db.ts';
+import { requireUser } from '../middleware/require-user.ts';
+import type { SessionVariables } from '../middleware/session.ts';
+import { canPurgeTrashedPage } from '../pages/can-purge-trashed-page.ts';
 import {
   duplicatePageDocumentBinding,
   formatPageDocumentBinding,
-} from '@/pages/duplicate-page-document.js';
-import { duplicateTitle } from '@/pages/duplicate-title.js';
-import { PAGE_SEARCH_LIMIT, searchQueryValid } from '@/pages/search-query.js';
-import { buildPagesTree } from '@/pages/tree.js';
-import { pageReadCollaborators } from '@/pages/page-collaborators.js';
-import { reparentPage } from '@/pages/page-reparent.js';
-import { validateRestorePageIds } from '@/pages/validate-restore-page-ids.js';
+} from '../pages/duplicate-page-document.ts';
+import { duplicateTitle } from '../pages/duplicate-title.ts';
+import { PAGE_SEARCH_LIMIT, searchQueryValid } from '../pages/search-query.ts';
+import { buildPagesTree } from '../pages/tree.ts';
+import { pageReadCollaborators } from '../pages/page-collaborators.ts';
+import { reparentPage } from '../pages/page-reparent.ts';
+import { validateRestorePageIds } from '../pages/validate-restore-page-ids.ts';
 import {
   sortIndicesAfterReorder,
   validateReorder,
-} from '@/pages/validate-reorder.js';
-import { assertPageAction } from '@/permissions.js';
-import { memberRole, memberRows } from '@/workspaces/membership.js';
+} from '../pages/validate-reorder.ts';
+import { assertPageAction } from '../permissions.ts';
+import { memberRole, memberRows } from '../workspaces/membership.ts';
 
 type Env = {
   Variables: DbVariables & SessionVariables;

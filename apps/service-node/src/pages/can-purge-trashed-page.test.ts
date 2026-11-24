@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canPurgeTrashedPage } from './can-purge-trashed-page.js';
+import { canPurgeTrashedPage } from './can-purge-trashed-page.ts';
 
 describe('canPurgeTrashedPage', () => {
   it('allows workspace owners to purge a trashed page', () => {

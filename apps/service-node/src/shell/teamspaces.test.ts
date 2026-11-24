@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PgPool } from '../db/pool.js';
-import { createShellApp } from './app.js';
-import { parseUserId } from '../models/User.js';
+import type { PgPool } from '../db/pool.ts';
+import { createShellApp } from './app.ts';
+import { parseUserId } from '../models/User.ts';
 
 describe('shell teamspace directory', () => {
   it('accepts canonical opaque IDs and earlier UUIDs', () => {

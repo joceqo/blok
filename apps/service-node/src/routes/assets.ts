@@ -1,12 +1,12 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { Hono } from 'hono';
 
-import { toAssetJson } from '@/assets/serialize.js';
-import { assets } from '@/db/schema.js';
-import { requireWorkspaceRole } from '@/http/workspace-access.js';
-import type { DbVariables } from '@/middleware/db.js';
-import { requireUser } from '@/middleware/require-user.js';
-import type { SessionVariables } from '@/middleware/session.js';
+import { toAssetJson } from '../assets/serialize.ts';
+import { assets } from '../db/schema.ts';
+import { requireWorkspaceRole } from '../http/workspace-access.ts';
+import type { DbVariables } from '../middleware/db.ts';
+import { requireUser } from '../middleware/require-user.ts';
+import type { SessionVariables } from '../middleware/session.ts';
 
 type Env = { Variables: DbVariables & SessionVariables };
 

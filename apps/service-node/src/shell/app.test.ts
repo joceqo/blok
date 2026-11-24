@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PgPool } from '../db/pool.js';
-import { createShellApp } from './app.js';
+import type { PgPool } from '../db/pool.ts';
+import { createShellApp } from './app.ts';
 
 const secret = 's'.repeat(32);
 const origins = new Set(['https://example.test', 'tauri://localhost']);

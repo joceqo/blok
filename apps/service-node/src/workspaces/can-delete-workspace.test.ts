@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canDeleteWorkspace } from '@/workspaces/can-delete-workspace.js';
+import { canDeleteWorkspace } from './can-delete-workspace.ts';
 
 describe('canDeleteWorkspace', () => {
   it('allows owner to delete when workspace has no pages', () => {

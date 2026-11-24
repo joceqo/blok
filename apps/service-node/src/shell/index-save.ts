@@ -1,6 +1,6 @@
-import { canEditPage } from './page-level.js';
-import type { IndexPage, Role } from './workspace-index.js';
-import { workspaceIndex } from './workspace-index.js';
+import { canEditPage } from './page-level.ts';
+import type { IndexPage, Role } from './workspace-index.ts';
+import { workspaceIndex } from './workspace-index.ts';
 
 type Page = Record<string, unknown> & { id: string; title: string; parentId?: string | null };
 type Incoming = { meta: Page; trashed: boolean };

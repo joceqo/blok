@@ -1,9 +1,9 @@
 import type { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import type { PgPool } from '../db/pool.js';
-import { IndexError, parseIndex, planIndexSave } from './index-save.js';
-import { sessionDigest } from './session.js';
-import { loadIndexPages, type Role } from './workspace-index.js';
+import type { PgPool } from '../db/pool.ts';
+import { IndexError, parseIndex, planIndexSave } from './index-save.ts';
+import { sessionDigest } from './session.ts';
+import { loadIndexPages, type Role } from './workspace-index.ts';
 
 async function saveIndex(pool: PgPool, key: string, slug: string, body: unknown) {
   const client = await pool.connect();

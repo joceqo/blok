@@ -2,9 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createRequestCode, trustedClientIP } from './request-code.js';
-import { createShellAuth } from './auth.js';
-import { createShellApp } from './app.js';
+import { createRequestCode, trustedClientIP } from './request-code.ts';
+import { createShellAuth } from './auth.ts';
+import { createShellApp } from './app.ts';
 
 // Opt in with a development PostgreSQL URL. Only this suite's schema is used.
 const databaseUrl = process.env.SHELL_TEST_DATABASE_URL;

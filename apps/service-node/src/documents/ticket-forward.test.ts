@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { verifyBlokTicket } from '@/tickets/hmac.js';
-import { mintDocumentStateAuthorization } from './ticket-forward.js';
+import { verifyBlokTicket } from '../tickets/hmac.ts';
+import { mintDocumentStateAuthorization } from './ticket-forward.ts';
 
 const SECRET = 'test-secret-at-least-32-characters!';
 

@@ -1,10 +1,10 @@
 import { and, eq } from 'drizzle-orm';
 
-import { pages } from '@/db/schema.js';
-import type { Database } from '@/db/index.js';
+import { pages } from '../db/schema.ts';
+import type { Database } from '../db/index.ts';
 
 type PageRow = typeof pages.$inferSelect;
-import { wouldCreatePageCycle } from '@/pages/tree.js';
+import { wouldCreatePageCycle } from './tree.ts';
 
 export type PageReparentFailure = 'not_found' | 'invalid_parent' | 'cycle';
 

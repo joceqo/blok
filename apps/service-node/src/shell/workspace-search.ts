@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import type { PgPool } from '../db/pool.js';
-import { sessionDigest } from './session.js';
-import { loadIndexPages, pageStandings } from './workspace-index.js';
-import { readWorkspaceScope, WorkspaceError } from './workspace-scope.js';
+import type { PgPool } from '../db/pool.ts';
+import { sessionDigest } from './session.ts';
+import { loadIndexPages, pageStandings } from './workspace-index.ts';
+import { readWorkspaceScope, WorkspaceError } from './workspace-scope.ts';
 
 interface Source { id: string; title: string; excerpt: string }
 

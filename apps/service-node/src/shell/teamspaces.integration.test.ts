@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createShellApp } from './app.js';
+import { createShellApp } from './app.ts';
 
 const databaseUrl = process.env.SHELL_TEST_DATABASE_URL;
 describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema', () => {

@@ -2,20 +2,20 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 
-import { createLoginMail, createRequestCode } from './request-code.js';
-import { createShellAuth } from './auth.js';
-import { registerIndexWrite } from './index-write.js';
-import type { PgPool } from '../db/pool.js';
-import { createInviteMail } from './invite-mail.js';
-import { createWorkspaceInvites } from './workspace-invites.js';
-import { createWorkspaceMembers } from './workspace-members.js';
-import { createPageSharing } from './page-sharing.js';
-import { createAccessRecheck, recheckLiveSessions } from './recheck-access.js';
-import { readProjectionHeaders, saveProjection } from './projection.js';
-import { createWorkspaceSearch } from './workspace-search.js';
-import { createShellTeamspaces } from './teamspaces.js';
-import { loadWorkspaceIndex } from './workspace-index.js';
-import { loadSession, loadVisiblePage, sessionDigest } from './session.js';
+import { createLoginMail, createRequestCode } from './request-code.ts';
+import { createShellAuth } from './auth.ts';
+import { registerIndexWrite } from './index-write.ts';
+import type { PgPool } from '../db/pool.ts';
+import { createInviteMail } from './invite-mail.ts';
+import { createWorkspaceInvites } from './workspace-invites.ts';
+import { createWorkspaceMembers } from './workspace-members.ts';
+import { createPageSharing } from './page-sharing.ts';
+import { createAccessRecheck, recheckLiveSessions } from './recheck-access.ts';
+import { readProjectionHeaders, saveProjection } from './projection.ts';
+import { createWorkspaceSearch } from './workspace-search.ts';
+import { createShellTeamspaces } from './teamspaces.ts';
+import { loadWorkspaceIndex } from './workspace-index.ts';
+import { loadSession, loadVisiblePage, sessionDigest } from './session.ts';
 
 const digest = (input: string) => createHash('sha256').update(input).digest();
 

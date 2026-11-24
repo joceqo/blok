@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { toAssetJson } from './serialize.js';
+import { toAssetJson } from './serialize.ts';
 
 describe('toAssetJson', () => {
   it('stringifies byteSize', () => {

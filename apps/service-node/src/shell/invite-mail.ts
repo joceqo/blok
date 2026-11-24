@@ -1,5 +1,5 @@
-import { createInternalMailTransport } from './internal-mail.js';
-import { WorkspaceError } from './workspace-scope.js';
+import { createInternalMailTransport } from './internal-mail.ts';
+import { WorkspaceError } from './workspace-scope.ts';
 
 export interface InviteMail {
   normalize(email: string): Promise<string>;
