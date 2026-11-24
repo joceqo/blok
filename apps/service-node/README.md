@@ -14,6 +14,8 @@ The desktop shell uses the PostgreSQL schema in `apps/service/schema.sql`, initi
 | `GET /api/workspaces/:slug/pages/:id` | Read the persisted page document with inherited visibility and grants. |
 | `GET/PUT /api/workspaces/:slug/pages/:id/access` | Read effective permissions or change page visibility. |
 | `PUT/DELETE /api/workspaces/:slug/pages/:id/shares/:target` | Grant, update or revoke a direct share for a workspace member. |
+| `GET /api/workspaces/:slug/members` and `PATCH/DELETE /api/workspaces/:slug/members/:userId` | List workspace members, change a role, or remove a member and their grants. |
+| `/api/workspaces/:slug/teamspaces` | List and manage teams and team memberships in the workspace. |
 | `GET/PUT /internal/documents/:id` | Load or persist a collaboration projection using the service credential and document revision. |
 | `GET /healthz` | Check PostgreSQL connectivity. |
 

@@ -5,7 +5,7 @@
   }
   @shellReads {
     method GET HEAD
-    path_regexp shellReads ^/api/(session|workspaces|workspaces/[^/]+/(index|pages/[^/]+(/access)?))$
+    path_regexp shellReads ^/api/(session|workspaces|workspaces/[^/]+/(index|members|pages/[^/]+(/access)?))$
   }
   handle @shellReads {
     reverse_proxy {$BLOK_SHELL_READ_UPSTREAM:app:8080}
@@ -22,6 +22,20 @@
     reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
   }
   handle @shellDelete {
+    reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
+  }
+  @membership {
+    method PATCH DELETE
+    path_regexp membership ^/api/workspaces/[^/]+/members/[^/]+$
+  }
+  handle @membership {
+    reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
+  }
+  @teamspaces {
+    method GET HEAD OPTIONS POST PATCH DELETE
+    path_regexp teamspaces ^/api/workspaces/[^/]+/teamspaces(/[^/]+(/members(/[^/]+)?)?)?$
+  }
+  handle @teamspaces {
     reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
   }
   @api path /api/* /files/* /healthz /mcp

@@ -80,7 +80,8 @@ export async function loadWorkspaceIndex(pool: PgPool, digest: string, slug: str
     }>(`SELECT a.user_id, w.id AS workspace_id, w.revision::text, m.role
         FROM (SELECT 1) start
         LEFT JOIN sessions a ON a.id=$1 AND a.expires_at>now()
-        LEFT JOIN workspaces w ON w.slug=$2
+        LEFT JOIN (SELECT id,revision FROM workspaces WHERE slug=$2 OR id=$2
+                   ORDER BY (slug=$2) DESC LIMIT 1) w ON true
         LEFT JOIN memberships m ON m.user_id=a.user_id AND m.workspace_id=w.id`, [digest, slug]);
     if (!scope?.user_id || !scope.workspace_id || !scope.role) {
       await client.query('COMMIT');
