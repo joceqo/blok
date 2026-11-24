@@ -55,14 +55,34 @@ describe('cloud gateway', () => {
     vi.stubGlobal('fetch', fetch);
     await mountCloudGateway(document.body,{onOpenWorkspace:vi.fn()});
     expect(document.querySelector('[data-cloud-route]')?.getAttribute('data-cloud-route')).toBe('setup');
-    expect(document.querySelector('input[type="email"]')).toBeNull();
-    expect(document.body.textContent).toContain('Étape 1 sur 4');
-    expect(document.body.textContent).toContain('Cette instance');
-    expect(document.body.textContent).toContain('docker compose exec app cat /data/setup-token');
+    // The assistant has its own address field, so the login form is identified
+    // by its own id rather than by the input type.
+    expect(document.querySelector('#cloud-email')).toBeNull();
+    expect(document.querySelector('#cloud-admin-email')).not.toBeNull();
+    expect(document.body.textContent).toContain('Bienvenue sur Blok');
+    expect(document.body.textContent).not.toMatch(/Étape \d/);
+    expect(document.body.textContent).not.toContain('Jeton');
     expect(document.body.textContent).not.toMatch(/Coming soon/i);
-    // Re-fetch before render — never trust a single cached setupRequired.
-    const instanceCalls = fetch.mock.calls.filter(([url]) => String(url).endsWith('/api/instance'));
-    expect(instanceCalls.length).toBeGreaterThanOrEqual(2);
+    // Boot reads the instance once — nothing is cached yet, so a second
+    // back-to-back read asserts an implementation artifact, not behaviour.
+    const booted = fetch.mock.calls.filter(([url]) => String(url).endsWith('/api/instance'));
+    expect(booted.length).toBe(1);
+  });
+  it('re-reads the instance on refresh so a claim made elsewhere closes the assistant', async () => {
+    let required = true;
+    const fetch = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/api/instance')) {
+        return response({ ...instance, setupRequired: required, defaultWorkspace: null });
+      }
+      return response({ error: 'Unauthorized' }, 401);
+    });
+    vi.stubGlobal('fetch', fetch);
+    const gateway = await mountCloudGateway(document.body, { onOpenWorkspace: vi.fn() });
+    expect(document.querySelector('[data-cloud-route]')?.getAttribute('data-cloud-route')).toBe('setup');
+    required = false;
+    await gateway.refresh();
+    await settle();
+    expect(document.querySelector('[data-cloud-route]')?.getAttribute('data-cloud-route')).not.toBe('setup');
   });
   it('keeps email and OTP semantics while using the shared editor fields',async()=>{
     stubFetch(async(url)=>url.endsWith('/api/session')?response({error:'Unauthorized'},401):response({ok:true}));

@@ -12,11 +12,14 @@ import { workspaceRepository } from './workspace-repository';
 import { pageAccess } from './page-access';
 import { openPageSharing } from './cloud/page-sharing';
 import { groupPagesBySection, sectionNames } from './page-section';
+import { nextPageIcon } from './page-icon-sync';
+import { brandedTitle } from './tab-identity';
 import { describeAccessLoss } from './access-friction';
 import { activeWorkspace, workspaceKey, type WorkspaceRef } from './workspace-registry';
 import { createDesktopFooter, readAppearance } from './settings';
 import {
   buildWelcomeDocuments,
+  seedWelcomeDocuments,
   hasWelcomeSeeded,
   markWelcomeSeeded,
   shouldSeedWelcome,
@@ -181,10 +184,15 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const pageFromUrl = (): string | null => new URL(location.href).searchParams.get('page');
   const navigate = (id: string, replace = false): void => {
     const url = new URL(location.href);
+    const from = url.searchParams.get('page');
     url.searchParams.set('page', id);
     if (replace) history.replaceState(null, '', url);
     else history.pushState(null, '', url);
     onRoute();
+    // Notion ouvre une autre page à son début. Seul un vrai changement de page
+    // remonte : corriger l'URL de la page courante laisse le lecteur où il est,
+    // et la position par onglet, restaurée par shell.ts, n'est pas concernée.
+    if (from !== id) window.scrollTo(0, 0);
   };
   const saveManifest = (): void => {
     if (!ws.index) return;
@@ -303,10 +311,15 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (icon?.type === 'image') return icon.url;
     return undefined;
   };
-  const syncPageIcon = (page: ShellPage, icon: ReturnType<Blok['title']['icon']['get']>, persist = true): void => {
+  const syncPageIcon = (
+    page: ShellPage,
+    icon: ReturnType<Blok['title']['icon']['get']>,
+    persist = true,
+    adoptOnly = false,
+  ): void => {
     if (!ws.index) return;
     const target = page;
-    const next = iconValue(icon);
+    const next = nextPageIcon(target.icon, iconValue(icon), { adoptOnly });
     if (target.icon !== next) {
       target.icon = next;
       ws.frame.setPages(withSections(ws.index.pages), ws.index.activeId);
@@ -543,7 +556,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       if (ws.generation !== turn) return;
       instance.on('collaboration:status', (raw) => {
         if (ws.generation !== turn) return;
-        const event = raw as { status?: string; save?: { pendingOperations?: number; pendingBytes?: number } };
+        // An emission with no payload must fall back to "not pending", not throw
+        // inside the listener and kill the rest of the handler.
+        const event = (raw ?? {}) as { status?: string; save?: { pendingOperations?: number; pendingBytes?: number } };
         const pendingOps = event.save?.pendingOperations ?? 0;
         const pendingBytes = event.save?.pendingBytes ?? 0;
         ws.remotePending = pendingOps > 0 || pendingBytes > 0;
@@ -593,7 +608,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           i18n: instance.i18n,
         });
       }
-      syncPageIcon(page, instance.title.icon.get(), ref.kind === 'local');
+      // Load-time read only: on a remote page the document — and its icon —
+      // lands after the editor is ready, so this must never clear (flash).
+      syncPageIcon(page, instance.title.icon.get(), ref.kind === 'local', true);
       toolbar.setBreadcrumbs(breadcrumbs(id));
       document.title = page.title;
       if (ref.kind === 'local') status.textContent = '';
@@ -785,31 +802,33 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     }
     const docs = buildWelcomeDocuments(workspaceId);
     const welcomePage = docs.pages[0];
-    const rightsPage = docs.pages[1];
-    if (!welcomePage || !rightsPage) return null;
-    for (const page of docs.pages) {
-      if (!ws.index.pages.some((item) => item.id === page.id)) ws.index.pages.push(page);
-    }
-    ws.frame.setPages(withSections(ws.index.pages), welcomePage.id);
-    saveManifest();
-    try {
-      await ws.saveOrder;
-      if (ref.kind === 'remote') {
-        await repository.seedPage(welcomePage.id, docs.welcome);
-        await repository.seedPage(rightsPage.id, docs.rights);
-      } else {
-        await repository.writePage(welcomePage.id, JSON.stringify(docs.welcome));
-        await repository.writePage(rightsPage.id, JSON.stringify(docs.rights));
-      }
+    if (!welcomePage) return null;
+    // Captured so the callbacks below keep the non-null narrowing from the guard.
+    const index = ws.index;
+    const seeded = await seedWelcomeDocuments({
+      docs,
+      publishPages: (selectId) => {
+        for (const page of docs.pages) {
+          if (!index.pages.some((item) => item.id === page.id)) index.pages.push(page);
+        }
+        ws.frame.setPages(withSections(index.pages), selectId ?? index.activeId);
+        saveManifest();
+      },
+      flushOrder: () => ws.saveOrder,
+      seedDocument: async (pageId, document) => {
+        if (ref.kind === 'remote') await repository.seedPage(pageId, document);
+        else await repository.writePage(pageId, JSON.stringify(document));
+      },
+    });
+    if (seeded) {
       markWelcomeSeeded(key);
       return welcomePage.id;
-    } catch {
-      ws.index.pages = ws.index.pages.filter((page) => !docs.pages.some((seeded) => seeded.id === page.id));
-      ws.frame.setPages(withSections(ws.index.pages), ws.index.activeId);
-      saveManifest();
-      try { await ws.saveOrder; } catch { /* keep empty */ }
-      return null;
     }
+    index.pages = index.pages.filter((page) => !docs.pages.some((item) => item.id === page.id));
+    ws.frame.setPages(withSections(index.pages), index.activeId);
+    saveManifest();
+    try { await ws.saveOrder; } catch { /* keep empty */ }
+    return null;
   }
 
   async function showEmptyWorkspace(): Promise<void> {
@@ -857,7 +876,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     }));
     const url = new URL(location.href);
     if (url.searchParams.has('page')) { url.searchParams.delete('page'); history.replaceState(null, '', url); }
-    document.title = ref.name;
+    document.title = brandedTitle(ref.name);
   }
 
   function onRoute(): void {
