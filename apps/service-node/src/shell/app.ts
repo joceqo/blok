@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 
+import { registerIndexWrite } from './index-write.js';
 import type { PgPool } from '../db/pool.js';
 import { createPageSharing } from './page-sharing.js';
 import { createAccessRecheck } from './recheck-access.js';
@@ -53,6 +54,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     if (!session) return c.json({ error: 'Sign in required' }, 401);
     return c.json(c.req.path === '/api/session' ? session : { workspaces: session.workspaces });
   });
+  registerIndexWrite(app, pool, recheckAccess);
   app.get('/api/workspaces/:slug/index', async (c) => {
     const key = sessionDigest(c);
     if (!key) return c.json({ error: 'Sign in required' }, 401);

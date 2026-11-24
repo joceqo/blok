@@ -88,4 +88,76 @@ describe.skipIf(!databaseUrl)('shell routes on the deployed PostgreSQL schema', 
     const stored = await app.request(path, { headers: journal });
     expect((await stored.text()).replaceAll(' ', '')).toBe(`{"data":${winner},"version":"1"}`);
   });
+
+  describe('workspace index writes', () => {
+    const page = (id: string, parentId: string | null = null) => ({ id, title: id, parentId });
+    async function freshWorkspace() {
+      const id = randomUUID();
+      await db.query("INSERT INTO workspaces(id,slug,name) VALUES($1,$1,'index test')", [id]);
+      await db.query("INSERT INTO memberships VALUES($1,'m','member')", [id]);
+      const observed: string[] = [];
+      const api = createShellApp(db, secret, new Set(), async workspaceId => {
+        // A separate connection observes the committed revision before the HTTP 200.
+        const { rows } = await db.query('SELECT revision FROM workspaces WHERE id=$1', [workspaceId]);
+        observed.push(rows[0].revision);
+      });
+      const put = (revision: number, pages: object[], trash: object[] = []) =>
+        api.request('/api/workspaces/' + id + '/index', {
+          method:'PUT', headers, body:JSON.stringify({revision, pages, trash}),
+        });
+      return { id, observed, put };
+    }
+
+    it('atomically creates a private root, grants its author full, and moves, trashes and deletes a child', async () => {
+      const { id, observed, put } = await freshWorkspace();
+      const root = page(id+'-private');
+      const child = page(id+'-child', root.id);
+      const open = page(id+'-public');
+      const created = await put(0, [{...root, initialVisibility:'private'}, child, open]);
+      expect(created.status).toBe(200);
+      expect(await created.json()).toEqual({revision:1});
+      const { rows } = await db.query(`SELECT p.visibility, sh.level, p.metadata ? 'initialVisibility' AS intent
+        FROM pages p JOIN page_shares sh ON sh.page_id=p.id AND sh.user_id='m' WHERE p.id=$1`, [root.id]);
+      expect(rows).toEqual([{visibility:'private',level:'full',intent:false}]);
+      const moved = {...child, parentId:open.id};
+      expect((await put(1, [open,root,moved])).status).toBe(200);
+      expect((await put(2, [root,open], [moved])).status).toBe(200);
+      const stored = (await db.query('SELECT metadata,trashed FROM pages WHERE id=$1',[child.id])).rows[0];
+      expect(stored).toMatchObject({metadata:{parentId:open.id},trashed:true});
+      expect((await put(3,[root,open])).status).toBe(200);
+      expect((await db.query('SELECT deleted FROM pages WHERE id=$1',[child.id])).rows[0].deleted).toBe(true);
+      expect((await put(4,[root,open,child])).status).toBe(409);
+      expect(observed).toEqual(['1','2','3','4']);
+    });
+
+    it('locks concurrent writers; exactly one receives the next revision', async () => {
+      const { id, put, observed } = await freshWorkspace();
+      const results = await Promise.all([put(0,[page(id+'-a')]),put(0,[page(id+'-b')])]);
+      expect(results.map(r => r.status).sort()).toEqual([200,409]);
+      expect((await db.query('SELECT id FROM pages WHERE workspace_id=$1',[id])).rowCount).toBe(1);
+      expect(observed).toEqual(['1']);
+    });
+
+    it('keeps hidden records and read-only fields, rejects a guessed hidden ID and rolls back a global ID collision', async () => {
+      const { id, put } = await freshWorkspace();
+      const hidden = page(id+'-hidden');
+      const child = page(id+'-child',hidden.id);
+      const readOnly = page(id+'-read');
+      for (const entry of [hidden,child,readOnly]) {
+        await db.query("INSERT INTO pages(id,workspace_id,metadata,visibility) VALUES($1,$2,$3,'private')",[entry.id,id,entry]);
+      }
+      await db.query("INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES($1,'m','edit','m'),($2,'m','view','m')",[child.id,readOnly.id]);
+      expect((await put(0,[hidden])).status).toBe(403);
+      const detached = {...child,parentId:null,title:'renamed'};
+      expect((await put(0,[detached,{...readOnly,title:'ignored'}])).status).toBe(200);
+      const read = (id: string) => db.query('SELECT metadata, deleted FROM pages WHERE id=$1',[id]).then(r => r.rows[0]);
+      expect(await read(child.id)).toMatchObject({metadata:{parentId:hidden.id,title:'renamed'}});
+      expect(await read(readOnly.id)).toMatchObject({metadata:{title:readOnly.title}});
+      expect(await read(hidden.id)).toMatchObject({deleted:false});
+      expect((await put(1,[page('public')])).status).toBe(409);
+      expect(await read(child.id)).toMatchObject({deleted:false});
+      await db.query("UPDATE memberships SET role='viewer' WHERE workspace_id=$1 AND user_id='m'",[id]);
+      expect((await put(1,[])).status).toBe(403);
+    });
+  });
 });

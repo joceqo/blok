@@ -1,6 +1,8 @@
 import type { PgPool } from '../db/pool.js';
 
 import { levels, resolvePageLevel, type Level, type Role, type Visibility } from './page-level.js';
+export type { Role } from './page-level.js';
+
 
 export interface IndexPage {
   id: string;
@@ -57,6 +59,16 @@ export function workspaceIndex(rows: IndexPage[], role: Role, revision: number) 
   return { pages, trash, revision, access };
 }
 
+export async function loadIndexPages(client: Pick<PgPool, 'query'>, workspaceId: string, userId: string) {
+  return (await client.query<IndexPage>(
+      `SELECT p.id,p.metadata,p.trashed,p.visibility,mine.level AS share,
+              EXISTS(SELECT 1 FROM page_shares s WHERE s.page_id=p.id AND s.user_id<>$2) AS shared
+       FROM pages p LEFT JOIN page_shares mine ON mine.page_id=p.id AND mine.user_id=$2
+       WHERE p.workspace_id=$1 AND NOT p.deleted
+       ORDER BY (p.metadata->>'position')::numeric NULLS LAST,p.id`, [workspaceId, userId],
+  )).rows;
+}
+
 export async function loadWorkspaceIndex(pool: PgPool, digest: string, slug: string) {
   const client = await pool.connect();
   try {
@@ -76,13 +88,7 @@ export async function loadWorkspaceIndex(pool: PgPool, digest: string, slug: str
       if (!scope.workspace_id) return { status: 404, error: 'Workspace not found' } as const;
       return { status: 403, error: 'Workspace membership required' } as const;
     }
-    const { rows } = await client.query<IndexPage>(
-      `SELECT p.id,p.metadata,p.trashed,p.visibility,mine.level AS share,
-              EXISTS(SELECT 1 FROM page_shares s WHERE s.page_id=p.id AND s.user_id<>$2) AS shared
-       FROM pages p LEFT JOIN page_shares mine ON mine.page_id=p.id AND mine.user_id=$2
-       WHERE p.workspace_id=$1 AND NOT p.deleted
-       ORDER BY (p.metadata->>'position')::numeric NULLS LAST,p.id`, [scope.workspace_id, scope.user_id],
-    );
+    const rows = await loadIndexPages(client, scope.workspace_id, scope.user_id);
     await client.query('COMMIT');
     const revision = Number(scope.revision);
     if (!Number.isSafeInteger(revision)) throw new Error('Workspace revision cannot be represented in the shell');
