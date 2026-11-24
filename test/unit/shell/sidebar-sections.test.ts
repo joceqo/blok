@@ -198,3 +198,32 @@ it('offers private creation even before the first private page exists', () => {
   frame.element.querySelector<HTMLButtonElement>('[data-blok-sidebar-create-private]')!.click();
   expect(created).toBe(1);
 });
+
+it('adds a keyboard-accessible sidebar shortcut only when the host provides remote teams', () => {
+  const options = { pages: [], activeId: '', onOpen() {}, onCreate() {} };
+  const local = createPageFrame(options);
+  expect(local.element.textContent).not.toContain('Espaces d’équipe');
+  let opened = 0;
+  const onTeamspaces = () => { opened++; };
+  const remote = createPageFrame({ ...options, onTeamspaces });
+  const shortcut = [...remote.element.querySelectorAll('button')].find((item) => item.textContent === 'Espaces d’équipe')!;
+  expect(shortcut.getAttribute('aria-haspopup')).toBe('dialog');
+  shortcut.click();
+  expect(opened).toBe(1);
+});
+
+it('distinguishes the team directory from the workspace pages toggle', () => {
+  const options = { pages: [page('Guide', { section: 'workspace' })], activeId: 'Guide',
+    teamspace: { name: 'Atelier' }, onOpen() {}, onCreate() {} };
+  const legacy = createPageFrame(options);
+  expect([...legacy.element.querySelectorAll('[data-blok-sidebar-section-label]')].map((label) => label.textContent)).toContain('Espaces d’équipe');
+  const frame = createPageFrame({ ...options, onTeamspaces() {} });
+  const buttons = [...frame.element.querySelectorAll('button')];
+  const teams = buttons.filter((button) => button.textContent === 'Espaces d’équipe');
+  expect(teams).toHaveLength(1);
+  expect(teams[0]?.getAttribute('aria-haspopup')).toBe('dialog');
+  const pages = buttons.find((button) => button.textContent === 'Pages de l’espace')!;
+  expect(pages.getAttribute('aria-expanded')).toBe('true');
+  pages.click();
+  expect(frame.element.querySelector('[data-blok-sidebar-teamspace-pages]')).toBeNull();
+});
