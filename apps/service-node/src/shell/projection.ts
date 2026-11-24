@@ -6,20 +6,44 @@ export interface ProjectionHead {
   sequence: string | null;
 }
 
-export function readProjectionHeaders(headers: Headers): ProjectionHead | undefined {
+interface ProjectionWrite extends ProjectionHead {
+  expected?: Pick<ProjectionHead, 'lineage' | 'sequence'>;
+}
+
+function validSequence(value: string) {
+  return /^[0-9]{1,20}$/.test(value) && BigInt(value) <= 0xffffffffffffffffn;
+}
+
+export function readProjectionHeaders(headers: Headers): ProjectionWrite | undefined {
   const version = headers.get('Blok-Doc-Version');
   const lineage = headers.get('Blok-Doc-Lineage');
   const sequence = headers.get('Blok-Doc-Sequence');
   if ((lineage === null) !== (sequence === null) || lineage === '') return undefined;
   if (version !== null && !/^(0|[1-9][0-9]{0,18})$/.test(version)) return undefined;
-  if (sequence !== null && (!/^[0-9]{1,20}$/.test(sequence) || BigInt(sequence) > 0xffffffffffffffffn)) {
+  if (sequence !== null && !validSequence(sequence)) {
     return undefined;
+  }
+  const mode = headers.get('Blok-Doc-If-Match');
+  const expectedLineage = headers.get('Blok-Doc-Expected-Lineage');
+  const expectedSequence = headers.get('Blok-Doc-Expected-Sequence');
+  if (mode !== null || expectedLineage !== null || expectedSequence !== null) {
+    if (mode !== 'exact' || version === null || lineage === null || sequence === null ||
+        expectedLineage === null || expectedSequence === null ||
+        (expectedLineage === '') !== (expectedSequence === '') ||
+        (expectedSequence !== '' && !validSequence(expectedSequence))) return undefined;
+    return { version, lineage, sequence: BigInt(sequence).toString(),
+      expected: { lineage: expectedLineage || null, sequence: expectedSequence ? BigInt(expectedSequence).toString() : null } };
   }
   // A journal can recover before its best-effort endpoint version read has finished.
   return { version: version ?? '', lineage, sequence: sequence === null ? null : BigInt(sequence).toString() };
 }
 
-export function projectionDecision(stored: ProjectionHead, incoming: ProjectionHead, sameData: boolean) {
+export function projectionDecision(stored: ProjectionHead, incoming: ProjectionWrite, sameData: boolean) {
+  const expected = incoming.expected;
+  if (expected && (stored.version !== incoming.version || stored.lineage !== expected.lineage ||
+      stored.sequence !== expected.sequence || (stored.lineage !== null && stored.lineage !== incoming.lineage))) {
+    return 'conflict';
+  }
   const sameLineage = incoming.lineage !== null && incoming.lineage === stored.lineage;
   if (sameLineage && stored.sequence !== null && incoming.sequence !== null) {
     const next = BigInt(incoming.sequence);
@@ -36,7 +60,7 @@ export function projectionDecision(stored: ProjectionHead, incoming: ProjectionH
 }
 
 /** The lock makes the revision comparison and its update atomic across workers. */
-export async function saveProjection(pool: PgPool, id: string, json: string, head: ProjectionHead) {
+export async function saveProjection(pool: PgPool, id: string, json: string, head: ProjectionWrite) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

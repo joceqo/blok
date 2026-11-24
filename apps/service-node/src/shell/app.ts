@@ -12,7 +12,7 @@ import { createWorkspaceInvites } from './workspace-invites.ts';
 import { createWorkspaceMembers } from './workspace-members.ts';
 import { createPageSharing } from './page-sharing.ts';
 import { createAccessRecheck, recheckLiveSessions } from './recheck-access.ts';
-import { readProjectionHeaders, saveProjection } from './projection.ts';
+import { type ProjectionHead, readProjectionHeaders, saveProjection } from './projection.ts';
 import { createWorkspaceSearch } from './workspace-search.ts';
 import { createShellTeamspaces } from './teamspaces.ts';
 import { loadWorkspaceIndex } from './workspace-index.ts';
@@ -23,6 +23,7 @@ const digest = (input: string) => createHash('sha256').update(input).digest();
 export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>, recheckAccess = createAccessRecheck(secret), inviteMail = createInviteMail(secret)) {
   if (secret.length < 32) throw new Error('INTERNAL_SECRET must have at least 32 characters');
   const expected = digest('Bearer ' + secret);
+  const nodeRoomPage = process.env.BLOK_NODE_ROOM_PAGE;
   const app = new Hono();
   app.onError((error, context) => {
     console.error('[shell-backend]', error.name);
@@ -98,17 +99,27 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     await next();
   });
   app.get('/internal/documents/:id', async (c) => {
-    const { rows } = await pool.query<{ content: string; version: string }>(
-      "SELECT coalesce(content::text,'null') AS content, version::text FROM pages WHERE id=$1", [c.req.param('id')],
+    const { rows } = await pool.query<ProjectionHead & { content: string }>(
+      "SELECT coalesce(content::text,'null') AS content, version::text, lineage, sequence::text FROM pages WHERE id=$1", [c.req.param('id')],
     );
     const row = rows[0];
     if (!row) return c.json({ error: 'Document not found' }, 404);
     // Keep jsonb numbers intact instead of round-tripping user data through JS floats.
-    return c.body(`{"data":${row.content},"version":${JSON.stringify(row.version)}}`, 200, { 'Content-Type': 'application/json' });
+    c.header('Blok-Doc-Version', row.version);
+    if (row.lineage !== null && row.sequence !== null) {
+      c.header('Blok-Doc-Lineage', row.lineage);
+      c.header('Blok-Doc-Sequence', row.sequence);
+    }
+    const { content, ...metadata } = row;
+    const payload = `{"data":${content},"version":${JSON.stringify(metadata.version)},"lineage":${JSON.stringify(metadata.lineage)},"sequence":${JSON.stringify(metadata.sequence)}}`;
+    return c.body(payload, 200, { 'Content-Type': 'application/json' });
   });
   app.put('/internal/documents/:id', bodyLimit({ maxSize: 64 * 1024 * 1024, onError: (c) => c.json({ error: 'Document too large' }, 413) }), async (c) => {
     const head = readProjectionHeaders(c.req.raw.headers);
     if (!head) return c.json({ error: 'Invalid projection headers' }, 400);
+    if (nodeRoomPage && c.req.param('id') === nodeRoomPage && !head.expected) {
+      return c.json({ error: 'Node room requires an exact projection head' }, 409);
+    }
     const json = await c.req.text();
     try {
       JSON.parse(json);

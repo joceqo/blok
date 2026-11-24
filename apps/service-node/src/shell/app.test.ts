@@ -52,11 +52,22 @@ describe('shell API admission', () => {
     expect((await put('{}')).status).toBe(413);
   });
 
+  it('rejects a legacy writer for the page assigned to a Node room', async () => {
+    vi.stubEnv('BLOK_NODE_ROOM_PAGE', 'selected');
+    try {
+      const api = createShellApp(unused, secret, origins);
+      const response = await api.request('/internal/documents/selected', {method:'PUT',headers:{ Authorization:'Bearer '+secret },body:'{}'});
+      expect(response.status).toBe(409);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('returns stored numeric JSON lexemes unchanged to the collaboration engine', async () => {
-    const db = { query: vi.fn().mockResolvedValue({ rows: [{ content: '{"id":9007199254740993}', version: '1' }] }) };
+    const db = { query: vi.fn().mockResolvedValue({ rows: [{ content: '{"id":9007199254740993}', version: '1', lineage: null, sequence: null }] }) };
     const withPage = createShellApp(db as unknown as PgPool, secret, origins);
     const res = await withPage.request('/internal/documents/p', { headers: { Authorization: 'Bearer ' + secret } });
-    expect(await res.text()).toBe('{"data":{"id":9007199254740993},"version":"1"}');
+    expect(await res.text()).toBe('{"data":{"id":9007199254740993},"version":"1","lineage":null,"sequence":null}');
     expect(res.headers.get('cache-control')).toBe('no-store');
   });
 });

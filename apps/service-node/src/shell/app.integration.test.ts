@@ -179,7 +179,30 @@ describe.skipIf(!databaseUrl)('shell routes on the deployed PostgreSQL schema', 
     const winner = bodies[statuses.indexOf(200)]!;
     expect(await (await put(winner)).json()).toEqual({ version: '1' });
     const stored = await app.request(path, { headers: journal });
-    expect((await stored.text()).replaceAll(' ', '')).toBe(`{"data":${winner},"version":"1"}`);
+    expect((await stored.text()).replaceAll(' ', '')).toBe(`{"data":${winner},"version":"1","lineage":"L","sequence":"1"}`);
+  });
+
+  it('checks the exact journal head under the row lock and preserves the winning content', async () => {
+    const id = randomUUID();
+    const path = '/internal/documents/' + id;
+    const auth = {Authorization: 'Bearer ' + secret};
+    await db.query("INSERT INTO pages(id,workspace_id,metadata) VALUES($1,'w','{}')", [id]);
+    const outgoing = { ...auth, 'Blok-Doc-Version':'0', 'Blok-Doc-Lineage':'first', 'Blok-Doc-Sequence':'1',
+      'Blok-Doc-If-Match':'exact', 'Blok-Doc-Expected-Lineage':'', 'Blok-Doc-Expected-Sequence':'' };
+    const put = (headers: Record<string,string>, body: string) => app.request(path, {method:'PUT', headers, body});
+    const writes = await Promise.all(['first client','second client'].map(text => put(outgoing, JSON.stringify({text}))));
+    expect(writes.map(r => r.status).sort()).toEqual([200,409]);
+    const read = await app.request(path,{headers:auth});
+    expect(read.headers.get('Blok-Doc-Version')).toBe('1');
+    expect(read.headers.get('Blok-Doc-Lineage')).toBe('first');
+    expect(read.headers.get('Blok-Doc-Sequence')).toBe('1');
+    const winner = await read.json();
+    expect(winner).toMatchObject({version:'1',lineage:'first',sequence:'1'});
+    const next = {...outgoing,'Blok-Doc-Version':'1','Blok-Doc-Sequence':'2','Blok-Doc-Expected-Lineage':'first','Blok-Doc-Expected-Sequence':'1'};
+    expect((await put({...next,'Blok-Doc-Expected-Sequence':'0'},'{}')).status).toBe(409);
+    expect((await put({...next,'Blok-Doc-Lineage':'different'},'{}')).status).toBe(409);
+    expect(await (await app.request(path,{headers:auth})).json()).toEqual(winner);
+    expect((await put(next,'{"text":"second edit"}')).status).toBe(200);
   });
 
   describe('workspace index writes', () => {
