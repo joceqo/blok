@@ -12,6 +12,19 @@ node scripts/build-node-server.mjs
 
 Produces `packages/server/node/dist/blok-server` (ordinary) and `dist/blok-server-conformance` (`BLOK_CONFORMANCE=true`).
 
+## Inspect a stopped journal
+
+Build once from the repository root, then pass the document journal directory containing `manifest`. Use a stopped writer or a coherent offline copy. The inspector opens files read-only and acquires no lock.
+
+```bash
+node scripts/build-node-server.mjs
+npm --prefix packages/server/node run --silent journal:inspect -- /absolute/path/to/document.journal
+```
+
+The JSON report includes all published manifest fields, the active baseline and checkpoint, the byte count verified, the contiguous sequence range and the number of records after the checkpoint. It checks slot and envelope checksums, baseline frame lengths, per-record checksums, unique operation IDs, sequence continuity and the checkpoint boundary. All 64-bit values are decimal strings. Document updates are opaque to this command.
+
+An incomplete final record is reported with its verified prefix. The CLI exits with 0 for a verified generation or a recognized purged/unseeded state, 1 for an inspection problem, and 2 for invalid arguments.
+
 ## Test
 
 **Fast (in-process, Vitest + Zod 4)** — low memory, for routes and CLI parse:

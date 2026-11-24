@@ -15,6 +15,7 @@
     "dist"
   ],
   "scripts": {
+    "journal:inspect": "node bin/journal-inspect.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:fast": "vitest run .fast.test.ts"
