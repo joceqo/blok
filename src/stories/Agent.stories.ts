@@ -103,6 +103,11 @@ const render = (): HTMLElement => {
   return assistant.element;
 };
 
+const renderMode = (mode: 'side' | 'floating' | 'full'): HTMLElement => {
+  localStorage.setItem('blok.shell.agent.panel-mode', mode);
+  return render();
+};
+
 const meta: Meta = {
   title: 'Shell/Agent',
   parameters: { layout: 'fullscreen' },
@@ -115,6 +120,7 @@ type Story = StoryObj;
 
 /** The assistant button, the panel, and the provider dialog around an editor. */
 export const Assistant: Story = {
+  render: () => renderMode('side'),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const openButton = canvas.getByRole('button', { name: 'Ouvrir l\'assistant IA' });
@@ -132,8 +138,58 @@ export const Assistant: Story = {
   },
 };
 
+/** The same conversation floats over the page without shrinking the editor. */
+export const Floating: Story = {
+  render: () => renderMode('floating'),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('[data-blok-editor]')).toBeTruthy());
+    await userEvent.click(canvas.getByRole('button', { name: 'Ouvrir l\'assistant IA' }));
+    const panel = canvas.getByRole('dialog', { name: 'Assistant IA' });
+    const composer = panel.querySelector('[data-blok-agent-composer]')!;
+    expect(panel.getAttribute('data-blok-agent-mode')).toBe('floating');
+    expect(composer.getBoundingClientRect().right).toBeLessThanOrEqual(panel.getBoundingClientRect().right);
+    expect(composer.getBoundingClientRect().bottom).toBeLessThanOrEqual(panel.getBoundingClientRect().bottom);
+  },
+};
+
+/** Full conversation view replaces the editor canvas while keeping it mounted. */
+export const FullScreen: Story = {
+  render: () => renderMode('full'),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('[data-blok-editor]')).toBeTruthy());
+    await userEvent.click(canvas.getByRole('button', { name: 'Ouvrir l\'assistant IA' }));
+    const panel = canvas.getByRole('region', { name: 'Assistant IA' });
+    const editor = canvasElement.querySelector('[data-blok-agent-editor]');
+    expect(panel.getAttribute('data-blok-agent-mode')).toBe('full');
+    expect(editor).toBeTruthy();
+    expect(getComputedStyle(editor!).display).toBe('none');
+    const welcome = panel.querySelector('[data-blok-agent-empty]')!;
+    const composer = panel.querySelector('[data-blok-agent-composer]')!;
+    const suggestions = panel.querySelector('[data-blok-agent-suggestions]')!;
+    expect(panel.hasAttribute('data-blok-agent-empty-view')).toBe(true);
+    expect(suggestions.hasAttribute('hidden')).toBe(false);
+    expect(welcome.getBoundingClientRect().bottom).toBeLessThan(composer.getBoundingClientRect().top);
+    expect(composer.getBoundingClientRect().bottom).toBeLessThan(suggestions.getBoundingClientRect().top);
+  },
+};
+
+/** Conversation switcher state. */
+export const History: Story = {
+  render: () => renderMode('side'),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvasElement.querySelector('[data-blok-editor]')).toBeTruthy());
+    await userEvent.click(canvas.getByRole('button', { name: 'Ouvrir l\'assistant IA' }));
+    await userEvent.click(canvas.getByRole('button', { name: /Historique/ }));
+    expect(canvas.getByRole('menu', { name: '' })).toBeTruthy();
+  },
+};
+
 /** Provider settings, shown separately so the assistant story opens on its main panel. */
 export const Providers: Story = {
+  render: () => renderMode('side'),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const openButton = canvas.getByRole('button', { name: 'Ouvrir l\'assistant IA' });

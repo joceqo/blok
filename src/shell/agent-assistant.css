@@ -36,7 +36,8 @@
 
 [data-blok-agent-panel][hidden],
 [data-blok-agent-menu][hidden],
-[data-blok-agent-resize][hidden] {
+[data-blok-agent-resize][hidden],
+[data-blok-agent-suggestions][hidden] {
   display: none;
 }
 
@@ -62,15 +63,131 @@
   inset-inline-end: 16px;
   width: min(420px, calc(100vw - 32px));
   height: min(720px, calc(100vh - 80px));
+  max-height: calc(100dvh - 80px);
   border: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.16));
   border-radius: var(--blok-radius-dialog);
   box-shadow: var(--blok-popover-box-shadow, var(--blok-popover-shadow));
 }
 
 [data-blok-agent-panel][data-blok-agent-mode="full"] {
-  position: fixed;
-  z-index: 30;
-  inset: 48px 0 0;
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
+
+[data-blok-agent-body]:has(> [data-blok-agent-panel][data-blok-agent-mode="full"]:not([hidden])) > [data-blok-agent-editor] {
+  display: none;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"] [data-blok-agent-transcript],
+[data-blok-agent-panel][data-blok-agent-mode="full"] [data-blok-agent-composer] {
+  width: min(100%, 820px);
+  margin-inline: auto;
+}
+
+/* The full-page welcome keeps its composer with the mascot and prompt. */
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] {
+  overflow-y: auto;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-header] {
+  border-bottom: 0;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-transcript] {
+  flex: none;
+  width: min(100%, 710px);
+  min-height: 0;
+  margin: clamp(52px, 18vh, 230px) auto 0;
+  padding: 0 16px;
+  overflow: visible;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-empty] {
+  min-height: 0;
+  max-width: none;
+  gap: 14px;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-empty-mark] {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-empty] p {
+  font-size: clamp(24px, 3vw, 30px);
+  line-height: 1.2;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-empty-intro] {
+  display: none;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-composer] {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  width: min(calc(100% - 32px), 710px);
+  margin: 32px auto 0;
+  padding: 12px;
+  background: var(--blok-bg-light, #f7f6f3);
+  border-radius: 16px;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-composer] textarea {
+  min-height: 58px;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-page-context] {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-providers] {
+  grid-column: 2;
+  grid-row: 2;
+  align-items: center;
+  min-width: 0;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-send] {
+  grid-column: 3;
+  grid-row: 2;
+  justify-content: center;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 0;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-send]::before {
+  content: "↑";
+  font-size: 18px;
+  line-height: 1;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"] [data-blok-agent-suggestions]:not([hidden]) {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  width: min(calc(100% - 32px), 710px);
+  margin: 28px auto auto;
+  padding-bottom: 40px;
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"] [data-blok-agent-suggestions] button {
+  color: var(--blok-text-secondary, #646a79);
+  font-size: 13px;
+}
+
+@media (max-height: 680px) {
+  [data-blok-agent-panel][data-blok-agent-mode="full"][data-blok-agent-empty-view] [data-blok-agent-transcript] {
+    margin-top: 48px;
+  }
 }
 
 [data-blok-agent-resize] {
@@ -162,8 +279,6 @@
 
 [data-blok-agent-panel] button:focus-visible,
 [data-blok-agent-bar] button:focus-visible,
-[data-blok-agent-composer] textarea:focus-visible,
-[data-blok-agent-composer] input:focus-visible,
 [data-blok-agent-resize]:focus-visible {
   outline: 2px solid var(--blok-focus-ring);
   outline-offset: 1px;
@@ -296,15 +411,21 @@
 
 [data-blok-agent-composer] {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   flex: none;
   align-items: center;
   gap: 6px 8px;
+  min-width: 0;
   margin: 12px;
   padding: 10px 11px;
   border: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.16));
   border-radius: var(--blok-radius-dialog);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+:root:not([data-blok-modality="pointer"]) [data-blok-agent-composer]:has(textarea:focus-visible) {
+  border-color: var(--blok-text-secondary, #646a79);
+  box-shadow: 0 0 0 1px var(--blok-text-secondary, #646a79);
 }
 
 [data-blok-agent-composer] textarea {
@@ -317,9 +438,12 @@
   color: var(--blok-text-primary, black);
   font: inherit;
   resize: none;
+  outline: none;
 }
 
 [data-blok-agent-composer] [data-blok-agent-page-context] {
+  grid-column: 1;
+  grid-row: 2;
   justify-self: start;
   min-height: 26px;
   padding: 3px 8px;
@@ -330,10 +454,16 @@
 [data-blok-agent-composer] [data-blok-agent-page-context] input {
   margin: 0;
   accent-color: #d95f4b;
+  outline: none;
+}
+
+:root:not([data-blok-modality="pointer"]) [data-blok-agent-composer] [data-blok-agent-page-context]:has(input:focus-visible) {
+  outline: 2px solid var(--blok-text-secondary, #646a79);
+  outline-offset: 2px;
 }
 
 [data-blok-agent-composer] [data-blok-agent-send] {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 2;
   min-height: 28px;
   padding: 5px 12px;
@@ -355,6 +485,14 @@
 [data-blok-agent-providers] {
   display: flex;
   flex-wrap: wrap;
-  grid-column: 1 / -1;
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
   gap: 6px;
+}
+
+[data-blok-agent-providers-empty] { overflow-wrap: anywhere; }
+
+[data-blok-agent-panel][data-blok-agent-mode="floating"] [data-blok-agent-composer] {
+  max-width: calc(100% - 24px);
 }
