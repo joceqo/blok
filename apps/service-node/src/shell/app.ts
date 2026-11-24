@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 
+import { roomTickets } from './room-tickets.ts';
 import { createMcpTokens } from './mcp-tokens.ts';
 import { createLoginMail, createRequestCode } from './request-code.ts';
 import { createShellAuth } from './auth.ts';
@@ -92,12 +93,14 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   app.route('/api/workspaces/:slug/members', createWorkspaceMembers(pool, recheckAccess));
   app.route('/api/workspaces/:slug/pages', createPageSharing(pool, recheckAccess));
 
-  app.use('/internal/documents/*', async (c, next) => {
+  app.use('/internal/*', async (c, next) => {
     if (!timingSafeEqual(expected, digest(c.req.header('Authorization') ?? ''))) {
       return c.json({ error: 'Internal authorization required' }, 401);
     }
     await next();
   });
+  const ticketSecret = process.env.TICKET_SECRET;
+  if (ticketSecret) app.route('/', roomTickets(pool, ticketSecret));
   app.get('/internal/documents/:id', async (c) => {
     const { rows } = await pool.query<ProjectionHead & { content: string }>(
       "SELECT coalesce(content::text,'null') AS content, version::text, lineage, sequence::text FROM pages WHERE id=$1", [c.req.param('id')],
