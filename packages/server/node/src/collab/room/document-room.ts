@@ -1,14 +1,16 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { WebSocket, type RawData } from 'ws';
 import { applyUpdate, Doc, encodeStateAsUpdate, encodeStateVector } from 'yjs';
 import { decode, encode } from '../../../../../../src/components/modules/collaboration/sync-wire.ts';
 import type { SyncWireFrame } from '../../../../../../src/components/modules/collaboration/types.ts';
+import { historyRequest, type HistoryRequest } from './history.ts';
+import { RoomPresence } from './presence.ts';
 import { preparePageStorage, type PageStorage } from './page-storage.ts';
 import { acquireJournalWriter, MAX_APPEND_BYTES } from '../journal/append.ts';
 
 import type { RoomIdentity, RoomOptions } from './preview.ts';
 
-interface Peer { ws: WebSocket; ticket: string; admission: RoomIdentity; synced: boolean }
+interface Peer { ws: WebSocket; ticket: string; admission: RoomIdentity; synced: boolean; badAwareness: number }
 type Operation = Extract<SyncWireFrame, { type:'operation' }>;
 
 function send(peer: Peer, frame: SyncWireFrame) {
@@ -39,6 +41,7 @@ export async function openDocumentRoom(options: RoomOptions) {
   const doc = new Doc();
   const operations = new Map<string, { digest:Buffer; sequence:bigint }>();
   const peers = new Set<Peer>();
+  const presence = new RoomPresence<Peer>();
   let queue = Promise.resolve();
   let stopping = false;
   let pendingBytes = 0;
@@ -93,25 +96,60 @@ export async function openDocumentRoom(options: RoomOptions) {
       if (candidate.kind === 'invalid') return reject('invalid-update');
       if (candidate.kind === 'unchanged' && head > 0n) return ack(head);
       try {
-        const receipt = await writer.append({ expectedLineage:lineage, expectedThrough:head, operationId,
-          update, actorId:identity.id, source:0 });
+        await commit(identity,operationId,digest,update,0,candidate.data);
+        if (await principal(peer)) ack(head);
+      } catch { /* commit has already closed this room */ }
+    }
+
+    async function commit(identity: RoomIdentity, operationId:string, digest:Buffer, update:Uint8Array, source:0|1|2,
+        data?:Record<string,unknown>, except?:Peer) {
+      try {
+        const receipt = await writer.append({ expectedLineage:tag.lineage, expectedThrough:head, operationId,
+          update, actorId:identity.actorId ?? identity.id, source, digest });
         if (receipt.outcome !== 'committed') throw new Error('Held journal changed');
         head = receipt.sequence;
-        if (storage && candidate.data) await storage.publish(head,candidate.data);
+        if (storage && data) await storage.publish(head,data);
         applyUpdate(doc,update);
         operations.set(operationId,{digest,sequence:head});
         await Promise.all([...peers].map(async member => {
-          if (member.synced && await principal(member)) send(member,{type:'update',update});
+          if (member!==except && member.synced && await principal(member)) send(member,{type:'update',update});
         }));
-        if (await principal(peer)) ack(head);
-      } catch {
+        return head;
+      } catch (error) {
         // Nothing in RAM can be used as evidence of a commit after storage failure.
         stopping = true;
         for (const member of peers) member.ws.close(4503, 'commit unavailable');
         clearInterval(timer);
         // Reopen from disk only after the old room releases its lease.
         setImmediate(() => { void stop().catch(() => {}); });
+        throw error;
       }
+    }
+
+    function history(request: HistoryRequest, admission:RoomIdentity, token:string) {
+      const result = queue.then(async () => {
+        if (stopping) throw new Error('Closing room');
+        const who = admission.revalidate ? await admission.revalidate() : await authorize(token,documentId);
+        if (!who || who.id !== admission.id || who.workspaceId !== admission.workspaceId ||
+            (request.method !== 'GET' && (!who.write || !admission.write))) return {status:403};
+        return historyRequest({directory:storage?.directory ?? options.directory,doc,tag,head,request,
+          project:storage?.validate,operations,commit:async (id,digest,update) => {
+            const candidate = classifyUpdate(doc,update,storage?.validate);
+            if (candidate.kind === 'invalid') throw new Error('Invalid restore');
+            return commit(who,id,digest,update,2,candidate.data);
+          }});
+      });
+      queue = result.then(()=>{},()=>{});
+      return result;
+    }
+
+    async function broadcastPresence(frame: SyncWireFrame, except: Peer) {
+      const identities = presence.identities();
+      await Promise.all([...peers].map(async member => {
+        if (!member.synced || !await principal(member)) return;
+        send(member,identities);
+        if (member !== except) send(member,frame);
+      }));
     }
 
     async function receive(peer: Peer, payload: Uint8Array) {
@@ -119,7 +157,23 @@ export async function openDocumentRoom(options: RoomOptions) {
       if (!identity || stopping) return;
       const frame = decode(payload);
       switch (frame.type) {
-        case 'operation': await operation(peer,identity,frame); break;
+        case 'awareness': {
+          if (!peer.synced) return;
+          let update;
+          try { update = presence.receive(peer,identity.actorId,frame.update); }
+          catch {
+            if (++peer.badAwareness >= 3) peer.ws.close(1008,'invalid awareness');
+            break;
+          }
+          if (update) await broadcastPresence(update,peer);
+          break;
+        }
+        case 'queryAwareness': {
+          const snapshot = presence.snapshot();
+          if (peer.synced && snapshot) { send(peer,presence.identities()); send(peer,snapshot); }
+          break;
+        }
+        case 'operation': if (peer.ws.protocol==='blok-sync.v2') await operation(peer,identity,frame); break;
         case 'syncStep1': {
           let update;
           try { update = encodeStateAsUpdate(doc,frame.stateVector); } catch { return; }
@@ -129,7 +183,15 @@ export async function openDocumentRoom(options: RoomOptions) {
           break;
         }
         case 'syncStep2':
-        case 'update': peer.ws.close(1008,'raw write on a v2 session'); break;
+        case 'update': {
+          if (peer.ws.protocol==='blok-sync.v2') { peer.ws.close(1008,'raw write on a v2 session'); break; }
+          if (!identity.write || !peer.synced || frame.update.length>MAX_APPEND_BYTES) break;
+          const update=frame.update;
+          const candidate=classifyUpdate(doc,update,storage?.validate);
+          if (candidate.kind==='changed') await commit(identity,randomBytes(16).toString('hex'),
+            createHash('sha256').update(update).digest(),update,1,candidate.data,peer);
+          break;
+        }
       }
     }
 
@@ -150,10 +212,16 @@ export async function openDocumentRoom(options: RoomOptions) {
 
     function connect(ws: WebSocket, ticket: string, identity: RoomIdentity) {
       if (stopping) { ws.close(4503, 'room unavailable'); return; }
-      const peer: Peer = {ws,ticket,admission:identity,synced:false};
+      const peer: Peer = {ws,ticket,admission:identity,synced:false,badAwareness:0};
       peers.add(peer);
       ws.on('error', () => ws.terminate());
-      ws.on('close', () => peers.delete(peer));
+      ws.on('close', () => {
+        peers.delete(peer);
+        queue = queue.then(async () => {
+          const removed = presence.leave(peer);
+          if (removed && !stopping) await broadcastPresence(removed,peer);
+        }).catch(() => {});
+      });
       ws.on('message', (data,binary) => enqueue(peer,data,binary));
       send(peer,{type:'control',tag});
       send(peer,{type:'limits',maxMessageBytes:MAX_APPEND_BYTES});
@@ -174,7 +242,7 @@ export async function openDocumentRoom(options: RoomOptions) {
       try { await Promise.all(Array.from(peers, principal)); } finally { sweeping = false; }
     }, 1000);
     timer.unref();
-    return { connect, recheck, close: stop, available: () => !stopping };
+    return { connect, history, recheck, close: stop, available: () => !stopping };
   } catch (error) {
     await stop();
     throw error;

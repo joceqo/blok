@@ -1,5 +1,6 @@
 import { navigationFavorites, navigationRecents } from './navigation-preferences';
 import { moveDestinations, PageMoveConflict } from './page-move';
+import { openPageHistory } from './page-history';
 import { openMovePicker, openPageSearch, openPageCreation, type CreationDestination } from './navigation-dialogs';
 import { PopoverDesktop } from '@blok/popover';
 import { customEmojiStore } from './custom-emojis';
@@ -159,6 +160,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.access = pageAccess(ref, value.access);
     const editable = ws.access.canEdit(ws.currentId);
     if (ws.currentId && wasEditable !== editable) {
+      ws.pageToolbar?.closeHistory();
       if (!editable) editAssistant?.cancel();
       const editor = ws.editor;
       if (editor) void editor.isReady.then(() => {
@@ -508,6 +510,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         if (ws.index) ws.frame.setPages(withSections(ws.index.pages), ws.currentId);
       },
       readOnly: readOnly(id),
+      onHistory: ref.kind === 'remote' ? () => openPageHistory({
+        base:ref.server+'/api/blok/sync/'+encodeURIComponent(id)+'/history', title:page.title,
+        ticket:()=>repository.ticket(id), editable:()=>ws.currentId===id && !readOnly(id),
+        flush:async()=>{ await ws.editor?.saver.flush(); },
+      }) : undefined,
       onRename: () => {
         const title = holder.querySelector<HTMLElement>('[data-blok-title] h1, h1[contenteditable="true"]');
         title?.focus();
@@ -631,8 +638,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     instance.width.set(page.fullWidth === true ? 'full' : 'narrow');
     void instance.isReady.then(() => {
       if (ws.generation !== turn) return;
-      instance.on('collaboration:status', (event) => {
+      instance.on('collaboration:status', (event:CollaborationStatusChangedPayload) => {
         if (ws.generation !== turn || ref.kind !== 'remote') return;
+        toolbar.setPeers(event.status === 'connected' ? event.participants.filter(p=>p.present && !p.self)
+          .map(p=>p.user.name || p.user.label || 'Anonyme') : []);
         ws.documentStatus = event;
         renderDocumentStatus();
       });

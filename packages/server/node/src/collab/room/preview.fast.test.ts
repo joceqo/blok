@@ -14,8 +14,8 @@ import { signedRoomTickets, startJournalRoom } from './preview.ts';
 const fixture = fileURLToPath(new URL('../../../test/fixtures/go-journal-rich', import.meta.url));
 const origin = 'http://localhost:18098';
 const lineage = '00112233445566778899aabbccddeeff';
-async function client(url: string, token: string) {
-  const ws = new WebSocket(url,['blok-sync.v2','blok-sync.v1',token],{origin});
+async function client(url: string, token: string, v1=false) {
+  const ws = new WebSocket(url,v1 ? ['blok-sync.v1',token] : ['blok-sync.v2','blok-sync.v1',token],{origin});
   const inbox: ReturnType<typeof decode>[] = [];
   let wake: (() => void) | undefined;
   ws.on('message', data => {
@@ -93,6 +93,22 @@ describe.skipIf(!['linux','darwin'].includes(process.platform))('isolated v2 Web
     expect(await reopened.next()).toMatchObject({type:'rejection',code:'operation-id-conflict'});
     reopened.send({...operation,lineage:'f'.repeat(32)});
     expect(await reopened.next()).toMatchObject({type:'rejection',code:'lineage-mismatch'});
+  });
+  it('relays a legacy v1 update into the v2 journal, preserving the writer permission',async()=>{
+    const writer=await client(room.url,'editor',true), reader=await client(room.url,'viewer',true);
+    const modern=await client(room.url,'editor');
+    await Promise.all([writer.sync(),reader.sync(),modern.sync()]);
+    expect(writer.ws.protocol).toBe('blok-sync.v1');
+    const before=encodeStateVector(writer.doc);
+    writer.doc.getText('room').insert(0,'legacy');
+    const update=encodeStateAsUpdate(writer.doc,before);
+    reader.send({type:'update',update});
+    writer.send({type:'syncStep2',update});
+    const [received,also]=await Promise.all([modern.next(),reader.next()]);
+    expect(also).toEqual(received);
+    if(received.type!=='update') throw new Error('Expected a committed update');
+    applyUpdate(modern.doc,received.update);
+    expect(modern.doc.getText('room').toString()).toBe('legacy');
   });
   it('checks authorization on upgrade, raw writes and later revocation', async () => {
     await expect(client(room.url,'invalid')).rejects.toThrow('403');

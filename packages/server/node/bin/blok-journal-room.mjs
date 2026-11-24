@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { createHmac } from 'node:crypto';
-import { shellRoomTickets, signedRoomTickets, startJournalRoom, startWorkspaceRooms } from '../dist/journal-room.mjs';
+import { shellRoomTickets, signedRoomTickets, startAllRooms, startJournalRoom, startWorkspaceRooms } from '../dist/journal-room.mjs';
 
-const usage = 'Usage: BLOK_ROOM_SECRET=... blok-journal-room <directory> <documentId|--workspace> <allowed-origin> [port]\n       BLOK_ROOM_CLOUD_ORIGIN=http://127.0.0.1:8080 INTERNAL_SECRET=... blok-journal-room <directory> <documentId|--workspace> <allowed-origin> [port]\n       BLOK_ROOM_SECRET=... blok-journal-room --ticket <documentId> <actor> <read|write>';
+const usage = 'Usage: BLOK_ROOM_SECRET=... blok-journal-room <directory> <documentId|--workspace|--all> <allowed-origin> [port]\n       BLOK_ROOM_CLOUD_ORIGIN=http://127.0.0.1:8080 INTERNAL_SECRET=... blok-journal-room <directory> <documentId|--workspace|--all> <allowed-origin> [port]\n       BLOK_ROOM_SECRET=... blok-journal-room --ticket <documentId> <actor> <read|write>';
 const args = process.argv.slice(2);
 try {
   if (args.length === 1 && ['--help','-h'].includes(args[0])) {
@@ -23,6 +23,8 @@ try {
       const port = Number(rawPort);
       if (!Number.isInteger(port) || port <= 0 || port > 65535) throw new Error('Invalid preview port');
       const workspace = documentId === '--workspace';
+      const all = documentId === '--all';
+      if (all && (!shellOrigin || process.env.BLOK_NODE_ROOM_PAGE || process.env.BLOK_NODE_ROOM_WORKSPACE)) throw new Error('All-workspace mode requires the shell access service and no page or workspace selection');
       const workspaceId = process.env.BLOK_NODE_ROOM_WORKSPACE;
       if (workspace && (!workspaceId || !shellOrigin || process.env.BLOK_NODE_ROOM_PAGE)) throw new Error('Workspace mode requires one workspace and the shell access service');
       if (!workspace && workspaceId) throw new Error('Select --workspace to use workspace ownership');
@@ -35,7 +37,7 @@ try {
       if (!['127.0.0.1','0.0.0.0'].includes(listenHost) || listenHost==='0.0.0.0' && !shellOrigin) throw new Error('Invalid room listen address');
       const options = { directory, allowedOrigins:new Set([origin,...additional]), port, authorize, listenHost,
         recheckSecret:shellOrigin ? process.env.INTERNAL_SECRET : undefined };
-      const room = workspace
+      const room = all ? await startAllRooms({...options,projection}) : workspace
         ? await startWorkspaceRooms({...options,workspaceId,projection})
         : await startJournalRoom({...options,documentId,projection});
       console.log(room.url);

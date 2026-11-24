@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import { Doc, encodeStateAsUpdate } from 'yjs';
+import { Doc, encodeStateVector, encodeStateAsUpdate } from 'yjs';
 import { DocumentStore } from '../../../../../../src/components/modules/yjs/document-store.ts';
 import { YBlockSerializer } from '../../../../../../src/components/modules/yjs/serializer.ts';
 import { readPageFields } from '../../../../../../src/components/modules/yjs/page-fields.ts';
@@ -96,4 +96,17 @@ export function exportPage(doc: Doc, extra: Record<string, unknown>): Record<str
   } finally {
     s.destroy();
   }
+}
+
+/** Derive a CRDT operation on the current document, retaining the IDs of blocks that survive. */
+export function restorePage(doc: Doc, data: Record<string,unknown>): Uint8Array {
+  const s = store();
+  try {
+    if (!Array.isArray(data.blocks)) throw new Error('Invalid historical blocks');
+    s.applyRemoteUpdate(encodeStateAsUpdate(doc));
+    s.fromJSON(data.blocks);
+    s.pageFromJSON(data);
+    if (!isDeepStrictEqual(output(s,envelope(data)),data)) throw new Error('Restore changed the target projection');
+    return s.encodeStateAsUpdate(encodeStateVector(doc));
+  } finally { s.destroy(); }
 }
