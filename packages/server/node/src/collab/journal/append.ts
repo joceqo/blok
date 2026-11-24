@@ -5,8 +5,8 @@ import { open, lstat, type FileHandle } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { applyUpdate, Doc } from 'yjs';
 import { MANIFEST_FILE_NAME, readManifest, type JournalManifest } from './files.ts';
-import { inspectJournal } from './inspect.ts';
-import { encodeRecord, type OperationSource } from './record.ts';
+import { inspectJournal, type JournalFrame } from './inspect.ts';
+import { encodeRecord, type OperationSource, type OperationRecord } from './record.ts';
 
 export interface AppendRequest {
   expectedLineage: string;
@@ -104,60 +104,114 @@ function validateRequest(request: AppendRequest): Buffer {
   return digest;
 }
 
-/** Append to an already-seeded canonical directory on a local POSIX filesystem. */
-export async function appendJournal(directory: string, input: AppendRequest): Promise<AppendResult> {
-  if (process.platform !== 'darwin' && process.platform !== 'linux') throw new Error('Journal writing requires macOS or Linux flock');
-  const digest = validateRequest(input);
-  // Callers may reuse their buffer while we await filesystem I/O.
-  const request = { ...input, update: Uint8Array.from(input.update) };
-  const root = resolve(directory);
-  const manifestPath = join(root, MANIFEST_FILE_NAME);
-  if (!(await lstat(manifestPath)).isFile()) throw new Error('Expected an existing journal manifest');
+async function appendHeld(root: string, hold: FileHandle, request: AppendRequest, digest: Buffer): Promise<AppendResult> {
   const flags = constants.O_RDWR | constants.O_NOFOLLOW;
-  const hold = await open(join(root, 'lock'), flags | constants.O_CREAT, 0o600);
+  const doc = new Doc();
+  try {
+    let existing: AppendResult | undefined;
+    const report = await inspectJournal(root, frame => applyUpdate(doc, frame.update), record => {
+      if (record.operationId === request.operationId) {
+        existing = { outcome: digest.equals(record.digest) ? 'duplicate' : 'conflict', sequence: record.sequence };
+      }
+    });
+    const { manifest, journal } = report;
+    if (report.state !== 'seeded' || !manifest || !journal || (report.integrity !== 'ok' && report.integrity !== 'incomplete')) {
+      throw new Error(`Cannot append (state=${report.state}, integrity=${report.integrity}): ${report.issue ?? ''}`);
+    }
+    requireComplete(doc);
+    const head = journal.durableThrough;
+    if (manifest.lineage !== request.expectedLineage) return { outcome:'stale', sequence:head };
+    if (!existing && head !== request.expectedThrough) return { outcome:'stale', sequence:head };
+
+    const path = join(root, journal.file);
+    const file = await open(path, flags);
+    try {
+      const check = async () => { await verifyFence(root, hold, manifest); await sameFile(path, file); };
+      await check();
+      if (existing) {
+        if (existing.outcome === 'duplicate') await file.sync();
+        await check();
+        return existing;
+      }
+      applyUpdate(doc, request.update);
+      requireComplete(doc);
+      const position = Number(journal.verifiedBytes);
+      if (!Number.isSafeInteger(position)) throw new RangeError('Journal offset exceeds the supported file size');
+      const sequence = head + 1n;
+      const bytes = encodeRecord({ ...request, digest, sequence, committedAtTicks: 621355968000000000n + BigInt(Date.now()) * 10000n });
+      if (report.integrity === 'incomplete') {
+        await file.truncate(position);
+        await file.sync();
+      }
+      await writeAndSync(file, bytes, position, check);
+      return { outcome:'committed', sequence };
+    } finally { await file.close(); }
+  } finally { doc.destroy(); }
+}
+
+/** Keep the Go-compatible lease until all scheduled commits settle and close() resolves. */
+export async function acquireJournalWriter(directory: string) {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') throw new Error('Journal writing requires macOS or Linux flock');
+  const root = resolve(directory);
+  if (!(await lstat(join(root, MANIFEST_FILE_NAME))).isFile()) throw new Error('Expected an existing journal manifest');
+  const hold = await open(join(root, 'lock'), constants.O_RDWR | constants.O_NOFOLLOW | constants.O_CREAT, 0o600);
   try {
     await lockDocument(hold);
     await sameFile(join(root, 'lock'), hold);
-    const doc = new Doc();
-    try {
-      let existing: AppendResult | undefined;
-      const report = await inspectJournal(root, frame => applyUpdate(doc, frame.update), record => {
-        if (record.operationId === request.operationId) {
-          existing = { outcome: digest.equals(record.digest) ? 'duplicate' : 'conflict', sequence: record.sequence };
+  } catch (error) {
+    await hold.close();
+    throw error;
+  }
+  let pending = Promise.resolve();
+  let closing: Promise<void> | undefined;
+  function schedule<T>(job: () => Promise<T>): Promise<T> {
+    if (closing) return Promise.reject(new Error('Journal writer closed'));
+    const result = pending.then(job);
+    pending = result.then(() => {}, () => {});
+    return result;
+  }
+  return {
+    recover(onUpdate: (frame: JournalFrame) => void, onRecord: (record: OperationRecord) => void) {
+      return schedule(async () => {
+        const report = await inspectJournal(root, onUpdate, onRecord);
+        const { manifest, journal } = report;
+        if (!manifest || !journal || report.state !== 'seeded' || !['ok','incomplete'].includes(report.integrity)) {
+          throw new Error('Cannot recover journal: ' + (report.issue ?? report.state));
         }
-      });
-      const { manifest, journal } = report;
-      if (report.state !== 'seeded' || !manifest || !journal || (report.integrity !== 'ok' && report.integrity !== 'incomplete')) {
-        throw new Error(`Cannot append (state=${report.state}, integrity=${report.integrity}): ${report.issue ?? ''}`);
-      }
-      requireComplete(doc);
-      const head = journal.durableThrough;
-      if (manifest.lineage !== request.expectedLineage) return { outcome:'stale', sequence:head };
-      if (!existing && head !== request.expectedThrough) return { outcome:'stale', sequence:head };
-
-      const path = join(root, journal.file);
-      const file = await open(path, flags);
-      try {
-        const check = async () => { await verifyFence(root, hold, manifest); await sameFile(path, file); };
-        await check();
-        if (existing) {
-          if (existing.outcome === 'duplicate') await file.sync();
-          await check();
-          return existing;
-        }
-        applyUpdate(doc, request.update);
-        requireComplete(doc);
-        const position = Number(journal.verifiedBytes);
-        if (!Number.isSafeInteger(position)) throw new RangeError('Journal offset exceeds the supported file size');
-        const sequence = head + 1n;
-        const bytes = encodeRecord({ ...request, digest, sequence, committedAtTicks: 621355968000000000n + BigInt(Date.now()) * 10000n });
-        if (report.integrity === 'incomplete') {
-          await file.truncate(position);
+        const path = join(root, journal.file);
+        const file = await open(path, constants.O_RDWR | constants.O_NOFOLLOW);
+        try {
+          await verifyFence(root, hold, manifest);
+          await sameFile(path, file);
+          if (report.integrity === 'incomplete') {
+            const position = Number(journal.verifiedBytes);
+            if (!Number.isSafeInteger(position)) throw new RangeError('Journal offset exceeds the supported file size');
+            await file.truncate(position);
+          }
+          // A previous process may have died after write() and before fsync().
+          // Stabilize the verified prefix before a new room can acknowledge it.
           await file.sync();
-        }
-        await writeAndSync(file, bytes, position, check);
-        return { outcome:'committed', sequence };
-      } finally { await file.close(); }
-    } finally { doc.destroy(); }
-  } finally { await hold.close(); }
+          await verifyFence(root, hold, manifest);
+          await sameFile(path, file);
+          return { manifest, journal };
+        } finally { await file.close(); }
+      });
+    },
+    append(input: AppendRequest): Promise<AppendResult> {
+      if (closing) return Promise.reject(new Error('Journal writer closed'));
+      const digest = validateRequest(input);
+      const request = { ...input, update: Uint8Array.from(input.update) };
+      return schedule(() => appendHeld(root, hold, request, digest));
+    },
+    close(): Promise<void> {
+      return closing ??= pending.then(() => hold.close());
+    },
+  };
+}
+
+/** Append to an already-seeded canonical directory on a local POSIX filesystem. */
+export async function appendJournal(directory: string, input: AppendRequest): Promise<AppendResult> {
+  const writer = await acquireJournalWriter(directory);
+  try { return await writer.append(input); }
+  finally { await writer.close(); }
 }

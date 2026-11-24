@@ -81,3 +81,32 @@ through fsync. Python supplies only that system call over an inherited file desc
 descriptor and performs the complete read, validation and write. The writer requires working flock
 semantics and a local filesystem. It fails when the syscall helper is unavailable. The CLI reads the
 entire current document on each append and is intended for offline use.
+
+### One-document WebSocket preview
+
+`journal:room` serves a format-2 journal copy on `127.0.0.1`. Build the Node server first, install
+the package dependencies, and use a dedicated secret of at least 32 characters. In
+`packages/server/node`, the following commands start a preview and issue a five-minute ticket
+from another terminal with the same secret:
+
+```sh
+export BLOK_ROOM_SECRET="$(openssl rand -hex 32)"
+npm run --silent journal:room -- "$copy" preview-page http://localhost:18098 18102
+npm run --silent journal:room -- --ticket preview-page demo-user write
+```
+
+Connect to `ws://127.0.0.1:18102/api/blok/sync/preview-page` with the explicit allowed origin,
+offering `blok-sync.v2`, `blok-sync.v1` and the opaque ticket in Sec-WebSocket-Protocol.
+The API `startJournalRoom({ directory, documentId, allowedOrigins, port, authorize })` lets a host
+supply fresh page permissions. It rechecks each incoming message, each broadcast recipient, and
+idle connections every second. The journal lock is held for the entire process lifetime. After a
+successful append the room broadcasts the update, then acknowledges its sequence. On storage
+failure it closes the room and releases the journal so a supervisor can restart it from disk.
+
+The preview implements sync, operation acknowledgement/rejection, reconnect and replay on one
+seeded document. Presence, HTTP edits, automatic document seeding, checkpoint rotation, snapshot
+projection and multi-workspace routing are outside this preview. Each changed operation rechecks
+the journal in full and is intended for small local documents. A workspace rollout requires
+workspace-scoped ticket issuance and live ACL callbacks, exclusive ownership of each selected
+journal across Go and Node, snapshot persistence, and an explicit proxy route for the selected
+documents. The normal shell continues to use its configured collaboration host.
