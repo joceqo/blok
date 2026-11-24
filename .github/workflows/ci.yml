@@ -702,6 +702,9 @@ jobs:
       - name: Test Go conformance
         run: node scripts/test-server-conformance.mjs --target go
 
+      - name: Test service-node
+        run: cd apps/service-node && npm ci && npm test
+
   build:
     name: Build
     runs-on: ubuntu-latest

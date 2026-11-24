@@ -1,0 +1,17 @@
+{
+  "description": "Setup API HTTP shapes. noDb cases run in-process with createApp({ database: undefined }) — unmounted /api/* returns 503 database_not_configured.",
+  "cases": [
+    {
+      "name": "GET /api/setup/status (no DB)",
+      "method": "GET",
+      "path": "/api/setup/status",
+      "noDb": true,
+      "expect": {
+        "status": 503,
+        "body": {
+          "error": "database_not_configured"
+        }
+      }
+    }
+  ]
+}
