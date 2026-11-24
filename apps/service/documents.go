@@ -170,6 +170,14 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 			return
 		}
 	}
+	if status := validateIndexMoves(parents, realParents, levels); status != 0 {
+		if status == http.StatusForbidden {
+			problem(w, status, "Write access required on source and destination")
+		} else {
+			problem(w, status, "Invalid parent hierarchy")
+		}
+		return
+	}
 	// L'appelant n'a pu envoyer que ce qu'il voit. Tombstoner sur cette seule
 	// base effacerait les pages des autres ; la suppression ne porte donc que sur
 	// ce qu'il peut écrire.
@@ -615,6 +623,34 @@ type indexSlot struct {
 }
 
 func (p incomingPage) id() string { v, _ := p.page["id"].(string); return v }
+
+// Validate the actual hierarchy inside the index transaction. A filtered index
+// can omit ancestors and represents an invisible parent as a workspace root.
+func validateIndexMoves(incoming, stored map[string]string, levels map[string]level) int {
+	projected := make(map[string]string, len(stored)+len(incoming))
+	for id, parent := range stored {
+		// An old dangling link is already presented as a detached root.
+		if _, exists := stored[parent]; !exists {
+			parent = ""
+		}
+		projected[id] = parent
+	}
+	for id, parent := range incoming {
+		original, exists := stored[id]
+		if exists && (parent == original || (parent == "" && levels[original] < levelView)) {
+			continue
+		}
+		_, knownParent := stored[parent]
+		if (exists && levels[id] < levelEdit) || (knownParent && levels[parent] < levelEdit) {
+			return http.StatusForbidden
+		}
+		projected[id] = parent
+	}
+	if !validParents(projected) {
+		return http.StatusBadRequest
+	}
+	return 0
+}
 
 // currentIndex rend les pages vivantes de l'espace et leur ordre actuel.
 func currentIndex(ctx context.Context, tx pgx.Tx, workspace string) (map[string]bool, []string, error) {

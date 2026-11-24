@@ -1,5 +1,6 @@
 import { navigationFavorites, navigationRecents } from './navigation-preferences';
-import { openPageSearch, openPageCreation, type CreationDestination } from './navigation-dialogs';
+import { moveDestinations, PageMoveConflict } from './page-move';
+import { openMovePicker, openPageSearch, openPageCreation, type CreationDestination } from './navigation-dialogs';
 import { PopoverDesktop } from '@blok/popover';
 import { customEmojiStore } from './custom-emojis';
 import { createEmptyWorkspaceState } from './workspace-empty';
@@ -117,6 +118,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     manifestError?: unknown;
     refreshingManifest: boolean;
     metadataAction: boolean;
+    movingPage: boolean;
     closeSearch: (() => void) | undefined;
   } = {
     access: pageAccess(ref, undefined),
@@ -140,6 +142,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     manifestFailed: false,
     refreshingManifest: false,
     metadataAction: false,
+    movingPage: false,
     closeSearch: undefined,
   };
   const adoptIndex = (value: WorkspaceIndex): WorkspaceIndex => {
@@ -195,11 +198,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   };
   const saveManifest = (): void => {
     if (!ws.index) return;
-    const snapshot = JSON.stringify(ws.index);
+    // A title/cover callback can fire during a move. Snapshot its parent after
+    // the queued move settles, so this write cannot undo a successful move.
+    const snapshot = ws.movingPage ? undefined : JSON.stringify(ws.index);
     ws.pendingManifests++;
     renderDocumentStatus();
     ws.saveOrder = ws.saveOrder.catch(() => undefined).then(async () => {
-      await repository.saveIndex(JSON.parse(snapshot) as WorkspaceIndex);
+      await repository.saveIndex(JSON.parse(snapshot ?? JSON.stringify(ws.index)) as WorkspaceIndex);
       ws.manifestFailed = false;
       ws.manifestError = undefined;
     }).catch((error: unknown) => {
@@ -313,8 +318,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const refusal = error instanceof RepositoryHttpError && [401, 403, 404].includes(error.status)
       ? 'Accès refusé. Vérifiez votre connexion au compte et vos droits sur cet espace.'
       : describeAccessLoss(error);
-    const conflict = error instanceof WorkspaceConflictError;
-    status.textContent = refusal ?? (conflict
+    const conflict = error instanceof WorkspaceConflictError || error instanceof PageMoveConflict;
+    status.textContent = refusal ?? (error instanceof PageMoveConflict ? error.message : conflict
       ? 'Conflit sur les pages de l’espace. Copiez vos changements avant de recharger pour comparer les versions.'
       : `Enregistrement impossible : ${String(error)}`);
     status.setAttribute('data-error', '');
@@ -722,8 +727,53 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     await ws.saveOrder;
   };
 
+  const movePage = async (id: string, originalParent: string | null, parentId: string | null): Promise<void> => {
+    if (ws.metadataAction || !ws.index) return;
+    const wasInert = ws.frame.element.inert;
+    ws.frame.element.inert = true;
+    ws.metadataAction = true;
+    try {
+      await flushRemoteBeforeAction({ type: 'move', id });
+      await ws.saveOrder;
+      const page = ws.index.pages.find((item) => item.id === id);
+      if (!page || page.parentId !== originalParent) throw new PageMoveConflict();
+      ws.movingPage = true;
+      ws.pendingManifests++;
+      renderDocumentStatus();
+      try {
+        const commit = repository.movePage(ws.index, id, parentId).then(() => { page.parentId = parentId; });
+        ws.saveOrder = commit.catch(() => undefined);
+        await commit;
+        ws.frame.setPages(withSections(ws.index.pages), ws.index.activeId);
+        ws.pageToolbar?.setBreadcrumbs(breadcrumbs(ws.currentId));
+        notifyPage(id);
+      } finally {
+        ws.movingPage = false;
+        ws.pendingManifests--;
+        renderDocumentStatus();
+      }
+    } finally {
+      ws.frame.element.inert = wasInert;
+      ws.metadataAction = false;
+    }
+    await refreshRemoteManifest();
+  };
+
   const action = async (command: SidebarAction): Promise<void> => {
     if (command.type !== 'open-tab' && readOnly(command.id)) return;
+    if (command.type === 'move') {
+      const page = ws.index?.pages.find((item) => item.id === command.id);
+      if (!page) return;
+      const originalParent = page.parentId;
+      ws.closeSearch?.();
+      ws.closeSearch = openMovePicker({
+        workspaceName: ref.name, sourceTitle: page.title, remote: ref.kind === 'remote',
+        pages: () => ws.index?.pages ?? [],
+        destinations: () => moveDestinations(ws.index?.pages ?? [], page.id, ws.access),
+        onChoose: (parentId) => { void movePage(page.id, originalParent, parentId).catch(showError); },
+      });
+      return;
+    }
     const wasInert = ws.frame.element.inert;
     if (ref.kind === 'remote') { ws.frame.element.inert = true; ws.metadataAction = true; }
     try {
@@ -778,7 +828,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     },
     onAction: (command) => { void action(command).catch(showError); },
     pageUrl,
-    availableActions: ['rename', 'duplicate', 'delete', 'open-tab'],
+    availableActions: ['rename', 'move', 'duplicate', 'delete', 'open-tab'],
     canEdit: (id) => !readOnly(id),
     canCreate: canCreateUnder,
     onFavorite: (id, value) => {
