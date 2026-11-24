@@ -121,9 +121,12 @@ func (s *Service) recheckSessionAccess(w http.ResponseWriter, r *http.Request) {
 func (s *Service) recheckDocument(ctx context.Context, doc string) error {
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	var err error
-	if s.nodeOwnsRoom(doc) {
-		err = s.recheckNodeRoom(bounded)
+	owned, err := s.nodeOwnsRoom(bounded, doc)
+	if err != nil {
+		return err
+	}
+	if owned {
+		err = s.recheckNodeRoom(bounded, doc)
 	} else {
 		_, err = s.Blok.RecheckAccess(bounded, doc)
 	}
