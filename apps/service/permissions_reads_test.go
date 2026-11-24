@@ -33,6 +33,18 @@ const (
 	tokenZoe   = "token-zoe"
 )
 
+func TestWorkspaceReferenceSelectsSlugBeforeMembership(t *testing.T) {
+	w := newReadsWorld(t)
+	// The existing workspace ID is "w". A different workspace can use it as a slug.
+	if _, err := w.service.DB.Exec(w.ctx, `INSERT INTO workspaces(id,slug,name) VALUES ('other','w','Other')`); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := w.service.lookupWorkspace(w.ctx, "w", "alice")
+	if err != nil || ws.ID != "other" || ws.Role != "" {
+		t.Fatalf("ambiguous reference resolved to %+v, error %v", ws, err)
+	}
+}
+
 func newReadsWorld(t *testing.T) *readsWorld {
 	t.Helper()
 	raw := os.Getenv("TEST_DATABASE_URL")

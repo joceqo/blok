@@ -13,7 +13,8 @@ async function saveIndex(pool: PgPool, key: string, slug: string, body: unknown)
       'SELECT user_id FROM sessions WHERE id=$1 AND expires_at>now() FOR SHARE', [key]);
     if (!session) throw new IndexError(401, 'Sign in required');
     const { rows: [workspace] } = await client.query<{ id: string; revision: string }>(
-      'SELECT id, revision::text FROM workspaces WHERE slug=$1 FOR UPDATE', [slug]);
+      `SELECT id, revision::text FROM workspaces WHERE slug=$1 OR id=$1
+       ORDER BY (slug=$1) DESC LIMIT 1 FOR UPDATE`, [slug]);
     if (!workspace) throw new IndexError(404, 'Workspace not found');
     const { rows: [member] } = await client.query<{role: Role}>(
       'SELECT role FROM memberships WHERE user_id=$1 AND workspace_id=$2 FOR SHARE', [session.user_id, workspace.id]);
