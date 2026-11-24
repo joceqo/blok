@@ -2,26 +2,25 @@
 
 Le shell web et Tauri partagent le code TypeScript de l’éditeur, des pages et de la navigation. La démo Docker utilise le même modèle de session, de permissions, d’identifiants de page et de version de document que le service Go. Un espace local Tauri reste utilisable sur disque. La connexion à un espace hébergé utilise son URL et son compte.
 
-## Lots et critères de fusion
+## Services du shell
 
-| Lot | Chemin utilisé | Critère pour intégrer au produit |
-| --- | --- | --- |
-| Shell et sauvegardes | État de sauvegarde confirmé par le serveur, attente des droits d’une page créée, protection contre une réponse de navigation tardive | Tests unitaires et édition de la même page depuis deux clients avec déconnexion puis rechargement |
-| Service produit Node (#46) | Connexion par code, invitations, sessions, lecture des espaces, lecture et écriture de l’index, partage des pages, enregistrement des documents dans PostgreSQL | Même visibilité que Go pour un membre, un lecteur et une page privée. Révision et contenu lus ensemble. Rejeu identique accepté, écriture périmée refusée |
-| Équipes et rôles | Annuaire, gestion des équipes, membres du workspace et changement de rôle en Node. Le shell web et Tauri donnent accès aux équipes depuis la barre latérale d’un espace distant | Une adhésion à une équipe conserve les droits individuels sur les pages. Le retrait d’un workspace nettoie ses partages et ses adhésions aux équipes |
-| Reste de l’API produit (#46) | Administration d’instance, fichiers et intégrations | Porter un domaine à la fois sur le schéma canonique. Vérifier les réponses attendues par le shell et une révocation de permission avant de changer le routage Docker |
-| Serveur de collaboration Node (#45) | Une page ou toutes les pages d’un workspace peuvent utiliser Node pour les tickets, les droits en direct, les WebSockets, le journal et la projection PostgreSQL. La passerelle HTTP Go transmet les connexions du workspace choisi au host Node. | Deux comptes doivent retrouver leurs changements après une coupure et un redémarrage. Une nouvelle page rejoint la même sélection et un ticket d’un autre espace ne doit jamais ouvrir son journal dans le host Node. |
-| Distribution | Docker local, shell Tauri et instance distante | Même parcours d’édition sur localhost et sur une instance de recette HTTPS, avec identités isolées. Vérifier sauvegarde et restauration avant la bascule d’une instance existante |
+Les images Docker font tourner l’API, la collaboration et les médias en Node. nginx transmet tous les WebSockets de document au service de collaboration. Chaque connexion et chaque nouvelle ouverture vérifient les droits de la page. Les identifiants, les sessions, les journaux et le schéma PostgreSQL existants servent à la reprise des installations.
 
-Le chemin quotidien est `npm test`. La recette à deux navigateurs se lance avec `./deploy/test-node-room-browser.sh` pour une page ou `./deploy/test-node-room-browser.sh --workspace` pour tout un workspace. Le parcours Docker avec la room Go reste disponible via `node desktop/src/cloud/demo-sync-smoke.mjs`. Les changements de protocole se vérifient aussi avec la suite de conformité correspondante. Le mode historique de la #46 a son propre schéma expérimental : le service du shell démarre via `dist/shell/main.js` sur le schéma canonique.
+| Domaine | Fonctionnement |
+| --- | --- |
+| Comptes et espaces | Connexion par code, invitations, équipes, rôles, partage par page et administration d’instance |
+| Collaboration | Tickets et droits en direct, présence, consultation et restauration des versions, journal et projection PostgreSQL pour tous les workspaces |
+| Médias | Pièces jointes privées, lecture par plages, liens temporaires, images du workspace et emojis |
+| Courrier | Livraison du code et des invitations via SMTP, Resend ou la boîte locale de développement |
+| Exploitation | Même image pour API, collaboration et médias, CLI Node `blokctl`, sauvegarde du journal avec la base et restauration sur une installation vide |
+
+Le chemin quotidien est `npm test`. La recette complète à deux navigateurs est opt-in via `./deploy/test-node-room-browser.sh --workspace`. Les suites de conformité des moteurs historiques restent disponibles pour comparer les formats et les contrats.
+
+Le shell ouvre l’historique depuis le menu « Actions de la page ». La room accepte les clients Blok v1 et v2 au format éditeur 2. Le protocole v2 confirme la persistance de chaque opération. La purge intégrale d’une page, les notes d’activité historiques des agents et le détail des différences champ par champ dans les bases restent à porter.
 
 ## IA et agents
 
-| Lot parallélisable | Fonctionnement actuel | Critère pour intégrer au produit |
-| --- | --- | --- |
-| Assistant IA du shell | Le chat peut inclure la page ouverte ou rechercher des extraits des pages accessibles et afficher leurs liens. Le workspace distant utilise les routes Go de configuration, de modèles et de réponse. Tauri propose aussi OpenAI en local et les CLI natifs. | Porter les routes distantes sur Node en conservant les réglages personnels et partagés, les droits administrateur, le chiffrement existant et l’annulation. Tester avec un fournisseur simulé, y compris une page et un historique longs. |
-| Actions sur le document | Le cœur TypeScript expose `editor.agent.ask()` et une boucle d’appels d’outils. Le shell web et Tauri proposent des actions sur la page éditable depuis le panneau et le raccourci Mod+J. | Les tests avec modèle simulé couvrent une insertion réelle, son annulation, le passage en lecture seule et une réponse tardive après navigation. |
-| Agents externes via MCP | Node gère les jetons personnels (création, liste, rotation et révocation). Go sert `/mcp`. Le test croisé utilise un vrai serveur Go et PostgreSQL pour vérifier le refus d’écriture du lecteur et l’invalidation immédiate des anciens jetons. | Vérifier la parité du serveur TypeScript avec les jetons, les outils du workspace et les accès par page du service hébergé. Tester une révocation pendant une session avant de basculer le proxy. |
+Les paramètres IA du workspace distant et le transport MCP hébergé résident dans le service Node. Le shell utilise les droits de l’utilisateur pour choisir les sources de contexte. Les espaces locaux Tauri gardent leur configuration et leur trousseau propres. Le parcours d’édition assistée permet d’annuler une opération et doit respecter la lecture seule après une navigation ou une révocation.
 
 Pour le shell, deux parcours d’AppFlowy donnent des références distinctes. La recherche IA retourne des réponses avec des liens vers les sources du workspace. Les plugins MCP permettent à un assistant externe de travailler sur des documents. Dans Blok, la recherche filtre les pages selon les droits avant de transmettre des extraits au modèle. [Recherche IA AppFlowy](https://github.com/AppFlowy-IO/AppFlowy/blob/main/CHANGELOG.md) · [Plugins MCP AppFlowy](https://github.com/AppFlowy-IO/appflowy-ai-plugins)
 

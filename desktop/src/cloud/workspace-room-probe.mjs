@@ -22,16 +22,16 @@ if (input.revokedTicket) {
 } else {
   const health = await (await fetch('http://127.0.0.1:18102/healthz')).json();
   assert.equal(health.backend,'node');
-  assert.equal(health.workspaceId,input.selected);
+
   const allowed = await access(input.newPage,input.selectedTicket);
   assert.equal(allowed.workspaceId,input.selected);
   const foreign = await access(input.outsidePage,input.foreignTicket);
   assert.equal(foreign.read,true);
   assert.equal(foreign.workspaceId,input.other);
-  // A valid ticket for its own document must still respect the host's workspace selection.
+  // Present a valid ticket for a different document against the selected page.
   const status = await new Promise((resolve,reject) => {
     const req = request({
-      hostname:'127.0.0.1',port:18102,path:'/api/blok/sync/'+input.outsidePage,
+      hostname:'127.0.0.1',port:18102,path:'/api/blok/sync/'+input.newPage,
       headers:{ origin:input.origin,upgrade:'websocket',connection:'Upgrade',
         'sec-websocket-key':randomBytes(16).toString('base64'),'sec-websocket-version':'13',
         'sec-websocket-protocol':['blok-sync.v2','blok-sync.v1',input.foreignTicket].join(', ') },
@@ -42,6 +42,6 @@ if (input.revokedTicket) {
     req.once('error',reject);
     req.end();
   });
-  console.log(JSON.stringify({workspaceId:health.workspaceId,foreignId:foreign.workspaceId,
+  console.log(JSON.stringify({workspaceId:allowed.workspaceId,foreignId:foreign.workspaceId,
     allowed:{read:allowed.read,write:allowed.write},foreignRoomStatus:status}));
 }

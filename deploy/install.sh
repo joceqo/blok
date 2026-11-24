@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-if [[ ! -f .env ]]; then
+env_file="${BLOK_ENV_FILE:-.env}"
+if [[ ! -f "$env_file" ]]; then
   umask 077
-  cp .env.example .env
+  cp .env.example "$env_file"
   for key in POSTGRES_PASSWORD TICKET_SECRET INTERNAL_SECRET; do
     value=$(openssl rand -hex 32)
     # Values are hex; no shell or sed metacharacters.
-    sed "s/^${key}=.*/${key}=${value}/" .env > .env.new
-    mv .env.new .env
+    sed "s/^${key}=.*/${key}=${value}/" "$env_file" > "$env_file.new"
+    mv "$env_file.new" "$env_file"
   done
-  echo 'Created deploy/.env with generated secrets. Set DOMAIN, BOOTSTRAP_ADMIN_EMAIL and MAILER_* for SMTP (or optional Resend), then run install.sh again.'
+  echo 'Created the environment file with generated secrets. Set DOMAIN, BOOTSTRAP_ADMIN_EMAIL and MAILER_* for SMTP (or optional Resend), then run install.sh again.'
   exit 0
 fi
 ./stack.sh config --quiet
