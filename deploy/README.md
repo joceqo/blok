@@ -25,7 +25,9 @@ Le démarrage ci-dessus construit le shell, le service Node et le service de com
 | Lire la session, les espaces, l’arborescence et le contenu enregistré d’une page | Node |
 | Écrire et relire en base le document issu du journal | Node, sur la boucle locale partagée avec Go |
 | Recevoir des changements en direct, les rejouer après reconnexion, émettre les tickets | Go |
-| Connexion par e-mail, modification de l’arborescence, partage, administration et fichiers | Go |
+| Connexion par code, déconnexion, invitations, équipes, rattachement des pages, rôles, partages et arborescence | Node |
+| Recherche de pages pour l’assistant | Node, sur le titre et le texte enregistré des pages accessibles |
+| Livraison du courrier, appels au fournisseur IA distant, administration d’instance et fichiers | Go |
 
 Pour un essai à côté d’une démo déjà ouverte, choisis un nom de projet, deux ports libres et un préfixe réseau libre avant le démarrage. Conserve ces variables pour les commandes `status`, `logs` et `stop` de cette seconde pile.
 
