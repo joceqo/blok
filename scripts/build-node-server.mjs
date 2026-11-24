@@ -29,6 +29,7 @@ async function bundle(outfile, conformance, entry = 'src/main.ts') {
       join(repositoryRoot, 'node_modules/esbuild/bin/esbuild'),
       join(nodePackage, entry),
       '--bundle',
+      '--alias:yjs='+join(nodePackage,'node_modules/yjs'),
       '--platform=node',
       '--external:ws',
       '--format=esm',
