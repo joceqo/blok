@@ -3,6 +3,13 @@
   handle /internal/* {
     respond 404
   }
+  @shellTickets {
+    method GET HEAD
+    path_regexp shellTickets ^/api/(blok-ticket|workspaces/[^/]+/ticket)$
+  }
+  handle @shellTickets {
+    reverse_proxy {$BLOK_SHELL_TICKET_UPSTREAM:app:8080}
+  }
   @shellReads {
     method GET HEAD
     path_regexp shellReads ^/api/(session|workspaces|workspaces/[^/]+/(index|members|pages/[^/]+(/access)?))$
