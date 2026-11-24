@@ -15,6 +15,7 @@
     "dist"
   ],
   "scripts": {
+    "journal:append": "node bin/blok-journal-append.mjs",
     "journal:inspect": "node bin/journal-inspect.mjs",
     "test": "vitest run",
     "test:watch": "vitest",

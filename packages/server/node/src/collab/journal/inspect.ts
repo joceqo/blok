@@ -4,7 +4,7 @@ import {
   BASELINE_MAGIC, CHECKPOINT_MAGIC, MANIFEST_FILE_NAME, InvalidDataError,
   baselineName, checkpointName, journalName, readManifest, readSealed, type JournalManifest,
 } from './files.ts';
-import { decodeRecord, RECORD_HEADER_BYTES } from './record.ts';
+import { decodeRecord, RECORD_HEADER_BYTES, type OperationRecord } from './record.ts';
 
 export interface JournalFrame {
   source: 'baseline' | 'checkpoint' | 'journal';
@@ -43,7 +43,7 @@ async function fill(file: FileHandle, target: Buffer): Promise<number> {
 }
 
 /** Verify the two checksums, contiguous sequence and unique operation ID per record. */
-async function scan(file: FileHandle, summary: SequenceReport, checkpoint: bigint, emit: (frame: JournalFrame) => void): Promise<void> {
+async function scan(file: FileHandle, summary: SequenceReport, checkpoint: bigint, emit: (frame: JournalFrame) => void, onRecord?: (record: OperationRecord) => void): Promise<void> {
   const seen = new Set<string>();
   const header = Buffer.alloc(RECORD_HEADER_BYTES);
   while (true) {
@@ -64,6 +64,7 @@ async function scan(file: FileHandle, summary: SequenceReport, checkpoint: bigin
     if (sequence !== summary.durableThrough + 1n) throw new InvalidDataError(`${position}: expected sequence ${summary.durableThrough + 1n}, found ${sequence}`);
     if (seen.has(operationId)) throw new InvalidDataError(`${position}: duplicate operation ID ${operationId}`);
     seen.add(operationId);
+    onRecord?.(decoded.record);
     summary.firstSequence ??= sequence;
     summary.durableThrough = sequence;
     summary.verifiedBytes += BigInt(decoded.bytesRead);
@@ -75,7 +76,7 @@ async function scan(file: FileHandle, summary: SequenceReport, checkpoint: bigin
 }
 
 /** A stopped journal directory or a coherent offline copy. Frames are provisional until integrity is ok. */
-export async function inspectJournal(directory: string, onUpdate?: (frame: JournalFrame) => void): Promise<JournalInspection> {
+export async function inspectJournal(directory: string, onUpdate?: (frame: JournalFrame) => void, onRecord?: (record: OperationRecord) => void): Promise<JournalInspection> {
   const root = resolve(directory);
   const report: JournalInspection = { directory: root, state: 'unknown', integrity: 'ok',
     manifest: null, baseline: null, checkpoint: null, journal: null };
@@ -124,7 +125,7 @@ export async function inspectJournal(directory: string, onUpdate?: (frame: Journ
     const name = journalName(manifest.generation, manifest.generationFence);
     report.journal = { file: name, verifiedBytes: 0n, firstSequence: null, durableThrough: 0n, tailRecords: 0n };
     const file = await open(join(root, name), 'r');
-    try { await scan(file, report.journal, manifest.checkpointThrough, emit); }
+    try { await scan(file, report.journal, manifest.checkpointThrough, emit, onRecord); }
     finally { await file.close(); }
     if (manifest.checkpointThrough > report.journal.durableThrough) {
       throw new InvalidDataError(`Checkpoint ${manifest.checkpointThrough} exceeds the journal's last sequence ${report.journal.durableThrough}`);
