@@ -29,7 +29,9 @@ if (args.some(arg => /^(?:\.\/)?test\/unit(?:\/|$)/.test(arg.replaceAll('\\', '/
   // Give spare workers to the first package (the DOM-heavy desktop suite).
   const run = (directory, index) => {
     const workers = Math.floor(budget / parallel) + Number(index < budget % parallel);
-    return vitest(directory, ['--maxWorkers', String(workers), '--exclude', '**/*.integration.test.*', ...args]);
+    // Separate the compiler caches too: the packages may use different Vitest versions.
+    const cache = fileURLToPath(new URL(`../${directory}/node_modules/.vitest-cache/`, import.meta.url));
+    return vitest(directory, ['--fsModuleCachePath', cache, '--maxWorkers', String(workers), '--exclude', '**/*.integration.test.*', ...args]);
   };
   const codes = [];
   for (let start = 0; start < selected.length; start += parallel) {
