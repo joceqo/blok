@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM node:26-bookworm-slim AS web-build
+FROM --platform=$BUILDPLATFORM node:26-bookworm-slim AS frontend-deps
 WORKDIR /build
 COPY package.json yarn.lock .yarnrc.yml ./
 COPY .yarn/patches .yarn/patches
@@ -10,6 +10,8 @@ COPY packages/react/package.json packages/react/package.json
 COPY packages/server/package.json packages/server/package.json
 COPY packages/vue/package.json packages/vue/package.json
 RUN npm install --global corepack@0.35.0 && corepack enable && yarn install --immutable
+
+FROM frontend-deps AS web-build
 COPY desktop/package.json desktop/package-lock.json desktop/.npmrc desktop/
 RUN npm ci --prefix desktop
 COPY . .
@@ -39,3 +41,20 @@ ENTRYPOINT ["/usr/local/bin/blok-cloud"]
 FROM caddy:2-alpine AS web
 COPY --from=web-build /build/desktop/dist /srv
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
+
+
+FROM frontend-deps AS room-build
+COPY packages/server/node/package*.json packages/server/node/
+RUN npm ci --prefix packages/server/node
+COPY . .
+RUN node scripts/build-node-server.mjs
+
+FROM node:26-bookworm-slim AS room
+RUN apt-get update && apt-get install --no-install-recommends -y python3 && rm -rf /var/lib/apt/lists/*
+WORKDIR /room
+COPY packages/server/node/package*.json ./
+RUN npm ci --omit=dev
+COPY packages/server/node/bin bin
+COPY --from=room-build /build/packages/server/node/dist dist
+USER 65532:65532
+ENTRYPOINT ["node", "bin/blok-journal-room.mjs"]

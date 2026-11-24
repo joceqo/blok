@@ -340,9 +340,15 @@ func (s *Service) workspaces(ctx context.Context, uid string) ([]Workspace, erro
 	return out, rows.Err()
 }
 func (s *Service) CanReadDocument(ctx context.Context, u blokserver.User, doc string) (bool, error) {
+	if s.nodeOwnsRoom(doc) {
+		return false, nil
+	}
 	return s.authorizeDoc(ctx, u.ID, doc, false)
 }
 func (s *Service) CanWriteDocument(ctx context.Context, u blokserver.User, doc string) (bool, error) {
+	if s.nodeOwnsRoom(doc) {
+		return false, nil
+	}
 	return s.authorizeDoc(ctx, u.ID, doc, true)
 }
 func (s *Service) authorizeDoc(ctx context.Context, session, doc string, write bool) (bool, error) {
