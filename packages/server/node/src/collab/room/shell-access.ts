@@ -1,9 +1,9 @@
 import type { RoomIdentity, RoomOptions } from './preview.ts';
 
-interface Decision { read: boolean; write: boolean; session?: unknown; ticketWrite?: unknown }
+interface Decision { read: boolean; write: boolean; session?: unknown; workspaceId?: unknown; ticketWrite?: unknown }
 
 /** The cloud service owns both the ticket signing key and the canonical session/page ACL. */
-export function shellRoomTickets(serviceOrigin: string, internalSecret: string): RoomOptions['authorize'] {
+export function shellRoomTickets(serviceOrigin: string, internalSecret: string, workspaceId?: string): RoomOptions['authorize'] {
   const endpoint = new URL(serviceOrigin);
   if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password ||
       endpoint.search || endpoint.hash || endpoint.pathname !== '/') throw new Error('Expected an internal cloud service origin');
@@ -20,7 +20,9 @@ export function shellRoomTickets(serviceOrigin: string, internalSecret: string):
     const data: unknown = await response.json();
     if (!data || typeof data !== 'object' || !('read' in data) || data.read !== true ||
         !('write' in data) || typeof data.write !== 'boolean') return null;
-    return data as Decision;
+    const decision = data as Decision;
+    if (workspaceId && decision.workspaceId !== workspaceId) return null;
+    return decision;
   }
 
   return async (ticket, documentId) => {
@@ -33,6 +35,6 @@ export function shellRoomTickets(serviceOrigin: string, internalSecret: string):
       const access = await check({documentId,session:id});
       return access ? {id,write:ticketWrite && access.write} : null;
     };
-    return {id,write:ticketWrite && grant.write,revalidate};
+    return {id,write:ticketWrite && grant.write,revalidate,...(workspaceId ? {workspaceId} : {})};
   };
 }
