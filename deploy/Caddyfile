@@ -24,6 +24,13 @@
   handle @shellDelete {
     reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
   }
+  @shellAuth {
+    method POST
+    path /api/auth/verify-code /api/auth/logout
+  }
+  handle @shellAuth {
+    reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
+  }
   @workspaceSearch {
     method POST
     path_regexp workspaceSearch ^/api/workspaces/[^/]+/search$

@@ -302,6 +302,7 @@ func (s *Service) routes() {
 	s.mux.HandleFunc("/api/workspaces/{slug}/{resource}/{id}/{action}/{target}", s.workspaceResource)
 	s.mux.HandleFunc("GET /api/blok-ticket", s.getTicket)
 	s.mux.HandleFunc("/internal/documents/{id}", s.document)
+	s.mux.HandleFunc("POST /internal/sessions/recheck-access", s.recheckSessionAccess)
 	s.mux.HandleFunc("POST /internal/workspaces/{id}/recheck-access", s.recheckWorkspaceAccess)
 	// Blok's own local-file branch bypasses its auth wrapper; explicitly guard it here.
 	blok := s.Blok.Handler("/api/blok")

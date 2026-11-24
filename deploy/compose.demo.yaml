@@ -24,6 +24,7 @@ services:
       INTERNAL_SECRET: ${INTERNAL_SECRET:?Run demo.sh first}
       PUBLIC_URL: http://localhost:${DEMO_WEB_PORT:-8088}
       ALLOWED_ORIGINS: tauri://localhost,http://tauri.localhost,https://tauri.localhost
+      BLOK_DEVELOPMENT: '1'
       PORT: '8081'
     networks:
       default:

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createShellAuth } from './auth.js';
 import { createShellApp } from './app.js';
 
 // Opt in with a development PostgreSQL URL. Only this suite's schema is used.
@@ -44,6 +45,68 @@ describe.skipIf(!databaseUrl)('shell routes on the deployed PostgreSQL schema', 
     }
     const ws = await app.request('/api/workspaces', { headers });
     expect(await ws.json()).toEqual({ workspaces: [{ id: 'w', name: 'Demo', role: 'viewer', slug: 'demo' }] });
+  });
+
+  describe('canonical login codes', () => {
+    const email = 'new.account@example.test';
+    const code = '002431';
+    const verify = (email: string, code: string, client?: string) => app.request('/api/auth/verify-code', {
+      method: 'POST', body: JSON.stringify({ email, code, client }),
+    });
+    const issue = (email: string) => db.query(`INSERT INTO login_codes(email,digest,expires_at)
+      VALUES($1,$2,now()+interval '5 minutes') ON CONFLICT(email) DO UPDATE SET
+      digest=excluded.digest,expires_at=excluded.expires_at,attempts=0`,
+      [email, createHash('sha256').update(email + ':' + code + ':' + secret).digest('hex')]);
+
+    it('enforces current admission and consumes an invitation and challenge exactly once', async () => {
+      await db.query("UPDATE instance_settings SET signup_policy='invite'");
+      await issue(email);
+      expect((await verify(email, code)).status).toBe(401);
+      await db.query(`INSERT INTO invites(id,workspace_id,email,role,expires_at)
+        VALUES('auth-invite','w',$1,'viewer',now()+interval '1 hour')`, [email]);
+      const results = await Promise.all([verify(email.toUpperCase(), code, 'desktop'), verify(email, code, 'desktop')]);
+      expect(results.map(r => r.status).sort()).toEqual([200,401]);
+      const success = results.find(r => r.status === 200)!;
+      expect(success.headers.get('Set-Cookie')).toBeNull();
+      const signed = await success.json();
+      expect(signed.workspaces).toEqual([{ id:'w', slug:'demo', name:'Demo', role:'viewer' }]);
+      expect((await app.request('/api/session', { headers: { Authorization:'Bearer ' + signed.token } })).status).toBe(200);
+      expect((await db.query("SELECT status FROM invites WHERE id='auth-invite'")).rows[0].status).toBe('accepted');
+    });
+
+    it('invalidates the session before confirming the live access check, including on retry', async () => {
+      const token = randomUUID();
+      const digest = createHash('sha256').update(token).digest('hex');
+      await db.query("INSERT INTO sessions(id,user_id,expires_at) VALUES($1,'m',now()+interval '1 hour')", [digest]);
+      let rechecks = 0;
+      const auth = createShellAuth(db, secret, async () => {
+        expect((await db.query('SELECT id FROM sessions WHERE id=$1', [digest])).rowCount).toBe(0);
+        rechecks++;
+      });
+      for (let i=0; i<2; i++) {
+        const response = await auth.request('/logout', {method:'POST', headers:{Cookie:'blok_session=' + token}});
+        expect(response.status).toBe(200);
+        expect(response.headers.get('Set-Cookie')).toMatch(/Max-Age=0/);
+      }
+      expect(rechecks).toBe(2);
+      expect((await app.request('/api/session', { headers: { Authorization:'Bearer ' + token } })).status).toBe(401);
+    });
+
+    it('bounds guesses, rechecks exact signup domains and issues an HttpOnly browser cookie', async () => {
+      const allowed = 'browser@sample.test';
+      const refused = 'browser@other.sample.test';
+      await db.query("UPDATE instance_settings SET signup_policy='domain',signup_domains=ARRAY['sample.test']");
+      await issue(refused);
+      expect((await verify(refused, code)).status).toBe(401);
+      await issue(allowed);
+      for (let i=0; i<5; i++) expect((await verify(allowed, 'abcdef')).status).toBe(401);
+      expect((await verify(allowed, code)).status).toBe(401);
+      await issue(allowed);
+      const result = await verify(allowed, code);
+      expect(result.status).toBe(200);
+      expect(result.headers.get('Set-Cookie')).toMatch(/blok_session=.*HttpOnly/);
+      expect(await result.json()).not.toHaveProperty('token');
+    });
   });
 
   it('reads public pages, honors ancestor shares, and hides private pages again on revocation', async () => {

@@ -12,7 +12,7 @@ export function sessionDigest(context: Context): string | undefined {
 }
 
 // Read all session fields from one PostgreSQL snapshot, including role changes.
-export async function loadSession(pool: PgPool, digest: string) {
+export async function loadSession(pool: Pick<PgPool, 'query'>, digest: string) {
   return (await pool.query<{ user: User; workspaces: WorkspaceMembership[]; supportEmail: string }>(
     `SELECT jsonb_build_object('id',u.id,'email',u.email,'name',u.name,
                                'instanceAdmin',ia.user_id IS NOT NULL) AS "user",

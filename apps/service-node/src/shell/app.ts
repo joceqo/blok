@@ -2,11 +2,12 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 
+import { createShellAuth } from './auth.js';
 import { registerIndexWrite } from './index-write.js';
 import type { PgPool } from '../db/pool.js';
 import { createWorkspaceMembers } from './workspace-members.js';
 import { createPageSharing } from './page-sharing.js';
-import { createAccessRecheck } from './recheck-access.js';
+import { createAccessRecheck, recheckLiveSessions } from './recheck-access.js';
 import { readProjectionHeaders, saveProjection } from './projection.js';
 import { createWorkspaceSearch } from './workspace-search.js';
 import { createShellTeamspaces } from './teamspaces.js';
@@ -47,6 +48,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     await next();
   });
 
+  app.route('/api/auth', createShellAuth(pool, secret, () => recheckLiveSessions(secret)));
   app.route('/api/workspaces/:slug/search', createWorkspaceSearch(pool));
   app.route('/api/workspaces/:slug/teamspaces', createShellTeamspaces(pool));
 
