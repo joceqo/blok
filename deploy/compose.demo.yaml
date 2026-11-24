@@ -14,8 +14,32 @@ services:
       interval: 3s
       timeout: 5s
       retries: 30
+  node:
+    build:
+      context: ../apps/service-node
+    init: true
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://blok:${POSTGRES_PASSWORD}@postgres:5432/blok
+      INTERNAL_SECRET: ${INTERNAL_SECRET:?Run demo.sh first}
+      PUBLIC_URL: http://localhost:${DEMO_WEB_PORT:-8088}
+      ALLOWED_ORIGINS: tauri://localhost,http://tauri.localhost,https://tauri.localhost
+      PORT: '8081'
+    networks:
+      default:
+        aliases: [app]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8081/healthz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
   app:
-    image: blok-cloud-app:local
+    # The document callback carries a bearer secret and accepts HTTP only over loopback.
+    network_mode: service:node
+    image: ${COMPOSE_PROJECT_NAME:-blok-local}-app:local
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -25,8 +49,8 @@ services:
     stop_grace_period: 90s
     environment:
       DATABASE_URL: postgres://blok:${POSTGRES_PASSWORD}@postgres:5432/blok?sslmode=disable
-      PUBLIC_URL: http://localhost:8088
-      INTERNAL_URL: http://127.0.0.1:8080
+      PUBLIC_URL: http://localhost:${DEMO_WEB_PORT:-8088}
+      INTERNAL_URL: http://127.0.0.1:8081
       LISTEN_ADDR: ':8080'
       DATA_DIRECTORY: /data
       AI_ENCRYPTION_KEY: ${AI_ENCRYPTION_KEY:-}
@@ -45,10 +69,12 @@ services:
       TICKET_SECRET: ${TICKET_SECRET:?Run demo.sh first}
       INTERNAL_SECRET: ${INTERNAL_SECRET:?Run demo.sh first}
       ALLOWED_ORIGINS: tauri://localhost,http://tauri.localhost,https://tauri.localhost
-      TRUSTED_PROXY_CIDRS: 172.30.88.3/32
+      TRUSTED_PROXY_CIDRS: ${DEMO_NETWORK_PREFIX:-172.30.88}.3/32
     volumes:
       - state:/data
     depends_on:
+      node:
+        condition: service_started
       postgres:
         condition: service_healthy
     healthcheck:
@@ -57,7 +83,7 @@ services:
       timeout: 5s
       retries: 30
   web:
-    image: blok-cloud-web:local
+    image: ${COMPOSE_PROJECT_NAME:-blok-local}-web:local
     build:
       context: ..
       dockerfile: deploy/Dockerfile
@@ -67,13 +93,16 @@ services:
     restart: unless-stopped
     environment:
       DOMAIN: ':80'
+      BLOK_SHELL_READ_UPSTREAM: node:8081
     networks:
       default:
-        ipv4_address: 172.30.88.3
+        ipv4_address: ${DEMO_NETWORK_PREFIX:-172.30.88}.3
     ports:
-      - '127.0.0.1:8088:80'
+      - '127.0.0.1:${DEMO_WEB_PORT:-8088}:80'
     depends_on:
       app:
+        condition: service_healthy
+      node:
         condition: service_healthy
   mailbox:
     image: python:3.13-alpine
@@ -85,7 +114,7 @@ services:
       - ./local-mailbox.py:/scripts/local-mailbox.py:ro
       - state:/data:ro
     ports:
-      - '127.0.0.1:8089:8025'
+      - '127.0.0.1:${DEMO_MAIL_PORT:-8089}:8025'
   seed:
     image: python:3.13-alpine
     profiles: [tools]
@@ -103,5 +132,5 @@ networks:
   default:
     ipam:
       config:
-        - subnet: 172.30.88.0/24
-          ip_range: 172.30.88.128/25
+        - subnet: ${DEMO_NETWORK_PREFIX:-172.30.88}.0/24
+          ip_range: ${DEMO_NETWORK_PREFIX:-172.30.88}.128/25

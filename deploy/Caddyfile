@@ -1,7 +1,15 @@
 {$DOMAIN} {
   encode zstd gzip
-  @private path /internal/*
-  respond @private 404
+  handle /internal/* {
+    respond 404
+  }
+  @shellReads {
+    method GET HEAD
+    path_regexp shellReads ^/api/(session|workspaces|workspaces/[^/]+/(index|pages/[^/]+))$
+  }
+  handle @shellReads {
+    reverse_proxy {$BLOK_SHELL_READ_UPSTREAM:app:8080}
+  }
   @api path /api/* /files/* /healthz /mcp
   handle @api {
     reverse_proxy app:8080

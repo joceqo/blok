@@ -16,6 +16,25 @@ Chaque connexion envoie un code neuf dans cette boîte locale. Aucun e-mail rée
 `./deploy/demo.sh stop` arrête la démo sans effacer les données ; `./deploy/demo.sh status` affiche les conteneurs.
 Cette pile distincte (`blok-local`) est limitée à l'ordinateur via `127.0.0.1`. La boîte mail donne accès aux codes : elle est uniquement destinée à la démonstration locale. Le déploiement public ci-dessous utilise ton relais SMTP et ne contient pas ce service.
 
+### Backend Node et synchronisation dans la démo
+
+Le démarrage ci-dessus construit le shell, le service Node et le service de compatibilité Go. Ils utilisent la même base PostgreSQL et les mêmes identifiants, sessions et droits que le shell existant. Go initialise le schéma de la base. Son journal de collaboration reste sur le volume `state`.
+
+| Opération dans le shell | Service de la démo |
+| --- | --- |
+| Lire la session, les espaces, l’arborescence et le contenu enregistré d’une page | Node |
+| Écrire et relire en base le document issu du journal | Node, sur la boucle locale partagée avec Go |
+| Recevoir des changements en direct, les rejouer après reconnexion, émettre les tickets | Go |
+| Connexion par e-mail, modification de l’arborescence, partage, administration et fichiers | Go |
+
+Pour un essai à côté d’une démo déjà ouverte, choisis un nom de projet, deux ports libres et un préfixe réseau libre avant le démarrage. Conserve ces variables pour les commandes `status`, `logs` et `stop` de cette seconde pile.
+
+```sh
+export COMPOSE_PROJECT_NAME=blok-node-review
+export DEMO_WEB_PORT=18098 DEMO_MAIL_PORT=18099 DEMO_NETWORK_PREFIX=172.30.91
+./deploy/demo.sh start
+```
+
 ## Construire les images sur ton VPS
 
 Prérequis : Git, Docker avec Compose v2, OpenSSL et un proxy HTTPS existant pour le domaine.
