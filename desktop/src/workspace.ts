@@ -631,8 +631,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       syncPageIcon(page, instance.title.icon.get(), ref.kind === 'local', true);
       toolbar.setBreadcrumbs(breadcrumbs(id));
       document.title = page.title;
-      if (ref.kind === 'local') status.textContent = '';
-    }).catch(showError);
+      if (ref.kind === 'local' && !ws.manifestFailed) status.textContent = '';
+    }).catch((error: unknown) => {
+      if (ws.generation === turn) showError(error);
+    });
   };
 
   const duplicatePage = async (page: DesktopPage): Promise<'navigated' | 'pending'> => {
@@ -911,6 +913,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       return;
     }
     void select(target).catch((error) => {
+      // Another tab or sidebar click can start a new navigation while the old
+      // editor waits for its save receipt. Only roll back the route that failed.
+      if (pageFromUrl() !== target) return;
       if (ws.currentId && pageFromUrl() !== ws.currentId) {
         const url = new URL(location.href); url.searchParams.set('page', ws.currentId);
         history.replaceState(null, '', url);
