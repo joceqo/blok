@@ -29,7 +29,7 @@ deploy/demo.sh room-disable
 
 Pour utiliser Node sur tout un workspace, lancez `deploy/demo.sh room-enable-workspace SLUG`. La démo résout le slug en identifiant canonique au moment de l’activation : le renommage du workspace ne change pas le propriétaire des rooms. Les pages créées ensuite sont attribuées au même serveur. Les tickets continuent de respecter les droits de chaque utilisateur sur chaque page. `room-disable` rend l’ensemble à Go après arrêt des deux hôtes et vérification des verrous de tous les journaux du volume, y compris ceux créés après l’activation.
 
-L’activation construit les images depuis les sources du checkout, termine les écritures Go en cours, puis démarre Node sur le même journal persistant. La page conserve son URL et le fournisseur WebSocket du shell. Sur l’upgrade de cette page, l’en-tête `X-Blok-Collaboration: node` indique le serveur choisi. Les autres pages continuent sur Go. Une interruption de la room ferme la connexion de cette page jusqu’à la reprise de Node.
+L’activation construit les images depuis les sources du checkout, termine les écritures Go en cours, puis démarre Node sur le même journal persistant. La page conserve son URL et le fournisseur WebSocket du shell. Sur l’upgrade de cette page, l’en-tête `X-Blok-Collaboration: node` indique le serveur choisi. Les pages hors de la sélection continuent sur Go. Une interruption de la room ferme la connexion de cette page jusqu’à la reprise de Node.
 
 La désactivation arrête la room, vérifie sa sortie et la libération du verrou de journal, puis redémarre Go. Le changement de propriétaire redémarre les services locaux et interrompt brièvement les connexions de la démo. Utilisez `room-disable` avant de choisir une autre page. La duplication en direct, les actions MCP sur le document et les routes d’historique Go sont indisponibles pour les pages confiées à Node pendant cet essai. Une page déjà ouverte sous Go doit avoir un journal que Node peut vérifier contre sa projection PostgreSQL. Une divergence empêche l’ouverture sur Node. Si un ancien déploiement BKW2 utilise ce volume, arrêtez-le avant l’activation : son ancien moteur peut écrire sans prendre le verrou de journal. En cas de format refusé ou de projection incohérente, lancez `room-disable` pour reprendre avec Go et examiner les fichiers d’origine.
 
@@ -43,8 +43,9 @@ Le démarrage ci-dessus construit le shell, le service Node et le service de com
 | --- | --- |
 | Lire la session, les espaces, l’arborescence et le contenu enregistré d’une page | Node |
 | Écrire et relire en base le document issu du journal | Node, sur la boucle locale partagée avec Go |
-| Recevoir des changements en direct et les rejouer après reconnexion | Node pour la page activée, Go pour les autres |
-| Émettre les tickets de connexion et vérifier les droits de la room | Go |
+| Recevoir des changements en direct et les rejouer après reconnexion | Node pour la page ou le workspace activé, Go hors de la sélection |
+| Émettre un ticket de collaboration | Node lorsque le mode page ou workspace est activé, Go dans la démo par défaut |
+| Vérifier les droits pendant une connexion | Le service TypeScript pour les rooms Node, le service Go pour ses propres rooms |
 | Connexion par code, déconnexion, invitations, équipes, rattachement des pages, rôles, partages et arborescence | Node |
 | Recherche de pages pour l’assistant | Node, sur le titre et le texte enregistré des pages accessibles |
 | Livraison du courrier, appels au fournisseur IA distant, administration d’instance et fichiers | Go |

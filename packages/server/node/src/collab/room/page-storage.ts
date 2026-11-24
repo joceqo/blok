@@ -6,7 +6,8 @@ import { createScanner, SyntaxKind } from 'jsonc-parser';
 import { applyUpdate, Doc } from 'yjs';
 import { inspectJournal } from '../journal/inspect.ts';
 import { envelope, exportPage, seedUpdate, type Snapshot } from './page-document.ts';
-import { existingDirectory, initializePage, pageDirectory, syncDirectory } from './page-seed.ts';
+import { readWorkingSet } from './legacy-working-set.ts';
+import { existingDirectory, initializePage, newBaseline, pageDirectory, syncDirectory } from './page-seed.ts';
 
 interface Head {
   version: string;
@@ -130,9 +131,11 @@ export async function preparePageStorage(root: string, pageId: string, origin: s
   let lineage: string;
   if (!(await existingDirectory(directory))) {
     const r = await read();
-    if (r.lineage !== null)
+    const source = await readWorkingSet(directory.slice(0, -'.journal'.length), r);
+    if (!source.baseline && r.lineage !== null)
       throw new Error('Projection already has a lineage; the matching journal must be restored');
-    await initializePage(root, pageId, seedUpdate(r.data), JSON.stringify(anchor(pageId, r)));
+    const baseline = source.baseline ?? newBaseline(seedUpdate(r.data));
+    await initializePage(root, pageId, baseline, JSON.stringify(anchor(pageId, r)), source.unchanged);
   }
   async function remember(next: Anchor) {
     const temp = disk + '.' + randomUUID();
