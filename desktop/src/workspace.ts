@@ -580,6 +580,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   };
 
   frame = createPageFrame({
+    teamspace: ref.kind === 'remote' ? { name: ref.name } : undefined,
     pages: [], activeId: '',
     onOpen: (id) => navigate(id),
     onCreate: (parentId) => createPage(parentId),
