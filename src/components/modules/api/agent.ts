@@ -313,6 +313,8 @@ export class AgentAPI extends Module {
     }
     this.assertNoTurn();
 
+    const scope = assistant.scopeSignal?.();
+    scope?.throwIfAborted();
     const place = options.context === false ? captured : describeUserPlace(this.Blok);
     const agent = { id: 'blok-assistant', name: assistant.name?.trim() || 'AI' };
     const identity = this.identityOf(agent);
@@ -322,6 +324,7 @@ export class AgentAPI extends Module {
     YjsManager.flushPendingBlockWrites();
     const input: AgentCode.AskInput = {
       prompt,
+      scope,
       options,
       place,
       base: YjsManager.topUndoToken(),

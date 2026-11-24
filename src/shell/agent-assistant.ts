@@ -17,6 +17,7 @@ import './agent-assistant.css';
 export interface AgentAssistantProvider { id: string; label: string }
 
 export interface AgentAssistantOptions {
+  editPage?: { available(): boolean; open(): void };
   /** Visible text of the open page, included when "Cette page" is checked. */
   getPageText: () => string;
   /** Closes the panel, then the host opens provider settings. */
@@ -34,6 +35,7 @@ export interface AgentAssistantOptions {
 }
 
 export interface AgentAssistantHandle {
+  refreshPageActions(): void;
   element: HTMLElement;
   editorSlot: HTMLElement;
   open: () => void;
@@ -247,7 +249,15 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   providerHint.setAttribute('data-blok-agent-providers-empty', '');
   providerHint.textContent = 'Connecte et active un provider dans les réglages.';
   providerHint.hidden = true;
+  const editPage = makeButton('Modifier la page avec OpenAI');
+  editPage.textContent = 'Modifier la page avec OpenAI';
+  editPage.setAttribute('data-blok-agent-edit-page', '');
+  const refreshPageActions = (): void => {
+    editPage.hidden = !options.editPage?.available() || !session.providers.some(provider => provider.id.startsWith('openai:'));
+  };
+  editPage.hidden = true;
   composerSlot.append(composer, providerHint);
+  if (options.editPage) composerSlot.append(editPage);
   fullSuggestions.setAttribute('data-blok-agent-suggestions', '');
   fullSuggestions.hidden = true;
   sendButton.setAttribute('data-blok-agent-send', '');
@@ -301,6 +311,7 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
 
   const paintProviders = (usable: AgentAssistantProvider[]): void => {
     session.providers = usable;
+    refreshPageActions();
     composerHandle.setProviders(usable, session.picked ?? undefined);
     providerHint.hidden = usable.length > 0;
   };
@@ -570,6 +581,11 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     if (session.open) close();
     else open();
   });
+  editPage.addEventListener('click', () => {
+    if (!options.editPage?.available()) return;
+    close();
+    options.editPage.open();
+  });
   closeButton.addEventListener('click', close);
   freshButton.addEventListener('click', () => {
     const conversation = current();
@@ -674,6 +690,7 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     open,
     close,
     refreshProviders,
+    refreshPageActions,
     destroy: () => {
       session.destroyed = true;
       stopRun();

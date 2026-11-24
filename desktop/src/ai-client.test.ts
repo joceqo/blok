@@ -35,6 +35,22 @@ describe('OpenAI client transport',()=>{
   const invoke=vi.fn();Reflect.set(window,'__TAURI_INTERNALS__',{invoke});const gate=new AbortController();gate.abort();
   await expect(createAiClient(initialWorkspace).respond({model:'gpt-x',system:'',messages:[]},gate.signal)).rejects.toMatchObject({name:'AbortError'});expect(invoke).not.toHaveBeenCalled();
  });
+ it('sends local editor requests over the native bridge and cancels by the same run ID',async()=>{
+  let finish!:(response:unknown)=>void;
+  const invoke=vi.fn((command:string,_args?:Record<string,unknown>)=>command==='ai_local_editor_respond'
+    ? new Promise(resolve=>{finish=resolve;}) : Promise.resolve(undefined));
+  Reflect.set(window,'__TAURI_INTERNALS__',{invoke});
+  const client=createAiClient(initialWorkspace);
+  const gate=new AbortController();
+  const request={model:'test',input:[],tools:[],store:false};
+  const pending=client.editorRespond(request,gate.signal);
+  const runId=invoke.mock.calls[0]![1]?.runId;
+  expect(invoke).toHaveBeenCalledWith('ai_local_editor_respond',{request,runId:expect.any(String)});
+  gate.abort();
+  expect(invoke).toHaveBeenCalledWith('ai_local_cancel',{runId});
+  finish({output:[]});
+  await expect(pending).rejects.toMatchObject({name:'AbortError'});
+ });
  it('isolates model selections by server, account and workspace',()=>{
   expect(selectionKey(ref)).not.toBe(selectionKey({...ref,accountId:'b'}));expect(selectionKey(ref)).not.toBe(selectionKey({...ref,workspaceId:'other'}));expect(selectionKey(ref)).not.toBe(selectionKey({...ref,server:'https://other.org'}));
  });
