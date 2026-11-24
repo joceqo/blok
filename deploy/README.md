@@ -9,12 +9,17 @@ nginx sert l’interface web et transmet les requêtes aux services TypeScript. 
 ./deploy/demo.sh start
 ```
 
-Ouvre [Blok local](http://localhost:8088) et la [boîte mail locale](http://localhost:8089).
-Connecte-toi avec `admin@example.test` pour administrer, `membre@example.test` pour le membre déjà ajouté, ou `demandeur@example.test` pour demander à rejoindre l'espace.
-Chaque connexion envoie un code neuf dans cette boîte locale. Aucun e-mail réel n'est envoyé. Utilise deux fenêtres privées/profils de navigateur pour comparer les rôles en même temps.
+Ouvre [Blok local](http://localhost:8088). Le démarrage crée trois comptes de démonstration avec des mots de passe distincts. Le script les génère dans `deploy/.env.demo` ou dans le fichier désigné par `DEMO_ENV_FILE`.
 
-`./deploy/demo.sh stop` arrête la démo sans effacer les données ; `./deploy/demo.sh status` affiche les conteneurs.
-Cette pile distincte (`blok-local`) est limitée à l'ordinateur via `127.0.0.1`. La boîte mail donne accès aux codes : elle est uniquement destinée à la démonstration locale. Le déploiement public ci-dessous utilise ton relais SMTP et ne contient pas ce service.
+| Compte | Rôle | Mot de passe dans le fichier local |
+| --- | --- | --- |
+| `admin@example.test` | Administrateur | `DEMO_ADMIN_PASSWORD` |
+| `membre@example.test` | Membre de l’espace | `DEMO_MEMBER_PASSWORD` |
+| `demandeur@example.test` | Utilisateur pouvant demander l’accès | `DEMO_REQUESTER_PASSWORD` |
+
+Pour créer ton propre espace sur un volume vierge, utilise `./deploy/demo.sh start --setup`. Saisis le nom de l’espace, ton nom, ton adresse e-mail et ton mot de passe. Blok ouvre ensuite l’éditeur. Sur un volume déjà configuré, le démarrage conserve les comptes et présente la connexion.
+
+La [boîte mail locale](http://localhost:8089) permet de tester l’envoi des codes. La pile de démonstration et cette boîte sont accessibles depuis cet ordinateur sur `127.0.0.1`. Utilise `./deploy/demo.sh stop` pour arrêter les services en conservant les données et `./deploy/demo.sh status` pour voir leur état.
 
 ### Services Node de la démo
 
@@ -55,10 +60,9 @@ Le premier lancement crée `deploy/.env` et trois secrets aléatoires, puis s'ar
 
 ```dotenv
 DOMAIN=blok.example.com
-BOOTSTRAP_ADMIN_EMAIL=ton-adresse@example.com
-# Optional: seed one workspace at first boot (both or neither).
-BOOTSTRAP_WORKSPACE_SLUG=equipe
-BOOTSTRAP_WORKSPACE_NAME=Équipe
+# Pour créer le premier espace depuis le navigateur, laisser BOOTSTRAP_ADMIN_EMAIL vide.
+BOOTSTRAP_ADMIN_EMAIL=
+# Facultatif pour une connexion par code. Pour le mot de passe, laisser MAILER_HOST vide.
 MAILER_HOST=smtp.example.com
 MAILER_PORT=465
 MAILER_USER=
@@ -84,10 +88,9 @@ sudo docker compose logs --tail 100 app web
 ```
 
 Le proxy existant gère le certificat HTTPS public. nginx écoute en HTTP sur le port 80 du conteneur, publié uniquement sur `127.0.0.1:18088`. `PUBLIC_URL` reste l’adresse HTTPS du domaine. Vérifie la pile depuis le VPS avec `curl http://127.0.0.1:18088/healthz`.
-Sans `BOOTSTRAP_ADMIN_EMAIL`, le premier démarrage ouvre l'assistant de setup : ouvrez l'adresse de l'instance, saisissez le nom de l'instance, votre nom et votre adresse, et l'espace de départ. Il n'y a pas de jeton à aller chercher.
+Sans `BOOTSTRAP_ADMIN_EMAIL`, ouvre l’adresse de l’instance pour créer le premier espace et son compte administrateur. Avec SMTP ou Resend, Blok envoie un code à l’adresse saisie. Sans transport de courrier, le formulaire demande un mot de passe. Le mode démo avec boîte mail sur disque propose aussi cette connexion par mot de passe.
 
-> **Configurez l'instance tout de suite après l'avoir démarrée.** Tant que l'assistant n'a pas été complété, **la première personne qui atteint cette adresse revendique l'instance** et en devient l'administratrice. La revendication n'ouvre aucune session — un code de connexion part à l'adresse saisie, donc il faut en contrôler la boîte — mais ne laissez pas une instance fraîche exposée sans la configurer. Le service le rappelle dans ses logs à chaque démarrage tant que le setup est en attente.
- Avec cette variable seule, l'adresse devient administrateur d'instance sans membership d'espace. Le couple `BOOTSTRAP_WORKSPACE_*` (avec l'admin) sème un espace et une membership admin une fois chacun (`ON CONFLICT DO NOTHING` — une rétrogradation volontaire survit au redémarrage).
+Configure l’instance dès sa mise en service. La première personne qui termine ce formulaire devient administratrice. Pour un provisionnement depuis Docker, `BOOTSTRAP_ADMIN_EMAIL` crée le compte administrateur au démarrage. Ajoute `BOOTSTRAP_WORKSPACE_SLUG` et `BOOTSTRAP_WORKSPACE_NAME` pour créer son espace. Sans courrier, attribue ensuite un mot de passe à ce compte avec la commande d’administration ci-dessous.
 
 Si le réseau Docker `172.30.87.0/24` existe déjà, change ensemble `BLOK_NETWORK_SUBNET`, `BLOK_NETWORK_DYNAMIC_RANGE` et `CADDY_IP` dans `.env`. L'adresse fixe de nginx doit rester hors de la plage dynamique.
 Seul nginx est un proxy de confiance ; les ports PostgreSQL et Node sont internes au réseau Compose.
@@ -123,9 +126,15 @@ Le CLI TypeScript permet d’intervenir avec un accès administrateur au contene
 ./deploy/stack.sh exec app blokctl email test admin@example.com
 ```
 
+Pour attribuer un mot de passe à un compte existant, fournis-le à `blokctl` sur son entrée standard depuis un fichier privé contenant le mot de passe.
+
+```sh
+./deploy/stack.sh exec -T app blokctl user set-password admin@example.com < /chemin/privé/mot-de-passe
+```
+
 ## Membres et administration
 
-Un nouvel utilisateur vérifie son e-mail, puis demande à rejoindre un espace (ou reçoit une invitation).
+Avec la connexion par code, un nouvel utilisateur vérifie son adresse e-mail avant de demander à rejoindre un espace. Sur une instance sans courrier, un administrateur peut créer un compte dans les réglages de l’instance et lui attribuer un mot de passe avec `blokctl`.
 Un administrateur peut approuver/refuser la demande, inviter par e-mail, changer un rôle ou retirer un membre.
 L'invitation devient effective à la prochaine connexion avec l'adresse invitée.
 
@@ -143,7 +152,7 @@ Le schéma de gestion des membres s'inspire du parcours [Paramètres → Membres
 
 ## Tauri et espaces locaux
 
-La même interface peut se lancer dans Tauri. Depuis les réglages, connecte un serveur HTTPS et vérifie ton e-mail pour ouvrir un espace partagé.
+La même interface peut se lancer dans Tauri. Depuis les réglages, connecte un serveur HTTPS puis identifie-toi avec le mode proposé par ce serveur pour ouvrir un espace partagé.
 Les sessions natives sont conservées dans le trousseau du système. Les données d'un espace local restent sur la machine, séparées des espaces serveur et des autres comptes.
 Changer d'espace attend les écritures en cours ; une synchronisation distante impossible bloque le changement pour éviter de perdre une modification.
 Le démarrage d'un espace serveur demande une connexion réseau. Les espaces locaux fonctionnent hors ligne ; leur contenu n'est pas automatiquement publié vers le serveur.

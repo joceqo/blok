@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from 'vitest';
-import {must} from '../test-helpers';
+import {must, requestBody} from '../test-helpers';
 import {mountCloudGateway, CloudClient} from './index';
 const user = {id:'u1', email:'alice@example.com'};
 const workspace = {id:'w1', slug:'acme', name:'Acme', role:'admin'};
@@ -59,7 +59,7 @@ describe('cloud gateway', () => {
     // by its own id rather than by the input type.
     expect(document.querySelector('#cloud-email')).toBeNull();
     expect(document.querySelector('#cloud-admin-email')).not.toBeNull();
-    expect(document.body.textContent).toContain('Bienvenue sur Blok');
+    expect(document.querySelector('h1')?.textContent).toBe('Créer votre espace');
     expect(document.body.textContent).not.toMatch(/Étape \d/);
     expect(document.body.textContent).not.toContain('Jeton');
     expect(document.body.textContent).not.toMatch(/Coming soon/i);
@@ -79,6 +79,10 @@ describe('cloud gateway', () => {
     vi.stubGlobal('fetch', fetch);
     const gateway = await mountCloudGateway(document.body, { onOpenWorkspace: vi.fn() });
     expect(document.querySelector('[data-cloud-route]')?.getAttribute('data-cloud-route')).toBe('setup');
+    const workspaceName = must(document.querySelector<HTMLInputElement>('#cloud-workspace-name'));
+    workspaceName.value = 'Mon équipe';
+    await gateway.refresh();
+    expect(document.querySelector<HTMLInputElement>('#cloud-workspace-name')?.value).toBe('Mon équipe');
     required = false;
     await gateway.refresh();
     await settle();
@@ -88,6 +92,58 @@ describe('cloud gateway', () => {
     stubFetch(async(url)=>url.endsWith('/api/session')?response({error:'Unauthorized'},401):response({ok:true}));
     await mountCloudGateway(document.body,{onOpenWorkspace:vi.fn()});const email=must(document.querySelector<HTMLInputElement>('#cloud-email'));expect(email.type).toBe('email');expect(email.autocomplete).toBe('email');expect(email.getAttribute('data-blok-field')).toBe('text');email.value='alice@example.test';must(email.form).dispatchEvent(new Event('submit',{cancelable:true}));await settle();
     const code=must(document.querySelector<HTMLInputElement>('#cloud-code'));expect(code.autocomplete).toBe('one-time-code');expect(code.inputMode).toBe('numeric');expect(code.pattern).toBe('[0-9]{6}');expect(code.getAttribute('data-blok-field')).toBe('text');
+  });
+  it('signs in the first administrator after creation and offers login if the session request fails', async () => {
+    const password = 'un mot de passe de test';
+    const open = vi.fn();
+    let loginAttempts = 0;
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/api/instance')) return response({...instance, setupRequired:true, passwordAuthAvailable:true, emailCodeAvailable:false});
+      if (url.endsWith('/api/setup/claim')) return response({ok:true});
+      if (url.endsWith('/api/auth/password')) {
+        expect(JSON.parse(requestBody(init))).toEqual({email:user.email, password});
+        if (++loginAttempts === 1) return response({error:'Session momentanément indisponible'}, 503);
+        return response({user, workspaces:[workspace]});
+      }
+      throw new Error('Unexpected URL ' + url);
+    });
+    vi.stubGlobal('fetch', fetch);
+    await mountCloudGateway(document.body, {onOpenWorkspace:open});
+    must(document.querySelector<HTMLInputElement>('#cloud-workspace-name')).value = workspace.name;
+    must(document.querySelector<HTMLInputElement>('#cloud-admin-name')).value = 'Alice';
+    must(document.querySelector<HTMLInputElement>('#cloud-admin-email')).value = user.email;
+    must(document.querySelector<HTMLInputElement>('#cloud-admin-password')).value = password;
+    must(document.querySelector('form')).requestSubmit();
+
+    await vi.waitFor(() => expect(document.querySelector('[role=alert]')?.textContent).toMatch(/Session/));
+    expect(document.querySelector('[data-cloud-route]')?.getAttribute('data-cloud-route')).toBe('login-password');
+    expect(must(document.querySelector<HTMLInputElement>('#cloud-email')).value).toBe(user.email);
+    expect(document.body.textContent).not.toContain('Utiliser un code par e-mail');
+    const retry = must(document.querySelector<HTMLInputElement>('#cloud-password'));
+    expect(retry.autocomplete).toBe('current-password');
+    expect(retry.value).toBe('');
+    retry.value = password;
+    must(retry.form).requestSubmit();
+    await vi.waitFor(() => expect(open).toHaveBeenCalledWith(workspace, expect.any(CloudClient)));
+    expect(fetch.mock.calls.filter(([url]) => url.endsWith('/api/setup/claim'))).toHaveLength(1);
+  });
+  it('keeps password and legacy email sign-in reachable with a local mailbox', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/api/instance')) return response({...instance, passwordAuthAvailable:true, emailCodeAvailable:true});
+      if (url.endsWith('/api/session')) return response({}, 401);
+      if (url.endsWith('/api/auth/request-code')) return response({ok:true});
+      throw new Error('Unexpected URL ' + url);
+    }));
+    await mountCloudGateway(document.body,{onOpenWorkspace:vi.fn()});
+    must(document.querySelector<HTMLInputElement>('#cloud-email')).value = user.email;
+    click('Utiliser un code par e-mail');
+    expect(must(document.querySelector<HTMLInputElement>('#cloud-email')).value).toBe(user.email);
+    must(document.querySelector('form')).requestSubmit();
+    await vi.waitFor(() => expect(document.querySelector('#cloud-code')).not.toBeNull());
+    click('Modifier l’adresse e-mail');
+    click('Utiliser un mot de passe');
+    expect(must(document.querySelector<HTMLInputElement>('#cloud-email')).value).toBe(user.email);
+    expect(document.querySelector('#cloud-password')).not.toBeNull();
   });
   it('opens a workspace only on explicit selection when several are available', async () => {
     const open = vi.fn(); stubFetch(async (url) => response(url.endsWith('/api/session') ? {user,workspaces:[workspace,second]} : {...workspace,joinStatus:'approved'}));
@@ -192,6 +248,16 @@ describe('cloud native credentials', () => {
     const client = new CloudClient({origin:'https://example.com/',sessionAdapter:adapter}); await client.verifyCode(user.email,'123456');
     expect(JSON.parse(fetch.mock.calls[0]?.[1]?.body as string)).toMatchObject({client:'desktop'});
     expect(adapter.setToken).toHaveBeenCalledWith('secret'); expect(client.currentSession?.user).toEqual(user);
+  });
+  it('stores desktop password sessions in the secure adapter', async () => {
+    const adapter = {getToken:vi.fn(async () => null),setToken:vi.fn(async () => {})};
+    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => response({user,workspaces:[workspace],token:'desktop-token'}));
+    vi.stubGlobal('fetch',fetch);
+    const client = new CloudClient({sessionAdapter:adapter});
+    await client.loginWithPassword(user.email, 'a-long-password');
+    expect(JSON.parse(requestBody(fetch.mock.calls[0]?.[1]))).toEqual({email:user.email, password:'a-long-password', client:'desktop'});
+    expect(adapter.setToken).toHaveBeenCalledWith('desktop-token');
+    expect(client.currentSession?.user).toEqual(user);
   });
   it('sends secure stored credentials and never requests desktop tokens in the browser', async () => {
     const fetch = vi.fn(async (_url: string, _init?: RequestInit) => response({user,workspaces:[]})); vi.stubGlobal('fetch',fetch);

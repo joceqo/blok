@@ -29,7 +29,7 @@ services:
       DATA_DIRECTORY: /data
       BLOK_NODE_ROOM_ALL: '1'
       MCP_SYNC_URL: ws://127.0.0.1:18102/api/blok/sync
-      DATABASE_URL: postgres://blok:${POSTGRES_PASSWORD}@postgres:5432/blok
+      DATABASE_URL: &demo_database postgres://blok:${POSTGRES_PASSWORD}@postgres:5432/blok
       TICKET_SECRET: ${TICKET_SECRET:?Set TICKET_SECRET}
       INTERNAL_SECRET: ${INTERNAL_SECRET:?Set INTERNAL_SECRET}
       AI_ENCRYPTION_KEY: ${AI_ENCRYPTION_KEY:-}
@@ -135,14 +135,24 @@ services:
     ports:
       - '127.0.0.1:${DEMO_MAIL_PORT:-8089}:8025'
   seed:
-    image: python:3.13-alpine
+    image: ${COMPOSE_PROJECT_NAME:-blok-local}-app:local
+    pull_policy: never
     profiles: [tools]
-    command: [python, /scripts/seed-demo.py]
+    command: ["/app/dist/shell/blokctl.js", "demo", "seed"]
     environment:
-      API_URL: http://web
-      MAIL_DIRECTORY: /data/mail
+      DATABASE_URL: *demo_database
+      APP_ENV: development
+      DEV_MAIL_DIRECTORY: ${DEV_MAIL_DIRECTORY-/data/mail}
+      MAILER_HOST: ${MAILER_HOST:-${SMTP_HOST:-}}
+      RESEND_API_KEY: ${RESEND_API_KEY:+configured}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL-admin@example.test}
+      BOOTSTRAP_WORKSPACE_SLUG: ${BOOTSTRAP_WORKSPACE_SLUG-equipe}
+      DEMO_MEMBER_EMAIL: ${DEMO_MEMBER_EMAIL:-membre@example.test}
+      DEMO_REQUESTER_EMAIL: ${DEMO_REQUESTER_EMAIL:-demandeur@example.test}
+      DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:-}
+      DEMO_MEMBER_PASSWORD: ${DEMO_MEMBER_PASSWORD:-}
+      DEMO_REQUESTER_PASSWORD: ${DEMO_REQUESTER_PASSWORD:-}
     volumes:
-      - ./seed-demo.py:/scripts/seed-demo.py:ro
       - state:/data:ro
 volumes:
   postgres:

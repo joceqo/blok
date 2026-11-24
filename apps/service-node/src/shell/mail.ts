@@ -35,6 +35,11 @@ export function mailBackend() {
   return '';
 }
 
+export function passwordAuthAvailable() {
+  const backend = mailBackend();
+  return backend === '' || backend === 'development';
+}
+
 async function sendSMTP(to: string, subject: string, text: string) {
   const host = smtpSetting('HOST', 'HOST');
   const port = Number(smtpSetting('PORT', 'PORT', '587'));

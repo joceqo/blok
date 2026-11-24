@@ -1,6 +1,6 @@
 import './cloud.css';
 import {WORKSPACE_ROLES} from '../access-vocabulary';
-import {brandedTitle} from '../tab-identity';
+import {BLOK_MARK_HREF, brandedTitle} from '../tab-identity';
 import {styleTextField} from '../ui/controls';
 import {CloudApiError, CloudClient, type CloudInstance, type CloudSession, type CloudSessionAdapter, type CloudWorkspace, type CloudWorkspaceStatus} from './client';
 import {mountCreateWorkspace} from './create-workspace';
@@ -17,6 +17,7 @@ export type CloudGatewayRoute =
   | 'boot'
   | 'unreachable'
   | 'setup'
+  | 'login-password'
   | 'login-email'
   | 'login-code'
   | 'invite'
@@ -108,14 +109,17 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     const header = node('header');
     const brandName = state.instance?.name?.trim() || 'Blok';
     const brand = node('div', undefined, 'data-cloud-brand');
-    brand.append(node('span', brandName.charAt(0).toLocaleUpperCase(), 'data-cloud-mark'), node('span', brandName));
+    const mark = node('img', undefined, 'data-cloud-mark');
+    mark.src = BLOK_MARK_HREF; mark.alt = '';
+    brand.append(mark, node('span', brandName));
     const nav = node('nav'); nav.setAttribute('aria-label', 'Compte');
     if (state.session) {
       nav.append(node('span', state.session.user.email, 'data-cloud-muted'), button('Changer de compte', () => run(async () => {await client.logout(); state.session = null; state.email = ''; login();})), button('Se déconnecter', () => run(async () => {await client.logout(); state.session = null; login();})));
     }
-    header.append(brand, nav);
+    header.append(brand);
+    if (nav.childElementCount) header.append(nav);
     state.currentMain = node('main');
-    view.append(header, state.currentMain, node('footer', 'Un espace commun pour les idées, les documents et les projets.'));
+    view.append(header, state.currentMain);
     return state.currentMain;
   }
 
@@ -146,24 +150,27 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
   function setup(): void {
     mountSetupAssistant({
       client,
+      passwordAuthAvailable: state.instance?.passwordAuthAvailable,
       frame: () => frame('setup'),
       run,
-      showError: error,
-      hostPreview: (() => {
-        try {
-          if (client.origin) return new URL(client.origin).host;
-          return window.location.host;
-        } catch { return undefined; }
-      })(),
-      onClaimed(claimedEmail) {
+      async onClaimed(claimedEmail, password) {
         state.email = claimedEmail;
-        login(true);
-        const note = node('p', `Un code a été envoyé à ${claimedEmail}.`, 'data-cloud-note');
-        note.setAttribute('role', 'status');
-        // Insert above the form so the handoff from setup is explicit (plan §9.2).
-        const form = state.currentMain.querySelector('form');
-        if (form) state.currentMain.insertBefore(note, form);
-        else state.currentMain.append(note);
+        if (state.instance) state.instance.setupRequired = false;
+        if (password === undefined) {
+          login('login-code');
+          return;
+        }
+        let session: CloudSession;
+        try {
+          session = await client.loginWithPassword(claimedEmail, password);
+        } catch (reason) {
+          login();
+          const note = node('p', 'Votre espace a été créé. Connectez-vous pour l’ouvrir.', 'data-cloud-note');
+          note.setAttribute('role', 'status');
+          state.currentMain.querySelector('h1')?.after(note);
+          throw reason;
+        }
+        await enter(session);
       },
     });
   }
@@ -251,8 +258,9 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     boot: () => { frame('boot').append(node('p', 'Chargement de votre espace…', 'data-cloud-muted')); },
     unreachable,
     setup,
-    'login-email': () => login(false),
-    'login-code': () => login(true),
+    'login-password': () => login('login-password'),
+    'login-email': () => login('login-email'),
+    'login-code': () => login('login-code'),
     invite,
     spaces: () => { void list(); },
     'create-workspace': createWorkspace,
@@ -265,19 +273,22 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     main.append(node('hr'), button(label, () => run(async () => { await openLocal(); })));
   }
 
-  function login(codeStep = false): void {
+  function login(route: 'login-password' | 'login-email' | 'login-code' = state.instance?.passwordAuthAvailable ? 'login-password' : 'login-email'): void {
     if (!state.alive) return;
-    const main = frame(codeStep ? 'login-code' : 'login-email'); main.setAttribute('data-cloud-narrow', '');
-    const welcome = state.instance?.name ? `Bienvenue sur\n${state.instance.name}.` : 'Bienvenue.';
-    main.append(node('span', 'Votre espace de travail partagé', 'data-cloud-eyebrow'), node('h1', codeStep ? 'Consultez votre boîte mail.' : welcome));
-    main.append(node('p', codeStep ? `Saisissez le code envoyé à ${state.email}. Il est valable 10 minutes.` : 'Retrouvez votre équipe, partagez vos connaissances et faites avancer vos projets.', 'data-cloud-muted'));
+    const codeStep = route === 'login-code';
+    const main = frame(route); main.setAttribute('data-cloud-narrow', '');
+    main.append(node('h1', codeStep ? 'Vérifiez votre e-mail' : 'Se connecter'));
+    if (codeStep) main.append(node('p', `Saisissez le code envoyé à ${state.email}. Il est valable 10 minutes.`, 'data-cloud-muted'));
     const form = node('form', undefined, 'data-cloud-stack');
     const input = field(form, codeStep ? 'Code de connexion' : 'Adresse e-mail', codeStep ? 'text' : 'email', codeStep ? 'code' : 'email', codeStep ? '' : state.email);
-    input.autocomplete = codeStep ? 'one-time-code' : 'email';
+    input.autocomplete = codeStep ? 'one-time-code' : route === 'login-password' ? 'username' : 'email';
     if (codeStep) { input.inputMode = 'numeric'; input.pattern = '[0-9]{6}'; input.maxLength = 6; }
-    const submit = button(codeStep ? 'Se connecter' : 'Continuer par e-mail', () => {}, true); submit.type = 'submit'; submit.setAttribute('data-cloud-block', ''); form.append(submit);
+    const password = route === 'login-password' ? field(form, 'Mot de passe', 'password', 'password') : null;
+    if (password) password.autocomplete = 'current-password';
+    const submit = button(route === 'login-email' ? 'Continuer par e-mail' : 'Se connecter', () => {}, true); submit.type = 'submit'; submit.setAttribute('data-cloud-block', ''); form.append(submit);
     form.addEventListener('submit', event => {
       event.preventDefault();
+      if (submit.disabled || !form.reportValidity()) return;
       void run(async () => {
         if (codeStep) {
           state.session = await client.verifyCode(state.email, input.value.trim());
@@ -285,8 +296,12 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
           return;
         }
         state.email = input.value.trim();
+        if (password) {
+          await enter(await client.loginWithPassword(state.email, password.value));
+          return;
+        }
         await client.request('/api/auth/request-code', {method:'POST', body:JSON.stringify({email: state.email})});
-        login(true);
+        login('login-code');
       });
     });
     main.append(form);
@@ -294,12 +309,19 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       main.append(node('p', 'Le message peut se trouver dans vos courriers indésirables.', 'data-cloud-note'));
       main.append(button('Renvoyer un code', () => run(async () => {
         await client.request('/api/auth/request-code', {method:'POST', body:JSON.stringify({email: state.email})});
-        login(true);
+        login('login-code');
         const status = node('p', 'Un nouveau code a été envoyé.', 'data-cloud-note');
         status.setAttribute('role', 'status');
         state.currentMain.append(status);
-      })), document.createTextNode(' '), button('Modifier l’adresse e-mail', () => login()));
-    } else main.append(node('p', 'Pas de mot de passe. Un code de connexion vous sera envoyé.', 'data-cloud-note'));
+      })), document.createTextNode(' '), button('Modifier l’adresse e-mail', () => login('login-email')));
+    } else if (state.instance?.passwordAuthAvailable && state.instance.emailCodeAvailable !== false) {
+      const alternate = button(password ? 'Utiliser un code par e-mail' : 'Utiliser un mot de passe', () => {
+        state.email = input.value.trim();
+        login(password ? 'login-email' : 'login-password');
+      });
+      alternate.setAttribute('data-cloud-link', '');
+      main.append(alternate);
+    }
     appendLocalOpen(main, 'Continuer avec un espace local');
     serverSection(main);
   }
@@ -308,7 +330,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     const onServerChange = options.onServerChange;
     if (!onServerChange) return;
     const details = node('details', undefined, 'data-cloud-section');
-    details.append(node('summary', 'Se connecter à un autre serveur'));
+    details.append(node('summary', 'Changer de serveur'));
     const serverForm = node('form');
     const initialOrigin = client.origin || (window.location.protocol.startsWith('http') ? window.location.origin : '');
     const server = field(serverForm, 'Adresse du serveur', 'url', 'server', initialOrigin);
@@ -320,7 +342,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
         await onServerChange(parseServerOrigin(server.value.trim()));
       });
     });
-    details.append(node('p', 'Chaque serveur conserve ses propres comptes et espaces.', 'data-cloud-note'), serverForm); main.append(details);
+    details.append(serverForm); main.append(details);
   }
 
   async function list(): Promise<void> {
@@ -394,7 +416,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       routers.invite();
       return;
     }
-    routers['login-email']();
+    login();
     if (!(reason instanceof CloudApiError && reason.status === 401)) error(reason);
   }
 
@@ -429,7 +451,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       await run(async () => {
         if (state.route === 'setup') {
           state.instance = await client.instance();
-          if (state.instance.setupRequired) { routers.setup(); return; }
+          if (state.instance.setupRequired) return;
         }
         if (state.session) await list();
         else login();

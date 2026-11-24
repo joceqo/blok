@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createRequestCode, trustedClientIP } from './request-code.ts';
 import { createShellAuth } from './auth.ts';
 import { createShellApp } from './app.ts';
@@ -303,5 +303,41 @@ describe.skipIf(!databaseUrl)('shell routes on the deployed PostgreSQL schema', 
       await db.query("UPDATE memberships SET role='viewer' WHERE workspace_id=$1 AND user_id='m'",[id]);
       expect((await put(1,[])).status).toBe(403);
     });
+  });
+
+  it('claims a password-only instance, signs in web and desktop clients and enforces transport and rate limits', async () => {
+    const email = 'offline-owner@example.test', password = 'correct local password';
+    const post = (path: string, data: unknown) => app.request(path, {method: 'POST', body: JSON.stringify(data)},
+      {incoming: {socket: {remoteAddress: '127.0.0.1'}}});
+    const info = async () => (await app.request('/api/instance')).json();
+    const claim = {email, password, name:'Owner', workspace:{slug:'local-owner', name:'Local owner'}};
+    vi.stubEnv('MAILER_HOST', '');
+    vi.stubEnv('RESEND_API_KEY', '');
+    vi.stubEnv('DEV_MAIL_DIRECTORY', '');
+    try {
+      expect(await info()).toMatchObject({passwordAuthAvailable:true, emailCodeAvailable:false});
+      expect((await post('/api/setup/claim', {...claim, password:'short'})).status).toBe(400);
+      expect((await post('/api/setup/claim', claim)).status).toBe(200);
+      expect((await db.query('SELECT FROM login_codes WHERE email=$1', [email])).rowCount).toBe(0);
+      expect((await post('/api/auth/password',{email,password:'incorrect password'})).status).toBe(401);
+      expect((await post('/api/auth/password',{email:'absent@example.test',password})).status).toBe(401);
+      const browser = await post('/api/auth/password',{email,password});
+      expect(browser.status).toBe(200);
+      expect(browser.headers.get('Set-Cookie')).toMatch(/blok_session=.*HttpOnly/);
+      const session = await browser.json();
+      expect(session).not.toHaveProperty('token');
+      expect(session).toMatchObject({user:{email,instanceAdmin:true},workspaces:[{slug:'local-owner',role:'admin'}]});
+      const native = await post('/api/auth/password',{email,password,client:'desktop'});
+      expect(native.headers.get('Set-Cookie')).toBeNull();
+      const token = (await native.json()).token;
+      expect((await app.request('/api/session', {headers:{Authorization:'Bearer '+token}})).status).toBe(200);
+      await db.query('UPDATE email_rate_limits SET count=8 WHERE key=$1',['password-email:'+email]);
+      expect((await post('/api/auth/password',{email,password})).status).toBe(429);
+      vi.stubEnv('MAILER_HOST', 'configured.example.test');
+      expect(await info()).toMatchObject({passwordAuthAvailable:false,emailCodeAvailable:true});
+      expect((await post('/api/auth/password',{email,password})).status).toBe(403);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

@@ -83,7 +83,7 @@ async function paint(main: HTMLElement, options: InviteScreenOptions): Promise<v
       attribute: 'data-cloud-muted',
     }));
     main.append(button({
-      label: 'Continuer par e-mail',
+      label: 'Se connecter',
       primary: true,
       onClick: () => { options.onLogin(invite.email); },
     }));
