@@ -13,6 +13,7 @@ import { RepositoryHttpError, workspaceRepository } from './workspace-repository
 import { WorkspaceConflictError } from './workspace-merge';
 import { documentSyncStatus } from './document-sync-status';
 import { pageAccess } from './page-access';
+import { CloudApiError } from './cloud/client';
 import { openTeamspaces } from './cloud/teamspaces';
 import { openPageSharing } from './cloud/page-sharing';
 import { groupPagesBySection, sectionNames } from './page-section';
@@ -177,6 +178,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   status.setAttribute('role', 'status');
   status.textContent = 'Ouverture des pages…';
 
+  let closeTeamspaces: (() => void) | undefined;
   const pageFromUrl = (): string | null => new URL(location.href).searchParams.get('page');
   const navigate = (id: string, replace = false): void => {
     const url = new URL(location.href);
@@ -219,12 +221,12 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     });
     void ws.saveOrder.catch(() => undefined);
   };
-  const refreshRemoteManifest = async (): Promise<void> => {
+  const refreshRemoteManifest = async (signal?: AbortSignal): Promise<void> => {
     if (ref.kind !== 'remote' || !ws.index || ws.pendingManifests > 0 || ws.manifestFailed || ws.refreshingManifest || ws.metadataAction) return;
     ws.refreshingManifest = true;
     const original = ws.index;
     try {
-      const updated = await repository.refreshIndex(() => ws.pendingManifests === 0 && !ws.manifestFailed && !ws.metadataAction && ws.index === original);
+      const updated = await repository.refreshIndex(() => !signal?.aborted && ws.pendingManifests === 0 && !ws.manifestFailed && !ws.metadataAction && ws.index === original, signal);
       if (!updated) return;
       updated.activeId = updated.pages.some((page) => page.id === ws.currentId) ? ws.currentId : updated.activeId;
       // Retain the live page object: title/cover callbacks close over it.
@@ -240,7 +242,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       for (const id of new Set([...original.pages.map((page) => page.id), ...ws.index.pages.map((page) => page.id)])) notifyPage(id);
       ws.refreshPagePresentation?.();
       if (!ws.index.pages.some((page) => page.id === ws.currentId)) onRoute();
-    } catch (error) { if (!ws.manifestFailed) showError(error); }
+    } catch (error) { if (!signal?.aborted && !ws.manifestFailed) showError(error); }
     finally { ws.refreshingManifest = false; }
   };
   const refreshDateTitles = (): void => {
@@ -804,7 +806,21 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       ws.closeSearch?.();
       ws.closeSearch = openPageSearch({ workspaceName: ref.name, pages: () => ws.index?.pages ?? [], onOpen: navigate, recentIds });
     },
-    onTeamspaces: ref.kind === 'remote' ? () => openTeamspaces(ref) : undefined,
+    onTeamspaces: ref.kind === 'remote' ? () => {
+      closeTeamspaces?.();
+      closeTeamspaces = openTeamspaces(ref, {
+        pages: () => ws.index?.pages ?? [],
+        canEdit: (id) => ws.access.canEdit(id),
+        open: async (id, signal) => {
+          const visible = () => ws.index?.pages.some((page) => page.id === id);
+          if (!visible()) { await ws.saveOrder; signal.throwIfAborted(); await refreshRemoteManifest(signal); }
+          signal.throwIfAborted();
+          if (!visible()) throw new CloudApiError(404, 'Page indisponible');
+          navigate(id);
+        },
+        onClose: () => { closeTeamspaces = undefined; },
+      });
+    } : undefined,
     onTeamspaceMenu: (anchor) => {
       const menuState = { requestedPanel: undefined as 'invites' | 'general' | undefined, settled: false };
       const menu = new PopoverDesktop({ trigger: anchor, autoFocusFirstItem: true,
@@ -971,6 +987,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   }
 
   function onRoute(): void {
+    closeTeamspaces?.();
     if (!ws.index) return;
     if (!ws.index.pages.length) { void showEmptyWorkspace().catch(showError); return; }
     const id = pageFromUrl();
