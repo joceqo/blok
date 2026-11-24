@@ -92,7 +92,7 @@ export class CloudClient {
     await this.sessionAdapter?.setToken(null);
     this.currentSession = null;
   }
-  workspace(slug: string): Promise<CloudWorkspaceStatus> { return this.request(`/api/workspaces/${encodeURIComponent(slug)}`); }
+  workspace(slug: string, signal?: AbortSignal): Promise<CloudWorkspaceStatus> { return this.request(`/api/workspaces/${encodeURIComponent(slug)}`, {signal}); }
   async ticket(slug: string, doc: string): Promise<string> {
     const result = await this.request<{ticket: string}>(`/api/workspaces/${encodeURIComponent(slug)}/ticket?doc=${encodeURIComponent(doc)}`);
     return result.ticket;

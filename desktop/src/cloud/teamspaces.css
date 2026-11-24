@@ -24,3 +24,6 @@
   .teamspaces-layout { grid-template-columns:minmax(0,1fr); }
   .teamspaces-layout nav { max-height:160px; overflow:auto; border-right:0; border-bottom:1px solid var(--desktop-border); }
 }
+.teamspaces-content { display:flex; flex-direction:column; align-items:stretch; gap:8px; min-width:0; }
+.teamspaces-content > button { align-self:flex-start; }
+.teamspaces-content .teamspaces-page { min-width:0; border-color:transparent; white-space:normal; overflow-wrap:anywhere; text-align:start; }
