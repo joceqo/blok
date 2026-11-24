@@ -75,16 +75,26 @@ describe('test-server-conformance', () => {
       .toContain('BLOK_CONFORMANCE_TARGET: options.target,');
   });
 
-  // Go and Rust have no Debug or Release choice here, so the flag would be silently ignored.
-  it.each(['go', 'rust', 'interop-rust'])('refuses --configuration for the %s target', (target) => {
+  // Go, Rust and Node have no Debug or Release choice here, so the flag would be silently ignored.
+  it.each(['go', 'rust', 'interop-rust', 'node'])('refuses --configuration for the %s target', (target) => {
     const result = runWithoutDotnet(['--target', target, '--configuration', 'Release']);
 
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');
     expect(result.stderr).toBe(
-      'Usage: node scripts/test-server-conformance.mjs [--target csharp|go|interop|rust|interop-rust] ' +
+      'Usage: node scripts/test-server-conformance.mjs [--target csharp|go|interop|rust|interop-rust|node] ' +
       '[--suite NAME]... [--test-name-pattern PATTERN] [--configuration Debug|Release (csharp and interop)]\n',
     );
+  });
+
+  // P5: bare `node` spawn — PATH='' must ENOENT before any suite runs.
+  it('builds the Node bundles with node', () => {
+    const result = runWithoutDotnet(['--target', 'node']);
+
+    expect(result.stdout).toContain(
+      'Conformance binaries — node: ordinary bundle, and one with BLOK_CONFORMANCE=true.',
+    );
+    expect(result.stderr).toContain('spawn node ENOENT');
   });
 
   // interop-rust builds Go first, then Rust, for the journal handover suite only.
@@ -131,7 +141,7 @@ describe('test-server-conformance', () => {
 
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');
-    expect(result.stderr).toContain('[--target csharp|go|interop|rust|interop-rust]');
+    expect(result.stderr).toContain('[--target csharp|go|interop|rust|interop-rust|node]');
   });
 
   // interop builds both servers for the journal handover suite and nothing else.
