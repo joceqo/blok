@@ -148,6 +148,8 @@ export interface PageConfig {
    * (see `databasePages`).
    */
   createFromMention?: boolean;
+  /** Offers @today as a saved calendar day with a relative display label. */
+  todayMention?: { label: string; heading: string; locale?: string };
   /**
    * Searches visible pages for an inline reference. The "@" menu asks with
    * `''` as soon as "@" is typed: answer with recent pages.

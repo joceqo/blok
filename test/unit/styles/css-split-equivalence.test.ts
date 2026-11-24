@@ -2131,6 +2131,9 @@ describe('main.css split — cascade-preserving equivalence', () => {
     const DATABASE_R330_BYTES = 1285;
     // file.css: the object on a file card — pages, editor tab, filmstrip, record, folder, punch card (measured file.css growth).
     const FILE_CARD_OBJECT_BYTES = 27_626;
+    // Fork additions against ffe3c76d3: custom emojis, cover gallery, date mentions
+    // and hiding the page header while the loading skeleton is active.
+    const DESKTOP_INTEGRATION_BYTES = 2_758;
     // emoji-picker.css: the database icon pickers' keyboard highlight (measured emoji-picker.css growth).
     const EMOJI_FILTER_KEYS_HIGHLIGHT_BYTES = 190;
     // emoji-picker.css: no hover fill on a filterKeys picker's cells, whose one highlight follows the pointer (measured growth).

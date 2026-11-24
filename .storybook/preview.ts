@@ -1,11 +1,20 @@
 import type { Preview } from "@storybook/html-vite";
 
 // Import global editor styles
-import "../src/styles/main.css";
+import editorStyles from "../src/styles/main.css?inline";
+
+// Use the same scoped CSS entry as the editor. The ordinary Vite CSS proxy
+// is JavaScript and cannot pass through the CSS scoping post-transform.
+const editorStyleElement = document.createElement("style");
+editorStyleElement.textContent = editorStyles;
+document.head.appendChild(editorStyleElement);
 // Blok loads the font faces lazily; stories rendered without an editor still need them.
 import "../src/styles/fonts.css";
 
 const preview: Preview = {
+  initialGlobals: {
+    reactGrab: true,
+  },
   parameters: {
     controls: {
       matchers: {
@@ -28,12 +37,17 @@ const preview: Preview = {
     },
   },
   decorators: [
-    (story) => {
+    (story, context) => {
       const container = document.createElement("div");
+      const fullscreen = context.parameters.layout === "fullscreen";
 
       container.style.fontFamily =
         "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif";
-      container.style.padding = "20px";
+      if (fullscreen) {
+        container.style.height = "100vh";
+      } else {
+        container.style.padding = "20px";
+      }
 
       const storyContent = story();
       const isStringContent = typeof storyContent === "string";

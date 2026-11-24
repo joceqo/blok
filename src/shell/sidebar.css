@@ -1,0 +1,669 @@
+/* Page navigation. Blok has no sidebar of its own; this shell is the host
+   frame, painted with the same tokens as the editor menus. */
+
+[data-blok-shell] {
+  display: flex;
+  height: 100vh;
+  min-height: 100vh;
+  background: var(--blok-popover-bg, #fff);
+  color: var(--blok-text-primary, black);
+  font-family: var(--blok-font-family, var(--blok-font-sans));
+}
+
+[data-blok-sidebar] {
+  --blok-sidebar-edge-color: #d9d9d9;
+  --blok-sidebar-edge-hover-color: #a3a3a3;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  width: 260px;
+  min-width: 220px;
+  max-width: 420px;
+  /* The light rail follows the editor surface; dark mode uses a solid tone. */
+  background: var(--blok-bg-light);
+  color: var(--blok-text-primary);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-blok-theme="light"]) [data-blok-sidebar] {
+    --blok-sidebar-edge-color: #222222;
+    --blok-sidebar-edge-hover-color: #2e2e2e;
+    background: #202020;
+  }
+}
+
+[data-blok-theme="dark"] [data-blok-sidebar] {
+  --blok-sidebar-edge-color: #222222;
+  --blok-sidebar-edge-hover-color: #2e2e2e;
+  background: #202020;
+}
+
+[data-blok-sidebar-header] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--blok-space-2);
+  height: 44px;
+  padding: var(--blok-space-2) var(--blok-space-3) var(--blok-space-2) var(--blok-space-4);
+  color: var(--blok-menu-section-label);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+[data-blok-sidebar-icon],
+[data-blok-sidebar-add],
+[data-blok-sidebar-more],
+[data-blok-sidebar-toggle] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--blok-radius-control-sm);
+  background: transparent;
+  color: var(--blok-text-secondary);
+  cursor: pointer;
+}
+
+[data-blok-sidebar-icon]:hover,
+[data-blok-sidebar-add]:hover,
+[data-blok-sidebar-more]:hover,
+[data-blok-sidebar-toggle]:hover {
+  background: var(--blok-item-hover-bg);
+  color: var(--blok-text-primary);
+}
+
+[data-blok-sidebar-icon]:focus-visible,
+[data-blok-sidebar-add]:focus-visible,
+[data-blok-sidebar-more]:focus-visible,
+[data-blok-sidebar-toggle]:focus-visible,
+[data-blok-sidebar-link]:focus-visible,
+[data-blok-sidebar-search] input:focus-visible,
+[data-blok-sidebar-rename]:focus-visible {
+  outline: 2px solid var(--blok-focus-ring);
+  outline-offset: 1px;
+}
+
+[data-blok-sidebar-search] {
+  display: flex;
+  align-items: center;
+  gap: var(--blok-space-2);
+  margin: 0 var(--blok-space-3) var(--blok-space-2);
+  padding: 0 var(--blok-space-2);
+  height: 32px;
+  border: 1px solid var(--blok-search-input-border);
+  border-radius: var(--blok-radius-control);
+  background: var(--blok-search-input-bg);
+  color: var(--blok-text-secondary);
+}
+
+[data-blok-sidebar-search]:focus-within {
+  border-color: var(--blok-search-input-focus-border);
+}
+
+[data-blok-sidebar-search] input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--blok-text-primary);
+  font: inherit;
+  font-size: 14px;
+}
+
+[data-blok-sidebar-search] input::placeholder {
+  color: var(--blok-search-input-placeholder);
+}
+
+[data-blok-sidebar-tree] {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  padding: 8px var(--blok-space-2) var(--blok-space-4);
+}
+
+[data-blok-sidebar-empty] {
+  margin: var(--blok-space-3) var(--blok-space-2);
+  color: var(--blok-text-secondary);
+  font-size: 13px;
+}
+
+[data-blok-sidebar-row] {
+  display: flex;
+  align-items: center;
+  position: relative;
+  gap: 2px;
+  min-height: 30px;
+  border-radius: 6px;
+}
+
+[data-blok-sidebar-row]:hover,
+[data-blok-sidebar-row][data-active] {
+  background: var(--blok-item-hover-bg);
+}
+
+[data-blok-sidebar-row][data-active] {
+  background: var(--blok-icon-active-bg);
+}
+
+[data-blok-sidebar-toggle],
+[data-blok-sidebar-leaf] {
+  display: grid;
+  flex: none;
+  place-items: center;
+}
+
+[data-blok-sidebar-glyph],
+[data-blok-sidebar-chevron] {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+[data-blok-sidebar-chevron] {
+  display: none;
+  color: var(--blok-text-secondary);
+}
+
+[data-blok-sidebar-row]:hover [data-blok-sidebar-toggle] [data-blok-sidebar-glyph],
+[data-blok-sidebar-row]:focus-within [data-blok-sidebar-toggle] [data-blok-sidebar-glyph],
+[data-blok-sidebar-row]:has([data-blok-sidebar-menu]:popover-open) [data-blok-sidebar-toggle] [data-blok-sidebar-glyph] {
+  display: none;
+}
+
+[data-blok-sidebar-row]:hover [data-blok-sidebar-chevron],
+[data-blok-sidebar-row]:focus-within [data-blok-sidebar-chevron],
+[data-blok-sidebar-row]:has([data-blok-sidebar-menu]:popover-open) [data-blok-sidebar-chevron] {
+  display: inline-flex;
+}
+
+[data-blok-sidebar-chevron] svg {
+  transition: transform 120ms ease;
+}
+
+[data-blok-sidebar-chevron][data-open] svg {
+  transform: rotate(90deg);
+}
+
+[data-blok-sidebar-link] {
+  display: flex;
+  align-items: center;
+  gap: var(--blok-space-2);
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 var(--blok-space-1);
+  border: 0;
+  background: transparent;
+  color: var(--blok-text-primary);
+  font: inherit;
+  font-size: 14px;
+  text-align: start;
+  cursor: pointer;
+}
+
+[data-blok-sidebar-link] span:not([data-blok-sidebar-favorite]),
+[data-blok-sidebar-rename] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-blok-sidebar-link] > span:first-child {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+[data-blok-sidebar-favorite] {
+  display: inline-flex;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-inline-start: 2px;
+  color: var(--blok-text-primary);
+}
+
+[data-blok-sidebar-favorite] svg {
+  width: 14px;
+  height: 14px;
+}
+
+[data-blok-sidebar-glyph] {
+  text-align: center;
+}
+
+[data-blok-sidebar-leaf] {
+  width: 24px;
+  height: 24px;
+  color: var(--blok-text-secondary);
+}
+
+[data-blok-sidebar-glyph] svg {
+  width: 16px;
+  height: 16px;
+}
+
+[data-blok-sidebar-rename] {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  border: 0;
+  border-radius: var(--blok-radius-control-sm);
+  background: var(--blok-popover-bg);
+  color: var(--blok-text-primary);
+  font: inherit;
+  font-size: 14px;
+}
+
+[data-blok-sidebar-add],
+[data-blok-sidebar-more] {
+  flex: none;
+  display: none;
+  opacity: 0;
+}
+
+[data-blok-sidebar-more] {
+  margin-inline-end: 0;
+}
+
+[data-blok-sidebar-row]:hover [data-blok-sidebar-add],
+[data-blok-sidebar-row]:hover [data-blok-sidebar-more],
+[data-blok-sidebar-row]:focus-within [data-blok-sidebar-add],
+[data-blok-sidebar-row]:focus-within [data-blok-sidebar-more],
+[data-blok-sidebar-row]:has([data-blok-sidebar-menu]:popover-open) [data-blok-sidebar-add],
+[data-blok-sidebar-row]:has([data-blok-sidebar-menu]:popover-open) [data-blok-sidebar-more] {
+  display: inline-flex;
+  opacity: 1;
+}
+
+[data-blok-sidebar-menu],
+[data-blok-sidebar-menu][data-blok-top-layer][popover] {
+  position: fixed;
+  inset: auto;
+  flex-direction: column;
+  width: 248px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--blok-space-1);
+  border: 0;
+  border-radius: var(--blok-radius-control);
+  background: var(--blok-popover-bg);
+  color: var(--blok-text-primary);
+  box-shadow: var(--blok-popover-box-shadow);
+}
+
+/* Author display beats the closed-popover user-agent rule, so say it ourselves. */
+[data-blok-sidebar-menu]:not(:popover-open) {
+  display: none;
+}
+
+[data-blok-sidebar-menu]:popover-open {
+  display: flex;
+}
+
+[data-blok-sidebar-menu] [role="menu"] {
+  display: flex;
+  flex-direction: column;
+}
+
+[data-blok-sidebar-menu] button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--blok-space-2);
+  border: 0;
+  border-radius: var(--blok-radius-control-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  text-align: start;
+  cursor: pointer;
+}
+
+[data-blok-sidebar-menu-icon] {
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--blok-text-secondary);
+}
+
+[data-blok-sidebar-menu-icon] svg {
+  width: 16px;
+  height: 16px;
+}
+
+[data-blok-sidebar-menu-label] {
+  flex: 1;
+  min-width: 0;
+}
+
+[data-blok-sidebar-menu] button[data-filled] [data-blok-sidebar-menu-icon] {
+  color: var(--blok-text-primary);
+}
+
+[data-blok-sidebar-menu] [data-blok-sidebar-menu-separator] {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--blok-popover-border);
+}
+
+[data-blok-sidebar-switch] {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 16px;
+  border-radius: var(--blok-radius-pill);
+  background: var(--blok-toggle-off-bg);
+}
+
+[data-blok-sidebar-switch]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  inset-inline-start: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: inherit;
+  background: var(--blok-toggle-thumb-on-bg, #fff);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+[data-blok-sidebar-menu] [aria-checked="true"] > [data-blok-sidebar-switch] {
+  background: var(--blok-toggle-on-bg);
+}
+
+[data-blok-sidebar-menu] [aria-checked="true"] > [data-blok-sidebar-switch]::after {
+  inset-inline-start: 14px;
+}
+
+[data-blok-sidebar-menu-meta] {
+  margin: 0;
+  padding: 6px 8px 4px;
+  color: var(--blok-text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+  cursor: default;
+  user-select: none;
+}
+
+[data-blok-sidebar-menu] button:hover {
+  background: var(--blok-item-hover-bg);
+}
+
+[data-blok-sidebar-menu] button:focus-visible {
+  outline: 2px solid var(--blok-focus-ring);
+  outline-offset: 1px;
+}
+
+[data-blok-sidebar-menu] button[data-danger] {
+  color: var(--blok-item-destructive-text);
+}
+
+[data-blok-sidebar-menu] button[data-danger]:hover {
+  background: var(--blok-item-destructive-hover-bg);
+}
+
+[data-blok-sidebar-edge] {
+  position: absolute;
+  inset-inline-end: 0;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  flex-grow: 0;
+  z-index: 1;
+  background: var(--blok-sidebar-edge-color);
+  pointer-events: auto;
+  backface-visibility: hidden;
+}
+
+[data-blok-sidebar-edge]:has([data-blok-sidebar-resize]:hover),
+[data-blok-sidebar-edge]:has([data-blok-sidebar-resize][data-resizing]) {
+  background: var(--blok-sidebar-edge-hover-color);
+}
+
+[data-blok-sidebar-resize] {
+  position: absolute;
+  top: 0;
+  inset-inline-start: -6px;
+  width: 12px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+[data-blok-sidebar-resize-anchor] {
+  position: absolute;
+  left: 50%;
+  width: 0;
+  height: 0;
+}
+
+[data-blok-sidebar-resize]:focus-visible {
+  outline: none;
+}
+
+[data-blok-sidebar-edge]:has([data-blok-sidebar-resize]:focus-visible) {
+  background: var(--blok-focus-ring);
+}
+
+[data-blok-sidebar][data-collapsed] {
+  min-width: 0;
+  overflow: visible;
+}
+
+[data-blok-sidebar][data-collapsed] > :not([data-blok-sidebar-edge]) {
+  visibility: hidden;
+}
+
+[data-blok-sidebar-resize-hint] {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  column-gap: 8px;
+  row-gap: 1px;
+  font-size: 13px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+[data-blok-sidebar-resize-hint] span:nth-child(even) {
+  color: var(--blok-text-secondary);
+  text-align: end;
+}
+
+[data-blok-sidebar-canvas] {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: var(--blok-bg-primary, #fff);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-blok-theme="light"]) [data-blok-sidebar-canvas] {
+    background: #191919;
+  }
+}
+
+[data-blok-theme="dark"] [data-blok-sidebar-canvas] {
+  background: #191919;
+}
+
+[data-blok-sidebar-canvas] [data-story-container] {
+  box-sizing: border-box;
+  max-width: var(--max-width-content);
+  min-height: 100%;
+  margin-inline: auto;
+  padding: 48px var(--blok-space-6) 64px;
+}
+
+[data-blok-sidebar-section] { display: block; }
+[data-blok-sidebar-section] + [data-blok-sidebar-section] { margin-top: 22px; }
+
+/* Les titres de section de Notion ne crient pas : casse normale, gris, petits.
+   Des capitales espacées transforment un repère en bandeau. */
+[data-blok-sidebar-section-label] {
+  /* Une rangée, pour que le chevron se centre sur le libellé : en bloc il
+     serait aligné sur la ligne de base de la police et tomberait trop bas. */
+  display: flex;
+  align-items: center;
+  width: 100%;
+  margin: 0 0 2px;
+  padding: 6px 8px;
+  border: 0;
+  background: none;
+  color: var(--blok-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: start;
+  cursor: pointer;
+  border-radius: 4px;
+}
+[data-blok-sidebar-section-label]:hover { background: var(--blok-item-hover-bg); color: var(--blok-text-primary); }
+
+/* L'espace est une ligne, pas un titre : même hauteur et même encre qu'une page,
+   avec sa pastille d'initiale à la place de l'icône de document. */
+[data-blok-sidebar-teamspace] > button:first-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--blok-text-primary);
+  font: inherit;
+  font-size: 14px;
+  text-align: start;
+  cursor: pointer;
+}
+[data-blok-sidebar-teamspace]:hover { background: var(--blok-item-hover-bg); }
+[data-blok-sidebar-teamspace-mark] {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--blok-item-hover-bg);
+  color: var(--blok-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+/* Les pages de l'espace s'indentent sous sa ligne, comme chez Notion. */
+[data-blok-sidebar-teamspace-pages] { padding-left: 0; }
+
+/* « Nouvelle page » est une ligne de la barre, pas seulement un + dans l'en-tête. */
+[data-blok-sidebar-shortcuts] { padding: 2px 8px 6px; }
+[data-blok-sidebar-shortcut] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--blok-text-secondary);
+  font: inherit;
+  font-size: 14px;
+  text-align: start;
+  cursor: pointer;
+}
+[data-blok-sidebar-shortcut]:hover { background: var(--blok-item-hover-bg); color: var(--blok-text-primary); }
+[data-blok-sidebar-shortcut] svg { flex: none; width: 16px; height: 16px; }
+
+[data-blok-sidebar] button[hidden] { display: none; }
+[data-blok-sidebar-tree]:hover { scrollbar-color: var(--blok-text-secondary) transparent; }
+[data-blok-sidebar-teamspace] > button > span:not([data-blok-sidebar-teamspace-mark]) {
+  flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600;
+}
+[data-blok-sidebar-teamspace-mark] svg { width: 14px; height: 14px; }
+[data-blok-sidebar-teamspace-chevron] { flex: none; width: 12px; height: 12px; color: var(--blok-text-secondary); transform: rotate(90deg); }
+[data-blok-sidebar-teamspace] > button[aria-expanded="false"] [data-blok-sidebar-teamspace-chevron] { transform: none; }
+[data-blok-sidebar-section-chevron] {
+  flex: none; width: 12px; height: 12px; margin-inline-start: 6px; opacity: 0;
+  transform: rotate(90deg); transition: opacity 120ms ease, transform 120ms ease;
+}
+[data-blok-sidebar-section-label]:is(:hover, :focus-visible) [data-blok-sidebar-section-chevron] { opacity: 1; }
+/* Replié, la marque reste : c'est le seul indice que la section cache des pages. */
+[data-blok-sidebar-section-label][aria-expanded="false"] [data-blok-sidebar-section-chevron] { transform: none; opacity: 1; }
+[data-blok-sidebar-section-label]:focus-visible,
+[data-blok-sidebar-shortcut]:focus-visible,
+[data-blok-sidebar-teamspace] > button:focus-visible { outline: 2px solid var(--blok-focus-ring); outline-offset: -2px; }
+[data-blok-sidebar-row] > [data-blok-sidebar-add] { margin-inline-end: 4px; }
+@media (hover: none) {
+  [data-blok-sidebar-more], [data-blok-sidebar-add] { display: inline-flex; opacity: 1; }
+}
+
+[data-blok-sidebar-section-header] { display: flex; align-items: center; gap: 4px; }
+[data-blok-sidebar-section-header] [data-blok-sidebar-section-label] { flex: 1; min-width: 0; margin: 0; }
+[data-blok-sidebar-create-private] { flex: none; margin-inline-end: 4px; }
+
+/* Keep the workspace icon and disclosure in the same slot; actions never shift its label. */
+[data-blok-sidebar-teamspace] { display: flex; align-items: center; border-radius: 4px; padding-right: 4px; }
+[data-blok-sidebar-teamspace] > button:first-child { flex: 1; min-width: 0; width: auto; }
+[data-blok-sidebar-teamspace-mark] { position: relative; }
+[data-blok-sidebar-teamspace-chevron] { position: absolute; opacity: 0; }
+[data-blok-sidebar-teamspace]:is(:hover, :focus-within) [data-blok-sidebar-teamspace-mark] { background: transparent; }
+[data-blok-sidebar-teamspace]:is(:hover, :focus-within) [data-blok-sidebar-teamspace-mark] > svg:first-child { opacity: 0; }
+[data-blok-sidebar-teamspace]:is(:hover, :focus-within) [data-blok-sidebar-teamspace-chevron] { opacity: 1; }
+[data-blok-sidebar-teamspace-add], [data-blok-sidebar-teamspace-more] {
+  display: grid; place-items: center; flex: none; width: 24px; height: 24px;
+  border: 0; border-radius: 4px; padding: 0; background: transparent; color: var(--blok-text-secondary); cursor: pointer; opacity: 0;
+}
+[data-blok-sidebar-teamspace]:is(:hover, :focus-within) > button { opacity: 1; }
+[data-blok-sidebar-teamspace] > button:not(:first-child):hover { background: var(--blok-item-hover-bg); }
+button[data-blok-sidebar-search] { cursor: pointer; font: inherit; font-size: 13px; text-align: start; }
+button[data-blok-sidebar-search] > span { flex: 1; }
+button[data-blok-sidebar-search] kbd { font: inherit; font-size: 11px; padding: 1px 4px; border-radius: 3px; background: var(--blok-item-hover-bg); }
+button[data-blok-sidebar-search]:hover { background: var(--blok-item-hover-bg); }
+@media (hover: none) { [data-blok-sidebar-teamspace-add], [data-blok-sidebar-teamspace-more] { opacity: 1; } }
+
+/* Muted navigation labels, brighter selection: use a separate palette from document text. */
+[data-blok-sidebar] { --blok-sidebar-label: var(--blok-text-primary); --blok-sidebar-heading: var(--blok-text-secondary); --blok-sidebar-selected: var(--blok-text-primary); }
+[data-blok-theme="dark"] [data-blok-sidebar] {
+  --blok-sidebar-label: #b7b7b5; --blok-sidebar-heading: #888885; --blok-sidebar-selected: #f0f0ef;
+  --blok-item-hover-bg: #2c2c2c; --blok-icon-active-bg: #303030;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-blok-theme="light"]) [data-blok-sidebar] {
+    --blok-sidebar-label: #b7b7b5; --blok-sidebar-heading: #888885; --blok-sidebar-selected: #f0f0ef;
+    --blok-item-hover-bg: #2c2c2c; --blok-icon-active-bg: #303030;
+  }
+}
+[data-blok-sidebar-link], [data-blok-sidebar-teamspace] > button:first-child { color: var(--blok-sidebar-label); }
+[data-blok-sidebar-row][data-active] [data-blok-sidebar-link] { color: var(--blok-sidebar-selected); font-weight: 500; }
+[data-blok-sidebar-row][data-active]:hover { background: color-mix(in srgb, var(--blok-icon-active-bg), var(--blok-text-primary) 5%); }
+[data-blok-sidebar-section-label], [data-blok-sidebar-recents] > [data-blok-sidebar-shortcut] { color: var(--blok-sidebar-heading); }
+[data-blok-sidebar-section-label] { margin-bottom: 2px; font-weight: 500; }
+[data-blok-sidebar-teamspace] > button:first-child > span:not([data-blok-sidebar-teamspace-mark]) { font-weight: 600; }
+[data-blok-sidebar-section-header] [data-blok-sidebar-create-private] { opacity: 0; }
+[data-blok-sidebar-section-header]:is(:hover, :focus-within) [data-blok-sidebar-create-private] { opacity: 1; }
+[data-blok-sidebar-row]:has(> button:focus-visible) { outline: 2px solid var(--blok-focus-ring); outline-offset: -2px; }
+@media (hover: none) { [data-blok-sidebar-section-header] [data-blok-sidebar-create-private] { opacity: 1; } }
+
+[data-blok-theme="light"] [data-blok-sidebar] {
+  background: #f7f7f5; --blok-sidebar-label: #5f5e5b; --blok-sidebar-heading: #91918e; --blok-sidebar-selected: #37352f;
+  --blok-item-hover-bg: #ebebea; --blok-icon-active-bg: #e8e8e6;
+}
