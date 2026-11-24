@@ -1,0 +1,18 @@
+{
+  "description": "Ticket API HTTP shapes. noDb cases run in-process with createApp({ database: undefined }) — unmounted /api/* returns 503 database_not_configured.",
+  "cases": [
+    {
+      "name": "POST /api/tickets/blok (no DB)",
+      "method": "POST",
+      "path": "/api/tickets/blok",
+      "body": {},
+      "noDb": true,
+      "expect": {
+        "status": 503,
+        "body": {
+          "error": "database_not_configured"
+        }
+      }
+    }
+  ]
+}

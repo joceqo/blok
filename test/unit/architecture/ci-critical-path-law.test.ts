@@ -839,6 +839,10 @@ describe('CI critical-path law', () => {
         name: 'Test Go conformance',
         run: 'node scripts/test-server-conformance.mjs --target go',
       },
+      {
+        name: 'Test service-node',
+        run: 'cd apps/service-node && npm ci && npm test',
+      },
     ]);
 
     expect(build.name).toBe('Build');

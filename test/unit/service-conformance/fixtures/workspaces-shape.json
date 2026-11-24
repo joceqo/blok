@@ -1,0 +1,20 @@
+{
+  "description": "Workspace API HTTP shapes. noDb cases run in-process with createApp({ database: undefined }) — unmounted /api/* returns 503 database_not_configured.",
+  "cases": [
+    {
+      "name": "POST /api/workspaces (no DB)",
+      "method": "POST",
+      "path": "/api/workspaces",
+      "body": {
+        "name": "Test"
+      },
+      "noDb": true,
+      "expect": {
+        "status": 503,
+        "body": {
+          "error": "database_not_configured"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "description": "Auth and protected API HTTP shapes. noDb cases run in-process with createApp({ database: undefined }) — unmounted /api/* returns 503 database_not_configured (request-code never reaches invalid_email validation; verify-code never reaches invalid_request validation). liveOnly cases need BLOK_SERVICE_CONFORMANCE_URL against a running service with PostgreSQL (request-code invalid_email → 400, verify-code invalid_request → 400, session cookie absent on /api/auth/me and /api/workspaces → 401).",
+  "cases": [
+    {
+      "name": "POST /api/auth/request-code (invalid email)",
+      "method": "POST",
+      "path": "/api/auth/request-code",
+      "body": {
+        "email": "not-an-email"
+      },
+      "liveOnly": true,
+      "expect": {
+        "status": 400,
+        "body": {
+          "error": "invalid_email"
+        }
+      }
+    },
+    {
+      "name": "POST /api/auth/verify-code (invalid request)",
+      "method": "POST",
+      "path": "/api/auth/verify-code",
+      "body": {},
+      "liveOnly": true,
+      "expect": {
+        "status": 400,
+        "body": {
+          "error": "invalid_request"
+        }
+      }
+    },
+    {
+      "name": "GET /api/auth/me (no session cookie)",
+      "method": "GET",
+      "path": "/api/auth/me",
+      "liveOnly": true,
+      "expect": {
+        "status": 401,
+        "body": {
+          "error": "unauthenticated"
+        }
+      }
+    },
+    {
+      "name": "GET /api/workspaces (unauthenticated)",
+      "method": "GET",
+      "path": "/api/workspaces",
+      "liveOnly": true,
+      "expect": {
+        "status": 401,
+        "body": {
+          "error": "unauthenticated"
+        }
+      }
+    },
+    {
+      "name": "POST /api/auth/request-code (invalid email, no DB)",
+      "method": "POST",
+      "path": "/api/auth/request-code",
+      "body": {
+        "email": "not-an-email"
+      },
+      "noDb": true,
+      "expect": {
+        "status": 503,
+        "body": {
+          "error": "database_not_configured"
+        }
+      }
+    },
+    {
+      "name": "POST /api/auth/verify-code (invalid body, no DB)",
+      "method": "POST",
+      "path": "/api/auth/verify-code",
+      "body": {
+        "email": "not-an-email",
+        "code": ""
+      },
+      "noDb": true,
+      "expect": {
+        "status": 503,
+        "body": {
+          "error": "database_not_configured"
+        }
+      }
+    },
+    {
+      "name": "GET /api/workspaces (no DB)",
+      "method": "GET",
+      "path": "/api/workspaces",
+      "noDb": true,
+      "expect": {
+        "status": 503,
+        "body": {
+          "error": "database_not_configured"
+        }
+      }
+    }
+  ]
+}
