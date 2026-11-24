@@ -1,8 +1,6 @@
 import type { PgPool } from '../db/pool.js';
 
-type Role = 'admin' | 'member' | 'viewer';
-type Level = 'view' | 'edit' | 'full';
-type Visibility = 'private' | 'workspace';
+import { levels, resolvePageLevel, type Level, type Role, type Visibility } from './page-level.js';
 
 export interface IndexPage {
   id: string;
@@ -19,8 +17,6 @@ interface Standing {
   shared: boolean;
   sharedRoot?: true;
 }
-
-const levels: Level[] = ['view', 'edit', 'full'];
 
 // These are the same chains, role ceiling and sidebar labels used by Go's
 // workspaceStandings. Build them from metadata alone, never document bodies.
@@ -43,12 +39,7 @@ export function workspaceIndex(rows: IndexPage[], role: Role, revision: number) 
       if (node.share !== null) granted = Math.max(granted, levels.indexOf(node.share));
       node = node.metadata.parentId ? byId.get(node.metadata.parentId) : undefined;
     }
-    if (first === 'workspace') {
-      const base = role === 'admin' ? 'full' : role === 'member' ? 'edit' : 'view';
-      granted = Math.max(granted, levels.indexOf(base));
-    }
-    if (role === 'viewer') granted = Math.min(granted, 0);
-    const level = levels[granted];
+    const level = resolvePageLevel(role, first ?? 'private', granted);
     if (level) access[page.id] = { level, visibility, shared };
   }
   const pages: IndexPage['metadata'][] = [];
