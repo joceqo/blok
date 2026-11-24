@@ -6,6 +6,7 @@ import { createDesktopFooter, readAppearance } from './settings';
 import { createAddCoverButton, createPageCover, isCoverId, type CoverId } from './cover';
 import { mountAgentAssistant, type AgentAssistantHandle } from '../../src/shell/agent-assistant';
 import { bindAssistantButton, createAssistantButton, inspectNativeProvider, nativeAgentModel, selectedProvider } from './assistant';
+import { createPageToolbar, type PageToolbar } from './page-toolbar';
 
 const desktopTools = {
   ...defaultTools,
@@ -31,6 +32,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   let assistant: AgentAssistantHandle;
   let pageCanvas: HTMLElement;
   let footer: HTMLElement;
+  let pageToolbar: PageToolbar | null = null;
   let currentId = '';
   let generation = 0;
   let saveOrder = Promise.resolve();
@@ -80,12 +82,26 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const turn = ++generation;
     coverRowObserver?.disconnect();
     coverRowObserver = null;
+    pageToolbar?.destroy();
     editor?.destroy();
     editor = null;
     status.textContent = 'Ouverture de la page…';
     status.removeAttribute('data-error');
     const article = document.createElement('article');
     article.setAttribute('data-desktop-document', '');
+    const applyFullWidth = (): void => {
+      const enabled = page.fullWidth === true;
+      pageCanvas.toggleAttribute('data-full-width', enabled);
+      article.toggleAttribute('data-full-width', enabled);
+      editor?.width.set(enabled ? 'full' : 'narrow');
+    };
+    const toolbar = createPageToolbar(page.title, page.icon, page.fullWidth === true, (enabled) => {
+      page.fullWidth = enabled;
+      applyFullWidth();
+      saveManifest();
+    });
+    pageToolbar = toolbar;
+    applyFullWidth();
     const holder = document.createElement('div');
     article.append(holder);
     let coverNode: HTMLElement | null = null;
@@ -128,7 +144,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         attachCoverAction();
       }
     };
-    pageCanvas.replaceChildren(article);
+    pageCanvas.replaceChildren(toolbar.element, article);
     renderCover();
     const instance = new Blok({
       holder,
@@ -140,6 +156,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           if (generation !== turn || !index) return;
           const next = title.trim() || 'Nouvelle page';
           page.title = next;
+          toolbar.setTitle(next);
           document.title = next;
           frame.setPages(index.pages, id);
           saveManifest();
@@ -147,6 +164,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         onIconChange(icon) {
           if (generation !== turn || !index) return;
           syncPageIcon(page, icon);
+          toolbar.setIcon(page.icon);
         },
       },
       documentId: id,
@@ -162,11 +180,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       },
     });
     editor = instance;
+    instance.width.set(page.fullWidth === true ? 'full' : 'narrow');
     void instance.isReady.then(() => {
       if (generation !== turn) return;
       attachCoverAction();
       if (!instance.title.get()) instance.title.set(page.title, { record: false });
       syncPageIcon(page, instance.title.icon.get());
+      toolbar.setIcon(page.icon);
       document.title = page.title;
       status.textContent = '';
     }).catch(showError);
