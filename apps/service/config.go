@@ -13,6 +13,8 @@ import (
 )
 
 type Config struct {
+	// Static for the process lifetime. The companion room shares its loopback namespace.
+	NodeRoomPage                                                                                         string
 	DatabaseURL, Listen, PublicURL, InternalURL, DataDirectory, TicketSecret, InternalSecret, AdminEmail string
 	// BootstrapWorkspaceSlug/Name, with AdminEmail, optionally seed one workspace at startup (§5.3).
 	BootstrapWorkspaceSlug, BootstrapWorkspaceName                         string
@@ -49,6 +51,7 @@ func ConfigFromEnv() Config {
 		return fallback
 	}
 	return Config{
+		NodeRoomPage:    os.Getenv("BLOK_NODE_ROOM_PAGE"),
 		AIEncryptionKey: os.Getenv("AI_ENCRYPTION_KEY"), DatabaseURL: os.Getenv("DATABASE_URL"),
 		Listen: get("LISTEN_ADDR", ":8080"), PublicURL: get("PUBLIC_URL", "http://localhost:8080"),
 		InternalURL: get("INTERNAL_URL", "http://127.0.0.1:8080"), DataDirectory: get("DATA_DIRECTORY", "./data"),
@@ -67,6 +70,9 @@ func ConfigFromEnv() Config {
 	}
 }
 func (c Config) validate() error {
+	if c.NodeRoomPage != "" && !roomPageID.MatchString(c.NodeRoomPage) {
+		return errors.New("invalid BLOK_NODE_ROOM_PAGE")
+	}
 	for _, raw := range c.TrustedProxyCIDRs {
 		if _, e := netip.ParsePrefix(strings.TrimSpace(raw)); e != nil {
 			return errors.New("invalid TRUSTED_PROXY_CIDRS")

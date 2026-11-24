@@ -75,6 +75,9 @@ func (s *Service) initMCP() error {
 // et de celle des routes HTTP, et doit répondre comme elles : un jeton MCP porte
 // l'identité de son propriétaire, jamais davantage.
 func (s *Service) authorizeMCPDocument(ctx context.Context, principal, documentID string, write bool) (bool, error) {
+	if s.nodeOwnsRoom(documentID) {
+		return false, nil
+	}
 	var trashed bool
 	e := s.DB.QueryRow(ctx, `SELECT trashed FROM pages WHERE id=$1 AND NOT deleted`, documentID).Scan(&trashed)
 	if errors.Is(e, pgx.ErrNoRows) {
