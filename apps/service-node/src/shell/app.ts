@@ -3,13 +3,15 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 
 import type { PgPool } from '../db/pool.js';
+import { createPageSharing } from './page-sharing.js';
+import { createAccessRecheck } from './recheck-access.js';
 import { readProjectionHeaders, saveProjection } from './projection.js';
 import { loadWorkspaceIndex } from './workspace-index.js';
 import { loadSession, loadVisiblePage, sessionDigest } from './session.js';
 
 const digest = (input: string) => createHash('sha256').update(input).digest();
 
-export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>) {
+export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>, recheckAccess = createAccessRecheck(secret)) {
   if (secret.length < 32) throw new Error('INTERNAL_SECRET must have at least 32 characters');
   const expected = digest('Bearer ' + secret);
   const app = new Hono();
@@ -68,6 +70,8 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     if (page.content === null) return c.json({ error: 'Page not found' }, 404);
     return c.body(page.content, 200, { 'Content-Type': 'application/json' });
   });
+
+  app.route('/api/workspaces/:slug/pages', createPageSharing(pool, recheckAccess));
 
   app.use('/internal/documents/*', async (c, next) => {
     if (!timingSafeEqual(expected, digest(c.req.header('Authorization') ?? ''))) {
