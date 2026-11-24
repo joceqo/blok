@@ -28,6 +28,13 @@ export function workspaceRepository(workspace: WorkspaceRef) {
       baseline = snapshot(index); acknowledged = snapshot(index);
       return index;
     },
+    async readPageAccess(id: string) {
+      if (ref.kind !== 'remote') throw new Error('Remote operation only');
+      const index = await request<WorkspaceIndex>(`${base}/index`);
+      const entry = index.access?.[id];
+      if (!entry) throw new Error('Page not found');
+      return entry;
+    },
     async refreshIndex(accept: () => boolean): Promise<WorkspaceIndex | null> {
       if (ref.kind !== 'remote') return null;
       const value = await request<WorkspaceIndex & {revision: number}>(`${base}/index`);

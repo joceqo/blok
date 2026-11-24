@@ -398,12 +398,27 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const select = async (id: string): Promise<void> => {
     if (!ws.index) return;
     refreshDateTitles();
+    const request = ++ws.selection;
+    if (ws.currentId !== id && ref.kind === 'remote') {
+      if (ws.editor) { await ws.editor.isReady; await ws.editor.saver.flush(); }
+      if (ws.selection !== request) return;
+      if (ws.index.access && !ws.index.access[id]) {
+        // Creating a page acknowledges the index revision before its access
+        // entry reaches this window. Get the server's decision before mounting.
+        await ws.saveOrder;
+        const index = ws.index;
+        const access = await repository.readPageAccess(id);
+        if (ws.selection !== request) return;
+        if (ws.index === index) {
+          index.access = { ...index.access, [id]: access };
+          ws.access = pageAccess(ref, index.access);
+        }
+      }
+    }
+    if (ws.selection !== request) return;
     const page = ws.index.pages.find((item) => item.id === id);
     if (!page) return;
     const selectedPage = page;
-    const request = ++ws.selection;
-    if (ws.currentId !== id && ws.editor && ref.kind === 'remote') { await ws.editor.isReady; await ws.editor.saver.flush(); }
-    if (ws.selection !== request) return;
     ws.index.activeId = id;
     if (ref.kind === 'local') saveManifest();
     ws.frame.setPages(withSections(ws.index.pages), id);
