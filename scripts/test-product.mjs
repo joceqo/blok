@@ -10,7 +10,6 @@ const args = process.argv.slice(2);
 const selected = Object.hasOwn(packages, args[0]) ? [packages[args.shift()]] : Object.values(packages);
 const budget = Math.min(4, availableParallelism());
 const parallel = Math.min(budget, selected.length);
-const workers = Math.floor(budget / parallel);
 
 function vitest(directory, args) {
   const cwd = fileURLToPath(new URL(`../${directory}/`, import.meta.url));
@@ -27,7 +26,11 @@ if (args.some(arg => /^(?:\.\/)?test\/unit(?:\/|$)/.test(arg.replaceAll('\\', '/
   // Preserve explicit root filters such as "yarn test test/unit/tools/code".
   process.exitCode = await vitest('.', ['--project=unit', '--project=unit-angular', ...args]);
 } else {
-  const run = directory => vitest(directory, ['--maxWorkers', String(workers), '--exclude', '**/*.integration.test.*', ...args]);
+  // Give spare workers to the first package (the DOM-heavy desktop suite).
+  const run = (directory, index) => {
+    const workers = Math.floor(budget / parallel) + Number(index < budget % parallel);
+    return vitest(directory, ['--maxWorkers', String(workers), '--exclude', '**/*.integration.test.*', ...args]);
+  };
   const codes = [];
   for (let start = 0; start < selected.length; start += parallel) {
     codes.push(...await Promise.all(selected.slice(start, start + parallel).map(run)));
