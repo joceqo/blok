@@ -1,0 +1,360 @@
+/* Host assistant chrome. A pressed provider is a check on a neutral surface. */
+
+[data-blok-agent-shell] {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 100%;
+  background: var(--blok-popover-bg, #fff);
+  color: var(--blok-text-primary, black);
+  font-family: var(--blok-font-family, var(--blok-font-sans));
+}
+
+[data-blok-agent-bar] {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  height: 52px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.12));
+  background: var(--blok-popover-bg, #fff);
+}
+
+[data-blok-agent-body] {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+[data-blok-agent-editor] {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+[data-blok-agent-panel][hidden],
+[data-blok-agent-menu][hidden],
+[data-blok-agent-resize][hidden] {
+  display: none;
+}
+
+[data-blok-agent-panel] {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--blok-popover-bg, #fff);
+  color: var(--blok-text-primary, black);
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="side"] {
+  position: relative;
+  flex: none;
+  width: var(--blok-agent-width, 392px);
+  border-inline-start: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.12));
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="floating"] {
+  position: fixed;
+  z-index: 30;
+  top: 64px;
+  inset-inline-end: 16px;
+  width: min(420px, calc(100vw - 32px));
+  height: min(720px, calc(100vh - 80px));
+  border: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.16));
+  border-radius: var(--blok-radius-dialog);
+  box-shadow: var(--blok-popover-box-shadow, var(--blok-popover-shadow));
+}
+
+[data-blok-agent-panel][data-blok-agent-mode="full"] {
+  position: fixed;
+  z-index: 30;
+  inset: 48px 0 0;
+}
+
+[data-blok-agent-resize] {
+  position: absolute;
+  z-index: 1;
+  inset-inline-start: -3px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+[data-blok-agent-header] {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  min-height: 56px;
+  padding: 0 12px 0 18px;
+  border-bottom: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.12));
+}
+
+[data-blok-agent-panel] h2 {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+[data-blok-agent-panel] button,
+[data-blok-agent-bar] button,
+[data-blok-agent-composer] label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--blok-radius-control);
+  background: transparent;
+  color: var(--blok-text-primary, black);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+[data-blok-agent-bar] [data-blok-agent-toggle] {
+  padding: 6px 11px;
+  border-color: var(--blok-popover-border, rgba(55, 53, 47, 0.16));
+  background: var(--blok-bg-light, #f7f6f3);
+  font-weight: 600;
+}
+
+[data-blok-agent-toggle]::before {
+  content: "✦";
+  margin-inline-end: 2px;
+  color: #e46d58;
+}
+
+[data-blok-agent-header] > button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  min-height: 0;
+  padding: 0;
+  color: var(--blok-text-secondary, #646a79);
+}
+
+[data-blok-agent-header] > button:hover {
+  color: var(--blok-text-primary, black);
+}
+
+[data-blok-agent-header] > button:last-of-type {
+  margin-inline-start: 3px;
+}
+
+[data-blok-agent-panel] button:hover,
+[data-blok-agent-bar] button:hover {
+  background: var(--blok-item-hover-bg, rgba(55, 53, 47, 0.06));
+}
+
+[data-blok-agent-panel] button:focus-visible,
+[data-blok-agent-bar] button:focus-visible,
+[data-blok-agent-composer] textarea:focus-visible,
+[data-blok-agent-composer] input:focus-visible,
+[data-blok-agent-resize]:focus-visible {
+  outline: 2px solid var(--blok-focus-ring);
+  outline-offset: 1px;
+}
+
+[data-blok-agent-menu] {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% - 4px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 220px;
+  margin: 0;
+  padding: 4px;
+  background: var(--blok-popover-bg, #fff);
+  border: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.16));
+  border-radius: var(--blok-radius-surface);
+  box-shadow: var(--blok-popover-box-shadow, var(--blok-popover-shadow));
+}
+
+[data-blok-agent-menu="history"] {
+  inset-inline-start: 8px;
+}
+
+[data-blok-agent-menu="mode"] {
+  inset-inline-end: 8px;
+}
+
+[data-blok-agent-menu] [aria-checked="true"],
+[data-blok-agent-provider][aria-pressed="true"] {
+  background: var(--blok-icon-active-bg, rgba(55, 53, 47, 0.1));
+  color: var(--blok-text-primary, black);
+}
+
+[data-blok-agent-check] {
+  display: inline-block;
+  width: 1em;
+  color: var(--blok-text-primary, black);
+}
+
+[data-blok-agent-transcript] {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 18px;
+}
+
+[data-blok-agent-empty] {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 100%;
+  max-width: 330px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+[data-blok-agent-empty-mark] {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 4px;
+  border-radius: var(--blok-radius-dialog);
+  background: #fff1ec;
+  color: #d95f4b;
+  font-size: 25px;
+}
+
+[data-blok-agent-empty] p {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+[data-blok-agent-empty-intro] {
+  margin-bottom: 16px;
+  color: var(--blok-text-secondary, #646a79);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+[data-blok-agent-empty] button {
+  justify-content: space-between;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 12px;
+  border-color: var(--blok-popover-border, rgba(55, 53, 47, 0.16));
+  text-align: start;
+}
+
+[data-blok-agent-empty] button::after {
+  content: "↗";
+  margin-inline-start: 8px;
+  color: var(--blok-text-secondary, #646a79);
+  font-size: 16px;
+}
+
+[data-blok-agent-turn] {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px 0;
+  border-top: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.12));
+}
+
+[data-blok-agent-question] {
+  margin: 0;
+  font-weight: 600;
+  white-space: pre-wrap;
+}
+
+[data-blok-agent-who],
+[data-blok-agent-running],
+[data-blok-agent-answer] {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+[data-blok-agent-who],
+[data-blok-agent-running],
+[data-blok-agent-providers-empty] {
+  color: var(--blok-text-secondary, #646a79);
+  font-size: 13px;
+}
+
+[data-blok-agent-composer] {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  flex: none;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 12px;
+  padding: 10px 11px;
+  border: 1px solid var(--blok-popover-border, rgba(55, 53, 47, 0.16));
+  border-radius: var(--blok-radius-dialog);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+[data-blok-agent-composer] textarea {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 52px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--blok-text-primary, black);
+  font: inherit;
+  resize: none;
+}
+
+[data-blok-agent-composer] [data-blok-agent-page-context] {
+  justify-self: start;
+  min-height: 26px;
+  padding: 3px 8px;
+  background: var(--blok-bg-light, #f7f6f3);
+  font-size: 12px;
+}
+
+[data-blok-agent-composer] [data-blok-agent-page-context] input {
+  margin: 0;
+  accent-color: #d95f4b;
+}
+
+[data-blok-agent-composer] [data-blok-agent-send] {
+  grid-column: 2;
+  grid-row: 2;
+  min-height: 28px;
+  padding: 5px 12px;
+  background: var(--blok-text-primary, #242424);
+  color: var(--blok-popover-bg, #fff);
+  font-weight: 600;
+}
+
+[data-blok-agent-composer] [data-blok-agent-send]:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+[data-blok-agent-composer] [data-blok-agent-send]:hover:not(:disabled) {
+  background: #3d3d3d;
+  color: var(--blok-popover-bg, #fff);
+}
+
+[data-blok-agent-providers] {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 1 / -1;
+  gap: 6px;
+}
