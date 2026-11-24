@@ -21,13 +21,13 @@ function run(command, args, options = {}) {
   });
 }
 
-async function bundle(outfile, conformance) {
+async function bundle(outfile, conformance, entry = 'src/main.ts') {
   const define = conformance ? '--define:BLOK_CONFORMANCE=true' : '--define:BLOK_CONFORMANCE=false';
   await run(
     process.execPath,
     [
       join(repositoryRoot, 'node_modules/esbuild/bin/esbuild'),
-      join(nodePackage, 'src/main.ts'),
+      join(nodePackage, entry),
       '--bundle',
       '--platform=node',
       '--format=esm',
@@ -48,4 +48,5 @@ await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
 await bundle(join(outDir, 'blok-server.mjs'), false);
 await bundle(join(outDir, 'blok-server-conformance.mjs'), true);
+await bundle(join(outDir, 'journal-inspect.mjs'), false, 'src/collab/journal/inspect.ts');
 console.log('Conformance binaries — node: ordinary bundle, and one with BLOK_CONFORMANCE=true.');
