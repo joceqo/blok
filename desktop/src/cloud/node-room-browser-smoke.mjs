@@ -106,8 +106,8 @@ const waitNode = (trace, previous = 0) => expect.poll(() => trace.connected.size
 async function append(page, needle, suffix) {
   const field = block(page, needle);
   await expect(field).toBeEditable({timeout});
-  await field.press('End');
-  await page.keyboard.insertText(suffix);
+  const value = await field.innerText();
+  await field.fill(value + suffix);
   await expect(field).toContainText(suffix,{timeout});
 }
 
