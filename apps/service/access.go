@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -103,30 +104,54 @@ func (s *Service) recheckObserved(ctx context.Context) {
 		s.recheckDocument(ctx, doc)
 	}
 }
-func (s *Service) recheckDocument(ctx context.Context, doc string) {
+func (s *Service) recheckDocument(ctx context.Context, doc string) error {
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if _, e := s.Blok.RecheckAccess(bounded, doc); e != nil && ctx.Err() == nil {
-		slog.Error("collaboration access recheck failed", "document", doc, "error", e)
+	_, err := s.Blok.RecheckAccess(bounded, doc)
+	if err != nil && ctx.Err() == nil {
+		slog.Error("collaboration access recheck failed", "document", doc, "error", err)
 	}
+	return err
 }
-func (s *Service) recheckWorkspace(ctx context.Context, workspace string) {
-	rows, e := s.DB.Query(ctx, "SELECT id FROM pages WHERE workspace_id=$1", workspace)
-	if e != nil {
-		slog.Error("access recheck query failed", "error", e)
-		return
+
+func (s *Service) recheckWorkspace(ctx context.Context, workspace string) error {
+	rows, err := s.DB.Query(ctx, "SELECT id FROM pages WHERE workspace_id=$1", workspace)
+	if err != nil {
+		slog.Error("access recheck query failed", "error", err)
+		return err
 	}
-	ids := []string{}
+	defer rows.Close()
+	var docs []string
 	for rows.Next() {
 		var id string
-		if rows.Scan(&id) == nil {
-			ids = append(ids, id)
+		if err := rows.Scan(&id); err != nil {
+			return err
 		}
-	}
-	rows.Close()
-	for _, id := range ids {
 		if s.isObserved(id) {
-			s.recheckDocument(ctx, id)
+			docs = append(docs, id)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	var result error
+	for _, doc := range docs {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(result, err)
+		}
+		result = errors.Join(result, s.recheckDocument(ctx, doc))
+	}
+	return result
+}
+
+func (s *Service) recheckWorkspaceAccess(w http.ResponseWriter, r *http.Request) {
+	if !internalAuth(r, s.Config.InternalSecret) {
+		problem(w, http.StatusUnauthorized, "Internal authorization required")
+		return
+	}
+	if err := s.recheckWorkspace(r.Context(), r.PathValue("id")); err != nil {
+		problem(w, http.StatusServiceUnavailable, "Collaboration access recheck failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
