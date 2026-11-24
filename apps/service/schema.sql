@@ -215,3 +215,16 @@ CREATE TABLE IF NOT EXISTS row_body_drafts (
  PRIMARY KEY(document_id,row_id,operation_id)
 );
 INSERT INTO schema_migrations(version) VALUES(14) ON CONFLICT DO NOTHING;
+
+-- Existing shares keep their level. Extend the check once on each installation.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version=15) THEN
+    ALTER TABLE page_shares DROP CONSTRAINT page_shares_level_check,
+      ADD CONSTRAINT page_shares_level_check CHECK(level IN ('view','comment','edit','full'));
+    ALTER TABLE memberships DROP CONSTRAINT memberships_role_check,
+      ADD CONSTRAINT memberships_role_check CHECK(role IN ('admin','member','viewer','guest'));
+    ALTER TABLE invites DROP CONSTRAINT invites_role_check,
+      ADD CONSTRAINT invites_role_check CHECK(role IN ('member','viewer','guest'));
+    INSERT INTO schema_migrations(version) VALUES(15);
+  END IF;
+END $$;

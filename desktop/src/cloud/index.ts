@@ -70,7 +70,7 @@ function readInviteFromLocation(): InviteContext | null {
     const host = params.get('host') ?? undefined;
     const role = params.get('role');
     const message = params.get('message') ?? undefined;
-    const parsedRole = role === 'admin' || role === 'member' || role === 'viewer' ? role : undefined;
+    const parsedRole = role === 'admin' || role === 'member' || role === 'viewer' || role === 'guest' ? role : undefined;
     return {slug, email, host, role: parsedRole, message};
   } catch {
     return null;

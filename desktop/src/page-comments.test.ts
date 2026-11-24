@@ -10,10 +10,10 @@ vi.mock('../../src/tools/database/database-comments-store', () => ({ BuiltInComm
   add = state.add; reply = state.reply; edit = state.edit; resolve = state.resolve; remove = state.remove;
 } }));
 const handles: Array<{ destroy(): void }> = [];
-function mount(writable = { value: true }) {
+function mount(writable = { value: true }, discussion?: Parameters<typeof mountPageComments>[0]['discussion']) {
   const events = { on: vi.fn(), off: vi.fn() };
   const editor = { blocks: {}, tools: {}, events, i18n: { t: (key: string) => key } } as unknown as Pick<Blok, 'blocks' | 'tools' | 'events' | 'i18n'>;
-  const panel = mountPageComments({ editor, author: () => ({ authorId: 'me', authorName: 'Moi' }), canComment: () => writable.value });
+  const panel = mountPageComments({ editor, discussion, author: () => ({ authorId: 'me', authorName: 'Moi' }), canEditDocument: () => writable.value });
   document.body.append(panel.action, panel.element); handles.push(panel);
   return { ...panel, events };
 }
@@ -27,6 +27,26 @@ function send(text: string): void {
 beforeEach(() => { vi.clearAllMocks(); state.threads = []; });
 afterEach(() => { handles.splice(0).forEach(handle => handle.destroy()); document.body.replaceChildren(); vi.restoreAllMocks(); });
 describe('page comment controls', () => {
+  it('lets a commenter submit through the server, keeping the draft and request ID on a failed reply', async () => {
+    state.threads = [{ id: 'topic', data: { text: 'Question', createdAt: 1 }, replies: [] }];
+    const post = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(undefined);
+    const panel = mount({ value: false }, { allowed: () => true, post });
+    const form = panel.element.querySelector<HTMLFormElement>('[data-page-comment-form]')!;
+    expect(form.hidden).toBe(false);
+    expect(panel.element.querySelector('[data-blok-database-comment-resolve]')).toBeNull();
+    form.querySelector('select')!.value = 'topic';
+    const input = form.querySelector('textarea')!;
+    input.value = 'Ma réponse';
+    form.requestSubmit();
+    await vi.waitFor(() => expect(form.textContent).toContain('brouillon'));
+    expect(input.value).toBe('Ma réponse');
+    form.requestSubmit();
+    await vi.waitFor(() => expect(input.value).toBe(''));
+    expect(post.mock.calls[0]).toEqual(post.mock.calls[1]);
+    expect(post.mock.calls[0]?.[0]).toMatchObject({ text: 'Ma réponse', threadId: 'topic' });
+    expect(state.reply).not.toHaveBeenCalled();
+  });
+
   it('keeps an empty discussion collapsed until requested and focuses its composer', () => {
     const panel = mount();
     const toggle = panel.action;
@@ -63,7 +83,7 @@ describe('page comment controls', () => {
     holder.innerHTML = '<header data-blok-page-header><div data-blok-page-icon-row></div><h1>Title</h1></header>';
     document.body.append(holder);
     const editor = { blocks: {}, tools: {}, events: { on: vi.fn(), off: vi.fn() }, i18n: { t: (key: string) => key } } as never;
-    const panel = mountPageComments({ holder, editor, author: () => ({ authorId: 'me' }), canComment: () => true });
+    const panel = mountPageComments({ holder, editor, author: () => ({ authorId: 'me' }), canEditDocument: () => true });
     handles.push(panel);
     const row = holder.querySelector('[data-blok-page-icon-row]')!;
     row.replaceChildren(document.createElement('button'));
@@ -116,7 +136,7 @@ it('updates the current author photo and name without losing a comment draft', (
   const author = { authorId: 'me', authorName: 'Joce', avatarUrl: 'data:image/png;base64,aGVsbG8=' };
   state.threads = [{id:'t', data:{text:'Bonjour',createdAt:1,authorId:'me',authorName:'Utilisateur local'},replies:[]}];
   const editor = {blocks:{},tools:{},events:{on:vi.fn(),off:vi.fn()},i18n:{t:(key:string)=>key}} as unknown as Pick<Blok,'blocks'|'tools'|'events'|'i18n'>;
-  const panel=mountPageComments({editor,author:()=>author,canComment:()=>true});handles.push(panel);document.body.append(panel.element);
+  const panel=mountPageComments({editor,author:()=>author,canEditDocument:()=>true});handles.push(panel);document.body.append(panel.element);
   expect(panel.element.querySelector('[data-blok-database-comment-author]')?.textContent).toBe('Joce');
   expect(panel.element.querySelector('img')?.src).toBe(author.avatarUrl);
   const textarea=panel.element.querySelector('textarea');if(!textarea)throw new Error('Missing composer');

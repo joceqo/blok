@@ -2,6 +2,7 @@ import {IconImage, IconTrash} from '../../src/components/icons';
 import {openModalDialog, type ModalDialogHandle} from '@blok/modal-dialog';
 import {styleTextField, wrapSearchField} from './ui/controls';
 import {customEmojiStore, readEmojiImage, type CustomEmoji} from './custom-emojis';
+import {isReaderRole} from './access-vocabulary';
 import type {WorkspaceRef} from './workspace-registry';
 import './custom-emoji-settings.css';
 
@@ -15,7 +16,7 @@ function reasonText(reason:unknown):string {return reason instanceof Error?reaso
 
 export function mountCustomEmojiSettings(container:HTMLElement, ref:WorkspaceRef):{destroy():void} {
   const store=customEmojiStore(ref);
-  const canAdd=ref.kind==='local'||ref.role!=='viewer';
+  const canAdd=ref.kind==='local'||!isReaderRole(ref.role);
   let alive=true;let busy=false;let generation=0;let items:CustomEmoji[]=[];
   let uploadDialog:ModalDialogHandle|null=null;
   const panel=el('section');panel.setAttribute('data-custom-emoji-settings','');
@@ -50,7 +51,7 @@ export function mountCustomEmojiSettings(container:HTMLElement, ref:WorkspaceRef
     for(const item of shown){
       const row=el('tr');const imageCell=el('td');const image=el('img');image.src=item.url;image.alt=item.name;imageCell.append(image);
       const actions=el('td');
-      const canDelete=ref.kind==='local'||ref.role==='admin'||(ref.role!=='viewer'&&item.createdBy===ref.accountId);
+      const canDelete=ref.kind==='local'||ref.role==='admin'||(!isReaderRole(ref.role)&&item.createdBy===ref.accountId);
       if(canDelete){const remove=button('');remove.innerHTML=IconTrash;remove.setAttribute('aria-label',`Supprimer ${item.name}`);remove.disabled=busy;remove.addEventListener('click',()=>{void removeEmoji(item.id);});actions.append(remove);}
       const date=item.createdAt?new Date(item.createdAt):null;
       row.append(imageCell,el('td',`:${item.name}:`),el('td',date&&!Number.isNaN(date.getTime())?date.toLocaleDateString('fr-FR'):'—'),actions);body.append(row);

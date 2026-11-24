@@ -1,4 +1,4 @@
-import type { CloudClient } from './client';
+import type { CloudClient, CloudRole } from './client';
 import { PAGE_LEVELS, PAGE_RIGHTS_CUMULATIVE, pageLevelOptions } from '../access-vocabulary';
 import { createChoice, type ChoiceControl } from '../ui/controls';
 import type { PageLevel } from '../page-access';
@@ -17,7 +17,7 @@ export interface ShareSheetHandle { destroy(): void; refresh(): Promise<void> }
 const levelNames = PAGE_LEVELS;
 const visibilityNames: Record<PageAccessSheet['visibility'], string> = {
   private: 'Personnes invitées uniquement',
-  workspace: 'Ouverte à l’espace — tous les membres y accèdent',
+  workspace: 'Ouverte aux membres de l’espace. Les lecteurs invités ont besoin d’un partage.',
   inherit: 'Héritée de la page parente',
 };
 
@@ -52,7 +52,7 @@ export function mountShareSheet(container: HTMLElement, options: ShareSheetOptio
     alive: true,
     sheet: null as PageAccessSheet | null,
     people: null as ChoiceControl<string> | null,
-    members: [] as { id: string; email: string }[],
+    members: [] as { id: string; email: string; role?: CloudRole }[],
     membersLoaded: false,
     adding: false,
   };
@@ -117,7 +117,7 @@ export function mountShareSheet(container: HTMLElement, options: ShareSheetOptio
     const control = createChoice<PageLevel>({
       label: `Niveau d’accès de ${entry.email}`,
       value: entry.level,
-      options: pageLevelOptions(),
+      options: pageLevelOptions(state.members.find(member => member.id === entry.userId)?.role),
       onChange: (value) => { void change(entry.userId, value); },
     });
     control.element.disabled = !governs;
@@ -155,13 +155,18 @@ export function mountShareSheet(container: HTMLElement, options: ShareSheetOptio
       label: 'Ajouter une personne', value: '', searchable: true,
       options: [{ value: '', label: state.membersLoaded ? 'Nom ou e-mail d’un membre…' : 'Chargement des membres…', disabled: true },
         ...candidates.map((member) => ({ value: member.id, label: member.email }))],
-      onChange: () => { add.disabled = state.adding; },
+      onChange: id => {
+        add.disabled = state.adding;
+        const allowed = pageLevelOptions(candidates.find(member => member.id === id)?.role);
+        if (!allowed.some(item => item.value === level.value)) level.setValue('view');
+      },
     });
     state.people.disabled = state.adding || !candidates.length;
     const personRow = el('div', undefined, 'data-cloud-share-person-picker');
     personRow.append(state.people.element, add);
     const level = createChoice<PageLevel>({ label: 'Accès à accorder', value: 'view',
-      options: pageLevelOptions(), onChange() {},
+      get options() { return pageLevelOptions(candidates.find(member => member.id === state.people?.value)?.role); },
+      onChange() {},
     });
     level.disabled = state.adding;
     controls.push(level);
@@ -180,7 +185,7 @@ export function mountShareSheet(container: HTMLElement, options: ShareSheetOptio
 
   async function loadMembers(): Promise<void> {
     try {
-      const result = await options.client.request<{ members: { id: string; email: string }[] }>(`/api/workspaces/${encodeURIComponent(options.slug)}/members`);
+      const result = await options.client.request<{ members: { id: string; email: string; role?: CloudRole }[] }>(`/api/workspaces/${encodeURIComponent(options.slug)}/members`);
       if (!state.alive) return;
       state.members = result.members;
       state.membersLoaded = true;

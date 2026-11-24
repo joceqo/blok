@@ -3,7 +3,7 @@ import { createPositionTracker } from '../../src/components/utils/popover/anchor
 import { resolvePosition } from '../../src/components/utils/popover/popover-position';
 import { promoteToTopLayer, removeFromTopLayer } from '../../src/components/utils/top-layer';
 import { renderPageIcon } from '../../src/shell/page-icon';
-import { WORKSPACE_ROLES } from './access-vocabulary';
+import { PAGE_LEVELS, WORKSPACE_ROLES } from './access-vocabulary';
 export interface PageToolbar {
   element: HTMLElement;
   setBreadcrumbs(items: PageBreadcrumbItem[]): void;
@@ -64,6 +64,7 @@ export function createPageToolbar(
     favorite?: boolean;
     onFavorite?: (favorite: boolean) => void;
     readOnly?: boolean;
+    canComment?: boolean;
     onRename?: () => void;
     onDuplicate?: () => void;
     onMove?: () => void;
@@ -128,7 +129,7 @@ export function createPageToolbar(
   if (options.readOnly) {
     const badge = document.createElement('span');
     badge.setAttribute('data-desktop-page-readonly', '');
-    badge.textContent = WORKSPACE_ROLES.viewer;
+    badge.textContent = options.canComment ? PAGE_LEVELS.comment : WORKSPACE_ROLES.viewer;
     identity.append(badge);
   }
 

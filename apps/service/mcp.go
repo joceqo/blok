@@ -116,6 +116,14 @@ func (s *Service) createMCPPageDocument(ctx context.Context, request blokagent.P
 // et de celle des routes HTTP, et doit répondre comme elles : un jeton MCP porte
 // l'identité de son propriétaire, jamais davantage.
 func (s *Service) authorizeMCPDocument(ctx context.Context, principal, documentID string, write bool) (bool, error) {
+	required := levelView
+	if write {
+		required = levelEdit
+	}
+	return s.authorizePageLevel(ctx, principal, documentID, required)
+}
+
+func (s *Service) authorizePageLevel(ctx context.Context, principal, documentID string, required level) (bool, error) {
 	var trashed bool
 	e := s.DB.QueryRow(ctx, `SELECT trashed FROM pages WHERE id=$1 AND NOT deleted`, documentID).Scan(&trashed)
 	if errors.Is(e, pgx.ErrNoRows) {
@@ -128,10 +136,7 @@ func (s *Service) authorizeMCPDocument(ctx context.Context, principal, documentI
 	if e != nil {
 		return false, e
 	}
-	if write {
-		return granted >= levelEdit, nil
-	}
-	return granted >= levelView, nil
+	return granted >= required, nil
 }
 
 func (s *Service) mcpIdentity(r *http.Request) (identity, error) {
@@ -419,7 +424,7 @@ func (s *Service) mcpUploadImage(ctx context.Context, req *mcp.CallToolRequest) 
 		return mcpError("Invalid arguments"), nil
 	}
 	ws, ok := s.mcpWorkspace(ctx, args.Workspace)
-	if !ok || ws.Role == "viewer" {
+	if !ok || capOf(ws.Role) < levelEdit {
 		return mcpError("Write access required"), nil
 	}
 	if _, _, err := decodeWorkspaceImage(args.DataURL, maxWorkspaceImage); err != nil {
@@ -442,7 +447,7 @@ func (s *Service) mcpUploadFile(ctx context.Context, req *mcp.CallToolRequest) (
 		return mcpError("Invalid arguments"), nil
 	}
 	ws, ok := s.mcpWorkspace(ctx, args.Workspace)
-	if !ok || ws.Role == "viewer" {
+	if !ok || capOf(ws.Role) < levelEdit {
 		return mcpError("Write access required"), nil
 	}
 	url, size, err := s.storeWorkspaceFile(ctx, ws, args.DataURL, args.FileName, maxWorkspaceFile)

@@ -121,6 +121,10 @@ export function workspaceRepository(workspace: WorkspaceRef) {
         throw error;
       }
     },
+    async postPageComment(pageId: string, message: {text: string; threadId?: string; requestId: string}): Promise<void> {
+      if (ref.kind !== 'remote') throw new Error('Remote operation only');
+      await request(`${base}/pages/${encodeURIComponent(pageId)}/comments`, { method: 'POST', body: JSON.stringify(message) });
+    },
     async uploadImage(dataUrl: string): Promise<string> {
       if (ref.kind === 'local') return dataUrl;
       const image = await request<{url: string}>(`${base}/images`, {method: 'POST', body: JSON.stringify({dataUrl})});

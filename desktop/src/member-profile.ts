@@ -3,7 +3,7 @@ import {profileDisplayName,profileInitial} from './profile-identity';
 import './member-profile.css';
 
 export interface WorkspacePerson {id:string;email:string;name?:string;avatarUrl?:string;role:CloudRole}
-const roleName:Record<CloudRole,string>={admin:'Administrateur',member:'Membre',viewer:'Lecteur'};
+const roleName:Record<CloudRole,string>={admin:'Administrateur',member:'Membre',viewer:'Lecteur',guest:'Lecteur invité'};
 const memberPortrait=(person:WorkspacePerson):HTMLElement=>{
   const portrait=document.createElement('div');portrait.setAttribute('data-member-profile-avatar','');portrait.textContent=profileInitial(profileDisplayName(person.name,person.email));
   if(!person.avatarUrl)return portrait;

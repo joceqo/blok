@@ -18,6 +18,7 @@ import './workspace-save-status.css';
 import './row-page-navigation.css';
 import { navigationFavorites, navigationRecents } from './navigation-preferences';
 import { commentAuthor } from './comment-author';
+import type { PageCommentInput } from './page-comment-form';
 import { mountPageComments } from './page-comments';
 import { CommentInlineTool } from './inline-comments';
 import { createNotesDocument, readNotesCollection, rememberNotesCollection, addNote } from './notes-collection';
@@ -236,6 +237,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (!ws.index?.access) return tagged.map((page) => ({ ...page, section: page.parentId ? undefined : 'workspace' }));
     return tagged.map(page=>page.parentId ? page : {...page,section:sidebarSectionOf(ws.index?.access?.[page.id])});
   };
+  const discussionFor = (id: string, active: () => boolean) => ref.kind === 'remote' ? {
+    allowed: () => active() && ws.access.canComment(id),
+    post: (message: PageCommentInput) => repository.postPageComment(id, message),
+  } : undefined;
   const readOnly = (pageId: string): boolean => !ws.access.canEdit(pageId);
   const canCreateUnder = (parentId: string | null): boolean =>
     parentId ? ws.access.canEdit(parentId) : !ws.access.readOnlyWorkspace;
@@ -762,6 +767,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         if (ws.index) ws.frame.setPages(withSections(ws.index.pages), ws.currentId);
       },
       readOnly: readOnly(id),
+      canComment: ws.access.canComment(id),
       onRename: () => {
         if (rowPageDestination(location.href)) return;
         const title = holder.querySelector<HTMLElement>('[data-blok-title] h1, h1[contenteditable="true"]');
@@ -998,7 +1004,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         let comments: ReturnType<typeof mountPageComments> | undefined;
         const ready = body.isReady.then(() => {
           if (disposed || !(config.holder instanceof HTMLElement)) return;
-          comments = mountPageComments({holder: config.holder, editor: body, author: () => commentAuthor(ref), canComment: () => !disposed && !readOnly(id) && !readOnly(config.collaboration?.doc ?? '')});
+          comments = mountPageComments({holder: config.holder, editor: body, author: () => commentAuthor(ref), discussion: discussionFor(config.collaboration?.doc ?? '', () => !disposed), canEditDocument: () => !disposed && !readOnly(id) && !readOnly(config.collaboration?.doc ?? '')});
           config.holder.append(comments.action, comments.element);
         });
         // Blok installs its API in exportAPI, after the constructor returns, so
@@ -1110,7 +1116,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     instance.width.set(page.fullWidth === true ? 'full' : 'narrow');
     const mountPresentation = (): void => {
       if (!life.active || life.destroyed) return;
-      ws.pageComments = mountPageComments({ holder, editor: instance, author: () => commentAuthor(ref), canComment: () => !readOnly(id) && ws.editor === instance });
+      ws.pageComments = mountPageComments({ holder, editor: instance, author: () => commentAuthor(ref), discussion: discussionFor(id, () => ws.editor === instance), canEditDocument: () => !readOnly(id) && ws.editor === instance });
       const discussions = ws.pageComments.element.querySelector('[data-inline-comments-open]');
       if (discussions) toolbar.element.querySelector('[data-desktop-page-actions]')?.prepend(discussions);
 
@@ -1425,7 +1431,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     try {
       const result=await teamspacesApi.list();
       teamspacesState.error=null;
-      sidebarTeamspaces.splice(0,sidebarTeamspaces.length,...result.teamspaces.filter(team=>!!team.myRole && !team.archived).map(team=>({id:team.id,name:team.name,icon:team.icon,canManage:team.canManage,canCreate:ref.kind==='remote' && ref.role!=='viewer'})));
+      sidebarTeamspaces.splice(0,sidebarTeamspaces.length,...result.teamspaces.filter(team=>!!team.myRole && !team.archived).map(team=>({id:team.id,name:team.name,icon:team.icon,canManage:team.canManage,canCreate:ref.kind==='remote' && !ws.access.readOnlyWorkspace})));
       if(ws.index)ws.frame.setPages(withSections(ws.index.pages),ws.currentId);
     }catch(error){
       teamspacesState.error=`Espaces d’équipe indisponibles : ${error instanceof Error ? error.message : 'réessayez depuis les paramètres'}`;
@@ -1447,7 +1453,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     pageMoves: { destinations: destinationsFor, move: (id, target) => { void movePage(id, target).catch(error => showError(error, 'move', id)); } },
     onOpen: (id) => navigate(id),
     onCreate: (parentId) => chooseNewPage(parentId),
-    onCreatePrivate: ref.kind === 'remote' ? () => chooseNewPage(null, true) : undefined,
+    onCreatePrivate: ref.kind === 'remote' && canCreateUnder(null) ? () => chooseNewPage(null, true) : undefined,
     onSearch: (recentIds) => {
       ws.closeSearch?.();
       ws.closeSearch = openPageSearch({ workspaceName: identity.name, pages: () => ws.index?.pages ?? [], onOpen: navigate, recentIds });
@@ -1673,6 +1679,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       recentIds: () => library.recents, isFavorite: favorites.has,
       loadChildren: pageId => repository.readPageOutline(pageId),
       onOpenBlock: (pageId, blockId) => { library.target = { pageId, blockId }; navigate(pageId); },
+      guest: ref.kind === 'remote' && ref.role === 'guest',
       canCreate: canCreateUnder(null), onOpen: navigate,
       onCreateNote: () => { void createNote().catch(error => showError(error, 'create')); }, onCreate: () => chooseNewPage(null),
     });

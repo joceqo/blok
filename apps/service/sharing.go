@@ -262,11 +262,16 @@ func (s *Service) pageShare(w http.ResponseWriter, r *http.Request, u identity, 
 		}
 		// Partager avec quelqu'un qui n'est pas de l'espace écrirait une ligne
 		// sans effet : son plafond est nul, donc son accès aussi.
-		var member bool
-		if e = tx.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM memberships WHERE workspace_id=$1 AND user_id=$2)", ws.ID, target).Scan(&member); e != nil {
+		var role string
+		if e = tx.QueryRow(r.Context(), "SELECT coalesce((SELECT role FROM memberships WHERE workspace_id=$1 AND user_id=$2),'')", ws.ID, target).Scan(&role); e != nil {
 			problem(w, 503, "Database unavailable")
 			return
 		}
+		if role == "guest" && parseLevel(in.Level) > levelComment {
+			problem(w, 400, "Guests can be granted view or comment access")
+			return
+		}
+		member := role != ""
 		tsID, e := s.pageTeamspace(r.Context(), tx, u.ID, page)
 		if e != nil {
 			problem(w, 503, "Database unavailable")

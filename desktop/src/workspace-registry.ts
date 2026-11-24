@@ -1,7 +1,8 @@
+import type { CloudRole } from './cloud/client';
 import { workspaceSwitchUrl } from './page-urls';
 /** Non-secret workspace references. Session credentials live in the OS keychain. */
 export type LocalWorkspace = { kind: 'local'; id: string; name: string; icon?: string | null };
-export type RemoteWorkspace = { kind: 'remote'; id: string; name: string; server: string; accountId: string; workspaceId: string; icon?: string | null; userName?: string; role?: 'admin' | 'member' | 'viewer' };
+export type RemoteWorkspace = { kind: 'remote'; id: string; name: string; server: string; accountId: string; workspaceId: string; icon?: string | null; userName?: string; role?: CloudRole };
 export type WorkspaceRef = LocalWorkspace | RemoteWorkspace;
 const KEY = 'blok:desktop:workspaces:v1';
 const ACTIVE = 'blok:desktop:active-workspace:v1';

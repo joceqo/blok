@@ -29,6 +29,7 @@ export function openPageLibrary(options: {
   onCreate: () => void;
   onCreateNote?: () => void;
   canCreate?: boolean;
+  guest?: boolean;
   loadChildren?: (pageId: string) => Promise<PageOutline[]>;
   onOpenBlock?: (pageId: string, blockId: string) => void;
 }): (() => void) & { refresh(): void } {
@@ -40,7 +41,8 @@ export function openPageLibrary(options: {
   const icon = (drawing: Parameters<typeof createElement>[0]): SVGElement => createElement(drawing, {'aria-hidden':'true',focusable:'false','stroke-width':'1.8'}) as SVGElement;
   const create = document.createElement('button'); create.type = 'button'; create.textContent = 'Nouvelle page'; create.disabled = options.canCreate === false; create.addEventListener('click', options.onCreate);
   const header = document.createElement('header');
-  const createGroup=document.createElement('div');createGroup.setAttribute('data-library-create','');createGroup.append(create);header.append(heading,createGroup);
+  const createGroup=document.createElement('div');createGroup.setAttribute('data-library-create','');createGroup.append(create);header.append(heading);
+  if (!options.guest) header.append(createGroup);
   const creation=options.onCreateNote?createChoice({label:'Options de création',value:'page',options:[{value:'page',label:'Nouvelle page'},{value:'note',label:'Nouvelle note'}],onChange:value=>{if(value==='note')options.onCreateNote?.();else options.onCreate();}}):null;
   if(creation){creation.element.prepend(icon(ChevronDown));creation.element.setAttribute('data-library-icon-button','');creation.disabled=options.canCreate===false;createGroup.append(creation.element);}
   if (options.onToggleSidebar) {
@@ -48,8 +50,9 @@ export function openPageLibrary(options: {
     toggle.addEventListener('click', options.onToggleSidebar); header.prepend(toggle);
   }
   const tabs = document.createElement('div'); tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Catégories de pages');
-  const categories = [['all', 'Toutes', Table2], ['teamspaces', 'Espaces d’équipe', Building2], ['recent', 'Récents', Clock3], ['favorite', 'Favoris', Star], ['shared', 'Partagé', Users], ['private', 'Privé', LockKeyhole]] as const;
-  const view = { category: options.category ?? 'all' };
+  const allCategories = [['all', 'Toutes', Table2], ['teamspaces', 'Espaces d’équipe', Building2], ['recent', 'Récents', Clock3], ['favorite', 'Favoris', Star], ['shared', 'Partagé', Users], ['private', 'Privé', LockKeyhole]] as const;
+  const categories = allCategories.filter(([category]) => !options.guest || category !== 'private');
+  const view = { category: categories.find(([category]) => category === options.category)?.[0] ?? 'all' };
   const expanded = new Set<string>();
   const outlines = new Map<string, PageOutline[]>();
   const loading = new Set<string>();

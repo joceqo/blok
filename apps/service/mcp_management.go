@@ -61,17 +61,17 @@ func (s *Service) managementOperations() []managementOperation {
 	memberRole := managementFields("workspace", "teamspaceId", "userId")
 	memberRole["role"] = enumField("owner", "member")
 	wsRole := managementFields("workspace", "userId")
-	wsRole["role"] = enumField("admin", "member", "viewer")
+	wsRole["role"] = enumField("admin", "member", "viewer", "guest")
 	bind := managementFields("workspace", "pageId")
 	bind["teamspaceId"] = map[string]any{"type": []string{"string", "null"}, "minLength": 1, "description": "Target teamspace ID, or null to detach. Private pages remain private."}
 	invite := managementFields("workspace", "email")
-	invite["role"] = enumField("member", "viewer")
+	invite["role"] = enumField("member", "viewer", "guest")
 	invite["message"] = map[string]any{"type": "string", "maxLength": 2000}
 	invite["silent"] = map[string]any{"type": "boolean"}
 	addMember := managementFields("workspace", "email")
-	addMember["role"] = enumField("member", "viewer")
+	addMember["role"] = enumField("member", "viewer", "guest")
 	join := managementFields("workspace", "requestId")
-	join["role"] = enumField("member", "viewer")
+	join["role"] = enumField("member", "viewer", "guest")
 	settings := map[string]any{
 		"name": map[string]any{"type": "string"}, "signupPolicy": enumField("open", "invite", "domain"),
 		"signupDomains": map[string]any{"type": "array", "items": stringField()}, "workspaceCreation": enumField("anyone", "admins_only", "disabled"),
@@ -94,7 +94,7 @@ func (s *Service) managementOperations() []managementOperation {
 	visibility := managementFields("workspace", "pageId")
 	visibility["visibility"] = enumField("private", "workspace", "inherit")
 	share := managementFields("workspace", "pageId", "userId")
-	share["level"] = enumField("view", "edit", "full")
+	share["level"] = enumField("view", "comment", "edit", "full")
 	emoji := managementFields("workspace", "name")
 	emoji["dataUrl"] = map[string]any{"type": "string", "description": "PNG/JPEG/GIF/WebP base64 data URL, up to 2 MiB. Provide this OR url."}
 	emoji["url"] = map[string]any{"type": "string", "description": "An existing /files/ image owned by this workspace (not a private page asset), or an external HTTPS image URL. Never store an expiring signed URL."}
@@ -108,7 +108,8 @@ func (s *Service) managementOperations() []managementOperation {
 		{"blok_delete_page", "Move a page and all its descendants to the workspace trash. Recoverable: preserves content, files, shares and parent links. Requires edit access to every page in the subtree; refuses the entire operation otherwise. Repeating the call on an already trashed subtree makes no further change. Returns id, trashed, affectedPages and revision.", "DELETE", s.workspaceResource, map[string]string{"resource": "pages"}, pageParams, managementFields("workspace", "pageId"), pageRequired, false},
 		{"blok_get_page_access", "Read page visibility, effective level and shares. Requires page access; admins cannot inspect private pages implicitly.", "GET", s.workspaceResource, map[string]string{"resource": "pages", "action": "access"}, pageParams, managementFields("workspace", "pageId"), pageRequired, false},
 		{"blok_set_page_visibility", "Change page visibility (private, workspace or inherited). Requires full access. Workspace visibility inside a teamspace is limited to its members; may affect descendants.", "PUT", s.workspaceResource, map[string]string{"resource": "pages", "action": "access"}, pageParams, visibility, []string{"workspace", "pageId", "visibility"}, false},
-		{"blok_set_page_share", "Grant or change a workspace member's page access (view, edit, full). Requires full access; does not bypass teamspace membership.", "PUT", s.workspaceResource, map[string]string{"resource": "pages", "action": "shares"}, map[string]string{"workspace": "slug", "pageId": "id", "userId": "target"}, share, []string{"workspace", "pageId", "userId", "level"}, false},
+		{"blok_add_page_comment", "Start a general page discussion or reply to an open page thread. Requires effective comment access. Supply a unique requestId per message and reuse it on retry.", "POST", s.workspaceResource, map[string]string{"resource": "pages", "action": "comments"}, map[string]string{"workspace": "slug", "pageId": "id"}, managementFields("workspace", "pageId", "requestId", "text", "threadId"), []string{"workspace", "pageId", "requestId", "text"}, false},
+		{"blok_set_page_share", "Grant or change a workspace member's page access (view, comment, edit, full). Requires full access; does not bypass teamspace membership.", "PUT", s.workspaceResource, map[string]string{"resource": "pages", "action": "shares"}, map[string]string{"workspace": "slug", "pageId": "id", "userId": "target"}, share, []string{"workspace", "pageId", "userId", "level"}, false},
 		{"blok_remove_page_share", "Remove a direct page share. Requires full access; inherited permissions can still grant access. Protects the last full-access holder.", "DELETE", s.workspaceResource, map[string]string{"resource": "pages", "action": "shares"}, map[string]string{"workspace": "slug", "pageId": "id", "userId": "target"}, managementFields("workspace", "pageId", "userId"), []string{"workspace", "pageId", "userId"}, false},
 		{"blok_get_teamspace", "Read teamspace identity and your role. Discovery does not grant access to its content.", "GET", s.workspaceResource, teamspaces, tsParams, managementFields("workspace", "teamspaceId"), tsRequired, false},
 		{"blok_create_teamspace", "Create a closed teamspace. Requires workspace admin; creator becomes owner. Does not create a workspace.", "POST", s.workspaceResource, teamspaces, wsParams, createTS, []string{"workspace", "name"}, false},
@@ -128,7 +129,7 @@ func (s *Service) managementOperations() []managementOperation {
 		{"blok_invite_workspace_member", "Invite someone by email, valid for 7 days. SENDS an invitation email unless silent is true. Requires workspace admin. Use only when the user requests an invitation.", "POST", s.workspaceResource, map[string]string{"resource": "invites"}, wsParams, invite, []string{"workspace", "email"}, false},
 		{"blok_revoke_workspace_invite", "Revoke a pending workspace invitation. Requires workspace admin.", "DELETE", s.workspaceResource, map[string]string{"resource": "invites"}, map[string]string{"workspace": "slug", "inviteId": "id"}, managementFields("workspace", "inviteId"), []string{"workspace", "inviteId"}, false},
 		{"blok_list_join_requests", "List workspace join requests. Requires workspace admin.", "GET", s.workspaceResource, map[string]string{"resource": "join-requests"}, wsParams, managementFields("workspace"), wsRequired, false},
-		{"blok_approve_join_request", "Approve a pending request with member or viewer role (default member). Requires workspace admin.", "POST", s.workspaceResource, map[string]string{"resource": "join-requests", "action": "approve"}, map[string]string{"workspace": "slug", "requestId": "id"}, join, []string{"workspace", "requestId"}, false},
+		{"blok_approve_join_request", "Approve a pending request with member, viewer or guest role (default member). Requires workspace admin.", "POST", s.workspaceResource, map[string]string{"resource": "join-requests", "action": "approve"}, map[string]string{"workspace": "slug", "requestId": "id"}, join, []string{"workspace", "requestId"}, false},
 		{"blok_reject_join_request", "Reject a pending workspace join request. Requires workspace admin.", "POST", s.workspaceResource, map[string]string{"resource": "join-requests", "action": "reject"}, map[string]string{"workspace": "slug", "requestId": "id"}, managementFields("workspace", "requestId"), []string{"workspace", "requestId"}, false},
 		{"blok_get_instance_settings", "Read server-wide settings. Requires instance admin, not just workspace admin.", "GET", s.getAdminSettings, nil, nil, map[string]any{}, nil, false},
 		{"blok_update_instance_settings", "Update server name, signup rules, workspace creation policy or default workspace. Requires instance admin. Omitted fields are preserved; null clears defaultWorkspaceId.", "PATCH", s.patchAdminSettings, nil, nil, settings, nil, false},
@@ -161,7 +162,7 @@ func (s *Service) registerMCPManagement(server *mcp.Server) {
 		}
 		schema := map[string]any{"type": "object", "properties": op.properties, "required": required, "additionalProperties": false}
 		readOnly := op.method == "GET"
-		destructive := !readOnly && op.name != "blok_create_teamspace" && op.name != "blok_create_workspace" && op.name != "blok_create_instance_user" && op.name != "blok_create_custom_emoji" && op.name != "blok_invite_workspace_member" && op.name != "blok_add_workspace_member"
+		destructive := !readOnly && op.name != "blok_add_page_comment" && op.name != "blok_create_teamspace" && op.name != "blok_create_workspace" && op.name != "blok_create_instance_user" && op.name != "blok_create_custom_emoji" && op.name != "blok_invite_workspace_member" && op.name != "blok_add_workspace_member"
 		openWorld := op.name == "blok_invite_workspace_member"
 		server.AddTool(&mcp.Tool{Name: op.name, Description: op.description, InputSchema: schema, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return s.callManagement(ctx, req, op), nil
@@ -308,8 +309,8 @@ func (s *Service) mcpCapabilities(ctx context.Context, _ *mcp.CallToolRequest) (
 		"user": map[string]any{"id": u.ID, "name": u.Name, "email": u.Email, "instanceAdmin": u.InstanceAdmin}, "workspaces": workspaces, "management": ops,
 		"workspaceCreation":  s.settings().WorkspaceCreation,
 		"canCreateWorkspace": u.InstanceAdmin || s.settings().WorkspaceCreation == "anyone",
-		"pageAccessLevels":   []string{"view", "edit", "full"},
-		"documentWorkflow":   []string{"List pages with blok_list_pages, or create one with blok_create_page (private by default outside teamspaces).", "Open with blok_open, inspect with blok_read and discover the available document actions before blok_execute.", "Databases, schemas, views, rows and page discussions use the document tools; do not invent REST endpoints.", "Text-anchored discussion UI is not implemented yet. General page and database discussions are available."},
+		"pageAccessLevels":   []string{"view", "comment", "edit", "full"},
+		"documentWorkflow":   []string{"List pages with blok_list_pages, or create one with blok_create_page (private by default outside teamspaces).", "Open with blok_open, inspect with blok_read and discover the available document actions before blok_execute.", "Use blok_add_page_comment to start or reply to a general page discussion with comment access. Databases, schemas, views and rows use document tools.", "Text-anchored discussion UI is not implemented yet. General page and database discussions are available."},
 		"permissions":        "Each operation rechecks current permissions. Workspace admin does not imply instance admin or private-page access. A teamspace's metadata does not grant content access.",
 	}), nil
 }

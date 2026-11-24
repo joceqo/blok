@@ -28,7 +28,7 @@ export function sectionOf(access: PageAccessEntry | undefined): PageSection {
   if (!access) return 'workspace';
   // Une page dont l'ancêtre est hors d'atteinte ne peut s'afficher nulle part
   // ailleurs : quelqu'un me l'a ouverte, donc elle est partagée.
-  if (access.sharedRoot === true) return 'shared';
+  if (access.sharedWithMe || access.sharedRoot === true) return 'shared';
   if (access.visibility === 'workspace') return 'workspace';
   return access.shared === true ? 'shared' : 'private';
 }
@@ -53,6 +53,6 @@ export function groupPagesBySection<T extends { id: string }>(pages: T[], access
 /** The effective teamspace comes from access metadata, never a client page label. */
 export function sidebarSectionOf(access: PageAccessEntry | undefined): string {
   const section=sectionOf(access);
-  if(access?.teamspaceId && !access.sharedRoot)return `teamspace:${access.teamspaceId}`;
+  if(access?.teamspaceId && !access.sharedRoot && !access.sharedWithMe)return `teamspace:${access.teamspaceId}`;
   return sectionNames[section];
 }

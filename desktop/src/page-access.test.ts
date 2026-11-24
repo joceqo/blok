@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { pageAccess } from './page-access';
 import type { RemoteWorkspace, LocalWorkspace } from './workspace-registry';
 
-const remote = (role: 'admin' | 'member' | 'viewer'): RemoteWorkspace =>
+const remote = (role: 'admin' | 'member' | 'viewer' | 'guest'): RemoteWorkspace =>
   ({ kind: 'remote', id: 'r', name: 'Équipe', server: 'https://example.org', accountId: 'a', workspaceId: 'equipe', role });
 const local: LocalWorkspace = { kind: 'local', id: 'l', name: 'Local' };
 
@@ -12,6 +12,14 @@ describe('page access', () => {
     expect(access.canEdit('lecture')).toBe(false);
     expect(access.canEdit('ecriture')).toBe(true);
     expect(access.canEdit('mienne')).toBe(true);
+  });
+
+  it.each(['viewer', 'member', 'guest'] as const)('allows %s to comment with an explicit comment-only level', role => {
+    const access = pageAccess(remote(role), { page: { level: 'comment' }, other: { level: 'view' } });
+    expect(access.canComment('page')).toBe(true);
+    expect(access.canEdit('page')).toBe(false);
+    expect(access.canShare('page')).toBe(false);
+    expect(access.canComment('other')).toBe(false);
   });
 
   it('separates editing from governing access', () => {

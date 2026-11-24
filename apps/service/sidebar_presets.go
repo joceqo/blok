@@ -124,7 +124,7 @@ func (s *Service) sidebarPresets(w http.ResponseWriter, r *http.Request, u ident
 		problem(w, 405, "Method not allowed")
 		return
 	}
-	if ws.Role != "admin" && ws.Role != "member" && ws.Role != "viewer" {
+	if capOf(ws.Role) == levelNone {
 		problem(w, 403, "Workspace membership required")
 		return
 	}

@@ -223,7 +223,7 @@ export function buildWelcomeDocuments(workspaceId: string): WelcomeDocuments {
         id: id('rights-p', workspaceId, 'intro'),
         type: 'paragraph',
         data: {
-          text: `Trois rôles d’espace (${WORKSPACE_ROLES.admin}, ${WORKSPACE_ROLES.member}, ${WORKSPACE_ROLES.viewer}) et trois niveaux de page (${PAGE_LEVELS.view}, ${PAGE_LEVELS.edit}, ${PAGE_LEVELS.full}). Le droit le plus large l’emporte ; une page privée reste hors de l’espace jusqu’à ce que vous la partagiez.`,
+          text: `Quatre rôles d’espace (${WORKSPACE_ROLES.admin}, ${WORKSPACE_ROLES.member}, ${WORKSPACE_ROLES.viewer}, ${WORKSPACE_ROLES.guest}) et quatre niveaux de page (${PAGE_LEVELS.view}, ${PAGE_LEVELS.comment}, ${PAGE_LEVELS.edit}, ${PAGE_LEVELS.full}). Le droit le plus large l’emporte ; une page privée reste hors de l’espace jusqu’à ce que vous la partagiez.`,
         },
       },
       {

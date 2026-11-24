@@ -7,6 +7,7 @@ export const WORKSPACE_ROLES: Record<CloudRole, string> = {
   admin: 'Administrateur',
   member: 'Membre',
   viewer: 'Lecture seule',
+  guest: 'Lecteur invité',
 };
 
 /** Rôles propres aux espaces d’équipe, indépendants du Workspace. */
@@ -22,12 +23,14 @@ export const INSTANCE_ROLES = {
 export const WORKSPACE_ROLE_DESCRIPTIONS: Record<CloudRole, string> = {
   admin: 'Gère les membres, les réglages et toutes les pages de l’espace.',
   member: 'Peut créer et modifier les pages de l’espace.',
-  viewer: 'Consulte les pages ouvertes à l’espace, sans les modifier.',
+  guest: 'Accède uniquement aux pages qui lui sont partagées. Peut y lire ou commenter selon le droit accordé. Ne peut créer aucune page.',
+  viewer: 'Consulte les pages et peut commenter celles partagées avec le droit « Peut lire et commenter ».',
 };
 
 /** Libellés de niveau de page affichés dans la feuille de partage. */
 export const PAGE_LEVELS: Record<PageLevel, string> = {
-  view: 'Peut voir',
+  view: 'Peut lire',
+  comment: 'Peut lire et commenter',
   edit: 'Peut modifier',
   full: 'Accès complet',
 };
@@ -35,7 +38,8 @@ export const PAGE_LEVELS: Record<PageLevel, string> = {
 /** Conséquences affichées en seconde ligne des sélecteurs de niveau. */
 export const PAGE_LEVEL_DESCRIPTIONS: Record<PageLevel, string> = {
   view: 'Peut ouvrir et lire cette page.',
-  edit: 'Peut modifier le contenu de cette page.',
+  comment: 'Peut lire la page, ouvrir une discussion et répondre.',
+  edit: 'Peut modifier le contenu et commenter.',
   full: 'Peut partager et gérer les accès de cette page.',
 };
 
@@ -48,7 +52,7 @@ export const PAGE_RIGHTS_CUMULATIVE =
 
 /** En-tête du panneau Membres — les trois rôles en une phrase. */
 export const MEMBERS_ROLES_INTRO =
-  `${WORKSPACE_ROLES.admin} gère l’espace, ${WORKSPACE_ROLES.member} crée et modifie, ${WORKSPACE_ROLES.viewer} consulte. Un partage de page ne dépasse jamais ce rôle.`;
+  `${WORKSPACE_ROLES.admin} gère l’espace, ${WORKSPACE_ROLES.member} crée et modifie, ${WORKSPACE_ROLES.viewer} consulte. ${WORKSPACE_ROLES.guest} accède uniquement aux pages qui lui sont partagées.`;
 
 /** Politique d’inscription — libellé + conséquence (plan §9.2 / §9.3). */
 export const SIGNUP_POLICIES: Record<CloudSignupPolicy, {label: string; consequence: string}> = {
@@ -84,7 +88,7 @@ export const WORKSPACE_CREATION_POLICIES: Record<CloudWorkspaceCreation, {label:
 
 /** Options du sélecteur de rôle d’espace, dans l’ordre historique. */
 export function roleOptions(admin = true): ChoiceOption<CloudRole>[] {
-  const values = (admin ? ['member', 'viewer', 'admin'] : ['member', 'viewer']) as CloudRole[];
+  const values = (admin ? ['member', 'viewer', 'guest', 'admin'] : ['member', 'viewer', 'guest']) as CloudRole[];
   return values.map((value) => ({
     value,
     label: WORKSPACE_ROLES[value],
@@ -93,8 +97,9 @@ export function roleOptions(admin = true): ChoiceOption<CloudRole>[] {
 }
 
 /** Options du sélecteur de niveau de page. */
-export function pageLevelOptions(): ChoiceOption<PageLevel>[] {
-  return (['view', 'edit', 'full'] as PageLevel[]).map((value) => ({
+export function pageLevelOptions(role?: CloudRole): ChoiceOption<PageLevel>[] {
+  const levels: PageLevel[] = role === 'guest' ? ['view', 'comment'] : ['view', 'comment', 'edit', 'full'];
+  return levels.map((value) => ({
     value,
     label: PAGE_LEVELS[value],
     description: PAGE_LEVEL_DESCRIPTIONS[value],
@@ -117,4 +122,8 @@ export function workspaceCreationOptions(): ChoiceOption<CloudWorkspaceCreation>
     label: WORKSPACE_CREATION_POLICIES[value].label,
     description: WORKSPACE_CREATION_POLICIES[value].consequence,
   }));
+}
+
+export function isReaderRole(role?: CloudRole): boolean {
+  return role === 'viewer' || role === 'guest';
 }

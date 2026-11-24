@@ -72,6 +72,9 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 				teamspaceID = standing.TeamspaceID
 			}
 			entry := map[string]any{"level": standing.Level.String(), "visibility": standing.Visibility, "shared": standing.Shared, "teamspaceId": teamspaceID, "publicId": publicID}
+			if ws.Role == "guest" {
+				entry["sharedWithMe"] = true
+			}
 			// Une page accessible sous un parent qui ne l'est pas ne peut pas
 			// s'afficher sous un nœud que l'appelant ne reçoit pas. Elle remonte,
 			// et le signalement empêche l'enregistrement de lire ce détachement
@@ -134,7 +137,7 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 		problem(w, 405, "Method not allowed")
 		return
 	}
-	if ws.Role == "viewer" {
+	if capOf(ws.Role) < levelEdit {
 		problem(w, 403, "Write access required")
 		return
 	}
@@ -183,7 +186,7 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 		return
 	}
 	var role string
-	if e = tx.QueryRow(r.Context(), "SELECT role FROM memberships WHERE workspace_id=$1 AND user_id=$2", ws.ID, u.ID).Scan(&role); e != nil || role == "viewer" {
+	if e = tx.QueryRow(r.Context(), "SELECT role FROM memberships WHERE workspace_id=$1 AND user_id=$2", ws.ID, u.ID).Scan(&role); e != nil || capOf(role) < levelEdit {
 		problem(w, 403, "Write access required")
 		return
 	}
@@ -440,6 +443,10 @@ func (s *Service) page(w http.ResponseWriter, r *http.Request, u identity, ws Wo
 		s.trashPage(w, r, u, ws)
 		return
 	}
+	if r.Method == http.MethodPost && r.PathValue("action") == "comments" {
+		s.addPageComment(w, r, u)
+		return
+	}
 	if r.Method == http.MethodPost && r.PathValue("action") == "row-body" {
 		s.openRowBody(w, r, u, ws)
 		return
@@ -638,7 +645,7 @@ func (s *Service) document(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, ws Workspace) {
-	if ws.Role == "viewer" {
+	if capOf(ws.Role) < levelEdit {
 		problem(w, 403, "Write access required")
 		return
 	}
@@ -725,7 +732,7 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 		return
 	}
 	var role string
-	if e = tx.QueryRow(r.Context(), "SELECT role FROM memberships WHERE workspace_id=$1 AND user_id=$2", ws.ID, u.ID).Scan(&role); e != nil || role == "viewer" {
+	if e = tx.QueryRow(r.Context(), "SELECT role FROM memberships WHERE workspace_id=$1 AND user_id=$2", ws.ID, u.ID).Scan(&role); e != nil || capOf(role) < levelEdit {
 		problem(w, 403, "Write access required")
 		return
 	}
@@ -821,7 +828,7 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 }
 
 func (s *Service) seed(w http.ResponseWriter, r *http.Request, u identity, ws Workspace) {
-	if ws.Role == "viewer" {
+	if capOf(ws.Role) < levelEdit {
 		problem(w, 403, "Write access required")
 		return
 	}

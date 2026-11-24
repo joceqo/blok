@@ -299,6 +299,11 @@ func (s *Service) members(w http.ResponseWriter, r *http.Request, ws Workspace) 
 	}
 	jsonOut(w, 200, map[string]any{"members": out})
 }
+
+func validInvitedRole(role string) bool {
+	return role == "member" || role == "viewer" || role == "guest"
+}
+
 // Grant access to someone who is not a member yet. Setting a workspace up —
 // filling person properties, assigning work — needs the team present before
 // anyone has signed in, and an invitation only becomes a membership at that
@@ -324,7 +329,7 @@ func (s *Service) addMember(w http.ResponseWriter, r *http.Request, u identity, 
 	// Invitations cannot carry the admin role, so neither can this: an admin is
 	// promoted afterwards. Otherwise the answer would differ for an address with
 	// an account and one without, which is exactly the leak this avoids.
-	if in.Role != "member" && in.Role != "viewer" {
+	if !validInvitedRole(in.Role) {
 		problem(w, 400, "Invalid role")
 		return
 	}
@@ -394,7 +399,7 @@ func (s *Service) mutateMember(w http.ResponseWriter, r *http.Request, u identit
 		if !body(w, r, &in) {
 			return
 		}
-		if in.Role != "admin" && in.Role != "member" && in.Role != "viewer" {
+		if in.Role != "admin" && !validInvitedRole(in.Role) {
 			problem(w, 400, "Invalid role")
 			return
 		}
@@ -430,12 +435,13 @@ func (s *Service) mutateMember(w http.ResponseWriter, r *http.Request, u identit
 			return
 		}
 	}
-	if r.Method == "DELETE" || in.Role == "viewer" {
+	reader := in.Role == "viewer" || in.Role == "guest"
+	if r.Method == "DELETE" || reader {
 		if e = s.protectTeamspaceOwnerMembership(r.Context(), tx, id, ws.ID); e != nil {
 			problem(w, 409, e.Error())
 			return
 		}
-		if in.Role == "viewer" {
+		if reader {
 			if _, e = tx.Exec(r.Context(), `UPDATE teamspace_memberships SET role='member' WHERE workspace_id=$1 AND user_id=$2`, ws.ID, id); e != nil {
 				problem(w, 500, "Update failed")
 				return
@@ -502,7 +508,7 @@ func (s *Service) joinRequests(w http.ResponseWriter, r *http.Request, ws Worksp
 	if in.Role == "" {
 		in.Role = "member"
 	}
-	if in.Role != "member" && in.Role != "viewer" {
+	if !validInvitedRole(in.Role) {
 		problem(w, 400, "Invalid role")
 		return
 	}
@@ -605,7 +611,7 @@ func (s *Service) invites(w http.ResponseWriter, r *http.Request, u identity, ws
 	if in.Role == "" {
 		in.Role = "member"
 	}
-	if in.Role != "member" && in.Role != "viewer" {
+	if !validInvitedRole(in.Role) {
 		problem(w, 400, "Invalid role")
 		return
 	}

@@ -89,7 +89,7 @@ func (s *Service) workspaceImage(w http.ResponseWriter, r *http.Request, ws Work
 		problem(w, 405, "Method not allowed")
 		return
 	}
-	if ws.Role == "viewer" {
+	if capOf(ws.Role) < levelEdit {
 		problem(w, 403, "Workspace editing permission required")
 		return
 	}
@@ -135,7 +135,7 @@ func (s *Service) emojis(w http.ResponseWriter, r *http.Request, u identity, ws 
 		jsonOut(w, 200, map[string]any{"emojis": out})
 		return
 	}
-	if ws.Role == "viewer" {
+	if capOf(ws.Role) < levelEdit {
 		problem(w, 403, "Workspace editing permission required")
 		return
 	}

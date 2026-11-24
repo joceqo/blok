@@ -1,4 +1,4 @@
-import { TEAMSPACE_ROLES } from '../access-vocabulary';
+import { isReaderRole, TEAMSPACE_ROLES } from '../access-vocabulary';
 import { EmojiPicker } from '@blok/emoji-picker';
 import french from '../../../src/components/i18n/locales/fr.json';
 import { createChoice, styleTextField, type ChoiceControl } from '../ui/controls';
@@ -90,7 +90,7 @@ export function mountTeamspaceSettings(container:HTMLElement, options:Options):{
         const row=el('tr');row.append(el('td',member.email));
         const role=el('td');const actions=el('td');
         if(team.canManage && !team.archived){
-          const isViewer=workspace?.members.find(item=>item.id===member.userId)?.role==='viewer';
+          const isViewer=isReaderRole(workspace?.members.find(item=>item.id===member.userId)?.role);
           const choice=createChoice<TeamspaceRole>({label:`Rôle de ${member.email}`,value:member.role,options:[{value:'owner',label:TEAMSPACE_ROLES.owner,disabled:isViewer},{value:'member',label:TEAMSPACE_ROLES.member}],onChange:value=>{void mutate(()=>options.api.setMember(team.id,member.userId,value),()=>detail(team.id,'members'));}});
           state.choices.push(choice);role.append(choice.element);
           actions.append(button('Retirer',()=>{void mutate(()=>options.api.removeMember(team.id,member.userId),()=>detail(team.id,'members'));}));

@@ -20,12 +20,14 @@ describe('access vocabulary', () => {
       admin: 'Administrateur',
       member: 'Membre',
       viewer: 'Lecture seule',
+      guest: 'Lecteur invité',
     });
   });
 
   it('keeps page level labels identical to the share sheet', () => {
     expect(PAGE_LEVELS).toEqual({
-      view: 'Peut voir',
+      view: 'Peut lire',
+      comment: 'Peut lire et commenter',
       edit: 'Peut modifier',
       full: 'Accès complet',
     });
@@ -35,17 +37,21 @@ describe('access vocabulary', () => {
     expect(roleOptions(true)).toEqual([
       { value: 'member', label: WORKSPACE_ROLES.member, description: WORKSPACE_ROLE_DESCRIPTIONS.member },
       { value: 'viewer', label: WORKSPACE_ROLES.viewer, description: WORKSPACE_ROLE_DESCRIPTIONS.viewer },
+      { value: 'guest', label: WORKSPACE_ROLES.guest, description: WORKSPACE_ROLE_DESCRIPTIONS.guest },
       { value: 'admin', label: WORKSPACE_ROLES.admin, description: WORKSPACE_ROLE_DESCRIPTIONS.admin },
     ]);
     expect(roleOptions(false)).toEqual([
       { value: 'member', label: WORKSPACE_ROLES.member, description: WORKSPACE_ROLE_DESCRIPTIONS.member },
       { value: 'viewer', label: WORKSPACE_ROLES.viewer, description: WORKSPACE_ROLE_DESCRIPTIONS.viewer },
+      { value: 'guest', label: WORKSPACE_ROLES.guest, description: WORKSPACE_ROLE_DESCRIPTIONS.guest },
     ]);
   });
 
   it('builds page level options with labels and descriptions', () => {
+    expect(pageLevelOptions('guest').map(item => item.value)).toEqual(['view', 'comment']);
     expect(pageLevelOptions()).toEqual([
       { value: 'view', label: PAGE_LEVELS.view, description: PAGE_LEVEL_DESCRIPTIONS.view },
+      { value: 'comment', label: PAGE_LEVELS.comment, description: PAGE_LEVEL_DESCRIPTIONS.comment },
       { value: 'edit', label: PAGE_LEVELS.edit, description: PAGE_LEVEL_DESCRIPTIONS.edit },
       { value: 'full', label: PAGE_LEVELS.full, description: PAGE_LEVEL_DESCRIPTIONS.full },
     ]);

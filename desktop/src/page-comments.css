@@ -23,3 +23,11 @@
 [data-page-comments-toggle][hidden] { display: none; }
 [data-desktop-page-comments] [data-blok-database-comments] { width: 100%; padding: 0; }
 [data-desktop-document]:has([data-blok-database-row-page], [data-blok-database-full-open]) [data-page-comments-toggle] { display: none; }
+
+[data-page-comment-form]:not([hidden]) { display: grid; gap: 8px; margin-top: 12px; }
+[data-page-comment-form] textarea { min-height: 60px; resize: vertical; }
+[data-page-comment-form] textarea, [data-page-comment-form] select {
+  max-width: 100%; box-sizing: border-box; padding: 6px 8px;
+  border: 1px solid var(--desktop-border); border-radius: 4px; background: transparent; color: inherit; font: inherit;
+}
+[data-page-comment-form] button { justify-self: start; }

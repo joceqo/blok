@@ -168,3 +168,15 @@ it('lists device-local pages as private without assuming unreported remote permi
   local();
   openPageLibrary({...options,local:false});expect(titles()).toEqual([]);
 });
+
+it('opens a guest library without private pages or creation controls', () => {
+  openPageLibrary({
+    container: document.body, guest: true, category: 'private', canCreate: false,
+    pages: () => [pages[0]], access: () => ({ [pages[0].id]: { level: 'view', sharedWithMe: true } }),
+    recentIds: () => [], isFavorite: () => false, onOpen: vi.fn(), onCreate: vi.fn(),
+  });
+  expect(document.querySelector('[data-library-create]')).toBeNull();
+  expect(document.getElementById('page-library-tab-private')).toBeNull();
+  button('Partagé').click();
+  expect(titles()).toEqual([pages[0].title]);
+});

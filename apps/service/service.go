@@ -73,7 +73,6 @@ type Workspace struct {
 	Icon *string `json:"icon"`
 }
 
-
 // allowedOrigins is what the Blok engine compares a request's Origin against,
 // by exact match. The service trims a trailing slash before its own comparison,
 // so PUBLIC_URL must arrive trimmed here too: otherwise "https://host/" admits
@@ -382,6 +381,11 @@ func (s *Service) authorizeDoc(ctx context.Context, session, doc string, write b
 		err := s.DB.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE id=$1 AND user_id=$2 AND expires_at>now()) OR EXISTS(SELECT 1 FROM mcp_tokens WHERE id=$1 AND user_id=$2 AND expires_at>now())`, session, principal.ID).Scan(&valid)
 		if err != nil || !valid {
 			return false, err
+		}
+		// Only a server-built comment operation on this exact document uses
+		// this context. Public document tickets still require edit for writes.
+		if target, ok := ctx.Value(commentDocumentKey{}).(string); ok && target == doc {
+			return s.authorizePageLevel(ctx, principal.ID, doc, levelComment)
 		}
 		return s.authorizeMCPDocument(ctx, principal.ID, doc, write)
 	}

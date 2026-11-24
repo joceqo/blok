@@ -117,15 +117,15 @@ func TestResolveTruthTable(t *testing.T) {
 }
 
 func TestLevelOrdering(t *testing.T) {
-	if !(levelNone < levelView && levelView < levelEdit && levelEdit < levelFull) {
+	if !(levelNone < levelView && levelView < levelComment && levelComment < levelEdit && levelEdit < levelFull) {
 		t.Fatal("les niveaux doivent être totalement ordonnés")
 	}
-	for raw, want := range map[string]level{"view": levelView, "edit": levelEdit, "full": levelFull, "": levelNone, "owner": levelNone} {
+	for raw, want := range map[string]level{"view": levelView, "comment": levelComment, "edit": levelEdit, "full": levelFull, "": levelNone, "owner": levelNone} {
 		if got := parseLevel(raw); got != want {
 			t.Fatalf("parseLevel(%q) = %v, attendu %v", raw, got, want)
 		}
 	}
-	for _, l := range []level{levelView, levelEdit, levelFull} {
+	for _, l := range []level{levelView, levelComment, levelEdit, levelFull} {
 		if parseLevel(l.String()) != l {
 			t.Fatalf("%v ne survit pas à l'aller-retour texte", l)
 		}

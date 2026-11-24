@@ -248,7 +248,7 @@ func (s *Service) teamspacesRoute(w http.ResponseWriter, r *http.Request, u iden
 				problem(w, 404, "Workspace member not found")
 				return
 			}
-			if next == "owner" && targetRole == "viewer" {
+			if next == "owner" && capOf(targetRole) < levelEdit {
 				problem(w, 400, "Viewer cannot own a teamspace")
 				return
 			}

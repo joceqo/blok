@@ -1,4 +1,4 @@
-export type CloudRole = 'admin' | 'member' | 'viewer';
+export type CloudRole = 'admin' | 'member' | 'viewer' | 'guest';
 export interface CloudWorkspace { id: string; slug: string; name: string; role: CloudRole; icon?: string | null }
 export interface CloudUser { id: string; email: string; name?: string; avatarUrl?: string; instanceAdmin?: boolean }
 export interface CloudSession { user: CloudUser; workspaces: CloudWorkspace[]; supportEmail?: string | null }

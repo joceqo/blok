@@ -19,6 +19,7 @@ type level int
 const (
 	levelNone level = iota
 	levelView
+	levelComment
 	levelEdit
 	levelFull
 )
@@ -27,6 +28,8 @@ func (l level) String() string {
 	switch l {
 	case levelView:
 		return "view"
+	case levelComment:
+		return "comment"
 	case levelEdit:
 		return "edit"
 	case levelFull:
@@ -39,6 +42,8 @@ func parseLevel(raw string) level {
 	switch raw {
 	case "view":
 		return levelView
+	case "comment":
+		return levelComment
 	case "edit":
 		return levelEdit
 	case "full":
@@ -49,15 +54,14 @@ func parseLevel(raw string) level {
 
 // Le rôle d'espace joue deux rôles distincts, et les confondre casse le modèle.
 //
-// capOf est le PLAFOND du compte : ce qu'aucun partage ne peut dépasser. Un
-// lecteur reste en lecture seule même si on lui donne l'édition — son rôle dit
-// « ce compte ne modifie rien ici ». Un membre, lui, doit pouvoir atteindre
-// l'accès complet : sinon personne hormis un administrateur ne pourrait partager
-// une page, pas même celle qu'il vient de créer.
+// capOf est le plafond ordinaire du rôle. Seul le partage explicite « comment »
+// permet à un lecteur de participer aux discussions (voir resolve).
 func capOf(role string) level {
 	switch role {
 	case "admin", "member":
 		return levelFull
+	case "guest":
+		return levelComment
 	case "viewer":
 		return levelView
 	}
@@ -68,6 +72,9 @@ func capOf(role string) level {
 // modifie les pages communes sans pour autant gouverner leurs accès ; il faut un
 // partage explicite, ou le rôle d'administrateur, pour cela.
 func baseOf(role string) level {
+	if role == "guest" {
+		return levelNone
+	}
 	if role == "member" {
 		return levelEdit
 	}
@@ -113,6 +120,9 @@ func resolve(role string, chain []pageNode) level {
 			if node.TeamspaceArchived || node.TeamspaceRole == "" {
 				return levelNone
 			}
+			if role == "guest" {
+				continue // Team membership alone never opens a page to a guest.
+			}
 			base = levelEdit
 			if node.TeamspaceRole == "owner" {
 				base = levelFull
@@ -124,6 +134,15 @@ func resolve(role string, chain []pageNode) level {
 	for _, node := range chain {
 		if visibility == "" && node.Visibility != visInherit {
 			visibility = node.Visibility
+		}
+		// A page can explicitly allow a workspace viewer to participate in its
+		// discussion. Legacy edit/full shares keep their original viewer cap.
+		if role == "viewer" && node.Share == levelComment {
+			ceiling = levelComment
+		}
+		// An edit or ownership grant from before a role change is not a guest share.
+		if role == "guest" && node.Share > levelComment {
+			continue
 		}
 		if node.Share > granted {
 			granted = node.Share

@@ -1,3 +1,4 @@
+import { pageCommentForm, type PageCommentInput } from './page-comment-form';
 import { watchLocalProfile } from './local-profile';
 import './page-comments.css';
 import { mountInlineComments } from './inline-comments';
@@ -19,12 +20,13 @@ export function mountPageComments(options: {
   holder?: HTMLElement;
   editor: Pick<Blok, 'blocks' | 'tools' | 'events' | 'i18n'>;
   author: () => CommentAuthor & { avatarUrl?: string };
-  canComment: () => boolean;
+  canEditDocument: () => boolean;
+  discussion?: { allowed(): boolean; post(message: PageCommentInput): Promise<void> };
 }): { element: HTMLElement; action: HTMLButtonElement; destroy(): void } {
   const { editor } = options;
   const store = new BuiltInComments(editor, options.author);
   const pageThreads = () => store.threads(null).filter(thread => !thread.data.anchor);
-  const inline = options.holder ? mountInlineComments({ ...options, holder: options.holder }) : null;
+  const inline = options.holder ? mountInlineComments({ ...options, holder: options.holder, canComment: options.canEditDocument }) : null;
   const element = document.createElement('section');
   element.setAttribute('data-blok-database-comments-section', '');
   element.setAttribute('data-desktop-page-comments', '');
@@ -41,21 +43,28 @@ export function mountPageComments(options: {
   const content = document.createElement('div'); content.setAttribute('data-page-comments-content', '');
   content.id = `page-discussion-${crypto.randomUUID()}`; toggle.setAttribute('aria-controls', content.id);
   content.append(controls, body); if (inline) element.append(inline.element); element.append(content);
+  const form = options.discussion && pageCommentForm(options.discussion.post);
+  if (form) content.append(form.form);
   let expanded = pageThreads().some(thread => !thread.data.resolved);
   const refreshSummary = (): void => {
     const threads = pageThreads();
     const count = threads.filter(thread => !thread.data.resolved).length;
     label.textContent = threads.length ? `Commentaires${count ? ` (${count})` : ''}` : 'Ajouter un commentaire';
-    toggle.toggleAttribute('data-page-comments-empty', threads.length === 0);
+    const canPost = !options.canEditDocument() && options.discussion?.allowed();
+    toggle.toggleAttribute('data-page-comments-empty', threads.length === 0 && !canPost);
     toggle.setAttribute('aria-expanded', String(expanded)); content.hidden = !expanded;
     controls.hidden = !threads.some(thread => thread.data.resolved) && !state.resolved;
-    toggle.hidden = expanded || (!threads.length && !options.canComment());
+    if (form) {
+      form.form.hidden = !canPost || state.resolved;
+      if (!form.form.hidden) form.refresh(threads);
+    }
+    toggle.hidden = expanded || (!threads.length && !options.canEditDocument() && !canPost);
     element.hidden = !expanded;
   };
   const state: { resolved: boolean; writable: boolean; panel: CommentsPanel | null; timer: ReturnType<typeof setTimeout> | null; destroyed: boolean; draft: string } = {
     resolved: false, writable: false, panel: null, timer: null, destroyed: false, draft: '',
   };
-  const writable = (): boolean => !state.destroyed && store.available() && options.canComment();
+  const writable = (): boolean => !state.destroyed && store.available() && options.canEditDocument();
   const own = (comment: StoredComment): boolean => !!comment.data.authorId && comment.data.authorId === options.author().authorId;
   const find = (id: string): StoredComment | undefined => pageThreads().flatMap(thread => [thread, ...thread.replies]).find(comment => comment.id === id);
   const owned = (id: string): boolean => { const comment = find(id); return !!comment && own(comment); };
@@ -111,7 +120,7 @@ export function mountPageComments(options: {
   resolved.addEventListener('click', () => { state.resolved = true; render(); });
   toggle.addEventListener('click', () => {
     expanded = !expanded; refreshSummary();
-    if (expanded) body.querySelector<HTMLTextAreaElement>('textarea')?.focus();
+    if (expanded) content.querySelector<HTMLTextAreaElement>('textarea')?.focus();
   });
   content.addEventListener('keydown', event => {
     if (event.key !== 'Escape') return;
@@ -120,7 +129,7 @@ export function mountPageComments(options: {
   });
   content.addEventListener('focusout', () => queueMicrotask(() => {
     if (state.destroyed || content.contains(document.activeElement) || pageThreads().length) return;
-    const input = body.querySelector<HTMLTextAreaElement>('textarea');
+    const input = content.querySelector<HTMLTextAreaElement>('textarea');
     if (input?.value.trim()) return;
     expanded = false; refreshSummary();
   }));
