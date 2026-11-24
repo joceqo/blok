@@ -58,3 +58,26 @@ A successful export applies the active checkpoint or baseline, then its remainin
 - **macOS TLS operator verification:** façade reports unavailable (`sectrust` parity deferred).
 - **Collaboration:** `GET /sync/{doc}/state` reads the configured document endpoint with its internal credential and checks the requested document against the user's ticket. Bare documents and envelopes are supported. The endpoint supplies the state for a fresh working set. Journal-backed rooms, S3 working sets and existing local working sets return HTTP 501 until replay is implemented.
 - Edit, reset, and history routes return HTTP 501. Use the production collaboration host for writes and live sessions.
+
+### Append a Yjs update to an offline journal
+
+Build `node scripts/build-node-server.mjs` from the repository root. Use an existing seeded directory
+on a local macOS or Linux filesystem with Python 3. In `packages/server/node`, run:
+
+```sh
+npm run --silent journal:append -- "$copy" "$lineage" "$expectedThrough" "$operationId" update.yjs
+```
+
+Read the lineage and current sequence with `journal:inspect`. Use one 32-character lowercase hexadecimal
+operation ID per change and reuse it after a lost response. The JSON result contains an outcome and a
+decimal sequence. A committed update and its identical retry exit 0. A stale head or conflicting ID
+exits 3. A busy document exits 4. The input is a binary Yjs v1 update of up to 1 MiB. The command
+validates it against the checkpoint and journal before writing. On a verified partial tail, a new append
+truncates back to the last whole record. A corrupt checksum stops the operation.
+
+The TypeScript API in `dist/journal-append.mjs` exposes `appendJournal` and accepts bigint sequences.
+The writer uses the Go/.NET Unix `lock` file, holding an exclusive nonblocking flock from inspection
+through fsync. Python supplies only that system call over an inherited file descriptor. Node owns the
+descriptor and performs the complete read, validation and write. The writer requires working flock
+semantics and a local filesystem. It fails when the syscall helper is unavailable. The CLI reads the
+entire current document on each append and is intended for offline use.
