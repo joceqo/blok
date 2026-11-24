@@ -84,6 +84,14 @@ async function roomTab(context, documentId = id, name = workspaceName) {
   const tab = await context.newPage();
   const cdp = await context.newCDPSession(tab);
   const targets = new Set(), connected = new Set(), closed = new Set(), go = new Set();
+  const nodeTickets = new Set();
+  cdp.on('Network.responseReceived', ({requestId,response}) => {
+    const url = new URL(response.url);
+    if (!url.pathname.endsWith('/ticket') || url.searchParams.get('doc') !== documentId || response.status !== 200) return;
+    if (Object.entries(response.headers).some(([key,value]) => key.toLowerCase() === 'x-blok-ticket-backend' && value === 'node')) {
+      nodeTickets.add(requestId);
+    }
+  });
   cdp.on('Network.webSocketCreated', event => {
     if (new URL(event.url).pathname === '/api/blok/sync/' + documentId) targets.add(event.requestId);
   });
@@ -103,7 +111,7 @@ async function roomTab(context, documentId = id, name = workspaceName) {
   }
   await expect(tab.locator('[data-blok-sidebar]')).toBeVisible({timeout});
   if (new URL(tab.url()).searchParams.get('page') !== documentId) await tab.goto('/?page='+documentId);
-  return { tab, connected, closed, go };
+  return { tab, connected, closed, go, nodeTickets };
 }
 const saved = page => expect(page.locator('[data-desktop-status]')).toHaveAttribute('data-sync-state','connected',{timeout});
 const waitNode = (trace, previous = 0) => expect.poll(() => trace.connected.size,
@@ -187,6 +195,7 @@ try {
     additional = await roomTab(ctx,newPage);
     await waitNode(additional);
     await saved(additional.tab);
+    for (const trace of [first,second,additional]) assert.ok(trace.nodeTickets.size > 0,'The shell must obtain its live ticket from Node');
     const field = additional.tab.locator(editorSelector).first();
     await expect(field).toBeEditable({timeout});
     await field.fill('Deuxième journal avant redémarrage');
