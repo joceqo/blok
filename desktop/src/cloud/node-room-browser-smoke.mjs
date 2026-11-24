@@ -119,6 +119,8 @@ const waitNode = (trace, previous = 0) => expect.poll(() => trace.connected.size
 async function append(page, needle, suffix) {
   const field = block(page, needle);
   await expect(field).toBeEditable({timeout});
+  await field.click();
+  await expect(field).toBeFocused({timeout});
   const value = await field.innerText();
   await field.fill(value + suffix);
   await expect(field).toContainText(suffix,{timeout});
@@ -180,6 +182,8 @@ try {
   console.log('Created a private document, granted its editor and selected its Node room.');
   const [first,second] = await Promise.all([roomTab(owner),roomTab(editor)]);
   await Promise.all([waitNode(first),waitNode(second),saved(first.tab),saved(second.tab)]);
+  // An HTTP/WS connection can finish before the peer has mounted the shared paragraph.
+  await expect(block(second.tab,paragraphs[0])).toBeEditable({timeout});
   await append(first.tab,paragraphs[0],' — partagé');
   await expect(block(second.tab,paragraphs[0])).toContainText('partagé',{timeout});
   await saved(first.tab);
