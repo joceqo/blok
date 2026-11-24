@@ -17,10 +17,13 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:fast": "vitest run --dir src"
+    "test:fast": "vitest run .fast.test.ts"
   },
   "devDependencies": {
     "vitest": "5.0.5",
     "zod": "^4.1.12"
+  },
+  "dependencies": {
+    "jsonc-parser": "3.3.1"
   }
 }

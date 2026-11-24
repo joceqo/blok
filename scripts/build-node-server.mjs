@@ -31,6 +31,7 @@ async function bundle(outfile, conformance) {
       '--bundle',
       '--platform=node',
       '--format=esm',
+      '--main-fields=module,main',
       '--target=node20',
       `--outfile=${outfile}`,
       define,
