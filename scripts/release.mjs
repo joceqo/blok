@@ -313,10 +313,11 @@ if (isDirectRun) {
       throw new Error('Local main is not the current origin/main; refusing to publish');
     }
 
+    run(`gh workflow run ci.yml -R ${RELEASE_REPO} --ref main -f release_checks=true`);
     await waitForSuccessfulCi({
       sha: sourceSha,
       getRuns: (sha) => JSON.parse(runCapture(
-        `gh run list -R ${RELEASE_REPO} --workflow CI --branch main --event push --commit ${sha} --limit 1 --json status,conclusion`,
+        `gh run list -R ${RELEASE_REPO} --workflow CI --branch main --event workflow_dispatch --commit ${sha} --limit 1 --json status,conclusion`,
       )),
       sleep: () => new Promise((resolve) => setTimeout(resolve, 10_000)),
     });
@@ -487,6 +488,7 @@ if (isDirectRun) {
   run(`git tag ${gitTag}`);
   run(`git tag ${goModuleTag}`);
   run('git push');
+  run(`gh workflow run ci.yml -R ${RELEASE_REPO} --ref main -f release_checks=true`);
   run(`git push origin ${goModuleTag}`);
   run(`git push origin ${gitTag}`);
 

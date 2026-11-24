@@ -1,10 +1,19 @@
 name: CI
+run-name: ${{ inputs.release_checks && 'Release CI' || 'CI' }}
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["**"]
+  workflow_dispatch:
+    inputs:
+      release_checks:
+        description: Qualify this main commit for docs deployment and mirror publication
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      unit_only:
+        description: Run the product units and static checks on ordinary pushes and pull requests
+        required: true
+        type: boolean
 
 # Only PR runs are cancelled. A main run cancelled mid-CodeQL uploads a
 # failed SARIF, and code scanning then reports CodeQL errors for main. A
@@ -17,6 +26,17 @@ permissions:
   contents: read
 
 jobs:
+  product-tests:
+    name: Shell and Node unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-node-deps
+      - run: npm ci --prefix desktop --no-audit --no-fund
+      - run: npm ci --prefix apps/service-node --no-audit --no-fund
+      - run: npm test
+
   i18n:
     name: i18n Check
     runs-on: ubuntu-latest
@@ -97,6 +117,7 @@ jobs:
       # the 7-minute budget. They come after TypeScript, whose include globs
       # would otherwise sweep cargo's target directory.
       - name: Cache Rust release build
+        if: '${{ !inputs.unit_only }}'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -107,15 +128,18 @@ jobs:
           restore-keys: rust-release-${{ runner.os }}-
 
       - name: Setup Go
+        if: '${{ !inputs.unit_only }}'
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/server/go/go.mod
           cache-dependency-path: packages/server/go/go.sum
 
       - name: Test Rust conformance
+        if: '${{ !inputs.unit_only }}'
         run: node scripts/test-server-conformance.mjs --target rust
 
       - name: Test journal interop between Go and Rust
+        if: '${{ !inputs.unit_only }}'
         run: node scripts/test-server-conformance.mjs --target interop-rust
 
   workflow-lint:
@@ -347,6 +371,7 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
       - name: Test Go server with coverage
+        if: '${{ !inputs.unit_only }}'
         working-directory: packages/server/go
         run: |
           go test -p 2 -covermode=atomic -coverprofile="$RUNNER_TEMP/go-coverage.out" ./...
@@ -354,12 +379,14 @@ jobs:
           node ../../../scripts/check-server-coverage.mjs --go "$RUNNER_TEMP/go-coverage.out"
 
       - name: Test Go module consumer and release build
+        if: '${{ !inputs.unit_only }}'
         run: node scripts/test-server-go-module.mjs
 
       # apps/service n'avait aucune porte : ses tests existants ne tournaient
       # nulle part. Le PostgreSQL est lancé ici plutôt qu'en `services:` pour ne
       # pas attacher un conteneur aux autres étapes de ce job.
       - name: Test cloud service
+        if: '${{ !inputs.unit_only }}'
         working-directory: apps/service
         run: |
           docker run -d --name cloud-test-pg \
@@ -378,6 +405,7 @@ jobs:
           TEST_DATABASE_URL='postgres://postgres:password@127.0.0.1:5432/blok_test?sslmode=disable' go test ./...
 
   server:
+    if: '${{ !inputs.unit_only }}'
     name: Server
     runs-on: ubuntu-latest
     timeout-minutes: 12
@@ -420,6 +448,7 @@ jobs:
 
   # Split from `server` so the two halves run side by side.
   server-delivery:
+    if: '${{ !inputs.unit_only }}'
     name: Server Delivery
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -485,7 +514,7 @@ jobs:
     name: MCP Conformance (${{ matrix.part }})
     needs: [server]
     # A red Server must not hide the MCP result.
-    if: ${{ !cancelled() }}
+    if: ${{ !inputs.unit_only && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -549,6 +578,7 @@ jobs:
   # No `needs: build`: the tests that read build output run in
   # workspace-unit-tests instead (DIST_TESTS in vitest.config.ts).
   unit-tests:
+    if: '${{ !inputs.unit_only }}'
     name: Unit Tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -691,6 +721,7 @@ jobs:
         run: cargo test --locked --workspace --doc
 
   validate-spec-coverage:
+    if: '${{ !inputs.unit_only }}'
     name: Validate Spec File Coverage
     runs-on: ubuntu-latest
     # About twice its longest green run since it gained Go conformance (159s).
@@ -723,7 +754,11 @@ jobs:
       - name: Test Go conformance
         run: node scripts/test-server-conformance.mjs --target go
 
+      - name: Test service-node
+        run: cd apps/service-node && npm ci && npm test
+
   build:
+    if: '${{ !inputs.unit_only }}'
     name: Build
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -764,6 +799,7 @@ jobs:
           retention-days: 1
 
   install-browsers:
+    if: '${{ !inputs.unit_only }}'
     name: Install Browsers
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -839,7 +875,7 @@ jobs:
 
   merge-reports:
     name: Merge E2E Reports
-    if: ${{ !cancelled() && github.ref != 'refs/heads/main' }}
+    if: ${{ !inputs.unit_only && !cancelled() && github.ref != 'refs/heads/main' }}
     needs: [e2e-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -873,6 +909,7 @@ jobs:
           retention-days: 14
 
   storybook-tests:
+    if: '${{ !inputs.unit_only }}'
     name: Storybook Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -929,8 +966,9 @@ jobs:
 
   production-readiness:
     name: Production Readiness
-    if: always()
+    if: ${{ !inputs.unit_only && always() }}
     needs:
+      - product-tests
       - i18n
       - lint
       - workflow-lint

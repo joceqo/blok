@@ -250,6 +250,9 @@ func TestCloudIntegration(t *testing.T) {
 		t.Fatal("viewer can write")
 	}
 	// Internal route never accepts a user's session; a known empty doc is 200 null.
+	recheckPath := "/internal/workspaces/" + public["id"].(string) + "/recheck-access"
+	request("POST", recheckPath, admin, nil, 401)
+	request("POST", recheckPath, cfg.InternalSecret, nil, 204)
 	request("GET", "/internal/documents/test-page-1", admin, nil, 401)
 	empty := request("GET", "/internal/documents/test-page-1", cfg.InternalSecret, nil, 200)
 	if empty["data"] != nil {

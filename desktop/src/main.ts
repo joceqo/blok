@@ -41,7 +41,7 @@ async function boot(root: HTMLElement): Promise<void> {
   const selected = activeWorkspace();
   const explicitGateway = params.get('cloud') === '1';
   const configured = native
-    ? params.get('server') ?? (selected.kind === 'remote' ? selected.server : '')
+    ? params.get('server') ?? (selected.kind === 'remote' ? selected.server : import.meta.env.VITE_BLOK_SERVER_URL)
     : location.origin;
   const origin = configured ? serverOrigin(configured) : '';
   const adapter = native && origin ? nativeSessionAdapter(origin) : undefined;

@@ -45,6 +45,27 @@ describe('workspace isolation', () => {
     rememberWorkspace(remote);
     expect(localStorage.getItem('blok:desktop:workspaces:v1')).not.toContain('token');
   });
+  it('ignores a delayed sidebar refresh after a newer local save was acknowledged', async () => {
+    const page = { id: 'p', title: 'Before', parentId: null };
+    const stale = { pages: [page], trash: [], revision: 1 };
+    let resolveRefresh!: (response: Response) => void;
+    const refresh = new Promise<Response>((resolve) => { resolveRefresh = resolve; });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json(stale))
+      .mockReturnValueOnce(refresh)
+      .mockResolvedValueOnce(Response.json({ revision: 2 }))
+      .mockResolvedValueOnce(Response.json({ revision: 3 }));
+    vi.stubGlobal('fetch', fetch);
+    const repository = workspaceRepository(remote);
+    const index = await repository.loadIndex();
+    const poll = repository.refreshIndex(() => true);
+    index.pages[0]!.title = 'After';
+    await repository.saveIndex(index);
+    resolveRefresh(Response.json(stale));
+    expect(await poll).toBeNull();
+    await repository.saveIndex(index);
+    expect(JSON.parse(fetch.mock.calls[3]![1].body)).toMatchObject({ revision: 2, pages: [{ title: 'After' }] });
+  });
   it('retries concurrent index writes without dropping remote pages on later local saves', async () => {
     const p = (id: string) => ({id,title:id,parentId:null});
     const responses = [

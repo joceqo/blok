@@ -1,17 +1,12 @@
 name: Mutation
 
 on:
-  push:
-    branches: ["main"]
   workflow_dispatch:
     inputs:
       sweep:
         description: "Measure the files too heavy for a push run"
         type: boolean
         default: false
-  # Files too heavy for a 7-minute push run wait here.
-  schedule:
-    - cron: "17 3 * * *"
 
 # Runs queue instead of cancelling one another. Two runs would race over the
 # survivor ledger, and a cancelled run's commits would never be measured at all.
@@ -28,7 +23,7 @@ permissions:
 jobs:
   mutation:
     name: Mutation
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.sweep)
+    if: '${{ !inputs.sweep }}'
     runs-on: ubuntu-latest
     # A backstop only: mutation-scope.mjs stops Stryker by MUTATION_STOP_AT,
     # which keeps the job under 7 minutes.
@@ -110,7 +105,7 @@ jobs:
 
   sweep:
     name: Mutation sweep
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.sweep)
+    if: inputs.sweep
     runs-on: ubuntu-latest
     # mutation-scope.mjs stops Stryker after 5 hours and sizes the batch to fit.
     timeout-minutes: 330
