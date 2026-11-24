@@ -121,7 +121,12 @@ func (s *Service) recheckSessionAccess(w http.ResponseWriter, r *http.Request) {
 func (s *Service) recheckDocument(ctx context.Context, doc string) error {
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	_, err := s.Blok.RecheckAccess(bounded, doc)
+	var err error
+	if s.nodeOwnsRoom(doc) {
+		err = s.recheckNodeRoom(bounded)
+	} else {
+		_, err = s.Blok.RecheckAccess(bounded, doc)
+	}
 	if err != nil && ctx.Err() == nil {
 		slog.Error("collaboration access recheck failed", "document", doc, "error", err)
 	}

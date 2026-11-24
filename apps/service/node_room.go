@@ -1,6 +1,8 @@
 package cloud
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -15,8 +17,28 @@ func (s *Service) nodeOwnsRoom(doc string) bool {
 	return doc != "" && s.Config.NodeRoomPage == doc
 }
 
+const nodeRoomAddress = "127.0.0.1:18102"
+
+func (s *Service) recheckNodeRoom(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+nodeRoomAddress+"/internal/room/recheck-access", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.Config.InternalSecret)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("Node room access recheck returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func nodeRoomProxy() *httputil.ReverseProxy {
-	upstream := &url.URL{Scheme: "http", Host: "127.0.0.1:18102"}
+	upstream := &url.URL{Scheme: "http", Host: nodeRoomAddress}
 	return &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(upstream)
