@@ -50,7 +50,14 @@ const fullGoRuns = (workflowText: string): string[] => fullRuns(workflowText, 'g
 
 type RunnerResult = { status: number | null; stdout: string; stderr: string };
 
-const TOOLCHAINS: Record<string, string> = { csharp: 'dotnet', go: 'go', interop: 'dotnet', rust: 'cargo', 'interop-rust': 'go' };
+const TOOLCHAINS: Record<string, string> = {
+  csharp: 'dotnet',
+  go: 'go',
+  interop: 'dotnet',
+  rust: 'cargo',
+  'interop-rust': 'go',
+  node: 'node',
+};
 
 /**
  * With no PATH the build spawn fails, so a runner that accepted the target
@@ -125,7 +132,7 @@ describe('server Go and C# parity law', () => {
     expect(result.stderr).toContain('Usage:');
   });
 
-  it.each(['csharp', 'go', 'interop', 'rust', 'interop-rust'])('lets the runner accept --target %s', (target) => {
+  it.each(['csharp', 'go', 'interop', 'rust', 'interop-rust', 'node'])('lets the runner accept --target %s', (target) => {
     expect(runnerAccepts(target, runRunner(runnerPath, ['--target', target]))).toBe(true);
   });
 
