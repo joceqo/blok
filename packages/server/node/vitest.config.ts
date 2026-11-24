@@ -7,6 +7,7 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 /** Fast tier: in-process Vitest + Zod (low memory). Full parity: scripts/test-server-conformance.mjs. */
 export default defineConfig({
   cacheDir: path.resolve(dirname, '../../../node_modules/.vite/server-node'),
+  resolve: { alias: { yjs: path.join(dirname, 'node_modules/yjs') } },
   test: {
     root: dirname,
     environment: 'node',

@@ -29,7 +29,8 @@ async function bundle(outfile, conformance, entry = 'src/main.ts') {
       join(repositoryRoot, 'node_modules/esbuild/bin/esbuild'),
       join(nodePackage, entry),
       '--bundle',
-      '--alias:yjs='+join(nodePackage,'node_modules/yjs'),
+      // The room and shared editor serializer must use one Yjs runtime.
+      ...(entry === 'src/collab/room/preview.ts' ? ['--external:yjs'] : []),
       '--platform=node',
       '--external:ws',
       '--format=esm',
