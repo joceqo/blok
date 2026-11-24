@@ -7,6 +7,8 @@ export type CloudWorkspaceCreation = 'anyone' | 'admins_only' | 'disabled';
 export interface CloudInstance {
   name: string;
   setupRequired: boolean;
+  passwordAuthAvailable?: boolean;
+  emailCodeAvailable?: boolean;
   signupPolicy: CloudSignupPolicy;
   workspaceCreation: CloudWorkspaceCreation;
   defaultWorkspace: {slug: string; name: string} | null;
@@ -78,8 +80,16 @@ export class CloudClient {
   }
   instance(): Promise<CloudInstance> { return this.request<CloudInstance>('/api/instance'); }
   async session(): Promise<CloudSession> { const session = await this.request<CloudSession>('/api/session'); this.currentSession = session; return session; }
-  async verifyCode(email: string, code: string): Promise<CloudSession> {
-    const session = await this.request<CloudSession & {token?: string}>('/api/auth/verify-code', { method: 'POST', body: JSON.stringify({email, code, ...(this.sessionAdapter ? {client: 'desktop'} : {})}) });
+  verifyCode(email: string, code: string): Promise<CloudSession> {
+    return this.authenticate('/api/auth/verify-code', {email, code});
+  }
+  loginWithPassword(email: string, password: string): Promise<CloudSession> {
+    return this.authenticate('/api/auth/password', {email, password});
+  }
+  private async authenticate(path: string, credentials: {email: string; code: string} | {email: string; password: string}): Promise<CloudSession> {
+    const session = await this.request<CloudSession & {token?: string}>(path, {
+      method: 'POST', body: JSON.stringify({...credentials, ...(this.sessionAdapter ? {client: 'desktop'} : {})}),
+    });
     if (this.sessionAdapter) {
       if (!session.token) throw new Error('Le serveur n’a pas fourni de session pour cet appareil.');
       await this.sessionAdapter.setToken(session.token);

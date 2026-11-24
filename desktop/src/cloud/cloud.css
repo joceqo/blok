@@ -74,6 +74,8 @@ body[data-blok-theme="light"] [data-cloud-gateway] { --desktop-canvas:#fff; --de
   & small { margin-top: 6px; font-size: 12px; color: var(--desktop-muted); }
   & button[data-cloud-primary] { background: var(--desktop-ink); color: var(--desktop-canvas); border-color: transparent; min-height: 40px; margin-top: 20px; }
   & button[data-cloud-primary]:not(:disabled):hover { background: var(--desktop-ink); }
+  & button[data-cloud-link] { margin-top: 16px; padding: 2px 0; border: 0; background: transparent; color: var(--desktop-muted); font-size: 13px; }
+  & button[data-cloud-link]:not(:disabled):hover { background: transparent; color: var(--desktop-ink); text-decoration: underline; }
   & details { margin-top: 24px; color: var(--desktop-muted); font-size: 13px; }
   & summary { cursor: pointer; }
   & details[open] > summary { margin-bottom: 12px; }

@@ -116,3 +116,6 @@ CREATE TABLE IF NOT EXISTS page_purge_requests (
 );
 CREATE INDEX IF NOT EXISTS page_purge_due ON page_purge_requests(next_attempt_at) WHERE completed_at IS NULL;
 INSERT INTO schema_migrations(version) VALUES(8) ON CONFLICT DO NOTHING;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text;
+INSERT INTO schema_migrations(version) VALUES(9) ON CONFLICT DO NOTHING;

@@ -21,7 +21,7 @@ describe('deriveWorkspaceSlug', () => {
 });
 
 describe('setup assistant', () => {
-  function setup() {
+  function setup(passwordAuthAvailable = false) {
     const fetch = vi.fn(async (_url: string, _init?: RequestInit) => response({ok: true}));
     vi.stubGlobal('fetch', fetch);
     const onClaimed = vi.fn();
@@ -29,7 +29,7 @@ describe('setup assistant', () => {
       client: new CloudClient({origin: 'http://blok.example.test'}),
       frame: () => document.body,
       run: async (action) => { await action(); },
-      onClaimed,
+      passwordAuthAvailable, onClaimed,
     });
     return {
       fetch, onClaimed,
@@ -46,7 +46,7 @@ describe('setup assistant', () => {
     admin.value = ' Alice ';
     email.value = 'alice@example.test';
     form.requestSubmit();
-    await vi.waitFor(() => expect(onClaimed).toHaveBeenCalledWith(email.value));
+    await vi.waitFor(() => expect(onClaimed).toHaveBeenCalledWith(email.value, undefined));
     expect(fetch).toHaveBeenCalledTimes(1);
     const [url, init] = must(fetch.mock.calls[0]);
     expect(url).toMatch(/\/api\/setup\/claim$/);
@@ -54,6 +54,31 @@ describe('setup assistant', () => {
       workspace: {name: 'Bureau Études', slug: 'bureau-etudes'},
       name: 'Alice', email: email.value,
     });
+  });
+
+  it('requires a valid new password in password mode and omits email delivery controls', async () => {
+    const {fetch, onClaimed, workspace, admin, email, form} = setup(true);
+    workspace.value = 'Studio';
+    admin.value = 'Alice';
+    email.value = 'alice@example.test';
+    const password = must(form.querySelector<HTMLInputElement>('input[type=password]'));
+    expect(password.autocomplete).toBe('new-password');
+    expect(document.querySelector('details')).toBeNull();
+    expect(document.body.textContent).not.toContain('code de connexion');
+
+    for (const value of ['🐈'.repeat(8), 'é'.repeat(513)]) {
+      password.value = value;
+      password.dispatchEvent(new Event('input'));
+      form.requestSubmit();
+      expect(password.validity.valid).toBe(false);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+
+    password.value = '🐈'.repeat(12);
+    password.dispatchEvent(new Event('input'));
+    form.requestSubmit();
+    await vi.waitFor(() => expect(onClaimed).toHaveBeenCalledWith(email.value, password.value));
+    expect(JSON.parse(requestBody(fetch.mock.calls[0]?.[1]))).toMatchObject({password: password.value});
   });
 
   it('requires a nonblank workspace name within the server limit', () => {

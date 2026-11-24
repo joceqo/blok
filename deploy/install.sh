@@ -11,7 +11,7 @@ if [[ ! -f "$env_file" ]]; then
     sed "s/^${key}=.*/${key}=${value}/" "$env_file" > "$env_file.new"
     mv "$env_file.new" "$env_file"
   done
-  echo 'Created the environment file with generated secrets. Set DOMAIN, BOOTSTRAP_ADMIN_EMAIL and MAILER_* for SMTP (or optional Resend), then run install.sh again.'
+  echo 'Created the environment file with generated secrets. Set DOMAIN and run install.sh again. Leave mail settings empty for password sign-in, or configure SMTP or Resend for email codes.'
   exit 0
 fi
 ./stack.sh config --quiet

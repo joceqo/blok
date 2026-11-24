@@ -4,14 +4,18 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createPool, type PgPool } from '../db/pool.ts';
 import { inTransaction } from './bootstrap.ts';
+import { seedDemo } from './demo-seed.ts';
+import { hashPassword, validPassword } from './password.ts';
 import { readInstanceSettings, updateInstanceSettings } from './instance-settings.ts';
-import { mailBackend, sendMail, validateAddress } from './mail.ts';
+import { mailBackend, passwordAuthAvailable, sendMail, validateAddress } from './mail.ts';
 
 const usage = `usage: blokctl <command>
 
   blokctl admin grant <email>
   blokctl admin list
   blokctl admin revoke <email>
+  blokctl user set-password <email>  (read the password from stdin)
+  blokctl demo seed
   blokctl settings show
   blokctl settings set key=value...
   blokctl email test <address>`;
@@ -24,11 +28,35 @@ const keys = new Map([
   ['default-workspace-id', 'defaultWorkspaceId'],
 ]);
 
-export async function runBlokctl(pool: PgPool, args: string[]) {
+export async function runBlokctl(pool: PgPool, args: string[], input = process.stdin) {
   const [group, action, ...rest] = args;
   const schema = await pool.query('SELECT max(version) AS version FROM schema_migrations');
   if (!(schema.rows[0]?.version >= 7))
     throw new Error('Database schema is behind this blokctl. Start the server to migrate first');
+  if (group === 'demo' && action === 'seed' && !rest.length) return seedDemo(pool);
+  if (group === 'user' && action === 'set-password' && rest.length === 1) {
+    if (!passwordAuthAvailable()) throw new Error('Password login is disabled with outgoing mail configured');
+    const email = validateAddress(rest[0]!);
+    if (!email) throw new Error('Invalid email');
+    if (input.isTTY) throw new Error('Pipe the password on stdin');
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    for await (const chunk of input) {
+      const data = Buffer.from(chunk);
+      bytes += data.length;
+      if (bytes > 1026) throw new Error('Password exceeds the size limit');
+      chunks.push(data);
+    }
+    const password = Buffer.concat(chunks).toString('utf8').replace(/\r?\n$/, '');
+    if (!validPassword(password)) throw new Error('Invalid password length');
+    const hash = await hashPassword(password);
+    return inTransaction(pool, async (db) => {
+      const account = await db.query('UPDATE users SET password_hash=$2 WHERE email=$1 RETURNING id', [email, hash]);
+      if (!account.rowCount) throw new Error('Unknown user');
+      await db.query('DELETE FROM sessions WHERE user_id=$1', [account.rows[0].id]);
+      return 'Password set for ' + email;
+    });
+  }
   if (group === 'settings' && action === 'show' && !rest.length)
     return JSON.stringify(await readInstanceSettings(pool), null, 2);
   if (group === 'settings' && action === 'set' && rest.length) {

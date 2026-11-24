@@ -18,7 +18,8 @@ export function deriveWorkspaceSlug(name: string): string {
 
 export interface SetupAssistantOptions {
   client: CloudClient;
-  onClaimed(email: string): void;
+  passwordAuthAvailable?: boolean;
+  onClaimed(email: string, password?: string): void | Promise<void>;
   frame(): HTMLElement;
   run(action: () => Promise<void>): Promise<void>;
 }
@@ -34,10 +35,22 @@ export function mountSetupAssistant(options: SetupAssistantOptions): void {
   admin.maxLength = 120;
   admin.autocomplete = 'name';
   const email = field({ form, label: 'Adresse e-mail', type: 'email', name: 'admin-email' });
-  email.autocomplete = 'email';
+  email.autocomplete = options.passwordAuthAvailable ? 'username' : 'email';
+  const password = options.passwordAuthAvailable
+    ? field({ form, label: 'Mot de passe', type: 'password', name: 'admin-password' })
+    : null;
+  if (password) {
+    password.autocomplete = 'new-password';
+    password.minLength = 12;
+    password.maxLength = 1024;
+    password.addEventListener('input', () => password.setCustomValidity(''));
+  }
 
-  const hint = el('small', { text: 'Vous recevrez un code de connexion à cette adresse.', attrs: { id: 'setup-email-hint' } });
-  email.setAttribute('aria-describedby', hint.id);
+  const hint = el('small', {
+    text: password ? '12 caractères minimum.' : 'Vous recevrez un code de connexion à cette adresse.',
+    attrs: { id: 'setup-credential-hint' },
+  });
+  (password ?? email).setAttribute('aria-describedby', hint.id);
   const submit = button({ label: 'Créer l’espace', primary: true, block: true, type: 'submit', onClick: () => {} });
   form.append(hint, submit);
   for (const input of [workspace, admin]) {
@@ -50,16 +63,25 @@ export function mountSetupAssistant(options: SetupAssistantOptions): void {
     workspace.setCustomValidity(!name ? 'Saisissez un nom pour votre espace.'
       : new TextEncoder().encode(name).length > 120 ? 'Raccourcissez le nom de votre espace.' : '');
     admin.setCustomValidity(adminName ? '' : 'Saisissez votre nom.');
+    if (password) {
+      const value = password.value;
+      const withinLimits = [...value].length >= 12 && new TextEncoder().encode(value).length <= 1024;
+      password.setCustomValidity(withinLimits ? '' : 'Utilisez au moins 12 caractères et au plus 1 024 octets.');
+    }
     if (submit.disabled || !form.reportValidity()) return;
     const address = email.value.trim();
+    const secret = password?.value;
     void options.run(async () => {
       await options.client.request('/api/setup/claim', {
         method: 'POST',
-        body: JSON.stringify({ workspace: { name, slug: deriveWorkspaceSlug(name) }, name: adminName, email: address }),
+        body: JSON.stringify({ workspace: { name, slug: deriveWorkspaceSlug(name) }, name: adminName, email: address, password: secret }),
       });
-      options.onClaimed(address);
+      await options.onClaimed(address, secret);
     });
   });
+  main.append(el('h1', { text: 'Créer votre espace' }), form);
+  if (password) return;
+
   const mailTest = el('details', { attribute: 'data-cloud-section' });
   const status = el('p', { attribute: 'data-cloud-note', attrs: { role: 'status' } });
   status.hidden = true;
@@ -76,5 +98,5 @@ export function mountSetupAssistant(options: SetupAssistantOptions): void {
       });
     },
   }), status);
-  main.append(el('h1', { text: 'Créer votre espace' }), form, mailTest);
+  main.append(mailTest);
 }

@@ -67,6 +67,9 @@ async function workspaceSlug(page) {
 }
 async function login(page,email) {
   await page.goto('/');
+  await page.getByLabel('Adresse e-mail',{exact:true}).waitFor();
+  const switchToCode = page.getByRole('button',{name:'Utiliser un code par e-mail'});
+  if (await switchToCode.isVisible()) await switchToCode.click();
   await page.getByLabel('Adresse e-mail',{exact:true}).fill(email);
   const requestedAt = Date.now();
   await page.getByRole('button',{name:'Continuer par e-mail',exact:true}).click();

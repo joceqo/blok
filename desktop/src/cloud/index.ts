@@ -17,6 +17,7 @@ export type CloudGatewayRoute =
   | 'boot'
   | 'unreachable'
   | 'setup'
+  | 'login-password'
   | 'login-email'
   | 'login-code'
   | 'invite'
@@ -149,11 +150,27 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
   function setup(): void {
     mountSetupAssistant({
       client,
+      passwordAuthAvailable: state.instance?.passwordAuthAvailable,
       frame: () => frame('setup'),
       run,
-      onClaimed(claimedEmail) {
+      async onClaimed(claimedEmail, password) {
         state.email = claimedEmail;
-        login(true);
+        if (state.instance) state.instance.setupRequired = false;
+        if (password === undefined) {
+          login('login-code');
+          return;
+        }
+        let session: CloudSession;
+        try {
+          session = await client.loginWithPassword(claimedEmail, password);
+        } catch (reason) {
+          login();
+          const note = node('p', 'Votre espace a été créé. Connectez-vous pour l’ouvrir.', 'data-cloud-note');
+          note.setAttribute('role', 'status');
+          state.currentMain.querySelector('h1')?.after(note);
+          throw reason;
+        }
+        await enter(session);
       },
     });
   }
@@ -241,8 +258,9 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     boot: () => { frame('boot').append(node('p', 'Chargement de votre espace…', 'data-cloud-muted')); },
     unreachable,
     setup,
-    'login-email': () => login(false),
-    'login-code': () => login(true),
+    'login-password': () => login('login-password'),
+    'login-email': () => login('login-email'),
+    'login-code': () => login('login-code'),
     invite,
     spaces: () => { void list(); },
     'create-workspace': createWorkspace,
@@ -255,18 +273,22 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     main.append(node('hr'), button(label, () => run(async () => { await openLocal(); })));
   }
 
-  function login(codeStep = false): void {
+  function login(route: 'login-password' | 'login-email' | 'login-code' = state.instance?.passwordAuthAvailable ? 'login-password' : 'login-email'): void {
     if (!state.alive) return;
-    const main = frame(codeStep ? 'login-code' : 'login-email'); main.setAttribute('data-cloud-narrow', '');
+    const codeStep = route === 'login-code';
+    const main = frame(route); main.setAttribute('data-cloud-narrow', '');
     main.append(node('h1', codeStep ? 'Vérifiez votre e-mail' : 'Se connecter'));
     if (codeStep) main.append(node('p', `Saisissez le code envoyé à ${state.email}. Il est valable 10 minutes.`, 'data-cloud-muted'));
     const form = node('form', undefined, 'data-cloud-stack');
     const input = field(form, codeStep ? 'Code de connexion' : 'Adresse e-mail', codeStep ? 'text' : 'email', codeStep ? 'code' : 'email', codeStep ? '' : state.email);
-    input.autocomplete = codeStep ? 'one-time-code' : 'email';
+    input.autocomplete = codeStep ? 'one-time-code' : route === 'login-password' ? 'username' : 'email';
     if (codeStep) { input.inputMode = 'numeric'; input.pattern = '[0-9]{6}'; input.maxLength = 6; }
-    const submit = button(codeStep ? 'Se connecter' : 'Continuer par e-mail', () => {}, true); submit.type = 'submit'; submit.setAttribute('data-cloud-block', ''); form.append(submit);
+    const password = route === 'login-password' ? field(form, 'Mot de passe', 'password', 'password') : null;
+    if (password) password.autocomplete = 'current-password';
+    const submit = button(route === 'login-email' ? 'Continuer par e-mail' : 'Se connecter', () => {}, true); submit.type = 'submit'; submit.setAttribute('data-cloud-block', ''); form.append(submit);
     form.addEventListener('submit', event => {
       event.preventDefault();
+      if (submit.disabled || !form.reportValidity()) return;
       void run(async () => {
         if (codeStep) {
           state.session = await client.verifyCode(state.email, input.value.trim());
@@ -274,8 +296,12 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
           return;
         }
         state.email = input.value.trim();
+        if (password) {
+          await enter(await client.loginWithPassword(state.email, password.value));
+          return;
+        }
         await client.request('/api/auth/request-code', {method:'POST', body:JSON.stringify({email: state.email})});
-        login(true);
+        login('login-code');
       });
     });
     main.append(form);
@@ -283,11 +309,18 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       main.append(node('p', 'Le message peut se trouver dans vos courriers indésirables.', 'data-cloud-note'));
       main.append(button('Renvoyer un code', () => run(async () => {
         await client.request('/api/auth/request-code', {method:'POST', body:JSON.stringify({email: state.email})});
-        login(true);
+        login('login-code');
         const status = node('p', 'Un nouveau code a été envoyé.', 'data-cloud-note');
         status.setAttribute('role', 'status');
         state.currentMain.append(status);
-      })), document.createTextNode(' '), button('Modifier l’adresse e-mail', () => login()));
+      })), document.createTextNode(' '), button('Modifier l’adresse e-mail', () => login('login-email')));
+    } else if (state.instance?.passwordAuthAvailable && state.instance.emailCodeAvailable !== false) {
+      const alternate = button(password ? 'Utiliser un code par e-mail' : 'Utiliser un mot de passe', () => {
+        state.email = input.value.trim();
+        login(password ? 'login-email' : 'login-password');
+      });
+      alternate.setAttribute('data-cloud-link', '');
+      main.append(alternate);
     }
     appendLocalOpen(main, 'Continuer avec un espace local');
     serverSection(main);
@@ -383,7 +416,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       routers.invite();
       return;
     }
-    routers['login-email']();
+    login();
     if (!(reason instanceof CloudApiError && reason.status === 401)) error(reason);
   }
 

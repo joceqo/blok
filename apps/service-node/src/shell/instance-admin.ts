@@ -10,8 +10,9 @@ import type { PgPool } from '../db/pool.ts';
 import { inTransaction } from './bootstrap.ts';
 import { readBody, requireAccount, validWorkspace } from './workspace-directory.ts';
 import { consumeRate, createLoginMail, trustedClientIP } from './request-code.ts';
-import { mailBackend, sendMail, validateAddress } from './mail.ts';
+import { mailBackend, passwordAuthAvailable, sendMail, validateAddress } from './mail.ts';
 import { generateLoginCode, hashSecret } from '../auth/codes.ts';
+import { hashPassword, validPassword } from './password.ts';
 import { sessionDigest } from './session.ts';
 
 import { readInstanceSettings, updateInstanceSettings } from './instance-settings.ts';
@@ -47,10 +48,11 @@ export function instanceAdmin(pool: PgPool, secret: string, recheck: ()=>Promise
   router.use('/api/setup/*',bodyLimit({maxSize:8192}));
   const clientIP=trustedClientIP(process.env.TRUSTED_PROXY_CIDRS??'');
   const ip=(c:Context)=>clientIP(getConnInfo(c).remote.address??'unknown',c.req.header('X-Forwarded-For')??'');
-  router.get('/api/instance',async c=>c.json((await pool.query(`SELECT s.name,s.signup_policy AS "signupPolicy",
+  router.get('/api/instance',async c=>c.json({...(await pool.query(`SELECT s.name,s.signup_policy AS "signupPolicy",
     s.workspace_creation AS "workspaceCreation",s.setup_completed_at IS NULL AS "setupRequired",
     CASE WHEN w.id IS NOT NULL THEN jsonb_build_object('name',w.name,'slug',w.slug) END AS "defaultWorkspace"
-    FROM instance_settings s LEFT JOIN workspaces w ON w.id=s.default_workspace_id WHERE s.id`)).rows[0]));
+    FROM instance_settings s LEFT JOIN workspaces w ON w.id=s.default_workspace_id WHERE s.id`)).rows[0],
+    passwordAuthAvailable:passwordAuthAvailable(),emailCodeAvailable:!!mailBackend()}));
   router.get('/api/admin/settings',async c=>c.json(await readInstanceSettings(pool)));
   router.patch('/api/admin/settings',async c=>{
     const patch=await readBody(c);
@@ -58,6 +60,10 @@ export function instanceAdmin(pool: PgPool, secret: string, recheck: ()=>Promise
   });
   router.post('/api/setup/claim',async c=>{
     const b=await readBody(c), email=getEmail(b.email),name=getName(b.name);
+    if (b.password !== undefined) {
+      if (!passwordAuthAvailable()) throw new HTTPException(403,{message:'Password sign-in is disabled'});
+      if (!validPassword(b.password)) bad('Le mot de passe doit contenir au moins 12 caractères et au plus 1 024 octets.');
+    }
     const instance=b.instanceName?getName(b.instanceName):null;
     const signup=b.signupPolicy??'invite',creation=b.workspaceCreation??'admins_only';
     policy(signup,['invite','domain','open']);policy(creation,['anyone','admins_only','disabled']);
@@ -72,13 +78,18 @@ export function instanceAdmin(pool: PgPool, secret: string, recheck: ()=>Promise
       const {rows:[cfg]}=await db.query('SELECT setup_completed_at FROM instance_settings WHERE id FOR UPDATE');
       if(cfg.setup_completed_at) throw new HTTPException(409,{message:'Setup already completed'});
       if(!await consumeRate(db,'login-ip:'+peer,30)||!await consumeRate(db,'login-email:'+email,8)) throw new HTTPException(429,{message:'Too many attempts'});
-      const {rows:[user]}=await db.query('INSERT INTO users(id,email,name) VALUES($1,$2,$3) ON CONFLICT(email) DO UPDATE SET name=excluded.name RETURNING id',[randomUUID(),email,name]);
+      const passwordHash = b.password === undefined ? null : await hashPassword(b.password);
+      const {rows:[user]}=await db.query(`INSERT INTO users(id,email,name,password_hash) VALUES($1,$2,$3,$4)
+        ON CONFLICT(email) DO UPDATE SET name=excluded.name WHERE excluded.password_hash IS NULL RETURNING id`,
+        [randomUUID(),email,name,passwordHash]);
+      if(!user) throw new HTTPException(409,{message:'Account already exists'});
       const id=randomUUID();
       await db.query('INSERT INTO instance_admins(user_id) VALUES($1)',[user.id]);
       await db.query('INSERT INTO workspaces(id,slug,name) VALUES($1,$2,$3)',[id,ws.slug,ws.name.trim()]);
       await db.query("INSERT INTO memberships VALUES($1,$2,'admin')",[id,user.id]);
       await db.query(`UPDATE instance_settings SET name=coalesce($1,name),signup_policy=$2,workspace_creation=$3,default_workspace_id=$4,
         setup_completed_at=now(),updated_at=now(),updated_by=$5 WHERE id`,[instance,signup,creation,id,user.id]);
+      if (passwordHash) return;
       const code=generateLoginCode();
       const issued=await db.query(`INSERT INTO login_codes(email,digest,expires_at) VALUES($1,$2,now()+interval '10 minutes')
         ON CONFLICT(email) DO UPDATE SET digest=excluded.digest,expires_at=excluded.expires_at,attempts=0,sent_at=now()
