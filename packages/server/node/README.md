@@ -42,6 +42,16 @@ node scripts/test-server-conformance.mjs --target node
 
 Filter one suite: `--suite routing-contract`. Files named `*.fast.test.ts` are the fast tier only.
 
+## Export a closed journal as a Yjs update
+
+Build with `node scripts/build-node-server.mjs` from the repository root. Use a stopped journal directory or a consistent copy. The command sends the reconstructed document to stdout as a binary Yjs v1 update.
+
+```sh
+npm --prefix packages/server/node run --silent journal:export -- /path/to/document.journal > document.yjs
+```
+
+A successful export applies the active checkpoint or baseline, then its remaining operations. The command exits with an error before emitting bytes if the journal is incomplete, has a damaged record, or ends with unresolved Yjs dependencies.
+
 ## Known divergences (planned; see `docs/plans/server-node-nifty-zebra.md`)
 
 - **Journal lock:** no `flock(2)` on Node — O_EXCL + PID liveness instead; concurrent cross-host journal hold with Go/C# is not the same contract.

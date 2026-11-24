@@ -49,4 +49,5 @@ await mkdir(outDir, { recursive: true });
 await bundle(join(outDir, 'blok-server.mjs'), false);
 await bundle(join(outDir, 'blok-server-conformance.mjs'), true);
 await bundle(join(outDir, 'journal-inspect.mjs'), false, 'src/collab/journal/inspect.ts');
+await bundle(join(outDir, 'journal-replay.mjs'), false, 'src/collab/journal/replay.ts');
 console.log('Conformance binaries — node: ordinary bundle, and one with BLOK_CONFORMANCE=true.');
