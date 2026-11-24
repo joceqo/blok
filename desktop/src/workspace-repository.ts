@@ -1,3 +1,5 @@
+import { pageAccess } from './page-access';
+import { moveDestinations, PageMoveConflict } from './page-move';
 import { mergeWorkspaceIndex } from './workspace-merge';
 import { loadIndex, readFile, writeFile, type WorkspaceIndex } from './storage';
 import { nativeSessionAdapter } from './native-session';
@@ -66,6 +68,34 @@ export function workspaceRepository(workspace: WorkspaceRef) {
         }
       }
       throw new Error('L’espace change trop rapidement. Réessayez.');
+    },
+    async movePage(index: WorkspaceIndex, sourceId: string, parentId: string | null): Promise<void> {
+      const source = index.pages.find((page) => page.id === sourceId);
+      if (!source) throw new PageMoveConflict();
+      const originalParent = source.parentId;
+      const intent = snapshot(index);
+      intent.pages.find((page) => page.id === sourceId)!.parentId = parentId;
+      const fresh = ref.kind === 'remote' ? await request<WorkspaceIndex & {revision: number}>(`${base}/index`) : undefined;
+      const current = fresh ?? index;
+      const page = current.pages.find((item) => item.id === sourceId);
+      if (!page || page.parentId !== originalParent || !moveDestinations(current.pages, sourceId, pageAccess(ref, current.access)).has(parentId)) {
+        throw new PageMoveConflict();
+      }
+      if (!fresh) { await writeFile('index', JSON.stringify(intent), ref); return; }
+      // A move can change inherited rights. Revalidate against this exact index
+      // revision and let the user pick again if a concurrent edit wins.
+      const pages = fresh.pages.map((item) => item.id === sourceId ? { ...item, parentId } : item);
+      try {
+        const saved = await request<{revision: number}>(`${base}/index`, {
+          method: 'PUT', body: JSON.stringify({ pages, trash: fresh.trash ?? [], revision: fresh.revision }),
+        });
+        revision = saved.revision;
+        baseline = intent;
+        acknowledged = snapshot({ ...fresh, pages, activeId: intent.activeId });
+      } catch (error) {
+        if (error instanceof RepositoryHttpError && error.status === 409) throw new PageMoveConflict();
+        throw error;
+      }
     },
     readPage(id: string) {
       if (ref.kind !== 'local') throw new Error('Remote documents require collaboration');
