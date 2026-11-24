@@ -1,8 +1,9 @@
-import http from 'node:http';
-import https from 'node:https';
-import { CollabRooms } from '../collab/rooms.ts';
+import { createHash } from 'node:crypto';
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import { DocEndpointClient } from '../collab/doc-endpoint.ts';
 import { equalsOrdinalIgnoreCase } from '../dotnet/ordinal.ts';
-import { eqIgnoreAsciiCase, isFieldValue, trimChars, type Headers } from '../http/headers.ts';
+import { isFieldValue, trimChars, type Headers } from '../http/headers.ts';
 import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { inGroup, Router, type RouteHandler } from '../route/router.ts';
@@ -21,7 +22,7 @@ import { uploadHandler } from './upload.ts';
 
 function isSingleSegment(doc: string): boolean {
   const lower = doc.toLowerCase();
-  return doc !== '' && !/[\\/]/.test(doc) && !lower.includes('%2f') && !lower.includes('%5c');
+  return doc !== '' && doc !== '.' && doc !== '..' && !/[\\/]/.test(doc) && !lower.includes('%2f') && !lower.includes('%5c');
 }
 
 function originAllowed(origin: string, allowedOrigins: string[]): boolean {
@@ -75,7 +76,11 @@ function disallow(allow: string): RouteHandler {
 
 function guarded(options: HostAppOptions, requireWrite: boolean, handler: RouteHandler): RouteHandler {
   return async (request, response, values) => {
-    if (!(await guardRequest(options, request, response, requireWrite))) {
+    if (!(await guardRequest(options, request, response, requireWrite, values.doc))) {
+      return;
+    }
+    if (values.doc !== undefined && !isSingleSegment(values.doc)) {
+      await writePlain(request, response, 400, 'document ids must be a single path segment\n');
       return;
     }
     await handler(request, response, values);
@@ -115,74 +120,48 @@ async function healthHandler(options: HostAppOptions, request: Request, response
 }
 
 
-async function stateHandler(options: HostAppOptions, request: Request, response: ResponseWriter, values: Record<string, string>): Promise<void> {
-  const doc = values.doc ?? '';
-  if (!isSingleSegment(doc)) {
-    await writePlain(request, response, 400, 'document ids must be a single path segment\n');
-    return;
-  }
-  if (options.docEndpoint === '') {
-    await writePlain(request, response, 503, 'the document could not be loaded\n');
-    return;
-  }
-  let text: string;
+async function unsupported(request: Request, response: ResponseWriter): Promise<void> {
+  await writePlain(request, response, 501, 'collaboration operation not implemented by the Node host\n');
+}
+
+async function storedWorkingSet(directory: string, doc: string): Promise<boolean> {
+  if (!directory) return false;
+  const name = createHash('sha256').update(doc).digest('hex');
   try {
-    text = await loadDocText(options.docEndpoint, doc);
-  } catch {
+    await stat(join(directory, name));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function stateHandler(
+  options: HostAppOptions, endpoint: DocEndpointClient, doc: string, request: Request, response: ResponseWriter,
+): Promise<void> {
+  // A journal or an existing working set can be ahead of the document projection.
+  // Serving that projection as current state in those modes would lose acknowledged edits.
+  if (options.collabJournal || options.collabS3Prefix) return unsupported(request, response);
+  let dataJson: string;
+  try {
+    if (await storedWorkingSet(options.collabDirectory, doc)) return unsupported(request, response);
+    const loaded = await endpoint.loadJson(doc);
+    dataJson = loaded.dataJson ?? '{"blocks":[]}';
+  } catch (error) {
+    options.collabLog(`collab: room "${doc}" could not load: ${error instanceof Error ? error.message : String(error)}`, 'warning');
     await writePlain(request, response, 503, 'the document could not be loaded\n');
     return;
   }
   response.headersMut().set('Cache-Control', 'no-store');
   response.headersMut().set('Content-Type', 'application/json');
   await response.start(200);
-  if (request.method() !== 'HEAD') {
-    await response.write(new TextEncoder().encode(text));
-  }
-}
-
-async function stubNoContent(request: Request, response: ResponseWriter): Promise<void> {
-  response.setStatus(204);
-  await response.start(204);
-}
-
-function loadDocText(endpoint: string, doc: string): Promise<string> {
-  const base = new URL(endpoint.endsWith('/') ? endpoint : `${endpoint}/`);
-  const prefix = base.pathname.replace(/\/$/, '');
-  const path = `${prefix}/${encodeURIComponent(doc)}`;
-  const requester = base.protocol === 'https:' ? https : http;
-  return new Promise((resolve, reject) => {
-    const req = requester.request(
-      {
-        hostname: base.hostname,
-        port: base.port === '' ? undefined : base.port,
-        path,
-        method: 'GET',
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () => {
-          if ((res.statusCode ?? 500) !== 200) {
-            reject(new Error(String(res.statusCode)));
-            return;
-          }
-          resolve(Buffer.concat(chunks).toString('utf8'));
-        });
-      },
-    );
-    req.on('error', reject);
-    req.end();
-  });
+  await response.write(new TextEncoder().encode(dataJson));
 }
 
 export function buildRouter(options: HostAppOptions): Router {
   const prefix = '';
   const router = new Router();
   const patternPrefix = prefix.replace(/\/+$/, '');
-
-  const collabRooms = options.collabEnabled && options.docEndpoint !== ''
-    ? new CollabRooms(options.docEndpoint, options.docEndpointAuth, options.collabLog)
-    : undefined;
 
   const store: BlobStore | undefined = options.blobStore
     ?? (options.storageDirectory !== ''
@@ -231,32 +210,19 @@ export function buildRouter(options: HostAppOptions): Router {
     });
     router.handle(`${patternPrefix}/sync/{doc}`, undefined, disallow('GET'));
 
-    shell(router, `${patternPrefix}/sync/{doc}/reset`, 'POST', stubNoContent, options);
-    shell(router, `${patternPrefix}/sync/{doc}/edit`, 'POST', async (request, response, values) => {
-      const doc = values.doc ?? '';
-      const body = request.bodyMut();
-      if (body !== undefined) {
-        try {
-          await body.readToEnd([]);
-        } catch {
-          return;
-        }
-      }
-      if (isSingleSegment(doc) && collabRooms !== undefined) {
-        await collabRooms.touchOnEdit(doc);
-      }
-      await stubNoContent(request, response);
-    }, options);
+    const endpoint = new DocEndpointClient({ endpoint: options.docEndpoint, authorization: options.docEndpointAuth });
+    shell(router, `${patternPrefix}/sync/{doc}/reset`, 'POST', unsupported, options);
+    shell(router, `${patternPrefix}/sync/{doc}/edit`, 'POST', unsupported, options);
     shell(router, `${patternPrefix}/sync/{doc}/state`, 'GET', (request, response, values) =>
-      stateHandler(options, request, response, values), options);
-    shell(router, `${patternPrefix}/sync/{doc}/history`, 'GET', stubNoContent, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}`, 'GET', stubNoContent, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}`, 'DELETE', stubNoContent, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}/restore`, 'POST', stubNoContent, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}/restore/preview`, 'POST', stubNoContent, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}/changes`, 'GET', stubNoContent, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/at`, 'GET', stubNoContent, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/changes`, 'GET', stubNoContent, options);
+      stateHandler(options, endpoint, values.doc ?? '', request, response), options);
+    shell(router, `${patternPrefix}/sync/{doc}/history`, 'GET', unsupported, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}`, 'GET', unsupported, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}`, 'DELETE', unsupported, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}/restore`, 'POST', unsupported, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}/restore/preview`, 'POST', unsupported, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}/changes`, 'GET', unsupported, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/at`, 'GET', unsupported, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/changes`, 'GET', unsupported, options);
   }
 
   const groupNotFound: RouteHandler = (request, response) => notFound(request, response);

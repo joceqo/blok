@@ -1,3 +1,4 @@
+import { findNodeAtLocation, parseTree, type ParseError } from 'jsonc-parser';
 import http from 'node:http';
 import https from 'node:https';
 
@@ -176,41 +177,42 @@ function request(
   });
 }
 
-function parseLoaded(body: Buffer): LoadedDocument {
-  let root: unknown;
-  try {
-    root = JSON.parse(body.toString('utf8')) as unknown;
-  } catch {
-    throw new DocEndpointError('collab: the doc endpoint did not answer with JSON.');
-  }
-  if (root === null) {
-    return { data: null, version: undefined };
-  }
-  if (typeof root !== 'object' || Array.isArray(root)) {
+function readEnvelope(body: Buffer): { dataJson: string | null; version: string | undefined } {
+  const source = new TextDecoder('utf-8', { fatal: true }).decode(body);
+  const errors: ParseError[] = [];
+  const root = parseTree(source, errors, { disallowComments: true, allowTrailingComma: false });
+  if (!root || errors.length > 0) throw new DocEndpointError('collab: the doc endpoint did not answer with JSON.');
+  if (root.type === 'null') return { dataJson: null, version: undefined };
+  if (root.type !== 'object') {
     throw new DocEndpointError('collab: the doc endpoint answered with JSON that is not an object.');
   }
-  const record = root as Record<string, unknown>;
-  if (!Object.prototype.hasOwnProperty.call(record, 'data')) {
-    return { data: record, version: undefined };
-  }
-  const data = record.data;
-  if (data !== null && (typeof data !== 'object' || Array.isArray(data))) {
+  const data = findNodeAtLocation(root, ['data']);
+  if (!data) return { dataJson: source.slice(root.offset, root.offset + root.length), version: undefined };
+  if (data.type !== 'null' && data.type !== 'object') {
     throw new DocEndpointError('collab: the doc endpoint envelope carries data that is not an object.');
   }
-  const version = record.version;
-  if (version !== undefined && typeof version !== 'string') {
-    throw new DocEndpointError('collab: the doc endpoint envelope carries a version that is not a string.');
+  const value = findNodeAtLocation(root, ['version']);
+  if (value?.type === 'boolean') {
+    throw new DocEndpointError('collab: the doc endpoint version must be a string or a number.');
   }
-  return { data, version };
+  const version = value?.type === 'string' || value?.type === 'number' ? String(value.value) : undefined;
+  // Custom blocks may contain integers outside the JS safe range. Return the
+  // actual document bytes when serving state, without reserializing its data.
+  return { dataJson: data.type === 'null' ? null : source.slice(data.offset, data.offset + data.length), version };
 }
 
 export class DocEndpointClient {
   constructor(readonly options: DocEndpointOptions) {}
 
   async load(docId: string): Promise<LoadedDocument> {
+    const { dataJson, version } = await this.loadJson(docId);
+    return { data: dataJson === null ? null : JSON.parse(dataJson), version };
+  }
+
+  async loadJson(docId: string): Promise<{ dataJson: string | null; version: string | undefined }> {
     const url = urlFor(this.options.endpoint, docId);
     const { body } = await request(this.options, 'GET', url, []);
-    return parseLoaded(body);
+    return readEnvelope(body);
   }
 
   async save(docId: string, outputData: unknown, version: string | undefined): Promise<void> {

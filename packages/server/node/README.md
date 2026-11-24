@@ -33,4 +33,5 @@ Filter one suite: `--suite routing-contract`. Files named `*.fast.test.ts` are t
 
 - **Journal lock:** no `flock(2)` on Node — O_EXCL + PID liveness instead; concurrent cross-host journal hold with Go/C# is not the same contract.
 - **macOS TLS operator verification:** façade reports unavailable (`sectrust` parity deferred).
-- **Phase 0 host:** routes only `GET`/`HEAD` `/health`; full `blokserver` routes land in later phases.
+- **Collaboration:** `GET /sync/{doc}/state` reads the configured document endpoint with its internal credential and checks the requested document against the user's ticket. Bare documents and envelopes are supported. The endpoint supplies the state for a fresh working set. Journal-backed rooms, S3 working sets and existing local working sets return HTTP 501 until replay is implemented.
+- Edit, reset, and history routes return HTTP 501. Use the production collaboration host for writes and live sessions.

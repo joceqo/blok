@@ -12,6 +12,7 @@ export interface ParsedConformanceArgs {
   fileBytes: boolean;
   fileBytesMaxBytes?: number;
   filesCors: boolean;
+  journal: boolean;
 }
 
 function isDigits(text: string): boolean {
@@ -44,12 +45,17 @@ export function parseConformanceArguments(argv: string[]): ParsedConformanceArgs
   let fileBytes = false;
   let fileBytesMaxBytes: number | undefined;
   let filesCors = false;
+  let journal = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!;
     if (argument === '--') {
       filtered.push(...argv.slice(index));
       break;
+    }
+    if (argument === '--conformance-journal' || argument === '-conformance-journal') {
+      journal = true;
+      continue;
     }
     if (argument === '--conformance-file-bytes' || argument === '-conformance-file-bytes') {
       fileBytes = true;
@@ -99,9 +105,9 @@ export function parseConformanceArguments(argv: string[]): ParsedConformanceArgs
     port = parsed.port;
   }
 
-  return { argv: filtered, err: '', origin, port, fileBytes, fileBytesMaxBytes, filesCors };
+  return { argv: filtered, err: '', origin, port, fileBytes, fileBytesMaxBytes, filesCors, journal };
 }
 
 function emptyErr(message: string): ParsedConformanceArgs {
-  return { argv: [], err: message, origin: '', port: 0, fileBytes: false, filesCors: false };
+  return { argv: [], err: message, origin: '', port: 0, fileBytes: false, filesCors: false, journal: false };
 }

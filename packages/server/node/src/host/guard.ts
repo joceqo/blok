@@ -51,6 +51,7 @@ export async function guardRequest(
   request: Request,
   response: ResponseWriter,
   requireWrite: boolean,
+  doc?: string,
 ): Promise<boolean> {
   const host = firstHeader(request, 'host');
   if (
@@ -92,6 +93,10 @@ export async function guardRequest(
     }
     if (requireWrite && !verified.claims.write) {
       await writePlain(request, response, 403, 'write access required\n');
+      return false;
+    }
+    if (doc !== undefined && verified.claims.doc !== doc) {
+      await writePlain(request, response, 403, 'pass is for another document\n');
       return false;
     }
     if (verified.claims.user !== '') {

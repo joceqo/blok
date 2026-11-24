@@ -14,6 +14,9 @@ export interface HostAppOptions {
   publicUrl: string;
   maxUploadBytes: number;
   collabEnabled: boolean;
+  collabDirectory: string;
+  collabJournal: boolean;
+  collabS3Prefix: string;
   docEndpoint: string;
   docEndpointAuth: string;
   collabLog: CollabLog;
