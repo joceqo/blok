@@ -2,6 +2,13 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 
+import { HTTPException } from 'hono/http-exception';
+import { WorkspaceError } from './workspace-scope.ts';
+import { createHostedAi } from './hosted-ai.ts';
+import { createHostedMcp } from './hosted-mcp.ts';
+import { createShellAssets } from './assets.ts';
+import { instanceAdmin } from './instance-admin.ts';
+import { workspaceDirectory } from './workspace-directory.ts';
 import { roomTickets } from './room-tickets.ts';
 import { createMcpTokens } from './mcp-tokens.ts';
 import { createLoginMail, createRequestCode } from './request-code.ts';
@@ -21,7 +28,7 @@ import { loadSession, loadVisiblePage, sessionDigest } from './session.ts';
 
 const digest = (input: string) => createHash('sha256').update(input).digest();
 
-export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>, recheckAccess = createAccessRecheck(secret), inviteMail = createInviteMail(secret)) {
+export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>, recheckAccess = createAccessRecheck(secret), inviteMail = createInviteMail(pool)) {
   if (secret.length < 32) throw new Error('INTERNAL_SECRET must have at least 32 characters');
   const expected = digest('Bearer ' + secret);
   const nodeRoomPage = process.env.BLOK_NODE_ROOM_PAGE;
@@ -29,6 +36,8 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   if (nodeRoomPage && nodeRoomWorkspace) throw new Error('Select one room ownership mode');
   const app = new Hono();
   app.onError((error, context) => {
+    if (error instanceof HTTPException || error instanceof WorkspaceError) return context.json({error:error.message},error.status);
+    if ('code' in error && error.code === '23505') return context.json({error:'Already exists'},409);
     console.error('[shell-backend]', error.name);
     return context.json({ error: 'Database unavailable' }, 503);
   });
@@ -46,7 +55,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
       c.header('Access-Control-Allow-Credentials', 'true');
     }
     if (c.req.method === 'OPTIONS') {
-      c.header('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+      c.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Blok-Ticket, Range, If-Match, Idempotency-Key');
       c.header('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS');
       return c.body(null, 204);
     }
@@ -57,7 +66,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   });
 
   app.route('/api/mcp/tokens', createMcpTokens(pool));
-  app.route('/api/auth', createRequestCode(pool, secret, createLoginMail(secret), process.env.TRUSTED_PROXY_CIDRS ?? ''));
+  app.route('/api/auth', createRequestCode(pool, secret, createLoginMail(), process.env.TRUSTED_PROXY_CIDRS ?? ''));
   app.route('/api/auth', createShellAuth(pool, secret, () => recheckLiveSessions(secret)));
   app.route('/api/workspaces/:slug/search', createWorkspaceSearch(pool));
   app.route('/api/workspaces/:slug/teamspaces', createShellTeamspaces(pool));
@@ -72,6 +81,11 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     if (!session) return c.json({ error: 'Sign in required' }, 401);
     return c.json(c.req.path === '/api/session' ? session : { workspaces: session.workspaces });
   });
+  app.route('/mcp',createHostedMcp(pool));
+  app.route('/api/workspaces/:slug/ai',createHostedAi(pool));
+  app.route('/',createShellAssets(pool,secret));
+  app.route('/',instanceAdmin(pool,secret,() => recheckLiveSessions(secret)));
+  app.route('/',workspaceDirectory(pool));
   registerIndexWrite(app, pool, recheckAccess);
   app.get('/api/workspaces/:slug/index', async (c) => {
     const key = sessionDigest(c);
@@ -122,7 +136,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   app.put('/internal/documents/:id', bodyLimit({ maxSize: 64 * 1024 * 1024, onError: (c) => c.json({ error: 'Document too large' }, 413) }), async (c) => {
     const head = readProjectionHeaders(c.req.raw.headers);
     if (!head) return c.json({ error: 'Invalid projection headers' }, 400);
-    if (nodeRoomPage && c.req.param('id') === nodeRoomPage && !head.expected) {
+    if ((process.env.BLOK_NODE_ROOM_ALL === '1' || nodeRoomPage && c.req.param('id') === nodeRoomPage) && !head.expected) {
       return c.json({ error: 'Node room requires an exact projection head' }, 409);
     }
     const json = await c.req.text();

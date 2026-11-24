@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, afterEach } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createInviteMail } from './invite-mail.ts';
 import { parseInvite } from './workspace-invites.ts';
 
@@ -13,17 +13,17 @@ describe('workspace invite fields', () => {
     'rejects invalid invitation fields', input => expect(() => parseInvite(input)).toThrow());
 });
 
-describe('workspace invite email bridge', () => {
-  afterEach(() => vi.unstubAllGlobals());
-  it('sends only the stored invitation identifier and the optional text to the fixed mail transport', async () => {
-    const transport = vi.fn().mockResolvedValueOnce(Response.json({email:'a@example.test'})).mockResolvedValueOnce(new Response(null,{status:204}));
-    vi.stubGlobal('fetch', transport);
-    const mail = createInviteMail('internal');
+describe('workspace invitation delivery', () => {
+  it('delivers the stored invitation to its intended recipient', async () => {
+    const query = vi.fn().mockResolvedValue({rows:[{email:'a@example.test',name:'Équipe'}]});
+    const send = vi.fn();
+    const mail = createInviteMail({query},send);
     expect(await mail.normalize(' A@EXAMPLE.TEST ')).toBe('a@example.test');
     await mail.deliver('id/1','note');
-    expect(transport.mock.calls.map(call => call[0])).toEqual([
-      'http://127.0.0.1:8080/internal/invitations/normalize', 'http://127.0.0.1:8080/internal/invitations/id%2F1/mail',
-    ]);
-    expect(transport.mock.calls[1]?.[1]).toMatchObject({ redirect:'error', headers:{ Authorization:'Bearer internal' }, body:'{"message":"note"}' });
+    expect(query.mock.calls[0]?.[1]).toEqual(['id/1']);
+    expect(send).toHaveBeenCalledWith('a@example.test','Invitation Blok — Équipe',expect.stringContaining('note'));
+    query.mockResolvedValue({rows:[]});
+    await expect(mail.deliver('revoked','note')).rejects.toThrow();
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

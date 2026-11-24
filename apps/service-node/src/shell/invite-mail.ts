@@ -1,4 +1,5 @@
-import { createInternalMailTransport } from './internal-mail.ts';
+import type { PgPool } from '../db/pool.ts';
+import { sendMail, validateAddress } from './mail.ts';
 import { WorkspaceError } from './workspace-scope.ts';
 
 export interface InviteMail {
@@ -6,22 +7,25 @@ export interface InviteMail {
   deliver(inviteId: string, message: string): Promise<void>;
 }
 
-// Keep SMTP/Resend credentials, address parsing and the configured public URL
-// in the same process as the authentication email transport.
-export function createInviteMail(secret: string): InviteMail {
-  const post = createInternalMailTransport(secret);
+export function createInviteMail(pool: Pick<PgPool, 'query'>, send = sendMail): InviteMail {
   return {
     async normalize(email) {
-      const response = await post('/internal/invitations/normalize', { email });
-      if (response.status === 400) throw new WorkspaceError(400, 'Invalid email');
-      if (!response.ok) throw new Error('Invitation address validation unavailable');
-      const data = await response.json() as { email?: string };
-      if (!data.email) throw new Error('Invitation address validation unavailable');
-      return data.email;
+      const address = validateAddress(email);
+      if (!address) throw new WorkspaceError(400, 'Invalid email');
+      return address;
     },
     async deliver(inviteId, message) {
-      const response = await post('/internal/invitations/' + encodeURIComponent(inviteId) + '/mail', { message });
-      if (response.status !== 204) throw new Error('Invitation email delivery failed');
+      const {
+        rows: [invite],
+      } = await pool.query<{ email: string; name: string }>(
+        `SELECT i.email,w.name FROM invites i JOIN workspaces w ON w.id=i.workspace_id
+         WHERE i.id=$1 AND i.status='delivering' AND i.expires_at>now()`,
+        [inviteId],
+      );
+      if (!invite) throw new Error('Deliverable invitation not found');
+      let text = `Vous êtes invité à rejoindre ${invite.name}.\nConnectez-vous avec cette adresse email sur ${process.env.PUBLIC_URL ?? ''} pour accepter cette invitation.\nCette invitation expire dans 7 jours.`;
+      if (message) text += '\n\nMessage de l’administrateur :\n' + message;
+      await send(invite.email, 'Invitation Blok — ' + invite.name, text);
     },
   };
 }
