@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 
+import { createLoginMail, createRequestCode } from './request-code.js';
 import { createShellAuth } from './auth.js';
 import { registerIndexWrite } from './index-write.js';
 import type { PgPool } from '../db/pool.js';
@@ -48,6 +49,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     await next();
   });
 
+  app.route('/api/auth', createRequestCode(pool, secret, createLoginMail(secret), process.env.TRUSTED_PROXY_CIDRS ?? ''));
   app.route('/api/auth', createShellAuth(pool, secret, () => recheckLiveSessions(secret)));
   app.route('/api/workspaces/:slug/search', createWorkspaceSearch(pool));
   app.route('/api/workspaces/:slug/teamspaces', createShellTeamspaces(pool));

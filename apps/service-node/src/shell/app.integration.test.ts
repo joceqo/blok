@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createRequestCode, trustedClientIP } from './request-code.js';
 import { createShellAuth } from './auth.js';
 import { createShellApp } from './app.js';
 
@@ -90,6 +91,35 @@ describe.skipIf(!databaseUrl)('shell routes on the deployed PostgreSQL schema', 
       }
       expect(rechecks).toBe(2);
       expect((await app.request('/api/session', { headers: { Authorization:'Bearer ' + token } })).status).toBe(401);
+    });
+
+    it('charges the real network peer, enforces mail cooldown and removes undelivered challenges', async () => {
+      const ip = trustedClientIP('172.30.91.3/32');
+      expect(ip('::ffff:172.30.91.3','198.51.100.42, 192.0.2.1')).toBe('192.0.2.1');
+      expect(ip('192.0.2.1','198.51.100.42')).toBe('192.0.2.1');
+      const sent: string[] = [];
+      const router = createRequestCode(db, secret, {
+        normalize: async email => email.trim().toLowerCase(),
+        deliver: async (email, code) => {
+          if (email === 'unavailable@sample.test') throw new Error('Offline mail');
+          sent.push(code);
+        },
+      },'172.30.91.3/32');
+      const submit = (email: string) => router.request('/request-code', {
+        method:'POST',body:JSON.stringify({email}),headers:{'X-Forwarded-For':'198.51.100.42'},
+      }, { incoming:{ socket:{ remoteAddress:'::ffff:172.30.91.3' } } });
+      await db.query("UPDATE instance_settings SET signup_policy='invite'");
+      expect((await submit('unknown@sample.test')).status).toBe(200);
+      expect(sent).toEqual([]);
+      await db.query("UPDATE instance_settings SET signup_policy='open'");
+      const email = 'request.code@sample.test';
+      expect((await submit(email)).status).toBe(200);
+      expect((await submit(email)).status).toBe(429);
+      expect(sent).toHaveLength(1);
+      expect((await verify(email, sent[0]!)).status).toBe(200);
+      expect((await submit('unavailable@sample.test')).status).toBe(503);
+      expect((await db.query("SELECT FROM login_codes WHERE email='unavailable@sample.test'")).rowCount).toBe(0);
+      expect((await db.query("SELECT count FROM email_rate_limits WHERE key='login-ip:198.51.100.42'")).rows[0].count).toBe(4);
     });
 
     it('bounds guesses, rechecks exact signup domains and issues an HttpOnly browser cookie', async () => {

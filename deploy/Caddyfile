@@ -26,7 +26,7 @@
   }
   @shellAuth {
     method POST
-    path /api/auth/verify-code /api/auth/logout
+    path /api/auth/request-code /api/auth/verify-code /api/auth/logout
   }
   handle @shellAuth {
     reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
