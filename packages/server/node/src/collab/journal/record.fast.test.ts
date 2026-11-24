@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { decodeRecord, encodeRecord, MAX_RECORD_BYTES, RECORD_HEADER_BYTES, type OperationRecord, type OperationSource } from './record.js';
+import { decodeRecord, encodeRecord, MAX_RECORD_BYTES, RECORD_HEADER_BYTES, type OperationRecord, type OperationSource } from './record.ts';
 
 interface EncodeVector {
   operationId: string; sequence: string; ticks: string; actor: string | null; source: OperationSource;

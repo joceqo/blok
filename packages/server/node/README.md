@@ -110,3 +110,35 @@ the journal in full and is intended for small local documents. A workspace rollo
 workspace-scoped ticket issuance and live ACL callbacks, exclusive ownership of each selected
 journal across Go and Node, snapshot persistence, and an explicit proxy route for the selected
 documents. The normal shell continues to use its configured collaboration host.
+
+### Use real shell tickets and page permissions in one preview room
+
+Run a cloud service that provides `POST /internal/room-access` and give the Node process
+the service's internal origin and `INTERNAL_SECRET` through the deployment environment.
+The built-in private demo signer is disabled in shell mode. The cloud service retains its
+ticket-signing key. Starting from `packages/server/node`:
+
+```sh
+BLOK_ROOM_CLOUD_ORIGIN=http://127.0.0.1:8080 \
+npm run --silent journal:room -- "$copy" "$pageId" http://localhost:18098 18102
+```
+
+Sign in to the shell, fetch a ticket from `GET /api/workspaces/{slug}/ticket?doc={pageId}`, and
+offer it as a WebSocket subprotocol. The controller verifies the signature, 60-second admission
+deadline, session and exact page. For an established socket, the room rechecks that same session
+and page on incoming frames, before broadcasting updates, and once per second while idle. It
+keeps the write ceiling from the original ticket across later permission changes. A revoked
+or expired session closes with code 4403. A new connection requires a valid upgrade ticket.
+
+The document ID and seeded directory are supplied together by the operator. This mode keeps
+the standalone preview's routing and performance limits. A workspace rollout still needs a
+trusted document-to-journal mapping, seeding from canonical state, projection to the product
+database, presence and ownership transfer between the current and new collaboration hosts.
+Routing and socket selection are explicit deployment work. The original shell does not
+automatically send sockets here.
+
+The acceptance scenario in `test/shell-room-acl.mjs` is run by the Go integration test
+`TestNodeRoomAgainstCanonicalACL`. Build the room first, set `TEST_DATABASE_URL` and
+`BLOK_TEST_NODE_ROOM_SCENARIO` to the script's absolute path, then run the Go test. It
+creates a private PostgreSQL schema and tests two clients against real short-lived Go tickets
+and live page-share changes.

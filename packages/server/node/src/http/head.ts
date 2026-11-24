@@ -1,6 +1,6 @@
 /** Kestrel's request head: the request line, the header block, its limits and its grammar. */
 
-import { Headers } from './headers.js';
+import { Headers } from './headers.ts';
 
 /** The request line counts its line end. */
 export const MAX_REQUEST_LINE = 8 << 10;

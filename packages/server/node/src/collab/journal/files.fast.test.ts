@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   BASELINE_MAGIC, CHECKPOINT_MAGIC, InvalidDataError, MANIFEST_FILE_NAME,
   baselineName, checkpointName, journalName, readManifest, readSealed, type JournalManifest,
-} from './files.js';
+} from './files.ts';
 
 type WireManifest = { [K in keyof JournalManifest]: JournalManifest[K] extends bigint ? string : JournalManifest[K] };
 type Magic = typeof BASELINE_MAGIC | typeof CHECKPOINT_MAGIC;

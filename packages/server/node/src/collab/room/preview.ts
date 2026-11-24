@@ -7,7 +7,12 @@ import type { SyncWireFrame } from '../../../../../../src/components/modules/col
 import { verifyTicket } from '../../auth/ticket.ts';
 import { acquireJournalWriter, MAX_APPEND_BYTES } from '../journal/append.ts';
 
-export interface RoomIdentity { id: string; write: boolean }
+export interface RoomIdentity {
+  id: string;
+  write: boolean;
+  /** Recheck only this admitted connection, bound to its original page and identity. */
+  revalidate?: () => Promise<RoomIdentity | null>;
+}
 export interface RoomOptions {
   directory: string;
   documentId: string;
@@ -27,7 +32,7 @@ export function signedRoomTickets(secret: string): RoomOptions['authorize'] {
   };
 }
 
-interface Peer { ws: WebSocket; ticket: string; actor: string; synced: boolean }
+interface Peer { ws: WebSocket; ticket: string; admission: RoomIdentity; synced: boolean }
 type Operation = Extract<SyncWireFrame, { type:'operation' }>;
 
 function send(peer: Peer, frame: SyncWireFrame) {
@@ -71,8 +76,9 @@ export async function startJournalRoom(options: RoomOptions) {
 
   async function principal(peer: Peer): Promise<RoomIdentity | null> {
     let identity: RoomIdentity | null;
-    try { identity = await authorize(peer.ticket, documentId); } catch { identity = null; }
-    if (identity?.id === peer.actor && peer.ws.readyState === WebSocket.OPEN) return identity;
+    try { identity = peer.admission.revalidate ? await peer.admission.revalidate() : await authorize(peer.ticket, documentId); }
+    catch { identity = null; }
+    if (identity?.id === peer.admission.id && peer.ws.readyState === WebSocket.OPEN) return identity;
     if (peer.ws.readyState === WebSocket.OPEN) peer.ws.close(4403, 'forbidden');
     return null;
   }
@@ -184,7 +190,7 @@ export async function startJournalRoom(options: RoomOptions) {
       if (!identity?.id) { refuse('403 Forbidden'); return; }
       if (stopping || peers.size >= 32 || socket.destroyed) { refuse('503 Service Unavailable'); return; }
       wss.handleUpgrade(req,socket,handshake,ws => {
-        const peer: Peer = {ws,ticket,actor:identity.id,synced:false};
+        const peer: Peer = {ws,ticket,admission:identity,synced:false};
         peers.add(peer);
         ws.on('error', () => ws.terminate());
         ws.on('close', () => peers.delete(peer));
@@ -211,3 +217,5 @@ export async function startJournalRoom(options: RoomOptions) {
     throw error;
   }
 }
+
+export { shellRoomTickets } from './shell-access.ts';
