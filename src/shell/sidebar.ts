@@ -443,7 +443,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
   function openSection(section: string): HTMLElement {
     const teamspace = options.teamspace;
     if (section !== 'workspace' || !teamspace) return appendSection(section, section);
-    const group = appendSection('Espaces d’équipe', 'workspace');
+    const group = appendSection(options.onTeamspaces ? 'Pages de l’espace' : 'Espaces d’équipe', 'workspace');
     if (collapsed.has('workspace')) return document.createElement('div');
     const row = document.createElement('div');
     row.setAttribute('data-blok-sidebar-teamspace', '');

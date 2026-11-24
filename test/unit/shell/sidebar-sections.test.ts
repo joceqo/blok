@@ -211,3 +211,19 @@ it('adds a keyboard-accessible sidebar shortcut only when the host provides remo
   shortcut.click();
   expect(opened).toBe(1);
 });
+
+it('distinguishes the team directory from the workspace pages toggle', () => {
+  const options = { pages: [page('Guide', { section: 'workspace' })], activeId: 'Guide',
+    teamspace: { name: 'Atelier' }, onOpen() {}, onCreate() {} };
+  const legacy = createPageFrame(options);
+  expect([...legacy.element.querySelectorAll('[data-blok-sidebar-section-label]')].map((label) => label.textContent)).toContain('Espaces d’équipe');
+  const frame = createPageFrame({ ...options, onTeamspaces() {} });
+  const buttons = [...frame.element.querySelectorAll('button')];
+  const teams = buttons.filter((button) => button.textContent === 'Espaces d’équipe');
+  expect(teams).toHaveLength(1);
+  expect(teams[0]?.getAttribute('aria-haspopup')).toBe('dialog');
+  const pages = buttons.find((button) => button.textContent === 'Pages de l’espace')!;
+  expect(pages.getAttribute('aria-expanded')).toBe('true');
+  pages.click();
+  expect(frame.element.querySelector('[data-blok-sidebar-teamspace-pages]')).toBeNull();
+});
