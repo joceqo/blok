@@ -13,6 +13,7 @@ import { RepositoryHttpError, workspaceRepository } from './workspace-repository
 import { WorkspaceConflictError } from './workspace-merge';
 import { documentSyncStatus } from './document-sync-status';
 import { pageAccess } from './page-access';
+import { openTeamspaces } from './cloud/teamspaces';
 import { openPageSharing } from './cloud/page-sharing';
 import { groupPagesBySection, sectionNames } from './page-section';
 import { nextPageIcon } from './page-icon-sync';
@@ -803,6 +804,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       ws.closeSearch?.();
       ws.closeSearch = openPageSearch({ workspaceName: ref.name, pages: () => ws.index?.pages ?? [], onOpen: navigate, recentIds });
     },
+    onTeamspaces: ref.kind === 'remote' ? () => openTeamspaces(ref) : undefined,
     onTeamspaceMenu: (anchor) => {
       const menuState = { requestedPanel: undefined as 'invites' | 'general' | undefined, settled: false };
       const menu = new PopoverDesktop({ trigger: anchor, autoFocusFirstItem: true,

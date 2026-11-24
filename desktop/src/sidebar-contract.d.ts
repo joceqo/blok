@@ -30,6 +30,7 @@ export function createPageFrame(options: {
   onSearch?(recentIds?: string[]): void;
   recentIds?: string[];
   onRecentsChange?(ids: string[]): void;
+  onTeamspaces?(): void;
   onTeamspaceMenu?(anchor: HTMLButtonElement): void;
   pageUrl?(id: string): string;
   availableActions?: SidebarAction['type'][];

@@ -198,3 +198,16 @@ it('offers private creation even before the first private page exists', () => {
   frame.element.querySelector<HTMLButtonElement>('[data-blok-sidebar-create-private]')!.click();
   expect(created).toBe(1);
 });
+
+it('adds a keyboard-accessible sidebar shortcut only when the host provides remote teams', () => {
+  const options = { pages: [], activeId: '', onOpen() {}, onCreate() {} };
+  const local = createPageFrame(options);
+  expect(local.element.textContent).not.toContain('Espaces d’équipe');
+  let opened = 0;
+  const onTeamspaces = () => { opened++; };
+  const remote = createPageFrame({ ...options, onTeamspaces });
+  const shortcut = [...remote.element.querySelectorAll('button')].find((item) => item.textContent === 'Espaces d’équipe')!;
+  expect(shortcut.getAttribute('aria-haspopup')).toBe('dialog');
+  shortcut.click();
+  expect(opened).toBe(1);
+});

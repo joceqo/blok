@@ -53,6 +53,7 @@ export interface PageFrameOptions {
   onSearch?: (recentIds?: string[]) => void;
   recentIds?: string[];
   onRecentsChange?: (ids: string[]) => void;
+  onTeamspaces?: () => void;
   onTeamspaceMenu?: (anchor: HTMLButtonElement) => void;
   pageUrl?: (id: string) => string;
   availableActions?: SidebarAction['type'][];
@@ -214,6 +215,16 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
   newPage.append(newPageLabel);
   newPage.addEventListener('click', () => options.onCreate(null));
   shortcuts.append(newPage);
+
+  if (options.onTeamspaces) {
+    const teams = document.createElement('button');
+    teams.type = 'button';
+    teams.setAttribute('data-blok-sidebar-shortcut', '');
+    teams.setAttribute('aria-haspopup', 'dialog');
+    teams.append(svg(['M2.5 4h4l1.5 2h5.5v6H2.5z']), document.createTextNode('Espaces d’équipe'));
+    teams.addEventListener('click', options.onTeamspaces);
+    shortcuts.append(teams);
+  }
 
   const searchLabel = document.createElement(options.onSearch ? 'button' : 'label');
   searchLabel.setAttribute('data-blok-sidebar-search', '');
