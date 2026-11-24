@@ -91,6 +91,8 @@ func (s *Service) ai(w http.ResponseWriter, r *http.Request, u identity, ws Work
 		s.aiModels(w, r, u, ws)
 	case "respond":
 		s.aiRespond(w, r, u, ws)
+	case "editor-respond":
+		s.aiEditorRespond(w, r, u, ws)
 	default:
 		problem(w, 404, "Introuvable")
 	}
@@ -306,6 +308,37 @@ func (s *Service) aiModels(w http.ResponseWriter, r *http.Request, u identity, w
 	sort.Slice(models, func(i, j int) bool { return models[i]["id"] < models[j]["id"] })
 	jsonOut(w, 200, map[string]any{"models": models, "source": credential.Scope})
 }
+func (s *Service) aiResponse(w http.ResponseWriter, r *http.Request, u identity, credential aiCredential, payload map[string]any) ([]byte, bool) {
+	if !s.aiBudget(r.Context(), u.ID, 30) {
+		problem(w, 429, "La limite IA de 30 requêtes par minute est atteinte. Réessayez plus tard")
+		return nil, false
+	}
+	s.aiMu.Lock()
+	if s.aiInFlight[u.ID] >= 2 {
+		s.aiMu.Unlock()
+		problem(w, 429, "Attendez la fin de vos requêtes IA en cours")
+		return nil, false
+	}
+	s.aiInFlight[u.ID]++
+	s.aiMu.Unlock()
+	defer func() {
+		s.aiMu.Lock()
+		s.aiInFlight[u.ID]--
+		if s.aiInFlight[u.ID] <= 0 {
+			delete(s.aiInFlight, u.ID)
+		}
+		s.aiMu.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	raw, status := s.aiUpstream(ctx, credential, "POST", "responses", payload)
+	if status != 200 {
+		aiFailure(w, status)
+		return nil, false
+	}
+	return raw, true
+}
+
 func (s *Service) aiRespond(w http.ResponseWriter, r *http.Request, u identity, ws Workspace) {
 	if r.Method != "POST" {
 		problem(w, 405, "Méthode non autorisée")
@@ -351,31 +384,8 @@ func (s *Service) aiRespond(w http.ResponseWriter, r *http.Request, u identity, 
 		problem(w, 400, "Choisissez d’abord un modèle OpenAI")
 		return
 	}
-	if !s.aiBudget(r.Context(), u.ID, 30) {
-		problem(w, 429, "La limite IA de 30 requêtes par minute est atteinte. Réessayez plus tard")
-		return
-	}
-	s.aiMu.Lock()
-	if s.aiInFlight[u.ID] >= 2 {
-		s.aiMu.Unlock()
-		problem(w, 429, "Attendez la fin de vos requêtes IA en cours")
-		return
-	}
-	s.aiInFlight[u.ID]++
-	s.aiMu.Unlock()
-	defer func() {
-		s.aiMu.Lock()
-		s.aiInFlight[u.ID]--
-		if s.aiInFlight[u.ID] <= 0 {
-			delete(s.aiInFlight, u.ID)
-		}
-		s.aiMu.Unlock()
-	}()
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-	defer cancel()
-	raw, status := s.aiUpstream(ctx, credential, "POST", "responses", map[string]any{"model": model, "instructions": in.System, "input": in.Messages, "store": false, "max_output_tokens": aiMaxOutputTokens})
-	if status != 200 {
-		aiFailure(w, status)
+	raw, ok := s.aiResponse(w, r, u, credential, map[string]any{"model": model, "instructions": in.System, "input": in.Messages, "store": false, "max_output_tokens": aiMaxOutputTokens})
+	if !ok {
 		return
 	}
 	var out struct {

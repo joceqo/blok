@@ -124,6 +124,16 @@ func TestAIIntegration(t *testing.T) {
 		mu.Lock()
 		lastPayload = payload
 		mu.Unlock()
+		if _, editor := payload["tools"]; editor {
+			items := payload["input"].([]any)
+			last, _ := items[len(items)-1].(map[string]any)
+			if last["type"] == "function_call_output" {
+				io.WriteString(w, `{"status":"completed","output":[{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Modification proposée","annotations":[]}]}]}`)
+			} else {
+				io.WriteString(w, `{"status":"completed","output":[{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque"},{"type":"function_call","id":"fc_1","call_id":"call_1","name":"blok_read","arguments":"{}"}]}`)
+			}
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{"status": "completed", "model": payload["model"], "output": []any{map[string]any{"type": "reasoning", "content": []any{}}, map[string]any{"type": "message", "content": []any{map[string]any{"type": "output_text", "text": "Réponse de test"}}}}})
 	}))
 	defer upstream.Close()
@@ -285,6 +295,8 @@ func TestAIIntegration(t *testing.T) {
 	if delta != 1 || lastKey != "mock-invalid-personal" {
 		t.Fatal("invalid personal key fell back to paid shared key")
 	}
+	editor := editorPayload()
+	request("POST", base+"/editor-respond", member, editor, 422)
 	request("DELETE", base+"/credentials?scope=personal", member, nil, 200)
 	out = request("POST", base+"/respond", member, respond, 200)
 	if out["source"] != "workspace" {
@@ -308,6 +320,29 @@ func TestAIIntegration(t *testing.T) {
 		t.Fatal("incomplete token budget not explained")
 	}
 	request("DELETE", base+"/credentials?scope=personal", member, nil, 200)
+	request("POST", base+"/editor-respond", "", editor, 401)
+	unoffered := editorPayload()
+	unoffered["tools"] = []any{}
+	request("POST", base+"/editor-respond", member, unoffered, 502)
+	beforeEditor := request("POST", base+"/editor-respond", member, editor, 200)
+	replyItems := beforeEditor["output"].([]any)
+	if len(replyItems) != 2 || replyItems[1].(map[string]any)["name"] != "blok_read" {
+		t.Fatal("function call was lost")
+	}
+	history := append(editor["input"].([]any), replyItems...)
+	editor["input"] = append(history, map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "document read"})
+	final := request("POST", base+"/editor-respond", member, editor, 200)
+	if final["output"].([]any)[0].(map[string]any)["phase"] != "final_answer" {
+		t.Fatal("final message phase was lost")
+	}
+	mu.Lock()
+	editPayload, editorKey := lastPayload, calls[len(calls)-1]
+	mu.Unlock()
+	if editPayload["max_output_tokens"] != float64(aiMaxOutputTokens) || editPayload["store"] != false ||
+		editPayload["stream"] != false || editorKey != "mock-workspace-key" ||
+		editPayload["input"].([]any)[1].(map[string]any)["encrypted_content"] != "opaque" {
+		t.Fatal("editor response lost its stateless history, shared credential or limits")
+	}
 	// A restart uses the persisted encryption key and existing credential state.
 	server.Close()
 	s.Close()
@@ -337,6 +372,7 @@ func TestAIIntegration(t *testing.T) {
 	if _, e = restarted.DB.Exec(ctx, "UPDATE email_rate_limits SET count=30,window_start=now() WHERE key=$1", "ai:"+memberID); e != nil {
 		t.Fatal(e)
 	}
+	request("POST", base+"/editor-respond", member, editorPayload(), 429)
 	request("POST", base+"/respond", member, respond, 429)
 }
 func TestAIUpstreamCancellationAndSanitizedFailure(t *testing.T) {
