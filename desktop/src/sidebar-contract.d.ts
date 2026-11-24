@@ -15,6 +15,7 @@ export interface PageFrame {
   element: HTMLElement;
   canvas: HTMLElement;
   setPages(pages: ShellPage[], activeId: string): void;
+  setCalendarActive(active: boolean): void;
   toggleSidebar(): void;
 }
 export function createPageFrame(options: {
@@ -30,6 +31,7 @@ export function createPageFrame(options: {
   onSearch?(recentIds?: string[]): void;
   recentIds?: string[];
   onRecentsChange?(ids: string[]): void;
+  onCalendar?(): void;
   onTeamspaces?(): void;
   onTeamspaceMenu?(anchor: HTMLButtonElement): void;
   pageUrl?(id: string): string;

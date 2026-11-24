@@ -248,3 +248,11 @@ La demande et le contexte de page explicitement activé sont envoyés à OpenAI 
 ### React Grab dans la démo locale
 
 La cible web accepte l’argument de build `VITE_REACT_GRAB=true`. Il est activé dans `compose.demo.yaml` et désactivé par défaut pour le serveur. Dans les réglages de la démo, « Sélectionner un élément » lance React Grab ; le raccourci est `⌘/Ctrl + Maj + G`. Collez ensuite le contexte dans le chat. La télémétrie de React Grab est désactivée. Les réglages étant écrits en DOM, le contexte inclut leur fichier source et le HTML sélectionné, sans inventer de pile de composants React.
+
+### Connect Google Calendar
+
+Enable the Google Calendar API in Google Cloud, configure the OAuth consent screen, and create an OAuth client of type **Web application**. Register the exact redirect URI `https://YOUR-BLOK-HOST/api/calendar/google/callback` on the same origin as Blok's `PUBLIC_URL`. For a local Docker demo, Google also supports a registered loopback URI such as `http://localhost:8088/api/calendar/google/callback`.
+
+Set `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET` and `GOOGLE_CALENDAR_REDIRECT_URI` in your deployment environment, then recreate the API container. Users can connect their own account in the workspace calendar. Google's read-only Calendar permission lets Blok display the chosen calendars and their recurring events. The availability sharing option exposes busy times from the primary calendar to teammates who can access that workspace. Blok stores its OAuth tokens encrypted. Preserve `INTERNAL_SECRET` when restoring the database.
+
+Google returns consent to the registered web server. When connecting from Tauri, first sign into the same Blok account in the external browser on that server. An embedded instance with a dynamically assigned local port uses the standalone Blok calendar. A fixed self-hosted URL enables the Google connection. Disconnect removes the local credentials for that workspace. To withdraw Google's grant across installations using the same OAuth client, remove Blok from your Google Account's third-party access page.

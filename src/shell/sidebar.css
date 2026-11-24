@@ -590,6 +590,7 @@
   text-align: start;
   cursor: pointer;
 }
+[data-blok-sidebar-shortcut][aria-current="page"],
 [data-blok-sidebar-shortcut]:hover { background: var(--blok-item-hover-bg); color: var(--blok-text-primary); }
 [data-blok-sidebar-shortcut] svg { flex: none; width: 16px; height: 16px; }
 

@@ -531,6 +531,14 @@ describe('explicit page links at startup',()=>{
     expect(readSession().activeId).toBe('second');
     expect(selected(root).textContent).toContain('Saved second');
   });
+  it('opens an explicit calendar link alongside saved page tabs', () => {
+    history.replaceState(null, '', '/?view=calendar');
+    sessionStorage.setItem(KEY, JSON.stringify({tabs: [savedTab('first')], activeId: 'first'}));
+    const root = mount();
+    expect(new URL(location.href).searchParams.get('view')).toBe('calendar');
+    expect(selected(root).textContent).toContain('Calendrier');
+    expect(readSession().tabs).toHaveLength(2);
+  });
   it('opens a new explicit page while retaining the other saved tabs',()=>{
     history.replaceState(null,'','/?page=requested');
     sessionStorage.setItem(KEY,JSON.stringify({tabs:[savedTab('first')],activeId:'first'}));

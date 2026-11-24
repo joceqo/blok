@@ -20,7 +20,7 @@ import { openTeamspaces } from './cloud/teamspaces';
 import { openPageSharing } from './cloud/page-sharing';
 import { groupPagesBySection, sectionNames } from './page-section';
 import { nextPageIcon } from './page-icon-sync';
-import { brandedTitle } from './tab-identity';
+import { applyFavicon, brandedTitle } from './tab-identity';
 import { describeAccessLoss } from './access-friction';
 import { activeWorkspace, workspaceKey, type WorkspaceRef } from './workspace-registry';
 import { createDesktopFooter, readAppearance } from './settings';
@@ -151,6 +151,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     movingPage: false,
     closeSearch: undefined,
   };
+  let calendar: { destroy(): void } | undefined;
+  let openingCalendar: number | undefined;
+  const isCalendarRoute = (): boolean => new URL(location.href).searchParams.get('view') === 'calendar';
   const ai = createAiClient(ref);
   let editAssistant: ReturnType<typeof pageEditorAssistant> | undefined;
   const activeEditable = (): boolean => !!ws.currentId && ws.currentId === pageFromUrl() &&
@@ -204,6 +207,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const navigate = (id: string, replace = false): void => {
     const url = new URL(location.href);
     const from = url.searchParams.get('page');
+    url.searchParams.delete('view');
     url.searchParams.set('page', id);
     if (replace) history.replaceState(null, '', url);
     else history.pushState(null, '', url);
@@ -249,7 +253,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     try {
       const updated = await repository.refreshIndex(() => !signal?.aborted && ws.pendingManifests === 0 && !ws.manifestFailed && !ws.metadataAction && ws.index === original, signal);
       if (!updated) return;
-      updated.activeId = updated.pages.some((page) => page.id === ws.currentId) ? ws.currentId : updated.activeId;
+      const previousPage = calendar ? original.activeId : ws.currentId;
+      if (updated.pages.some(page => page.id === previousPage)) updated.activeId = previousPage;
       // Retain the live page object: title/cover callbacks close over it.
       const live = original.pages.find((page) => page.id === ws.currentId);
       const remotePage = updated.pages.find((page) => page.id === ws.currentId);
@@ -838,6 +843,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     onRecentsChange: recentPages.save,
     onOpen: (id) => navigate(id),
     onCreate: (parentId) => chooseNewPage(parentId),
+    onCalendar: () => {
+      if (isCalendarRoute()) return;
+      const url = new URL(location.href);
+      url.searchParams.delete('page');
+      url.searchParams.set('view', 'calendar');
+      history.pushState(null, '', url);
+      onRoute();
+    },
     onCreatePrivate: ref.kind === 'remote' ? () => chooseNewPage(null, true) : undefined,
     onSearch: (recentIds) => {
       ws.closeSearch?.();
@@ -981,30 +994,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     return null;
   }
 
-  async function showEmptyWorkspace(): Promise<void> {
-    editAssistant?.cancel();
-    editAssistant = undefined;
-    ws.assistant.refreshPageActions();
-    if (ws.editor) {
-      await ws.editor.isReady;
-      if (ref.kind === 'remote') await ws.editor.saver.flush();
-    }
-    if (ws.index?.pages.length) { onRoute(); return; }
-    const key = workspaceKey(ref);
-    if (shouldSeedWelcome({
-      empty: true,
-      seeded: hasWelcomeSeeded(key),
-      viewer: ws.access.readOnlyWorkspace,
-      remote: ref.kind === 'remote',
-    })) {
-      const seededId = await seedWelcomeWorkspace();
-      if (seededId) {
-        navigate(seededId);
-        return;
-      }
-    }
-    ws.generation++;
-    ws.selection++;
+  function clearDocument(): void {
     ws.coverRowObserver?.disconnect(); ws.coverRowObserver = null;
     ws.pageToolbar?.destroy(); ws.pageToolbar = null;
     ws.floatingToc?.destroy(); ws.floatingToc = null;
@@ -1018,6 +1008,96 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       status.removeAttribute('data-error');
       status.removeAttribute('data-sync-state');
     }
+  }
+
+  async function flushDocument(): Promise<void> {
+    editAssistant?.cancel();
+    const editor = ws.editor;
+    const id = ws.currentId;
+    if (editor) {
+      await editor.isReady;
+      if (ref.kind === 'local') {
+        const data = await editor.save();
+        await repository.writePage(id, JSON.stringify(data));
+      } else await editor.saver.flush();
+    }
+    await ws.saveOrder;
+  }
+
+  async function showCalendar(): Promise<void> {
+    if (!ws.index || calendar || openingCalendar !== undefined) return;
+    const request = ++ws.selection;
+    openingCalendar = request;
+    ws.pageCanvas.inert = true;
+    try {
+      const [, { mountCalendar }, { createCalendarStore }] = await Promise.all([
+        flushDocument(), import('./calendar-view'), import('./calendar-store'),
+      ]);
+      if (ws.selection !== request || !isCalendarRoute()) return;
+      ws.generation++;
+      clearDocument();
+      editAssistant = undefined;
+      ws.assistant.refreshPageActions();
+      ws.pageCanvas.removeAttribute('data-full-width');
+      ws.pageCanvas.replaceChildren();
+      calendar = mountCalendar(ws.pageCanvas, {
+        store: createCalendarStore(ref),
+        get pages() { return ws.index?.pages ?? []; },
+        canEdit: !ws.access.readOnlyWorkspace,
+        openPage: (id) => { if (ws.index?.pages.some(page => page.id === id)) navigate(id); },
+        onClose: () => {
+          if (ws.index?.activeId) navigate(ws.index.activeId);
+          else {
+            const url = new URL(location.href);
+            url.searchParams.delete('view');
+            history.pushState(null, '', url);
+            onRoute();
+          }
+        },
+      });
+      ws.frame.setCalendarActive(true);
+      ws.frame.element.toggleAttribute('data-desktop-read-only', ws.access.readOnlyWorkspace);
+      applyFavicon(undefined);
+      document.title = brandedTitle('Calendrier');
+    } catch (error) {
+      if (ws.selection !== request || !isCalendarRoute()) return;
+      const previousPage = ws.currentId || ws.index?.activeId;
+      if (previousPage) navigate(previousPage, true);
+      showError(error);
+    } finally {
+      if (openingCalendar === request) {
+        openingCalendar = undefined;
+        ws.pageCanvas.inert = false;
+      }
+    }
+  }
+
+  async function showEmptyWorkspace(): Promise<void> {
+    editAssistant?.cancel();
+    editAssistant = undefined;
+    ws.assistant.refreshPageActions();
+    if (ws.editor) {
+      await ws.editor.isReady;
+      if (ref.kind === 'remote') await ws.editor.saver.flush();
+    }
+    if (ws.index?.pages.length || isCalendarRoute()) { onRoute(); return; }
+    const key = workspaceKey(ref);
+    if (shouldSeedWelcome({
+      empty: true,
+      seeded: hasWelcomeSeeded(key),
+      viewer: ws.access.readOnlyWorkspace,
+      remote: ref.kind === 'remote',
+    })) {
+      const seededId = await seedWelcomeWorkspace();
+      if (isCalendarRoute()) return;
+      if (seededId) {
+        navigate(seededId);
+        return;
+      }
+    }
+    ws.generation++;
+    ws.selection++;
+    clearDocument();
     ws.pageCanvas.replaceChildren(createEmptyWorkspaceState(ws.access.readOnlyWorkspace, () => createPage(), {
       onTemplate: () => chooseNewPage(),
       onInvite: () => {
@@ -1041,6 +1121,17 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     closeTrash?.();
     closeTrash = undefined;
     if (!ws.index) return;
+    if (isCalendarRoute()) { void showCalendar(); return; }
+    if (openingCalendar !== undefined) {
+      ws.selection++;
+      openingCalendar = undefined;
+      ws.pageCanvas.inert = false;
+    }
+    if (calendar) {
+      calendar.destroy();
+      calendar = undefined;
+      ws.frame.setCalendarActive(false);
+    }
     if (!ws.index.pages.length) { void showEmptyWorkspace().catch(showError); return; }
     const id = pageFromUrl();
     const target = ws.index.pages.find((page) => page.id === id)?.id ?? ws.index.activeId;
@@ -1121,17 +1212,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       } catch (error) { showError(error); }
     },
     async flush() {
-      editAssistant?.cancel();
       const wasInert = ws.frame.element.inert;
       ws.frame.element.inert = true;
       try {
-        if (ws.editor) await ws.editor.isReady;
-        if (ws.editor && ref.kind === 'local') {
-          const data = await ws.editor.save();
-          await repository.writePage(ws.currentId, JSON.stringify(data));
-        }
-        if (ws.editor && ref.kind === 'remote') await ws.editor.saver.flush();
-        await ws.saveOrder;
+        await flushDocument();
       } finally { ws.frame.element.inert = wasInert; }
     },
     onRoute,
