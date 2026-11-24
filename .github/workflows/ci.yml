@@ -35,6 +35,7 @@ jobs:
       - uses: ./.github/actions/setup-node-deps
       - run: npm ci --prefix desktop --no-audit --no-fund
       - run: npm ci --prefix apps/service-node --no-audit --no-fund
+      - run: npm ci --prefix packages/server/node --no-audit --no-fund
       - run: npm test
 
   i18n:
