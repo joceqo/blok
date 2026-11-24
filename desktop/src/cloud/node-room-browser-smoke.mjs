@@ -27,7 +27,7 @@ const workspaceName = 'Collaboration Node ' + slug;
 const path = '/?page=' + id;
 const pageAPI = workspace + '/pages/' + id;
 // The provider reports connected before read-only arbitration and the first document render finish.
-const editorSelector = '[data-blok-rendered]:not([data-blok-loading]) [data-blok-redactor] [contenteditable="true"]';
+const editorSelector = '[data-blok-instance]:not([aria-busy="true"]) [data-blok-redactor] [contenteditable="true"]';
 const block = (page, text) => page.locator(editorSelector).filter({ hasText: text }).first();
 
 async function demo(...args) {
@@ -122,8 +122,8 @@ async function append(page, needle, suffix) {
   await expect(field).toBeEditable({timeout});
   await field.click();
   await expect(field).toBeFocused({timeout});
-  const value = await field.innerText();
-  await field.fill(value + suffix);
+  await field.press('End');
+  await field.pressSequentially(suffix);
   await expect(field).toContainText(suffix,{timeout});
 }
 
@@ -201,11 +201,20 @@ try {
     await waitNode(additional);
     await saved(additional.tab);
     for (const trace of [first,second,additional]) assert.ok(trace.nodeTickets.size > 0,'The shell must obtain its live ticket from Node');
-    const field = additional.tab.locator(editorSelector).first();
+    // First sync creates the empty paragraph on this brand-new document.
+    // Wait for its durable projection before targeting that block in the browser.
+    const pageUrl = workspace+'/pages/'+newPage;
+    const blockId = async () => {
+      const response = await (await api(editor,'GET',pageUrl,200)).json();
+      return response?.blocks?.[0]?.id;
+    };
+    await expect.poll(blockId,{timeout,message:'Expected the first paragraph to finish synchronizing'}).toBeTruthy();
+    const paragraphId = await blockId();
+    const field = additional.tab.locator('[data-blok-id="'+paragraphId+'"]').locator('[contenteditable="true"]').first();
     await expect(field).toBeEditable({timeout});
     await field.click();
     await expect(field).toBeFocused({timeout});
-    await field.fill('Deuxième journal avant redémarrage');
+    await field.pressSequentially('Deuxième journal avant redémarrage');
     await expect(field).toContainText('Deuxième journal',{timeout});
     await saved(additional.tab);
     const session = await (await api(owner,'GET','/api/session',200)).json();
