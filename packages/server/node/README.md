@@ -177,3 +177,10 @@ available for inspection.
 The opt-in socket/storage test uses a temporary schema. Build both services first and run
 `SHELL_TEST_DATABASE_URL=postgres:///test node --test test/page-projection.mjs` from this
 package. To test a separate product checkout, set `BLOK_SHELL_TEST_ROOT` to its root.
+
+
+### Serve a workspace
+
+The product demo can give the Node host ownership of a whole workspace. The host starts a document room on the first authorized WebSocket, serializes concurrent opens of that page, and releases its journal lock after the last connection closes. Other pages have independent queues and leases. A reconnect waits for a draining writer before reopening the same journal.
+
+In workspace mode the CLI takes `<journal-root> --workspace <allowed-origin> [port]` and reads the canonical `BLOK_NODE_ROOM_WORKSPACE` ID. The product service must return that workspace ID when it verifies a ticket or rechecks a session. An unauthorized request cannot initialize a journal. This host supports 128 simultaneously resident pages, 32 WebSocket connections per page and 256 handshakes in flight. The other pages remain available on demand as rooms drain.

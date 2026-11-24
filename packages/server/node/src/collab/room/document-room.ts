@@ -51,7 +51,8 @@ export async function openDocumentRoom(options: RoomOptions) {
     let identity: RoomIdentity | null;
     try { identity = peer.admission.revalidate ? await peer.admission.revalidate() : await authorize(peer.ticket, documentId); }
     catch { identity = null; }
-    if (identity?.id === peer.admission.id && peer.ws.readyState === WebSocket.OPEN) return identity;
+    if (identity?.id === peer.admission.id && identity.workspaceId === peer.admission.workspaceId &&
+        peer.ws.readyState === WebSocket.OPEN) return identity;
     if (peer.ws.readyState === WebSocket.OPEN) peer.ws.close(4403, 'forbidden');
     return null;
   }

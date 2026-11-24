@@ -40,3 +40,19 @@ it('requires an authenticated admission response with a valid session, role ceil
   expect(await admit('signed','doc')).toBeNull();
   expect(() => shellRoomTickets('http://user:pass@host',secret)).toThrow();
 });
+
+it('requires the selected workspace during both admission and revocation checks', async () => {
+  const http = vi.fn();
+  vi.stubGlobal('fetch', http);
+  const admit = shellRoomTickets(origin, secret, 'selected');
+  const response = {read:true, write:true, session, ticketWrite:true};
+  for (const workspaceId of [undefined,'other']) {
+    http.mockResolvedValueOnce(Response.json({...response,workspaceId}));
+    expect(await admit('ticket','page')).toBeNull();
+  }
+  http.mockResolvedValueOnce(Response.json({...response,workspaceId:'selected'}));
+  const grant = await admit('ticket','page');
+  expect(grant?.workspaceId).toBe('selected');
+  http.mockResolvedValueOnce(Response.json({read:true,write:true,workspaceId:'other'}));
+  expect(await grant?.revalidate?.()).toBeNull();
+});

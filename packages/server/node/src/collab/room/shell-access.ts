@@ -31,10 +31,11 @@ export function shellRoomTickets(serviceOrigin: string, internalSecret: string, 
         typeof grant.ticketWrite !== 'boolean') return null;
     const id = grant.session;
     const ticketWrite = grant.ticketWrite;
+    const scope = workspaceId ? { workspaceId } : {};
     const revalidate = async (): Promise<RoomIdentity | null> => {
       const access = await check({documentId,session:id});
-      return access ? {id,write:ticketWrite && access.write} : null;
+      return access ? {id,write:ticketWrite && access.write,...scope} : null;
     };
-    return {id,write:ticketWrite && grant.write,revalidate,...(workspaceId ? {workspaceId} : {})};
+    return {id,write:ticketWrite && grant.write,revalidate,...scope};
   };
 }
