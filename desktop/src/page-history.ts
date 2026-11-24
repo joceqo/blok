@@ -1,4 +1,5 @@
 import { openModalDialog } from '@blok/modal-dialog';
+import { historyChangeDetails } from './history-change-details';
 import { IconCross } from '../../src/components/icons';
 import { blocksToHtml } from '@bloklabs/core/view';
 import './page-history.css';
@@ -50,7 +51,9 @@ export function openPageHistory(options: HistoryOptions): () => void {
   notice.setAttribute('role', 'status');
   const actions = document.createElement('div');
   actions.setAttribute('data-history-actions', '');
-  surface.append(closeButton, heading, versions, preview, actions, notice);
+  const changes = document.createElement('div');
+  const points: Version[] = [];
+  surface.append(closeButton, heading, versions, preview, changes, actions, notice);
   overlay.append(surface);
   const abort = new AbortController();
   let turn = 0;
@@ -94,6 +97,7 @@ export function openPageHistory(options: HistoryOptions): () => void {
   async function selectVersion() {
     const id = ++turn;
     preview.replaceChildren();
+    changes.replaceChildren();
     actions.replaceChildren();
     notice.textContent = 'Chargement…';
     const path = '/' + versions.value;
@@ -102,6 +106,12 @@ export function openPageHistory(options: HistoryOptions): () => void {
       if (turn !== id || abort.signal.aborted) return;
       // The shared read-only renderer sanitizes block HTML and links.
       preview.innerHTML = blocksToHtml(content);
+      const selected = points[versions.selectedIndex];
+      const older = points[versions.selectedIndex + 1];
+      if (selected && selected.sequence > 0) {
+        changes.append(historyChangeDetails(request, selected.lineage, selected.sequence,
+          older?.lineage === selected.lineage ? older.sequence : 0));
+      }
       notice.textContent = '';
       if (!options.editable() || versions.selectedIndex === 0) return;
       const planned = await request<Preview>(path + '/restore/preview', { method: 'POST' });
@@ -161,6 +171,7 @@ export function openPageHistory(options: HistoryOptions): () => void {
       await options.flush();
       const list = await request<{ versions: Version[] }>('');
       if (abort.signal.aborted) return;
+      points.push(...list.versions);
       for (const [index, version] of list.versions.entries()) {
         const option = document.createElement('option');
         option.value = encodeURIComponent(version.lineage) + '/' + version.sequence;

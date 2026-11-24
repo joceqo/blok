@@ -32,7 +32,7 @@ function same(before?: BigIntStats, after?: BigIntStats) {
   );
 }
 
-export async function readWorkingSet(path: string, remote: Remote) {
+export async function readWorkingSet(path: string, remote?: Remote) {
   const before = await identity(path);
   async function unchanged() {
     if (!same(before, await identity(path))) throw new Error('Go working set changed during handoff');
@@ -57,7 +57,7 @@ export async function readWorkingSet(path: string, remote: Remote) {
   if (format !== 2 || epoch < 0n || epoch > BigInt(Number.MAX_SAFE_INTEGER))
     throw new Error('Unsupported Go working-set format or epoch');
   const lineage = bytes.subarray(16, 32);
-  if (remote.lineage !== null && (remote.lineage !== lineage.toString('hex') || remote.sequence !== '0'))
+  if (remote && remote.lineage !== null && (remote.lineage !== lineage.toString('hex') || remote.sequence !== '0'))
     throw new Error('Go working-set lineage or sequence conflicts with the projection');
 
   const frames = bytes.subarray(32);
@@ -73,7 +73,7 @@ export async function readWorkingSet(path: string, remote: Remote) {
     }
     if (doc.store.pendingStructs !== null || doc.store.pendingDs !== null)
       throw new Error('Incomplete Yjs state in Go working set');
-    if (!isDeepStrictEqual(exportPage(doc, envelope(remote.data)), remote.data ?? { blocks: [] }))
+    if (remote && !isDeepStrictEqual(exportPage(doc, envelope(remote.data)), remote.data ?? { blocks: [] }))
       throw new Error('Go working set and canonical projection have different content');
   } finally {
     doc.destroy();

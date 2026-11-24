@@ -29,3 +29,8 @@
 [data-navigation-destination] [data-navigation-caption] { flex: none; padding: 0; }
 [data-navigation-destination] [data-desktop-choice] { min-width: 0; max-width: 100%; }
 [data-navigation-dialog] button:focus-visible { outline: 2px solid var(--blok-focus-ring); outline-offset: -2px; }
+
+[data-workspace-trash] ul { overflow-y: auto; min-height: 0; list-style: none; margin: 0; padding: 4px 20px; }
+[data-workspace-trash] li { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+[data-workspace-trash] li :is(span, p) { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+[data-workspace-trash] [role='status'] { margin: 8px 20px 16px; color: var(--desktop-muted); }

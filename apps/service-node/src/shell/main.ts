@@ -1,3 +1,4 @@
+import { roomPurger, startPurgeRetries } from './page-purge.ts';
 import { loadAiKey } from './ai-crypto.ts';
 import { bootstrapShell } from './bootstrap.ts';
 import { serve } from '@hono/node-server';
@@ -16,10 +17,11 @@ process.env.BLOK_NODE_ROOM_ALL = '1';
 await bootstrapShell(pool);
 await loadAiKey(pool, process.env.DATA_DIRECTORY ?? './data', process.env.AI_ENCRYPTION_KEY);
 const app = createShellApp(pool, process.env.INTERNAL_SECRET ?? '', origins);
+const stopPurgeRetries = startPurgeRetries(pool, roomPurger(process.env.INTERNAL_SECRET!));
 const server = serve({ fetch: app.fetch, port }, () => console.info(`Shell backend listening on port ${port}`));
 
 function shutdown() {
-  server.close(() => { void pool.end(); });
+  server.close(() => { void stopPurgeRetries().then(() => pool.end()); });
 }
 process.once('SIGTERM', shutdown);
 process.once('SIGINT', shutdown);

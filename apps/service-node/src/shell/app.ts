@@ -9,6 +9,7 @@ import { createHostedMcp } from './hosted-mcp.ts';
 import { createShellAssets } from './assets.ts';
 import { instanceAdmin } from './instance-admin.ts';
 import { workspaceDirectory } from './workspace-directory.ts';
+import { pagePurgeRoutes, roomPurger } from './page-purge.ts';
 import { roomTickets } from './room-tickets.ts';
 import { createMcpTokens } from './mcp-tokens.ts';
 import { createLoginMail, createRequestCode } from './request-code.ts';
@@ -86,6 +87,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   app.route('/',createShellAssets(pool,secret));
   app.route('/',instanceAdmin(pool,secret,() => recheckLiveSessions(secret)));
   app.route('/',workspaceDirectory(pool));
+  app.route('/',pagePurgeRoutes(pool,roomPurger(secret)));
   registerIndexWrite(app, pool, recheckAccess);
   app.get('/api/workspaces/:slug/index', async (c) => {
     const key = sessionDigest(c);
@@ -119,7 +121,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   if (ticketSecret) app.route('/', roomTickets(pool, ticketSecret));
   app.get('/internal/documents/:id', async (c) => {
     const { rows } = await pool.query<ProjectionHead & { content: string }>(
-      "SELECT coalesce(content::text,'null') AS content, version::text, lineage, sequence::text FROM pages WHERE id=$1", [c.req.param('id')],
+      "SELECT coalesce(content::text,'null') AS content, version::text, lineage, sequence::text FROM pages WHERE id=$1 AND NOT deleted", [c.req.param('id')],
     );
     const row = rows[0];
     if (!row) return c.json({ error: 'Document not found' }, 404);

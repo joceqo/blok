@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { open, readFile, readdir, rm } from 'node:fs/promises';
+import { notesFilename } from './record-notes.ts';
 import { syncDirectory } from './page-seed.ts';
 import { basename, join } from 'node:path';
 import {
@@ -76,27 +77,26 @@ export async function historyLineages(directory: string) {
     );
 }
 
-export async function deleteArchivedLineage(directory: string, entry: HistoryLineage, live: HistoryLineage) {
-  const { manifest } = entry;
-  if (entry.current || manifest.generation === live.manifest.generation) return false;
+/** Append only while holding the document lease. */
+export async function recordHistoryLineage(directory:string,manifest:JournalManifest,createdAt:number|null,type:1|2=1) {
   const size = 61,
     slot = Buffer.alloc(size);
-  slot[0] = 2;
+  slot[0] = type;
   slot.writeBigUInt64LE(manifest.generation, 1);
   slot.writeBigUInt64LE(manifest.generationFence, 9);
   Buffer.from(manifest.lineage, 'hex').copy(slot, 17);
   slot.writeBigInt64LE(manifest.epoch, 33);
   slot.writeInt32LE(manifest.format, 41);
   slot.writeBigInt64LE(
-    entry.createdAt === null ? -(1n << 63n) : 621355968000000000n + BigInt(entry.createdAt) * 10000n,
+    createdAt === null ? -(1n << 63n) : 621355968000000000n + BigInt(createdAt) * 10000n,
     45,
   );
   createHash('sha256').update(slot.subarray(0, 53)).digest().copy(slot, 53, 0, 8);
-  // The lease and document queue are held by the caller. Publish the tombstone before unlinking any data.
-  const file = await open(join(directory, 'lineages'), 'r+');
+  const file = await open(join(directory, 'lineages'), 'a+', 0o600);
   try {
     const stat = await file.stat();
     const offset = stat.size - (stat.size % size);
+    if (stat.size !== offset) await file.truncate(offset);
     let done = 0;
     while (done < size) {
       const result = await file.write(slot, done, size - done, offset + done);
@@ -107,12 +107,19 @@ export async function deleteArchivedLineage(directory: string, entry: HistoryLin
   } finally {
     await file.close();
   }
+}
+
+export async function deleteArchivedLineage(directory: string, entry: HistoryLineage, live: HistoryLineage) {
+  const { manifest } = entry;
+  if (entry.current || manifest.generation === live.manifest.generation) return false;
+  await recordHistoryLineage(directory,manifest,entry.createdAt,2);
   const oldChecks = (await readdir(directory)).filter((name) =>
     name.startsWith('checkpoint.' + manifest.generation + '.'),
   );
   for (const name of [
     baselineName(manifest.generation, manifest.generationFence),
     journalName(manifest.generation, manifest.generationFence),
+    notesFilename(manifest.lineage),
     ...oldChecks,
   ])
     await rm(join(directory, name), { force: true });

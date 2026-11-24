@@ -1,6 +1,6 @@
 import type { RoomIdentity, RoomOptions } from './preview.ts';
 
-interface Decision { actorId?: unknown; read: boolean; write: boolean; session?: unknown; workspaceId?: unknown; ticketWrite?: unknown }
+interface Decision { recordNote?: {kind?:unknown; onBehalfOf?:unknown}; actorId?: unknown; read: boolean; write: boolean; session?: unknown; workspaceId?: unknown; ticketWrite?: unknown }
 
 /** The cloud service owns both the ticket signing key and the canonical session/page ACL. */
 export function shellRoomTickets(serviceOrigin: string, internalSecret: string, workspaceId?: string): RoomOptions['authorize'] {
@@ -31,7 +31,11 @@ export function shellRoomTickets(serviceOrigin: string, internalSecret: string, 
         typeof grant.ticketWrite !== 'boolean') return null;
     const id = grant.session;
     const ticketWrite = grant.ticketWrite;
+    const {recordNote} = grant;
     const scope = {
+      ...(recordNote?.kind === 'agent' && {
+        recordNote: {kind:'agent' as const, ...(typeof recordNote.onBehalfOf === 'string' && recordNote.onBehalfOf && {onBehalfOf:recordNote.onBehalfOf})}
+      }),
       ...(typeof grant.workspaceId === 'string' && {workspaceId:grant.workspaceId}),
       ...(typeof grant.actorId === 'string' && grant.actorId && {actorId:grant.actorId}),
     };

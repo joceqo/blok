@@ -192,6 +192,8 @@ try {
   await first.tab.getByRole('button',{name:'Historique des versions'}).click();
   const historyPanel=first.tab.locator('[data-desktop-history]');
   await expect(historyPanel.locator('[data-history-preview]')).toContainText('partagé',{timeout});
+  await historyPanel.getByText('Modifications de cette version',{exact:true}).click({timeout});
+  await expect(historyPanel.locator('[data-history-details] li').first()).toContainText('Modification',{timeout});
   await historyPanel.getByLabel('Version à consulter').selectOption({index:1});
   await expect(historyPanel.locator('[data-history-preview]')).toContainText(paragraphs[0],{timeout});
   await expect(historyPanel.locator('[data-history-preview]')).not.toContainText('partagé',{timeout});
@@ -312,6 +314,41 @@ try {
   }
   await api(owner,'PUT',grant,200,{level:'edit'});
   console.log('A clean reload restored both edits for both users. Revocation closed the live member socket and denied a new ticket; the share was restored.');
+  if (additional) {
+    const disposable = randomUUID();
+    const title = 'Page jetable de la recette';
+    await addPrivatePage(owner,workspace,disposable,title);
+    const data = {blocks:[{id:'fixture',type:'paragraph',data:{text:'Avant réinitialisation'}}]};
+    await api(owner,'POST',workspace+'/pages/'+disposable+'/seed',200,{document:data});
+    const token = await nodeTicket(owner,workspace+'/ticket?doc='+disposable);
+    const headers = {Authorization:'Bearer '+token,Origin:baseURL};
+    const sync='/api/blok/sync/'+disposable;
+    const before = await owner.request.get(sync+'/state',{headers});
+    assert.equal(before.status(),200);
+    const reset=await owner.request.post(sync+'/reset',{headers});
+    assert.equal(reset.status(),204,'Reset must rebaseline the canonical record');
+    const after=await owner.request.get(sync+'/state',{headers});
+    assert.equal(after.status(),200);
+    assert.notEqual(before.headers()['blok-doc-lineage'],after.headers()['blok-doc-lineage']);
+    assert.deepEqual((await after.json()).blocks,(await before.json()).blocks);
+    const index=await (await api(owner,'GET',workspace+'/index',200)).json();
+    await api(owner,'PUT',workspace+'/index',200,{revision:index.revision,pages:index.pages.filter(p=>p.id!==disposable),
+      trash:[...index.trash,index.pages.find(p=>p.id===disposable)]});
+    const tab=await owner.newPage();
+    await tab.goto('/?page='+id);
+    await tab.locator('[data-blok-sidebar-teamspace-more]').first().click({timeout});
+    await tab.locator('[data-blok-item-name="trash"]').click({timeout});
+    const trash=tab.locator('[data-workspace-trash]');
+    await trash.getByRole('button',{name:'Supprimer définitivement « '+title+' »',exact:true}).click({timeout});
+    await trash.getByRole('button',{name:'Supprimer définitivement',exact:true}).click({timeout});
+    await expect(trash.getByRole('status')).toContainText('a été supprimée',{timeout});
+    assert.equal((await owner.request.get(sync+'/history',{headers})).status(),403);
+    const stored=await demo('compose','exec','-T','postgres','psql','-U','blok','-d','blok','-Atc',
+      "SELECT deleted AND content IS NULL AND metadata='{}'::jsonb AND completed_at IS NOT NULL FROM pages JOIN page_purge_requests ON page_id=id WHERE id='"+disposable+"'");
+    assert.equal(stored.stdout.trim(),'t');
+    await tab.close();
+    console.log('Reset preserved the page contents in a new lineage. Permanent deletion from the trash removed its journal and canonical projection.');
+  }
   if (additional) console.log('Second Node document: '+baseURL+'/?page='+newPage);
   console.log('Document: '+baseURL+path+'\nMailbox: '+mailbox+'\nWorkspace: '+workspaceName+'\nAccounts: '+ownerEmail+', '+editorEmail);
 } finally {

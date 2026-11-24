@@ -37,3 +37,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+[data-history-details] {
+  max-height: 30vh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+[data-history-details] summary { cursor: pointer; }
+[data-history-details] ol, [data-history-details] ul { padding-inline-start: 1.5em; }

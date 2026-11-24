@@ -6,6 +6,7 @@ import { createScanner, SyntaxKind } from 'jsonc-parser';
 import { applyUpdate, Doc } from 'yjs';
 import { inspectJournal } from '../journal/inspect.ts';
 import { envelope, exportPage, seedUpdate, type Snapshot } from './page-document.ts';
+import { publishFile } from './reset.ts';
 import { readWorkingSet } from './legacy-working-set.ts';
 import { existingDirectory, initializePage, newBaseline, pageDirectory, syncDirectory } from './page-seed.ts';
 
@@ -92,6 +93,8 @@ function validHead(v: Head) {
         unsigned.test(v.sequence)))
   );
 }
+export class ProjectionDiverged extends Error {}
+
 export async function preparePageStorage(root: string, pageId: string, origin: string, secret: string) {
   const endpoint = new URL(origin);
   if (
@@ -127,6 +130,7 @@ export async function preparePageStorage(root: string, pageId: string, origin: s
   }
   const directory = pageDirectory(root, pageId);
   const disk = join(directory, 'node-projection.json');
+  const resetIntent = join(directory,'node-reset.json');
   let cursor: Anchor;
   let lineage: string;
   if (!(await existingDirectory(directory))) {
@@ -159,7 +163,7 @@ export async function preparePageStorage(root: string, pageId: string, origin: s
       remote.lineage === lineage && remote.sequence === String(seq) && isDeepStrictEqual(remote.data, data)
     );
   }
-  async function publish(seq: bigint, data: Snapshot) {
+  async function publish(seq: bigint, data: Snapshot, reset=false) {
     const expect = cursor;
     const headers = {
       ...auth,
@@ -170,6 +174,7 @@ export async function preparePageStorage(root: string, pageId: string, origin: s
       'Blok-Doc-Expected-Sequence': expect.sequence ?? '',
       'Blok-Doc-Lineage': lineage,
       'Blok-Doc-Sequence': String(seq),
+      ...(reset && {'Blok-Doc-Reset':'1'}),
     };
     const res = await fetch(endpoint, {
       method: 'PUT',
@@ -187,13 +192,50 @@ export async function preparePageStorage(root: string, pageId: string, origin: s
       throw new Error('Invalid projection receipt');
     await remember(anchor(pageId, { data, version: ack.version, lineage, sequence: String(seq) }));
   }
+  // The intent is durable before the manifest switches. Whichever side of
+  // the PostgreSQL CAS a crash lands on, reopening can finish the same reset.
+  async function finishReset(activeLineage:string) {
+    let intent:{lineage:string;from:Anchor};
+    try { intent=JSON.parse(await readFile(resetIntent,'utf8')); }
+    catch(error) { if ((error as NodeJS.ErrnoException).code==='ENOENT') return; throw error; }
+    if (intent.lineage===activeLineage) {
+      const remote=await read();
+      lineage=activeLineage;
+      if (intent.from.pageId!==pageId || !validHead(intent.from) || fingerprint(remote.data)!==intent.from.hash)
+        throw new ProjectionDiverged('Canonical data changed during reset');
+      if (eqHead(intent.from,remote)) {
+        cursor=intent.from;
+        await publish(0n,remote.data,true);
+      } else if (remote.lineage===lineage && remote.sequence==='0' && BigInt(remote.version)===BigInt(intent.from.version)+1n) {
+        await remember(anchor(pageId,remote));
+      } else throw new ProjectionDiverged('Canonical revision changed during reset');
+    }
+    await rm(resetIntent);
+    await syncDirectory(directory);
+  }
   return {
     directory,
+    async prepareReset(next:string) {
+      const remote=await read();
+      const baseline=seedUpdate(remote.data);
+      const legacy=directory.slice(0,-'.journal'.length);
+      const source=await readWorkingSet(legacy);
+      if(source.baseline) {
+        await source.unchanged();
+        await rm(legacy);
+        await syncDirectory(root);
+      }
+      await publishFile(resetIntent,JSON.stringify({lineage:next,from:anchor(pageId,remote)}));
+      await syncDirectory(directory);
+      return baseline;
+    },
+    finishReset,
     async attach(doc: Doc, activeLineage: string, head: bigint) {
+      await finishReset(activeLineage);
       lineage = activeLineage;
       const remote = await read();
       if (remote.lineage !== null && (remote.lineage !== lineage || BigInt(remote.sequence!) > head))
-        throw new Error('Projection disagrees with the journal lineage or is ahead of it');
+        throw new ProjectionDiverged('Projection disagrees with the journal lineage or is ahead of it');
       try {
         cursor = parseLossless(await readFile(disk, 'utf8')) as Anchor;
         if (
@@ -236,7 +278,7 @@ export async function preparePageStorage(root: string, pageId: string, origin: s
         return;
       }
       if (!eqHead(cursor, remote) || fingerprint(remote.data) !== cursor.hash)
-        throw new Error('Canonical projection changed since the journal was last confirmed');
+        throw new ProjectionDiverged('Canonical projection changed since the journal was last confirmed');
       await publish(head, target);
     },
     validate(doc: Doc) {

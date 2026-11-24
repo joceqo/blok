@@ -16,7 +16,9 @@ Les images Docker font tourner l’API, la collaboration et les médias en Node.
 
 Le chemin quotidien est `npm test`. La recette complète à deux navigateurs est opt-in via `./deploy/test-node-room-browser.sh --workspace`. Les suites de conformité des moteurs historiques restent disponibles pour comparer les formats et les contrats.
 
-Le shell ouvre l’historique depuis le menu « Actions de la page ». La room accepte les clients Blok v1 et v2 au format éditeur 2. Le protocole v2 confirme la persistance de chaque opération. La purge intégrale d’une page, les notes d’activité historiques des agents et le détail des différences champ par champ dans les bases restent à porter.
+Le shell ouvre l’historique depuis le menu « Actions de la page ». La room accepte les clients Blok v1 et v2 au format éditeur 2. Le protocole v2 confirme la persistance de chaque opération. Dans « Modifications de cette version », le shell affiche l’agent et la personne pour laquelle il a agi lorsque le journal possède cette attribution. Les modifications de cellules montrent les valeurs avant et après. Le panneau indique aussi les changements de propriétés et de vues. Une ancienne écriture sans note conserve son auteur connu.
+
+Le menu de l’espace ouvre la corbeille. Un membre disposant du contrôle complet peut confirmer la suppression définitive d’une page déjà à la corbeille. Le serveur bloque aussitôt les accès et reprend le nettoyage du journal et de la projection PostgreSQL après une interruption. Une simple mise à la corbeille conserve le contenu et les versions. Une réinitialisation du document crée une nouvelle lignée depuis son contenu canonique et laisse les versions précédentes consultables.
 
 ## IA et agents
 

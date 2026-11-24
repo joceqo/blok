@@ -1,12 +1,10 @@
 import { applyUpdate, Doc } from 'yjs';
+import { HistoryChangeWindow, maxHistoryChangeRecords, type ChangePoint as Point } from './history-change-window.ts';
+import { changeQuery } from './database-changes.ts';
+import { readRecordNotes, recordActor, type HistoryActor } from './record-notes.ts';
 import { inspectJournal } from '../journal/inspect.ts';
 import type { HistoryLineage } from './history-lineages.ts';
 
-interface Point {
-  lineage: string;
-  sequence: number;
-  committedAt: number;
-}
 const day = 86400000;
 const utcEpoch = 621355968000000000n;
 function timeParam(q: URLSearchParams, key: string, defaultTime: number) {
@@ -24,11 +22,13 @@ export async function timeHistory<T>(
   url: URL,
   asJSON: boolean,
   project: (d: Doc) => T,
-  changes: (before: T, after: T) => { blocks: { id?: string }[]; page: string[] },
+  changes: (before: T, after: T, properties: boolean) => { blocks: { id?: string }[]; page: string[] },
   actorName: (id: string | null) => string | null,
 ) {
   const q = url.searchParams;
   const atTime = url.pathname.endsWith('/at');
+  const filters = changeQuery(q);
+  if (!atTime && !filters.valid) return { status: 400 };
   const at = timeParam(q, 'time', NaN),
     to = timeParam(q, 'to', Date.now()),
     from = timeParam(q, 'from', to - day);
@@ -39,7 +39,8 @@ export async function timeHistory<T>(
   if (beforeIndex < 0) return { status: 404 };
   let best: Point | undefined;
   const selected: Point[] = [];
-  const max = 64;
+  const max = maxHistoryChangeRecords;
+  let selectedLineages = 0;
   let truncated = false;
   // Read newest generation first. The room queue holds its writer across both passes.
   for (let i = beforeIndex; i < entries.length; i++) {
@@ -78,6 +79,10 @@ export async function timeHistory<T>(
       entry.manifest,
     );
     if (report.integrity !== 'ok') throw new Error('Inconsistent historical journal');
+    if (recent.length && ++selectedLineages > 8) {
+      truncated = true;
+      break;
+    }
     selected.push(...recent.reverse());
     if (selected.length > max) {
       selected.length = max;
@@ -95,14 +100,16 @@ export async function timeHistory<T>(
     headers.Location = best.lineage + '/' + best.sequence;
     return { status: 302, headers };
   }
-  const rows = new Map<string, unknown>();
-  for (const entry of entries) {
+  const rows = new HistoryChangeWindow();
+  for (const entry of [...entries].reverse()) {
     const lineage = entry.manifest.lineage;
     const points = selected.filter((p) => p.lineage === lineage);
     if (!points.length) continue;
     const wanted = new Map(points.map((p) => [p.sequence, p]));
     const doc = new Doc();
     let actor: string | null = null;
+    const notes=await readRecordNotes(directory,lineage);
+    let noted: HistoryActor | undefined;
     try {
       const report = await inspectJournal(
         directory,
@@ -112,17 +119,18 @@ export async function timeHistory<T>(
           const old = point && project(doc);
           applyUpdate(doc, frame.update);
           if (point && old) {
-            const diff = changes(old, project(doc));
-            if (q.has('block')) {
-              diff.blocks = diff.blocks.filter((b) => b.id === q.get('block'));
+            const diff = changes(old, project(doc), filters.properties);
+            if (filters.blockId !== undefined) {
+              diff.blocks = diff.blocks.filter((b) => b.id === filters.blockId);
               diff.page = [];
               if (!diff.blocks.length) return;
             }
-            rows.set(lineage + ':' + point.sequence, { ...point, actor, ...diff });
+            rows.add(point, { ...point, actor, actors: noted ? [noted] : [], ...diff });
           }
         },
         (r) => {
           actor = actorName(r.actorId);
+          noted = recordActor(notes,r,actor);
         },
         true,
         entry.manifest,
@@ -134,13 +142,6 @@ export async function timeHistory<T>(
   }
   return {
     status: 200,
-    body: {
-      changes: selected.flatMap((p) => {
-        const row = rows.get(p.lineage + ':' + p.sequence);
-        return row ? [row] : [];
-      }),
-      truncated,
-      ...(truncated && { olderEnd: selected.at(-1) }),
-    },
+    body: rows.result(truncated ? selected.at(-1) : undefined, true),
   };
 }

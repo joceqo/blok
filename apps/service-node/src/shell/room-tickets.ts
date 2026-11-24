@@ -5,6 +5,7 @@ import type { PgPool } from '../db/pool.ts';
 import { blokTicket } from '../tickets/hmac.ts';
 import { roomPass } from '../tickets/room-pass.ts';
 import { canEditPage, resolvePageLevel, type Role, type Visibility } from './page-level.ts';
+import { publicMcpActor } from './agent-identity.ts';
 import { sessionDigest } from './session.ts';
 
 interface Decision {
@@ -127,17 +128,20 @@ export function roomTickets(pool: PgPool, ticketSecret: string) {
         return c.json({ error: 'Invalid room authorization request' }, 400);
       const decision = await documentAccess(pool, digest, documentId);
       if (!decision.read) return c.json({ read: false, write: false });
-      const actorId = digest.startsWith('mcp:') ? digest : decision.actor;
+      // documentAccess matched the digest to a currently valid credential and workspace member.
+      const agent = digest.startsWith('mcp:');
+      const actorId = agent ? publicMcpActor(digest) : decision.actor;
+      const recordNote = agent ? {kind:'agent',onBehalfOf:decision.actor} : {kind:'person'};
       if (claims)
         return c.json({
           read: true,
-          actorId,
+          actorId, recordNote,
           write: decision.write && claims.write,
           workspaceId: decision.workspace,
           session: digest,
           ticketWrite: claims.write,
         });
-      return c.json({ read: true, actorId, write: decision.write, workspaceId: decision.workspace });
+      return c.json({ read: true, actorId, recordNote, write: decision.write, workspaceId: decision.workspace });
     },
   );
   return router;

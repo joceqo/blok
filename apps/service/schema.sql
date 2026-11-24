@@ -106,3 +106,13 @@ CREATE TABLE IF NOT EXISTS teamspace_pages (
 );
 CREATE INDEX IF NOT EXISTS teamspace_pages_page ON teamspace_pages(workspace_id,page_id);
 INSERT INTO schema_migrations(version) VALUES(7) ON CONFLICT DO NOTHING;
+
+-- Only an explicitly requested permanent deletion schedules erasure.
+CREATE TABLE IF NOT EXISTS page_purge_requests (
+  page_id text PRIMARY KEY REFERENCES pages(id),
+  requested_by text NOT NULL,
+  next_attempt_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS page_purge_due ON page_purge_requests(next_attempt_at) WHERE completed_at IS NULL;
+INSERT INTO schema_migrations(version) VALUES(8) ON CONFLICT DO NOTHING;

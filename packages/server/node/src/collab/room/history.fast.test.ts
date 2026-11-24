@@ -6,6 +6,7 @@ import { expect, it } from 'vitest';
 import { initializePage, newBaseline, pageDirectory } from './page-seed.ts';
 import { restorePage, seedUpdate } from './page-document.ts';
 import { appendJournal } from '../journal/append.ts';
+import { notesFilename, writeRecordNote } from './record-notes.ts';
 import { startJournalRoom } from './preview.ts';
 
 it('serves guarded version reads and recoverable restores from the actual journal over HTTP', async () => {
@@ -48,7 +49,7 @@ it('serves guarded version reads and recoverable restores from the actual journa
     expect((await request('', 'unauthorized')).status).toBe(403);
     const list = await request();
     expect(await list.json()).toMatchObject({
-      versions: [{ sequence: 1, actors: ['account-1'] }, { sequence: 0 }],
+      versions: [{ sequence: 1, actors: ['account-1'], actorKinds: [] }, { sequence: 0, actorKinds: [] }],
     });
     const old = await request('/' + lineage + '/0');
     expect(await old.json()).toMatchObject(snapshot('old'));
@@ -73,7 +74,7 @@ it('serves guarded version reads and recoverable restores from the actual journa
     expect(await head.json()).toMatchObject(snapshot('old'));
     const changes = await request('/' + lineage + '/2/changes?since=1');
     expect(await changes.json()).toMatchObject({
-      changes: [{ sequence: 2, blocks: [{ id: 'a', kind: 'changed' }] }],
+      changes: [{ sequence: 2, actors:[{id:'editor',kind:'person'}], blocks: [{ id: 'a', kind: 'changed' }] }],
       truncated: false,
     });
   } finally {
@@ -112,6 +113,7 @@ it('resolves an old Go ledger generation and tombstones only the requested archi
   ledger.writeBigInt64LE(621355968000000000n, 45);
   createHash('sha256').update(ledger.subarray(0, 53)).digest().copy(ledger, 53, 0, 8);
   await writeFile(join(directory, 'lineages'), ledger);
+  await writeRecordNote(directory,old,1n,'1'.repeat(32),{kind:'agent',onBehalfOf:'user'});
   const host = await startJournalRoom({
     directory,
     documentId: page,
@@ -140,6 +142,7 @@ it('resolves an old Go ledger generation and tombstones only the requested archi
     expect((await req('/' + live, 'DELETE')).status).toBe(409);
     expect((await req('/' + old, 'DELETE')).status).toBe(204);
     expect((await req('/' + old + '/0')).status).toBe(404);
+    await expect(stat(join(directory,notesFilename(old)))).rejects.toMatchObject({code:'ENOENT'});
     await expect(stat(join(directory, 'baseline.1.1'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect((await req('/' + live + '/0')).status).toBe(200);
   } finally {

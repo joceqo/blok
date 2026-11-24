@@ -19,7 +19,7 @@ function icon(value?: string, database = false): HTMLElement {
   return element;
 }
 
-function dialog(label: string): { surface: HTMLElement; open: (focus: HTMLElement, cleanup?: () => void) => void; close: () => void } {
+export function createNavigationDialog(label: string): { surface: HTMLElement; open: (focus: HTMLElement, cleanup?: () => void) => void; close: () => void } {
   const overlay = node('div', 'data-desktop-settings-overlay');
   const surface = node('div', 'data-navigation-dialog');
   const closeButton = node('button', 'data-navigation-close');
@@ -79,7 +79,7 @@ function openPagePicker(options: {
   notice?: string;
   onChoose: (id: string | null) => void;
 }): () => void {
-  const modal = dialog(options.label);
+  const modal = createNavigationDialog(options.label);
   modal.surface.setAttribute('data-navigation-search', '');
   const input = document.createElement('input');
   input.type = 'search'; input.placeholder = options.placeholder; input.setAttribute('aria-label', options.searchLabel);
@@ -153,7 +153,7 @@ export function openPageCreation(options: {
   destination: string;
   onCreate: (destination: CreationDestination, database: boolean) => void;
 }): void {
-  const modal = dialog('Créer une page');
+  const modal = createNavigationDialog('Créer une page');
   modal.surface.setAttribute('data-navigation-create', '');
   modal.surface.append(node('h2', 'data-navigation-heading', 'Créer une page'));
   const destination = createChoice({ label: 'Ajouter dans', value: options.destination, options: options.destinations, searchable: true, onChange() {} });

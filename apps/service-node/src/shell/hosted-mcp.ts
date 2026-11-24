@@ -17,7 +17,7 @@ export interface HostedMcpOptions {
   call(principal: string, name: string, args: Record<string,unknown>): Promise<ToolResult>;
 }
 interface Runtime {
-  fetch(request: Request,principal: string): Promise<Response>;
+  fetch(request: Request,principal: string,owner: string): Promise<Response>;
   close(): Promise<void>;
 }
 interface HostedMcpModule { hostedMcp(options: HostedMcpOptions): Runtime }
@@ -100,8 +100,8 @@ export function createHostedMcp(pool: PgPool) {
     if (c.req.header('Origin') !== undefined || !bearer?.startsWith('Bearer ') || bearer.length <= 7)
       return c.json({error:'Bearer token required'},401);
     const digest = createHash('sha256').update(bearer.slice(7)).digest('hex');
-    const {rowCount} = await pool.query('UPDATE mcp_tokens SET last_used_at=now() WHERE id=$1 AND expires_at>now()',[digest]);
-    if (!rowCount) return c.json({error:'Invalid or expired token'},401);
+    const {rows:[token]} = await pool.query<{user_id:string}>('UPDATE mcp_tokens SET last_used_at=now() WHERE id=$1 AND expires_at>now() RETURNING user_id',[digest]);
+    if (!token) return c.json({error:'Invalid or expired token'},401);
     const secret = process.env.TICKET_SECRET, origin = process.env.PUBLIC_URL;
     if (!secret || !origin) return c.json({error:'MCP transport configuration unavailable'},503);
     if (!runtime) {
@@ -112,7 +112,7 @@ export function createHostedMcp(pool: PgPool) {
           syncUrl:process.env.MCP_SYNC_URL || 'ws://room:18102/api/blok/sync'}))
         .catch(error => { runtime = undefined; throw error; });
     }
-    return (await runtime).fetch(c.req.raw,'mcp:'+digest);
+    return (await runtime).fetch(c.req.raw,'mcp:'+digest, token.user_id);
   });
   return app;
 }

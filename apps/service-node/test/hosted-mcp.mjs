@@ -49,8 +49,9 @@ try {
       resolveReady();
     });
   });
-  room = await startAllRooms({directory:dir,allowedOrigins:new Set([process.env.PUBLIC_URL]),
+  const startRoom = () => startAllRooms({directory:dir,allowedOrigins:new Set([process.env.PUBLIC_URL]),
     authorize:shellRoomTickets(process.env.PUBLIC_URL,secret),projection:{origin:process.env.PUBLIC_URL,secret}});
+  room = await startRoom();
   process.env.MCP_SYNC_URL=room.url;
   process.env.BLOK_ROOM_STATE_ORIGIN=new URL(room.url.replace('ws:','http:')).origin;
   assert.equal((await rpc('unknown','tools/list',{})).status,401);
@@ -104,6 +105,36 @@ try {
   console.log('Live duplication used the separate Node room snapshot and preserved private content, parent permissions, editor grant and revision.');
   const close = await call(writer,'blok_close',{handle});
   assert.ok(!close.isError);
+  // Reopen the journal in a fresh room instance with a page reader's ticket.
+  await room.close();
+  room = await startRoom();
+  const issued = await fetch(process.env.PUBLIC_URL+'/api/workspaces/demo/ticket?doc='+created.id,
+    {headers:{Authorization:'Bearer '+copier}});
+  assert.equal(issued.status,200);
+  const {ticket} = await issued.json();
+  const history = (suffix='') => fetch(room.url.replace('ws:','http:')+created.id+'/history'+suffix,
+    {headers:{Authorization:'Bearer '+ticket,Origin:process.env.PUBLIC_URL}});
+  const response = await history();
+  assert.equal(response.status,200,await response.clone().text());
+  const timeline = await response.json();
+  const publicId = 'actor-'+digest('mcp:'+digest(writer)).slice(0,16);
+  const note = {id:publicId,kind:'agent',onBehalfOf:'writer'};
+  const version = timeline.versions.find(v=>v.actorKinds.some(a=>a.id===publicId));
+  assert.ok(version,JSON.stringify(timeline));
+  assert.deepEqual(version.actorKinds,[note]);
+  for (const path of ['/'+version.lineage+'/'+version.sequence+'/changes?since=0','/changes']) {
+    const details = await (await history(path)).json();
+    const row = details.changes.find(r=>r.actor===publicId);
+    assert.deepEqual(row?.actors,[note]);
+    assert.ok(!JSON.stringify(details).includes(digest(writer)));
+  }
+  const inserted = original.blocks.find(block => block.id === 'agent-edit');
+  assert.equal(inserted.createdBy,'writer');
+  assert.equal(inserted.createdWith,publicId);
+  assert.ok(!JSON.stringify(original).includes(digest(writer)));
+  await db.query("DELETE FROM page_shares WHERE page_id=$1 AND user_id='copier'",[created.id]);
+  assert.equal((await history()).status,403);
+  console.log('Verified durable MCP actor and delegating account in versions, sequence and time ranges after restart. Revoked reader denied.');
   await db.query('DELETE FROM mcp_tokens WHERE id=$1',[digest(writer)]);
   assert.equal((await rpc(writer,'tools/list',{})).status,401);
   console.log('Node MCP HTTP and journal verified: bearer isolation, workspace tools, read/write permissions, durable editor command, token revocation.');

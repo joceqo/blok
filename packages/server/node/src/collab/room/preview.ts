@@ -1,8 +1,13 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
 import { WebSocketServer } from 'ws';
-import { MAX_APPEND_BYTES } from '../journal/append.ts';
+import { DocumentPurged, UnreadableJournalData, MAX_APPEND_BYTES } from '../journal/append.ts';
 import { verifyTicket } from '../../auth/ticket.ts';
+import { pageDirectory } from './page-seed.ts';
+import { preparePageStorage, ProjectionDiverged } from './page-storage.ts';
+import { seedUpdate } from './page-document.ts';
+import { resetGeneration } from './reset.ts';
+import { purgeDocument } from './purge.ts';
 import { openDocumentRoom } from './document-room.ts';
 
 export interface RoomIdentity {
@@ -10,6 +15,8 @@ export interface RoomIdentity {
   write: boolean;
   workspaceId?: string;
   actorId?: string;
+  /** Set by the host after resolving the authenticated credential. */
+  recordNote?: import('./record-notes.ts').RecordNote;
   /** Recheck only this admitted connection, bound to its original page and identity. */
   revalidate?: () => Promise<RoomIdentity | null>;
 }
@@ -88,10 +95,73 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
 
   const inScope = (identity:RoomIdentity|null):identity is RoomIdentity => !!identity?.id &&
     (!('all' in options) || !!identity.workspaceId) && (!workspaceId || identity.workspaceId === workspaceId);
+  // A transition excludes new admissions until the old writer has drained
+  // and released its lease. Other documents continue serving concurrently.
+  const transitions = new Map<string,Promise<void>>();
+  const unfinishedPurges = new Set<string>();
+  function exclusive(id:string, work:()=>Promise<void>) {
+    const pending = (transitions.get(id) ?? Promise.resolve()).catch(()=>{}).then(work);
+    transitions.set(id,pending);
+    return pending.finally(()=>{ if (transitions.get(id)===pending) transitions.delete(id); });
+  }
+  function directory(id:string) { return options.projection ? pageDirectory(options.directory,id) : options.directory; }
+  async function retire(id:string, reason:{code:number;message:string}, recover:boolean) {
+    if (recover && !pages.has(id) && pages.size>=128) throw new Error('Room busy');
+    const entry=pages.get(id) ?? (recover ? load(id) : undefined);
+    if (!entry) return;
+    if (entry.closing) { await entry.closing; return; }
+    try {
+      const room=await entry.room;
+      entry.closing=room.close(reason);
+      await entry.closing;
+    } catch(error) {
+      // Explicit reset is how the host adopts an externally changed record.
+      // Purge must also work when the old bytes are no longer readable.
+      if(recover && !(error instanceof ProjectionDiverged) && !(error instanceof UnreadableJournalData)) throw error;
+    } finally { if (pages.get(id)===entry) pages.delete(id); }
+  }
+  async function purge(id:string, allowed:()=>boolean|Promise<boolean>) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(id) || (singlePage && id!==singlePage)) throw new Error('Invalid document ID');
+    await exclusive(id,async()=>{
+      if(stopping) throw new Error('Host stopping');
+      if (!await allowed()) throw new Error('Document purge not authorized');
+      unfinishedPurges.add(id);
+      await retire(id,{code:4403,message:'forbidden'},false);
+      await purgeDocument(directory(id),Boolean(options.projection));
+      unfinishedPurges.delete(id); // The durable marker now protects future opens.
+    });
+  }
+  async function reset(id:string, token:string, admitted:RoomIdentity) {
+    let forbidden=false;
+    await exclusive(id,async()=>{
+      if(stopping) throw new Error('Host stopping');
+      const who=admitted.revalidate ? await admitted.revalidate() : await options.authorize(token,id);
+      if (!inScope(who) || !who.write || who.id!==admitted.id || who.workspaceId!==admitted.workspaceId) {
+        forbidden=true; return;
+      }
+      if (unfinishedPurges.has(id)) throw new DocumentPurged('Document purge pending');
+      await retire(id,{code:4409,message:'document reset'},true);
+      const cfg=options.projection;
+      const storage=cfg && await preparePageStorage(options.directory,id,cfg.origin,cfg.secret);
+      let lineage='';
+      await resetGeneration(directory(id),async next=>{
+        lineage=next;
+        return storage ? storage.prepareReset(next) : seedUpdate(null);
+      },async()=>{ await storage?.finishReset(lineage); });
+    });
+    return forbidden ? 403 : 204;
+  }
   let admissions = 0;
   async function reserve(id: string) {
-    let entry = pages.get(id);
-    while (entry?.closing) { await entry.closing; entry = pages.get(id); }
+    let entry:Resident|undefined;
+    for (;;) {
+      const transition=transitions.get(id);
+      if (transition) { await transition.catch(()=>{}); continue; }
+      if (unfinishedPurges.has(id)) throw new DocumentPurged('Document purge pending');
+      entry=pages.get(id);
+      if(!entry?.closing) break;
+      await entry.closing;
+    }
     if (stopping || (!entry && pages.size >= 128) || (entry && entry.users >= 32)) throw new Error('Room busy');
     entry ??= load(id);
     entry.users++;
@@ -105,7 +175,7 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
   const http = createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/healthz') {
       const single = singlePage && pages.get(singlePage);
-      if (stopping || (single && !(await single.room).available())) { res.writeHead(503).end(); return; }
+      if (stopping || (single && !await single.room.then(room=>room.available(),()=>false))) { res.writeHead(503).end(); return; }
       const scope = singlePage ? {documentId:singlePage} : workspaceId ? {workspaceId} : {all:true};
       res.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({backend:'node',...scope}));
       return;
@@ -129,7 +199,19 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
     let url:URL;
     try { url = new URL(req.url ?? '/','http://localhost'); }
     catch { res.writeHead(400).end(); return; }
-    const match = /^\/api\/blok\/sync\/([A-Za-z0-9_-]{1,128})\/(?:history(?:\/|$)|state$)/.exec(url.pathname);
+    if (recheckKey && req.method==='POST' && url.pathname==='/internal/room/purge') {
+      if (!timingSafeEqual(recheckKey,createHash('sha256').update(req.headers.authorization ?? '').digest())) {
+        res.writeHead(401).end(); return;
+      }
+      const id=url.searchParams.get('documentId');
+      if(!id || !/^[A-Za-z0-9_-]{1,128}$/.test(id) || (singlePage && singlePage!==id) || workspaceId) {
+        res.writeHead(400).end(); return;
+      }
+      try { await purge(id,()=>true); res.writeHead(204).end(); }
+      catch(error) { res.writeHead((error as NodeJS.ErrnoException).code==='JOURNAL_BUSY'?409:503).end(); }
+      return;
+    }
+    const match = /^\/api\/blok\/sync\/([A-Za-z0-9_-]{1,128})\/(?:history(?:\/|$)|state$|reset$)/.exec(url.pathname);
     if (match && (!singlePage || match[1] === singlePage)) {
       res.setHeader('Cache-Control','no-store');
       res.setHeader('Vary','Origin');
@@ -138,11 +220,12 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
       if (origin) res.setHeader('Access-Control-Allow-Origin',origin);
       if (req.method === 'OPTIONS') {
         res.setHeader('Access-Control-Allow-Methods','GET,POST,DELETE,OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers','Authorization, Content-Type, If-Match, Blok-Idempotency-Key, X-Blok-Restore-Confirm');
+        res.setHeader('Access-Control-Allow-Headers','Authorization, X-Blok-Ticket, Content-Type, If-Match, Blok-Idempotency-Key, X-Blok-Restore-Confirm');
         res.writeHead(204).end(); return;
       }
       const id = match[1]!;
-      const token = /^Bearer (\S+)$/i.exec(req.headers.authorization ?? '')?.[1];
+      const token = /^Bearer (\S+)$/i.exec(req.headers.authorization ?? '')?.[1] ??
+        (typeof req.headers['x-blok-ticket']==='string' ? req.headers['x-blok-ticket'] : undefined) ?? url.searchParams.get('ticket');
       if (!token) { res.writeHead(401).end(); return; }
       if (stopping || admissions >= 256) { res.writeHead(503).end(); return; }
       admissions++;
@@ -150,6 +233,10 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
       try {
         const identity = await options.authorize(token,id);
         if (!inScope(identity) || (req.method !== 'GET' && !identity.write)) { res.writeHead(403).end(); return; }
+        if (url.pathname==='/api/blok/sync/'+id+'/reset') {
+          if (req.method!=='POST') { res.writeHead(405).end(); return; }
+          res.writeHead(await reset(id,token,identity)).end(); return;
+        }
         const confirmed = String(req.headers['x-blok-restore-confirm'] ?? '').split(',').map(k=>k.trim());
         if (req.method === 'POST') {
           const body = await confirmations(req);
@@ -163,7 +250,7 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
         res.setHeader('Access-Control-Expose-Headers','Blok-History-Lineage, Blok-History-Sequence, Blok-Doc-Lineage, Blok-Doc-Sequence, ETag, X-Blok-Restore-Refusal');
         res.writeHead(result.status,{'Content-Type':'application/json',...('headers' in result && result.headers)});
         res.end('body' in result ? JSON.stringify(result.body) : undefined);
-      } catch { res.writeHead(503).end(); }
+      } catch (error) { res.writeHead(error instanceof DocumentPurged ? 403 : 503).end(); }
       finally { if (resident) releaseUser(id,resident); admissions--; }
       return;
     }
@@ -202,9 +289,9 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
       if (stopping || !room.available() || socket.destroyed) { refuse('503 Service Unavailable'); return; }
       socket.once('close', release);
       sockets.handleUpgrade(req,socket,handshake,ws => room.connect(ws,ticket,identity));
-    } catch {
+    } catch(error) {
       release();
-      refuse('503 Service Unavailable');
+      refuse(error instanceof DocumentPurged ? '403 Forbidden' : '503 Service Unavailable');
     } finally {
       if (socket.destroyed || socket.writableEnded) release();
       admissions--;
@@ -215,7 +302,7 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
     if (!closing) {
       stopping = true;
       const closed = new Promise<void>(resolve => http.close(() => resolve()));
-      closing = Promise.allSettled([...pages].map(([id,entry]) => unload(id,entry))).then(async results => {
+      closing = Promise.allSettled([...transitions.values(), ...[...pages].map(([id,entry]) => unload(id,entry))]).then(async results => {
         sockets.close();
         await closed;
         for (const result of results) if (result.status === 'rejected') throw result.reason;
@@ -224,7 +311,7 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
     return closing;
   }
   try {
-    if (singlePage) await load(singlePage).room;
+    if (singlePage) await load(singlePage).room.catch(error=>{ if(!(error instanceof DocumentPurged)) throw error; });
     await new Promise<void>((resolve,reject) => {
       http.once('error', reject);
       http.listen(options.port ?? 0, options.listenHost ?? '127.0.0.1',() => { http.off('error',reject); resolve(); });
@@ -232,7 +319,7 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
     const address = http.address();
     if (!address || typeof address === 'string') throw new Error('Expected a TCP address');
     const path = singlePage ? '/api/blok/sync/'+encodeURIComponent(singlePage) : '/api/blok/sync/';
-    return { url:`ws://127.0.0.1:${address.port}${path}`, close:stop };
+    return { url:`ws://127.0.0.1:${address.port}${path}`, close:stop, purgeDocument:purge };
   } catch (error) { await stop(); throw error; }
 }
 

@@ -7,6 +7,7 @@ export interface ProjectionHead {
 }
 
 interface ProjectionWrite extends ProjectionHead {
+  reset?: true;
   expected?: Pick<ProjectionHead, 'lineage' | 'sequence'>;
 }
 
@@ -23,15 +24,17 @@ export function readProjectionHeaders(headers: Headers): ProjectionWrite | undef
   if (sequence !== null && !validSequence(sequence)) {
     return undefined;
   }
+  const reset = headers.get('Blok-Doc-Reset');
   const mode = headers.get('Blok-Doc-If-Match');
   const expectedLineage = headers.get('Blok-Doc-Expected-Lineage');
   const expectedSequence = headers.get('Blok-Doc-Expected-Sequence');
+  if (reset !== null && (reset !== '1' || mode !== 'exact' || !lineage || !/^[a-f0-9]{32}$/.test(lineage) || lineage === expectedLineage || sequence !== '0')) return undefined;
   if (mode !== null || expectedLineage !== null || expectedSequence !== null) {
     if (mode !== 'exact' || version === null || lineage === null || sequence === null ||
         expectedLineage === null || expectedSequence === null ||
         (expectedLineage === '') !== (expectedSequence === '') ||
         (expectedSequence !== '' && !validSequence(expectedSequence))) return undefined;
-    return { version, lineage, sequence: BigInt(sequence).toString(),
+    return { ...(reset && {reset:true as const}), version, lineage, sequence: BigInt(sequence).toString(),
       expected: { lineage: expectedLineage || null, sequence: expectedSequence ? BigInt(expectedSequence).toString() : null } };
   }
   // A journal can recover before its best-effort endpoint version read has finished.
@@ -40,6 +43,10 @@ export function readProjectionHeaders(headers: Headers): ProjectionWrite | undef
 
 export function projectionDecision(stored: ProjectionHead, incoming: ProjectionWrite, sameData: boolean) {
   const expected = incoming.expected;
+  if (incoming.reset) {
+    return expected && sameData && incoming.version === stored.version && stored.lineage === expected.lineage &&
+      stored.sequence === expected.sequence && incoming.lineage !== stored.lineage && incoming.sequence === '0' ? 'write' : 'conflict';
+  }
   if (expected && (stored.version !== incoming.version || stored.lineage !== expected.lineage ||
       stored.sequence !== expected.sequence || (stored.lineage !== null && stored.lineage !== incoming.lineage))) {
     return 'conflict';
@@ -65,8 +72,8 @@ export async function saveProjection(pool: PgPool, id: string, json: string, hea
   try {
     await client.query('BEGIN');
     const { rows } = await client.query<ProjectionHead & { same: boolean; workspaceId: string }>(
-      `SELECT version::text, lineage, sequence::text, workspace_id AS "workspaceId", content IS NOT DISTINCT FROM $2::jsonb AS same
-       FROM pages WHERE id=$1 FOR UPDATE`, [id, json],
+      `SELECT version::text, lineage, sequence::text, workspace_id AS "workspaceId", (content IS NOT DISTINCT FROM $2::jsonb OR ($3 AND content IS NULL AND $2::jsonb='null'::jsonb)) AS same
+       FROM pages WHERE id=$1 AND NOT deleted FOR UPDATE`, [id, json, head.reset ?? false],
     );
     const row = rows[0];
     // The owning workspace is read under the same row lock as the CAS.
@@ -81,8 +88,8 @@ export async function saveProjection(pool: PgPool, id: string, json: string, hea
     let version = row.version;
     if (decision === 'write') {
       const updated = await client.query<{ version: string }>(
-        `UPDATE pages SET content=$2::jsonb, version=version+1, lineage=$3, sequence=$4
-         WHERE id=$1 RETURNING version::text`, [id, json, head.lineage, head.sequence],
+        `UPDATE pages SET content=CASE WHEN $5 THEN content ELSE $2::jsonb END, version=version+1, lineage=$3, sequence=$4
+         WHERE id=$1 RETURNING version::text`, [id, json, head.lineage, head.sequence, head.reset ?? false],
       );
       version = updated.rows[0]!.version;
     }

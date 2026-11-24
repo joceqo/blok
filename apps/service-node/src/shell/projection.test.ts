@@ -51,3 +51,16 @@ describe('shell projection concurrency', () => {
     expect(readProjectionHeaders(headers)).toBeUndefined();
   });
 });
+
+it('rebaselines only the exact canonical state and rejects ordinary cross-lineage writes',()=>{
+  const headers=new Headers({'Blok-Doc-Reset':'1','Blok-Doc-If-Match':'exact','Blok-Doc-Version':'3','Blok-Doc-Lineage':'a'.repeat(32),
+    'Blok-Doc-Sequence':'0','Blok-Doc-Expected-Lineage':'first','Blok-Doc-Expected-Sequence':'10'});
+  const reset=readProjectionHeaders(headers)!;
+  expect(projectionDecision(stored,reset,true)).toBe('write');
+  expect(projectionDecision(stored,reset,false)).toBe('conflict');
+  expect(projectionDecision({...stored,version:'4'},reset,true)).toBe('conflict');
+  headers.delete('Blok-Doc-Reset');
+  expect(projectionDecision(stored,readProjectionHeaders(headers)!,true)).toBe('conflict');
+  headers.set('Blok-Doc-Reset','1');headers.set('Blok-Doc-Sequence','1');
+  expect(readProjectionHeaders(headers)).toBeUndefined();
+});

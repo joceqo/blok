@@ -6,7 +6,8 @@ export interface BlokMcpOptions {
   transport: { kind: 'stdio' } | { kind: 'http'; listen: string; public?: boolean };
   auth: { kind: 'none' } | { kind: 'oauth'; issuer: string; audience: string; jwksUrl: string };
   sync?: { url: string; origin?: string };
-  tickets?: { kind: 'secret'; secret: string } | { kind: 'url'; url: string; hostToken: string };
+  /** A hosted room may authorize the private principal separately from the public actor ID. */
+  tickets?: { kind: 'secret'; secret: string; subject?: 'actor' | 'principal' } | { kind: 'url'; url: string; hostToken: string };
   authorize?: (principal: string, documentId: string, write: boolean) => Promise<boolean>;
   agentActor?: (principal: string, clientName: string) => AgentActor;
   source?:
