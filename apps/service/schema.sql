@@ -119,3 +119,24 @@ INSERT INTO schema_migrations(version) VALUES(8) ON CONFLICT DO NOTHING;
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text;
 INSERT INTO schema_migrations(version) VALUES(9) ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS workspace_notifications (
+  id text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  recipient_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  actor_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type text NOT NULL CHECK(type IN ('join_requested','join_approved','join_rejected')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  read_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS workspace_notifications_inbox
+  ON workspace_notifications(workspace_id,recipient_id,(read_at IS NULL) DESC,created_at DESC,id DESC);
+
+-- Keep existing pending requests visible when an installation first gains an inbox.
+WITH upgrade AS (
+  INSERT INTO schema_migrations(version) VALUES(10) ON CONFLICT DO NOTHING RETURNING version
+)
+INSERT INTO workspace_notifications(workspace_id,recipient_id,actor_id,type,created_at)
+SELECT j.workspace_id,m.user_id,j.user_id,'join_requested',j.created_at
+FROM upgrade CROSS JOIN join_requests j JOIN memberships m ON m.workspace_id=j.workspace_id
+WHERE j.status='pending' AND m.role='admin';

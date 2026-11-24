@@ -6,7 +6,7 @@ import type { PoolClient } from 'pg';
 import type { PgPool } from '../db/pool.ts';
 import { inTransaction } from './bootstrap.ts';
 import { loadSession, sessionDigest } from './session.ts';
-import { readWorkspaceScope } from './workspace-scope.ts';
+import { readWorkspaceScope, readWorkspaceSession } from './workspace-scope.ts';
 import { blokTicket } from '../tickets/hmac.ts';
 import { consumeRate } from './request-code.ts';
 import { documentAccess } from './room-tickets.ts';
@@ -38,7 +38,7 @@ export function validWorkspace(slug: unknown, name: unknown) {
   );
 }
 
-async function lookup(db: Pick<PoolClient, 'query'>, slug: string, digest?: string, lock = false) {
+async function lookup(db: Pick<PoolClient, 'query'>, slug: string, digest?: string) {
   const {
     rows: [ws],
   } = await db.query(
@@ -46,7 +46,7 @@ async function lookup(db: Pick<PoolClient, 'query'>, slug: string, digest?: stri
     FROM workspaces w LEFT JOIN sessions s ON s.id=$2 AND s.expires_at>now()
     LEFT JOIN memberships m ON m.workspace_id=w.id AND m.user_id=s.user_id
     LEFT JOIN join_requests j ON j.workspace_id=w.id AND j.user_id=s.user_id
-    WHERE w.slug=$1 OR w.id=$1 ORDER BY (w.slug=$1) DESC LIMIT 1 ${lock ? 'FOR UPDATE OF w' : ''}`,
+    WHERE w.slug=$1 OR w.id=$1 ORDER BY (w.slug=$1) DESC LIMIT 1`,
     [slug, digest ?? null],
   );
   if (!ws) throw new HTTPException(404, { message: 'Workspace not found' });
@@ -104,18 +104,30 @@ export function workspaceDirectory(pool: PgPool) {
     return c.json(result);
   });
   router.post('/api/workspaces/:slug/join-requests', bodyLimit({ maxSize: 8192 }), async (c) => {
-    const user = await requireAccount(pool, c);
+    await requireAccount(pool, c);
     const { message = '' } = await readBody(c);
     if (typeof message !== 'string' || Buffer.byteLength(message) > 2000)
       throw new HTTPException(400, { message: 'Invalid message' });
     const status = await inTransaction(pool, async (db) => {
-      const ws = await lookup(db, c.req.param('slug'), sessionDigest(c), true);
-      if (ws.role) return 'approved';
+      const {workspace_id, user_id} = await readWorkspaceSession(db, sessionDigest(c) ?? '', c.req.param('slug'), true);
+      const {rows: [prior]} = await db.query(
+        `SELECT EXISTS(SELECT FROM memberships WHERE workspace_id=$1 AND user_id=$2) AS member,
+          (SELECT status FROM join_requests WHERE workspace_id=$1 AND user_id=$2) AS status`,
+        [workspace_id, user_id],
+      );
+      if (prior.member) return 'approved';
       await db.query(
         `INSERT INTO join_requests(id,workspace_id,user_id,message) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,user_id)
         DO UPDATE SET message=excluded.message,status='pending',created_at=now()`,
-        [randomUUID(), ws.id, user.id, message],
+        [randomUUID(), workspace_id, user_id, message],
       );
+      if (prior.status !== 'pending') {
+        await db.query(
+          `INSERT INTO workspace_notifications(workspace_id,recipient_id,actor_id,type)
+           SELECT workspace_id,user_id,$2,'join_requested' FROM memberships WHERE workspace_id=$1 AND role='admin'`,
+          [workspace_id, user_id],
+        );
+      }
       return 'pending';
     });
     return c.json({ ok: true, status });
@@ -155,6 +167,10 @@ export function workspaceDirectory(pool: PgPool) {
           request.user_id,
           role,
         ]);
+      await db.query(
+        'INSERT INTO workspace_notifications(workspace_id,recipient_id,actor_id,type) VALUES($1,$2,$3,$4)',
+        [scope.workspace_id, request.user_id, scope.user_id, action === 'approve' ? 'join_approved' : 'join_rejected'],
+      );
     });
     return c.json({ ok: true });
   });

@@ -46,6 +46,8 @@ const config: StorybookConfig = {
         alias: {
           ...viteConfig.resolve?.alias,
           '@/types': path.resolve(__dirname, '../types'),
+          '@blok/modal-dialog': path.resolve(__dirname, '../src/components/utils/modal-dialog.ts'),
+          '@blok/popover': path.resolve(__dirname, '../src/components/utils/popover/popover-desktop.ts'),
         },
       },
       // Strip incompatible plugins (nested arrays are flattened first so each

@@ -26,6 +26,8 @@ All paths relative to configured HTTPS API origin. JSON errors `{error:string}`.
 - GET `/api/workspaces/:slug/members` → `{members:[{id,email,role}]}` (members).
 - PATCH `/api/workspaces/:slug/members/:userID` `{role}` → `{ok:true}` (admin; last admin protected).
 - DELETE `/api/workspaces/:slug/members/:userID` → `{ok:true}` (admin; last admin protected).
+- GET `/api/workspaces/:slug/notifications` → `{notifications:[{id,type,actorName,createdAt,readAt}],unreadCount}`. The inbox returns up to 50 entries, unread first and newest first within each group. The count includes all visible unread entries. Each recipient sees their own entries. Current workspace admins receive `join_requested` events. Applicants can read their `join_approved` or `join_rejected` decisions even without membership.
+- POST `/api/workspaces/:slug/notifications/:id/read` → `{ok:true}`. Marks a visible entry read and preserves its first read time on retries. Returns 404 for other recipients’ and workspaces’ entries.
 - GET `/api/workspaces/:slug/join-requests` → `{requests:[{id,userId,email,message,status,createdAt}]}` (admin).
 - POST `/api/workspaces/:slug/join-requests/:requestID/approve` `{role?:"member"|"viewer"}` → `{ok:true}` (admin).
 - POST `/api/workspaces/:slug/join-requests/:requestID/reject` `{}` → `{ok:true}` (admin).

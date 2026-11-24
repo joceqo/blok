@@ -6,7 +6,7 @@ import type { CloudClient, CloudRole } from './client';
 import './workspace-settings.css';
 import { createChoice, styleTextField, wrapSearchField, type ChoiceControl } from '../ui/controls';
 
-export interface WorkspaceMembersOptions { client: CloudClient; slug: string; onInvite?: () => void }
+export interface WorkspaceMembersOptions { client: CloudClient; slug: string; initialTab?: Tab; onInvite?: () => void }
 export interface WorkspaceMembersHandle { destroy(): void; refresh(): Promise<void> }
 export interface WorkspaceInvitationOptions {
   client: CloudClient;
@@ -88,7 +88,7 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
     generation: 0,
     read: undefined as AbortController | undefined,
     loaded: false,
-    tab: 'members' as Tab,
+    tab: options.initialTab ?? 'members',
     members: [] as Member[],
     requests: [] as JoinRequest[],
     invites: [] as Invite[],
