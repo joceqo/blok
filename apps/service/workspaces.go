@@ -94,7 +94,9 @@ func (s *Service) insertWorkspace(w http.ResponseWriter, r *http.Request, u iden
 }
 func (s *Service) lookupWorkspace(ctx context.Context, slug, user string) (Workspace, error) {
 	var out Workspace
-	e := s.DB.QueryRow(ctx, `SELECT w.id,w.slug,w.name,coalesce(m.role,'') FROM workspaces w LEFT JOIN memberships m ON m.workspace_id=w.id AND m.user_id=$2 WHERE w.slug=$1 OR w.id=$1`, slug, user).Scan(&out.ID, &out.Slug, &out.Name, &out.Role)
+	e := s.DB.QueryRow(ctx, `SELECT w.id,w.slug,w.name,coalesce(m.role,'') FROM workspaces w
+		LEFT JOIN memberships m ON m.workspace_id=w.id AND m.user_id=$2
+		WHERE w.slug=$1 OR w.id=$1 ORDER BY (w.slug=$1) DESC LIMIT 1`, slug, user).Scan(&out.ID, &out.Slug, &out.Name, &out.Role)
 	return out, e
 }
 func (s *Service) workspace(w http.ResponseWriter, r *http.Request) {

@@ -31,7 +31,7 @@ export async function loadSession(pool: PgPool, digest: string) {
 export async function loadVisiblePage(pool: PgPool, digest: string, slug: string, id: string) {
   const { rows } = await pool.query<{ authenticated: boolean; workspace: boolean; member: boolean; content: string | null }>(
     `WITH RECURSIVE account AS (SELECT user_id FROM sessions WHERE id=$1 AND expires_at>now()),
-     workspace AS (SELECT id FROM workspaces WHERE slug=$2),
+     workspace AS (SELECT id FROM workspaces WHERE slug=$2 OR id=$2 ORDER BY (slug=$2) DESC LIMIT 1),
      member AS (SELECT m.* FROM memberships m JOIN workspace w ON w.id=m.workspace_id
                 JOIN account a ON a.user_id=m.user_id),
      chain AS (
