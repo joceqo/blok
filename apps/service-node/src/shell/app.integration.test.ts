@@ -6,6 +6,7 @@ import { createShellApp } from './app.js';
 
 // Opt in with a development PostgreSQL URL. Only this suite's schema is used.
 const databaseUrl = process.env.SHELL_TEST_DATABASE_URL;
+const schemaPath = process.env.SHELL_TEST_SCHEMA_PATH ?? new URL('../../../service/schema.sql', import.meta.url);
 describe.skipIf(!databaseUrl)('shell routes on the deployed PostgreSQL schema', () => {
   const schema = 'test_shell_' + randomUUID().replaceAll('-', '');
   const admin = new pg.Pool({ connectionString: databaseUrl });
@@ -16,7 +17,7 @@ describe.skipIf(!databaseUrl)('shell routes on the deployed PostgreSQL schema', 
 
   beforeAll(async () => {
     await admin.query('CREATE SCHEMA ' + schema);
-    await db.query(await readFile(new URL('../../../service/schema.sql', import.meta.url), 'utf8'));
+    await db.query(await readFile(schemaPath, 'utf8'));
     await db.query(`INSERT INTO users(id,email) VALUES('m','m@example.test');
       INSERT INTO workspaces(id,slug,name) VALUES ('w','demo','Demo');
       INSERT INTO memberships VALUES('w','m','viewer');
