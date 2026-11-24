@@ -137,6 +137,7 @@ func (s *Service) managementOperations() []managementOperation {
 		{"blok_update_instance_user", "Update account name, picture, or grant/revoke instance administrator status. Requires instance admin; protects the last admin.", "PATCH", s.patchAdminUser, nil, map[string]string{"userId": "id"}, userPatch, []string{"userId"}, false},
 		{"blok_delete_instance_user", "PERMANENTLY delete a server account and revoke its access. Requires instance admin; protects last administrators/owners. Use only for an explicit account deletion request.", "DELETE", s.deleteAdminUser, nil, map[string]string{"userId": "id"}, managementFields("userId"), []string{"userId"}, false},
 		{"blok_list_instance_workspaces", "List all server workspaces and member counts (paginated), without access to their private content. Requires instance admin.", "GET", s.listAdminWorkspaces, nil, nil, paging, nil, true},
+		{"blok_delete_workspace", "PERMANENTLY delete an entire workspace, including all pages (also private/trash), teamspaces, memberships, files and document history. Requires instance admin, even for an empty workspace; accounts and other workspaces remain intact. Only use for an explicit workspace deletion request. Pass the exact workspaceId from blok_list_instance_workspaces, never a slug. No need to remove the last admin first. If cleanup is interrupted, repeat this call with the same ID; retries are idempotent.", "DELETE", s.deleteAdminWorkspace, nil, map[string]string{"workspaceId": "id"}, managementFields("workspaceId"), []string{"workspaceId"}, false},
 		{"blok_create_workspace", "Create a workspace and become its admin. Obeys server creation policy; instance admins can create even when normal creation is disabled.", "POST", s.mcpCreateWorkspaceHTTP, nil, nil, managementFields("name", "slug"), []string{"name", "slug"}, false},
 	}
 }
@@ -267,14 +268,14 @@ func managementFailure(status int, message string) *mcp.CallToolResult {
 	return managementFailureWithDetails(status, message, nil)
 }
 
-// Only public placement recovery fields may cross the HTTP-to-MCP bridge.
+// Only public operation recovery fields may cross the HTTP-to-MCP bridge.
 func managementFailureWithDetails(status int, message string, details map[string]any) *mcp.CallToolResult {
 	code := map[int]string{400: "INVALID_ARGUMENT", 401: "UNAUTHENTICATED", 403: "FORBIDDEN", 404: "NOT_FOUND", 409: "CONFLICT", 429: "RATE_LIMITED"}[status]
 	if code == "" {
 		code = "SERVICE_ERROR"
 	}
 	publicDetails := map[string]any{}
-	for _, key := range []string{"pageId", "operationId", "requestId", "retry", "parentId", "parentRowId"} {
+	for _, key := range []string{"pageId", "operationId", "requestId", "retry", "parentId", "parentRowId", "workspaceId", "deleted", "cleanupComplete"} {
 		if value, ok := details[key]; ok {
 			publicDetails[key] = value
 		}

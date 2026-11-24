@@ -128,11 +128,13 @@ func New(ctx context.Context, c Config) (*Service, error) {
 	// after the admin user exists — also ON CONFLICT DO NOTHING, so a deliberate
 	// demotion survives restart (§5.1).
 	if c.AdminEmail != "" && c.BootstrapWorkspaceSlug != "" && c.BootstrapWorkspaceName != "" {
-		if _, e = tx.Exec(ctx, `INSERT INTO workspaces(id,slug,name) VALUES($1,$2,$3) ON CONFLICT(slug) DO NOTHING`,
+		if _, e = tx.Exec(ctx, `INSERT INTO workspaces(id,slug,name) SELECT $1,$2,$3 WHERE NOT EXISTS (SELECT 1 FROM workspace_deletions WHERE slug=$2) ON CONFLICT(slug) DO NOTHING`,
 			opaque(), c.BootstrapWorkspaceSlug, c.BootstrapWorkspaceName); e != nil {
 			return fail(e)
 		}
 	}
+	// Explicit deletions are recorded in workspace_deletions so a restart
+	// cannot recreate a workspace from unchanged bootstrap environment variables.
 	// bootstrap_markers is unused since instance admins (§5.1); keep the empty table.
 	setupRequired, e := s.bootstrapInstance(ctx, tx)
 	if e != nil {
@@ -321,6 +323,7 @@ func (s *Service) routes() {
 	s.mux.HandleFunc("DELETE /api/admin/users/{id}", s.deleteAdminUser)
 	s.mux.HandleFunc("GET /api/admin/workspaces", s.listAdminWorkspaces)
 	s.mux.HandleFunc("POST /api/admin/workspaces", s.createAdminWorkspace)
+	s.mux.HandleFunc("DELETE /api/admin/workspaces/{id}", s.deleteAdminWorkspace)
 	s.mux.HandleFunc("POST /api/admin/email-test", s.adminEmailTest)
 	s.mux.HandleFunc("POST /api/auth/request-code", s.requestCode)
 	s.mux.HandleFunc("POST /api/auth/verify-code", s.verifyCode)

@@ -215,3 +215,16 @@ CREATE TABLE IF NOT EXISTS row_body_drafts (
  PRIMARY KEY(document_id,row_id,operation_id)
 );
 INSERT INTO schema_migrations(version) VALUES(14) ON CONFLICT DO NOTHING;
+
+-- Retain a content-free deletion receipt outside workspace foreign keys. File
+-- and journal cleanup can resume after a request interruption or process crash.
+CREATE TABLE IF NOT EXISTS workspace_deletions (
+ workspace_id text PRIMARY KEY,
+ slug text NOT NULL,
+ document_ids jsonb NOT NULL CHECK(jsonb_typeof(document_ids)='array'),
+ asset_names jsonb NOT NULL CHECK(jsonb_typeof(asset_names)='array'),
+ deleted_at timestamptz NOT NULL DEFAULT now(),
+ completed_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS workspace_deletions_slug ON workspace_deletions(slug);
+INSERT INTO schema_migrations(version) VALUES(15) ON CONFLICT DO NOTHING;
