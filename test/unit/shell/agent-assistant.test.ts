@@ -55,3 +55,24 @@ describe('host assistant provider adapters',()=>{
     expect(handle.element.querySelector<HTMLButtonElement>('[data-blok-chat-provider-trigger]')!.disabled).toBe(true);expect(handle.element.textContent).toContain('Session expirée');
   });
 });
+
+it('sends only fresh search results, links the source page and omits sourced turns from later requests', async () => {
+  const find = vi.fn().mockResolvedValue([{id:'p1', title:'Budget', excerpt:'Trente euros'}]);
+  const open = vi.fn();
+  const model = vi.fn<AgentModel>().mockResolvedValue({content:[{type:'text',text:'Trente [1]'}],stop_reason:'end_turn'});
+  const handle = mount({ getPageText:()=>'Page active', openSettings:()=>{}, workspaceSearch:{find,open},
+    listProviders:async()=>[{id:'model',label:'Modèle'}], modelFor:()=>model });
+  const toggle = handle.element.querySelector<HTMLInputElement>('[data-blok-workspace-search] input')!;
+  toggle.checked = true;
+  await handle.refreshProviders();
+  ask(handle, 'Quel budget ?');
+  await vi.waitFor(() => expect(handle.element.querySelector('[data-blok-answer-sources] button')).toBeTruthy());
+  expect(find).toHaveBeenCalledWith('Quel budget ?', expect.any(AbortSignal));
+  expect(JSON.stringify(model.mock.calls[0]![0].messages)).toContain('Trente euros');
+  handle.element.querySelector<HTMLButtonElement>('[data-blok-answer-sources] button')!.click();
+  expect(open).toHaveBeenCalledWith('p1');
+  toggle.checked = false;
+  ask(handle, 'Autre question');
+  await vi.waitFor(() => expect(model).toHaveBeenCalledTimes(2));
+  expect(JSON.stringify(model.mock.calls[1]![0].messages)).not.toContain('Trente');
+});

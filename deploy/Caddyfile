@@ -24,6 +24,13 @@
   handle @shellDelete {
     reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
   }
+  @workspaceSearch {
+    method POST
+    path_regexp workspaceSearch ^/api/workspaces/[^/]+/search$
+  }
+  handle @workspaceSearch {
+    reverse_proxy {$BLOK_SHELL_READ_UPSTREAM:app:8080}
+  }
   @membership {
     method PATCH DELETE
     path_regexp membership ^/api/workspaces/[^/]+/members/[^/]+$

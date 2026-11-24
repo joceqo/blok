@@ -22,6 +22,11 @@ export function workspaceRepository(workspace: WorkspaceRef) {
   }
   return {
     ref,
+    async searchSources(query: string, signal: AbortSignal) {
+      return (await request<{ sources: {id: string; title: string; excerpt: string}[] }>(`${base}/search`, {
+        method: 'POST', body: JSON.stringify({query}), signal,
+      })).sources;
+    },
     async loadIndex(): Promise<WorkspaceIndex> {
       if (ref.kind === 'local') return loadIndex(ref);
       const value = await request<WorkspaceIndex & { revision: number }>(`${base}/index`);

@@ -1,6 +1,10 @@
 import type {AgentModel} from '../../types/api';
 import type {CliCommand,CliStatus} from '../../src/shell/agent-model';
 export interface AgentAssistantOptions {
+  workspaceSearch?: {
+    find(query: string, signal: AbortSignal): Promise<{id: string; title: string; excerpt: string}[]>;
+    open(id: string): void;
+  };
   getPageText(): string;
   openSettings(): void;
   inspectProvider?: (command:CliCommand,signal:AbortSignal)=>Promise<CliStatus>;

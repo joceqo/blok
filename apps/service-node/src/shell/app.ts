@@ -8,6 +8,7 @@ import { createWorkspaceMembers } from './workspace-members.js';
 import { createPageSharing } from './page-sharing.js';
 import { createAccessRecheck } from './recheck-access.js';
 import { readProjectionHeaders, saveProjection } from './projection.js';
+import { createWorkspaceSearch } from './workspace-search.js';
 import { createShellTeamspaces } from './teamspaces.js';
 import { loadWorkspaceIndex } from './workspace-index.js';
 import { loadSession, loadVisiblePage, sessionDigest } from './session.js';
@@ -46,6 +47,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     await next();
   });
 
+  app.route('/api/workspaces/:slug/search', createWorkspaceSearch(pool));
   app.route('/api/workspaces/:slug/teamspaces', createShellTeamspaces(pool));
 
   app.get('/healthz', async (c) => {

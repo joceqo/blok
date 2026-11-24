@@ -109,6 +109,21 @@ describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema
     await expect(db.query('INSERT INTO teamspace_pages VALUES($1,$2,$3)', ['w',team,'other-note'])).rejects.toMatchObject({ code:'23503' });
   });
 
+  it('searches persisted text under current page permissions before returning excerpts', async () => {
+    await db.query(`INSERT INTO pages(id,workspace_id,metadata,content,visibility) VALUES
+      ('g1','w','{"title":"Recette"}','{"blocks":[{"data":{"text":"Le budget approuvé est de trente euros"}}]}','workspace'),
+      ('g2','w','{"title":"Finances privées"}','{"blocks":[{"data":{"text":"Budget confidentiel"}}]}','private'),
+      ('g3','z','{"title":"Budget autre équipe"}','{}','workspace')`);
+    const lookup = () => app.request('/api/workspaces/demo/search', {
+      method:'POST', headers:{Authorization:'Bearer reader'}, body:JSON.stringify({query:'Quel est le budget ?'}) });
+    const list = async () => { const response = await lookup(); expect(response.status).toBe(200); return (await response.json()).sources; };
+    expect(await list()).toEqual([{id:'g1',title:'Recette',excerpt:expect.stringContaining('trente euros')}]);
+    await db.query("INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES('g2','reader','view','admin')");
+    expect((await list()).map((s: {id:string}) => s.id).sort()).toEqual(['g1','g2']);
+    await db.query("DELETE FROM page_shares WHERE page_id='g2'; UPDATE pages SET trashed=true WHERE id='g1'");
+    expect(await list()).toEqual([]);
+  });
+
   it('enforces both workspace relations even on direct SQL writes', async () => {
     const id = await create('Operations');
     await expect(db.query('INSERT INTO teamspace_members VALUES($1,$2,$3)', ['z',id,'outsider'])).rejects.toMatchObject({ code:'23503' });

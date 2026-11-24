@@ -856,6 +856,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   });
   ws.frame.element.append(status);
   ws.assistant = mountAgentAssistant({
+    workspaceSearch: ref.kind === 'remote' ? { find: repository.searchSources, open: navigate } : undefined,
     getPageText: () => ws.pageCanvas.querySelector('[data-desktop-document]')?.textContent?.slice(0, 100_000) ?? '',
     openSettings: () => ws.footer.dispatchEvent(new Event('blok:desktop-open-ai-settings')),
     ...createWorkspaceAssistant(ref),

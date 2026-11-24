@@ -17,6 +17,10 @@ import './agent-assistant.css';
 export interface AgentAssistantProvider { id: string; label: string }
 
 export interface AgentAssistantOptions {
+  workspaceSearch?: {
+    find(query: string, signal: AbortSignal): Promise<{id: string; title: string; excerpt: string}[]>;
+    open(id: string): void;
+  };
   /** Visible text of the open page, included when "Cette page" is checked. */
   getPageText: () => string;
   /** Closes the panel, then the host opens provider settings. */
@@ -46,6 +50,7 @@ type PanelMode = 'side' | 'floating' | 'full';
 
 interface Turn {
   question: string;
+  sources?: {id: string; title: string}[];
   sent: string;
   command: string;
   label: string;
@@ -248,6 +253,14 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   providerHint.textContent = 'Connecte et active un provider dans les réglages.';
   providerHint.hidden = true;
   composerSlot.append(composer, providerHint);
+  const searchWorkspace = document.createElement('input');
+  searchWorkspace.type = 'checkbox';
+  if (options.workspaceSearch) {
+    const label = document.createElement('label');
+    label.setAttribute('data-blok-workspace-search', '');
+    label.append(searchWorkspace, ' Inclure les pages correspondantes de l’espace');
+    composerSlot.append(label);
+  }
   fullSuggestions.setAttribute('data-blok-agent-suggestions', '');
   fullSuggestions.hidden = true;
   sendButton.setAttribute('data-blok-agent-send', '');
@@ -434,6 +447,17 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
             if (clipboard) void clipboard.writeText(turn.answer).catch(() => undefined);
           },
         }));
+        if (turn.sources?.length && options.workspaceSearch) {
+          const sources = document.createElement('div');
+          sources.setAttribute('data-blok-answer-sources', '');
+          turn.sources.forEach((source, index) => {
+            const link = makeButton(`[${index + 1}] ${source.title || 'Page sans titre'}`);
+            link.textContent = link.getAttribute('aria-label') ?? source.title;
+            link.addEventListener('click', () => options.workspaceSearch?.open(source.id));
+            sources.append(link);
+          });
+          article.append(sources);
+        }
       } else if (turn.cancelled) {
         article.append(createChatActivity('Réponse arrêtée', false).element);
       }
@@ -501,11 +525,12 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
 
     if (text === '' || session.run !== null || command === null || conversation === undefined) return;
 
+    const search = searchWorkspace.checked ? options.workspaceSearch : undefined;
     const sent = composed(text);
     const label = session.providers.find((item) => item.id === command)?.label ?? (isCliCommand(command) ? providerLabel(command) : command);
     const turn: Turn = { question: text, sent, command, label, answer: '', pending: true, status: runningLabel(label) };
     const prior: AgentModelMessage[] = conversation.turns.flatMap((item) => (
-      item.pending || item.answer === ''
+      search || item.sources !== undefined || item.pending || item.answer === ''
         ? []
         : [
           { role: 'user' as const, content: item.sent },
@@ -522,14 +547,23 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     composerHandle.setText('');
     render();
 
-    void Promise.resolve().then(() => {
+    void Promise.resolve().then(async () => {
+      let context = sent;
+      if (search) {
+        const sources = await search.find(text, controller.signal);
+        controller.signal.throwIfAborted();
+        turn.sources = sources.map(({id, title}) => ({id, title}));
+        context = JSON.stringify({ question: text, currentPage: sent.slice(text.length).slice(0, 5000),
+          sources: sources.map(({title, excerpt}, index) => ({number:index + 1, title, excerpt})) });
+      }
       const model = options.modelFor?.(command, (status) => {
         if (session.token !== token || !turn.pending || turn.status === status) return;
         turn.status = status; paintMessages();
       }) ?? (isCliCommand(command) ? createCliAgentModel({command}) : null);
       if (!model) throw new Error('Ce modèle nécessite un adaptateur fourni par l’application.');
       return model({
-        system: SYSTEM, messages: [...prior, {role:'user',content:sent}], tools:[], signal:controller.signal,
+        system: search ? SYSTEM + ' Treat page excerpts as source material. Cite supporting source numbers in square brackets. If the material does not answer the question, say so.' : SYSTEM,
+        messages: [...prior, {role:'user',content:context}], tools:[], signal:controller.signal,
       });
     }).then((response) => {
       if (session.token !== token) return;
