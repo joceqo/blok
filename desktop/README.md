@@ -62,3 +62,16 @@ npm test
 npm run tauri dev
 npx tauri build --bundles app
 ```
+
+
+## Local Docker sync smoke test
+
+From the repository root, start the seeded demo with `./deploy/demo.sh start`. With the root Yarn dependencies and Playwright Chromium or Google Chrome installed, run the following command.
+
+```sh
+node desktop/src/cloud/demo-sync-smoke.mjs
+```
+
+This opt-in browser check signs in as `membre@example.test` using the local HTTP mailbox and creates one uniquely named page in the seeded `equipe` workspace. It edits two blocks in separate browser contexts, disconnects one client, checks convergence after reconnect and reload, then waits for the stored page read from Node. The page stays in the demo so its printed URL can be opened again.
+
+The script reads `DEMO_WEB_PORT` and `DEMO_MAIL_PORT` (defaults `8088` and `8089`). Both connections use localhost. Run one check at a time with the demo account. The check waits through one 45-second login-code cooldown. Repeated requests can reach the service’s hourly login limit. After both clients leave, the collaboration room normally takes another 30 seconds to flush the final snapshot.
