@@ -31,6 +31,20 @@
   handle @shellAuth {
     reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
   }
+  @mcpTokenReads {
+    method GET HEAD
+    path /api/mcp/tokens
+  }
+  handle @mcpTokenReads {
+    reverse_proxy {$BLOK_SHELL_READ_UPSTREAM:app:8080}
+  }
+  @mcpTokenWrites {
+    method OPTIONS POST DELETE
+    path_regexp mcpTokenWrites ^/api/mcp/tokens(/[^/]+(/rotate)?)?$
+  }
+  handle @mcpTokenWrites {
+    reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
+  }
   @workspaceSearch {
     method POST
     path_regexp workspaceSearch ^/api/workspaces/[^/]+/search$

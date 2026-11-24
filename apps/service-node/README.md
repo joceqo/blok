@@ -11,6 +11,7 @@ The desktop shell uses the PostgreSQL schema in `apps/service/schema.sql`, initi
 | `POST /api/auth/request-code`, `/verify-code`, `/logout` | Issue and verify a code or close a session. The private mail transport uses the configured Go sender. |
 | `GET/POST /api/workspaces/:slug/invites` and `DELETE .../invites/:id` | List, deliver and revoke workspace invitations. |
 | `POST /api/workspaces/:slug/search` | Find accessible pages by title or saved block text. |
+| `GET/POST /api/mcp/tokens`, `DELETE /api/mcp/tokens/:id`, `POST /api/mcp/tokens/:id/rotate` | List, issue, revoke and rotate the signed-in account’s MCP tokens. The Go MCP endpoint checks the same PostgreSQL records on each request. |
 | `GET /api/session` and `GET /api/workspaces` | Load the signed-in user and memberships with a browser cookie or native bearer token. |
 | `GET /api/workspaces/:slug/index` | Read the page tree, trash, access levels and workspace revision from one database snapshot. |
 | `PUT /api/workspaces/:slug/index` | Create, rename, reorder, move, trash or remove pages in one transaction, conditional on the last observed workspace revision. |
