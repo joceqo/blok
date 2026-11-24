@@ -226,6 +226,8 @@ export class EmojiPicker {
   private _keywordsLoad: Promise<void> | null = null;
   /** Caret rect override for inline mode — see `open()`'s `anchorRect` param. */
   private _anchorRectOverride: DOMRect | null = null;
+  /** Never flips above the anchor: with no room it is clamped up from the bottom edge instead. */
+  private _stayBelow = false;
 
   private _element: HTMLElement;
   private _body: HTMLElement;
@@ -379,7 +381,7 @@ export class EmojiPicker {
   public async open(
     anchor: HTMLElement,
     anchorRect?: DOMRect,
-    handlers?: Pick<EmojiPickerOptions, 'onSelect' | 'onRemove'> & { current?: string; removable?: boolean; height?: number }
+    handlers?: Pick<EmojiPickerOptions, 'onSelect' | 'onRemove'> & { current?: string; removable?: boolean; height?: number; stayBelow?: boolean }
   ): Promise<void> {
     const active = document.activeElement;
 
@@ -389,6 +391,7 @@ export class EmojiPicker {
     }
 
     this._current = handlers?.current ?? '';
+    this._stayBelow = handlers?.stayBelow === true;
     const customTurn = ++this.customGeneration;
     this.customItems = [];
     this.renderCustomEmojis('');
@@ -2407,7 +2410,7 @@ export class EmojiPicker {
     const width = this._element.offsetWidth || pickerRect.width;
     const viewportHeight = window.innerHeight;
     const viewportWidth = window.innerWidth;
-    const above = rect.bottom + height + 4 > viewportHeight - 8 && rect.top > viewportHeight - rect.bottom;
+    const above = !this._stayBelow && rect.bottom + height + 4 > viewportHeight - 8 && rect.top > viewportHeight - rect.bottom;
     const preferredTop = above ? rect.top - height - 4 : rect.bottom + 4;
     const top = Math.max(8, Math.min(preferredTop, viewportHeight - height - 8));
     // Starts before the anchor's start edge: its right edge in RTL.
