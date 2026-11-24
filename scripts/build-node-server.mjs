@@ -30,6 +30,7 @@ async function bundle(outfile, conformance, entry = 'src/main.ts') {
       join(nodePackage, entry),
       '--bundle',
       '--platform=node',
+      '--external:ws',
       '--format=esm',
       '--main-fields=module,main',
       '--target=node20',
@@ -51,4 +52,5 @@ await bundle(join(outDir, 'blok-server-conformance.mjs'), true);
 await bundle(join(outDir, 'journal-inspect.mjs'), false, 'src/collab/journal/inspect.ts');
 await bundle(join(outDir, 'journal-replay.mjs'), false, 'src/collab/journal/replay.ts');
 await bundle(join(outDir, 'journal-append.mjs'), false, 'src/collab/journal/append.ts');
+await bundle(join(outDir, 'journal-room.mjs'), false, 'src/collab/room/preview.ts');
 console.log('Conformance binaries — node: ordinary bundle, and one with BLOK_CONFORMANCE=true.');
