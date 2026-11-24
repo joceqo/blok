@@ -463,7 +463,12 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 			return
 		}
 	}
-	if s.nodeOwnsRoom(source) {
+	owned, err := s.nodeOwnsRoom(r.Context(), source)
+	if err != nil {
+		problem(w, 503, "Room ownership unavailable")
+		return
+	}
+	if owned {
 		problem(w, 409, "Live duplication is unavailable for the Node room")
 		return
 	}
@@ -580,7 +585,7 @@ func (s *Service) seed(w http.ResponseWriter, r *http.Request, u identity, ws Wo
 		problem(w, 403, "Write access required")
 		return
 	}
-	if s.nodeOwnsRoom(r.PathValue("id")) {
+	if s.Config.NodeRoomPage != "" && s.Config.NodeRoomPage == r.PathValue("id") {
 		problem(w, 409, "Seed this page before assigning it to the Node room")
 		return
 	}

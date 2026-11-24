@@ -112,3 +112,54 @@ func TestNodeRoomProxyUpgradeAndOutage(t *testing.T) {
 		t.Fatalf("offline room returned %d", response.StatusCode)
 	}
 }
+
+func TestWorkspaceNodeRoomTracksNewPagesAndFailsClosed(t *testing.T) {
+	world := newReadsWorld(t)
+	s := &Service{DB: world.service.DB, Config: Config{NodeRoomWorkspace: "w"}, observed: make(map[string]int)}
+	if _, err := s.DB.Exec(world.ctx, `INSERT INTO workspaces(id,slug,name) VALUES('other-workspace','w','Other');
+		INSERT INTO pages(id,workspace_id,metadata) VALUES('other-page','other-workspace','{}')`); err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	proxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.isObserved("after-activation") {
+			t.Fatal("upgrade not tracked for recheck")
+		}
+		seen++
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	})
+	upgrade := func(ctx context.Context, doc string) (bool, int) {
+		req := httptest.NewRequest(http.MethodGet, "/api/blok/sync/"+doc, nil).WithContext(ctx)
+		req.Header.Set("Upgrade", "websocket")
+		w := httptest.NewRecorder()
+		handled := s.routeWorkspaceUpgrade(proxy, w, req)
+		return handled, w.Code
+	}
+	if handled, _ := upgrade(world.ctx, "after-activation"); handled {
+		t.Fatal("absent page delegated")
+	}
+	world.page(t, "after-activation", "", "workspace")
+	if handled, code := upgrade(world.ctx, "after-activation"); !handled || code != 101 {
+		t.Fatalf("new page: %v %d", handled, code)
+	}
+	if s.isObserved("after-activation") {
+		t.Fatal("closed proxy still observed")
+	}
+	if handled, _ := upgrade(world.ctx, "other-page"); handled {
+		t.Fatal("outside workspace delegated")
+	}
+	if allowed, err := s.CanWriteDocument(world.ctx, blokserver.User{ID: hash(tokenBob)}, "after-activation"); err != nil || allowed {
+		t.Fatal("Go writer", allowed, err)
+	}
+	if allowed, err := s.authorizeMCPDocument(world.ctx, "bob", "after-activation", true); err != nil || allowed {
+		t.Fatal("Go MCP writer", allowed, err)
+	}
+	dead, cancel := context.WithCancel(world.ctx)
+	cancel()
+	if handled, code := upgrade(dead, "after-activation"); !handled || code != 503 {
+		t.Fatalf("failed ownership lookup fell through: %v %d", handled, code)
+	}
+	if seen != 1 {
+		t.Fatalf("unexpected number of upgrades: %d", seen)
+	}
+}

@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createRequestCode, trustedClientIP } from './request-code.ts';
 import { createShellAuth } from './auth.ts';
 import { createShellApp } from './app.ts';
+import { saveProjection } from './projection.ts';
 
 // Opt in with a development PostgreSQL URL. Only this suite's schema is used.
 const databaseUrl = process.env.SHELL_TEST_DATABASE_URL;
@@ -180,6 +181,18 @@ describe.skipIf(!databaseUrl)('shell routes on the deployed PostgreSQL schema', 
     expect(await (await put(winner)).json()).toEqual({ version: '1' });
     const stored = await app.request(path, { headers: journal });
     expect((await stored.text()).replaceAll(' ', '')).toBe(`{"data":${winner},"version":"1","lineage":"L","sequence":"1"}`);
+  });
+
+  it('fences both projection writers by the canonical workspace of a newly created page', async () => {
+    await db.query(`INSERT INTO workspaces(id,slug,name) VALUES('other-room','w','Other');
+      INSERT INTO pages(id,workspace_id,metadata) VALUES ('selected-new','w','{}'),('outside-new','other-room','{}')`);
+    const data = '{"blocks":[]}';
+    const go = {version:'0',lineage:null,sequence:null};
+    const node = {version:'0',lineage:'lineage',sequence:'0',expected:{lineage:null,sequence:null}};
+    expect(await saveProjection(db,'selected-new',data,go,'w')).toBeUndefined();
+    expect(await saveProjection(db,'outside-new',data,node,'w')).toBeUndefined();
+    expect(await saveProjection(db,'selected-new',data,node,'w')).toBe('1');
+    expect(await saveProjection(db,'outside-new',data,go,'w')).toBe('1');
   });
 
   it('checks the exact journal head under the row lock and preserves the winning content', async () => {

@@ -18,13 +18,19 @@ read_selection() {
   selected=''
   if [[ -f "$selection_file" ]]; then
     selected=$(cat "$selection_file")
-    valid_page "$selected" || { echo "Invalid room selection in $selection_file" >&2; return 1; }
+    valid_page "${selected#workspace:}" || { echo "Invalid room selection in $selection_file" >&2; return 1; }
   fi
 }
 compose() {
   local args=(--env-file "$env_file" -f compose.demo.yaml)
+  local page="$selected" workspace='' target="$selected"
   if [[ -n "$selected" ]]; then args+=(-f compose.demo-room.yaml); fi
-  BLOK_NODE_ROOM_PAGE="$selected" docker compose "${args[@]}" "$@"
+  if [[ "$selected" == workspace:* ]]; then
+    workspace="${selected#workspace:}"
+    page=''
+    target='--workspace'
+  fi
+  BLOK_NODE_ROOM_PAGE="$page" BLOK_NODE_ROOM_WORKSPACE="$workspace" BLOK_ROOM_TARGET="$target" docker compose "${args[@]}" "$@"
 }
 
 # A forced kill is not a completed drain. Keep the current selection on disk if
@@ -63,27 +69,34 @@ action="${1:-start}"
 setup_mode=0
 [[ "${1:-}" == "--setup" ]] && { setup_mode=1; shift; }
 case "$action" in
-  start|stop|room-enable|room-disable)
+  start|stop|room-enable|room-enable-workspace|room-disable)
     if ! mkdir "$env_file.room-lock"; then echo "Another demo transition holds $env_file.room-lock" >&2; exit 1; fi
     trap 'rmdir "$env_file.room-lock"' EXIT
     ;;
 esac
 read_selection
 case "$action" in
-  room-enable)
-    page="${1:-}"
-    valid_page "$page" || { echo 'Supply an existing page ID (letters, digits, hyphens or underscores).' >&2; exit 1; }
-    if [[ -n "$selected" && "$selected" != "$page" ]]; then echo "Disable the current Node room first." >&2; exit 1; fi
-    if [[ "$selected" == "$page" ]]; then compose up -d --wait --wait-timeout 180; exit 0; fi
-    active=$(compose exec -T postgres psql -U blok -d blok -Atqc "SELECT 1 FROM pages WHERE id='$page' AND NOT deleted AND NOT trashed")
-    [[ "$active" == 1 ]] || { echo "That page is missing or in the trash." >&2; exit 1; }
-    selected="$page"
-    compose build app node room
+  room-enable|room-enable-workspace)
+    name="${1:-}"
+    valid_page "$name" || { echo 'Supply a valid page ID or workspace slug/ID.' >&2; exit 1; }
+    if [[ "$action" == room-enable-workspace ]]; then
+      ws=$(compose exec -T postgres psql -v ON_ERROR_STOP=1 -U blok -d blok -Atqc "SELECT id FROM workspaces WHERE slug='$name' OR id='$name' ORDER BY (slug='$name') DESC LIMIT 1")
+      valid_page "$ws" || { echo 'Workspace not found or unsupported canonical ID.' >&2; exit 1; }
+      candidate="workspace:$ws"
+    else
+      active=$(compose exec -T postgres psql -v ON_ERROR_STOP=1 -U blok -d blok -Atqc "SELECT 1 FROM pages WHERE id='$name' AND NOT deleted AND NOT trashed")
+      [[ "$active" == 1 ]] || { echo "That page is missing or in the trash." >&2; exit 1; }
+      candidate="$name"
+    fi
+    if [[ -n "$selected" && "$selected" != "$candidate" ]]; then echo "Disable the current Node room selection first." >&2; exit 1; fi
+    if [[ "$selected" == "$candidate" ]]; then compose up -d --wait --wait-timeout 180; exit 0; fi
+    selected="$candidate"
+    compose build app node web room
     drain app
-    printf '%s\n' "$page" > "$selection_file.tmp"
+    printf '%s\n' "$selected" > "$selection_file.tmp"
     mv "$selection_file.tmp" "$selection_file"
     compose up -d --wait --wait-timeout 180
-    echo "Node serves page $page."
+    echo "Node serves $selected."
     ;;
   room-disable)
     [[ -n "$selected" ]] || { echo 'Go already serves every page.'; exit 0; }
@@ -93,14 +106,22 @@ case "$action" in
     # The stopped process can no longer hold a flock. Also test the actual
     # Go journal lock before enabling its owner; a second holder must fail closed.
     compose run --rm --no-deps --entrypoint python3 room -c '
-import fcntl, hashlib, os, sys
-root="/data/collab/"+hashlib.sha256(sys.argv[1].encode()).hexdigest()+".journal"
-try:
-    lock=open(os.path.join(root,"lock"),"rb")
-except FileNotFoundError:
-    sys.exit(0)  # A room that never booted may not have created this journal.
-with lock:
-    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+import fcntl, hashlib, os, pathlib, sys
+root=pathlib.Path("/data/collab")
+selection=sys.argv[1]
+if selection.startswith("workspace:"):
+    # Both hosts are stopped. Include new, trashed and orphaned journals.
+    # Handoff must not depend on the workspace index at activation time.
+    locks=root.glob("*.journal/lock")
+else:
+    locks=[root/(hashlib.sha256(selection.encode()).hexdigest()+".journal")/"lock"]
+for path in locks:
+    try:
+        handle=path.open("rb")
+    except FileNotFoundError:
+        continue  # A never-opened page may have no journal yet.
+    with handle:
+        fcntl.flock(handle,fcntl.LOCK_EX | fcntl.LOCK_NB)
 ' "$selected"
     rm "$selection_file"
     selected=''
@@ -134,5 +155,5 @@ with lock:
   status) compose ps ;;
   logs) compose logs --tail 100 "$@" ;;
   compose) compose "$@" ;;
-  *) echo 'Usage: demo.sh [start|stop|status|seed|room-enable PAGE|room-disable|logs|compose ...]' >&2; exit 1 ;;
+  *) echo 'Usage: demo.sh [start|stop|status|seed|room-enable PAGE|room-enable-workspace SLUG|room-disable|logs|compose ...]' >&2; exit 1 ;;
 esac
