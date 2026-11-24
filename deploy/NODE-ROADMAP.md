@@ -10,10 +10,10 @@ Le shell web et Tauri partagent le code TypeScript de l’éditeur, des pages et
 | Service produit Node (#46) | Connexion par code, invitations, sessions, lecture des espaces, lecture et écriture de l’index, partage des pages, enregistrement des documents dans PostgreSQL | Même visibilité que Go pour un membre, un lecteur et une page privée. Révision et contenu lus ensemble. Rejeu identique accepté, écriture périmée refusée |
 | Équipes et rôles | Annuaire, gestion des équipes, membres du workspace et changement de rôle en Node. Le shell web et Tauri donnent accès aux équipes depuis la barre latérale d’un espace distant | Une adhésion à une équipe conserve les droits individuels sur les pages. Le retrait d’un workspace nettoie ses partages et ses adhésions aux équipes |
 | Reste de l’API produit (#46) | Administration d’instance, fichiers et intégrations | Porter un domaine à la fois sur le schéma canonique. Vérifier les réponses attendues par le shell et une révocation de permission avant de changer le routage Docker |
-| Serveur de collaboration Node (#45) | Lecture et rejeu du journal, écritures durables et room WebSocket sur copie dédiée (#62, #66, #71). La démo principale utilise toujours Go pour la collaboration | Vérifier deux clients, une coupure, puis un redémarrage du serveur avec les mêmes volumes. Comparer contenu, versions et droits avant de remplacer le processus Go |
+| Serveur de collaboration Node (#45) | Sur une page choisie, le shell utilise la room Node pour le journal, les WebSockets et la projection conditionnelle en base. Go émet les tickets et vérifie les droits. | Deux comptes doivent retrouver leurs changements après une coupure et un redémarrage, puis perdre l’accès dès la révocation. Pour étendre la bascule, traiter les journaux historiques, la présence et la reprise multi-page. |
 | Distribution | Docker local, shell Tauri et instance distante | Même parcours d’édition sur localhost et sur une instance de recette HTTPS, avec identités isolées. Vérifier sauvegarde et restauration avant la bascule d’une instance existante |
 
-Le chemin quotidien est `npm test`. Le test navigateur de la démo s’exécute à la demande avec `node desktop/src/cloud/demo-sync-smoke.mjs`. Les changements de protocole se vérifient aussi avec la suite de conformité correspondante. Le mode historique de la #46 a son propre schéma expérimental : le service du shell démarre via `dist/shell/main.js` sur le schéma canonique.
+Le chemin quotidien est `npm test`. La recette de la page confiée à Node se lance à la demande avec `./deploy/test-node-room-browser.sh`. Le parcours Docker avec la room Go reste disponible via `node desktop/src/cloud/demo-sync-smoke.mjs`. Les changements de protocole se vérifient aussi avec la suite de conformité correspondante. Le mode historique de la #46 a son propre schéma expérimental : le service du shell démarre via `dist/shell/main.js` sur le schéma canonique.
 
 ## IA et agents
 
@@ -24,6 +24,12 @@ Le chemin quotidien est `npm test`. Le test navigateur de la démo s’exécute 
 | Agents externes via MCP | Node gère les jetons personnels (création, liste, rotation et révocation). Go sert `/mcp`. Le test croisé utilise un vrai serveur Go et PostgreSQL pour vérifier le refus d’écriture du lecteur et l’invalidation immédiate des anciens jetons. | Vérifier la parité du serveur TypeScript avec les jetons, les outils du workspace et les accès par page du service hébergé. Tester une révocation pendant une session avant de basculer le proxy. |
 
 Pour le shell, deux parcours d’AppFlowy donnent des références distinctes. La recherche IA retourne des réponses avec des liens vers les sources du workspace. Les plugins MCP permettent à un assistant externe de travailler sur des documents. Dans Blok, la recherche filtre les pages selon les droits avant de transmettre des extraits au modèle. [Recherche IA AppFlowy](https://github.com/AppFlowy-IO/AppFlowy/blob/main/CHANGELOG.md) · [Plugins MCP AppFlowy](https://github.com/AppFlowy-IO/appflowy-ai-plugins)
+
+## Règles du serveur de collaboration
+
+Chez Docmost, un changement de droit déclenche une vérification des connexions déjà ouvertes sur la page. Dans la démo Blok, la mutation de partage prévient le processus propriétaire de la page et attend la revérification. Une socket inactive perd aussi son accès. Une panne du rappel renvoie une erreur après enregistrement des nouveaux droits. [Vérification des connexions dans Docmost](https://github.com/docmost/docmost/blob/c956adaa3272a9fe5899d185a16331ec9bcd65f6/apps/server/src/collaboration/extensions/authentication.extension.ts)
+
+Dans AFFiNE, la passerelle distingue notamment le droit de mettre à jour un document de la simple participation à son espace. Ce cas guide le test Blok du lecteur qui peut ouvrir une page et reçoit un refus lorsqu’il tente d’y écrire. [Passerelle de synchronisation AFFiNE](https://github.com/toeverything/AFFiNE/blob/81da59d63d535d72ba677a097d9a0cc9a5871ade/packages/backend/server/src/core/sync/gateway.ts)
 
 ## Maintenir le fork
 

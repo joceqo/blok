@@ -41,7 +41,8 @@ Le démarrage ci-dessus construit le shell, le service Node et le service de com
 | --- | --- |
 | Lire la session, les espaces, l’arborescence et le contenu enregistré d’une page | Node |
 | Écrire et relire en base le document issu du journal | Node, sur la boucle locale partagée avec Go |
-| Recevoir des changements en direct, les rejouer après reconnexion, émettre les tickets | Go |
+| Recevoir des changements en direct et les rejouer après reconnexion | Node pour la page activée, Go pour les autres |
+| Émettre les tickets de connexion et vérifier les droits de la room | Go |
 | Connexion par code, déconnexion, invitations, équipes, rattachement des pages, rôles, partages et arborescence | Node |
 | Recherche de pages pour l’assistant | Node, sur le titre et le texte enregistré des pages accessibles |
 | Livraison du courrier, appels au fournisseur IA distant, administration d’instance et fichiers | Go |
