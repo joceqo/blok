@@ -22,8 +22,14 @@ describe('shell API admission', () => {
   it('separates native and foreign origins', async () => {
     const res = await app.request('/api/session', { method: 'OPTIONS', headers: { Origin: 'tauri://localhost' } });
     expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-methods')?.split(', ')).toEqual(expect.arrayContaining(['PUT', 'DELETE']));
     expect(res.headers.get('access-control-allow-origin')).toBe('tauri://localhost');
     expect((await app.request('/api/session', { headers: { Origin: 'https://other.test' } })).status).toBe(403);
+  });
+
+  it('rejects a cross-site write with no Origin before routing', async () => {
+    const res = await app.request('/api/workspaces/demo/index', { method: 'PUT', headers: { 'Sec-Fetch-Site': 'cross-site' } });
+    expect(res.status).toBe(403);
   });
 
   it('refuses malformed/oversized documents and inconsistent journal headers', async () => {
