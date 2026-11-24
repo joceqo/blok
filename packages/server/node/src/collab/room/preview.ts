@@ -4,6 +4,7 @@ import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { applyUpdate, Doc, encodeStateAsUpdate, encodeStateVector } from 'yjs';
 import { decode, encode } from '../../../../../../src/components/modules/collaboration/sync-wire.ts';
 import type { SyncWireFrame } from '../../../../../../src/components/modules/collaboration/types.ts';
+import { preparePageStorage, type PageStorage } from './page-storage.ts';
 import { verifyTicket } from '../../auth/ticket.ts';
 import { acquireJournalWriter, MAX_APPEND_BYTES } from '../journal/append.ts';
 
@@ -17,6 +18,8 @@ export interface RoomOptions {
   directory: string;
   documentId: string;
   port?: number;
+  listenHost?: '127.0.0.1' | '0.0.0.0';
+  projection?: { origin: string; secret: string };
   allowedOrigins: ReadonlySet<string>;
   /** Verify ticket expiry, document scope and current read/write permissions. */
   authorize(ticket: string, documentId: string): Promise<RoomIdentity | null>;
@@ -41,16 +44,16 @@ function send(peer: Peer, frame: SyncWireFrame) {
   peer.ws.send(encode(frame));
 }
 
-function classifyUpdate(doc: Doc, update: Uint8Array): 'changed' | 'unchanged' | 'invalid' {
+function classifyUpdate(doc: Doc, update: Uint8Array, project?: PageStorage['validate']) {
   const probe = new Doc();
   try {
     applyUpdate(probe, encodeStateAsUpdate(doc));
     let changed = false;
     probe.on('update', () => { changed = true; });
     applyUpdate(probe, update);
-    if (probe.store.pendingStructs !== null || probe.store.pendingDs !== null) return 'invalid';
-    return changed ? 'changed' : 'unchanged';
-  } catch { return 'invalid'; }
+    if (probe.store.pendingStructs !== null || probe.store.pendingDs !== null) return { kind:'invalid' } as const;
+    return {kind:changed ? 'changed' : 'unchanged', data:project?.(probe)} as const;
+  } catch { return {kind:'invalid'} as const; }
   finally { probe.destroy(); }
 }
 
@@ -58,11 +61,16 @@ function classifyUpdate(doc: Doc, update: Uint8Array): 'changed' | 'unchanged' |
 export async function startJournalRoom(options: RoomOptions) {
   const { documentId, allowedOrigins, authorize } = options;
   if (!documentId || !allowedOrigins.size) throw new Error('A document ID and allowed origins are required');
-  const writer = await acquireJournalWriter(options.directory);
+  const storage = options.projection && await preparePageStorage(options.directory, documentId, options.projection.origin, options.projection.secret);
+  const writer = await acquireJournalWriter(storage?.directory ?? options.directory);
   const doc = new Doc();
   const operations = new Map<string, { digest:Buffer; sequence:bigint }>();
   const peers = new Set<Peer>();
-  const http = createServer((_req, res) => { res.writeHead(404).end(); });
+  const http = createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/healthz' && !stopping) {
+      res.writeHead(200, {'Content-Type':'application/json'}).end(JSON.stringify({backend:'node',documentId}));
+    } else res.writeHead(404).end();
+  });
   const wss = new WebSocketServer({ noServer:true, perMessageDeflate:false, maxPayload:MAX_APPEND_BYTES+4096,
     handleProtocols: offered => offered.has('blok-sync.v2') ? 'blok-sync.v2' : false });
   let queue = Promise.resolve();
@@ -104,6 +112,7 @@ export async function startJournalRoom(options: RoomOptions) {
         doc.store.pendingStructs !== null || doc.store.pendingDs !== null) throw new Error('Room needs an intact seeded format-2 journal');
     const tag = { format:manifest.format, epoch:Number(manifest.epoch), lineage:manifest.lineage };
     let head = journal.durableThrough;
+    await storage?.attach(doc,tag.lineage,head);
 
     async function operation(peer: Peer, identity: RoomIdentity, op: Operation) {
       const { lineage, operationId, update } = op;
@@ -116,14 +125,15 @@ export async function startJournalRoom(options: RoomOptions) {
       const digest = createHash('sha256').update(update).digest();
       const previous = operations.get(operationId);
       if (previous) return digest.equals(previous.digest) ? ack(previous.sequence) : reject('operation-id-conflict');
-      const kind = classifyUpdate(doc,update);
-      if (kind === 'invalid') return reject('invalid-update');
-      if (kind === 'unchanged' && head > 0n) return ack(head);
+      const candidate = classifyUpdate(doc,update,storage?.validate);
+      if (candidate.kind === 'invalid') return reject('invalid-update');
+      if (candidate.kind === 'unchanged' && head > 0n) return ack(head);
       try {
         const receipt = await writer.append({ expectedLineage:lineage, expectedThrough:head, operationId,
           update, actorId:identity.id, source:0 });
         if (receipt.outcome !== 'committed') throw new Error('Held journal changed');
         head = receipt.sequence;
+        if (storage && candidate.data) await storage.publish(head,candidate.data);
         applyUpdate(doc,update);
         operations.set(operationId,{digest,sequence:head});
         await Promise.all([...peers].map(async member => {
@@ -201,7 +211,7 @@ export async function startJournalRoom(options: RoomOptions) {
     });
     await new Promise<void>((ok,fail) => {
       http.once('error',fail);
-      http.listen(options.port ?? 0,'127.0.0.1',() => { http.off('error',fail); ok(); });
+      http.listen(options.port ?? 0,options.listenHost ?? '127.0.0.1',() => { http.off('error',fail); ok(); });
     });
     timer = setInterval(async () => {
       if (sweeping || stopping) return;
