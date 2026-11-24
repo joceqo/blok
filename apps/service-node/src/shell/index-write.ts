@@ -67,15 +67,18 @@ export function registerIndexWrite(app: Hono, pool: PgPool, recheckAccess?: (wor
     if (!recheckAccess) return c.json({ error: 'Collaboration access recheck unavailable' }, 503);
     let body: unknown;
     try { body = await c.req.json(); } catch { return c.json({ error: 'Invalid JSON' }, 400); }
+    let written;
     try {
-      const written = await saveIndex(pool, key, c.req.param('slug'), body);
-      // The journal host checks existing connections against the committed tree.
-      // Never acknowledge this revision before the host answers.
-      await recheckAccess(written.workspaceId);
-      return c.json({ revision: written.revision });
+      written = await saveIndex(pool, key, c.req.param('slug'), body);
     } catch (error) {
       if (error instanceof IndexError) return c.json({ error: error.message }, error.status);
       throw error;
     }
+    try {
+      await recheckAccess(written.workspaceId);
+    } catch {
+      return c.json({ error: 'Index saved, live access refresh failed', revision: written.revision }, 503);
+    }
+    return c.json({ revision: written.revision });
   });
 }
