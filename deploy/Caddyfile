@@ -5,10 +5,24 @@
   }
   @shellReads {
     method GET HEAD
-    path_regexp shellReads ^/api/(session|workspaces|workspaces/[^/]+/(index|pages/[^/]+))$
+    path_regexp shellReads ^/api/(session|workspaces|workspaces/[^/]+/(index|pages/[^/]+(/access)?))$
   }
   handle @shellReads {
     reverse_proxy {$BLOK_SHELL_READ_UPSTREAM:app:8080}
+  }
+  @shellPut {
+    method PUT
+    path_regexp shellPut ^/api/workspaces/[^/]+/(index|pages/[^/]+/(access|shares/[^/]+))$
+  }
+  @shellDelete {
+    method DELETE
+    path_regexp shellDelete ^/api/workspaces/[^/]+/pages/[^/]+/shares/[^/]+$
+  }
+  handle @shellPut {
+    reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
+  }
+  handle @shellDelete {
+    reverse_proxy {$BLOK_SHELL_WRITE_UPSTREAM:app:8080}
   }
   @api path /api/* /files/* /healthz /mcp
   handle @api {

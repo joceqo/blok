@@ -12,6 +12,8 @@ The desktop shell uses the PostgreSQL schema in `apps/service/schema.sql`, initi
 | `GET /api/workspaces/:slug/index` | Read the page tree, trash, access levels and workspace revision from one database snapshot. |
 | `PUT /api/workspaces/:slug/index` | Create, rename, reorder, move, trash or remove pages in one transaction, conditional on the last observed workspace revision. |
 | `GET /api/workspaces/:slug/pages/:id` | Read the persisted page document with inherited visibility and grants. |
+| `GET/PUT /api/workspaces/:slug/pages/:id/access` | Read effective permissions or change page visibility. |
+| `PUT/DELETE /api/workspaces/:slug/pages/:id/shares/:target` | Grant, update or revoke a direct share for a workspace member. |
 | `GET/PUT /internal/documents/:id` | Load or persist a collaboration projection using the service credential and document revision. |
 | `GET /healthz` | Check PostgreSQL connectivity. |
 
@@ -19,9 +21,9 @@ Run `npm ci && npm run build && npm run start:shell` from this directory. Set `D
 
 The shell sends `{ revision, pages, trash }` when saving its sidebar and receives `{ revision }` after a successful write. An outdated revision returns 409. Invisible pages and read-only metadata survive a partial index. Private creation gives the author full access in the same transaction. An existing tombstone reserves its page ID.
 
-After committing, Node asks the journal host at `127.0.0.1:8080` to recheck open collaboration connections. Enable index-write routing only with the product version that serves the authenticated `/internal/workspaces/:id/recheck-access` callback. A callback failure returns 503 after the transaction has committed; reload the index to recover its current revision.
+After committing, Node asks the journal host at `127.0.0.1:8080` to recheck open collaboration connections. Enable index and page sharing writes only with the product version that serves the authenticated `/internal/workspaces/:id/recheck-access` callback. A callback failure returns 503 after the transaction has committed; reload the index to recover its current revision.
 
-The Go service continues to own login, workspace administration, ACL changes, tickets, WebSockets and the operation journal. Live state can lead the PostgreSQL projection until a checkpoint, room eviction or shutdown flushes the journal. Keep the internal callback private. The standalone development API documented below uses its own schema and database.
+The Go service continues to own login, workspace administration, tickets, WebSockets and the operation journal. Live state can lead the PostgreSQL projection until a checkpoint, room eviction or shutdown flushes the journal. Keep the internal callback private. The standalone development API documented below uses its own schema and database.
 
 Run the focused shell tests with `npm test -- src/shell`. Set `SHELL_TEST_DATABASE_URL` to include the PostgreSQL checks. They create and remove a unique schema in that database.
 

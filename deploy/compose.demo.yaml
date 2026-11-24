@@ -94,6 +94,7 @@ services:
     environment:
       DOMAIN: ':80'
       BLOK_SHELL_READ_UPSTREAM: node:8081
+      BLOK_SHELL_WRITE_UPSTREAM: node:8081
     networks:
       default:
         ipv4_address: ${DEMO_NETWORK_PREFIX:-172.30.88}.3
