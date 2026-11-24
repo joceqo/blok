@@ -5,7 +5,7 @@ export function createAccessRecheck(secret: string) {
 }
 
 export async function recheckLiveSessions(secret: string) {
-  const response = await fetch(new URL('http://127.0.0.1:18102/internal/room/recheck-access'), {
+  const response = await fetch(new URL('/internal/room/recheck-access', process.env.BLOK_ROOM_STATE_ORIGIN ?? 'http://127.0.0.1:18102'), {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + secret },
     redirect: 'error',

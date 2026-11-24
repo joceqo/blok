@@ -32,12 +32,15 @@ except OSError as error:
         sys.exit(75)
     raise`;
 
-// POSIX flock belongs to the shared open file description. Python takes the
+// POSIX flock belongs to the shared open file description. The helper takes the
 // lock through inherited fd 3 and exits; Node owns it until handle.close().
 async function lockDocument(handle: FileHandle): Promise<void> {
   await new Promise<void>((ok, fail) => {
-    const child = spawn('python3', ['-I', '-S', '-c', flock], { stdio: ['ignore', 'ignore', 'ignore', handle.fd] });
-    child.once('error', cause => fail(new Error('Cannot acquire the journal flock (python3 required)', { cause })));
+    const helper = process.env.BLOK_FLOCK_HELPER;
+    const child = spawn(helper || 'python3', helper ? [] : ['-I', '-S', '-c', flock], {
+      stdio: ['ignore', 'ignore', 'ignore', handle.fd],
+    });
+    child.once('error', cause => fail(new Error('Cannot start the journal lock helper', { cause })));
     child.once('close', (code) => {
       if (code === 0) ok();
       else if (code === 75) fail(Object.assign(new Error('Journal held by another writer'), {code:'JOURNAL_BUSY'}));

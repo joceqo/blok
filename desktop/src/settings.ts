@@ -3,6 +3,7 @@ import { createChoice, styleTextField, wrapSearchField } from './ui/controls';
 import { openModalDialog, type ModalDialogHandle } from '@blok/modal-dialog';
 import { PopoverDesktop } from '@blok/popover';
 import { CloudClient } from './cloud/client';
+import { embeddedServerAvailable } from './native-runtime';
 import { nativeSessionAdapter } from './native-session';
 import { createNotificationTrigger } from './cloud/notification-trigger';
 import { mountWorkspaceMembers, openWorkspaceInvitation } from './cloud/workspace-settings';
@@ -319,7 +320,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     popup.show();
   };
   help.addEventListener('click', () => { openHelp(); });
-  const emitCloud = (section: 'settings' | 'invites' | 'account' | 'local-server'): void => {
+  const emitCloud = (section: 'settings' | 'invites' | 'account' | 'local-server' | 'embedded-server'): void => {
     closeMenu();
     footer.dispatchEvent(new CustomEvent('blok:desktop-connect-cloud', {bubbles: true, detail: {section}}));
   };
@@ -579,14 +580,17 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
       const manage = actionButton('data-desktop-settings-copy', client ? 'Gérer les comptes' : 'Se connecter', 'profile');
       manage.addEventListener('click', () => { closeSettings(); emitCloud('account'); });
       accounts.append(labels, manage); content.append(accounts);
-      if (native && (currentWorkspace.kind === 'local' || currentWorkspace.server !== LOCAL_SERVER_ORIGIN)) {
+      if (native && (currentWorkspace.kind === 'local' || !currentWorkspace.embedded)) {
         const server = el('section', 'data-desktop-connections-accounts');
         const info = el('div', 'data-desktop-settings-row-labels');
-        info.append(el('strong', 'data-desktop-settings-row-title', 'Serveur sur cet ordinateur'),
-          el('span', 'data-desktop-settings-row-help', LOCAL_SERVER_ORIGIN + ' · Docker'));
-        const open = actionButton('data-desktop-settings-copy', 'Ouvrir le serveur local', 'connections');
-        open.addEventListener('click', () => { closeSettings(); emitCloud('local-server'); });
-        server.append(info, open); content.append(server);
+        void embeddedServerAvailable().then(available => {
+          if (!content.isConnected || (!available && currentWorkspace.kind === 'remote' && currentWorkspace.server === LOCAL_SERVER_ORIGIN)) return;
+          info.append(el('strong', 'data-desktop-settings-row-title', 'Serveur sur cet ordinateur'),
+            el('span', 'data-desktop-settings-row-help', available ? 'Serveur intégré à Blok' : LOCAL_SERVER_ORIGIN + ' · Docker'));
+          const open = actionButton('data-desktop-settings-copy', available ? 'Ouvrir le serveur intégré' : 'Ouvrir le serveur local', 'connections');
+          open.addEventListener('click', () => { closeSettings(); emitCloud(available ? 'embedded-server' : 'local-server'); });
+          server.append(info, open); content.append(server);
+        });
       }
       main.append(content);
       if (client) mountMcpSettings(content, client, {embedded: true});

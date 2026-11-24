@@ -1,6 +1,6 @@
 /** Non-secret workspace references. Session credentials live in the OS keychain. */
 export type LocalWorkspace = { kind: 'local'; id: string; name: string };
-export type RemoteWorkspace = { kind: 'remote'; id: string; name: string; server: string; accountId: string; workspaceId: string; userName?: string; role?: 'admin' | 'member' | 'viewer' };
+export type RemoteWorkspace = { kind: 'remote'; embedded?: boolean; id: string; name: string; server: string; accountId: string; workspaceId: string; userName?: string; role?: 'admin' | 'member' | 'viewer' };
 export type WorkspaceRef = LocalWorkspace | RemoteWorkspace;
 const KEY = 'blok:desktop:workspaces:v1';
 const ACTIVE = 'blok:desktop:active-workspace:v1';
@@ -27,6 +27,7 @@ export function listWorkspaces(): WorkspaceRef[] {
     return [initialWorkspace, ...refs.filter((item) => workspaceKey(item) !== workspaceKey(initialWorkspace))];
   } catch { return [initialWorkspace]; }
 }
+export function hasSelectedWorkspace(): boolean { return localStorage.getItem(ACTIVE) !== null; }
 export function activeWorkspace(): WorkspaceRef {
   return listWorkspaces().find((item) => workspaceKey(item) === localStorage.getItem(ACTIVE)) ?? initialWorkspace;
 }
@@ -49,6 +50,7 @@ export function selectWorkspace(ref: WorkspaceRef): void {
   url.searchParams.delete('manage');
   url.searchParams.delete('section');
   url.searchParams.delete('server');
+  url.searchParams.delete('embedded');
   if (ref.kind === 'local') url.searchParams.set('local', '1');
   else url.searchParams.delete('local');
   location.assign(url.href);

@@ -8,7 +8,7 @@ import { loadIndexPages, pageStandings } from './workspace-index.ts';
 
 export function roomPurger(secret: string) {
   return async (pageId: string) => {
-    const url = new URL('http://127.0.0.1:18102/internal/room/purge');
+    const url = new URL('/internal/room/purge', process.env.BLOK_ROOM_STATE_ORIGIN ?? 'http://127.0.0.1:18102');
     url.searchParams.set('documentId', pageId);
     const response = await fetch(url, {
       method: 'POST',

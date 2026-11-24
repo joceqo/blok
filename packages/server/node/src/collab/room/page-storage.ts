@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { createScanner, SyntaxKind } from 'jsonc-parser';
 import { applyUpdate, Doc } from 'yjs';
 import { inspectJournal } from '../journal/inspect.ts';
-import { envelope, exportPage, seedUpdate, type Snapshot } from './page-document.ts';
+import { envelope, exportPage, matchesProjection, seedUpdate, type Snapshot } from './page-document.ts';
 import { publishFile } from './reset.ts';
 import { readWorkingSet } from './legacy-working-set.ts';
 import { existingDirectory, initializePage, newBaseline, pageDirectory, syncDirectory } from './page-seed.ts';
@@ -160,7 +160,7 @@ export async function preparePageStorage(root: string, pageId: string, origin: s
   }
   function match(remote: Remote, data: Snapshot, seq: bigint) {
     return (
-      remote.lineage === lineage && remote.sequence === String(seq) && isDeepStrictEqual(remote.data, data)
+      remote.lineage === lineage && remote.sequence === String(seq) && matchesProjection(data, remote.data)
     );
   }
   async function publish(seq: bigint, data: Snapshot, reset=false) {
@@ -259,7 +259,7 @@ export async function preparePageStorage(root: string, pageId: string, origin: s
             info.integrity !== 'ok' ||
             !info.manifest ||
             info.manifest.checkpointThrough > target ||
-            !isDeepStrictEqual(exportPage(prefix, envelope(remote.data)), remote.data ?? { blocks: [] })
+            !matchesProjection(exportPage(prefix, envelope(remote.data)), remote.data ?? { blocks: [] })
           )
             throw new Error('Unverified pre-existing journal projection');
         } finally {

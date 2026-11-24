@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:embedded": "node scripts/prepare-bundled-runtime.mjs && tauri build --config src-tauri/tauri.embedded.conf.json",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run"

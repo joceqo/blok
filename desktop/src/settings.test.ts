@@ -57,7 +57,7 @@ describe('desktop sidebar footer', () => {
     expect(dialog.parentElement?.hasAttribute('hidden')).toBe(true);
   });
 
-  it('opens the Docker server through native connections without changing the standalone workspace', () => {
+  it('opens the Docker server through native connections without changing the standalone workspace', async () => {
     Reflect.set(window, '__TAURI_INTERNALS__', {invoke: vi.fn().mockResolvedValue('/tmp/workspace')});
     const footer = createDesktopFooter(vi.fn());
     document.body.append(footer);
@@ -66,6 +66,7 @@ describe('desktop sidebar footer', () => {
     must(footer.querySelector<HTMLButtonElement>('[data-desktop-switcher]')).click();
     must([...footer.querySelectorAll<HTMLButtonElement>('[role=menuitem]')].find(el => el.textContent === 'Paramètres')).click();
     must([...document.querySelectorAll<HTMLButtonElement>('[data-desktop-settings-nav-item]')].find(el => el.textContent === 'Connexions')).click();
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Ouvrir le serveur local'));
     must([...document.querySelectorAll<HTMLButtonElement>('button')].find(el => el.textContent === 'Ouvrir le serveur local')).click();
     expect(change).toHaveBeenCalledWith(expect.objectContaining({detail:{section:'local-server'}}));
   });

@@ -18,7 +18,7 @@ await bootstrapShell(pool);
 await loadAiKey(pool, process.env.DATA_DIRECTORY ?? './data', process.env.AI_ENCRYPTION_KEY);
 const app = createShellApp(pool, process.env.INTERNAL_SECRET ?? '', origins);
 const stopPurgeRetries = startPurgeRetries(pool, roomPurger(process.env.INTERNAL_SECRET!));
-const server = serve({ fetch: app.fetch, port }, () => console.info(`Shell backend listening on port ${port}`));
+const server = serve({ fetch: app.fetch, port, hostname: process.env.BLOK_LISTEN_HOST }, () => console.info(`Shell backend listening on port ${port}`));
 
 function shutdown() {
   server.close(() => { void stopPurgeRetries().then(() => pool.end()); });

@@ -6,7 +6,22 @@ controls occupy the sidebar width, followed by navigation, tabs, and an adjacent
 new-tab button. The macOS window uses an overlay title bar with traffic lights at
 16, 21 and starts at 1440×900.
 
-## Local data
+## Standalone app with the embedded Node server
+
+The Apple Silicon build runs on macOS 15 or newer. Open Blok and create a workspace with your name, email and password. The app starts its own Node backend, PostgreSQL and SeaweedFS on loopback. It works offline, including the editor and attachments. External AI providers require an internet connection.
+
+Quitting Blok stops its services. Accounts, documents and attachments persist in `~/Library/Application Support/dev.notiooon.blok/embedded-server`. An existing disk workspace keeps opening as before. Use **Paramètres → Connexions → Ouvrir le serveur intégré** to set up the server alongside it.
+
+To build on an Apple Silicon Mac with the Tauri prerequisites and repository dependencies installed, run the following from the repository root. The first build downloads the pinned runtime binaries. End users only need the packaged app.
+
+```sh
+npm ci --prefix apps/service-node
+npm ci --prefix packages/server/node
+npm ci --prefix desktop
+npm run build:embedded --prefix desktop
+```
+
+## Local data in disk workspaces
 
 On this Mac, pages are saved under:
 
@@ -29,7 +44,7 @@ project's NASA/Webb cover assets.
 
 The Blok button opens the shared assistant panel with conversation history, page context and a provider/model picker. In **Paramètres → Assistant IA**, configure OpenAI with a personal key or (as workspace administrator) a shared key. Personal credentials take priority and never silently fall back after an API error. Keys are masked and never stored in browser localStorage. The selected model and key source appear in the assistant.
 
-For remote workspaces, requests use the authenticated Go service and encrypted credentials in PostgreSQL. Local native workspaces use a separate credential in the operating system keychain and the Rust HTTPS client. Codex and Claude Code remain available in the native app via their existing CLI authentication. The browser cannot inspect or execute tools installed on the Mac.
+For remote workspaces, requests use the authenticated workspace service and encrypted credentials in PostgreSQL. Local native workspaces use a separate credential in the operating system keychain and the Rust HTTPS client. Codex and Claude Code remain available in the native app via their existing CLI authentication. The browser cannot inspect or execute tools installed on the Mac.
 
 ## Sharing
 
@@ -78,7 +93,7 @@ The script reads `DEMO_WEB_PORT` and `DEMO_MAIL_PORT` (defaults `8088` and `8089
 
 ## Native shell with a local or remote server
 
-Tauri bundles the same TypeScript shell and editor used by the browser. It opens the local workspace on first launch. In the connection screen, choose **Se connecter à un autre serveur** and enter the Docker demo URL or an HTTPS server. The native adapter stores remote sessions in the OS keychain.
+Tauri bundles the same TypeScript shell and editor used by the browser. On a fresh installation, the standalone package opens the embedded server setup. The smaller package opens a disk workspace. In the connection screen, choose **Se connecter à un autre serveur** and enter the Docker demo URL or an HTTPS server. The native adapter stores remote sessions in the OS keychain.
 
 To preselect a server when building the native app, set `VITE_BLOK_SERVER_URL` for the build. An explicitly chosen server or an already active remote workspace takes precedence.
 

@@ -3,7 +3,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { blokTicket } from '../tickets/hmac.ts';
 
-export const mediaOrigin = 'http://127.0.0.1:18103';
+export const mediaOrigin = process.env.BLOK_MEDIA_ORIGIN ?? 'http://127.0.0.1:18103';
 const generatedKey = /^[0-9a-f]{32}(?:\.[a-z0-9]{1,15})?$/;
 export const uploadDirectory = () => join(process.env.DATA_DIRECTORY ?? './data', 'uploads');
 

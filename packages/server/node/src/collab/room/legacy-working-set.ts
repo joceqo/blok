@@ -1,8 +1,7 @@
 import { constants, type BigIntStats } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
-import { isDeepStrictEqual } from 'node:util';
 import { applyUpdate, Doc } from 'yjs';
-import { envelope, exportPage, type Snapshot } from './page-document.ts';
+import { envelope, exportPage, matchesProjection, type Snapshot } from './page-document.ts';
 
 type Remote = { data: Snapshot; lineage: string | null; sequence: string | null };
 export interface Baseline {
@@ -73,7 +72,7 @@ export async function readWorkingSet(path: string, remote?: Remote) {
     }
     if (doc.store.pendingStructs !== null || doc.store.pendingDs !== null)
       throw new Error('Incomplete Yjs state in Go working set');
-    if (remote && !isDeepStrictEqual(exportPage(doc, envelope(remote.data)), remote.data ?? { blocks: [] }))
+    if (remote && !matchesProjection(exportPage(doc, envelope(remote.data)), remote.data ?? { blocks: [] }))
       throw new Error('Go working set and canonical projection have different content');
   } finally {
     doc.destroy();
