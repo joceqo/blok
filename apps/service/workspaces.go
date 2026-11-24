@@ -481,14 +481,18 @@ func (s *Service) invites(w http.ResponseWriter, r *http.Request, u identity, ws
 		problem(w, 500, "Invitation failed")
 		return
 	}
-	invitationText := "Vous êtes invité à rejoindre " + ws.Name + ".\nConnectez-vous avec cette adresse email sur " + s.Config.PublicURL + " pour accepter cette invitation.\nCette invitation expire dans 7 jours."
-	if in.Message != "" {
-		invitationText += "\n\nMessage de l’administrateur :\n" + in.Message
-	}
-	if e = s.send(email, "Invitation Blok — "+ws.Name, invitationText); e != nil {
+	if e = s.sendWorkspaceInvitation(email, ws.Name, in.Message); e != nil {
 		s.DB.Exec(r.Context(), "UPDATE invites SET status='delivery-failed' WHERE id=$1", inviteID)
 		problem(w, 503, "Invitation email delivery failed")
 		return
 	}
 	jsonOut(w, 201, map[string]bool{"ok": true})
+}
+
+func (s *Service) sendWorkspaceInvitation(email, workspaceName, message string) error {
+	invitationText := "Vous êtes invité à rejoindre " + workspaceName + ".\nConnectez-vous avec cette adresse email sur " + s.Config.PublicURL + " pour accepter cette invitation.\nCette invitation expire dans 7 jours."
+	if message != "" {
+		invitationText += "\n\nMessage de l’administrateur :\n" + message
+	}
+	return s.send(email, "Invitation Blok — "+workspaceName, invitationText)
 }
