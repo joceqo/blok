@@ -17,6 +17,8 @@ describe('shell API admission', () => {
   it('requires a shell session before looking up a page', async () => {
     expect((await app.request('/api/workspaces/demo/pages/p')).status).toBe(401);
     expect((await app.request('/api/session')).status).toBe(401);
+    expect((await app.request('/api/workspaces/demo/members')).status).toBe(401);
+    expect((await app.request('/api/workspaces/demo/members/target', { method: 'DELETE' })).status).toBe(401);
   });
 
   it('separates native and foreign origins', async () => {
