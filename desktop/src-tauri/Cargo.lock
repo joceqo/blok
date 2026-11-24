@@ -326,13 +326,16 @@ name = "blok-desktop"
 version = "0.1.0"
 dependencies = [
  "keyring",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "tauri",
  "tauri-build",
+ "tempfile",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

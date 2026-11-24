@@ -116,6 +116,8 @@ override-extension/payload/
 desktop/node_modules/
 desktop/dist/
 desktop/src-tauri/target/
+desktop/src-tauri/bundled-runtime/
+desktop/src-tauri/.runtime-build-*/
 desktop/src-tauri/gen/
 !desktop/.npmrc
 

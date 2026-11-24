@@ -134,14 +134,14 @@ export function buildWelcomeDocuments(workspaceId: string): WelcomeDocuments {
     blocks: [
       // Already done by the time you read this — ticked, like Notion's first line.
       check('account', 'Créer votre compte', { checked: true }),
-      check('desktop', '<b>Installer l’application de bureau</b> pour travailler hors ligne et emporter Blok partout'),
-      check('slash', 'Cliquez n’importe où ci-dessous et <b>tapez</b> <code>/</code> pour voir ce que vous pouvez créer — titres, tableaux, cases à cocher, etc.'),
-      check('slash-page', 'Tapez <code>/page</code> pour ajouter une <b>nouvelle page</b> et imbriquer ce que vous voulez, où vous voulez', { depth: 1 }),
-      check('sidebar', '<b>Trouvez</b>, <b>organisez</b> et <b>ajoutez des pages</b> depuis la barre latérale, à gauche 👈'),
-      check('tasks', 'Jetez un œil à la page <b>À faire</b> ajoutée pour vous, avec d’autres astuces', { depth: 1 }),
+      check('desktop', '<strong>Installer l’application de bureau</strong> pour travailler hors ligne et emporter Blok partout'),
+      check('slash', 'Cliquez n’importe où ci-dessous et <strong>tapez</strong> <code>/</code> pour voir ce que vous pouvez créer — titres, tableaux, cases à cocher, etc.'),
+      check('slash-page', 'Tapez <code>/page</code> pour ajouter une <strong>nouvelle page</strong> et imbriquer ce que vous voulez, où vous voulez', { depth: 1 }),
+      check('sidebar', '<strong>Trouvez</strong>, <strong>organisez</strong> et <strong>ajoutez des pages</strong> depuis la barre latérale, à gauche 👈'),
+      check('tasks', 'Jetez un œil à la page <strong>À faire</strong> ajoutée pour vous, avec d’autres astuces', { depth: 1 }),
       check('drag', 'Glissez un bloc par sa poignée ☰ pour le déplacer, ou <code>Tab</code> pour l’imbriquer sous le précédent', { depth: 1 }),
-      check('share', 'Utilisez <b>Partager</b>, en haut de la page, pour choisir qui la voit'),
-      check('rights', 'Les trois rôles et les trois niveaux sont expliqués dans <b>Droits et partage</b>', { depth: 1 }),
+      check('share', 'Utilisez <strong>Partager</strong>, en haut de la page, pour choisir qui la voit'),
+      check('rights', 'Les trois rôles et les trois niveaux sont expliqués dans <strong>Droits et partage</strong>', { depth: 1 }),
       // Notion links its seeded pages from the checklist; Blok's native
       // construct for that is the page block, so the two land here.
       {
@@ -226,7 +226,7 @@ export function buildWelcomeDocuments(workspaceId: string): WelcomeDocuments {
         id: id('rights-p', workspaceId, 'share'),
         type: 'paragraph',
         data: {
-          text: 'Ouvrez <b>Partager</b> en haut à droite pour inviter quelqu’un sur cette page, ou invitez des membres depuis le menu de l’espace.',
+          text: 'Ouvrez <strong>Partager</strong> en haut à droite pour inviter quelqu’un sur cette page, ou invitez des membres depuis le menu de l’espace.',
         },
       },
     ],

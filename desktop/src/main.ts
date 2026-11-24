@@ -2,6 +2,7 @@ import './editor.css';
 import '../../src/shell/sidebar.css';
 import './shell.css';
 import { activeWorkspace, initialWorkspace, LOCAL_SERVER_ORIGIN, rememberWorkspace, selectWorkspace, serverOrigin, type RemoteWorkspace } from './workspace-registry';
+import { startEmbeddedServer, useEmbeddedServer } from './native-runtime';
 import { nativeSessionAdapter } from './native-session';
 import { applyAppearance, readAppearance } from './settings';
 import { CloudClient, mountCloudGateway } from './cloud';
@@ -40,9 +41,30 @@ async function boot(root: HTMLElement): Promise<void> {
   const params = new URLSearchParams(location.search);
   const selected = activeWorkspace();
   const explicitGateway = params.get('cloud') === '1';
-  const configured = native
+  const embedded = native && await useEmbeddedServer(params, selected, import.meta.env.VITE_BLOK_SERVER_URL);
+  let configured = native
     ? params.get('server') ?? (selected.kind === 'remote' ? selected.server : import.meta.env.VITE_BLOK_SERVER_URL)
     : location.origin;
+  if (embedded) {
+    const status = document.createElement('p');
+    status.setAttribute('role', 'status');
+    status.textContent = 'Ouverture de votre espace sur cet ordinateur…';
+    root.replaceChildren(status);
+    try {
+      configured = await startEmbeddedServer();
+      if (selected.kind === 'remote' && selected.embedded && selected.server !== configured) {
+        throw new Error('L’adresse de cet espace a changé. Vérifiez le répertoire de données du serveur intégré.');
+      }
+    } catch (reason) {
+      const retry = document.createElement('button');
+      retry.textContent = 'Réessayer'; retry.onclick = () => location.reload();
+      const offline = document.createElement('button');
+      offline.textContent = 'Ouvrir un espace sur disque'; offline.onclick = () => selectWorkspace(initialWorkspace);
+      status.textContent = reason instanceof Error ? reason.message : String(reason);
+      root.append(retry, offline);
+      return;
+    }
+  }
   const origin = configured ? serverOrigin(configured) : '';
   const adapter = native && origin ? nativeSessionAdapter(origin) : undefined;
   const client = new CloudClient({origin, sessionAdapter: adapter});
@@ -59,7 +81,7 @@ async function boot(root: HTMLElement): Promise<void> {
       onOpenWorkspace: async (workspace, source) => {
         const session = source.currentSession ?? await source.session();
         const ref: RemoteWorkspace = {
-          kind: 'remote', id: workspace.id, name: workspace.name,
+          kind: 'remote', ...(embedded ? {embedded: true} : {}), id: workspace.id, name: workspace.name,
           server: serverOrigin(source.origin || location.origin), accountId: session.user.id,
           workspaceId: workspace.slug, userName: session.user.email, role: workspace.role,
         };
@@ -76,6 +98,7 @@ async function boot(root: HTMLElement): Promise<void> {
           return;
         }
         const url = new URL(location.href);
+        url.searchParams.delete('embedded');
         url.searchParams.set('server', serverOrigin(server));
         url.searchParams.set('cloud', '1');
         url.searchParams.delete('page');
@@ -84,7 +107,7 @@ async function boot(root: HTMLElement): Promise<void> {
     });
   };
 
-  if (explicitGateway || (!native && selected.kind === 'local' && params.get('local') !== '1')) {
+  if (explicitGateway || (embedded && selected.kind === 'local') || (!native && selected.kind === 'local' && params.get('local') !== '1')) {
     await showGateway();
     return;
   }
@@ -105,7 +128,15 @@ async function boot(root: HTMLElement): Promise<void> {
     void flushDesktop().then(() => {
       const url = new URL(location.href);
       url.searchParams.set('cloud', '1');
-      if (native && section === 'local-server') url.searchParams.set('server', LOCAL_SERVER_ORIGIN);
+      if (native && section === 'local-server') {
+        url.searchParams.delete('embedded');
+        url.searchParams.set('server', LOCAL_SERVER_ORIGIN);
+      }
+      if (native && section === 'embedded-server') {
+        url.searchParams.delete('server');
+        url.searchParams.delete('local');
+        url.searchParams.set('embedded', '1');
+      }
       url.searchParams.delete('page');
       url.searchParams.delete('manage');
       url.searchParams.delete('section');
