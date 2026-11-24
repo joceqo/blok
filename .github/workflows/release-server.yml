@@ -102,7 +102,7 @@ jobs:
             exit 0
           fi
           for _ in $(seq 1 360); do
-            state="$(gh run list --workflow CI --branch main --event push --commit "$RELEASE_SHA" --limit 1 \
+            state="$(gh run list --workflow CI --branch main --event workflow_dispatch --commit "$RELEASE_SHA" --limit 1 \
               --json status,conclusion \
               --jq 'if length == 0 then "missing" else "\(.[0].status):\(.[0].conclusion // "")" end')"
             case "$state" in

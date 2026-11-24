@@ -80,16 +80,15 @@ describe('mutation workflow', () => {
     expect(steps[0]?.run).toContain('MUTATION_STOP_AT=');
     expect(steps[0]?.run).toContain('$GITHUB_ENV');
     expect(workflow.jobs.mutation['timeout-minutes']).toBeLessThanOrEqual(10);
-    expect(workflow.jobs.mutation.if).toContain("github.event_name == 'push'");
+    expect(workflow.jobs.mutation.if).toBe('${{ !inputs.sweep }}');
   });
 
-  // Files too heavy for a push run wait for the sweep. Without a schedule
-  // nothing ever measures them.
-  it('sweeps the heavy files on a schedule with room to finish', () => {
+  // Operators can request the long sweep separately from the short mutation run.
+  it('sweeps the heavy files on request with room to finish', () => {
     const run = sweepSteps.find((step) => step.name === 'Run mutation testing');
 
-    expect(workflow.on?.schedule?.length).toBeGreaterThan(0);
-    expect(workflow.jobs.sweep.if).toContain("github.event_name == 'schedule'");
+    expect(Object.keys(workflow.on ?? {})).toEqual(['workflow_dispatch']);
+    expect(workflow.jobs.sweep.if).toBe('inputs.sweep');
     expect(run?.run).toContain('node scripts/mutation-scope.mjs run --sweep');
     expect(workflow.jobs.sweep['timeout-minutes']).toBeGreaterThanOrEqual(330);
   });

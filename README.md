@@ -247,9 +247,33 @@ Contributions are welcome — issues, discussions and pull requests alike. Read 
 ```bash
 yarn install
 yarn serve   # dev playground (add --no-server to skip the collaboration backend)
-yarn test    # unit tests
 yarn lint    # ESLint + TypeScript
 ```
+
+### Product tests
+
+Use the Node version in `.nvmrc`. Install the root editor dependencies and the two product packages once per checkout, or again when their lockfiles change.
+
+```bash
+yarn install --immutable
+npm ci --prefix desktop
+npm ci --prefix apps/service-node
+npm test
+```
+
+`npm test` runs the desktop shell and Node service unit tests in parallel with up to four Vitest workers in total. They cover page permissions, validation, workspace merging, persistence and UI behaviour. The command uses installed dependencies. Tests named `*.integration.test.ts` belong to the opt-in tier. To select one area, run `npm run test:desktop` or `npm run test:service`. Both accept Vitest file filters after `--`.
+
+| On-demand checks | Command |
+| --- | --- |
+| Full editor and Angular unit suite | `yarn test:unit:all` |
+| One editor unit file | `yarn test test/unit/tools/code/code-header.test.ts` |
+| Node service tests including in-process integration | `npm --prefix apps/service-node test` |
+| Product API conformance | `node scripts/test-service-conformance.mjs --target node` |
+| Browser suites and Storybook | `yarn e2e` / `yarn storybook:test` |
+| Full CI including cross-runtime and browser tests | GitHub Actions → **CI** → **Run workflow** |
+| Mutation runs and long sweeps | GitHub Actions → **Mutation** → **Run workflow** |
+
+Pull requests and pushes to `main` run the product unit suite, lint, translations and security scans. The full build, coverage, database integration and browser matrix run on demand. The release command requests full CI on the exact main revisions used for publication.
 
 ## License and attribution
 
