@@ -59,6 +59,7 @@ func (s *Service) ticketIdentity(r *http.Request) (session, doc string, write bo
 	return claims.User, claims.Doc, claims.Write, true
 }
 func (s *Service) blokHandler(next http.Handler) http.Handler {
+	nodeRoom := nodeRoomProxy()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Blok independently checks cryptographic ticket validity. Gate every service
 		// route too: upload/delete/unfurl do not call document Authorization hooks.
@@ -75,6 +76,9 @@ func (s *Service) blokHandler(next http.Handler) http.Handler {
 		}
 		if !can || (isWrite && !write) {
 			problem(w, 403, "Document access refused")
+			return
+		}
+		if s.routeNodeRoom(nodeRoom, w, r, doc) {
 			return
 		}
 		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
