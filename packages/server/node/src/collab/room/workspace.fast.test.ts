@@ -6,11 +6,11 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 import { decode } from '../../../../../../src/components/modules/collaboration/sync-wire.ts';
-import { startWorkspaceRooms } from './preview.ts';
+import { startAllRooms, startWorkspaceRooms } from './preview.ts';
 import { pageDirectory } from './page-seed.ts';
 import { acquireJournalWriter } from '../journal/append.ts';
 
-it.skipIf(!['darwin','linux'].includes(process.platform))('opens only authorized pages, shares one writer across concurrent connections, then drains its lease', async () => {
+it.skipIf(!['darwin','linux'].includes(process.platform)).each([false,true])('authorizes every page before opening a writer and drains idle rooms (all workspaces: %s)', async all => {
   const directory = await mkdtemp(join(tmpdir(), 'blok-workspace-'));
   const origin = 'http://localhost';
   const internalSecret = 'workspace-test'.repeat(3);
@@ -37,9 +37,10 @@ it.skipIf(!['darwin','linux'].includes(process.platform))('opens only authorized
   await once(projection, 'listening');
   const address = projection.address();
   if (!address || typeof address === 'string') throw new Error('Expected TCP');
-  const host = await startWorkspaceRooms({directory,workspaceId:'selected',allowedOrigins:new Set([origin]),recheckSecret:internalSecret,
+  const options = {directory,allowedOrigins:new Set([origin]),recheckSecret:internalSecret,
     projection:{origin:'http://127.0.0.1:'+address.port,secret:internalSecret},
-    authorize:async (token,id) => token === 'valid' ? {id:'session',write:true,workspaceId:id==='foreign'?'other':'selected'} : null});
+    authorize:async (token:string,id:string) => token === 'valid' ? {id:'session',write:true,workspaceId:id==='unscoped'?undefined:id==='foreign'?'other':'selected'} : null};
+  const host = all ? await startAllRooms(options) : await startWorkspaceRooms({...options,workspaceId:'selected'});
   const clients = new Set<WebSocket>();
   async function open(id: string, token = 'valid') {
     const ws = new WebSocket(host.url+id,['blok-sync.v2',token],{origin});
@@ -57,13 +58,21 @@ it.skipIf(!['darwin','linux'].includes(process.platform))('opens only authorized
   }
   try {
     expect(await readdir(directory)).toEqual([]);
-    await expect(open('foreign')).rejects.toThrow('403');
+    await expect(open('unscoped')).rejects.toThrow('403');
+    if (!all) await expect(open('foreign')).rejects.toThrow('403');
     await expect(open('a','invalid')).rejects.toThrow('403');
     expect(await readdir(directory)).toEqual([]);
     const [first,second,other] = await Promise.all([open('a'),open('a'),open('b')]);
     expect(first.tag).toEqual(second.tag);
     expect(other.tag.lineage).not.toBe(first.tag.lineage);
     expect(loads).toEqual(new Set(['a','b']));
+    if (all) {
+      const foreign = await open('foreign');
+      expect(foreign.tag.lineage).not.toBe(first.tag.lineage);
+      const state = await fetch(host.url.replace('ws:', 'http:')+'cold/state',{headers:{Authorization:'Bearer valid'}});
+      expect(state.status).toBe(200);
+      expect(await state.json()).toEqual({blocks:[]});
+    }
     expect(snapshots.get('a')?.version).toBe('1');
     expect(snapshots.get('b')?.version).toBe('1');
     await close(first.ws);

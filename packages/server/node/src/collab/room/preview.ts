@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { MAX_APPEND_BYTES } from '../journal/append.ts';
 import { verifyTicket } from '../../auth/ticket.ts';
@@ -9,6 +9,7 @@ export interface RoomIdentity {
   id: string;
   write: boolean;
   workspaceId?: string;
+  actorId?: string;
   /** Recheck only this admitted connection, bound to its original page and identity. */
   revalidate?: () => Promise<RoomIdentity | null>;
 }
@@ -51,12 +52,17 @@ export function startWorkspaceRooms(options: WorkspaceOptions) {
   return startHost(options);
 }
 
+export function startAllRooms(options: Omit<WorkspaceOptions, 'workspaceId'>) {
+  if (!options.projection) throw new Error('All rooms require canonical document storage');
+  return startHost({...options, all:true});
+}
+
 export function startJournalRoom(options: RoomOptions) {
   if (!options.documentId) throw new Error('A document ID is required');
   return startHost(options);
 }
 
-async function startHost(options: RoomOptions | WorkspaceOptions) {
+async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<WorkspaceOptions,'workspaceId'> & {all:true})) {
   const singlePage = 'documentId' in options ? options.documentId : undefined;
   const workspaceId = 'workspaceId' in options ? options.workspaceId : undefined;
   if (!options.allowedOrigins.size) throw new Error('Allowed origins are required');
@@ -64,7 +70,8 @@ async function startHost(options: RoomOptions | WorkspaceOptions) {
   let closing: Promise<void> | undefined;
   const pages = new Map<string, Resident>();
   const sockets = new WebSocketServer({noServer:true, perMessageDeflate:false, maxPayload:MAX_APPEND_BYTES+4096,
-    handleProtocols: protocols => protocols.has('blok-sync.v2') ? 'blok-sync.v2' : false});
+    handleProtocols: protocols => protocols.has('blok-sync.v2') ? 'blok-sync.v2' : protocols.has('blok-sync.v1') ? 'blok-sync.v1' : false});
+  sockets.on('headers', headers => headers.push('X-Blok-Collaboration: node'));
   function load(id: string): Resident {
     const entry: Resident = {room:openDocumentRoom({...options,documentId:id}),users:0};
     pages.set(id, entry);
@@ -79,12 +86,27 @@ async function startHost(options: RoomOptions | WorkspaceOptions) {
     return entry.closing;
   }
 
+  const inScope = (identity:RoomIdentity|null):identity is RoomIdentity => !!identity?.id &&
+    (!('all' in options) || !!identity.workspaceId) && (!workspaceId || identity.workspaceId === workspaceId);
+  let admissions = 0;
+  async function reserve(id: string) {
+    let entry = pages.get(id);
+    while (entry?.closing) { await entry.closing; entry = pages.get(id); }
+    if (stopping || (!entry && pages.size >= 128) || (entry && entry.users >= 32)) throw new Error('Room busy');
+    entry ??= load(id);
+    entry.users++;
+    return entry;
+  }
+  function releaseUser(id:string,entry:Resident) {
+    if (--entry.users === 0 && !singlePage) void unload(id,entry).catch(() => {});
+  }
+
   const recheckKey = options.recheckSecret && createHash('sha256').update('Bearer '+options.recheckSecret).digest();
   const http = createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/healthz') {
       const single = singlePage && pages.get(singlePage);
       if (stopping || (single && !(await single.room).available())) { res.writeHead(503).end(); return; }
-      const scope = singlePage ? {documentId:singlePage} : {workspaceId};
+      const scope = singlePage ? {documentId:singlePage} : workspaceId ? {workspaceId} : {all:true};
       res.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({backend:'node',...scope}));
       return;
     }
@@ -104,10 +126,50 @@ async function startHost(options: RoomOptions | WorkspaceOptions) {
       } catch { res.writeHead(503).end(); }
       return;
     }
+    let url:URL;
+    try { url = new URL(req.url ?? '/','http://localhost'); }
+    catch { res.writeHead(400).end(); return; }
+    const match = /^\/api\/blok\/sync\/([A-Za-z0-9_-]{1,128})\/(?:history(?:\/|$)|state$)/.exec(url.pathname);
+    if (match && (!singlePage || match[1] === singlePage)) {
+      res.setHeader('Cache-Control','no-store');
+      res.setHeader('Vary','Origin');
+      const origin = req.headers.origin;
+      if (origin && !options.allowedOrigins.has(origin)) { res.writeHead(403).end(); return; }
+      if (origin) res.setHeader('Access-Control-Allow-Origin',origin);
+      if (req.method === 'OPTIONS') {
+        res.setHeader('Access-Control-Allow-Methods','GET,POST,DELETE,OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers','Authorization, Content-Type, If-Match, Blok-Idempotency-Key, X-Blok-Restore-Confirm');
+        res.writeHead(204).end(); return;
+      }
+      const id = match[1]!;
+      const token = /^Bearer (\S+)$/i.exec(req.headers.authorization ?? '')?.[1];
+      if (!token) { res.writeHead(401).end(); return; }
+      if (stopping || admissions >= 256) { res.writeHead(503).end(); return; }
+      admissions++;
+      let resident:Resident|undefined;
+      try {
+        const identity = await options.authorize(token,id);
+        if (!inScope(identity) || (req.method !== 'GET' && !identity.write)) { res.writeHead(403).end(); return; }
+        const confirmed = String(req.headers['x-blok-restore-confirm'] ?? '').split(',').map(k=>k.trim());
+        if (req.method === 'POST') {
+          const body = await confirmations(req);
+          if (!body) { res.writeHead(413).end(); return; }
+          confirmed.push(...body);
+        }
+        resident = await reserve(id);
+        const room = await resident.room;
+        const result = await room.history({url,asJSON:req.headers.accept?.includes('application/json'),method:req.method ?? '',key:req.headers['blok-idempotency-key'] as string|undefined,
+          match:req.headers['if-match'],confirmed}, identity, token);
+        res.setHeader('Access-Control-Expose-Headers','Blok-History-Lineage, Blok-History-Sequence, Blok-Doc-Lineage, Blok-Doc-Sequence, ETag, X-Blok-Restore-Refusal');
+        res.writeHead(result.status,{'Content-Type':'application/json',...('headers' in result && result.headers)});
+        res.end('body' in result ? JSON.stringify(result.body) : undefined);
+      } catch { res.writeHead(503).end(); }
+      finally { if (resident) releaseUser(id,resident); admissions--; }
+      return;
+    }
     res.writeHead(404).end();
   });
 
-  let admissions = 0;
   http.on('upgrade', async (req, socket, handshake) => {
     socket.on('error', () => socket.destroy());
     const refuse = (status: string) => socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
@@ -119,7 +181,7 @@ async function startHost(options: RoomOptions | WorkspaceOptions) {
     if (!req.headers.origin || !options.allowedOrigins.has(req.headers.origin)) { refuse('403 Forbidden'); return; }
     const offers = req.headers['sec-websocket-protocol']?.split(',').map(p => p.trim()) ?? [];
     const tickets = offers.filter(p => p !== 'blok-sync.v2' && p !== 'blok-sync.v1');
-    if (!offers.includes('blok-sync.v2') || tickets.length !== 1 || !tickets[0]) { refuse('401 Unauthorized'); return; }
+    if ((!offers.includes('blok-sync.v2') && !offers.includes('blok-sync.v1')) || tickets.length !== 1 || !tickets[0]) { refuse('401 Unauthorized'); return; }
     if (stopping || admissions >= 256) { refuse('503 Service Unavailable'); return; }
     admissions++;
     let reserved: Resident | undefined;
@@ -127,20 +189,15 @@ async function startHost(options: RoomOptions | WorkspaceOptions) {
       if (!reserved) return;
       const entry = reserved;
       reserved = undefined;
-      if (--entry.users === 0 && !singlePage) void unload(id!,entry).catch(() => {});
+      releaseUser(id!,entry);
     }
     try {
       const ticket = tickets[0];
       const identity = await options.authorize(ticket,id).catch(() => null);
-      if (!identity?.id || (workspaceId && identity.workspaceId !== workspaceId)) { refuse('403 Forbidden'); return; }
-      // Two clients may arrive during an eviction. Both wait for the same lease to close.
-      let entry = pages.get(id);
-      while (entry?.closing) { await entry.closing; entry = pages.get(id); }
-      if (stopping || socket.destroyed || (!entry && pages.size >= 128)) { refuse('503 Service Unavailable'); return; }
-      entry ??= load(id);
-      if (entry.users >= 32) { refuse('503 Service Unavailable'); return; }
+      if (!inScope(identity)) { refuse('403 Forbidden'); return; }
+      if (socket.destroyed) return;
+      const entry = await reserve(id);
       reserved = entry;
-      entry.users++;
       const room = await entry.room;
       if (stopping || !room.available() || socket.destroyed) { refuse('503 Service Unavailable'); return; }
       socket.once('close', release);
@@ -180,3 +237,18 @@ async function startHost(options: RoomOptions | WorkspaceOptions) {
 }
 
 export { shellRoomTickets } from './shell-access.ts';
+
+async function confirmations(req:IncomingMessage):Promise<string[]|null> {
+  let length = 0;
+  const chunks:Buffer[] = [];
+  for await (const chunk of req) {
+    length += chunk.length;
+    if (length > 16384) return null;
+    chunks.push(chunk);
+  }
+  if (!length) return [];
+  try {
+    const parsed = JSON.parse(Buffer.concat(chunks).toString());
+    return Array.isArray(parsed?.confirm) ? parsed.confirm.filter((item:unknown)=>typeof item === 'string') : [];
+  } catch { return []; }
+}

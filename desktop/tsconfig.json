@@ -21,6 +21,9 @@
       "@bloklabs/core/full": [
         "../types/full.d.ts"
       ],
+      "@bloklabs/core/view": [
+        "../types/view.d.ts"
+      ],
       "@bloklabs/core/tools": [
         "../types/tools-entry.d.ts"
       ],

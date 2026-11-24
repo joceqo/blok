@@ -76,7 +76,7 @@ async function scan(file: FileHandle, summary: SequenceReport, checkpoint: bigin
 }
 
 /** A stopped journal directory or a coherent offline copy. Frames are provisional until integrity is ok. */
-export async function inspectJournal(directory: string, onUpdate?: (frame: JournalFrame) => void, onRecord?: (record: OperationRecord) => void): Promise<JournalInspection> {
+export async function inspectJournal(directory: string, onUpdate?: (frame: JournalFrame) => void, onRecord?: (record: OperationRecord) => void, fromBaseline = false, historyManifest?:JournalManifest): Promise<JournalInspection> {
   const root = resolve(directory);
   const report: JournalInspection = { directory: root, state: 'unknown', integrity: 'ok',
     manifest: null, baseline: null, checkpoint: null, journal: null };
@@ -91,7 +91,7 @@ export async function inspectJournal(directory: string, onUpdate?: (frame: Journ
       return report;
     }
     const doc = basename(root);
-    const manifest = await readManifest(join(root, MANIFEST_FILE_NAME), doc);
+    const manifest = historyManifest ?? await readManifest(join(root, MANIFEST_FILE_NAME), doc);
     report.manifest = manifest;
     if (!manifest) {
       const orphan = entries.some((entry) => entry.isFile() && (entry.name === 'journal' || entry.name.startsWith('journal.')));
@@ -111,7 +111,7 @@ export async function inspectJournal(directory: string, onUpdate?: (frame: Journ
       const length = content.readInt32LE(offset);
       offset += 4;
       if (length < 1 || length > content.length - offset) throw new InvalidDataError(`Invalid frame length in ${baseline}`);
-      if (manifest.checkpointThrough === 0n) emit({ source: 'baseline', sequence: 0n, update: content.subarray(offset, offset + length) });
+      if (fromBaseline || manifest.checkpointThrough === 0n) emit({ source: 'baseline', sequence: 0n, update: content.subarray(offset, offset + length) });
       report.baseline.frames++;
       offset += length;
     }
@@ -120,12 +120,12 @@ export async function inspectJournal(directory: string, onUpdate?: (frame: Journ
       const sealed = await readSealed(join(root, name), CHECKPOINT_MAGIC, doc);
       if (sealed.tag !== manifest.checkpointThrough) throw new InvalidDataError(`${name} carries sequence ${sealed.tag}, expected ${manifest.checkpointThrough}`);
       report.checkpoint = { file: name, through: sealed.tag };
-      emit({ source: 'checkpoint', sequence: sealed.tag, update: sealed.content });
+      if (!fromBaseline) emit({ source: 'checkpoint', sequence: sealed.tag, update: sealed.content });
     }
     const name = journalName(manifest.generation, manifest.generationFence);
     report.journal = { file: name, verifiedBytes: 0n, firstSequence: null, durableThrough: 0n, tailRecords: 0n };
     const file = await open(join(root, name), 'r');
-    try { await scan(file, report.journal, manifest.checkpointThrough, emit, onRecord); }
+    try { await scan(file, report.journal, fromBaseline ? 0n : manifest.checkpointThrough, emit, onRecord); }
     finally { await file.close(); }
     if (manifest.checkpointThrough > report.journal.durableThrough) {
       throw new InvalidDataError(`Checkpoint ${manifest.checkpointThrough} exceeds the journal's last sequence ${report.journal.durableThrough}`);

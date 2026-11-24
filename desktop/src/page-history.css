@@ -1,0 +1,39 @@
+[data-desktop-history] {
+  padding: 0 20px 16px;
+  gap: 12px;
+}
+[data-desktop-history] [data-navigation-heading] {
+  padding-left: 0;
+}
+[data-desktop-history] select {
+  align-self: flex-start;
+  max-width: 100%;
+  font: inherit;
+}
+[data-history-preview] {
+  overflow: auto;
+  min-height: 64px;
+  padding: 8px 0;
+  border-block: 1px solid var(--desktop-border);
+}
+[data-history-preview] img {
+  max-width: 100%;
+}
+[data-history-actions] {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+[data-desktop-history] [role='status'] {
+  color: var(--desktop-muted);
+  margin: 0;
+  font-size: 13px;
+}
+[data-desktop-page-peers] {
+  font-size: 12px;
+  color: var(--desktop-muted);
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

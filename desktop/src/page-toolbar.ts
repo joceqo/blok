@@ -7,6 +7,8 @@ export interface PageToolbar {
   setTitle(title: string): void;
   setIcon(icon: string | undefined): void;
   setFavorite(favorite: boolean): void;
+  setPeers(names: string[]): void;
+  closeHistory(): void;
   destroy(): void;
 }
 
@@ -63,8 +65,10 @@ export function createPageToolbar(
     onRename?: () => void;
     onDuplicate?: () => void;
     onDelete?: () => void;
+    onHistory?: () => (() => void);
   } = {},
 ): PageToolbar {
+  let closeHistory:(() => void)|undefined;
   let closeSharing: (() => void) | void;
   const toolbar = document.createElement('div');
   toolbar.setAttribute('data-desktop-page-toolbar', '');
@@ -220,6 +224,18 @@ export function createPageToolbar(
   fullWidthButton.append(label, track);
   fullWidthButton.disabled = options.readOnly === true;
   menu.append(heading, fullWidthButton);
+  const peers = document.createElement('span');
+  peers.setAttribute('data-desktop-page-peers','');
+  peers.hidden = true;
+  if (options.onHistory) {
+    actions.prepend(peers);
+    const history = document.createElement('button');
+    history.type='button';
+    history.textContent='Historique des versions';
+    history.setAttribute('data-desktop-page-command','');
+    history.onclick=()=>{ close(true); closeHistory?.(); closeHistory=options.onHistory?.(); };
+    menu.append(history);
+  }
   const commands = [
     ['Renommer', options.onRename], ['Dupliquer', options.onDuplicate], ['Mettre à la corbeille', options.onDelete],
   ] as const;
@@ -469,6 +485,15 @@ export function createPageToolbar(
     setTitle(value) { updateCurrent({ title: value }); },
     setIcon(value) { updateCurrent({ icon: value }); },
     setFavorite,
-    destroy() { disposed = true; clearTimeout(feedbackTimer); closeSharing?.(); close(); closeBreadcrumbMenu(); },
+    closeHistory() { closeHistory?.(); closeHistory=undefined; },
+    setPeers(names) {
+      peers.hidden=names.length===0;
+      const label=names.join(', ');
+      const text=names.length>2 ? names.slice(0,2).join(', ')+' +'+(names.length-2) : label;
+      if (peers.textContent!==text) peers.textContent=text;
+      peers.title=names.length ? 'Sur cette page · '+label : '';
+      peers.setAttribute('aria-label',peers.title);
+    },
+    destroy() { disposed = true; clearTimeout(feedbackTimer); closeSharing?.(); closeHistory?.(); close(); closeBreadcrumbMenu(); },
   };
 }

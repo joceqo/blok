@@ -10,6 +10,7 @@ export default defineConfig({
     alias: {
       '@blok/agent-assistant': fileURLToPath(new URL('../src/shell/agent-assistant.ts', import.meta.url)), '@blok/popover': fileURLToPath(new URL('../src/components/utils/popover/popover-desktop.ts', import.meta.url)), '@blok/modal-dialog': fileURLToPath(new URL('../src/components/utils/modal-dialog.ts', import.meta.url)),
       '@bloklabs/core/full': fileURLToPath(new URL('../src/full.ts', import.meta.url)),
+      '@bloklabs/core/view': fileURLToPath(new URL('../src/view/blocks-to-html.ts', import.meta.url)),
       '@bloklabs/core/tools': fileURLToPath(new URL('../src/tools/index.ts', import.meta.url)),
       '@blok/sidebar': fileURLToPath(new URL('../src/shell/sidebar.ts', import.meta.url)),
       '@blok/date-editor': fileURLToPath(new URL('../src/tools/database/cells/date-editor.ts', import.meta.url)),
@@ -20,9 +21,10 @@ export default defineConfig({
   server: {
     port: 1420,
     proxy: {
-      '/api': { target: process.env.BLOK_API_URL || 'http://127.0.0.1:8080', changeOrigin: false, ws: true },
-      '/files': { target: process.env.BLOK_API_URL || 'http://127.0.0.1:8080', changeOrigin: false },
-      '/healthz': { target: process.env.BLOK_API_URL || 'http://127.0.0.1:8080', changeOrigin: false },
+      '/api': { target: process.env.BLOK_API_URL || 'http://127.0.0.1:8088', changeOrigin: false, ws: true },
+      '/mcp': { target: process.env.BLOK_API_URL || 'http://127.0.0.1:8088', changeOrigin: false },
+      '/files': { target: process.env.BLOK_API_URL || 'http://127.0.0.1:8088', changeOrigin: false },
+      '/healthz': { target: process.env.BLOK_API_URL || 'http://127.0.0.1:8088', changeOrigin: false },
     },
     strictPort: true,
     host: host || false,

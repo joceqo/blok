@@ -1,6 +1,6 @@
 import type { RoomIdentity, RoomOptions } from './preview.ts';
 
-interface Decision { read: boolean; write: boolean; session?: unknown; workspaceId?: unknown; ticketWrite?: unknown }
+interface Decision { actorId?: unknown; read: boolean; write: boolean; session?: unknown; workspaceId?: unknown; ticketWrite?: unknown }
 
 /** The cloud service owns both the ticket signing key and the canonical session/page ACL. */
 export function shellRoomTickets(serviceOrigin: string, internalSecret: string, workspaceId?: string): RoomOptions['authorize'] {
@@ -27,14 +27,17 @@ export function shellRoomTickets(serviceOrigin: string, internalSecret: string, 
 
   return async (ticket, documentId) => {
     const grant = await check({documentId,ticket});
-    if (!grant || typeof grant.session !== 'string' || !/^[a-f0-9]{64}$/.test(grant.session) ||
+    if (!grant || typeof grant.session !== 'string' || !/^(?:mcp:)?[a-f0-9]{64}$/.test(grant.session) ||
         typeof grant.ticketWrite !== 'boolean') return null;
     const id = grant.session;
     const ticketWrite = grant.ticketWrite;
-    const scope = workspaceId ? { workspaceId } : {};
+    const scope = {
+      ...(typeof grant.workspaceId === 'string' && {workspaceId:grant.workspaceId}),
+      ...(typeof grant.actorId === 'string' && grant.actorId && {actorId:grant.actorId}),
+    };
     const revalidate = async (): Promise<RoomIdentity | null> => {
       const access = await check({documentId,session:id});
-      return access ? {id,write:ticketWrite && access.write,...scope} : null;
+      return access && access.workspaceId === grant.workspaceId ? {id,write:ticketWrite && access.write,...scope} : null;
     };
     return {id,write:ticketWrite && grant.write,revalidate,...scope};
   };
