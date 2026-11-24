@@ -21,6 +21,14 @@ describe('shell API admission', () => {
     expect((await app.request('/api/workspaces/demo/members/target', { method: 'DELETE' })).status).toBe(401);
   });
 
+  it('requires an account session on every MCP token-management route', async () => {
+    for (const [method,path] of [['GET',''],['POST',''],['POST','/key/rotate'],['DELETE','/key']] as const) {
+      const response = await app.request('/api/mcp/tokens'+path, {method});
+      expect(response.status).toBe(401);
+      expect(await response.json()).toEqual({error:'Sign in required'});
+    }
+  });
+
   it('separates native and foreign origins', async () => {
     const res = await app.request('/api/session', { method: 'OPTIONS', headers: { Origin: 'tauri://localhost' } });
     expect(res.status).toBe(204);

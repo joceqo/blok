@@ -8,6 +8,7 @@ The desktop shell uses the PostgreSQL schema in `apps/service/schema.sql`, initi
 
 | Request | Purpose |
 | --- | --- |
+| `GET/POST /api/mcp/tokens`, `DELETE /api/mcp/tokens/:id`, `POST /api/mcp/tokens/:id/rotate` | List, issue, revoke and rotate the signed-in account’s MCP tokens. The Go MCP endpoint checks the same PostgreSQL records on each request. |
 | `GET /api/session` and `GET /api/workspaces` | Load the signed-in user and memberships with a browser cookie or native bearer token. |
 | `GET /api/workspaces/:slug/index` | Read the page tree, trash, access levels and workspace revision from one database snapshot. |
 | `PUT /api/workspaces/:slug/index` | Create, rename, reorder, move, trash or remove pages in one transaction, conditional on the last observed workspace revision. |
@@ -35,6 +36,14 @@ The integration tests read `apps/service/schema.sql` from the product checkout b
 SHELL_TEST_SCHEMA_PATH=/absolute/path/to/blok-product/apps/service/schema.sql \
 SHELL_TEST_DATABASE_URL=postgresql://localhost/blok_test \
 npm test -- src/shell/app.integration.test.ts
+```
+
+To check Node-issued tokens against a running Go host, point `SHELL_TEST_DATABASE_URL` at the disposable PostgreSQL database used by that host and `SHELL_TEST_GO_MCP_URL` at its HTTP origin. The test creates and removes its own viewer, workspace, session and tokens. It checks a real MCP tool call, a denied write, rotation and revocation.
+
+```sh
+SHELL_TEST_DATABASE_URL=postgresql://localhost/blok_test \
+SHELL_TEST_GO_MCP_URL=http://127.0.0.1:8080 \
+npm test -- src/shell/mcp-tokens.integration.test.ts
 ```
 
 ## Stack
