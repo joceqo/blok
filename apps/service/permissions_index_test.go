@@ -208,3 +208,38 @@ func TestIndexInitialVisibilityCannotChangeExistingAccess(t *testing.T) {
 		t.Fatalf("index changed existing access: %v", own)
 	}
 }
+
+func TestValidateIndexMoves(t *testing.T) {
+	// The filtered tree shows leaf as a root; its real ancestor is source.
+	stored := map[string]string{"source": "", "hidden": "source", "leaf": "hidden", "view": "", "edit": ""}
+	levels := map[string]level{"source": levelEdit, "leaf": levelEdit, "view": levelView, "edit": levelEdit}
+	for _, tc := range []struct {
+		name     string
+		incoming map[string]string
+		want     int
+	}{
+		{"editable destination", map[string]string{"leaf": "edit"}, 0},
+		{"unchanged hidden parent", map[string]string{"leaf": ""}, 0},
+		{"cycle through hidden ancestor", map[string]string{"source": "leaf", "leaf": ""}, 400},
+		{"read-only source", map[string]string{"view": "edit"}, 403},
+		{"read-only destination", map[string]string{"source": "view"}, 403},
+		{"create in read-only destination", map[string]string{"new": "view"}, 403},
+		{"unchanged read-only page", map[string]string{"view": ""}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := validateIndexMoves(tc.incoming, stored, levels); got != tc.want {
+				t.Fatalf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIndexMoveChecksDestinationBeforeWriting(t *testing.T) {
+	w := newReadsWorld(t)
+	if _, err := w.service.DB.Exec(w.ctx, `INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES('enfant','alice','view','bob')`); err != nil {
+		t.Fatal(err)
+	}
+	w.putIndex(t, tokenAlice, []map[string]any{entry("public", "enfant"), entry("enfant", nil)}, 0, 403)
+	// Same revision and same root, so the refused move committed no changes.
+	w.putIndex(t, tokenAlice, []map[string]any{entry("public", nil), entry("enfant", nil)}, 0, 200)
+}

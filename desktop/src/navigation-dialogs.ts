@@ -41,22 +41,63 @@ export function openPageSearch(options: {
   onOpen: (id: string) => void;
   recentIds?: string[];
 }): () => void {
-  const modal = dialog(options.recentIds ? 'Pages récentes' : 'Rechercher une page');
+  const caption = options.recentIds ? 'Pages récentes' : `Pages de ${options.workspaceName}`;
+  return openPagePicker({
+    ...options, label: options.recentIds ? 'Pages récentes' : 'Rechercher une page', caption,
+    searchLabel: 'Rechercher une page par son titre', placeholder: 'Rechercher une page…', verb: 'ouvrir',
+    onChoose: (id) => { if (id !== null) options.onOpen(id); },
+  });
+}
+
+export function openMovePicker(options: {
+  workspaceName: string;
+  pages: () => ShellPage[];
+  sourceTitle: string;
+  destinations: () => Set<string | null>;
+  remote: boolean;
+  onChoose: (id: string | null) => void;
+}): () => void {
+  const label = `Déplacer « ${options.sourceTitle} »`;
+  return openPagePicker({
+    ...options, label, caption: label, searchLabel: 'Rechercher une destination',
+    placeholder: 'Rechercher une destination…', verb: 'déplacer',
+    notice: options.remote ? 'Les droits hérités de la page et de ses sous-pages peuvent changer selon la destination.' : undefined,
+  });
+}
+
+type PickerItem = { id: string | null; title: string; parentId: string | null; icon?: string };
+function openPagePicker(options: {
+  workspaceName: string;
+  pages: () => ShellPage[];
+  recentIds?: string[];
+  destinations?: () => Set<string | null>;
+  label: string;
+  caption: string;
+  searchLabel: string;
+  placeholder: string;
+  verb: string;
+  notice?: string;
+  onChoose: (id: string | null) => void;
+}): () => void {
+  const modal = dialog(options.label);
   modal.surface.setAttribute('data-navigation-search', '');
   const input = document.createElement('input');
-  input.type = 'search'; input.placeholder = 'Rechercher une page…'; input.setAttribute('aria-label', 'Rechercher une page par son titre');
+  input.type = 'search'; input.placeholder = options.placeholder; input.setAttribute('aria-label', options.searchLabel);
   const header = node('div', 'data-navigation-search-header'); header.append(wrapSearchField(input));
-  const heading = node('p', 'data-navigation-caption', options.recentIds ? 'Pages récentes' : `Pages de ${options.workspaceName}`);
+  const heading = node('p', 'data-navigation-caption', options.caption);
   const results = node('div', 'data-navigation-results');
   const empty = node('p', 'data-navigation-empty'); empty.setAttribute('role', 'status');
-  const footer = node('div', 'data-navigation-help', 'Recherche par titre · ↑ ↓ parcourir · Entrée ouvrir · Échap fermer');
-  modal.surface.append(header, heading, results, empty, footer);
+  const footer = node('div', 'data-navigation-help', `↑ ↓ parcourir · Entrée ${options.verb} · Échap fermer`);
+  modal.surface.append(header, heading);
+  if (options.notice) modal.surface.append(node('p', 'data-navigation-caption', options.notice));
+  modal.surface.append(results, empty, footer);
   let selected = 0;
-  let matches: ShellPage[] = [];
-  const choose = (page: ShellPage): void => {
-    // An index refresh can revoke access while the dialog is open.
-    if (!options.pages().some((item) => item.id === page.id)) { render(); return; }
-    modal.close(); options.onOpen(page.id);
+  let matches: PickerItem[] = [];
+  const choose = (page: PickerItem): void => {
+    // The tree and permissions can change while the dialog is open.
+    const allowed = options.destinations ? options.destinations().has(page.id) : options.pages().some((item) => item.id === page.id);
+    if (!allowed) { render(); return; }
+    modal.close(); options.onChoose(page.id);
   };
   function highlight(): void {
     [...results.querySelectorAll<HTMLButtonElement>('button')].forEach((button, i) => {
@@ -71,7 +112,10 @@ export function openPageSearch(options: {
     const query = input.value.trim().toLocaleLowerCase();
     const source = options.recentIds && !query
       ? options.recentIds.map((id) => byId.get(id)).filter((page): page is ShellPage => !!page) : pages;
-    matches = source.filter((page) => page.title.toLocaleLowerCase().includes(query));
+    const destinations = options.destinations?.();
+    const choices: PickerItem[] = destinations ? source.filter((page) => destinations.has(page.id)) : source;
+    if (destinations?.has(null)) choices.unshift({ id: null, title: options.workspaceName, parentId: null });
+    matches = choices.filter((page) => page.title.toLocaleLowerCase().includes(query));
     selected = 0; results.replaceChildren();
     for (const page of matches) {
       const row = node('button', 'data-navigation-result'); row.type = 'button';
@@ -80,12 +124,12 @@ export function openPageSearch(options: {
       const path: string[] = []; const seen = new Set([page.id]); let parent = byId.get(page.parentId ?? '');
       while (parent && !seen.has(parent.id)) { seen.add(parent.id); path.unshift(parent.title); parent = byId.get(parent.parentId ?? ''); }
       path.unshift(options.workspaceName);
-      labels.append(node('small', 'data-navigation-result-path', path.join(' / ')));
+      labels.append(node('small', 'data-navigation-result-path', page.id === null ? 'Racine de l’espace' : path.join(' / ')));
       row.append(icon(page.icon), labels);
       row.addEventListener('click', () => choose(page)); results.append(row);
     }
     empty.hidden = matches.length > 0;
-    empty.textContent = query ? `Aucune page pour « ${input.value.trim()} »` : 'Aucune page à afficher.';
+    empty.textContent = query ? `Aucune page pour « ${input.value.trim()} »` : (options.destinations ? 'Aucune destination disponible.' : 'Aucune page à afficher.');
     highlight();
   }
   input.addEventListener('input', render);
