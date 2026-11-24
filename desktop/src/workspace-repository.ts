@@ -2,7 +2,7 @@ import { mergeWorkspaceIndex } from './workspace-merge';
 import { loadIndex, readFile, writeFile, type WorkspaceIndex } from './storage';
 import { nativeSessionAdapter } from './native-session';
 import type { WorkspaceRef } from './workspace-registry';
-class RepositoryHttpError extends Error { constructor(public status: number) { super(`Serveur indisponible (${status})`); } }
+export class RepositoryHttpError extends Error { constructor(public status: number) { super(`Serveur indisponible (${status})`); } }
 const snapshot = (index: WorkspaceIndex): WorkspaceIndex => JSON.parse(JSON.stringify(index)) as WorkspaceIndex;
 /** A repository owns one immutable identity, including all queued writes. */
 export function workspaceRepository(workspace: WorkspaceRef) {
@@ -28,10 +28,19 @@ export function workspaceRepository(workspace: WorkspaceRef) {
       baseline = snapshot(index); acknowledged = snapshot(index);
       return index;
     },
+    async readPageAccess(id: string) {
+      if (ref.kind !== 'remote') throw new Error('Remote operation only');
+      const index = await request<WorkspaceIndex>(`${base}/index`);
+      const entry = index.access?.[id];
+      if (!entry) throw new Error('Page not found');
+      return entry;
+    },
     async refreshIndex(accept: () => boolean): Promise<WorkspaceIndex | null> {
       if (ref.kind !== 'remote') return null;
       const value = await request<WorkspaceIndex & {revision: number}>(`${base}/index`);
-      if (!accept()) return null;
+      // A focus refresh can finish after our PUT has already committed. Its older
+      // snapshot would rewind both the sidebar and the next conditional write.
+      if (!accept() || (revision !== null && value.revision < revision)) return null;
       revision = value.revision;
       const index = {pages:value.pages,trash:value.trash ?? [],activeId:value.pages[0]?.id ?? '',access:value.access};
       baseline = snapshot(index); acknowledged = snapshot(index);

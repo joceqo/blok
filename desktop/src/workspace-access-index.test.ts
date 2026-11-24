@@ -24,6 +24,25 @@ describe('page levels reaching the interface', () => {
     expect(access.canShare('mienne')).toBe(true);
   });
 
+  it('reads the new page level after an index write returned only a revision', async () => {
+    const page = { id: 'new', title: 'New', parentId: null };
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json({ pages: [], trash: [], access: {}, revision: 1 }))
+      .mockResolvedValueOnce(Response.json({ revision: 2 }))
+      .mockResolvedValueOnce(Response.json({ pages: [page], access: { new: { level: 'edit' } }, revision: 2 }))
+      .mockResolvedValueOnce(Response.json({ pages: [page], access: { new: { level: 'view' } }, revision: 2 }))
+      .mockResolvedValueOnce(Response.json({ pages: [], access: {}, revision: 3 }));
+    vi.stubGlobal('fetch', fetch);
+    const repository = workspaceRepository(remote);
+    const index = await repository.loadIndex();
+    index.pages.push(page);
+    await repository.saveIndex(index);
+    expect(pageAccess(remote, index.access).canEdit(page.id)).toBe(false);
+    expect((await repository.readPageAccess(page.id)).level).toBe('edit');
+    expect((await repository.readPageAccess(page.id)).level).toBe('view');
+    await expect(repository.readPageAccess(page.id)).rejects.toThrow('Page not found');
+  });
+
   it('stays usable against a server that reports no levels at all', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       pages: [{ id: 'page', title: 'Page', parentId: null }], trash: [], revision: 1,

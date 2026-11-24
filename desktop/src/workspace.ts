@@ -4,11 +4,13 @@ import { PopoverDesktop } from '@blok/popover';
 import { customEmojiStore } from './custom-emojis';
 import { createEmptyWorkspaceState } from './workspace-empty';
 import { mountRemoteAssets } from './remote-assets';
-import { Blok, defaultTools, type OutputData } from '@bloklabs/core/full';
+import { Blok, defaultTools, type OutputData, type CollaborationStatusChangedPayload } from '@bloklabs/core/full';
 import { Audio, Bookmark, File, Video, Callout, Code, Database, DatabaseComment, DatabaseRow, Divider, Image, Page, Quote, Table, TableOfContents, Toggle, type PageConfig } from '@bloklabs/core/tools';
 import { createPageFrame, type PageFrame, type ShellPage, type SidebarAction } from '@blok/sidebar';
 import { type DesktopPage, type WorkspaceIndex } from './storage';
-import { workspaceRepository } from './workspace-repository';
+import { RepositoryHttpError, workspaceRepository } from './workspace-repository';
+import { WorkspaceConflictError } from './workspace-merge';
+import { documentSyncStatus } from './document-sync-status';
 import { pageAccess } from './page-access';
 import { openPageSharing } from './cloud/page-sharing';
 import { groupPagesBySection, sectionNames } from './page-section';
@@ -75,16 +77,6 @@ function adoptRemoteFields(live: DesktopPage, remote: DesktopPage): void {
   Object.assign(live, remote);
 }
 
-function syncStatusLabel(synced: boolean, pending: boolean): string {
-  if (synced) return '';
-  return pending ? 'Synchronisation…' : 'Connexion au serveur…';
-}
-
-function syncStatusState(synced: boolean, pending: boolean): string {
-  if (synced) return 'connected';
-  return pending ? 'pending' : 'connecting';
-}
-
 export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (id: string, icon: string) => void, options: { ref?: WorkspaceRef } = {}): Workspace {
   const ref = Object.freeze({... (options.ref ?? activeWorkspace())});
   const repository = workspaceRepository(ref);
@@ -105,7 +97,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     access: ReturnType<typeof pageAccess>;
     index: WorkspaceIndex | null;
     editor: Blok | null;
-    remotePending: boolean;
+    documentStatus?: CollaborationStatusChangedPayload;
     selection: number;
     frame: PageFrame;
     coverRowObserver: MutationObserver | null;
@@ -122,6 +114,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     saveOrder: Promise<void>;
     pendingManifests: number;
     manifestFailed: boolean;
+    manifestError?: unknown;
     refreshingManifest: boolean;
     metadataAction: boolean;
     closeSearch: (() => void) | undefined;
@@ -129,7 +122,6 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     access: pageAccess(ref, undefined),
     index: null,
     editor: null,
-    remotePending: false,
     selection: 0,
     frame: null as unknown as PageFrame,
     coverRowObserver: null,
@@ -194,14 +186,31 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     // et la position par onglet, restaurée par shell.ts, n'est pas concernée.
     if (from !== id) window.scrollTo(0, 0);
   };
+  const renderDocumentStatus = (): void => {
+    if (ref.kind !== 'remote' || !ws.currentId || ws.manifestFailed) return;
+    const notice = documentSyncStatus(ws.documentStatus, ws.pendingManifests > 0);
+    if (status.textContent !== notice.message) status.textContent = notice.message;
+    status.setAttribute('data-sync-state', notice.state);
+    status.toggleAttribute('data-error', notice.state === 'error' || notice.state === 'denied');
+  };
   const saveManifest = (): void => {
     if (!ws.index) return;
     const snapshot = JSON.stringify(ws.index);
     ws.pendingManifests++;
+    renderDocumentStatus();
     ws.saveOrder = ws.saveOrder.catch(() => undefined).then(async () => {
       await repository.saveIndex(JSON.parse(snapshot) as WorkspaceIndex);
       ws.manifestFailed = false;
-    }).catch((error) => { ws.manifestFailed = true; showError(error); throw error; }).finally(() => { ws.pendingManifests--; });
+      ws.manifestError = undefined;
+    }).catch((error: unknown) => {
+      ws.manifestFailed = true;
+      ws.manifestError = error;
+      showError(error);
+      throw error;
+    }).finally(() => {
+      ws.pendingManifests--;
+      renderDocumentStatus();
+    });
     void ws.saveOrder.catch(() => undefined);
   };
   const refreshRemoteManifest = async (): Promise<void> => {
@@ -225,7 +234,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       for (const id of new Set([...original.pages.map((page) => page.id), ...ws.index.pages.map((page) => page.id)])) notifyPage(id);
       ws.refreshPagePresentation?.();
       if (!ws.index.pages.some((page) => page.id === ws.currentId)) onRoute();
-    } catch (error) { showError(error); }
+    } catch (error) { if (!ws.manifestFailed) showError(error); }
     finally { ws.refreshingManifest = false; }
   };
   const refreshDateTitles = (): void => {
@@ -301,10 +310,26 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     // Un retrait d'accès ferme la session en moins de cinq secondes côté
     // serveur. Le présenter comme une panne d'enregistrement laisserait croire
     // à un incident, et pousserait à réessayer pour rien.
-    const refusal = describeAccessLoss(error);
-    status.textContent = refusal ?? `Enregistrement impossible : ${String(error)}`;
+    const refusal = error instanceof RepositoryHttpError && [401, 403, 404].includes(error.status)
+      ? 'Accès refusé. Vérifiez votre connexion au compte et vos droits sur cet espace.'
+      : describeAccessLoss(error);
+    const conflict = error instanceof WorkspaceConflictError;
+    status.textContent = refusal ?? (conflict
+      ? 'Conflit sur les pages de l’espace. Copiez vos changements avant de recharger pour comparer les versions.'
+      : `Enregistrement impossible : ${String(error)}`);
     status.setAttribute('data-error', '');
-    status.setAttribute('data-sync-state', refusal ? 'denied' : 'error');
+    status.setAttribute('data-sync-state', refusal ? 'denied' : conflict ? 'conflict' : 'error');
+    if (ref.kind === 'remote' && ws.manifestFailed && ws.manifestError === error &&
+        (error instanceof TypeError || (error instanceof RepositoryHttpError && (error.status >= 500 || error.status === 429)))) {
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.textContent = 'Réessayer';
+      retry.addEventListener('click', () => {
+        retry.disabled = true;
+        saveManifest();
+      });
+      status.append(' ', retry);
+    }
   };
   const iconValue = (icon: ReturnType<Blok['title']['icon']['get']>): string | undefined => {
     if (icon?.type === 'emoji') return icon.value;
@@ -373,12 +398,27 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const select = async (id: string): Promise<void> => {
     if (!ws.index) return;
     refreshDateTitles();
+    const request = ++ws.selection;
+    if (ws.currentId !== id && ref.kind === 'remote') {
+      if (ws.editor) { await ws.editor.isReady; await ws.editor.saver.flush(); }
+      if (ws.selection !== request) return;
+      if (ws.index.access && !ws.index.access[id]) {
+        // Creating a page acknowledges the index revision before its access
+        // entry reaches this window. Get the server's decision before mounting.
+        await ws.saveOrder;
+        const index = ws.index;
+        const access = await repository.readPageAccess(id);
+        if (ws.selection !== request) return;
+        if (ws.index === index) {
+          index.access = { ...index.access, [id]: access };
+          ws.access = pageAccess(ref, index.access);
+        }
+      }
+    }
+    if (ws.selection !== request) return;
     const page = ws.index.pages.find((item) => item.id === id);
     if (!page) return;
     const selectedPage = page;
-    const request = ++ws.selection;
-    if (ws.currentId !== id && ws.editor && ref.kind === 'remote') { await ws.editor.isReady; await ws.editor.saver.flush(); }
-    if (ws.selection !== request) return;
     ws.index.activeId = id;
     if (ref.kind === 'local') saveManifest();
     ws.frame.setPages(withSections(ws.index.pages), id);
@@ -399,8 +439,12 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.titleDateMention = null;
     ws.editor?.destroy();
     ws.editor = null;
-    status.textContent = 'Ouverture de la page…';
-    status.removeAttribute('data-error');
+    ws.documentStatus = undefined;
+    if (!ws.manifestFailed) {
+      status.textContent = 'Ouverture de la page…';
+      status.removeAttribute('data-sync-state');
+      status.removeAttribute('data-error');
+    }
     const article = document.createElement('article');
     article.setAttribute('data-desktop-document', '');
     const applyFullWidth = (): void => {
@@ -550,24 +594,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       } }),
     });
     ws.editor = instance;
-    ws.remotePending = false;
     instance.width.set(page.fullWidth === true ? 'full' : 'narrow');
     void instance.isReady.then(() => {
       if (ws.generation !== turn) return;
-      instance.on('collaboration:status', (raw) => {
-        if (ws.generation !== turn) return;
-        // An emission with no payload must fall back to "not pending", not throw
-        // inside the listener and kill the rest of the handler.
-        const event = (raw ?? {}) as { status?: string; save?: { pendingOperations?: number; pendingBytes?: number } };
-        const pendingOps = event.save?.pendingOperations ?? 0;
-        const pendingBytes = event.save?.pendingBytes ?? 0;
-        ws.remotePending = pendingOps > 0 || pendingBytes > 0;
-        if (ref.kind === 'remote' && !ws.manifestFailed) {
-          const synced = !ws.remotePending && event.status === 'connected';
-          status.textContent = syncStatusLabel(synced, ws.remotePending);
-          status.setAttribute('data-sync-state', syncStatusState(synced, ws.remotePending));
-          status.removeAttribute('data-error');
-        }
+      instance.on('collaboration:status', (event) => {
+        if (ws.generation !== turn || ref.kind !== 'remote') return;
+        ws.documentStatus = event;
+        renderDocumentStatus();
       });
 
       const redactor = holder.querySelector<HTMLElement>('[data-blok-redactor]');
@@ -613,8 +646,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       syncPageIcon(page, instance.title.icon.get(), ref.kind === 'local', true);
       toolbar.setBreadcrumbs(breadcrumbs(id));
       document.title = page.title;
-      if (ref.kind === 'local') status.textContent = '';
-    }).catch(showError);
+      if (ref.kind === 'local' && !ws.manifestFailed) status.textContent = '';
+    }).catch((error: unknown) => {
+      if (ws.generation === turn) showError(error);
+    });
   };
 
   const duplicatePage = async (page: DesktopPage): Promise<'navigated' | 'pending'> => {
@@ -859,8 +894,12 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.refreshPagePresentation = null;
     ws.editor?.destroy(); ws.editor = null;
     ws.currentId = '';
-    status.textContent = '';
-    status.removeAttribute('data-error');
+    ws.documentStatus = undefined;
+    if (!ws.manifestFailed) {
+      status.textContent = '';
+      status.removeAttribute('data-error');
+      status.removeAttribute('data-sync-state');
+    }
     ws.pageCanvas.replaceChildren(createEmptyWorkspaceState(ws.access.readOnlyWorkspace, () => createPage(), {
       onTemplate: () => chooseNewPage(),
       onInvite: () => {
@@ -889,6 +928,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       return;
     }
     void select(target).catch((error) => {
+      // Another tab or sidebar click can start a new navigation while the old
+      // editor waits for its save receipt. Only roll back the route that failed.
+      if (pageFromUrl() !== target) return;
       if (ws.currentId && pageFromUrl() !== ws.currentId) {
         const url = new URL(location.href); url.searchParams.set('page', ws.currentId);
         history.replaceState(null, '', url);
@@ -947,7 +989,12 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         if (ref.kind === 'remote') {
           window.addEventListener('focus', () => { void refreshRemoteManifest(); });
           window.setInterval(() => { void refreshRemoteManifest(); }, 15_000);
-          window.addEventListener('beforeunload', (event) => { if (ws.pendingManifests > 0 || ws.manifestFailed) event.preventDefault(); });
+          window.addEventListener('beforeunload', (event) => {
+            const save = ws.documentStatus?.save?.state;
+            if (ws.pendingManifests > 0 || ws.manifestFailed || save === 'blocked' || save === 'quarantined') {
+              event.preventDefault();
+            }
+          });
         }
       } catch (error) { showError(error); }
     },
