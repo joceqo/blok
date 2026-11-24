@@ -175,9 +175,15 @@ try {
     await expect(block(trace.tab,paragraphs[1])).toContainText('confirmé',{timeout});
     fresh.push(trace);
   }
+  const persisted = await (await api(owner,'GET',pageAPI,200)).json();
+  const storedBlocks = JSON.stringify(persisted.blocks);
+  assert.ok(storedBlocks.includes('hors ligne') && storedBlocks.includes('confirmé'), 'Both edits should reach the API document projection');
   const memberTrace = fresh[1];
+  const active = [...memberTrace.connected].filter(socket => !memberTrace.closed.has(socket));
+  assert.ok(active.length > 0,'Expected an active member connection before revocation');
   await api(owner,'DELETE',grant,200);
-  await expect.poll(() => memberTrace.closed.size,{timeout,message:'Revoking the private share must close an active socket'}).toBeGreaterThan(0);
+  await expect.poll(() => active.every(socket => memberTrace.closed.has(socket)),
+    {timeout,message:'Revoking the private share must close its active sockets'}).toBe(true);
   await api(editor,'GET',workspace+'/ticket?doc='+id,404);
   await api(editor,'GET',pageAPI,404);
   await api(owner,'GET',pageAPI,200);
