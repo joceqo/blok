@@ -19,7 +19,8 @@ const id = randomUUID();
 const slug = 'browser-' + id.slice(0, 8);
 const ownerEmail = 'admin@example.test', editorEmail = 'editor@example.test';
 const workspace = '/api/workspaces/' + slug;
-const path = '/?cloud=1&workspace=' + slug + '&page=' + id;
+const workspaceName = 'Collaboration Node ' + slug;
+const path = '/?page=' + id;
 const pageAPI = workspace + '/pages/' + id;
 const editorSelector = '[data-blok-redactor] [contenteditable="true"]';
 const block = (page, text) => page.locator(editorSelector).filter({ hasText: text }).first();
@@ -89,7 +90,14 @@ async function roomTab(context) {
   });
   cdp.on('Network.webSocketClosed', ({requestId}) => { if (connected.has(requestId)) closed.add(requestId); });
   await cdp.send('Network.enable');
-  await tab.goto(path);
+  const session = await (await api(context,'GET','/api/session',200)).json();
+  await tab.goto('/?cloud=1');
+  if (session.workspaces.length > 1) {
+    const row = tab.locator('[data-cloud-row]').filter({hasText:workspaceName});
+    await row.getByRole('button',{name:'Ouvrir l’espace'}).click({timeout});
+  }
+  await expect(tab.locator('[data-blok-sidebar]')).toBeVisible({timeout});
+  if (new URL(tab.url()).searchParams.get('page') !== id) await tab.goto(path);
   return { tab, connected, closed };
 }
 const saved = page => expect(page.locator('[data-desktop-status]')).toHaveAttribute('data-sync-state','connected',{timeout});
@@ -109,7 +117,7 @@ try {
   browsers.push(await launch());
   const owner = await browsers[0].newContext({baseURL}), editor = await browsers[1].newContext({baseURL});
   await login(owner, ownerEmail);
-  await api(owner, 'POST', '/api/workspaces', 201, {slug,name:'Recette collaboration Node'});
+  await api(owner, 'POST', '/api/workspaces', 201, {slug,name:workspaceName});
   await api(owner, 'POST', workspace+'/invites', 201, {email:editorEmail,role:'member'});
   const member = await login(editor, editorEmail);
   assert.ok(member.workspaces.some(w => w.slug===slug && w.role==='member'));
@@ -175,7 +183,7 @@ try {
   await api(owner,'GET',pageAPI,200);
   await api(owner,'PUT',grant,200,{level:'edit'});
   console.log('A clean reload restored both edits for both users. Revocation closed the live member socket and denied a new ticket; the share was restored.');
-  console.log('Document: '+baseURL+path+'\nMailbox: '+mailbox+'\nAccounts: '+ownerEmail+', '+editorEmail);
+  console.log('Document: '+baseURL+path+'\nMailbox: '+mailbox+'\nWorkspace: '+workspaceName+'\nAccounts: '+ownerEmail+', '+editorEmail);
 } finally {
   await Promise.all(browsers.map(browser=>browser.close()));
 }
