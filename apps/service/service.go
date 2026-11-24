@@ -305,6 +305,8 @@ func (s *Service) routes() {
 	s.mux.HandleFunc("POST /internal/auth/login-mail", s.deliverStoredLoginCode)
 	s.mux.HandleFunc("POST /internal/sessions/recheck-access", s.recheckSessionAccess)
 	s.mux.HandleFunc("POST /internal/workspaces/{id}/recheck-access", s.recheckWorkspaceAccess)
+	s.mux.HandleFunc("POST /internal/invitations/normalize", s.validateInvitationAddress)
+	s.mux.HandleFunc("POST /internal/invitations/{id}/mail", s.deliverStagedInvitation)
 	// Blok's own local-file branch bypasses its auth wrapper; explicitly guard it here.
 	blok := s.Blok.Handler("/api/blok")
 	s.mux.Handle("/api/blok/", s.blokHandler(blok))

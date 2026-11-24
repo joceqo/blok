@@ -6,6 +6,8 @@ import { createLoginMail, createRequestCode } from './request-code.js';
 import { createShellAuth } from './auth.js';
 import { registerIndexWrite } from './index-write.js';
 import type { PgPool } from '../db/pool.js';
+import { createInviteMail } from './invite-mail.js';
+import { createWorkspaceInvites } from './workspace-invites.js';
 import { createWorkspaceMembers } from './workspace-members.js';
 import { createPageSharing } from './page-sharing.js';
 import { createAccessRecheck, recheckLiveSessions } from './recheck-access.js';
@@ -17,7 +19,7 @@ import { loadSession, loadVisiblePage, sessionDigest } from './session.js';
 
 const digest = (input: string) => createHash('sha256').update(input).digest();
 
-export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>, recheckAccess = createAccessRecheck(secret)) {
+export function createShellApp(pool: PgPool, secret: string, allowedOrigins: ReadonlySet<string>, recheckAccess = createAccessRecheck(secret), inviteMail = createInviteMail(secret)) {
   if (secret.length < 32) throw new Error('INTERNAL_SECRET must have at least 32 characters');
   const expected = digest('Bearer ' + secret);
   const app = new Hono();
@@ -83,6 +85,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
     return c.body(page.content, 200, { 'Content-Type': 'application/json' });
   });
 
+  app.route('/api/workspaces/:slug/invites', createWorkspaceInvites(pool, inviteMail));
   app.route('/api/workspaces/:slug/members', createWorkspaceMembers(pool, recheckAccess));
   app.route('/api/workspaces/:slug/pages', createPageSharing(pool, recheckAccess));
 
