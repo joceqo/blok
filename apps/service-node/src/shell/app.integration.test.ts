@@ -138,6 +138,21 @@ describe.skipIf(!databaseUrl)('shell routes on the deployed PostgreSQL schema', 
       expect(observed).toEqual(['1']);
     });
 
+    it('reports the committed revision if the live access refresh fails', async () => {
+      const { id, put } = await freshWorkspace();
+      const offline = createShellApp(db, secret, new Set(), async () => { throw new Error('offline'); });
+      const path = '/api/workspaces/' + id + '/index';
+      const entry = page(id + '-page');
+      const response = await offline.request(path, {
+        method: 'PUT', headers, body: JSON.stringify({ revision: 0, pages: [entry], trash: [] }),
+      });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: 'Index saved, live access refresh failed', revision: 1 });
+      const reload = await offline.request(path, { headers });
+      expect(await reload.json()).toMatchObject({ revision: 1, pages: [{ id: entry.id }] });
+      expect((await put(0, [entry])).status).toBe(409);
+    });
+
     it('keeps hidden records and read-only fields, rejects a guessed hidden ID and rolls back a global ID collision', async () => {
       const { id, put } = await freshWorkspace();
       const hidden = page(id+'-hidden');
