@@ -9,6 +9,21 @@ afterEach(()=>{mounted.splice(0).forEach(handle=>handle.destroy());document.body
 function mount(options: Parameters<typeof mountAgentAssistant>[0]) {const handle=mountAgentAssistant(options);mounted.push(handle);document.body.append(handle.element);handle.open();return handle;}
 function ask(handle:AgentAssistantHandle,text='Question'){const field=handle.element.querySelector<HTMLTextAreaElement>('textarea')!;field.value=text;field.dispatchEvent(new Event('input',{bubbles:true}));handle.element.querySelector('form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));}
 describe('host assistant provider adapters',()=>{
+  it('opens the editor separately from chat and immediately hides the action on permission loss', async()=>{
+    const editPage={available:vi.fn(()=>true),open:vi.fn()};
+    const handle=mount({getPageText:()=>'',openSettings:vi.fn(),editPage,listProviders:async()=>[{id:'openai:test',label:'OpenAI'}]});
+    await handle.refreshProviders();
+    const edit=handle.element.querySelector<HTMLButtonElement>('[data-blok-agent-edit-page]')!;
+    expect(edit.hidden).toBe(false);
+    edit.click();
+    expect(editPage.open).toHaveBeenCalledOnce();
+    expect(handle.element.querySelector<HTMLElement>('[data-blok-agent-panel]')!.hidden).toBe(true);
+    editPage.available.mockReturnValue(false);
+    handle.refreshPageActions();
+    expect(edit.hidden).toBe(true);
+    edit.click();
+    expect(editPage.open).toHaveBeenCalledOnce();
+  });
   it('keeps opaque model IDs through composer selection and renders the captured provider label',async()=>{
     const response: AgentModel=vi.fn(async()=>({content:[{type:'text',text:'OpenAI answer'}],stop_reason:'end_turn'}));
     const modelFor=vi.fn(()=>response), selected=vi.fn();

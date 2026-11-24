@@ -32,6 +32,8 @@ import {
 } from './welcome-seed';
 import { COVER_GALLERY, readCoverFile, createAddCoverButton, createPageCover, isPageCover, trackPageHeaderHover, type PageCover } from './cover';
 import { mountAgentAssistant, type AgentAssistantHandle } from '@blok/agent-assistant';
+import { createAiClient, selectionKey } from './ai-client';
+import { pageEditorAssistant } from './editor-assistant';
 import { bindAssistantButton, createAssistantButton, createWorkspaceAssistant } from './assistant';
 import { createPageToolbar, type PageBreadcrumbChoice, type PageBreadcrumbItem, type PageToolbar } from './page-toolbar';
 import { bindTitleDateMention, titleDateLabel, type TitleDateMentionBinding } from './title-date-mention';
@@ -147,9 +149,24 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     movingPage: false,
     closeSearch: undefined,
   };
+  const ai = createAiClient(ref);
+  let editAssistant: ReturnType<typeof pageEditorAssistant> | undefined;
+  const activeEditable = (): boolean => !!ws.currentId && ws.currentId === pageFromUrl() &&
+    ws.frame.element.isConnected && !ws.frame.element.inert && ws.access.canEdit(ws.currentId);
   const adoptIndex = (value: WorkspaceIndex): WorkspaceIndex => {
+    const wasEditable = ws.access.canEdit(ws.currentId);
     ws.index = value;
     ws.access = pageAccess(ref, value.access);
+    const editable = ws.access.canEdit(ws.currentId);
+    if (ws.currentId && wasEditable !== editable) {
+      if (!editable) editAssistant?.cancel();
+      const editor = ws.editor;
+      if (editor) void editor.isReady.then(() => {
+        if (ws.editor === editor) return editor.readOnly.set(!ws.access.canEdit(ws.currentId));
+      }).catch(showError);
+      ws.frame.element.toggleAttribute('data-desktop-read-only', !editable);
+      ws.assistant.refreshPageActions();
+    }
     return value;
   };
   /**
@@ -407,6 +424,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (!ws.index) return;
     refreshDateTitles();
     const request = ++ws.selection;
+    if (ws.currentId !== id) {
+      editAssistant?.cancel();
+      ws.assistant.refreshPageActions();
+    }
     if (ws.currentId !== id && ref.kind === 'remote') {
       if (ws.editor) { await ws.editor.isReady; await ws.editor.saver.flush(); }
       if (ws.selection !== request) return;
@@ -549,8 +570,12 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.refreshPagePresentation = () => { applyFullWidth(); renderCover(); ws.titleDateMention?.refresh(); };
     ws.pageCanvas.replaceChildren(toolbar.element, article);
     renderCover();
+    editAssistant = pageEditorAssistant(ai,
+      () => ws.generation === turn && activeEditable(),
+      () => localStorage.getItem(selectionKey(ref)));
     const instance = new Blok({
       holder,
+      agent: ws.access.readOnlyWorkspace ? undefined : editAssistant.agent,
       readOnly: readOnly(id),
       tools: { ...desktopTools, database: {class: Database, config: {customEmojis: () => emojis.list(), coverGallery: COVER_GALLERY, uploadCover: (file: globalThis.File) => readCoverFile(file).then(repository.uploadImage)}}, page: { class: Page, config: { ...pageConfig } } },
       theme: readAppearance(),
@@ -602,6 +627,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       } }),
     });
     ws.editor = instance;
+    ws.assistant.refreshPageActions();
     instance.width.set(page.fullWidth === true ? 'full' : 'narrow');
     void instance.isReady.then(() => {
       if (ws.generation !== turn) return;
@@ -859,6 +885,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     workspaceSearch: ref.kind === 'remote' ? { find: repository.searchSources, open: navigate } : undefined,
     getPageText: () => ws.pageCanvas.querySelector('[data-desktop-document]')?.textContent?.slice(0, 100_000) ?? '',
     openSettings: () => ws.footer.dispatchEvent(new Event('blok:desktop-open-ai-settings')),
+    editPage: {
+      available: () => !!editAssistant?.agent && activeEditable(),
+      open: () => { if (activeEditable()) ws.editor?.agent.openAssistant(); },
+    },
     ...createWorkspaceAssistant(ref),
   });
   ws.pageCanvas = ws.assistant.editorSlot;
@@ -936,6 +966,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   }
 
   async function showEmptyWorkspace(): Promise<void> {
+    editAssistant?.cancel();
+    editAssistant = undefined;
+    ws.assistant.refreshPageActions();
     if (ws.editor) {
       await ws.editor.isReady;
       if (ref.kind === 'remote') await ws.editor.saver.flush();
@@ -1004,6 +1037,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       if (ws.currentId && pageFromUrl() !== ws.currentId) {
         const url = new URL(location.href); url.searchParams.set('page', ws.currentId);
         history.replaceState(null, '', url);
+        ws.assistant.refreshPageActions();
       }
       showError(error);
     });
@@ -1069,6 +1103,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       } catch (error) { showError(error); }
     },
     async flush() {
+      editAssistant?.cancel();
       const wasInert = ws.frame.element.inert;
       ws.frame.element.inert = true;
       try {

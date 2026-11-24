@@ -7,7 +7,7 @@ const base:AiConfig={personal:{configured:true,model:'gpt-personal'},workspace:{
 const cleanup:Array<()=>void>=[];
 afterEach(()=>{cleanup.splice(0).forEach(fn=>fn());document.body.replaceChildren();localStorage.clear();vi.restoreAllMocks();});
 function mount(config:AiConfig=base,patch:Partial<AiClient>={}) {
- const client:AiClient={available:true,config:vi.fn(async()=>config),save:vi.fn(async()=>undefined),remove:vi.fn(async()=>undefined),models:vi.fn(async()=>({models:[{id:'gpt-personal'},{id:'gpt-new'},{id:'gpt-team'}]})),respond:vi.fn(),...patch};
+ const client:AiClient={available:true,config:vi.fn(async()=>config),save:vi.fn(async()=>undefined),remove:vi.fn(async()=>undefined),models:vi.fn(async()=>({models:[{id:'gpt-personal'},{id:'gpt-new'},{id:'gpt-team'}]})),respond:vi.fn(),editorRespond:vi.fn(),...patch};
  const container=document.createElement('div');document.body.append(container);const handle=mountAiSettings(container,ref,client);cleanup.push(()=>handle.destroy());return {client,container,handle};
 }
 async function ready(container:HTMLElement){await vi.waitFor(()=>expect(container.querySelector('[data-ai-scope=personal]')).not.toBeNull());}

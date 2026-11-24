@@ -5,6 +5,7 @@ export interface AgentAssistantOptions {
     find(query: string, signal: AbortSignal): Promise<{id: string; title: string; excerpt: string}[]>;
     open(id: string): void;
   };
+  editPage?: { available(): boolean; open(): void };
   getPageText(): string;
   openSettings(): void;
   inspectProvider?: (command:CliCommand,signal:AbortSignal)=>Promise<CliStatus>;
@@ -14,6 +15,7 @@ export interface AgentAssistantOptions {
   onProviderSelected?:(id:string)=>void;
 }
 export interface AgentAssistantHandle {
+  refreshPageActions(): void;
   element:HTMLElement;editorSlot:HTMLElement;open():void;close():void;destroy():void;refreshProviders():Promise<void>;
 }
 export function mountAgentAssistant(options:AgentAssistantOptions):AgentAssistantHandle;
