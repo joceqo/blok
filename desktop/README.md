@@ -21,6 +21,14 @@ npm ci --prefix desktop
 npm run build:embedded --prefix desktop
 ```
 
+## Calendar
+
+Open **Calendrier** in the workspace sidebar. Select a day in the mini-calendar, toggle sources to overlay their events, and select an appointment to open its details or a linked Blok page. Drag a timed workspace event in the grid to move it, or drag its lower edge to change its duration. The event form provides the same edits using a keyboard.
+
+The shared workspace calendar runs offline in the embedded app. On a Node workspace, members can subscribe to a Google, Outlook or iCloud calendar URL via **Abonnements**. Each subscription belongs to the signed-in member. Subscriptions are refreshed when opening or refocusing the calendar, every five minutes while visible, or via **Actualiser**. Files imported via **Importer .ics** become workspace events after confirmation.
+
+A configured self-hosted server also lets each member connect a Google account, select individual Google calendars, and share busy periods from their primary Google calendar with their workspace. Details of external events are read-only. See the Google Calendar OAuth section in `../deploy/README.md` for server setup.
+
 ## Local data in disk workspaces
 
 On this Mac, pages are saved under:

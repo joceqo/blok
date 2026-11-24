@@ -357,3 +357,17 @@ describe('page sidebar row', () => {
     expect(tooltipText()).toBe('Actions de la page');
   });
 });
+
+it('keeps the calendar selected when the visible page tree refreshes', () => {
+  const openCalendar = vi.fn();
+  const frame = createPageFrame({ pages: tree(), activeId: 'home', onOpen: vi.fn(), onCreate: vi.fn(), onCalendar: openCalendar });
+  const button = frame.element.querySelector<HTMLButtonElement>('[data-blok-sidebar-calendar]')!;
+  button.click();
+  expect(openCalendar).toHaveBeenCalledOnce();
+  frame.setCalendarActive(true);
+  frame.setPages(tree(), 'notes');
+  expect(button.getAttribute('aria-current')).toBe('page');
+  expect(frame.element.querySelector('[data-blok-sidebar-tree] [aria-current]')).toBeNull();
+  frame.setCalendarActive(false);
+  expect(button.hasAttribute('aria-current')).toBe(false);
+});

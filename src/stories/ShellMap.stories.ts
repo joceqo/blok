@@ -24,6 +24,9 @@ const groups: { title: string; screens: Screen[] }[] = [
   { title: 'Naviguer dans un espace', screens: [
     { name: 'Barre latérale', path: 'Espace → pages, sous-pages, favoris', stories: [['Arborescence', 'shell-sidebar--page-tree']] },
     { name: 'Recherche et pages récentes', path: 'Navigation → rechercher une page par titre ou rouvrir une page récente' },
+    { name: 'Calendrier', path: 'Barre latérale → semaine, événements et pages associées', stories: [
+      ['Agendas superposés', 'shell-calendrier--agendas-superposes'], ['Semaine', 'shell-calendrier--semaine'], ['Lecture seule', 'shell-calendrier--lecture-seule'],
+    ] },
     { name: 'Espaces d’équipe', path: 'Espace partagé → espaces d’équipe, membres et rôles' },
     { name: 'Notifications', path: 'Espace partagé → demandes d’accès et décisions', stories: [
       ['Boîte vide', 'shell-notifications--vide'], ['Non lues', 'shell-notifications--non-lues'],

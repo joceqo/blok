@@ -26,6 +26,7 @@ export interface PageFrame {
   element: HTMLElement;
   canvas: HTMLElement;
   setPages: (pages: ShellPage[], activeId: string) => void;
+  setCalendarActive: (active: boolean) => void;
   toggleSidebar: () => void;
 }
 
@@ -54,6 +55,7 @@ export interface PageFrameOptions {
   recentIds?: string[];
   onRecentsChange?: (ids: string[]) => void;
   onTeamspaces?: () => void;
+  onCalendar?: () => void;
   onTeamspaceMenu?: (anchor: HTMLButtonElement) => void;
   pageUrl?: (id: string) => string;
   availableActions?: SidebarAction['type'][];
@@ -215,6 +217,16 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
   newPage.append(newPageLabel);
   newPage.addEventListener('click', () => options.onCreate(null));
   shortcuts.append(newPage);
+
+  const calendar = document.createElement('button');
+  if (options.onCalendar) {
+    calendar.type = 'button';
+    calendar.setAttribute('data-blok-sidebar-shortcut', '');
+    calendar.setAttribute('data-blok-sidebar-calendar', '');
+    calendar.append(svg(['M2.5 4h11v9.5h-11z', 'M5 2.5v3M11 2.5v3M2.5 7h11']), document.createTextNode('Calendrier'));
+    calendar.addEventListener('click', options.onCalendar);
+    shortcuts.append(calendar);
+  }
 
   if (options.onTeamspaces) {
     const teams = document.createElement('button');
@@ -565,7 +577,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     const expanded = visibleChildren.length > 0 && (forceOpen || !closed.has(page.id));
     const row = document.createElement('div');
     row.setAttribute('data-blok-sidebar-row', '');
-    if (page.id === view.activeId) row.setAttribute('data-active', '');
+    if (page.id === view.activeId && !calendar.hasAttribute('aria-current')) row.setAttribute('data-active', '');
     row.style.paddingInlineStart = `${8 + depth * 8}px`;
 
     const canExpand = visibleChildren.length > 0;
@@ -602,7 +614,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     const link = document.createElement('button');
     link.type = 'button';
     link.setAttribute('data-blok-sidebar-link', '');
-    if (page.id === view.activeId) link.setAttribute('aria-current', 'page');
+    if (page.id === view.activeId && !calendar.hasAttribute('aria-current')) link.setAttribute('aria-current', 'page');
     const label = document.createElement('span');
     label.setAttribute('data-blok-sidebar-label', '');
     label.textContent = page.title;
@@ -805,12 +817,18 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     element: shell,
     canvas,
     toggleSidebar: () => setCollapsed(!sidebar.hasAttribute('data-collapsed')),
+    setCalendarActive(active) {
+      if (calendar.hasAttribute('aria-current') === active) return;
+      if (active) calendar.setAttribute('aria-current', 'page');
+      else calendar.removeAttribute('aria-current');
+      paint();
+    },
     setPages(next, nextActive) {
       view.pages = next;
       view.activeId = nextActive;
       const allowed = new Set(next.map((page) => page.id));
       for (let i = recents.length - 1; i >= 0; i--) if (!allowed.has(recents[i])) recents.splice(i, 1);
-      remember(nextActive);
+      if (!calendar.hasAttribute('aria-current')) remember(nextActive);
       paint();
     },
   };

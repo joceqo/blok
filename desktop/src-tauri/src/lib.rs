@@ -29,6 +29,28 @@ fn workspace_file(app: &tauri::AppHandle, name: &str, workspace: Option<&str>) -
 }
 
 #[tauri::command]
+fn open_calendar_authorization(url: String) -> Result<(), String> {
+    let parsed = tauri::Url::parse(&url).map_err(|_| "URL Google invalide")?;
+    if parsed.origin().ascii_serialization() != "https://accounts.google.com"
+        || parsed.path() != "/o/oauth2/v2/auth" || !parsed.username().is_empty()
+        || parsed.password().is_some() || parsed.fragment().is_some()
+    {
+        return Err("URL Google invalide".into());
+    }
+    #[cfg(target_os = "macos")]
+    let command = "open";
+    #[cfg(target_os = "linux")]
+    let command = "xdg-open";
+    #[cfg(target_os = "windows")]
+    let command = "rundll32.exe";
+    let mut launch = Command::new(command);
+    #[cfg(target_os = "windows")]
+    launch.arg("url.dll,FileProtocolHandler");
+    launch.arg(parsed.as_str()).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn load_workspace_file(app: tauri::AppHandle, name: String, workspace: Option<String>) -> Result<Option<String>, String> {
     let path = workspace_file(&app, &name, workspace.as_deref())?;
     match std::fs::read_to_string(path) {
@@ -394,7 +416,7 @@ pub fn run() {
                 let _ = window.eval(script);
             }
         })
-        .invoke_handler(tauri::generate_handler![embedded_server::embedded_server_available, embedded_server::ensure_embedded_server, ai::ai_local_status, ai::ai_local_save, ai::ai_local_delete, ai::ai_local_models, ai::ai_local_respond, ai::ai_local_editor_respond, ai::ai_local_cancel, close_editor_window, load_cloud_session, save_cloud_session, load_workspace_file, save_workspace_file, workspace_data_directory, agent_provider_status, agent_ask, agent_cancel])
+        .invoke_handler(tauri::generate_handler![open_calendar_authorization, embedded_server::embedded_server_available, embedded_server::ensure_embedded_server, ai::ai_local_status, ai::ai_local_save, ai::ai_local_delete, ai::ai_local_models, ai::ai_local_respond, ai::ai_local_editor_respond, ai::ai_local_cancel, close_editor_window, load_cloud_session, save_cloud_session, load_workspace_file, save_workspace_file, workspace_data_directory, agent_provider_status, agent_ask, agent_cancel])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {

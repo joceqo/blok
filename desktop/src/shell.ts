@@ -167,18 +167,19 @@ function boot(): Session {
   const restored = load(sessionStorage.getItem(tabKey()));
   const requested = new URL(location.href);
   const page = requested.searchParams.get('page');
-  if (!restored || !page) return restored ?? freshSession();
+  const calendar = requested.searchParams.get('view') === 'calendar';
+  if (!restored || (!page && !calendar)) return restored ?? freshSession();
   // An explicit page link takes precedence over the previously selected tab.
   const existing = restored.tabs.find((tab) => {
     const url = new URL(tab.href);
-    return url.pathname === requested.pathname && url.searchParams.get('page') === page;
+    return url.pathname === requested.pathname && (calendar ? url.searchParams.get('view') === 'calendar' : url.searchParams.get('page') === page);
   });
   if (existing) {
     existing.href = requested.href;
     existing.entries[existing.index] = requested.href;
     restored.activeId = existing.id;
   } else {
-    const opened = freshTab(requested.href, 'Nouvelle page');
+    const opened = freshTab(requested.href, calendar ? 'Calendrier' : 'Nouvelle page');
     restored.tabs.push(opened);
     restored.tabs = restored.tabs.slice(-MAX_TABS);
     restored.activeId = opened.id;
@@ -411,8 +412,9 @@ function syncTitle(): void {
   const tab = active();
   if (!tab) return;
   const title = readable(document.title);
-  if (tab.title === title) return;
-  box.session = withTab(box.session, tab.id, { ...tab, title });
+  const icon = new URL(tab.href).searchParams.get('view') === 'calendar' ? '' : tab.icon;
+  if (tab.title === title && tab.icon === icon) return;
+  box.session = withTab(box.session, tab.id, { ...tab, title, icon });
   persist();
   paint();
 }

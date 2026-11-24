@@ -24,6 +24,9 @@ services:
     restart: unless-stopped
     stop_grace_period: 90s
     environment:
+      GOOGLE_CALENDAR_CLIENT_ID: ${GOOGLE_CALENDAR_CLIENT_ID:-}
+      GOOGLE_CALENDAR_CLIENT_SECRET: ${GOOGLE_CALENDAR_CLIENT_SECRET:-}
+      GOOGLE_CALENDAR_REDIRECT_URI: ${GOOGLE_CALENDAR_REDIRECT_URI:-}
       PUBLIC_URL: http://localhost:${DEMO_WEB_PORT:-8088}
       PORT: '8081'
       DATA_DIRECTORY: /data

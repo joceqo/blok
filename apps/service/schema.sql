@@ -140,3 +140,55 @@ INSERT INTO workspace_notifications(workspace_id,recipient_id,actor_id,type,crea
 SELECT j.workspace_id,m.user_id,j.user_id,'join_requested',j.created_at
 FROM upgrade CROSS JOIN join_requests j JOIN memberships m ON m.workspace_id=j.workspace_id
 WHERE j.status='pending' AND m.role='admin';
+
+-- Events that link to a page follow the page's visibility, including after deletion.
+CREATE TABLE IF NOT EXISTS workspace_calendar_events (
+  workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  id uuid NOT NULL,
+  title text NOT NULL CHECK (length(title) BETWEEN 1 AND 300),
+  starts_at timestamptz NOT NULL,
+  ends_at timestamptz NOT NULL CHECK (ends_at > starts_at),
+  all_day boolean NOT NULL,
+  page_id text,
+  revision integer NOT NULL DEFAULT 1 CHECK (revision > 0),
+  PRIMARY KEY (workspace_id, id),
+  FOREIGN KEY (workspace_id, page_id) REFERENCES pages(workspace_id, id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS workspace_calendar_range ON workspace_calendar_events(workspace_id, all_day, starts_at);
+INSERT INTO schema_migrations(version) VALUES(11) ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS calendar_google_connections (
+  workspace_id text NOT NULL,
+  user_id text NOT NULL,
+  refresh_secret text NOT NULL,
+  access_secret text NOT NULL,
+  access_expires_at timestamptz NOT NULL,
+  PRIMARY KEY (workspace_id,user_id),
+  FOREIGN KEY (workspace_id,user_id) REFERENCES memberships(workspace_id,user_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS calendar_google_states (
+  digest text PRIMARY KEY,
+  workspace_id text NOT NULL,
+  user_id text NOT NULL,
+  verifier text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  used boolean NOT NULL DEFAULT false,
+  UNIQUE(workspace_id,user_id),
+  FOREIGN KEY (workspace_id,user_id) REFERENCES memberships(workspace_id,user_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS workspace_calendar_feeds (
+  workspace_id text NOT NULL,
+  user_id text NOT NULL,
+  id uuid NOT NULL,
+  label text NOT NULL,
+  secret text NOT NULL,
+  PRIMARY KEY(workspace_id,user_id,id),
+  FOREIGN KEY(workspace_id,user_id) REFERENCES memberships(workspace_id,user_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS calendar_availability_shares (
+  workspace_id text NOT NULL,
+  user_id text NOT NULL,
+  PRIMARY KEY(workspace_id,user_id),
+  FOREIGN KEY(workspace_id,user_id) REFERENCES memberships(workspace_id,user_id) ON DELETE CASCADE
+);
+INSERT INTO schema_migrations(version) VALUES(12) ON CONFLICT DO NOTHING;
