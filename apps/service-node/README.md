@@ -20,6 +20,14 @@ The Go service continues to own login, workspace mutations, ACL changes, tickets
 
 Run the focused shell tests with `npm test -- src/shell`. Set `SHELL_TEST_DATABASE_URL` to include the PostgreSQL checks. They create and remove a unique schema in that database.
 
+The integration tests read `apps/service/schema.sql` from the product checkout by default. When developing the Node service on its standalone branch, point `SHELL_TEST_SCHEMA_PATH` at the canonical file in a sibling checkout of `integration/tout`. Run this from `apps/service-node` with a development database that permits creating schemas.
+
+```sh
+SHELL_TEST_SCHEMA_PATH=/absolute/path/to/blok-product/apps/service/schema.sql \
+SHELL_TEST_DATABASE_URL=postgresql://localhost/blok_test \
+npm test -- src/shell/app.integration.test.ts
+```
+
 ## Stack
 
 | Layer | Choice |
