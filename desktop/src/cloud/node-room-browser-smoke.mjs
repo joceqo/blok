@@ -26,7 +26,8 @@ const workspace = '/api/workspaces/' + slug;
 const workspaceName = 'Collaboration Node ' + slug;
 const path = '/?page=' + id;
 const pageAPI = workspace + '/pages/' + id;
-const editorSelector = '[data-blok-redactor] [contenteditable="true"]';
+// The provider reports connected before read-only arbitration and the first document render finish.
+const editorSelector = '[data-blok-rendered]:not([data-blok-loading]) [data-blok-redactor] [contenteditable="true"]';
 const block = (page, text) => page.locator(editorSelector).filter({ hasText: text }).first();
 
 async function demo(...args) {
@@ -202,6 +203,8 @@ try {
     for (const trace of [first,second,additional]) assert.ok(trace.nodeTickets.size > 0,'The shell must obtain its live ticket from Node');
     const field = additional.tab.locator(editorSelector).first();
     await expect(field).toBeEditable({timeout});
+    await field.click();
+    await expect(field).toBeFocused({timeout});
     await field.fill('Deuxième journal avant redémarrage');
     await expect(field).toContainText('Deuxième journal',{timeout});
     await saved(additional.tab);
