@@ -162,6 +162,29 @@ func TestCloudIntegration(t *testing.T) {
 	lock.Lock()
 	invitationBody := deliveredMessages["invited@example.test"]
 	lock.Unlock()
+	request("POST", "/internal/invitations/normalize", "", map[string]any{"email": " test@example.test "}, 401)
+	normalized := request("POST", "/internal/invitations/normalize", cfg.InternalSecret, map[string]any{"email": " BRIDGE@EXAMPLE.TEST "}, 200)
+	if normalized["email"] != "bridge@example.test" {
+		t.Fatal("address bridge drift")
+	}
+	request("POST", "/internal/invitations/normalize", cfg.InternalSecret, map[string]any{"email": "Nobody <bridge@example.test>"}, 400)
+	if _, err := s.DB.Exec(ctx, `INSERT INTO invites(id,workspace_id,email,role,status,expires_at)
+		SELECT 'bridge-invite',id,'bridge@example.test','viewer','delivering',now()+interval '7 days' FROM workspaces WHERE slug='tousambassadeurs'`); err != nil {
+		t.Fatal(err)
+	}
+	request("POST", "/internal/invitations/bridge-invite/mail", admin, map[string]any{"message": "bridge note"}, 401)
+	request("POST", "/internal/invitations/bridge-invite/mail", cfg.InternalSecret, map[string]any{"message": "bridge note"}, 204)
+	lock.Lock()
+	bridgeNote := deliveredMessages["bridge@example.test"]
+	lock.Unlock()
+	if !strings.Contains(bridgeNote, "bridge note") || !strings.Contains(bridgeNote, cfg.PublicURL) {
+		t.Fatal("mail bridge did not use canonical text and public URL")
+	}
+	if _, err := s.DB.Exec(ctx, "UPDATE invites SET status='revoked' WHERE id='bridge-invite'"); err != nil {
+		t.Fatal(err)
+	}
+	request("POST", "/internal/invitations/bridge-invite/mail", cfg.InternalSecret, map[string]any{}, 404)
+
 	if !strings.Contains(invitationBody, note) {
 		t.Fatal("Invitation delivery omitted the optional note")
 	}
