@@ -963,7 +963,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       markWelcomeSeeded(key);
       return existing.id;
     }
-    const docs = buildWelcomeDocuments(workspaceId);
+    const docs = buildWelcomeDocuments(workspaceId, ref.kind === 'remote' && ref.device === true);
     const welcomePage = docs.pages[0];
     if (!welcomePage) return null;
     // Captured so the callbacks below keep the non-null narrowing from the guard.

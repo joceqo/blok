@@ -42,7 +42,7 @@ export function mountCalendarSources(container:HTMLElement, store:CalendarStore,
   const api = <T>(path:string, init?:RequestInit) => remote!.client.request<T>(remote!.base + path,init);
   function checkbox(name:string,value:boolean,tint:string,change:(on:boolean)=>void) {
     const line = element('label'), box = element('input');
-    box.type = 'checkbox'; box.checked = value; box.style.accentColor = tint;
+    box.type = 'checkbox'; box.checked = value; box.style.setProperty('--cal-source-color',tint);
     box.onchange = () => change(box.checked); line.append(box,element('span',name)); return line;
   }
   function report(error:unknown) { message = error instanceof Error ? error.message : 'Source indisponible.'; render(); }

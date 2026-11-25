@@ -3,7 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Nouvelle page</title>
+    <title>Blok</title>
+    <script>
+      try {
+        const appearance = localStorage.getItem('blok:desktop:appearance');
+        document.documentElement.dataset.startupTheme = appearance === 'light' || appearance === 'auto' ? appearance : 'dark';
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="/src/startup.css" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
@@ -14,7 +21,14 @@
     <link rel="stylesheet" href="/src/shell.css" />
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <main data-blok-startup aria-label="Démarrage de Blok" aria-busy="true">
+        <div class="startup-content">
+          <div class="startup-brand"><img src="/favicon-128x128.png" width="64" height="64" alt="" /><span>Blok</span></div>
+          <p role="status" class="startup-status"><span class="startup-spinner" aria-hidden="true"></span>Ouverture de votre espace…</p>
+        </div>
+      </main>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

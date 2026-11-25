@@ -416,7 +416,7 @@ pub fn run() {
                 let _ = window.eval(script);
             }
         })
-        .invoke_handler(tauri::generate_handler![open_calendar_authorization, embedded_server::embedded_server_available, embedded_server::ensure_embedded_server, ai::ai_local_status, ai::ai_local_save, ai::ai_local_delete, ai::ai_local_models, ai::ai_local_respond, ai::ai_local_editor_respond, ai::ai_local_cancel, close_editor_window, load_cloud_session, save_cloud_session, load_workspace_file, save_workspace_file, workspace_data_directory, agent_provider_status, agent_ask, agent_cancel])
+        .invoke_handler(tauri::generate_handler![open_calendar_authorization, embedded_server::embedded_server_available, embedded_server::ensure_embedded_server, embedded_server::embedded_device_session, ai::ai_local_status, ai::ai_local_save, ai::ai_local_delete, ai::ai_local_models, ai::ai_local_respond, ai::ai_local_editor_respond, ai::ai_local_cancel, close_editor_window, load_cloud_session, save_cloud_session, load_workspace_file, save_workspace_file, workspace_data_directory, agent_provider_status, agent_ask, agent_cancel])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {

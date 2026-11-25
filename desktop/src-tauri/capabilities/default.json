@@ -11,6 +11,7 @@
     "core:window:allow-start-dragging",
     "allow-embedded-server-available",
     "allow-ensure-embedded-server",
+    "allow-embedded-device-session",
     "allow-close-editor-window",
     "allow-load-workspace-file",
     "allow-save-workspace-file",

@@ -8,3 +8,6 @@
 .cal-layer-row { display: flex; align-items: center; justify-content: space-between; }
 .cal-sources form { display: grid; gap: 5px; }
 .cal-sources form input { min-width: 0; width: 100%; color: inherit; background: transparent; border: 1px solid var(--desktop-border,#aaa); border-radius: 4px; padding: 3px; }
+
+.cal-sources input[type="checkbox"] { accent-color: var(--cal-source-color); }
+[data-blok-theme="dark"] .cal-sources input[type="checkbox"] { accent-color: oklch(from var(--cal-source-color) 75% min(.2, calc(c * 3.5)) h); }

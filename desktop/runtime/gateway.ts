@@ -28,10 +28,52 @@ async function serveFile(root: string, pathname: string, req: IncomingMessage, r
   else pipeline(createReadStream(path), res, () => {});
 }
 
-export function gateway(ports: Instance['ports'], web: string) {
+// These are the shell routes that can call the private media service. Listing
+// emojis and signing an existing URL use only PostgreSQL and stay available.
+function needsStorage(path: string, method: string | undefined) {
+  return path.startsWith('/files/') || path === '/mcp' ||
+    /^\/api\/blok\/(upload|upload-by-url|delete|unfurl|frame-check|file-bytes)\/?$/.test(path) ||
+    (method === 'POST' && /^\/api\/workspaces\/[^/]+\/(images|emojis)\/?$/.test(path));
+}
+
+function storageGate() {
+  let state: 'starting' | 'ready' | 'failed' = 'starting';
+  const waiting = new Set<() => void>();
+  const reject = (res: ServerResponse) => res.writeHead(503, { 'Retry-After': '1' }).end();
+  function update(next: 'ready' | 'failed') {
+    state = next;
+    for (const resume of waiting) resume();
+  }
+  return {
+    update,
+    run(res: ServerResponse, forward: () => void) {
+      if (state === 'ready') { forward(); return; }
+      if (state === 'failed' || waiting.size >= 32) { reject(res); return; }
+      // Do not consume the request body until the upstream can receive it.
+      // This leaves upload backpressure with the HTTP socket.
+      const release = () => {
+        clearTimeout(timer);
+        waiting.delete(resume);
+        res.off('close', release);
+      };
+      const resume = () => {
+        release();
+        if (res.destroyed) return;
+        if (state === 'ready') forward();
+        else reject(res);
+      };
+      const timer = setTimeout(resume, 20_000).unref();
+      waiting.add(resume);
+      res.once('close', release);
+    },
+  };
+}
+
+export function gateway(ports: Pick<Instance['ports'], 'public' | 'api' | 'room'>, web: string) {
   const authority = loopback + ':' + ports.public;
   const sockets = new Set<import('node:net').Socket>();
   let ready = false;
+  const storage = storageGate();
   // Only origin-form URLs are ever passed to an upstream. URIs containing encoded
   // separators or dot segments must not be interpreted differently by the backend.
   function pathname(req: IncomingMessage) {
@@ -47,6 +89,16 @@ export function gateway(ports: Instance['ports'], web: string) {
     if (!upgrade) { delete headers.upgrade; headers.connection = 'close'; }
     return request({ hostname: loopback, port, path: req.url, method: req.method, headers });
   }
+  function proxyHttp(req: IncomingMessage, res: ServerResponse, port: number) {
+    const proxy = upstream(req, port, false);
+    proxy.on('error', () => { if (!res.headersSent) end(res, 502); else res.destroy(); });
+    proxy.once('response', reply => {
+      res.writeHead(reply.statusCode ?? 502, reply.headers);
+      pipeline(reply, res, () => {});
+    });
+    res.on('close', () => proxy.destroy());
+    req.pipe(proxy);
+  }
   const server = createServer((req, res) => {
     let path;
     try { path = pathname(req); } catch { return end(res, 400); }
@@ -57,14 +109,9 @@ export function gateway(ports: Instance['ports'], web: string) {
       void serveFile(web, path, req, res).catch(() => { if (!res.headersSent) end(res, 404); else res.destroy(); });
       return;
     }
-    const proxy = upstream(req, isRoom(path) ? ports.room : ports.api, false);
-    proxy.on('error', () => { if (!res.headersSent) end(res, 502); else res.destroy(); });
-    proxy.once('response', reply => {
-      res.writeHead(reply.statusCode ?? 502, reply.headers);
-      pipeline(reply, res, () => {});
-    });
-    res.on('close', () => proxy.destroy());
-    req.pipe(proxy);
+    const forward = () => proxyHttp(req, res, isRoom(path) ? ports.room : ports.api);
+    if (needsStorage(decodeURIComponent(path), req.method)) storage.run(res, forward);
+    else forward();
   });
   server.on('upgrade', (req, socket, head) => {
     let path;
@@ -90,8 +137,9 @@ export function gateway(ports: Instance['ports'], web: string) {
     proxy.end();
   });
   server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
-  return { server, setReady: () => { ready = true; }, stopAccepting: () => {
+  return { server, setStorage: storage.update, setReady: () => { ready = true; }, stopAccepting: () => {
     ready = false;
+    storage.update('failed');
     for (const socket of sockets) socket.destroy();
   } };
 }

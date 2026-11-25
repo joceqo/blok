@@ -8,9 +8,9 @@ new-tab button. The macOS window uses an overlay title bar with traffic lights a
 
 ## Standalone app with the embedded Node server
 
-The Apple Silicon build runs on macOS 15 or newer. Open Blok and create a workspace with your name, email and password. The app starts its own Node backend, PostgreSQL and SeaweedFS on loopback. It works offline, including the editor and attachments. External AI providers require an internet connection.
+The Apple Silicon build runs on macOS 15 or newer. Open Blok to start in your local account and workspace. Your operating-system profile owns this account. Email authentication applies when you choose to connect to a remote Blok server. The app starts its own Node backend, PostgreSQL and SeaweedFS on loopback. It works offline, including the editor and attachments. External AI providers require an internet connection.
 
-Quitting Blok stops its services. Accounts, documents and attachments persist in `~/Library/Application Support/dev.notiooon.blok/embedded-server`. An existing disk workspace keeps opening as before. Use **Paramètres → Connexions → Ouvrir le serveur intégré** to set up the server alongside it.
+Quitting Blok stops its services. Accounts, documents and attachments persist in `~/Library/Application Support/dev.notiooon.blok/embedded-server`. At upgrade, Blok imports the original default disk workspace, including page bodies, hierarchy, trash and database-row pages. It archives the original JSON files byte-for-byte in PostgreSQL and keeps the source folder on disk. The import runs once. Other disk workspaces remain accessible from the switcher.
 
 To build on an Apple Silicon Mac with the Tauri prerequisites and repository dependencies installed, run the following from the repository root. The first build downloads the pinned runtime binaries. End users only need the packaged app.
 
@@ -101,7 +101,7 @@ The script reads `DEMO_WEB_PORT` and `DEMO_MAIL_PORT` (defaults `8088` and `8089
 
 ## Native shell with a local or remote server
 
-Tauri bundles the same TypeScript shell and editor used by the browser. On a fresh installation, the standalone package opens the embedded server setup. The smaller package opens a disk workspace. In the connection screen, choose **Se connecter à un autre serveur** and enter the Docker demo URL or an HTTPS server. The native adapter stores remote sessions in the OS keychain.
+Tauri bundles the same TypeScript shell and editor used by the browser. On a fresh installation, the standalone package opens your device workspace. The smaller package opens a disk workspace. In the connection screen, choose **Se connecter à un autre serveur** and enter the Docker demo URL or an HTTPS server. The native adapter stores remote sessions in the OS keychain.
 
 To preselect a server when building the native app, set `VITE_BLOK_SERVER_URL` for the build. An explicitly chosen server or an already active remote workspace takes precedence.
 

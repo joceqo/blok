@@ -38,11 +38,12 @@ export async function choosePorts<T extends string>(names: readonly T[], exclude
   }
 }
 
-export async function checkPrivatePorts(ports: Ports) {
+export async function checkPrivatePorts(ports: Ports, group: 'editor' | 'storage') {
   // A persisted port may now belong to another local program. Fail before passing
   // credentials to any service or letting its health endpoint satisfy readiness.
   for (const name of portNames) {
-    if (name === 'public') continue;
+    const editor = name === 'api' || name === 'postgres' || name === 'room';
+    if (name === 'public' || editor !== (group === 'editor')) continue;
     const probe = createServer();
     try {
       await listen(probe, ports[name]);

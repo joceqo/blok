@@ -1,5 +1,6 @@
-import type { WorkspaceRef } from './workspace-registry';
-import { hasSelectedWorkspace } from './workspace-registry';
+import { CloudApiError, CloudClient, type CloudSession } from './cloud/client';
+import { bindDeviceSession, nativeSessionAdapter } from './native-session';
+import { prefersDefaultDisk, type RemoteWorkspace, type WorkspaceRef } from './workspace-registry';
 
 type NativeBridge = { invoke(command: string, args?: Record<string, unknown>): Promise<unknown> };
 function bridge(): NativeBridge | undefined {
@@ -11,23 +12,61 @@ export async function embeddedServerAvailable(): Promise<boolean> {
   catch { return false; }
 }
 
-export async function useEmbeddedServer(params: URLSearchParams, workspace: WorkspaceRef, configuredServer?: string): Promise<boolean> {
+export async function useEmbeddedServer(params: URLSearchParams, workspace: WorkspaceRef): Promise<boolean> {
   const native = bridge();
   if (!native || params.has('server')) return false;
   if (params.get('embedded') === '1') return true;
   if (workspace.kind === 'remote') return workspace.embedded === true;
-  if (params.get('local') === '1' || workspace.id !== 'default' || configuredServer || hasSelectedWorkspace() || !await embeddedServerAvailable()) return false;
-  // A previous version could save local pages before the user ever selected a
-  // workspace. Preserve that library when upgrading an existing installation.
-  return await native.invoke('load_workspace_file', {name: 'index'}) === null;
+  return params.get('local') !== '1' && workspace.id === 'default' && !prefersDefaultDisk() && await embeddedServerAvailable();
 }
 
-export async function startEmbeddedServer(): Promise<string> {
-  const origin = await bridge()?.invoke('ensure_embedded_server');
+function localOrigin(origin: unknown): string {
   if (typeof origin !== 'string') throw new Error('Le serveur intégré ne répond pas.');
   const url = new URL(origin);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port || url.origin !== origin) {
     throw new Error('Adresse du serveur intégré invalide.');
   }
   return origin;
+}
+
+export async function startEmbeddedServer(): Promise<string> {
+  return localOrigin(await bridge()?.invoke('ensure_embedded_server'));
+}
+
+interface DeviceSession extends CloudSession { origin: string; token: string; deviceWorkspaceId: string; deviceActivePageId?: string | null; deviceImportedWorkspaceId?: string | null }
+
+export async function openEmbeddedWorkspace(selected: WorkspaceRef, explicit: boolean): Promise<{workspace: RemoteWorkspace; activePageId?: string; otherWorkspaces?: RemoteWorkspace[]}> {
+  const previous = selected.kind === 'remote' && selected.embedded ? selected : undefined;
+  if (previous && !previous.device && !explicit) {
+    // A pre-device build could already have a signed-in, password-based workspace.
+    const origin = await startEmbeddedServer();
+    if (origin !== previous.server) throw new Error('L’adresse du serveur intégré de cet espace a changé.');
+    const adapter = nativeSessionAdapter(origin);
+    if (await adapter.getToken()) {
+      try {
+        const session = await new CloudClient({origin, sessionAdapter: adapter}).session();
+        const membership = session.workspaces.find(w => w.slug === previous.workspaceId);
+        if (session.user.id === previous.accountId && membership) return {workspace:{...previous, name: membership.name, role: membership.role, userName:session.user.name || 'Profil local'}};
+      } catch (error) { if (!(error instanceof CloudApiError && error.status === 401)) throw error; }
+    }
+  }
+  const result = await bridge()?.invoke('embedded_device_session') as DeviceSession | undefined;
+  const origin = localOrigin(result?.origin);
+  if (typeof result?.token !== 'string' || !result.token || !result.user?.id || !Array.isArray(result.workspaces)) throw new Error('Profil local indisponible.');
+  if (previous?.device && !explicit && origin !== previous.server) throw new Error('L’adresse du serveur intégré de cet espace a changé.');
+  const imported = selected.kind === 'local' && selected.id === 'default' ? result.deviceImportedWorkspaceId : undefined;
+  const preferred = previous?.device && previous.accountId === result.user.id ? previous.id : imported || result.deviceWorkspaceId;
+  const references: RemoteWorkspace[] = result.workspaces.map(w => ({
+    kind:'remote', embedded:true, device:true, id:w.id, name:w.name, server:origin,
+    workspaceId:w.slug, role:w.role, accountId:result.user.id, userName:result.user.name || 'Profil local',
+  }));
+  const workspace = references.find(w => w.id === preferred) ?? references.find(w => w.id === result.deviceWorkspaceId);
+  if (!workspace) throw new Error('Espace de cet appareil introuvable.');
+  bindDeviceSession(origin, result.token);
+  const importedHere = !result.deviceImportedWorkspaceId || workspace.id === result.deviceImportedWorkspaceId;
+  return {
+    workspace,
+    otherWorkspaces: references.filter(w => w.id !== workspace.id),
+    activePageId: importedHere && typeof result.deviceActivePageId === 'string' ? result.deviceActivePageId : undefined,
+  };
 }

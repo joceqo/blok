@@ -1,5 +1,6 @@
 .blok-calendar {
   --cal-accent: #c54f3d;
+  --cal-accent-text: var(--cal-accent);
   --cal-hour: 56px;
   --cal-gutter: 56px;
   display: flex; flex-direction: row; container: calendar / inline-size; position: relative;
@@ -7,6 +8,7 @@
   background: var(--desktop-canvas); color: var(--desktop-ink);
   font: 13px/1.45 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
+[data-blok-theme="dark"] .blok-calendar { --cal-accent-text: #ef8a75; color-scheme: dark; }
 .cal-heading { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; padding: 22px clamp(12px, 3vw, 32px) 18px; }
 .cal-title h1 { margin: 0; color: var(--desktop-ink); font-size: clamp(21px, 2.3vw, 30px); line-height: 1.12; letter-spacing: -.045em; font-weight: 650; }
 .cal-title h1::first-letter, .cal-title p::first-letter { text-transform: uppercase; }
@@ -41,7 +43,7 @@
 .cal-day-label span { font-size: 10px; font-weight: 550; color: var(--desktop-muted); letter-spacing: .035em; text-transform: uppercase; }
 .cal-day-label strong { display: grid; place-items: center; min-width: 26px; height: 26px; margin-left: -4px; font-size: 21px; font-weight: 550; line-height: 1; letter-spacing: -.055em; }
 .cal-day-label[aria-current] strong { color: white; background: var(--cal-accent); border-radius: 50%; font-size: 16px; }
-.cal-day-label[aria-current] span { color: var(--cal-accent); }
+.cal-day-label[aria-current] span { color: var(--cal-accent-text); }
 .cal-zone, .cal-all > span, .cal-scale { color: var(--desktop-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .cal-zone, .cal-all > span { align-self: end; padding: 3px 6px; text-align: right; }
 .cal-all { border-block: 1px solid var(--desktop-border); }
@@ -86,7 +88,7 @@
 .cal-editor > footer { border-top: 1px solid var(--desktop-border); gap: 10px; }
 .cal-editor > footer:empty { display: none; }
 .cal-editor button.cal-primary { margin-left: auto; }
-.cal-editor .cal-delete, .cal-error { color: var(--cal-accent); }
+.cal-editor .cal-delete, .cal-error { color: var(--cal-accent-text); }
 .cal-error { margin: 0 18px 12px; }
 .cal-editor button:disabled { cursor: wait; opacity: .6; }
 @media (max-width: 650px) {
@@ -113,7 +115,7 @@
 .cal-mini-grid { display: grid; grid-template-columns: repeat(7, 1fr); row-gap: 3px; align-items: center; }
 .cal-mini-grid > span { text-align: center; font-size: 10px; color: var(--desktop-muted); }
 .cal-mini-grid .cal-mini-date { height: 22px; min-width: 0; padding: 0; font-size: 11px; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.cal-mini-date.cal-out-month { color: var(--desktop-muted); opacity: .65; }
+.cal-mini-date.cal-out-month { color: var(--desktop-muted); }
 .cal-mini-date.cal-in-week { background: var(--desktop-hover); }
 .cal-mini-date[aria-pressed=true] { font-weight: 700; box-shadow: inset 0 0 0 1px var(--desktop-muted); border-radius: 50%; }
 .cal-mini-date[aria-current=date] { background: var(--cal-accent); color: white; border-radius: 50%; }
@@ -130,6 +132,16 @@
 .cal-agenda-entry small { color: var(--desktop-muted); font-size: 10px; }
 .cal-agenda-entry strong { font-size: 12px; font-weight: 520; overflow-wrap: anywhere; }
 .cal-event.cal-external { border-color: var(--event-color); background: color-mix(in srgb, var(--event-color) 22%, var(--desktop-canvas)); }
+/* Keep each provider's hue and give it a distinct dark fill and a bright edge. */
+[data-blok-theme="dark"] .cal-event {
+  --cal-source: var(--event-color, #54836b);
+  background: oklch(from var(--cal-source) 40% min(.17, calc(c * 3)) h);
+  border-left: 4px solid oklch(from var(--cal-source) 75% min(.2, calc(c * 3.5)) h);
+  color: #fff;
+}
+[data-blok-theme="dark"] .cal-event:hover { background: oklch(from var(--cal-source) 45% min(.18, calc(c * 3)) h); }
+[data-blok-theme="dark"] .cal-event small { opacity: .92; }
+[data-blok-theme="dark"] .cal-agenda-entry { border-left: 3px solid oklch(from var(--event-color) 75% min(.2, calc(c * 3.5)) h); }
 .cal-actions .cal-rail-toggle { display: none; }
 .cal-main { flex: 1; }
 .cal-rail { flex: 0 0 176px; box-sizing: border-box; }
