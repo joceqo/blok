@@ -72,8 +72,9 @@ lists, so the desktop also registers Table, Database, DatabaseRow and
 DatabaseComment explicitly for the slash menu and saved documents.
 `src/editor.css` explicitly includes the root `src/` in Tailwind's source scan;
 without it, editor controls and popovers lose their utility styles in desktop.
-React Grab loads only in Vite/Tauri development, as in the reference desktop
-project; it is excluded from the packaged app.
+React Grab is available in the packaged Tauri app and in development. Press
+⌘/Ctrl + Shift + G or choose “Sélectionner un élément” in Settings to copy
+context about an element. Web production builds opt in with `VITE_REACT_GRAB=true`.
 
 The app icon uses the Blok mascot from `docs/public/logo-no-sign.png`. Regenerate the source with `swift scripts/generate-icon.swift ../docs/public/logo-no-sign.png src-tauri/icons/icon-source.png`, then run `npx tauri icon src-tauri/icons/icon-source.png` to refresh the platform icons.
 

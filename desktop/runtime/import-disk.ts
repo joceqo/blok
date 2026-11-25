@@ -81,7 +81,7 @@ export async function readLegacyWorkspace(directory:string) {
     const filename=id+'.json';
     if (used.has(filename)) throw fail('identifiant de fiche réservé');
     used.add(filename);
-    const meta={id,title:row.title,parentId:row.documentId,...(typeof row.icon==='string'?{icon:row.icon}:{})};
+    const meta={id,title:row.title,parentId:row.documentId,databaseRowBody:true,...(typeof row.icon==='string'?{icon:row.icon}:{})};
     const page={meta,trashed:parent.trashed,content:document(filename)};
     pages.push(page); byId.set(id,page); rowPages++;
   }

@@ -47,11 +47,14 @@ test('the disk importer keeps original bytes and translates rich text without dr
   try {
     const page = {id:'p1', title:'Notes', parentId:null};
     await writeFile(join(directory, 'index.json'), JSON.stringify({pages:[page], trash:[], activeId:page.id}));
+    await writeFile(join(directory, 'row-bodies.json'), JSON.stringify({sheet:{documentId:page.id,title:'Sheet'}}));
     const doc = {blocks:[{id:'paragraph', type:'paragraph', data:{text:[{text:'gras',marks:{bold:true}}]}}]};
     const bytes = JSON.stringify(doc);
     await writeFile(join(directory, 'p1.json'), bytes);
     const result = await readLegacyWorkspace(directory);
     assert.equal(result.active, page.id);
+    assert.equal(result.pages.find(p => p.meta.id === 'sheet').meta.databaseRowBody, true);
+    assert.equal(result.pages[0].meta.databaseRowBody, undefined);
     assert.equal(result.pages[0].content.blocks[0].data.text, '<strong>gras</strong>');
     assert.equal(result.files.get('p1.json').bytes.toString(), bytes);
     assert.equal(await readFile(join(directory, 'p1.json'), 'utf8'), bytes);

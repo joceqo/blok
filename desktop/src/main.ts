@@ -9,9 +9,12 @@ import { CloudClient, mountCloudGateway } from './cloud';
 import { mountServerPicker } from './cloud/server-picker';
 import { brandedTitle } from './tab-identity';
 
-import {loadReactGrab, reactGrabAvailable} from './react-grab';
+import {loadReactGrab, onReactGrabShortcut, reactGrabAvailable} from './react-grab';
 
-if (reactGrabAvailable) void loadReactGrab().catch(() => { /* Settings lets the user retry loading. */ });
+if (reactGrabAvailable) {
+  window.addEventListener('keydown', onReactGrabShortcut, {capture: true});
+  void loadReactGrab().catch(() => { /* Settings lets the user retry loading. */ });
+}
 
 const root = document.querySelector('#app');
 const native = '__TAURI_INTERNALS__' in window;

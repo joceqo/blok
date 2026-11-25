@@ -5,7 +5,20 @@ import { fileURLToPath } from 'node:url';
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
-  plugins: [tailwindcss()],
+  plugins: [
+    tailwindcss(),
+    {
+      name: 'react-grab-offline-font',
+      apply: 'build',
+      // The inspector hardcodes a Google Fonts stylesheet in its shadow root.
+      // Its existing system font fallback works in the offline desktop bundle.
+      transform(code, id) {
+        if (id.includes('/react-grab/dist/')) {
+          return code.replace(/@import url\("https:\/\/fonts\.googleapis\.com\/[^"]+"\);/g, '');
+        }
+      },
+    },
+  ],
   resolve: {
     alias: {
       '@blok/agent-assistant': fileURLToPath(new URL('../src/shell/agent-assistant.ts', import.meta.url)), '@blok/popover': fileURLToPath(new URL('../src/components/utils/popover/popover-desktop.ts', import.meta.url)), '@blok/modal-dialog': fileURLToPath(new URL('../src/components/utils/modal-dialog.ts', import.meta.url)),

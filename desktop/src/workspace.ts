@@ -181,7 +181,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
    * basculer la page tout seul, au prochain index reçu.
    */
   const withSections = (pages: DesktopPage[]): DesktopPage[] => {
-    const tagged = pages.map((page) => ({ ...page, favorite: favorites.has(page.id) }));
+    const tagged = pages.filter((page) => !page.databaseRowBody || !page.parentId).map((page) => ({ ...page, favorite: favorites.has(page.id) }));
     if (ref.kind !== 'remote') return tagged;
     if (!ws.index?.access) return tagged.map((page) => ({ ...page, section: page.parentId ? undefined : 'workspace' }));
     const roots = tagged.filter((page) => !page.parentId);
@@ -838,7 +838,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
 
   ws.frame = createPageFrame({
     teamspace: ref.kind === 'remote' ? { name: ref.name } : undefined,
-    pages: [], activeId: '',
+    pages: [], activeId: '', collapsedByDefault: true,
     recentIds: recentPages.ids,
     onRecentsChange: recentPages.save,
     onOpen: (id) => navigate(id),

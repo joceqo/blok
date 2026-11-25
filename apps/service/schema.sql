@@ -218,3 +218,23 @@ CREATE TABLE IF NOT EXISTS desktop_disk_originals (
   PRIMARY KEY(source,filename)
 );
 INSERT INTO schema_migrations(version) VALUES(14) ON CONFLICT DO NOTHING;
+
+-- Earlier desktop imports attached database row documents as ordinary child pages.
+-- The archived registry distinguishes those sheets from children listed in the old tree.
+WITH upgrade AS (
+  INSERT INTO schema_migrations(version) VALUES(15) ON CONFLICT DO NOTHING RETURNING version
+), imports AS (
+  SELECT d.workspace_id, convert_from(r.bytes,'UTF8')::jsonb AS registry,
+         convert_from(i.bytes,'UTF8')::jsonb AS old_index
+  FROM upgrade CROSS JOIN desktop_disk_imports d
+  JOIN desktop_disk_originals r ON r.source=d.source AND r.filename='row-bodies.json'
+  JOIN desktop_disk_originals i ON i.source=d.source AND i.filename='index.json'
+)
+UPDATE pages p SET metadata=p.metadata || '{"databaseRowBody":true}'::jsonb
+FROM imports CROSS JOIN LATERAL jsonb_each(imports.registry) AS sheet(id,entry)
+WHERE p.workspace_id=imports.workspace_id AND p.id=sheet.id
+  AND p.metadata->>'parentId'=sheet.entry->>'documentId'
+  AND NOT EXISTS (
+    SELECT FROM jsonb_array_elements((imports.old_index->'pages') || coalesce(imports.old_index->'trash','[]'::jsonb)) original
+    WHERE original->>'id'=sheet.id
+  );

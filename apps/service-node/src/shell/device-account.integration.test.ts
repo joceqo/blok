@@ -25,6 +25,21 @@ describe.skipIf(!url)('embedded account on PostgreSQL', () => {
     try { await owner.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE'); }
     finally { await owner.end(); }
   });
+  it('marks only database sheets omitted from the old navigation index on upgrade', async () => {
+    await db.query("INSERT INTO workspaces(id,slug,name) VALUES('ws','ws','Workspace')");
+    await db.query("INSERT INTO desktop_disk_imports(source,workspace_id,counts) VALUES('default','ws','{}')");
+    const registry = {sheet:{documentId:'parent'}, listed:{documentId:'parent'}, moved:{documentId:'former'}};
+    for (const [name, value] of [['index.json',{pages:[{id:'listed'}]}], ['row-bodies.json',registry]]) {
+      await db.query("INSERT INTO desktop_disk_originals(source,filename,sha256,bytes) VALUES('default',$1,'hash',$2)",[name,Buffer.from(JSON.stringify(value))]);
+    }
+    for (const id of ['sheet','listed','moved','child']) {
+      await db.query("INSERT INTO pages(id,workspace_id,metadata) VALUES($1,'ws',$2)",[id,{id,parentId:'parent'}]);
+    }
+    await db.query('DELETE FROM schema_migrations WHERE version=15');
+    await db.query(await readFile(new URL('../../../service/schema.sql',import.meta.url),'utf8'));
+    const result = await db.query("SELECT id FROM pages WHERE metadata->>'databaseRowBody'='true'");
+    expect(result.rows).toEqual([{id:'sheet'}]);
+  });
   it('provisions once before startup and grants sessions only through the private native credential', async () => {
     const users = await Promise.all(Array.from({length:4}, () => inTransaction(db,ensureDeviceAccount)));
     expect(new Set(users).size).toBe(1);

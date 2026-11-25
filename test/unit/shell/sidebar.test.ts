@@ -130,6 +130,25 @@ describe('page sidebar row', () => {
     expect(css).toMatch(/\[data-blok-sidebar-menu\]:popover-open\s*\{[^}]*display:\s*flex/);
   });
 
+  it('starts folded, reveals the selected path, and preserves manual collapse on a refresh', () => {
+    const pages = [...tree(), { id: 'other', title: 'Other', parentId: null },
+      { id: 'unrelated', title: 'Unrelated', parentId: 'other' }];
+    const frame = createPageFrame({ pages: [], activeId: '', collapsedByDefault: true,
+      onOpen: () => undefined, onCreate: () => undefined });
+    document.body.append(frame.element);
+    frame.setPages(pages, 'home');
+    expect(row('Home').querySelector('[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
+    expect(() => row('Draft')).toThrow();
+    frame.setPages(pages, 'draft');
+    expect(row('Draft').style.paddingInlineStart).toBe('24px');
+    expect(() => row('Unrelated')).toThrow();
+    click(row('Home').querySelector('[data-blok-sidebar-toggle]'));
+    frame.setPages(pages, 'draft');
+    expect(() => row('Draft')).toThrow();
+    click(row('Home').querySelector('[data-blok-sidebar-toggle]'));
+    expect(row('Draft')).toBeTruthy();
+  });
+
   it('indents each level by 8px', () => {
     mount();
 

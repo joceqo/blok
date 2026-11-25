@@ -20,6 +20,7 @@ export interface PageFrame {
 }
 export function createPageFrame(options: {
   pages: ShellPage[];
+  collapsedByDefault?: boolean;
   activeId: string;
   /** L'espace courant, rendu comme une ligne sous « Espaces » plutôt qu'un titre. */
   teamspace?: { name: string };
