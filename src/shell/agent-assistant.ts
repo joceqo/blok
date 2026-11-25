@@ -40,6 +40,8 @@ export interface AgentAssistantOptions {
 
 export interface AgentAssistantHandle {
   refreshPageActions(): void;
+  searchableChats(): {id: string; title: string; excerpt: string}[];
+  openChat(id: string): void;
   element: HTMLElement;
   editorSlot: HTMLElement;
   open: () => void;
@@ -388,9 +390,7 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
       mark.textContent = selected ? '✓' : '';
       row.append(mark, document.createTextNode(historyLabel(item)));
       row.addEventListener('click', () => {
-        stopRun();
-        session.active = index;
-        session.menu = null;
+        selectChat(index);
         render();
       });
       historyMenu.append(row);
@@ -597,6 +597,12 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     });
   };
 
+  function selectChat(index: number): void {
+    if (session.active !== index) stopRun();
+    session.active = index;
+    session.menu = null;
+  }
+
   const open = (): void => {
     session.open = true;
     session.picked = null;
@@ -719,6 +725,17 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   void refreshProviders();
 
   return {
+    searchableChats: () => session.conversations.filter(item => item.turns.length > 0).map(item => ({
+      id: item.id,
+      title: historyLabel(item),
+      excerpt: item.turns.map(turn => [turn.question, turn.answer].filter(Boolean).join('\n')).join('\n\n'),
+    })).reverse(),
+    openChat(id) {
+      const index = session.conversations.findIndex(item => item.id === id);
+      if (index === -1) return;
+      selectChat(index);
+      open();
+    },
     element: shell,
     editorSlot,
     open,

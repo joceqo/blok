@@ -1,6 +1,6 @@
-import { openModalDialog, type ModalDialogHandle } from '@blok/modal-dialog';
+import { createNavigationDialog } from './navigation-modal';
 import type { ShellPage } from '@blok/sidebar';
-import { IconCross, IconFile, IconTable } from '../../src/components/icons';
+import { IconFile, IconTable } from '../../src/components/icons';
 import { renderPageIcon } from '../../src/shell/page-icon';
 import { createChoice, wrapSearchField } from './ui/controls';
 import './navigation-dialogs.css';
@@ -19,36 +19,8 @@ function icon(value?: string, database = false): HTMLElement {
   return element;
 }
 
-export function createNavigationDialog(label: string): { surface: HTMLElement; open: (focus: HTMLElement, cleanup?: () => void) => void; close: () => void } {
-  const overlay = node('div', 'data-desktop-settings-overlay');
-  const surface = node('div', 'data-navigation-dialog');
-  const closeButton = node('button', 'data-navigation-close');
-  closeButton.type = 'button'; closeButton.setAttribute('aria-label', 'Fermer'); closeButton.innerHTML = IconCross;
-  surface.tabIndex = -1;
-  surface.append(closeButton); overlay.append(surface);
-  let handle: ModalDialogHandle | null = null;
-  const close = (): void => handle?.close();
-  closeButton.addEventListener('click', close);
-  return { surface, close, open(focus, cleanup) {
-    handle = openModalDialog({ content: overlay, surface, label, initialFocus: () => focus, onDismiss: close, onClose: cleanup });
-  } };
-}
-
-/** Metadata search only: its input is the current server-filtered workspace index. */
-export function openPageSearch(options: {
-  workspaceName: string;
-  pages: () => ShellPage[];
-  onOpen: (id: string) => void;
-  recentIds?: string[];
-  pageIdFromLink?: (value: string) => string | undefined;
-}): () => void {
-  const caption = options.recentIds ? 'Pages récentes' : `Pages de ${options.workspaceName}`;
-  return openPagePicker({
-    ...options, label: options.recentIds ? 'Pages récentes' : 'Rechercher une page', caption,
-    searchLabel: 'Rechercher une page par son titre', placeholder: 'Rechercher une page…', verb: 'ouvrir',
-    onChoose: (id) => { if (id !== null) options.onOpen(id); },
-  });
-}
+export { createNavigationDialog } from './navigation-modal';
+export { openPageSearch } from './page-search';
 
 export function openMovePicker(options: {
   workspaceName: string;

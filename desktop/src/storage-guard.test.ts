@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { StaleFileError, readFile, writeFile } from './storage';
+import { StaleFileError, peekFile, readFile, writeFile } from './storage';
 
 interface Bridge { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> }
 
@@ -43,6 +43,22 @@ describe('storage overwrite guard', () => {
 
     await readFile('doc');
     await expect(writeFile('doc', '{"blocks":[1]}')).rejects.toBeInstanceOf(StaleFileError);
+  });
+
+  it('keeps the editor fingerprint when search previews a newer on-disk revision', async () => {
+    const scope = {kind:'local' as const, id:'preview', name:'Test'};
+    const expectations: unknown[] = [];
+    let data = 'first revision';
+    installBridge(async (command, args) => {
+      if (command === 'load_workspace_file') return data;
+      expectations.push(args?.expected); return null;
+    });
+    await readFile('draft', scope);
+    await writeFile('draft','first revision',scope);
+    data = 'another window edited this';
+    expect(await peekFile('draft',scope)).toBe(data);
+    await writeFile('draft','new revision',scope);
+    expect(expectations[1]).toBe(expectations[0]);
   });
 
   it('saves a file it never read without a fingerprint, so new documents still work', async () => {

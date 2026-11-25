@@ -1,3 +1,4 @@
+import { pageSearchText } from './page-search-text.ts';
 import type { User } from '../models/User.ts';
 import type { WorkspaceMembership } from '../models/Workspace.ts';
 import { createHash } from 'node:crypto';
@@ -39,7 +40,7 @@ export async function loadSession(pool: Pick<PgPool, 'query'>, digest: string) {
 
 // Match Go's nearest explicit visibility plus any named share on the first 64
 // ancestors. Membership, session expiry, ACL and payload are read in one snapshot.
-export async function loadVisiblePage(pool: PgPool, digest: string, slug: string, id: string) {
+export async function loadVisiblePage(pool: PgPool, digest: string, slug: string, id: string, preview = false) {
   const { rows } = await pool.query<{ authenticated: boolean; workspace: boolean; member: boolean; content: string | null }>(
     `WITH RECURSIVE account AS (SELECT user_id FROM sessions WHERE id=$1 AND expires_at>now()),
      workspace AS (SELECT id FROM workspaces WHERE slug=$2 OR id=$2 ORDER BY (slug=$2) DESC LIMIT 1),
@@ -62,8 +63,8 @@ export async function loadVisiblePage(pool: PgPool, digest: string, slug: string
      )
      SELECT EXISTS(SELECT FROM account) AS authenticated, EXISTS(SELECT FROM workspace) AS workspace,
             EXISTS(SELECT FROM member) AS member,
-            (SELECT coalesce(p.content::text,'null') FROM pages p JOIN chain c ON c.id=p.id AND c.depth=0
-             WHERE (SELECT allowed FROM visible)) AS content`, [digest, slug, id],
+            (SELECT ${preview ? `json_build_object('excerpt',left(${pageSearchText},1600))::text` : "coalesce(p.content::text,'null')"} FROM pages p JOIN chain c ON c.id=p.id AND c.depth=0
+             WHERE (SELECT allowed FROM visible) AND (NOT $4 OR NOT p.trashed)) AS content`, [digest, slug, id, preview],
   );
   return rows[0]!;
 }

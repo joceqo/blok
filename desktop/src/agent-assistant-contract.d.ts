@@ -15,6 +15,8 @@ export interface AgentAssistantOptions {
   onProviderSelected?:(id:string)=>void;
 }
 export interface AgentAssistantHandle {
+  searchableChats(): {id: string; title: string; excerpt: string}[];
+  openChat(id: string): void;
   refreshPageActions(): void;
   element:HTMLElement;editorSlot:HTMLElement;open():void;close():void;destroy():void;refreshProviders():Promise<void>;
 }

@@ -156,8 +156,8 @@ function installKeys(): void {
 function installMenu(): void {
   if (installed.menu) return;
   installed.menu = true;
-  window.addEventListener('blok:desktop-new-tab', () => {
-    if (isTauri()) createTab();
+  window.addEventListener('blok:desktop-new-tab', event => {
+    if (isTauri()) createTab(event instanceof CustomEvent ? event.detail : undefined);
   });
   window.addEventListener('blok:desktop-reload', event => {
     if (!isTauri()) return;
@@ -361,18 +361,21 @@ function moveTo(id: string, check: boolean): void {
   box.workspace?.onRoute();
 }
 
-function createTab(): void {
+function createTab(page?: {id: string; title: string; icon?: string}): void {
   if (!allowed()) return;
   if (box.session.tabs.length >= MAX_TABS) return;
   const current = active();
   const saved = current ? snapshot(current) : null;
-  const href = homeHref();
-  const tab = freshTab(href, 'Nouvelle page');
+  const url = new URL(homeHref());
+  if (page) url.searchParams.set('page', page.id);
+  const href = url.href;
+  const tab = freshTab(href, page?.title || 'Nouvelle page');
+  tab.icon = page?.icon ?? '';
   const tabs = box.session.tabs.map((item) => (saved && item.id === saved.id ? saved : item));
   box.session = { tabs: [...tabs, tab], activeId: tab.id };
   nativeReplace(href);
   window.scrollTo(0, 0);
-  if (document.title !== 'Nouvelle page') document.title = 'Nouvelle page';
+  if (document.title !== tab.title) document.title = tab.title;
   applyFavicon(tab.icon);
   persist();
   paint();

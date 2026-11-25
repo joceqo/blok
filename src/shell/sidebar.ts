@@ -269,7 +269,8 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     const label = document.createElement('span');
     label.textContent = 'Rechercher…';
     const shortcut = document.createElement('kbd');
-    shortcut.textContent = /Mac/i.test(navigator.platform) ? '⌘K' : 'Ctrl K';
+    shortcut.textContent = /Mac/i.test(navigator.platform) ? '⌘P' : 'Ctrl P';
+    searchLabel.setAttribute('aria-keyshortcuts', 'Meta+P Control+P Meta+K Control+K');
     searchLabel.append(label, shortcut);
     searchLabel.addEventListener('click', () => options.onSearch?.());
   } else searchLabel.append(searchInput);
@@ -373,7 +374,8 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     syncValue();
   });
   shell.addEventListener('keydown', (event) => {
-    if (options.onSearch && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'k') {
+    if (event.defaultPrevented) return;
+    if (options.onSearch && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && ['p', 'k'].includes(event.key.toLowerCase())) {
       event.preventDefault();
       options.onSearch();
       return;

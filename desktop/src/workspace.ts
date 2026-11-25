@@ -465,6 +465,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       return;
     }
     ws.currentId = id;
+    recentPages.visit(id);
     ws.frame.element.toggleAttribute('data-desktop-read-only', readOnly(id));
     const turn = ++ws.generation;
     ws.coverRowObserver?.disconnect();
@@ -742,13 +743,39 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (removed.has(ws.currentId) && fallback) navigate(fallback.id, true);
   };
 
+  let pendingSearch: { recentIds?: string[] } | undefined;
+
+  function showPageSearch(recentIds?: string[]): void {
+    if (!ws.index) {
+      pendingSearch = { recentIds };
+      return;
+    }
+    ws.closeSearch?.();
+    const pages = () => ws.index?.pages ?? [];
+    ws.closeSearch = openPageSearch({
+      workspaceName: ref.name, pages, onOpen: navigate, pageUrl,
+      recentIds: recentIds ?? recentPages.ids, recentOnly: recentIds !== undefined,
+      visitedAt: recentPages.visitedAt,
+      pageIdFromLink: value => pageIdForWorkspaceLink(ref, value),
+      onOpenTab: id => {
+        const page = pages().find(item => item.id === id);
+        if (page) openPageTab(page);
+      },
+      chats: () => ws.assistant.searchableChats(),
+      onOpenChat: id => ws.assistant.openChat(id),
+      ...repository.pageSearch(pages),
+    });
+  }
+
   const openPageTab = (page: DesktopPage): void => {
     if ('__TAURI_INTERNALS__' in window) {
-      window.dispatchEvent(new Event('blok:desktop-new-tab'));
-      navigate(page.id, true);
+      window.dispatchEvent(new CustomEvent('blok:desktop-new-tab', {
+        detail: {id: page.id, title: page.title, icon: page.icon},
+      }));
       return;
     }
     const url = new URL(location.href);
+    url.searchParams.delete('view');
     url.searchParams.set('page', page.id);
     window.open(url.href, '_blank', 'noopener,noreferrer');
   };
@@ -851,12 +878,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       onRoute();
     },
     onCreatePrivate: ref.kind === 'remote' ? () => chooseNewPage(null, true) : undefined,
-    onSearch: (recentIds) => {
-      ws.closeSearch?.();
-      ws.closeSearch = openPageSearch({ workspaceName: ref.name, pages: () => ws.index?.pages ?? [], onOpen: navigate, recentIds,
-        pageIdFromLink: (value) => pageIdForWorkspaceLink(ref, value),
-      });
-    },
+    onSearch: showPageSearch,
     onTeamspaces: ref.kind === 'remote' ? () => {
       closeTeamspaces?.();
       closeTeamspaces = openTeamspaces(ref, {
@@ -1154,12 +1176,15 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     });
   }
 
+  const openWorkspaceSearch = (): void => {
+    if (ws.frame.element.isConnected && !document.querySelector('[aria-modal="true"]')) showPageSearch();
+  };
+  window.addEventListener('blok:desktop-search', openWorkspaceSearch);
   document.addEventListener('keydown', (event) => {
-    if (event.defaultPrevented || !ws.frame.element.isConnected || document.querySelector('[aria-modal="true"]')) return;
-    if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'k') return;
+    if (event.defaultPrevented || !ws.frame.element.isConnected || event.isComposing) return;
+    if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || !['p', 'k'].includes(event.key.toLowerCase())) return;
     event.preventDefault();
-    ws.closeSearch?.();
-    ws.closeSearch = openPageSearch({ workspaceName: ref.name, pages: () => ws.index?.pages ?? [], onOpen: navigate });
+    openWorkspaceSearch();
   });
   function chooseNewPage(parentId: string | null = null, privatePage = false): void {
     if (!ws.index || !canCreateUnder(parentId)) return;
@@ -1199,6 +1224,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         refreshDateTitles();
         ws.frame.setPages(withSections(loaded.pages), loaded.activeId);
         onRoute();
+        if (pendingSearch && ws.frame.element.isConnected) {
+          showPageSearch(pendingSearch.recentIds);
+          pendingSearch = undefined;
+        }
         scheduleDateRefresh();
         window.addEventListener('focus', refreshDateTitles);
         if (ref.kind === 'remote') {

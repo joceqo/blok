@@ -114,7 +114,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   app.get('/api/workspaces/:slug/pages/:id', async (c) => {
     const key = sessionDigest(c);
     if (!key) return c.json({ error: 'Sign in required' }, 401);
-    const page = await loadVisiblePage(pool, key, c.req.param('slug'), c.req.param('id'));
+    const page = await loadVisiblePage(pool, key, c.req.param('slug'), c.req.param('id'), c.req.query('preview') === '1');
     if (!page.authenticated) return c.json({ error: 'Sign in required' }, 401);
     if (!page.workspace) return c.json({ error: 'Workspace not found' }, 404);
     if (!page.member) return c.json({ error: 'Workspace membership required' }, 403);

@@ -3,6 +3,15 @@ import { navigationFavorites, navigationRecents } from './navigation-preferences
 import type { RemoteWorkspace } from './workspace-registry';
 const ref: RemoteWorkspace = { kind: 'remote', id: 'one', name: 'Équipe', server: 'https://blok.example.com', accountId: 'alice', workspaceId: 'team' };
 beforeEach(() => localStorage.clear());
+it('retains undated history and records new visits in the current workspace', () => {
+  const history = navigationRecents(ref);
+  history.save(['old']);
+  expect(history.ids).toEqual(['old']);
+  expect(history.visitedAt('old')).toBeUndefined();
+  history.visit('old');
+  expect(navigationRecents(ref).visitedAt('old')).toBe(history.visitedAt('old'));
+  expect(navigationRecents({...ref, accountId: 'other'}).visitedAt('old')).toBeUndefined();
+});
 it('persists recent order for this account and workspace only', () => {
   navigationRecents(ref).save(['b', 'a']);
   expect(navigationRecents(ref).ids).toEqual(['b', 'a']);

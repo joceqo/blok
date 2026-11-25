@@ -91,3 +91,19 @@ it('sends only fresh search results, links the source page and omits sourced tur
   await vi.waitFor(() => expect(model).toHaveBeenCalledTimes(2));
   expect(JSON.stringify(model.mock.calls[1]![0].messages)).not.toContain('Trente');
 });
+
+it('finds conversations in this session and reopens the selected one', async () => {
+  const handle = mount({ getPageText: () => 'Contexte du document', openSettings: () => undefined });
+  await handle.refreshProviders();
+  expect(handle.searchableChats()).toEqual([]);
+  ask(handle, 'Préparer les entretiens');
+  await vi.waitFor(() => expect(handle.searchableChats()[0]?.excerpt).toContain('CLI answer'));
+  const [original] = handle.searchableChats();
+  expect(original.title).toBe('Préparer les entretiens');
+  expect(original.excerpt).not.toContain('Contexte du document');
+  handle.element.querySelector<HTMLButtonElement>('[data-blok-agent-new]')!.click();
+  handle.close();
+  handle.openChat(original.id);
+  expect(handle.element.querySelector<HTMLElement>('[data-blok-agent-panel]')!.hidden).toBe(false);
+  expect(handle.element.querySelector('[data-blok-agent-history]')?.getAttribute('aria-label')).toContain(original.title);
+});
