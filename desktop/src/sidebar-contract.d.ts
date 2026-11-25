@@ -14,6 +14,7 @@ export type SidebarAction =
 export interface PageFrame {
   element: HTMLElement;
   canvas: HTMLElement;
+  headerActions: HTMLElement;
   setPages(pages: ShellPage[], activeId: string): void;
   setCalendarActive(active: boolean): void;
   toggleSidebar(): void;

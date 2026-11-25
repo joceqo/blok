@@ -954,7 +954,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   });
   ws.frame.canvas.append(assistantButton);
   if (panel) bindAssistantButton(assistantButton, panel);
-  ws.footer = createDesktopFooter((mode) => ws.editor?.theme.set(mode), ref);
+  ws.footer = createDesktopFooter((mode) => ws.editor?.theme.set(mode), ref, ws.frame.headerActions);
   ws.footer.addEventListener('blok:desktop-open-page', (event) => {
     const detail = (event as CustomEvent<{ pageId: string; seedWelcome?: boolean }>).detail;
     if (!detail?.pageId) return;

@@ -53,6 +53,12 @@
   text-transform: uppercase;
 }
 
+[data-blok-sidebar-header-actions] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 [data-blok-sidebar-icon],
 [data-blok-sidebar-add],
 [data-blok-sidebar-more],

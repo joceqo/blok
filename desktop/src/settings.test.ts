@@ -127,10 +127,18 @@ describe('workspace menu hierarchy',()=>{
       return new Response(JSON.stringify(data));
     });
     try {
-      const footer = remoteFooter();
-      must(footer.querySelector<HTMLButtonElement>('[data-inbox-trigger]')).click();
-      await vi.waitFor(() => expect(document.querySelector('[data-inbox-dialog]')?.textContent).toContain('Alex'));
-      must([...document.querySelectorAll<HTMLButtonElement>('[data-inbox-dialog] button')].find(b => b.textContent === 'Voir les demandes')).click();
+      const header = document.createElement('div');
+      const create = document.createElement('button');
+      create.textContent = 'Nouvelle page';
+      header.append(create);
+      const footer = createDesktopFooter(() => undefined, remoteRef, header);
+      document.body.append(header, footer);
+      expect(footer.querySelector('[data-inbox-trigger]')).toBeNull();
+      const inbox = must(header.querySelector<HTMLButtonElement>('[data-inbox-trigger]'));
+      expect(inbox.nextElementSibling).toBe(create);
+      inbox.click();
+      await vi.waitFor(() => expect(document.querySelector('[data-inbox-pane]')?.textContent).toContain('Alex'));
+      must([...document.querySelectorAll<HTMLButtonElement>('[data-inbox-pane] button')].find(b => b.textContent === 'Voir les demandes')).click();
       expect(childUi.mount).toHaveBeenCalledWith(expect.any(HTMLElement),expect.objectContaining({slug:'acme',initialTab:'requests'}));
     } finally { fetch.mockRestore(); }
   });

@@ -25,6 +25,7 @@ export interface ShellPage {
 export interface PageFrame {
   element: HTMLElement;
   canvas: HTMLElement;
+  headerActions: HTMLElement;
   setPages: (pages: ShellPage[], activeId: string) => void;
   setCalendarActive: (active: boolean) => void;
   toggleSidebar: () => void;
@@ -215,7 +216,10 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
   create.title = 'Nouvelle page';
   create.append(svg(ICONS.pencil));
   create.addEventListener('click', () => options.onCreate(null));
-  header.append(collapse, create);
+  const headerActions = document.createElement('div');
+  headerActions.setAttribute('data-blok-sidebar-header-actions', '');
+  headerActions.append(create);
+  header.append(collapse, headerActions);
 
   // Notion met « New page » sur une ligne de la barre, pas seulement derrière le
   // + de l'en-tête : c'est l'action la plus fréquente, elle mérite sa place.
@@ -831,6 +835,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
   return {
     element: shell,
     canvas,
+    headerActions,
     toggleSidebar: () => setCollapsed(!sidebar.hasAttribute('data-collapsed')),
     setCalendarActive(active) {
       if (calendar.hasAttribute('aria-current') === active) return;

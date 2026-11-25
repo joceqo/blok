@@ -185,7 +185,7 @@ function actionButton(attribute: string, label: string, kind: MenuIcon): HTMLBut
   return button;
 }
 
-export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, currentWorkspace = activeWorkspace()): HTMLElement {
+export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, currentWorkspace = activeWorkspace(), headerActions?: HTMLElement): HTMLElement {
   const native = '__TAURI_INTERNALS__' in window;
   const onDevice = currentWorkspace.kind === 'remote' && currentWorkspace.embedded === true;
   const offlineProfile = native && (onDevice || currentWorkspace.kind === 'local');
@@ -218,7 +218,8 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     const inbox = createNotificationTrigger({client, slug: currentWorkspace.workspaceId,
       onManageRequests: admin ? () => openSettings('members', 'requests') : undefined,
     });
-    footer.append(inbox.element);
+    if (headerActions) headerActions.prepend(inbox.element);
+    else footer.append(inbox.element);
   }
 
   const menu = el('div', 'data-desktop-footer-menu');

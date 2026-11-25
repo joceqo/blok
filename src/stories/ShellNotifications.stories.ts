@@ -1,6 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/html-vite';
 import { expect, userEvent, within } from 'storybook/test';
-import { mountNotificationList } from '../../desktop/src/cloud/notifications';
+import { createNotificationTrigger } from '../../desktop/src/cloud/notification-trigger';
+import { createPageFrame } from '../shell/sidebar';
+import '../shell/sidebar.css';
 import type { WorkspaceNotification } from '../../desktop/src/cloud/notifications';
 import { PreviewClient, shellPreview } from './shell-story-fixtures';
 import type { ShellTheme } from './shell-story-fixtures';
@@ -9,12 +11,15 @@ type Args = { theme: ShellTheme };
 type Feed = 'empty' | 'unread' | 'error';
 const requested = 'Camille demande à rejoindre cet espace.';
 
-function inbox(theme: ShellTheme, feed: Feed): HTMLElement {
+function inbox(theme: ShellTheme, feed: Feed, signal: AbortSignal): HTMLElement {
   const host = shellPreview(theme);
-  const frame = document.createElement('main');
-  frame.setAttribute('data-inbox-dialog', '');
-  frame.style.margin = 'clamp(16px, 10vh, 88px) auto';
-  host.append(frame);
+  const page = { id: 'roadmap', title: 'Feuille de route', parentId: null };
+  const frame = createPageFrame({ pages: [page], activeId: page.id, onOpen() {}, onCreate() {} });
+  frame.element.setAttribute('data-desktop-workspace', '');
+  const heading = document.createElement('h1');
+  heading.textContent = page.title;
+  frame.canvas.append(heading);
+  host.append(frame.element);
   const items: WorkspaceNotification[] = feed === 'empty' ? [] : [
     { id: 'request', type: 'join_requested', actorName: 'Camille', createdAt: '2026-02-17T10:30:00Z', readAt: null },
     { id: 'approval', type: 'join_approved', actorName: 'Lou', createdAt: '2026-02-16T14:30:00Z', readAt: '2026-02-16T15:00:00Z' },
@@ -34,7 +39,10 @@ function inbox(theme: ShellTheme, feed: Feed): HTMLElement {
     }
     throw new Error(`Route hors de cet aperçu : ${path}`);
   });
-  mountNotificationList(frame, { client, slug: 'atelier' });
+  const trigger = createNotificationTrigger({ client, slug: 'atelier' });
+  frame.headerActions.prepend(trigger.element);
+  queueMicrotask(() => { if (!signal.aborted) trigger.element.click(); });
+  signal.addEventListener('abort', () => trigger.destroy(), { once: true });
   return host;
 }
 
@@ -49,27 +57,27 @@ export default meta;
 type Story = StoryObj<Args>;
 
 export const Vide: Story = {
-  render: ({ theme }) => inbox(theme, 'empty'),
+  render: ({ theme }, { abortSignal }) => inbox(theme, 'empty', abortSignal),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText('Aucune notification.')).toBeVisible();
-    await expect(canvas.queryByRole('listitem')).toBeNull();
+    await expect(within(canvas.getByRole('list', { name: 'Notifications de l’espace' })).queryByRole('listitem')).toBeNull();
   },
 };
 
 export const NonLues: Story = {
   name: 'Non lues',
-  render: ({ theme }) => inbox(theme, 'unread'),
+  render: ({ theme }, { abortSignal }) => inbox(theme, 'unread', abortSignal),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(requested)).toBeVisible();
-    await expect(canvas.getAllByRole('listitem')).toHaveLength(2);
+    await expect(within(canvas.getByRole('list', { name: 'Notifications de l’espace' })).getAllByRole('listitem')).toHaveLength(2);
     await expect(canvas.getByRole('button', { name: 'Marquer comme lue' })).toBeVisible();
   },
 };
 
 export const Lecture: Story = {
-  render: ({ theme }) => inbox(theme, 'unread'),
+  render: ({ theme }, { abortSignal }) => inbox(theme, 'unread', abortSignal),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole('button', { name: 'Marquer comme lue' }));
@@ -79,7 +87,7 @@ export const Lecture: Story = {
 };
 
 export const Indisponible: Story = {
-  render: ({ theme }) => inbox(theme, 'error'),
+  render: ({ theme }, { abortSignal }) => inbox(theme, 'error', abortSignal),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/Impossible de charger les notifications/)).toBeVisible();

@@ -58,7 +58,7 @@ describe('cloud gateway', () => {
       await gateway.refresh();
       expect(document.querySelector('h2')?.textContent).toBe('Second');
       must(document.querySelector<HTMLButtonElement>('[data-inbox-trigger]')).click();
-      await vi.waitFor(() => expect(document.querySelector('[data-inbox-dialog]')?.textContent).toContain('Votre demande d’accès a été refusée.'));
+      await vi.waitFor(() => expect(document.querySelector('[data-inbox-pane]')?.textContent).toContain('Votre demande d’accès a été refusée.'));
     } finally { gateway.destroy(); }
   });
   it('shows the dedicated unreachable screen when the instance fetch fails', async () => {
