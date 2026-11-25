@@ -47,8 +47,7 @@ export function activateWorkspace(ref: WorkspaceRef): void {
   if (ref.kind === 'remote' && ref.device) localStorage.removeItem(DISK);
 }
 
-/** Call only after the current editor has flushed; reload removes all old listeners and timers. */
-export function selectWorkspace(ref: WorkspaceRef, pageId?: string): void {
+function workspaceRoute(ref: WorkspaceRef, pageId?: string): URL {
   if (ref.kind === 'local' && ref.id === 'default') localStorage.setItem(DISK, '1');
   activateWorkspace(ref);
   const url = new URL(location.href);
@@ -61,5 +60,15 @@ export function selectWorkspace(ref: WorkspaceRef, pageId?: string): void {
   url.searchParams.delete('embedded');
   if (ref.kind === 'local') url.searchParams.set('local', '1');
   else url.searchParams.delete('local');
-  location.assign(url.href);
+  return url;
+}
+
+/** Call only after the current editor has flushed; reload removes all old listeners and timers. */
+export function selectWorkspace(ref: WorkspaceRef, pageId?: string): void {
+  location.assign(workspaceRoute(ref, pageId).href);
+}
+
+/** An OS launch URL was validated before any editor or saved account was opened. */
+export function selectStartupPage(ref: WorkspaceRef, pageId: string): void {
+  history.replaceState(history.state, '', workspaceRoute(ref, pageId).href);
 }

@@ -230,4 +230,4 @@ function showError(error: unknown): void {
   const message = startupErrorNode(root);
   message.textContent = error instanceof Error ? error.message : 'Impossible d’ouvrir cet espace. Rechargez pour réessayer.';
 }
-if (root instanceof HTMLElement) void boot(root).catch(showError).then(() => listenForPageLinks(showError));
+if (root instanceof HTMLElement) void listenForPageLinks(showError).then(() => boot(root)).catch(showError);

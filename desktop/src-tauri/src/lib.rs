@@ -120,12 +120,13 @@ fn cloud_credential(server: &str) -> Result<keyring::Entry, String> {
 }
 
 #[tauri::command]
-fn load_cloud_session(server: String) -> Result<Option<String>, String> {
-    match cloud_credential(&server)?.get_password() {
+async fn load_cloud_session(server: String) -> Result<Option<String>, String> {
+    // Unlocking the OS keychain may wait for a user decision. Keep the native event loop responsive.
+    tauri::async_runtime::spawn_blocking(move || match cloud_credential(&server)?.get_password() {
         Ok(token) => Ok(Some(token)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(error.to_string()),
-    }
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
