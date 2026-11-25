@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('./native-runtime',()=>({ nativeBridge:()=>({invoke:mocks.take}), deviceWorkspaces:mocks.session }));
 vi.mock('./workspace-registry',()=>({ activeWorkspace:()=>({kind:'remote',id:'previous',server:'https://unrelated.example'}), selectStartupPage:mocks.startup, selectWorkspace:mocks.select }));
-vi.mock('./shell',()=>({flushDesktop:mocks.flush}));
+vi.mock('./shell',()=>({flushDesktop:mocks.flush, openMountedPage:()=>false}));
 
 import { listenForPageLinks } from './native-page-links';
 

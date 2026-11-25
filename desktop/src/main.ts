@@ -1,4 +1,5 @@
 import { listenForPageLinks } from './native-page-links';
+import { parsePageLink } from './page-link';
 import './editor.css';
 import '../../src/shell/sidebar.css';
 import './shell.css';
@@ -45,6 +46,7 @@ function startupErrorNode(host: HTMLElement): HTMLElement {
 async function boot(root: HTMLElement): Promise<void> {
   applyAppearance(root, readAppearance());
   const params = new URLSearchParams(location.search);
+  const browserPage = !native && params.get('web') === '1' ? parsePageLink(location.href) : undefined;
   let selected = activeWorkspace();
   const explicitGateway = params.get('cloud') === '1';
   function chooseServer(server: string): void {
@@ -113,6 +115,7 @@ async function boot(root: HTMLElement): Promise<void> {
       sessionAdapter: adapter,
       allowLocal: native,
       initialManage: manageSlug && manageSection ? {slug: manageSlug, section: manageSection} : undefined,
+      initialWorkspaceId: browserPage?.workspace,
       onOpenWorkspace: async (workspace, source) => {
         const session = source.currentSession ?? await source.session();
         const ref: RemoteWorkspace = {
@@ -124,7 +127,7 @@ async function boot(root: HTMLElement): Promise<void> {
         if (manageSlug && manageSection && workspace.slug === manageSlug) {
           sessionStorage.setItem('blok:desktop:pending-settings', manageSection);
         }
-        selectWorkspace(ref);
+        selectWorkspace(ref, browserPage?.origin === ref.server && (!browserPage.workspace || browserPage.workspace === ref.id) ? browserPage.id : undefined);
       },
       onOpenLocal: () => selectWorkspace(selected.kind === 'local' || selected.device ? selected : listWorkspaces().find(ref => ref.kind === 'remote' && ref.device) ?? initialWorkspace),
       onServerChange: (server) => {
@@ -137,7 +140,8 @@ async function boot(root: HTMLElement): Promise<void> {
     });
   };
 
-  if ((!embedded && explicitGateway) || (!native && selected.kind === 'local' && params.get('local') !== '1')) {
+  if ((!embedded && explicitGateway) || (!native && selected.kind === 'local' && params.get('local') !== '1') ||
+      (browserPage?.workspace && browserPage.workspace !== selected.id)) {
     await showGateway();
     return;
   }

@@ -236,6 +236,19 @@ describe('cloud account and server selection', () => {
   });
 });
 describe('direct workspace administration', () => {
+  it('opens the linked workspace from the authenticated browser memberships', async () => {
+    stubFetch(async () => response({user,workspaces:[workspace,second]}));
+    const open = vi.fn();
+    await mountCloudGateway(document.body,{onOpenWorkspace:open,initialWorkspaceId:second.id});
+    expect(open).toHaveBeenCalledWith(second, expect.any(CloudClient));
+  });
+  it('explains a missing page workspace without opening an unrelated membership', async () => {
+    stubFetch(async (url) => response(url.endsWith('/api/session') ? {user,workspaces:[workspace]} : workspace));
+    const open = vi.fn();
+    await mountCloudGateway(document.body,{onOpenWorkspace:open,initialWorkspaceId:'absent'});
+    expect(open).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain('Ce compte n’a pas accès');
+  });
   it('opens the managed workspace instead of a duplicate members screen', async () => {
     stubFetch(async (url) => response(url.endsWith('/api/session') ? {user,workspaces:[workspace]} : {...workspace,joinStatus:'approved'}));
     const open = vi.fn();

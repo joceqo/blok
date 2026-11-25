@@ -35,8 +35,12 @@ function serveDevicePageLink(req: IncomingMessage, res: ServerResponse, origin: 
   if (req.method !== 'GET' && req.method !== 'HEAD') return false;
   const params = new URL(req.url!, origin).searchParams;
   const page = params.get('page');
-  if (params.size !== 1 || !page || !/^[a-zA-Z0-9_-]{1,128}$/.test(page)) return false;
-  const href = 'blok://page/' + page + '?origin=' + encodeURIComponent(origin);
+  const workspace = params.get('workspace');
+  const validId = /^[a-zA-Z0-9_-]{1,128}$/;
+  if (!page || !validId.test(page) || (workspace !== null && !validId.test(workspace)) ||
+      params.size !== (workspace === null ? 1 : 2)) return false;
+  const scope = workspace === null ? '' : '&amp;workspace=' + workspace;
+  const href = 'blok://page/' + page + '?origin=' + encodeURIComponent(origin) + scope;
   const html = `<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ouvrir la page dans Blok</title><link rel="icon" href="/favicon-32x32.png">
@@ -48,7 +52,7 @@ a{color:inherit;text-underline-offset:.2em}p{margin:.8rem 0}
 .primary{display:inline-block;padding:.55rem 1rem;border-radius:.5rem;background:light-dark(#272622,#f3f2ef);color:light-dark(#fff,#272622);font-weight:600;text-decoration:none}
 </style></head><body><main><img src="/favicon-128x128.png" width="64" height="64" alt="">
 <h1>Ouvrir cette page</h1><p><a class="primary" href="${href}">Ouvrir dans Blok</a></p>
-<a href="/?page=${page}&amp;web=1">Continuer dans le navigateur</a></main></body></html>`;
+<a href="/?page=${page}${scope}&amp;web=1">Continuer dans le navigateur</a></main></body></html>`;
   res.writeHead(200, {
     'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
     'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'",

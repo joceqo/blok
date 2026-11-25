@@ -1,6 +1,6 @@
 import { workspacePageLink } from './page-link';
 import { renderPageIcon } from '../../src/shell/page-icon';
-import { activeWorkspace, workspaceKey } from './workspace-registry';
+import { activeWorkspace, workspaceKey, type WorkspaceRef } from './workspace-registry';
 import { createWorkspace, type Workspace } from './workspace';
 import { applyAppearance, readAppearance, watchSystemAppearance } from './settings';
 
@@ -49,6 +49,7 @@ const box: {
   session: Session;
   canLeave: () => boolean;
   workspace: Workspace | null;
+  mountedKey?: string;
 } = {
   root: null,
   session: { tabs: [], activeId: '' },
@@ -58,6 +59,26 @@ const box: {
 
 export async function flushDesktop(): Promise<void> { await box.workspace?.flush(); }
 
+/** Reuse the editor and its live connection when the OS opens a page in this workspace. */
+export async function openMountedPage(ref: WorkspaceRef, id: string): Promise<boolean> {
+  if (box.mountedKey !== workspaceKey(ref) || !box.workspace?.hasPage(id)) return false;
+  const isTarget = (href: string) => {
+    const url = new URL(href);
+    return !url.searchParams.has('view') && url.searchParams.get('page') === id;
+  };
+  if (isTarget(location.href)) return true;
+  await flushDesktop();
+  const existing = box.session.tabs.find(tab => isTarget(tab.href));
+  if (existing) moveTo(existing.id, false);
+  else if (box.session.tabs.length < MAX_TABS) createTab({id, title: ''});
+  else {
+    const url = new URL(homeHref());
+    url.searchParams.set('page', id);
+    history.pushState(null, '', url);
+  }
+  return true;
+}
+
 export function setCanLeave(guard: () => boolean): void {
   box.canLeave = guard;
 }
@@ -65,6 +86,7 @@ export function setCanLeave(guard: () => boolean): void {
 export function mountDesktop(root: HTMLElement): void {
   install();
   box.root = root;
+  box.mountedKey = workspaceKey(activeWorkspace());
   root.setAttribute('data-desktop-shell', '');
   applyAppearance(root, readAppearance());
   watchSystemAppearance(root);

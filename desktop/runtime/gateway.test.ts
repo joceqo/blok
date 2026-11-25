@@ -79,7 +79,11 @@ test('existing device page URLs offer a manual native handoff and keep browser s
     assert.ok(html.includes('href="/?page=' + page + '&amp;web=1"'));
     assert.doesNotMatch(html, /<script|http-equiv|\/internal\//i);
     assert.equal(response.headers.get('set-cookie'), null);
-    for (const route of ['/', '/?page=' + page + '&web=1', '/?view=calendar', '/?page=%3Cscript%3E', '/?page=a&page=b']) {
+    const scoped = '/?page=' + page + '&workspace=work-1';
+    const handoff = await (await fetch(origin + scoped)).text();
+    assert.ok(handoff.includes('href="blok://page/' + page + '?origin=' + encodeURIComponent(origin) + '&amp;workspace=work-1"'));
+    assert.ok(handoff.includes('href="/?page=' + page + '&amp;workspace=work-1&amp;web=1"'));
+    for (const route of ['/', scoped + '&web=1', scoped + '&workspace=other', '/?page=a&workspace=%3C', '/?page=' + page + '&web=1', '/?view=calendar', '/?page=%3Cscript%3E', '/?page=a&page=b']) {
       assert.equal(await (await fetch(origin + route)).text(), 'web shell');
     }
     assert.equal((await fetch(origin + '/internal/desktop/session')).status, 404);

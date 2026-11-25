@@ -391,11 +391,12 @@ fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> 
                 &PredefinedMenuItem::quit(app, None)?,
             ],
         )?;
+        let inspector = MenuItem::with_id(app, "web-inspector", "Web Inspector", true, Some("Cmd+Alt+I"))?;
         let view = Submenu::with_items(
             app,
             "View",
             true,
-            &[&search, &reload, &PredefinedMenuItem::fullscreen(app, None)?],
+            &[&search, &reload, &inspector, &PredefinedMenuItem::fullscreen(app, None)?],
         )?;
         return Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window_menu, &help]);
     }
@@ -409,7 +410,10 @@ fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.append_invoke_initialization_script(include_str!("inspect_shortcut.js"));
+    builder
         .manage(editor_close::EditorClose::default())
         .manage(page_links::PendingPageLink::default())
         .setup(|app| {
@@ -428,6 +432,12 @@ pub fn run() {
         .manage(ai::LocalAiRuns::default())
         .menu(|app| editor_menu(app))
         .on_menu_event(|app, event| {
+            if event.id().as_ref() == "web-inspector" {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
+                return;
+            }
             let script = match event.id().as_ref() {
                 "reload-tab" => "if (window.dispatchEvent(new Event('blok:desktop-reload', {cancelable:true}))) location.reload()",
                 "new-tab" => "window.dispatchEvent(new Event('blok:desktop-new-tab'))",

@@ -69,6 +69,7 @@ const desktopTools = {
 
 export interface Workspace {
   element: HTMLElement;
+  hasPage(id: string): boolean;
   start(): Promise<void>;
   flush(): Promise<void>;
   onRoute(): void;
@@ -1218,6 +1219,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
 
   return {
     element: ws.frame.element,
+    hasPage: id => ws.index?.pages.some(page => page.id === id) ?? false,
     async start() {
       try {
         const loaded = adoptIndex(await repository.loadIndex());

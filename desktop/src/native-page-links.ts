@@ -23,6 +23,7 @@ export async function listenForPageLinks(report: (error: unknown) => void): Prom
       for (const ref of matches) {
         const response = await fetch(origin + '/api/workspaces/' + encodeURIComponent(ref.workspaceId) + '/index', {
           headers: {Authorization:'Bearer ' + result.token}, credentials:'omit', redirect:'error',
+          signal: AbortSignal.timeout(15000),
         });
         if (response.status === 403 || response.status === 404) continue;
         if (!response.ok) throw new Error('Impossible de lire cet espace.');
@@ -37,7 +38,8 @@ export async function listenForPageLinks(report: (error: unknown) => void): Prom
       selectStartupPage(target, link.id);
       return;
     }
-    const {flushDesktop} = await import('./shell');
+    const {flushDesktop, openMountedPage} = await import('./shell');
+    if (await openMountedPage(target, link.id)) return;
     await flushDesktop();
     selectWorkspace(target, link.id);
   }

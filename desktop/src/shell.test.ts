@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { mountDesktop, setCanLeave } from './shell';
+import { mountDesktop, openMountedPage, setCanLeave } from './shell';
+import { initialWorkspace } from './workspace-registry';
 import { BLOK_MARK_HREF, faviconHref } from './tab-identity';
 
 const flush = vi.fn<() => Promise<void>>();
@@ -18,6 +19,7 @@ vi.mock('./workspace', () => ({
     onLayout(260);
     return {
       element,
+      hasPage: (id: string) => id === 'linked' || id === 'original',
       start: async () => undefined,
       flush,
       onRoute: () => { routeCalls++; },
@@ -154,6 +156,22 @@ afterEach(() => {
 installScroll();
 
 describe('desktop tab strip', () => {
+  it('opens a warm link in the live workspace and reuses the existing tab on repeat', async () => {
+    history.replaceState(null, '', '/?page=original');
+    const host = mount();
+    flush.mockClear();
+    expect(await openMountedPage(initialWorkspace, 'linked')).toBe(true);
+    expect(location.search).toBe('?page=linked');
+    expect(tabLabels(host)).toHaveLength(2);
+    expect(await openMountedPage(initialWorkspace, 'linked')).toBe(true);
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(await openMountedPage(initialWorkspace, 'original')).toBe(true);
+    expect(tabLabels(host)).toHaveLength(2);
+    expect(location.search).toBe('?page=original');
+    expect(await openMountedPage(initialWorkspace, 'absent')).toBe(false);
+    expect(await openMountedPage({...initialWorkspace, id: 'another'}, 'linked')).toBe(false);
+  });
+
   it('opens one readable tab in a 40px strip', () => {
     const root = mount();
     const strip = root.querySelector('[data-desktop-tabstrip]');

@@ -52,6 +52,7 @@ function workspaceRoute(ref: WorkspaceRef, pageId?: string): URL {
   activateWorkspace(ref);
   const url = new URL(location.href);
   url.searchParams.delete('page');
+  url.searchParams.delete('workspace');
   if (pageId) { url.searchParams.delete('view'); url.searchParams.set('page', pageId); }
   url.searchParams.delete('cloud');
   url.searchParams.delete('manage');

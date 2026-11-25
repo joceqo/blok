@@ -1,4 +1,5 @@
 import { IconPage, IconPageEmpty } from '../../components/icons';
+import { renderPageIcon } from '../../shell/page-icon';
 
 import type { DatabaseRow, DatabaseViewConfig } from './types';
 
