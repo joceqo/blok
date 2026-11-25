@@ -80,7 +80,7 @@ const id = (prefix: string, workspaceId: string, suffix: string): string =>
  * page. The sample database lives on its own page, the way Notion seeds a
  * separate "To Do List" rather than embedding one.
  */
-export function buildWelcomeDocuments(workspaceId: string): WelcomeDocuments {
+export function buildWelcomeDocuments(workspaceId: string, device = false): WelcomeDocuments {
   const welcomeId = welcomePageId(workspaceId);
   const rightsId = welcomeRightsPageId(workspaceId);
   const tasksId = welcomeTasksPageId(workspaceId);
@@ -133,8 +133,8 @@ export function buildWelcomeDocuments(workspaceId: string): WelcomeDocuments {
     icon: { type: 'emoji', value: '👋' },
     blocks: [
       // Already done by the time you read this — ticked, like Notion's first line.
-      check('account', 'Créer votre compte', { checked: true }),
-      check('desktop', '<strong>Installer l’application de bureau</strong> pour travailler hors ligne et emporter Blok partout'),
+      check('account', device ? 'Ouvrir votre espace local' : 'Créer votre compte', { checked: true }),
+      check('desktop', device ? 'Ajoutez un rendez-vous dans le <strong>Calendrier</strong> de cet appareil' : '<strong>Installer l’application de bureau</strong> pour travailler hors ligne et emporter Blok partout'),
       check('slash', 'Cliquez n’importe où ci-dessous et <strong>tapez</strong> <code>/</code> pour voir ce que vous pouvez créer — titres, tableaux, cases à cocher, etc.'),
       check('slash-page', 'Tapez <code>/page</code> pour ajouter une <strong>nouvelle page</strong> et imbriquer ce que vous voulez, où vous voulez', { depth: 1 }),
       check('sidebar', '<strong>Trouvez</strong>, <strong>organisez</strong> et <strong>ajoutez des pages</strong> depuis la barre latérale, à gauche 👈'),

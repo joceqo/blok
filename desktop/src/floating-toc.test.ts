@@ -1,7 +1,25 @@
-import { describe, expect, it } from 'vitest';
-import { closestTocHeading, collectFloatingHeadings } from './floating-toc';
+import { describe, expect, it, vi } from 'vitest';
+import { closestTocHeading, collectFloatingHeadings, createFloatingToc } from './floating-toc';
 
 describe('floating table of contents', () => {
+  it('keeps the outline inside the page that owns the cover controls', () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    const page = document.createElement('main');
+    const editor = document.createElement('article');
+    page.append(editor);
+    document.body.append(page);
+    const toc = createFloatingToc(page, editor);
+    try {
+      expect(page.contains(toc.element)).toBe(true);
+      page.remove();
+      expect(toc.element.isConnected).toBe(false);
+    } finally {
+      toc.destroy();
+      page.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('chooses the heading whose centre is nearest the upper quarter', () => {
     const headings = [
       { id: 'first', top: 80, height: 30 },

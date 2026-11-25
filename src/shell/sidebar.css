@@ -53,6 +53,12 @@
   text-transform: uppercase;
 }
 
+[data-blok-sidebar-header-actions] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 [data-blok-sidebar-icon],
 [data-blok-sidebar-add],
 [data-blok-sidebar-more],
@@ -592,6 +598,7 @@
 }
 [data-blok-sidebar-shortcut][aria-current="page"],
 [data-blok-sidebar-shortcut]:hover { background: var(--blok-item-hover-bg); color: var(--blok-text-primary); }
+a[data-blok-sidebar-calendar] { text-decoration: none; }
 [data-blok-sidebar-shortcut] svg { flex: none; width: 16px; height: 16px; }
 
 [data-blok-sidebar] button[hidden] { display: none; }

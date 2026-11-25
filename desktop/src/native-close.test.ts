@@ -1,0 +1,34 @@
+import {afterEach, expect, it, vi} from 'vitest';
+import {guardNativeClose} from './native-close';
+
+afterEach(() => { vi.useRealTimers(); document.body.replaceChildren(); });
+it('keeps the editor open on failure, coalesces repeated quits, and confirms only after a successful retry', async () => {
+  vi.useFakeTimers();
+  const host = document.createElement('main');
+  document.body.append(host);
+  host.inert = false;
+  const bridge = {invoke: vi.fn().mockResolvedValue(undefined)};
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const flush = vi.fn(() => new Promise<void>((ok, fail) => {resolve = ok; reject = fail;}));
+  await guardNativeClose(host, bridge, flush);
+  const close = (): void => { window.dispatchEvent(new Event('blok:desktop-prepare-close')); };
+  close(); close();
+  expect(flush).toHaveBeenCalledTimes(1);
+  expect(host.inert).toBe(true);
+  expect(document.querySelector('[role=status]')).toBeNull();
+  await vi.advanceTimersByTimeAsync(250);
+  expect(document.querySelector('[role=status]')?.textContent).toContain('Enregistrement');
+  expect(bridge.invoke).toHaveBeenCalledTimes(1);
+  reject(new Error('Disque plein'));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(bridge.invoke).toHaveBeenLastCalledWith('finish_editor_close', {saved: false});
+  expect(host.inert).toBe(false);
+  expect(document.querySelector('[role=alert]')?.textContent).toContain('Disque plein');
+  close();
+  expect(document.querySelector('[role=alert]')).toBeNull();
+  resolve();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(bridge.invoke).toHaveBeenLastCalledWith('finish_editor_close', {saved: true});
+  expect(host.inert).toBe(true);
+});

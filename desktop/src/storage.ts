@@ -4,7 +4,7 @@ import type { PageCover } from './cover';
 import type { DateDisplay } from '@blok/date-editor';
 import type { PageAccessMap } from './page-access';
 
-export type DesktopPage = ShellPage & { initialVisibility?: 'private'; cover?: PageCover; coverPosition?: number; fullWidth?: boolean; titleDate?: string; titleDateDisplay?: DateDisplay; titleDateSuffix?: string };
+export type DesktopPage = ShellPage & { databaseRowBody?: boolean; initialVisibility?: 'private'; cover?: PageCover; coverPosition?: number; fullWidth?: boolean; titleDate?: string; titleDateDisplay?: DateDisplay; titleDateSuffix?: string };
 
 export interface WorkspaceIndex {
   pages: DesktopPage[];
@@ -43,17 +43,19 @@ async function fingerprint(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export async function readFile(name: string, workspace: WorkspaceRef = activeWorkspace()): Promise<string | null> {
+// Previews must not advance an editor's optimistic-concurrency fingerprint.
+export async function peekFile(name: string, workspace: WorkspaceRef): Promise<string | null> {
   if (workspace.kind !== 'local') throw new Error('Remote documents require collaboration; local storage is forbidden');
   const scope = workspace.id === 'default' ? {} : { workspace: workspace.id };
-  const key = `${workspace.id}:${name}`;
   const bridge = native();
-  if (bridge) {
-    const data = await bridge.invoke('load_workspace_file', { name, ...scope }) as string | null;
-    seen.set(key, await fingerprint(data ?? ''));
-    return data;
-  }
+  if (bridge) return await bridge.invoke('load_workspace_file', {name, ...scope}) as string | null;
   return localStorage.getItem(workspace.id === 'default' ? `blok:workspace:${name}` : `blok:workspace:${workspace.id}:${name}`);
+}
+
+export async function readFile(name: string, workspace: WorkspaceRef = activeWorkspace()): Promise<string | null> {
+  const data = await peekFile(name, workspace);
+  if (native()) seen.set(`${workspace.id}:${name}`, await fingerprint(data ?? ''));
+  return data;
 }
 
 export async function writeFile(name: string, data: string, workspace: WorkspaceRef = activeWorkspace()): Promise<void> {

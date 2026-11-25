@@ -185,8 +185,10 @@ function actionButton(attribute: string, label: string, kind: MenuIcon): HTMLBut
   return button;
 }
 
-export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, currentWorkspace = activeWorkspace()): HTMLElement {
+export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, currentWorkspace = activeWorkspace(), headerActions?: HTMLElement): HTMLElement {
   const native = '__TAURI_INTERNALS__' in window;
+  const onDevice = currentWorkspace.kind === 'remote' && currentWorkspace.embedded === true;
+  const offlineProfile = native && (onDevice || currentWorkspace.kind === 'local');
   const admin = currentWorkspace.kind === 'remote' && currentWorkspace.role === 'admin';
   const client = currentWorkspace.kind === 'remote' ? new CloudClient({origin: currentWorkspace.server, sessionAdapter: native ? nativeSessionAdapter(currentWorkspace.server) : undefined}) : null;
   const ui = {
@@ -216,13 +218,14 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     const inbox = createNotificationTrigger({client, slug: currentWorkspace.workspaceId,
       onManageRequests: admin ? () => openSettings('members', 'requests') : undefined,
     });
-    footer.append(inbox.element);
+    if (headerActions) headerActions.prepend(inbox.element);
+    else footer.append(inbox.element);
   }
 
   const menu = el('div', 'data-desktop-footer-menu');
   menu.setAttribute('role', 'menu');
   menu.hidden = true;
-  const account = currentWorkspace.kind === 'remote' ? el('div', 'data-desktop-menu-account') : el('button', 'data-desktop-menu-account');
+  const account = currentWorkspace.kind === 'remote' && !onDevice ? el('div', 'data-desktop-menu-account') : el('button', 'data-desktop-menu-account');
   if (account instanceof HTMLButtonElement) { account.type = 'button'; account.setAttribute('role', 'menuitem'); }
   account.append(el('span', 'data-desktop-menu-avatar', currentWorkspace.name.charAt(0).toLocaleUpperCase()));
   const accountText = el('span', 'data-desktop-menu-account-text');
@@ -324,15 +327,15 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     closeMenu();
     footer.dispatchEvent(new CustomEvent('blok:desktop-connect-cloud', {bubbles: true, detail: {section}}));
   };
-  const connect = actionButton('data-desktop-menu-connect', currentWorkspace.kind === 'remote' ? 'Gérer mon compte' : 'Ajouter un compte', 'profile');
+  const connect = actionButton('data-desktop-menu-connect', offlineProfile ? 'Se connecter à un serveur distant' : currentWorkspace.kind === 'remote' ? 'Gérer mon compte' : 'Ajouter un compte', 'profile');
   connect.setAttribute('data-desktop-menu-item', '');
   connect.setAttribute('role', 'menuitem');
   connect.addEventListener('click', () => {
-    if (currentWorkspace.kind === 'remote') openSettings('account');
+    if (currentWorkspace.kind === 'remote' && !onDevice) openSettings('account');
     else emitCloud('account');
   });
   menu.append(account, preferences, help);
-  if (admin) {
+  if (admin && !onDevice) {
     const invite = actionButton('data-desktop-menu-invite', 'Inviter des membres', 'profile');
     invite.setAttribute('data-desktop-menu-item', '');
     invite.setAttribute('role', 'menuitem');
@@ -344,6 +347,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
   const remote = all.filter((ref) => ref.kind === 'remote');
   const groups = new Map<string, typeof remote>();
   for (const ref of remote) {
+    if (ref.embedded) continue;
     const email = ref.userName ?? 'Compte en ligne';
     const members = groups.get(email) ?? [];
     members.push(ref); groups.set(email, members);
@@ -378,7 +382,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     const group = el('div', 'data-desktop-menu-group');
     group.setAttribute('role', 'group'); group.setAttribute('aria-label', 'Sur cet appareil');
     group.append(el('div', 'data-desktop-menu-group-label', 'Sur cet appareil'));
-    for (const ref of all.filter((item) => item.kind === 'local')) addChoice(ref, group);
+    for (const ref of all.filter((item) => item.kind === 'local' || item.embedded)) addChoice(ref, group);
     const addLocal = actionButton('data-desktop-menu-new-workspace', 'Créer un espace local', 'storage');
     addLocal.setAttribute('data-desktop-menu-item', ''); addLocal.setAttribute('role', 'menuitem');
     addLocal.addEventListener('click', () => {
@@ -408,7 +412,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
   noResults.hidden = true; noResults.setAttribute('role', 'status');
   nav.append(searchBox, navList, noResults);
   navList.append(el('div', 'data-desktop-settings-nav-heading', 'Compte'));
-  const accountTab = actionButton('data-desktop-settings-nav-item', currentWorkspace.kind === 'remote' ? currentWorkspace.userName ?? 'Mon compte' : 'Profil local', 'profile');
+  const accountTab = actionButton('data-desktop-settings-nav-item', currentWorkspace.kind === 'remote' && !onDevice ? currentWorkspace.userName ?? 'Mon compte' : 'Profil local', 'profile');
   const connectionsTab = actionButton('data-desktop-settings-nav-item', 'Connexions', 'connections');
   navList.append(accountTab);
   navList.append(connectionsTab);
@@ -420,7 +424,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
   const emojiTab = actionButton('data-desktop-settings-nav-item', 'Émojis', 'emoji');
   const membersTab = actionButton('data-desktop-settings-nav-item', 'Membres', 'profile');
   navList.append(el('div', 'data-desktop-settings-nav-heading', 'Espace'), generalTab, emojiTab);
-  if (admin) navList.append(membersTab);
+  if (admin && !onDevice) navList.append(membersTab);
   const navEntries: Array<[HTMLButtonElement, string]> = [
     [accountTab, 'compte profil identité email'], [connectionsTab, 'connexion mcp jeton compte serveur espace'],
     [prefsTab, 'préférences apparence thème clair sombre'], [aiTab, 'assistant ia openai modèle clé api'],
@@ -450,7 +454,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     }
     noResults.hidden = Boolean(navList.querySelector('[data-desktop-settings-nav-item]:not([hidden])'));
   };
-  if (client) {
+  if (client && !onDevice) {
     void client.session().then((session) => {
       if (!session.user.instanceAdmin) return;
       const instanceHeading = el('div', 'data-desktop-settings-nav-heading', 'Instance');
@@ -576,8 +580,8 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
       content.append(el('h1', 'data-desktop-settings-title', 'Connexions'), el('p', 'data-desktop-settings-intro', 'Gérez vos comptes et connectez vos outils à Blok.'));
       const accounts = el('section', 'data-desktop-connections-accounts');
       const labels = el('div', 'data-desktop-settings-row-labels');
-      labels.append(el('strong', 'data-desktop-settings-row-title', 'Comptes et espaces'), el('span', 'data-desktop-settings-row-help', 'Ouvrez un autre espace ou connectez-vous avec une autre adresse.'));
-      const manage = actionButton('data-desktop-settings-copy', client ? 'Gérer les comptes' : 'Se connecter', 'profile');
+      labels.append(el('strong', 'data-desktop-settings-row-title', offlineProfile ? 'Serveur distant' : 'Comptes et espaces'), el('span', 'data-desktop-settings-row-help', offlineProfile ? 'Accédez aux espaces d’un autre serveur Blok.' : 'Ouvrez un autre espace ou connectez-vous avec une autre adresse.'));
+      const manage = actionButton('data-desktop-settings-copy', offlineProfile ? 'Se connecter à un serveur distant' : client ? 'Gérer les comptes' : 'Se connecter', 'profile');
       manage.addEventListener('click', () => { closeSettings(); emitCloud('account'); });
       accounts.append(labels, manage); content.append(accounts);
       if (native && (currentWorkspace.kind === 'local' || !currentWorkspace.embedded)) {
@@ -608,7 +612,13 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
       ui.members = mountWorkspaceMembers(content, {client, slug: currentWorkspace.workspaceId, initialTab, onInvite: () => openInvitation(dialog)});
       return;
     }
-    if (panel === 'account' && currentWorkspace.kind === 'remote') {
+    if (panel === 'account' && onDevice) {
+      content.append(el('h1', 'data-desktop-settings-title', 'Profil local'));
+      content.append(el('p', 'data-desktop-settings-intro', 'Votre profil et vos documents sont enregistrés sur cet appareil.'));
+      const row = el('div', 'data-desktop-settings-row');
+      row.append(el('strong', 'data-desktop-settings-row-title', 'Espace de travail'), el('span', 'data-desktop-settings-row-value', currentWorkspace.name));
+      content.append(row);
+    } else if (panel === 'account' && currentWorkspace.kind === 'remote') {
       content.setAttribute('data-desktop-account', '');
       content.append(el('h1', 'data-desktop-settings-title', 'Mon compte'), el('p', 'data-desktop-settings-intro', 'Votre identité et votre accès à cet espace.'));
       const identity = el('section', 'data-desktop-account-section');
@@ -746,7 +756,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
   }
   if (currentWorkspace.kind === 'remote') {
     const accountSubtitle = account.querySelector('[data-desktop-menu-subtitle]');
-    if (accountSubtitle) accountSubtitle.textContent = currentWorkspace.userName ?? 'Compte en ligne';
+    if (accountSubtitle) accountSubtitle.textContent = onDevice ? 'Profil local' : currentWorkspace.userName ?? 'Compte en ligne';
     switcher.setAttribute('aria-label', 'Espaces et réglages');
   }
   const pendingSettings = sessionStorage.getItem('blok:desktop:pending-settings');

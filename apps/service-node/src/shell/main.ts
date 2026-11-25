@@ -1,6 +1,7 @@
 import { roomPurger, startPurgeRetries } from './page-purge.ts';
 import { loadAiKey } from './ai-crypto.ts';
-import { bootstrapShell } from './bootstrap.ts';
+import { deviceCredential, ensureDeviceAccount } from './device-account.ts';
+import { bootstrapShell, inTransaction } from './bootstrap.ts';
 import { serve } from '@hono/node-server';
 import { createPool } from '../db/pool.ts';
 import { createShellApp } from './app.ts';
@@ -15,6 +16,10 @@ const pool = createPool(databaseUrl);
 if ((process.env.TICKET_SECRET?.length ?? 0) < 32) throw new Error('TICKET_SECRET must have at least 32 characters');
 process.env.BLOK_NODE_ROOM_ALL = '1';
 await bootstrapShell(pool);
+if (deviceCredential(process.env.BLOK_DEVICE_SESSION_SECRET)) {
+  if (process.env.BLOK_LISTEN_HOST !== '127.0.0.1') throw new Error('Embedded sessions require a loopback listener');
+  await inTransaction(pool, ensureDeviceAccount);
+}
 await loadAiKey(pool, process.env.DATA_DIRECTORY ?? './data', process.env.AI_ENCRYPTION_KEY);
 const app = createShellApp(pool, process.env.INTERNAL_SECRET ?? '', origins);
 const stopPurgeRetries = startPurgeRetries(pool, roomPurger(process.env.INTERNAL_SECRET!));

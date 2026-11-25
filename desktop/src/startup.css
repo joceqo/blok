@@ -1,0 +1,50 @@
+[data-blok-startup] {
+  --startup-paper: #1c1c1c;
+  --startup-ink: #f3f2ef;
+  --startup-muted: #b5b3ae;
+  --startup-line: #454541;
+  display: grid;
+  min-height: 100vh;
+  min-height: 100dvh;
+  place-items: center;
+  text-align: center;
+  background: var(--startup-paper);
+  color: var(--startup-ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+html[data-startup-theme="light"] [data-blok-startup] {
+  --startup-paper: #faf9f6;
+  --startup-ink: #272622;
+  --startup-muted: #66645e;
+  --startup-line: #d8d6d0;
+}
+@media (prefers-color-scheme: light) {
+  html[data-startup-theme="auto"] [data-blok-startup] {
+    --startup-paper: #faf9f6;
+    --startup-ink: #272622;
+    --startup-muted: #66645e;
+    --startup-line: #d8d6d0;
+  }
+}
+.startup-content { display: grid; justify-items: center; gap: 24px; max-width: min(32rem, 86vw); padding: 24px; }
+.startup-brand { display: flex; align-items: center; gap: 9px; line-height: 1; font-size: 36px; letter-spacing: -.055em; font-weight: 650; }
+.startup-brand img { display: block; width: 58px; height: 58px; object-fit: contain; }
+.startup-status { display: flex; align-items: center; justify-content: center; gap: 9px; margin: 0; color: var(--startup-muted); font-size: 14px; line-height: 1.5; }
+.startup-spinner { width: 13px; height: 13px; flex: none; border: 1.5px solid var(--startup-line); border-top-color: currentColor; border-radius: 50%; animation: blok-starting .8s linear infinite; }
+.startup-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.startup-actions button { padding: 6px 12px; border: 1px solid var(--startup-line); border-radius: 6px; background: transparent; color: var(--startup-ink); font: inherit; cursor: pointer; }
+.startup-actions button:first-child { background: var(--startup-ink); color: var(--startup-paper); }
+@keyframes blok-starting { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .startup-spinner { animation: none; } }
+.desktop-close-notice {
+  position: fixed;
+  z-index: 10000;
+  inset: auto 16px 16px auto;
+  max-width: min(30rem, 85vw);
+  padding: 10px 16px;
+  border: 1px solid var(--desktop-border, #787878);
+  border-radius: 8px;
+  color: CanvasText;
+  background: Canvas;
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+}

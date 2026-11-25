@@ -32,6 +32,7 @@ export interface CloudGatewayOptions {
   sessionAdapter?: CloudSessionAdapter;
   allowLocal?: boolean;
   initialManage?: {slug: string; section?: 'members' | 'invites'};
+  initialWorkspaceId?: string;
   /** Prefill the invite acceptance screen (or parse `?invite=` / `?email=`). */
   initialInvite?: InviteContext;
   onOpenWorkspace(workspace: CloudWorkspace, client: CloudClient): void | Promise<void>;
@@ -402,6 +403,17 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     if (state.pendingInvite) {
       state.session = active; client.currentSession = active;
       routers.invite();
+      return;
+    }
+    if (options.initialWorkspaceId) {
+      const workspace = active.workspaces.find(item => item.id === options.initialWorkspaceId);
+      if (workspace) {
+        state.session = active; client.currentSession = active;
+        await options.onOpenWorkspace(workspace, client);
+      } else {
+        await list();
+        error(new Error('Ce compte n’a pas accès à l’espace de cette page.'));
+      }
       return;
     }
     const manage = options.initialManage;

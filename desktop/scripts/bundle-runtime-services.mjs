@@ -53,6 +53,7 @@ export async function bundleServices(destination) {
     ...shared, entryPoints: [entry], outfile: join(destination, out), ...extra,
   });
   const results = await Promise.all([
+    bundle('desktop/runtime/import-disk.ts', 'app/import-disk.mjs'),
     bundle('apps/service-node/src/shell/main.ts', 'app/dist/shell/main.mjs'),
     bundle('apps/service-node/mcp/runtime.ts', 'app/dist/shell/mcp-runtime.mjs', { define: { VERSION: JSON.stringify(mcp.version) } }),
     bundle('packages/server/node/src/main.ts', 'room/media.mjs', { define: { BLOK_CONFORMANCE: 'false' } }),

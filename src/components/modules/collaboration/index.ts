@@ -289,6 +289,11 @@ export class Collaboration extends Module {
     if (this.settings === null) {
       return;
     }
+    // Before a memory-only session's first sync the editor is read-only and
+    // there is no persisted outbox to recover. It has no receipt to wait for.
+    if (!this.settings.offline && !this.hasLineage && this.resetGeneration === 0 && !this.durabilityLost && !this.isDestroyed) {
+      return;
+    }
     const waitForReceipt = async (): Promise<void> => {
       if (this.isDestroyed) {
         throw new Error('The editor was destroyed before its changes were acknowledged');

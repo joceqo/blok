@@ -1,9 +1,12 @@
+import { editorUrl } from './calendar-route';
 /** Non-secret workspace references. Session credentials live in the OS keychain. */
 export type LocalWorkspace = { kind: 'local'; id: string; name: string };
-export type RemoteWorkspace = { kind: 'remote'; embedded?: boolean; id: string; name: string; server: string; accountId: string; workspaceId: string; userName?: string; role?: 'admin' | 'member' | 'viewer' };
+export type RemoteWorkspace = { kind: 'remote'; embedded?: boolean; device?: boolean; id: string; name: string; server: string; accountId: string; workspaceId: string; userName?: string; role?: 'admin' | 'member' | 'viewer' };
 export type WorkspaceRef = LocalWorkspace | RemoteWorkspace;
 const KEY = 'blok:desktop:workspaces:v1';
 const ACTIVE = 'blok:desktop:active-workspace:v1';
+const DISK = 'blok:desktop:prefer-default-disk:v1';
+export function prefersDefaultDisk(): boolean { return localStorage.getItem(DISK) === '1'; }
 export const LOCAL_SERVER_ORIGIN = 'http://localhost:18150';
 export const initialWorkspace: LocalWorkspace = { kind: 'local', id: 'default', name: 'Espace local' };
 export function serverOrigin(value: string): string {
@@ -27,7 +30,6 @@ export function listWorkspaces(): WorkspaceRef[] {
     return [initialWorkspace, ...refs.filter((item) => workspaceKey(item) !== workspaceKey(initialWorkspace))];
   } catch { return [initialWorkspace]; }
 }
-export function hasSelectedWorkspace(): boolean { return localStorage.getItem(ACTIVE) !== null; }
 export function activeWorkspace(): WorkspaceRef {
   return listWorkspaces().find((item) => workspaceKey(item) === localStorage.getItem(ACTIVE)) ?? initialWorkspace;
 }
@@ -40,12 +42,19 @@ export function createLocalWorkspace(name: string): LocalWorkspace {
   rememberWorkspace(ref);
   return ref;
 }
-/** Call only after the current editor has flushed; reload removes all old listeners and timers. */
-export function selectWorkspace(ref: WorkspaceRef): void {
+export function activateWorkspace(ref: WorkspaceRef): void {
   rememberWorkspace(ref);
   localStorage.setItem(ACTIVE, workspaceKey(ref));
-  const url = new URL(location.href);
+  if (ref.kind === 'remote' && ref.device) localStorage.removeItem(DISK);
+}
+
+function workspaceRoute(ref: WorkspaceRef, pageId?: string): URL {
+  if (ref.kind === 'local' && ref.id === 'default') localStorage.setItem(DISK, '1');
+  activateWorkspace(ref);
+  const url = pageId ? editorUrl(new URL(location.href)) : new URL(location.href);
   url.searchParams.delete('page');
+  url.searchParams.delete('workspace');
+  if (pageId) { url.searchParams.delete('view'); url.searchParams.set('page', pageId); }
   url.searchParams.delete('cloud');
   url.searchParams.delete('manage');
   url.searchParams.delete('section');
@@ -53,5 +62,15 @@ export function selectWorkspace(ref: WorkspaceRef): void {
   url.searchParams.delete('embedded');
   if (ref.kind === 'local') url.searchParams.set('local', '1');
   else url.searchParams.delete('local');
-  location.assign(url.href);
+  return url;
+}
+
+/** Call only after the current editor has flushed; reload removes all old listeners and timers. */
+export function selectWorkspace(ref: WorkspaceRef, pageId?: string): void {
+  location.assign(workspaceRoute(ref, pageId).href);
+}
+
+/** An OS launch URL was validated before any editor or saved account was opened. */
+export function selectStartupPage(ref: WorkspaceRef, pageId: string): void {
+  history.replaceState(history.state, '', workspaceRoute(ref, pageId).href);
 }

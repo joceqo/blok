@@ -19,7 +19,7 @@ async function pendingInvitations(db: PoolClient, email: string) {
   return rows.map(row => row.id);
 }
 
-async function issueSession(db: PoolClient, userId: string, invites: string[]) {
+export async function issueSession(db: PoolClient, userId: string, invites: string[]) {
   if (invites.length) {
     await db.query(`INSERT INTO memberships(workspace_id,user_id,role)
       SELECT DISTINCT ON (workspace_id) workspace_id,$1,role FROM invites WHERE id=ANY($2::text[])
@@ -31,7 +31,7 @@ async function issueSession(db: PoolClient, userId: string, invites: string[]) {
   await db.query("INSERT INTO sessions(id,user_id,expires_at) VALUES($1,$2,now()+interval '30 days')", [key, userId]);
   const session = await loadSession(db, key);
   if (!session) throw new Error('Session missing after creation');
-  return { token, user: session.user, workspaces: session.workspaces };
+  return { token, ...session };
 }
 
 export function createShellAuth(pool: PgPool, secret: string, recheckSessions: () => Promise<void>) {

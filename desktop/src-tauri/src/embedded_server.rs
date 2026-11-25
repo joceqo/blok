@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -52,23 +52,81 @@ impl Resources {
     }
 }
 
-#[derive(Deserialize)]
+// Delivered by our child over a private pipe. Only the public origin is exposed
+// by ensure_embedded_server. Keep these credentials out of Debug and Serialize.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Ready {
     origin: String,
+    api_origin: String,
+    device_secret: String,
 }
 
-fn parse_ready(line: &[u8]) -> Result<String, String> {
-    let invalid = || "Le serveur embarqué a renvoyé une adresse locale invalide.".to_string();
+fn valid_endpoint(origin: &str) -> bool {
+    tauri::Url::parse(origin).is_ok_and(|url| {
+        url.scheme() == "http"
+            && url.host_str() == Some("127.0.0.1")
+            && url.port().is_some_and(|port| port > 0)
+            && url.origin().ascii_serialization() == origin
+    })
+}
+
+fn parse_ready(line: &[u8]) -> Result<Ready, String> {
+    let invalid = || "Le serveur embarqué a renvoyé une configuration locale invalide.".to_string();
     let ready: Ready = serde_json::from_slice(line).map_err(|_| invalid())?;
-    let url = tauri::Url::parse(&ready.origin).map_err(|_| invalid())?;
-    if url.scheme() != "http"
-        || !matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
-        || !url.port().is_some_and(|port| port > 0)
-        || url.origin().ascii_serialization() != ready.origin
+    if !valid_endpoint(&ready.origin)
+        || !valid_endpoint(&ready.api_origin)
+        || ready.origin == ready.api_origin
+        || !(32..=128).contains(&ready.device_secret.len())
+        || !ready
+            .device_secret
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
     {
         return Err(invalid());
     }
-    Ok(ready.origin)
+    Ok(ready)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeviceSession {
+    #[serde(skip_deserializing)]
+    origin: String,
+    user: serde_json::Value,
+    workspaces: Vec<serde_json::Value>,
+    support_email: Option<String>,
+    device_workspace_id: String,
+    device_active_page_id: Option<String>,
+    device_imported_workspace_id: Option<String>,
+    token: String,
+}
+
+impl Ready {
+    async fn device_session(&self) -> Result<DeviceSession, String> {
+        let failed = |_| "Impossible d’ouvrir le compte de cet appareil.".to_string();
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(failed)?;
+        let response = http
+            .post(format!("{}/internal/desktop/session", self.api_origin))
+            .bearer_auth(&self.device_secret)
+            .send()
+            .await
+            .map_err(failed)?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "Le serveur local a refusé la session de cet appareil ({}).",
+                response.status().as_u16()
+            ));
+        }
+        let mut session: DeviceSession = response.json().await.map_err(failed)?;
+        session.origin = self.origin.clone();
+        Ok(session)
+    }
 }
 
 #[derive(Default)]
@@ -81,7 +139,7 @@ struct ServerProcess {
     input: Option<ChildStdin>,
     output: Option<ChildStdout>,
     exited: mpsc::Receiver<()>,
-    origin: Option<String>,
+    ready: Option<Ready>,
     #[cfg(unix)]
     group: i32,
     #[cfg(windows)]
@@ -189,7 +247,7 @@ impl ServerProcess {
             input,
             output,
             exited,
-            origin: None,
+            ready: None,
             #[cfg(unix)]
             group,
             #[cfg(windows)]
@@ -197,7 +255,7 @@ impl ServerProcess {
         })
     }
 
-    fn wait_ready(&mut self, quitting: &AtomicBool, timeout: Duration) -> Result<String, String> {
+    fn wait_ready(&mut self, quitting: &AtomicBool, timeout: Duration) -> Result<Ready, String> {
         let stdout = self.output.take().expect("piped supervisor stdout");
         let (send, receive) = mpsc::sync_channel(1);
         std::thread::spawn(move || {
@@ -277,7 +335,7 @@ impl Drop for ServerProcess {
 }
 
 impl EmbeddedServer {
-    fn ensure(&self, resources: &Resources, data: &Path) -> Result<String, String> {
+    fn ensure(&self, resources: &Resources, data: &Path) -> Result<Ready, String> {
         let mut running = self
             .running
             .lock()
@@ -287,8 +345,8 @@ impl EmbeddedServer {
         }
         if let Some(process) = running.as_ref() {
             if matches!(process.exited.try_recv(), Err(mpsc::TryRecvError::Empty)) {
-                if let Some(origin) = &process.origin {
-                    return Ok(origin.clone());
+                if let Some(ready) = &process.ready {
+                    return Ok(ready.clone());
                 }
             }
         }
@@ -299,10 +357,10 @@ impl EmbeddedServer {
             );
         }
         let mut process = ServerProcess::launch(resources, data)?;
-        let origin = process.wait_ready(&self.quitting, READY_TIMEOUT)?;
-        process.origin = Some(origin.clone());
+        let ready = process.wait_ready(&self.quitting, READY_TIMEOUT)?;
+        process.ready = Some(ready.clone());
         *running = Some(process);
-        Ok(origin)
+        Ok(ready)
     }
 
     pub(crate) fn shutdown(&self) {
@@ -320,8 +378,7 @@ pub(crate) fn embedded_server_available(app: tauri::AppHandle) -> bool {
         .is_ok_and(|path| Resources::in_bundle(&path).available())
 }
 
-#[tauri::command]
-pub(crate) async fn ensure_embedded_server(app: tauri::AppHandle) -> Result<String, String> {
+async fn ready_server(app: tauri::AppHandle) -> Result<Ready, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let resources =
             Resources::in_bundle(&app.path().resource_dir().map_err(|e| e.to_string())?);
@@ -336,27 +393,119 @@ pub(crate) async fn ensure_embedded_server(app: tauri::AppHandle) -> Result<Stri
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+pub(crate) async fn ensure_embedded_server(app: tauri::AppHandle) -> Result<String, String> {
+    Ok(ready_server(app).await?.origin)
+}
+
+fn trusted_webview(label: &str, url: &tauri::Url) -> bool {
+    if label != "main" || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    let bundled = url.port().is_none()
+        && matches!(
+            (url.scheme(), url.host_str()),
+            ("tauri", Some("localhost")) | ("http" | "https", Some("tauri.localhost"))
+        );
+    bundled
+        || (cfg!(debug_assertions) && url.origin().ascii_serialization() == "http://localhost:1420")
+}
+
+#[tauri::command]
+pub(crate) async fn embedded_device_session(
+    webview: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<DeviceSession, String> {
+    if !trusted_webview(webview.label(), &webview.url().map_err(|e| e.to_string())?) {
+        return Err("La session locale est réservée à la fenêtre Blok.".into());
+    }
+    ready_server(app).await?.device_session().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn accepts_only_a_canonical_local_origin_with_port() {
-        for origin in ["http://127.0.0.1:18400", "http://localhost:49000"] {
-            let bytes = serde_json::to_vec(&serde_json::json!({"origin":origin})).unwrap();
-            assert_eq!(parse_ready(&bytes).unwrap(), origin);
-        }
+    fn accepts_only_private_supervisor_endpoints_and_a_separate_credential() {
+        let ready = |origin: &str, api: &str, secret: &str| {
+            let bytes = serde_json::to_vec(
+                &serde_json::json!({"origin":origin,"apiOrigin":api,"deviceSecret":secret}),
+            )
+            .unwrap();
+            parse_ready(&bytes)
+        };
+        let secret = "a".repeat(48);
+        let public = "http://127.0.0.1:18400";
+        let private = "http://127.0.0.1:18401";
+        assert_eq!(ready(public, private, &secret).unwrap().origin, public);
         for origin in [
             "https://example.com",
-            "http://localhost",
+            "http://localhost:8080",
             "http://0.0.0.0:8000",
             "http://127.0.0.1:8000/a",
-            "http://user@localhost:8000",
-            "http://localhost:8000?x=1",
+            "http://user@127.0.0.1:8000",
+            "http://127.0.0.1:8000?x=1",
         ] {
-            let bytes = serde_json::to_vec(&serde_json::json!({"origin":origin})).unwrap();
-            assert!(parse_ready(&bytes).is_err(), "{origin}");
+            assert!(ready(origin, private, &secret).is_err());
+            assert!(ready(public, origin, &secret).is_err());
         }
+        assert!(ready(public, public, &secret).is_err());
+        assert!(ready(public, private, "short").is_err());
+    }
+
+    #[test]
+    fn local_session_is_limited_to_bundled_main_ui() {
+        let trusted =
+            |label: &str, url: &str| trusted_webview(label, &tauri::Url::parse(url).unwrap());
+        assert!(trusted("main", "tauri://localhost/?view=calendar"));
+        assert!(trusted("main", "https://tauri.localhost"));
+        assert!(!trusted("other", "tauri://localhost"));
+        assert!(!trusted("main", "http://127.0.0.1:18400"));
+        assert!(!trusted("main", "https://remote.test"));
+        assert!(!trusted("main", "https://tauri.localhost:8888"));
+    }
+
+    #[test]
+    fn device_session_refuses_redirects() {
+        use std::io::Write;
+        use std::net::TcpListener;
+
+        let api = TcpListener::bind("127.0.0.1:0").unwrap();
+        let other = TcpListener::bind("127.0.0.1:0").unwrap();
+        let api_origin = format!("http://{}", api.local_addr().unwrap());
+        let location = format!("http://{}", other.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (socket, _) = api.accept().unwrap();
+            let mut req = BufReader::new(socket);
+            let mut lines = Vec::new();
+            loop {
+                let mut line = String::new();
+                if req.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+                lines.push(line);
+            }
+            assert!(lines[0].starts_with("POST /internal/desktop/session "));
+            assert!(lines.iter().any(|line| {
+                line.trim()
+                    .eq_ignore_ascii_case("Authorization: Bearer private-test-secret")
+            }));
+            write!(req.into_inner(),"HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let ready = Ready {
+            origin: "http://127.0.0.1:8331".into(),
+            api_origin,
+            device_secret: "private-test-secret".into(),
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(rt.block_on(ready.device_session()).is_err());
+        server.join().unwrap();
+        other.set_nonblocking(true).unwrap();
+        assert!(matches!(other.accept(), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
     }
 
     #[cfg(unix)]
@@ -393,7 +542,7 @@ mod tests {
             &binary,
             r#"#!/bin/sh
 echo start >> launches
-echo '{"origin":"http://127.0.0.1:18733"}'
+echo '{"origin":"http://127.0.0.1:18733","apiOrigin":"http://127.0.0.1:18734","deviceSecret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
 cat > /dev/null
 echo stop >> launches
 "#,
@@ -403,7 +552,7 @@ echo stop >> launches
         std::thread::scope(|scope| {
             let first = scope.spawn(|| manager.ensure(&resources, &data).unwrap());
             let second = scope.spawn(|| manager.ensure(&resources, &data).unwrap());
-            assert_eq!(first.join().unwrap(), second.join().unwrap());
+            assert_eq!(first.join().unwrap().origin, second.join().unwrap().origin);
         });
         manager.shutdown();
         assert_eq!(
@@ -428,7 +577,7 @@ echo stop >> launches
             r#"#!/bin/sh
 sleep 90 &
 echo "$!" > service-pid
-echo '{"origin":"http://127.0.0.1:18733"}'
+echo '{"origin":"http://127.0.0.1:18733","apiOrigin":"http://127.0.0.1:18734","deviceSecret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
 read keepalive
 "#,
         )
@@ -467,8 +616,8 @@ read keepalive
         let resources = Resources::in_bundle(Path::new(&root));
         let data = tempfile::tempdir().unwrap();
         let manager = EmbeddedServer::default();
-        let origin = match manager.ensure(&resources, data.path()) {
-            Ok(origin) => origin,
+        let ready = match manager.ensure(&resources, data.path()) {
+            Ok(ready) => ready,
             Err(error) => panic!(
                 "{error} — journal : {}",
                 data.keep().join("supervisor.log").display()
@@ -478,35 +627,61 @@ read keepalive
             .enable_all()
             .build()
             .unwrap();
-        let info: serde_json::Value = rt.block_on(async {
-            reqwest::get(format!("{origin}/api/instance"))
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let session = rt.block_on(async {
+            let info: serde_json::Value = http
+                .get(format!("{}/api/instance", ready.origin))
+                .send()
                 .await
                 .unwrap()
                 .error_for_status()
                 .unwrap()
                 .json()
                 .await
-                .unwrap()
-        });
-        assert_eq!(info["setupRequired"], true);
-        assert_eq!(info["passwordAuthAvailable"], true);
-        assert_eq!(info["emailCodeAvailable"], false);
-        assert_eq!(manager.ensure(&resources, data.path()).unwrap(), origin);
-        let http = reqwest::Client::builder().no_proxy().build().unwrap();
-        let email = "owner@example.test";
-        let password = "local runtime smoke password";
-        rt.block_on(async {
-            http.post(format!("{origin}/api/setup/claim"))
-                .json(
-                    &serde_json::json!({"name":"Owner","email":email,"password":password,
-                    "workspace":{"name":"Local workspace","slug":"local-workspace"}}),
-                )
+                .unwrap();
+            assert_eq!(info["setupRequired"], false);
+            assert_eq!(
+                http.post(format!("{}/internal/desktop/session", ready.origin))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                404
+            );
+            assert!(
+                !http
+                    .post(format!("{}/internal/desktop/session", ready.api_origin))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status()
+                    .is_success()
+            );
+            let session = ready.device_session().await.unwrap();
+            let authenticated: serde_json::Value = http
+                .get(format!("{}/api/session", ready.origin))
+                .bearer_auth(&session.token)
                 .send()
                 .await
                 .unwrap()
                 .error_for_status()
+                .unwrap()
+                .json()
+                .await
                 .unwrap();
+            assert_eq!(authenticated["user"]["id"], session.user["id"]);
+            assert!(
+                session
+                    .workspaces
+                    .iter()
+                    .any(|space| space["id"] == session.device_workspace_id)
+            );
+            session
         });
+        assert_eq!(
+            manager.ensure(&resources, data.path()).unwrap().origin,
+            ready.origin
+        );
         manager.shutdown();
         let state: serde_json::Value =
             serde_json::from_slice(&fs::read(data.path().join("instance.json")).unwrap()).unwrap();
@@ -518,21 +693,11 @@ read keepalive
             );
         }
         let reopened = EmbeddedServer::default();
-        assert_eq!(reopened.ensure(&resources, data.path()).unwrap(), origin);
-        let session: serde_json::Value = rt.block_on(async {
-            http.post(format!("{origin}/api/auth/password"))
-                .json(&serde_json::json!({"email":email,"password":password,"client":"desktop"}))
-                .send()
-                .await
-                .unwrap()
-                .error_for_status()
-                .unwrap()
-                .json()
-                .await
-                .unwrap()
-        });
-        assert_eq!(session["workspaces"][0]["slug"], "local-workspace");
-        assert!(session["token"].is_string());
+        let second = reopened.ensure(&resources, data.path()).unwrap();
+        assert_eq!(second.origin, ready.origin);
+        let restored = rt.block_on(second.device_session()).unwrap();
+        assert_eq!(restored.device_workspace_id, session.device_workspace_id);
+        assert_eq!(restored.user["id"], session.user["id"]);
         reopened.shutdown();
     }
 }

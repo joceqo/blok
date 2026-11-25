@@ -1,5 +1,7 @@
+import { calendarUrl, editorUrl, isCalendarUrl } from './calendar-route';
+import { workspacePageLink } from './page-link';
 import { renderPageIcon } from '../../src/shell/page-icon';
-import { activeWorkspace, workspaceKey } from './workspace-registry';
+import { activeWorkspace, workspaceKey, type WorkspaceRef } from './workspace-registry';
 import { createWorkspace, type Workspace } from './workspace';
 import { applyAppearance, readAppearance, watchSystemAppearance } from './settings';
 
@@ -48,6 +50,7 @@ const box: {
   session: Session;
   canLeave: () => boolean;
   workspace: Workspace | null;
+  mountedKey?: string;
 } = {
   root: null,
   session: { tabs: [], activeId: '' },
@@ -57,6 +60,26 @@ const box: {
 
 export async function flushDesktop(): Promise<void> { await box.workspace?.flush(); }
 
+/** Reuse the editor and its live connection when the OS opens a page in this workspace. */
+export async function openMountedPage(ref: WorkspaceRef, id: string): Promise<boolean> {
+  if (box.mountedKey !== workspaceKey(ref) || !box.workspace?.hasPage(id)) return false;
+  const isTarget = (href: string) => {
+    const url = new URL(href);
+    return !url.searchParams.has('view') && url.searchParams.get('page') === id;
+  };
+  if (isTarget(location.href)) return true;
+  await flushDesktop();
+  const existing = box.session.tabs.find(tab => isTarget(tab.href));
+  if (existing) moveTo(existing.id, false);
+  else if (box.session.tabs.length < MAX_TABS) createTab({id, title: ''});
+  else {
+    const url = new URL(homeHref());
+    url.searchParams.set('page', id);
+    history.pushState(null, '', url);
+  }
+  return true;
+}
+
 export function setCanLeave(guard: () => boolean): void {
   box.canLeave = guard;
 }
@@ -64,6 +87,7 @@ export function setCanLeave(guard: () => boolean): void {
 export function mountDesktop(root: HTMLElement): void {
   install();
   box.root = root;
+  box.mountedKey = workspaceKey(activeWorkspace());
   root.setAttribute('data-desktop-shell', '');
   applyAppearance(root, readAppearance());
   watchSystemAppearance(root);
@@ -155,8 +179,33 @@ function installKeys(): void {
 function installMenu(): void {
   if (installed.menu) return;
   installed.menu = true;
-  window.addEventListener('blok:desktop-new-tab', () => {
-    if (isTauri()) createTab();
+  window.addEventListener('blok:desktop-new-tab', event => {
+    if (isTauri()) createTab(event instanceof CustomEvent ? event.detail : undefined);
+  });
+  let returnTab: string | undefined;
+  window.addEventListener('blok:open-calendar', event => {
+    if (!isTauri()) return;
+    event.preventDefault();
+    if (!allowed()) return;
+    const current = active();
+    if (current && isCalendarUrl(new URL(current.href))) return;
+    returnTab = current?.id;
+    const existing = box.session.tabs.find(tab => isCalendarUrl(new URL(tab.href)));
+    const href = calendarUrl(new URL(location.href)).href;
+    if (existing) moveTo(existing.id, false);
+    else if (box.session.tabs.length < MAX_TABS) addTab(href, 'Calendrier');
+    else history.pushState(null, '', href);
+  });
+  window.addEventListener('blok:return-from-calendar', event => {
+    if (!isTauri()) return;
+    const pages = box.session.tabs.filter(tab => !isCalendarUrl(new URL(tab.href)));
+    const target = pages.find(tab => tab.id === returnTab) ?? pages.at(-1);
+    if (target) { event.preventDefault(); moveTo(target.id, true); }
+  });
+  window.addEventListener('blok:desktop-reload', event => {
+    if (!isTauri()) return;
+    event.preventDefault();
+    void reloadTab(box.session.activeId);
   });
   window.addEventListener('blok:desktop-close-tab', () => {
     if (isTauri()) closeActive();
@@ -167,13 +216,15 @@ function boot(): Session {
   const restored = load(sessionStorage.getItem(tabKey()));
   const requested = new URL(location.href);
   const page = requested.searchParams.get('page');
-  const calendar = requested.searchParams.get('view') === 'calendar';
+  const calendar = isCalendarUrl(requested);
   if (!restored || (!page && !calendar)) return restored ?? freshSession();
   // An explicit page link takes precedence over the previously selected tab.
-  const existing = restored.tabs.find((tab) => {
+  const matchesRoute = (tab: Tab): boolean => {
     const url = new URL(tab.href);
-    return url.pathname === requested.pathname && (calendar ? url.searchParams.get('view') === 'calendar' : url.searchParams.get('page') === page);
-  });
+    return calendar ? isCalendarUrl(url) : url.pathname === requested.pathname && url.searchParams.get('page') === page;
+  };
+  const current = restored.tabs.find(tab => tab.id === restored.activeId);
+  const existing = current && matchesRoute(current) ? current : restored.tabs.find(matchesRoute);
   if (existing) {
     existing.href = requested.href;
     existing.entries[existing.index] = requested.href;
@@ -233,7 +284,7 @@ function readable(title: string): string {
 }
 
 function homeHref(): string {
-  const url = new URL(location.href);
+  const url = editorUrl(new URL(location.href));
   url.search = '';
   url.hash = '';
   return url.href;
@@ -353,18 +404,24 @@ function moveTo(id: string, check: boolean): void {
   box.workspace?.onRoute();
 }
 
-function createTab(): void {
+function createTab(page?: {id: string; title: string; icon?: string}): void {
   if (!allowed()) return;
   if (box.session.tabs.length >= MAX_TABS) return;
+  const url = new URL(homeHref());
+  if (page) url.searchParams.set('page', page.id);
+  addTab(url.href, page?.title || 'Nouvelle page', page?.icon);
+}
+
+function addTab(href: string, title: string, icon = ''): void {
   const current = active();
   const saved = current ? snapshot(current) : null;
-  const href = homeHref();
-  const tab = freshTab(href, 'Nouvelle page');
+  const tab = freshTab(href, title);
+  tab.icon = icon;
   const tabs = box.session.tabs.map((item) => (saved && item.id === saved.id ? saved : item));
   box.session = { tabs: [...tabs, tab], activeId: tab.id };
   nativeReplace(href);
   window.scrollTo(0, 0);
-  if (document.title !== 'Nouvelle page') document.title = 'Nouvelle page';
+  if (document.title !== tab.title) document.title = tab.title;
   applyFavicon(tab.icon);
   persist();
   paint();
@@ -412,9 +469,15 @@ function syncTitle(): void {
   const tab = active();
   if (!tab) return;
   const title = readable(document.title);
-  const icon = new URL(tab.href).searchParams.get('view') === 'calendar' ? '' : tab.icon;
-  if (tab.title === title && tab.icon === icon) return;
-  box.session = withTab(box.session, tab.id, { ...tab, title, icon });
+  const icon = isCalendarUrl(new URL(tab.href)) ? '' : tab.icon;
+  const page = pageOf(tab.href);
+  const tabs = box.session.tabs.map(item => {
+    if (item.id === tab.id) return item.title === title && item.icon === icon ? item : {...item, title, icon};
+    if (page && pageOf(item.href) === page && item.title !== title) return {...item, title};
+    return item;
+  });
+  if (tabs.every((item, index) => item === box.session.tabs[index])) return;
+  box.session = {...box.session, tabs};
   persist();
   paint();
 }
@@ -546,16 +609,51 @@ function duplicateTab(id: string): void {
   box.workspace?.onRoute();
 }
 
+let reloading = false;
+
+async function reloadTab(id: string): Promise<void> {
+  const host = box.root;
+  const tab = box.session.tabs.find(item => item.id === id);
+  if (!host || !tab || reloading || !allowed()) return;
+  reloading = true;
+  const previous = host.inert;
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  host.inert = true;
+  host.querySelector('[data-desktop-reload-error]')?.remove();
+  try {
+    await flushDesktop();
+    const current = active();
+    if (current) box.session = withTab(box.session, current.id, snapshot(current));
+    box.session.activeId = id;
+    nativeReplace(tab.href);
+    persist();
+    location.reload();
+  } catch (error) {
+    host.inert = previous;
+    reloading = false;
+    const notice = document.createElement('div');
+    notice.className = 'desktop-close-notice';
+    notice.setAttribute('data-desktop-reload-error', '');
+    notice.setAttribute('role', 'alert');
+    notice.textContent = 'Impossible d’enregistrer avant le rechargement. ' + (error instanceof Error ? error.message : String(error));
+    host.append(notice);
+  }
+}
+
 function runTabMenuAction(action: TabMenuAction, id: string): void {
   const ids = tabIds();
   const index = ids.indexOf(id);
   if (action === 'copy-link') {
     const tab = box.session.tabs.find((item) => item.id === id);
     const link = tab ? pageLinkFor(tab.href) : null;
-    if (link) void navigator.clipboard?.writeText(link);
+    if (link && tab) {
+      const workspace = activeWorkspace();
+      const id = new URL(tab.href).searchParams.get('page');
+      void navigator.clipboard?.writeText(workspace.kind === 'remote' && workspace.device && id ? workspacePageLink(workspace, id) : link);
+    }
     return;
   }
-  if (action === 'reload') { moveTo(id, false); box.workspace?.onRoute(); return; }
+  if (action === 'reload') { void reloadTab(id); return; }
   if (action === 'duplicate') { duplicateTab(id); return; }
   if (action === 'close') { closeTab(id); return; }
   if (action === 'close-others') { closeMany(ids.filter((other) => other !== id)); return; }

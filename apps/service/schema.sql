@@ -192,3 +192,61 @@ CREATE TABLE IF NOT EXISTS calendar_availability_shares (
   FOREIGN KEY(workspace_id,user_id) REFERENCES memberships(workspace_id,user_id) ON DELETE CASCADE
 );
 INSERT INTO schema_migrations(version) VALUES(12) ON CONFLICT DO NOTHING;
+
+-- A packaged Tauri data directory has one device identity, independent of mail accounts.
+CREATE TABLE IF NOT EXISTS desktop_device_account (
+  singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton),
+  user_id text UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  workspace_id text REFERENCES workspaces(id) ON DELETE SET NULL
+);
+INSERT INTO schema_migrations(version) VALUES(13) ON CONFLICT DO NOTHING;
+
+-- The immutable import receipt outlives individual pages: a later deletion or edit
+-- must never cause those files to be re-imported on the next app launch.
+CREATE TABLE IF NOT EXISTS desktop_disk_imports (
+  source text PRIMARY KEY,
+  workspace_id text REFERENCES workspaces(id) ON DELETE SET NULL,
+  active_page_id text,
+  imported_at timestamptz NOT NULL DEFAULT now(),
+  counts jsonb NOT NULL
+);
+CREATE TABLE IF NOT EXISTS desktop_disk_originals (
+  source text NOT NULL REFERENCES desktop_disk_imports(source),
+  filename text NOT NULL,
+  sha256 text NOT NULL,
+  bytes bytea NOT NULL,
+  PRIMARY KEY(source,filename)
+);
+INSERT INTO schema_migrations(version) VALUES(14) ON CONFLICT DO NOTHING;
+
+-- Earlier desktop imports attached database row documents as ordinary child pages.
+-- The archived registry distinguishes those sheets from children listed in the old tree.
+WITH upgrade AS (
+  INSERT INTO schema_migrations(version) VALUES(15) ON CONFLICT DO NOTHING RETURNING version
+), imports AS (
+  SELECT d.workspace_id, convert_from(r.bytes,'UTF8')::jsonb AS registry,
+         convert_from(i.bytes,'UTF8')::jsonb AS old_index
+  FROM upgrade CROSS JOIN desktop_disk_imports d
+  JOIN desktop_disk_originals r ON r.source=d.source AND r.filename='row-bodies.json'
+  JOIN desktop_disk_originals i ON i.source=d.source AND i.filename='index.json'
+)
+UPDATE pages p SET metadata=p.metadata || '{"databaseRowBody":true}'::jsonb
+FROM imports CROSS JOIN LATERAL jsonb_each(imports.registry) AS sheet(id,entry)
+WHERE p.workspace_id=imports.workspace_id AND p.id=sheet.id
+  AND p.metadata->>'parentId'=sheet.entry->>'documentId'
+  AND NOT EXISTS (
+    SELECT FROM jsonb_array_elements((imports.old_index->'pages') || coalesce(imports.old_index->'trash','[]'::jsonb)) original
+    WHERE original->>'id'=sheet.id
+  );
+
+-- Calendar selection belongs to the person and is revoked alongside their workspace membership.
+CREATE TABLE IF NOT EXISTS calendar_workspace_preferences (
+  workspace_id text NOT NULL,
+  user_id text NOT NULL,
+  connected boolean NOT NULL DEFAULT false,
+  visible boolean NOT NULL DEFAULT true,
+  PRIMARY KEY (workspace_id,user_id),
+  FOREIGN KEY (workspace_id,user_id) REFERENCES memberships(workspace_id,user_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS calendar_workspace_preferences_user ON calendar_workspace_preferences(user_id);
+INSERT INTO schema_migrations(version) VALUES(16) ON CONFLICT DO NOTHING;

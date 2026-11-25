@@ -1,3 +1,5 @@
+import { calendarUrl, editorUrl, isCalendarUrl } from './calendar-route';
+import { pageIdForWorkspaceLink, workspacePageLink } from './page-link';
 import { navigationFavorites, navigationRecents } from './navigation-preferences';
 import { moveDestinations, PageMoveConflict } from './page-move';
 import { openPageHistory } from './page-history';
@@ -22,7 +24,7 @@ import { groupPagesBySection, sectionNames } from './page-section';
 import { nextPageIcon } from './page-icon-sync';
 import { applyFavicon, brandedTitle } from './tab-identity';
 import { describeAccessLoss } from './access-friction';
-import { activeWorkspace, workspaceKey, type WorkspaceRef } from './workspace-registry';
+import { activeWorkspace, selectWorkspace, workspaceKey, type WorkspaceRef } from './workspace-registry';
 import { createDesktopFooter, readAppearance } from './settings';
 import {
   buildWelcomeDocuments,
@@ -68,6 +70,7 @@ const desktopTools = {
 
 export interface Workspace {
   element: HTMLElement;
+  hasPage(id: string): boolean;
   start(): Promise<void>;
   flush(): Promise<void>;
   onRoute(): void;
@@ -89,11 +92,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const repository = workspaceRepository(ref);
   const favorites = navigationFavorites(ref);
   const recentPages = navigationRecents(ref);
-  const pageUrl = (id: string): string => {
-    const url = new URL('/', ref.kind === 'remote' ? ref.server : location.href);
-    url.searchParams.set('page', id);
-    return url.href;
-  };
+  const pageUrl = (id: string): string => workspacePageLink(ref, id);
   const emojis = customEmojiStore(ref);
   const pageIcon = (value: string) => /^(https?:|data:image\/|\/files\/)/i.test(value) ? {type: 'image' as const, url: value} : {type: 'emoji' as const, value};
   if (ref.kind === 'remote' && '__TAURI_INTERNALS__' in window) mountRemoteAssets(ref.server, repository.assetUrl);
@@ -153,7 +152,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   };
   let calendar: { destroy(): void } | undefined;
   let openingCalendar: number | undefined;
-  const isCalendarRoute = (): boolean => new URL(location.href).searchParams.get('view') === 'calendar';
+  const isCalendarRoute = (): boolean => isCalendarUrl(new URL(location.href));
   const ai = createAiClient(ref);
   let editAssistant: ReturnType<typeof pageEditorAssistant> | undefined;
   const activeEditable = (): boolean => !!ws.currentId && ws.currentId === pageFromUrl() &&
@@ -181,7 +180,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
    * basculer la page tout seul, au prochain index reçu.
    */
   const withSections = (pages: DesktopPage[]): DesktopPage[] => {
-    const tagged = pages.map((page) => ({ ...page, favorite: favorites.has(page.id) }));
+    const tagged = pages.filter((page) => !page.databaseRowBody || !page.parentId).map((page) => ({ ...page, favorite: favorites.has(page.id) }));
     if (ref.kind !== 'remote') return tagged;
     if (!ws.index?.access) return tagged.map((page) => ({ ...page, section: page.parentId ? undefined : 'workspace' }));
     const roots = tagged.filter((page) => !page.parentId);
@@ -205,9 +204,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   let closeTrash: (() => void) | undefined;
   const pageFromUrl = (): string | null => new URL(location.href).searchParams.get('page');
   const navigate = (id: string, replace = false): void => {
-    const url = new URL(location.href);
+    const url = editorUrl(new URL(location.href));
     const from = url.searchParams.get('page');
-    url.searchParams.delete('view');
     url.searchParams.set('page', id);
     if (replace) history.replaceState(null, '', url);
     else history.pushState(null, '', url);
@@ -462,10 +460,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.frame.setPages(withSections(ws.index.pages), id);
     onPageIcon(id, page.icon ?? '');
     if (ws.currentId === id) {
+      // A new tab can display the already mounted editor without reloading its document.
+      document.title = page.title;
       ws.pageToolbar?.setBreadcrumbs(breadcrumbs(id));
       return;
     }
     ws.currentId = id;
+    recentPages.visit(id);
     ws.frame.element.toggleAttribute('data-desktop-read-only', readOnly(id));
     const turn = ++ws.generation;
     ws.coverRowObserver?.disconnect();
@@ -743,13 +744,38 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (removed.has(ws.currentId) && fallback) navigate(fallback.id, true);
   };
 
-  const openPageTab = (page: DesktopPage): void => {
-    if ('__TAURI_INTERNALS__' in window) {
-      window.dispatchEvent(new Event('blok:desktop-new-tab'));
-      navigate(page.id, true);
+  let pendingSearch: { recentIds?: string[] } | undefined;
+
+  function showPageSearch(recentIds?: string[]): void {
+    if (!ws.index) {
+      pendingSearch = { recentIds };
       return;
     }
-    const url = new URL(location.href);
+    ws.closeSearch?.();
+    const pages = () => ws.index?.pages ?? [];
+    ws.closeSearch = openPageSearch({
+      workspaceName: ref.name, pages, onOpen: navigate, pageUrl,
+      recentIds: recentIds ?? recentPages.ids, recentOnly: recentIds !== undefined,
+      visitedAt: recentPages.visitedAt,
+      pageIdFromLink: value => pageIdForWorkspaceLink(ref, value),
+      onOpenTab: id => {
+        const page = pages().find(item => item.id === id);
+        if (page) openPageTab(page);
+      },
+      chats: () => ws.assistant.searchableChats(),
+      onOpenChat: id => ws.assistant.openChat(id),
+      ...repository.pageSearch(pages),
+    });
+  }
+
+  const openPageTab = (page: DesktopPage): void => {
+    if ('__TAURI_INTERNALS__' in window) {
+      window.dispatchEvent(new CustomEvent('blok:desktop-new-tab', {
+        detail: {id: page.id, title: page.title, icon: page.icon},
+      }));
+      return;
+    }
+    const url = editorUrl(new URL(location.href));
     url.searchParams.set('page', page.id);
     window.open(url.href, '_blank', 'noopener,noreferrer');
   };
@@ -838,24 +864,20 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
 
   ws.frame = createPageFrame({
     teamspace: ref.kind === 'remote' ? { name: ref.name } : undefined,
-    pages: [], activeId: '',
+    pages: [], activeId: '', collapsedByDefault: true,
     recentIds: recentPages.ids,
     onRecentsChange: recentPages.save,
     onOpen: (id) => navigate(id),
     onCreate: (parentId) => chooseNewPage(parentId),
+    calendarHref: '__TAURI_INTERNALS__' in window ? undefined : calendarUrl(new URL(location.href)).href,
     onCalendar: () => {
       if (isCalendarRoute()) return;
-      const url = new URL(location.href);
-      url.searchParams.delete('page');
-      url.searchParams.set('view', 'calendar');
-      history.pushState(null, '', url);
+      if (!window.dispatchEvent(new Event('blok:open-calendar', {cancelable:true}))) return;
+      history.pushState({fromBlokPage:true}, '', calendarUrl(new URL(location.href)));
       onRoute();
     },
     onCreatePrivate: ref.kind === 'remote' ? () => chooseNewPage(null, true) : undefined,
-    onSearch: (recentIds) => {
-      ws.closeSearch?.();
-      ws.closeSearch = openPageSearch({ workspaceName: ref.name, pages: () => ws.index?.pages ?? [], onOpen: navigate, recentIds });
-    },
+    onSearch: showPageSearch,
     onTeamspaces: ref.kind === 'remote' ? () => {
       closeTeamspaces?.();
       closeTeamspaces = openTeamspaces(ref, {
@@ -922,6 +944,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   });
   ws.pageCanvas = ws.assistant.editorSlot;
   ws.frame.canvas.append(ws.assistant.element);
+  const calendarHost = document.createElement('main');
+  calendarHost.setAttribute('data-desktop-calendar-app', '');
+  calendarHost.hidden = true;
+  ws.frame.element.append(calendarHost);
   const sidebar = ws.frame.element.querySelector('[data-blok-sidebar]') as HTMLElement;
   const panel = ws.assistant.element.querySelector<HTMLElement>('[data-blok-agent-panel]');
   const assistantButton = createAssistantButton(() => {
@@ -930,7 +956,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   });
   ws.frame.canvas.append(assistantButton);
   if (panel) bindAssistantButton(assistantButton, panel);
-  ws.footer = createDesktopFooter((mode) => ws.editor?.theme.set(mode), ref);
+  ws.footer = createDesktopFooter((mode) => ws.editor?.theme.set(mode), ref, ws.frame.headerActions);
   ws.footer.addEventListener('blok:desktop-open-page', (event) => {
     const detail = (event as CustomEvent<{ pageId: string; seedWelcome?: boolean }>).detail;
     if (!detail?.pageId) return;
@@ -963,7 +989,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       markWelcomeSeeded(key);
       return existing.id;
     }
-    const docs = buildWelcomeDocuments(workspaceId);
+    const docs = buildWelcomeDocuments(workspaceId, ref.kind === 'remote' && ref.device === true);
     const welcomePage = docs.pages[0];
     if (!welcomePage) return null;
     // Captured so the callbacks below keep the non-null narrowing from the guard.
@@ -1022,6 +1048,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       } else await editor.saver.flush();
     }
     await ws.saveOrder;
+    if (ws.manifestFailed) throw ws.manifestError ?? new Error('Les pages de l’espace ne sont pas encore enregistrées.');
   }
 
   async function showCalendar(): Promise<void> {
@@ -1030,8 +1057,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     openingCalendar = request;
     ws.pageCanvas.inert = true;
     try {
-      const [, { mountCalendar }, { createCalendarStore }] = await Promise.all([
-        flushDocument(), import('./calendar-view'), import('./calendar-store'),
+      const [, { mountCalendar }, { createCalendarStore }, { createCalendarWorkspaces }] = await Promise.all([
+        flushDocument(), import('./calendar-view'), import('./calendar-store'), import('./calendar-workspaces'),
       ]);
       if (ws.selection !== request || !isCalendarRoute()) return;
       ws.generation++;
@@ -1040,21 +1067,29 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       ws.assistant.refreshPageActions();
       ws.pageCanvas.removeAttribute('data-full-width');
       ws.pageCanvas.replaceChildren();
-      calendar = mountCalendar(ws.pageCanvas, {
+      calendar = mountCalendar(calendarHost, {
+        workspaces: createCalendarWorkspaces(ref),
+        openWorkspacePage: (owner, id) => {
+          if (workspaceKey(owner) === workspaceKey(ref)) navigate(id);
+          else selectWorkspace(owner, id);
+        },
         store: createCalendarStore(ref),
         get pages() { return ws.index?.pages ?? []; },
         canEdit: !ws.access.readOnlyWorkspace,
         openPage: (id) => { if (ws.index?.pages.some(page => page.id === id)) navigate(id); },
         onClose: () => {
+          if (!window.dispatchEvent(new Event('blok:return-from-calendar', {cancelable:true}))) return;
+          if (history.state?.fromBlokPage) { history.back(); return; }
           if (ws.index?.activeId) navigate(ws.index.activeId);
           else {
-            const url = new URL(location.href);
-            url.searchParams.delete('view');
+            const url = editorUrl(new URL(location.href));
             history.pushState(null, '', url);
             onRoute();
           }
         },
       });
+      calendarHost.hidden = false;
+      ws.frame.element.setAttribute('data-calendar-mode', '');
       ws.frame.setCalendarActive(true);
       ws.frame.element.toggleAttribute('data-desktop-read-only', ws.access.readOnlyWorkspace);
       applyFavicon(undefined);
@@ -1129,6 +1164,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     }
     if (calendar) {
       calendar.destroy();
+      calendarHost.hidden = true;
+      ws.frame.element.removeAttribute('data-calendar-mode');
       calendar = undefined;
       ws.frame.setCalendarActive(false);
     }
@@ -1152,12 +1189,15 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     });
   }
 
+  const openWorkspaceSearch = (): void => {
+    if (ws.frame.element.isConnected && !document.querySelector('[aria-modal="true"]')) showPageSearch();
+  };
+  window.addEventListener('blok:desktop-search', openWorkspaceSearch);
   document.addEventListener('keydown', (event) => {
-    if (event.defaultPrevented || !ws.frame.element.isConnected || document.querySelector('[aria-modal="true"]')) return;
-    if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'k') return;
+    if (event.defaultPrevented || !ws.frame.element.isConnected || event.isComposing) return;
+    if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || !['p', 'k'].includes(event.key.toLowerCase())) return;
     event.preventDefault();
-    ws.closeSearch?.();
-    ws.closeSearch = openPageSearch({ workspaceName: ref.name, pages: () => ws.index?.pages ?? [], onOpen: navigate });
+    openWorkspaceSearch();
   });
   function chooseNewPage(parentId: string | null = null, privatePage = false): void {
     if (!ws.index || !canCreateUnder(parentId)) return;
@@ -1191,12 +1231,17 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
 
   return {
     element: ws.frame.element,
+    hasPage: id => ws.index?.pages.some(page => page.id === id) ?? false,
     async start() {
       try {
         const loaded = adoptIndex(await repository.loadIndex());
         refreshDateTitles();
         ws.frame.setPages(withSections(loaded.pages), loaded.activeId);
         onRoute();
+        if (pendingSearch && ws.frame.element.isConnected) {
+          showPageSearch(pendingSearch.recentIds);
+          pendingSearch = undefined;
+        }
         scheduleDateRefresh();
         window.addEventListener('focus', refreshDateTitles);
         if (ref.kind === 'remote') {

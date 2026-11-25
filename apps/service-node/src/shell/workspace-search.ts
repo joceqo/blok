@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { PgPool } from '../db/pool.ts';
 import { sessionDigest } from './session.ts';
+import { pageSearchText } from './page-search-text.ts';
 import { loadIndexPages, pageStandings } from './workspace-index.ts';
 import { readWorkspaceScope, WorkspaceError } from './workspace-scope.ts';
 
@@ -15,6 +16,7 @@ export function createWorkspaceSearch(pool: PgPool) {
     const body = await c.req.json().catch(() => null);
     const question = typeof body?.query === 'string' ? body.query.trim() : '';
     if (!question || question.length > 1200) return c.json({ error: 'La recherche accepte entre 1 et 1 200 caractères.' }, 400);
+    const palette = body?.mode === 'palette';
     const client = await pool.connect();
     try {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
@@ -25,22 +27,17 @@ export function createWorkspaceSearch(pool: PgPool) {
       const ids = rows.filter(row => !row.trashed && standing[row.id]).map(row => row.id);
       const result = await client.query<Source>(`
         WITH terms AS (
-          SELECT to_tsquery('french', string_agg(quote_literal(term),' | ')) AS q
-          FROM unnest(tsvector_to_array(to_tsvector('french',$3))) AS term
+          SELECT to_tsquery('french', string_agg(quote_literal(term) || CASE WHEN $4 THEN ':*' ELSE '' END,' | ')) AS q
+          FROM unnest(tsvector_to_array(to_tsvector('french',translate($3,'’‘ʼ','   ')))) AS term
         ), documents AS (
           SELECT p.id, coalesce(p.metadata->>'title','') AS title,
-            coalesce((
-              SELECT string_agg(regexp_replace(coalesce(b->'data'->>'text',b->'data'->>'caption',''),'<[^>]+>',' ','g'),' ' ORDER BY ord)
-              FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.content->'blocks')='array' THEN p.content->'blocks' ELSE '[]' END)
-                WITH ORDINALITY AS blocks(b,ord)
-              WHERE jsonb_typeof(b->'data'->'text')='string' OR jsonb_typeof(b->'data'->'caption')='string'
-            ),'') AS body
+            ${pageSearchText} AS body
           FROM pages p WHERE p.workspace_id=$1 AND p.id=ANY($2::text[]) AND NOT p.trashed AND NOT p.deleted
         ), indexed AS (
-          SELECT *,setweight(to_tsvector('french',title),'A') || to_tsvector('french',body) AS words FROM documents
+          SELECT *,setweight(to_tsvector('french',translate(title,'’‘ʼ','   ')),'A') || to_tsvector('french',translate(body,'’‘ʼ','   ')) AS words FROM documents
         )
         SELECT id,title,left(ts_headline('french',body,q,'MaxWords=45,MinWords=12,StartSel="",StopSel=""'),800) AS excerpt
-          FROM indexed,terms WHERE words @@ q ORDER BY ts_rank(words,q) DESC,id LIMIT 5`, [workspace_id, ids, question]);
+          FROM indexed,terms WHERE words @@ q ORDER BY ts_rank(words,q) DESC,id LIMIT $5`, [workspace_id, ids, question, palette, palette ? 40 : 5]);
       await client.query('COMMIT');
       return c.json({ sources: result.rows });
     } catch (error) {

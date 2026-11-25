@@ -1,16 +1,24 @@
+import { isCalendarUrl } from './calendar-route';
+import { listenForPageLinks } from './native-page-links';
+import { parsePageLink } from './page-link';
 import './editor.css';
 import '../../src/shell/sidebar.css';
 import './shell.css';
-import { activeWorkspace, initialWorkspace, LOCAL_SERVER_ORIGIN, rememberWorkspace, selectWorkspace, serverOrigin, type RemoteWorkspace } from './workspace-registry';
-import { startEmbeddedServer, useEmbeddedServer } from './native-runtime';
+import { activateWorkspace, activeWorkspace, initialWorkspace, listWorkspaces, LOCAL_SERVER_ORIGIN, rememberWorkspace, selectWorkspace, serverOrigin, type RemoteWorkspace } from './workspace-registry';
+import { nativeBridge, openEmbeddedWorkspace, useEmbeddedServer } from './native-runtime';
+import { guardNativeClose } from './native-close';
 import { nativeSessionAdapter } from './native-session';
 import { applyAppearance, readAppearance } from './settings';
 import { CloudClient, mountCloudGateway } from './cloud';
+import { mountServerPicker } from './cloud/server-picker';
 import { brandedTitle } from './tab-identity';
 
-import {loadReactGrab, reactGrabAvailable} from './react-grab';
+import {loadReactGrab, onReactGrabShortcut, reactGrabAvailable} from './react-grab';
 
-if (reactGrabAvailable) void loadReactGrab().catch(() => { /* Settings lets the user retry loading. */ });
+if (reactGrabAvailable) {
+  window.addEventListener('keydown', onReactGrabShortcut, {capture: true});
+  void loadReactGrab().catch(() => { /* Settings lets the user retry loading. */ });
+}
 
 const root = document.querySelector('#app');
 const native = '__TAURI_INTERNALS__' in window;
@@ -39,29 +47,59 @@ function startupErrorNode(host: HTMLElement): HTMLElement {
 async function boot(root: HTMLElement): Promise<void> {
   applyAppearance(root, readAppearance());
   const params = new URLSearchParams(location.search);
-  const selected = activeWorkspace();
+  const browserPage = !native && params.get('web') === '1' ? parsePageLink(location.href) : undefined;
+  let selected = activeWorkspace();
   const explicitGateway = params.get('cloud') === '1';
-  const embedded = native && await useEmbeddedServer(params, selected, import.meta.env.VITE_BLOK_SERVER_URL);
+  function chooseServer(server: string): void {
+    const url = new URL(location.href);
+    url.searchParams.delete('local');
+    url.searchParams.delete('page');
+    if (selected.kind === 'remote' && selected.embedded && selected.server === server) {
+      url.searchParams.delete('server');
+      url.searchParams.delete('cloud');
+      url.searchParams.set('embedded', '1');
+    } else {
+      url.searchParams.delete('embedded');
+      url.searchParams.set('server', serverOrigin(server));
+      url.searchParams.set('cloud', '1');
+    }
+    location.assign(url.href);
+  }
+  if (native && explicitGateway && !params.has('server') && !params.has('embedded') &&
+      (selected.kind === 'local' || selected.embedded)) {
+    mountServerPicker(root, chooseServer, () => {
+      const url = new URL(location.href);
+      url.searchParams.delete('cloud');
+      location.assign(url.href);
+    });
+    return;
+  }
+  const embedded = native && await useEmbeddedServer(params, selected);
   let configured = native
     ? params.get('server') ?? (selected.kind === 'remote' ? selected.server : import.meta.env.VITE_BLOK_SERVER_URL)
     : location.origin;
+  let desktop: typeof import('./shell') | undefined;
   if (embedded) {
-    const status = document.createElement('p');
-    status.setAttribute('role', 'status');
-    status.textContent = 'Ouverture de votre espace sur cet ordinateur…';
-    root.replaceChildren(status);
     try {
-      configured = await startEmbeddedServer();
-      if (selected.kind === 'remote' && selected.embedded && selected.server !== configured) {
-        throw new Error('L’adresse de cet espace a changé. Vérifiez le répertoire de données du serveur intégré.');
+      // Load the editor while the native services start. Mount it only after selecting the workspace.
+      const [opened, shell] = await Promise.all([
+        openEmbeddedWorkspace(selected, params.get('embedded') === '1'),
+        import('./shell'),
+      ]);
+      desktop = shell;
+      const url = new URL(location.href);
+      if (selected.kind === 'local' && selected.id === 'default' && opened.activePageId &&
+          !url.searchParams.has('page') && !isCalendarUrl(url)) {
+        url.searchParams.set('page', opened.activePageId);
       }
+      for (const key of ['cloud', 'embedded', 'local']) url.searchParams.delete(key);
+      if (url.href !== location.href) history.replaceState(null, '', url.href);
+      for (const other of opened.otherWorkspaces ?? []) rememberWorkspace(other);
+      selected = opened.workspace;
+      activateWorkspace(selected);
+      configured = selected.server;
     } catch (reason) {
-      const retry = document.createElement('button');
-      retry.textContent = 'Réessayer'; retry.onclick = () => location.reload();
-      const offline = document.createElement('button');
-      offline.textContent = 'Ouvrir un espace sur disque'; offline.onclick = () => selectWorkspace(initialWorkspace);
-      status.textContent = reason instanceof Error ? reason.message : String(reason);
-      root.append(retry, offline);
+      showStartupFailure(root, reason, () => selectWorkspace(initialWorkspace));
       return;
     }
   }
@@ -78,10 +116,11 @@ async function boot(root: HTMLElement): Promise<void> {
       sessionAdapter: adapter,
       allowLocal: native,
       initialManage: manageSlug && manageSection ? {slug: manageSlug, section: manageSection} : undefined,
+      initialWorkspaceId: browserPage?.workspace,
       onOpenWorkspace: async (workspace, source) => {
         const session = source.currentSession ?? await source.session();
         const ref: RemoteWorkspace = {
-          kind: 'remote', ...(embedded ? {embedded: true} : {}), id: workspace.id, name: workspace.name,
+          kind: 'remote', id: workspace.id, name: workspace.name,
           server: serverOrigin(source.origin || location.origin), accountId: session.user.id,
           workspaceId: workspace.slug, userName: session.user.email, role: workspace.role,
         };
@@ -89,32 +128,28 @@ async function boot(root: HTMLElement): Promise<void> {
         if (manageSlug && manageSection && workspace.slug === manageSlug) {
           sessionStorage.setItem('blok:desktop:pending-settings', manageSection);
         }
-        selectWorkspace(ref);
+        selectWorkspace(ref, browserPage?.origin === ref.server && (!browserPage.workspace || browserPage.workspace === ref.id) ? browserPage.id : undefined);
       },
-      onOpenLocal: () => selectWorkspace(selected.kind === 'local' ? selected : initialWorkspace),
+      onOpenLocal: () => selectWorkspace(selected.kind === 'local' || selected.device ? selected : listWorkspaces().find(ref => ref.kind === 'remote' && ref.device) ?? initialWorkspace),
       onServerChange: (server) => {
         if (!native) {
           location.assign(serverOrigin(server));
           return;
         }
-        const url = new URL(location.href);
-        url.searchParams.delete('embedded');
-        url.searchParams.set('server', serverOrigin(server));
-        url.searchParams.set('cloud', '1');
-        url.searchParams.delete('page');
-        location.assign(url.href);
+        chooseServer(server);
       },
     });
   };
 
-  if (explicitGateway || (embedded && selected.kind === 'local') || (!native && selected.kind === 'local' && params.get('local') !== '1')) {
+  if ((!embedded && explicitGateway) || (!native && selected.kind === 'local' && params.get('local') !== '1') ||
+      (browserPage?.workspace && browserPage.workspace !== selected.id)) {
     await showGateway();
     return;
   }
-  if (selected.kind === 'remote' && !(await refreshRemoteMembership(client, selected, origin, showGateway))) {
+  if (!embedded && selected.kind === 'remote' && !(await refreshRemoteMembership(client, selected, origin, showGateway))) {
     return;
   }
-  const {mountDesktop, flushDesktop} = await import('./shell');
+  const {mountDesktop, flushDesktop} = desktop ?? await import('./shell');
   root.addEventListener('blok:desktop-connect-cloud', (event) => {
     const section = (event as CustomEvent<{section?: string}>).detail?.section;
     // Already inside a remote workspace: open settings in place instead of the old gateway admin screen.
@@ -143,6 +178,8 @@ async function boot(root: HTMLElement): Promise<void> {
       location.assign(url.href);
     }).catch(showError);
   });
+  const bridge = nativeBridge();
+  if (bridge) await guardNativeClose(root, bridge, flushDesktop);
   mountDesktop(root);
 }
 
@@ -167,9 +204,35 @@ async function refreshRemoteMembership(
   }
 }
 
+function showStartupFailure(host: HTMLElement, reason: unknown, openDisk?: () => void): void {
+  const panel = host.querySelector<HTMLElement>('[data-blok-startup]');
+  const status = panel?.querySelector<HTMLElement>('.startup-status');
+  if (!panel || !status) {
+    startupErrorNode(host).textContent = reason instanceof Error ? reason.message : 'Impossible d’ouvrir cet espace.';
+    return;
+  }
+  panel.setAttribute('aria-busy', 'false');
+  status.setAttribute('role', 'alert');
+  status.textContent = reason instanceof Error ? reason.message : 'Impossible d’ouvrir cet espace.';
+  const actions = document.createElement('div');
+  actions.className = 'startup-actions';
+  const retry = document.createElement('button');
+  retry.textContent = 'Réessayer';
+  retry.onclick = () => location.reload();
+  actions.append(retry);
+  if (openDisk) {
+    const offline = document.createElement('button');
+    offline.textContent = 'Ouvrir un espace sur disque';
+    offline.onclick = openDisk;
+    actions.append(offline);
+  }
+  status.after(actions);
+}
+
 function showError(error: unknown): void {
   if (!(root instanceof HTMLElement)) return;
+  if (root.querySelector('[data-blok-startup]')) { showStartupFailure(root, error); return; }
   const message = startupErrorNode(root);
   message.textContent = error instanceof Error ? error.message : 'Impossible d’ouvrir cet espace. Rechargez pour réessayer.';
 }
-if (root instanceof HTMLElement) void boot(root).catch(showError);
+if (root instanceof HTMLElement) void listenForPageLinks(showError).then(() => boot(root)).catch(showError);

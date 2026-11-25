@@ -72,6 +72,26 @@ async function visiblePages(db: PoolClient, scope: Scope) {
 
 export function workspaceCalendar(pool: PgPool) {
   const router = new Hono();
+  router.patch('/preferences', bodyLimit({maxSize: 1024}), async c => {
+    const patch = await c.req.json().catch(() => null);
+    if (!patch || typeof patch.accountId !== 'string' ||
+        (patch.connected === undefined && patch.visible === undefined) ||
+        (patch.connected !== undefined && typeof patch.connected !== 'boolean') ||
+        (patch.visible !== undefined && typeof patch.visible !== 'boolean')) {
+      throw new WorkspaceError(400, 'Préférences de calendrier invalides.');
+    }
+    await inTransaction(pool, async db => {
+      const scope = await readWorkspaceScope(db, sessionDigest(c) ?? '', c.req.param('slug')!, true);
+      if (scope.user_id !== patch.accountId) throw new WorkspaceError(403, 'Le compte de cet agenda a changé.');
+      await db.query(`INSERT INTO calendar_workspace_preferences(workspace_id,user_id,connected,visible)
+        VALUES($1,$2,coalesce($3::boolean,false),coalesce($4::boolean,true))
+        ON CONFLICT(workspace_id,user_id) DO UPDATE
+        SET connected=coalesce($3,calendar_workspace_preferences.connected),
+            visible=coalesce($4,calendar_workspace_preferences.visible)`,
+        [scope.workspace_id,scope.user_id,patch.connected ?? null,patch.visible ?? null]);
+    });
+    return c.json({ok:true});
+  });
   router.get('/', async c => {
     const events = await inTransaction(pool, async db => {
       await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');

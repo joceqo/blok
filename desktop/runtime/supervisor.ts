@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { access, mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { gateway } from './gateway.ts';
@@ -36,14 +37,15 @@ const baseEnv: NodeJS.ProcessEnv = {};
 for (const key of ['PATH', 'Path', 'HOME', 'USER', 'LOGNAME', 'TMP', 'TEMP', 'TMPDIR', 'SystemRoot', 'WINDIR', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'COMSPEC']) {
   if (process.env[key]) baseEnv[key] = process.env[key];
 }
-function start(label: string, command: string, args: string[], env: NodeJS.ProcessEnv = {}) {
+function start(label: string, command: string, args: string[], env: NodeJS.ProcessEnv = {}, failed: (error: Error) => void = stop) {
   stopped.signal.throwIfAborted();
   const child = spawn(command, args, { cwd: data, env: { ...baseEnv, ...env }, windowsHide: true, stdio: ['ignore', logFd, logFd] });
   const done = new Promise<void>(resolve => {
-    child.once('error', error => { stop(new Error(label + ': ' + error.message)); resolve(); });
-    child.once('exit', (code, signal) => { stop(new Error(label + ' exited (' + (code ?? signal) + '). See runtime.log')); resolve(); });
+    child.once('error', error => { if (!stopped.signal.aborted) failed(new Error(label + ': ' + error.message)); resolve(); });
+    child.once('exit', (code, signal) => { if (!stopped.signal.aborted) failed(new Error(label + ' exited (' + (code ?? signal) + '). See runtime.log')); resolve(); });
   });
   services.push({ label, child, done });
+  return child;
 }
 async function command(command: string, args: string[], capture = false, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -60,18 +62,20 @@ async function command(command: string, args: string[], capture = false, signal?
     });
   });
 }
-async function until(label: string, check: () => Promise<boolean>) {
+async function until(label: string, check: () => Promise<boolean>, signal = stopped.signal) {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
-    stopped.signal.throwIfAborted();
+    signal.throwIfAborted();
     if (await check().catch(() => false)) return;
-    await delay(150, undefined, { signal: stopped.signal });
+    await delay(50, undefined, { signal });
   }
   throw new Error(label + ' did not become ready. See runtime.log');
 }
-function healthy(origin: string, path: string) {
+function healthy(origin: string, path: string, signal = stopped.signal) {
   return async () => {
-    const response = await fetch(origin + path, { signal: AbortSignal.any([stopped.signal, AbortSignal.timeout(1_500)]) });
+    // Each probe is one-shot. A pooled socket otherwise keeps the media server
+    // waiting for another request during an early quit.
+    const response = await fetch(origin + path, { headers: { connection: 'close' }, signal: AbortSignal.any([signal, AbortSignal.timeout(1_500)]) });
     await response.body?.cancel();
     return response.ok;
   };
@@ -111,6 +115,7 @@ const { ports, secrets } = await openInstance(data);
 const origin = (port: number) => 'http://' + loopback + ':' + port;
 const publicOrigin = origin(ports.public);
 const api = origin(ports.api);
+const deviceSecret = randomBytes(32).toString('hex');
 const room = origin(ports.room);
 const media = origin(ports.media);
 const s3 = origin(ports.s3);
@@ -124,51 +129,76 @@ try {
 }
 const log = await open(join(data, 'runtime.log'), 'w', 0o600);
 logFd = log.fd;
-try {
-  await checkPrivatePorts(ports);
-  await access(join(web, 'index.html'));
-  await setupDatabase(secrets.postgres);
-  start('PostgreSQL', pg('postgres'), ['-D', postgresDirectory, '-h', loopback, '-p', String(ports.postgres), '-c', 'unix_socket_directories=']);
-  await until('PostgreSQL', async () => {
-    const status = await readFile(join(postgresDirectory, 'postmaster.pid'), 'utf8');
-    return status.split('\n')[0] === String(services[0].child.pid) && status.split('\n')[7]?.trim() === 'ready';
-  });
+const storage = { BLOK_S3_BUCKET: 'blok-assets', BLOK_S3_ENDPOINT: s3, BLOK_S3_REGION: 'us-east-1',
+  BLOK_S3_ADDRESSING: 'path', BLOK_S3_ACCESS_KEY: secrets.accessKey, BLOK_S3_SECRET_KEY: secrets.secretKey };
+const allowedOrigins = 'tauri://localhost,http://tauri.localhost,https://tauri.localhost';
+const storageStopped = new AbortController();
+const storageSignal = storageStopped.signal;
+function storageFailure(error: Error) {
+  if (storageSignal.aborted) return;
+  storageStopped.abort();
+  front.setStorage('failed');
+  void log.write('Storage unavailable: ' + error.message + '\n').catch(() => {});
+}
+async function startStorage() {
+  await checkPrivatePorts(ports, 'storage');
+  start('Media', binary('node'), [join(resources, 'room', 'media.mjs'), '--listen', loopback + ':' + ports.media, '--auth', 'ticket',
+    '--public-url', publicOrigin + '/files', '--allow-origin', publicOrigin, '--storage-dir', join(data, 'uploads'), '--rate-limit', '600'],
+    { ...storage, BLOK_SECRET: secrets.ticket }, storageFailure);
   const objects = join(data, 'objects');
   await mkdir(objects, { recursive: true });
   const admin = await choosePorts(['http', 'grpc'] as const, Object.values(ports));
   start('SeaweedFS', binary('weed'), ['mini', '-dir=' + objects, '-ip=' + loopback, '-ip.bind=' + loopback,
-    '-master.telemetry=false', '-webdav=false', '-admin.ui=false', '-admin.port.legacy=0', '-s3.port.iceberg=0', '-s3.port.lance=0',
+    // The single local volume has no other nodes waiting on routing heartbeats.
+    '-volume.preStopSeconds=0', '-master.telemetry=false', '-webdav=false', '-admin.ui=false', '-admin.port.legacy=0', '-s3.port.iceberg=0', '-s3.port.lance=0',
     '-admin.port=' + admin.http, '-admin.port.grpc=' + admin.grpc,
     '-master.port=' + ports.master, '-master.port.grpc=' + ports.masterGrpc, '-volume.port=' + ports.volume,
     '-volume.port.grpc=' + ports.volumeGrpc, '-filer.port=' + ports.filer, '-filer.port.grpc=' + ports.filerGrpc,
     '-s3.port=' + ports.s3, '-s3.port.grpc=' + ports.s3Grpc, '-filer.allowedOrigins=' + publicOrigin, '-s3.allowedOrigins=' + publicOrigin],
     { AWS_ACCESS_KEY_ID: secrets.accessKey, AWS_SECRET_ACCESS_KEY: secrets.secretKey, S3_BUCKET: 'blok-assets',
-      WEED_ADMIN_PASSWORD: createHmac('sha256', secrets.internal).update('seaweed-admin').digest('hex') });
-  await until('SeaweedFS', healthy(s3, '/readyz'));
-  const storage = { BLOK_S3_BUCKET: 'blok-assets', BLOK_S3_ENDPOINT: s3, BLOK_S3_REGION: 'us-east-1',
-    BLOK_S3_ADDRESSING: 'path', BLOK_S3_ACCESS_KEY: secrets.accessKey, BLOK_S3_SECRET_KEY: secrets.secretKey };
-  const allowedOrigins = 'tauri://localhost,http://tauri.localhost,https://tauri.localhost';
-  start('Shell', binary('node'), [join(resources, 'app', 'main.mjs')], { ...storage, DATABASE_URL: 'postgresql://blok:' + secrets.postgres + '@' + loopback + ':' + ports.postgres + '/postgres',
-    PUBLIC_URL: publicOrigin, PORT: String(ports.api), BLOK_LISTEN_HOST: loopback, BLOK_NODE_ROOM_ALL: '1',
-    DATA_DIRECTORY: data, BLOK_SCHEMA_PATH: join(resources, 'app', 'schema.sql'), ALLOWED_ORIGINS: allowedOrigins,
-    INTERNAL_SECRET: secrets.internal, TICKET_SECRET: secrets.ticket, BLOK_MEDIA_ORIGIN: media, BLOK_ROOM_STATE_ORIGIN: room,
-    MCP_SYNC_URL: room.replace('http:', 'ws:') + '/api/blok/sync', BLOK_DEVELOPMENT: '1' });
-  await until('Shell', healthy(api, '/healthz'));
+      WEED_ADMIN_PASSWORD: createHmac('sha256', secrets.internal).update('seaweed-admin').digest('hex') }, storageFailure);
+  await Promise.all([
+    until('SeaweedFS', healthy(s3, '/readyz', storageSignal), storageSignal),
+    until('Media', healthy(media, '/health', storageSignal), storageSignal),
+  ]);
+  if (!storageSignal.aborted) front.setStorage('ready');
+}
+let storageStartup: Promise<void> | undefined;
+try {
+  await Promise.all([checkPrivatePorts(ports, 'editor'), access(join(web, 'index.html'))]);
+  storageStartup = startStorage().catch(storageFailure);
   start('Room', binary('node'), [join(resources, 'room', 'room.mjs'), join(data, 'collab'), '--all', publicOrigin, String(ports.room)],
     { BLOK_ROOM_LISTEN_HOST: loopback, BLOK_ROOM_CLOUD_ORIGIN: api, BLOK_ROOM_PROJECTION_ORIGIN: api, INTERNAL_SECRET: secrets.internal,
       ALLOWED_ORIGINS: allowedOrigins, BLOK_FLOCK_HELPER: binary('blok-flock') });
-  start('Media', binary('node'), [join(resources, 'room', 'media.mjs'), '--listen', loopback + ':' + ports.media, '--auth', 'ticket',
-    '--public-url', publicOrigin + '/files', '--allow-origin', publicOrigin, '--storage-dir', join(data, 'uploads'), '--rate-limit', '600'],
-    { ...storage, BLOK_SECRET: secrets.ticket });
-  await Promise.all([until('Room', healthy(room, '/healthz')), until('Media', healthy(media, '/health'))]);
+  await setupDatabase(secrets.postgres);
+  const postgres = start('PostgreSQL', pg('postgres'), ['-D', postgresDirectory, '-h', loopback, '-p', String(ports.postgres), '-c', 'unix_socket_directories=']);
+  await until('PostgreSQL', async () => {
+    const status = await readFile(join(postgresDirectory, 'postmaster.pid'), 'utf8');
+    return status.split('\n')[0] === String(postgres.pid) && status.split('\n')[7]?.trim() === 'ready';
+  });
+  const databaseUrl = 'postgresql://blok:' + secrets.postgres + '@' + loopback + ':' + ports.postgres + '/postgres';
+  start('Shell', binary('node'), [join(resources, 'app', 'main.mjs')], { ...storage, DATABASE_URL: databaseUrl,
+    PUBLIC_URL: publicOrigin, PORT: String(ports.api), BLOK_LISTEN_HOST: loopback, BLOK_NODE_ROOM_ALL: '1',
+    DATA_DIRECTORY: data, BLOK_SCHEMA_PATH: join(resources, 'app', 'schema.sql'), ALLOWED_ORIGINS: allowedOrigins,
+    BLOK_DEVICE_SESSION_SECRET: deviceSecret, INTERNAL_SECRET: secrets.internal, TICKET_SECRET: secrets.ticket, BLOK_MEDIA_ORIGIN: media, BLOK_ROOM_STATE_ORIGIN: room,
+    MCP_SYNC_URL: room.replace('http:', 'ws:') + '/api/blok/sync', BLOK_DEVELOPMENT: '1' });
+  await until('Shell', healthy(api, '/healthz'));
+  if (basename(data) === 'embedded-server') {
+    const {migrateLegacyWorkspace} = await import(pathToFileURL(join(resources, 'app', 'import-disk.mjs')).href);
+    const imported = await migrateLegacyWorkspace(join(dirname(data), 'workspace'), databaseUrl);
+    if (imported) await log.write('Migration du dossier local : ' + JSON.stringify(imported) + '\n');
+  }
+  await until('Room', healthy(room, '/healthz'));
   stopped.signal.throwIfAborted();
   front.setReady();
-  process.stdout.write(JSON.stringify({ origin: publicOrigin }) + '\n');
+  process.stdout.write(JSON.stringify({ origin: publicOrigin, apiOrigin: api, deviceSecret }) + '\n');
   await new Promise<void>(resolve => stopped.signal.addEventListener('abort', () => resolve(), { once: true }));
 } catch (error) {
   if (!stopped.signal.aborted) stop(error instanceof Error ? error : new Error(String(error)));
 } finally {
-  front.stopAccepting();
+  await front.stopAccepting();
+  storageStopped.abort();
+  await storageStartup;
   // The journal flushes its final projection through the shell; outstanding shell
   // uploads can in turn still require media. Keep each dependency alive until then.
   for (const label of ['Room', 'Shell', 'Media']) {
@@ -178,5 +208,6 @@ try {
   await Promise.all(services.filter(s => s.label === 'PostgreSQL' || s.label === 'SeaweedFS').map(shutdown));
   await new Promise<void>(resolve => front.server.close(() => resolve()));
   await log.close();
+  process.stdin.destroy();
 }
 if (failure) { console.error(failure.message); process.exitCode = 1; }

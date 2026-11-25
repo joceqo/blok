@@ -1,0 +1,56 @@
+import { afterEach, expect, it, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({
+  take:vi.fn(), session:vi.fn(), flush:vi.fn(), select:vi.fn(), startup:vi.fn(),
+}));
+vi.mock('./native-runtime',()=>({ nativeBridge:()=>({invoke:mocks.take}), deviceWorkspaces:mocks.session }));
+vi.mock('./workspace-registry',()=>({ activeWorkspace:()=>({kind:'remote',id:'previous',server:'https://unrelated.example'}), selectStartupPage:mocks.startup, selectWorkspace:mocks.select }));
+vi.mock('./shell',()=>({flushDesktop:mocks.flush, openMountedPage:()=>false}));
+
+import { listenForPageLinks } from './native-page-links';
+
+afterEach(() => vi.unstubAllGlobals());
+it('checks device membership before handing off a cold or warm page link and flushes edits before opening it', async () => {
+  const ref = {id:'workspace-1',workspaceId:'mine'};
+  const origin='http://127.0.0.1:1234';
+  mocks.session.mockResolvedValue({origin,result:{token:'local-session'},references:[ref]});
+  let first!: (raw: unknown) => void;
+  mocks.take.mockReturnValueOnce(new Promise(resolve=>{first=resolve;}));
+  const fetch = vi.fn().mockImplementation(async()=>new Response(JSON.stringify({pages:[{id:'p1'}]})));
+  vi.stubGlobal('fetch',fetch);
+  const report=vi.fn();
+  const start = listenForPageLinks(report);
+  await vi.waitFor(()=>expect(mocks.take).toHaveBeenCalledOnce());
+  mocks.take.mockResolvedValueOnce('blok://page/p1?device=1&workspace=workspace-1');
+  window.dispatchEvent(new Event('blok:page-link'));
+  first(null);
+  await start;
+  expect(mocks.startup).toHaveBeenCalledWith(ref,'p1');
+  expect(mocks.select).not.toHaveBeenCalled();
+  expect(mocks.flush).not.toHaveBeenCalled();
+  expect(fetch).toHaveBeenCalledTimes(1);
+
+  mocks.take.mockResolvedValueOnce('blok://page/p1?origin=http%3A%2F%2F127.0.0.1%3A5678');
+  window.dispatchEvent(new Event('blok:page-link'));
+  await vi.waitFor(()=>expect(report).toHaveBeenCalledTimes(1));
+  expect(fetch).toHaveBeenCalledTimes(1);
+
+  mocks.take.mockResolvedValueOnce('blok://page/p1?device=1&workspace=workspace-1');
+  window.dispatchEvent(new Event('blok:page-link'));
+  await vi.waitFor(()=>expect(mocks.select).toHaveBeenCalledWith(ref,'p1'));
+  expect(fetch).toHaveBeenCalledWith(origin+'/api/workspaces/mine/index',expect.objectContaining({redirect:'error',headers:{Authorization:'Bearer local-session'}}));
+  expect(mocks.flush.mock.invocationCallOrder[0]).toBeLessThan(mocks.select.mock.invocationCallOrder[0]);
+
+  mocks.take.mockResolvedValueOnce('blok://page/missing?device=1');
+  fetch.mockResolvedValueOnce(new Response(JSON.stringify({pages:[]})));
+  window.dispatchEvent(new Event('blok:page-link'));
+  await vi.waitFor(()=>expect(report).toHaveBeenCalledTimes(2));
+  expect(mocks.select).toHaveBeenCalledTimes(1);
+
+  const calendar = vi.fn((event: Event) => event.preventDefault());
+  window.addEventListener('blok:open-calendar', calendar, {once:true});
+  mocks.take.mockResolvedValueOnce('blok://calendar');
+  window.dispatchEvent(new Event('blok:page-link'));
+  await vi.waitFor(() => expect(calendar).toHaveBeenCalledOnce());
+  expect(mocks.select).toHaveBeenCalledTimes(1);
+});

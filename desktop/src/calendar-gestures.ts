@@ -61,8 +61,24 @@ function preview(board: HTMLElement, event: CalendarEvent) {
   }
 }
 
+/** A selection can run backwards and cross midnight. All-day ends stay exclusive. */
+export function rangeDraft(a: CalendarSlot, b: CalendarSlot, allDay: boolean): CalendarEvent {
+  const toDate = (slot: CalendarSlot) => {
+    const date = new Date(slot.date + 'T00:00');
+    if (!allDay) date.setMinutes(slot.minutes);
+    return date;
+  };
+  const x = toDate(a), y = toDate(b);
+  const [start, end] = x < y ? [x, y] : [y, x];
+  if (allDay) end.setDate(end.getDate() + 1);
+  else if (+start === +end) end.setMinutes(end.getMinutes() + 15);
+  return {id:'', title:'Nouvel événement', start:allDay ? dayKey(start) : start.toISOString(),
+    end:allDay ? dayKey(end) : end.toISOString(), allDay, pageId:null, revision:0};
+}
+
 /** Keep the stored event in place until its versioned write succeeds. */
-export function bindCalendarGestures(board: HTMLElement, find: (id: string) => CalendarEvent | undefined, save: (event: CalendarEvent) => void) {
+export function bindCalendarGestures(board: HTMLElement, find: (id: string) => CalendarEvent | undefined, save: (event: CalendarEvent, original: CalendarEvent) => void,
+  create?: (from: CalendarSlot, to: CalendarSlot, allDay: boolean) => void, canCreate: () => boolean = () => true) {
   const life = new AbortController();
   let active: AbortController | undefined;
   let suppressClick = false;
@@ -73,14 +89,15 @@ export function bindCalendarGestures(board: HTMLElement, find: (id: string) => C
     const target = down.target;
     if (!(target instanceof Element)) return;
     const chip = target.closest<HTMLElement>('[data-editable-event]');
-    if (!chip?.dataset.eventId) return;
-    const event = find(chip.dataset.eventId);
-    if (!event || event.source) return;
-    const origin = slotAt(board, down.clientX, down.clientY, event.allDay);
+    const event = chip?.dataset.eventId ? find(chip.dataset.eventId) : undefined;
+    if (chip && (!event || event.source)) return;
+    if (!event && (!create || !canCreate() || down.pointerType === 'touch' || target.closest('button') || !target.matches('.cal-column,.cal-all-cell'))) return;
+    const allDay = event?.allDay ?? target.matches('.cal-all-cell');
+    const origin = slotAt(board, down.clientX, down.clientY, allDay);
     if (!origin) return;
     active = new AbortController();
     const signal = active.signal, resize = Boolean(target.closest('.cal-resize'));
-    let dragged = false, candidate: CalendarEvent | null = null;
+    let dragged = false, candidate: CalendarEvent | null = null, end: CalendarSlot | null = null;
     function stop() {
       clear(); delete board.dataset.dragging; active?.abort(); active = undefined;
     }
@@ -92,15 +109,17 @@ export function bindCalendarGestures(board: HTMLElement, find: (id: string) => C
       if (e.pointerId !== down.pointerId || (!dragged && Math.hypot(e.clientX - down.clientX, e.clientY - down.clientY) < 5)) return;
       e.preventDefault();
       dragged = suppressClick = true; board.dataset.dragging = '';
-      const slot = slotAt(board, e.clientX, e.clientY, event.allDay);
-      candidate = slot ? reschedule(event, origin!, slot, resize) : null;
+      end = slotAt(board, e.clientX, e.clientY, allDay);
+      candidate = end ? event ? reschedule(event, origin!, end, resize) : rangeDraft(origin!, end, allDay) : null;
       clear();
       if (candidate) preview(board, candidate);
     }, {signal});
     document.addEventListener('pointerup', e => {
       if (e.pointerId !== down.pointerId) return;
       stop();
-      if (dragged && candidate && (candidate.start !== event.start || candidate.end !== event.end)) save(candidate);
+      if (!dragged || !candidate) return;
+      if (!event && end) create?.(origin!, end, allDay);
+      else if (event && (candidate.start !== event.start || candidate.end !== event.end)) save(candidate, event);
     }, {signal});
   }, {signal:life.signal});
   board.addEventListener('click', e => {

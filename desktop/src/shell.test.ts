@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { mountDesktop, setCanLeave } from './shell';
+import { mountDesktop, openMountedPage, setCanLeave } from './shell';
+import { initialWorkspace } from './workspace-registry';
 import { BLOK_MARK_HREF, faviconHref } from './tab-identity';
 
+const flush = vi.fn<() => Promise<void>>();
 let routeCalls = 0;
 let reportPageIcon: (id: string, icon: string) => void = () => undefined;
 
@@ -17,7 +19,9 @@ vi.mock('./workspace', () => ({
     onLayout(260);
     return {
       element,
+      hasPage: (id: string) => id === 'linked' || id === 'original',
       start: async () => undefined,
+      flush,
       onRoute: () => { routeCalls++; },
       toggleSidebar: () => undefined,
       createPage: () => history.pushState(null, '', `/?page=${crypto.randomUUID()}`),
@@ -152,6 +156,22 @@ afterEach(() => {
 installScroll();
 
 describe('desktop tab strip', () => {
+  it('opens a warm link in the live workspace and reuses the existing tab on repeat', async () => {
+    history.replaceState(null, '', '/?page=original');
+    const host = mount();
+    flush.mockClear();
+    expect(await openMountedPage(initialWorkspace, 'linked')).toBe(true);
+    expect(location.search).toBe('?page=linked');
+    expect(tabLabels(host)).toHaveLength(2);
+    expect(await openMountedPage(initialWorkspace, 'linked')).toBe(true);
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(await openMountedPage(initialWorkspace, 'original')).toBe(true);
+    expect(tabLabels(host)).toHaveLength(2);
+    expect(location.search).toBe('?page=original');
+    expect(await openMountedPage(initialWorkspace, 'absent')).toBe(false);
+    expect(await openMountedPage({...initialWorkspace, id: 'another'}, 'linked')).toBe(false);
+  });
+
   it('opens one readable tab in a 40px strip', () => {
     const root = mount();
     const strip = root.querySelector('[data-desktop-tabstrip]');
@@ -167,6 +187,29 @@ describe('desktop tab strip', () => {
     expect(button(root, 'Afficher ou masquer la barre latérale')).toBeInstanceOf(HTMLButtonElement);
     expect(button(root, 'Nouvelle page')).toBeInstanceOf(HTMLButtonElement);
     expect(button(root, 'Nouvel onglet').getAttribute('title')).toBe('Nouvel onglet (⌘T)');
+  });
+
+  it('keeps the active tab and all page titles consistent for duplicate page tabs', () => {
+    const root = mount();
+    history.replaceState(null, '', '/?page=notes');
+    document.title = 'Mes notes';
+    window.dispatchEvent(new Event('blok:desktop-new-tab'));
+    history.replaceState(null, '', '/?page=notes');
+    document.title = 'Mes notes';
+    document.title = 'Titre modifié';
+    const activeId = readSession().activeId;
+    expect(tabLabels(root)).toEqual(['Titre modifié', 'Titre modifié']);
+    mount();
+    expect(readSession().activeId).toBe(activeId);
+  });
+
+  it('retains the editor if a native reload cannot save the last edit', async () => {
+    const root = mount();
+    flush.mockRejectedValueOnce(new Error('disque plein'));
+    const request = new Event('blok:desktop-reload', {cancelable: true});
+    expect(window.dispatchEvent(request)).toBe(false);
+    await vi.waitFor(() => expect(root.querySelector('[role="alert"]')?.textContent).toContain('disque plein'));
+    expect(root.inert).toBeFalsy();
   });
 
   it('shows only the workspace on the web without restoring native tabs', () => {
@@ -512,6 +555,7 @@ describe('Tauri window', () => {
     const rust = readFileSync(join(process.cwd(), 'src-tauri/src/lib.rs'), 'utf8');
     expect(rust).toContain('New Tab');
     expect(rust).toContain('Close Tab');
+    expect(rust).toContain('CmdOrCtrl+R');
     expect(rust).toContain('CmdOrCtrl+T');
     expect(rust).toContain('CmdOrCtrl+W');
     expect(rust).toContain("window.dispatchEvent(new Event('blok:desktop-new-tab'))");
@@ -538,6 +582,22 @@ describe('explicit page links at startup',()=>{
     expect(new URL(location.href).searchParams.get('view')).toBe('calendar');
     expect(selected(root).textContent).toContain('Calendrier');
     expect(readSession().tabs).toHaveLength(2);
+  });
+  it('reuses the calendar tab and returns to the page that opened it', () => {
+    history.replaceState(null, '', '/?page=original');
+    const root = mount();
+    const original = readSession().activeId;
+    window.dispatchEvent(new Event('blok:open-calendar', {cancelable:true}));
+    expect(location.pathname).toBe('/calendar');
+    expect(location.search).toBe('');
+    expect(tabLabels(root)).toHaveLength(2);
+    window.dispatchEvent(new Event('blok:return-from-calendar', {cancelable:true}));
+    expect(readSession().activeId).toBe(original);
+    expect(location.href).toBe(location.origin + '/?page=original');
+    window.dispatchEvent(new Event('blok:open-calendar', {cancelable:true}));
+    expect(tabLabels(root)).toHaveLength(2);
+    window.dispatchEvent(new Event('blok:desktop-new-tab'));
+    expect(location.pathname).toBe('/');
   });
   it('opens a new explicit page while retaining the other saved tabs',()=>{
     history.replaceState(null,'','/?page=requested');

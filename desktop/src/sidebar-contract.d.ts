@@ -14,12 +14,14 @@ export type SidebarAction =
 export interface PageFrame {
   element: HTMLElement;
   canvas: HTMLElement;
+  headerActions: HTMLElement;
   setPages(pages: ShellPage[], activeId: string): void;
   setCalendarActive(active: boolean): void;
   toggleSidebar(): void;
 }
 export function createPageFrame(options: {
   pages: ShellPage[];
+  collapsedByDefault?: boolean;
   activeId: string;
   /** L'espace courant, rendu comme une ligne sous « Espaces » plutôt qu'un titre. */
   teamspace?: { name: string };
@@ -32,6 +34,7 @@ export function createPageFrame(options: {
   recentIds?: string[];
   onRecentsChange?(ids: string[]): void;
   onCalendar?(): void;
+  calendarHref?: string;
   onTeamspaces?(): void;
   onTeamspaceMenu?(anchor: HTMLButtonElement): void;
   pageUrl?(id: string): string;

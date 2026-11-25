@@ -1,4 +1,4 @@
-.blok-calendar-import { box-sizing: border-box; width: min(440px, calc(100vw - 32px)); max-height: 85vh; padding: 24px; border: 1px solid var(--desktop-border, #ddd); border-radius: 12px; background: var(--desktop-bg, Canvas); color: var(--desktop-ink, CanvasText); box-shadow: 0 16px 56px #0002; font: inherit; }
+.blok-calendar-import { box-sizing: border-box; width: min(440px, calc(100vw - 32px)); max-height: 85vh; padding: 24px; border: 1px solid var(--desktop-border, #ddd); border-radius: 12px; background: var(--desktop-canvas, Canvas); color: var(--desktop-ink, CanvasText); box-shadow: 0 16px 56px #0002; font: inherit; }
 .blok-calendar-import::backdrop { background: #15141955; }
 .blok-calendar-import h2 { margin: 0 0 12px; font-size: 20px; }
 .blok-calendar-import p, .blok-calendar-import li { font-size: 13px; line-height: 1.5; }
@@ -6,5 +6,5 @@
 .blok-calendar-import ul { max-height: 24vh; overflow: auto; padding-inline-start: 18px; }
 .blok-calendar-import footer { display: flex; gap: 8px; justify-content: flex-end; }
 .blok-calendar-import button { background: transparent; color: inherit; border: 1px solid var(--desktop-border, #ccc); padding: 5px 14px; border-radius: 6px; cursor: pointer; }
-.blok-calendar-import button:last-child { background: var(--desktop-ink, #333); color: var(--desktop-bg, white); }
+.blok-calendar-import button:last-child { background: var(--desktop-ink, #333); color: var(--desktop-canvas, white); }
 .blok-calendar-import button:disabled { opacity: .45; cursor: default; }

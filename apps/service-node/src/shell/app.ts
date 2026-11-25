@@ -19,6 +19,7 @@ import { pagePurgeRoutes, roomPurger } from './page-purge.ts';
 import { roomTickets } from './room-tickets.ts';
 import { createMcpTokens } from './mcp-tokens.ts';
 import { createLoginMail, createRequestCode } from './request-code.ts';
+import { createDeviceSessions, deviceCredential } from './device-account.ts';
 import { createShellAuth } from './auth.ts';
 import { registerIndexWrite } from './index-write.ts';
 import type { PgPool } from '../db/pool.ts';
@@ -97,6 +98,8 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   app.route('/mcp',createHostedMcp(pool));
   app.route('/api/workspaces/:slug/ai',createHostedAi(pool));
   app.route('/',createShellAssets(pool,secret));
+  const device = deviceCredential(process.env.BLOK_DEVICE_SESSION_SECRET);
+  if (device) app.post('/api/setup/claim', c => c.json({error:'Cet appareil dispose déjà de son compte local.'}, 409));
   app.route('/',instanceAdmin(pool,secret,() => recheckLiveSessions(secret)));
   app.route('/',workspaceDirectory(pool));
   app.route('/',pagePurgeRoutes(pool,roomPurger(secret)));
@@ -111,7 +114,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   app.get('/api/workspaces/:slug/pages/:id', async (c) => {
     const key = sessionDigest(c);
     if (!key) return c.json({ error: 'Sign in required' }, 401);
-    const page = await loadVisiblePage(pool, key, c.req.param('slug'), c.req.param('id'));
+    const page = await loadVisiblePage(pool, key, c.req.param('slug'), c.req.param('id'), c.req.query('preview') === '1');
     if (!page.authenticated) return c.json({ error: 'Sign in required' }, 401);
     if (!page.workspace) return c.json({ error: 'Workspace not found' }, 404);
     if (!page.member) return c.json({ error: 'Workspace membership required' }, 403);
@@ -123,6 +126,16 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   app.route('/api/workspaces/:slug/members', createWorkspaceMembers(pool, recheckAccess));
   app.route('/api/workspaces/:slug/pages', createPageSharing(pool, recheckAccess));
 
+  if (device) {
+    const expectedDevice = digest('Bearer ' + device);
+    const getSession = createDeviceSessions(pool);
+    app.post('/internal/desktop/session', async c => {
+      if (c.req.header('Origin') || !timingSafeEqual(expectedDevice, digest(c.req.header('Authorization') ?? ''))) {
+        return c.json({error: 'Native authorization required'}, 403);
+      }
+      return c.json(await getSession());
+    });
+  }
   app.use('/internal/*', async (c, next) => {
     if (!timingSafeEqual(expected, digest(c.req.header('Authorization') ?? ''))) {
       return c.json({ error: 'Internal authorization required' }, 401);

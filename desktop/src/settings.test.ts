@@ -57,6 +57,23 @@ describe('desktop sidebar footer', () => {
     expect(dialog.parentElement?.hasAttribute('hidden')).toBe(true);
   });
 
+  it('presents the embedded identity as a device profile and asks for a distant server by choice', async () => {
+    Reflect.set(window, '__TAURI_INTERNALS__', {invoke: vi.fn().mockResolvedValue(null)});
+    const footer = createDesktopFooter(vi.fn(), {kind:'remote',embedded:true,device:true,id:'my-id',name:'Mes documents',workspaceId:'local',
+      server:'http://127.0.0.1:53002',accountId:'local-user',userName:'Profil local',role:'admin'});
+    document.body.append(footer);
+    const change = vi.fn(); footer.addEventListener('blok:desktop-connect-cloud', change);
+    must(footer.querySelector<HTMLButtonElement>('[data-desktop-switcher]')).click();
+    expect(footer.textContent).toContain('Se connecter à un serveur distant');
+    must(footer.querySelector<HTMLButtonElement>('[data-desktop-menu-account]')).click();
+    const dialog = must(document.querySelector<HTMLElement>('[role=dialog]'));
+    expect(dialog.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Profil local');
+    expect(dialog.textContent).not.toContain('Adresse e-mail');
+    must([...dialog.querySelectorAll<HTMLButtonElement>('[data-desktop-settings-nav-item]')].find(el=>el.textContent==='Connexions')).click();
+    must([...dialog.querySelectorAll<HTMLButtonElement>('button')].find(el=>el.textContent==='Se connecter à un serveur distant')).click();
+    expect(change).toHaveBeenCalledWith(expect.objectContaining({detail:{section:'account'}}));
+  });
+
   it('opens the Docker server through native connections without changing the standalone workspace', async () => {
     Reflect.set(window, '__TAURI_INTERNALS__', {invoke: vi.fn().mockResolvedValue('/tmp/workspace')});
     const footer = createDesktopFooter(vi.fn());
@@ -110,10 +127,18 @@ describe('workspace menu hierarchy',()=>{
       return new Response(JSON.stringify(data));
     });
     try {
-      const footer = remoteFooter();
-      must(footer.querySelector<HTMLButtonElement>('[data-inbox-trigger]')).click();
-      await vi.waitFor(() => expect(document.querySelector('[data-inbox-dialog]')?.textContent).toContain('Alex'));
-      must([...document.querySelectorAll<HTMLButtonElement>('[data-inbox-dialog] button')].find(b => b.textContent === 'Voir les demandes')).click();
+      const header = document.createElement('div');
+      const create = document.createElement('button');
+      create.textContent = 'Nouvelle page';
+      header.append(create);
+      const footer = createDesktopFooter(() => undefined, remoteRef, header);
+      document.body.append(header, footer);
+      expect(footer.querySelector('[data-inbox-trigger]')).toBeNull();
+      const inbox = must(header.querySelector<HTMLButtonElement>('[data-inbox-trigger]'));
+      expect(inbox.nextElementSibling).toBe(create);
+      inbox.click();
+      await vi.waitFor(() => expect(document.querySelector('[data-inbox-pane]')?.textContent).toContain('Alex'));
+      must([...document.querySelectorAll<HTMLButtonElement>('[data-inbox-pane] button')].find(b => b.textContent === 'Voir les demandes')).click();
       expect(childUi.mount).toHaveBeenCalledWith(expect.any(HTMLElement),expect.objectContaining({slug:'acme',initialTab:'requests'}));
     } finally { fetch.mockRestore(); }
   });

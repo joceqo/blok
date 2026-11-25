@@ -1,3 +1,5 @@
+mod page_links;
+mod editor_close;
 mod ai;
 mod embedded_server;
 use tauri::menu::{
@@ -118,12 +120,13 @@ fn cloud_credential(server: &str) -> Result<keyring::Entry, String> {
 }
 
 #[tauri::command]
-fn load_cloud_session(server: String) -> Result<Option<String>, String> {
-    match cloud_credential(&server)?.get_password() {
+async fn load_cloud_session(server: String) -> Result<Option<String>, String> {
+    // Unlocking the OS keychain may wait for a user decision. Keep the native event loop responsive.
+    tauri::async_runtime::spawn_blocking(move || match cloud_credential(&server)?.get_password() {
         Ok(token) => Ok(Some(token)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(error.to_string()),
-    }
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -326,6 +329,9 @@ fn close_editor_window(window: tauri::WebviewWindow) {
 }
 
 fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let reload = MenuItem::with_id(app, "reload-tab", "Reload Tab", true, Some("CmdOrCtrl+R"))?;
+    let search = MenuItem::with_id(app, "workspace-search", "Search Workspace", true, Some("CmdOrCtrl+P"))?;
+    let calendar = MenuItem::with_id(app, "open-calendar", "Calendar", true, None::<&str>)?;
     let new_tab = MenuItem::with_id(app, "new-tab", "New Tab", true, Some("CmdOrCtrl+T"))?;
     let close_tab = MenuItem::with_id(app, "close-tab", "Close Tab", true, Some("CmdOrCtrl+W"))?;
     let file = Submenu::with_items(app, "File", true, &[&new_tab, &close_tab])?;
@@ -386,29 +392,58 @@ fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> 
                 &PredefinedMenuItem::quit(app, None)?,
             ],
         )?;
+        let inspector = MenuItem::with_id(app, "web-inspector", "Web Inspector", true, Some("Cmd+Alt+I"))?;
         let view = Submenu::with_items(
             app,
             "View",
             true,
-            &[&PredefinedMenuItem::fullscreen(app, None)?],
+            &[&calendar, &search, &reload, &inspector, &PredefinedMenuItem::fullscreen(app, None)?],
         )?;
         return Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window_menu, &help]);
     }
 
     #[cfg(not(target_os = "macos"))]
-    Menu::with_items(app, &[&file, &edit, &window_menu, &help])
+    {
+        let view = Submenu::with_items(app, "View", true, &[&calendar, &search, &reload])?;
+        Menu::with_items(app, &[&file, &edit, &view, &window_menu, &help])
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.append_invoke_initialization_script(include_str!("inspect_shortcut.js"));
+    builder
+        .manage(editor_close::EditorClose::default())
+        .manage(page_links::PendingPageLink::default())
+        .setup(|app| {
+            #[cfg(target_os = "macos")]
+            editor_close::install_macos_quit(app)?;
+            Ok(())
+        })
+        .on_page_load(|view, payload| {
+            if view.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                editor_close::page_started(view.app_handle());
+            }
+        })
+        .on_window_event(editor_close::window_event)
         .manage(AgentRuns::default())
         .manage(embedded_server::EmbeddedServer::default())
         .manage(ai::LocalAiRuns::default())
         .menu(|app| editor_menu(app))
         .on_menu_event(|app, event| {
+            if event.id().as_ref() == "web-inspector" {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
+                return;
+            }
             let script = match event.id().as_ref() {
+                "reload-tab" => "if (window.dispatchEvent(new Event('blok:desktop-reload', {cancelable:true}))) location.reload()",
                 "new-tab" => "window.dispatchEvent(new Event('blok:desktop-new-tab'))",
+                "open-calendar" => "window.dispatchEvent(new Event('blok:open-calendar', {cancelable:true}))",
+                "workspace-search" => "window.dispatchEvent(new Event('blok:desktop-search'))",
                 "close-tab" => "window.dispatchEvent(new Event('blok:desktop-close-tab'))",
                 _ => return,
             };
@@ -416,10 +451,12 @@ pub fn run() {
                 let _ = window.eval(script);
             }
         })
-        .invoke_handler(tauri::generate_handler![open_calendar_authorization, embedded_server::embedded_server_available, embedded_server::ensure_embedded_server, ai::ai_local_status, ai::ai_local_save, ai::ai_local_delete, ai::ai_local_models, ai::ai_local_respond, ai::ai_local_editor_respond, ai::ai_local_cancel, close_editor_window, load_cloud_session, save_cloud_session, load_workspace_file, save_workspace_file, workspace_data_directory, agent_provider_status, agent_ask, agent_cancel])
+        .invoke_handler(tauri::generate_handler![page_links::take_page_link, open_calendar_authorization, embedded_server::embedded_server_available, embedded_server::ensure_embedded_server, embedded_server::embedded_device_session, ai::ai_local_status, ai::ai_local_save, ai::ai_local_delete, ai::ai_local_models, ai::ai_local_respond, ai::ai_local_editor_respond, ai::ai_local_cancel, close_editor_window, editor_close::arm_editor_close, editor_close::finish_editor_close, load_cloud_session, save_cloud_session, load_workspace_file, save_workspace_file, workspace_data_directory, agent_provider_status, agent_ask, agent_cancel])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { ref urls } = event { page_links::opened(app, urls); }
             if matches!(event, tauri::RunEvent::Exit) {
                 app.state::<embedded_server::EmbeddedServer>().shutdown();
             }

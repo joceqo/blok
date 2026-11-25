@@ -37,6 +37,26 @@ describe.skipIf(!url)('shared calendar on PostgreSQL', () => {
     try { await owner.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE'); } finally { await owner.end(); }
   });
 
+  it('synchronizes personal workspace choices across clients with read-only memberships and partial writes', async () => {
+    await db.query("INSERT INTO workspaces(id,slug,name) VALUES('studio','studio','Studio'); INSERT INTO memberships VALUES('studio','viewer','viewer'),('studio','owner','admin')");
+    const get = async (token: string) => (await (await app.request('/api/session', {headers:{Authorization:'Bearer '+token}})).json()).calendarWorkspaces;
+    const patch = (user: string, body: object) => call(user,'PATCH','/preferences', {accountId:user,...body}, 'studio');
+    expect(await get('viewer')).toEqual([]);
+    const writes = await Promise.all([patch('viewer',{connected:true}),patch('viewer',{visible:false})]);
+    expect(writes.map(r=>r.status)).toEqual([200,200]);
+    expect((await patch('viewer',{connected:true})).status).toBe(200);
+    expect(await get('viewer')).toEqual([{id:'studio',connected:true,visible:false}]);
+    expect(await get('owner')).toEqual([]);
+    expect((await patch('owner',{accountId:'viewer',visible:true})).status).toBe(403);
+    expect((await patch('outside',{connected:true})).status).toBe(403);
+    expect((await patch('expired',{connected:true})).status).toBe(401);
+    expect((await patch('viewer',{visible:'yes'})).status).toBe(400);
+    expect((await patch('viewer',{connected:false,visible:true})).status).toBe(200);
+    expect(await get('viewer')).toEqual([{id:'studio',connected:false,visible:true}]);
+    await db.query("DELETE FROM memberships WHERE workspace_id='studio' AND user_id='viewer'");
+    expect(await get('viewer')).toEqual([]);
+  });
+
   it('shares events, prevents lost updates and cross-workspace mutations, and respects floating-day boundaries', async () => {
     const e = make(), write = (event: typeof e) => call('member','PUT','/'+event.id,event);
     const created = await write(e);

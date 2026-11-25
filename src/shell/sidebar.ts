@@ -25,6 +25,7 @@ export interface ShellPage {
 export interface PageFrame {
   element: HTMLElement;
   canvas: HTMLElement;
+  headerActions: HTMLElement;
   setPages: (pages: ShellPage[], activeId: string) => void;
   setCalendarActive: (active: boolean) => void;
   toggleSidebar: () => void;
@@ -45,6 +46,7 @@ export interface PageFrameOptions {
   /** L'espace courant, rendu comme une ligne sous « Espaces » plutôt qu'un titre. */
   teamspace?: { name: string };
   pages: ShellPage[];
+  collapsedByDefault?: boolean;
   activeId: string;
   onOpen: (id: string) => void;
   onCreate: (parentId: string | null) => void;
@@ -56,6 +58,7 @@ export interface PageFrameOptions {
   onRecentsChange?: (ids: string[]) => void;
   onTeamspaces?: () => void;
   onCalendar?: () => void;
+  calendarHref?: string;
   onTeamspaceMenu?: (anchor: HTMLButtonElement) => void;
   pageUrl?: (id: string) => string;
   availableActions?: SidebarAction['type'][];
@@ -175,7 +178,19 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     activeId: options.activeId,
     query: '',
   };
-  const closed = new Set<string>();
+  // Store only explicit overrides, so pages arriving on a later refresh use the same default.
+  const expandedPages = new Map<string, boolean>();
+  function revealPath(): void {
+    if (!options.collapsedByDefault) return;
+    const byId = new Map(view.pages.map((page) => [page.id, page]));
+    let parent = byId.get(view.activeId)?.parentId;
+    const seen = new Set<string>();
+    while (parent && !seen.has(parent)) {
+      seen.add(parent);
+      expandedPages.set(parent, true);
+      parent = byId.get(parent)?.parentId;
+    }
+  }
   const offline = new Set<string>();
 
   const shell = document.createElement('div');
@@ -202,7 +217,10 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
   create.title = 'Nouvelle page';
   create.append(svg(ICONS.pencil));
   create.addEventListener('click', () => options.onCreate(null));
-  header.append(collapse, create);
+  const headerActions = document.createElement('div');
+  headerActions.setAttribute('data-blok-sidebar-header-actions', '');
+  headerActions.append(create);
+  header.append(collapse, headerActions);
 
   // Notion met « New page » sur une ligne de la barre, pas seulement derrière le
   // + de l'en-tête : c'est l'action la plus fréquente, elle mérite sa place.
@@ -218,13 +236,19 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
   newPage.addEventListener('click', () => options.onCreate(null));
   shortcuts.append(newPage);
 
-  const calendar = document.createElement('button');
+  const calendar = options.calendarHref ? document.createElement('a') : document.createElement('button');
   if (options.onCalendar) {
-    calendar.type = 'button';
+    if (calendar instanceof HTMLAnchorElement) calendar.href = options.calendarHref!;
+    else calendar.type = 'button';
     calendar.setAttribute('data-blok-sidebar-shortcut', '');
     calendar.setAttribute('data-blok-sidebar-calendar', '');
     calendar.append(svg(['M2.5 4h11v9.5h-11z', 'M5 2.5v3M11 2.5v3M2.5 7h11']), document.createTextNode('Calendrier'));
-    calendar.addEventListener('click', options.onCalendar);
+    calendar.addEventListener('click', event => {
+      if (calendar instanceof HTMLAnchorElement && event instanceof MouseEvent &&
+          (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
+      event.preventDefault();
+      options.onCalendar?.();
+    });
     shortcuts.append(calendar);
   }
 
@@ -256,7 +280,8 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     const label = document.createElement('span');
     label.textContent = 'Rechercher…';
     const shortcut = document.createElement('kbd');
-    shortcut.textContent = /Mac/i.test(navigator.platform) ? '⌘K' : 'Ctrl K';
+    shortcut.textContent = /Mac/i.test(navigator.platform) ? '⌘P' : 'Ctrl P';
+    searchLabel.setAttribute('aria-keyshortcuts', 'Meta+P Control+P Meta+K Control+K');
     searchLabel.append(label, shortcut);
     searchLabel.addEventListener('click', () => options.onSearch?.());
   } else searchLabel.append(searchInput);
@@ -360,7 +385,8 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     syncValue();
   });
   shell.addEventListener('keydown', (event) => {
-    if (options.onSearch && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'k') {
+    if (event.defaultPrevented) return;
+    if (options.onSearch && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && ['p', 'k'].includes(event.key.toLowerCase())) {
       event.preventDefault();
       options.onSearch();
       return;
@@ -574,7 +600,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     const visibleChildren = shortcut ? [] : view.query === ''
       ? childrenOf(view.pages, page.id)
       : childrenOf(view.pages, page.id).filter((child) => matches(view.pages, child, view.query));
-    const expanded = visibleChildren.length > 0 && (forceOpen || !closed.has(page.id));
+    const expanded = visibleChildren.length > 0 && (forceOpen || (expandedPages.get(page.id) ?? !options.collapsedByDefault));
     const row = document.createElement('div');
     row.setAttribute('data-blok-sidebar-row', '');
     if (page.id === view.activeId && !calendar.hasAttribute('aria-current')) row.setAttribute('data-active', '');
@@ -605,8 +631,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
       mark.append(chevron());
       leading.append(mark);
       leading.addEventListener('click', () => {
-        if (closed.has(page.id)) closed.delete(page.id);
-        else closed.add(page.id);
+        expandedPages.set(page.id, !expanded);
         paint();
       });
     }
@@ -630,7 +655,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     add.append(plus());
     onHover(add, ADD_HINT);
     add.addEventListener('click', () => {
-      closed.delete(page.id);
+      expandedPages.set(page.id, true);
       options.onCreate(page.id);
     });
 
@@ -810,12 +835,14 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     input.addEventListener('blur', () => commit(true));
   }
 
+  revealPath();
   remember(options.activeId);
   paint();
 
   return {
     element: shell,
     canvas,
+    headerActions,
     toggleSidebar: () => setCollapsed(!sidebar.hasAttribute('data-collapsed')),
     setCalendarActive(active) {
       if (calendar.hasAttribute('aria-current') === active) return;
@@ -824,8 +851,10 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
       paint();
     },
     setPages(next, nextActive) {
+      const reveal = view.activeId !== nextActive || !view.pages.some((p) => p.id === nextActive);
       view.pages = next;
       view.activeId = nextActive;
+      if (reveal) revealPath();
       const allowed = new Set(next.map((page) => page.id));
       for (let i = recents.length - 1; i >= 0; i--) if (!allowed.has(recents[i])) recents.splice(i, 1);
       if (!calendar.hasAttribute('aria-current')) remember(nextActive);

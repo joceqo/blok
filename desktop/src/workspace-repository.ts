@@ -1,7 +1,7 @@
 import { pageAccess } from './page-access';
 import { moveDestinations, PageMoveConflict } from './page-move';
 import { mergeWorkspaceIndex } from './workspace-merge';
-import { loadIndex, readFile, writeFile, type WorkspaceIndex } from './storage';
+import { loadIndex, peekFile, readFile, writeFile, type WorkspaceIndex } from './storage';
 import { nativeSessionAdapter } from './native-session';
 import type { WorkspaceRef } from './workspace-registry';
 export class RepositoryHttpError extends Error { constructor(public status: number) { super(`Serveur indisponible (${status})`); } }
@@ -20,12 +20,54 @@ export function workspaceRepository(workspace: WorkspaceRef) {
     if (!response.ok) throw new RepositoryHttpError(response.status);
     return await response.json() as T;
   }
+  async function searchSources(query: string, signal: AbortSignal, palette = false) {
+    return (await request<{sources: {id: string; title: string; excerpt: string}[]}>(`${base}/search`, {
+      method: 'POST', body: JSON.stringify(palette ? {query, mode:'palette'} : {query}), signal,
+    })).sources;
+  }
   return {
     ref,
-    async searchSources(query: string, signal: AbortSignal) {
-      return (await request<{ sources: {id: string; title: string; excerpt: string}[] }>(`${base}/search`, {
-        method: 'POST', body: JSON.stringify({query}), signal,
-      })).sources;
+    searchSources,
+    // One cache per open palette, scoped to this local workspace. A new search
+    // session sees subsequent disk edits. Remote previews always require a fresh ACL check.
+    pageSearch(pages: () => WorkspaceIndex['pages']) {
+      const texts = new Map<string, string>();
+      async function diskText(id: string, signal: AbortSignal): Promise<string> {
+        signal.throwIfAborted();
+        const cached = texts.get(id);
+        if (cached !== undefined) return cached;
+        const [raw, {blocksToPlainText}] = await Promise.all([peekFile(id, ref), import('@bloklabs/core/view')]);
+        signal.throwIfAborted();
+        const text = raw ? blocksToPlainText(JSON.parse(raw)) : '';
+        texts.set(id, text);
+        return text;
+      }
+      return {
+        async preview(id: string, signal: AbortSignal): Promise<string> {
+          if (!pages().some(page => page.id === id)) return '';
+          if (ref.kind === 'local') return (await diskText(id, signal)).slice(0,1600);
+          // Older remote servers return the authorized document for this same URL.
+          type Document = NonNullable<Parameters<typeof import('@bloklabs/core/view').blocksToPlainText>[0]>;
+          const result = await request<{excerpt: string} | Document | null>(`${base}/pages/${encodeURIComponent(id)}?preview=1`, {signal});
+          if (!result) return '';
+          if ('excerpt' in result && typeof result.excerpt === 'string') return result.excerpt;
+          const {blocksToPlainText} = await import('@bloklabs/core/view');
+          return 'blocks' in result ? blocksToPlainText(result).slice(0,1600) : '';
+        },
+        async searchContent(query: string, signal: AbortSignal) {
+          if (ref.kind === 'remote') return searchSources(query, signal, true);
+          const needle = query.trim().toLocaleLowerCase();
+          const matches: {id:string; excerpt:string}[] = [];
+          if (!needle) return matches;
+          for (const {id} of pages()) {
+            const text = await diskText(id, signal);
+            const hit = text.toLocaleLowerCase().indexOf(needle);
+            if (hit >= 0) matches.push({id, excerpt:text.slice(Math.max(0,hit-75),hit+needle.length+175)});
+            if (matches.length === 40) break;
+          }
+          return matches;
+        },
+      };
     },
     async loadIndex(): Promise<WorkspaceIndex> {
       if (ref.kind === 'local') return loadIndex(ref);

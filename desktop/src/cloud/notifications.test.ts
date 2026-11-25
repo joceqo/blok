@@ -36,7 +36,7 @@ it('loads unread activity, marks only the selected notification and updates the 
     expect(request.mock.calls.filter(([,init]) => init?.method === 'POST')).toHaveLength(1);
     must([...list.querySelectorAll('button')].find(b => b.textContent === 'Voir les demandes')).click();
     expect(manage).toHaveBeenCalledOnce();
-    expect(document.querySelector('[data-inbox-dialog]')).toBeNull();
+    expect(document.querySelector('[data-inbox-pane]')).toBeNull();
   } finally { trigger.destroy(); }
 });
 
@@ -65,4 +65,38 @@ it('keeps reading available after a failed update and never offers administratio
   expect(control.disabled).toBe(false);
   expect(document.body.textContent).not.toContain('Voir les demandes');
   view.destroy();
+});
+
+it('opens a nonmodal sidebar pane, keeps the editor usable when pinned and returns focus on Escape', () => {
+  const api = client();
+  vi.spyOn(api, 'request').mockResolvedValue({notifications:[], unreadCount:0});
+  const shell = document.createElement('div');
+  const sidebar = document.createElement('aside');
+  sidebar.setAttribute('data-blok-sidebar', '');
+  const editor = document.createElement('textarea');
+  const inbox = createNotificationTrigger({client:api, slug:'atelier'});
+  sidebar.append(inbox.element);
+  shell.append(sidebar, editor);
+  document.body.append(shell);
+  try {
+    inbox.element.click();
+    const surface = must(shell.querySelector<HTMLElement>('[data-inbox-pane]'));
+    expect(sidebar.nextElementSibling).toBe(surface);
+    expect(inbox.element.getAttribute('aria-controls')).toBe(surface.id);
+    expect(document.querySelector('dialog, [aria-modal="true"]')).toBeNull();
+    const pin = must(surface.querySelector<HTMLButtonElement>('[data-inbox-pin]'));
+    pin.click();
+    expect(pin.getAttribute('aria-pressed')).toBe('true');
+    editor.dispatchEvent(new Event('pointerdown', {bubbles:true}));
+    editor.focus();
+    expect(document.activeElement).toBe(editor);
+    expect(surface.isConnected).toBe(true);
+    pin.focus();
+    pin.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+    expect(surface.isConnected).toBe(false);
+    expect(document.activeElement).toBe(inbox.element);
+    inbox.element.click();
+    editor.dispatchEvent(new Event('pointerdown', {bubbles:true}));
+    expect(inbox.element.getAttribute('aria-expanded')).toBe('false');
+  } finally { inbox.destroy(); }
 });
