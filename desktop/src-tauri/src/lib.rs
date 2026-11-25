@@ -331,6 +331,7 @@ fn close_editor_window(window: tauri::WebviewWindow) {
 fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
     let reload = MenuItem::with_id(app, "reload-tab", "Reload Tab", true, Some("CmdOrCtrl+R"))?;
     let search = MenuItem::with_id(app, "workspace-search", "Search Workspace", true, Some("CmdOrCtrl+P"))?;
+    let calendar = MenuItem::with_id(app, "open-calendar", "Calendar", true, None::<&str>)?;
     let new_tab = MenuItem::with_id(app, "new-tab", "New Tab", true, Some("CmdOrCtrl+T"))?;
     let close_tab = MenuItem::with_id(app, "close-tab", "Close Tab", true, Some("CmdOrCtrl+W"))?;
     let file = Submenu::with_items(app, "File", true, &[&new_tab, &close_tab])?;
@@ -396,14 +397,14 @@ fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> 
             app,
             "View",
             true,
-            &[&search, &reload, &inspector, &PredefinedMenuItem::fullscreen(app, None)?],
+            &[&calendar, &search, &reload, &inspector, &PredefinedMenuItem::fullscreen(app, None)?],
         )?;
         return Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window_menu, &help]);
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-        let view = Submenu::with_items(app, "View", true, &[&search, &reload])?;
+        let view = Submenu::with_items(app, "View", true, &[&calendar, &search, &reload])?;
         Menu::with_items(app, &[&file, &edit, &view, &window_menu, &help])
     }
 }
@@ -441,6 +442,7 @@ pub fn run() {
             let script = match event.id().as_ref() {
                 "reload-tab" => "if (window.dispatchEvent(new Event('blok:desktop-reload', {cancelable:true}))) location.reload()",
                 "new-tab" => "window.dispatchEvent(new Event('blok:desktop-new-tab'))",
+                "open-calendar" => "window.dispatchEvent(new Event('blok:open-calendar', {cancelable:true}))",
                 "workspace-search" => "window.dispatchEvent(new Event('blok:desktop-search'))",
                 "close-tab" => "window.dispatchEvent(new Event('blok:desktop-close-tab'))",
                 _ => return,

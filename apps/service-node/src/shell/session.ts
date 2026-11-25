@@ -14,13 +14,15 @@ export function sessionDigest(context: Context): string | undefined {
 
 // Read all session fields from one PostgreSQL snapshot, including role changes.
 export async function loadSession(pool: Pick<PgPool, 'query'>, digest: string) {
-  const session = (await pool.query<{ user: User; workspaces: WorkspaceMembership[]; supportEmail: string; deviceWorkspaceId?: string; deviceActivePageId?: string; deviceImportedWorkspaceId?: string }>(
+  const session = (await pool.query<{ user: User; workspaces: WorkspaceMembership[]; calendarWorkspaces: {id: string; connected: boolean; visible: boolean}[]; supportEmail: string; deviceWorkspaceId?: string; deviceActivePageId?: string; deviceImportedWorkspaceId?: string }>(
     `SELECT jsonb_build_object('id',u.id,'email',u.email,'name',u.name,
                                'instanceAdmin',ia.user_id IS NOT NULL) AS "user",
             coalesce((SELECT jsonb_agg(jsonb_build_object('id',w.id,'slug',w.slug,'name',w.name,
                                                           'role',m.role) ORDER BY w.name,w.id)
                       FROM memberships m JOIN workspaces w ON w.id=m.workspace_id
                       WHERE m.user_id=u.id),'[]') AS workspaces,
+            coalesce((SELECT jsonb_agg(jsonb_build_object('id',p.workspace_id,'connected',p.connected,'visible',p.visible))
+                      FROM calendar_workspace_preferences p WHERE p.user_id=u.id),'[]') AS "calendarWorkspaces",
             device.workspace_id AS "deviceWorkspaceId",
             imported.active_page_id AS "deviceActivePageId", imported.workspace_id AS "deviceImportedWorkspaceId",
             coalesce((SELECT a.email FROM instance_admins i JOIN users a ON a.id=i.user_id

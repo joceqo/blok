@@ -58,6 +58,7 @@ export interface PageFrameOptions {
   onRecentsChange?: (ids: string[]) => void;
   onTeamspaces?: () => void;
   onCalendar?: () => void;
+  calendarHref?: string;
   onTeamspaceMenu?: (anchor: HTMLButtonElement) => void;
   pageUrl?: (id: string) => string;
   availableActions?: SidebarAction['type'][];
@@ -235,13 +236,19 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
   newPage.addEventListener('click', () => options.onCreate(null));
   shortcuts.append(newPage);
 
-  const calendar = document.createElement('button');
+  const calendar = options.calendarHref ? document.createElement('a') : document.createElement('button');
   if (options.onCalendar) {
-    calendar.type = 'button';
+    if (calendar instanceof HTMLAnchorElement) calendar.href = options.calendarHref!;
+    else calendar.type = 'button';
     calendar.setAttribute('data-blok-sidebar-shortcut', '');
     calendar.setAttribute('data-blok-sidebar-calendar', '');
     calendar.append(svg(['M2.5 4h11v9.5h-11z', 'M5 2.5v3M11 2.5v3M2.5 7h11']), document.createTextNode('Calendrier'));
-    calendar.addEventListener('click', options.onCalendar);
+    calendar.addEventListener('click', event => {
+      if (calendar instanceof HTMLAnchorElement && event instanceof MouseEvent &&
+          (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
+      event.preventDefault();
+      options.onCalendar?.();
+    });
     shortcuts.append(calendar);
   }
 

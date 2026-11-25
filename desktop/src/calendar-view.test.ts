@@ -124,3 +124,59 @@ it('reloads the stored event and reports a conflicting drop', async () => {
   expect(store.save).toHaveBeenCalledWith(expect.objectContaining({revision:e.revision,start:new Date(2026,10,24,10,30).toISOString()}));
   expect(get('.cal-event').closest('.cal-column')?.getAttribute('data-date')).toBe('2026-11-23');
 });
+
+it('overlays two spaces with the same event id and saves edits and linked pages in the chosen space', async () => {
+  vi.setSystemTime(new Date(2026,10,25,13));
+  const event = fixture('2026-11-25','2026-11-26',{allDay:true,id:'overlap',pageId:'brief'});
+  function workspace(id:string, connected:boolean) {
+    const ref = {kind:'local' as const,id,name:id};
+    const store = {list:vi.fn(async()=>[{...event,title:id}]),save:vi.fn(async()=>{}),remove:vi.fn(async()=>{})};
+    return {id,ref,name:id,store,connected,visible:connected,canEdit:true,color:'#54836b'};
+  }
+  const a = workspace('A',true), b = workspace('B',false);
+  const spaces = {
+    activeId:a.id, entries:()=>[a,b], refresh:async()=>{},
+    connect:async()=>{b.connected=b.visible=true;}, disconnect:async()=>{b.connected=b.visible=false;},
+    setVisible:async(id:string,v:boolean)=>{(id===b.id?b:a).visible=v;},
+    pages:vi.fn(async()=>[{id:'brief',title:'Page B'}]),
+  };
+  const openWorkspacePage = vi.fn();
+  lifetimes.push(mountCalendar(document.body,{store:a.store,canEdit:true,pages:[{id:'brief',title:'Page A'}],
+    workspaces:spaces,openPage:vi.fn(),openWorkspacePage,onClose:vi.fn()}));
+  await vi.waitFor(()=>expect(document.querySelectorAll('.cal-event')).toHaveLength(1));
+  const addSpace = get<HTMLSelectElement>('select[aria-label="Ajouter un espace"]');
+  addSpace.value='B'; addSpace.dispatchEvent(new Event('change'));
+  await vi.waitFor(()=>expect(document.querySelectorAll('.cal-event')).toHaveLength(2));
+  get('.cal-event[data-workspace-id="B"]').click();
+  await vi.waitFor(()=>expect(get('[name=pageId]').textContent).toContain('Page B'));
+  expect(get('[name=pageId]').textContent).not.toContain('Page A');
+  get<HTMLButtonElement>('.cal-fields button').click();
+  expect(openWorkspacePage).toHaveBeenCalledWith(b.ref,'brief');
+  click('Nouvel événement');
+  const target = get<HTMLSelectElement>('[name=workspaceId]');
+  target.value='B';target.dispatchEvent(new Event('change'));
+  await vi.waitFor(()=>expect(get('[name=pageId]').textContent).toContain('Page B'));
+  get<HTMLInputElement>('[name=title]').value='Plénière';
+  get<HTMLSelectElement>('[name=pageId]').value='brief';
+  get<HTMLFormElement>('.cal-editor').requestSubmit();
+  await vi.waitFor(()=>expect(b.store.save).toHaveBeenCalledWith(expect.objectContaining({title:'Plénière',pageId:'brief'})));
+  expect(a.store.save).not.toHaveBeenCalled();
+  get<HTMLInputElement>('.cal-space-group[data-workspace-id="B"] input').click();
+  await vi.waitFor(()=>expect(document.querySelector('.cal-event[data-workspace-id="B"]')).toBeNull());
+});
+
+it('opens a draft for the selected time range when dragging upwards through an empty day', async () => {
+  setup(async()=>[]);
+  await vi.waitFor(()=>expect(get('.cal-notice').textContent).toBe(''));
+  const column=get('.cal-column');
+  column.getBoundingClientRect=()=>new DOMRect(0,0,100,1440);
+  const pointer=(node:EventTarget,type:string,y:number)=>node.dispatchEvent(new PointerEvent(type,{
+    bubbles:true,isPrimary:true,pointerType:'mouse',pointerId:1,button:0,clientX:20,clientY:y,
+  }));
+  pointer(column,'pointerdown',690);
+  pointer(document,'pointermove',570);
+  expect(document.querySelector('.cal-drag-preview')).toBeTruthy();
+  pointer(document,'pointerup',570);
+  expect(get<HTMLInputElement>('[name=start]').value).toBe('2026-11-23T09:30');
+  expect(get<HTMLInputElement>('[name=end]').value).toBe('2026-11-23T11:30');
+});

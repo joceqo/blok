@@ -583,6 +583,22 @@ describe('explicit page links at startup',()=>{
     expect(selected(root).textContent).toContain('Calendrier');
     expect(readSession().tabs).toHaveLength(2);
   });
+  it('reuses the calendar tab and returns to the page that opened it', () => {
+    history.replaceState(null, '', '/?page=original');
+    const root = mount();
+    const original = readSession().activeId;
+    window.dispatchEvent(new Event('blok:open-calendar', {cancelable:true}));
+    expect(location.pathname).toBe('/calendar');
+    expect(location.search).toBe('');
+    expect(tabLabels(root)).toHaveLength(2);
+    window.dispatchEvent(new Event('blok:return-from-calendar', {cancelable:true}));
+    expect(readSession().activeId).toBe(original);
+    expect(location.href).toBe(location.origin + '/?page=original');
+    window.dispatchEvent(new Event('blok:open-calendar', {cancelable:true}));
+    expect(tabLabels(root)).toHaveLength(2);
+    window.dispatchEvent(new Event('blok:desktop-new-tab'));
+    expect(location.pathname).toBe('/');
+  });
   it('opens a new explicit page while retaining the other saved tabs',()=>{
     history.replaceState(null,'','/?page=requested');
     sessionStorage.setItem(KEY,JSON.stringify({tabs:[savedTab('first')],activeId:'first'}));

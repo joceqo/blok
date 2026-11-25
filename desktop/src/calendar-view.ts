@@ -3,14 +3,18 @@ import { IconChevronLeft, IconChevronRight, IconCross, IconPlus } from '../../sr
 import { button, el } from './ui/dom';
 import type { CalendarEvent, CalendarStore } from './calendar-store';
 import { exportCalendarEvent, importCalendarFile } from './calendar-ical';
-import { bindCalendarGestures } from './calendar-gestures';
-import { mountCalendarSources } from './calendar-sources';
+import { bindCalendarGestures, rangeDraft } from './calendar-gestures';
+import { mountWorkspaceRail } from './calendar-workspace-rail';
+import type { CalendarWorkspaceEntry, CalendarWorkspaces } from './calendar-workspaces';
+import type { WorkspaceRef } from './workspace-registry';
 import './calendar.css';
 
 export interface CalendarOptions {
   store: CalendarStore;
   pages: Array<{ id: string; title: string }>;
   openPage(id: string): void;
+  workspaces?: CalendarWorkspaces;
+  openWorkspacePage?(ref: WorkspaceRef, id: string): void;
   canEdit: boolean;
   onClose(): void;
 }
@@ -74,7 +78,7 @@ function field(label: string, control: HTMLElement) {
   return el('label', { className: 'cal-field', children: [el('span', { text: label }), control] });
 }
 
-function editEvent(root: HTMLElement, options: CalendarOptions, event: CalendarEvent, existing: boolean, changed: () => void, sidebar?: HTMLElement) {
+function editEvent(root: HTMLElement, options: CalendarOptions, event: CalendarEvent, existing: boolean, changed: () => void, sidebar?: HTMLElement, owner?: CalendarWorkspaceEntry) {
   const titleText = existing ? 'Événement' : 'Nouvel événement';
   const form = el('form', { className: 'cal-editor' });
   const overlay = el('div', { className: 'cal-overlay', children: [form] });
@@ -97,25 +101,59 @@ function editEvent(root: HTMLElement, options: CalendarOptions, event: CalendarE
     end.value = allDay.checked || !b ? b : b + 'T10:00';
   };
   const page = el('select', { attrs: { name: 'pageId' } });
-  page.append(new Option('Aucune page', ''));
-  for (const p of options.pages) page.append(new Option(p.title || 'Sans titre', p.id));
-  page.value = event.pageId ?? '';
-  const open = button({ label: 'Ouvrir la page', onClick: () => { modal.close(); options.openPage(page.value); } });
-  open.hidden = !page.value;
-  page.onchange = () => { open.hidden = !page.value; };
+  const open = button({ label: 'Ouvrir la page', onClick: () => {
+    if (!page.value) return;
+    modal.close();
+    if (destination && options.openWorkspacePage) options.openWorkspacePage(destination.ref, page.value);
+    else options.openPage(page.value);
+  } });
+  const workspaces = options.workspaces;
+  const choices = workspaces?.entries().filter(entry => entry.connected && (existing ? entry.id === owner?.id : entry.canEdit)) ?? [];
+  let destination: CalendarWorkspaceEntry | undefined = owner ?? choices.find(entry => entry.visible && entry.id === workspaces?.activeId) ?? choices.find(entry => entry.visible) ?? choices[0];
+  const target = el('select', {attrs:{name:'workspaceId'}});
+  for (const entry of choices) target.append(new Option(entry.name, entry.id));
+  if (destination) target.value = destination.id;
+  target.disabled = existing || choices.length <= 1;
   const body = el('div', { className: 'cal-fields', children: [
-    field('Titre', title), el('label', { className: 'cal-check', children: [allDay, 'Toute la journée'] }),
+    field('Titre', title), ...(workspaces ? [field('Agenda',target)] : []),
+    el('label', { className: 'cal-check', children: [allDay, 'Toute la journée'] }),
     field('Début', start), field('Fin', end), field('Page Blok associée', page), open,
   ] });
   const footer = el('footer'), error = el('p', { className: 'cal-error', attrs: { role: 'alert' } });
   let busy = false;
   let alive = true;
+  let pageRequest = 0, linkedPage = event.pageId;
+  const canEdit = (destination?.canEdit ?? options.canEdit) && !event.source;
+  function populate(pages: CalendarOptions['pages']) {
+    page.replaceChildren(new Option('Aucune page',''), ...pages.map(p => new Option(p.title || 'Sans titre',p.id)));
+    if (linkedPage && !pages.some(p => p.id === linkedPage)) page.append(new Option('Page liée',linkedPage));
+    page.value = linkedPage ?? '';
+    open.hidden = !linkedPage || !pages.some(p => p.id === linkedPage);
+    page.disabled = !canEdit;
+  }
+  async function loadPages() {
+    const stamp = ++pageRequest;
+    if (!destination || destination.id === workspaces?.activeId) { populate(options.pages); return; }
+    populate([]); page.disabled = true;
+    try {
+      const pages = await workspaces!.pages(destination.id);
+      if (alive && stamp === pageRequest) populate(pages);
+    } catch {
+      if (alive && stamp === pageRequest) error.textContent = 'Impossible de charger les pages de cet espace.';
+    }
+  }
+  page.onchange = () => { linkedPage = page.value || null; open.hidden = !linkedPage; };
+  target.onchange = () => {
+    destination = choices.find(entry => entry.id === target.value);
+    linkedPage = null; error.textContent = ''; void loadPages();
+  };
+  void loadPages();
   let confirming = false;
-  const canEdit = options.canEdit && !event.source;
+
   if (!canEdit) for (const control of [title, allDay, start, end, page]) control.disabled = true;
   const save = el('button', { text: 'Enregistrer', className: 'cal-primary', attrs: { type: 'submit' } });
   const remove = button({ label: 'Supprimer', className: 'cal-delete', onClick: () => {
-    if (confirming) { void mutate(() => options.store.remove(event)); return; }
+    if (confirming) { void mutate(() => (destination?.store ?? options.store).remove(event)); return; }
     confirming = true;
     remove.textContent = 'Confirmer la suppression';
     remove.focus();
@@ -146,9 +184,9 @@ function editEvent(root: HTMLElement, options: CalendarOptions, event: CalendarE
     const from = instant(start.value, event.start), to = instant(end.value, event.end);
     if (allDay.checked) to.setDate(to.getDate() + 1);
     if (!(to > from)) { error.textContent = 'La fin doit être après le début.'; end.focus(); return; }
-    void mutate(() => options.store.save({ ...event, title: name, allDay: allDay.checked,
+    void mutate(() => (destination?.store ?? options.store).save({ ...event, title: name, allDay: allDay.checked,
       start: allDay.checked ? dateKey(from) : from.toISOString(),
-      end: allDay.checked ? dateKey(to) : to.toISOString(), pageId: page.value || null }));
+      end: allDay.checked ? dateKey(to) : to.toISOString(), pageId: page.value || linkedPage }));
   };
   if (existing) body.append(button({ label: 'Exporter en .ics', className: 'cal-export', onClick: () => exportCalendarEvent(event) }));
   if (canEdit && existing) footer.append(remove);
@@ -165,21 +203,36 @@ function editEvent(root: HTMLElement, options: CalendarOptions, event: CalendarE
 export function mountCalendar(host: HTMLElement, options: CalendarOptions): { destroy(): void } {
   let selected = midnight(new Date());
   let length = window.matchMedia?.('(max-width: 650px)').matches ? 1 : 7;
+  const owners = new WeakMap<CalendarEvent, CalendarWorkspaceEntry>();
+  const eventKey = (e: CalendarEvent) => owners.has(e) ? JSON.stringify([owners.get(e)!.id, e.id]) : e.id;
   let events: CalendarEvent[] = [], version = 0, modal: { close(): void } | undefined;
-  let destroyed = false;
+  let destroyed = false, visibleRange = '';
   const root = el('section', { className: 'blok-calendar', attrs: { 'aria-label': 'Calendrier' } });
   const rail = el('aside', { className: 'cal-rail', attrs: { 'aria-label': 'Calendriers' } });
-  const railToggle = button({ label: 'Agendas', className: 'cal-rail-toggle', onClick: () => {
-    const visible = rail.classList.toggle('cal-open');
-    railToggle.setAttribute('aria-expanded', String(visible));
-  } });
+  function toggleRail(open: boolean) {
+    rail.classList.toggle('cal-open', open); railToggle.setAttribute('aria-expanded',String(open));
+  }
+  const railToggle = button({ label: 'Agendas', className:'cal-rail-toggle', onClick:() => toggleRail(!rail.classList.contains('cal-open')) });
+  const closeRail = iconAction('Fermer les agendas',IconCross,() => { toggleRail(false); railToggle.focus(); });
+  closeRail.classList.add('cal-rail-close');
+  root.addEventListener('keydown',e => {
+    if (e.key === 'Escape' && rail.classList.contains('cal-open') && !modal) {
+      toggleRail(false); railToggle.focus();
+    }
+  });
+  root.addEventListener('pointerdown',e => {
+    if (rail.classList.contains('cal-open') && !e.composedPath().includes(rail) && !e.composedPath().includes(railToggle)) toggleRail(false);
+  });
   railToggle.setAttribute('aria-expanded', 'false');
   const mini = el('div', { className: 'cal-mini' });
   const sourceHost = el('div', { className: 'cal-sources' });
   const details = el('aside', { className: 'cal-details', attrs: { 'aria-label': 'Détails du calendrier' } });
   const agenda = el('div', { className: 'cal-agenda' });
   details.append(agenda);
-  rail.append(el('h2', { text: 'Calendrier', className: 'cal-rail-title' }), mini, sourceHost);
+  const returnToBlok = button({label:'Blok', className:'cal-return', onClick:options.onClose});
+  returnToBlok.setAttribute('aria-label','Retour à Blok'); returnToBlok.title = 'Retour à Blok';
+  const back = el('span',{attrs:{'aria-hidden':'true'}}); back.innerHTML = IconChevronLeft; returnToBlok.prepend(back);
+  rail.append(el('header', {className:'cal-brand', children:[el('h2',{text:'Calendrier',className:'cal-rail-title'}),returnToBlok,closeRail]}), mini, sourceHost);
   const heading = el('h1');
   let miniMonth = new Date(selected.getFullYear(), selected.getMonth(), 1);
   let miniFocus = dateKey(selected);
@@ -187,8 +240,7 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
     selected = midnight(day);
     miniMonth = new Date(day.getFullYear(), day.getMonth(), 1);
     miniFocus = dateKey(day);
-    rail.classList.remove('cal-open');
-    railToggle.setAttribute('aria-expanded', 'false');
+    toggleRail(false);
     void load();
   }
   function drawMini() {
@@ -243,17 +295,37 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
     iconAction('Période suivante', IconChevronRight, () => move(1)), view] });
   const headingRow = el('header', { className: 'cal-heading',
     children: [el('div', { className: 'cal-title', children: [heading, period] }), actions] });
+  const destinations = () => options.workspaces?.entries().filter(entry => entry.connected && entry.canEdit);
+  const canCreate = () => options.workspaces ? destinations()!.length > 0 : options.canEdit;
+  const editable = (event: CalendarEvent) => !event.source && (owners.get(event)?.canEdit ?? options.canEdit);
   function openEvent(event: CalendarEvent, existing = true) {
     modal?.close();
-    modal = editEvent(root, options, event, existing, () => { void load(); }, root.clientWidth >= 1000 ? details : undefined);
+    modal = editEvent(root, options, event, existing, () => { void load(); }, root.clientWidth >= 1000 ? details : undefined, owners.get(event));
   }
-  if (options.canEdit) {
-    actions.append(button({ label: 'Importer .ics', className: 'cal-import', onClick: () => importCalendarFile(root, options.store, load) }));
-    const add = button({ label: 'Événement', className: 'cal-primary', onClick: () => openEvent(draft(selected, 9 * 60), false) });
-    const glyph = el('span', { attrs: { 'aria-hidden': 'true' } }); glyph.innerHTML = IconPlus; add.prepend(glyph);
-    add.setAttribute('aria-label', 'Nouvel événement'); actions.append(add);
+  function drawCreateActions() {
+    const current = actions.querySelector('.cal-create-actions');
+    if (!canCreate()) { current?.remove(); return; }
+    if (current) return;
+    const importButton = button({ label: 'Importer .ics', className:'cal-import', onClick:() => {
+      const writable = destinations() ?? [];
+      if (writable.length < 2) { void importCalendarFile(root, writable[0]?.store ?? options.store, load); return; }
+      const menu = el('div',{className:'cal-editor'});
+      const select = el('select',{attrs:{name:'workspaceId'}});
+      writable.forEach(entry => select.append(new Option(entry.name,entry.id)));
+      const next = button({label:'Choisir le fichier',className:'cal-primary',onClick:() => {
+        const selected = writable.find(entry => entry.id === select.value);
+        if (selected) { dialog.close(); void importCalendarFile(root,selected.store,load); }
+      }});
+      menu.append(el('header',{children:[el('h2',{text:'Importer un calendrier'})]}),el('div',{className:'cal-fields',children:[field('Agenda',select)]}),el('footer',{children:[button({label:'Annuler',onClick:()=>dialog.close()}),next]}));
+      const dialog = openModalDialog({label:'Importer un calendrier',content:el('div',{className:'cal-overlay',children:[menu]}),surface:menu,container:root,initialFocus:()=>select,onDismiss:()=>dialog.close()});
+      modal?.close(); modal=dialog;
+    } });
+    const add = button({label:'Événement',className:'cal-primary',onClick:()=>openEvent(draft(selected,9*60),false)});
+    const glyph = el('span',{attrs:{'aria-hidden':'true'}}); glyph.innerHTML=IconPlus; add.prepend(glyph);
+    add.setAttribute('aria-label','Nouvel événement');
+    actions.append(el('div',{className:'cal-create-actions',children:[importButton,add]}));
   }
-  actions.append(iconAction('Fermer le calendrier', IconCross, options.onClose));
+  drawCreateActions();
   const notice = el('div', { className: 'cal-notice', attrs: { role: 'status', 'aria-live': 'polite' } });
   const scroll = el('div', { className: 'cal-scroll' });
   const board = el('div', { className: 'cal-board' });
@@ -261,16 +333,33 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
   const main = el('section', { className: 'cal-main', children: [headingRow, notice, scroll] });
   root.append(rail, main, details);
   host.append(root);
-  const sources = mountCalendarSources(sourceHost, options.store, () => { void load(); });
-  const stopGestures = bindCalendarGestures(board, id => events.find(e => !e.source && e.id === id), async event => {
-    if (!options.canEdit || destroyed) return;
-    try { await options.store.save(event); await load(); }
+  const sources = mountWorkspaceRail(sourceHost, options.store, options.workspaces, () => { drawCreateActions(); void load(); });
+  function shortcut(event: KeyboardEvent) {
+    if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    const target = event.target;
+    if (!(target instanceof HTMLElement) || (target !== document.body && !root.contains(target)) ||
+        target.closest('input, select, textarea, [contenteditable=true], button, [role=dialog]') || root.querySelector('.cal-editor')) return;
+    switch (event.key.toLowerCase()) {
+      case 'n': if (!canCreate()) return; openEvent(draft(selected,9*60),false); break;
+      case 't': selectDay(new Date()); break;
+      case 'j': move(-1); break;
+      case 'k': move(1); break;
+      default: return;
+    }
+    event.preventDefault();
+  }
+  document.addEventListener('keydown', shortcut);
+  const stopGestures = bindCalendarGestures(board, id => events.find(e => editable(e) && eventKey(e) === id), async (event, original) => {
+    if (!editable(original) || destroyed) return;
+    try { await (owners.get(original)?.store ?? options.store).save(event); await load(); }
     catch (error) {
       if (destroyed) return;
       await load();
       if (!destroyed) notice.textContent = errorMessage(error);
     }
-  });
+  }, (from, to, allDay) => {
+    if (canCreate()) openEvent({...rangeDraft(from,to,allDay),id:crypto.randomUUID(),title:''},false);
+  }, canCreate);
   function drawAgenda() {
     const now = new Date(), key = dateKey(now);
     const startOf = (e: CalendarEvent) => e.allDay ? new Date(e.start + 'T00:00') : new Date(e.start);
@@ -283,16 +372,18 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
     for (const e of items) {
       const item = button({ label: '', className: 'cal-agenda-entry', onClick: () => openEvent(e) });
       const date = startOf(e), label = dateKey(date) === key ? 'Aujourd’hui' : weekRange.format(date);
-      item.style.setProperty('--event-color', e.source?.color ?? '#54836b');
+      item.style.setProperty('--event-color', e.source?.color ?? owners.get(e)?.color ?? '#54836b');
       item.append(el('small', { text: label + ' · ' + (e.allDay ? 'Journée' : hour.format(date)) }), el('strong', { text: e.title }));
       agenda.append(item);
     }
   }
   function eventButton(e: CalendarEvent, lastSegment: boolean) {
     const item = button({ label: e.title, className: 'cal-event', onClick: () => openEvent(e) });
-    item.dataset.eventId = e.id;
+    item.dataset.eventId = eventKey(e);
+    const owner = owners.get(e);
+    if (owner) { item.dataset.workspaceId = owner.id; item.style.setProperty('--event-color',owner.color); }
     item.title = e.title;
-    if (options.canEdit && !e.source) {
+    if (editable(e)) {
       item.dataset.editableEvent = '';
       if (lastSegment) item.append(el('span', { className: 'cal-resize', attrs: { 'aria-hidden': 'true', title: 'Ajuster la fin' } }));
     }
@@ -328,7 +419,7 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
       dayLabels.append(label);
       const lane = el('div', { className: 'cal-all-cell', attrs: { 'data-date': key } });
       const column = el('div', { className: 'cal-column', attrs: { 'data-date': key } });
-      if (options.canEdit) {
+      if (canCreate()) {
         const pick = (e: MouseEvent) => {
           if ((e.target as HTMLElement).closest('button')) return;
           const bounds = column.getBoundingClientRect();
@@ -365,14 +456,27 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
     const last = midnight(start, length - 1);
     heading.textContent = monthTitle.format(selected);
     period.textContent = length === 1 ? fullDate.format(start) : weekRange.formatRange(start, last);
-    events = []; drawMini(); draw(start); drawAgenda();
-    notice.textContent = 'Chargement…';
+    const range = dateKey(start) + '/' + length;
+    if (range !== visibleRange) {
+      visibleRange = range; events = []; drawMini(); draw(start); drawAgenda();
+      notice.textContent = 'Chargement…';
+    } else {
+      if (options.workspaces) {
+        const allowed = new Set(options.workspaces.entries().filter(entry=>entry.connected && entry.visible).map(entry=>entry.id));
+        const visible = events.filter(e=>allowed.has(owners.get(e)?.id ?? ''));
+        if (visible.length < events.length) { events = visible; draw(start); drawAgenda(); }
+        const editing = root.querySelector<HTMLSelectElement>('.cal-editor [name=workspaceId]');
+        if (editing && !options.workspaces.entries().some(entry=>entry.id===editing.value && entry.connected)) modal?.close();
+      }
+      drawMini();
+    }
     try {
       const from = start.toISOString(), to = midnight(start, length).toISOString();
-      const [workspace, subscribed] = await Promise.all([sources.workspaceVisible() ? options.store.list(from, to) : [], sources.list(from, to)]);
+      const {items,failed} = await sources.list(from,to);
       if (destroyed || stamp !== version) return;
-      events = [...workspace, ...subscribed];
-      notice.textContent = '';
+      events = items.map(({event,owner}) => { if (owner) owners.set(event,owner); return event; });
+      notice.replaceChildren();
+      if (failed.length) notice.append('Agenda indisponible : '+failed.join(', ')+'. ',button({label:'Réessayer',onClick:load}));
       draw(start); drawAgenda();
     } catch (error) {
       if (destroyed || stamp !== version) return;
@@ -383,5 +487,5 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
   void load();
   // Storybook and the shell may attach the returned DOM after mounting the view.
   const frame = window.requestAnimationFrame(() => { scroll.scrollTop = 7 * 56; });
-  return { destroy() { destroyed = true; version++; window.cancelAnimationFrame(frame); stopGestures(); sources.destroy(); modal?.close(); root.remove(); } };
+  return { destroy() { destroyed = true; version++; window.cancelAnimationFrame(frame); document.removeEventListener('keydown',shortcut); stopGestures(); sources.destroy(); modal?.close(); root.remove(); } };
 }

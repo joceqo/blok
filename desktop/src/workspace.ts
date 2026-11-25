@@ -1,3 +1,4 @@
+import { calendarUrl, editorUrl, isCalendarUrl } from './calendar-route';
 import { pageIdForWorkspaceLink, workspacePageLink } from './page-link';
 import { navigationFavorites, navigationRecents } from './navigation-preferences';
 import { moveDestinations, PageMoveConflict } from './page-move';
@@ -23,7 +24,7 @@ import { groupPagesBySection, sectionNames } from './page-section';
 import { nextPageIcon } from './page-icon-sync';
 import { applyFavicon, brandedTitle } from './tab-identity';
 import { describeAccessLoss } from './access-friction';
-import { activeWorkspace, workspaceKey, type WorkspaceRef } from './workspace-registry';
+import { activeWorkspace, selectWorkspace, workspaceKey, type WorkspaceRef } from './workspace-registry';
 import { createDesktopFooter, readAppearance } from './settings';
 import {
   buildWelcomeDocuments,
@@ -151,7 +152,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   };
   let calendar: { destroy(): void } | undefined;
   let openingCalendar: number | undefined;
-  const isCalendarRoute = (): boolean => new URL(location.href).searchParams.get('view') === 'calendar';
+  const isCalendarRoute = (): boolean => isCalendarUrl(new URL(location.href));
   const ai = createAiClient(ref);
   let editAssistant: ReturnType<typeof pageEditorAssistant> | undefined;
   const activeEditable = (): boolean => !!ws.currentId && ws.currentId === pageFromUrl() &&
@@ -203,9 +204,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   let closeTrash: (() => void) | undefined;
   const pageFromUrl = (): string | null => new URL(location.href).searchParams.get('page');
   const navigate = (id: string, replace = false): void => {
-    const url = new URL(location.href);
+    const url = editorUrl(new URL(location.href));
     const from = url.searchParams.get('page');
-    url.searchParams.delete('view');
     url.searchParams.set('page', id);
     if (replace) history.replaceState(null, '', url);
     else history.pushState(null, '', url);
@@ -775,8 +775,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       }));
       return;
     }
-    const url = new URL(location.href);
-    url.searchParams.delete('view');
+    const url = editorUrl(new URL(location.href));
     url.searchParams.set('page', page.id);
     window.open(url.href, '_blank', 'noopener,noreferrer');
   };
@@ -870,12 +869,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     onRecentsChange: recentPages.save,
     onOpen: (id) => navigate(id),
     onCreate: (parentId) => chooseNewPage(parentId),
+    calendarHref: '__TAURI_INTERNALS__' in window ? undefined : calendarUrl(new URL(location.href)).href,
     onCalendar: () => {
       if (isCalendarRoute()) return;
-      const url = new URL(location.href);
-      url.searchParams.delete('page');
-      url.searchParams.set('view', 'calendar');
-      history.pushState(null, '', url);
+      if (!window.dispatchEvent(new Event('blok:open-calendar', {cancelable:true}))) return;
+      history.pushState({fromBlokPage:true}, '', calendarUrl(new URL(location.href)));
       onRoute();
     },
     onCreatePrivate: ref.kind === 'remote' ? () => chooseNewPage(null, true) : undefined,
@@ -946,6 +944,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   });
   ws.pageCanvas = ws.assistant.editorSlot;
   ws.frame.canvas.append(ws.assistant.element);
+  const calendarHost = document.createElement('main');
+  calendarHost.setAttribute('data-desktop-calendar-app', '');
+  calendarHost.hidden = true;
+  ws.frame.element.append(calendarHost);
   const sidebar = ws.frame.element.querySelector('[data-blok-sidebar]') as HTMLElement;
   const panel = ws.assistant.element.querySelector<HTMLElement>('[data-blok-agent-panel]');
   const assistantButton = createAssistantButton(() => {
@@ -1055,8 +1057,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     openingCalendar = request;
     ws.pageCanvas.inert = true;
     try {
-      const [, { mountCalendar }, { createCalendarStore }] = await Promise.all([
-        flushDocument(), import('./calendar-view'), import('./calendar-store'),
+      const [, { mountCalendar }, { createCalendarStore }, { createCalendarWorkspaces }] = await Promise.all([
+        flushDocument(), import('./calendar-view'), import('./calendar-store'), import('./calendar-workspaces'),
       ]);
       if (ws.selection !== request || !isCalendarRoute()) return;
       ws.generation++;
@@ -1065,21 +1067,29 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       ws.assistant.refreshPageActions();
       ws.pageCanvas.removeAttribute('data-full-width');
       ws.pageCanvas.replaceChildren();
-      calendar = mountCalendar(ws.pageCanvas, {
+      calendar = mountCalendar(calendarHost, {
+        workspaces: createCalendarWorkspaces(ref),
+        openWorkspacePage: (owner, id) => {
+          if (workspaceKey(owner) === workspaceKey(ref)) navigate(id);
+          else selectWorkspace(owner, id);
+        },
         store: createCalendarStore(ref),
         get pages() { return ws.index?.pages ?? []; },
         canEdit: !ws.access.readOnlyWorkspace,
         openPage: (id) => { if (ws.index?.pages.some(page => page.id === id)) navigate(id); },
         onClose: () => {
+          if (!window.dispatchEvent(new Event('blok:return-from-calendar', {cancelable:true}))) return;
+          if (history.state?.fromBlokPage) { history.back(); return; }
           if (ws.index?.activeId) navigate(ws.index.activeId);
           else {
-            const url = new URL(location.href);
-            url.searchParams.delete('view');
+            const url = editorUrl(new URL(location.href));
             history.pushState(null, '', url);
             onRoute();
           }
         },
       });
+      calendarHost.hidden = false;
+      ws.frame.element.setAttribute('data-calendar-mode', '');
       ws.frame.setCalendarActive(true);
       ws.frame.element.toggleAttribute('data-desktop-read-only', ws.access.readOnlyWorkspace);
       applyFavicon(undefined);
@@ -1154,6 +1164,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     }
     if (calendar) {
       calendar.destroy();
+      calendarHost.hidden = true;
+      ws.frame.element.removeAttribute('data-calendar-mode');
       calendar = undefined;
       ws.frame.setCalendarActive(false);
     }

@@ -1,3 +1,4 @@
+import { isCalendarUrl } from './calendar-route';
 import { listenForPageLinks } from './native-page-links';
 import { parsePageLink } from './page-link';
 import './editor.css';
@@ -88,7 +89,7 @@ async function boot(root: HTMLElement): Promise<void> {
       desktop = shell;
       const url = new URL(location.href);
       if (selected.kind === 'local' && selected.id === 'default' && opened.activePageId &&
-          !url.searchParams.has('page') && !url.searchParams.has('view')) {
+          !url.searchParams.has('page') && !isCalendarUrl(url)) {
         url.searchParams.set('page', opened.activePageId);
       }
       for (const key of ['cloud', 'embedded', 'local']) url.searchParams.delete(key);

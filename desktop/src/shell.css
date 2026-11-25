@@ -681,3 +681,9 @@ button[data-desktop-page-workspace]:focus-visible { outline: 2px solid var(--blo
 @media (max-width: 640px) {
   [data-desktop-empty-cards] { grid-template-columns: 1fr; }
 }
+
+[data-desktop-workspace][data-calendar-mode] > :not([data-desktop-calendar-app]) { display: none; }
+[data-desktop-calendar-app] { flex: 1; min-width: 0; min-height: 0; }
+[data-desktop-calendar-app][hidden] { display: none; }
+[data-desktop-shell]:has([data-calendar-mode]) [data-desktop-leading] { flex-basis: 96px; }
+[data-desktop-shell]:has([data-calendar-mode]) [data-desktop-leading] button { display: none; }

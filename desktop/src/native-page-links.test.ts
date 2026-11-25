@@ -46,4 +46,11 @@ it('checks device membership before handing off a cold or warm page link and flu
   window.dispatchEvent(new Event('blok:page-link'));
   await vi.waitFor(()=>expect(report).toHaveBeenCalledTimes(2));
   expect(mocks.select).toHaveBeenCalledTimes(1);
+
+  const calendar = vi.fn((event: Event) => event.preventDefault());
+  window.addEventListener('blok:open-calendar', calendar, {once:true});
+  mocks.take.mockResolvedValueOnce('blok://calendar');
+  window.dispatchEvent(new Event('blok:page-link'));
+  await vi.waitFor(() => expect(calendar).toHaveBeenCalledOnce());
+  expect(mocks.select).toHaveBeenCalledTimes(1);
 });

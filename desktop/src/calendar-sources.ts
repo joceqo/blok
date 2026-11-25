@@ -26,7 +26,7 @@ function readFeed(text:string, from:string, to:string):Promise<CalendarEvent[]> 
   });
 }
 
-export function mountCalendarSources(container:HTMLElement, store:CalendarStore, onChange:()=>void) {
+export function mountCalendarSources(container:HTMLElement, store:CalendarStore, onChange:()=>void, grouped = false) {
   const remote = store.remote;
   const prefix = 'blok:calendar:layers:' + (remote?.preferenceKey ?? 'disk');
   let selected:Record<string,boolean> = {};
@@ -75,7 +75,7 @@ export function mountCalendarSources(container:HTMLElement, store:CalendarStore,
     if (destroyed) return;
     container.replaceChildren();
     const group = (name:string) => {const section=element('section');section.append(element('h3',name));container.append(section);return section;};
-    group('Agendas').append(checkbox('Espace de travail',selected.workspace !== false,'#54836b',on=>toggle('workspace',on)));
+    if (!grouped) group('Agendas').append(checkbox('Espace de travail',selected.workspace !== false,'#54836b',on=>toggle('workspace',on)));
     if (remote) {
       const fill = (section:HTMLElement,kind:Group) => {
         for (const s of sources.filter(s=>s.kind === kind)) {

@@ -1,3 +1,4 @@
+import { editorUrl } from './calendar-route';
 /** Non-secret workspace references. Session credentials live in the OS keychain. */
 export type LocalWorkspace = { kind: 'local'; id: string; name: string };
 export type RemoteWorkspace = { kind: 'remote'; embedded?: boolean; device?: boolean; id: string; name: string; server: string; accountId: string; workspaceId: string; userName?: string; role?: 'admin' | 'member' | 'viewer' };
@@ -50,7 +51,7 @@ export function activateWorkspace(ref: WorkspaceRef): void {
 function workspaceRoute(ref: WorkspaceRef, pageId?: string): URL {
   if (ref.kind === 'local' && ref.id === 'default') localStorage.setItem(DISK, '1');
   activateWorkspace(ref);
-  const url = new URL(location.href);
+  const url = pageId ? editorUrl(new URL(location.href)) : new URL(location.href);
   url.searchParams.delete('page');
   url.searchParams.delete('workspace');
   if (pageId) { url.searchParams.delete('view'); url.searchParams.set('page', pageId); }

@@ -1,3 +1,4 @@
+import { calendarUrl } from './calendar-route';
 import { deviceWorkspaces, nativeBridge } from './native-runtime';
 import { parsePageLink } from './page-link';
 import { activeWorkspace, selectStartupPage, selectWorkspace } from './workspace-registry';
@@ -11,6 +12,12 @@ export async function listenForPageLinks(report: (error: unknown) => void): Prom
   async function open(): Promise<void> {
     const raw = await bridge!.invoke('take_page_link');
     if (typeof raw !== 'string') return;
+    if (raw === 'blok://calendar' || raw === 'blok://calendar/') {
+      const url = calendarUrl(new URL(location.href));
+      if (starting) history.replaceState(null, '', url);
+      else if (window.dispatchEvent(new Event('blok:open-calendar', {cancelable:true}))) location.assign(url.href);
+      return;
+    }
     const link = parsePageLink(raw);
     if (!link) throw new Error('Lien de page Blok invalide.');
     let target = activeWorkspace();

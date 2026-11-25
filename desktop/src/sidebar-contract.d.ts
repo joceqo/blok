@@ -34,6 +34,7 @@ export function createPageFrame(options: {
   recentIds?: string[];
   onRecentsChange?(ids: string[]): void;
   onCalendar?(): void;
+  calendarHref?: string;
   onTeamspaces?(): void;
   onTeamspaceMenu?(anchor: HTMLButtonElement): void;
   pageUrl?(id: string): string;

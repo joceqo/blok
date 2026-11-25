@@ -1,3 +1,4 @@
+import { calendarUrl, editorUrl, isCalendarUrl } from './calendar-route';
 import { workspacePageLink } from './page-link';
 import { renderPageIcon } from '../../src/shell/page-icon';
 import { activeWorkspace, workspaceKey, type WorkspaceRef } from './workspace-registry';
@@ -181,6 +182,26 @@ function installMenu(): void {
   window.addEventListener('blok:desktop-new-tab', event => {
     if (isTauri()) createTab(event instanceof CustomEvent ? event.detail : undefined);
   });
+  let returnTab: string | undefined;
+  window.addEventListener('blok:open-calendar', event => {
+    if (!isTauri()) return;
+    event.preventDefault();
+    if (!allowed()) return;
+    const current = active();
+    if (current && isCalendarUrl(new URL(current.href))) return;
+    returnTab = current?.id;
+    const existing = box.session.tabs.find(tab => isCalendarUrl(new URL(tab.href)));
+    const href = calendarUrl(new URL(location.href)).href;
+    if (existing) moveTo(existing.id, false);
+    else if (box.session.tabs.length < MAX_TABS) addTab(href, 'Calendrier');
+    else history.pushState(null, '', href);
+  });
+  window.addEventListener('blok:return-from-calendar', event => {
+    if (!isTauri()) return;
+    const pages = box.session.tabs.filter(tab => !isCalendarUrl(new URL(tab.href)));
+    const target = pages.find(tab => tab.id === returnTab) ?? pages.at(-1);
+    if (target) { event.preventDefault(); moveTo(target.id, true); }
+  });
   window.addEventListener('blok:desktop-reload', event => {
     if (!isTauri()) return;
     event.preventDefault();
@@ -195,12 +216,12 @@ function boot(): Session {
   const restored = load(sessionStorage.getItem(tabKey()));
   const requested = new URL(location.href);
   const page = requested.searchParams.get('page');
-  const calendar = requested.searchParams.get('view') === 'calendar';
+  const calendar = isCalendarUrl(requested);
   if (!restored || (!page && !calendar)) return restored ?? freshSession();
   // An explicit page link takes precedence over the previously selected tab.
   const matchesRoute = (tab: Tab): boolean => {
     const url = new URL(tab.href);
-    return url.pathname === requested.pathname && (calendar ? url.searchParams.get('view') === 'calendar' : url.searchParams.get('page') === page);
+    return calendar ? isCalendarUrl(url) : url.pathname === requested.pathname && url.searchParams.get('page') === page;
   };
   const current = restored.tabs.find(tab => tab.id === restored.activeId);
   const existing = current && matchesRoute(current) ? current : restored.tabs.find(matchesRoute);
@@ -263,7 +284,7 @@ function readable(title: string): string {
 }
 
 function homeHref(): string {
-  const url = new URL(location.href);
+  const url = editorUrl(new URL(location.href));
   url.search = '';
   url.hash = '';
   return url.href;
@@ -386,13 +407,16 @@ function moveTo(id: string, check: boolean): void {
 function createTab(page?: {id: string; title: string; icon?: string}): void {
   if (!allowed()) return;
   if (box.session.tabs.length >= MAX_TABS) return;
-  const current = active();
-  const saved = current ? snapshot(current) : null;
   const url = new URL(homeHref());
   if (page) url.searchParams.set('page', page.id);
-  const href = url.href;
-  const tab = freshTab(href, page?.title || 'Nouvelle page');
-  tab.icon = page?.icon ?? '';
+  addTab(url.href, page?.title || 'Nouvelle page', page?.icon);
+}
+
+function addTab(href: string, title: string, icon = ''): void {
+  const current = active();
+  const saved = current ? snapshot(current) : null;
+  const tab = freshTab(href, title);
+  tab.icon = icon;
   const tabs = box.session.tabs.map((item) => (saved && item.id === saved.id ? saved : item));
   box.session = { tabs: [...tabs, tab], activeId: tab.id };
   nativeReplace(href);
@@ -445,7 +469,7 @@ function syncTitle(): void {
   const tab = active();
   if (!tab) return;
   const title = readable(document.title);
-  const icon = new URL(tab.href).searchParams.get('view') === 'calendar' ? '' : tab.icon;
+  const icon = isCalendarUrl(new URL(tab.href)) ? '' : tab.icon;
   const page = pageOf(tab.href);
   const tabs = box.session.tabs.map(item => {
     if (item.id === tab.id) return item.title === title && item.icon === icon ? item : {...item, title, icon};

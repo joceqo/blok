@@ -238,3 +238,15 @@ WHERE p.workspace_id=imports.workspace_id AND p.id=sheet.id
     SELECT FROM jsonb_array_elements((imports.old_index->'pages') || coalesce(imports.old_index->'trash','[]'::jsonb)) original
     WHERE original->>'id'=sheet.id
   );
+
+-- Calendar selection belongs to the person and is revoked alongside their workspace membership.
+CREATE TABLE IF NOT EXISTS calendar_workspace_preferences (
+  workspace_id text NOT NULL,
+  user_id text NOT NULL,
+  connected boolean NOT NULL DEFAULT false,
+  visible boolean NOT NULL DEFAULT true,
+  PRIMARY KEY (workspace_id,user_id),
+  FOREIGN KEY (workspace_id,user_id) REFERENCES memberships(workspace_id,user_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS calendar_workspace_preferences_user ON calendar_workspace_preferences(user_id);
+INSERT INTO schema_migrations(version) VALUES(16) ON CONFLICT DO NOTHING;
