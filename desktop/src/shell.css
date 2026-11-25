@@ -32,14 +32,6 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
   --desktop-hover: #ebebea;
   --desktop-border: #e8e8e6;
 }
-body[data-blok-theme="light"] [data-desktop-floating-toc] {
-  --desktop-canvas: #ffffff;
-  --desktop-strip: #f7f7f5;
-  --desktop-ink: #242424;
-  --desktop-muted: #717171;
-  --desktop-hover: #ebebea;
-  --desktop-border: #e8e8e6;
-}
 [data-desktop-tabstrip] {
   position: sticky; top: 0; z-index: 10;
   display: flex; flex: none; align-items: stretch;
@@ -189,7 +181,8 @@ body[data-blok-theme="light"] [data-desktop-floating-toc] {
 [data-desktop-document] [data-desktop-title-date-token] { color: var(--desktop-muted); cursor: pointer; }
 [data-desktop-document] [data-desktop-title-date-at] { opacity: .6; }
 [data-desktop-floating-toc] {
-  position: fixed; z-index: 20; width: 42px; padding: 8px 0;
+  /* Page content < outline < cover actions and their gallery. */
+  position: fixed; z-index: 2; width: 42px; padding: 8px 0;
   border: 1px solid transparent; border-radius: 14px;
   color: var(--desktop-muted); font: 14px/1.4 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   overflow-y: auto; scrollbar-width: none;

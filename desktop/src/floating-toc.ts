@@ -46,7 +46,7 @@ export function createFloatingToc(scroller: HTMLElement, redactor: HTMLElement):
   nav.setAttribute('aria-label', 'Sommaire de la page');
   list.setAttribute('role', 'list');
   nav.append(list);
-  document.body.append(nav);
+  scroller.append(nav);
 
   let headings: Heading[] = [];
   let activeId: string | null = null;
