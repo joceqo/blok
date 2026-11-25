@@ -71,9 +71,11 @@ async function until(label: string, check: () => Promise<boolean>, signal = stop
   }
   throw new Error(label + ' did not become ready. See runtime.log');
 }
-function healthy(origin: string, path: string) {
+function healthy(origin: string, path: string, signal = stopped.signal) {
   return async () => {
-    const response = await fetch(origin + path, { signal: AbortSignal.any([stopped.signal, AbortSignal.timeout(1_500)]) });
+    // Each probe is one-shot. A pooled socket otherwise keeps the media server
+    // waiting for another request during an early quit.
+    const response = await fetch(origin + path, { headers: { connection: 'close' }, signal: AbortSignal.any([signal, AbortSignal.timeout(1_500)]) });
     await response.body?.cancel();
     return response.ok;
   };
@@ -131,7 +133,7 @@ const storage = { BLOK_S3_BUCKET: 'blok-assets', BLOK_S3_ENDPOINT: s3, BLOK_S3_R
   BLOK_S3_ADDRESSING: 'path', BLOK_S3_ACCESS_KEY: secrets.accessKey, BLOK_S3_SECRET_KEY: secrets.secretKey };
 const allowedOrigins = 'tauri://localhost,http://tauri.localhost,https://tauri.localhost';
 const storageStopped = new AbortController();
-const storageSignal = AbortSignal.any([storageStopped.signal, stopped.signal]);
+const storageSignal = storageStopped.signal;
 function storageFailure(error: Error) {
   if (storageSignal.aborted) return;
   storageStopped.abort();
@@ -147,7 +149,8 @@ async function startStorage() {
   await mkdir(objects, { recursive: true });
   const admin = await choosePorts(['http', 'grpc'] as const, Object.values(ports));
   start('SeaweedFS', binary('weed'), ['mini', '-dir=' + objects, '-ip=' + loopback, '-ip.bind=' + loopback,
-    '-master.telemetry=false', '-webdav=false', '-admin.ui=false', '-admin.port.legacy=0', '-s3.port.iceberg=0', '-s3.port.lance=0',
+    // The single local volume has no other nodes waiting on routing heartbeats.
+    '-volume.preStopSeconds=0', '-master.telemetry=false', '-webdav=false', '-admin.ui=false', '-admin.port.legacy=0', '-s3.port.iceberg=0', '-s3.port.lance=0',
     '-admin.port=' + admin.http, '-admin.port.grpc=' + admin.grpc,
     '-master.port=' + ports.master, '-master.port.grpc=' + ports.masterGrpc, '-volume.port=' + ports.volume,
     '-volume.port.grpc=' + ports.volumeGrpc, '-filer.port=' + ports.filer, '-filer.port.grpc=' + ports.filerGrpc,
@@ -155,8 +158,8 @@ async function startStorage() {
     { AWS_ACCESS_KEY_ID: secrets.accessKey, AWS_SECRET_ACCESS_KEY: secrets.secretKey, S3_BUCKET: 'blok-assets',
       WEED_ADMIN_PASSWORD: createHmac('sha256', secrets.internal).update('seaweed-admin').digest('hex') }, storageFailure);
   await Promise.all([
-    until('SeaweedFS', healthy(s3, '/readyz'), storageSignal),
-    until('Media', healthy(media, '/health'), storageSignal),
+    until('SeaweedFS', healthy(s3, '/readyz', storageSignal), storageSignal),
+    until('Media', healthy(media, '/health', storageSignal), storageSignal),
   ]);
   if (!storageSignal.aborted) front.setStorage('ready');
 }
@@ -193,7 +196,8 @@ try {
 } catch (error) {
   if (!stopped.signal.aborted) stop(error instanceof Error ? error : new Error(String(error)));
 } finally {
-  front.stopAccepting();
+  await front.stopAccepting();
+  storageStopped.abort();
   await storageStartup;
   // The journal flushes its final projection through the shell; outstanding shell
   // uploads can in turn still require media. Keep each dependency alive until then.

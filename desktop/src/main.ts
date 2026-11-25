@@ -2,7 +2,8 @@ import './editor.css';
 import '../../src/shell/sidebar.css';
 import './shell.css';
 import { activateWorkspace, activeWorkspace, initialWorkspace, listWorkspaces, LOCAL_SERVER_ORIGIN, rememberWorkspace, selectWorkspace, serverOrigin, type RemoteWorkspace } from './workspace-registry';
-import { openEmbeddedWorkspace, useEmbeddedServer } from './native-runtime';
+import { nativeBridge, openEmbeddedWorkspace, useEmbeddedServer } from './native-runtime';
+import { guardNativeClose } from './native-close';
 import { nativeSessionAdapter } from './native-session';
 import { applyAppearance, readAppearance } from './settings';
 import { CloudClient, mountCloudGateway } from './cloud';
@@ -73,9 +74,15 @@ async function boot(root: HTMLElement): Promise<void> {
   let configured = native
     ? params.get('server') ?? (selected.kind === 'remote' ? selected.server : import.meta.env.VITE_BLOK_SERVER_URL)
     : location.origin;
+  let desktop: typeof import('./shell') | undefined;
   if (embedded) {
     try {
-      const opened = await openEmbeddedWorkspace(selected, params.get('embedded') === '1');
+      // Load the editor while the native services start. Mount it only after selecting the workspace.
+      const [opened, shell] = await Promise.all([
+        openEmbeddedWorkspace(selected, params.get('embedded') === '1'),
+        import('./shell'),
+      ]);
+      desktop = shell;
       const url = new URL(location.href);
       if (selected.kind === 'local' && selected.id === 'default' && opened.activePageId &&
           !url.searchParams.has('page') && !url.searchParams.has('view')) {
@@ -136,7 +143,7 @@ async function boot(root: HTMLElement): Promise<void> {
   if (!embedded && selected.kind === 'remote' && !(await refreshRemoteMembership(client, selected, origin, showGateway))) {
     return;
   }
-  const {mountDesktop, flushDesktop} = await import('./shell');
+  const {mountDesktop, flushDesktop} = desktop ?? await import('./shell');
   root.addEventListener('blok:desktop-connect-cloud', (event) => {
     const section = (event as CustomEvent<{section?: string}>).detail?.section;
     // Already inside a remote workspace: open settings in place instead of the old gateway admin screen.
@@ -165,6 +172,8 @@ async function boot(root: HTMLElement): Promise<void> {
       location.assign(url.href);
     }).catch(showError);
   });
+  const bridge = nativeBridge();
+  if (bridge) await guardNativeClose(root, bridge, flushDesktop);
   mountDesktop(root);
 }
 

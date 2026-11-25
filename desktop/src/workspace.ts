@@ -1022,6 +1022,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       } else await editor.saver.flush();
     }
     await ws.saveOrder;
+    if (ws.manifestFailed) throw ws.manifestError ?? new Error('Les pages de l’espace ne sont pas encore enregistrées.');
   }
 
   async function showCalendar(): Promise<void> {

@@ -35,3 +35,26 @@ test('the editor opens while the first upload waits, with its request body intac
     await Promise.all([front.server, api].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
   }
 });
+
+test('closing drains an admitted upload even when storage is still starting', async () => {
+  const ports = await choosePorts(['public', 'api', 'room']);
+  const api = createServer(async (req, res) => res.end(await text(req)));
+  await listen(api, ports.api);
+  const front = gateway(ports, '.');
+  await listen(front.server, ports.public);
+  front.setReady();
+  try {
+    const accepted = new Promise<void>(resolve => front.server.once('request', () => resolve()));
+    const origin = 'http://127.0.0.1:' + ports.public;
+    const upload = fetch(origin + '/api/workspaces/local/images', { method: 'POST', body: 'last image' });
+    await accepted;
+    const drained = front.stopAccepting();
+    front.setStorage('ready');
+    assert.equal(await (await upload).text(), 'last image');
+    await drained;
+    await assert.rejects(fetch(origin + '/api/session'));
+  } finally {
+    await front.stopAccepting();
+    await Promise.all([front.server, api].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+  }
+});

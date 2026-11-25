@@ -13,6 +13,8 @@
     "allow-ensure-embedded-server",
     "allow-embedded-device-session",
     "allow-close-editor-window",
+    "allow-arm-editor-close",
+    "allow-finish-editor-close",
     "allow-load-workspace-file",
     "allow-save-workspace-file",
     "allow-workspace-data-directory",

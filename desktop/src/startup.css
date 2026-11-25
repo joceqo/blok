@@ -36,3 +36,15 @@ html[data-startup-theme="light"] [data-blok-startup] {
 .startup-actions button:first-child { background: var(--startup-ink); color: var(--startup-paper); }
 @keyframes blok-starting { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .startup-spinner { animation: none; } }
+.desktop-close-notice {
+  position: fixed;
+  z-index: 10000;
+  inset: auto 16px 16px auto;
+  max-width: min(30rem, 85vw);
+  padding: 10px 16px;
+  border: 1px solid var(--desktop-border, #787878);
+  border-radius: 8px;
+  color: CanvasText;
+  background: Canvas;
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+}

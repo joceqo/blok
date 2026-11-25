@@ -7,7 +7,7 @@ function fixture() {
   const flush = vi.fn();
   const stats = vi.fn(async () => ({ pendingOperations: state.pending, pendingBytes: state.pending, quarantinedOperations: state.quarantined, appendInFlight: false }));
   const module = Object.assign(Object.create(Collaboration.prototype), {
-    settings: { doc: 'test' }, protocol: 'v2', store: { stats },
+    settings: { doc: 'test' }, protocol: 'v2', firstSynced: true, resetGeneration: 0, store: { stats },
     Blok: { YjsManager: {
       flushPendingBlockWrites: flush,
       onPendingBlockWritesSettled: (callback: () => void) => { state.settled = callback; return unhook; },
@@ -17,6 +17,27 @@ function fixture() {
 }
 afterEach(() => vi.useRealTimers());
 describe('host navigation flush', () => {
+  it('exits a read-only first connection without waiting for a server receipt', async () => {
+    const { module, state, stats } = fixture();
+    Object.assign(module, { firstSynced: false, protocol: 'v1' });
+    const waiting = module.flush(0);
+    await Promise.resolve();
+    state.settled?.();
+    await waiting;
+    expect(stats).not.toHaveBeenCalled();
+  });
+  it.each([
+    { settings: { doc: 'test', offline: true } },
+    { resetGeneration: 1 },
+  ])('still checks for unresolved work after cache adoption or a lineage reset', async (overrides) => {
+    const { module, state, stats } = fixture();
+    Object.assign(module, { firstSynced: false, protocol: 'v1', ...overrides });
+    const rejected = expect(module.flush(0)).rejects.toThrow('acknowledged');
+    await Promise.resolve();
+    state.settled?.();
+    await rejected;
+    expect(stats).toHaveBeenCalledOnce();
+  });
   it('waits for asynchronous block writes and their durable receipt before returning', async () => {
     vi.useFakeTimers();
     const { module, state, flush, stats } = fixture();

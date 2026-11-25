@@ -3,17 +3,17 @@ import { bindDeviceSession, nativeSessionAdapter } from './native-session';
 import { prefersDefaultDisk, type RemoteWorkspace, type WorkspaceRef } from './workspace-registry';
 
 type NativeBridge = { invoke(command: string, args?: Record<string, unknown>): Promise<unknown> };
-function bridge(): NativeBridge | undefined {
+export function nativeBridge(): NativeBridge | undefined {
   return (window as Window & {__TAURI_INTERNALS__?: NativeBridge}).__TAURI_INTERNALS__;
 }
 
 export async function embeddedServerAvailable(): Promise<boolean> {
-  try { return await bridge()?.invoke('embedded_server_available') === true; }
+  try { return await nativeBridge()?.invoke('embedded_server_available') === true; }
   catch { return false; }
 }
 
 export async function useEmbeddedServer(params: URLSearchParams, workspace: WorkspaceRef): Promise<boolean> {
-  const native = bridge();
+  const native = nativeBridge();
   if (!native || params.has('server')) return false;
   if (params.get('embedded') === '1') return true;
   if (workspace.kind === 'remote') return workspace.embedded === true;
@@ -30,7 +30,7 @@ function localOrigin(origin: unknown): string {
 }
 
 export async function startEmbeddedServer(): Promise<string> {
-  return localOrigin(await bridge()?.invoke('ensure_embedded_server'));
+  return localOrigin(await nativeBridge()?.invoke('ensure_embedded_server'));
 }
 
 interface DeviceSession extends CloudSession { origin: string; token: string; deviceWorkspaceId: string; deviceActivePageId?: string | null; deviceImportedWorkspaceId?: string | null }
@@ -50,7 +50,7 @@ export async function openEmbeddedWorkspace(selected: WorkspaceRef, explicit: bo
       } catch (error) { if (!(error instanceof CloudApiError && error.status === 401)) throw error; }
     }
   }
-  const result = await bridge()?.invoke('embedded_device_session') as DeviceSession | undefined;
+  const result = await nativeBridge()?.invoke('embedded_device_session') as DeviceSession | undefined;
   const origin = localOrigin(result?.origin);
   if (typeof result?.token !== 'string' || !result.token || !result.user?.id || !Array.isArray(result.workspaces)) throw new Error('Profil local indisponible.');
   if (previous?.device && !explicit && origin !== previous.server) throw new Error('L’adresse du serveur intégré de cet espace a changé.');

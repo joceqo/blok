@@ -3,6 +3,7 @@ import { stat } from 'node:fs/promises';
 import { createServer, request, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
 import { extname, resolve, sep } from 'node:path';
 import { pipeline } from 'node:stream';
+import { setTimeout as delay } from 'node:timers/promises';
 import { loopback, type Instance } from './instance.ts';
 
 const mime: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript',
@@ -72,6 +73,8 @@ function storageGate() {
 export function gateway(ports: Pick<Instance['ports'], 'public' | 'api' | 'room'>, web: string) {
   const authority = loopback + ':' + ports.public;
   const sockets = new Set<import('node:net').Socket>();
+  const writes = new Map<ServerResponse, Promise<void>>();
+  let closing = false;
   let ready = false;
   const storage = storageGate();
   // Only origin-form URLs are ever passed to an upstream. URIs containing encoded
@@ -110,6 +113,12 @@ export function gateway(ports: Pick<Instance['ports'], 'public' | 'api' | 'room'
       return;
     }
     const forward = () => proxyHttp(req, res, isRoom(path) ? ports.room : ports.api);
+    if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS') {
+      writes.set(res, new Promise<void>(resolve => res.once('close', () => {
+        writes.delete(res);
+        resolve();
+      })));
+    }
     if (needsStorage(decodeURIComponent(path), req.method)) storage.run(res, forward);
     else forward();
   });
@@ -136,10 +145,24 @@ export function gateway(ports: Pick<Instance['ports'], 'public' | 'api' | 'room'
     socket.on('close', () => proxy.destroy());
     proxy.end();
   });
-  server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
-  return { server, setStorage: storage.update, setReady: () => { ready = true; }, stopAccepting: () => {
+  server.on('connection', socket => {
+    if (closing) { socket.destroy(); return; }
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  async function stopAccepting() {
     ready = false;
+    closing = true;
+    // Keep the public port reserved until shutdown completes. End idle connections and
+    // subscriptions immediately, but let an admitted save or upload receive its reply.
+    const writing = new Set([...writes.keys()].map(res => res.socket));
+    for (const socket of sockets) if (!writing.has(socket)) socket.destroy();
+    if (writes.size) await Promise.race([
+      Promise.all(writes.values()),
+      delay(8_000, undefined, { ref: false }),
+    ]);
     storage.update('failed');
     for (const socket of sockets) socket.destroy();
-  } };
+  }
+  return { server, setStorage: storage.update, setReady: () => { ready = true; }, stopAccepting };
 }
