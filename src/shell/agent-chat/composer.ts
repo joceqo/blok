@@ -130,6 +130,7 @@ export const createChatComposer = (options: ChatComposerOptions): ChatComposerHa
   field.addEventListener('input', () => { sizeField(); sync(); });
   field.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    if (field.ownerDocument.documentElement.hasAttribute('data-blok-chat-enter-newline') && !event.metaKey && !event.ctrlKey) return;
 
     event.preventDefault();
     if (!submit.disabled) element.requestSubmit();

@@ -14,6 +14,28 @@ describe('workspace isolation', () => {
     expect(await readFile('old', other)).toBe('new content');
     expect((await loadIndex(initialWorkspace)).activeId).toBe('old');
   });
+  it('recovers a Markdown import after a failed index write without duplicating the document', async () => {
+    const workspace = createLocalWorkspace('Import');
+    const repository = workspaceRepository(workspace);
+    const initial = await repository.loadIndex();
+    const attempt = crypto.randomUUID();
+    const source = '# Guide\n\nUn **mot** important.';
+    const originalWrite = Storage.prototype.setItem;
+    const failOnce = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, value) {
+      if (key.endsWith(':index')) throw new Error('Quota dépassé');
+      originalWrite.call(this, key, value);
+    });
+    try {
+      await expect(repository.importMarkdown(attempt, 'Guide.md', source)).rejects.toThrow('Quota');
+    } finally { failOnce.mockRestore(); }
+    const written = await readFile(attempt, workspace);
+    expect(written).toContain('<strong>mot</strong>');
+    expect((await repository.loadIndex()).pages).toEqual(initial.pages);
+    await repository.importMarkdown(attempt, 'Guide.md', source);
+    await repository.importMarkdown(attempt, 'Guide.md', source);
+    expect(await readFile(attempt, workspace)).toBe(written);
+    expect((await repository.loadIndex()).pages).toEqual([...initial.pages, {id: attempt, title: 'Guide', parentId: null}]);
+  });
   it('keeps queued native writes on their original workspace and serializes them', async () => {
     const original = createLocalWorkspace('Original');
     const repository = workspaceRepository(original);

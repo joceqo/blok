@@ -195,7 +195,8 @@ export const History: Story = {
     await waitFor(() => expect(canvasElement.querySelector('[data-blok-editor]')).toBeTruthy());
     await userEvent.click(canvas.getByRole('button', { name: 'Ouvrir l\'assistant IA' }));
     await userEvent.click(canvas.getByRole('button', { name: /Historique/ }));
-    expect(canvas.getByRole('menu', { name: '' })).toBeTruthy();
+    const history = within(canvas.getByRole('dialog', { name: 'Historique des conversations' }));
+    expect(history.getByRole('searchbox')).toHaveFocus();
   },
 };
 
@@ -220,5 +221,36 @@ export const Providers: Story = {
     await waitFor(() => {
       expect(within(dialog).getAllByText('CLI non installée', { selector: '[data-blok-agent-status-label]' })).toHaveLength(2);
     });
+  },
+};
+
+
+export const RetrouverUnBrouillon: Story = {
+  name: 'Retrouver un brouillon',
+  render: (_args, {abortSignal}) => {
+    const assistant = mountAgentAssistant({getPageText:() => '',openSettings:() => {},listProviders:async () => []});
+    assistant.element.setAttribute('data-blok-theme','dark');
+    abortSignal.addEventListener('abort',() => assistant.destroy(),{once:true});
+    live.assistant?.destroy();
+    live.assistant = null;
+    return assistant.element;
+  },
+  play: async ({canvasElement}) => {
+    const canvas = within(canvasElement);
+    const openButton = canvas.getByRole('button', {name:"Ouvrir l'assistant IA"});
+    await userEvent.click(openButton);
+    const field = canvasElement.querySelector<HTMLTextAreaElement>('[data-blok-agent-composer] textarea')!;
+    await userEvent.type(field, 'Préparer la réunion design');
+    await userEvent.click(canvas.getByRole('button',{name:'Nouvelle conversation'}));
+    await expect(field).toHaveValue('');
+    const trigger = canvas.getByRole('button',{name:/Historique/});
+    await userEvent.click(trigger);
+    const history = within(canvas.getByRole('dialog',{name:'Historique des conversations'}));
+    await userEvent.type(history.getByRole('searchbox'), 'reunion');
+    await userEvent.keyboard('{ArrowDown}{Enter}');
+    await expect(field).toHaveFocus();
+    await expect(field).toHaveValue('Préparer la réunion design');
+    await userEvent.keyboard('{Escape}');
+    await expect(openButton).toHaveFocus();
   },
 };

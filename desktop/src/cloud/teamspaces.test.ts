@@ -22,6 +22,26 @@ const name = (value: string) => {
 };
 afterEach(() => { button('Fermer')?.click(); document.body.replaceChildren(); vi.unstubAllGlobals(); Reflect.deleteProperty(window, '__TAURI_INTERNALS__'); });
 
+it.each(['admin', 'member'])('opens the creation form after the server confirms the %s role', async role => {
+  const fetch = vi.fn().mockResolvedValueOnce(response({role})).mockResolvedValueOnce(response({teamspaces: [team]}));
+  mockMembers(fetch);
+  openTeamspaces({...ref, role: 'viewer'}, {...emptyNavigation, initialView: 'create'});
+  await vi.waitFor(() => expect(document.querySelector('form input')).toBeInstanceOf(HTMLInputElement));
+  expect(document.activeElement).toBe(document.querySelector('form input'));
+  expect(button('Créer')?.disabled).toBe(true);
+  expect(fetch.mock.calls.map(([url]) => url)).toEqual([base.slice(0, -'/teamspaces'.length), base]);
+});
+
+it('shows the read-only directory when a stale member opens a creation link as a viewer', async () => {
+  const fetch = vi.fn().mockResolvedValueOnce(response({role: 'viewer'}))
+    .mockResolvedValueOnce(response({teamspaces: [team]})).mockResolvedValueOnce(response({members:[bob]}));
+  mockMembers(fetch);
+  openTeamspaces(ref, {...emptyNavigation, initialView:'create'});
+  await has(bob.email);
+  expect(document.querySelector('form')).toBeNull();
+  expect(button('Nouvel espace d’équipe')).toBeUndefined();
+});
+
 it('lets viewers see the team and roster without member-directory or mutation controls', async () => {
   const fetch = vi.fn().mockResolvedValueOnce(response({teamspaces: [team]})).mockResolvedValueOnce(response({members: [bob]}));
   mockMembers(fetch);
@@ -193,4 +213,26 @@ it('keeps members usable and offers a retry when team pages cannot load', async 
   openTeamspaces(ref, pageNavigation());
   await has('Actualiser les pages'); await has(bob.email);
   click('Actualiser les pages'); await has('Pages de l’équipe (1)');
+});
+
+it('filters the returned teams and their pages locally and opens a matching visible page with Enter', async () => {
+  const teams=[{id:'A',name:'Alpha'},{id:'B',name:'Équipe Design'}];
+  const fetch=mockPages(async url => response({pages:url.includes('/B/')? [visiblePage,otherPage] : []}),teams);
+  const navigation=pageNavigation();
+  openTeamspaces({...ref,role:'viewer'},navigation);
+  await has('Équipe Design');
+  const input=(label:string)=>must(document.querySelector<HTMLInputElement>('input[aria-label="'+label+'"]'));
+  const type=(field:HTMLInputElement,value:string)=>{ field.value=value;field.dispatchEvent(new Event('input')); };
+  const enter=(field:HTMLInputElement)=>field.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+  const teamSearch=input('Rechercher un espace d’équipe');
+  const before=fetch.mock.calls.length;
+  type(teamSearch,'equipe');
+  expect(button('Alpha')?.closest('li')?.hidden).toBe(true);
+  expect(fetch).toHaveBeenCalledTimes(before);
+  enter(teamSearch);await has('Pages de l’équipe (2)');
+  const pageSearch=input('Rechercher une page de cette équipe');
+  type(pageSearch,'introuvable');enter(pageSearch);
+  expect(navigation.open).not.toHaveBeenCalled();
+  type(pageSearch,'liee');enter(pageSearch);
+  expect(navigation.open).toHaveBeenCalledWith(visiblePage.id,expect.any(AbortSignal));
 });

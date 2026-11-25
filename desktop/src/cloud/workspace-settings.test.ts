@@ -27,7 +27,7 @@ function mockAccess(){
     return reply({ok:true});
   }
   if(init?.method==='DELETE'){access.revoked=true;return reply({ok:true});}
-  if(url.endsWith('/members'))return reply({members:[{id:'u1',email:'member@example.test',role:access.role}]});
+  if(url.endsWith('/members'))return reply({members:[{id:'u1',email:'member@example.test',name:'Maïa Simon',role:access.role}]});
   if(url.endsWith('/join-requests'))return reply({requests:access.approved?[]:[{id:'r1',email:'applicant@example.test',message:'Bonjour',status:'pending'}]});
   return reply({invites:access.revoked?[]:[{id:'i1',email:'invited@example.test',role:'viewer',status:'pending'}]});
  });vi.stubGlobal('fetch',fetch);return fetch;
@@ -48,6 +48,29 @@ describe('embedded workspace access panel',()=>{
   }));
   const handle=mountWorkspaceMembers(document.body,{client:new CloudClient(),slug:'team'});await loaded('admin@example.test');must(document.querySelector<HTMLButtonElement>('[data-cloud-member-menu]')).click();await vi.waitFor(()=>expect([...document.querySelectorAll('[role=menuitem]')].some(item=>item.textContent?.includes('Retirer de l’espace'))).toBe(true));must([...document.querySelectorAll<HTMLElement>('[role=menuitem]')].find(item=>item.textContent?.includes('Retirer de l’espace'))).click();await loaded('Keep at least one administrator');expect(document.body.textContent).toContain('admin@example.test');handle.destroy();
  });
+ it('shows the display name and email and finds either, including unaccented input',async()=>{
+  mockAccess();
+  const handle=mountWorkspaceMembers(document.body,{client:new CloudClient(),slug:'team'});
+  await loaded('Maïa Simon');
+  const search=must(document.querySelector<HTMLInputElement>('[type=search]'));
+  for(const text of ['maia','EXAMPLE.TEST','missing']){
+    search.value=text;
+    search.dispatchEvent(new Event('input'));
+    const rows=document.querySelectorAll('tbody tr');
+    expect(rows.length).toBe(text==='missing'?0:1);
+    if(rows.length) expect(rows[0].textContent).toContain('member@example.test');
+  }
+  handle.destroy();
+ });
+ it('closes the invitation when its panel is destroyed',async()=>{
+  mockAccess();
+  const handle=mountWorkspaceMembers(document.body,{client:new CloudClient(),slug:'team'});
+  await loaded('Maïa Simon');
+  click('Inviter des membres');
+  expect(document.querySelector('[data-cloud-invite-dialog]')).toBeTruthy();
+  handle.destroy();
+  expect(document.querySelector('[data-cloud-invite-dialog]')).toBeNull();
+ });
  it('does not render a late response after the settings tab was destroyed',async()=>{
   const deferred={releases:[] as ((value:Response)=>void)[],signals:[] as AbortSignal[]};vi.stubGlobal('fetch',vi.fn((_url:string,init:RequestInit)=>{deferred.signals.push(must(init.signal));return new Promise<Response>(resolve=>{deferred.releases.push(resolve);});}));
   const host=document.createElement('div');document.body.append(host);const handle=mountWorkspaceMembers(host,{client:new CloudClient(),slug:'team'});await vi.waitFor(()=>expect(deferred.releases).toHaveLength(3));handle.destroy();expect(deferred.signals.every(signal=>signal.aborted)).toBe(true);for(const release of deferred.releases)release(reply({members:[],requests:[],invites:[]}));await Promise.resolve();await Promise.resolve();expect(host.children).toHaveLength(0);
@@ -65,6 +88,22 @@ describe('compact workspace invitation dialog',()=>{
  });
  it('sends normalized unique addresses with role/message and closes after success',async()=>{
   const fetch=vi.fn(async()=>reply({ok:true}));vi.stubGlobal('fetch',fetch);const done=vi.fn();openWorkspaceInvitation({client:new CloudClient(),slug:'team',onComplete:done});const email=must(document.querySelector<HTMLInputElement>('input'));email.value='ALICE@example.test, bob@example.test, alice@example.test';await choose('Accès à l’espace',WORKSPACE_ROLES.viewer);must(document.querySelector<HTMLTextAreaElement>('textarea')).value='Bienvenue !';submit();await vi.waitFor(()=>expect(document.querySelector('[data-cloud-invite-dialog]')).toBeNull());expect(fetch).toHaveBeenCalledTimes(2);expect(JSON.parse((fetch.mock.calls as unknown as [string,RequestInit][])[0][1].body as string)).toEqual({email:'alice@example.test',role:'viewer',message:'Bienvenue !'});expect(done).toHaveBeenCalledOnce();
+ });
+ it('keeps submit locked while refreshing the member list after delivery',async()=>{
+  const fetch=vi.fn(async()=>reply({ok:true}));
+  vi.stubGlobal('fetch',fetch);
+  let release!:()=>void;
+  const refreshed=new Promise<void>(resolve=>{release=resolve;});
+  const onComplete=vi.fn(()=>refreshed);
+  openWorkspaceInvitation({client:new CloudClient(),slug:'team',onComplete});
+  must(document.querySelector<HTMLInputElement>('input')).value='lou@example.test';
+  submit();
+  await vi.waitFor(()=>expect(onComplete).toHaveBeenCalledOnce());
+  expect(must(document.querySelector<HTMLButtonElement>('button[type=submit]')).disabled).toBe(true);
+  submit();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  release();
+  await vi.waitFor(()=>expect(document.querySelector('[data-cloud-invite-dialog]')).toBeNull());
  });
  it('retains only failed addresses after partial success and retries only those',async()=>{
   const state={fail:true};const sent:string[]=[];vi.stubGlobal('fetch',vi.fn(async(_url:string,init:RequestInit)=>{

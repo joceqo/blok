@@ -6,7 +6,7 @@ import type { CloudClient, CloudRole } from './client';
 import './workspace-settings.css';
 import { createChoice, styleTextField, wrapSearchField, type ChoiceControl } from '../ui/controls';
 
-export interface WorkspaceMembersOptions { client: CloudClient; slug: string; initialTab?: Tab; onInvite?: () => void }
+export interface WorkspaceMembersOptions { client: CloudClient; slug: string; initialTab?: Tab; onInvite?: () => { close(): void } | void }
 export interface WorkspaceMembersHandle { destroy(): void; refresh(): Promise<void> }
 export interface WorkspaceInvitationOptions {
   client: CloudClient;
@@ -16,7 +16,7 @@ export interface WorkspaceInvitationOptions {
   container?: HTMLElement;
   onComplete?: () => void | Promise<void>;
 }
-interface Member { id: string; email: string; role: CloudRole }
+interface Member { id: string; email: string; name?: string | null; role: CloudRole }
 interface JoinRequest { id: string; email: string; message?: string; status: string }
 interface Invite { id: string; email: string; role: CloudRole; status: string }
 type Tab = 'members' | 'requests' | 'invites';
@@ -93,6 +93,7 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
     requests: [] as JoinRequest[],
     invites: [] as Invite[],
   };
+  let invitation: { close(): void } | void;
   const choices: ChoiceControl<CloudRole>[] = [];
   const rowMenus: Array<{ destroy(): void }> = [];
 
@@ -104,8 +105,7 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
   }
 
   const invite = action('Inviter des membres', () => {
-    if (options.onInvite) options.onInvite();
-    else openWorkspaceInvitation({
+    invitation = options.onInvite ? options.onInvite() : openWorkspaceInvitation({
       client: options.client,
       slug: options.slug,
       container: container.closest<HTMLElement>('[data-desktop-settings-dialog]') ?? undefined,
@@ -158,14 +158,14 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
     error.hidden = false;
   }
 
-  function row(email: string, subtitle?: string): { root: HTMLElement; controls: HTMLElement } {
+  function row(label: string, subtitle?: string): { root: HTMLElement; controls: HTMLElement } {
     const root = el('tr', undefined, 'data-cloud-member-row');
     const identityCell = el('td');
     const identity = el('div', undefined, 'data-cloud-member-identity');
-    const avatar = el('span', email.charAt(0).toUpperCase(), 'data-cloud-member-avatar');
+    const avatar = el('span', Array.from(label)[0]?.toLocaleUpperCase(), 'data-cloud-member-avatar');
     avatar.setAttribute('aria-hidden', 'true');
     const text = el('div');
-    text.append(el('strong', email));
+    text.append(el('strong', label));
     if (subtitle) text.append(el('p', subtitle, 'data-cloud-settings-muted'));
     identity.append(avatar, text);
     const controlsCell = el('td');
@@ -308,8 +308,15 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
     if (activeTab) list.setAttribute('aria-labelledby', activeTab.id);
     disposeChoices();
     list.replaceChildren();
-    const needle = search.value.trim().toLocaleLowerCase();
-    const shown = itemsForTab(pending, outstanding).filter((item) => item.email.toLocaleLowerCase().includes(needle));
+    if (!state.loaded) {
+      if (!error.hidden) showLoadFailure();
+      else list.append(el('p', 'Chargement des accès…', 'data-cloud-settings-muted'));
+      return;
+    }
+    const normalize = (text: string) => text.normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase();
+    const needle = normalize(search.value.trim());
+    const shown = itemsForTab(pending, outstanding).filter((item) =>
+      normalize(item.email).includes(needle) || ('name' in item && normalize(item.name ?? '').includes(needle)));
     if (!shown.length) {
       list.append(el('p', emptyListCopy(state.tab, needle), 'data-cloud-members-empty'));
       return;
@@ -323,7 +330,8 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
     table.append(head, body);
     list.append(table);
     for (const item of shown) {
-      const { root, controls } = row(item.email, rowSubtitle(item));
+      const name = 'name' in item ? item.name?.trim() : undefined;
+      const { root, controls } = row(name || item.email, name ? item.email : rowSubtitle(item));
       if (state.tab === 'members') appendMemberControls(controls, item as Member);
       else if (state.tab === 'requests') appendRequestControls(controls, item as JoinRequest);
       else appendInviteControls(controls, item as Invite);
@@ -364,7 +372,7 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
     }
   }
 
-  list.append(el('p', 'Chargement des membres…', 'data-cloud-settings-muted'));
+  render();
   void refresh();
   return {
     refresh,
@@ -372,6 +380,7 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
       state.alive = false;
       ++state.generation;
       state.read?.abort();
+      invitation?.close();
       disposeChoices();
       panel.remove();
     },
@@ -401,6 +410,8 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
   email.placeholder = 'nom@entreprise.fr, autre@entreprise.fr';
   emailLabel.append(email);
   const hint = el('p', 'Séparez les adresses par une virgule.', 'data-cloud-invite-hint');
+  hint.id = `cloud-invite-hint-${crypto.randomUUID()}`;
+  email.setAttribute('aria-describedby', hint.id);
   const roleLabel = el('label', 'Accès à l’espace');
   const role = rolePicker('member', 'Accès à l’espace');
   roleLabel.append(role.element);
@@ -440,15 +451,19 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
   async function send(): Promise<void> {
     const addresses = [...new Set(email.value.split(/[,;\n]+/).map((value) => value.trim().toLowerCase()).filter(Boolean))];
     error.hidden = true;
+    email.removeAttribute('aria-invalid');
     if (!addresses.length || addresses.some((value) => !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(value))) {
       error.textContent = 'Saisissez une ou plusieurs adresses e-mail valides.';
       error.hidden = false;
+      email.setAttribute('aria-invalid', 'true');
       email.focus();
       return;
     }
     if (addresses.length > 25) {
       error.textContent = 'Invitez au maximum 25 personnes à la fois.';
       error.hidden = false;
+      email.setAttribute('aria-invalid', 'true');
+      email.focus();
       return;
     }
     life.busy = true;
@@ -475,14 +490,14 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
       }
     }
     if (!life.alive) return;
-    life.busy = false;
-    for (const control of [email, note, cancel, submit]) control.disabled = false;
-    role.disabled = false;
     if (progress.sent) {
       try { await options.onComplete?.(); } catch { /* Invitations already sent: never retry a successful address. */ }
     }
     if (!life.alive) return;
     if (!failed.length) { close(); return; }
+    life.busy = false;
+    for (const control of [email, note, cancel, submit]) control.disabled = false;
+    role.disabled = false;
     email.value = failed.map((item) => item.email).join(', ');
     const sent = progress.sent;
     status.textContent = sent ? `${sent} invitation${sent > 1 ? 's' : ''} envoyée${sent > 1 ? 's' : ''}.` : '';

@@ -11,6 +11,28 @@ document.head.appendChild(editorStyleElement);
 // Blok loads the font faces lazily; stories rendered without an editor still need them.
 import "../src/styles/fonts.css";
 
+// The desktop shell scopes its palette on the document as well as its mount.
+// Dialogs and popovers attached to body need the same attributes in an isolated story.
+let restoreDocumentTheme: (() => void) | undefined;
+
+function setStoryTheme(theme: string, signal: AbortSignal): void {
+  const roots = [document.documentElement, document.body];
+  const previous = roots.map(root => root.getAttribute("data-blok-theme"));
+  roots.forEach(root => root.setAttribute("data-blok-theme", theme));
+  const restore = () => {
+    if (restoreDocumentTheme !== restore) return;
+    roots.forEach((root, index) => {
+      const value = previous[index];
+      if (value === null) root.removeAttribute("data-blok-theme");
+      else root.setAttribute("data-blok-theme", value);
+    });
+    signal.removeEventListener("abort", restore);
+    restoreDocumentTheme = undefined;
+  };
+  restoreDocumentTheme = restore;
+  signal.addEventListener("abort", restore, {once:true});
+}
+
 const preview: Preview = {
   initialGlobals: {
     reactGrab: true,
@@ -38,6 +60,7 @@ const preview: Preview = {
   },
   decorators: [
     (story, context) => {
+      if (context.viewMode === "story") restoreDocumentTheme?.();
       const container = document.createElement("div");
       const fullscreen = context.parameters.layout === "fullscreen";
 
@@ -58,6 +81,11 @@ const preview: Preview = {
       }
 
       if (isElementContent) {
+        if (context.viewMode === "story" && fullscreen && context.title.startsWith("Shell/")) {
+          const theme = storyContent.getAttribute("data-blok-theme");
+          if (theme === "dark" || theme === "light") setStoryTheme(theme, context.abortSignal);
+        }
+        delete document.documentElement.dataset.shellLoadingTheme;
         container.appendChild(storyContent);
       }
 

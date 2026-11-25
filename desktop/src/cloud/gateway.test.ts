@@ -58,7 +58,9 @@ describe('cloud gateway', () => {
       await gateway.refresh();
       expect(document.querySelector('h2')?.textContent).toBe('Second');
       must(document.querySelector<HTMLButtonElement>('[data-inbox-trigger]')).click();
-      await vi.waitFor(() => expect(document.querySelector('[data-inbox-pane]')?.textContent).toContain('Votre demande d’accès a été refusée.'));
+      await vi.waitFor(() => expect(document.querySelector('[data-inbox-decision]')?.textContent).toContain('Refusée par Admin'));
+      expect(document.querySelector('[data-inbox-description]')?.textContent).toBe('Votre demande d’accès');
+      expect(document.querySelector('[data-inbox-decision] time')?.getAttribute('datetime')).toBe('2026-11-01T12:00:00Z');
     } finally { gateway.destroy(); }
   });
   it('shows the dedicated unreachable screen when the instance fetch fails', async () => {
@@ -68,6 +70,51 @@ describe('cloud gateway', () => {
     expect(document.body.textContent).toContain('Serveur injoignable');
     expect(document.querySelector('input[type="email"]')).toBeNull();
     expect([...document.querySelectorAll('button')].some(item => item.textContent === 'Réessayer')).toBe(true);
+  });
+  it('rechecks the server before resuming a session that went offline', async () => {
+    let offline = true;
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/api/instance')) return response(instance);
+      return offline ? response({},503) : response({user,workspaces:[workspace]});
+    });
+    vi.stubGlobal('fetch', fetch);
+    const open = vi.fn();
+    const gateway = await mountCloudGateway(document.body, {onOpenWorkspace:open});
+    try {
+      expect(document.querySelector('[data-cloud-route]')?.getAttribute('data-cloud-route')).toBe('unreachable');
+      expect(document.querySelector('input[type=email]')).toBeNull();
+      await gateway.refresh();
+      expect(document.querySelector('h1')?.textContent).toBe('Serveur injoignable');
+      offline = false;
+      click('Réessayer');
+      await vi.waitFor(() => expect(open).toHaveBeenCalledWith(workspace, expect.any(CloudClient)));
+      expect(fetch.mock.calls.filter(([url]) => url.endsWith('/api/instance'))).toHaveLength(3);
+    } finally { gateway.destroy(); }
+  });
+  it.each([true,false])('opens a looked-up member workspace only when its current session still permits it (%s)', async present => {
+    stubFetch(async url => response(url.endsWith('/api/session')
+      ? {user,workspaces:present ? [workspace,second] : []} : {...workspace,role:'member',joinStatus:'approved'}));
+    const open = vi.fn();
+    const gateway = await mountCloudGateway(document.body,{onOpenWorkspace:open});
+    try {
+      click('Rejoindre un espace');
+      const slug = must(document.querySelector<HTMLInputElement>('#cloud-join-slug'));
+      expect(document.activeElement).toBe(slug);
+      must(slug.form).requestSubmit();
+      await settle();
+      if (present) expect(open).toHaveBeenCalledWith(workspace, expect.any(CloudClient));
+      else expect(open).not.toHaveBeenCalled();
+    } finally { gateway.destroy(); }
+  });
+  it.each([
+    ['admins_only',false,false], ['admins_only',true,true], ['disabled',true,false],
+  ] as const)('shows the workspace creation entry for %s, instance admin %s', async (policy, instanceAdmin, visible) => {
+    vi.stubGlobal('fetch', vi.fn(async (url:string) => response(url.endsWith('/api/instance')
+      ? {...instance,workspaceCreation:policy,defaultWorkspace:null} : {user:{...user,instanceAdmin},workspaces:[]})));
+    const gateway = await mountCloudGateway(document.body,{onOpenWorkspace:vi.fn()});
+    try {
+      expect([...document.querySelectorAll('button')].some(b=>b.textContent==='Créer un espace de travail')).toBe(visible);
+    } finally { gateway.destroy(); }
   });
   it('offers the Docker startup command and the standalone workspace when the native local server is down', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('offline')));

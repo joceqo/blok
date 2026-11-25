@@ -1,11 +1,14 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import type { CalendarEvent, CalendarStore } from './calendar-store';
 import { mountCalendar } from './calendar-view';
+import { getTimeFormatter, setTimeFormat } from './display-preferences';
 import { must } from './test-helpers';
 
 const lifetimes: Array<{destroy():void}> = [];
 afterEach(() => {
   lifetimes.splice(0).forEach(view => view.destroy());
+  localStorage.removeItem('blok:desktop:time-format');
+  document.documentElement.removeAttribute('data-desktop-time-format');
   document.body.replaceChildren();
   vi.useRealTimers();
 });
@@ -179,4 +182,62 @@ it('opens a draft for the selected time range when dragging upwards through an e
   pointer(document,'pointerup',570);
   expect(get<HTMLInputElement>('[name=start]').value).toBe('2026-11-23T09:30');
   expect(get<HTMLInputElement>('[name=end]').value).toBe('2026-11-23T11:30');
+});
+
+it('shows a weekly planning grouped by local date with all-day entries first and exclusive ends', async () => {
+  setTimeFormat('24h');
+  const timed = fixture(new Date(2026,10,25,23).toISOString(), new Date(2026,10,26,1).toISOString(), {title:'Passation'});
+  const allDay = fixture('2026-11-25','2026-11-26',{allDay:true,title:'Atelier'});
+  setup(async () => [timed, allDay], false);
+  const view = get<HTMLSelectElement>('.cal-view');
+  view.value = 'agenda'; view.dispatchEvent(new Event('change'));
+  await vi.waitFor(() => expect(document.querySelectorAll('.cal-planning-event')).toHaveLength(3));
+  const groups = document.querySelectorAll('.cal-planning-day');
+  expect(groups.length).toBe(2);
+  expect(groups[0].querySelector('.cal-planning-event strong')?.textContent).toBe('Atelier');
+  expect(groups[0].textContent).toContain('23:00 – 24:00');
+  expect(groups[1].textContent).toContain('00:00 – 01:00');
+  setTimeFormat('12h');
+  const midnight = getTimeFormatter().format(new Date(2026,10,26));
+  await vi.waitFor(() => expect(groups[0].textContent).toContain(getTimeFormatter().format(new Date(2026,10,25,23)) + ' – ' + midnight));
+  expect(groups[1].textContent).toContain(midnight + ' – ' + getTimeFormatter().format(new Date(2026,10,26,1)));
+  get<HTMLButtonElement>('.cal-planning-event').click();
+  expect(get<HTMLInputElement>('[name=title]').value).toBe('Atelier');
+  expect(document.querySelector('.cal-editor [type=submit]')).toBeNull();
+});
+
+it('updates clock labels and event times in place while keeping local input values', async () => {
+  const start = new Date(2026,10,25,16,30), end = new Date(2026,10,25,17,30);
+  const { store } = setup(async () => [fixture(start.toISOString(), end.toISOString())]);
+  await vi.waitFor(() => expect(document.querySelector('.cal-event')).toBeTruthy());
+  for (const mode of ['24h', '12h'] as const) {
+    setTimeFormat(mode);
+    const format = getTimeFormatter();
+    expect(format.resolvedOptions().hour12).toBe(mode === '12h');
+    expect(get('.cal-scale').textContent).toContain(format.format(new Date(2000,0,15,16)));
+    expect(get('.cal-event small').textContent).toBe(format.format(start) + ' – ' + format.format(end));
+    expect(get('.cal-agenda-entry').textContent).toContain(format.format(start));
+  }
+  expect(store.list).toHaveBeenCalledTimes(1);
+  get<HTMLButtonElement>('.cal-event').click();
+  expect(get<HTMLInputElement>('[name=start]').value).toBe('2026-11-25T16:30');
+});
+
+it('opens a day from the week, keeps draft duration when moving it, then cancels back to its opener', async () => {
+  const {store} = setup(async () => []);
+  get<HTMLButtonElement>('button.cal-day-label').click();
+  expect(get<HTMLSelectElement>('.cal-view').value).toBe('1');
+  const newEvent = get<HTMLButtonElement>('[aria-label="Nouvel événement"]');
+  newEvent.focus(); newEvent.click();
+  expect(get('.cal-details .cal-editor')).toBeTruthy();
+  expect(get('.cal-details .cal-mini')).toBeTruthy();
+  const start = get<HTMLInputElement>('[name=start]');
+  expect(start.value).toBe('2026-11-23T09:00');
+  start.value = '2026-11-23T15:30'; start.dispatchEvent(new Event('change'));
+  expect(get<HTMLInputElement>('[name=end]').value).toBe('2026-11-23T16:30');
+  start.focus();
+  start.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true}));
+  expect(document.querySelector('.cal-editor')).toBeNull();
+  expect(document.activeElement).toBe(newEvent);
+  expect(store.save).not.toHaveBeenCalled();
 });

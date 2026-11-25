@@ -9,11 +9,11 @@ export function openRemoteTrash(
   ref: RemoteWorkspace,
   flush: () => Promise<unknown>,
   changed: () => Promise<void>,
-) {
-  const client = new CloudClient({
+  client: Pick<CloudClient, 'request'> = new CloudClient({
     origin: ref.server,
     sessionAdapter: '__TAURI_INTERNALS__' in window ? nativeSessionAdapter(ref.server) : undefined,
-  });
+  }),
+) {
   const base = '/api/workspaces/' + encodeURIComponent(ref.workspaceId);
   const controller = new AbortController();
   const modal = createNavigationDialog('Corbeille');
@@ -38,9 +38,10 @@ export function openRemoteTrash(
 
   async function refresh(message = '') {
     await flush();
-    const index = await client.request<WorkspaceIndex>(base + '/index', { signal: controller.signal });
+    const index = await client.request<WorkspaceIndex & { revision: number }>(base + '/index', { signal: controller.signal });
     if (controller.signal.aborted) return;
     list.replaceChildren();
+    const inTrash = new Set(index.trash?.map(page => page.id));
     for (const page of index.trash ?? []) {
       const name = page.title || 'Sans titre';
       const row = document.createElement('li');
@@ -50,12 +51,23 @@ export function openRemoteTrash(
       list.append(row);
       if ((ref.role !== 'admin' && ref.role !== 'member') || index.access?.[page.id]?.level !== 'full')
         continue;
+      const restore = button('Restaurer', () => void restorePage(page.id, name, index.revision, restore));
+      restore.setAttribute('aria-label', 'Restaurer « ' + name + ' »');
+      const unavailable = index.access[page.id].sharedRoot ? 'Emplacement d’origine inaccessible.' :
+        page.parentId && inTrash.has(page.parentId) ? 'Restaurez d’abord la page parente.' : '';
+      restore.disabled = Boolean(unavailable) || !Number.isSafeInteger(index.revision);
+      restore.title = unavailable || 'Restaurer uniquement cette page à son emplacement d’origine';
+      if (unavailable) {
+        const detail = document.createElement('small');
+        detail.textContent = unavailable;
+        caption.append(document.createElement('br'), detail);
+      }
       const remove = button('Supprimer…', () => {
         if (busy) return;
         const question = document.createElement('p');
         question.textContent = 'Supprimer définitivement « ' + name + ' » et son historique ?';
         const cancel = button('Annuler', () => {
-          row.replaceChildren(caption, remove);
+          row.replaceChildren(caption, restore, remove);
           remove.focus();
         });
         const confirm = button('Supprimer définitivement', () => {
@@ -65,21 +77,21 @@ export function openRemoteTrash(
         cancel.focus();
       });
       remove.setAttribute('aria-label', 'Supprimer définitivement « ' + name + ' »');
-      row.append(remove);
+      row.append(restore, remove);
     }
     status.textContent = [message, !list.children.length && 'La corbeille est vide.']
       .filter(Boolean)
       .join(' ');
   }
 
-  function failure(error: unknown) {
+  function failure(error: unknown, restoring = false) {
     if (controller.signal.aborted) return;
     if (error instanceof CloudApiError && error.status === 403) {
       status.textContent = 'Vous n’avez plus les droits nécessaires.';
     } else if (error instanceof CloudApiError && error.status === 404) {
       status.textContent = 'La page est introuvable ou inaccessible.';
     } else if (error instanceof CloudApiError && error.status === 409) {
-      status.textContent =
+      status.textContent = restoring ? 'La page ou son emplacement a changé. Actualisez la corbeille.' :
         'Vérifiez que la page est dans la corbeille. Supprimez ou déplacez d’abord ses sous-pages.';
     } else {
       status.textContent = 'La demande a échoué. Actualisez la corbeille puis réessayez.';
@@ -90,6 +102,28 @@ export function openRemoteTrash(
         void refresh().catch(failure);
       }),
     );
+  }
+
+  async function restorePage(id: string, name: string, revision: number, control: HTMLButtonElement) {
+    if (busy) return;
+    busy = true;
+    control.disabled = true;
+    try {
+      await flush();
+      if (controller.signal.aborted) return;
+      const result = await client.request<{restored: string}>(
+        base + '/pages/' + encodeURIComponent(id) + '/restore-from-trash',
+        {method:'POST', body: JSON.stringify({revision})},
+      );
+      if (result.restored !== id) throw new Error('Unconfirmed restoration');
+      await changed();
+      if (controller.signal.aborted) return;
+      await refresh('« ' + name + ' » a été restaurée.');
+      modal.surface.focus();
+    } catch (error) {
+      failure(error, true);
+      control.disabled = false;
+    } finally { busy = false; }
   }
 
   async function purge(id: string, name: string, confirm: HTMLButtonElement, cancel: HTMLButtonElement) {

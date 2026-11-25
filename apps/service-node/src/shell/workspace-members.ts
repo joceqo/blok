@@ -50,7 +50,7 @@ export function createWorkspaceMembers(pool: PgPool, recheckAccess: (workspace: 
       const scope = await readWorkspaceScope(client, key, c.req.param('slug')!, write);
       workspace = scope.workspace_id;
       if (!write) {
-        const { rows } = await client.query(`SELECT u.id,u.email,m.role FROM memberships m
+        const { rows } = await client.query(`SELECT u.id,u.email,u.name,m.role FROM memberships m
           JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 ORDER BY u.email`, [workspace]);
         await client.query('COMMIT');
         return c.json({ members: rows });

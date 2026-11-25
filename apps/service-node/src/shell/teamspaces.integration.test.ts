@@ -20,7 +20,7 @@ describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema
     const response = await call('', 'POST', { name });
     expect(response.status).toBe(201);
     const { teamspace } = await response.json();
-    expect(teamspace).toEqual({ id: expect.any(String), name: name.trim(), workspaceId: 'w', createdAt: expect.any(String) });
+    expect(teamspace).toMatchObject({ memberCount:1, joined:true, canManage:true, owners:[{userId:"member"}], id: expect.any(String), name: name.trim(), workspaceId: 'w', createdAt: expect.any(String) });
     return teamspace.id as string;
   }
   beforeAll(async () => {
@@ -70,10 +70,10 @@ describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema
     const path = '/' + id + '/members';
     const added = await Promise.all([1,2].map(() => call(path, 'POST', { userId:'reader' })));
     expect(added.map(r => r.status).sort()).toEqual([201,409]);
-    expect(await added.find(r => r.status === 201)!.json()).toEqual({member:{userId:'reader',email:'reader@test.invalid'}});
+    expect(await added.find(r => r.status === 201)!.json()).toMatchObject({member:{userId:'reader',email:'reader@test.invalid',role:'member'}});
     await call(path,'POST',{userId:'admin'});
     const listed = await call(path);
-    expect((await listed.json()).members.map((m: {userId:string}) => m.userId)).toEqual(['admin','reader']);
+    expect((await listed.json()).members.map((m: {userId:string}) => m.userId)).toEqual(['admin','member','reader']);
     expect((await call(path,'POST',{userId:'outside/member'})).status).toBe(400);
     expect(await (await call(path,'POST',{userId:'outsider'})).json()).toEqual({error:'not_workspace_member'});
     expect((await call(path+'/reader','DELETE')).status).toBe(200);
@@ -137,6 +137,81 @@ describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema
     expect(await list()).toEqual([]);
   });
 
+  it('persists metadata and enforces team ownership and the workspace creation policy', async () => {
+    const id = await create('Catalogue');
+    const path = '/' + id;
+    expect((await call(path, 'PATCH', { icon:'🧑‍💻', description:'Documents produit' })).status).toBe(200);
+    let directory = await (await call()).json();
+    expect(directory.teamspaces.find((t: {id:string}) => t.id===id)).toMatchObject({
+      icon:'🧑‍💻', description:'Documents produit', updatedAt:expect.any(String), owners:[{userId:'member'}],
+    });
+    for (const icon of ['https://example.test/x','data:image/svg+xml;base64,AAAA','not an icon', '📅📅']) {
+      expect((await call(path,'PATCH',{icon})).status).toBe(400);
+    }
+    const tiny = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+kxi0AAAAASUVORK5CYII=', 'base64');
+    expect((await call(path,'PATCH',{icon:'data:image/png;base64,' + tiny.toString('base64')})).status).toBe(200);
+    tiny.writeUInt32BE(500_000, 16);
+    expect((await call(path,'PATCH',{icon:'data:image/png;base64,' + tiny.toString('base64')})).status).toBe(400);
+    expect((await call(path,'PATCH',{icon:'icon:house:blue'})).status).toBe(200);
+    expect((await call(path+'/members/member','DELETE')).status).toBe(409);
+    expect((await call(path+'/members','POST',{userId:'reader',role:'owner'})).status).toBe(400);
+    expect((await call(path+'/members','POST',{userId:'admin',role:'owner'})).status).toBe(201);
+    expect((await call(path+'/members/member','PATCH',{role:'member'})).status).toBe(200);
+    expect((await call(path,'PATCH',{description:'no permission'})).status).toBe(403);
+    expect((await call(path+'/members/member','PATCH',{role:'owner'},'admin')).status).toBe(200);
+    expect((await call('/settings','PATCH',{restrictCreation:true})).status).toBe(403);
+    expect((await call('/settings','PATCH',{restrictCreation:true},'admin')).status).toBe(200);
+    directory = await (await call()).json();
+    expect(directory.canCreate).toBe(false);
+    expect(directory.settings.restrictCreation).toBe(true);
+    expect((await call('','POST',{name:'Refusé'})).status).toBe(403);
+    expect((await call('','POST',{name:'Autorisé'},'admin')).status).toBe(201);
+    expect((await call('/settings','PATCH',{restrictCreation:false},'admin')).status).toBe(200);
+  });
+
+  it('enrolls existing and future workspace members without granting access to a page', async () => {
+    const id = await create('All hands');
+    const path = '/' + id;
+    expect((await call('/settings','PATCH',{defaultTeamspaceIds:[id,'other-team']},'admin')).status).toBe(404);
+    expect((await call('/settings','PATCH',{defaultTeamspaceIds:[id]},'admin')).status).toBe(200);
+    expect((await call(path+'/members/reader','DELETE')).status).toBe(409);
+    const getTeam = async () => (await (await call()).json()).teamspaces.find((row: {id:string}) => row.id===id);
+    expect(await getTeam()).toMatchObject({isDefault:true,memberCount:3,owners:[{userId:'member'}]});
+    await db.query("INSERT INTO users(id,email) VALUES('newbie','newbie@test'); INSERT INTO memberships VALUES('w','newbie','viewer')");
+    expect(await getTeam()).toMatchObject({memberCount:4});
+    expect((await db.query("SELECT 1 FROM page_shares WHERE user_id='newbie'")).rowCount).toBe(0);
+    expect((await call('/settings','PATCH',{defaultTeamspaceIds:[]},'admin')).status).toBe(200);
+    expect(await getTeam()).toMatchObject({isDefault:false,memberCount:4});
+    await db.query("DELETE FROM memberships WHERE user_id='newbie'; INSERT INTO memberships VALUES('w','newbie','member')");
+    expect(await getTeam()).toMatchObject({memberCount:3});
+  });
+
+  it('serializes a concurrent admission and default-team change', async () => {
+    const id = await create('Operations');
+    await db.query("INSERT INTO users(id,email) VALUES('concurrent-member','concurrent@test')");
+    const admission = await db.connect();
+    try {
+      await admission.query('BEGIN');
+      await admission.query("INSERT INTO memberships VALUES('w','concurrent-member','viewer')");
+      const change = call('/settings','PATCH',{defaultTeamspaceIds:[id]},'admin');
+      await admission.query('COMMIT');
+      expect((await change).status).toBe(200);
+      expect((await db.query("SELECT role FROM teamspace_members WHERE workspace_id='w' AND teamspace_id=$1 AND user_id='concurrent-member'",[id])).rows)
+        .toEqual([{role:'member'}]);
+    } finally {
+      await admission.query('ROLLBACK');
+      admission.release();
+    }
+  });
+
+  it('keeps historical teams editable without guessing who created them', async () => {
+    await db.query("INSERT INTO teamspaces(id,workspace_id,name) VALUES('legacy','w','Legacy')");
+    const directory = await (await call()).json();
+    expect(directory.teamspaces.find((t: {id:string}) => t.id==='legacy')).toMatchObject({owners:[], canManage:true, description:'', isDefault:false});
+    expect((await call('/legacy','PATCH',{name:'Renamed'})).status).toBe(200);
+    expect((await call('/legacy','PATCH',{description:'Viewer'},'reader')).status).toBe(403);
+  });
+
   it('enforces both workspace relations even on direct SQL writes', async () => {
     const id = await create('Operations');
     await expect(db.query('INSERT INTO teamspace_members VALUES($1,$2,$3)', ['z',id,'outsider'])).rejects.toMatchObject({ code:'23503' });
@@ -144,6 +219,6 @@ describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema
     await db.query("INSERT INTO users(id,email) VALUES('departed','departed@test'); INSERT INTO memberships VALUES('w','departed','member')");
     await call('/'+id+'/members','POST',{userId:'departed'});
     await db.query("DELETE FROM memberships WHERE workspace_id='w' AND user_id='departed'; DELETE FROM users WHERE id='departed'");
-    expect(await (await call('/'+id+'/members')).json()).toEqual({members:[]});
+    expect((await (await call('/'+id+'/members')).json()).members.map((m: {userId:string}) => m.userId)).toEqual(['member']);
   });
 });

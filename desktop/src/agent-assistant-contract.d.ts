@@ -1,6 +1,7 @@
 import type {AgentModel} from '../../types/api';
 import type {CliCommand,CliStatus} from '../../src/shell/agent-model';
 export interface AgentAssistantOptions {
+  onOpenChange?(open: boolean): void;
   workspaceSearch?: {
     find(query: string, signal: AbortSignal): Promise<{id: string; title: string; excerpt: string}[]>;
     open(id: string): void;
@@ -17,6 +18,7 @@ export interface AgentAssistantOptions {
 export interface AgentAssistantHandle {
   searchableChats(): {id: string; title: string; excerpt: string}[];
   openChat(id: string): void;
+  newChat(): void;
   refreshPageActions(): void;
   element:HTMLElement;editorSlot:HTMLElement;open():void;close():void;destroy():void;refreshProviders():Promise<void>;
 }

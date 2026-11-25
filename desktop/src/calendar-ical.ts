@@ -1,6 +1,7 @@
 import ICAL from 'ical.js';
 import type { CalendarEvent, CalendarStore } from './calendar-store';
 import { CloudApiError } from './cloud/client';
+import { getTimeFormatter } from './display-preferences';
 import './calendar-import.css';
 
 const maxEvents = 250;
@@ -116,7 +117,8 @@ export function importCalendarFile(host: HTMLElement, store: CalendarStore, refr
       pending = events;
       for (const item of events) {
         const row = document.createElement('li');
-        row.textContent = item.title + ' · ' + (item.allDay ? item.start : new Date(item.start).toLocaleString('fr-FR', {dateStyle: 'short', timeStyle: 'short'}));
+        const date = new Date(item.start);
+        row.textContent = item.title + ' · ' + (item.allDay ? item.start : date.toLocaleDateString('fr-FR') + ' ' + getTimeFormatter().format(date));
         list.append(row);
       }
       status.textContent = events.length + ' à importer.' + (omitted ? ' Éléments ignorés (' + omitted + ') : ' + skipped.join(', ') + '.' : '');

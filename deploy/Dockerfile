@@ -55,6 +55,7 @@ COPY --from=shell-build /app/package.json /app/package.json
 COPY --from=shell-build /app/node_modules /app/node_modules
 COPY --from=shell-build /app/dist /app/dist
 COPY --from=room-build /build/apps/service-node/dist/shell/mcp-runtime.mjs /app/dist/shell/mcp-runtime.mjs
+COPY --from=room-build /build/apps/service-node/dist/shell/markdown-runtime.mjs /app/dist/shell/markdown-runtime.mjs
 COPY apps/service/schema.sql /app/schema.sql
 RUN mkdir -p /data && chown 65532:65532 /data \
  && chmod +x /app/dist/shell/blokctl.js && ln -s /app/dist/shell/blokctl.js /usr/local/bin/blokctl

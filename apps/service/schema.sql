@@ -250,3 +250,103 @@ CREATE TABLE IF NOT EXISTS calendar_workspace_preferences (
 );
 CREATE INDEX IF NOT EXISTS calendar_workspace_preferences_user ON calendar_workspace_preferences(user_id);
 INSERT INTO schema_migrations(version) VALUES(16) ON CONFLICT DO NOTHING;
+
+-- Copies delivered to different admins share a cycle with the applicant's decision.
+-- A new submission after a rejection starts a separate cycle.
+ALTER TABLE join_requests ADD COLUMN IF NOT EXISTS notification_cycle uuid NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE workspace_notifications ADD COLUMN IF NOT EXISTS request_cycle uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS workspace_notification_decision_cycle
+  ON workspace_notifications(workspace_id, request_cycle) WHERE type IN ('join_approved','join_rejected');
+-- Reconstruct older decisions only when the recorded interval contains one submission.
+-- All admin copies of the same submission have the same transaction timestamp.
+WITH decisions AS (
+  UPDATE workspace_notifications SET request_cycle=gen_random_uuid()
+  WHERE type IN ('join_approved','join_rejected') AND request_cycle IS NULL
+    AND NOT EXISTS (SELECT FROM schema_migrations WHERE version=17)
+  RETURNING workspace_id,recipient_id,created_at,request_cycle
+), intervals AS (
+  SELECT *,lag(created_at) OVER (PARTITION BY workspace_id,recipient_id ORDER BY created_at) AS previous_at
+  FROM decisions
+), matches AS (
+  SELECT i.request_cycle,n.id,n.created_at FROM intervals i JOIN workspace_notifications n
+    ON n.workspace_id=i.workspace_id AND n.actor_id=i.recipient_id AND n.type='join_requested'
+    AND n.created_at < i.created_at AND (i.previous_at IS NULL OR n.created_at > i.previous_at)
+), unambiguous AS (
+  SELECT request_cycle FROM matches GROUP BY request_cycle HAVING min(created_at)=max(created_at)
+)
+UPDATE workspace_notifications n SET request_cycle=m.request_cycle
+FROM matches m JOIN unambiguous USING(request_cycle) WHERE n.id=m.id AND n.request_cycle IS NULL;
+
+WITH upgrade AS (
+  INSERT INTO schema_migrations(version) VALUES(17) ON CONFLICT DO NOTHING RETURNING version
+)
+UPDATE workspace_notifications n SET request_cycle=j.notification_cycle
+FROM upgrade CROSS JOIN join_requests j
+WHERE j.workspace_id=n.workspace_id AND j.user_id=n.actor_id AND j.status='pending'
+  AND n.type='join_requested' AND n.created_at=j.created_at AND n.request_cycle IS NULL;
+
+ALTER TABLE workspace_notifications ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+INSERT INTO schema_migrations(version) VALUES(18) ON CONFLICT DO NOTHING;
+
+-- Add directory metadata without assigning an invented owner to existing teams.
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS restrict_teamspace_creation boolean NOT NULL DEFAULT false;
+ALTER TABLE teamspaces ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT '';
+ALTER TABLE teamspaces ADD COLUMN IF NOT EXISTS icon text NOT NULL DEFAULT '';
+ALTER TABLE teamspaces ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false;
+ALTER TABLE teamspaces ADD COLUMN IF NOT EXISTS owner_managed boolean NOT NULL DEFAULT false;
+ALTER TABLE teamspaces ADD COLUMN IF NOT EXISTS updated_at timestamptz;
+UPDATE teamspaces SET updated_at=created_at WHERE updated_at IS NULL;
+ALTER TABLE teamspaces ALTER COLUMN updated_at SET DEFAULT now(), ALTER COLUMN updated_at SET NOT NULL;
+ALTER TABLE teamspace_members ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT 'member' CHECK(role IN ('owner','member'));
+
+-- Serialize admissions against default-team updates, including invitation acceptance.
+CREATE OR REPLACE FUNCTION lock_workspace_teamspace_defaults() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM 1 FROM workspaces WHERE id=NEW.workspace_id FOR KEY SHARE;
+  RETURN NEW;
+END $$;
+CREATE OR REPLACE TRIGGER lock_workspace_teamspace_defaults BEFORE INSERT ON memberships
+FOR EACH ROW EXECUTE FUNCTION lock_workspace_teamspace_defaults();
+
+CREATE OR REPLACE FUNCTION join_default_teamspaces() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO teamspace_members(workspace_id,teamspace_id,user_id)
+  SELECT NEW.workspace_id,id,NEW.user_id FROM teamspaces WHERE workspace_id=NEW.workspace_id AND is_default
+  ON CONFLICT DO NOTHING;
+  RETURN NEW;
+END $$;
+CREATE OR REPLACE TRIGGER join_default_teamspaces AFTER INSERT ON memberships
+FOR EACH ROW EXECUTE FUNCTION join_default_teamspaces();
+
+CREATE OR REPLACE FUNCTION touch_teamspace_directory() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP='DELETE' THEN
+    UPDATE teamspaces SET updated_at=now() WHERE workspace_id=OLD.workspace_id AND id=OLD.teamspace_id;
+  ELSE
+    UPDATE teamspaces SET updated_at=now() WHERE workspace_id=NEW.workspace_id AND id=NEW.teamspace_id;
+  END IF;
+  RETURN NULL;
+END $$;
+CREATE OR REPLACE TRIGGER touch_teamspace_roster AFTER INSERT OR DELETE OR UPDATE OF role ON teamspace_members
+FOR EACH ROW EXECUTE FUNCTION touch_teamspace_directory();
+CREATE OR REPLACE TRIGGER touch_teamspace_pages AFTER INSERT OR DELETE ON teamspace_pages
+FOR EACH ROW EXECUTE FUNCTION touch_teamspace_directory();
+INSERT INTO schema_migrations(version) VALUES(19) ON CONFLICT DO NOTHING;
+
+-- Discussion notifications inherit the page's access and are removed with it.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM schema_migrations WHERE version=20) THEN
+    ALTER TABLE workspace_notifications ADD COLUMN page_id text REFERENCES pages(id) ON DELETE CASCADE;
+    ALTER TABLE workspace_notifications ADD COLUMN comment_id text;
+    ALTER TABLE workspace_notifications ALTER COLUMN actor_id DROP NOT NULL;
+    ALTER TABLE workspace_notifications DROP CONSTRAINT workspace_notifications_type_check;
+    ALTER TABLE workspace_notifications ADD CONSTRAINT workspace_notifications_type_check CHECK (
+      (type IN ('join_requested','join_approved','join_rejected') AND actor_id IS NOT NULL AND page_id IS NULL AND comment_id IS NULL)
+      OR (type IN ('comment_mention','comment_reply') AND page_id IS NOT NULL AND comment_id IS NOT NULL)
+    );
+    CREATE UNIQUE INDEX workspace_notifications_comment_recipient
+      ON workspace_notifications(page_id,comment_id,recipient_id) WHERE comment_id IS NOT NULL;
+    INSERT INTO schema_migrations(version) VALUES(20);
+  END IF;
+END $$;

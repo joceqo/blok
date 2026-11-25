@@ -1,0 +1,65 @@
+.workspace-library {
+  width: 100%; min-width: 0; height: 100%; overflow: auto; container-type: inline-size;
+  padding: 52px clamp(20px, 7vw, 96px) 64px clamp(20px, 7.5vw, 104px); color: var(--desktop-ink); background: var(--desktop-canvas);
+  font-size: 14px; line-height: 1.45;
+}
+.workspace-library :where(.library-titlebar, .library-toolbar) button { font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer; }
+.workspace-library :where(.library-titlebar, .library-toolbar) button:focus-visible, .workspace-library input:focus-visible {
+  outline: 2px solid var(--blok-focus-ring, #2383e2); outline-offset: -2px;
+}
+.library-titlebar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.library-titlebar [data-desktop-sidebar-toggle] .library-glyph { transform: scaleX(-1); }
+.library-titlebar h1 { margin: 0 auto 0 0; font-size: 32px; line-height: 1.25; font-weight: 700; letter-spacing: -.035em; }
+.library-titlebar h1:focus { outline: none; }
+.library-titlebar .library-create { flex: none; border-radius: 6px; padding: 5px 12px; min-height: 32px; color: #fff; background: #176bc1; font-weight: 600; }
+.library-titlebar .library-create:hover { background: #125ba7; }
+.workspace-library h2 { margin: 10px 0 14px 4px; font-size: 24px; font-weight: 650; letter-spacing: -.025em; }
+.library-toolbar, .library-toolbar nav, .library-tools, .library-glyph { display: flex; align-items: center; }
+.library-toolbar { justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.library-toolbar nav { gap: 2px; flex-wrap: wrap; }
+.library-toolbar nav button { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; padding: 3px 12px; border-radius: 20px; color: var(--desktop-muted); font-weight: 500; }
+.library-toolbar nav button[aria-current], .library-toolbar nav button:hover, .library-tools button:hover { background: var(--desktop-hover); color: var(--desktop-ink); }
+.library-glyph { justify-content: center; flex: none; width: 16px; height: 16px; }
+.library-glyph svg, .library-glyph img { width: 16px; height: 16px; object-fit: contain; }
+.library-tools { position: relative; gap: 1px; margin-left: auto; padding-inline-end: 4px; }
+.library-tools > button { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 5px; color: var(--desktop-muted); }
+.library-tools > button[data-applied], .library-tools > button[aria-expanded=true] { color: var(--desktop-ink); background: var(--desktop-hover); }
+.library-menu { position: absolute; inset: calc(100% + 4px) 0 auto auto; z-index: 2; padding: 6px; border: 1px solid var(--desktop-border); border-radius: 8px; background: var(--desktop-strip); box-shadow: 0 6px 18px #0002; }
+.library-menu label { display: flex; align-items: center; gap: 8px; padding: 5px; white-space: nowrap; cursor: pointer; }
+.library-search { display: flex; align-items: center; gap: 8px; margin: 8px 0; padding: 0 8px; background: var(--desktop-strip); color: var(--desktop-muted); border-radius: 5px; }
+.library-search input { flex: 1; min-width: 0; background: transparent; color: var(--desktop-ink); font: inherit; border: none; padding: 6px 4px; }
+.library-empty { padding-inline: 8px; color: var(--desktop-muted); }
+@container (max-width: 520px) {
+  .library-toolbar nav button { padding: 4px 7px; gap: 4px; }
+  .library-tools { padding: 0; }
+
+}
+@container (max-width: 400px) {
+  .library-titlebar { gap: 6px; flex-wrap: wrap; }
+  .library-titlebar h1 { font-size: 25px; }
+  .library-titlebar [data-desktop-sidebar-toggle] { margin-inline-end: 0; }
+  .library-titlebar .library-create { padding-inline: 8px; }
+}
+
+.library-view-picker { display: none; }
+@container (max-width: 480px) {
+  .library-toolbar nav { display: none; }
+  .library-view-picker {
+    position: relative; display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 3px 10px;
+    border-radius: 20px; font-weight: 500; background: var(--desktop-hover); color: var(--desktop-ink);
+  }
+  .library-view-picker select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+  .library-view-picker:focus-within { outline: 2px solid var(--blok-focus-ring, #2383e2); }
+  .library-titlebar { flex-wrap: wrap; }
+}
+
+[data-desktop-library-host] { flex: 1 1 0%; min-width: 0; min-height: 0; overflow: auto; }
+[data-desktop-library-host][hidden] { display: none; }
+[data-library-content] { height: 100%; }
+[data-library-mode] [data-blok-agent-body] > [data-blok-agent-editor] { display: none; }
+[data-library-grid] {
+  margin-top: 6px; min-width: 0;
+  /* The library supplies its own page margins. Read-only rows have no edit gutter. */
+  --blok-content-max-width: 100%;
+  --blok-database-table-row-gutter: 0px;
+}

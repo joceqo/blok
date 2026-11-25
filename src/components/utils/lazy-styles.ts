@@ -49,6 +49,8 @@ interface Registry {
   loads: Map<string, Promise<void>>;
   /** Sheets already written into a given #blok-styles. */
   written: WeakMap<Element, Set<string>>;
+  /** A standalone view may be mounted before the first editor installs #blok-styles. */
+  hostStyles?: Map<string, HTMLStyleElement>;
 }
 
 declare const VERSION: string | undefined;
@@ -110,6 +112,8 @@ const write = (name: string): void => {
   }, tag.textContent ?? '');
   done.add(name);
   written.set(tag, done);
+  registry().hostStyles?.get(name)?.remove();
+  registry().hostStyles?.delete(name);
 };
 
 /**
@@ -154,6 +158,21 @@ export const loadSheet = (name: LazySheet): Promise<void> => {
   loads.set(name, load);
 
   return load;
+};
+
+/** Load the normal feature CSS for a standalone surface, including before an editor exists. */
+export const loadHostSheet = async (name: LazySheet): Promise<void> => {
+  await loadSheet(name);
+  const store = registry();
+  const css = store.css.get(name);
+  if (!css || document.getElementById(EAGER_ID)) return;
+  store.hostStyles ??= new Map();
+  if (store.hostStyles.get(name)?.isConnected) return;
+  const tag = document.createElement('style');
+  tag.dataset.blokHostSheet = name;
+  tag.textContent = partsOf(name, css).map(([, part]) => part).join('\n');
+  document.head.prepend(tag);
+  store.hostStyles.set(name, tag);
 };
 
 export const isSheetLoaded = (name: LazySheet): boolean => registry().css.has(name);

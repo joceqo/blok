@@ -1,7 +1,7 @@
 import { pageAccess } from './page-access';
 import { moveDestinations, PageMoveConflict } from './page-move';
 import { mergeWorkspaceIndex } from './workspace-merge';
-import { loadIndex, peekFile, readFile, writeFile, type WorkspaceIndex } from './storage';
+import { loadIndex, peekFile, readFile, saveIndex, writeFile, type WorkspaceIndex } from './storage';
 import { nativeSessionAdapter } from './native-session';
 import type { WorkspaceRef } from './workspace-registry';
 export class RepositoryHttpError extends Error { constructor(public status: number) { super(`Serveur indisponible (${status})`); } }
@@ -28,6 +28,11 @@ export function workspaceRepository(workspace: WorkspaceRef) {
   return {
     ref,
     searchSources,
+    async listPeople() {
+      if (ref.kind !== 'remote') return [];
+      const result = await request<{members: {id: string; name: string; email: string}[]}>(base + '/members');
+      return result.members.map(({id, name, email}) => ({id, name: name.trim() || email || 'Profil local'}));
+    },
     // One cache per open palette, scoped to this local workspace. A new search
     // session sees subsequent disk edits. Remote previews always require a fresh ACL check.
     pageSearch(pages: () => WorkspaceIndex['pages']) {
@@ -153,6 +158,30 @@ export function workspaceRepository(workspace: WorkspaceRef) {
       const pending = (pageWrites.get(id) ?? Promise.resolve()).then(() => writeFile(id, data, ref));
       pageWrites.set(id, pending);
       return pending;
+    },
+    async importMarkdown(attempt: string, name: string, source: string): Promise<string> {
+      if (ref.kind === 'remote') {
+        const body = JSON.stringify({attempt, name, source});
+        if (new Blob([body]).size > (8 << 20)) throw new Error('Ce fichier dépasse la taille acceptée par le serveur (8 Mio).');
+        try {
+          return (await request<{id: string}>(`${base}/import/markdown`, {method: 'POST', body})).id;
+        } catch (error) {
+          if (error instanceof RepositoryHttpError && error.status === 403) throw new Error('Vous ne pouvez pas créer de page dans cet espace.');
+          if (error instanceof RepositoryHttpError && error.status === 422) throw new Error('Ce document Markdown contient des blocs impossibles à importer.');
+          throw error;
+        }
+      }
+      const id = attempt;
+      const index = await loadIndex(ref);
+      if (index.pages.some(page => page.id === id)) return id;
+      if (index.trash?.some(page => page.id === id)) throw new Error('La page importée se trouve dans la corbeille.');
+      const {markdownPage} = await import('../../src/markdown/import-page');
+      const document = await markdownPage(name, source);
+      if (await readFile(id, ref) === null) await writeFile(id, JSON.stringify(document), ref);
+      const page = {id, title: document.title, parentId: null, ...(document.icon?.type === 'emoji' ? {icon: document.icon.value} : {})};
+      // Publish the index only once the document exists. A failed index write can be retried with the same id.
+      await saveIndex({...index, pages: [...index.pages, page]}, ref);
+      return id;
     },
     async seedPage(id: string, document: unknown): Promise<void> {
       if (ref.kind !== 'remote') throw new Error('Remote operation only');

@@ -49,6 +49,22 @@ function glyph(paths: string[]): SVGSVGElement {
   return svg;
 }
 
+function moveMenuFocus(menu: HTMLElement, event: KeyboardEvent): void {
+  const controls = [...menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+  if (!controls.length) return;
+  const at = controls.indexOf(document.activeElement as HTMLButtonElement);
+  let next: number;
+  switch (event.key) {
+    case 'ArrowDown': next = (at + 1) % controls.length; break;
+    case 'ArrowUp': next = (at <= 0 ? controls.length : at) - 1; break;
+    case 'Home': next = 0; break;
+    case 'End': next = controls.length - 1; break;
+    default: return;
+  }
+  event.preventDefault();
+  controls[next].focus();
+}
+
 export function createPageToolbar(
   breadcrumbs: PageBreadcrumbItem[],
   fullWidth: boolean,
@@ -207,6 +223,7 @@ export function createPageToolbar(
   menu.setAttribute('data-desktop-page-menu', '');
   menu.setAttribute('role', 'dialog');
   menu.setAttribute('aria-label', 'Apparence et mise en page');
+  menu.tabIndex = -1;
   menu.hidden = true;
   const heading = document.createElement('div');
   heading.setAttribute('data-desktop-page-menu-heading', '');
@@ -262,16 +279,28 @@ export function createPageToolbar(
     if (restoreFocus) more.focus();
   };
   const outside = (event: PointerEvent): void => {
-    if (event.target instanceof Node && actions.contains(event.target)) return;
+    if (event.target instanceof Node && (menu.contains(event.target) || more.contains(event.target))) return;
     close();
   };
   const onKey = (event: KeyboardEvent): void => {
-    if (event.key === 'Tab') close();
+    if (event.target instanceof Node && menu.contains(event.target)) {
+      if (event.key === 'Tab') {
+        const controls = menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
+        const boundary = event.shiftKey ? controls[0] : controls[controls.length - 1];
+        if (!boundary || document.activeElement === boundary) {
+          close(true);
+          if (event.shiftKey) event.preventDefault();
+        }
+      } else moveMenuFocus(menu, event);
+    }
     if (event.key === 'Escape') {
       event.preventDefault();
       close(true);
     }
   };
+  menu.addEventListener('focusout', event => {
+    if (!menu.hidden && event.relatedTarget instanceof Node && event.relatedTarget !== more && !menu.contains(event.relatedTarget)) close();
+  });
   more.addEventListener('click', () => {
     if (!menu.hidden) {
       close();
@@ -286,7 +315,7 @@ export function createPageToolbar(
     more.setAttribute('aria-expanded', 'true');
     document.addEventListener('pointerdown', outside, true);
     document.addEventListener('keydown', onKey, true);
-    fullWidthButton.focus();
+    (menu.querySelector<HTMLButtonElement>('button:not(:disabled)') ?? menu).focus({preventScroll:true});
   });
   fullWidthButton.addEventListener('click', () => {
     fullWidth = !fullWidth;
@@ -298,6 +327,7 @@ export function createPageToolbar(
   breadcrumbMenu.setAttribute('role', 'menu');
   breadcrumbMenu.setAttribute('aria-label', 'Naviguer entre les pages');
   breadcrumbMenu.hidden = true;
+  breadcrumbMenu.tabIndex = -1;
   toolbar.append(breadcrumbMenu);
   let activeCrumb: HTMLButtonElement | null = null;
   const closeBreadcrumbMenu = (restoreFocus = false): void => {
@@ -321,13 +351,8 @@ export function createPageToolbar(
       event.preventDefault();
       closeBreadcrumbMenu(true);
     }
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      const buttons = [...breadcrumbMenu.querySelectorAll<HTMLButtonElement>('button')];
-      const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
-      buttons[(at + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus();
-    }
-    if (event.key === 'Tab') closeBreadcrumbMenu();
+    if (event.target instanceof Node && breadcrumbMenu.contains(event.target)) moveMenuFocus(breadcrumbMenu, event);
+    if (event.key === 'Tab') closeBreadcrumbMenu(true);
   };
   const onBreadcrumbResize = (): void => closeBreadcrumbMenu();
   const openBreadcrumbMenu = (item: PageBreadcrumbItem, anchor: HTMLButtonElement): void => {
@@ -339,6 +364,7 @@ export function createPageToolbar(
     close();
     const choices = item.menu ?? [];
     const renderChoices = (level: PageBreadcrumbChoice[], title: string, back?: () => void, expanded = false): void => {
+      const changingLevel = !breadcrumbMenu.hidden;
       const heading = document.createElement('div');
 
       heading.setAttribute('data-desktop-breadcrumb-menu-heading', '');
@@ -348,6 +374,7 @@ export function createPageToolbar(
         const backButton = document.createElement('button');
 
         backButton.type = 'button';
+        backButton.setAttribute('role', 'menuitem');
         backButton.setAttribute('data-desktop-breadcrumb-menu-back', '');
         backButton.textContent = '‹ Retour';
         backButton.addEventListener('click', back);
@@ -379,6 +406,7 @@ export function createPageToolbar(
           const children = document.createElement('button');
 
           children.type = 'button';
+          children.setAttribute('role', 'menuitem');
           children.setAttribute('data-desktop-breadcrumb-menu-children', '');
           children.setAttribute('aria-label', `Sous-pages de ${choice.title}`);
           children.textContent = '›';
@@ -391,11 +419,13 @@ export function createPageToolbar(
         const morePages = document.createElement('button');
 
         morePages.type = 'button';
+        morePages.setAttribute('role', 'menuitem');
         morePages.setAttribute('data-desktop-breadcrumb-menu-more', '');
         morePages.textContent = `${level.length - 6} autres`;
         morePages.addEventListener('click', () => renderChoices(level, title, back, true));
         breadcrumbMenu.append(morePages);
       }
+      if (changingLevel) breadcrumbMenu.querySelector<HTMLButtonElement>('button')?.focus();
     };
 
     renderChoices(choices, item.menuHeading ?? 'Pages');
@@ -413,6 +443,7 @@ export function createPageToolbar(
     breadcrumbMenu.hidden = false;
     promoteToTopLayer(breadcrumbMenu);
     activeCrumb = anchor;
+    (breadcrumbMenu.querySelector<HTMLButtonElement>('[aria-current="page"], [data-desktop-breadcrumb-menu-item]') ?? breadcrumbMenu).focus({preventScroll:true});
     anchor.setAttribute('aria-expanded', 'true');
     document.addEventListener('pointerdown', outsideBreadcrumbMenu, true);
     document.addEventListener('keydown', onBreadcrumbKey, true);

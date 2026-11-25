@@ -2,6 +2,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
+    "jsx": "react-jsx",
     "moduleResolution": "bundler",
     "lib": [
       "ES2022",
@@ -27,9 +28,11 @@
       "@bloklabs/core/tools": [
         "../types/tools-entry.d.ts"
       ],
+      "@blok/page-table": ["../types/tools/page-table.d.ts"],
       "@blok/sidebar": [
         "./src/sidebar-contract.d.ts"
       ],
+      "@blok/page-sheet": ["./src/page-sheet-contract.d.ts"],
       "@blok/date-editor": [
         "./src/date-editor-contract.d.ts"
       ],

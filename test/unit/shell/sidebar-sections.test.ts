@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createPageFrame } from '../../../src/shell/sidebar';
@@ -98,6 +98,20 @@ describe('sidebar sections', () => {
     expect(headings()).toEqual(['Équipe']);
   });
 
+  it('opens the host palette from its search field and both keyboard shortcuts', () => {
+    let opens = 0;
+    const frame = createPageFrame({ pages: [], activeId: '', onCreate() {}, onOpen() {}, onSearch() { opens++; } });
+    document.body.append(frame.element);
+    const trigger = frame.element.querySelector<HTMLButtonElement>('button[data-blok-sidebar-search]')!;
+    expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(trigger.querySelector('kbd')?.textContent).toMatch(/K$/);
+    trigger.click();
+    for (const key of ['p', 'k']) {
+      trigger.dispatchEvent(new KeyboardEvent('keydown', { key, metaKey: true, bubbles: true }));
+    }
+    expect(opens).toBe(3);
+  });
+
   // La recherche traverse les sections : on cherche une page, pas une section.
   it('searches across every section at once', () => {
     mount([page('alpha', { section: 'Équipe' }), page('beta', { section: 'Privé' })]);
@@ -155,8 +169,56 @@ describe('teamspace row', () => {
 });
 
 describe('sidebar shortcuts', () => {
-  // Notion met « New page » sur une ligne de la barre, pas seulement derrière
-  // un + dans l'en-tête.
+  it('opens workspace destinations and keeps the current mode in sync with the host', () => {
+    const calls: string[] = [];
+    const frame = createPageFrame({
+      pages: [page('a')], activeId: 'a', onOpen() {}, onCreate() {},
+      onChat: () => calls.push('chat'), onHome: () => calls.push('home'),
+      onCalendar: () => calls.push('calendar'), calendarHref: '/calendar',
+      onNewChat: () => calls.push('new'), onLibrary: ids => calls.push(ids.join(',')),
+    });
+    document.body.append(frame.element);
+    const modes = frame.element.querySelector('[data-blok-sidebar-modes]')!;
+    const home = modes.querySelector<HTMLButtonElement>('[aria-label="Accueil"]')!;
+    const chat = modes.querySelector<HTMLButtonElement>('[aria-label="Discussions"]')!;
+    const calendar = modes.querySelector<HTMLAnchorElement>('a')!;
+    expect(home.getAttribute('aria-current')).toBe('page');
+    chat.click(); frame.setChatActive(true);
+    expect(chat.getAttribute('aria-current')).toBe('page');
+    expect(home.hasAttribute('aria-current')).toBe(false);
+    calendar.click(); frame.setCalendarActive(true);
+    expect(calendar.getAttribute('aria-current')).toBe('page');
+    expect(chat.hasAttribute('aria-current')).toBe(false);
+    frame.setCalendarActive(false); home.click();
+    expect(home.getAttribute('aria-current')).toBe('page');
+    expect(frame.element.querySelector('[data-blok-sidebar-recents]')).toBeNull();
+    const rows = frame.element.querySelectorAll<HTMLButtonElement>('[data-blok-sidebar-shortcuts] > [data-blok-sidebar-shortcut]');
+    rows.forEach(row => row.click());
+    expect(calls).toEqual(['chat', 'calendar', 'home', 'new', 'a']);
+  });
+
+  it('keeps hidden shortcuts scoped to one workspace and preserves the underlying pages', () => {
+    const key = 'blok:sidebar:sections:atelier';
+    localStorage.setItem(key, JSON.stringify({events:false, favorites:false}));
+    try {
+      const settings = {
+        pages: [page('rapport', {favorite:true, section:'Privé'})], activeId: '',
+        onHome() {}, onOpen() {}, onCalendar() {}, onCreate() {},
+      };
+      const hidden = createPageFrame({...settings, preferenceKey:'atelier'});
+      expect(hidden.element.querySelector('[data-blok-sidebar-favorites]')).toBeNull();
+      expect(hidden.element.querySelector('[data-blok-sidebar-tree]')?.textContent).not.toContain('Événements à venir');
+      expect(hidden.element.querySelector('[data-blok-sidebar-link]')?.textContent).toBe('rapport');
+      let invited = false;
+      const other = createPageFrame({...settings, preferenceKey:'autre', onInviteMembers:() => { invited = true; }});
+      expect(other.element.querySelector('[data-blok-sidebar-favorites]')).not.toBeNull();
+      const invite = [...other.element.querySelectorAll('button')].find(node => node.textContent === 'Inviter des membres');
+      invite?.click();
+      expect(invited).toBe(true);
+      expect(hidden.element.textContent).not.toContain('Inviter des membres');
+    } finally { localStorage.removeItem(key); }
+  });
+
   it('offers New page as a row, not only as a header button', () => {
     mount([page('a')]);
     const shortcut = document.querySelector<HTMLButtonElement>('[data-blok-sidebar-shortcut]');
@@ -226,4 +288,17 @@ it('distinguishes the team directory from the workspace pages toggle', () => {
   expect(pages.getAttribute('aria-expanded')).toBe('true');
   pages.click();
   expect(frame.element.querySelector('[data-blok-sidebar-teamspace-pages]')).toBeNull();
+});
+
+it('links the teamspace section header to the library independently of collapsing it', () => {
+  const onTeamspaces = vi.fn();
+  const frame = createPageFrame({pages:[], activeId:'', teamspace:{name:'Atelier'}, onHome() {}, onTeamspaces, onOpen() {}, onCreate() {}});
+  const link = frame.element.querySelector<HTMLButtonElement>('[data-blok-sidebar-section-action]')!;
+  expect(link.getAttribute('aria-label')).toBe('Ouvrir les espaces d’équipe dans la bibliothèque');
+  expect(link.hasAttribute('aria-haspopup')).toBe(false);
+  link.click();
+  expect(onTeamspaces).toHaveBeenCalledOnce();
+  const heading = link.parentElement?.querySelector('[data-blok-sidebar-section-label]');
+  expect(heading?.textContent).toBe('Espaces d’équipe');
+  expect(heading?.getAttribute('aria-expanded')).toBe('true');
 });

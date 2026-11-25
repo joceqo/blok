@@ -1,6 +1,7 @@
+import { libraryView } from './library-route';
 import { isCalendarUrl } from './calendar-route';
 import { listenForPageLinks } from './native-page-links';
-import { parsePageLink } from './page-link';
+import { webPageLink } from './page-link';
 import './editor.css';
 import '../../src/shell/sidebar.css';
 import './shell.css';
@@ -8,8 +9,10 @@ import { activateWorkspace, activeWorkspace, initialWorkspace, listWorkspaces, L
 import { nativeBridge, openEmbeddedWorkspace, useEmbeddedServer } from './native-runtime';
 import { guardNativeClose } from './native-close';
 import { nativeSessionAdapter } from './native-session';
+import {initializeDisplayPreferences} from './display-preferences';
 import { applyAppearance, readAppearance } from './settings';
 import { CloudClient, mountCloudGateway } from './cloud';
+import {hasWebAccount, leaveForWebAccount} from './cloud/web-account-actions';
 import { mountServerPicker } from './cloud/server-picker';
 import { brandedTitle } from './tab-identity';
 
@@ -45,9 +48,19 @@ function startupErrorNode(host: HTMLElement): HTMLElement {
 }
 
 async function boot(root: HTMLElement): Promise<void> {
+  initializeDisplayPreferences();
   applyAppearance(root, readAppearance());
-  const params = new URLSearchParams(location.search);
-  const browserPage = !native && params.get('web') === '1' ? parsePageLink(location.href) : undefined;
+  const launchUrl = new URL(location.href);
+  const params = launchUrl.searchParams;
+  const browserPage = native ? undefined : webPageLink(launchUrl);
+  if (!native && launchUrl.pathname === '/' && params.has('page') && !browserPage) {
+    showStartupFailure(root, new Error('Lien de page Blok invalide.'), () => {
+      params.delete('page');
+      params.delete('workspace');
+      location.assign(launchUrl.href);
+    }, 'Retour à l’espace');
+    return;
+  }
   let selected = activeWorkspace();
   const explicitGateway = params.get('cloud') === '1';
   function chooseServer(server: string): void {
@@ -89,7 +102,7 @@ async function boot(root: HTMLElement): Promise<void> {
       desktop = shell;
       const url = new URL(location.href);
       if (selected.kind === 'local' && selected.id === 'default' && opened.activePageId &&
-          !url.searchParams.has('page') && !isCalendarUrl(url)) {
+          !url.searchParams.has('page') && !isCalendarUrl(url) && !libraryView(url)) {
         url.searchParams.set('page', opened.activePageId);
       }
       for (const key of ['cloud', 'embedded', 'local']) url.searchParams.delete(key);
@@ -108,6 +121,8 @@ async function boot(root: HTMLElement): Promise<void> {
   const client = new CloudClient({origin, sessionAdapter: adapter});
   const manageSlug = params.get('manage');
   const manageSection = manageSectionFromParams(params);
+  const section = params.get('section');
+  const accountSection = !native && explicitGateway && (section === 'accounts' || section === 'create-workspace') ? section : undefined;
 
   const showGateway = async (): Promise<void> => {
     document.title = brandedTitle('Connexion');
@@ -117,6 +132,7 @@ async function boot(root: HTMLElement): Promise<void> {
       allowLocal: native,
       initialManage: manageSlug && manageSection ? {slug: manageSlug, section: manageSection} : undefined,
       initialWorkspaceId: browserPage?.workspace,
+      initialAccountSection: accountSection,
       onOpenWorkspace: async (workspace, source) => {
         const session = source.currentSession ?? await source.session();
         const ref: RemoteWorkspace = {
@@ -152,6 +168,14 @@ async function boot(root: HTMLElement): Promise<void> {
   const {mountDesktop, flushDesktop} = desktop ?? await import('./shell');
   root.addEventListener('blok:desktop-connect-cloud', (event) => {
     const section = (event as CustomEvent<{section?: string}>).detail?.section;
+    if (section === 'logout' || section === 'new-workspace' || (section === 'account' && hasWebAccount(selected, native))) {
+      if (!hasWebAccount(selected, native) || root.inert) return;
+      root.inert = true;
+      void leaveForWebAccount(section, {workspace: selected, native, client, flush: flushDesktop,
+        navigate: href => location.assign(href),
+      }).catch(showError).finally(() => { root.inert = false; });
+      return;
+    }
     // Already inside a remote workspace: open settings in place instead of the old gateway admin screen.
     if (selected.kind === 'remote' && (section === 'settings' || section === 'invites' || section === 'members')) {
       const footer = root.querySelector('[data-desktop-footer]');
@@ -204,7 +228,7 @@ async function refreshRemoteMembership(
   }
 }
 
-function showStartupFailure(host: HTMLElement, reason: unknown, openDisk?: () => void): void {
+function showStartupFailure(host: HTMLElement, reason: unknown, openFallback?: () => void, fallbackLabel = 'Ouvrir un espace sur disque'): void {
   const panel = host.querySelector<HTMLElement>('[data-blok-startup]');
   const status = panel?.querySelector<HTMLElement>('.startup-status');
   if (!panel || !status) {
@@ -220,11 +244,11 @@ function showStartupFailure(host: HTMLElement, reason: unknown, openDisk?: () =>
   retry.textContent = 'Réessayer';
   retry.onclick = () => location.reload();
   actions.append(retry);
-  if (openDisk) {
-    const offline = document.createElement('button');
-    offline.textContent = 'Ouvrir un espace sur disque';
-    offline.onclick = openDisk;
-    actions.append(offline);
+  if (openFallback) {
+    const fallback = document.createElement('button');
+    fallback.textContent = fallbackLabel;
+    fallback.onclick = openFallback;
+    actions.append(fallback);
   }
   status.after(actions);
 }

@@ -108,3 +108,30 @@ it('sends the native account credential for the matching server', async () => {
     Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
   }
 });
+
+it('restores one page at the displayed revision, then refreshes the shell and the trash', async () => {
+  const tree = { ...snapshot, revision: 7, pages: [] };
+  const fetch = vi.fn()
+    .mockResolvedValueOnce(Response.json(tree))
+    .mockResolvedValueOnce(Response.json({restored:'p',revision:8}))
+    .mockResolvedValueOnce(Response.json({...tree,revision:8,trash:[tree.trash[1]]}));
+  vi.stubGlobal('fetch', fetch);
+  const changed = vi.fn(async () => {});
+  openRemoteTrash(ref, async () => {}, changed);
+  await vi.waitFor(() => expect(button('Restaurer')).toBeDefined());
+  button('Restaurer')!.click();
+  await vi.waitFor(() => expect(document.body.textContent).toContain('« Compte rendu » a été restaurée.'));
+  expect(fetch.mock.calls[1]).toEqual([base + '/pages/p/restore-from-trash', expect.objectContaining({method:'POST',body:'{"revision":7}'})]);
+  expect(changed).toHaveBeenCalledOnce();
+  expect(document.querySelectorAll('[aria-label^="Restaurer «"]')).toHaveLength(0);
+});
+
+it('keeps a child in the trash while its original parent is unavailable', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({
+    revision: 2, pages: [], trash: [{id:'child',title:'Child',parentId:'parent'}, {id:'parent',title:'Parent'}],
+    access: {child:{level:'full'},parent:{level:'full',sharedRoot:true}},
+  })));
+  openRemoteTrash(ref, async () => {}, async () => {});
+  await vi.waitFor(() => expect(button('Restaurer')).toBeDefined());
+  expect([...document.querySelectorAll<HTMLButtonElement>('[aria-label^="Restaurer «"]')].map(row => row.disabled)).toEqual([true,true]);
+});

@@ -1,3 +1,4 @@
+import {recordCommentNotifications} from './comment-notifications.ts';
 import type { PgPool } from '../db/pool.ts';
 
 export interface ProjectionHead {
@@ -71,9 +72,10 @@ export async function saveProjection(pool: PgPool, id: string, json: string, hea
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { rows } = await client.query<ProjectionHead & { same: boolean; workspaceId: string }>(
-      `SELECT version::text, lineage, sequence::text, workspace_id AS "workspaceId", (content IS NOT DISTINCT FROM $2::jsonb OR ($3 AND content IS NULL AND $2::jsonb='null'::jsonb)) AS same
-       FROM pages WHERE id=$1 AND NOT deleted FOR UPDATE`, [id, json, head.reset ?? false],
+    const hasComments = !head.reset && json.includes('database-comment');
+    const { rows } = await client.query<ProjectionHead & { same: boolean; workspaceId: string; previous: unknown }>(
+      `SELECT version::text, lineage, sequence::text, workspace_id AS "workspaceId", CASE WHEN $4 THEN content END AS previous, (content IS NOT DISTINCT FROM $2::jsonb OR ($3 AND content IS NULL AND $2::jsonb='null'::jsonb)) AS same
+       FROM pages WHERE id=$1 AND NOT deleted FOR UPDATE`, [id, json, head.reset ?? false, hasComments],
     );
     const row = rows[0];
     // The owning workspace is read under the same row lock as the CAS.
@@ -92,6 +94,7 @@ export async function saveProjection(pool: PgPool, id: string, json: string, hea
          WHERE id=$1 RETURNING version::text`, [id, json, head.lineage, head.sequence, head.reset ?? false],
       );
       version = updated.rows[0]!.version;
+      if (hasComments && !row.same) await recordCommentNotifications(client,row.workspaceId,id,row.previous,JSON.parse(json));
     }
     await client.query('COMMIT');
     return version;

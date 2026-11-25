@@ -51,6 +51,7 @@ export function createFloatingToc(scroller: HTMLElement, redactor: HTMLElement):
   let headings: Heading[] = [];
   let activeId: string | null = null;
   let frame: number | null = null;
+  let outlineChanged = true;
   let destroyed = false;
 
   const place = (): void => {
@@ -78,6 +79,8 @@ export function createFloatingToc(scroller: HTMLElement, redactor: HTMLElement):
   const refresh = (): void => {
     frame = null;
     if (destroyed) return;
+    if (!outlineChanged) { markActive(); return; }
+    outlineChanged = false;
     const next = collectFloatingHeadings(redactor);
     const before = JSON.stringify(headings.map(({ id, level, text }) => [id, level, text]));
     const after = JSON.stringify(next.map(({ id, level, text }) => [id, level, text]));
@@ -108,6 +111,10 @@ export function createFloatingToc(scroller: HTMLElement, redactor: HTMLElement):
   const schedule = (): void => {
     if (frame === null && !destroyed) frame = window.requestAnimationFrame(refresh);
   };
+  const invalidate = (): void => {
+    outlineChanged = true;
+    schedule();
+  };
   const onClick = (event: MouseEvent): void => {
     const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[data-desktop-floating-toc-link]') : null;
     if (!link || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -115,16 +122,17 @@ export function createFloatingToc(scroller: HTMLElement, redactor: HTMLElement):
     if (!target) return;
     event.preventDefault();
     const rect = scroller.getBoundingClientRect();
-    scroller.scrollTo({ top: scroller.scrollTop + target.getBoundingClientRect().top - rect.top - 94, behavior: 'smooth' });
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    scroller.scrollTo({ top: scroller.scrollTop + target.getBoundingClientRect().top - rect.top - 94, behavior: reducedMotion ? 'instant' : 'smooth' });
   };
-  const observer = new MutationObserver(schedule);
+  const observer = new MutationObserver(invalidate);
   observer.observe(redactor, { subtree: true, childList: true, characterData: true, attributes: true,
     attributeFilter: ['class', 'hidden', 'aria-hidden', 'data-blok-heading-level', 'data-blok-toggle-open'] });
-  const resize = new ResizeObserver(schedule);
+  const resize = new ResizeObserver(invalidate);
   resize.observe(scroller);
   resize.observe(redactor);
   scroller.addEventListener('scroll', schedule, { passive: true });
-  window.addEventListener('resize', schedule);
+  window.addEventListener('resize', invalidate);
   nav.addEventListener('click', onClick);
   refresh();
 
@@ -135,7 +143,7 @@ export function createFloatingToc(scroller: HTMLElement, redactor: HTMLElement):
       observer.disconnect();
       resize.disconnect();
       scroller.removeEventListener('scroll', schedule);
-      window.removeEventListener('resize', schedule);
+      window.removeEventListener('resize', invalidate);
       nav.removeEventListener('click', onClick);
       if (frame !== null) window.cancelAnimationFrame(frame);
       nav.remove();

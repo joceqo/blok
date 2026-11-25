@@ -147,3 +147,23 @@ describe('breadcrumb navigation', () => {
     toolbar.destroy();
   });
 });
+
+it('moves through page actions with the keyboard and restores focus on Escape', () => {
+  const toolbar = createPageToolbar([{id:'page', title:'Page'}], false, vi.fn(), undefined, undefined, {
+    onHistory: () => () => {}, onRename: vi.fn(),
+  });
+  document.body.append(toolbar.element);
+  try {
+    const trigger = toolbar.element.querySelector<HTMLButtonElement>('[data-desktop-page-more]')!;
+    trigger.click();
+    const press = (key: string) => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles:true}));
+    expect(document.activeElement?.getAttribute('role')).toBe('switch');
+    press('ArrowDown');
+    expect(document.activeElement?.textContent).toBe('Historique des versions');
+    press('End');
+    expect(document.activeElement?.textContent).toBe('Renommer');
+    press('Escape');
+    expect(document.activeElement).toBe(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+  } finally { toolbar.destroy(); toolbar.element.remove(); }
+});

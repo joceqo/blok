@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openEmbeddedWorkspace, startEmbeddedServer, useEmbeddedServer } from './native-runtime';
 import { nativeSessionAdapter } from './native-session';
-import { initialWorkspace, type RemoteWorkspace } from './workspace-registry';
+import { activateWorkspace, createLocalWorkspace, initialWorkspace, listWorkspaces, rememberWorkspace, type RemoteWorkspace } from './workspace-registry';
 
 afterEach(() => { Reflect.deleteProperty(window, '__TAURI_INTERNALS__'); localStorage.clear(); vi.unstubAllGlobals(); });
 
@@ -59,6 +59,13 @@ describe('embedded desktop server', () => {
     expect(migrated.workspace.id).toBe(imported.id);
     expect(migrated.activePageId).toBe('ancienne-page');
     expect(migrated.otherWorkspaces?.map(w=>w.id)).toEqual(['own']);
+    const additionalDisk = createLocalWorkspace('Archives');
+    rememberWorkspace(migrated.otherWorkspaces![0]!);
+    expect(listWorkspaces()).toContainEqual(initialWorkspace);
+    activateWorkspace(migrated.workspace);
+    expect(listWorkspaces().map(ref => ref.id)).toEqual([additionalDisk.id, own.id, imported.id]);
+    localStorage.setItem('blok:desktop:prefer-default-disk:v1', '1');
+    expect(listWorkspaces()).toContainEqual(initialWorkspace);
     const selected = await openEmbeddedWorkspace({...remote,device:true,id:own.id,accountId:'device'},false);
     expect(selected.workspace.id).toBe(own.id);
     expect(selected.activePageId).toBeUndefined();

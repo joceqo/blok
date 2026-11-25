@@ -27,3 +27,14 @@
 .teamspaces-content { display:flex; flex-direction:column; align-items:stretch; gap:8px; min-width:0; }
 .teamspaces-content > button { align-self:flex-start; }
 .teamspaces-content .teamspaces-page { min-width:0; border-color:transparent; white-space:normal; overflow-wrap:anywhere; text-align:start; }
+.teamspaces-layout .teamspaces-filter-results li[hidden], .teamspaces-layout [role=status][hidden] { display: none; }
+.teamspaces-layout nav .teamspaces-filter-results { gap: 2px; }
+.teamspaces-layout nav .teamspaces-filter-results li { padding: 0; border: 0; }
+.teamspaces-layout nav .teamspaces-item { width: 100%; }
+.teamspaces-layout input[type=search] { box-sizing: border-box; width: 100%; min-width: 0; }
+
+[data-desktop-settings-content] > [data-teamspaces] {
+  width: 100%; max-height: none; overflow: visible; border: 0; border-radius: 0; box-shadow: none;
+}
+[data-desktop-settings-content] > [data-teamspaces] > header { padding: 0 0 20px; }
+[data-desktop-settings-content] > [data-teamspaces] > header h2 { font-size: 26px; }

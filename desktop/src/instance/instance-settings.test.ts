@@ -111,7 +111,7 @@ describe('instance settings nav', () => {
       .map((node) => node.textContent);
     expect(labels).toEqual(expect.arrayContaining(['Général', 'Accès', 'Comptes', 'Espaces', 'Santé et e-mail']));
     const headings = [...dialog.querySelectorAll('[data-desktop-settings-nav-heading]')];
-    const espace = headings.find((node) => node.textContent === 'Espace');
+    const espace = headings.find((node) => node.textContent === 'Espace de travail');
     const instance = headings.find((node) => node.textContent === 'Instance');
     expect(espace).toBeTruthy();
     expect(instance).toBeTruthy();
@@ -152,5 +152,38 @@ describe('instance access and health panels', () => {
       expect(JSON.parse(requestBody(must(call)[1]))).toEqual({ email: 'probe@example.org' });
     });
     await vi.waitFor(() => expect(dialog.textContent).toMatch(/envoyé|développement|réussi/i));
+  });
+});
+
+describe('account actions in instance settings', () => {
+  it('restores focus on cancel and releases the nested dialog when the settings close', async () => {
+    const { dialog, fetch } = openRemoteSettings(true);
+    const accounts = () => [...dialog.querySelectorAll<HTMLButtonElement>('[data-instance-panel]')]
+      .find(tab => tab.textContent === 'Comptes');
+    await vi.waitFor(() => expect(accounts()).toBeDefined());
+    must(accounts()).click();
+    const menu = () => dialog.querySelector<HTMLButtonElement>('[data-desktop-instance-account-menu]');
+    await vi.waitFor(() => expect(menu()).toBeTruthy());
+    const trigger = must(menu());
+    const table = must(dialog.querySelector('table'));
+    expect([...table.querySelectorAll('th[scope=col]')].map(th => th.textContent))
+      .toEqual(['Adresse', 'Nom', 'Date', 'Espaces', 'Actions']);
+    expect([...table.querySelectorAll('[data-desktop-instance-cell-label]')].map(cell => cell.textContent))
+      .toEqual(['Nom', 'Date', 'Espaces']);
+    async function openConfirmation() {
+      trigger.click();
+      await vi.waitFor(() => expect(document.querySelector('[data-blok-item-name=delete]')).toBeTruthy());
+      must(document.querySelector<HTMLElement>('[data-blok-item-name=delete]')).click();
+      await vi.waitFor(() => expect(dialog.querySelector('[role=alertdialog]')).toBeTruthy());
+    }
+    await openConfirmation();
+    document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+    expect(dialog.querySelector('[role=alertdialog]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    await openConfirmation();
+    must(dialog.querySelector<HTMLButtonElement>('[data-desktop-settings-close]')).click();
+    expect(dialog.querySelector('[role=alertdialog]')).toBeNull();
+    expect(document.querySelector('[inert]')).toBeNull();
+    expect(fetch.mock.calls.some(([,init]) => init?.method === 'DELETE')).toBe(false);
   });
 });

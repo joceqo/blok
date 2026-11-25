@@ -302,7 +302,23 @@
 
 [data-blok-agent-menu="history"] {
   inset-inline-start: 8px;
+  width: min(330px, calc(100% - 16px));
+  min-width: 0;
+  max-height: min(360px, 55dvh);
+  box-sizing: border-box;
+  padding: 6px;
 }
+[data-blok-agent-menu="history"] input {
+  flex: none; min-width: 0; width: 100%; box-sizing: border-box;
+  padding: 8px; border: 1px solid var(--blok-popover-border); border-radius: var(--blok-radius-control);
+  color: var(--blok-text-primary); background: var(--blok-bg-light); font: inherit; font-size: 14px;
+}
+[data-blok-agent-menu="history"] input:focus-visible { outline: 2px solid var(--blok-focus-ring); outline-offset: -2px; }
+[data-blok-agent-history-list] { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+[data-blok-agent-history-list] button { width: 100%; text-align: start; }
+[data-blok-agent-history-list] button[aria-current="true"] { background: var(--blok-item-hover-bg); }
+[data-blok-agent-history-list] button > span:last-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+[data-blok-agent-menu="history"] [role="status"] { margin: 12px 8px; font-size: 13px; color: var(--blok-text-secondary); }
 
 [data-blok-agent-menu="mode"] {
   inset-inline-end: 8px;

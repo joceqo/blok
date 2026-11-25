@@ -23124,3 +23124,12 @@ button[data-blok-database-feed-reaction]:hover,
 :is([data-blok-database-calendar-event], [data-blok-database-timeline-bar], [data-blok-database-feed-card])[data-blok-database-color] {
   background-color: var(--_blok-database-rule-bg);
 }
+
+/* A host page supplies its own title, document margins and scrolling editor. */
+[data-blok-database-drawer][data-blok-database-hosted-page] > [data-blok-database-drawer-content] {
+  display: flex; flex: 1; flex-direction: column; min-height: 0; width: 100%;
+  max-width: none; margin: 0; padding: 0; overflow: hidden;
+}
+[data-blok-database-hosted-page] > [data-blok-database-drawer-content] > [data-blok-database-drawer-editor] {
+  display: flex; flex: 1; min-height: 0; margin: 0; padding: 0;
+}

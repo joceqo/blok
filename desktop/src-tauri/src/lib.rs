@@ -1,3 +1,4 @@
+mod system_notifications;
 mod page_links;
 mod editor_close;
 mod ai;
@@ -331,6 +332,7 @@ fn close_editor_window(window: tauri::WebviewWindow) {
 fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
     let reload = MenuItem::with_id(app, "reload-tab", "Reload Tab", true, Some("CmdOrCtrl+R"))?;
     let search = MenuItem::with_id(app, "workspace-search", "Search Workspace", true, Some("CmdOrCtrl+P"))?;
+    let preferences = MenuItem::with_id(app, "open-preferences", "Settings…", true, Some("CmdOrCtrl+Comma"))?;
     let calendar = MenuItem::with_id(app, "open-calendar", "Calendar", true, None::<&str>)?;
     let new_tab = MenuItem::with_id(app, "new-tab", "New Tab", true, Some("CmdOrCtrl+T"))?;
     let close_tab = MenuItem::with_id(app, "close-tab", "Close Tab", true, Some("CmdOrCtrl+W"))?;
@@ -384,6 +386,8 @@ fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> 
             &[
                 &PredefinedMenuItem::about(app, None, Some(about))?,
                 &PredefinedMenuItem::separator(app)?,
+                &preferences,
+                &PredefinedMenuItem::separator(app)?,
                 &PredefinedMenuItem::services(app, None)?,
                 &PredefinedMenuItem::separator(app)?,
                 &PredefinedMenuItem::hide(app, None)?,
@@ -404,7 +408,7 @@ fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> 
 
     #[cfg(not(target_os = "macos"))]
     {
-        let view = Submenu::with_items(app, "View", true, &[&calendar, &search, &reload])?;
+        let view = Submenu::with_items(app, "View", true, &[&calendar, &search, &preferences, &reload])?;
         Menu::with_items(app, &[&file, &edit, &view, &window_menu, &help])
     }
 }
@@ -443,6 +447,7 @@ pub fn run() {
                 "reload-tab" => "if (window.dispatchEvent(new Event('blok:desktop-reload', {cancelable:true}))) location.reload()",
                 "new-tab" => "window.dispatchEvent(new Event('blok:desktop-new-tab'))",
                 "open-calendar" => "window.dispatchEvent(new Event('blok:open-calendar', {cancelable:true}))",
+                "open-preferences" => "window.dispatchEvent(new Event('blok:desktop-preferences'))",
                 "workspace-search" => "window.dispatchEvent(new Event('blok:desktop-search'))",
                 "close-tab" => "window.dispatchEvent(new Event('blok:desktop-close-tab'))",
                 _ => return,
@@ -451,7 +456,7 @@ pub fn run() {
                 let _ = window.eval(script);
             }
         })
-        .invoke_handler(tauri::generate_handler![page_links::take_page_link, open_calendar_authorization, embedded_server::embedded_server_available, embedded_server::ensure_embedded_server, embedded_server::embedded_device_session, ai::ai_local_status, ai::ai_local_save, ai::ai_local_delete, ai::ai_local_models, ai::ai_local_respond, ai::ai_local_editor_respond, ai::ai_local_cancel, close_editor_window, editor_close::arm_editor_close, editor_close::finish_editor_close, load_cloud_session, save_cloud_session, load_workspace_file, save_workspace_file, workspace_data_directory, agent_provider_status, agent_ask, agent_cancel])
+        .invoke_handler(tauri::generate_handler![system_notifications::notification_permission, system_notifications::post_system_notification, system_notifications::open_notification_settings, page_links::take_page_link, open_calendar_authorization, embedded_server::embedded_server_available, embedded_server::ensure_embedded_server, embedded_server::embedded_device_session, ai::ai_local_status, ai::ai_local_save, ai::ai_local_delete, ai::ai_local_models, ai::ai_local_respond, ai::ai_local_editor_respond, ai::ai_local_cancel, close_editor_window, editor_close::arm_editor_close, editor_close::finish_editor_close, load_cloud_session, save_cloud_session, load_workspace_file, save_workspace_file, workspace_data_directory, agent_provider_status, agent_ask, agent_cancel])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {

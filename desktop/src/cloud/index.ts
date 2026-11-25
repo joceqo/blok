@@ -4,6 +4,7 @@ import {BLOK_MARK_HREF, brandedTitle} from '../tab-identity';
 import {styleTextField} from '../ui/controls';
 import {CloudApiError, CloudClient, type CloudInstance, type CloudSession, type CloudSessionAdapter, type CloudWorkspace, type CloudWorkspaceStatus} from './client';
 import {mountCreateWorkspace} from './create-workspace';
+import {canCreateWorkspace} from './web-account-actions';
 import {mountInviteScreen, type InviteContext} from './invite';
 import {createNotificationTrigger} from './notification-trigger';
 import {mountJoinWorkspace} from './join';
@@ -33,6 +34,7 @@ export interface CloudGatewayOptions {
   allowLocal?: boolean;
   initialManage?: {slug: string; section?: 'members' | 'invites'};
   initialWorkspaceId?: string;
+  initialAccountSection?: 'accounts' | 'create-workspace';
   /** Prefill the invite acceptance screen (or parse `?invite=` / `?email=`). */
   initialInvite?: InviteContext;
   onOpenWorkspace(workspace: CloudWorkspace, client: CloudClient): void | Promise<void>;
@@ -259,13 +261,25 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       run,
       showError: error,
       onRequested: (slug) => list(slug),
+      async onOpenMember(slug) {
+        const active = await client.session();
+        if (!state.alive) return;
+        const workspace = active.workspaces.find(item => item.slug === slug);
+        if (!workspace) { await list(slug, active); return; }
+        state.session = active;
+        await options.onOpenWorkspace(workspace, client);
+      },
       onCancel: () => { void run(list); },
     });
   }
 
   /** Router table — every named route reachable from one place. */
   const routers: Record<CloudGatewayRoute, () => void> = {
-    boot: () => { frame('boot').append(node('p', 'Chargement de votre espace…', 'data-cloud-muted')); },
+    boot: () => {
+      const status = node('p', 'Connexion au serveur…', 'data-cloud-muted');
+      status.setAttribute('role','status');
+      frame('boot').append(status);
+    },
     unreachable,
     setup,
     'login-password': () => login('login-password'),
@@ -355,13 +369,14 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     details.append(serverForm); main.append(details);
   }
 
-  async function list(requestedSlug = state.instance?.defaultWorkspace?.slug): Promise<void> {
-    const active = await client.session();
+  async function list(requestedSlug = state.instance?.defaultWorkspace?.slug, activeSession?: CloudSession): Promise<void> {
+    const active = activeSession ?? await client.session();
     const status = requestedSlug ? await client.workspace(requestedSlug) : null;
     if (!state.alive) return;
     state.session = active; client.currentSession = active;
     const main = frame('spaces');
-    main.append(node('span', 'Vos espaces', 'data-cloud-eyebrow'), node('h1', 'Où souhaitez-vous travailler ?'), node('p', 'Choisissez un espace pour retrouver ses pages et son équipe.', 'data-cloud-muted'));
+    main.append(node('h1', 'Où souhaitez-vous travailler ?'));
+    if (active.workspaces.length) main.append(node('p', 'Choisissez un espace pour retrouver ses pages et son équipe.', 'data-cloud-muted'));
     for (const workspace of active.workspaces) {
       const row = node('div', undefined, 'data-cloud-row'); const text = node('div'); text.append(node('strong', workspace.name), node('p', roleName[workspace.role]));
       const actions = node('div', undefined, 'data-cloud-actions');
@@ -369,10 +384,9 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     }
     if (status && !status.role) joinSection(main, status);
     const actions = node('div', undefined, 'data-cloud-actions');
-    actions.append(
-      button('Créer un espace de travail', () => routers['create-workspace'](), true),
-      button('Rejoindre un espace', () => routers.join()),
-    );
+    const canCreate = canCreateWorkspace(state.instance, active);
+    if (canCreate) actions.append(button('Créer un espace de travail', () => routers['create-workspace'](), true));
+    actions.append(button('Rejoindre un espace', () => routers.join(), !canCreate));
     main.append(actions);
     appendLocalOpen(main, 'Ouvrir un espace local');
     serverSection(main);
@@ -405,13 +419,20 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       routers.invite();
       return;
     }
+    if (options.initialAccountSection) {
+      state.session = active;
+      client.currentSession = active;
+      if (options.initialAccountSection === 'create-workspace' && canCreateWorkspace(state.instance, active)) routers['create-workspace']();
+      else await list(undefined, active);
+      return;
+    }
     if (options.initialWorkspaceId) {
       const workspace = active.workspaces.find(item => item.id === options.initialWorkspaceId);
       if (workspace) {
         state.session = active; client.currentSession = active;
         await options.onOpenWorkspace(workspace, client);
       } else {
-        await list();
+        await list(undefined, active);
         error(new Error('Ce compte n’a pas accès à l’espace de cette page.'));
       }
       return;
@@ -433,10 +454,14 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       await options.onOpenWorkspace(active.workspaces[0], client);
       return;
     }
-    await list();
+    await list(undefined, active);
   }
 
   function handleSessionFailure(reason: unknown): void {
+    if (reason instanceof CloudApiError && (reason.status === 0 || reason.status >= 500)) {
+      routers.unreachable();
+      return;
+    }
     if (state.pendingInvite) {
       routers.invite();
       return;
@@ -452,6 +477,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       // matters is in refresh(), which re-reads while the setup route is open
       // so a claim completed in another tab stops showing the assistant.
       state.instance = await client.instance();
+      if (!state.alive) return;
       document.title = brandedTitle('Connexion', state.instance.name);
       if (state.instance.setupRequired) {
         routers.setup();
@@ -459,12 +485,13 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       }
       try {
         state.session = await client.session();
+        if (!state.alive) return;
         await enter(state.session);
       } catch (reason) {
-        handleSessionFailure(reason);
+        if (state.alive) handleSessionFailure(reason);
       }
     } catch {
-      routers.unreachable();
+      if (state.alive) routers.unreachable();
     }
   }
 
@@ -474,6 +501,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     async refresh() {
       if (!state.alive) return;
       await run(async () => {
+        if (state.route === 'unreachable') { await boot(); return; }
         if (state.route === 'setup') {
           state.instance = await client.instance();
           if (state.instance.setupRequired) return;

@@ -1,10 +1,12 @@
 import { openModalDialog } from '@blok/modal-dialog';
-import { IconChevronLeft, IconChevronRight, IconCross, IconPlus } from '../../src/components/icons';
+import { IconChevronLeft, IconChevronRight, IconCross, IconPlus, IconSidebarRight } from '../../src/components/icons';
 import { button, el } from './ui/dom';
 import type { CalendarEvent, CalendarStore } from './calendar-store';
 import { exportCalendarEvent, importCalendarFile } from './calendar-ical';
 import { bindCalendarGestures, rangeDraft } from './calendar-gestures';
 import { mountWorkspaceRail } from './calendar-workspace-rail';
+import { mountPlanning } from './calendar-planning';
+import { getTimeFormatter, subscribeDisplayPreferences } from './display-preferences';
 import type { CalendarWorkspaceEntry, CalendarWorkspaces } from './calendar-workspaces';
 import type { WorkspaceRef } from './workspace-registry';
 import './calendar.css';
@@ -17,12 +19,12 @@ export interface CalendarOptions {
   openWorkspacePage?(ref: WorkspaceRef, id: string): void;
   canEdit: boolean;
   onClose(): void;
+  onToggleSidebar?(): void;
 }
 
 const fullDate = new Intl.DateTimeFormat('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
 const monthTitle = new Intl.DateTimeFormat('fr-FR', { month: 'long', year: 'numeric' });
 const dayName = new Intl.DateTimeFormat('fr-FR', { weekday: 'short' });
-const hour = new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit' });
 const weekRange = new Intl.DateTimeFormat('fr-FR', { month: 'short', day: 'numeric' });
 const pad = (n: number) => String(n).padStart(2, '0');
 const dateKey = (d: Date) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
@@ -78,10 +80,10 @@ function field(label: string, control: HTMLElement) {
   return el('label', { className: 'cal-field', children: [el('span', { text: label }), control] });
 }
 
-function editEvent(root: HTMLElement, options: CalendarOptions, event: CalendarEvent, existing: boolean, changed: () => void, sidebar?: HTMLElement, owner?: CalendarWorkspaceEntry) {
+function editEvent(sidebar: HTMLElement, options: CalendarOptions, event: CalendarEvent, existing: boolean, changed: () => void, owner?: CalendarWorkspaceEntry) {
   const titleText = existing ? 'Événement' : 'Nouvel événement';
-  const form = el('form', { className: 'cal-editor' });
-  const overlay = el('div', { className: 'cal-overlay', children: [form] });
+  const opener = document.activeElement;
+  const form = el('form', { className: 'cal-editor', attrs: { 'aria-label':titleText } });
   const close = iconAction('Fermer', IconCross, () => { if (!busy) modal.close(); });
   form.append(el('header', { children: [el('h2', { text: titleText }), close] }));
   const title = el('input', { attrs: { name: 'title', placeholder: 'Titre de l’événement', required: '', maxlength: '200' } });
@@ -94,11 +96,25 @@ function editEvent(root: HTMLElement, options: CalendarOptions, event: CalendarE
   start.value = event.allDay ? event.start : localTime(new Date(event.start));
   // Users choose the last included day. The stored end of an all-day event is exclusive.
   end.value = event.allDay ? dateKey(midnight(new Date(event.end + 'T00:00'), -1)) : localTime(new Date(event.end));
+  let previousStart = start.value;
+  start.onchange = () => {
+    if (!start.value || !end.value) return;
+    if (allDay.checked) {
+      // The distance between calendar dates stays the same through a clock change.
+      const days = (Date.parse(end.value) - Date.parse(previousStart)) / 86_400_000;
+      if (days >= 0) end.value = dateKey(midnight(new Date(start.value + 'T00:00'), days));
+    } else {
+      const duration = Date.parse(end.value) - Date.parse(previousStart);
+      if (duration > 0) end.value = localTime(new Date(Date.parse(start.value) + duration));
+    }
+    previousStart = start.value;
+  };
   allDay.onchange = () => {
     const a = start.value.slice(0, 10), b = end.value.slice(0, 10);
     start.type = end.type = allDay.checked ? 'date' : 'datetime-local';
     start.value = allDay.checked || !a ? a : a + 'T09:00';
     end.value = allDay.checked || !b ? b : b + 'T10:00';
+    previousStart = start.value;
   };
   const page = el('select', { attrs: { name: 'pageId' } });
   const open = button({ label: 'Ouvrir la page', onClick: () => {
@@ -190,17 +206,28 @@ function editEvent(root: HTMLElement, options: CalendarOptions, event: CalendarE
   };
   if (existing) body.append(button({ label: 'Exporter en .ics', className: 'cal-export', onClick: () => exportCalendarEvent(event) }));
   if (canEdit && existing) footer.append(remove);
-  if (canEdit) footer.append(save);
+  if (canEdit) footer.append(button({label:'Annuler', onClick:() => { if (!busy) modal.close(); }}),save);
   form.append(body, error, footer);
   if (event.source) body.prepend(el('p', { className: 'cal-source-label', text: event.source.label }));
-  const modal = sidebar ? { close() { alive = false; form.remove(); } } : openModalDialog({ content: overlay, surface: form, label: titleText,
-    container: root, initialFocus: () => canEdit ? title : close,
-    onDismiss: () => { if (!busy) modal.close(); }, onClose: () => { alive = false; } });
-  if (sidebar) { sidebar.prepend(form); (canEdit ? title : close).focus(); }
+  const modal = { close() {
+    const restoreFocus = form.contains(document.activeElement);
+    alive = false;
+    form.remove();
+    if (restoreFocus && opener instanceof HTMLElement && opener.isConnected) opener.focus({preventScroll:true});
+  } };
+  form.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !e.defaultPrevented && !e.isComposing && !busy) {
+      e.preventDefault();
+      modal.close();
+    }
+  });
+  sidebar.prepend(form);
+  (canEdit ? title : close).focus();
   return modal;
 }
 
 export function mountCalendar(host: HTMLElement, options: CalendarOptions): { destroy(): void } {
+  let hour = getTimeFormatter();
   let selected = midnight(new Date());
   let length = window.matchMedia?.('(max-width: 650px)').matches ? 1 : 7;
   const owners = new WeakMap<CalendarEvent, CalendarWorkspaceEntry>();
@@ -208,42 +235,51 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
   let events: CalendarEvent[] = [], version = 0, modal: { close(): void } | undefined;
   let destroyed = false, visibleRange = '';
   const root = el('section', { className: 'blok-calendar', attrs: { 'aria-label': 'Calendrier' } });
-  const rail = el('aside', { className: 'cal-rail', attrs: { 'aria-label': 'Calendriers' } });
+  const rail = el('section', { className: 'cal-rail', attrs: { 'aria-label': 'Calendriers' } });
   function toggleRail(open: boolean) {
     rail.classList.toggle('cal-open', open); railToggle.setAttribute('aria-expanded',String(open));
   }
-  const railToggle = button({ label: 'Agendas', className:'cal-rail-toggle', onClick:() => toggleRail(!rail.classList.contains('cal-open')) });
+  const railToggle = button({ label: 'Agendas', className:'cal-rail-toggle', onClick:() => {
+    const opening = !rail.classList.contains('cal-open');
+    toggleRail(opening);
+    if (opening) closeRail.focus();
+  } });
   const closeRail = iconAction('Fermer les agendas',IconCross,() => { toggleRail(false); railToggle.focus(); });
   closeRail.classList.add('cal-rail-close');
   root.addEventListener('keydown',e => {
-    if (e.key === 'Escape' && rail.classList.contains('cal-open') && !modal) {
+    if (!e.defaultPrevented && e.key === 'Escape' && rail.classList.contains('cal-open') && !root.querySelector('.cal-editor')) {
       toggleRail(false); railToggle.focus();
     }
   });
   root.addEventListener('pointerdown',e => {
-    if (rail.classList.contains('cal-open') && !e.composedPath().includes(rail) && !e.composedPath().includes(railToggle)) toggleRail(false);
+    if (rail.classList.contains('cal-open') && !e.composedPath().includes(details) && !e.composedPath().includes(railToggle)) toggleRail(false);
   });
   railToggle.setAttribute('aria-expanded', 'false');
   const mini = el('div', { className: 'cal-mini' });
   const sourceHost = el('div', { className: 'cal-sources' });
-  const details = el('aside', { className: 'cal-details', attrs: { 'aria-label': 'Détails du calendrier' } });
+  const details = el('section', { className: 'cal-details', attrs: { 'aria-label': 'Détails du calendrier' } });
   const agenda = el('div', { className: 'cal-agenda' });
-  details.append(agenda);
+  details.append(rail);
   const returnToBlok = button({label:'Blok', className:'cal-return', onClick:options.onClose});
   returnToBlok.setAttribute('aria-label','Retour à Blok'); returnToBlok.title = 'Retour à Blok';
   const back = el('span',{attrs:{'aria-hidden':'true'}}); back.innerHTML = IconChevronLeft; returnToBlok.prepend(back);
-  rail.append(el('header', {className:'cal-brand', children:[el('h2',{text:'Calendrier',className:'cal-rail-title'}),returnToBlok,closeRail]}), mini, sourceHost);
+  rail.append(el('header', {className:'cal-brand', children:[el('h2',{text:'Calendrier',className:'cal-rail-title'}),returnToBlok,closeRail]}), mini, sourceHost, agenda);
   const heading = el('h1');
   let miniMonth = new Date(selected.getFullYear(), selected.getMonth(), 1);
   let miniFocus = dateKey(selected);
   function selectDay(day: Date) {
+    const wasInDrawer = rail.classList.contains('cal-open') && rail.contains(document.activeElement);
     selected = midnight(day);
     miniMonth = new Date(day.getFullYear(), day.getMonth(), 1);
     miniFocus = dateKey(day);
     toggleRail(false);
     void load();
+    if (wasInDrawer) railToggle.focus();
   }
   function drawMini() {
+    const focused = document.activeElement;
+    const focusLabel = focused instanceof HTMLButtonElement && mini.contains(focused)
+      ? focused.getAttribute('aria-label') : null;
     function browse(direction: number) {
       miniMonth = new Date(miniMonth.getFullYear(), miniMonth.getMonth() + direction, 1);
       miniFocus = dateKey(miniMonth); drawMini();
@@ -282,25 +318,39 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
       days.append(b);
     }
     mini.replaceChildren(caption, days);
+    if (focusLabel) mini.querySelector<HTMLButtonElement>('[aria-label="' + CSS.escape(focusLabel) + '"]')?.focus({preventScroll:true});
   }
   const period = el('p');
   const today = button({ label: 'Aujourd’hui', onClick: () => selectDay(new Date()) });
   const view = el('select', { className: 'cal-view', attrs: { 'aria-label': 'Vue du calendrier' } });
-  view.append(new Option('Jour', '1'), new Option('Semaine', '7'));
+  view.append(new Option('Jour', '1'), new Option('Semaine', '7'), new Option('Planning', 'agenda'));
   view.value = String(length);
-  view.onchange = () => { length = Number(view.value); void load(); };
+  let timelineScroll = 7 * 56;
+  view.onchange = () => {
+    const wasPlanning = Boolean(planning);
+    length = view.value === '1' ? 1 : 7;
+    if (view.value === 'agenda') timelineScroll = scroll.scrollTop;
+    void load();
+    if (view.value === 'agenda') scroll.scrollTop = 0;
+    else if (wasPlanning) scroll.scrollTop = timelineScroll;
+  };
   function move(direction: number) { selectDay(midnight(selected, direction * length)); }
   const actions = el('div', { className: 'cal-actions', children: [railToggle, today,
     iconAction('Période précédente', IconChevronLeft, () => move(-1)),
     iconAction('Période suivante', IconChevronRight, () => move(1)), view] });
   const headingRow = el('header', { className: 'cal-heading',
     children: [el('div', { className: 'cal-title', children: [heading, period] }), actions] });
+  if (options.onToggleSidebar) {
+    const toggle = iconAction('Afficher ou masquer la barre latérale', IconSidebarRight, options.onToggleSidebar);
+    toggle.setAttribute('data-desktop-sidebar-toggle', '');
+    headingRow.prepend(toggle);
+  }
   const destinations = () => options.workspaces?.entries().filter(entry => entry.connected && entry.canEdit);
   const canCreate = () => options.workspaces ? destinations()!.length > 0 : options.canEdit;
   const editable = (event: CalendarEvent) => !event.source && (owners.get(event)?.canEdit ?? options.canEdit);
   function openEvent(event: CalendarEvent, existing = true) {
     modal?.close();
-    modal = editEvent(root, options, event, existing, () => { void load(); }, root.clientWidth >= 1000 ? details : undefined, owners.get(event));
+    modal = editEvent(details, options, event, existing, () => { void load(); }, owners.get(event));
   }
   function drawCreateActions() {
     const current = actions.querySelector('.cal-create-actions');
@@ -331,7 +381,7 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
   const board = el('div', { className: 'cal-board' });
   scroll.append(board);
   const main = el('section', { className: 'cal-main', children: [headingRow, notice, scroll] });
-  root.append(rail, main, details);
+  root.append(main, details);
   host.append(root);
   const sources = mountWorkspaceRail(sourceHost, options.store, options.workspaces, () => { drawCreateActions(); void load(); });
   function shortcut(event: KeyboardEvent) {
@@ -392,11 +442,24 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
     if (!e.allDay) item.append(el('small', { text: hour.format(new Date(e.start)) + ' – ' + hour.format(new Date(e.end)) }));
     return item;
   }
-  function draw(start: Date) {
+  let planning: ReturnType<typeof mountPlanning> | undefined;
+  function draw(start: Date, loading = false) {
+    const days = Array.from({ length }, (_, i) => midnight(start, i));
+    root.toggleAttribute('data-clock-12h', Boolean(hour.resolvedOptions().hour12));
+    if (view.value === 'agenda') {
+      board.dataset.length = 'agenda';
+      if (!planning) { board.replaceChildren(); planning = mountPlanning(board); }
+      planning.render({days,events,hour,ownerOf:event=>owners.get(event),keyOf:eventKey,open:openEvent,
+        create:canCreate() ? () => openEvent(draft(selected, 9 * 60),false) : undefined, loading});
+      return;
+    }
+    planning?.destroy(); planning = undefined;
+    const focused = document.activeElement;
+    const focusKey = focused instanceof HTMLButtonElement && board.contains(focused) ? focused.dataset.eventId : undefined;
+    const focusDate = focused?.closest<HTMLElement>('[data-date]')?.dataset.date;
     board.replaceChildren();
     board.style.setProperty('--cal-days', String(length));
     board.dataset.length = String(length);
-    const days = Array.from({ length }, (_, i) => midnight(start, i));
     const now = new Date();
     const dayLabels = el('div', { className: 'cal-days' });
     const zone = new Intl.DateTimeFormat('fr-FR', { timeZoneName: 'shortOffset' }).formatToParts(start).find(p => p.type === 'timeZoneName')?.value ?? '';
@@ -406,15 +469,19 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
     const timeline = el('div', { className: 'cal-timeline' });
     const scale = el('div', { className: 'cal-scale' });
     for (let h = 1; h < 24; h++) {
-      const label = el('span', { text: pad(h) + ':00' }); label.style.top = (h / 24 * 100) + '%'; scale.append(label);
+      const label = el('span', { text: hour.format(new Date(2000, 0, 15, h)) }); label.style.top = (h / 24 * 100) + '%'; scale.append(label);
     }
     timeline.append(scale);
     for (const day of days) {
       const key = dateKey(day);
       const isToday = key === dateKey(now);
-      const label = el('div', { className: 'cal-day-label', children: [
+      const label = el(length === 7 ? 'button' : 'div', { className: 'cal-day-label', children: [
         el('span', { text: dayName.format(day).replace('.', '') }), el('strong', { text: String(day.getDate()) }),
       ] });
+      if (label instanceof HTMLButtonElement) {
+        label.type = 'button'; label.setAttribute('aria-label', 'Voir la journée du ' + fullDate.format(day));
+        label.onclick = () => { view.value = '1'; length = 1; selectDay(day); view.focus(); };
+      }
       if (isToday) label.setAttribute('aria-current', 'date');
       dayLabels.append(label);
       const lane = el('div', { className: 'cal-all-cell', attrs: { 'data-date': key } });
@@ -448,6 +515,11 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
       timeline.append(column);
     }
     board.append(el('div', { className: 'cal-sticky', children: [dayLabels, allDay] }), timeline);
+    if (focusKey) {
+      const chips = Array.from(board.querySelectorAll<HTMLButtonElement>('[data-event-id]')).filter(chip => chip.dataset.eventId === focusKey);
+      const sameDay = chips.find(chip => chip.closest<HTMLElement>('[data-date]')?.dataset.date === focusDate);
+      (sameDay ?? chips[0] ?? view).focus({preventScroll:true});
+    }
   }
   async function load() {
     if (destroyed) return;
@@ -456,9 +528,9 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
     const last = midnight(start, length - 1);
     heading.textContent = monthTitle.format(selected);
     period.textContent = length === 1 ? fullDate.format(start) : weekRange.formatRange(start, last);
-    const range = dateKey(start) + '/' + length;
+    const range = dateKey(start) + '/' + view.value;
     if (range !== visibleRange) {
-      visibleRange = range; events = []; drawMini(); draw(start); drawAgenda();
+      visibleRange = range; events = []; drawMini(); draw(start,true); drawAgenda();
       notice.textContent = 'Chargement…';
     } else {
       if (options.workspaces) {
@@ -484,8 +556,15 @@ export function mountCalendar(host: HTMLElement, options: CalendarOptions): { de
     }
   }
 
+  const stopPreferences = subscribeDisplayPreferences(() => {
+    const next = getTimeFormatter();
+    if (next === hour) return;
+    hour = next;
+    if (view.value !== 'agenda' || events.length) draw(length === 7 ? mondayOf(selected) : selected);
+    drawAgenda();
+  });
   void load();
   // Storybook and the shell may attach the returned DOM after mounting the view.
-  const frame = window.requestAnimationFrame(() => { scroll.scrollTop = 7 * 56; });
-  return { destroy() { destroyed = true; version++; window.cancelAnimationFrame(frame); document.removeEventListener('keydown',shortcut); stopGestures(); sources.destroy(); modal?.close(); root.remove(); } };
+  const frame = window.requestAnimationFrame(() => { if (view.value !== 'agenda') scroll.scrollTop = 7 * 56; });
+  return { destroy() { destroyed = true; version++; window.cancelAnimationFrame(frame); document.removeEventListener('keydown',shortcut); stopPreferences(); stopGestures(); sources.destroy(); modal?.close(); planning?.destroy(); root.remove(); } };
 }

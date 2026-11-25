@@ -3,7 +3,7 @@ import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { PoolClient } from 'pg';
 import type { PgPool } from '../db/pool.ts';
-import { parseTeamspaceCreateBody, parseTeamspacePatchBody } from '../workspaces/teamspace-body.ts';
+import { enrollWorkspaceMembers, manageTeam, teamspaceDirectory, teamspaceMetadata, teamspaceSettings } from './teamspace-directory.ts';
 import { parseUserId } from '../models/User.ts';
 import { canEditWorkspace, type WorkspaceRole } from '../models/Workspace.ts';
 import { canEditPage } from './page-level.ts';
@@ -20,7 +20,7 @@ interface Scope {
 }
 
 type Route = (c: Context, scope: Scope) => Promise<Response>;
-const teamspaceFields = 'id,workspace_id AS "workspaceId",name,created_at AS "createdAt"';
+
 
 export function createShellTeamspaces(pool: PgPool) {
   const router = new Hono();
@@ -56,42 +56,73 @@ export function createShellTeamspaces(pool: PgPool) {
   };
 
   const inTeam = (route: Route) => scoped(async (c, scope) => {
-    const team = await scope.client.query(
-      'SELECT 1 FROM teamspaces WHERE workspace_id=$1 AND id=$2',
-      [scope.workspaceId, c.req.param('teamspaceId')],
+    const { rows: [team] } = await scope.client.query(
+      `SELECT ${manageTeam} AS manage FROM teamspaces t WHERE t.workspace_id=$1 AND t.id=$4`,
+      [scope.workspaceId, scope.userId, scope.role, c.req.param('teamspaceId')],
     );
-    if (!team.rowCount) return c.json({ error: 'not_found' }, 404);
+    if (!team) return c.json({ error: 'not_found' }, 404);
+    if (!['GET', 'HEAD'].includes(c.req.method) && !team.manage)
+      return c.json({ error: 'permission_denied', action: 'edit' }, 403);
     return route(c, scope);
   });
 
-  router.get('/', scoped(async (c, { client, workspaceId }) => {
-    const { rows } = await client.query(`SELECT ${teamspaceFields} FROM teamspaces WHERE workspace_id=$1 ORDER BY created_at,id`, [workspaceId]);
-    return c.json({ teamspaces: rows });
+  async function isRestricted(client: PoolClient, workspaceId: string): Promise<boolean> {
+    const { rows: [workspace] } = await client.query('SELECT restrict_teamspace_creation FROM workspaces WHERE id=$1', [workspaceId]);
+    return workspace.restrict_teamspace_creation;
+  }
+
+  router.get('/', scoped(async (c, { client, workspaceId, userId, role }) => {
+    const teams = await teamspaceDirectory(client, workspaceId, userId, role);
+    const restrictCreation = await isRestricted(client, workspaceId);
+    return c.json({ teamspaces: teams, settings: { restrictCreation }, canCreate: role === 'admin' || (role === 'member' && !restrictCreation) });
   }));
 
-  router.post('/', scoped(async (c, { client, workspaceId, input }) => {
-    const parsed = parseTeamspaceCreateBody(input);
-    if (!parsed.ok) return c.json({ error: parsed.reason }, 400);
-    const { rows } = await client.query(
-      `INSERT INTO teamspaces(id,workspace_id,name) VALUES($1,$2,$3) RETURNING ${teamspaceFields}`,
-      [randomUUID(), workspaceId, parsed.name],
-    );
-    return c.json({ teamspace: rows[0] }, 201);
+  router.patch('/settings', scoped(async (c, { client, workspaceId, role, input }) => {
+    if (role !== 'admin') return c.json({ error: 'permission_denied' }, 403);
+    const settings = teamspaceSettings(input);
+    if (!settings) return c.json({ error: 'invalid_request' }, 400);
+    const ids = settings.defaultTeamspaceIds;
+    if (ids) {
+      const found = await client.query('SELECT id FROM teamspaces WHERE workspace_id=$1 AND id=ANY($2::text[])', [workspaceId, ids]);
+      if (found.rowCount !== ids.length) return c.json({ error: 'not_found' }, 404);
+      await client.query(
+        `UPDATE teamspaces SET is_default=(id=ANY($2::text[])), updated_at=now()
+         WHERE workspace_id=$1 AND is_default IS DISTINCT FROM (id=ANY($2::text[]))`, [workspaceId, ids]);
+      await enrollWorkspaceMembers(client, workspaceId, ids);
+    }
+    if (settings.restrictCreation !== undefined)
+      await client.query('UPDATE workspaces SET restrict_teamspace_creation=$2 WHERE id=$1', [workspaceId, settings.restrictCreation]);
+    return c.json({ ok: true });
   }));
 
-  router.patch('/:teamspaceId', inTeam(async (c, { client, workspaceId, input }) => {
-    const parsed = parseTeamspacePatchBody(input);
-    if (!parsed.ok) return c.json({ error: parsed.reason }, 400);
-    const { rows } = await client.query(
-      `UPDATE teamspaces SET name=$3 WHERE workspace_id=$1 AND id=$2 RETURNING ${teamspaceFields}`,
-      [workspaceId, c.req.param('teamspaceId'), parsed.name],
-    );
-    return c.json({ teamspace: rows[0] });
+  router.post('/', scoped(async (c, { client, workspaceId, input, userId, role }) => {
+    const meta = teamspaceMetadata(input);
+    const makeDefault = (input as {makeDefault?: unknown} | null)?.makeDefault;
+    if (!meta?.name || (makeDefault !== undefined && typeof makeDefault !== 'boolean')) return c.json({ error: 'invalid_request' }, 400);
+    if (role !== 'admin' && (makeDefault || await isRestricted(client, workspaceId))) return c.json({ error: 'permission_denied' }, 403);
+    const id = randomUUID();
+    await client.query(
+      `INSERT INTO teamspaces(id,workspace_id,name,description,icon,is_default,owner_managed) VALUES($1,$2,$3,$4,$5,$6,true)`,
+      [id, workspaceId, meta.name, meta.description ?? '', meta.icon ?? '', makeDefault ?? false]);
+    await client.query(`INSERT INTO teamspace_members(workspace_id,teamspace_id,user_id,role) VALUES($1,$2,$3,'owner')`, [workspaceId,id,userId]);
+    if (makeDefault) await enrollWorkspaceMembers(client, workspaceId, [id]);
+    const [teamspace] = await teamspaceDirectory(client, workspaceId, userId, role, id);
+    return c.json({ teamspace }, 201);
   }));
 
-  router.delete('/:teamspaceId', scoped(async (c, { client, workspaceId }) => {
-    const removed = await client.query('DELETE FROM teamspaces WHERE workspace_id=$1 AND id=$2', [workspaceId, c.req.param('teamspaceId')]);
-    if (!removed.rowCount) return c.json({ error: 'not_found' }, 404);
+  router.patch('/:teamspaceId', inTeam(async (c, { client, workspaceId, input, userId, role }) => {
+    const meta = teamspaceMetadata(input);
+    if (!meta) return c.json({ error: 'invalid_request' }, 400);
+    const id = c.req.param('teamspaceId')!;
+    await client.query(
+      `UPDATE teamspaces SET name=coalesce($3,name),description=coalesce($4,description),icon=coalesce($5,icon),updated_at=now()
+       WHERE workspace_id=$1 AND id=$2`, [workspaceId, id, meta.name, meta.description, meta.icon]);
+    const [teamspace] = await teamspaceDirectory(client, workspaceId, userId, role, id);
+    return c.json({ teamspace });
+  }));
+
+  router.delete('/:teamspaceId', inTeam(async (c, { client, workspaceId }) => {
+    await client.query('DELETE FROM teamspaces WHERE workspace_id=$1 AND id=$2', [workspaceId, c.req.param('teamspaceId')]);
     return c.json({ ok: true });
   }));
 
@@ -125,36 +156,51 @@ export function createShellTeamspaces(pool: PgPool) {
 
   router.get('/:teamspaceId/members', inTeam(async (c, { client, workspaceId }) => {
     const { rows } = await client.query(
-      `SELECT m.user_id AS "userId",u.email FROM teamspace_members m JOIN users u ON u.id=m.user_id
-       WHERE m.workspace_id=$1 AND m.teamspace_id=$2 ORDER BY u.email`, [workspaceId, c.req.param('teamspaceId')],
+      `SELECT m.user_id AS "userId",u.name,u.email,m.role,w.role AS "workspaceRole" FROM teamspace_members m
+       JOIN memberships w ON w.workspace_id=m.workspace_id AND w.user_id=m.user_id JOIN users u ON u.id=m.user_id
+       WHERE m.workspace_id=$1 AND m.teamspace_id=$2 ORDER BY u.email,u.id`, [workspaceId, c.req.param('teamspaceId')],
     );
     return c.json({ members: rows });
   }));
 
   router.post('/:teamspaceId/members', inTeam(async (c, { client, workspaceId, input }) => {
-    const userId = parseUserId((input as { userId?: unknown } | null)?.userId);
-    if (!userId) return c.json({ error: 'invalid_request' }, 400);
+    const body = input as { userId?: unknown; role?: unknown } | null;
+    const userId = parseUserId(body?.userId);
+    const role = body?.role === undefined ? 'member' : body.role;
+    if (!userId || (role !== 'member' && role !== 'owner')) return c.json({ error: 'invalid_request' }, 400);
     const { rows: [member] } = await client.query(
-      `SELECT m.user_id AS "userId",u.email FROM memberships m JOIN users u ON u.id=m.user_id
-       WHERE m.workspace_id=$1 AND m.user_id=$2 FOR KEY SHARE OF m`, [workspaceId, userId],
-    );
+      `SELECT m.user_id AS "userId",u.name,u.email,m.role AS "workspaceRole" FROM memberships m JOIN users u ON u.id=m.user_id
+       WHERE m.workspace_id=$1 AND m.user_id=$2 FOR KEY SHARE OF m`, [workspaceId, userId]);
     if (!member) return c.json({ error: 'not_workspace_member' }, 400);
+    if (role === 'owner' && member.workspaceRole === 'viewer') return c.json({ error: 'viewer_cannot_own' }, 400);
     const inserted = await client.query(
-      'INSERT INTO teamspace_members(workspace_id,teamspace_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',
-      [workspaceId, c.req.param('teamspaceId'), userId],
-    );
+      'INSERT INTO teamspace_members(workspace_id,teamspace_id,user_id,role) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',
+      [workspaceId, c.req.param('teamspaceId'), userId, role]);
     if (!inserted.rowCount) return c.json({ error: 'already_member' }, 409);
-    return c.json({ member }, 201);
+    return c.json({ member: { ...member, role } }, 201);
   }));
 
-  router.delete('/:teamspaceId/members/:userId', inTeam(async (c, { client, workspaceId }) => {
+  router.on(['PATCH','DELETE'], '/:teamspaceId/members/:userId', inTeam(async (c, { client, workspaceId, input }) => {
     const userId = parseUserId(c.req.param('userId'));
-    if (!userId) return c.json({ error: 'invalid_request' }, 400);
-    const removed = await client.query(
-      'DELETE FROM teamspace_members WHERE workspace_id=$1 AND teamspace_id=$2 AND user_id=$3',
-      [workspaceId, c.req.param('teamspaceId'), userId],
-    );
-    if (!removed.rowCount) return c.json({ error: 'not_found' }, 404);
+    const teamId = c.req.param('teamspaceId');
+    const remove = c.req.method === 'DELETE';
+    const role = (input as {role?: unknown} | null)?.role;
+    if (!userId || (!remove && role !== 'member' && role !== 'owner')) return c.json({ error: 'invalid_request' }, 400);
+    const args = [workspaceId, teamId, userId];
+    const { rows: [member] } = await client.query(
+      `SELECT m.role,w.role AS workspace_role,t.is_default,
+       (SELECT count(*)::int FROM teamspace_members o WHERE o.workspace_id=m.workspace_id AND o.teamspace_id=m.teamspace_id AND o.role='owner') AS owners
+       FROM teamspace_members m JOIN memberships w ON w.workspace_id=m.workspace_id AND w.user_id=m.user_id
+       JOIN teamspaces t ON t.workspace_id=m.workspace_id AND t.id=m.teamspace_id
+       WHERE m.workspace_id=$1 AND m.teamspace_id=$2 AND m.user_id=$3`, args);
+    if (!member) return c.json({ error: 'not_found' }, 404);
+    if (remove && member.is_default) return c.json({ error: 'default_teamspace' }, 409);
+    if (member.role === 'owner' && member.owners === 1 && (remove || role === 'member')) return c.json({ error: 'last_owner' }, 409);
+    if (!remove && role === 'owner' && member.workspace_role === 'viewer') return c.json({ error: 'viewer_cannot_own' }, 400);
+    if (remove)
+      await client.query('DELETE FROM teamspace_members WHERE workspace_id=$1 AND teamspace_id=$2 AND user_id=$3', args);
+    else
+      await client.query('UPDATE teamspace_members SET role=$4 WHERE workspace_id=$1 AND teamspace_id=$2 AND user_id=$3', [...args, role]);
     return c.json({ ok: true });
   }));
 

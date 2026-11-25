@@ -17,7 +17,7 @@
   display: flex;
   flex-direction: column;
   flex: none;
-  width: 260px;
+  width: 270px;
   min-width: 220px;
   max-width: 420px;
   /* The light rail follows the editor surface; dark mode uses a solid tone. */
@@ -40,12 +40,14 @@
 }
 
 [data-blok-sidebar-header] {
+  box-sizing: border-box;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--blok-space-2);
   height: 44px;
-  padding: var(--blok-space-2) var(--blok-space-3) var(--blok-space-2) var(--blok-space-4);
+  padding: 8px 12px;
   color: var(--blok-menu-section-label);
   font-size: 12px;
   font-weight: 600;
@@ -75,6 +77,13 @@
   color: var(--blok-text-secondary);
   cursor: pointer;
 }
+
+[data-blok-sidebar-header] [data-blok-sidebar-icon] {
+  width: 28px;
+  height: 28px;
+  color: var(--blok-sidebar-label);
+}
+[data-blok-sidebar-header] [data-blok-sidebar-icon] svg { width: 18px; height: 18px; }
 
 [data-blok-sidebar-icon]:hover,
 [data-blok-sidebar-add]:hover,
@@ -578,8 +587,29 @@
 /* Les pages de l'espace s'indentent sous sa ligne, comme chez Notion. */
 [data-blok-sidebar-teamspace-pages] { padding-left: 0; }
 
-/* « Nouvelle page » est une ligne de la barre, pas seulement un + dans l'en-tête. */
-[data-blok-sidebar-shortcuts] { padding: 2px 8px 6px; }
+
+[data-blok-sidebar-shortcuts] { flex: none; padding: 2px 8px 6px; }
+[data-blok-sidebar-shortcuts]:has([data-blok-sidebar-modes]) { padding-top: 4px; }
+[data-blok-sidebar-modes] { display: flex; align-items: center; gap: 4px; min-width: 0; margin: 0 4px 12px; }
+[data-blok-sidebar-modes] > :is(button,a) {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  box-sizing: border-box; height: 32px; min-width: 28px; min-height: 0; padding: 0 5px;
+  border: 0; border-radius: 7px; background: transparent; color: var(--blok-sidebar-heading);
+  text-decoration: none; font: inherit; font-size: 14px; cursor: pointer;
+}
+[data-blok-sidebar-modes] svg { flex: none; width: 16px; height: 16px; }
+[data-blok-sidebar-modes] > :not([aria-current="page"]) span { display: none; }
+[data-blok-sidebar-modes] > :is(button,a):hover { background: var(--blok-item-hover-bg); color: var(--blok-sidebar-label); }
+[data-blok-sidebar-modes] > [aria-current="page"] {
+  padding-inline: 8px; background: var(--blok-item-hover-bg); color: var(--blok-sidebar-selected); font-weight: 600;
+}
+[data-blok-sidebar-modes] > :focus-visible { outline: 2px solid var(--blok-focus-ring); outline-offset: -2px; }
+[data-blok-sidebar-modes] ~ [data-blok-sidebar-shortcut] {
+  margin-block: 1px; padding-inline: 10px; gap: 10px; border-radius: 6px; color: var(--blok-sidebar-label);
+}
+[data-blok-sidebar-modes] ~ [data-blok-sidebar-shortcut][aria-current="page"] {
+  color: var(--blok-sidebar-selected); background: var(--blok-item-hover-bg); font-weight: 500;
+}
 [data-blok-sidebar-shortcut] {
   display: flex;
   align-items: center;
@@ -625,6 +655,13 @@ a[data-blok-sidebar-calendar] { text-decoration: none; }
 }
 
 [data-blok-sidebar-section-header] { display: flex; align-items: center; gap: 4px; }
+[data-blok-sidebar-section-action] {
+  position: relative; display: grid; place-items: center; flex: none; width: 26px; height: 26px;
+  padding: 0; border: 0; border-radius: 4px; color: var(--blok-sidebar-label); background: transparent; cursor: pointer;
+}
+[data-blok-sidebar-section-action] span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+[data-blok-sidebar-section-action]:hover { background: var(--blok-item-hover-bg); }
+[data-blok-sidebar-section-action]:focus-visible { outline: 2px solid var(--blok-focus-ring); outline-offset: -2px; }
 [data-blok-sidebar-section-header] [data-blok-sidebar-section-label] { flex: 1; min-width: 0; margin: 0; }
 [data-blok-sidebar-create-private] { flex: none; margin-inline-end: 4px; }
 
@@ -642,10 +679,42 @@ a[data-blok-sidebar-calendar] { text-decoration: none; }
 }
 [data-blok-sidebar-teamspace]:is(:hover, :focus-within) > button { opacity: 1; }
 [data-blok-sidebar-teamspace] > button:not(:first-child):hover { background: var(--blok-item-hover-bg); }
-button[data-blok-sidebar-search] { cursor: pointer; font: inherit; font-size: 13px; text-align: start; }
+[data-blok-sidebar-customize] {
+  display: flex; align-items: center; flex: none; height: 32px; gap: 10px; margin: 4px 8px 8px;
+  padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--blok-sidebar-heading);
+  font: inherit; font-size: 14px; text-align: start; cursor: pointer;
+}
+[data-blok-sidebar-customize] svg { flex: none; width: 16px; height: 16px; }
+[data-blok-sidebar-customize] span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[data-blok-sidebar-customize]:is(:hover, [aria-expanded="true"]) { background: var(--blok-item-hover-bg); color: var(--blok-sidebar-label); }
+[data-blok-sidebar-customize]:focus-visible { outline: 2px solid var(--blok-focus-ring); outline-offset: -2px; }
+button[data-blok-sidebar-search] {
+  flex: none;
+  gap: 8px;
+  height: 32px;
+  margin: 0 12px 8px;
+  padding: 0 7px 0 8px;
+  border: 1px solid color-mix(in srgb, var(--blok-sidebar-label) 20%, transparent);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--blok-sidebar-label);
+  font: inherit;
+  font-size: 14px;
+  text-align: start;
+  cursor: pointer;
+}
 button[data-blok-sidebar-search] > span { flex: 1; }
-button[data-blok-sidebar-search] kbd { font: inherit; font-size: 11px; padding: 1px 4px; border-radius: 3px; background: var(--blok-item-hover-bg); }
+button[data-blok-sidebar-search] kbd {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--blok-sidebar-label) 11%, transparent);
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
 button[data-blok-sidebar-search]:hover { background: var(--blok-item-hover-bg); }
+button[data-blok-sidebar-search]:focus-visible { outline: 2px solid var(--blok-focus-ring); outline-offset: 2px; }
 @media (hover: none) { [data-blok-sidebar-teamspace-add], [data-blok-sidebar-teamspace-more] { opacity: 1; } }
 
 /* Muted navigation labels, brighter selection: use a separate palette from document text. */

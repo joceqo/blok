@@ -1,3 +1,4 @@
+import './cover-controls.css';
 import { registerLayer } from '../../src/components/utils/dismissable-layer';
 import { createCoverDownloadButton } from '../../src/components/utils/cover-download';
 import additionalCover0 from './assets/covers/cma_130391.jpg';
@@ -417,12 +418,26 @@ export function createPageCover(
   gallery.setAttribute('role', 'dialog');
   gallery.setAttribute('aria-label', 'Choisir une couverture');
   gallery.hidden = true;
+  gallery.id = 'cover-picker-' + crypto.randomUUID();
+  change.setAttribute('aria-controls', gallery.id);
+  const choose = (next: PageCover | undefined): void => {
+    const parent = root.parentElement;
+    const restoreFocus = gallery.contains(document.activeElement);
+    closeGallery();
+    onChange(next);
+    if (restoreFocus) {
+      const trigger = root.isConnected ? change : parent?.querySelector<HTMLButtonElement>(
+        '[data-desktop-cover-actions] > [aria-haspopup="dialog"], [data-desktop-add-cover]',
+      );
+      trigger?.focus({preventScroll:true});
+    }
+  };
   const head = document.createElement('div');
   head.setAttribute('data-desktop-cover-gallery-head', '');
   const remove = document.createElement('button');
   remove.type = 'button';
   remove.textContent = 'Supprimer';
-  remove.addEventListener('click', () => onChange(undefined));
+  remove.addEventListener('click', () => choose(undefined));
   gallery.append(head);
   const tabs = document.createElement('div');
   tabs.setAttribute('data-desktop-cover-tabs', '');
@@ -454,9 +469,32 @@ export function createPageCover(
       option.setAttribute('data-cover-id', preset.id);
       option.setAttribute('aria-pressed', String(preset.id === value));
       option.style.backgroundImage = preset.background;
-      option.addEventListener('click', () => onChange(preset.id));
+      option.addEventListener('click', () => choose(preset.id));
       grid.append(option);
     }
+    const buttons = [...grid.querySelectorAll('button')];
+    const current = buttons.find(button => button.getAttribute('aria-pressed') === 'true') ?? buttons[0];
+    buttons.forEach(button => { button.tabIndex = button === current ? 0 : -1; });
+    grid.addEventListener('keydown', event => {
+      const at = buttons.indexOf(event.target as HTMLButtonElement);
+      if (at < 0) return;
+      const columns = getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length || 1;
+      let next: number;
+      switch (event.key) {
+        case 'ArrowRight': next = at + 1; break;
+        case 'ArrowLeft': next = at - 1; break;
+        case 'ArrowDown': next = at + columns; break;
+        case 'ArrowUp': next = at - columns; break;
+        case 'Home': next = 0; break;
+        case 'End': next = buttons.length - 1; break;
+        default: return;
+      }
+      event.preventDefault();
+      buttons[Math.max(0, Math.min(next, buttons.length - 1))].focus();
+    });
+    grid.addEventListener('focusin', event => {
+      buttons.forEach(button => { button.tabIndex = button === event.target ? 0 : -1; });
+    });
     section.append(heading, grid);
     scroll.append(section);
   }
@@ -483,7 +521,7 @@ export function createPageCover(
     uploadStatus.textContent = 'Importation…';
     void readCoverFile(selected).then((data) => options.upload ? options.upload(data) : data).then((url) => {
       if (!isPageCover(url)) throw new Error('Image invalide.');
-      onChange(url);
+      choose(url);
     }).catch((error: unknown) => {
       uploadStatus.textContent = error instanceof Error ? error.message : 'Impossible d’importer cette image.';
     }).finally(() => { upload.disabled = false; file.value = ''; });
@@ -509,13 +547,15 @@ export function createPageCover(
     event.preventDefault();
     const url = link.value.trim();
     if (!/^https?:\/\//i.test(url) || !isPageCover(url)) { linkStatus.textContent = 'Saisissez une adresse HTTP ou HTTPS valide.'; return; }
-    onChange(new URL(url).href);
+    choose(new URL(url).href);
   });
   const content = document.createElement('div');
   content.setAttribute('data-desktop-cover-content', '');
-  content.append(scrollFrame, uploadPanel, linkPanel);
+  const linkTabPanel = document.createElement('div');
+  linkTabPanel.append(linkPanel);
+  content.append(scrollFrame, uploadPanel, linkTabPanel);
   gallery.append(content);
-  const panels = [scrollFrame, uploadPanel, linkPanel];
+  const panels = [scrollFrame, uploadPanel, linkTabPanel];
   const tabButtons: HTMLButtonElement[] = [];
   const selectTab = (index: number): void => {
     content.toggleAttribute('data-gallery', index === 0);
@@ -537,7 +577,10 @@ export function createPageCover(
     });
     tabButtons.push(tab); tabs.append(tab);
     panels[index].setAttribute('role', 'tabpanel');
-    panels[index].setAttribute('aria-label', label);
+    tab.id = gallery.id + '-tab-' + index;
+    tab.setAttribute('aria-controls', gallery.id + '-panel-' + index);
+    panels[index].id = gallery.id + '-panel-' + index;
+    panels[index].setAttribute('aria-labelledby', tab.id);
   });
   const updateScrollbar = (): void => {
     const maxScroll = scroll.scrollHeight - scroll.clientHeight;
@@ -574,24 +617,37 @@ export function createPageCover(
     const y = event.clientY - scrollbar.getBoundingClientRect().top - thumb.clientHeight / 2;
     scroll.scrollTop = y * (scroll.scrollHeight - scroll.clientHeight) / travel;
   });
-  const closeGallery = (): void => {
+  let unregisterGallery: (() => void) | undefined;
+  const layoutGallery = (): void => {
+    const bounds = root.getBoundingClientRect();
+    if (bounds.width > 0) gallery.style.maxWidth = Math.max(0, bounds.width - 24) + 'px';
+    const top = gallery.getBoundingClientRect().top;
+    content.style.setProperty('--desktop-cover-gallery-height', Math.max(0, Math.min(350, window.innerHeight - top - head.offsetHeight - 12)) + 'px');
+    updateScrollbar();
+  };
+  const closeGallery = (restoreFocus = false): void => {
+    unregisterGallery?.();
+    unregisterGallery = undefined;
     gallery.hidden = true;
     change.setAttribute('aria-expanded', 'false');
     actions.removeAttribute('data-open');
+    if (restoreFocus) change.focus({preventScroll:true});
   };
   change.addEventListener('click', () => {
     if (gallery.hidden) {
       gallery.hidden = false;
-      content.style.setProperty('--desktop-cover-gallery-height', `${Math.max(0, Math.min(350, window.innerHeight - gallery.getBoundingClientRect().top - 60))}px`);
-      updateScrollbar();
+      layoutGallery();
+      const resize = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(layoutGallery);
+      resize?.observe(root);
+      const release = registerLayer({element:gallery, anchor:change, onDismiss:reason => closeGallery(reason === 'escape')});
+      unregisterGallery = () => { release(); resize?.disconnect(); };
+      tabButtons.find(tab => tab.tabIndex === 0)?.focus({preventScroll:true});
       change.setAttribute('aria-expanded', 'true');
       actions.setAttribute('data-open', '');
     } else closeGallery();
   });
-  root.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeGallery(); });
   actions.addEventListener('focusout', (event) => {
-    if (event.relatedTarget instanceof Node && actions.contains(event.relatedTarget)) return;
-    closeGallery();
+    if (event.relatedTarget instanceof Node && !actions.contains(event.relatedTarget)) closeGallery();
   });
 
   const drag = document.createElement('div');

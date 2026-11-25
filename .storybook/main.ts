@@ -43,9 +43,12 @@ const config: StorybookConfig = {
       },
       resolve: {
         ...viteConfig.resolve,
+        dedupe: [...new Set([...(viteConfig.resolve?.dedupe ?? []), 'react', 'react-dom'])],
         alias: {
           ...viteConfig.resolve?.alias,
           '@/types': path.resolve(__dirname, '../types'),
+          '@blok/page-table': path.resolve(__dirname, '../src/tools/database/page-table.ts'),
+          '@blok/page-sheet': path.resolve(__dirname, '../src/tools/database/host-page-sheet.ts'),
           '@blok/modal-dialog': path.resolve(__dirname, '../src/components/utils/modal-dialog.ts'),
           '@blok/popover': path.resolve(__dirname, '../src/components/utils/popover/popover-desktop.ts'),
         },

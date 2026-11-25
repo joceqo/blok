@@ -1,3 +1,4 @@
+import { libraryView } from './library-route';
 import { calendarUrl, editorUrl, isCalendarUrl } from './calendar-route';
 import { workspacePageLink } from './page-link';
 import { renderPageIcon } from '../../src/shell/page-icon';
@@ -196,6 +197,12 @@ function installMenu(): void {
     else if (box.session.tabs.length < MAX_TABS) addTab(href, 'Calendrier');
     else history.pushState(null, '', href);
   });
+  window.addEventListener('blok:return-from-library-peek', event => {
+    if (!isTauri()) return;
+    event.preventDefault();
+    const tab = active();
+    if (tab && tab.index > 0) step(-1);
+  });
   window.addEventListener('blok:return-from-calendar', event => {
     if (!isTauri()) return;
     const pages = box.session.tabs.filter(tab => !isCalendarUrl(new URL(tab.href)));
@@ -217,10 +224,12 @@ function boot(): Session {
   const requested = new URL(location.href);
   const page = requested.searchParams.get('page');
   const calendar = isCalendarUrl(requested);
-  if (!restored || (!page && !calendar)) return restored ?? freshSession();
+  const library = libraryView(requested);
+  if (!restored || (!page && !calendar && !library)) return restored ?? freshSession();
   // An explicit page link takes precedence over the previously selected tab.
   const matchesRoute = (tab: Tab): boolean => {
     const url = new URL(tab.href);
+    if (library) return url.pathname === requested.pathname && url.searchParams.get('p') === requested.searchParams.get('p');
     return calendar ? isCalendarUrl(url) : url.pathname === requested.pathname && url.searchParams.get('page') === page;
   };
   const current = restored.tabs.find(tab => tab.id === restored.activeId);
@@ -230,7 +239,7 @@ function boot(): Session {
     existing.entries[existing.index] = requested.href;
     restored.activeId = existing.id;
   } else {
-    const opened = freshTab(requested.href, calendar ? 'Calendrier' : 'Nouvelle page');
+    const opened = freshTab(requested.href, calendar ? 'Calendrier' : library ? 'Bibliothèque' : 'Nouvelle page');
     restored.tabs.push(opened);
     restored.tabs = restored.tabs.slice(-MAX_TABS);
     restored.activeId = opened.id;
@@ -469,7 +478,8 @@ function syncTitle(): void {
   const tab = active();
   if (!tab) return;
   const title = readable(document.title);
-  const icon = isCalendarUrl(new URL(tab.href)) ? '' : tab.icon;
+  const url = new URL(tab.href);
+  const icon = isCalendarUrl(url) || libraryView(url) ? '' : tab.icon;
   const page = pageOf(tab.href);
   const tabs = box.session.tabs.map(item => {
     if (item.id === tab.id) return item.title === title && item.icon === icon ? item : {...item, title, icon};
@@ -649,7 +659,7 @@ function runTabMenuAction(action: TabMenuAction, id: string): void {
     if (link && tab) {
       const workspace = activeWorkspace();
       const id = new URL(tab.href).searchParams.get('page');
-      void navigator.clipboard?.writeText(workspace.kind === 'remote' && workspace.device && id ? workspacePageLink(workspace, id) : link);
+      void navigator.clipboard?.writeText(workspace.kind === 'remote' && id ? workspacePageLink(workspace, id) : link);
     }
     return;
   }

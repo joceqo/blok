@@ -71,6 +71,7 @@ export async function deviceWorkspaces() {
   if (typeof result?.token !== 'string' || !result.token || !result.user?.id || !Array.isArray(result.workspaces)) throw new Error('Profil local indisponible.');
   const references: RemoteWorkspace[] = result.workspaces.map(w => ({
     kind:'remote', embedded:true, device:true, id:w.id, name:w.name, server:origin,
+    importedDefaultDisk: w.id === result.deviceImportedWorkspaceId,
     workspaceId:w.slug, role:w.role, accountId:result.user.id, userName:result.user.name || 'Profil local',
   }));
   return {result, origin, references};

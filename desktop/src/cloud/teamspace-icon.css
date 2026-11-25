@@ -1,0 +1,30 @@
+.team-icon { display:inline-grid; place-items:center; vertical-align:middle; inline-size:1em; block-size:1em; line-height:1; font-weight:500; }
+.team-icon :is(svg,img) { display:block; inline-size:100%; block-size:100%; object-fit:contain; }
+button.team-icon-trigger { display:inline-grid; place-items:center; flex:none; width:1.65em; height:1.65em; padding:0; border:0; border-radius:5px; background:var(--desktop-hover); color:inherit; font:inherit; cursor:pointer; }
+.team-icon-trigger:hover { background:color-mix(in srgb,var(--desktop-ink) 14%,var(--desktop-strip)); }
+.team-icon-popover {
+  box-sizing:border-box; position:fixed; margin:0; inset:auto; width:min(410px,calc(100vw - 16px));
+  max-height:min(390px,calc(100dvh - 16px)); overflow:auto; z-index:10; padding:0;
+  border:1px solid color-mix(in srgb,var(--desktop-ink) 13%,var(--desktop-strip)); border-radius:10px;
+  color:var(--desktop-ink); background:var(--desktop-strip); box-shadow:0 8px 32px #0004; font:14px/1.4 Inter,system-ui,sans-serif; text-align:start;
+}
+.team-icon-popover button { border:0; color:inherit; background:transparent; font:inherit; cursor:pointer; }
+.team-icon-popover button:disabled { opacity:.45; cursor:default; }
+.team-icon-popover :is(button,input,select):focus-visible { outline:2px solid var(--blok-focus-ring,#2383e2); outline-offset:-2px; }
+.team-icon-tabs { display:flex; gap:8px; align-items:center; padding:0 12px; border-bottom:1px solid var(--desktop-border); }
+.team-icon-tabs button { height:40px; padding:4px; font-weight:500; color:var(--desktop-muted); }
+.team-icon-tabs button[aria-pressed="true"] { color:var(--desktop-ink); box-shadow:inset 0 -2px currentColor; }
+.team-icon-tabs button:last-child { margin-inline-start:auto; }
+.team-icon-tools { display:flex; gap:6px; align-items:center; padding:8px; }
+.team-icon-tools :is(input,select,button) { height:30px; background:var(--desktop-hover); color:var(--desktop-ink); border:1px solid var(--desktop-border); border-radius:6px; font:inherit; }
+.team-icon-tools input { flex:1; min-width:0; padding:0 8px; }
+.team-icon-tools button { width:32px; font-size:19px; }
+.team-icon-tools select { max-width:80px; }
+.team-icon-scroll { padding:4px 8px 12px; overflow:auto; max-height:270px; overscroll-behavior:contain; }
+.team-icon-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(29px,1fr)); gap:2px; }
+.team-icon-grid button { display:grid; place-items:center; padding:5px; height:31px; border-radius:5px; font-size:20px; }
+.team-icon-grid button:is(:hover,[aria-pressed=true]), .team-icon-more:hover { background:var(--desktop-hover); }
+.team-icon-upload { display:grid; gap:12px; padding:22px 16px; }
+.team-icon-upload small,.team-icon-scroll p { color:var(--desktop-muted); }
+.team-icon-popover p { margin:10px; font-size:13px; }
+.team-icon-more { width:100%; padding:6px; margin-top:10px; border-radius:5px; }

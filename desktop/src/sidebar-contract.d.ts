@@ -12,11 +12,13 @@ export type SidebarAction =
   | { id: string; type: 'duplicate' | 'delete' | 'move' | 'wiki' | 'open-tab' | 'open-window' | 'open-peek' }
   | { id: string; type: 'offline'; on: boolean };
 export interface PageFrame {
+  sidebarPreferences: import('../../src/shell/sidebar-preferences').SidebarPreferences;
   element: HTMLElement;
   canvas: HTMLElement;
   headerActions: HTMLElement;
   setPages(pages: ShellPage[], activeId: string): void;
   setCalendarActive(active: boolean): void;
+  setChatActive(active: boolean): void;
   toggleSidebar(): void;
 }
 export function createPageFrame(options: {
@@ -33,6 +35,12 @@ export function createPageFrame(options: {
   onSearch?(recentIds?: string[]): void;
   recentIds?: string[];
   onRecentsChange?(ids: string[]): void;
+  preferenceKey?: string;
+  onInviteMembers?(): void;
+  onHome?(): void;
+  onChat?(): void;
+  onNewChat?(): void;
+  onLibrary?(recentIds: string[]): void;
   onCalendar?(): void;
   calendarHref?: string;
   onTeamspaces?(): void;

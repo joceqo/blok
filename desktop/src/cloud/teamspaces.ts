@@ -6,9 +6,11 @@ import type { RemoteWorkspace } from '../workspace-registry';
 import { CloudApiError, CloudClient } from './client';
 import './workspace-settings.css';
 import './teamspaces.css';
+import {mountTeamspaceSettings} from './teamspace-settings';
 
 interface TeamPage { id: string; title: string }
 export interface TeamPageNavigation {
+  initialView?: 'create';
   pages(): readonly TeamPage[];
   canEdit(id: string): boolean;
   open(id: string, signal: AbortSignal): Promise<void>;
@@ -41,9 +43,36 @@ function errorMessage(cause: unknown): string {
   return 'Le serveur n’a pas pu terminer la demande. Réessayez.';
 }
 
-export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigation): () => void {
-  const client = new CloudClient({ origin: ref.server,
+/** Filter only the entries returned by the directory. Enter opens its first visible result. */
+function filterList(container: HTMLElement, rows: {name:string; row:HTMLLIElement; open:HTMLButtonElement}[],
+  label: string, noMatch: string, query: string, onQuery:(query:string)=>void): void {
+  const list = el('ul');
+  list.className = 'teamspaces-filter-results';
+  list.append(...rows.map(item => item.row));
+  if (rows.length < 2 && !query) {container.append(list); return;}
+  const input = styleTextField(el('input'));
+  input.type = 'search'; input.placeholder = label + '…'; input.value = query; input.setAttribute('aria-label',label);
+  const status = el('p', noMatch); status.setAttribute('role','status');
+  const fold = (value:string) => value.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLocaleLowerCase().trim();
+  function filter() {
+    const value = fold(input.value);
+    for (const item of rows) item.row.hidden = !fold(item.name).includes(value);
+    status.hidden = rows.some(item => !item.row.hidden);
+    onQuery(input.value);
+  }
+  input.addEventListener('input',filter);
+  input.addEventListener('keydown',event=>{
+    if(event.isComposing || event.key!=='Enter')return;
+    const first=rows.find(item=>!item.row.hidden);
+    if(first){event.preventDefault();first.open.click();}
+  });
+  container.append(input,list,status);filter();
+}
+
+export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigation, transport?: Pick<CloudClient, 'request' | 'workspace'>, host?: HTMLElement): () => void {
+  const client = transport ?? new CloudClient({ origin: ref.server,
     sessionAdapter: '__TAURI_INTERNALS__' in window ? nativeSessionAdapter(ref.server) : undefined });
+  if (host) return mountTeamspaceSettings(host, ref, navigation, client);
   const workspace = `/api/workspaces/${encodeURIComponent(ref.workspaceId)}`;
   const base = workspace + '/teamspaces';
   const url = (team: Teamspace) => base + '/' + encodeURIComponent(team.id);
@@ -58,10 +87,11 @@ export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigat
   heading.id = `teams-${crypto.randomUUID()}`;
   const titles = el('div');
   titles.append(heading, el('p', ref.name));
-  const close = action('Fermer', () => dialog.close());
+  const close = action('Fermer', () => dismiss());
   close.setAttribute('aria-label', 'Fermer');
   close.innerHTML = IconCross;
-  header.append(titles, close);
+  header.append(titles);
+  header.append(close);
   const layout = el('div');
   layout.className = 'teamspaces-layout';
   const nav = el('nav');
@@ -84,10 +114,14 @@ export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigat
   let reading = new AbortController();
   let writing = false;
   let closed = false;
+  function dispose() {
+    if (closed) return;
+    closed = true; reading.abort(); picker?.destroy(); panel.remove(); navigation.onClose?.();
+  }
   const dialog = openModalDialog({ content: overlay, surface: panel, labelledBy: heading.id,
-    initialFocus: () => close, onDismiss: () => dialog.close(),
-    onClose: () => { closed = true; reading.abort(); picker?.destroy(); navigation.onClose?.(); },
+    initialFocus: () => close, onDismiss: () => dismiss(), onClose: dispose,
   });
+  function dismiss() { dialog.close(); }
 
   function startView(): AbortSignal {
     reading.abort();
@@ -102,17 +136,22 @@ export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigat
     error.hidden = false;
     error.replaceChildren(el('span', errorMessage(cause)), action('Actualiser', () => { void loadDirectory(true); }));
   }
+  let directoryQuery = '';
+  let pendingCreation = navigation.initialView === 'create';
   function renderNav(): void {
     nav.replaceChildren();
     if (canManage) nav.append(action('Nouvel espace d’équipe', () => nameForm(), true));
-    if (!teams.length) nav.append(el('p', 'Aucun espace d’équipe.'));
-    for (const team of teams) {
-      const button = action(team.name, () => { void openTeam(team, true); });
-      button.className = 'teamspaces-item';
-      button.setAttribute('aria-current', team.id === selected?.id ? 'true' : 'false');
+    if (!teams.length) { nav.append(el('p', 'Aucun espace d’équipe.')); return; }
+    const rows = teams.map(team => {
+      const open = action(team.name, () => { void openTeam(team, true); });
+      open.className = 'teamspaces-item';
+      open.setAttribute('aria-current', team.id === selected?.id ? 'true' : 'false');
       const mark = el('span'); mark.innerHTML = IconPeople; mark.setAttribute('aria-hidden', 'true');
-      button.prepend(mark); nav.append(button);
-    }
+      const row = el('li'); open.prepend(mark); row.append(open);
+      return {name:team.name, row, open};
+    });
+    filterList(nav, rows, 'Rechercher un espace d’équipe', 'Aucun espace ne correspond à votre recherche.',
+      directoryQuery, value => {directoryQuery=value;});
   }
   async function loadDirectory(refreshRole = false): Promise<void> {
     if (writing || closed) return;
@@ -127,9 +166,12 @@ export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigat
       const data = await client.request<{teamspaces: Teamspace[]}>(base, { signal });
       if (signal.aborted) return;
       teams = data.teamspaces;
-      selected = teams.find((team) => team.id === selected?.id) ?? teams[0];
+      const openCreation = pendingCreation && canManage;
+      pendingCreation = false;
+      selected = openCreation ? undefined : teams.find((team) => team.id === selected?.id) ?? teams[0];
       renderNav();
-      if (selected) await openTeam(selected);
+      if (openCreation) nameForm();
+      else if (selected) await openTeam(selected);
     } catch (cause) {
       if (signal.aborted) return;
       nav.replaceChildren(); showError(cause);
@@ -192,6 +234,7 @@ export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigat
       if (!name || name === team?.name) return;
       void mutate<{teamspace: Teamspace}>(team ? url(team) : base, team ? 'PATCH' : 'POST', { name }, ({teamspace}) => {
         teams = team ? teams.map((item) => item.id === team.id ? teamspace : item) : [...teams, teamspace];
+        directoryQuery = '';
         void openTeam(teamspace, true);
       });
     });
@@ -247,6 +290,7 @@ export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigat
     region.setAttribute('aria-label', 'Pages de l’équipe');
     const path = url(team) + '/pages';
     let attached: TeamPage[] = [];
+    let pageQuery = '';
     let pagePicker: ChoiceControl<string> | undefined;
     signal.addEventListener('abort', () => pagePicker?.destroy(), {once: true});
 
@@ -256,7 +300,7 @@ export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigat
     async function openPage(id: string): Promise<void> {
       try {
         await navigation.open(id, signal);
-        if (!signal.aborted) dialog.close();
+        if (!signal.aborted) dismiss();
       } catch (cause) {
         if (!signal.aborted) showError(cause);
       }
@@ -289,8 +333,7 @@ export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigat
       pagePicker?.destroy(); pagePicker = undefined;
       region.replaceChildren(el('h4', `Pages de l’équipe (${attached.length})`));
       if (!attached.length) region.append(el('p', 'Aucune page accessible rattachée à cette équipe.'));
-      const list = el('ul');
-      for (const page of attached) {
+      const rows = attached.map(page => {
         const row = el('li');
         const title = page.title || 'Sans titre';
         const open = action(title, () => { void openPage(page.id); });
@@ -299,9 +342,10 @@ export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigat
           const detach = action('Détacher', () => writeLink(page.id, 'DELETE'));
           detach.setAttribute('aria-label', `Détacher ${title} de l’équipe`); row.append(detach);
         }
-        list.append(row);
-      }
-      region.append(list);
+        return {name:title,row,open};
+      });
+      if (rows.length) filterList(region, rows, 'Rechercher une page de cette équipe', 'Aucune page ne correspond à votre recherche.',
+        pageQuery, value => {pageQuery=value;});
       if (canManage) region.append(action('Rattacher une page', choosePage));
     }
     async function load(): Promise<void> {
@@ -329,10 +373,10 @@ export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigat
     detail.append(title, el('p', 'Chargement des membres de l’espace de travail…'), cancel);
     cancel.focus();
     try {
-      const result = await client.request<{members: {id: string; email: string}[]}>(workspace + '/members', {signal});
+      const result = await client.request<{members: {id: string; email: string; name?: string}[]}>(workspace + '/members', {signal});
       if (signal.aborted) return;
       const existing = new Set(members.map((member) => member.userId));
-      const options = result.members.filter((item) => !existing.has(item.id)).map((item) => ({ value: item.id, label: item.email }));
+      const options = result.members.filter((item) => !existing.has(item.id)).map((item) => ({ value: item.id, label: item.name ? item.name + ' · ' + item.email : item.email }));
       detail.replaceChildren(title);
       if (!options.length) { detail.append(el('p', 'Tous les membres de l’espace de travail sont déjà dans cette équipe.'), cancel); cancel.focus(); return; }
       const add = action('Ajouter', () => {
@@ -354,6 +398,6 @@ export function openTeamspaces(ref: RemoteWorkspace, navigation: TeamPageNavigat
       detail.replaceChildren(title, cancel); showError(cause);
     }
   }
-  void loadDirectory();
-  return () => dialog.close();
+  void loadDirectory(pendingCreation);
+  return dismiss;
 }

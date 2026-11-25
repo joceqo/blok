@@ -7,6 +7,10 @@
   ],
   "permissions": [
     "core:default",
+    "allow-notification-permission",
+    "allow-post-system-notification",
+    "allow-open-notification-settings",
+    "core:window:allow-set-badge-count",
     "allow-open-calendar-authorization",
     "allow-take-page-link",
     "core:window:allow-start-dragging",

@@ -1,7 +1,7 @@
 import { editorUrl } from './calendar-route';
 /** Non-secret workspace references. Session credentials live in the OS keychain. */
 export type LocalWorkspace = { kind: 'local'; id: string; name: string };
-export type RemoteWorkspace = { kind: 'remote'; embedded?: boolean; device?: boolean; id: string; name: string; server: string; accountId: string; workspaceId: string; userName?: string; role?: 'admin' | 'member' | 'viewer' };
+export type RemoteWorkspace = { kind: 'remote'; embedded?: boolean; device?: boolean; importedDefaultDisk?: boolean; id: string; name: string; server: string; accountId: string; workspaceId: string; userName?: string; role?: 'admin' | 'member' | 'viewer' };
 export type WorkspaceRef = LocalWorkspace | RemoteWorkspace;
 const KEY = 'blok:desktop:workspaces:v1';
 const ACTIVE = 'blok:desktop:active-workspace:v1';
@@ -27,7 +27,9 @@ export function listWorkspaces(): WorkspaceRef[] {
       if (item.kind === 'local') return /^[a-zA-Z0-9-]+$/.test(item.id);
       try { return item.kind === 'remote' && typeof item.accountId === 'string' && typeof item.workspaceId === 'string' && serverOrigin(item.server) === item.server; } catch { return false; }
     });
-    return [initialWorkspace, ...refs.filter((item) => workspaceKey(item) !== workspaceKey(initialWorkspace))];
+    const saved = refs.filter(item => workspaceKey(item) !== workspaceKey(initialWorkspace));
+    const imported = saved.some(item => item.kind === 'remote' && item.device && item.embedded && item.importedDefaultDisk);
+    return imported && !prefersDefaultDisk() ? saved : [initialWorkspace, ...saved];
   } catch { return [initialWorkspace]; }
 }
 export function activeWorkspace(): WorkspaceRef {
@@ -37,6 +39,15 @@ export function rememberWorkspace(ref: WorkspaceRef): void {
   const all = listWorkspaces().filter((item) => workspaceKey(item) !== workspaceKey(ref));
   localStorage.setItem(KEY, JSON.stringify([...all, ref]));
 }
+export function forgetWebAccount(account: RemoteWorkspace): void {
+  const removed = (item: WorkspaceRef) => item.kind === 'remote' && !item.embedded && !item.device &&
+    item.server === account.server && item.accountId === account.accountId;
+  const all = listWorkspaces();
+  const active = localStorage.getItem(ACTIVE);
+  if (all.some(item => removed(item) && workspaceKey(item) === active)) localStorage.removeItem(ACTIVE);
+  localStorage.setItem(KEY, JSON.stringify(all.filter(item => !removed(item))));
+}
+
 export function createLocalWorkspace(name: string): LocalWorkspace {
   const ref: LocalWorkspace = { kind: 'local', id: crypto.randomUUID(), name: name.trim().slice(0, 80) || 'Nouvel espace local' };
   rememberWorkspace(ref);
@@ -53,7 +64,8 @@ function workspaceRoute(ref: WorkspaceRef, pageId?: string): URL {
   activateWorkspace(ref);
   const url = pageId ? editorUrl(new URL(location.href)) : new URL(location.href);
   url.searchParams.delete('page');
-  url.searchParams.delete('workspace');
+  // Keep an explicitly scoped web link shareable after the first workspace selection.
+  if (!pageId || ref.kind !== 'remote' || url.searchParams.get('workspace') !== ref.id) url.searchParams.delete('workspace');
   if (pageId) { url.searchParams.delete('view'); url.searchParams.set('page', pageId); }
   url.searchParams.delete('cloud');
   url.searchParams.delete('manage');

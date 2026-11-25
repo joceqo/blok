@@ -99,7 +99,7 @@ describe.skipIf(!databaseUrl)('teamspace, workspace and page permissions on Post
     await db.query("INSERT INTO memberships(workspace_id,user_id,role) VALUES ('w1','member','member')");
     expect((await request('member', page)).status).toBe(404);
     expect((await (await request('member', '/index')).json()).pages).toEqual([]);
-    expect((await (await request('owner', roster)).json()).members).toEqual([]);
+    expect((await (await request('owner', roster)).json()).members.map((m: {userId:string}) => m.userId)).toEqual(['owner']);
   });
 
   it('isolates team rosters, page IDs and member targets across workspaces', async () => {

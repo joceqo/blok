@@ -71,20 +71,44 @@ function applyEmailTestOutcome(
   result.hidden = false;
 }
 
+function metadataTable(labels: string[], rows: (string | HTMLElement)[][]): HTMLTableElement {
+  const table = el('table', {attribute: 'data-desktop-instance-table'});
+  const headings = table.createTHead().insertRow();
+  for (const label of labels) {
+    const header = el('th', {text: label});
+    header.scope = 'col';
+    headings.append(header);
+  }
+  const body = table.createTBody();
+  for (const values of rows) {
+    const row = body.insertRow();
+    values.forEach((value, index) => {
+      const cell = row.insertCell();
+      if (index > 0 && typeof value === 'string') {
+        const mobileLabel = el('span', {text: labels[index], attribute: 'data-desktop-instance-cell-label'});
+        mobileLabel.setAttribute('aria-hidden', 'true');
+        cell.append(mobileLabel);
+      }
+      cell.append(value);
+    });
+  }
+  return table;
+}
+
 function openConfirm(options: {
   title: string;
   message: string;
   confirmLabel: string;
   container: HTMLElement;
   onConfirm: () => void | Promise<void>;
-}): void {
+  onClose: () => void;
+}): ModalDialogHandle {
   const overlay = el('div', { attribute: 'data-desktop-settings-overlay' });
   overlay.setAttribute('data-desktop-instance-confirm', '');
   const surface = el('section', { attribute: 'data-desktop-instance-confirm-dialog' });
-  surface.append(
-    el('h2', { text: options.title }),
-    el('p', { text: options.message, attribute: 'data-cloud-settings-muted' }),
-  );
+  const description = el('p', { text: options.message, attribute: 'data-cloud-settings-muted' });
+  description.id = `account-confirm-${crypto.randomUUID()}`;
+  surface.append(el('h2', { text: options.title }), description);
   const actions = el('div', { attribute: 'data-desktop-instance-confirm-actions' });
   const confirmState: { handle: ModalDialogHandle | null; busy: boolean } = { handle: null, busy: false };
   const close = (): void => { if (!confirmState.busy) confirmState.handle?.close(); };
@@ -112,10 +136,13 @@ function openConfirm(options: {
     surface,
     label: options.title,
     role: 'alertdialog',
+    describedBy: description.id,
+    onClose: options.onClose,
     container: options.container,
     initialFocus: () => cancel,
     onDismiss: close,
   });
+  return confirmState.handle;
 }
 
 /** Mounts one Instance settings panel into the settings content shell. */
@@ -318,6 +345,8 @@ export function mountInstanceSettings(
     error.hidden = true;
     const list = el('div', { attribute: 'data-desktop-instance-accounts' });
     root.append(status, error, list);
+    let confirmation: ModalDialogHandle | undefined;
+    disposers.push(() => confirmation?.close());
     const menus: Array<{ destroy(): void }> = [];
     disposers.push(() => { for (const menu of menus) menu.destroy(); menus.length = 0; });
 
@@ -328,33 +357,10 @@ export function mountInstanceSettings(
         list.append(el('p', { text: 'Aucun compte.', attribute: 'data-cloud-settings-muted' }));
         return;
       }
-      const table = el('table', { attribute: 'data-desktop-instance-table' });
-      const head = el('thead');
-      const heading = el('tr');
-      heading.append(
-        el('th', { text: 'Adresse' }),
-        el('th', { text: 'Nom' }),
-        el('th', { text: 'Date' }),
-        el('th', { text: 'Espaces' }),
-        el('th', { text: 'Actions' }),
-      );
-      head.append(heading);
-      const body = el('tbody');
-      for (const user of users) {
-        const row = el('tr');
-        row.append(
-          el('td', { text: user.email }),
-          el('td', { text: user.name || '—' }),
-          el('td', { text: formatDate(user.createdAt) }),
-          el('td', { text: String(user.workspaceCount) }),
-        );
-        const actions = el('td');
-        actions.append(accountMenu(user, () => { void refresh(); }));
-        row.append(actions);
-        body.append(row);
-      }
-      table.append(head, body);
-      list.append(table);
+      list.append(metadataTable(['Adresse', 'Nom', 'Date', 'Espaces', 'Actions'], users.map(user => [
+        user.email, user.name || '—', formatDate(user.createdAt), String(user.workspaceCount),
+        accountMenu(user, () => { void refresh(); }),
+      ])));
     };
 
     function accountMenu(user: CloudAdminUser, onChanged: () => void): HTMLButtonElement {
@@ -389,11 +395,16 @@ export function mountInstanceSettings(
             isDestructive: true,
             closeOnActivate: true,
             onActivate: () => {
-              openConfirm({
+              if (confirmation || !life.alive) return;
+              confirmation = openConfirm({
                 title: 'Supprimer ce compte ?',
                 message: `${user.email} sera retiré de l’instance. Sessions, jetons et accès seront effacés. Cette action est définitive.`,
                 confirmLabel: 'Supprimer',
                 container: options.dialog,
+                onClose: () => {
+                  confirmation = undefined;
+                  if (life.alive && trigger.isConnected) trigger.focus();
+                },
                 onConfirm: async () => {
                   try {
                     await options.client.deleteAdminUser(user.id);
@@ -458,29 +469,9 @@ export function mountInstanceSettings(
         list.append(el('p', { text: 'Aucun espace.', attribute: 'data-cloud-settings-muted' }));
         return;
       }
-      const table = el('table', { attribute: 'data-desktop-instance-table' });
-      const head = el('thead');
-      const heading = el('tr');
-      heading.append(
-        el('th', { text: 'Nom' }),
-        el('th', { text: 'Identifiant' }),
-        el('th', { text: 'Membres' }),
-        el('th', { text: 'Date' }),
-      );
-      head.append(heading);
-      const body = el('tbody');
-      for (const workspace of workspaces) {
-        const row = el('tr');
-        row.append(
-          el('td', { text: workspace.name }),
-          el('td', { text: workspace.slug || workspace.id }),
-          el('td', { text: String(workspace.memberCount) }),
-          el('td', { text: formatDate(workspace.createdAt) }),
-        );
-        body.append(row);
-      }
-      table.append(head, body);
-      list.append(table);
+      list.append(metadataTable(['Nom', 'Identifiant', 'Membres', 'Date'], workspaces.map(workspace => [
+        workspace.name, workspace.slug || workspace.id, String(workspace.memberCount), formatDate(workspace.createdAt),
+      ])));
     }).catch((reason) => {
       if (life.alive) status.textContent = errorMessage(reason);
     });

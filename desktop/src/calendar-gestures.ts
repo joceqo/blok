@@ -1,4 +1,5 @@
 import type { CalendarEvent } from './calendar-store';
+import { getTimeFormatter } from './display-preferences';
 
 const minutesPerDay = 1440;
 const dayIndex = (key: string) => Date.parse(key + 'T00:00:00Z') / 86_400_000;
@@ -37,7 +38,7 @@ function slotAt(board: HTMLElement, x: number, y: number, allDay: boolean): Cale
 
 function preview(board: HTMLElement, event: CalendarEvent) {
   const columns = board.querySelectorAll<HTMLElement>(event.allDay ? '.cal-all-cell' : '.cal-column');
-  const format = new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const format = getTimeFormatter();
   for (const col of columns) {
     const key = col.dataset.date!;
     const chip = document.createElement('div');

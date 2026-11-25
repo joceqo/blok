@@ -107,3 +107,29 @@ it('finds conversations in this session and reopens the selected one', async () 
   expect(handle.element.querySelector<HTMLElement>('[data-blok-agent-panel]')!.hidden).toBe(false);
   expect(handle.element.querySelector('[data-blok-agent-history]')?.getAttribute('aria-label')).toContain(original.title);
 });
+
+it('reopens a matching draft without sending it or replacing another draft', async () => {
+  const handle = mount({getPageText:()=>'',openSettings:()=>{},listProviders:async()=>[]});
+  const opener = handle.element.querySelector<HTMLButtonElement>('[data-blok-agent-toggle]')!;
+  const field = handle.element.querySelector<HTMLTextAreaElement>('textarea')!;
+  handle.close(); opener.focus(); opener.click();
+  field.value = 'Préparer la réunion'; field.dispatchEvent(new Event('input',{bubbles:true}));
+  handle.element.querySelector<HTMLButtonElement>('[data-blok-agent-new]')!.click();
+  expect(field.value).toBe('');
+  field.value = 'Deuxième brouillon'; field.dispatchEvent(new Event('input',{bubbles:true}));
+  const history = handle.element.querySelector<HTMLButtonElement>('[data-blok-agent-history]')!;
+  history.click();
+  const search = handle.element.querySelector<HTMLInputElement>('[data-blok-agent-menu=history] input')!;
+  expect(document.activeElement).toBe(search);
+  search.value = 'reunion'; search.dispatchEvent(new Event('input',{bubbles:true}));
+  expect(handle.element.querySelectorAll('[data-agent-chat-id]')).toHaveLength(1);
+  search.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+  expect(field.value).toBe('Préparer la réunion');
+  expect(document.activeElement).toBe(field);
+  history.click();
+  search.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+  expect(document.activeElement).toBe(history);
+  history.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+  expect(document.activeElement).toBe(opener);
+  expect(cli.model).not.toHaveBeenCalled();
+});

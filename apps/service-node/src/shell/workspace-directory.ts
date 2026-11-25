@@ -116,16 +116,18 @@ export function workspaceDirectory(pool: PgPool) {
         [workspace_id, user_id],
       );
       if (prior.member) return 'approved';
-      await db.query(
+      const {rows: [submission]} = await db.query(
         `INSERT INTO join_requests(id,workspace_id,user_id,message) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,user_id)
-        DO UPDATE SET message=excluded.message,status='pending',created_at=now()`,
+        DO UPDATE SET message=excluded.message,status='pending',created_at=now(),
+          notification_cycle=CASE WHEN join_requests.status='pending' THEN join_requests.notification_cycle ELSE excluded.notification_cycle END
+        RETURNING notification_cycle`,
         [randomUUID(), workspace_id, user_id, message],
       );
       if (prior.status !== 'pending') {
         await db.query(
-          `INSERT INTO workspace_notifications(workspace_id,recipient_id,actor_id,type)
-           SELECT workspace_id,user_id,$2,'join_requested' FROM memberships WHERE workspace_id=$1 AND role='admin'`,
-          [workspace_id, user_id],
+          `INSERT INTO workspace_notifications(workspace_id,recipient_id,actor_id,type,request_cycle)
+           SELECT workspace_id,user_id,$2,'join_requested',$3 FROM memberships WHERE workspace_id=$1 AND role='admin'`,
+          [workspace_id, user_id, submission.notification_cycle],
         );
       }
       return 'pending';
@@ -157,7 +159,7 @@ export function workspaceDirectory(pool: PgPool) {
       const {
         rows: [request],
       } = await db.query(
-        "UPDATE join_requests SET status=$3 WHERE id=$1 AND workspace_id=$2 AND status='pending' RETURNING user_id",
+        "UPDATE join_requests SET status=$3 WHERE id=$1 AND workspace_id=$2 AND status='pending' RETURNING user_id,notification_cycle",
         [id, scope.workspace_id, action === 'approve' ? 'approved' : 'rejected'],
       );
       if (!request) throw new HTTPException(404, { message: 'Pending request not found' });
@@ -168,8 +170,8 @@ export function workspaceDirectory(pool: PgPool) {
           role,
         ]);
       await db.query(
-        'INSERT INTO workspace_notifications(workspace_id,recipient_id,actor_id,type) VALUES($1,$2,$3,$4)',
-        [scope.workspace_id, request.user_id, scope.user_id, action === 'approve' ? 'join_approved' : 'join_rejected'],
+        'INSERT INTO workspace_notifications(workspace_id,recipient_id,actor_id,type,request_cycle) VALUES($1,$2,$3,$4,$5)',
+        [scope.workspace_id, request.user_id, scope.user_id, action === 'approve' ? 'join_approved' : 'join_rejected',request.notification_cycle],
       );
     });
     return c.json({ ok: true });

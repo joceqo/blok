@@ -9,6 +9,8 @@ export const WORKSPACE_ROLES: Record<CloudRole, string> = {
   viewer: 'Lecture seule',
 };
 
+export const TEAM_ROLES = { member: WORKSPACE_ROLES.member, owner: 'Propriétaire' } as const;
+
 /** Conséquences affichées en seconde ligne des sélecteurs de rôle. */
 export const WORKSPACE_ROLE_DESCRIPTIONS: Record<CloudRole, string> = {
   admin: 'Gère les membres, les réglages et toutes les pages de l’espace.',

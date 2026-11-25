@@ -1,0 +1,21 @@
+<script>
+  // Set the shell's loading surface before Storybook runs its first module.
+  const previewParams = new URLSearchParams(location.search);
+  const previewId = previewParams.get('id') || '';
+  if (previewParams.get('viewMode') !== 'docs' && previewId.startsWith('shell-')) {
+    const explicitTheme = /(?:^|;)theme:(light|dark)(?:;|$)/.exec(previewParams.get('args') || '');
+    const loadingTheme = explicitTheme?.[1] || (previewId.startsWith('shell-notifications--') ? 'dark' : '');
+    if (loadingTheme) document.documentElement.dataset.shellLoadingTheme = loadingTheme;
+  }
+</script>
+<style>
+  html[data-shell-loading-theme="dark"],
+  html[data-shell-loading-theme="dark"] .sb-preparing-story,
+  html[data-blok-theme="dark"] .sb-preparing-story {
+    background: var(--desktop-canvas, #191919);
+  }
+  html[data-shell-loading-theme="light"],
+  html[data-shell-loading-theme="light"] .sb-preparing-story {
+    background: #fff;
+  }
+</style>

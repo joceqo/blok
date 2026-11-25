@@ -208,3 +208,27 @@ describe('desktop page cover', () => {
     expect(shown).toMatch(/visibility:\s*visible/);
   });
 });
+
+it('navigates swatches without tabbing through the entire gallery and dismisses on a neutral surface', () => {
+  const root = createPageCover('dusk', 50, vi.fn(), vi.fn());
+  const outside = document.createElement('div');
+  document.body.append(root, outside);
+  try {
+    const trigger = root.querySelector<HTMLButtonElement>('[aria-haspopup="dialog"]')!;
+    trigger.click();
+    const gallery = root.querySelector<HTMLElement>('[data-desktop-cover-gallery]')!;
+    expect(document.activeElement?.textContent).toBe('Galerie');
+    const buttons = gallery.querySelectorAll<HTMLButtonElement>('[data-desktop-cover-grid] button');
+    buttons[0].focus();
+    buttons[0].dispatchEvent(new KeyboardEvent('keydown', {key:'ArrowRight', bubbles:true}));
+    expect(document.activeElement).toBe(buttons[1]);
+    expect(buttons[1].tabIndex).toBe(0);
+    expect(buttons[0].tabIndex).toBe(-1);
+    document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+    expect(gallery.hidden).toBe(true);
+    expect(document.activeElement).toBe(trigger);
+    trigger.click();
+    outside.dispatchEvent(new MouseEvent('pointerdown', {bubbles:true}));
+    expect(gallery.hidden).toBe(true);
+  } finally { root.remove(); outside.remove(); }
+});

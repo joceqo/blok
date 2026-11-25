@@ -1,7 +1,7 @@
 /** Empty remote spaces stay empty until a member explicitly creates a page — unless welcome seed runs first. */
 
 export interface EmptyWorkspaceExtras {
-  onTemplate?: () => void;
+  onCreateDatabase?: () => void;
   onInvite?: () => void;
   onImport?: () => void;
   onGettingStarted?: () => void;
@@ -40,18 +40,12 @@ export function createEmptyWorkspaceState(
     cards.append(card);
   };
   addCard('create', 'Créer une page', 'Une page blanche dans cet espace.', onCreate, true);
-  addCard(
-    'template',
-    'Partir d’un modèle',
-    'Choisissez où créer, y compris une base de données.',
-    () => extras.onTemplate?.() ?? onCreate(),
-  );
-  addCard(
-    'invite',
-    'Inviter des personnes',
-    'Ajoutez des membres à l’espace.',
-    () => extras.onInvite?.(),
-  );
+  if (extras.onCreateDatabase) {
+    addCard('database', 'Créer une base de données', 'Organiser des pages dans une table.', extras.onCreateDatabase);
+  }
+  if (extras.onInvite) {
+    addCard('invite', 'Inviter des personnes', 'Ajoutez des membres à l’espace.', extras.onInvite);
+  }
   element.append(cards);
 
   const links = document.createElement('div');
@@ -64,8 +58,8 @@ export function createEmptyWorkspaceState(
     link.addEventListener('click', onClick);
     links.append(link);
   };
-  addLink('import', 'Importer', () => extras.onImport?.());
-  addLink('getting-started', 'Premiers pas', () => extras.onGettingStarted?.());
-  element.append(links);
+  if (extras.onImport) addLink('import', 'Importer', extras.onImport);
+  if (extras.onGettingStarted) addLink('getting-started', 'Premiers pas', extras.onGettingStarted);
+  if (links.childElementCount) element.append(links);
   return element;
 }

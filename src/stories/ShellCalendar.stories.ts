@@ -136,6 +136,31 @@ export const LectureSeule: Story = {
   },
 };
 
+export const Planning: Story = {
+  name: 'Planning de la semaine',
+  args: { layered: true, theme: 'dark' },
+  play: async ({canvasElement}) => {
+    const canvas = within(canvasElement);
+    await fireEvent.change(canvas.getByRole('combobox', {name: 'Vue du calendrier'}), {target: {value: 'agenda'}});
+    const list = await canvas.findByRole('region', {name: 'Planning de la semaine'});
+    await expect(await within(list).findByRole('button', {name: /Revue produit/})).toBeVisible();
+    await expect(within(list).getByRole('button', {name: /Livraison du site/})).toHaveTextContent('Toute la journée');
+  },
+};
+
+export const CreerUnEvenement: Story = {
+  name: 'Créer un événement',
+  args: {theme: 'dark'},
+  play: async ({canvasElement}) => {
+    const canvas = within(canvasElement);
+    await fireEvent.click(canvas.getByRole('button', {name: 'Nouvel événement'}));
+    const title = await canvas.findByRole('textbox', {name:'Titre'});
+    await fireEvent.input(title, {target:{value:'Revue du calendrier'}});
+    await expect(canvas.getByRole('button', {name:'Annuler'})).toBeVisible();
+    await expect(canvas.getByRole('button', {name:'Enregistrer'})).toBeEnabled();
+  },
+};
+
 export const AgendasSuperposes: Story = {
   name: 'Agendas superposés',
   args: { layered: true },

@@ -39,7 +39,9 @@ export function mountUnreachable(options: UnreachableOptions): void {
   if (local) {
     main.append(el('p', { children: ['Démarrez Docker, puis lancez ', el('code', { text: './deploy/local.sh start' }), ' depuis le dépôt Blok. Pour la première installation, utilisez ', el('code', { text: './deploy/local.sh install' }), '.'] }));
   } else {
-    main.append(el('p', { text: 'Vérifiez l’adresse du serveur et votre connexion, puis réessayez.', attribute: 'data-cloud-muted' }));
+    main.append(el('p', { text: options.currentOrigin
+      ? `Vérifiez votre connexion à ${options.currentOrigin}, puis réessayez.`
+      : 'Vérifiez votre connexion au serveur, puis réessayez.', attribute: 'data-cloud-muted' }));
   }
   main.append(button({
     label: 'Réessayer',

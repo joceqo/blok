@@ -37,9 +37,9 @@ async function withFileLock<T>(workspace: string, action: () => Promise<T>): Pro
   finally { if (queues.get(key) === done) queues.delete(key); }
 }
 
-export function createCalendarStore(ref: WorkspaceRef): CalendarStore {
+export function createCalendarStore(ref: WorkspaceRef, providedClient?: CloudClient): CalendarStore {
   if (ref.kind === 'remote') {
-    const client = new CloudClient({origin: ref.server, sessionAdapter: '__TAURI_INTERNALS__' in window ? nativeSessionAdapter(ref.server) : undefined});
+    const client = providedClient ?? new CloudClient({origin: ref.server, sessionAdapter: '__TAURI_INTERNALS__' in window ? nativeSessionAdapter(ref.server) : undefined});
     const base = '/api/workspaces/' + encodeURIComponent(ref.workspaceId) + '/calendar';
     return {
       remote: {client, base, preferenceKey: JSON.stringify([ref.server, ref.workspaceId, ref.accountId])},

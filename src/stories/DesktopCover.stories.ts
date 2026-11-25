@@ -1,7 +1,8 @@
 import type { Meta, StoryObj } from '@storybook/html-vite';
 import { expect, userEvent, waitFor, within } from 'storybook/test';
-import { createAddCoverButton, createPageCover, type CoverId, type PageCover } from '../../desktop/src/cover';
-import '../../desktop/src/shell.css';
+import { createAddCoverButton, createPageCover, trackPageHeaderHover, type CoverId, type PageCover } from '../../desktop/src/cover';
+import { createFloatingToc } from '../../desktop/src/floating-toc';
+import { shellPreview } from './shell-story-fixtures';
 
 function page(initialCover?: CoverId, initialIcon?: string): HTMLElement {
   const canvas = document.createElement('main');
@@ -47,12 +48,15 @@ function page(initialCover?: CoverId, initialIcon?: string): HTMLElement {
     }
   };
   paint();
-  return canvas;
+  const host = shellPreview('dark');
+  host.append(canvas);
+  return host;
 }
 
 const meta: Meta = {
   title: 'Shell/Desktop/Couverture',
   parameters: { layout: 'fullscreen' },
+  beforeEach: () => trackPageHeaderHover(document),
   render: () => page(),
 };
 export default meta;
@@ -61,8 +65,7 @@ type Story = StoryObj;
 export const SansCouverture: Story = {
   render: () => page(),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const add = canvas.getByRole('button', { name: 'Ajouter une couverture' });
+    const add = canvasElement.querySelector<HTMLButtonElement>('[data-desktop-add-cover]')!;
     expect(add.parentElement?.hasAttribute('data-blok-page-icon-row')).toBe(true);
     expect(getComputedStyle(add).opacity).toBe('0');
   },
@@ -74,10 +77,11 @@ export const ActionsAuSurvol: Story = {
     const canvas = within(canvasElement);
     const header = canvasElement.querySelector<HTMLElement>('[data-blok-page-header]');
     if (!header) throw new Error('L’en-tête de page doit être présent.');
-    const add = canvas.getByRole('button', { name: 'Ajouter une couverture' });
     await userEvent.hover(header);
+    const add = canvas.getByRole('button', { name: 'Ajouter une couverture' });
     await waitFor(() => expect(getComputedStyle(add).opacity).toBe('1'));
-    expect(getComputedStyle(canvas.getByRole('button', { name: 'Ajouter une icône' })).opacity).toBe('1');
+    await userEvent.unhover(header);
+    await waitFor(() => expect(getComputedStyle(add).visibility).toBe('hidden'));
   },
 };
 
@@ -160,5 +164,45 @@ export const Repositionnement: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole('button', { name: 'Repositionner' }));
     expect(canvas.getByRole('slider', { name: 'Position verticale de la couverture' })).toBeTruthy();
+  },
+};
+
+
+export const GalerieEtSommaire: Story = {
+  name: 'Galerie et sommaire',
+  render: (_args, {abortSignal}) => {
+    const host = page('dusk');
+    const scroller = host.querySelector('main')!;
+    scroller.style.height = '100vh';
+    scroller.style.overflowY = 'auto';
+    const article = scroller.querySelector('article')!;
+    for (const [id, title] of [['jour-un', 'Premier jour'], ['jour-deux', 'Deuxième jour'], ['retour', 'Le retour']]) {
+      const block = document.createElement('section');
+      block.setAttribute('data-blok-element', '');
+      block.setAttribute('data-blok-id', id);
+      const heading = document.createElement('h2');
+      heading.setAttribute('data-blok-tool', 'header');
+      heading.textContent = title;
+      block.append(heading);
+      article.append(block);
+    }
+    const toc = createFloatingToc(scroller, article);
+    abortSignal.addEventListener('abort', () => toc.destroy(), {once:true});
+    return host;
+  },
+  play: async ({canvasElement}) => {
+    const canvas = within(canvasElement);
+    const trigger = canvas.getByRole('button', {name:'Changer la couverture'});
+    await userEvent.click(trigger);
+    await expect(canvas.getByRole('tab', {name:'Galerie'})).toHaveFocus();
+    await userEvent.keyboard('{End}');
+    await expect(canvas.getByRole('tab', {name:'Lien'})).toHaveFocus();
+    await userEvent.keyboard('{Escape}');
+    await expect(trigger).toHaveFocus();
+    await userEvent.keyboard('{Enter}{Home}');
+    const first = canvas.getByRole('button', {name:'Crépuscule'});
+    first.focus();
+    await userEvent.keyboard('{ArrowRight}');
+    await expect(canvas.getByRole('button', {name:'Océan'})).toHaveFocus();
   },
 };

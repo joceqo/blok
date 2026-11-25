@@ -14,7 +14,9 @@ import { calendarFeedRoutes } from './calendar-feeds.ts';
 import { calendarSharing } from './calendar-sharing.ts';
 import { workspaceCalendar } from './calendar.ts';
 import { workspaceNotifications } from './notifications.ts';
+import { markdownImportRoutes } from './markdown-import.ts';
 import { workspaceDirectory } from './workspace-directory.ts';
+import { registerTrashRestore } from './page-restore.ts';
 import { pagePurgeRoutes, roomPurger } from './page-purge.ts';
 import { roomTickets } from './room-tickets.ts';
 import { createMcpTokens } from './mcp-tokens.ts';
@@ -102,8 +104,10 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   if (device) app.post('/api/setup/claim', c => c.json({error:'Cet appareil dispose déjà de son compte local.'}, 409));
   app.route('/',instanceAdmin(pool,secret,() => recheckLiveSessions(secret)));
   app.route('/',workspaceDirectory(pool));
+  app.route('/',markdownImportRoutes(pool));
   app.route('/',pagePurgeRoutes(pool,roomPurger(secret)));
   registerIndexWrite(app, pool, recheckAccess);
+  registerTrashRestore(app, pool);
   app.get('/api/workspaces/:slug/index', async (c) => {
     const key = sessionDigest(c);
     if (!key) return c.json({ error: 'Sign in required' }, 401);

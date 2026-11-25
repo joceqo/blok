@@ -17,6 +17,7 @@ import './agent-assistant.css';
 export interface AgentAssistantProvider { id: string; label: string }
 
 export interface AgentAssistantOptions {
+  onOpenChange?(open: boolean): void;
   workspaceSearch?: {
     find(query: string, signal: AbortSignal): Promise<{id: string; title: string; excerpt: string}[]>;
     open(id: string): void;
@@ -42,6 +43,7 @@ export interface AgentAssistantHandle {
   refreshPageActions(): void;
   searchableChats(): {id: string; title: string; excerpt: string}[];
   openChat(id: string): void;
+  newChat(): void;
   element: HTMLElement;
   editorSlot: HTMLElement;
   open: () => void;
@@ -68,6 +70,7 @@ interface Turn {
 interface Conversation {
   id: string;
   turns: Turn[];
+  draft?: string;
 }
 
 const MODE_KEY = 'blok.shell.agent.panel-mode';
@@ -118,9 +121,10 @@ const clampWidth = (value: number): number => Math.min(MAX_WIDTH, Math.max(MIN_W
 const historyLabel = (conversation: Conversation): string => {
   const first = conversation.turns.find((turn) => turn.question.trim() !== '');
 
-  if (first === undefined) return 'Nouvelle conversation';
+  const text = first?.question || conversation.draft || '';
+  if (!text.trim()) return 'Nouvelle conversation';
 
-  const trimmed = first.question.trim().replace(/\s+/g, ' ');
+  const trimmed = text.trim().replace(/\s+/g, ' ');
 
   return trimmed.length > 48 ? `${trimmed.slice(0, 47)}…` : trimmed;
 };
@@ -171,6 +175,10 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   const settingsButton = makeButton('Réglages de l\'assistant IA');
   const closeButton = makeButton('Fermer');
   const historyMenu = document.createElement('div');
+  const historySearch = document.createElement('input');
+  const historyRows = document.createElement('div');
+  const emptyHistory = document.createElement('p');
+  let returnFocus: HTMLElement | null = null;
   const modeMenu = document.createElement('div');
   const transcript = document.createElement('div');
   const composerSlot = document.createElement('div');
@@ -210,6 +218,10 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     },
     onContextChange: (includePage) => { session.includePage = includePage; },
   });
+  composerHandle.field.addEventListener('input', () => {
+    const conversation = current();
+    if (conversation) conversation.draft = composerHandle.field.value;
+  });
   const composer = composerHandle.element;
   const sendButton = composerHandle.submit;
 
@@ -221,6 +233,9 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   toggle.setAttribute('aria-controls', panelId);
   body.setAttribute('data-blok-agent-body', '');
   editorSlot.setAttribute('data-blok-agent-editor', '');
+  editorSlot.tabIndex = 0;
+  editorSlot.setAttribute('role', 'region');
+  editorSlot.setAttribute('aria-label', 'Page');
   panel.id = panelId;
   panel.setAttribute('data-blok-agent-panel', '');
   // Non-modal: the page editor stays reachable beside the panel, Escape closes
@@ -240,13 +255,24 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   iconButton(settingsButton, 'Réglages de l\'assistant IA', 'settings');
   iconButton(closeButton, 'Fermer', 'close');
   historyButton.setAttribute('data-blok-agent-history', '');
-  historyButton.setAttribute('aria-haspopup', 'menu');
+  historyButton.setAttribute('aria-haspopup', 'dialog');
   historyButton.setAttribute('aria-expanded', 'false');
   freshButton.setAttribute('data-blok-agent-new', '');
   modeButton.setAttribute('aria-haspopup', 'menu');
   modeButton.setAttribute('aria-expanded', 'false');
   historyMenu.setAttribute('data-blok-agent-menu', 'history');
-  historyMenu.setAttribute('role', 'menu');
+  historyMenu.id = panelId + '-history';
+  historyButton.setAttribute('aria-controls', historyMenu.id);
+  historyMenu.setAttribute('role', 'dialog');
+  historyMenu.setAttribute('aria-label', 'Historique des conversations');
+  historySearch.type = 'search';
+  historySearch.setAttribute('aria-label', 'Rechercher une conversation');
+  historySearch.placeholder = 'Rechercher une conversation';
+  historySearch.autocomplete = 'off';
+  historyRows.setAttribute('data-blok-agent-history-list', '');
+  emptyHistory.setAttribute('role', 'status');
+  emptyHistory.textContent = 'Aucune conversation trouvée.';
+  historyMenu.append(historySearch,historyRows,emptyHistory);
   historyMenu.setAttribute('hidden', '');
   modeMenu.setAttribute('data-blok-agent-menu', 'mode');
   modeMenu.setAttribute('role', 'menu');
@@ -372,29 +398,44 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   const paintHistory = (): void => {
     const conversation = current();
 
-    const label = conversation === undefined ? 'Nouvelle conversation' : historyLabel(conversation);
+    const currentLabel = conversation === undefined ? 'Nouvelle conversation' : historyLabel(conversation);
 
-    historyButton.setAttribute('aria-label', `Historique : ${label}`);
-    historyButton.title = `Historique : ${label}`;
-    historyMenu.replaceChildren();
-    session.conversations.forEach((item, index) => {
+    historyButton.setAttribute('aria-label', `Historique : ${currentLabel}`);
+    historyButton.title = `Historique : ${currentLabel}`;
+    if (session.menu !== 'history') return;
+    const focusedId = document.activeElement instanceof HTMLElement ? document.activeElement.dataset.agentChatId : undefined;
+    const normalize = (value: string): string => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
+    const query = normalize(historySearch.value.trim());
+    const rows: HTMLButtonElement[] = [];
+    for (let index = session.conversations.length - 1; index >= 0; index--) {
+      const item = session.conversations[index];
+      const label = historyLabel(item);
+      if (query && ![label, item.draft ?? '', ...item.turns.flatMap(turn => [turn.question,turn.answer])].some(text => normalize(text).includes(query))) continue;
       const row = document.createElement('button');
       const mark = document.createElement('span');
       const selected = index === session.active;
 
       row.type = 'button';
-      row.setAttribute('role', 'menuitemradio');
-      row.setAttribute('aria-checked', selected ? 'true' : 'false');
+      row.dataset.agentChatId = item.id;
+      if (selected) row.setAttribute('aria-current', 'true');
+      row.title = item.turns[0]?.question || label;
       mark.setAttribute('aria-hidden', 'true');
       mark.setAttribute('data-blok-agent-check', '');
       mark.textContent = selected ? '✓' : '';
-      row.append(mark, document.createTextNode(historyLabel(item)));
+      const name = document.createElement('span');
+      name.textContent = label;
+      row.append(mark, name);
       row.addEventListener('click', () => {
         selectChat(index);
         render();
+        if (composerHandle.field.disabled) historyButton.focus();
+        else composerHandle.focus();
       });
-      historyMenu.append(row);
-    });
+      rows.push(row);
+    }
+    historyRows.replaceChildren(...rows);
+    emptyHistory.hidden = rows.length > 0;
+    if (focusedId) (rows.find(row => row.dataset.agentChatId === focusedId) ?? historySearch).focus({preventScroll:true});
   };
 
   const paintMessages = (): void => {
@@ -551,6 +592,7 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     const controller = new AbortController();
     const token = { id: session.token.id + 1 };
 
+    conversation.draft = '';
     conversation.turns.push(turn);
     session.run = controller;
     session.token = token;
@@ -598,13 +640,20 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   };
 
   function selectChat(index: number): void {
-    if (session.active !== index) stopRun();
+    if (session.active !== index) {
+      const previous = current();
+      if (previous) previous.draft = composerHandle.field.value;
+      stopRun();
+      composerHandle.setText(session.conversations[index].draft ?? '');
+    }
     session.active = index;
     session.menu = null;
   }
 
   const open = (): void => {
+    if (!session.open && document.activeElement instanceof HTMLElement && document.activeElement !== document.body) returnFocus = document.activeElement;
     session.open = true;
+    options.onOpenChange?.(true);
     session.picked = null;
     render();
     void refreshProviders();
@@ -612,9 +661,16 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   };
 
   const close = (): void => {
+    const restore = panel.contains(document.activeElement);
     session.open = false;
+    options.onOpenChange?.(false);
     session.menu = null;
     render();
+    if (restore) {
+      const opener = returnFocus?.isConnected ? returnFocus : getComputedStyle(bar).display === 'none' ? editorSlot : toggle;
+      opener.focus({preventScroll:true});
+    }
+    returnFocus = null;
   };
 
   toggle.addEventListener('click', () => {
@@ -627,21 +683,45 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     options.editPage.open();
   });
   closeButton.addEventListener('click', close);
-  freshButton.addEventListener('click', () => {
+  const newChat = (): void => {
     const conversation = current();
 
-    if (conversation !== undefined && conversation.turns.length > 0) {
-      stopRun();
-      session.conversations.push({ id: crypto.randomUUID(), turns: [] });
-      session.active = session.conversations.length - 1;
+    if (conversation && (conversation.turns.length > 0 || composerHandle.field.value.trim())) {
+      const blank = session.conversations.findIndex((chat,index) => index !== session.active && !chat.turns.length && !chat.draft);
+      if (blank === -1) session.conversations.push({ id: crypto.randomUUID(), turns: [] });
+      selectChat(blank === -1 ? session.conversations.length - 1 : blank);
     }
 
     session.menu = null;
     render();
+    composerHandle.focus();
+  };
+  freshButton.addEventListener('click', newChat);
+  historySearch.addEventListener('input', paintHistory);
+  historyMenu.addEventListener('focusout', event => {
+    if (session.menu !== 'history' || !(event.relatedTarget instanceof Node)) return;
+    if (event.relatedTarget === historyButton || historyMenu.contains(event.relatedTarget)) return;
+    session.menu = null;
+    render();
+  });
+  historyMenu.addEventListener('keydown', event => {
+    const buttons = [...historyRows.querySelectorAll('button')];
+    if (!buttons.length) return;
+    const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (at < 0 && event.key === 'Enter' && !event.isComposing) {
+      event.preventDefault();
+      buttons[0].click();
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const next = event.key === 'ArrowDown' ? (at + 1) % buttons.length : (at <= 0 ? buttons.length : at) - 1;
+      buttons[next].focus();
+    }
   });
   historyButton.addEventListener('click', () => {
+    historySearch.value = '';
     session.menu = session.menu === 'history' ? null : 'history';
     render();
+    if (session.menu === 'history') historySearch.focus();
   });
   modeButton.addEventListener('click', () => {
     session.menu = session.menu === 'mode' ? null : 'mode';
@@ -705,8 +785,10 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
     event.stopPropagation();
 
     if (session.menu !== null) {
+      const opener = session.menu === 'history' ? historyButton : modeButton;
       session.menu = null;
       render();
+      opener.focus();
 
       return;
     }
@@ -725,6 +807,7 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
   void refreshProviders();
 
   return {
+    newChat() { open(); newChat(); },
     searchableChats: () => session.conversations.filter(item => item.turns.length > 0).map(item => ({
       id: item.id,
       title: historyLabel(item),

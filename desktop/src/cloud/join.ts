@@ -10,6 +10,7 @@ export interface JoinWorkspaceOptions {
   run(action: () => Promise<void>): Promise<void>;
   showError(reason: unknown): void;
   onRequested(slug: string): void | Promise<void>;
+  onOpenMember(slug: string): void | Promise<void>;
   onCancel(): void;
 }
 
@@ -18,7 +19,6 @@ export function mountJoinWorkspace(options: JoinWorkspaceOptions): void {
   const main = options.frame();
   main.setAttribute('data-cloud-narrow', '');
   main.append(
-    el('span', { text: 'Rejoindre', attribute: 'data-cloud-eyebrow' }),
     el('h1', { text: 'Rejoindre un espace' }),
     el('p', {
       text: 'Un administrateur validera votre demande avant que vous puissiez ouvrir l’espace.',
@@ -28,7 +28,7 @@ export function mountJoinWorkspace(options: JoinWorkspaceOptions): void {
 
   if (options.defaultName) {
     main.append(el('p', {
-      text: `Espace proposé : ${options.defaultName} (${options.defaultSlug}).`,
+      text: `Espace proposé · ${options.defaultName}`,
       attribute: 'data-cloud-note',
     }));
   }
@@ -41,10 +41,12 @@ export function mountJoinWorkspace(options: JoinWorkspaceOptions): void {
     name: 'join-slug',
     value: options.defaultSlug ?? '',
   });
-  slug.pattern = '[a-z0-9][a-z0-9-]{1,62}';
+  slug.pattern = '[a-z0-9][a-z0-9\\-]{1,62}';
   slug.minLength = 2;
   slug.maxLength = 63;
   slug.placeholder = 'mon-equipe';
+  slug.autocapitalize = 'none';
+  slug.spellcheck = false;
   const message = field({
     form,
     label: 'Un mot pour l’équipe (facultatif)',
@@ -54,23 +56,17 @@ export function mountJoinWorkspace(options: JoinWorkspaceOptions): void {
   });
   message.maxLength = 1000;
 
-  const statusBox = el('div', { attribute: 'data-cloud-status' });
-  statusBox.hidden = true;
-
   const submit = button({ label: 'Demander à rejoindre', primary: true, block: true, type: 'submit', onClick: () => {} });
   form.append(submit);
   form.addEventListener('submit', (event) => {
     event.preventDefault();
+    if (submit.disabled || !form.reportValidity()) return;
     void options.run(async () => {
       const value = slug.value.trim();
       if (!value) throw new Error('Saisissez l’identifiant de l’espace.');
       const workspace = await options.client.workspace(value);
       if (workspace.role) {
-        statusBox.replaceChildren(
-          el('strong', { text: `Vous êtes déjà membre de ${workspace.name}` }),
-          el('p', { text: 'Retournez à la liste pour l’ouvrir.' }),
-        );
-        statusBox.hidden = false;
+        await options.onOpenMember(workspace.slug);
         return;
       }
       if (workspace.joinStatus === 'pending' || workspace.joinStatus === 'rejected') {
@@ -85,6 +81,7 @@ export function mountJoinWorkspace(options: JoinWorkspaceOptions): void {
     });
   });
 
-  main.append(form, statusBox);
+  main.append(form);
   main.append(button({ label: 'Retour', onClick: options.onCancel }));
+  slug.focus();
 }
