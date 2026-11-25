@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { text } from 'node:stream/consumers';
 import { gateway } from './gateway.ts';
@@ -56,5 +59,33 @@ test('closing drains an admitted upload even when storage is still starting', as
   } finally {
     await front.stopAccepting();
     await Promise.all([front.server, api].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+  }
+});
+
+test('existing device page URLs offer a manual native handoff and keep browser sign-in available', async () => {
+  const ports = await choosePorts(['public', 'api', 'room']);
+  const web = await mkdtemp(join(tmpdir(), 'blok-gateway-'));
+  const front = gateway(ports, web);
+  const origin = 'http://127.0.0.1:' + ports.public;
+  try {
+    await writeFile(join(web, 'index.html'), 'web shell');
+    await listen(front.server, ports.public);
+    front.setReady();
+    const page = '2a8b1ae7-1bb0-4849-a6f9-87faf9211097';
+    const response = await fetch(origin + '/?page=' + page);
+    const html = await response.text();
+    assert.equal(response.status, 200);
+    assert.ok(html.includes('href="blok://page/' + page + '?origin=' + encodeURIComponent(origin) + '"'));
+    assert.ok(html.includes('href="/?page=' + page + '&amp;web=1"'));
+    assert.doesNotMatch(html, /<script|http-equiv|\/internal\//i);
+    assert.equal(response.headers.get('set-cookie'), null);
+    for (const route of ['/', '/?page=' + page + '&web=1', '/?view=calendar', '/?page=%3Cscript%3E', '/?page=a&page=b']) {
+      assert.equal(await (await fetch(origin + route)).text(), 'web shell');
+    }
+    assert.equal((await fetch(origin + '/internal/desktop/session')).status, 404);
+  } finally {
+    await front.stopAccepting();
+    await new Promise<void>(resolve => front.server.close(() => resolve()));
+    await rm(web, {recursive: true, force: true});
   }
 });

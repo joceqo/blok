@@ -40,6 +40,7 @@ export function openPageSearch(options: {
   pages: () => ShellPage[];
   onOpen: (id: string) => void;
   recentIds?: string[];
+  pageIdFromLink?: (value: string) => string | undefined;
 }): () => void {
   const caption = options.recentIds ? 'Pages récentes' : `Pages de ${options.workspaceName}`;
   return openPagePicker({
@@ -70,6 +71,7 @@ function openPagePicker(options: {
   workspaceName: string;
   pages: () => ShellPage[];
   recentIds?: string[];
+  pageIdFromLink?: (value: string) => string | undefined;
   destinations?: () => Set<string | null>;
   label: string;
   caption: string;
@@ -115,7 +117,8 @@ function openPagePicker(options: {
     const destinations = options.destinations?.();
     const choices: PickerItem[] = destinations ? source.filter((page) => destinations.has(page.id)) : source;
     if (destinations?.has(null)) choices.unshift({ id: null, title: options.workspaceName, parentId: null });
-    matches = choices.filter((page) => page.title.toLocaleLowerCase().includes(query));
+    const linkedId = options.pageIdFromLink?.(input.value.trim());
+    matches = choices.filter((page) => linkedId ? page.id === linkedId : page.title.toLocaleLowerCase().includes(query));
     selected = 0; results.replaceChildren();
     for (const page of matches) {
       const row = node('button', 'data-navigation-result'); row.type = 'button';

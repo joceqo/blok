@@ -8,6 +8,7 @@
   "permissions": [
     "core:default",
     "allow-open-calendar-authorization",
+    "allow-take-page-link",
     "core:window:allow-start-dragging",
     "allow-embedded-server-available",
     "allow-ensure-embedded-server",

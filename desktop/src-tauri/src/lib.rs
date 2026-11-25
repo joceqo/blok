@@ -1,3 +1,4 @@
+mod page_links;
 mod editor_close;
 mod ai;
 mod embedded_server;
@@ -327,6 +328,7 @@ fn close_editor_window(window: tauri::WebviewWindow) {
 }
 
 fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let reload = MenuItem::with_id(app, "reload-tab", "Reload Tab", true, Some("CmdOrCtrl+R"))?;
     let new_tab = MenuItem::with_id(app, "new-tab", "New Tab", true, Some("CmdOrCtrl+T"))?;
     let close_tab = MenuItem::with_id(app, "close-tab", "Close Tab", true, Some("CmdOrCtrl+W"))?;
     let file = Submenu::with_items(app, "File", true, &[&new_tab, &close_tab])?;
@@ -391,19 +393,23 @@ fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> 
             app,
             "View",
             true,
-            &[&PredefinedMenuItem::fullscreen(app, None)?],
+            &[&reload, &PredefinedMenuItem::fullscreen(app, None)?],
         )?;
         return Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window_menu, &help]);
     }
 
     #[cfg(not(target_os = "macos"))]
-    Menu::with_items(app, &[&file, &edit, &window_menu, &help])
+    {
+        let view = Submenu::with_items(app, "View", true, &[&reload])?;
+        Menu::with_items(app, &[&file, &edit, &view, &window_menu, &help])
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(editor_close::EditorClose::default())
+        .manage(page_links::PendingPageLink::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             editor_close::install_macos_quit(app)?;
@@ -421,6 +427,7 @@ pub fn run() {
         .menu(|app| editor_menu(app))
         .on_menu_event(|app, event| {
             let script = match event.id().as_ref() {
+                "reload-tab" => "if (window.dispatchEvent(new Event('blok:desktop-reload', {cancelable:true}))) location.reload()",
                 "new-tab" => "window.dispatchEvent(new Event('blok:desktop-new-tab'))",
                 "close-tab" => "window.dispatchEvent(new Event('blok:desktop-close-tab'))",
                 _ => return,
@@ -429,10 +436,12 @@ pub fn run() {
                 let _ = window.eval(script);
             }
         })
-        .invoke_handler(tauri::generate_handler![open_calendar_authorization, embedded_server::embedded_server_available, embedded_server::ensure_embedded_server, embedded_server::embedded_device_session, ai::ai_local_status, ai::ai_local_save, ai::ai_local_delete, ai::ai_local_models, ai::ai_local_respond, ai::ai_local_editor_respond, ai::ai_local_cancel, close_editor_window, editor_close::arm_editor_close, editor_close::finish_editor_close, load_cloud_session, save_cloud_session, load_workspace_file, save_workspace_file, workspace_data_directory, agent_provider_status, agent_ask, agent_cancel])
+        .invoke_handler(tauri::generate_handler![page_links::take_page_link, open_calendar_authorization, embedded_server::embedded_server_available, embedded_server::ensure_embedded_server, embedded_server::embedded_device_session, ai::ai_local_status, ai::ai_local_save, ai::ai_local_delete, ai::ai_local_models, ai::ai_local_respond, ai::ai_local_editor_respond, ai::ai_local_cancel, close_editor_window, editor_close::arm_editor_close, editor_close::finish_editor_close, load_cloud_session, save_cloud_session, load_workspace_file, save_workspace_file, workspace_data_directory, agent_provider_status, agent_ask, agent_cancel])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { ref urls } = event { page_links::opened(app, urls); }
             if matches!(event, tauri::RunEvent::Exit) {
                 app.state::<embedded_server::EmbeddedServer>().shutdown();
             }

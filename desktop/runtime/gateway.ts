@@ -29,6 +29,35 @@ async function serveFile(root: string, pathname: string, req: IncomingMessage, r
   else pipeline(createReadStream(path), res, () => {});
 }
 
+// Only the bundled loopback server renders this handoff. Browsers have their own
+// session, so delegate the device page to the installed app after a user click.
+function serveDevicePageLink(req: IncomingMessage, res: ServerResponse, origin: string): boolean {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return false;
+  const params = new URL(req.url!, origin).searchParams;
+  const page = params.get('page');
+  if (params.size !== 1 || !page || !/^[a-zA-Z0-9_-]{1,128}$/.test(page)) return false;
+  const href = 'blok://page/' + page + '?origin=' + encodeURIComponent(origin);
+  const html = `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ouvrir la page dans Blok</title><link rel="icon" href="/favicon-32x32.png">
+<style>
+:root{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}
+body{margin:0;min-height:100vh;min-height:100dvh;display:grid;place-items:center;background:light-dark(#faf9f6,#1c1c1c);color:light-dark(#272622,#f3f2ef)}
+main{text-align:center;padding:24px}h1{font-size:1.6rem;margin:.6rem 0 1.25rem}
+a{color:inherit;text-underline-offset:.2em}p{margin:.8rem 0}
+.primary{display:inline-block;padding:.55rem 1rem;border-radius:.5rem;background:light-dark(#272622,#f3f2ef);color:light-dark(#fff,#272622);font-weight:600;text-decoration:none}
+</style></head><body><main><img src="/favicon-128x128.png" width="64" height="64" alt="">
+<h1>Ouvrir cette page</h1><p><a class="primary" href="${href}">Ouvrir dans Blok</a></p>
+<a href="/?page=${page}&amp;web=1">Continuer dans le navigateur</a></main></body></html>`;
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+    'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff',
+  });
+  res.end(req.method === 'HEAD' ? undefined : html);
+  return true;
+}
+
 // These are the shell routes that can call the private media service. Listing
 // emojis and signing an existing URL use only PostgreSQL and stay available.
 function needsStorage(path: string, method: string | undefined) {
@@ -107,6 +136,7 @@ export function gateway(ports: Pick<Instance['ports'], 'public' | 'api' | 'room'
     try { path = pathname(req); } catch { return end(res, 400); }
     if (path === null) return end(res, 400);
     if (!ready) return end(res, 503);
+    if (path === '/' && serveDevicePageLink(req, res, 'http://' + authority)) return;
     if (path === '/internal' || path.startsWith('/internal/')) return end(res, 404);
     if (!(path.startsWith('/api/') || path.startsWith('/files/') || path === '/mcp' || path === '/healthz')) {
       void serveFile(web, path, req, res).catch(() => { if (!res.headersSent) end(res, 404); else res.destroy(); });

@@ -1,3 +1,4 @@
+import { pageIdForWorkspaceLink, workspacePageLink } from './page-link';
 import { navigationFavorites, navigationRecents } from './navigation-preferences';
 import { moveDestinations, PageMoveConflict } from './page-move';
 import { openPageHistory } from './page-history';
@@ -89,11 +90,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const repository = workspaceRepository(ref);
   const favorites = navigationFavorites(ref);
   const recentPages = navigationRecents(ref);
-  const pageUrl = (id: string): string => {
-    const url = new URL('/', ref.kind === 'remote' ? ref.server : location.href);
-    url.searchParams.set('page', id);
-    return url.href;
-  };
+  const pageUrl = (id: string): string => workspacePageLink(ref, id);
   const emojis = customEmojiStore(ref);
   const pageIcon = (value: string) => /^(https?:|data:image\/|\/files\/)/i.test(value) ? {type: 'image' as const, url: value} : {type: 'emoji' as const, value};
   if (ref.kind === 'remote' && '__TAURI_INTERNALS__' in window) mountRemoteAssets(ref.server, repository.assetUrl);
@@ -462,6 +459,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.frame.setPages(withSections(ws.index.pages), id);
     onPageIcon(id, page.icon ?? '');
     if (ws.currentId === id) {
+      // A new tab can display the already mounted editor without reloading its document.
+      document.title = page.title;
       ws.pageToolbar?.setBreadcrumbs(breadcrumbs(id));
       return;
     }
@@ -854,7 +853,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     onCreatePrivate: ref.kind === 'remote' ? () => chooseNewPage(null, true) : undefined,
     onSearch: (recentIds) => {
       ws.closeSearch?.();
-      ws.closeSearch = openPageSearch({ workspaceName: ref.name, pages: () => ws.index?.pages ?? [], onOpen: navigate, recentIds });
+      ws.closeSearch = openPageSearch({ workspaceName: ref.name, pages: () => ws.index?.pages ?? [], onOpen: navigate, recentIds,
+        pageIdFromLink: (value) => pageIdForWorkspaceLink(ref, value),
+      });
     },
     onTeamspaces: ref.kind === 'remote' ? () => {
       closeTeamspaces?.();

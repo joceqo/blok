@@ -1,3 +1,4 @@
+import { workspacePageLink } from './page-link';
 import { renderPageIcon } from '../../src/shell/page-icon';
 import { activeWorkspace, workspaceKey } from './workspace-registry';
 import { createWorkspace, type Workspace } from './workspace';
@@ -158,6 +159,11 @@ function installMenu(): void {
   window.addEventListener('blok:desktop-new-tab', () => {
     if (isTauri()) createTab();
   });
+  window.addEventListener('blok:desktop-reload', event => {
+    if (!isTauri()) return;
+    event.preventDefault();
+    void reloadTab(box.session.activeId);
+  });
   window.addEventListener('blok:desktop-close-tab', () => {
     if (isTauri()) closeActive();
   });
@@ -170,10 +176,12 @@ function boot(): Session {
   const calendar = requested.searchParams.get('view') === 'calendar';
   if (!restored || (!page && !calendar)) return restored ?? freshSession();
   // An explicit page link takes precedence over the previously selected tab.
-  const existing = restored.tabs.find((tab) => {
+  const matchesRoute = (tab: Tab): boolean => {
     const url = new URL(tab.href);
     return url.pathname === requested.pathname && (calendar ? url.searchParams.get('view') === 'calendar' : url.searchParams.get('page') === page);
-  });
+  };
+  const current = restored.tabs.find(tab => tab.id === restored.activeId);
+  const existing = current && matchesRoute(current) ? current : restored.tabs.find(matchesRoute);
   if (existing) {
     existing.href = requested.href;
     existing.entries[existing.index] = requested.href;
@@ -413,8 +421,14 @@ function syncTitle(): void {
   if (!tab) return;
   const title = readable(document.title);
   const icon = new URL(tab.href).searchParams.get('view') === 'calendar' ? '' : tab.icon;
-  if (tab.title === title && tab.icon === icon) return;
-  box.session = withTab(box.session, tab.id, { ...tab, title, icon });
+  const page = pageOf(tab.href);
+  const tabs = box.session.tabs.map(item => {
+    if (item.id === tab.id) return item.title === title && item.icon === icon ? item : {...item, title, icon};
+    if (page && pageOf(item.href) === page && item.title !== title) return {...item, title};
+    return item;
+  });
+  if (tabs.every((item, index) => item === box.session.tabs[index])) return;
+  box.session = {...box.session, tabs};
   persist();
   paint();
 }
@@ -546,16 +560,51 @@ function duplicateTab(id: string): void {
   box.workspace?.onRoute();
 }
 
+let reloading = false;
+
+async function reloadTab(id: string): Promise<void> {
+  const host = box.root;
+  const tab = box.session.tabs.find(item => item.id === id);
+  if (!host || !tab || reloading || !allowed()) return;
+  reloading = true;
+  const previous = host.inert;
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  host.inert = true;
+  host.querySelector('[data-desktop-reload-error]')?.remove();
+  try {
+    await flushDesktop();
+    const current = active();
+    if (current) box.session = withTab(box.session, current.id, snapshot(current));
+    box.session.activeId = id;
+    nativeReplace(tab.href);
+    persist();
+    location.reload();
+  } catch (error) {
+    host.inert = previous;
+    reloading = false;
+    const notice = document.createElement('div');
+    notice.className = 'desktop-close-notice';
+    notice.setAttribute('data-desktop-reload-error', '');
+    notice.setAttribute('role', 'alert');
+    notice.textContent = 'Impossible d’enregistrer avant le rechargement. ' + (error instanceof Error ? error.message : String(error));
+    host.append(notice);
+  }
+}
+
 function runTabMenuAction(action: TabMenuAction, id: string): void {
   const ids = tabIds();
   const index = ids.indexOf(id);
   if (action === 'copy-link') {
     const tab = box.session.tabs.find((item) => item.id === id);
     const link = tab ? pageLinkFor(tab.href) : null;
-    if (link) void navigator.clipboard?.writeText(link);
+    if (link && tab) {
+      const workspace = activeWorkspace();
+      const id = new URL(tab.href).searchParams.get('page');
+      void navigator.clipboard?.writeText(workspace.kind === 'remote' && workspace.device && id ? workspacePageLink(workspace, id) : link);
+    }
     return;
   }
-  if (action === 'reload') { moveTo(id, false); box.workspace?.onRoute(); return; }
+  if (action === 'reload') { void reloadTab(id); return; }
   if (action === 'duplicate') { duplicateTab(id); return; }
   if (action === 'close') { closeTab(id); return; }
   if (action === 'close-others') { closeMany(ids.filter((other) => other !== id)); return; }

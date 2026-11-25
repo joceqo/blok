@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { mountDesktop, setCanLeave } from './shell';
 import { BLOK_MARK_HREF, faviconHref } from './tab-identity';
 
+const flush = vi.fn<() => Promise<void>>();
 let routeCalls = 0;
 let reportPageIcon: (id: string, icon: string) => void = () => undefined;
 
@@ -18,6 +19,7 @@ vi.mock('./workspace', () => ({
     return {
       element,
       start: async () => undefined,
+      flush,
       onRoute: () => { routeCalls++; },
       toggleSidebar: () => undefined,
       createPage: () => history.pushState(null, '', `/?page=${crypto.randomUUID()}`),
@@ -167,6 +169,29 @@ describe('desktop tab strip', () => {
     expect(button(root, 'Afficher ou masquer la barre latérale')).toBeInstanceOf(HTMLButtonElement);
     expect(button(root, 'Nouvelle page')).toBeInstanceOf(HTMLButtonElement);
     expect(button(root, 'Nouvel onglet').getAttribute('title')).toBe('Nouvel onglet (⌘T)');
+  });
+
+  it('keeps the active tab and all page titles consistent for duplicate page tabs', () => {
+    const root = mount();
+    history.replaceState(null, '', '/?page=notes');
+    document.title = 'Mes notes';
+    window.dispatchEvent(new Event('blok:desktop-new-tab'));
+    history.replaceState(null, '', '/?page=notes');
+    document.title = 'Mes notes';
+    document.title = 'Titre modifié';
+    const activeId = readSession().activeId;
+    expect(tabLabels(root)).toEqual(['Titre modifié', 'Titre modifié']);
+    mount();
+    expect(readSession().activeId).toBe(activeId);
+  });
+
+  it('retains the editor if a native reload cannot save the last edit', async () => {
+    const root = mount();
+    flush.mockRejectedValueOnce(new Error('disque plein'));
+    const request = new Event('blok:desktop-reload', {cancelable: true});
+    expect(window.dispatchEvent(request)).toBe(false);
+    await vi.waitFor(() => expect(root.querySelector('[role="alert"]')?.textContent).toContain('disque plein'));
+    expect(root.inert).toBeFalsy();
   });
 
   it('shows only the workspace on the web without restoring native tabs', () => {
@@ -512,6 +537,7 @@ describe('Tauri window', () => {
     const rust = readFileSync(join(process.cwd(), 'src-tauri/src/lib.rs'), 'utf8');
     expect(rust).toContain('New Tab');
     expect(rust).toContain('Close Tab');
+    expect(rust).toContain('CmdOrCtrl+R');
     expect(rust).toContain('CmdOrCtrl+T');
     expect(rust).toContain('CmdOrCtrl+W');
     expect(rust).toContain("window.dispatchEvent(new Event('blok:desktop-new-tab'))");

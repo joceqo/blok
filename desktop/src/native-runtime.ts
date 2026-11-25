@@ -50,16 +50,10 @@ export async function openEmbeddedWorkspace(selected: WorkspaceRef, explicit: bo
       } catch (error) { if (!(error instanceof CloudApiError && error.status === 401)) throw error; }
     }
   }
-  const result = await nativeBridge()?.invoke('embedded_device_session') as DeviceSession | undefined;
-  const origin = localOrigin(result?.origin);
-  if (typeof result?.token !== 'string' || !result.token || !result.user?.id || !Array.isArray(result.workspaces)) throw new Error('Profil local indisponible.');
+  const {result, origin, references} = await deviceWorkspaces();
   if (previous?.device && !explicit && origin !== previous.server) throw new Error('L’adresse du serveur intégré de cet espace a changé.');
   const imported = selected.kind === 'local' && selected.id === 'default' ? result.deviceImportedWorkspaceId : undefined;
   const preferred = previous?.device && previous.accountId === result.user.id ? previous.id : imported || result.deviceWorkspaceId;
-  const references: RemoteWorkspace[] = result.workspaces.map(w => ({
-    kind:'remote', embedded:true, device:true, id:w.id, name:w.name, server:origin,
-    workspaceId:w.slug, role:w.role, accountId:result.user.id, userName:result.user.name || 'Profil local',
-  }));
   const workspace = references.find(w => w.id === preferred) ?? references.find(w => w.id === result.deviceWorkspaceId);
   if (!workspace) throw new Error('Espace de cet appareil introuvable.');
   bindDeviceSession(origin, result.token);
@@ -69,4 +63,15 @@ export async function openEmbeddedWorkspace(selected: WorkspaceRef, explicit: bo
     otherWorkspaces: references.filter(w => w.id !== workspace.id),
     activePageId: importedHere && typeof result.deviceActivePageId === 'string' ? result.deviceActivePageId : undefined,
   };
+}
+
+export async function deviceWorkspaces() {
+  const result = await nativeBridge()?.invoke('embedded_device_session') as DeviceSession | undefined;
+  const origin = localOrigin(result?.origin);
+  if (typeof result?.token !== 'string' || !result.token || !result.user?.id || !Array.isArray(result.workspaces)) throw new Error('Profil local indisponible.');
+  const references: RemoteWorkspace[] = result.workspaces.map(w => ({
+    kind:'remote', embedded:true, device:true, id:w.id, name:w.name, server:origin,
+    workspaceId:w.slug, role:w.role, accountId:result.user.id, userName:result.user.name || 'Profil local',
+  }));
+  return {result, origin, references};
 }

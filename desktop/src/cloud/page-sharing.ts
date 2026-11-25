@@ -1,3 +1,4 @@
+import { workspacePageLink } from '../page-link';
 import { openModalDialog } from '@blok/modal-dialog';
 import { promoteToTopLayer, removeFromTopLayer } from '../../../src/components/utils/top-layer';
 import { CloudClient } from './client';
@@ -40,8 +41,7 @@ export function openPageSharing(ref: RemoteWorkspace, pageId: string, pageTitle:
   const copy = document.createElement('button');
   copy.type = 'button'; copy.textContent = 'Copier le lien';
   copy.addEventListener('click', () => {
-    const url = new URL('/', ref.server); url.searchParams.set('page', pageId);
-    void navigator.clipboard.writeText(url.href).then(() => { copy.textContent = 'Lien copié'; }, () => { hint.textContent = 'La copie du lien a échoué.'; });
+    void navigator.clipboard.writeText(workspacePageLink(ref, pageId)).then(() => { copy.textContent = 'Lien copié'; }, () => { hint.textContent = 'La copie du lien a échoué.'; });
   });
   hint.setAttribute('role', 'status');
   footer.append(hint, copy); surface.append(footer);

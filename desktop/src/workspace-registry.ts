@@ -48,11 +48,12 @@ export function activateWorkspace(ref: WorkspaceRef): void {
 }
 
 /** Call only after the current editor has flushed; reload removes all old listeners and timers. */
-export function selectWorkspace(ref: WorkspaceRef): void {
+export function selectWorkspace(ref: WorkspaceRef, pageId?: string): void {
   if (ref.kind === 'local' && ref.id === 'default') localStorage.setItem(DISK, '1');
   activateWorkspace(ref);
   const url = new URL(location.href);
   url.searchParams.delete('page');
+  if (pageId) { url.searchParams.delete('view'); url.searchParams.set('page', pageId); }
   url.searchParams.delete('cloud');
   url.searchParams.delete('manage');
   url.searchParams.delete('section');
