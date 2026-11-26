@@ -45,6 +45,35 @@ function refusalAnswer(refusal: Refusal): Answer {
   return { tag: 'MethodNotAllowed', allow: refusal.allow };
 }
 
+/** A deadline that can be dropped before it fires. */
+function deadline(atMs: number): { expiry: Promise<never>; drop: () => void } {
+  const handle: { timer?: ReturnType<typeof setTimeout> } = {};
+  const expiry = new Promise<never>((_, reject) => {
+    handle.timer = setTimeout(() => reject(new Error('timeout')), Math.max(0, atMs - Date.now()));
+  });
+  return { expiry, drop: () => clearTimeout(handle.timer) };
+}
+
+/**
+ * Runs the handler under the request deadline, which a hijack drops. A hijacked
+ * handler owns the socket for the whole session it serves — a WebSocket outlives
+ * any request timeout — and `serve` destroys that socket the moment the handler
+ * returns. So the deadline is dropped, not merely ignored.
+ */
+async function underDeadline(run: () => Promise<void>, deadlineAt: number, exchange: Exchange): Promise<void> {
+  // Armed before the handler starts, so a hijack cannot slip past the watch.
+  const hijacked = exchange.hijacked.notified();
+  hijacked.enable();
+  const { expiry, drop } = deadline(deadlineAt);
+  void hijacked.wait().then(drop);
+  try {
+    await Promise.race([run(), expiry]);
+  } finally {
+    drop();
+    hijacked.cancel();
+  }
+}
+
 async function waitForRequest(shared: Shared, inbound: Inbound): Promise<boolean> {
   const idleDeadline = Date.now() + shared.config.keepAliveTimeoutMs;
   for (;;) {
@@ -190,10 +219,7 @@ async function runExchange(
   const deadlineAt = config.requestTimeoutMs === undefined ? undefined : Date.now() + config.requestTimeoutMs;
   try {
     if (deadlineAt !== undefined) {
-      await Promise.race([
-        shared.handler(request, response),
-        new Promise<void>((_, reject) => setTimeout(() => reject(new Error('timeout')), Math.max(0, deadlineAt - Date.now()))),
-      ]);
+      await underDeadline(() => shared.handler(request, response), deadlineAt, exchange);
     } else {
       await shared.handler(request, response);
     }

@@ -131,6 +131,9 @@ export class ResponseWriter {
     wire.hijacked = true;
     this.committed = true;
     guard.release();
+    // The exchange now owns the socket for as long as its session lives, so
+    // the connection must drop the request timeout it armed around the handler.
+    this.exchange.hijacked.notifyWaiters();
     const stopped = await this.exchange.inbound.stop();
     if (stopped === undefined) {
       throw HijackError.Gone;
