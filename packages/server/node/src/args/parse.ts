@@ -129,7 +129,10 @@ export function parseHostArguments(
   const conformanceOnly = /^--conformance-/;
 
   for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index];
+    // In range by the loop bound; the fallback is what noUncheckedIndexedAccess
+    // costs without a non-null assertion, and an absent argument stops the scan
+    // exactly as a non-flag one would.
+    const argument = argv[index] ?? '';
     if (argument === '--' || argument.length < 2 || !argument.startsWith('-')) {
       break;
     }

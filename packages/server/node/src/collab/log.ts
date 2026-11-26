@@ -1,8 +1,13 @@
 const NEWLINE = process.platform === 'win32' ? '\r\n' : '\n';
 
+/** The one call a log line makes on its destination; process.stderr satisfies it. */
+export interface LogSink {
+  write(text: string): unknown;
+}
+
 /** Writes "<kind>: <message>" with collab log escaping (host-log-lines.json). */
 export function writeLogLine(
-  out: NodeJS.WriteStream,
+  out: LogSink,
   kind: 'warning' | 'error',
   message: string,
 ): void {
@@ -48,7 +53,7 @@ export function writeLogLine(
 
 export type CollabLog = (message: string, level: 'warning' | 'error') => void;
 
-export function collabLogger(out: NodeJS.WriteStream): CollabLog {
+export function collabLogger(out: LogSink): CollabLog {
   return (message, level) => {
     writeLogLine(out, level, message);
   };

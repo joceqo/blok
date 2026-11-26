@@ -141,3 +141,6 @@ research_notes/
 
 # Local reports
 reports/
+
+# Collaboration journals written by test runs
+blok-collab/

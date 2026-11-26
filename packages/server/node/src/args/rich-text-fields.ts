@@ -26,7 +26,8 @@ function readJsonString(text: string, start: number): { value: string; end: numb
 function hasTopLevelDuplicateKey(text: string): boolean {
   let index = 0;
   const skipWs = (): void => {
-    while (index < text.length && /\s/.test(text[index])) {
+    // In range by the loop bound; an absent char tests false and ends the skip.
+    while (index < text.length && /\s/.test(text[index] ?? '')) {
       index += 1;
     }
   };
