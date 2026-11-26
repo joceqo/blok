@@ -758,6 +758,19 @@ jobs:
       - name: Test service-node
         run: cd apps/service-node && npm ci && npm test
 
+      - name: Install the Node host dependencies
+        run: npm ci --prefix packages/server/node --no-audit --no-fund
+
+      # Conformance on the Node host is still partial, so this names the suites
+      # that pass rather than running the lot. It is a ratchet: a suite joins it
+      # the day it goes green and never leaves, so no repair to the Node host
+      # can be silently undone. server-go-parity-law fails if it is narrowed.
+      - name: Test Node conformance
+        run: >-
+          node scripts/test-server-conformance.mjs --target node
+          --suite harness-contract --suite server-contract
+          --suite protocol-v2-contract --suite routing-contract
+
   build:
     if: '${{ !inputs.unit_only }}'
     name: Build

@@ -48,6 +48,27 @@ const fullRuns = (workflowText: string, target: string): string[] => {
 
 const fullGoRuns = (workflowText: string): string[] => fullRuns(workflowText, 'go');
 
+/** Every suite a `--target node` run names. */
+const nodeSuites = (workflowText: string): string[] => {
+  const workflow = parse(workflowText) as Workflow;
+
+  return Object.values(workflow.jobs ?? {})
+    .flatMap((job) => job.steps ?? [])
+    .flatMap((step) => step.run === undefined ? [] : step.run.split('\n'))
+    .map((line) => line.trim())
+    .filter((line) => line.includes('test-server-conformance.mjs --target node'))
+    .flatMap((line) => [...line.matchAll(/--suite (\S+)/g)])
+    .flatMap((match) => match[1] === undefined ? [] : [match[1]]);
+};
+
+/**
+ * The suites that pass on the Node host today. Conformance there is still
+ * partial, so CI cannot run it whole: it holds this ratchet instead, and a
+ * suite only ever joins it. Add one here the day it goes green, and replace
+ * the whole thing with `fullRuns` once nothing is left out.
+ */
+const NODE_RATCHET = ['harness-contract', 'server-contract', 'protocol-v2-contract', 'routing-contract'];
+
 type RunnerResult = { status: number | null; stdout: string; stderr: string };
 
 const TOOLCHAINS: Record<string, string> = {
@@ -105,6 +126,17 @@ describe('server Go and C# parity law', () => {
   // U8: one collaboration directory, written by one server and served by the other.
   it('runs the journal interop suite in CI', () => {
     expect(conformanceTargets(read('.github/workflows/ci.yml'))).toContain('interop');
+  });
+
+  // Nothing else guards the Node host: without this, every repair to it can be
+  // undone by the next commit and no build would say so.
+  it('runs the node conformance ratchet in CI', () => {
+    const ci = read('.github/workflows/ci.yml');
+
+    expect(conformanceTargets(ci)).toContain('node');
+    for (const suite of NODE_RATCHET) {
+      expect(nodeSuites(ci)).toContain(suite);
+    }
   });
 
   it('runs every conformance suite on Go in CI, unfiltered', () => {
