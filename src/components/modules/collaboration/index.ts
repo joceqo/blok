@@ -238,6 +238,7 @@ export class Collaboration extends Module {
   /** A denied ticket, or a no-ticket headless copy without a write grant. */
   private writeDenied = false;
   private ticketAllowsRecovery = false;
+  private seedAfterGrant = false;
   private awaitingRoomCopy = false;
   private recoveryPending: Promise<void> | undefined;
 
@@ -262,10 +263,10 @@ export class Collaboration extends Module {
    */
   private store: OperationStore | null = null;
 
-  public async inspectQuarantine(): Promise<QuarantineReview> {
+  public async inspectQuarantine(includePreview = true): Promise<QuarantineReview> {
     if (!this.store) return { through: 0, entries: [] };
     const { through, entries, snapshot } = await this.store.inspectQuarantine();
-    if (!snapshot) return { through, entries };
+    if (!includePreview || !snapshot) return { through, entries };
     const copy = new DocumentStore(new YBlockSerializer());
     try {
       copy.applyRemoteUpdate(snapshot);
@@ -276,6 +277,11 @@ export class Collaboration extends Module {
     } finally {
       copy.destroy();
     }
+  }
+
+  public retryQuarantineAccess(): boolean {
+    if (this.isDestroyed || this.durabilityLost) return false;
+    return this.provider?.refreshAfterRefusal(true) ?? false;
   }
 
   public async clearQuarantine(through: number): Promise<number> {
@@ -1341,12 +1347,10 @@ export class Collaboration extends Module {
         this.writeDenied = denied;
         await this.applyArbitration();
 
-        // A grant that arrives LATE still has to find the room habitable. The
-        // first-sync seed is skipped for a member who may not write, and an
-        // editor that came up empty has no block to type in and no gesture that
-        // makes one — so the moment writes are granted, seed the empty document
-        // the same way the first sync would have.
-        this.seedEmptyDocument();
+        // A durable reconnect may restore the first paragraph from quarantine.
+        // Wait for the server copy and the recovery transaction before seeding.
+        this.seedAfterGrant = !denied && this.protocol === 'v2';
+        if (!denied && !this.seedAfterGrant) this.seedEmptyDocument();
       }
 
       return token;
@@ -1418,8 +1422,11 @@ export class Collaboration extends Module {
     void this.refreshSave();
 
     // Hide after arbitration: lifting read-only can re-render the blocks the hide measures.
-    if (isFirstSync) {
+    if (status === 'connected' && (isFirstSync || this.seedAfterGrant)) {
+      this.seedAfterGrant = false;
       this.seedEmptyDocument();
+    }
+    if (isFirstSync) {
       void this.Blok.UI.hideLoading();
 
       return;

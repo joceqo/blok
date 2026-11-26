@@ -63,3 +63,16 @@
 [data-quarantine-review]::backdrop { background: #0006; }
 [data-quarantine-review] button + button { margin-inline-start: 8px; }
 [data-quarantine-review] pre { max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+[data-desktop-workspace] [data-sync-compact] > [data-diagnostic-trigger] {
+  position: absolute; width: 28px; height: 28px; padding: 0;
+  border: 0; background: transparent; cursor: pointer;
+}
+[data-save-diagnostic] {
+  box-sizing: border-box; width: min(440px, 90vw); max-height: 85vh;
+  padding: 20px; border: 1px solid GrayText; border-radius: 8px;
+  background: Canvas; color: CanvasText; font: inherit;
+}
+[data-save-diagnostic]::backdrop { background: #0006; }
+[data-save-diagnostic] textarea { box-sizing: border-box; width: 100%; height: 12em; margin-top: 8px; }
+[data-save-diagnostic] > div { display: flex; flex-wrap: wrap; gap: 8px; }

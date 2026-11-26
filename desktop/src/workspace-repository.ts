@@ -4,7 +4,7 @@ import { mergeWorkspaceIndex } from './workspace-merge';
 import { loadIndex, readFile, writeFile, type WorkspaceIndex } from './storage';
 import { nativeSessionAdapter } from './native-session';
 import type { WorkspaceRef } from './workspace-registry';
-class RepositoryHttpError extends Error { constructor(public status: number) { super(`Serveur indisponible (${status})`); } }
+class RepositoryHttpError extends Error { constructor(public status: number, public requestId?: string | null) { super(`Serveur indisponible (${status})`); } }
 /**
  * The server already holds a document for this page.
  *
@@ -30,7 +30,7 @@ export function workspaceRepository(workspace: WorkspaceRef) {
   async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const token = ref.kind === 'remote' && '__TAURI_INTERNALS__' in window ? await nativeSessionAdapter(ref.server).getToken() : null;
     const response = await fetch(url, { ...init, credentials: 'include', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init?.headers } });
-    if (!response.ok) throw new RepositoryHttpError(response.status);
+    if (!response.ok) throw new RepositoryHttpError(response.status, response.headers?.get('X-Request-ID'));
     return await response.json() as T;
   }
   return {
@@ -114,9 +114,9 @@ export function workspaceRepository(workspace: WorkspaceRef) {
         await request(`${base}/pages/${encodeURIComponent(id)}/move`, {method: 'POST', body: JSON.stringify({parentId, teamspaceId})});
       } catch (error) {
         if (error instanceof RepositoryHttpError) {
-          if (error.status === 403 || error.status === 404) throw new Error('Vous n’avez plus les droits nécessaires pour déplacer cette page ou l’une de ses sous-pages.');
-          if (error.status === 409) throw new Error('La page ou sa destination a changé. Actualisez puis réessayez.');
-          if (error.status === 400) throw new Error('Cette destination ne peut pas contenir la page.');
+          if (error.status === 403 || error.status === 404) throw new Error('Vous n’avez plus les droits nécessaires pour déplacer cette page ou l’une de ses sous-pages.', { cause: error });
+          if (error.status === 409) throw new Error('La page ou sa destination a changé. Actualisez puis réessayez.', { cause: error });
+          if (error.status === 400) throw new Error('Cette destination ne peut pas contenir la page.', { cause: error });
         }
         throw error;
       }

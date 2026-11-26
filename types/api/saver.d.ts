@@ -12,7 +12,9 @@ export interface QuarantineReview {
 }
 
 export interface Saver {
-  inspectQuarantine(): Promise<QuarantineReview>;
+  inspectQuarantine(includePreview?: boolean): Promise<QuarantineReview>;
+  /** Request a fresh authenticated session. Only eligible read-only edits may be retried. */
+  retryQuarantineAccess(): boolean;
   /** Discard only the reviewed rows, after confirmation. */
   clearQuarantine(through: number): Promise<number>;
   /**

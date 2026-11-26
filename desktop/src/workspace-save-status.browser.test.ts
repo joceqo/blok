@@ -81,7 +81,7 @@ it.each(['chromium', 'webkit'] as const)('keeps the real page toolbar still duri
     await page.addScriptTag({type: 'module', content: `
       import { createWorkspaceSaveStatus } from '/src/workspace-save-status.ts';
       import { createPageToolbar } from '/src/page-toolbar.ts';
-      const status = createWorkspaceSaveStatus(true, true);
+      const status = createWorkspaceSaveStatus(true, true, undefined, { pageId: () => "page" });
       const toolbar = createPageToolbar([{id:'page',title:'Vue tableaux finaux touches'}],false,()=>{},undefined,()=>()=>{}, {workspaceName:'Nexenture'});
       toolbar.element.insertBefore(status.element,toolbar.element.querySelector('[data-desktop-page-actions]'));
       document.querySelector('[data-desktop-workspace]').append(toolbar.element);
@@ -130,6 +130,7 @@ it('lets someone review a refused edit, keep it, then explicitly abandon it', as
       import {createWorkspaceSaveStatus} from '/src/workspace-save-status.ts';
       const actions = {
         inspectQuarantine: async () => ({ through: 17, entries: [{reason: 'read-only', count: 4}], preview: 'Mon paragraphe' }),
+        retryQuarantineAccess: () => false,
         clearQuarantine: async through => {
           if (through !== 17) throw Error('wrong review');
           publish('saved', 0);
@@ -146,6 +147,8 @@ it('lets someone review a refused edit, keep it, then explicitly abandon it', as
     const review = page.getByRole('button', {name: 'Voir les modifications refusées'});
     await review.click();
     const panel = page.getByRole('dialog');
+    await panel.getByRole('button', { name: 'Revérifier mon accès' }).click();
+    expect(await panel.getByText(/Vos modifications restent en quarantaine/).isVisible()).toBe(true);
     await panel.getByText('Voir le contenu de la dernière copie locale').click();
     expect(await panel.getByText('Mon paragraphe').isVisible()).toBe(true);
     await panel.getByRole('button', {name: 'Conserver'}).click();
@@ -157,4 +160,45 @@ it('lets someone review a refused edit, keep it, then explicitly abandon it', as
   } finally {
     await browser.close();
   }
+});
+
+it('copies a safe report, guards stale alerts and retries failed metadata from the banner', async () => {
+  const browser = await chromium.launch(existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? {channel: 'chrome'} : {});
+  try {
+    const page = await browser.newPage({ permissions: ['clipboard-read', 'clipboard-write'] });
+    await page.route(origin + '/', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><body></body>' }));
+    await page.goto(origin + '/');
+    await page.addScriptTag({ type: 'module', content: `
+      import {createWorkspaceSaveStatus} from '/src/workspace-save-status.ts';
+      const status = createWorkspaceSaveStatus(true, true, undefined, {
+        pageId: () => 'page-1', retry: async source => status.saved(source),
+      });
+      window.indicator = status;
+      document.body.append(status.element);
+      status.connection({status:'connected', save:{state:'saved',serverSequence:'8',pendingOperations:0,pendingBytes:0,quarantinedOperations:0}});
+      status.error(new Error('private page content'), null, 'duplicate');
+    ` });
+    const trigger = page.getByRole('button', { name: 'Diagnostic de synchronisation' });
+    const panel = page.getByRole('dialog');
+    await trigger.click();
+    await panel.getByRole('button', { name: 'Copier le diagnostic' }).click();
+    await panel.getByText('Diagnostic copié.').waitFor();
+    const copied = await page.evaluate(() => navigator.clipboard.readText());
+    expect(copied).not.toContain('private page content');
+    expect(JSON.parse(copied)).toMatchObject({ sync: { state: 'saved' }, failures: [{ source: 'duplicate' }] });
+    await page.evaluate(() => (window as FixtureWindow).indicator.error(new Error(), null, 'duplicate'));
+    await panel.getByRole('button', { name: 'Masquer cette alerte' }).click();
+    await panel.getByText('Cette alerte a déjà changé.').waitFor();
+    await panel.getByRole('button', { name: 'Fermer' }).click();
+    await trigger.click();
+    await panel.getByRole('button', { name: 'Masquer cette alerte' }).click();
+    await panel.getByRole('button', { name: 'Fermer' }).click();
+    await page.evaluate(() => (window as FixtureWindow).indicator.error(new Error(), null, 'manifest'));
+    await trigger.click();
+    expect(await panel.getByRole('button', { name: 'Masquer cette alerte' }).count()).toBe(0);
+    await panel.getByRole('button', { name: 'Réessayer' }).click();
+    await panel.getByText('Opération confirmée.').waitFor();
+    await panel.getByRole('button', { name: 'Fermer' }).click();
+    expect(await page.locator('[data-desktop-status]').getAttribute('data-sync-state')).toBe('saved');
+  } finally { await browser.close(); }
 });

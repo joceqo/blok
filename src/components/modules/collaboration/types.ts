@@ -381,7 +381,7 @@ export interface CollabProvider {
   /** Start connecting. Idempotent while a connection is live or pending. */
   connect(): void;
   /** Rebuild from the server after the host has handled a final refusal. */
-  refreshAfterRefusal(): void;
+  refreshAfterRefusal(requestFreshAccess?: boolean): boolean;
   /** Stop for good: close the socket, unhook the seam, cancel every timer. */
   destroy(): void;
 

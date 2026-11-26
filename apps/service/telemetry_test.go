@@ -291,9 +291,14 @@ func TestFailedResponsesGroupByStatus(t *testing.T) {
 	handler := logFailedResponses(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "Seeding failed")
 	}))
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/workspaces/x/pages/y/seed", nil))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/workspaces/x/pages/y/seed", nil))
 
 	joined := strings.Join(lines, "")
+	id := response.Result().Header.Get("X-Request-ID")
+	if len(id) != 32 || !strings.Contains(joined, "request_id="+id) {
+		t.Fatal("the browser must be able to identify the refusal in the service log")
+	}
 	if !strings.Contains(joined, `msg="request refused with 500"`) {
 		t.Fatalf("the status must be in the message, not only in a tag: %s", joined)
 	}

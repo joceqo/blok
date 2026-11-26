@@ -48,7 +48,7 @@ export interface CloudSessionAdapter {
 }
 export interface CloudWorkspaceStatus { id: string; slug: string; name: string; icon?: string | null; role: CloudRole | null; joinStatus: 'pending' | 'approved' | 'rejected' | null }
 export class CloudApiError extends Error {
-  constructor(public status: number, message: string) { super(message); this.name = 'CloudApiError'; }
+  constructor(public status: number, message: string, public requestId?: string | null) { super(message); this.name = 'CloudApiError'; }
 }
 export interface CloudClientOptions { origin?: string; sessionAdapter?: CloudSessionAdapter }
 
@@ -73,7 +73,7 @@ export class CloudClient {
     if (token) headers.set('Authorization', `Bearer ${token}`);
     const response = await fetchResponse(`${this.origin}${path}`, { ...init, headers, credentials: 'include' });
     const data = await response.json().catch(() => null) as { error?: unknown } | null;
-    if (!response.ok) throw new CloudApiError(response.status, typeof data?.error === 'string' ? data.error : 'La demande n’a pas pu aboutir. Réessayez.');
+    if (!response.ok) throw new CloudApiError(response.status, typeof data?.error === 'string' ? data.error : 'La demande n’a pas pu aboutir. Réessayez.', response.headers?.get('X-Request-ID'));
     return data as T;
   }
   instance(): Promise<CloudInstance> { return this.request<CloudInstance>('/api/instance'); }
