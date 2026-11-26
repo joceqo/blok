@@ -83,6 +83,12 @@ function sanitizeS3MediaType(value: string): string {
   return sanitizeWire(trimmed);
 }
 
+function requireKey(key: string): void {
+  if (key === '') {
+    throw new Error('blobstore: s3 key is empty');
+  }
+}
+
 function escapeKeyInPath(key: string): string {
   return key.replace(/\?/g, '%3F').replace(/#/g, '%23');
 }
@@ -226,7 +232,35 @@ export class S3Store implements BlobStore {
     await this.send('DELETE', key, '', Buffer.alloc(0), EMPTY_HASH);
   }
 
-  private async send(method: string, key: string, mimeType: string, body: Buffer, hash: string): Promise<void> {
+  /**
+   * Reads one raw key, for the collab working set. A 404 answers nothing; a
+   * 403 stays a failure, because S3 answers 403 for a missing key whenever the
+   * credentials may not list the bucket.
+   */
+  async getObject(key: string): Promise<Buffer | undefined> {
+    requireKey(key);
+    return this.send('GET', key, '', Buffer.alloc(0), EMPTY_HASH, true);
+  }
+
+  async putObject(key: string, content: Buffer): Promise<void> {
+    requireKey(key);
+    const hash = createHash('sha256').update(content).digest('hex');
+    await this.send('PUT', key, 'application/octet-stream', content, hash);
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    requireKey(key);
+    await this.send('DELETE', key, '', Buffer.alloc(0), EMPTY_HASH, true);
+  }
+
+  private async send(
+    method: string,
+    key: string,
+    mimeType: string,
+    body: Buffer,
+    hash: string,
+    allowNotFound = false,
+  ): Promise<Buffer | undefined> {
     const target = resolveTarget(this.options, key);
     const headers = sign(
       method,
@@ -247,7 +281,10 @@ export class S3Store implements BlobStore {
     }
     const response = await rawRequest(target.url, method, headers, method === 'PUT' ? body : undefined);
     if (response.status >= 200 && response.status <= 299) {
-      return;
+      return response.body;
+    }
+    if (allowNotFound && response.status === 404) {
+      return undefined;
     }
     const detail = response.body.subarray(0, ERROR_BODY_LIMIT).toString('utf8').trim();
     throw new Error(`blobstore: s3 ${method} returned ${response.status}: ${detail}`);

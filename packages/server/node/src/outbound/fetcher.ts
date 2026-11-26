@@ -208,7 +208,7 @@ export class OutboundFetcher {
       const path = `${target.pathname}${target.search}`;
       let response: Awaited<ReturnType<typeof rawGet>['promise']>;
       try {
-        const fetch = rawGet(Number(target.port), path, limits.range);
+        const fetch = rawGet(Number(target.port), path, limits.range, deadline);
         onRawGet(() => fetch.cancel());
         response = await fetch.promise;
       } catch (error) {

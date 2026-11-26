@@ -13,7 +13,9 @@ function proxyAuth(target: ProxyTarget): string {
   return `Proxy-Authorization: Basic ${Buffer.from(token, 'utf8').toString('base64')}\r\n`;
 }
 
-function parseHttpResponse(buffer: Buffer): { status: number; headersEnd: number; body: Buffer } | undefined {
+function parseHttpResponse(
+  buffer: Buffer,
+): { status: number; headersEnd: number; body: Buffer; declaredLength?: number } | undefined {
   const end = buffer.indexOf('\r\n\r\n');
   if (end < 0) {
     return undefined;
@@ -23,7 +25,15 @@ function parseHttpResponse(buffer: Buffer): { status: number; headersEnd: number
   if (!Number.isFinite(status)) {
     return undefined;
   }
-  return { status, headersEnd: end + 4, body: buffer.subarray(end + 4) };
+  const declared = head.split('\r\n').slice(1)
+    .map((line) => /^content-length:\s*(\d+)\s*$/i.exec(line))
+    .find((match) => match !== null);
+  return {
+    status,
+    headersEnd: end + 4,
+    body: buffer.subarray(end + 4),
+    declaredLength: declared === undefined ? undefined : Number(declared[1]),
+  };
 }
 
 function sendRequest(
@@ -50,25 +60,46 @@ function sendRequest(
   head += '\r\n';
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
+    const done = (): void => {
+      socket.off('data', onData);
+      socket.off('error', onError);
+      socket.off('end', onEnd);
+    };
     const onData = (chunk: Buffer): void => {
       chunks.push(chunk);
       const parsed = parseHttpResponse(Buffer.concat(chunks));
       if (parsed === undefined) {
         return;
       }
-      socket.off('data', onData);
-      socket.off('error', onError);
+      // An object arrives across as many reads as the network gives it, so a
+      // declared body is only whole once that many bytes have landed.
+      // Answering on the headers alone truncated every read above one chunk.
+      if (parsed.declaredLength !== undefined && parsed.body.length < parsed.declaredLength) {
+        return;
+      }
+      done();
       if (parsed.status === 407 && retry && proxy !== undefined) {
         sendRequest(socket, method, target, host, headers, body, proxy, false).then(resolve, reject);
         return;
       }
       resolve({ status: parsed.status, body: parsed.body });
     };
+    const onEnd = (): void => {
+      done();
+      const parsed = parseHttpResponse(Buffer.concat(chunks));
+      if (parsed === undefined || (parsed.declaredLength !== undefined && parsed.body.length < parsed.declaredLength)) {
+        reject(new Error('blobstore: the proxy ended the response body early'));
+        return;
+      }
+      resolve({ status: parsed.status, body: parsed.body });
+    };
     const onError = (error: Error): void => {
+      done();
       reject(error);
     };
     socket.on('data', onData);
     socket.on('error', onError);
+    socket.on('end', onEnd);
     socket.write(head);
     if (body !== undefined && body.length > 0) {
       socket.write(body);

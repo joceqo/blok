@@ -57,6 +57,10 @@ function readHead(buffer: Buffer): { statusCode: number; headersEnd: number; hea
   return { statusCode: status, headersEnd: end + 4, headers: parseHeaders(lines.slice(1).join('\r\n')) };
 }
 
+function isChunked(headers: Record<string, string[]>): boolean {
+  return (headers['transfer-encoding'] ?? []).some((v) => v.toLowerCase().includes('chunked'));
+}
+
 function readBody(buffer: Buffer, headersEnd: number, headers: Record<string, string[]>): Buffer {
   const lengthText = headers['content-length']?.[0];
   if (lengthText !== undefined) {
@@ -66,10 +70,64 @@ function readBody(buffer: Buffer, headersEnd: number, headers: Record<string, st
     }
     return buffer.subarray(headersEnd, headersEnd + length);
   }
-  if ((headers['transfer-encoding'] ?? []).some((v) => v.toLowerCase().includes('chunked'))) {
+  if (isChunked(headers)) {
     return decodeChunked(buffer.subarray(headersEnd));
   }
   return buffer.subarray(headersEnd);
+}
+
+/**
+ * Whether the framing says the whole body has arrived. Without it the fetch
+ * would have to wait for the origin to close, which costs a connection per
+ * fetch and — because a half-closed request makes Node's own server abort a
+ * reply it has not written yet — frees the fetch's outbound permit while the
+ * origin still holds the request.
+ */
+function bodyComplete(buffer: Buffer, headersEnd: number, headers: Record<string, string[]>): boolean {
+  const lengthText = headers['content-length']?.[0];
+  if (lengthText !== undefined) {
+    const length = Number.parseInt(lengthText, 10);
+    if (!Number.isFinite(length) || length < 0) {
+      return false;
+    }
+    return buffer.length - headersEnd >= length;
+  }
+  if (isChunked(headers)) {
+    return chunkedComplete(buffer.subarray(headersEnd));
+  }
+  return false;
+}
+
+/** Head plus body under Content-Length framing, or undefined under any other. */
+function contentLengthTotal(headersEnd: number, headers: Record<string, string[]>): number | undefined {
+  const lengthText = headers['content-length']?.[0];
+  if (lengthText === undefined) {
+    return undefined;
+  }
+  const length = Number.parseInt(lengthText, 10);
+  return Number.isFinite(length) && length >= 0 ? headersEnd + length : undefined;
+}
+
+/** True once the terminal zero-size chunk line is in the buffer. */
+function chunkedComplete(data: Buffer): boolean {
+  let at = 0;
+  while (at < data.length) {
+    const lineEnd = data.indexOf(0x0a, at);
+    if (lineEnd < 0) {
+      return false;
+    }
+    const line = data.subarray(at, lineEnd).toString('latin1').trim();
+    const size = Number.parseInt(line.split(';')[0] ?? '', 16);
+    if (!Number.isFinite(size)) {
+      return false;
+    }
+    at = lineEnd + 1;
+    if (size === 0) {
+      return true;
+    }
+    at += size + 2;
+  }
+  return false;
 }
 
 function decodeChunked(data: Buffer): Buffer {
@@ -95,7 +153,7 @@ function decodeChunked(data: Buffer): Buffer {
   return Buffer.concat(chunks);
 }
 
-export function rawGet(port: number, path: string, range?: ByteRange): RawGet {
+export function rawGet(port: number, path: string, range?: ByteRange, deadlineMs?: number): RawGet {
   let request = `GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUser-Agent: ${USER_AGENT}\r\n`;
   if (range !== undefined) {
     const value = range.end < 0 ? `bytes=${range.start}-` : `bytes=${range.start}-${range.end}`;
@@ -106,39 +164,63 @@ export function rawGet(port: number, path: string, range?: ByteRange): RawGet {
   let settled = false;
   const promise = new Promise<RawResponse>((resolve, reject) => {
     const chunks: Buffer[] = [];
-    socket.on('error', (error) => {
+    let buffered = 0;
+    let timer: NodeJS.Timeout | undefined;
+    const settle = (answer: () => void): void => {
       if (settled) {
         return;
       }
       settled = true;
-      reject(error);
-    });
-    socket.on('data', (chunk) => {
-      chunks.push(chunk);
-      if (Buffer.concat(chunks).length > MAX_RESPONSE_HEAD + (8 << 20)) {
-        socket.destroy();
-        if (!settled) {
-          settled = true;
-          reject(new OutboundError(OutboundFailure.TooLarge));
-        }
-      }
-    });
-    socket.on('end', () => {
-      if (settled) {
+      clearTimeout(timer);
+      socket.destroy();
+      answer();
+    };
+    // Total message bytes, once a Content-Length head has said so. Checking it
+    // against the running count keeps a long download off the quadratic path
+    // of joining every chunk again on every chunk.
+    let required: number | undefined;
+    // `ended` is the connection-close framing: whatever arrived is the body.
+    const take = (ended: boolean): void => {
+      if (!ended && required !== undefined && buffered < required) {
         return;
       }
+      const buffer = Buffer.concat(chunks);
+      let parsed: ReturnType<typeof readHead>;
       try {
-        const buffer = Buffer.concat(chunks);
-        const parsed = readHead(buffer);
-        const body = readBody(buffer, parsed.headersEnd, parsed.headers);
-        settled = true;
-        resolve({ statusCode: parsed.statusCode, headers: parsed.headers, body });
+        parsed = readHead(buffer);
       } catch (error) {
-        settled = true;
-        reject(error);
+        if (ended || error instanceof OutboundError) {
+          settle(() => reject(error));
+        }
+        return;
       }
+      required = contentLengthTotal(parsed.headersEnd, parsed.headers);
+      if (!ended && !bodyComplete(buffer, parsed.headersEnd, parsed.headers)) {
+        return;
+      }
+      const body = readBody(buffer, parsed.headersEnd, parsed.headers);
+      settle(() => resolve({ statusCode: parsed.statusCode, headers: parsed.headers, body }));
+    };
+    if (deadlineMs !== undefined) {
+      timer = setTimeout(
+        () => settle(() => reject(new OutboundError(OutboundFailure.TimedOut))),
+        Math.max(0, deadlineMs - Date.now()),
+      );
+    }
+    socket.on('error', (error) => settle(() => reject(error)));
+    socket.on('data', (chunk: Buffer | string) => {
+      const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'latin1') : chunk;
+
+      chunks.push(bytes);
+      buffered += bytes.length;
+      if (buffered > MAX_RESPONSE_HEAD + (8 << 20)) {
+        settle(() => reject(new OutboundError(OutboundFailure.TooLarge)));
+        return;
+      }
+      take(false);
     });
-    socket.end(request);
+    socket.on('end', () => take(true));
+    socket.write(request);
   });
   return {
     promise,

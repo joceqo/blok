@@ -2,6 +2,7 @@ import type { Readable } from 'node:stream';
 import { randomBytes } from 'node:crypto';
 
 import { eqIgnoreAsciiCase, isFieldValue } from '../http/headers.ts';
+import { parseHttpDate } from '../http/http-date.ts';
 import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { isGenerated } from '../blob/key.ts';
@@ -28,26 +29,30 @@ function applyFilesCors(options: HostAppOptions, request: Request, response: Res
   }
 }
 
+/** .NET parses a bound as Int64, so a leading sign is fine and overflow is not. */
+const INT64_MAX = 9223372036854775807n;
+
 function parseRangeNumber(value: string): bigint | undefined {
-  if (!/^-?\d+$/.test(value)) {
+  if (!/^[+-]?\d+$/.test(value)) {
     return undefined;
   }
   const n = BigInt(value);
-  if (n < 0n) {
+  if (n < 0n || n > INT64_MAX) {
     return undefined;
   }
   return n;
 }
 
-type ParsedRanges = { start: bigint; length: bigint }[] | 'invalid' | 'no-overlap';
+type ParsedRanges = { start: bigint; length: bigint }[] | 'invalid' | 'no-overlap' | 'too-many';
 
 function parseRanges(header: string, size: bigint): ParsedRanges {
   if (!header.startsWith('bytes=')) {
     return 'invalid';
   }
+  // Counted before the empty specs are dropped, as the C# host counts them.
   const parts = header.slice(6).split(',');
   if (parts.length > 16) {
-    return 'invalid';
+    return 'too-many';
   }
   const ranges: { start: bigint; length: bigint }[] = [];
   let noOverlap = false;
@@ -64,7 +69,8 @@ function parseRanges(header: string, size: bigint): ParsedRanges {
     const endText = spec.slice(dash + 1).trim();
     if (startText === '') {
       const suffix = parseRangeNumber(endText);
-      if (!suffix || endText.startsWith('-')) {
+      // A zero suffix parses; it is the empty selection, not a broken range.
+      if (suffix === undefined || endText.startsWith('-')) {
         return 'invalid';
       }
       const use = suffix > size ? size : suffix;
@@ -107,17 +113,38 @@ function parseRanges(header: string, size: bigint): ParsedRanges {
   return ranges;
 }
 
+/**
+ * C# opens the file before it writes anything, so a key it may not read is a
+ * 404. Reading lazily instead would send a 200 head and then kill the body.
+ */
+async function openable(store: ReadableBlobStore, fileName: string): Promise<boolean> {
+  const probe = store.openReadStream(fileName);
+  const opened = await new Promise<boolean>((resolve) => {
+    probe.once('readable', () => resolve(true));
+    probe.once('end', () => resolve(true));
+    probe.once('error', () => resolve(false));
+  });
+  // A failure after this point has no listener left, and would be uncaught.
+  probe.on('error', () => {});
+  probe.destroy();
+  return opened;
+}
+
+/**
+ * Last-Modified carries whole seconds, and C# compares every precondition
+ * against that truncated stamp. A file's sub-second part must not tip one.
+ */
+function wholeSecond(mtimeMs: number): number {
+  return Math.floor(mtimeMs / 1000) * 1000;
+}
+
 function httpLastModified(mtimeMs: number): string {
   return new Date(mtimeMs).toUTCString();
 }
 
 function headerDate(request: Request, name: string): number | undefined {
   const joined = [...request.headers().getAll(name.toLowerCase())].join(',');
-  if (joined === '') {
-    return undefined;
-  }
-  const ms = Date.parse(joined);
-  return Number.isFinite(ms) ? ms : undefined;
+  return parseHttpDate(joined);
 }
 
 function hasWildcardTag(value: string): boolean {
@@ -207,23 +234,28 @@ async function serveLocalFile(
     await writePlain(request, response, 404, '404 page not found\n');
     return;
   }
-  if (info.isDirectory()) {
+  if (info.isDirectory() || !await openable(store, fileName)) {
     await writePlain(request, response, 404, '404 page not found\n');
     return;
   }
   const size = BigInt(info.size);
   const contentType = contentTypeFor(fileName);
-  response.headersMut().set('Last-Modified', httpLastModified(info.mtimeMs));
+  const modifiedMs = wholeSecond(info.mtimeMs);
+  response.headersMut().set('Last-Modified', httpLastModified(modifiedMs));
   response.headersMut().set('Content-Disposition', 'attachment');
   response.headersMut().set('X-Content-Type-Options', 'nosniff');
   const headOnly = request.method().toUpperCase() === 'HEAD';
-  const early = preconditions(request, info.mtimeMs);
+  const early = preconditions(request, modifiedMs);
   if (early !== 0) {
+    // Kestrel frames a 304 with nothing at all, and a 412 with a zero length.
+    if (early !== 304) {
+      response.headersMut().set('Content-Length', '0');
+    }
     await response.start(early);
     return;
   }
   let rangeHeader = [...request.headers().getAll('range')].join(',');
-  if (rangeHeader !== '' && !ifRangeMatches(request, info.mtimeMs)) {
+  if (rangeHeader !== '' && !ifRangeMatches(request, modifiedMs)) {
     rangeHeader = '';
   }
   const serveWhole = async () => {
@@ -240,8 +272,8 @@ async function serveLocalFile(
     return;
   }
   const parsed = parseRanges(rangeHeader, size);
-  if (parsed === 'invalid') {
-    const body = 'invalid range\n';
+  if (parsed === 'invalid' || parsed === 'too-many') {
+    const body = parsed === 'too-many' ? 'too many ranges\n' : 'invalid range\n';
     response.headersMut().remove('accept-ranges');
     response.headersMut().remove('last-modified');
     response.headersMut().set('Content-Type', 'text/plain; charset=utf-8');

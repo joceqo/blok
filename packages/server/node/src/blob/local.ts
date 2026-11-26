@@ -2,6 +2,7 @@ import { createReadStream, type ReadStream } from 'node:fs';
 import { link, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { CONTENT_TYPES } from './content-types.ts';
 import { ErrForeign, extension, keyFromPublicUrl, newKey } from './key.ts';
 import type { BlobStore } from './store.ts';
 
@@ -64,16 +65,16 @@ export class LocalStore implements BlobStore {
   }
 }
 
+/**
+ * CONTENT_TYPES by lower-case key: the generated table keeps ASP.NET's own
+ * spelling, which has upper-case keys (".IVF"), while a stored key is lower
+ * case. Built once, as the Go host builds its `lowerContentTypes`.
+ */
+const LOWER_CONTENT_TYPES: ReadonlyMap<string, string> = new Map(
+  Object.entries(CONTENT_TYPES).map(([ext, type]) => [ext.toLowerCase(), type]),
+);
+
+/** What FileExtensionContentTypeProvider answers, else a byte stream. */
 export function contentTypeFor(name: string): string {
-  const ext = extension(name).toLowerCase();
-  if (ext === '.txt') {
-    return 'text/plain';
-  }
-  if (ext === '.json') {
-    return 'application/json';
-  }
-  if (ext === '.pdf') {
-    return 'application/pdf';
-  }
-  return 'application/octet-stream';
+  return LOWER_CONTENT_TYPES.get(extension(name).toLowerCase()) ?? 'application/octet-stream';
 }

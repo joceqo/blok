@@ -63,6 +63,18 @@ export class ResponseWriter {
     return this.committed;
   }
 
+  /**
+   * Ends the connection once this answer is written, and names it in the head.
+   * A handler that refuses a request without draining its body needs this: the
+   * bytes it never read stay on the wire, and the next request down a kept
+   * socket would be read out of the middle of them.
+   */
+  async closeConnection(): Promise<void> {
+    const guard = await this.exchange.wire.lock();
+    guard.get().close = true;
+    guard.release();
+  }
+
   async start(status: number): Promise<void> {
     this.setStatus(status);
     await this.flush();

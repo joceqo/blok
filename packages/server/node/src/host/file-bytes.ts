@@ -234,49 +234,54 @@ async function serveRemotePdf(
       timeoutMs: 120_000,
       maxBytes: FILE_BYTES_ANSWER_BYTES,
       maxRedirects: 5,
-    hop: hopBudget(options, request),
-    caller: fetchCaller(options, request),
-    upload: true,
-    range: byteRange,
+      hop: hopBudget(options, request),
+      caller: fetchCaller(options, request),
+      upload: true,
+      range: byteRange,
     });
-    const extent = upstreamExtent(fetched);
-    if (
-      !extent.ok
-      || fetched.statusCode < 200
-      || fetched.statusCode > 299
-      || encoded(fetched.headers)
-    ) {
-      await failed();
-      return;
-    }
-    const total = extent.total >= 0 ? extent.total : fetched.body.length;
-    if (total > options.fileBytesMaxBytes) {
-      await writePlain(request, response, 413, 'file too large\n');
-      return;
-    }
-    if (!pdfChecks.has(fetched.finalUrl)) {
-      const head = fetched.body.subarray(0, Math.min(fetched.body.length, PDF_CHECK_BYTES));
-      if (extent.start !== 0 || !Buffer.from(head).includes(PDF_MAGIC)) {
-        if (!hopBudget(options, request)()) {
-          await writePlain(request, response, 429, 'rate limit exceeded\n');
-          return;
-        }
-        const ok = await probePdf(options.fetcher, options, request, fetched.finalUrl);
-        if (!ok) {
-          await writePlain(request, response, 415, 'not a pdf\n');
-          return;
-        }
+    // Every way out of here gives the slot back, refusals included: four that
+    // keep it are four that wedge the route for every caller after them.
+    try {
+      const extent = upstreamExtent(fetched);
+      if (
+        !extent.ok
+        || fetched.statusCode < 200
+        || fetched.statusCode > 299
+        || encoded(fetched.headers)
+      ) {
+        await failed();
+        return;
       }
-      pdfChecks.add(fetched.finalUrl);
+      const total = extent.total >= 0 ? extent.total : fetched.body.length;
+      if (total > options.fileBytesMaxBytes) {
+        await writePlain(request, response, 413, 'file too large\n');
+        return;
+      }
+      if (!pdfChecks.has(fetched.finalUrl)) {
+        const head = fetched.body.subarray(0, Math.min(fetched.body.length, PDF_CHECK_BYTES));
+        if (extent.start !== 0 || !Buffer.from(head).includes(PDF_MAGIC)) {
+          if (!hopBudget(options, request)()) {
+            await writePlain(request, response, 429, 'rate limit exceeded\n');
+            return;
+          }
+          const ok = await probePdf(options.fetcher, options, request, fetched.finalUrl);
+          if (!ok) {
+            await writePlain(request, response, 415, 'not a pdf\n');
+            return;
+          }
+        }
+        pdfChecks.add(fetched.finalUrl);
+      }
+      const status = fetched.statusCode === 206 ? 206 : 200;
+      writePdfHead(response, status, extent.start, fetched.body.length, total);
+      await response.start(status);
+      if (request.method().toUpperCase() === 'HEAD') {
+        return;
+      }
+      await response.write(fetched.body);
+    } finally {
+      fetched.release();
     }
-    const status = fetched.statusCode === 206 ? 206 : 200;
-    writePdfHead(response, status, extent.start, fetched.body.length, total);
-    await response.start(status);
-    if (request.method().toUpperCase() === 'HEAD') {
-      return;
-    }
-    await response.write(fetched.body);
-    fetched.release();
   } catch (error) {
     if (isOutboundFailure(error, OutboundFailure.TooLarge)) {
       await writePlain(request, response, 413, 'range too large\n');
