@@ -56,3 +56,23 @@ it('derives an operation id from the idempotency key, and refuses the keys the f
 
   expect(wrong).toEqual([]);
 });
+
+/** Every body the fixture refuses, with the words it refuses them in. */
+const refused = fixture.parse.flatMap((entry) =>
+  entry.error === undefined ? [] : [{ ...entry, error: entry.error }]);
+
+it('refuses every body the fixture refuses, in the same words', () => {
+  const wrong = refused.flatMap((entry) => {
+    const body = entry.body !== undefined
+      ? new TextEncoder().encode(entry.body)
+      : Uint8Array.from(Buffer.from(entry.bodyHex ?? '', 'hex'));
+    const result = canonicalEdit(body);
+    if (!('error' in result)) return [`${entry.name}: accepted, expected a refusal`];
+    return result.error === entry.error
+      ? []
+      : [`${entry.name}: got ${JSON.stringify(result.error)} want ${JSON.stringify(entry.error)}`];
+  });
+
+  expect(wrong).toEqual([]);
+  expect(refused.length).toBe(74);
+});
