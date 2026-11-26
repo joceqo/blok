@@ -21,8 +21,21 @@ function run(command, args, options = {}) {
   });
 }
 
+// `ws` is CommonJS and requires node builtins; an ESM bundle needs a real
+// `require` for those, or esbuild's shim throws on the first one.
+const REQUIRE_SHIM = "import { createRequire as __blokCreateRequire } from 'node:module';\n" +
+  'const require = __blokCreateRequire(import.meta.url);';
+
 async function bundle(outfile, conformance, entry = 'src/main.ts') {
   const define = conformance ? '--define:BLOK_CONFORMANCE=true' : '--define:BLOK_CONFORMANCE=false';
+  // The room preview keeps its dependencies external: it is published next to
+  // its node_modules. The host binary is copied away from them (conformance
+  // runs it from a temp directory), so everything it imports must be inlined.
+  const external = entry === 'src/collab/room/preview.ts'
+    ? ['--external:yjs', '--external:ws']
+    // The room and the shared editor serializer resolve `yjs` to two unhoisted
+    // copies of the same version; two in one bundle break Yjs constructor checks.
+    : [`--alias:yjs=${join(repositoryRoot, 'node_modules/yjs')}`];
   await run(
     process.execPath,
     [
@@ -30,16 +43,15 @@ async function bundle(outfile, conformance, entry = 'src/main.ts') {
       join(nodePackage, entry),
       '--bundle',
       // The room and shared editor serializer must use one Yjs runtime.
-      ...(entry === 'src/collab/room/preview.ts' ? ['--external:yjs'] : []),
+      ...external,
       '--platform=node',
-      '--external:ws',
       '--format=esm',
       '--main-fields=module,main',
       '--target=node20',
       `--outfile=${outfile}`,
       define,
       '--loader:.txt=text',
-      '--banner:js=#!/usr/bin/env node',
+      `--banner:js=#!/usr/bin/env node\n${REQUIRE_SHIM}`,
       '--log-level=warning',
     ],
     { cwd: nodePackage },

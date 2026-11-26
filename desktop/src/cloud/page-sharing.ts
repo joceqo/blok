@@ -1,4 +1,4 @@
-import { workspacePageLink } from '../page-link';
+import { pageView, workspacePageLink } from '../page-link';
 import { openModalDialog } from '@blok/modal-dialog';
 import { promoteToTopLayer, removeFromTopLayer } from '../../../src/components/utils/top-layer';
 import { CloudClient } from './client';
@@ -12,6 +12,8 @@ let active: { anchor?: HTMLElement; close: () => void } | undefined;
 
 /** Same access sheet in a toolbar popover, or a modal for callers without an anchor. */
 export function openPageSharing(ref: RemoteWorkspace, pageId: string, pageTitle: string, anchor?: HTMLButtonElement, onChanged?: () => Promise<void> | void): () => void {
+  const url = new URL(location.href);
+  const view = url.searchParams.get('page') === pageId ? pageView(url) : 'document';
   const same = active?.anchor === anchor && active !== undefined;
   active?.close();
   if (same) return () => {};
@@ -51,7 +53,7 @@ export function openPageSharing(ref: RemoteWorkspace, pageId: string, pageTitle:
   copy.append(linkIcon, 'Copier le lien');
   copy.addEventListener('click', () => {
     void (async () => {
-      try { await navigator.clipboard.writeText(workspacePageLink(ref, pageId)); hint.textContent = 'Lien copié'; }
+      try { await navigator.clipboard.writeText(workspacePageLink(ref, pageId, view)); hint.textContent = 'Lien copié'; }
       catch { hint.textContent = 'La copie du lien a échoué.'; }
     })();
   });

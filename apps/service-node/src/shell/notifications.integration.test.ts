@@ -46,6 +46,24 @@ describe.skipIf(!url)('workspace access notifications', () => {
     try { await owner.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE'); }
     finally { await owner.end(); }
   });
+  it('delivers a calendar invitation once and withdraws it when the participant is removed', async () => {
+    const id = randomUUID();
+    const path = 'calendar/' + id;
+    const event = {id, title:'Revue', start:'2026-11-26T10:00:00Z', end:'2026-11-26T11:00:00Z',
+      pageId:null, allDay:false, revision:0, participantIds:['deputy']};
+    const received = async () => (await inbox('deputy')).notifications.filter((n:{type:string}) => n.type === 'calendar_invitation');
+    expect((await call('owner',path,'PUT',{...event,participantIds:['visitor']})).status).toBe(400);
+    expect((await call('owner',path,'PUT',event)).status).toBe(200);
+    expect(await received()).toMatchObject([{eventTitle:'Revue', actorName:'owner',eventStart:'2026-11-26T10:00:00.000Z'}]);
+    const range = 'calendar?from=2026-11-25T00:00:00Z&to=2026-11-27T00:00:00Z';
+    expect(await (await call('deputy',range)).json()).toMatchObject({events:[{id,participantIds:['deputy']}]});
+    expect((await call('owner',path,'PUT',event)).status).toBe(409);
+    const {participantIds: _ids, ...legacy} = event;
+    expect((await call('owner',path,'PUT',{...legacy,revision:1})).status).toBe(200);
+    expect(await received()).toHaveLength(1);
+    expect((await call('owner',path,'PUT',{...event,revision:2,participantIds:[]})).status).toBe(200);
+    expect(await received()).toEqual([]);
+  });
   it('backfills a pending request and links recorded decisions once on upgrade', async () => {
     expect(await inbox('visitor', 'beta')).toMatchObject({notifications:[
       {type:'join_requested',actorName:'applicant'},

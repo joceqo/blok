@@ -94,6 +94,7 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
   position: sticky; top: 0; z-index: 12;
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   height: 44px; min-width: 0; padding: 0 12px;
+  border-bottom: 1px solid var(--desktop-border);
   background: var(--desktop-canvas); color: var(--desktop-ink);
 }
 [data-desktop-page-identity] { display: flex; flex: 1; align-items: center; min-width: 0; font-size: 14px; }
@@ -269,7 +270,7 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 [data-desktop-cover-image] { width: 100%; height: 100%; background-size: cover; }
 [data-desktop-cover-actions] {
   position: absolute; right: 12px; top: 12px;
-  z-index: 3; display: flex; align-items: center; gap: 0; padding: 2px; opacity: 0;
+  z-index: 3; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; max-width: calc(100% - 24px); gap: 0; padding: 2px; opacity: 0;
   border: 1px solid var(--desktop-border); border-radius: var(--blok-radius-control, 6px);
   background: var(--desktop-strip); box-shadow: 0 2px 6px #0002;
 }

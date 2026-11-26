@@ -350,3 +350,42 @@ BEGIN
     INSERT INTO schema_migrations(version) VALUES(20);
   END IF;
 END $$;
+
+-- Invitations follow both the workspace membership and the lifetime of the event.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM schema_migrations WHERE version=21) THEN
+    ALTER TABLE workspace_calendar_events ADD COLUMN organizer_id text REFERENCES users(id) ON DELETE SET NULL;
+    ALTER TABLE workspace_calendar_events ADD COLUMN detached_private boolean NOT NULL DEFAULT false;
+    CREATE TABLE calendar_participants (
+      workspace_id text NOT NULL,
+      event_id uuid NOT NULL,
+      user_id text NOT NULL,
+      PRIMARY KEY (workspace_id,event_id,user_id),
+      FOREIGN KEY (workspace_id,event_id) REFERENCES workspace_calendar_events(workspace_id,id) ON DELETE CASCADE,
+      FOREIGN KEY (workspace_id,user_id) REFERENCES memberships(workspace_id,user_id) ON DELETE CASCADE
+    );
+    ALTER TABLE workspace_notifications ADD COLUMN event_id uuid;
+    ALTER TABLE workspace_notifications ADD FOREIGN KEY (workspace_id,event_id,recipient_id)
+      REFERENCES calendar_participants(workspace_id,event_id,user_id) ON DELETE CASCADE;
+    ALTER TABLE workspace_notifications DROP CONSTRAINT workspace_notifications_type_check;
+    ALTER TABLE workspace_notifications ADD CONSTRAINT workspace_notifications_type_check CHECK (
+      (type IN ('join_requested','join_approved','join_rejected') AND actor_id IS NOT NULL AND page_id IS NULL AND comment_id IS NULL AND event_id IS NULL)
+      OR (type IN ('comment_mention','comment_reply') AND page_id IS NOT NULL AND comment_id IS NOT NULL AND event_id IS NULL)
+      OR (type='calendar_invitation' AND event_id IS NOT NULL AND page_id IS NULL AND comment_id IS NULL)
+    );
+    INSERT INTO schema_migrations(version) VALUES(21);
+  END IF;
+END $$;
+
+-- Preserve invitations when the attachment is purged without making a formerly
+-- private event visible to unrelated workspace members.
+CREATE OR REPLACE FUNCTION detach_invited_calendar_events() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE workspace_calendar_events e SET page_id=NULL, detached_private=true, revision=revision+1
+    WHERE workspace_id=OLD.workspace_id AND page_id=OLD.id AND EXISTS (
+      SELECT FROM calendar_participants p WHERE p.workspace_id=e.workspace_id AND p.event_id=e.id);
+  RETURN OLD;
+END $$;
+CREATE OR REPLACE TRIGGER detach_invited_calendar_events BEFORE DELETE ON pages
+  FOR EACH ROW EXECUTE FUNCTION detach_invited_calendar_events();

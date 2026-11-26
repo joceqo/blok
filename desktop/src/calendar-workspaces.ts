@@ -1,3 +1,4 @@
+import type { CloudClient } from './cloud/client';
 import { createCalendarStore, type CalendarStore } from './calendar-store';
 import { peekFile, type WorkspaceIndex } from './storage';
 import { listWorkspaces, type WorkspaceRef } from './workspace-registry';
@@ -16,15 +17,16 @@ export interface CalendarWorkspaceEntry {
 export interface CalendarWorkspaces {
   activeId: string;
   entries(): CalendarWorkspaceEntry[];
-  refresh(): Promise<void>;
+  unavailable?(): WorkspaceRef[];
+  refresh(onAccountReady?: () => void): Promise<void>;
   connect(id: string): Promise<void>;
   disconnect(id: string): Promise<void>;
   setVisible(id: string, visible: boolean): Promise<void>;
   pages(id: string): Promise<Array<{id: string; title: string}>>;
 }
 
-const colors = ['#42877b', '#9577bb', '#4185bb', '#b67941', '#a56e88'];
-function workspaceColors(ids: Iterable<string>, connected: (id: string) => boolean): Map<string,string> {
+const colors = ['#49ca81', '#9950ff', '#32a5e5', '#fe7132', '#ee000e'];
+export function workspaceColors(ids: Iterable<string>, connected: (id: string) => boolean): Map<string,string> {
   const assigned = new Map<string,string>();
   const used = new Set<number>();
   // Assign connected workspaces first. Membership ordering and display names can differ between devices.
@@ -45,7 +47,7 @@ type Preferences = { connected: string[]; hidden: string[] };
 const validIds = (value: unknown): string[] => Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
 const unavailable = () => new Error('Cet espace n’est plus connecté au calendrier.');
 
-export function createCalendarWorkspaces(current: WorkspaceRef): CalendarWorkspaces {
+export function createCalendarWorkspaces(current: WorkspaceRef, active = true, client?: CloudClient): CalendarWorkspaces {
   const account = current.kind === 'local' ? ['disk'] : [current.server, current.accountId];
   const preferenceKey = 'blok:calendar:workspaces:v1:' + JSON.stringify(account);
   let preferences: Preferences = {connected: [], hidden: []};
@@ -72,7 +74,7 @@ export function createCalendarWorkspaces(current: WorkspaceRef): CalendarWorkspa
   }
   preferences = readPreferences();
 
-  const connected = (id: string) => refs.has(id) && (current.id === id || preferences.connected.includes(id));
+  const connected = (id: string) => refs.has(id) && ((active && current.id === id) || preferences.connected.includes(id));
   function requireRef(id: string, write = false): WorkspaceRef {
     const ref = refs.get(id);
     if (!ref || !connected(id)) throw unavailable();
@@ -84,7 +86,7 @@ export function createCalendarWorkspaces(current: WorkspaceRef): CalendarWorkspa
     const key = JSON.stringify([ref.id, ref.kind === 'remote' ? ref.workspaceId : '']);
     const cached = stores.get(key);
     if (cached) return cached;
-    const underlying = createCalendarStore(ref);
+    const underlying = createCalendarStore(ref, client);
     function check(write = false) {
       const latest = requireRef(ref.id, write);
       if (latest.kind === 'remote' && ref.kind === 'remote' && latest.workspaceId !== ref.workspaceId) throw unavailable();
@@ -140,7 +142,7 @@ export function createCalendarWorkspaces(current: WorkspaceRef): CalendarWorkspa
       const before = changes;
       if (current.kind === 'remote') {
         try {
-          const session = await storeFor(current).remote!.client.session();
+          const session = await storeFor(current).remote!.client.session(AbortSignal.timeout(8000));
           if (request !== generation) return;
           if (session.user.id !== current.accountId) throw new Error('Le compte de cet agenda a changé. Rouvrez votre espace.');
           serverPreferences = Array.isArray(session.calendarWorkspaces);
@@ -162,7 +164,7 @@ export function createCalendarWorkspaces(current: WorkspaceRef): CalendarWorkspa
       if (changes === before) update(saved.connected.filter(id => refs.has(id)), saved.hidden.filter(id => refs.has(id)));
     },
     connect: id => change(id, {connected:true, visible:true}),
-    disconnect: id => id === current.id ? Promise.resolve() : change(id, {connected:false, visible:true}),
+    disconnect: id => active && id === current.id ? Promise.resolve() : change(id, {connected:false, visible:true}),
     setVisible(id, visible) {
       if (!connected(id)) return Promise.reject(unavailable());
       return change(id, {visible});

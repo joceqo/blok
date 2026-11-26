@@ -41,7 +41,7 @@ export function workspaceNotifications(pool: PgPool) {
            ORDER BY (read_at IS NULL) DESC,created_at DESC,id DESC LIMIT 50
          )
          SELECT n.id,n.type,n.created_at AS "createdAt",n.read_at AS "readAt",n.archived_at AS "archivedAt",
-           n.page_id AS "pageId",p.metadata->>'title' AS "pageTitle",totals.unread,w.name AS "workspaceName",nullif(j.message,'') AS "requestMessage",
+           e.title AS "eventTitle", e.starts_at AS "eventStart", e.all_day AS "eventAllDay", n.page_id AS "pageId",p.metadata->>'title' AS "pageTitle",totals.unread,w.name AS "workspaceName",nullif(j.message,'') AS "requestMessage",
            (j.status='pending') AS "requestPending",
            coalesce(nullif(u.name,''), CASE WHEN n.type='join_requested' THEN u.email WHEN n.page_id IS NOT NULL THEN '' ELSE 'Un administrateur' END) AS "actorName",
            CASE WHEN d.id IS NOT NULL THEN jsonb_build_object(
@@ -50,6 +50,7 @@ export function workspaceNotifications(pool: PgPool) {
              'isMe',d.actor_id=n.recipient_id,'at',d.created_at
            ) END AS decision
          FROM totals LEFT JOIN page n ON TRUE
+         LEFT JOIN workspace_calendar_events e ON e.workspace_id=n.workspace_id AND e.id=n.event_id
          LEFT JOIN pages p ON p.id=n.page_id
          LEFT JOIN users u ON u.id=n.actor_id
          LEFT JOIN workspaces w ON w.id=n.workspace_id
@@ -62,8 +63,9 @@ export function workspaceNotifications(pool: PgPool) {
         [workspace_id, user_id, await pageAccess(db,workspace_id,user_id), c.req.query('archived') === '1'],
       );
       return {
-        notifications: rows.filter(row => row.id !== null).map(({ unread, decision, requestMessage, requestPending, pageId, pageTitle, ...notification }) => ({
+        notifications: rows.filter(row => row.id !== null).map(({ unread, decision, requestMessage, requestPending, pageId, pageTitle, eventTitle, eventStart, eventAllDay, ...notification }) => ({
           ...notification,
+          ...(eventTitle && {eventTitle, eventStart, eventAllDay}),
           ...(pageId && {pageId, pageTitle}),
           ...(decision && { decision }),
           ...(requestMessage && { requestMessage }),

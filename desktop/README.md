@@ -27,7 +27,7 @@ Open **Calendrier** in the workspace sidebar. Select a day in the mini-calendar,
 
 The shared workspace calendar runs offline in the embedded app. On a Node workspace, members can subscribe to a Google, Outlook or iCloud calendar URL via **Abonnements**. Each subscription belongs to the signed-in member. Subscriptions are refreshed when opening or refocusing the calendar, every five minutes while visible, or via **Actualiser**. Files imported via **Importer .ics** become workspace events after confirmation.
 
-A configured self-hosted server also lets each member connect a Google account, select individual Google calendars, and share busy periods from their primary Google calendar with their workspace. Details of external events are read-only. See the Google Calendar OAuth section in `../deploy/README.md` for server setup.
+Each member can also connect a Google account, select individual Google calendars, and share busy periods from their primary Google calendar with their workspace. This works both on a configured self-hosted server and in the embedded app, which derives its own loopback callback and reads its Google client from `google-calendar.json` in its data directory. Details of external events are read-only. See the Google Calendar OAuth section in `../deploy/README.md` for both setups.
 
 ## Local data in disk workspaces
 

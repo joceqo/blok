@@ -1,0 +1,925 @@
+"use client";
+
+import * as React from "react";
+import {
+  ArrowLeft,
+  CalendarSearch,
+  PanelRightIcon,
+  SearchIcon,
+  X,
+} from "lucide-react";
+import {
+  addDays,
+  format,
+  isBefore,
+  isSameDay,
+  isSameYear,
+  startOfDay,
+} from "date-fns";
+
+import { cn } from "../lib/utils";
+import { EVENT_COLOR_CLASSES } from "./calendar-event-item";
+import { useCalendar, useCalendarConfig } from "./calendar-provider";
+import type {
+  DetailedCalendarEvent,
+  KeyboardShortcut,
+  KeyboardShortcutGroup,
+} from "./calendar-types";
+import { AvailabilityPanel } from "./availability-panel";
+import { EventDetailPanel } from "./event-detail-panel";
+import { useEventTitleFocus } from "./event-title-focus-context";
+import { useScheduling } from "./scheduling-provider";
+import {
+  CALENDAR_SIDEBAR_COLORS_CLASS,
+  SidebarOverlay,
+} from "./sidebar-overlay";
+import { Button } from "./ui/button";
+import { Kbd } from "./ui/kbd";
+import {
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  useSidebar,
+} from "./ui/sidebar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "./ui/tooltip";
+import { resolveEventColorStyle } from "../lib/event-utils";
+import { expandRecurringEvents } from "../lib/recurrence";
+import {
+  KEYBOARD_SHORTCUT_GROUPS,
+  SHORTCUTS,
+  findKeyboardShortcuts,
+} from "../lib/keyboard-shortcuts";
+import { formatDuration } from "../lib/time-input";
+import { getZonedNow } from "../lib/time-zones";
+import type { DetailsSidebarActions } from "./week-view-types";
+
+/**
+ * Width of the context panel, inline or as an overlay: Notion Calendar's
+ * 308px inside, plus the 1px border. Set it as `--sidebar-width` on the
+ * `SidebarProvider` around the panel.
+ */
+export const CONTEXT_PANEL_WIDTH = "309px";
+
+/**
+ * Muted text color the context panel uses for labels and placeholders: its
+ * own token, which stands in for `--muted-foreground` inside the panel
+ */
+const PANEL_MUTED_FOREGROUND = "var(--calendar-context-panel-muted-foreground)";
+
+/** A caption in the panel: a muted heading, "No upcoming results" */
+const PANEL_CAPTION_CLASS =
+  "text-calendar-detail-placeholder dark:text-calendar-detail-secondary";
+
+/**
+ * The panel's search fields (events, shortcuts): filled on hover in a light
+ * theme, outlined in a dark one, filled while focused in both
+ */
+const SEARCH_FIELD_CLASS =
+  "group/search flex flex-1 cursor-text items-center gap-2 rounded-sm border border-transparent px-1 hover:border-calendar-detail-focus hover:bg-calendar-detail-focus dark:hover:border-calendar-detail-hover-border dark:hover:bg-transparent has-[:focus]:border-calendar-detail-focus has-[:focus]:bg-calendar-detail-focus dark:has-[:focus]:border-calendar-detail-focus dark:has-[:focus]:bg-calendar-detail-focus";
+
+/**
+ * Days before and after today the event search lists a repeating event's
+ * dates for: a year either side
+ */
+const SEARCH_RANGE_DAYS = 365;
+
+/** A shortcut the context panel lists while no event is selected */
+export interface DetailsSidebarShortcut {
+  label: string;
+  /** Keys pressed together, each shown as a key cap */
+  keys: string[];
+  /** Not built yet: a "Soon" badge is shown in place of its keys */
+  soon?: boolean;
+}
+
+/**
+ * Notion Calendar's "Useful shortcuts", the panel's default list. The ones
+ * nothing handles yet are marked `soon`
+ */
+export const USEFUL_SHORTCUTS: DetailsSidebarShortcut[] = [
+  { label: "Command menu", keys: ["⌘", "K"] },
+  { label: "Toggle sidebar", keys: ["⌘", "/"] },
+  SHORTCUTS.showTeammateCalendar,
+  SHORTCUTS.goToDate,
+  { label: "All keyboard shortcuts", keys: SHORTCUTS.showShortcuts.keys },
+];
+
+/** "Soon" badge of a listed shortcut that isn't built yet, as in the command menu */
+const SOON_BADGE = (
+  <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[10px] leading-none font-medium">
+    Soon
+  </span>
+);
+
+interface DetailsSidebarProps extends React.ComponentProps<"div"> {
+  /** Render as a modal sheet instead of an inline column (phones and tablets) */
+  overlay?: boolean;
+  /** Shortcuts listed while no event is selected or searched */
+  shortcuts?: DetailsSidebarShortcut[];
+  /**
+   * The full keyboard shortcut list `actionsRef.current.showAllShortcuts()`
+   * shows. Defaults to `KEYBOARD_SHORTCUT_GROUPS`, every key the live demo
+   * handles
+   */
+  shortcutGroups?: KeyboardShortcutGroup[];
+  /**
+   * Receives the panel's actions, for your commands and keys: open event
+   * search with its field focused (`searchEvents`), or the full shortcut
+   * list (`showAllShortcuts`)
+   */
+  actionsRef?: React.Ref<DetailsSidebarActions>;
+}
+
+interface DateGroup {
+  key: string;
+  label: string;
+  isToday: boolean;
+  events: DetailedCalendarEvent[];
+}
+
+function formatTimeRange(event: DetailedCalendarEvent): string {
+  if (event.isAllDay) {
+    return "All day";
+  }
+  const startPeriod = format(event.start, "a");
+  const endPeriod = format(event.end, "a");
+  const endStr = format(event.end, "h:mm a").replace(":00 ", " ");
+
+  if (startPeriod === endPeriod) {
+    const startStr = format(event.start, "h:mm").replace(":00", "");
+    return `${startStr}\u2013${endStr}`;
+  }
+
+  const startStr = format(event.start, "h:mm a").replace(":00 ", " ");
+  return `${startStr}\u2013${endStr}`;
+}
+
+function formatDateHeader(
+  date: Date,
+  now: Date,
+): {
+  label: string;
+  isTodayGroup: boolean;
+} {
+  if (isSameDay(date, now)) {
+    return { label: "Today", isTodayGroup: true };
+  }
+  if (isSameDay(date, addDays(now, 1))) {
+    return { label: "Tomorrow", isTodayGroup: false };
+  }
+  if (isSameYear(date, now)) {
+    return { label: format(date, "EEE MMM d"), isTodayGroup: false };
+  }
+  return { label: format(date, "EEE MMM d, yyyy"), isTodayGroup: false };
+}
+
+function groupEventsByDate(
+  events: DetailedCalendarEvent[],
+  now: Date,
+): DateGroup[] {
+  const grouped = new Map<string, DetailedCalendarEvent[]>();
+
+  for (const event of events) {
+    const dayKey = format(startOfDay(event.start), "yyyy-MM-dd");
+    const existing = grouped.get(dayKey);
+    if (existing) {
+      existing.push(event);
+    } else {
+      grouped.set(dayKey, [event]);
+    }
+  }
+
+  const groups: DateGroup[] = [];
+  for (const [key, groupEvents] of grouped) {
+    const date = groupEvents[0].start;
+    const { label, isTodayGroup } = formatDateHeader(date, now);
+    const sorted = groupEvents.sort(
+      (a, b) => a.start.getTime() - b.start.getTime(),
+    );
+    groups.push({ key, label, isToday: isTodayGroup, events: sorted });
+  }
+
+  return groups.sort((a, b) => a.key.localeCompare(b.key));
+}
+
+/**
+ * Notion Calendar's context panel, on the right: the selected event's
+ * details, event search, and useful shortcuts when nothing is selected.
+ * While open times are marked inside a `SchedulingProvider`, it shows the
+ * scheduling panel (`AvailabilityPanel`) instead.
+ * Reads the events and the selection from the nearest `CalendarProvider`;
+ * its open state is shadcn/ui's `SidebarProvider` (`useSidebar()`), with
+ * `--sidebar-width` set to `CONTEXT_PANEL_WIDTH`.
+ */
+export function DetailsSidebar({
+  overlay = false,
+  shortcuts = USEFUL_SHORTCUTS,
+  shortcutGroups = KEYBOARD_SHORTCUT_GROUPS,
+  actionsRef,
+  className,
+  ...props
+}: DetailsSidebarProps) {
+  const {
+    events,
+    selectedEvent,
+    eventDraft,
+    clearSelection,
+    editEvent,
+    updateEventDraft,
+    previousInSeries,
+    nextInSeries,
+    showSeriesOccurrence,
+    deleteEvent,
+    duplicateEvent,
+    copyEvent,
+    cutEvent,
+  } = useCalendar<DetailedCalendarEvent>();
+  const { timeZone } = useCalendarConfig();
+  const {
+    toggleSidebar,
+    state,
+    open,
+    setOpen,
+    openMobile,
+    setOpenMobile,
+    isMobile,
+  } = useSidebar();
+  // shadcn keeps a separate open state for phones; follow whichever is active
+  const panelOpen = isMobile ? openMobile : open;
+  const setPanelOpen = isMobile ? setOpenMobile : setOpen;
+  const { pendingEventId, clearPending } = useEventTitleFocus();
+  // While open times are marked, the panel is the scheduling panel
+  const scheduling = useScheduling();
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const [debouncedQuery, setDebouncedQuery] = React.useState("");
+  const [searchSelectedEvent, setSearchSelectedEvent] =
+    React.useState<DetailedCalendarEvent | null>(null);
+  /** Whether the panel shows the full keyboard shortcut list */
+  const [showingAllShortcuts, setShowingAllShortcuts] = React.useState(false);
+  /** Text typed in the shortcut list's find field */
+  const [shortcutQuery, setShortcutQuery] = React.useState("");
+  /** Field to focus once the panel has rendered it, after an action asked */
+  const [pendingFocus, setPendingFocus] = React.useState<
+    "search" | "shortcuts" | null
+  >(null);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const shortcutInputRef = React.useRef<HTMLInputElement>(null);
+
+  const isSearching = searchQuery.trim().length > 0;
+  const isLoadingResults = isSearching && searchQuery !== debouncedQuery;
+
+  React.useEffect(() => {
+    if (!isSearching) {
+      setDebouncedQuery("");
+      return;
+    }
+    const timer = setTimeout(() => {
+      setDebouncedQuery(searchQuery);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [searchQuery, isSearching]);
+
+  const resolvedSearchEvent = React.useMemo(() => {
+    if (!searchSelectedEvent) return null;
+    return (
+      events.find((e) => e.id === searchSelectedEvent.id) ?? searchSelectedEvent
+    );
+  }, [events, searchSelectedEvent]);
+
+  React.useEffect(() => {
+    if (selectedEvent) {
+      setSearchSelectedEvent(null);
+      setShowingAllShortcuts(false);
+    }
+  }, [selectedEvent]);
+
+  React.useImperativeHandle(
+    actionsRef,
+    () => ({
+      searchEvents: (query = "") => {
+        clearSelection();
+        setSearchSelectedEvent(null);
+        setShowingAllShortcuts(false);
+        setSearchQuery(query);
+        setPanelOpen(true);
+        setPendingFocus("search");
+      },
+      showAllShortcuts: () => {
+        clearSelection();
+        setSearchSelectedEvent(null);
+        setSearchQuery("");
+        setShortcutQuery("");
+        setShowingAllShortcuts(true);
+        setPanelOpen(true);
+        setPendingFocus("shortcuts");
+      },
+    }),
+    [clearSelection, setPanelOpen],
+  );
+
+  // Focus the asked-for field once the open panel shows it (a sheet mounts
+  // its content when it opens)
+  React.useEffect(() => {
+    if (!pendingFocus || !panelOpen) return;
+    const input =
+      pendingFocus === "search" ? inputRef.current : shortcutInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+    setPendingFocus(null);
+  }, [pendingFocus, panelOpen, showingAllShortcuts, selectedEvent]);
+
+  const foundShortcutGroups = React.useMemo(
+    () => findKeyboardShortcuts(shortcutGroups, shortcutQuery),
+    [shortcutGroups, shortcutQuery],
+  );
+
+  /** Leaves the full shortcut list for the panel's search and useful shortcuts */
+  const closeAllShortcuts = () => {
+    setShowingAllShortcuts(false);
+    setShortcutQuery("");
+  };
+
+  const searchResults = React.useMemo(() => {
+    if (!debouncedQuery.trim()) {
+      return [];
+    }
+    const query = debouncedQuery.trim().toLowerCase();
+    // A repeating event is listed on each of its dates within a year of
+    // today. Expanded before matching, so an edited date keeps its own title
+    const today = startOfDay(getZonedNow(timeZone));
+    const occurrences = expandRecurringEvents(
+      events,
+      {
+        start: addDays(today, -SEARCH_RANGE_DAYS),
+        end: addDays(today, SEARCH_RANGE_DAYS + 1),
+      },
+      timeZone,
+    );
+    return occurrences.filter((event) =>
+      event.title.toLowerCase().includes(query),
+    );
+  }, [events, debouncedQuery, timeZone]);
+
+  const { pastGroups, todayGroup, futureGroups } = React.useMemo(() => {
+    // Today and tomorrow on the calendar's clock, like the events
+    const now = getZonedNow(timeZone);
+    const allGroups = groupEventsByDate(searchResults, now);
+    const todayStart = startOfDay(now);
+
+    const past: DateGroup[] = [];
+    let today: DateGroup | null = null;
+    const future: DateGroup[] = [];
+
+    for (const group of allGroups) {
+      if (group.isToday) {
+        today = group;
+        continue;
+      }
+      const groupDate = new Date(group.key);
+      if (isBefore(groupDate, todayStart)) {
+        past.push(group);
+        continue;
+      }
+      future.push(group);
+    }
+
+    return { pastGroups: past, todayGroup: today, futureGroups: future };
+  }, [searchResults, timeZone]);
+
+  const hasUpcomingResults = todayGroup !== null || futureGroups.length > 0;
+
+  const onPrevWeek = previousInSeries
+    ? () => showSeriesOccurrence(previousInSeries)
+    : undefined;
+  const onNextWeek = nextInSeries
+    ? () => showSeriesOccurrence(nextInSeries)
+    : undefined;
+
+  /**
+   * The "..." menu's actions for the event the panel shows. Deleting or
+   * cutting a search pick also leaves the pick, which the provider doesn't
+   * select
+   */
+  const getEventActions = (eventId: string) => ({
+    onCut: () => {
+      cutEvent(eventId);
+      setSearchSelectedEvent(null);
+    },
+    onCopy: () => copyEvent(eventId),
+    onDuplicate: () => duplicateEvent(eventId),
+    onDelete: () => {
+      deleteEvent(eventId);
+      setSearchSelectedEvent(null);
+    },
+  });
+
+  const panel = scheduling?.isPicking ? (
+    <AvailabilityPanel />
+  ) : (
+    <>
+      <SidebarHeader className="h-14 justify-center px-4">
+        <div className="flex items-center gap-2">
+          {selectedEvent ? (
+            <div className="flex-1" />
+          ) : resolvedSearchEvent ? (
+            <>
+              <Button
+                variant="ghost"
+                className="-ml-2 h-7 gap-2 px-2 has-[>svg]:px-2 text-xs text-sidebar-foreground justify-start"
+                onClick={() => setSearchSelectedEvent(null)}
+              >
+                <ArrowLeft className="size-4" />
+                Search
+              </Button>
+              <div className="flex-1" />
+            </>
+          ) : showingAllShortcuts ? (
+            <div
+              className={SEARCH_FIELD_CLASS}
+              onClick={() => shortcutInputRef.current?.focus()}
+            >
+              <SearchIcon className="size-4 shrink-0 text-calendar-detail-muted" />
+              <input
+                ref={shortcutInputRef}
+                type="text"
+                placeholder="Find keyboard shortcuts"
+                aria-label="Find keyboard shortcuts"
+                value={shortcutQuery}
+                onChange={(e) => setShortcutQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  // Escape goes back, without reaching the calendar's keys
+                  if (e.key !== "Escape") return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  closeAllShortcuts();
+                }}
+                className="text-foreground placeholder:text-muted-foreground h-7 w-full border-none bg-transparent p-0 text-xs outline-none"
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Close keyboard shortcuts"
+                className="size-7 shrink-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeAllShortcuts();
+                }}
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+          ) : (
+            <div
+              className={SEARCH_FIELD_CLASS}
+              onClick={() => inputRef.current?.focus()}
+            >
+              <CalendarSearch className="size-4 shrink-0 text-calendar-detail-muted" />
+              <input
+                ref={inputRef}
+                type="text"
+                placeholder="Search events"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="text-foreground placeholder:text-muted-foreground h-7 w-full border-none bg-transparent p-0 text-xs outline-none"
+              />
+              {isSearching && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 shrink-0 opacity-0 transition-opacity group-hover/search:opacity-100 group-has-[:focus]/search:opacity-100"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSearchQuery("");
+                    inputRef.current?.focus();
+                  }}
+                >
+                  <X className="size-4" />
+                </Button>
+              )}
+            </div>
+          )}
+          <Tooltip>
+            <TooltipTrigger render={<Button variant="ghost" size="icon" className="size-7 shrink-0" onClick={toggleSidebar} />}><PanelRightIcon className="size-4" /></TooltipTrigger>
+            <TooltipContent side="bottom">
+              Close context panel <Kbd className="ml-1">/</Kbd>
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </SidebarHeader>
+      <SidebarContent className="gap-2">
+        {selectedEvent ? (
+          <EventDetailPanel
+            event={selectedEvent}
+            onEventChange={editEvent}
+            // An event being created: typing its title previews it, and
+            // its first edit saves it
+            onTitlePreview={
+              eventDraft?.id === selectedEvent.id ? updateEventDraft : undefined
+            }
+            onPrevWeek={onPrevWeek}
+            onNextWeek={onNextWeek}
+            {...getEventActions(selectedEvent.id)}
+            autoFocusTitle={panelOpen && pendingEventId === selectedEvent.id}
+            onTitleAutoFocused={clearPending}
+          />
+        ) : resolvedSearchEvent ? (
+          <EventDetailPanel
+            event={resolvedSearchEvent}
+            onEventChange={editEvent}
+            onPrevWeek={onPrevWeek}
+            onNextWeek={onNextWeek}
+            {...getEventActions(resolvedSearchEvent.id)}
+          />
+        ) : showingAllShortcuts ? (
+          <AllShortcutsList groups={foundShortcutGroups} />
+        ) : isLoadingResults ? (
+          <div className="px-4 pl-8 pt-8">
+            <p className={cn(PANEL_CAPTION_CLASS, "text-xs")}>
+              Searching
+              <AnimatedDots />
+            </p>
+          </div>
+        ) : isSearching ? (
+          <div className="flex flex-col pb-16">
+            {pastGroups.map((group) => (
+              <DateGroupSection
+                key={group.key}
+                group={group}
+                isPast
+                onEventClick={setSearchSelectedEvent}
+              />
+            ))}
+            <div className="px-4 pt-5">
+              <p className="-ml-1 text-primary text-xs font-semibold pb-3">
+                Today
+              </p>
+              {todayGroup && (
+                <div className="flex flex-col">
+                  {todayGroup.events.map((event) => (
+                    <SearchResultItem
+                      key={event.id}
+                      event={event}
+                      onClick={setSearchSelectedEvent}
+                    />
+                  ))}
+                </div>
+              )}
+              {!hasUpcomingResults && (
+                <p className={cn(PANEL_CAPTION_CLASS, "pl-4 pt-1 text-xs")}>
+                  No upcoming results
+                </p>
+              )}
+            </div>
+            {futureGroups.map((group) => (
+              <DateGroupSection
+                key={group.key}
+                group={group}
+                onEventClick={setSearchSelectedEvent}
+              />
+            ))}
+          </div>
+        ) : (
+          <SidebarGroup className="px-3 pt-6">
+            <SidebarGroupLabel className="text-foreground text-xs font-semibold px-0">
+              Useful shortcuts
+            </SidebarGroupLabel>
+            <SidebarGroupContent>
+              <div className="flex flex-col">
+                {shortcuts.map((shortcut) => (
+                  <ShortcutRow
+                    key={shortcut.label}
+                    label={shortcut.label}
+                    soon={shortcut.soon}
+                  >
+                    {shortcut.keys.map((key) => (
+                      <Kbd key={key}>{key}</Kbd>
+                    ))}
+                  </ShortcutRow>
+                ))}
+              </div>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
+      </SidebarContent>
+    </>
+  );
+
+  if (overlay) {
+    return (
+      <SidebarOverlay
+        open={panelOpen}
+        onOpenChange={setPanelOpen}
+        side="right"
+        title="Context panel"
+        description="Event details, event search and useful shortcuts."
+        className="!bg-calendar-context-panel"
+        style={
+          {
+            "--sidebar-width": CONTEXT_PANEL_WIDTH,
+            "--muted-foreground": PANEL_MUTED_FOREGROUND,
+          } as React.CSSProperties
+        }
+      >
+        {panel}
+      </SidebarOverlay>
+    );
+  }
+
+  // shadcn's Sidebar markup for side="right", collapsible="offcanvas", without
+  // its slide transition: the panel opens and closes at once
+  return (
+    <div
+      className="group peer text-sidebar-foreground hidden md:block"
+      data-state={state}
+      data-collapsible={state === "collapsed" ? "offcanvas" : ""}
+      data-variant="sidebar"
+      data-side="right"
+      data-slot="sidebar"
+    >
+      {/* Takes the panel's width in the page's flex row */}
+      <div
+        data-slot="sidebar-gap"
+        className="relative w-(--sidebar-width) rotate-180 bg-transparent group-data-[collapsible=offcanvas]:w-0"
+      />
+      <div
+        data-slot="sidebar-container"
+        className={cn(
+          CALENDAR_SIDEBAR_COLORS_CLASS,
+          "bg-calendar-context-panel text-sidebar-foreground fixed inset-y-0 right-0 z-10 hidden h-svh w-(--sidebar-width) border-l md:flex group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
+          className,
+        )}
+        style={
+          {
+            "--muted-foreground": PANEL_MUTED_FOREGROUND,
+          } as React.CSSProperties
+        }
+        {...props}
+      >
+        <div
+          data-sidebar="sidebar"
+          data-slot="sidebar-inner"
+          className="bg-calendar-context-panel flex h-full w-full flex-col"
+        >
+          {panel}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DateGroupSection({
+  group,
+  isPast = false,
+  onEventClick,
+}: {
+  group: DateGroup;
+  isPast?: boolean;
+  onEventClick?: (event: DetailedCalendarEvent) => void;
+}) {
+  return (
+    <div className="px-4 pt-5">
+      <p
+        className={cn(
+          "-ml-1 text-xs font-semibold pb-3",
+          group.isToday ? "text-primary" : "text-foreground",
+        )}
+      >
+        {group.label}
+      </p>
+      <div className="flex flex-col">
+        {group.events.map((event) => (
+          <SearchResultItem
+            key={event.id}
+            event={event}
+            isPast={isPast}
+            onClick={onEventClick}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Colors of a search result by temporal state: the details' text colors,
+ * at half strength for a past event
+ */
+const SEARCH_RESULT_COLORS = {
+  future: {
+    title: "text-calendar-detail-foreground",
+    time: "text-calendar-detail-secondary",
+    duration: "text-calendar-detail-placeholder",
+    hover: "hover:bg-calendar-detail-focus",
+  },
+  past: {
+    title: "text-calendar-detail-foreground/50",
+    time: "text-calendar-detail-secondary/50",
+    duration: "text-calendar-detail-placeholder/50",
+    hover: "hover:bg-calendar-detail-focus/50",
+  },
+} as const;
+
+/**
+ * Sequential dot fill animation.
+ * Steps: fill dot 0 → fill dot 1 → fill dot 2 → unfill dot 0 → unfill dot 1 → unfill dot 2
+ * Each dot is either 10% or 100% opacity based on the current step.
+ */
+const DOT_STEP_INTERVAL_MS = 300;
+const DOT_STEPS = [
+  [false, false, false],
+  [true, false, false],
+  [true, true, false],
+  [true, true, true],
+  [false, true, true],
+  [false, false, true],
+] as const;
+
+function AnimatedDots() {
+  const [step, setStep] = React.useState(0);
+
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      setStep((prev) => (prev + 1) % DOT_STEPS.length);
+    }, DOT_STEP_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, []);
+
+  const filled = DOT_STEPS[step];
+
+  return (
+    <span className="ml-1 inline-flex items-center gap-0.5">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="inline-block size-0.5 rounded-full bg-calendar-detail-placeholder dark:bg-calendar-detail-secondary transition-opacity duration-200"
+          style={{ opacity: filled[i] ? 1 : 0.1 }}
+        />
+      ))}
+    </span>
+  );
+}
+
+function SearchResultItem({
+  event,
+  isPast = false,
+  onClick,
+}: {
+  event: DetailedCalendarEvent;
+  isPast?: boolean;
+  onClick?: (event: DetailedCalendarEvent) => void;
+}) {
+  const { calendars } = useCalendarConfig();
+  const timeRange = formatTimeRange(event);
+  const duration = event.isAllDay ? "" : formatDuration(event.start, event.end);
+  const colors = isPast
+    ? SEARCH_RESULT_COLORS.past
+    : SEARCH_RESULT_COLORS.future;
+
+  return (
+    <div
+      className={cn(
+        "-mx-1 flex cursor-default items-start gap-2.5 rounded-sm px-1 py-2",
+        colors.hover,
+      )}
+      onClick={() => onClick?.(event)}
+    >
+      <div
+        className={cn(
+          "-mt-1 -mb-1 w-1 shrink-0 self-stretch rounded-full",
+          EVENT_COLOR_CLASSES.border,
+          isPast && "opacity-40",
+        )}
+        style={resolveEventColorStyle(event, calendars)}
+      />
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <p
+          className={cn(
+            "truncate text-sm font-medium leading-snug",
+            colors.title,
+          )}
+        >
+          {event.title}
+        </p>
+        <p className="text-sm">
+          <span className={colors.time}>{timeRange}</span>
+          {duration && <span className={colors.duration}> {duration}</span>}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** One key combination as key caps, the keys pressed together */
+function KeyCaps({ keys }: { keys: string[] }) {
+  return keys.map((key) => <Kbd key={key}>{key}</Kbd>);
+}
+
+/** A shortcut's keys, and the other keys that do the same after "or" */
+function ShortcutKeys({ shortcut }: { shortcut: KeyboardShortcut }) {
+  return (
+    <>
+      <KeyCaps keys={shortcut.keys} />
+      {shortcut.alternativeKeys?.map((keys) => (
+        <React.Fragment key={keys.join("+")}>
+          <span>or</span>
+          <KeyCaps keys={keys} />
+        </React.Fragment>
+      ))}
+    </>
+  );
+}
+
+/**
+ * Label color of the full shortcut list's rows: the panel's muted color is
+ * too faint on white for a long list, so light mode uses the darker
+ * secondary text
+ */
+const ALL_SHORTCUTS_ROW_CLASS =
+  "text-calendar-detail-secondary dark:text-muted-foreground";
+
+/**
+ * Notion Calendar's full keyboard shortcut list, in the context panel: each
+ * group under its heading, the shortcuts that act on something under a
+ * muted one ("With a selected event…")
+ */
+function AllShortcutsList({ groups }: { groups: KeyboardShortcutGroup[] }) {
+  if (groups.length === 0) {
+    return (
+      <p className={cn(PANEL_CAPTION_CLASS, "px-4 pt-6 text-xs")}>
+        No keyboard shortcut found
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-5 px-3 pt-6 pb-16">
+      {groups.map((group) => (
+        <section key={group.heading} aria-label={group.heading}>
+          <h3 className="text-foreground pb-1 text-xs font-semibold">
+            {group.heading}
+          </h3>
+          {group.shortcuts.map((shortcut) => (
+            <ShortcutRow
+              key={shortcut.label}
+              label={shortcut.label}
+              className={ALL_SHORTCUTS_ROW_CLASS}
+            >
+              <ShortcutKeys shortcut={shortcut} />
+            </ShortcutRow>
+          ))}
+          {group.sections?.map((section) => (
+            <div key={section.heading} className="pt-2">
+              <h4 className={cn(PANEL_CAPTION_CLASS, "py-1 text-xs")}>
+                {section.heading}
+              </h4>
+              {section.shortcuts.map((shortcut) => (
+                <ShortcutRow
+                  key={shortcut.label}
+                  label={shortcut.label}
+                  className={ALL_SHORTCUTS_ROW_CLASS}
+                >
+                  <ShortcutKeys shortcut={shortcut} />
+                </ShortcutRow>
+              ))}
+            </div>
+          ))}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function ShortcutRow({
+  label,
+  soon,
+  className,
+  children,
+}: {
+  label: string;
+  /** Not built yet: a "Soon" badge replaces the keys */
+  soon?: boolean;
+  /** Classes for the row, e.g. a text color */
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "text-muted-foreground flex items-center justify-between py-1 text-xs",
+        className,
+      )}
+    >
+      <span>{label}</span>
+      <div className="flex items-center gap-1">
+        {soon ? SOON_BADGE : children}
+      </div>
+    </div>
+  );
+}

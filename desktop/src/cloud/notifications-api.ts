@@ -2,7 +2,10 @@ import type { CloudClient } from './client';
 
 export interface WorkspaceNotification {
   id: string;
-  type: 'join_requested' | 'join_approved' | 'join_rejected' | 'comment_mention' | 'comment_reply';
+  type: 'join_requested' | 'join_approved' | 'join_rejected' | 'comment_mention' | 'comment_reply' | 'calendar_invitation';
+  eventTitle?: string;
+  eventStart?: string;
+  eventAllDay?: boolean;
   pageId?: string;
   pageTitle?: string;
   actorName: string;

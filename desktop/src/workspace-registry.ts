@@ -1,4 +1,4 @@
-import { editorUrl } from './calendar-route';
+import { clearPageRoute, pageUrlForView, type PageView } from './page-link';
 /** Non-secret workspace references. Session credentials live in the OS keychain. */
 export type LocalWorkspace = { kind: 'local'; id: string; name: string };
 export type RemoteWorkspace = { kind: 'remote'; embedded?: boolean; device?: boolean; importedDefaultDisk?: boolean; id: string; name: string; server: string; accountId: string; workspaceId: string; userName?: string; role?: 'admin' | 'member' | 'viewer' };
@@ -59,14 +59,15 @@ export function activateWorkspace(ref: WorkspaceRef): void {
   if (ref.kind === 'remote' && ref.device) localStorage.removeItem(DISK);
 }
 
-function workspaceRoute(ref: WorkspaceRef, pageId?: string): URL {
+function workspaceRoute(ref: WorkspaceRef, pageId?: string, view?: PageView): URL {
   if (ref.kind === 'local' && ref.id === 'default') localStorage.setItem(DISK, '1');
   activateWorkspace(ref);
-  const url = pageId ? editorUrl(new URL(location.href)) : new URL(location.href);
-  url.searchParams.delete('page');
+  const current = new URL(location.href);
+  const url = pageId ? pageUrlForView(current, pageId, view) : current;
+  if (!pageId) clearPageRoute(url);
   // Keep an explicitly scoped web link shareable after the first workspace selection.
-  if (!pageId || ref.kind !== 'remote' || url.searchParams.get('workspace') !== ref.id) url.searchParams.delete('workspace');
-  if (pageId) { url.searchParams.delete('view'); url.searchParams.set('page', pageId); }
+  if (pageId && ref.kind === 'local') url.searchParams.set('workspace', ref.id);
+  else if (!pageId || url.searchParams.get('workspace') !== ref.id) url.searchParams.delete('workspace');
   url.searchParams.delete('cloud');
   url.searchParams.delete('manage');
   url.searchParams.delete('section');
@@ -78,11 +79,11 @@ function workspaceRoute(ref: WorkspaceRef, pageId?: string): URL {
 }
 
 /** Call only after the current editor has flushed; reload removes all old listeners and timers. */
-export function selectWorkspace(ref: WorkspaceRef, pageId?: string): void {
-  location.assign(workspaceRoute(ref, pageId).href);
+export function selectWorkspace(ref: WorkspaceRef, pageId?: string, view?: PageView): void {
+  location.assign(workspaceRoute(ref, pageId, view).href);
 }
 
 /** An OS launch URL was validated before any editor or saved account was opened. */
-export function selectStartupPage(ref: WorkspaceRef, pageId: string): void {
-  history.replaceState(history.state, '', workspaceRoute(ref, pageId).href);
+export function selectStartupPage(ref: WorkspaceRef, pageId: string, view?: PageView): void {
+  history.replaceState(history.state, '', workspaceRoute(ref, pageId, view).href);
 }

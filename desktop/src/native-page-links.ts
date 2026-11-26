@@ -1,3 +1,4 @@
+import { diskPageWorkspace } from './disk-page-link';
 import { calendarUrl } from './calendar-route';
 import { deviceWorkspaces, nativeBridge } from './native-runtime';
 import { parsePageLink } from './page-link';
@@ -21,7 +22,9 @@ export async function listenForPageLinks(report: (error: unknown) => void): Prom
     const link = parsePageLink(raw);
     if (!link) throw new Error('Lien de page Blok invalide.');
     let target = activeWorkspace();
-    if (link.device || (target.kind === 'remote' && target.device)) {
+    if (link.local && link.workspace) {
+      target = await diskPageWorkspace(link.workspace, link.id);
+    } else if (link.device || (target.kind === 'remote' && target.device)) {
       const {references, origin, result} = await deviceWorkspaces();
       if (link.origin && link.origin !== origin) throw new Error('Ce lien appartient à un autre serveur local.');
       const workspace = link.workspace ?? (!link.device ? target.id : undefined);
@@ -38,17 +41,17 @@ export async function listenForPageLinks(report: (error: unknown) => void): Prom
         if (index.pages.some(page => page.id === link.id)) { target = ref; found = true; break; }
       }
       if (!found) throw new Error('Page introuvable dans les espaces de cet appareil.');
-    } else if (!(await workspaceRepository(target).loadIndex()).pages.some(page => page.id === link.id)) {
+    } else if ((link.workspace && link.workspace !== target.id) || !(await workspaceRepository(target).loadIndex()).pages.some(page => page.id === link.id)) {
       throw new Error('Page introuvable dans cet espace.');
     }
     if (starting) {
-      selectStartupPage(target, link.id);
+      selectStartupPage(target, link.id, link.view);
       return;
     }
     const {flushDesktop, openMountedPage} = await import('./shell');
-    if (await openMountedPage(target, link.id)) return;
+    if (await openMountedPage(target, link.id, link.view)) return;
     await flushDesktop();
-    selectWorkspace(target, link.id);
+    selectWorkspace(target, link.id, link.view);
   }
   let pending = Promise.resolve();
   let startupError: unknown;

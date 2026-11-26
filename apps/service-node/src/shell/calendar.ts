@@ -51,17 +51,23 @@ export function calendarInput(id: string, raw: unknown) {
   const start = timestamp(event.start, event.allDay);
   const end = timestamp(event.end, event.allDay);
   if (end <= start) throw new WorkspaceError(400, 'La fin doit suivre le début.');
-  return { id, title: event.title.trim(), start, end, allDay: event.allDay, pageId: event.pageId, revision: event.revision };
+  const participants = event.participantIds;
+  if (participants !== undefined && (!Array.isArray(participants) || participants.length > 64 ||
+      participants.some(id => typeof id !== 'string' || !id || id.length > 128 || id.includes('\0')))) {
+    throw new WorkspaceError(400, 'Liste des participants invalide.');
+  }
+  const participantIds = participants === undefined ? undefined : [...new Set(participants as string[])];
+  return { participantIds, id, title: event.title.trim(), start, end, allDay: event.allDay, pageId: event.pageId, revision: event.revision };
 }
 
 type Scope = Awaited<ReturnType<typeof readWorkspaceScope>>;
-type Row = { id: string; title: string; starts_at: Date; ends_at: Date; all_day: boolean; page_id: string | null; revision: number };
-const columns = 'id,title,starts_at,ends_at,all_day,page_id,revision';
+type Row = { organizer_id:string | null; detached_private:boolean; participant_ids?: string[]; id: string; title: string; starts_at: Date; ends_at: Date; all_day: boolean; page_id: string | null; revision: number };
+const columns = 'id,title,starts_at,ends_at,all_day,page_id,revision,organizer_id,detached_private';
 
 function eventData(row: Row) {
   const format = (date: Date) => row.all_day ? date.toISOString().slice(0, 10) : date.toISOString();
   return { id: row.id, title: row.title, start: format(row.starts_at), end: format(row.ends_at),
-    allDay: row.all_day, pageId: row.page_id, revision: row.revision };
+    ...(row.participant_ids?.length && {participantIds: row.participant_ids}), allDay: row.all_day, pageId: row.page_id, revision: row.revision };
 }
 
 async function visiblePages(db: PoolClient, scope: Scope) {
@@ -92,17 +98,35 @@ export function workspaceCalendar(pool: PgPool) {
     });
     return c.json({ok:true});
   });
+  router.get('/invitees', async c => {
+    const members = await inTransaction(pool, async db => {
+      const scope = await readWorkspaceScope(db, sessionDigest(c) ?? '', c.req.param('slug')!, false);
+      const {rows} = await db.query(`SELECT u.id, coalesce(nullif(u.name,''),nullif(u.email,''),'Profil local') AS title
+        FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 ORDER BY title,u.id`, [scope.workspace_id]);
+      return rows;
+    });
+    return c.json({members});
+  });
   router.get('/', async c => {
     const events = await inTransaction(pool, async db => {
       await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
       const scope = await readWorkspaceScope(db, sessionDigest(c) ?? '', c.req.param('slug')!, false);
       const { from, to, fromDay, toDay } = calendarRange(c.req.query());
       const { rows } = await db.query<Row>(
-        `SELECT ${columns} FROM workspace_calendar_events WHERE workspace_id=$1 AND
+        `SELECT ${columns}, ARRAY(SELECT p.user_id FROM calendar_participants p
+           WHERE p.workspace_id=e.workspace_id AND p.event_id=e.id ORDER BY p.user_id) AS participant_ids
+         FROM workspace_calendar_events e WHERE workspace_id=$1 AND
           ((NOT all_day AND starts_at<$3 AND ends_at>$2) OR (all_day AND starts_at<$5 AND ends_at>$4))
          ORDER BY starts_at, ends_at, id`, [scope.workspace_id, from, to, fromDay, toDay]);
       const visible = rows.some(event => event.page_id) ? await visiblePages(db, scope) : null;
-      return rows.filter(event => event.page_id === null || visible?.has(event.page_id)).map(eventData);
+      return rows.flatMap(event => {
+        if (!event.detached_private && (!event.page_id || visible?.has(event.page_id))) return [eventData(event)];
+        const isOrganizer = event.organizer_id === scope.user_id;
+        if ((isOrganizer && (event.detached_private || event.participant_ids?.length)) || event.participant_ids?.includes(scope.user_id)) {
+          return [{...eventData(event),pageId:null,readOnly:!!event.page_id || event.organizer_id !== scope.user_id}];
+        }
+        return [];
+      });
     });
     return c.json({ events });
   });
@@ -121,8 +145,9 @@ export function workspaceCalendar(pool: PgPool) {
       if (!isRevision(revision) || (!write && revision === 0)) throw new WorkspaceError(400, 'Révision du calendrier invalide.');
       const key = [scope.workspace_id, id];
       // The workspace lock serializes this check with event writers and sharing changes.
-      const {rows: [current]} = await db.query<Pick<Row,'page_id'|'revision'>>(
-        'SELECT page_id,revision FROM workspace_calendar_events WHERE workspace_id=$1 AND id=$2', key);
+      const {rows: [current]} = await db.query<Pick<Row,'page_id'|'revision'|'detached_private'|'organizer_id'>>(
+        'SELECT page_id,revision,detached_private,organizer_id FROM workspace_calendar_events WHERE workspace_id=$1 AND id=$2', key);
+      if (current?.detached_private && current.organizer_id !== scope.user_id) throw notFound();
       if (current?.page_id || input?.pageId) {
         const visible = await visiblePages(db, scope);
         if ((current?.page_id && !visible.has(current.page_id)) || (input?.pageId && !visible.has(input.pageId))) throw notFound();
@@ -134,12 +159,28 @@ export function workspaceCalendar(pool: PgPool) {
         return { ok: true };
       }
       const { rows: [saved] } = await db.query<Row>(
-        `INSERT INTO workspace_calendar_events(workspace_id,id,title,starts_at,ends_at,all_day,page_id)
-         VALUES($1,$2,$3,$4,$5,$6,$7)
+        `INSERT INTO workspace_calendar_events(workspace_id,id,title,starts_at,ends_at,all_day,page_id,organizer_id)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8)
          ON CONFLICT(workspace_id,id) DO UPDATE SET title=excluded.title, starts_at=excluded.starts_at,
-           ends_at=excluded.ends_at, all_day=excluded.all_day, page_id=excluded.page_id, revision=workspace_calendar_events.revision+1
-         RETURNING ${columns}`, [...key, input.title, input.start, input.end, input.allDay, input.pageId]);
-      return { event: eventData(saved!) };
+           ends_at=excluded.ends_at, all_day=excluded.all_day, page_id=excluded.page_id,
+           organizer_id=coalesce(workspace_calendar_events.organizer_id,excluded.organizer_id), revision=workspace_calendar_events.revision+1
+         RETURNING ${columns}`, [...key, input.title, input.start, input.end, input.allDay, input.pageId,scope.user_id]);
+      if (input.participantIds !== undefined) {
+        const members = await db.query(
+          'SELECT user_id FROM memberships WHERE workspace_id=$1 AND user_id=ANY($2::text[])',
+          [scope.workspace_id, input.participantIds]);
+        if (members.rowCount !== input.participantIds.length) throw new WorkspaceError(400, 'Choisissez des membres de cet espace.');
+        const params = [...key, input.participantIds];
+        await db.query('DELETE FROM calendar_participants WHERE workspace_id=$1 AND event_id=$2 AND NOT(user_id=ANY($3::text[]))', params);
+        await db.query(`WITH added AS (
+            INSERT INTO calendar_participants(workspace_id,event_id,user_id)
+            SELECT $1,$2,u FROM unnest($3::text[]) u ON CONFLICT DO NOTHING RETURNING user_id)
+          INSERT INTO workspace_notifications(workspace_id,event_id,recipient_id,actor_id,type)
+          SELECT $1,$2,user_id,$4,'calendar_invitation' FROM added WHERE user_id<>$4`, [...params, scope.user_id]);
+      }
+      const participants = await db.query<{user_id:string}>(
+        'SELECT user_id FROM calendar_participants WHERE workspace_id=$1 AND event_id=$2 ORDER BY user_id', key);
+      return { event: eventData({...saved!, participant_ids:participants.rows.map(p => p.user_id)}) };
     });
     return c.json(result);
   });

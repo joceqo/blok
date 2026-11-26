@@ -9,16 +9,19 @@ export const googleCallback = '/api/calendar/google/callback';
 const unavailable = () => new HTTPException(503, {message:'Google Agenda est temporairement indisponible.'});
 export const reconnect = () => new HTTPException(409, {message:'Reconnectez votre compte Google Agenda.'});
 
-type Config = { clientId: string; clientSecret: string; redirect: string };
+type Config = { clientId: string; clientSecret: string; redirect: string; loopback: boolean };
 function googleConfig(env: NodeJS.ProcessEnv): Config | undefined {
   const clientId = env.GOOGLE_CALENDAR_CLIENT_ID, clientSecret = env.GOOGLE_CALENDAR_CLIENT_SECRET, redirect = env.GOOGLE_CALENDAR_REDIRECT_URI;
   if (!clientId || !clientSecret || !redirect) return;
   try {
     const url = new URL(redirect);
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost','127.0.0.1'].includes(url.hostname))) return;
+    // An installed app serves this same callback on the loopback port its
+    // instance was given. It still belongs to the origin the server announces.
+    const loopback = url.protocol === 'http:' && ['localhost','127.0.0.1','::1'].includes(url.hostname);
+    if (url.protocol !== 'https:' && !loopback) return;
     if (url.username || url.password || url.search || url.hash || url.pathname !== googleCallback ||
         (env.PUBLIC_URL && url.origin !== new URL(env.PUBLIC_URL).origin)) return;
-    return {clientId,clientSecret,redirect};
+    return {clientId,clientSecret,redirect,loopback};
   } catch { return; }
 }
 
@@ -120,9 +123,9 @@ export function createGoogleCalendarProvider(secret: string, env = process.env, 
     async calendars(pool: PgPool, w: string, u: string) {
       const token = await access(pool,w,u);
       const url = new URL('users/me/calendarList',api);
-      url.search = new URLSearchParams({minAccessRole:'reader',maxResults:'250',fields:'nextPageToken,items(id,summary,summaryOverride,backgroundColor,primary,accessRole)'}).toString();
+      url.search = new URLSearchParams({minAccessRole:'freeBusyReader',maxResults:'250',fields:'nextPageToken,items(id,summary,summaryOverride,backgroundColor,primary,accessRole)'}).toString();
       return (await pages<GoogleListEntry>(url,token)).map(item=>({id:item.id,title:item.summaryOverride ?? item.summary,
-        color:/^#[\da-f]{6}$/i.test(item.backgroundColor ?? '') ? item.backgroundColor : '#4285f4',primary:item.primary === true}));
+        ...(item.accessRole === 'freeBusyReader' && {busyOnly:true}), color:/^#[\da-f]{6}$/i.test(item.backgroundColor ?? '') ? item.backgroundColor : '#4285f4',primary:item.primary === true}));
     },
     async events(pool: PgPool, w: string, u: string, calendarId: string, from: string, to: string) {
       const token = await access(pool,w,u);
@@ -140,10 +143,10 @@ export function createGoogleCalendarProvider(secret: string, env = process.env, 
           end:allDay ? end : new Date(end).toISOString(),pageId:null,revision:0}];
       });
     },
-    async freeBusy(pool: PgPool, w: string, u: string, from: string, to: string): Promise<Busy[]> {
+    async freeBusy(pool: PgPool, w: string, u: string, from: string, to: string, calendarId = 'primary'): Promise<Busy[]> {
       const token = await access(pool,w,u);
-      const data = await google(new URL('freeBusy',api),token,{timeMin:from,timeMax:to,items:[{id:'primary'}]});
-      const calendar = (data.calendars as {primary?: {busy?: Busy[]; errors?: unknown[]}} | undefined)?.primary;
+      const data = await google(new URL('freeBusy',api),token,{timeMin:from,timeMax:to,items:[{id:calendarId}]});
+      const calendar = (data.calendars as Record<string, {busy?: Busy[]; errors?: unknown[]}> | undefined)?.[calendarId];
       if (calendar?.errors?.length || !Array.isArray(calendar?.busy)) throw unavailable();
       return calendar.busy.map(({start,end})=>({start,end}));
     },

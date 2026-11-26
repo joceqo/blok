@@ -109,7 +109,7 @@ export function openPageSearch(options: SearchOptions): () => void {
     failed = false; selected = undefined; feedback = '';
     const input = query.trim();
     const search = options.searchContent;
-    pending = Boolean(input && mode === 'pages' && search && !titleOnly && !options.pageIdFromLink?.(input));
+    pending = Boolean(input && mode === 'pages' && search && !titleOnly && !options.pageLinkFromUrl?.(input));
     reload();
     const scroll = surface.querySelector('.palette-scroll');
     if (scroll) scroll.scrollTop = 0;
@@ -136,13 +136,17 @@ export function openPageSearch(options: SearchOptions): () => void {
   function open(id: string | undefined, newTab = false) {
     if (!id || !authorized(id)) { reload(); return; }
     const callback = mode === 'chats' ? options.onOpenChat : newTab && options.onOpenTab ? options.onOpenTab : options.onOpen;
-    if (callback) { modal.close(); callback(id); }
+    if (!callback) return;
+    const view = matches.find(item => item.id === id)?.view;
+    modal.close();
+    if (view) callback(id, view);
+    else callback(id);
   }
   async function copy() {
     const id = selected;
     if (!id || mode !== 'pages' || !options.pageUrl || !authorized(id)) { reload(); return; }
     try {
-      await navigator.clipboard.writeText(options.pageUrl(id));
+      await navigator.clipboard.writeText(options.pageUrl(id, matches.find(item => item.id === id)?.view));
       if (id === selected) feedback = 'Lien copié';
     } catch { if (id === selected) feedback = 'Copie impossible'; }
     paint();

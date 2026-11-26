@@ -1,2 +1,4 @@
 @import '../../src/styles/main.css';
 @source '../../src';
+
+@source not "./calendarcn";

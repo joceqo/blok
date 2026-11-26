@@ -32,6 +32,12 @@ async function writeChunk(write: ReturnType<typeof createWriteStream>, slice: Ui
 async function spoolBody(body: Body): Promise<{ path: string; data: Uint8Array }> {
   const path = join(tmpdir(), `.blok-upload-${randomBytes(16).toString('hex')}`);
   const write = createWriteStream(path, { flags: 'wx', mode: 0o600 });
+  // The failure path below destroys this stream while writes may still be in
+  // flight, and those come back as stream errors. An 'error' nobody listens for
+  // is an uncaught exception, which kills the process and leaves every later
+  // upload answering 503. Failures still reach callers through the write
+  // callbacks and end() below; this listener only keeps them non-fatal.
+  write.on('error', () => undefined);
   const chunks: Uint8Array[] = [];
   const chunk = new Uint8Array(16 << 10);
   try {

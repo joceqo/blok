@@ -73,6 +73,14 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
       return c.json({ error: 'Cross-site write refused' }, 403);
     }
     await next();
+    // A proxied media response supplies its own Headers, including on upload failure.
+    // Apply the shell's origin decision to the response the client actually receives.
+    if (origin) {
+      c.header('Access-Control-Allow-Origin', origin);
+      c.header('Access-Control-Allow-Credentials', 'true');
+      if (!c.res.headers.get('Vary')?.split(',').some(name => name.trim().toLowerCase() === 'origin'))
+        c.header('Vary', 'Origin', { append: true });
+    }
   });
 
   app.route('/api/mcp/tokens', createMcpTokens(pool));

@@ -21,6 +21,12 @@ export function nativeSessionAdapter(server: string) {
   }
   return {
     async getToken(): Promise<string | null> { return await bridge.invoke('load_cloud_session', { server: origin }) as string | null; },
+    async getAccountToken(account: string) {
+      return await bridge.invoke('load_cloud_session', {server:origin, account}) as string | null;
+    },
+    async setAccountToken(account: string, token: string | null) {
+      await bridge.invoke('save_cloud_session', {server:origin, account, token});
+    },
     async setToken(token: string | null): Promise<void> { await bridge.invoke('save_cloud_session', { server: origin, token }); },
   };
 }

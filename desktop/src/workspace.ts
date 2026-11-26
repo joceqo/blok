@@ -1,6 +1,8 @@
 import { isTeamspaceLibrary, libraryPageId, libraryPageUrl, libraryUrl, libraryView, type LibraryView } from './library-route';
 import { calendarUrl, editorUrl, isCalendarUrl } from './calendar-route';
-import { pageIdForWorkspaceLink, webPageLink, workspacePageLink } from './page-link';
+import { whiteboardElementTool } from './whiteboard-element';
+import { mountPageWhiteboard, whiteboardPlacementTune } from './page-whiteboard';
+import { clearPageRoute, pageIdForWorkspaceLink, pageUrlForView, pageView, resolveWorkspacePageLink, webPageLink, workspacePageLink, type PageView } from './page-link';
 import { navigationFavorites, navigationRecents } from './navigation-preferences';
 import { moveDestinations, PageMoveConflict } from './page-move';
 import { openPageHistory } from './page-history';
@@ -48,6 +50,9 @@ import type { DateDisplayChange } from '@blok/date-editor';
 
 const desktopTools = {
   ...defaultTools,
+  whiteboardPlacement: whiteboardPlacementTune,
+  whiteboardElement: whiteboardElementTool,
+  paragraph: { ...defaultTools.paragraph, tunes: ['whiteboardPlacement'] },
   table: { class: Table },
   database: { class: Database },
   'database-row': { class: DatabaseRow },
@@ -94,7 +99,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const repository = workspaceRepository(ref);
   const favorites = navigationFavorites(ref);
   const recentPages = navigationRecents(ref);
-  const pageUrl = (id: string): string => workspacePageLink(ref, id);
+  const pageUrl = (id: string, view?: PageView): string => workspacePageLink(ref, id, view);
   const emojis = customEmojiStore(ref);
   const pageIcon = (value: string) => /^(https?:|data:image\/|\/files\/)/i.test(value) ? {type: 'image' as const, url: value} : {type: 'emoji' as const, value};
   if (ref.kind === 'remote' && '__TAURI_INTERNALS__' in window) mountRemoteAssets(ref.server, repository.assetUrl);
@@ -153,6 +158,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     closeSearch: undefined,
   };
   let calendar: { destroy(): void } | undefined;
+  let board: ReturnType<typeof mountPageWhiteboard> | undefined;
   let openingCalendar: number | undefined;
   let library: ReturnType<typeof import('./workspace-library').mountWorkspaceLibrary> | undefined;
   let openingLibrary: string | undefined;
@@ -215,10 +221,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const url = new URL(location.href);
     return libraryView(url) ? libraryPageId(url) : url.searchParams.get('page');
   };
-  const navigate = (id: string, replace = false): void => {
-    const url = editorUrl(new URL(location.href));
-    const from = url.searchParams.get('page');
-    url.searchParams.set('page', id);
+  const navigate = (id: string, replace = false, view: PageView = 'document'): void => {
+    const from = pageFromUrl();
+    const url = pageUrlForView(new URL(location.href), id, view);
     if (replace) history.replaceState(null, '', url);
     else history.pushState(null, '', url);
     onRoute();
@@ -433,7 +438,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       const url = new URL(href);
       if (ref.kind === 'remote' && url.origin === ref.server) return pageIdForWorkspaceLink(ref, href);
       const link = webPageLink(url);
-      return link?.origin === location.origin && (!link.workspace || link.workspace === ref.id) ? link.id : null;
+      return link?.origin === location.origin && (!link.local || ref.kind === 'local') && (!link.workspace || link.workspace === ref.id) ? link.id : null;
     },
     open: (id) => { if (ws.index?.pages.some((page) => page.id === id)) navigate(id); },
     create: async ({ pageId, title, parentId, document: initialDocument }) => {
@@ -482,6 +487,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.frame.setPages(withSections(ws.index.pages), id);
     if (!currentLibrary()) onPageIcon(id, page.icon ?? '');
     if (ws.currentId === id) {
+      board?.setView(pageView(new URL(location.href)));
       // A new tab can display the already mounted editor without reloading its document.
       document.title = currentLibrary() ? brandedTitle('Bibliothèque') : page.title;
       ws.pageToolbar?.setBreadcrumbs(breadcrumbs(id));
@@ -493,6 +499,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const turn = ++ws.generation;
     ws.coverRowObserver?.disconnect();
     ws.coverRowObserver = null;
+    board?.destroy(); board = undefined;
     ws.pageToolbar?.destroy();
     ws.floatingToc?.destroy();
     ws.floatingToc = null;
@@ -514,6 +521,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       article.toggleAttribute('data-full-width', enabled);
       ws.editor?.width.set(enabled ? 'full' : 'narrow');
     };
+    const viewControls = document.createElement('div');
     const toolbar = createPageToolbar(breadcrumbs(id), page.fullWidth === true, (enabled) => {
       if (readOnly(id)) return;
       page.fullWidth = enabled;
@@ -523,6 +531,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       ws.frame.toggleSidebar();
       onLayout(sidebar.getBoundingClientRect().width);
     }, ref.kind === 'remote' ? (anchor) => openPageSharing(ref, id, page.title, anchor, refreshRemoteManifest) : undefined, {
+      viewControls,
       workspaceName: ref.name,
       workspacePages: () => {
         const pages = withSections(ws.index?.pages ?? []);
@@ -533,7 +542,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         });
         return pages.filter((page) => !page.parentId && (ref.kind === 'local' || page.section === 'workspace')).map(choice);
       },
-      pageUrl,
+      pageUrl: pageId => workspacePageLink(ref, pageId, pageView(new URL(location.href))),
       favorite: favorites.has(id),
       onFavorite: (value) => {
         favorites.set(id, value);
@@ -562,7 +571,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     applyFullWidth();
     const holder = document.createElement('div');
     article.append(holder);
-    const cover = { node: null as HTMLElement | null, rendered: undefined as PageCover | undefined, position: undefined as number | undefined, button: null as HTMLButtonElement | null };
+    const cover = { node: null as HTMLElement | null, readOnly: false, rendered: undefined as PageCover | undefined, position: undefined as number | undefined, button: null as HTMLButtonElement | null };
     function changeCover(cover: PageCover | undefined): void {
       if (readOnly(id)) return;
       selectedPage.cover = cover;
@@ -591,7 +600,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         const position = typeof page.coverPosition === 'number' && Number.isFinite(page.coverPosition)
           ? Math.max(0, Math.min(100, page.coverPosition)) : 50;
         // Background metadata refreshes must preserve the open picker and its focus.
-        if (cover.node && cover.rendered === page.cover && cover.position === position) return;
+        const locked = readOnly(id);
+        if (cover.node && cover.rendered === page.cover && cover.position === position && cover.readOnly === locked) return;
+        cover.readOnly = locked;
         cover.rendered = page.cover;
         cover.position = position;
         const next = createPageCover(page.cover, position, changeCover, (value) => {
@@ -599,7 +610,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           page.coverPosition = value;
           cover.position = value;
           saveManifest();
-        }, { upload: repository.uploadImage, resolveUrl: repository.assetUrl, readOnly: readOnly(id) });
+        }, { upload: repository.uploadImage, resolveUrl: repository.assetUrl, readOnly: locked });
         if (cover.node) cover.node.replaceWith(next);
         else ws.pageCanvas.insertBefore(next, article);
         cover.node = next;
@@ -611,6 +622,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     };
     ws.refreshPagePresentation = () => { applyFullWidth(); renderCover(); ws.titleDateMention?.refresh(); };
     ws.pageCanvas.replaceChildren(toolbar.element, article);
+    let boardEditorReady = false;
+    board = mountPageWhiteboard({
+      assets: {origin: ref.kind === 'remote' ? ref.server : undefined, resolve: repository.assetUrl},
+      getEditor: () => boardEditorReady ? ws.editor : null,
+      holder, controls: viewControls, initialView: pageView(new URL(location.href)),
+      onViewChange: view => navigate(id, false, view),
+    });
     renderCover();
     editAssistant = pageEditorAssistant(ai,
       () => ws.generation === turn && activeEditable(),
@@ -673,6 +691,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     instance.width.set(page.fullWidth === true ? 'full' : 'narrow');
     void instance.isReady.then(() => {
       if (ws.generation !== turn) return;
+      boardEditorReady = true;
+      board?.refresh();
       instance.on('collaboration:status', (event:CollaborationStatusChangedPayload) => {
         if (ws.generation !== turn || ref.kind !== 'remote') return;
         toolbar.setPeers(event.status === 'connected' ? event.participants.filter(p=>p.present && !p.self)
@@ -781,13 +801,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.closeSearch?.();
     const pages = () => ws.index?.pages ?? [];
     ws.closeSearch = openPageSearch({
-      workspaceName: ref.name, pages, onOpen: navigate, pageUrl,
+      workspaceName: ref.name, pages, onOpen: (id, view) => navigate(id, false, view), pageUrl,
       recentIds: recentIds ?? recentPages.ids, recentOnly: recentIds !== undefined,
       visitedAt: recentPages.visitedAt,
-      pageIdFromLink: value => pageIdForWorkspaceLink(ref, value),
-      onOpenTab: id => {
+      pageLinkFromUrl: value => resolveWorkspacePageLink(ref, value),
+      onOpenTab: (id, view) => {
         const page = pages().find(item => item.id === id);
-        if (page) openPageTab(page);
+        if (page) openPageTab(page, view);
       },
       chats: () => ws.assistant.searchableChats(),
       onOpenChat: id => ws.assistant.openChat(id),
@@ -795,15 +815,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     });
   }
 
-  const openPageTab = (page: DesktopPage): void => {
+  const openPageTab = (page: DesktopPage, view: PageView = 'document'): void => {
     if ('__TAURI_INTERNALS__' in window) {
       window.dispatchEvent(new CustomEvent('blok:desktop-new-tab', {
-        detail: {id: page.id, title: page.title, icon: page.icon},
+        detail: {id: page.id, title: page.title, icon: page.icon, view},
       }));
       return;
     }
-    const url = editorUrl(new URL(location.href));
-    url.searchParams.set('page', page.id);
+    const url = pageUrlForView(new URL(location.href), page.id, view);
     window.open(url.href, '_blank', 'noopener,noreferrer');
   };
 
@@ -1115,6 +1134,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
 
   function clearDocument(): void {
     ws.coverRowObserver?.disconnect(); ws.coverRowObserver = null;
+    board?.destroy(); board = undefined;
     ws.pageToolbar?.destroy(); ws.pageToolbar = null;
     ws.floatingToc?.destroy(); ws.floatingToc = null;
     ws.titleDateMention?.destroy(); ws.titleDateMention = null;
@@ -1267,8 +1287,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     openingCalendar = request;
     ws.pageCanvas.inert = true;
     try {
-      const [, { mountCalendar }, { createCalendarStore }, { createCalendarWorkspaces }] = await Promise.all([
-        flushDocument(), import('./calendar-view'), import('./calendar-store'), import('./calendar-workspaces'),
+      const [, { mountCalendar }, { createCalendarStore }, { createCalendarDirectory }] = await Promise.all([
+        flushDocument(), import('./calendar-view'), import('./calendar-store'), import('./calendar-directory'),
       ]);
       if (ws.selection !== request || !isCalendarRoute()) return;
       ws.generation++;
@@ -1278,7 +1298,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       ws.pageCanvas.removeAttribute('data-full-width');
       ws.pageCanvas.replaceChildren();
       calendar = mountCalendar(calendarHost, {
-        workspaces: createCalendarWorkspaces(ref),
+        workspaces: createCalendarDirectory(ref),
         onToggleSidebar: toggleWorkspaceSidebar,
         openWorkspacePage: (owner, id) => {
           if (workspaceKey(owner) === workspaceKey(ref)) navigate(id);
@@ -1357,7 +1377,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       },
     }));
     const url = new URL(location.href);
-    if (url.searchParams.has('page')) { url.searchParams.delete('page'); history.replaceState(null, '', url); }
+    if (url.searchParams.has('page')) { clearPageRoute(url); history.replaceState(null, '', url); }
     document.title = brandedTitle(ref.name);
   }
 
@@ -1401,7 +1421,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       // editor waits for its save receipt. Only roll back the route that failed.
       if (pageFromUrl() !== target) return;
       if (ws.currentId && pageFromUrl() !== ws.currentId) {
-        const url = new URL(location.href); url.searchParams.set('page', ws.currentId);
+        const url = pageUrlForView(new URL(location.href), ws.currentId, board?.view);
         history.replaceState(null, '', url);
         ws.assistant.refreshPageActions();
       }

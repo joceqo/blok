@@ -1,11 +1,11 @@
 import { afterEach, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  take:vi.fn(), session:vi.fn(), flush:vi.fn(), select:vi.fn(), startup:vi.fn(),
+  take:vi.fn(), session:vi.fn(), flush:vi.fn(), mounted:vi.fn(), select:vi.fn(), startup:vi.fn(),
 }));
 vi.mock('./native-runtime',()=>({ nativeBridge:()=>({invoke:mocks.take}), deviceWorkspaces:mocks.session }));
 vi.mock('./workspace-registry',()=>({ activeWorkspace:()=>({kind:'remote',id:'previous',server:'https://unrelated.example'}), selectStartupPage:mocks.startup, selectWorkspace:mocks.select }));
-vi.mock('./shell',()=>({flushDesktop:mocks.flush, openMountedPage:()=>false}));
+vi.mock('./shell',()=>({flushDesktop:mocks.flush, openMountedPage:mocks.mounted}));
 
 import { listenForPageLinks } from './native-page-links';
 
@@ -21,11 +21,11 @@ it('checks device membership before handing off a cold or warm page link and flu
   const report=vi.fn();
   const start = listenForPageLinks(report);
   await vi.waitFor(()=>expect(mocks.take).toHaveBeenCalledOnce());
-  mocks.take.mockResolvedValueOnce('blok://page/p1?device=1&workspace=workspace-1');
+  mocks.take.mockResolvedValueOnce('blok://page/p1?device=1&workspace=workspace-1&view=whiteboard');
   window.dispatchEvent(new Event('blok:page-link'));
   first(null);
   await start;
-  expect(mocks.startup).toHaveBeenCalledWith(ref,'p1');
+  expect(mocks.startup).toHaveBeenCalledWith(ref,'p1','whiteboard');
   expect(mocks.select).not.toHaveBeenCalled();
   expect(mocks.flush).not.toHaveBeenCalled();
   expect(fetch).toHaveBeenCalledTimes(1);
@@ -35,11 +35,17 @@ it('checks device membership before handing off a cold or warm page link and flu
   await vi.waitFor(()=>expect(report).toHaveBeenCalledTimes(1));
   expect(fetch).toHaveBeenCalledTimes(1);
 
-  mocks.take.mockResolvedValueOnce('blok://page/p1?device=1&workspace=workspace-1');
+  mocks.take.mockResolvedValueOnce('blok://page/p1?device=1&workspace=workspace-1&view=whiteboard');
   window.dispatchEvent(new Event('blok:page-link'));
-  await vi.waitFor(()=>expect(mocks.select).toHaveBeenCalledWith(ref,'p1'));
+  await vi.waitFor(()=>expect(mocks.select).toHaveBeenCalledWith(ref,'p1','whiteboard'));
   expect(fetch).toHaveBeenCalledWith(origin+'/api/workspaces/mine/index',expect.objectContaining({redirect:'error',headers:{Authorization:'Bearer local-session'}}));
   expect(mocks.flush.mock.invocationCallOrder[0]).toBeLessThan(mocks.select.mock.invocationCallOrder[0]);
+
+  mocks.mounted.mockResolvedValueOnce(true);
+  mocks.take.mockResolvedValueOnce('blok://page/p1?device=1');
+  window.dispatchEvent(new Event('blok:page-link'));
+  await vi.waitFor(()=>expect(mocks.mounted).toHaveBeenCalledWith(ref,'p1',undefined));
+  expect(mocks.select).toHaveBeenCalledTimes(1);
 
   mocks.take.mockResolvedValueOnce('blok://page/missing?device=1');
   fetch.mockResolvedValueOnce(new Response(JSON.stringify({pages:[]})));

@@ -1,10 +1,12 @@
 import { defineConfig } from 'vite';
+import { scopeCalendarCss } from './scripts/scope-calendar-css.mjs';
 import tailwindcss from '@tailwindcss/vite';
 import { fileURLToPath } from 'node:url';
 
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
+  css: { postcss: { plugins: [scopeCalendarCss] } },
   plugins: [
     tailwindcss(),
     {
@@ -21,6 +23,7 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
+      '@calendarcn-local': fileURLToPath(new URL('./src/calendarcn', import.meta.url)),
       '@blok/page-table': fileURLToPath(new URL('../src/tools/database/page-table.ts', import.meta.url)), '@blok/agent-assistant': fileURLToPath(new URL('../src/shell/agent-assistant.ts', import.meta.url)), '@blok/popover': fileURLToPath(new URL('../src/components/utils/popover/popover-desktop.ts', import.meta.url)), '@blok/modal-dialog': fileURLToPath(new URL('../src/components/utils/modal-dialog.ts', import.meta.url)),
       '@bloklabs/core/full': fileURLToPath(new URL('../src/full.ts', import.meta.url)),
       '@bloklabs/core/view': fileURLToPath(new URL('../src/view/index.ts', import.meta.url)),

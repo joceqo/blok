@@ -13,6 +13,11 @@ describe('tab context menu', () => {
       expect(pageLinkFor('http://localhost:1420/?page=blok-architecture')).toBe('blok://page/blok-architecture');
     });
 
+    it('copies the view from the tab whose menu is open', () => {
+      expect(pageLinkFor('/?page=notes&view=whiteboard')).toBe('blok://page/notes?view=whiteboard');
+      expect(pageLinkFor('/?page=notes&local=1&workspace=mine&view=whiteboard')).toBe('blok://page/notes?local=1&workspace=mine&view=whiteboard');
+    });
+
     it('keeps the id verbatim, including uuids', () => {
       const id = '15dcb34a-17c3-4158-95d4-966919c44a2d';
       expect(pageLinkFor(`http://x/?page=${id}`)).toBe(`blok://page/${id}`);

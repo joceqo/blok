@@ -74,6 +74,34 @@ describe.skipIf(!url)('Google calendar account binding and isolation',()=>{
     expect((await call('alice','/api/calendar/google/callback?state='+new URL(another.url).searchParams.get('state')+'&code=x')).status).toBe(400);
     expect(http).toHaveBeenCalledTimes(1);
   });
+  it('completes an installed-app consent on the loopback callback, where no browser carries a Blok session',async()=>{
+    // The desktop app opens the system browser, which has no cookie for the
+    // server it just started on 127.0.0.1. Google can only answer on that
+    // machine's own loopback port, so the one-time state identifies the account.
+    const installed={...env,GOOGLE_CALENDAR_REDIRECT_URI:'http://127.0.0.1:52430/api/calendar/google/callback',PUBLIC_URL:'http://127.0.0.1:52430'};
+    const local=vi.fn<typeof fetch>();
+    const app=new Hono().route('/',googleCalendarRoutes(db,createGoogleCalendarProvider('secret'.repeat(8),installed,local)));
+    app.onError((e,c)=>c.json({error:e.message},e instanceof WorkspaceError || e instanceof HTTPException ? e.status : 500));
+    const start=await app.request(base+'connect',{method:'POST',headers:{Cookie:'blok_session=bob'}});
+    const state=new URL((await start.json()).url).searchParams.get('state')!;
+    local.mockImplementationOnce(async(url,options)=>{
+      expect(String(url)).toBe('https://oauth2.googleapis.com/token');
+      expect((options?.body as URLSearchParams).get('redirect_uri')).toBe(installed.GOOGLE_CALENDAR_REDIRECT_URI);
+      return Response.json({access_token:'local-access',refresh_token:'local-refresh',expires_in:3600,scope:calendarScope});
+    });
+    const callback='/api/calendar/google/callback?state='+state+'&code=authorization-code';
+    const done=await app.request(callback);
+    expect(done.status).toBe(200);
+    expect(await done.text()).toContain('fermer cet onglet');
+    expect(await (await app.request(base+'status',{headers:{Cookie:'blok_session=bob'}})).json()).toEqual({configured:true,connected:true});
+    const row=(await db.query("SELECT * FROM calendar_google_connections WHERE user_id='bob'")).rows[0];
+    expect(row.refresh_secret).not.toContain('local-refresh');
+    // One consent, one connection: a replayed callback is refused.
+    expect((await app.request(callback)).status).toBe(400);
+    expect(local).toHaveBeenCalledTimes(1);
+    await db.query("DELETE FROM calendar_google_connections WHERE user_id='bob'");
+  });
+
   it('clears a revoked account and its availability opt-in together while preserving a concurrently replaced grant',async()=>{
     const google=createGoogleCalendarProvider('secret'.repeat(8),env,http);
     const old=google.encrypt('b','alice','refresh','old-grant');

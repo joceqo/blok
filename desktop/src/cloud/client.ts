@@ -47,6 +47,7 @@ export interface CloudEmailTestResult {
 export interface CloudSessionAdapter {
   getToken(): Promise<string | null>;
   setToken(token: string | null): Promise<void>;
+  setAccountToken?(account: string, token: string | null): Promise<void>;
 }
 export interface CloudWorkspaceStatus { id: string; slug: string; name: string; role: CloudRole | null; joinStatus: 'pending' | 'approved' | 'rejected' | null }
 export class CloudApiError extends Error {
@@ -79,7 +80,7 @@ export class CloudClient {
     return data as T;
   }
   instance(): Promise<CloudInstance> { return this.request<CloudInstance>('/api/instance'); }
-  async session(): Promise<CloudSession> { const session = await this.request<CloudSession>('/api/session'); this.currentSession = session; return session; }
+  async session(signal?: AbortSignal): Promise<CloudSession> { const session = await this.request<CloudSession>('/api/session', {signal}); this.currentSession = session; return session; }
   verifyCode(email: string, code: string): Promise<CloudSession> {
     return this.authenticate('/api/auth/verify-code', {email, code});
   }
@@ -92,6 +93,7 @@ export class CloudClient {
     });
     if (this.sessionAdapter) {
       if (!session.token) throw new Error('Le serveur n’a pas fourni de session pour cet appareil.');
+      await this.sessionAdapter.setAccountToken?.(session.user.id, session.token);
       await this.sessionAdapter.setToken(session.token);
     }
     this.currentSession = session;
@@ -99,6 +101,7 @@ export class CloudClient {
   }
   async logout(): Promise<void> {
     await this.request('/api/auth/logout', {method:'POST'});
+    if (this.currentSession) await this.sessionAdapter?.setAccountToken?.(this.currentSession.user.id, null);
     await this.sessionAdapter?.setToken(null);
     this.currentSession = null;
   }

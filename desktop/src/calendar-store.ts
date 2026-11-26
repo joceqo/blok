@@ -10,6 +10,8 @@ export interface CalendarEvent {
   end: string;
   allDay: boolean;
   pageId: string | null;
+  participantIds?: string[];
+  readOnly?: boolean;
   revision: number;
   source?: {id: string; label: string; color: string};
 }

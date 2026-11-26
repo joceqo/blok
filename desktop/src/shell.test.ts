@@ -172,6 +172,25 @@ describe('desktop tab strip', () => {
     expect(await openMountedPage({...initialWorkspace, id: 'another'}, 'linked')).toBe(false);
   });
 
+  it('reuses only the requested view on warm and cold native links', async () => {
+    history.replaceState(null, '', '/?page=original');
+    const host = mount();
+    const documentTab = readSession().activeId;
+    expect(await openMountedPage(initialWorkspace, 'original', 'whiteboard')).toBe(true);
+    const whiteboardTab = readSession().activeId;
+    expect(whiteboardTab).not.toBe(documentTab);
+    expect(location.search).toBe('?page=original&view=whiteboard');
+    expect(await openMountedPage(initialWorkspace, 'original')).toBe(true);
+    expect(readSession().activeId).toBe(documentTab);
+    expect(tabLabels(host)).toHaveLength(2);
+
+    Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+    history.replaceState(null, '', '/?page=original&view=whiteboard');
+    mount();
+    expect(readSession().activeId).toBe(whiteboardTab);
+    expect(readSession().tabs).toHaveLength(2);
+  });
+
   it('opens one readable tab in a 40px strip', () => {
     const root = mount();
     const strip = root.querySelector('[data-desktop-tabstrip]');

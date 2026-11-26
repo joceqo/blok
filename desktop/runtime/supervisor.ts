@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { gateway } from './gateway.ts';
+import { googleCalendarEnv } from './google-calendar.ts';
 import { checkPrivatePorts, choosePorts, listen, loopback, openInstance } from './instance.ts';
 
 const { values } = parseArgs({ options: { resources: { type: 'string' }, data: { type: 'string' }, web: { type: 'string' } } });
@@ -149,6 +150,9 @@ async function startStorage() {
   await mkdir(objects, { recursive: true });
   const admin = await choosePorts(['http', 'grpc'] as const, Object.values(ports));
   start('SeaweedFS', binary('weed'), ['mini', '-dir=' + objects, '-ip=' + loopback, '-ip.bind=' + loopback,
+    // Mini persists a volume size chosen at first launch. On a laptop with less free space
+    // later, 1 GiB volumes can leave no slot for the separate asset collection.
+    '-master.volumeSizeLimitMB=64',
     // The single local volume has no other nodes waiting on routing heartbeats.
     '-volume.preStopSeconds=0', '-master.telemetry=false', '-webdav=false', '-admin.ui=false', '-admin.port.legacy=0', '-s3.port.iceberg=0', '-s3.port.lance=0',
     '-admin.port=' + admin.http, '-admin.port.grpc=' + admin.grpc,
@@ -178,6 +182,7 @@ try {
   });
   const databaseUrl = 'postgresql://blok:' + secrets.postgres + '@' + loopback + ':' + ports.postgres + '/postgres';
   start('Shell', binary('node'), [join(resources, 'app', 'main.mjs')], { ...storage, DATABASE_URL: databaseUrl,
+    ...await googleCalendarEnv(data, publicOrigin),
     PUBLIC_URL: publicOrigin, PORT: String(ports.api), BLOK_LISTEN_HOST: loopback, BLOK_NODE_ROOM_ALL: '1',
     DATA_DIRECTORY: data, BLOK_SCHEMA_PATH: join(resources, 'app', 'schema.sql'), ALLOWED_ORIGINS: allowedOrigins,
     BLOK_DEVICE_SESSION_SECRET: deviceSecret, INTERNAL_SECRET: secrets.internal, TICKET_SECRET: secrets.ticket, BLOK_MEDIA_ORIGIN: media, BLOK_ROOM_STATE_ORIGIN: room,

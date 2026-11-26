@@ -255,4 +255,22 @@ Enable the Google Calendar API in Google Cloud, configure the OAuth consent scre
 
 Set `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET` and `GOOGLE_CALENDAR_REDIRECT_URI` in your deployment environment, then recreate the API container. Users can connect their own account in the workspace calendar. Google's read-only Calendar permission lets Blok display the chosen calendars and their recurring events. The availability sharing option exposes busy times from the primary calendar to teammates who can access that workspace. Blok stores its OAuth tokens encrypted. Preserve `INTERNAL_SECRET` when restoring the database.
 
-Google returns consent to the registered web server. When connecting from Tauri, first sign into the same Blok account in the external browser on that server. An embedded instance with a dynamically assigned local port uses the standalone Blok calendar. A fixed self-hosted URL enables the Google connection. Disconnect removes the local credentials for that workspace. To withdraw Google's grant across installations using the same OAuth client, remove Blok from your Google Account's third-party access page.
+Google returns consent to the registered redirect URI. On a hosted server, the browser that returns must already be signed into the same Blok account: that is what stops a copied consent link from attaching someone else's Google account to its sender. Disconnect removes the local credentials for that workspace. To withdraw Google's grant across installations using the same OAuth client, remove Blok from your Google Account's third-party access page.
+
+#### From the embedded desktop app
+
+The desktop app runs this same server on loopback, so it configures itself: it derives its redirect URI from the origin it serves and needs no `GOOGLE_CALENDAR_REDIRECT_URI`. Google can only deliver that consent to the machine that asked for it, so the returning browser needs no Blok session there, and the one-time state identifies the account.
+
+Create an OAuth client of type **Desktop app**, which accepts any loopback port, and write it to `google-calendar.json` in the instance's data directory — a packaged app inherits no environment variables:
+
+```json
+{ "clientId": "YOUR-ID.apps.googleusercontent.com", "clientSecret": "YOUR-SECRET" }
+```
+
+| Platform | Data directory |
+| --- | --- |
+| macOS | `~/Library/Application Support/dev.notiooon.blok/embedded-server/` |
+| Windows | `%APPDATA%\dev.notiooon.blok\embedded-server\` |
+| Linux | `~/.local/share/dev.notiooon.blok/embedded-server/` |
+
+Restart the app; **Connecter Google** appears in the calendar's source list. An installed client secret is not confidential — Google expects this of installed apps, and PKCE is what protects the exchange. To register an exact URI instead (an OAuth client of type **Web application**), read the stable `ports.public` of that installation from `instance.json` in the same directory and register `http://127.0.0.1:PORT/api/calendar/google/callback`.

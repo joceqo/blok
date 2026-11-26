@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { parsePageLink } from './page-link';
 import { openPageCreation, openPageSearch } from './navigation-dialogs';
 
 afterEach(() => {
@@ -27,6 +28,18 @@ it('searches authorized titles, shows ancestry and opens the keyboard-selected r
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   expect(onOpen).toHaveBeenCalledWith('c');
   expect(document.querySelector('[data-navigation-dialog]')).toBeNull();
+});
+
+it.each([false, true])('opens a pasted whiteboard link in its requested view (new tab %s)', (newTab) => {
+  const onOpen = vi.fn();
+  const onOpenTab = vi.fn();
+  openPageSearch({workspaceName:'Équipe', pages:() => [{id:'a',title:'Guide',parentId:null}],
+    pageLinkFromUrl:parsePageLink, onOpen, onOpenTab});
+  const input = document.querySelector<HTMLInputElement>('[role=combobox]')!;
+  input.value = 'blok://page/a?view=whiteboard';
+  input.dispatchEvent(new Event('input', {bubbles:true}));
+  input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', ctrlKey:newTab, bubbles:true}));
+  expect(newTab ? onOpenTab : onOpen).toHaveBeenCalledWith('a','whiteboard');
 });
 
 it('does not open a result removed by a permissions refresh', () => {

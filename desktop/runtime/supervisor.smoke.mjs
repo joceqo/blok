@@ -109,6 +109,17 @@ test('the local device account keeps its workspace and private object across a c
     assert.equal((await call(base + '/index', 'PUT', { revision: 0, pages: [page], trash: [] })).status, 200);
     const { ticket } = await (await call(base + '/ticket?doc=' + page.id)).json();
     assert.ok(ticket);
+    const form = new FormData();
+    form.append('file', new Blob([image], {type: 'image/gif'}), 'capture.gif');
+    const saved = await fetch(origin + '/api/blok/upload', {
+      method: 'POST', headers: {origin: 'tauri://localhost', authorization: 'Bearer ' + ticket}, body: form,
+    });
+    assert.equal(saved.headers.get('access-control-allow-origin'), 'tauri://localhost');
+    assert.equal(saved.status, 200, await saved.clone().text());
+    const fileUrl = (await saved.json()).url;
+    const signed = await call('/api/assets/url?url=' + encodeURIComponent(fileUrl));
+    assert.equal(signed.status, 200);
+    assert.deepEqual(Buffer.from(await (await fetch((await signed.json()).url)).arrayBuffer()), image);
     assert.equal(await connectRoom(origin, page.id, ticket), 'blok-sync.v2');
     const config = JSON.parse(await readFile(join(data, 'instance.json'), 'utf8'));
     assert.equal((await fetch('http://127.0.0.1:' + config.ports.s3 + '/blok-assets/' + url.slice(7))).status, 403);
@@ -121,6 +132,9 @@ test('the local device account keeps its workspace and private object across a c
     assert.equal(sameAccount.deviceWorkspaceId, workspace.id);
     token = sameAccount.token;
     assert.equal((await call('/api/session')).status, 200);
+    const afterRestart = await call('/api/assets/url?url=' + encodeURIComponent(fileUrl));
+    assert.equal(afterRestart.status, 200);
+    assert.deepEqual(Buffer.from(await (await fetch((await afterRestart.json()).url)).arrayBuffer()), image);
     const range = await fetch(origin + url, { headers: { authorization: 'Bearer ' + token, range: 'bytes=0-5' } });
     assert.equal(range.status, 206);
     assert.deepEqual(Buffer.from(await range.arrayBuffer()), image.subarray(0, 6));

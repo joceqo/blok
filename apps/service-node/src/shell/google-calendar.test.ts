@@ -4,6 +4,7 @@ import type { PgPool } from '../db/pool.ts';
 import { describe, expect, it, vi } from 'vitest';
 import { googleCalendarRoutes } from './google-calendar.ts';
 import { calendarScope, createGoogleCalendarProvider } from './google-calendar-provider.ts';
+import { googleCalendarEnv } from '../../../../desktop/runtime/google-calendar.ts';
 import { openCalendarSecret, sealCalendarSecret } from './calendar-secrets.ts';
 
 const secret = 'x'.repeat(32);
@@ -32,6 +33,28 @@ it('requires an exact registered server callback', () => {
   }
   expect(createGoogleCalendarProvider(secret,{}).config).toBeUndefined();
   expect(createGoogleCalendarProvider(secret,env).config?.redirect).toBe(env.GOOGLE_CALENDAR_REDIRECT_URI);
+});
+
+it('accepts the loopback callback an installed app answers on', () => {
+  // The desktop app starts this same server on a loopback port of its own, so
+  // its callback is http rather than the https a hosted deployment registers.
+  const installed = {...env,GOOGLE_CALENDAR_REDIRECT_URI:'http://127.0.0.1:52430/api/calendar/google/callback',PUBLIC_URL:'http://127.0.0.1:52430'};
+  expect(createGoogleCalendarProvider(secret,installed).config).toMatchObject({redirect:installed.GOOGLE_CALENDAR_REDIRECT_URI,loopback:true});
+  expect(createGoogleCalendarProvider(secret,env).config).toMatchObject({loopback:false});
+  for (const redirect of ['http://127.0.0.1:52430/calendar','http://blok.example/api/calendar/google/callback',
+    'http://127.0.0.1:52430/api/calendar/google/callback?x=1','http://127.0.0.1:52431/api/calendar/google/callback']) {
+    expect(createGoogleCalendarProvider(secret,{...installed,GOOGLE_CALENDAR_REDIRECT_URI:redirect}).config).toBeUndefined();
+  }
+});
+
+it('configures this server from what the desktop runtime hands it', async () => {
+  // The runtime builds the callback from its own copy of the path. If the two
+  // drift apart, the installed app silently reports Google as unconfigured.
+  const origin = 'http://127.0.0.1:51395';
+  const installed = await googleCalendarEnv('/no/such/directory',origin,
+    {GOOGLE_CALENDAR_CLIENT_ID:'installed',GOOGLE_CALENDAR_CLIENT_SECRET:'installed-secret'});
+  expect(createGoogleCalendarProvider(secret,{...installed,PUBLIC_URL:origin}).config)
+    .toMatchObject({clientId:'installed',redirect:origin+'/api/calendar/google/callback',loopback:true});
 });
 
 it('forwards only FreeBusy windows from the primary calendar for a connected account', async () => {
@@ -85,6 +108,24 @@ it('pages through calendar lists and expanded occurrences, preserving floating d
   expect(await google.events(pool,'w','u','team@example.org',from,to)).toMatchObject([
     {start:'2026-11-24T13:00:00.000Z',end:'2026-11-24T14:00:00.000Z',allDay:false,title:'Occupé'},
     {start:'2026-11-25',end:'2026-11-26',allDay:true,title:'Journée'}]);
+});
+
+it('lists shared busy-only calendars and reads just their occupied intervals',async()=>{
+  const {pool} = poolWithToken();
+  const id = 'colleague@example.org';
+  const http = vi.fn<typeof fetch>(async (raw,init) => {
+    const url = new URL(String(raw));
+    if (url.pathname.endsWith('calendarList')) {
+      expect(url.searchParams.get('minAccessRole')).toBe('freeBusyReader');
+      return reply({items:[{id,summary:'Collègue',accessRole:'freeBusyReader'}]});
+    }
+    expect(url.pathname).toMatch(/freeBusy$/);
+    expect(JSON.parse(String(init?.body)).items).toEqual([{id}]);
+    return reply({calendars:{[id]:{busy:[{start:from,end:to}]}}});
+  });
+  const google = createGoogleCalendarProvider(secret,env,http);
+  expect(await google.calendars(pool,'w','u')).toMatchObject([{id,busyOnly:true}]);
+  expect(await google.freeBusy(pool,'w','u',from,to,id)).toEqual([{start:from,end:to}]);
 });
 
 describe('OAuth consent',()=>{

@@ -1,11 +1,12 @@
+import { diskPageWorkspace } from './disk-page-link';
 import { libraryView } from './library-route';
 import { isCalendarUrl } from './calendar-route';
 import { listenForPageLinks } from './native-page-links';
-import { webPageLink } from './page-link';
+import { clearPageRoute, pageRoute, webPageLink } from './page-link';
 import './editor.css';
 import '../../src/shell/sidebar.css';
 import './shell.css';
-import { activateWorkspace, activeWorkspace, initialWorkspace, listWorkspaces, LOCAL_SERVER_ORIGIN, rememberWorkspace, selectWorkspace, serverOrigin, type RemoteWorkspace } from './workspace-registry';
+import { activateWorkspace, activeWorkspace, initialWorkspace, listWorkspaces, LOCAL_SERVER_ORIGIN, rememberWorkspace, selectStartupPage, selectWorkspace, serverOrigin, type RemoteWorkspace } from './workspace-registry';
 import { nativeBridge, openEmbeddedWorkspace, useEmbeddedServer } from './native-runtime';
 import { guardNativeClose } from './native-close';
 import { nativeSessionAdapter } from './native-session';
@@ -55,18 +56,29 @@ async function boot(root: HTMLElement): Promise<void> {
   const browserPage = native ? undefined : webPageLink(launchUrl);
   if (!native && launchUrl.pathname === '/' && params.has('page') && !browserPage) {
     showStartupFailure(root, new Error('Lien de page Blok invalide.'), () => {
-      params.delete('page');
+      clearPageRoute(launchUrl);
       params.delete('workspace');
       location.assign(launchUrl.href);
     }, 'Retour à l’espace');
     return;
   }
   let selected = activeWorkspace();
-  const explicitGateway = params.get('cloud') === '1';
+  const diskPage = native ? pageRoute(launchUrl) : browserPage;
+  if (diskPage?.local && diskPage.workspace) {
+    try {
+      const disk = await diskPageWorkspace(diskPage.workspace, diskPage.id);
+      if (selected.kind !== 'local' || disk.id !== selected.id) selectStartupPage(disk, diskPage.id, diskPage.view);
+      selected = disk;
+    } catch (error) {
+      showStartupFailure(root, error, () => selectWorkspace(activeWorkspace()), 'Retour à l’espace');
+      return;
+    }
+  }
+  const explicitGateway = !(diskPage?.local && diskPage.workspace) && params.get('cloud') === '1';
   function chooseServer(server: string): void {
     const url = new URL(location.href);
     url.searchParams.delete('local');
-    url.searchParams.delete('page');
+    clearPageRoute(url);
     if (selected.kind === 'remote' && selected.embedded && selected.server === server) {
       url.searchParams.delete('server');
       url.searchParams.delete('cloud');
@@ -144,7 +156,8 @@ async function boot(root: HTMLElement): Promise<void> {
         if (manageSlug && manageSection && workspace.slug === manageSlug) {
           sessionStorage.setItem('blok:desktop:pending-settings', manageSection);
         }
-        selectWorkspace(ref, browserPage?.origin === ref.server && (!browserPage.workspace || browserPage.workspace === ref.id) ? browserPage.id : undefined);
+        const page = browserPage?.origin === ref.server && (!browserPage.workspace || browserPage.workspace === ref.id) ? browserPage : undefined;
+        selectWorkspace(ref, page?.id, page?.view);
       },
       onOpenLocal: () => selectWorkspace(selected.kind === 'local' || selected.device ? selected : listWorkspaces().find(ref => ref.kind === 'remote' && ref.device) ?? initialWorkspace),
       onServerChange: (server) => {
@@ -162,8 +175,10 @@ async function boot(root: HTMLElement): Promise<void> {
     await showGateway();
     return;
   }
-  if (!embedded && selected.kind === 'remote' && !(await refreshRemoteMembership(client, selected, origin, showGateway))) {
-    return;
+  if (!embedded && selected.kind === 'remote') {
+    const refreshed = await refreshRemoteMembership(client, selected, origin, showGateway);
+    if (!refreshed) return;
+    selected = refreshed;
   }
   const {mountDesktop, flushDesktop} = desktop ?? await import('./shell');
   root.addEventListener('blok:desktop-connect-cloud', (event) => {
@@ -196,7 +211,7 @@ async function boot(root: HTMLElement): Promise<void> {
         url.searchParams.delete('local');
         url.searchParams.set('embedded', '1');
       }
-      url.searchParams.delete('page');
+      clearPageRoute(url);
       url.searchParams.delete('manage');
       url.searchParams.delete('section');
       location.assign(url.href);
@@ -204,7 +219,7 @@ async function boot(root: HTMLElement): Promise<void> {
   });
   const bridge = nativeBridge();
   if (bridge) await guardNativeClose(root, bridge, flushDesktop);
-  mountDesktop(root);
+  mountDesktop(root, selected);
 }
 
 async function refreshRemoteMembership(
@@ -212,19 +227,20 @@ async function refreshRemoteMembership(
   selected: Extract<ReturnType<typeof activeWorkspace>, { kind: 'remote' }>,
   origin: string,
   showGateway: () => Promise<void>,
-): Promise<boolean> {
+): Promise<RemoteWorkspace | undefined> {
   try {
     const session = await client.session();
     const membership = session.workspaces.find(item => item.slug === selected.workspaceId);
     if (session.user.id !== selected.accountId || !membership || selected.server !== origin) {
       await showGateway();
-      return false;
+      return;
     }
-    rememberWorkspace({...selected, role: membership.role, name: membership.name});
-    return true;
+    const refreshed = {...selected, role: membership.role, name: membership.name};
+    rememberWorkspace(refreshed);
+    return refreshed;
   } catch {
     await showGateway();
-    return false;
+    return;
   }
 }
 

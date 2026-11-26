@@ -102,6 +102,21 @@ describe('desktop page cover', () => {
     await vi.waitFor(() => expect(change).toHaveBeenCalledWith('https://example.com/files/cover.png'));
     expect(upload).toHaveBeenCalledWith('data:image/png;base64,YQ==');
   });
+  it('removes a cover directly and ignores an earlier upload finishing afterwards', async () => {
+    const change = vi.fn();
+    let finishUpload!: (url: string) => void;
+    const upload = vi.fn(() => new Promise<string>(resolve => { finishUpload = resolve; }));
+    const root = createPageCover('dusk', 35, change, vi.fn(), { upload });
+    const file = root.querySelector<HTMLInputElement>('input[type=file]')!;
+    Object.defineProperty(file, 'files', { value: [new File(['a'], 'cover.png', { type: 'image/png' })] });
+    file.dispatchEvent(new Event('change'));
+    await vi.waitFor(() => expect(upload).toHaveBeenCalledOnce());
+    root.querySelector<HTMLButtonElement>('[data-desktop-cover-actions] > [aria-label="Retirer la couverture"]')!.click();
+    finishUpload('https://example.org/cover.png');
+    await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>('[data-desktop-cover-panel] button')!.disabled).toBe(false));
+    expect(change).toHaveBeenCalledExactlyOnceWith(undefined);
+  });
+
   it('shows upload errors and hides controls from viewers', async () => {
     const change = vi.fn();
     const root = createPageCover('dusk', 50, change, vi.fn(), {upload: vi.fn().mockRejectedValue(new Error('Connexion perdue'))});

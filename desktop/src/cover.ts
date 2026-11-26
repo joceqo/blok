@@ -420,15 +420,17 @@ export function createPageCover(
   gallery.hidden = true;
   gallery.id = 'cover-picker-' + crypto.randomUUID();
   change.setAttribute('aria-controls', gallery.id);
+  let selectionVersion = 0;
   const choose = (next: PageCover | undefined): void => {
+    selectionVersion++;
     const parent = root.parentElement;
-    const restoreFocus = gallery.contains(document.activeElement);
+    const restoreFocus = actions.contains(document.activeElement);
     closeGallery();
     onChange(next);
     if (restoreFocus) {
-      const trigger = root.isConnected ? change : parent?.querySelector<HTMLButtonElement>(
-        '[data-desktop-cover-actions] > [aria-haspopup="dialog"], [data-desktop-add-cover]',
-      );
+      const trigger = root.isConnected ? change : parent?.querySelector<HTMLElement>(
+        next === undefined ? '[data-blok-page-title]' : '[data-desktop-cover-actions] > [aria-haspopup="dialog"]',
+      ) ?? parent?.querySelector<HTMLElement>('[data-desktop-add-cover]');
       trigger?.focus({preventScroll:true});
     }
   };
@@ -438,6 +440,12 @@ export function createPageCover(
   remove.type = 'button';
   remove.textContent = 'Supprimer';
   remove.addEventListener('click', () => choose(undefined));
+  const removeFromPage = document.createElement('button');
+  removeFromPage.type = 'button';
+  removeFromPage.textContent = 'Retirer';
+  removeFromPage.setAttribute('aria-label', 'Retirer la couverture');
+  removeFromPage.title = 'Retirer la couverture';
+  removeFromPage.addEventListener('click', () => choose(undefined));
   gallery.append(head);
   const tabs = document.createElement('div');
   tabs.setAttribute('data-desktop-cover-tabs', '');
@@ -517,9 +525,11 @@ export function createPageCover(
   file.addEventListener('change', () => {
     const selected = file.files?.[0];
     if (!selected) return;
+    const version = selectionVersion;
     upload.disabled = true;
     uploadStatus.textContent = 'Importation…';
     void readCoverFile(selected).then((data) => options.upload ? options.upload(data) : data).then((url) => {
+      if (version !== selectionVersion) return;
       if (!isPageCover(url)) throw new Error('Image invalide.');
       choose(url);
     }).catch((error: unknown) => {
@@ -677,7 +687,7 @@ export function createPageCover(
     start = null;
     drag.hidden = true;
     root.removeAttribute('data-repositioning');
-    actions.replaceChildren(change, reposition, download, gallery);
+    actions.replaceChildren(change, reposition, download, removeFromPage, gallery);
     actions.removeAttribute('data-open');
     if (restoreFocus) reposition.focus();
   };
@@ -726,7 +736,7 @@ export function createPageCover(
       onDismiss: (reason) => { if (reason === 'outside') commitPosition(false); else cancelPosition(); },
     });
   });
-  actions.append(change, reposition, download, gallery);
+  actions.append(change, reposition, download, removeFromPage, gallery);
   root.append(image, drag);
   if (!options.readOnly) root.append(actions);
   return root;

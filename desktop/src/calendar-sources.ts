@@ -1,7 +1,7 @@
 import type { CalendarEvent, CalendarStore } from './calendar-store';
 import './calendar-sources.css';
 
-type Source = {kind: 'google'|'member'|'feed'; id:string; label:string; color:string; primary?:boolean};
+type Source = {kind: 'google'|'member'|'feed'; id:string; label:string; color:string; busyOnly?:boolean; primary?:boolean};
 type Group = Source['kind'];
 const palette = ['#4682a3','#ad7161','#8874b0','#b38c3e','#598e7f'];
 const color = (id: string) => palette[Array.from(id).reduce((n,c)=>n+c.charCodeAt(0),0) % palette.length];
@@ -26,6 +26,15 @@ function readFeed(text:string, from:string, to:string):Promise<CalendarEvent[]> 
   });
 }
 
+export async function connectGoogleCalendar(remote: NonNullable<CalendarStore['remote']>) {
+    const {url} = await remote.client.request<{url:string}>(remote.base + '/google/connect',{method:'POST'});
+    const dest = new URL(url);
+    if (dest.origin !== 'https://accounts.google.com' || dest.pathname !== '/o/oauth2/v2/auth') throw new Error('Adresse de connexion Google invalide.');
+    const bridge = (window as Window & {__TAURI_INTERNALS__?:{invoke:(cmd:string,args:Record<string,string>)=>Promise<void>}}).__TAURI_INTERNALS__;
+    if (bridge) await bridge.invoke('open_calendar_authorization',{url:dest.href});
+    else window.location.assign(dest.href);
+  }
+
 export function mountCalendarSources(container:HTMLElement, store:CalendarStore, onChange:()=>void, grouped = false) {
   const remote = store.remote;
   const prefix = 'blok:calendar:layers:' + (remote?.preferenceKey ?? 'disk');
@@ -40,6 +49,26 @@ export function mountCalendarSources(container:HTMLElement, store:CalendarStore,
     onChange();
   }
   const api = <T>(path:string, init?:RequestInit) => remote!.client.request<T>(remote!.base + path,init);
+  async function memberBusy(memberId:string, from:string, to:string, generation:number) {
+    // The availability endpoint accepts at most 31 days and clips intervals at the bounds.
+    const limit = 31 * 86400000;
+    const end = Date.parse(to);
+    const slots: Array<{start:string; end:string}> = [];
+    for (let start = Date.parse(from); start < end; start += limit) {
+      if (generation !== readSerial || destroyed) return [];
+      const range = new URLSearchParams({
+        from: new Date(start).toISOString(),
+        to: new Date(Math.min(start + limit, end)).toISOString(),
+      });
+      const {busy} = await api<{busy:typeof slots}>('/members/'+encodeURIComponent(memberId)+'/freebusy?'+range);
+      for (const slot of busy) {
+        const last = slots.at(-1);
+        if (last && last.end === slot.start) last.end = slot.end;
+        else slots.push(slot);
+      }
+    }
+    return slots;
+  }
   function checkbox(name:string,value:boolean,tint:string,change:(on:boolean)=>void) {
     const line = element('label'), box = element('input');
     box.type = 'checkbox'; box.checked = value; box.style.setProperty('--cal-source-color',tint);
@@ -62,19 +91,10 @@ export function mountCalendarSources(container:HTMLElement, store:CalendarStore,
     });};
     container.append(form); title.focus();
   }
-  async function connect() {
-    const {url} = await api<{url:string}>('/google/connect',{method:'POST'});
-    if (destroyed) return;
-    const dest = new URL(url);
-    if (dest.origin !== 'https://accounts.google.com' || dest.pathname !== '/o/oauth2/v2/auth') throw new Error('Adresse de connexion Google invalide.');
-    const bridge = (window as Window & {__TAURI_INTERNALS__?:{invoke:(cmd:string,args:Record<string,string>)=>Promise<void>}}).__TAURI_INTERNALS__;
-    if (bridge) await bridge.invoke('open_calendar_authorization',{url:dest.href});
-    else window.location.assign(dest.href);
-  }
   function render() {
     if (destroyed) return;
     container.replaceChildren();
-    const group = (name:string) => {const section=element('section');section.append(element('h3',name));container.append(section);return section;};
+    const group = (name:string) => {const section=element('section');section.append(element(grouped ? 'h3' : 'h2', name));container.append(section);return section;};
     if (!grouped) group('Agendas').append(checkbox('Espace de travail',selected.workspace !== false,'#54836b',on=>toggle('workspace',on)));
     if (remote) {
       const fill = (section:HTMLElement,kind:Group) => {
@@ -91,7 +111,7 @@ export function mountCalendarSources(container:HTMLElement, store:CalendarStore,
       const google = group('Google Agenda');
       fill(google,'google');
       if (connected) google.append(action('Déconnecter Google',()=>void transact(async()=>{await api('/google/connection',{method:'DELETE'});})));
-      else if (configured) google.append(action('Connecter Google',()=>void connect().catch(report)));
+      else if (configured) google.append(action('Connecter Google',()=>void connectGoogleCalendar(remote).catch(report)));
       else google.append(element('small','Connexion à configurer sur le serveur.'));
       const feeds = group('Abonnements'); fill(feeds,'feed'); feeds.append(action('+ Ajouter un agenda',addFeed));
       const team = group('Disponibilités de l’équipe'); fill(team,'member');
@@ -108,7 +128,7 @@ export function mountCalendarSources(container:HTMLElement, store:CalendarStore,
     const generation = ++serial;
     const [google,team,feeds] = await Promise.allSettled([
       (async()=>{const status=await api<{configured:boolean;connected:boolean}>('/google/status');
-        const list=status.connected ? (await api<{calendars:{id:string;title:string;color:string;primary?:boolean}[]}>('/google/calendars')).calendars : [];
+        const list=status.connected ? (await api<{calendars:{id:string;title:string;color:string;busyOnly?:boolean; primary?:boolean}[]}>('/google/calendars')).calendars : [];
         return {status, list};})(),
       api<{members:{id:string;name:string}[];sharing:boolean}>('/members'),
       api<{feeds:{id:string;label:string}[]}>('/feeds'),
@@ -119,17 +139,29 @@ export function mountCalendarSources(container:HTMLElement, store:CalendarStore,
     configured = google.status==='fulfilled' && google.value.status.configured;
     connected = google.status==='fulfilled' && google.value.status.connected;
     sharing = team.status==='fulfilled' && team.value.sharing;
-    if (google.status==='fulfilled') for (const s of google.value.list) sources.push({kind:'google',id:s.id,label:s.title,primary:s.primary,color:/^#[0-9a-f]{6}$/i.test(s.color)?s.color:color(s.id)});
+    if (google.status==='fulfilled') for (const s of google.value.list) sources.push({kind:'google',id:s.id,label:s.busyOnly ? s.title + ' · Disponibilités' : s.title,busyOnly:s.busyOnly,primary:s.primary,color:/^#[0-9a-f]{6}$/i.test(s.color)?s.color:color(s.id)});
     if (feeds.status==='fulfilled') for (const s of feeds.value.feeds) sources.push({...s,kind:'feed',color:color(s.id)});
     if (team.status==='fulfilled') for (const s of team.value.members) sources.push({id:s.id,label:s.name,color:color(s.id),kind:'member'});
     render();
   }
   render();
-  let ready=reload();
+  // Let the sidebar list the calendars as soon as they land, without waiting
+  // for the next focus or toggle.
+  let ready=reload().then(()=>{if(!destroyed)onChange();});
   const refresh=()=>{if(document.visibilityState!=='hidden' && !destroyed){ready=reload(); void ready.then(()=>{if(!destroyed)onChange();});}};
   window.addEventListener('focus',refresh);
   const timer=remote ? window.setInterval(refresh, 300000) : undefined;
   return {
+    /**
+     * The account's calendars for the sidebar: the primary one plus everything
+     * shared with it. A Google calendar belongs to an account, and the primary
+     * calendar's id IS that account's address, so no extra call is needed.
+     */
+    sources:()=>sources.filter(s=>s.kind==='google').map(s=>({
+      key:key(s), id:s.id, label:s.label, color:s.color, visible:active(s),
+      account:sources.find(other=>other.kind==='google' && other.primary)?.id ?? '',
+    })),
+    setVisible:(k:string,visible:boolean)=>toggle(k,visible),
     workspaceVisible:()=>selected.workspace!==false,
     destroy(){destroyed=true;window.removeEventListener('focus',refresh);window.clearInterval(timer);},
     async list(from:string,to:string):Promise<CalendarEvent[]> {
@@ -141,9 +173,9 @@ export function mountCalendarSources(container:HTMLElement, store:CalendarStore,
       const layers=await Promise.all(sources.filter(active).map(async s=>{
         try {
           let result:CalendarEvent[];
-          if (s.kind==='google') result=(await api<{events:CalendarEvent[]}>('/google/events?'+qs+'&calendarId='+encodeURIComponent(s.id))).events;
+          if (s.kind==='google') result=(await api<{events:CalendarEvent[]}>('/google/events?'+qs+(s.busyOnly ? '&busyOnly=1' : '')+'&calendarId='+encodeURIComponent(s.id))).events;
           else if(s.kind==='member') {
-            const {busy}=await api<{busy:{start:string;end:string}[]}>('/members/'+encodeURIComponent(s.id)+'/freebusy?'+qs);
+            const busy=await memberBusy(s.id, from, to, gen);
             result=busy.map(slot=>({...slot,id:slot.start,title:'Occupé · '+s.label,allDay:false,pageId:null,revision:0}));
           } else {
             const {ical}=await api<{ical:string}>('/feeds/'+encodeURIComponent(s.id)); result=await readFeed(ical,from,to);

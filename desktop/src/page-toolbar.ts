@@ -72,6 +72,7 @@ export function createPageToolbar(
   onToggleSidebar?: () => void,
   onShare?: (anchor: HTMLButtonElement) => (() => void) | void,
   options: {
+    viewControls?: HTMLElement;
     workspaceName?: string;
     workspacePages?: () => PageBreadcrumbChoice[];
     pageUrl?: (id: string) => string;
@@ -130,6 +131,7 @@ export function createPageToolbar(
     separator.setAttribute('aria-hidden', 'true');
     identity.append(workspace, separator, trail);
   } else identity.append(trail, local);
+  if (options.viewControls) trail.after(options.viewControls);
   if (options.readOnly) {
     const badge = document.createElement('span');
     badge.setAttribute('data-desktop-page-readonly', '');

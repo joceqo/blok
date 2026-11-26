@@ -1,15 +1,18 @@
 import { libraryView } from './library-route';
 import { calendarUrl, editorUrl, isCalendarUrl } from './calendar-route';
-import { workspacePageLink } from './page-link';
+import { pageUrlForView, pageView, workspacePageLink, type PageView } from './page-link';
 import { renderPageIcon } from '../../src/shell/page-icon';
 import { activeWorkspace, workspaceKey, type WorkspaceRef } from './workspace-registry';
 import { createWorkspace, type Workspace } from './workspace';
 import { applyAppearance, readAppearance, watchSystemAppearance } from './settings';
 
-import { buildTabMenuItems, pageLinkFor, type TabMenuAction } from './tab-menu';
+import { buildTabMenuItems, type TabMenuAction } from './tab-menu';
 import { applyFavicon } from './tab-identity';
 
-const tabKey = (): string => workspaceKey(activeWorkspace()) === 'local:default' ? 'blok:window-tabs:v1' : `blok:window-tabs:v1:${workspaceKey(activeWorkspace())}`;
+function tabKey(): string {
+  const key = workspaceKey(box.mountedWorkspace ?? activeWorkspace());
+  return key === 'local:default' ? 'blok:window-tabs:v1' : `blok:window-tabs:v1:${key}`;
+}
 const MAX_TABS = 20;
 const MAX_HISTORY = 100;
 
@@ -51,7 +54,7 @@ const box: {
   session: Session;
   canLeave: () => boolean;
   workspace: Workspace | null;
-  mountedKey?: string;
+  mountedWorkspace?: WorkspaceRef;
 } = {
   root: null,
   session: { tabs: [], activeId: '' },
@@ -62,22 +65,18 @@ const box: {
 export async function flushDesktop(): Promise<void> { await box.workspace?.flush(); }
 
 /** Reuse the editor and its live connection when the OS opens a page in this workspace. */
-export async function openMountedPage(ref: WorkspaceRef, id: string): Promise<boolean> {
-  if (box.mountedKey !== workspaceKey(ref) || !box.workspace?.hasPage(id)) return false;
+export async function openMountedPage(ref: WorkspaceRef, id: string, view: PageView = 'document'): Promise<boolean> {
+  if (!box.mountedWorkspace || workspaceKey(box.mountedWorkspace) !== workspaceKey(ref) || !box.workspace?.hasPage(id)) return false;
   const isTarget = (href: string) => {
     const url = new URL(href);
-    return !url.searchParams.has('view') && url.searchParams.get('page') === id;
+    return !isCalendarUrl(url) && !libraryView(url) && url.searchParams.get('page') === id && pageView(url) === view;
   };
   if (isTarget(location.href)) return true;
   await flushDesktop();
   const existing = box.session.tabs.find(tab => isTarget(tab.href));
   if (existing) moveTo(existing.id, false);
-  else if (box.session.tabs.length < MAX_TABS) createTab({id, title: ''});
-  else {
-    const url = new URL(homeHref());
-    url.searchParams.set('page', id);
-    history.pushState(null, '', url);
-  }
+  else if (box.session.tabs.length < MAX_TABS) createTab({id, title: '', view});
+  else history.pushState(null, '', pageUrlForView(new URL(homeHref()), id, view));
   return true;
 }
 
@@ -85,10 +84,10 @@ export function setCanLeave(guard: () => boolean): void {
   box.canLeave = guard;
 }
 
-export function mountDesktop(root: HTMLElement): void {
+export function mountDesktop(root: HTMLElement, ref: WorkspaceRef = activeWorkspace()): void {
   install();
   box.root = root;
-  box.mountedKey = workspaceKey(activeWorkspace());
+  box.mountedWorkspace = ref;
   root.setAttribute('data-desktop-shell', '');
   applyAppearance(root, readAppearance());
   watchSystemAppearance(root);
@@ -100,7 +99,7 @@ export function mountDesktop(root: HTMLElement): void {
   applyFavicon(current?.icon);
   box.workspace = createWorkspace((width) => {
     root.style.setProperty('--desktop-sidebar-width', `${Math.max(isTauri() ? 156 : 84, width)}px`);
-  }, syncPageIcon);
+  }, syncPageIcon, {ref});
   root.replaceChildren(...(isTauri() ? [strip(), box.workspace.element] : [box.workspace.element]));
   root.addEventListener('click', onClick);
   root.addEventListener('contextmenu', onContextMenu);
@@ -230,7 +229,7 @@ function boot(): Session {
   const matchesRoute = (tab: Tab): boolean => {
     const url = new URL(tab.href);
     if (library) return url.pathname === requested.pathname && url.searchParams.get('p') === requested.searchParams.get('p');
-    return calendar ? isCalendarUrl(url) : url.pathname === requested.pathname && url.searchParams.get('page') === page;
+    return calendar ? isCalendarUrl(url) : url.pathname === requested.pathname && !isCalendarUrl(url) && url.searchParams.get('page') === page && pageView(url) === pageView(requested);
   };
   const current = restored.tabs.find(tab => tab.id === restored.activeId);
   const existing = current && matchesRoute(current) ? current : restored.tabs.find(matchesRoute);
@@ -413,11 +412,11 @@ function moveTo(id: string, check: boolean): void {
   box.workspace?.onRoute();
 }
 
-function createTab(page?: {id: string; title: string; icon?: string}): void {
+function createTab(page?: {id: string; title: string; icon?: string; view?: PageView}): void {
   if (!allowed()) return;
   if (box.session.tabs.length >= MAX_TABS) return;
-  const url = new URL(homeHref());
-  if (page) url.searchParams.set('page', page.id);
+  const home = new URL(homeHref());
+  const url = page ? pageUrlForView(home, page.id, page.view) : home;
   addTab(url.href, page?.title || 'Nouvelle page', page?.icon);
 }
 
@@ -655,11 +654,10 @@ function runTabMenuAction(action: TabMenuAction, id: string): void {
   const index = ids.indexOf(id);
   if (action === 'copy-link') {
     const tab = box.session.tabs.find((item) => item.id === id);
-    const link = tab ? pageLinkFor(tab.href) : null;
-    if (link && tab) {
-      const workspace = activeWorkspace();
-      const id = new URL(tab.href).searchParams.get('page');
-      void navigator.clipboard?.writeText(workspace.kind === 'remote' && id ? workspacePageLink(workspace, id) : link);
+    if (tab && box.mountedWorkspace) {
+      const url = new URL(tab.href);
+      const id = url.searchParams.get('page');
+      if (id) void navigator.clipboard?.writeText(workspacePageLink(box.mountedWorkspace, id, pageView(url)));
     }
     return;
   }

@@ -112,18 +112,23 @@ fn workspace_data_directory(app: tauri::AppHandle, workspace: Option<String>) ->
     Ok(workspace_directory(&app, workspace.as_deref())?.to_string_lossy().into_owned())
 }
 
-fn cloud_credential(server: &str) -> Result<keyring::Entry, String> {
+fn cloud_credential(server: &str, account: Option<&str>) -> Result<keyring::Entry, String> {
     let url = tauri::Url::parse(server).map_err(|_| "Invalid server")?;
     if url.origin().ascii_serialization() != server || (url.scheme() != "https" && !(url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1")))) {
         return Err("Invalid server origin".into());
     }
-    keyring::Entry::new("dev.notiooon.blok.cloud", server).map_err(|error| error.to_string())
+    let key = match account {
+        Some(id) if !id.is_empty() && id.len() <= 256 => format!("{server}/account/{}", sha256_hex(id.as_bytes())),
+        Some(_) => return Err("Invalid account".into()),
+        None => server.to_owned(),
+    };
+    keyring::Entry::new("dev.notiooon.blok.cloud", &key).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-async fn load_cloud_session(server: String) -> Result<Option<String>, String> {
+async fn load_cloud_session(server: String, account: Option<String>) -> Result<Option<String>, String> {
     // Unlocking the OS keychain may wait for a user decision. Keep the native event loop responsive.
-    tauri::async_runtime::spawn_blocking(move || match cloud_credential(&server)?.get_password() {
+    tauri::async_runtime::spawn_blocking(move || match cloud_credential(&server, account.as_deref())?.get_password() {
         Ok(token) => Ok(Some(token)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(error.to_string()),
@@ -131,8 +136,8 @@ async fn load_cloud_session(server: String) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-fn save_cloud_session(server: String, token: Option<String>) -> Result<(), String> {
-    let entry = cloud_credential(&server)?;
+fn save_cloud_session(server: String, token: Option<String>, account: Option<String>) -> Result<(), String> {
+    let entry = cloud_credential(&server, account.as_deref())?;
     match token {
         Some(token) => entry.set_password(&token).map_err(|error| error.to_string()),
         None => match entry.delete_credential() {

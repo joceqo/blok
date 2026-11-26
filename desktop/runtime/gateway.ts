@@ -36,10 +36,11 @@ function serveDevicePageLink(req: IncomingMessage, res: ServerResponse, origin: 
   const params = new URL(req.url!, origin).searchParams;
   const page = params.get('page');
   const workspace = params.get('workspace');
+  const view = params.get('view');
   const validId = /^[a-zA-Z0-9_-]{1,128}$/;
   if (!page || !validId.test(page) || (workspace !== null && !validId.test(workspace)) ||
-      params.size !== (workspace === null ? 1 : 2)) return false;
-  const scope = workspace === null ? '' : '&amp;workspace=' + workspace;
+      (view !== null && view !== 'whiteboard') || params.size !== 1 + Number(workspace !== null) + Number(view !== null)) return false;
+  const scope = (workspace === null ? '' : '&amp;workspace=' + workspace) + (view === null ? '' : '&amp;view=whiteboard');
   const href = 'blok://page/' + page + '?origin=' + encodeURIComponent(origin) + scope;
   const html = `<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">

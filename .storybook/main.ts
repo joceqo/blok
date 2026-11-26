@@ -1,4 +1,5 @@
 import path from 'path';
+import { scopeCalendarCss } from '../desktop/scripts/scope-calendar-css.mjs';
 import { fileURLToPath } from 'url';
 import tailwindcss from '@tailwindcss/vite';
 import type { StorybookConfig } from '@storybook/html-vite';
@@ -34,6 +35,7 @@ const config: StorybookConfig = {
   viteFinal: async (viteConfig) => {
     const updatedConfig: InlineConfig = {
       ...viteConfig,
+      css: { ...viteConfig.css, postcss: { plugins: [scopeCalendarCss] } },
       build: {
         ...viteConfig.build,
         // Disable module preload polyfill to prevent CSS preload errors in Chromatic
@@ -46,6 +48,7 @@ const config: StorybookConfig = {
         dedupe: [...new Set([...(viteConfig.resolve?.dedupe ?? []), 'react', 'react-dom'])],
         alias: {
           ...viteConfig.resolve?.alias,
+          '@calendarcn-local': path.resolve(__dirname, '../desktop/src/calendarcn'),
           '@/types': path.resolve(__dirname, '../types'),
           '@blok/page-table': path.resolve(__dirname, '../src/tools/database/page-table.ts'),
           '@blok/page-sheet': path.resolve(__dirname, '../src/tools/database/host-page-sheet.ts'),

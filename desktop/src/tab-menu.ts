@@ -1,3 +1,5 @@
+import { nativePageLink, pageView } from './page-link';
+
 /**
  * The tab strip's own context menu.
  *
@@ -37,13 +39,15 @@ export interface TabMenuContext {
  * page the tab shows.
  */
 export function pageLinkFor(href: string): string | null {
-  let id: string | null = null;
   try {
-    id = new URL(href, 'http://localhost').searchParams.get('page');
+    const url = new URL(href, 'http://localhost');
+    const id = url.searchParams.get('page');
+    if (!id) return null;
+    const disk = url.searchParams.get('local') === '1' ? url.searchParams.get('workspace') : undefined;
+    return nativePageLink(id, pageView(url), disk ?? undefined);
   } catch {
     return null;
   }
-  return id ? `blok://page/${id}` : null;
 }
 
 export function buildTabMenuItems(context: TabMenuContext): TabMenuItem[] {

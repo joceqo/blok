@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/html-vite';
-import { expect, fireEvent, waitFor, within } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { mountCalendar } from '../../desktop/src/calendar-view';
 import type { CalendarEvent, CalendarStore } from '../../desktop/src/calendar-store';
 import { PreviewClient, shellPreview, type ShellTheme } from './shell-story-fixtures';
@@ -123,7 +123,7 @@ type Story = StoryObj<Args>;
 export const Semaine: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole('region', { name: 'Calendrier' })).toBeVisible();
+    await expect(await canvas.findByRole('region', { name: 'Calendrier' })).toBeVisible();
     await expect(canvas.getByRole('button', { name: 'Nouvel événement' })).toBeVisible();
   },
 };
@@ -131,7 +131,7 @@ export const LectureSeule: Story = {
   args: { canEdit: false },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole('region', { name: 'Calendrier' })).toBeVisible();
+    await expect(await canvas.findByRole('region', { name: 'Calendrier' })).toBeVisible();
     await expect(canvas.queryByRole('button', { name: 'Nouvel événement' })).toBeNull();
   },
 };
@@ -141,10 +141,26 @@ export const Planning: Story = {
   args: { layered: true, theme: 'dark' },
   play: async ({canvasElement}) => {
     const canvas = within(canvasElement);
-    await fireEvent.change(canvas.getByRole('combobox', {name: 'Vue du calendrier'}), {target: {value: 'agenda'}});
-    const list = await canvas.findByRole('region', {name: 'Planning de la semaine'});
-    await expect(await within(list).findByRole('button', {name: /Revue produit/})).toBeVisible();
-    await expect(within(list).getByRole('button', {name: /Livraison du site/})).toHaveTextContent('Toute la journée');
+    const overlay = within(canvasElement.ownerDocument.body);
+    const view = await canvas.findByRole('button', {name:'Vue du calendrier'});
+    await userEvent.click(view);
+    await userEvent.click(await overlay.findByRole('menuitemradio', {name:'Agenda'}));
+    const toggle = await canvas.findByRole('button', {name:'Agendas', exact:true});
+    if (toggle.getAttribute('aria-expanded') === 'false') await userEvent.click(toggle);
+    // Start the agenda on the week our fixture describes, even when the story opens on Sunday.
+    const monday = new Date();
+    monday.setDate(monday.getDate() - (monday.getDay() + 6) % 7);
+    const weekStart = await waitFor(() => {
+      const day = canvasElement.ownerDocument.querySelector<HTMLButtonElement>(`[data-slot="mini-calendar"] button[data-day="${monday.toLocaleDateString()}"]`);
+      if (!day) throw new Error('Le lundi de la semaine doit être visible.');
+      return day;
+    });
+    await userEvent.click(weekStart);
+    await expect(view).toHaveTextContent('Agenda');
+    await expect(await canvas.findByRole('button', {name:/Revue produit/})).toBeVisible();
+    const delivery = await canvas.findByRole('button', {name:/Livraison du site/});
+    await expect(delivery).toHaveTextContent('Toute la journée');
+    await expect(delivery.closest('[role="group"][data-date]')).toBeInTheDocument();
   },
 };
 
@@ -153,11 +169,13 @@ export const CreerUnEvenement: Story = {
   args: {theme: 'dark'},
   play: async ({canvasElement}) => {
     const canvas = within(canvasElement);
-    await fireEvent.click(canvas.getByRole('button', {name: 'Nouvel événement'}));
-    const title = await canvas.findByRole('textbox', {name:'Titre'});
-    await fireEvent.input(title, {target:{value:'Revue du calendrier'}});
-    await expect(canvas.getByRole('button', {name:'Annuler'})).toBeVisible();
-    await expect(canvas.getByRole('button', {name:'Enregistrer'})).toBeEnabled();
+    const overlay = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await canvas.findByRole('button', {name:'Nouvel événement'}));
+    const title = await overlay.findByRole('textbox', {name:'Titre de l’événement'});
+    await userEvent.type(title, 'Revue du calendrier');
+    await expect(title).toHaveValue('Revue du calendrier');
+    await expect(overlay.getByRole('button', {name:'Annuler'})).toBeVisible();
+    await expect(overlay.getByRole('button', {name:'Enregistrer'})).toBeEnabled();
   },
 };
 
@@ -166,16 +184,20 @@ export const AgendasSuperposes: Story = {
   args: { layered: true },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const view = canvas.getByRole('combobox', {name: 'Vue du calendrier'}) as HTMLSelectElement;
-    if (view.value !== '7') await fireEvent.change(view, {target: {value: '7'}});
-    const showFilters = canvas.queryByRole('button', {name: 'Agendas', exact: true});
-    if (showFilters) await fireEvent.click(showFilters);
-    const team = await canvas.findByRole('checkbox', { name: 'Lina Martin' }) as HTMLInputElement;
-    if (!team.checked) await fireEvent.click(team);
-    const google = await canvas.findByRole('checkbox', { name: 'Agenda personnel' }) as HTMLInputElement;
-    if (google.checked) await fireEvent.click(google);
+    const overlay = within(canvasElement.ownerDocument.body);
+    const view = await canvas.findByRole('button', {name:'Vue du calendrier'});
+    if (!view.textContent?.includes('Semaine')) {
+      await userEvent.click(view);
+      await userEvent.click(await overlay.findByRole('menuitemradio', {name:'Semaine'}));
+    }
+    const filters = await canvas.findByRole('button', {name:'Agendas', exact:true});
+    if (filters.getAttribute('aria-expanded') === 'false') await userEvent.click(filters);
+    const team = await overlay.findByRole('checkbox', {name:'Lina Martin'}) as HTMLInputElement;
+    if (!team.checked) await userEvent.click(team);
+    const google = await overlay.findByRole('checkbox', {name:'Agenda personnel'}) as HTMLInputElement;
+    if (google.checked) await userEvent.click(google);
     await waitFor(() => expect(canvasElement.querySelector('[data-event-id*="podcast"]')).toBeNull());
-    await fireEvent.click(google);
+    await userEvent.click(await overlay.findByRole('checkbox', {name:'Agenda personnel'}));
     await waitFor(() => expect(canvasElement.querySelector('[data-event-id*="podcast"]')).toBeInTheDocument());
   },
 };

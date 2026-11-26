@@ -35,6 +35,9 @@ function WorkspaceTarget({name}: {name: string}) {
 }
 
 function Description({item}: {item: WorkspaceNotification}) {
+  if (item.type === 'calendar_invitation') {
+    return <><strong>{item.actorName || 'Un membre'}</strong> vous invite à <strong>{item.eventTitle}</strong>.</>;
+  }
   if (item.type === 'comment_mention' || item.type === 'comment_reply') {
     return <>{item.type === 'comment_mention' ? 'Vous avez été mentionné·e dans un commentaire' : 'Votre commentaire a reçu une réponse'} sur <strong>{item.pageTitle || 'une page'}</strong>.</>;
   }
@@ -46,6 +49,12 @@ function Description({item}: {item: WorkspaceNotification}) {
 }
 
 function Decision({item}: {item: WorkspaceNotification}) {
+  if (item.type === 'calendar_invitation') {
+    if (!item.eventStart) return null;
+    const date = new Date(item.eventStart);
+    return <p data-inbox-decision=""><time dateTime={item.eventStart}>{item.eventAllDay
+      ? date.toLocaleDateString('fr-FR', {dateStyle:'long', timeZone:'UTC'}) : dates.format(date)}</time></p>;
+  }
   if (item.pageId) return null;
   const decision = item.decision;
   if (item.type === 'join_requested' && !decision) {

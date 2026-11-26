@@ -80,6 +80,31 @@ describe.skipIf(!url)('shared calendar on PostgreSQL', () => {
     expect((await call('outside','GET',range)).status).toBe(403);
   });
 
+  it('preserves the invitation when the linked page is inaccessible, revoked or purged', async () => {
+    await db.query("INSERT INTO pages(id,workspace_id,metadata,visibility) VALUES('attachment','a','{}','private')");
+    await db.query("INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES('attachment','owner','full','owner')");
+    const event = {...make(),pageId:'attachment',participantIds:['member']};
+    const inbox = async () => (await (await app.request('/api/workspaces/alpha/notifications',
+      {headers:{Authorization:'Bearer member'}})).json()).notifications;
+    expect((await call('owner','PUT','/'+event.id,event)).status).toBe(200);
+    const notifications = await inbox();
+    expect(notifications).toMatchObject([{type:'calendar_invitation',eventTitle:event.title}]);
+    expect(notifications[0]).not.toHaveProperty('pageId');
+    const invited = async () => (await list('member')).find(item => item.id === event.id);
+    expect(await invited()).toMatchObject({pageId:null,readOnly:true});
+    await db.query("INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES('attachment','member','view','owner')");
+    expect(await invited()).toMatchObject({pageId:'attachment'});
+    await db.query("DELETE FROM page_shares WHERE user_id='member' AND page_id='attachment'");
+    expect(await inbox()).toEqual(notifications);
+    expect(await invited()).toMatchObject({pageId:null,readOnly:true});
+    await db.query("DELETE FROM page_shares WHERE page_id='attachment'; DELETE FROM pages WHERE id='attachment'");
+    expect(await inbox()).toEqual(notifications);
+    expect(await invited()).toMatchObject({pageId:null,readOnly:true,revision:2});
+    expect((await list('viewer')).some(item => item.id === event.id)).toBe(false);
+    expect((await call('member','DELETE','/'+event.id+'?revision=2')).status).toBe(404);
+    expect((await call('owner','DELETE','/'+event.id+'?revision=2')).status).toBe(200);
+    expect(await inbox()).toEqual([]);
+  });
   it('reevaluates page visibility for the event title, mutations, and previously granted links', async () => {
     const e = {...make(),title:'Conseil privé',pageId:'child'};
     const send = (user: string, event: ReturnType<typeof make>) => call(user,'PUT','/'+event.id,event);
