@@ -1,7 +1,7 @@
 import type { OutputData } from '../../types';
 import { extractPageOutline } from './page-outline';
 import { mergeWorkspaceIndex } from './workspace-merge';
-import { loadIndex, readFile, writeFile, type WorkspaceIndex } from './storage';
+import { StaleFileError, loadIndex, readFile, readFileContents, writeFile, type WorkspaceIndex } from './storage';
 import { nativeSessionAdapter } from './native-session';
 import type { WorkspaceRef } from './workspace-registry';
 class RepositoryHttpError extends Error { constructor(public status: number, public requestId?: string | null) { super(`Serveur indisponible (${status})`); } }
@@ -36,7 +36,11 @@ export function workspaceRepository(workspace: WorkspaceRef) {
   return {
     ref,
     async loadIndex(): Promise<WorkspaceIndex> {
-      if (ref.kind === 'local') return loadIndex(ref);
+      if (ref.kind === 'local') {
+        const index = await loadIndex(ref);
+        baseline = snapshot(index); acknowledged = snapshot(index);
+        return index;
+      }
       const value = await request<WorkspaceIndex & { revision: number }>(`${base}/index`);
       revision = value.revision;
       const index = { pages: value.pages, trash: value.trash ?? [], activeId: value.pages[0]?.id ?? '', access: value.access };
@@ -53,7 +57,32 @@ export function workspaceRepository(workspace: WorkspaceRef) {
       return index;
     },
     async saveIndex(value: WorkspaceIndex): Promise<WorkspaceIndex> {
-      if (ref.kind === 'local') { await writeFile('index', JSON.stringify(value), ref); return value; }
+      if (ref.kind === 'local') {
+        const intent = snapshot(value);
+        // The index belongs to everything that touches this workspace at once: a
+        // second window, an agent over MCP, a sync tool. Refusing the write would
+        // strand this window on a fingerprint it can never satisfy again, so a
+        // refusal re-reads what the other writer left and replays our own changes
+        // on top of it — the same three-way merge the server path performs.
+        if (!baseline || !acknowledged) {
+          await writeFile('index', JSON.stringify(intent), ref);
+          baseline = intent; acknowledged = snapshot(intent);
+          return intent;
+        }
+        let merged = mergeWorkspaceIndex(baseline, intent, acknowledged);
+        for (let attempt = 0; attempt < 4; attempt++) {
+          try {
+            await writeFile('index', JSON.stringify(merged), ref);
+            baseline = intent; acknowledged = snapshot(merged);
+            return merged;
+          } catch (error) {
+            if (!(error instanceof StaleFileError) || attempt === 3) throw error;
+            acknowledged = snapshot(await loadIndex(ref));
+            merged = mergeWorkspaceIndex(baseline, intent, acknowledged);
+          }
+        }
+        throw new Error('L’espace change trop rapidement. Réessayez.');
+      }
       if (revision === null || !baseline || !acknowledged) throw new Error('L’espace doit être chargé avant son enregistrement');
       const intent = snapshot(value);
       let merged = mergeWorkspaceIndex(baseline, intent, acknowledged);
@@ -77,7 +106,7 @@ export function workspaceRepository(workspace: WorkspaceRef) {
     async readPageOutline(id: string) {
       if (ref.kind === 'remote') return extractPageOutline(id, await request<unknown>(`${base}/pages/${encodeURIComponent(id)}`));
       await (pageWrites.get(id) ?? Promise.resolve());
-      const raw = await readFile(id, ref);
+      const raw = await readFileContents(id, ref);
       return extractPageOutline(id, raw === null ? null : JSON.parse(raw) as unknown);
     },
     readPage(id: string) {
@@ -86,9 +115,12 @@ export function workspaceRepository(workspace: WorkspaceRef) {
     },
     writePage(id: string, data: string) {
       if (ref.kind !== 'local') throw new Error('Remote documents require collaboration');
-      const pending = (pageWrites.get(id) ?? Promise.resolve()).then(() => writeFile(id, data, ref));
+      const pending = (pageWrites.get(id) ?? Promise.resolve()).catch(() => undefined).then(() => writeFile(id, data, ref));
       pageWrites.set(id, pending);
-      return pending;
+      // Keep only in-flight work. The next retry must reach the native guard again.
+      return pending.finally(() => {
+        if (pageWrites.get(id) === pending) pageWrites.delete(id);
+      });
     },
     async readLivePage(id: string): Promise<OutputData> {
       if (ref.kind !== 'remote') throw new Error('Remote operation only');
@@ -107,6 +139,18 @@ export function workspaceRepository(workspace: WorkspaceRef) {
     async duplicatePage(source: string, page: {id: string; title: string; parentId: string | null}): Promise<void> {
       if (ref.kind !== 'remote') throw new Error('Remote operation only');
       await request(`${base}/pages/${encodeURIComponent(source)}/duplicate`, {method: 'POST', body: JSON.stringify(page)});
+    },
+    async changePageTrash(id: string, action: 'trash' | 'restore' | 'purge'): Promise<void> {
+      if (ref.kind !== 'remote') throw new Error('Remote operation only');
+      const suffix = action === 'trash' ? '' : '/' + action;
+      await request(`${base}/pages/${encodeURIComponent(id)}${suffix}`, {method: action === 'restore' ? 'POST' : 'DELETE'});
+    },
+    async clearLocalPage(id: string): Promise<void> {
+      if (ref.kind !== 'local') throw new Error('Local operation only');
+      await pageWrites.get(id);
+      await readFile(id, ref);
+      // The native store checks the last-read fingerprint before replacing the payload.
+      await writeFile(id, '', ref);
     },
     async movePage(id: string, parentId: string | null, teamspaceId?: string | null): Promise<void> {
       if (ref.kind !== 'remote') throw new Error('Remote operation only');

@@ -1,4 +1,5 @@
 import { copiedPageLink } from './page-urls';
+import { deepLinkFor } from './deep-link';
 /**
  * The tab strip's own context menu.
  *
@@ -8,6 +9,7 @@ import { copiedPageLink } from './page-urls';
  */
 
 export type TabMenuAction =
+  | 'open-in-app'
   | 'copy-link'
   | 'reload'
   | 'duplicate'
@@ -28,6 +30,8 @@ export interface TabMenuContext {
   tabId: string;
   tabIds: string[];
   href: string;
+  /** The native build is already the app; only the web offers to hand off to it. */
+  native?: boolean;
 }
 
 /** Copy a remote public URL when known; local/native legacy documents retain
@@ -38,7 +42,12 @@ export function buildTabMenuItems(context: TabMenuContext): TabMenuItem[] {
   const index = context.tabIds.indexOf(context.tabId);
   const alone = context.tabIds.length <= 1;
   return [
-    { action: 'copy-link', label: 'Copier le lien', disabled: pageLinkFor(context.href) === null },
+    ...(context.native ? [] : [{
+      action: 'open-in-app' as const,
+      label: 'Ouvrir dans l’application',
+      disabled: deepLinkFor(context.href) === null,
+    }]),
+    { action: 'copy-link' as const, label: 'Copier le lien', disabled: pageLinkFor(context.href) === null },
     { action: 'reload', label: 'Recharger l’onglet', disabled: false },
     { action: 'duplicate', label: 'Dupliquer l’onglet', disabled: false, separated: true },
     { action: 'close', label: 'Fermer l’onglet', disabled: alone, separated: true },

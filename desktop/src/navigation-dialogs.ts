@@ -209,3 +209,139 @@ export function openPageMove(options: {
   render(); modal.open(input, () => { disposed = true; });
   return modal.close;
 }
+
+/** Shows the current workspace index, including pages nested beneath another trashed page. */
+export function openPageTrash(options: {
+  pages: () => ShellPage[];
+  canEdit: (id: string) => boolean;
+  change: (id: string, action: 'restore' | 'purge') => Promise<void>;
+}): () => void {
+  const modal = dialog('Corbeille');
+  const input = document.createElement('input');
+  input.type = 'search';
+  input.placeholder = 'Rechercher dans la corbeille…';
+  input.setAttribute('aria-label', input.placeholder);
+  const header = node('div', 'data-navigation-search-header');
+  header.append(wrapSearchField(input));
+  const results = node('div', 'data-navigation-results');
+  const message = node('p', 'data-navigation-caption');
+  message.setAttribute('role', 'status');
+  modal.surface.append(node('h2', 'data-navigation-heading', 'Corbeille'), header, results, message);
+  let confirming: string | null = null;
+  let busy = false;
+  const run = async (id: string, action: 'restore' | 'purge'): Promise<void> => {
+    if (busy) return;
+    busy = true;
+    results.inert = true;
+    try {
+      await options.change(id, action);
+      message.textContent = action === 'restore' ? 'Page restaurée.' : 'Page supprimée définitivement.';
+    } catch (error) {
+      message.textContent = error instanceof Error ? error.message : 'Opération impossible.';
+    } finally {
+      busy = false;
+      confirming = null;
+      results.inert = false;
+      render();
+      input.focus();
+    }
+  };
+  const button = (label: string, callback: () => void): HTMLButtonElement => {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.textContent = label;
+    el.onclick = callback;
+    return el;
+  };
+  function render(): void {
+    results.replaceChildren();
+    const pages = options.pages();
+    const parents = new Set(pages.map(p => p.id));
+    for (const page of pages.filter(p => p.title.toLocaleLowerCase().includes(input.value.trim().toLocaleLowerCase()))) {
+      const row = node('div', 'data-trash-page');
+      row.append(icon(page.icon), node('span', 'data-trash-title', page.title || 'Sans titre'));
+      if (options.canEdit(page.id)) {
+        if (confirming === page.id) {
+          row.append(node('span', 'data-trash-confirm', 'Supprimer cette page et ses sous-pages définitivement ?'),
+            button('Annuler', () => { confirming = null; render(); input.focus(); }),
+            button('Confirmer', () => void run(page.id, 'purge')));
+        } else {
+          const restore = button('Restaurer', () => void run(page.id, 'restore'));
+          restore.disabled = !!page.parentId && parents.has(page.parentId);
+          if (restore.disabled) restore.title = 'Restaurez d’abord la page parente.';
+          row.append(restore, button('Supprimer définitivement', () => {
+            confirming = page.id; render(); results.querySelector<HTMLButtonElement>('[data-trash-confirm] + button')?.focus();
+          }));
+        }
+      }
+      results.append(row);
+    }
+    if (!results.childElementCount) results.append(node('p', 'data-navigation-empty', pages.length ? 'Aucun résultat.' : 'La corbeille est vide.'));
+  }
+  input.oninput = () => { confirming = null; render(); };
+  render();
+  modal.open(input);
+  return modal.close;
+}
+
+export interface TransferWorkspaceChoice { key: string; name: string; detail: string }
+
+/**
+ * Copying a page into another workspace.
+ *
+ * Deliberately not the move dialog. The two stores are disjoint, so this leaves
+ * the original where it is, and none of the source's sharing follows it. Calling
+ * it a move would promise both.
+ */
+export function openWorkspaceTransfer(options: {
+  title: string;
+  workspaces: TransferWorkspaceChoice[];
+  onTransfer: (key: string) => Promise<void>;
+}): () => void {
+  const modal = dialog('Copier vers un espace');
+  modal.surface.setAttribute('data-navigation-transfer', '');
+  modal.surface.append(node('h2', 'data-navigation-heading', 'Copier vers un espace…'));
+  const caption = node('p', 'data-navigation-caption',
+    `« ${options.title} » et ses sous-pages sont recréées dans l’espace choisi. L’original reste ici : c’est une copie, pas un déplacement.`);
+  const results = node('div', 'data-navigation-results');
+  const error = node('p', 'data-navigation-transfer-error');
+  error.setAttribute('role', 'alert'); error.hidden = true;
+  const footer = node('div', 'data-navigation-help',
+    'Sur un serveur, la copie arrive privée : à vous de la partager. L’historique ne suit pas, et une page contenant une base de données ne peut pas encore être copiée. · Échap fermer');
+  const state = { pending: false, disposed: false };
+  const buttons = options.workspaces.map(choice => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    const name = document.createElement('span');
+    name.textContent = choice.name;
+    button.append(name, node('span', 'data-navigation-path', choice.detail));
+    button.addEventListener('click', () => { void choose(choice); });
+    results.append(button);
+    return button;
+  });
+  const enable = (value: boolean): void => {
+    for (const button of buttons) button.disabled = !value;
+  };
+  async function choose(choice: TransferWorkspaceChoice): Promise<void> {
+    if (state.pending) return;
+    state.pending = true; error.hidden = true;
+    modal.surface.setAttribute('aria-busy', 'true');
+    enable(false);
+    try { await options.onTransfer(choice.key); modal.close(); }
+    catch (cause) {
+      if (state.disposed) return;
+      error.textContent = cause instanceof Error ? cause.message : 'La copie a échoué. Réessayez.';
+      error.hidden = false;
+      enable(true);
+      modal.surface.removeAttribute('aria-busy');
+    } finally { state.pending = false; }
+  }
+  if (buttons.length === 0) {
+    const empty = node('p', 'data-navigation-empty', 'Aucun autre espace disponible.');
+    empty.setAttribute('role', 'status');
+    results.append(empty);
+  }
+  modal.surface.append(caption, results, error, footer);
+  modal.open(buttons[0] ?? modal.surface, () => { state.disposed = true; });
+  return modal.close;
+}

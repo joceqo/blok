@@ -332,6 +332,37 @@ describe('desktop tab strip', () => {
     expect(favicon()).toBe(faviconHref('\u{1F331}'));
   });
 
+  /**
+   * The tab took its icon from the page in its URL, so a tab showing a row
+   * carried the page's emoji next to the row's title — two different things
+   * named at once.
+   */
+  it('keeps the generic icon on a tab showing a row, and restores the page icon on leaving it', () => {
+    history.replaceState(null, '', '/?page=alpha');
+    const root = mount();
+
+    reportPageIcon('alpha', '\u{1F972}');
+    expect(selected(root).querySelector('[data-desktop-tab-icon]')?.textContent).toBe('\u{1F972}');
+
+    history.replaceState(null, '', '/?page=alpha&row=row-one&database=db');
+    document.title = 'Documenter un dépôt';
+    reportPageIcon('alpha', '\u{1F972}');
+
+    const tab = selected(root);
+
+    expect(tab.querySelector('[data-desktop-tab-label]')?.textContent).toBe('Documenter un dépôt');
+    expect(tab.querySelector('[data-desktop-tab-icon="document"]')).not.toBeNull();
+
+    // The row has an icon of its own; it is the one that belongs beside its title.
+    reportPageIcon('row-one', '\u{1F607}');
+    expect(selected(root).querySelector('[data-desktop-tab-icon]')?.textContent).toBe('\u{1F607}');
+
+    history.replaceState(null, '', '/?page=alpha');
+    document.title = 'alpha';
+    reportPageIcon('alpha', '\u{1F972}');
+    expect(selected(root).querySelector('[data-desktop-tab-icon]')?.textContent).toBe('\u{1F972}');
+  });
+
   it('hides the close control on the last tab and closes any other tab', () => {
     const root = mount();
     button(root, 'Nouvel onglet').click();
@@ -465,6 +496,34 @@ describe('desktop tab strip', () => {
     const tab = readSession().tabs[0];
     expect(tab?.entries.map((href) => new URL(href).search)).toEqual(['', '?page=replaced']);
     expect(tab?.index).toBe(1);
+  });
+
+  /**
+   * The drawer hides its own toolbar in full page, expecting the page's to take
+   * over. On a row page it cannot: the open page is the host, not the row. Both
+   * sets of actions would vanish at once.
+   */
+  /**
+   * "Saved" is the normal state. Showing it permanently put a wordless glyph in
+   * the action row, where it read as a button that does nothing.
+   */
+  it('hides the save badge while there is nothing to report', () => {
+    const css = readFileSync(join(process.cwd(), 'src/shell.css'), 'utf8');
+
+    expect(css).toMatch(/\[data-desktop-status\]\[data-sync-state="saved"\][^}]*display:\s*none/);
+  });
+
+  it('gives a row page back the drawer toolbar the drawer hides in full mode', () => {
+    const css = readFileSync(join(process.cwd(), 'src/row-page-navigation.css'), 'utf8');
+
+    // The !important is the point: preflight hides [hidden] with one too.
+    expect(css).toMatch(/\[data-blok-database-drawer-toolbar\]\[hidden\][^}]*display:\s*flex\s*!important/);
+  });
+
+  it('reserves the scrollbar gutter on the page canvas, so pages do not shift sideways', () => {
+    const css = readFileSync(join(process.cwd(), 'src/shell.css'), 'utf8');
+
+    expect(css).toMatch(/\[data-desktop-page-canvas\][^}]*scrollbar-gutter:\s*stable/);
   });
 
   it('paints the strip from the stylesheet contract', () => {

@@ -17,7 +17,7 @@ import corePackage from '../../package.json';
 import appPackage from '../package.json';
 import { mountAiSettings } from './ai-settings';
 import { mountCustomEmojiSettings } from './custom-emoji-settings';
-import { mountMcpSettings } from './mcp-settings';
+import { mountLocalMcpSettings, mountMcpSettings } from './mcp-settings';
 import {loadReactGrab, reactGrabAvailable} from './react-grab';
 import { mountInstanceSettings, type InstancePanel } from './instance/instance-settings';
 
@@ -128,7 +128,7 @@ function chevron(): SVGSVGElement {
   return svg;
 }
 
-type MenuIcon = 'profile' | 'settings' | 'ai' | 'storage' | 'connections' | 'emoji' | 'help';
+type MenuIcon = 'profile' | 'settings' | 'ai' | 'storage' | 'connections' | 'emoji' | 'help' | 'trash';
 
 function menuIcon(kind: MenuIcon): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -143,6 +143,7 @@ function menuIcon(kind: MenuIcon): SVGSVGElement {
     ai: 'M10 2.5l1.6 5.1L17 9.2l-5.4 1.6L10 16l-1.6-5.2L3 9.2l5.4-1.6L10 2.5ZM16.5 14.3l.5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2-1.2-.5 1.2-.5.5-1.2Z',
     connections: 'M8 12l4-4M7 13l-1 1a3 3 0 0 1-4-4l3-3a3 3 0 0 1 4 0M13 7l1-1a3 3 0 0 1 4 4l-3 3a3 3 0 0 1-4 0',
     emoji: 'M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0ZM7 8h.01M13 8h.01M7 12c1.5 2 4.5 2 6 0',
+    trash: 'M3 5.5h14M7.5 5.5V3.3h5v2.2M5 5.5l.8 11h8.4l.8-11M8.5 8v6M11.5 8v6',
     storage: 'M3 5.2h5l1.3 1.5H17v8.1H3V5.2Z',
     help: 'M10 17.5a7.5 7.5 0 1 0 0-15 7.5 7.5 0 0 0 0 15ZM10 14.2h.01M8.4 7.6a1.8 1.8 0 1 1 2.5 1.6c-.5.3-.9.7-.9 1.3v.4',
   };
@@ -163,7 +164,7 @@ function actionButton(attribute: string, label: string, kind: MenuIcon): HTMLBut
   return button;
 }
 
-export function createDesktopFooter(onThemeChange: (mode: Appearance) => void): HTMLElement {
+export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, onTrash?: () => void): HTMLElement {
   const currentWorkspace = activeWorkspace();
   const native = '__TAURI_INTERNALS__' in window;
   const admin = currentWorkspace.kind === 'remote' && currentWorkspace.role === 'admin';
@@ -214,6 +215,17 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void): 
     else emitCloud('account');
   });
   menu.append(account, preferences);
+  if (onTrash) {
+    const trash = actionButton('data-desktop-menu-item', 'Corbeille', 'trash');
+    trash.setAttribute('role', 'menuitem');
+    trash.setAttribute('aria-haspopup', 'dialog');
+    trash.addEventListener('click', () => {
+      closeMenu();
+      switcher.focus();
+      onTrash();
+    });
+    menu.append(trash);
+  }
   if (admin) {
     const invite = actionButton('data-desktop-menu-invite', 'Inviter des membres', 'profile');
     invite.setAttribute('data-desktop-menu-item', '');
@@ -317,11 +329,10 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void): 
   navList.append(el('div', 'data-desktop-settings-nav-heading', 'Workspace'), generalTab, emojiTab);
   if (admin) navList.append(membersTab, sidebarPresetsTab);
   if (client) navList.append(teamspacesTab);
-  navList.append(el('div', 'data-desktop-settings-nav-heading', 'Fonctionnalités'), aiTab);
-  if (client) navList.append(mcpTab);
+  navList.append(el('div', 'data-desktop-settings-nav-heading', 'Fonctionnalités'), aiTab, mcpTab);
   const navEntries: Array<[HTMLButtonElement, string]> = [
-    [accountTab, 'compte profil identité email'], [connectionsTab, client ? 'connexion compte serveur espace' : 'connexion mcp jeton compte serveur espace'],
-    ...(client ? [[mcpTab, 'mcp jeton accès outils'] as [HTMLButtonElement, string]] : []),
+    [accountTab, 'compte profil identité email'], [connectionsTab, 'connexion compte serveur espace'],
+    [mcpTab, 'mcp jeton accès outils assistant ia'],
     [sidebarTab, 'barre latérale onglets raccourcis personnel'], ...(admin ? [[sidebarPresetsTab, 'modèles barre latérale équipe'] as [HTMLButtonElement,string]] : []),
     [prefsTab, 'préférences apparence thème clair sombre'], [aiTab, 'assistant ia openai modèle clé api'],
     ...(client ? [[teamspacesTab, 'équipe teamspace membres accès workspace'] as [HTMLButtonElement,string]] : []),
@@ -510,9 +521,10 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void): 
       main.append(content);
       return;
     }
-    if (panel === 'mcp' && client) {
+    if (panel === 'mcp') {
       main.append(content);
-      mountMcpSettings(content, client);
+      if (currentWorkspace.kind === 'local') void mountLocalMcpSettings(content, currentWorkspace);
+      else if (client) mountMcpSettings(content, client);
       return;
     }
     if (panel === 'connections') {

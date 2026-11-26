@@ -1,3 +1,7 @@
+import mcpPackage from '../../packages/mcp/package.json';
+import { dataDirectory } from './storage';
+import type { LocalWorkspace } from './workspace-registry';
+import { pageIdForHref, libraryCategoryForHref } from './page-urls';
 import { CloudClient } from './cloud/client';
 import { styleTextField } from './ui/controls';
 import './mcp-settings.css';
@@ -13,6 +17,54 @@ function expiryText(expiresAt: string): string {
   return date.getTime() - Date.now() > NEVER_AFTER_YEARS * 365 * 24 * 3600 * 1000
     ? 'N’expire pas'
     : `Expire le ${date.toLocaleDateString('fr-FR')}`;
+}
+
+export async function mountLocalMcpSettings(content: HTMLElement, workspace: LocalWorkspace): Promise<void> {
+  const panel = document.createElement('section');
+  panel.setAttribute('data-desktop-mcp-panel', '');
+  const heading = document.createElement('h1');
+  heading.setAttribute('data-desktop-settings-title', ''); heading.textContent = 'Accès MCP';
+  const help = document.createElement('p');
+  help.setAttribute('data-desktop-settings-intro', '');
+  panel.append(heading, help); content.append(panel);
+  if (!('__TAURI_INTERNALS__' in window)) {
+    help.textContent = 'Cet espace est enregistré dans le navigateur. Le MCP local utilise les fichiers des espaces créés dans l’application Blok pour ordinateur.';
+    return;
+  }
+  help.textContent = 'L’IA accède aux fichiers de cet espace sur votre ordinateur, sans jeton. Copiez les instructions dans votre assistant local. Node.js 20.19 ou ultérieur est requis.';
+  const status = document.createElement('p');
+  status.setAttribute('role', 'status'); status.setAttribute('data-desktop-mcp-status', '');
+  status.textContent = 'Recherche du dossier de cet espace…'; panel.append(status);
+  try {
+    const directory = await dataDirectory(workspace);
+    if (!panel.isConnected) return;
+    const server = `blok-local-${workspace.id}`;
+    const config = { mcpServers: { [server]: {
+      command: 'npx', args: ['--yes', `@bloklabs/mcp@${mcpPackage.version}`, '--source', `files:${directory}`],
+    } } };
+    const pageId = libraryCategoryForHref(location.href) ? null : pageIdForHref(location.href);
+    const text = [
+      'Utilise ce serveur MCP local en mode stdio pour accéder à mon espace Blok.',
+      JSON.stringify(config, null, 2),
+      ...(pageId && /^[a-zA-Z0-9-]+$/.test(pageId) ? [`Page ouverte dans Blok · documentId = ${pageId}`] : []),
+    ].join('\n\n');
+    const instructions = document.createElement('div');
+    instructions.setAttribute('data-desktop-mcp-endpoint', '');
+    const label = document.createElement('span'); label.textContent = workspace.name;
+    const code = document.createElement('code'); code.textContent = text;
+    code.setAttribute('data-desktop-mcp-instructions', '');
+    const copy = document.createElement('button');
+    copy.type = 'button'; copy.className = 'blok-button'; copy.setAttribute('data-desktop-settings-copy', '');
+    copy.textContent = 'Copier pour l’IA';
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        status.textContent = 'Instructions copiées.';
+      } catch { status.textContent = 'Sélectionnez les instructions ci-dessus pour les copier.'; }
+    });
+    instructions.append(label, code, copy); panel.insertBefore(instructions, status);
+    status.textContent = '';
+  } catch { status.textContent = 'Impossible de lire le chemin de cet espace local.'; }
 }
 
 export function mountMcpSettings(content: HTMLElement, client: CloudClient, options: {embedded?: boolean} = {}): void {

@@ -371,9 +371,10 @@ describe('BlockHierarchy', () => {
 
       expect(block.parentId).toBeNull();
       expect(oldParent.contentIds).not.toContain('child');
+      // Legal during conflict resolution, so it must not read as a fault.
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringMatching(/dangling parent id/i),
-        'error'
+        'warn'
       );
 
       warnSpy.mockRestore();

@@ -3,6 +3,9 @@ import tailwindcss from '@tailwindcss/vite';
 import { fileURLToPath } from 'node:url';
 
 const host = process.env.TAURI_DEV_HOST;
+// Dev server port. The dev build of the app (identifier .dev) shifts it so it
+// can run alongside the installed one, which keeps 1420. The HMR socket follows.
+const port = Number(process.env.BLOK_DEV_PORT) || 1420;
 
 export default defineConfig({
   plugins: [tailwindcss()],
@@ -18,7 +21,7 @@ export default defineConfig({
   },
   clearScreen: false,
   server: {
-    port: 1420,
+    port,
     proxy: {
       '/api': { target: process.env.BLOK_API_URL || 'http://127.0.0.1:8080', changeOrigin: false, ws: true },
       '/files': { target: process.env.BLOK_API_URL || 'http://127.0.0.1:8080', changeOrigin: false },
@@ -27,7 +30,7 @@ export default defineConfig({
     strictPort: true,
     host: host || false,
     hmr: host
-      ? { protocol: 'ws', host, port: 1421 }
+      ? { protocol: 'ws', host, port: port + 1 }
       : undefined,
     watch: {
       ignored: ['**/src-tauri/**'],

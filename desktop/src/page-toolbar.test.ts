@@ -11,6 +11,19 @@ function required<T>(value: T | null | undefined): T {
 afterEach(() => { document.body.innerHTML = ''; vi.restoreAllMocks(); });
 
 describe('page appearance toolbar', () => {
+  /**
+   * The "on this device" marker lost its label at this width and read as a dead
+   * button among live ones. Where a page is stored is the save status's job.
+   */
+  it('carries no device marker among the actions', () => {
+    const toolbar = createPageToolbar([{ id: 'p', title: 'Page' }], false, vi.fn());
+
+    document.body.append(toolbar.element);
+    expect(toolbar.element.querySelector('[data-desktop-page-local]')).toBeNull();
+    expect(toolbar.element.textContent).not.toContain('Sur cet appareil');
+    toolbar.destroy();
+  });
+
   it('copies the current page URL from the host and shows visible success', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
@@ -23,6 +36,27 @@ describe('page appearance toolbar', () => {
     const status = required(toolbar.element.querySelector<HTMLElement>('[role="status"]'));
     expect(status.textContent).toBe('Lien copié'); expect(status.hidden).toBe(false);
     expect(copy.title).toBe('Lien copié');
+    toolbar.destroy();
+  });
+
+  /**
+   * On a row opened full page the last crumb names the ROW, so rebuilding
+   * `?page=<id>` from it addressed a page that does not exist. The address bar
+   * already holds the row's own url.
+   */
+  it('copies the row’s own address when a row is open full page', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    history.replaceState(null, '', '/?page=host&row=row-one&database=db');
+    const toolbar = createPageToolbar([{ id: 'host', title: 'Skills' }], false, vi.fn(), undefined, undefined, { pageUrl: id => `https://blok.example.com/?page=${id}` });
+
+    document.body.append(toolbar.element);
+    toolbar.setBreadcrumbs([{ id: 'host', title: 'Skills' }, { id: 'row-one', title: 'Documenter un dépôt' }]);
+    required(toolbar.element.querySelector<HTMLButtonElement>('[data-desktop-page-copy]')).click();
+
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining('row=row-one')));
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining('page=host'));
+    history.replaceState(null, '', '/');
     toolbar.destroy();
   });
 
@@ -102,6 +136,25 @@ describe('page appearance toolbar', () => {
     ]);
     expect(nav?.textContent).toContain('🚗Page renommée/🎸jojo');
     toolbar.destroy();
+  });
+
+  it('goes to the page a crumb names, even the one already open, instead of listing siblings', () => {
+    const openCurrent = vi.fn();
+    const toolbar = createPageToolbar([
+      { id: 'parent', title: 'Nouvelle page', icon: '🏕️', onOpen: vi.fn() },
+      { id: 'current', title: 'Skills', icon: '🥲', menuHeading: 'Nouvelle page', onOpen: openCurrent, menu: [
+        { id: 'current', title: 'Skills', icon: '🥲', current: true, onOpen: vi.fn() },
+        { id: 'sibling', title: 'Autre page', onOpen: vi.fn() },
+      ] },
+    ], false, vi.fn());
+
+    document.body.append(toolbar.element);
+    const current = required(toolbar.element.querySelector<HTMLButtonElement>('[data-page-id="current"] > button'));
+
+    current.click();
+    expect(openCurrent).toHaveBeenCalledOnce();
+    expect(current.getAttribute('aria-haspopup')).toBeNull();
+    expect(toolbar.element.querySelector<HTMLElement>('[data-desktop-breadcrumb-menu]')?.hidden ?? true).toBe(true);
   });
 
   it('opens each breadcrumb menu and navigates from its page list', () => {

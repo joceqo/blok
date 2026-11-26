@@ -180,3 +180,26 @@ func TestDeletePageClosesDescendantSocket(t *testing.T) {
 		}
 	}
 }
+
+func TestTrashRestoreAndPermanentRemoval(t *testing.T) {
+	w := newReadsWorld(t)
+	base := "/api/workspaces/equipe/pages/"
+	w.send(t, "DELETE", tokenBob, base+"prive/purge", nil, 409)
+	w.send(t, "DELETE", tokenBob, base+"enfant", nil, 200)
+	w.send(t, "DELETE", tokenBob, base+"prive", nil, 200)
+	w.send(t, "POST", tokenBob, base+"enfant/restore", nil, 409)
+	w.send(t, "POST", tokenAlice, base+"prive/restore", nil, 404)
+	w.send(t, "POST", tokenBob, base+"prive/restore", nil, 200)
+	var childStillTrashed bool
+	if err := w.service.DB.QueryRow(w.ctx, `SELECT trashed FROM pages WHERE id='enfant'`).Scan(&childStillTrashed); err != nil || !childStillTrashed {
+		t.Fatalf("independently trashed child was restored: %v", err)
+	}
+	w.send(t, "DELETE", tokenBob, base+"prive", nil, 200)
+	w.send(t, "DELETE", tokenAlice, base+"prive/purge", nil, 404)
+	w.send(t, "DELETE", tokenBob, base+"prive/purge", nil, 200)
+	var removed int
+	if err := w.service.DB.QueryRow(w.ctx, `SELECT count(*) FROM pages WHERE id IN ('prive','enfant') AND deleted AND content IS NULL`).Scan(&removed); err != nil || removed != 2 {
+		t.Fatalf("purged %d pages: %v", removed, err)
+	}
+	w.send(t, "POST", tokenBob, base+"prive/restore", nil, 404)
+}

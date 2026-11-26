@@ -208,7 +208,10 @@ body[data-blok-theme="light"] [data-desktop-floating-toc] {
 [data-desktop-document] {
   width: min(100%, 900px); min-height: 100%; margin-inline: auto; padding: 30px 64px 120px;
 }
-[data-desktop-page-canvas] { container-type: inline-size; }
+/* The canvas is what scrolls. Without a reserved gutter, a page long enough to
+   need a scrollbar is narrower than one that is not, so moving between the two
+   shifts the whole text sideways — read as a stray animation. */
+[data-desktop-page-canvas] { container-type: inline-size; scrollbar-gutter: stable; }
 /* A promoted peek is positioned against the window, not the workspace.
    Reserve the native tab strip for both its panel and its click shield,
    including the shell retained while the side panel slides closed. */
@@ -555,6 +558,16 @@ body[data-blok-theme="light"] [data-desktop-floating-toc] {
   --blok-chat-focus-ring: #2e8cff;
   height: 100%; min-height: 0;
 }
+/* The block above dresses the agent shell in the app's palette, and that shell
+   wraps the editor — so every menu inside it was painted with
+   --desktop-canvas, the page's own colour, and vanished into the page. A menu
+   is a surface ABOVE the page; it keeps the editor's popover colour. */
+[data-desktop-workspace] [data-blok-agent-shell] :is([data-blok-popover], [data-blok-top-layer], [data-blok-interface]) {
+  --blok-popover-bg: #252525;
+}
+body[data-blok-theme="light"] [data-desktop-workspace] [data-blok-agent-shell] :is([data-blok-popover], [data-blok-top-layer], [data-blok-interface]) {
+  --blok-popover-bg: #ffffff;
+}
 [data-desktop-workspace] [data-blok-agent-bar] { display: none; }
 [data-desktop-workspace] [data-blok-agent-editor] {
   height: 100%;
@@ -577,6 +590,10 @@ body[data-blok-theme="light"] [data-desktop-floating-toc] {
 }
 [data-desktop-status] { position: absolute; bottom: 12px; right: 16px; max-width: min(420px, calc(100% - 32px)); padding: 5px 9px; border-radius: var(--blok-radius-control, 6px); background: var(--desktop-canvas); color: var(--desktop-muted); font-size: 12px; z-index: 1; pointer-events: none; }
 [data-desktop-status]:empty { display: none; }
+/* Saved is the normal state: saying so permanently costs a slot in the action
+   row and, at this width, shows a wordless glyph that reads as a dead button.
+   The badge speaks when it has something to say — saving, offline, refused. */
+[data-desktop-status][data-sync-state="saved"] { display: none; }
 [data-desktop-status][data-error] { color: #ff9c91; }
 
 /* The tab strip's own context menu. Without it a right-click fell through to

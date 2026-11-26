@@ -1,5 +1,26 @@
+/*
+  Le tiroir cache sa propre barre en pleine page (database-card-drawer.ts), en
+  supposant que celle de la page prend le relais. Ici elle ne le peut pas : la
+  page ouverte est l'hôte, pas la ligne. Sans ce rétablissement, les deux jeux
+  d'actions disparaissent en même temps et la ligne n'en a plus aucune.
+*/
+/* !important beats preflight's [hidden] { display: none !important } — the same
+   reason find.css carries one. Without it the rule loses whatever its
+   specificity, and the toolbar stays hidden. */
+[data-desktop-row-page] [data-blok-database-drawer-toolbar][hidden],
+body:has([data-desktop-row-page]) [data-blok-database-drawer][data-peek-mode="full"] [data-blok-database-drawer-toolbar][hidden] {
+  display: flex !important;
+}
+
+/*
+  Les actions de la page parente sont masquées ici : favori, renommer,
+  dupliquer, supprimer agiraient sur la page hôte alors que la ligne est à
+  l'écran. Copier le lien fait exception — il copie l'adresse de ce qui est
+  affiché, donc de la ligne, et n'a aucune raison de disparaître avec le reste.
+*/
 [data-desktop-row-page] > [data-desktop-cover],
-[data-desktop-row-page] > [data-desktop-page-toolbar] [data-desktop-page-actions],
+[data-desktop-row-page] > [data-desktop-page-toolbar] [data-desktop-page-actions]
+  > *:not([data-desktop-page-copy]):not([data-desktop-page-feedback]),
 [data-desktop-row-page] > article > [data-desktop-editor] > [data-desktop-page-comments] {
   display: none;
 }

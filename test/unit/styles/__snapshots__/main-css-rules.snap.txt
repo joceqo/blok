@@ -6825,12 +6825,12 @@ span[data-blok-slash-search] {
 }
 
 [data-blok-database-drawer][data-peek-mode="side"] [data-blok-database-drawer-icon] {
-  inline-size: 36px;
-  block-size: 36px;
+  inline-size: 60px;
+  block-size: 60px;
   margin-block: 0 calc(-1 * var(--blok-space-1));
-  margin-inline: var(--blok-space-2-25) calc(100% - 36px - var(--blok-space-2-25));
-  font-size: 36px;
-  line-height: 36px;
+  margin-inline: var(--blok-space-2-25) calc(100% - 60px - var(--blok-space-2-25));
+  font-size: 60px;
+  line-height: 60px;
 }
 
 [data-blok-database-drawer]:is([data-peek-mode="center"], [data-peek-mode="full"]) [data-blok-database-drawer-icon] {

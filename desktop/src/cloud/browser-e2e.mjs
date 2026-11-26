@@ -114,6 +114,9 @@ try {
   await expect(title).toBeVisible({timeout:20000});
   await expect(title).toHaveAttribute('contenteditable','true',{timeout:20000});
   const text = `Validation navigateur ${Date.now()}`;
+  await expect(member.locator('[data-desktop-page-actions]')).toBeVisible();
+  await expect(member.getByRole('dialog')).toHaveCount(0);
+  await expect(title).toBeFocused();
   await title.fill(text);
   const paragraph = member.locator('[data-blok-redactor] [contenteditable="true"]').first();
   await expect(paragraph).toBeVisible();
@@ -122,6 +125,9 @@ try {
   const indexBefore = await json(member,`/api/workspaces/${slug}/index`);
   expect(indexBefore.status).toBe(200);
   await expect.poll(async () => (await json(member,`/api/workspaces/${slug}/index`)).body.pages.some(page => page.title === text),{timeout:15000}).toBe(true);
+  const privateIndex = (await json(member,`/api/workspaces/${slug}/index`)).body;
+  const createdPage = privateIndex.pages.find(page => page.title === text);
+  expect(privateIndex.access[createdPage.id].visibility).toBe('private');
   await member.reload();
   // The app can restore the chosen workspace or return to the authenticated selector.
   await expect.poll(async () => (await member.locator('[data-desktop-shell]').isVisible()) || (await member.getByRole('button',{name:'Ouvrir l’espace',exact:true}).first().isVisible().catch(() => false))).toBe(true);

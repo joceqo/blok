@@ -91,6 +91,66 @@ async function go(id: string, title = id): Promise<void> {
   history.replaceState(null, '', `/?page=${id}`); workspace.onRoute();
   await vi.waitFor(() => expect(document.title).toBe(title));
 }
+/**
+ * A local row's body is a block inside its page, not a document of its own, so
+ * the desktop handed its database no row navigation at all: opening a row drew
+ * it on screen without an address, and the breadcrumb kept naming the page. The
+ * presentation reads blocks, so everything but the address was already there.
+ */
+it('gives a local row an address, so opening one full page is a navigation', async () => {
+  const rows = editorAt(0).rowPages();
+
+  expect(rows).toBeDefined();
+  expect(rows?.href?.('row-one', { databaseId: 'db' })).toContain('row=row-one');
+
+  rows?.navigate?.('row-one', { databaseId: 'db' });
+  await vi.waitFor(() => expect(location.search).toContain('row=row-one'));
+  expect(location.search).toContain('database=db');
+  expect(location.search).toContain('page=a');
+});
+
+/**
+ * A local row body used to be refused outright: the body lived as child blocks
+ * of the row, so there was no document to mount. It is a document now, and the
+ * pool that mounts one is the same code the server path uses — only its
+ * configuration differs.
+ */
+/**
+ * Once a row owns a document, its address is that document's — not a position
+ * inside the page that happens to hold it. That is what makes the row survive
+ * being moved, and what gives the page actions something to act on.
+ */
+/**
+ * legacyPageUrl rebuilds the address from "/" and drops the query, `local=1`
+ * with it. A reload then looked for the page on a server and showed it as
+ * unavailable — the row's address has to stay inside the local workspace.
+ */
+it('keeps a row body address inside the local workspace', async () => {
+  const rows = editorAt(0).rowPages() as { href?(rowId: string, context: {databaseId: string; pageId?: string}): string } | undefined;
+
+  expect(rows?.href?.('row-one', { databaseId: 'db', pageId: 'body-1' })).toContain('local=1');
+  expect(rows?.href?.('row-one', { databaseId: 'db' })).toContain('local=1');
+});
+
+it('addresses a row that owns a document by that document', async () => {
+  const rows = editorAt(0).rowPages() as { href?(rowId: string, context: {databaseId: string; pageId?: string}): string } | undefined;
+
+  expect(rows?.href?.('row-one', { databaseId: 'db' })).toContain('row=row-one');
+  expect(rows?.href?.('row-one', { databaseId: 'db', pageId: 'body-1' })).toContain('page=body-1');
+  expect(rows?.href?.('row-one', { databaseId: 'db', pageId: 'body-1' })).not.toContain('row=row-one');
+});
+
+it('offers a local row the same body pool the server path uses', async () => {
+  const rows = editorAt(0).rowPages() as (ReturnType<NonNullable<typeof editorAt>> extends never ? never : Record<string, unknown>) | undefined;
+
+  expect(typeof rows?.mount).toBe('function');
+  expect(typeof rows?.prepare).toBe('function');
+  expect(typeof rows?.flush).toBe('function');
+  expect(typeof rows?.mountedEditor).toBe('function');
+  // The link lives on the row block, so nothing has to be looked up for it.
+  await expect((rows?.lookup as (input: {rowId: string}) => Promise<unknown>)({ rowId: 'row-one' })).resolves.toBeNull();
+});
+
 it('reuses a rendered page on A → B → A, with only the visible editor accepting input', async () => {
   const first = editorAt(0);
   await go('b');
@@ -159,7 +219,7 @@ async function startRemote(remoteOrigin = location.origin, pages: WorkspaceIndex
       return Response.json({});
     }
     if (url.pathname.includes('/resolve-id/') && (url.pathname.split('/').at(-1) ?? '') in server.locations) return Response.json(server.locations[url.pathname.split('/').at(-1) ?? '']);
-    if (url.pathname.includes('/resolve-id/')) return Response.json({pageId:'body',publicId:'77777777-7777-7777-7777-777777777777',title:'Row',workspace:{id:'remote-cache',slug:'cache-test',name:'Remote',role:'admin'},teamspaceId:null,rowBodyOf:{documentId:'a',rowId:'row-body'}});
+    if (url.pathname.includes('/resolve-id/') || url.pathname.includes('/resolve/')) return Response.json({pageId:'body',publicId:'77777777-7777-7777-7777-777777777777',title:'Row',workspace:{id:'remote-cache',slug:'cache-test',name:'Remote',role:'admin'},teamspaceId:null,rowBodyOf:{documentId:'a',rowId:'row-body'}});
     if (url.pathname.endsWith('/teamspaces')) return Response.json({teamspaces: []});
     return Response.json({});
   }));
@@ -346,8 +406,10 @@ it('returns to the row and its scroll position after visiting its parent breadcr
   await vi.waitFor(() => expect(document.title).toBe('a'));
   const parentUrl = location.href;
   const entries = history.length;
+  // The crumb of the page already open goes to that page, which is a move to
+  // where we already are: it must leave the history alone, or going back would
+  // land on the page instead of the row.
   document.querySelector<HTMLButtonElement>('[data-desktop-page-breadcrumb-item] button[aria-current="page"]')!.click();
-  document.querySelector<HTMLButtonElement>('[data-desktop-breadcrumb-menu-item="a"]')!.click();
   expect(history.length).toBe(entries);
   const traverse = (direction: 'back' | 'forward') => new Promise<void>(resolve => {
     window.addEventListener('popstate', () => { workspace.onRoute(); resolve(); }, {once:true});
@@ -362,33 +424,153 @@ it('returns to the row and its scroll position after visiting its parent breadcr
   expect(location.href).toBe(parentUrl);
 });
 
-it('opens a migrated body at its own public route, reloads its source row, and keeps parent page actions guarded', async () => {
-  const server=await startRemote();
-  state.rowBodies['row-body']='body';
-  const host=editorAt(0).rowPages();
-  host?.navigate?.('row-body',{databaseId:'db',pageId:'body'});
+it('opens a migrated body in its own session, keeps its actions and reloads without indexing it', async () => {
+  const server = await startRemote(location.origin, undefined, {body: {level:'full', publicId:'77777777-7777-7777-7777-777777777777'}});
+  state.rowBodies['row-body'] = 'body';
+  const host = editorAt(0);
+  host.rowPages()?.navigate?.('row-body', {databaseId:'db', pageId:'body'});
   await vi.waitFor(() => expect(location.pathname).toBe('/p/row-77777777-7777-7777-7777-777777777777'));
-  await vi.waitFor(() => expect(document.title).toBe('row-body'));
-  expect(location.hash).toBe('');
-  expect(new URL(location.href).searchParams.has('row')).toBe(false);
-  expect(document.querySelector('[data-desktop-page-breadcrumbs]')?.textContent).toContain('row-body');
-  expect(document.querySelector('[data-desktop-row-page]')).not.toBeNull();
-  const more=document.querySelector<HTMLButtonElement>('[data-desktop-page-more]');
-  more?.click();
-  const remove=Array.from(document.querySelectorAll<HTMLButtonElement>('[data-desktop-page-menu] button')).find(button => button.textContent === 'Mettre à la corbeille');
-  expect(remove).toBeDefined(); remove?.click();
+  await vi.waitFor(() => expect(document.title).toBe('Row'));
+  expect(editorAt(1).collaboration).toMatchObject({doc:'body'});
+  expect(state.rowCalls).toEqual([]);
+  expect(document.querySelector('[data-desktop-row-page]')).toBeNull();
+  expect(document.querySelector('[data-desktop-page-share]')).not.toBeNull();
+  document.querySelector<HTMLButtonElement>('[data-desktop-page-favorite]')?.click();
+  const storedFavorites = Object.keys(localStorage).filter(key => key.startsWith('blok:navigation:favorites:')).map(key => JSON.parse(localStorage.getItem(key) ?? '[]') as string[]).flat();
+  // Personal favorites must name the body; the parent must stay untouched.
+  expect(storedFavorites).toContain('body');
+  expect(storedFavorites).not.toContain('a');
+  document.querySelector<HTMLButtonElement>('[data-desktop-page-more]')?.click();
+  const menu = document.querySelector('[data-desktop-page-menu]');
+  expect(menu?.textContent).toContain('Historique des versions');
+  expect(menu?.textContent).toContain('Renommer');
+  expect(menu?.textContent).not.toContain('Déplacer vers');
+  expect(menu?.textContent).not.toContain('Mettre à la corbeille');
+  editorAt(1).rename('Own title');
   await workspace.flush();
-  expect(server.index.pages.map(page=>page.id)).toEqual(['a','b']);
+  expect(document.title).toBe('Own title');
+  expect(server.index.pages.map(page => [page.id, page.title])).toEqual([['a','a'],['b','b']]);
+  expect(server.writes).toEqual([]);
 
-  workspace.destroy(); workspace.element.remove(); state.editors.length=0; state.rowCalls.length=0;
-  const {createWorkspace}=await import('./workspace');
-  workspace=createWorkspace(()=>undefined,()=>undefined,{ref:{kind:'remote',id:'remote-cache',name:'Remote',accountId:'user',workspaceId:'cache-test',server:location.origin,role:'admin'}});
+  workspace.destroy(); workspace.element.remove(); state.editors.length = 0;
+  const {createWorkspace} = await import('./workspace');
+  workspace = createWorkspace(() => undefined, () => undefined, {ref:{kind:'remote',id:'remote-cache',name:'Remote',accountId:'user',workspaceId:'cache-test',server:location.origin,role:'admin'}});
   document.body.append(workspace.element); await workspace.start();
-  await vi.waitFor(() => expect(document.title).toBe('row-body'));
-  expect(state.rowCalls).toContainEqual({rowId:'row-body',mode:'full',explicit:true});
-  expect(server.index.pages.map(page=>page.id)).toEqual(['a','b']);
+  await vi.waitFor(() => expect(editorAt(0).collaboration).toMatchObject({doc:'body'}));
+  expect(server.index.pages.map(page => page.id)).toEqual(['a','b']);
   await go('b');
   expect(document.querySelector('[data-desktop-row-page]')).toBeNull();
+});
+
+it('shares and duplicates the body document without acting on its parent', async () => {
+  const server = await startRemote(location.origin, undefined, {body:{level:'full'}});
+  const sharing = await import('./cloud/page-sharing');
+  const share = vi.spyOn(sharing, 'openPageSharing').mockImplementation(() => () => undefined);
+  editorAt(0).rowPages()?.navigate?.('row-body', {databaseId:'db',pageId:'body'});
+  await vi.waitFor(() => expect(document.title).toBe('Row'));
+  document.querySelector<HTMLButtonElement>('[data-desktop-page-share]')?.click();
+  expect(share.mock.calls.at(-1)?.slice(1, 3)).toEqual(['body', 'Row']);
+  document.querySelector<HTMLButtonElement>('[data-desktop-page-more]')?.click();
+  const copy = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-desktop-page-menu] button')).find(button => button.textContent === 'Dupliquer');
+  expect(copy).toBeDefined(); copy?.click();
+  await vi.waitFor(() => expect(document.title).toBe('Row (copie)'));
+  expect(vi.mocked(fetch).mock.calls.some(([url, init]) => (url instanceof Request ? url.url : String(url)).endsWith('/pages/body/duplicate') && init?.method === 'POST')).toBe(true);
+  expect(server.index.pages.some(page => page.id === 'body')).toBe(false);
+  expect(server.index.pages.find(page => page.id === 'a')?.title).toBe('a');
+});
+
+it('opens a native body route in a body session while preserving the app origin', async () => {
+  vi.stubGlobal('__TAURI_INTERNALS__', {invoke:vi.fn(async () => null)});
+  await startRemote('https://native-server.example', undefined, {body:{level:'full'}});
+  const origin = location.origin;
+  editorAt(0).rowPages()?.navigate?.('row-body', {databaseId:'db',pageId:'body'});
+  await vi.waitFor(() => expect(document.title).toBe('Row'));
+  expect(location.origin).toBe(origin);
+  expect(new URL(location.href).searchParams.get('page')).toBe('body');
+  expect(editorAt(1).collaboration).toMatchObject({doc:'body'});
+});
+
+it('presents an inline row inside a standalone body using that body session, then restores its document actions', async () => {
+  const server = await startRemote(location.origin, undefined, {body:{level:'full'}});
+  history.replaceState(null, '', '?page=body&row=row-inline&database=db'); workspace.onRoute();
+  await vi.waitFor(() => expect(document.title).toBe('row-inline'));
+  expect(editorAt(1).collaboration).toMatchObject({doc:'body'});
+  expect(editorAt(1).rowPages()?.navigation?.current()).toEqual({rowId:'row-inline',databaseId:'db'});
+  expect(editorAt(0).rowPages()?.navigation?.current()).toBeNull();
+  await go('body', 'Row');
+  expect(document.querySelector('[data-desktop-row-page]')).toBeNull();
+  expect(editorAt(1).destroyed).toBe(false);
+  expect(server.writes).toEqual([]);
+});
+
+it('opens a body from a cold URL even when only the body is shared, then closes it on access loss', async () => {
+  const server = await startRemote(location.origin, [{id:'a',title:'a',parentId:null}], {body: {level:'view', publicId:'77777777-7777-7777-7777-777777777777'}});
+  server.locations.body = {pageId:'body', publicId:'77777777-7777-7777-7777-777777777777', title:'Shared body', workspace:{id:'remote-cache',slug:'cache-test',name:'Remote',role:'admin'},teamspaceId:null};
+  history.replaceState(null, '', '?page=body'); workspace.onRoute();
+  await vi.waitFor(() => expect(document.title).toBe('Shared body'));
+  expect(editorAt(1).collaboration).toMatchObject({doc:'body'});
+  expect(editorAt(1).configuredReadOnly()).toBe(true);
+  expect(document.querySelector('[data-desktop-page-breadcrumbs]')?.textContent).not.toContain('row-body');
+  server.index.access = {};
+  window.dispatchEvent(new Event('focus'));
+  await vi.waitFor(() => expect(document.querySelector('[data-page-unavailable]')).not.toBeNull());
+  expect(editorAt(1).destroyed).toBe(true);
+  expect(server.writes).toEqual([]);
+});
+
+it('reloads a local body in its own editor, edits its content, and keeps the workspace index unchanged', async () => {
+  workspace.destroy(); workspace.element.remove(); state.editors.length = 0;
+  const index = localStorage.getItem('blok:workspace:cache-test:index');
+  localStorage.setItem('blok:workspace:cache-test:a', JSON.stringify({blocks:[{id:'db',type:'database',data:{}},{id:'row-one',type:'database-row',parent:'db',data:{pageId:'local-body',bodyBlocks:true}}]}));
+  localStorage.setItem('blok:workspace:cache-test:row-bodies', JSON.stringify({'local-body':{publicId:'11111111-1111-4111-8111-111111111111',documentId:'a',rowId:'row-one',databaseId:'db',title:'Local row'}}));
+  localStorage.setItem('blok:workspace:cache-test:local-body', JSON.stringify({blocks:[{id:'text',type:'paragraph',data:{text:'Same content'}}]}));
+  history.replaceState(null, '', '?page=local-body&local=1');
+  const {createWorkspace} = await import('./workspace');
+  workspace = createWorkspace(() => undefined, () => undefined, {ref:{kind:'local',id:'cache-test',name:'Test'}});
+  document.body.append(workspace.element); await workspace.start();
+  await vi.waitFor(() => expect(document.title).toBe('Local row'));
+  await editorAt(0).isReady;
+  expect(editorAt(0).data).toMatchObject({blocks:[{id:'text',data:{text:'Same content'}}]});
+  editorAt(0).data = {title:'Body title',blocks:[{id:'text',type:'paragraph',data:{text:'Edited content'}}]};
+  editorAt(0).rename('Body title');
+  await workspace.flush();
+  expect(localStorage.getItem('blok:workspace:cache-test:local-body')).toContain('Edited content');
+  expect(localStorage.getItem('blok:workspace:cache-test:index')).toBe(index);
+  await editorAt(0).pageConfig()?.create?.({pageId:'local-child',title:'Child'});
+  const withChild = JSON.parse(localStorage.getItem('blok:workspace:cache-test:index') ?? '{}') as WorkspaceIndex;
+  expect(withChild.pages.find(page => page.id === 'local-child')).toMatchObject({title:'Child',parentId:'a'});
+  await go('a');
+  const target = document.createElement('div'); document.body.append(target);
+  const mounted = editorAt(1).rowPages()?.mount('local-body', target);
+  await vi.waitFor(() => expect(editorAt(2).data).toMatchObject({blocks:[{data:{text:'Edited content'}}]}));
+  localStorage.setItem('blok:workspace:cache-test:local-body', JSON.stringify({blocks:[{id:'text',type:'paragraph',data:{text:'External update'}}]}));
+  await workspace.flush();
+  expect(localStorage.getItem('blok:workspace:cache-test:local-body')).toContain('External update');
+  mounted?.destroy();
+});
+
+it('duplicates the latest local body content as an ordinary page without retaining its row ancestry', async () => {
+  workspace.destroy(); workspace.element.remove(); state.editors.length = 0;
+  localStorage.setItem('blok:workspace:cache-test:row-bodies', JSON.stringify({'copy-body':{publicId:'11111111-1111-4111-8111-111111111111',documentId:'a',rowId:'row-one',title:'Body'}}));
+  localStorage.setItem('blok:workspace:cache-test:copy-body', JSON.stringify({title:'Body',blocks:[{id:'text',type:'paragraph',data:{text:'Old content'}}]}));
+  history.replaceState(null, '', '?page=copy-body&local=1');
+  const {createWorkspace} = await import('./workspace');
+  workspace = createWorkspace(() => undefined, () => undefined, {ref:{kind:'local',id:'cache-test',name:'Test'}});
+  document.body.append(workspace.element); await workspace.start();
+  await vi.waitFor(() => expect(document.title).toBe('Body'));
+  await editorAt(0).isReady;
+  editorAt(0).data = {title:'Body',blocks:[{id:'text',type:'paragraph',data:{text:'Latest edit'}}]};
+  document.querySelector<HTMLButtonElement>('[data-desktop-page-more]')?.click();
+  Array.from(document.querySelectorAll<HTMLButtonElement>('[data-desktop-page-menu] button')).find(button => button.textContent === 'Dupliquer')?.click();
+  await vi.waitFor(() => expect(document.title).toBe('Body (copie)'));
+  expect([...document.querySelectorAll('[data-desktop-page-breadcrumb-item]')].map(crumb => crumb.textContent)).toEqual(['a','Body (copie)']);
+  const index = JSON.parse(localStorage.getItem('blok:workspace:cache-test:index') ?? '{}') as WorkspaceIndex;
+  const copy = index.pages.find(page => page.title === 'Body (copie)');
+  if (!copy) throw new Error('Missing body copy');
+  expect(copy.parentId).toBe('a');
+  expect(copy.location).toBeUndefined();
+  expect(index.pages.some(page => page.id === 'copy-body')).toBe(false);
+  expect(localStorage.getItem(`blok:workspace:cache-test:${copy.id}`)).toContain('Latest edit');
 });
 
 it.each([false,true])('ignores a delayed row resolver after leaving its source (rejected: %s)', async rejected => {
@@ -433,7 +615,7 @@ it('uses a native same-origin route for an unmigrated row and a public URL when 
 });
 
 it.each(['expand', 'legacy full link'])('routes a nested task through its physical sprint body (%s)', async (entry) => {
-  const server = await startRemote();
+  const server = await startRemote(location.origin, undefined, {'sprint-body':{level:'full'}, 'task-body':{level:'full'}});
   const publicId = '99999999-9999-9999-9999-999999999999';
   state.rowBodies['row-sprint'] = 'sprint-body';
   state.rowBodies['row-task'] = 'task-body';
@@ -458,10 +640,11 @@ it.each(['expand', 'legacy full link'])('routes a nested task through its physic
   await vi.waitFor(() => expect(location.pathname).toBe('/p/task-'+publicId));
   expect(location.hash).toBe('');
   expect(history.length).toBe(historyLength + (entry === 'expand' ? 1 : 0));
-  expect(nested?.navigation?.current()).toEqual({databaseId:'db',rowId:'row-task'});
-  await vi.waitFor(() => expect(document.title).toBe('row-task'));
+  expect(nested?.navigation?.current()).toBeNull();
+  await vi.waitFor(() => expect(document.title).toBe('Task'));
+  expect(editorAt(2).collaboration).toMatchObject({doc:'task-body'});
   const trail = [...document.querySelectorAll('[data-desktop-page-breadcrumb-item]')].map(crumb => crumb.textContent);
-  expect(trail).toEqual(['a', 'row-sprint', 'row-task']);
+  expect(trail).toEqual(['a', 'Sprint', 'Task']);
   mounted?.destroy();
 });
 
@@ -585,7 +768,7 @@ it('ignores a late body resolver after leaving its row breadcrumb', async () => 
   await startRemote(location.origin, [
     {id:'a',title:'a',parentId:null},
     Object.assign({id:'b',title:'b',parentId:'a'}, {location:{documentId:'a',blockId:'row2',rows:[{documentId:'a',rowId:'row1',databaseId:'db',title:'Sprint'},{documentId:'body',rowId:'row2',databaseId:'db',title:'Task'}]}}),
-  ]);
+  ], {body:{level:'full'}});
   await go('b');
   const pending: {finish?: (response: Response) => void} = {};
   const original = vi.mocked(fetch).getMockImplementation();
@@ -613,14 +796,14 @@ it.each(['root','body'])('keeps each host on its own row while routing across do
     rowBodyOf:{documentId:'body1',rowId:'row2'},
     location:{documentId:'a',blockId:'row2',rows:[{documentId:'a',rowId:'row1',databaseId:'db',title:'Sprint'},{documentId:'body1',rowId:'row2',databaseId:'nested-db',title:'Task'}]},
   });
-  history.replaceState(null, '', '/?page=body2');
+  history.replaceState(null, '', '/?page=body1&row=row2&database=nested-db');
   if (scope === 'root') {
-    expect(editorAt(0).rowPages()?.navigation?.current()).toEqual({rowId:'row1',databaseId:'db'});
+    expect(editorAt(0).rowPages()?.navigation?.current()).toBeNull();
   } else {
     const holder = document.createElement('div'); document.body.append(holder);
     const mounted = editorAt(0).rowPages()?.mount('body1', holder);
     await editorAt(1).isReady;
-    expect(editorAt(1).rowPages()?.navigation?.current()).toEqual({rowId:'row2',databaseId:'nested-db'});
+    expect(editorAt(1).rowPages()?.navigation?.current()).toBeNull();
     mounted?.destroy();
   }
 });

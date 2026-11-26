@@ -466,13 +466,14 @@ export class Collaboration extends Module {
 
     // Zero cost when absent. `server` is guaranteed by the config setter's
     // refusal matrix; the check is what makes that guarantee visible here.
-    if (collaboration === undefined || server === undefined) {
+    if (collaboration === undefined || (server === undefined && collaboration.socketFactory === undefined)) {
       return;
     }
 
     this.settings = {
       doc: collaboration.doc,
-      url: syncUrl(server, collaboration.doc),
+      // With an injected transport and no host, the URL only names the room.
+      url: server === undefined ? `ws://localhost/sync/${encodeURIComponent(collaboration.doc)}` : syncUrl(server, collaboration.doc),
       user: collaboration.user,
       userId: normalizeUserId(this.config.user?.id) ?? undefined,
       offline: collaboration.offline === true,

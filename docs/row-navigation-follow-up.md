@@ -56,3 +56,56 @@ Le chemin de chargement du workspace ouvre désormais les lignes ancêtres de la
 Le défaut a été constaté sur Sprints (refonte) : l’URL et le titre désignaient la tâche, mais son panneau avait une largeur de zéro sous deux parents masqués. `Block.call` réveillait déjà son outil ; il manquait l’ouverture des parents. Les aperçus imbriqués gardent aussi leur parent ouvert pour ne pas renvoyer leur propre table dans le pool au milieu du clic.
 
 Le test navigateur `nested-row-navigation.browser.test.ts` utilise le vrai éditeur et le même module d’ouverture que le workspace. Il vérifie cinq niveaux, l’URL directe sans `databaseId`, le clic réel sur « Ouvrir en pleine page », le rechargement, Précédent/Suivant et l’ouverture depuis un aperçu latéral. Les ancêtres ne créent pas d’entrées d’historique ni de fragments supplémentaires. La limite des chaînes traversant plusieurs documents de corps séparés, décrite plus haut, reste distincte de ce correctif.
+
+
+## Décision A — Corps ouvrable comme document (24 novembre 2026)
+
+L’URL publique ou historique d’un corps ouvre désormais une session sur ce corps.
+L’éditeur, le diagnostic de synchronisation, le partage et l’historique utilisent
+son identité. Les métadonnées résolues restent en mémoire, séparées de
+`index.pages` ; les droits viennent toujours de l’index courant. Le retrait de
+l’accès ferme la session. Un partage portant uniquement sur le corps fonctionne
+sans dévoiler son parent.
+
+Le tiroir reste un accès éditable au même contenu. En mode local, le passage au
+document ferme les éditeurs du parent avant de monter celui du corps, pour ne
+pas écrire le même fichier depuis deux éditeurs. Les modifications du tiroir
+sont explicitement collectées avant ce passage. Les lignes encore inline
+conservent leur route `?row=…&database=…` et le masquage des actions de l’hôte.
+La création d’un corps pendant l’édition d’une ligne inline ne remplace plus
+silencieusement son URL : l’ouverture explicite change à la fois l’URL et la
+session.
+
+Le titre et l’icône du document sont enregistrés avec son contenu ; le serveur
+projette déjà le titre dans ses métadonnées. Le libellé et les propriétés de la
+ligne restent gérés dans la database et son tiroir. La préférence de pleine
+largeur du document est personnelle, mémorisée sur cet appareil. Les favoris
+restent personnels et ne publient pas le corps dans la sidebar.
+
+Le menu propose les actions compatibles : copier le lien, renommer le document,
+dupliquer son contenu en page ordinaire, historique (à distance) et pleine
+largeur. Le partage cible le corps. Déplacer le corps et le mettre isolément à
+la corbeille ne sont pas proposés : il reste attaché à sa ligne, et les règles
+de sidebar, recherche, corbeille et déplacements n’ont pas changé. La gestion
+de la ligne reste disponible depuis la database et le tiroir.
+
+Le bloc `/page` utilise la création de page existante. À distance, le parent
+physique peut être le corps ; localement, la page est indexée sous l’ancêtre du
+workspace, comme pour les sous-pages créées depuis le tiroir. Le corps ne devient
+pas une entrée d’index. Aucune migration de données n’est ajoutée.
+
+Validation finale ciblée : 59 tests passent, dont un parcours Chromium avec
+l’éditeur réel, ainsi que le contrôle TypeScript du desktop. La duplication
+locale prend les dernières modifications ; un corps non modifié dans un
+tiroir ne réécrit pas une version externe plus récente. Les tests ont été
+écrits et vus en échec avant les correctifs correspondants.
+
+Les commandes complètes `yarn lint` et `yarn test` ont été lancées sous la
+limite de 2 Go du dépôt et ont échoué par épuisement du tas Node. Le lint
+ciblé conserve les 36 diagnostics préexistants, vérifiés contre les copies
+initiales dans un miroir séparé. Une exécution complète des tests desktop
+compte 712 succès, 14 échecs hors de cette modification et un test ignoré :
+10 échecs viennent du WebKit Playwright absent, les quatre autres de la
+hauteur des onglets et de règles d’architecture sur des fichiers inchangés
+par cette session. La validation globale n’est donc pas acquise. Le
+déploiement et la vérification de l’instance restent à faire.

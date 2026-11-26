@@ -28,38 +28,35 @@ export function pageNavigationUrl(destination: string, currentHref = location.hr
 }
 export interface ResolvedPage {pageId:string;publicId:string;title:string;workspace:CloudWorkspace;teamspaceId:string|null;rowBodyOf?:{documentId:string;rowId:string};location?:PageLocation}
 export interface RowPageDestination {documentId:string;rowId:string;databaseId?:string;pageId?:string;steps?:RowLocationStep[]}
-// Resolver context is transient. Internal row bodies never become sidebar pages.
-const resolvedRows=new Map<string,{route:RowPageDestination;bodyDocumentId:string}>();
-export function rememberResolvedRowPage(origin:string,page:ResolvedPage):void {
-  const keys=[`${origin}|public|${page.publicId.toLowerCase()}`,`${origin}|legacy|${page.pageId}`];
-  if (!page.rowBodyOf) { keys.forEach(key => resolvedRows.delete(key)); return; }
-  const steps=page.location?.rows.map(({documentId,rowId,databaseId})=>({documentId,rowId,databaseId}));
-  const route:RowPageDestination={...page.rowBodyOf,pageId:page.pageId};
-  if(page.location && steps?.length){
-    route.documentId=page.location.documentId;
-    route.steps=steps;
-    route.databaseId=steps.at(-1)?.databaseId;
-  }
-  keys.forEach(key => resolvedRows.set(key,{route,bodyDocumentId:page.pageId}));
+// Resolver metadata is transient and never enters the workspace/sidebar index.
+const resolvedPages = new Map<string, ResolvedPage>();
+const resolvedLinks = new Map<string, string>();
+export function rememberResolvedRowPage(origin: string, page: ResolvedPage, server?: string): void {
+  resolvedPages.set(`${origin}|public|${page.publicId.toLowerCase()}`, page);
+  resolvedPages.set(`${origin}|legacy|${page.pageId}`, page);
+  const key = `${origin}|legacy|${page.pageId}`;
+  if (server) resolvedLinks.set(key, publicPageUrl(server, page.title, page.publicId));
+  else resolvedLinks.delete(key);
 }
-export function rowPageDestination(href:string):RowPageDestination|null {
-  const url=new URL(href,location.href),destination=pageDestination(url.href);
-  const resolved = destination.kind==='public' || destination.kind==='legacy'
-    ? resolvedRows.get(`${url.origin}|${destination.kind}|${destination.id}`) : undefined;
-  if(resolved){
-    const rowId=url.searchParams.get('row'),databaseId=url.searchParams.get('database');
-    if(rowId && resolved.route.steps){
-      return {documentId:resolved.route.documentId,rowId,...(databaseId ? {databaseId} : {}),steps:[
-        ...resolved.route.steps,
-        {documentId:resolved.bodyDocumentId,rowId,...(databaseId ? {databaseId} : {})},
-      ]};
-    }
-    return {...resolved.route};
+export function forgetResolvedPages(origin: string, workspaceId?: string): void {
+  for (const [key, page] of resolvedPages) {
+    if (key.startsWith(`${origin}|`) && (!workspaceId || page.workspace.id === workspaceId)) { resolvedPages.delete(key); resolvedLinks.delete(key); }
   }
-  const rowId=url.searchParams.get('row'),documentId=pageIdForHref(url.href);
-  if(!rowId || !documentId)return null;
-  const databaseId=url.searchParams.get('database');
-  return {documentId,rowId,...(databaseId ? {databaseId} : {})};
+}
+export function resolvedPageForHref(href: string): ResolvedPage | undefined {
+  const url = new URL(href, location.href), destination = pageDestination(url.href);
+  return destination.kind === 'public' || destination.kind === 'legacy'
+    ? resolvedPages.get(`${url.origin}|${destination.kind}|${destination.id}`) : undefined;
+}
+export function resolvedPageForId(origin: string, id: string): ResolvedPage | undefined {
+  return resolvedPages.get(`${origin}|legacy|${id}`);
+}
+export function rowPageDestination(href: string): RowPageDestination | null {
+  const url = new URL(href, location.href);
+  const rowId = url.searchParams.get('row'), documentId = pageIdForHref(url.href);
+  if (!rowId || !documentId) return null;
+  const databaseId = url.searchParams.get('database');
+  return {documentId, rowId, ...(databaseId ? {databaseId} : {})};
 }
 /** Inline and unmigrated rows stay addressable through their source page. */
 export function rowPageUrl(parentUrl:string,rowId:string,databaseId?:string):string {
@@ -93,7 +90,7 @@ export function pageIdForHref(href:string):string|null {
     const url=new URL(href,location.href),destination=pageDestination(url.href);
     if(destination.kind==='legacy')return destination.id;
     if(destination.kind!=='public')return null;
-    return [...pageLinks.entries()].find(([key,value])=>key.startsWith(`${url.origin}|`) && value.publicId===destination.id)?.[1].id ?? null;
+    return [...pageLinks.entries()].find(([key,value])=>key.startsWith(`${url.origin}|`) && value.publicId===destination.id)?.[1].id ?? resolvedPageForHref(url.href)?.pageId ?? null;
   }catch{return null;}
 }
 export function copiedPageLink(href:string):string|null {
@@ -101,7 +98,7 @@ export function copiedPageLink(href:string):string|null {
     const url=new URL(href,location.href),destination=pageDestination(url.href);
     if(destination.kind==='public')return url.href;
     if(destination.kind!=='legacy')return null;
-    return pageLinks.get(`${url.origin}|${destination.id}`)?.href ?? `blok://page/${destination.id}`;
+    return pageLinks.get(`${url.origin}|${destination.id}`)?.href ?? resolvedLinks.get(`${url.origin}|legacy|${destination.id}`) ?? `blok://page/${destination.id}`;
   }catch{return null;}
 }
 /** A voluntary switch drops the destination; only an explicit login continuation retains it. */

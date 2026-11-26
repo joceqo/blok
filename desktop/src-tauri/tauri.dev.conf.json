@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Blok Dev",
+  "identifier": "dev.notiooon.blok.dev",
+  "build": {
+    "beforeDevCommand": "BLOK_DEV_PORT=1421 npm run dev",
+    "devUrl": "http://localhost:1421"
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "blok-dev"
+        ]
+      }
+    }
+  }
+}

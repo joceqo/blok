@@ -437,7 +437,11 @@ func (s *Service) page(w http.ResponseWriter, r *http.Request, u identity, ws Wo
 		return
 	}
 	if r.Method == http.MethodDelete && r.PathValue("action") == "" {
-		s.trashPage(w, r, u, ws)
+		s.changePageTrash(w, r, u, ws, "trash")
+		return
+	}
+	if (r.Method == http.MethodPost && r.PathValue("action") == "restore") || (r.Method == http.MethodDelete && r.PathValue("action") == "purge") {
+		s.changePageTrash(w, r, u, ws, r.PathValue("action"))
 		return
 	}
 	if r.Method == http.MethodPost && r.PathValue("action") == "row-body" {

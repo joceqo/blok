@@ -45,6 +45,7 @@ describe('empty remote workspace', () => {
     must(element.querySelector<HTMLButtonElement>('[data-desktop-empty-link="import"]')).click();
     must(element.querySelector<HTMLButtonElement>('[data-desktop-empty-link="getting-started"]')).click();
     expect(template).toHaveBeenCalledOnce();
+    expect(create).not.toHaveBeenCalled();
     expect(invite).toHaveBeenCalledOnce();
     expect(importPage).toHaveBeenCalledOnce();
     expect(gettingStarted).toHaveBeenCalledOnce();

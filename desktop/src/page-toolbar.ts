@@ -1,3 +1,4 @@
+import { rowPageDestination } from './page-urls';
 import { IconSearch, IconLink, IconCopy, IconPencil, IconArrowRightLine, IconClock, IconTrash, IconExpandFullscreen } from '../../src/components/icons';
 import { createPositionTracker } from '../../src/components/utils/popover/anchored-position';
 import { resolvePosition } from '../../src/components/utils/popover/popover-position';
@@ -67,6 +68,7 @@ export function createPageToolbar(
     onRename?: () => void;
     onDuplicate?: () => void;
     onMove?: () => void;
+    onCopyToWorkspace?: () => void;
     onDelete?: () => void;
     onHistory?: () => void;
   } = {},
@@ -98,10 +100,6 @@ export function createPageToolbar(
   const trail = document.createElement('nav');
   trail.setAttribute('data-desktop-page-breadcrumbs', '');
   trail.setAttribute('aria-label', 'Fil d’Ariane');
-  const local = document.createElement('span');
-  local.setAttribute('data-desktop-page-local', '');
-  local.title = 'Cette page est enregistrée sur cet appareil';
-  local.append(glyph(['M2.5 3.5h11v8h-11z', 'M5.5 13.5h5']), document.createTextNode('Sur cet appareil'));
   if (state.workspaceName) {
     const workspace = document.createElement('button');
     workspace.type = 'button';
@@ -124,7 +122,10 @@ export function createPageToolbar(
     separator.textContent = '/';
     separator.setAttribute('aria-hidden', 'true');
     identity.append(workspace, separator, trail);
-  } else identity.append(trail, local);
+  // No "on this device" marker: at this width it loses its label and reads as a
+  // dead button in a row of live ones. Where a page is stored belongs to the
+  // save status, which already says it and says it when it fails.
+  } else identity.append(trail);
   if (options.readOnly) {
     const badge = document.createElement('span');
     badge.setAttribute('data-desktop-page-readonly', '');
@@ -168,10 +169,18 @@ export function createPageToolbar(
     if (copy.disabled) return;
     resetFeedback();
     copy.disabled = true;
+    // On a row opened full page the last crumb names the ROW, so rebuilding
+    // `?page=<id>` from it would address a page that does not exist. The
+    // address bar already holds the row's own url, which is what to copy.
     const url = new URL(location.href);
-    url.pathname = '/'; url.search = ''; url.hash = '';
-    const id = state.items.at(-1)?.id;
-    if (id) url.searchParams.set('page', id);
+    const onRow = rowPageDestination(location.href) !== null;
+    const id = onRow ? undefined : state.items.at(-1)?.id;
+
+    if (!onRow) {
+      url.pathname = '/'; url.search = ''; url.hash = '';
+
+      if (id) url.searchParams.set('page', id);
+    }
     void (async () => {
       try {
         await navigator.clipboard.writeText(id ? options.pageUrl?.(id) ?? url.href : url.href);
@@ -272,7 +281,8 @@ export function createPageToolbar(
   command('Copier le lien', IconLink, () => copy.click(), commandsGroup, 'data-desktop-page-copy-action');
   const commands = [
     ['Renommer', IconPencil, options.onRename], ['Dupliquer', IconCopy, options.onDuplicate],
-    ['Déplacer vers…', IconArrowRightLine, options.onMove], ['Historique des versions', IconClock, options.onHistory],
+    ['Déplacer vers…', IconArrowRightLine, options.onMove], ['Copier vers un espace…', IconCopy, options.onCopyToWorkspace],
+    ['Historique des versions', IconClock, options.onHistory],
   ] as const;
   for (const [title, svg, run] of commands) {
     if (run && !options.readOnly) command(title, svg, run, commandsGroup);
@@ -526,8 +536,9 @@ export function createPageToolbar(
         content.type = 'button';
         // Going to the page wins over listing its siblings. Notion puts the
         // dropdown on the workspace chip, not on a page crumb: clicking a page
-        // in the trail goes there. The current page has nowhere to go, so it
-        // keeps its menu.
+        // in the trail goes there. A crumb with no destination — one naming
+        // something the host cannot navigate to, such as a row — falls back to
+        // its menu rather than being dead.
         if (item.onOpen) {
           content.addEventListener('click', item.onOpen);
         } else if (item.menu) {

@@ -49,7 +49,7 @@ export function createEmptyWorkspaceState(
     'template',
     'Partir d’un modèle',
     'Choisissez où créer, y compris une base de données.',
-    () => extras.onTemplate?.() ?? onCreate(),
+    extras.onTemplate ?? onCreate,
   );
   addCard(
     'invite',

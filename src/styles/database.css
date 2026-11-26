@@ -2614,14 +2614,14 @@
   padding-block-start: calc(30vh - var(--blok-space-6));
 }
 
-/* Side: a 36px icon on its own line under the row, the title right under it. The DOM order is set per mode in database-card-drawer.ts. */
+/* Side: a 60px icon on its own line under the row, the title right under it. The DOM order is set per mode in database-card-drawer.ts. */
 [data-blok-database-drawer][data-peek-mode="side"] [data-blok-database-drawer-icon] {
-  inline-size: 36px;
-  block-size: 36px;
+  inline-size: 60px;
+  block-size: 60px;
   margin-block: 0 calc(-1 * var(--blok-space-1));
-  margin-inline: var(--blok-space-2-25) calc(100% - 36px - var(--blok-space-2-25));
-  font-size: 36px;
-  line-height: 36px;
+  margin-inline: var(--blok-space-2-25) calc(100% - 60px - var(--blok-space-2-25));
+  font-size: 60px;
+  line-height: 60px;
 }
 
 /* Centre and full page: a 78px icon on its own line, 96 under the bar or 42 over the cover; the row 8 under it. */

@@ -6,7 +6,7 @@ import { Dom as $ } from './dom';
 import { CriticalError } from './errors/critical';
 import type { BlokEventMap } from './events';
 import { Modules } from './modules';
-import type { Collaboration } from './modules/collaboration';
+import type { Collaboration, CollaborationConfig } from './modules/collaboration';
 import type { Renderer } from './modules/renderer';
 import { LogLevels, isEmpty, isFunction, isObject, isString, log, setLogLevel } from './utils';
 import { cloneOutputBlocks } from './utils/clone-output-blocks';
@@ -361,7 +361,9 @@ export class Core {
    * of that URL. Refuse-don't-warn — throwing rejects the ready promise.
    */
   private validateCollaborationConfig(): void {
-    const { collaboration } = this.config;
+    // Widened, not asserted: the published type carries none of the injection
+    // points, and the structural assignment is what makes them readable here.
+    const collaboration: CollaborationConfig | undefined = this.config.collaboration;
 
     if (collaboration === undefined) {
       return;
@@ -371,8 +373,13 @@ export class Core {
       throw new Error('collaboration and persistence cannot be combined: the sync service owns the document round-trip');
     }
 
-    if (this.config.server === undefined) {
-      throw new Error('collaboration requires the server option');
+    // `server` is how the sync URL is derived — so a session that brings its own
+    // transport has no use for it. A local workspace relays frames between its
+    // own windows and never addresses a host, and demanding a URL there would
+    // also hand the editor an uploader and link endpoints pointing at a service
+    // that does not exist.
+    if (this.config.server === undefined && collaboration.socketFactory === undefined) {
+      throw new Error('collaboration requires the server option, or a socketFactory that opens the transport');
     }
 
     if (!isSingleDocSegment(collaboration.doc)) {

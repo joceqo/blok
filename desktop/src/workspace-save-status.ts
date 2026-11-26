@@ -1,6 +1,7 @@
 import type { CollaborationStatusChangedPayload } from '../../types/events/editor-events';
 
 import type { Saver } from '../../types/api/saver';
+import { StaleFileError } from './storage';
 
 import { actionLabel, diagnosticContext, dismissibleAction, failureMetadata, openDiagnostic, syncReport,
   type DiagnosticControl, type Failure } from './save-diagnostic';
@@ -340,6 +341,7 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
     online(value: boolean) { model.online = value; paint(); },
     pending(value: number) { model.pending = value; paint(); },
     error(error: unknown, refusal?: string | null, source = 'operation', pageId?: string) {
+      const conflict = !remote && error instanceof StaleFileError;
       const key = keyFor(source, pageId);
       const previous = failures.get(key)?.record;
       const now = new Date().toISOString();
@@ -347,8 +349,10 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
       failures.set(key, {
         record: { source, pageId: pageId ?? (options?.pageId() || null), firstAt: previous?.firstAt ?? now,
           lastAt: now, attempts: (previous?.attempts ?? 0) + 1, ...metadata },
-        label: actionLabel(source) ?? (refusal ? 'Accès refusé' : 'Enregistrement impossible'),
-        detail: refusal ?? (dismissibleAction(source)
+        label: conflict ? 'Modification concurrente' : actionLabel(source) ?? (refusal ? 'Accès refusé' : 'Enregistrement impossible'),
+        detail: refusal ?? (conflict
+          ? `Cette page a été modifiée par une autre fenêtre ou un outil pendant votre édition${error instanceof StaleFileError && error.name_ === 'index' ? ' (index de l’espace)' : ''}. Copiez vos modifications locales avant de la rouvrir ; le reste de l’espace reste utilisable.`
+          : dismissibleAction(source)
           ? 'Vérifiez le résultat de cette action dans la page avant de la relancer.'
           : source === 'refresh' ? 'La liste des pages n’a pas pu être actualisée.'
           : remote

@@ -53,6 +53,11 @@ import {
 import type { CodeViewMode } from './constants';
 import { renderLatex } from '../../shared/katex';
 import { renderMermaid } from './mermaid-loader';
+import { diagramImageUrl } from './diagram-image';
+
+/** Marks a preview whose double-click already opens the lightbox. */
+const DIAGRAM_ZOOM_ATTR = 'data-blok-diagram-zoom';
+import { openLightbox } from '../image/ui';
 import { tokenizePrism, isHighlightable } from './prism-loader';
 import { applyPrismHighlight, disposePrismStyles } from './prism-applier';
 import {
@@ -485,6 +490,42 @@ export class CodeTool implements BlockTool {
       : await renderLatex(code);
 
     container.innerHTML = rendered;
+
+    if (this._data.language === 'mermaid') {
+      this.enableDiagramZoom(container);
+    }
+  }
+
+  /**
+   * At document width a dense diagram is a thumbnail, not a drawing. A
+   * double-click opens it in the lightbox images already use, which brings its
+   * zoom, pan and keyboard handling along — rather than a second viewer here.
+   *
+   * The listener sits on the container, which survives a re-render, and reads
+   * the current SVG when it fires: the drawing is replaced on every edit.
+   */
+  private enableDiagramZoom(container: HTMLElement): void {
+    if (container.getAttribute(DIAGRAM_ZOOM_ATTR) !== null) {
+      return;
+    }
+
+    container.setAttribute(DIAGRAM_ZOOM_ATTR, '');
+    container.addEventListener('dblclick', () => {
+      const diagram = container.querySelector('svg');
+      const url = diagram ? diagramImageUrl(diagram.outerHTML) : null;
+
+      // Invalid syntax renders a message, and there is nothing to open.
+      if (!url) {
+        return;
+      }
+
+      openLightbox({
+        url,
+        alt: this.api.i18n.t(PREVIEW_TAB_KEY),
+        origin: diagram ?? undefined,
+        i18n: this.api.i18n,
+      });
+    });
   }
 
   public setReadOnly(state: boolean): void {

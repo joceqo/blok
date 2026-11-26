@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS memberships(workspace_id text REFERENCES workspaces(i
 CREATE TABLE IF NOT EXISTS join_requests(id text PRIMARY KEY,workspace_id text REFERENCES workspaces(id),user_id text REFERENCES users(id),message text NOT NULL DEFAULT '',status text NOT NULL DEFAULT 'pending',created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(workspace_id,user_id));
 CREATE TABLE IF NOT EXISTS invites(id text PRIMARY KEY,workspace_id text REFERENCES workspaces(id),email text NOT NULL,role text NOT NULL CHECK(role IN ('member','viewer')),status text NOT NULL DEFAULT 'pending',expires_at timestamptz NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS pages(id text PRIMARY KEY,workspace_id text NOT NULL REFERENCES workspaces(id),metadata jsonb NOT NULL,trashed boolean NOT NULL DEFAULT false,deleted boolean NOT NULL DEFAULT false,content jsonb,version bigint NOT NULL DEFAULT 0,lineage text,sequence numeric(20,0));
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS trash_root text;
 CREATE INDEX IF NOT EXISTS pages_workspace ON pages(workspace_id);
 -- A prepared transfer keeps its complete source backup and prevents normal
 -- startup until the collaboration journal has been reset and verified.

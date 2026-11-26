@@ -1,8 +1,9 @@
 mod ai;
+mod sync_server;
 use tauri::menu::{
     HELP_SUBMENU_ID, Menu, MenuItem, PredefinedMenuItem, Submenu, WINDOW_SUBMENU_ID,
 };
-use tauri::{Manager, Runtime};
+use tauri::{Emitter, Manager, Runtime};
 use std::path::PathBuf;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
@@ -34,8 +35,17 @@ struct AgentRun {
 #[derive(Default)]
 struct AgentRuns(Arc<Mutex<HashMap<String, Arc<AgentRun>>>>);
 
+/// Whether a document may be stored under this name.
+///
+/// The point is that a name can never leave the workspace directory: no
+/// separator, no dot, no traversal. The set it allows is the one Blok's own
+/// identifiers live in.
+fn valid_document_id(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
 fn workspace_file(app: &tauri::AppHandle, name: &str, workspace: Option<&str>) -> Result<PathBuf, String> {
-    if !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-') || name.is_empty() {
+    if !valid_document_id(name) {
         return Err("Invalid document id".into());
     }
     let dir = workspace_directory(app, workspace)?;
@@ -51,6 +61,46 @@ fn load_workspace_file(app: tauri::AppHandle, name: String, workspace: Option<St
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
     }
+}
+
+/// Relays one frame to every other window.
+///
+/// A local workspace has no sync service, so its pages were files rewritten
+/// whole — and a second window could only be refused, never merged. Windows are
+/// separate webviews with separate JavaScript contexts, so they need the native
+/// side to carry frames between them. This relays, it does not arbitrate: the
+/// updates commute, and each window applies what it receives.
+#[tauri::command]
+fn collab_broadcast(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    workspace: String,
+    doc: String,
+    frame: Vec<u8>,
+) -> Result<(), String> {
+    // Echoing to the sender would feed its own edit back to it as a peer's.
+    let origin = window.label().to_string();
+    let payload = sync_server::CollabFrame { workspace, doc, frame };
+
+    for (label, target) in app.webview_windows() {
+        if label != origin {
+            target
+                .emit("blok:collab-frame", payload.clone())
+                .map_err(|error| error.to_string())?;
+        }
+    }
+
+    // And every agent connected to this document over the local endpoint.
+    app.state::<Arc<sync_server::SyncServer>>()
+        .fan_out(&payload.workspace, &payload.doc, &payload.frame, None);
+
+    Ok(())
+}
+
+/// Where an agent reaches this app's sync endpoint, and the token that admits it.
+#[tauri::command]
+fn collab_endpoint(app: tauri::AppHandle) -> Option<sync_server::SyncEndpoint> {
+    app.state::<Arc<sync_server::SyncServer>>().endpoint()
 }
 
 static WORKSPACE_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -319,6 +369,9 @@ fn close_editor_window(window: tauri::WebviewWindow) {
 }
 
 fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
+    // Tauri ships no reload of its own, and a webview with no address bar leaves
+    // no way back from a stale page.
+    let reload = MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?;
     let new_tab = MenuItem::with_id(app, "new-tab", "New Tab", true, Some("CmdOrCtrl+T"))?;
     let close_tab = MenuItem::with_id(app, "close-tab", "Close Tab", true, Some("CmdOrCtrl+W"))?;
     let file = Submenu::with_items(app, "File", true, &[&new_tab, &close_tab])?;
@@ -383,22 +436,88 @@ fn editor_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> 
             app,
             "View",
             true,
-            &[&PredefinedMenuItem::fullscreen(app, None)?],
+            &[&reload, &PredefinedMenuItem::fullscreen(app, None)?],
         )?;
         return Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window_menu, &help]);
     }
 
     #[cfg(not(target_os = "macos"))]
-    Menu::with_items(app, &[&file, &edit, &window_menu, &help])
+    {
+        let view = Submenu::with_items(app, "View", true, &[&reload])?;
+
+        return Menu::with_items(app, &[&file, &edit, &view, &window_menu, &help]);
+    }
+}
+
+/// A link can reach the app before a window exists to show it — a cold launch
+/// from the browser is exactly that. The latest one waits here until the front
+/// end asks for it; once an app is already running the event below carries it.
+#[derive(Default)]
+struct PendingDeepLink(Mutex<Option<String>>);
+
+/// Taken once. A link already opened must not reopen itself at the next launch,
+/// so the front end empties this on both paths: at boot, and after the event.
+#[tauri::command]
+fn take_pending_deep_link(state: tauri::State<'_, PendingDeepLink>) -> Option<String> {
+    state.0.lock().ok()?.take()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
+        .manage(PendingDeepLink::default())
         .manage(AgentRuns::default())
         .manage(ai::LocalAiRuns::default())
+        .manage(Arc::new(sync_server::SyncServer::default()))
+        .setup(|app| {
+            let handle = app.handle().clone();
+
+            // Best effort: a workspace still edits in its own windows when the
+            // endpoint cannot bind, it just has no agent joining it.
+            tauri::async_runtime::spawn(async move {
+                if let Ok(endpoint) = sync_server::start(handle.clone()).await {
+                    sync_server::publish(&handle, &endpoint);
+                }
+            });
+
+            // A link opened from a browser must reach the page even when the app
+            // was not running: hold it for boot, and raise the window so the
+            // click does not land behind whatever the reader was looking at.
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let links = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        let href = url.to_string();
+                        if let Some(state) = links.try_state::<PendingDeepLink>() {
+                            if let Ok(mut held) = state.0.lock() {
+                                *held = Some(href.clone());
+                            }
+                        }
+                        let _ = links.emit("blok:deep-link", href);
+                        if let Some(window) = links.get_webview_window("main") {
+                            let _ = window.set_focus();
+                        }
+                    }
+                });
+            }
+
+            Ok(())
+        })
         .menu(|app| editor_menu(app))
         .on_menu_event(|app, event| {
+            // Reload belongs to the window in front, not to "main": every other
+            // window would reload instead of the one being looked at.
+            if event.id().as_ref() == "reload" {
+                for (_, window) in app.webview_windows() {
+                    if window.is_focused().unwrap_or(false) {
+                        let _ = window.eval("location.reload()");
+                    }
+                }
+                return;
+            }
             let script = match event.id().as_ref() {
                 "new-tab" => "window.dispatchEvent(new Event('blok:desktop-new-tab'))",
                 "close-tab" => "window.dispatchEvent(new Event('blok:desktop-close-tab'))",
@@ -408,7 +527,32 @@ pub fn run() {
                 let _ = window.eval(script);
             }
         })
-        .invoke_handler(tauri::generate_handler![open_notion_faces, ai::ai_local_status, ai::ai_local_save, ai::ai_local_delete, ai::ai_local_models, ai::ai_local_respond, ai::ai_local_cancel, close_editor_window, load_cloud_session, save_cloud_session, load_workspace_file, save_workspace_file, workspace_data_directory, agent_provider_status, agent_ask, agent_cancel])
+        .invoke_handler(tauri::generate_handler![open_notion_faces, ai::ai_local_status, ai::ai_local_save, ai::ai_local_delete, ai::ai_local_models, ai::ai_local_respond, ai::ai_local_cancel, close_editor_window, load_cloud_session, save_cloud_session, load_workspace_file, save_workspace_file, workspace_data_directory, collab_broadcast, collab_endpoint, agent_provider_status, agent_ask, agent_cancel, take_pending_deep_link])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod document_id_tests {
+    use super::valid_document_id;
+
+    /// `generateBlockId` is `nanoid(10)`, whose alphabet is `A-Za-z0-9_-`, and
+    /// `BLOCK_ID_PATTERN` accepts it. Roughly one id in seven carries an
+    /// underscore, and every page that drew one became unreadable here.
+    #[test]
+    fn accepts_every_identifier_blok_mints() {
+        assert!(valid_document_id("o68tEd8Cs_"));
+        assert!(valid_document_id("1f0eb8ec-83e5-4e4c-ba8b-50ee19192879"));
+        assert!(valid_document_id("index"));
+        assert!(valid_document_id("row-bodies"));
+    }
+
+    #[test]
+    fn refuses_anything_that_could_leave_the_workspace_directory() {
+        assert!(!valid_document_id(""));
+        assert!(!valid_document_id("../index"));
+        assert!(!valid_document_id("sub/page"));
+        assert!(!valid_document_id("page.json"));
+        assert!(!valid_document_id("page\\windows"));
+    }
 }

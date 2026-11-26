@@ -10,6 +10,7 @@ import { applyAppearance, readAppearance } from './settings';
 import { CloudClient, mountCloudGateway } from './cloud';
 import { restoredPageNavigationUrl, pageDestination, resolvePageDestination, publicPageUrl, legacyPageUrl, rememberPageLinks, rememberResolvedRowPage } from './page-urls';
 import { brandedTitle } from './tab-identity';
+import { appUrlForDeepLink, handoffTarget } from './deep-link';
 
 import {loadReactGrab, reactGrabAvailable} from './react-grab';
 
@@ -110,7 +111,7 @@ async function boot(root: HTMLElement): Promise<void> {
       cacheAccountProfile(ref, session.user);
       activateWorkspace(ref);
       rememberPageLinks(location.origin,origin,[{id:resolved.pageId,title:resolved.title,publicId:resolved.publicId}]);
-      rememberResolvedRowPage(location.origin,resolved);
+      rememberResolvedRowPage(location.origin,resolved,origin);
       const url=native ? legacyPageUrl(location.href,resolved.pageId) : publicPageUrl(origin,resolved.title,resolved.publicId);
       history.replaceState(history.state,'',restoredPageNavigationUrl(url));
     }catch{showUnavailable(root);return;}
@@ -177,9 +178,68 @@ function showUnavailable(host:HTMLElement):void {
   section.append(title,copy,back);host.replaceChildren(section);
 }
 
+/** Shown while the browser hands the page over; the link stays clickable in
+ * case the scheme prompt was dismissed, or the app is not installed here. */
+function showHandoff(host: HTMLElement, link: string): void {
+  document.title = brandedTitle('Ouverture dans l’application');
+  const section = document.createElement('section');
+  section.setAttribute('data-desktop-handoff', '');
+  section.style.padding = '48px';
+  const title = document.createElement('h1');
+  title.textContent = 'Ouverture dans Blok…';
+  const copy = document.createElement('p');
+  copy.textContent = 'Si rien ne se passe, l’application n’est peut-être pas installée sur cet appareil.';
+  const again = document.createElement('a');
+  again.href = link;
+  again.textContent = 'Réessayer';
+  const web = document.createElement('p');
+  const stay = document.createElement('a');
+  const here = new URL(location.href);
+  here.searchParams.delete('open');
+  stay.href = here.href;
+  stay.textContent = 'Continuer dans le navigateur';
+  web.append(stay);
+  section.append(title, copy, again, web);
+  host.replaceChildren(section);
+}
+
 function showError(error: unknown): void {
   if (!(root instanceof HTMLElement)) return;
   const message = startupErrorNode(root);
   message.textContent = error instanceof Error ? error.message : 'Impossible d’ouvrir cet espace. Rechargez pour réessayer.';
 }
-if (root instanceof HTMLElement) void boot(root).catch(showError);
+/**
+ * A `blok://` link opened from a browser. Boot already routes `?page=`, so the
+ * link only has to become that URL before boot reads it.
+ *
+ * Two arrivals, one path: a cold launch leaves the link waiting in the backend,
+ * a running app receives the event. The pending slot is emptied on both so a
+ * link opened today does not reopen itself at tomorrow's launch.
+ */
+async function startWithDeepLink(host: HTMLElement): Promise<void> {
+  // A pasted web URL reaches the browser, never the app: this page is what
+  // turns it into the scheme the system knows.
+  const handoff = native ? null : handoffTarget(location.href);
+  if (handoff) {
+    showHandoff(host, handoff);
+    location.href = handoff;
+    return;
+  }
+  if (native) {
+    const {invoke} = await import('@tauri-apps/api/core');
+    const {listen} = await import('@tauri-apps/api/event');
+    const pending = await invoke<string | null>('take_pending_deep_link').catch(() => null);
+    const initial = pending ? appUrlForDeepLink(pending, location.href) : null;
+    if (initial && initial !== location.href) history.replaceState(null, '', initial);
+    void listen<string>('blok:deep-link', (event) => {
+      const url = appUrlForDeepLink(event.payload, location.href);
+      void invoke('take_pending_deep_link').catch(() => null);
+      // A full load rather than in-app routing: the destination may belong to
+      // another workspace, which boot resolves and the open editor cannot.
+      if (url && url !== location.href) location.assign(url);
+    }).catch(() => { /* Links still open the app; only live delivery is lost. */ });
+  }
+  await boot(host);
+}
+
+if (root instanceof HTMLElement) void startWithDeepLink(root).catch(showError);

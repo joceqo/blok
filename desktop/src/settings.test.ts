@@ -196,19 +196,17 @@ describe('workspace menu without help', () => {
 });
 
 describe('settings discovery', () => {
-  it('finds connections by MCP and opens account sign-in from a local workspace', () => {
+  it('finds the local MCP panel and explains browser storage', () => {
     const footer = createDesktopFooter(() => undefined); document.body.append(footer);
     must(footer.querySelector<HTMLButtonElement>('[data-desktop-switcher]')).click();
     must([...footer.querySelectorAll<HTMLButtonElement>('[role=menuitem]')].find(node => node.textContent === 'Paramètres')).click();
     const search = must(document.querySelector<HTMLInputElement>('[data-desktop-settings-search]'));
     search.value = 'MCP'; search.dispatchEvent(new Event('input'));
     const visible = [...document.querySelectorAll<HTMLButtonElement>('[data-desktop-settings-nav-item]')].filter(node => !node.hidden);
-    expect(visible.map(node => node.textContent)).toEqual(['Connexions']);
+    expect(visible.map(node => node.textContent)).toEqual(['MCP']);
     search.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter'}));
-    expect(document.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Connexions');
-    const connect = vi.fn(); footer.addEventListener('blok:desktop-connect-cloud', connect);
-    must([...document.querySelectorAll<HTMLButtonElement>('[data-desktop-connections-accounts] button')].find(node => node.textContent === 'Se connecter')).click();
-    expect(connect).toHaveBeenCalledOnce();
+    expect(document.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Accès MCP');
+    expect(document.querySelector('[data-desktop-mcp-panel]')?.textContent).toContain('enregistré dans le navigateur');
   });
   it('clears a search with Escape without closing settings and resets it on reopen', () => {
     const footer = createDesktopFooter(() => undefined); document.body.append(footer);

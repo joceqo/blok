@@ -4,7 +4,7 @@ import "net/http"
 
 // Trash a subtree without replacing the caller's (possibly stale or partial)
 // workspace index. Keep content, shares and parent links available for restore.
-func (s *Service) trashPage(w http.ResponseWriter, r *http.Request, u identity, ws Workspace) {
+func (s *Service) changePageTrash(w http.ResponseWriter, r *http.Request, u identity, ws Workspace, action string) {
 	ctx := r.Context()
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
@@ -48,7 +48,35 @@ func (s *Service) trashPage(w http.ResponseWriter, r *http.Request, u identity, 
 			}
 		}
 	}
-	tag, err := tx.Exec(ctx, `UPDATE pages SET trashed=true WHERE workspace_id=$1 AND id=ANY($2) AND NOT deleted AND NOT trashed`, ws.ID, ids)
+	args := []any{ws.ID, ids, pageID}
+	query := `UPDATE pages SET trashed=true, trash_root=$3 WHERE workspace_id=$1 AND id=ANY($2) AND NOT deleted AND NOT trashed`
+	if action != "trash" {
+		var trashed, parentTrashed bool
+		var batch string
+		if err = tx.QueryRow(ctx, `SELECT p.trashed, coalesce(parent.trashed,false), coalesce(p.trash_root,'') FROM pages p
+			LEFT JOIN pages parent ON parent.id=p.metadata->>'parentId' AND parent.workspace_id=p.workspace_id AND NOT parent.deleted
+			WHERE p.id=$1 AND p.workspace_id=$2 AND NOT p.deleted`, pageID, ws.ID).Scan(&trashed, &parentTrashed, &batch); err != nil {
+			problem(w, 404, "Page not found")
+			return
+		}
+		if !trashed || (action == "restore" && parentTrashed) {
+			problem(w, 409, "Page or parent has changed")
+			return
+		}
+		if action == "restore" {
+			query = `UPDATE pages SET trashed=false,trash_root=NULL WHERE workspace_id=$1 AND id=ANY($2) AND trashed AND NOT deleted AND coalesce(trash_root,'')=$3`
+			args[2] = batch
+		} else {
+			var live bool
+			if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT FROM pages WHERE workspace_id=$1 AND id=ANY($2) AND NOT deleted AND NOT trashed)`, ws.ID, ids).Scan(&live); err != nil || live {
+				problem(w, 409, "Subtree contains a live page")
+				return
+			}
+			args = args[:2]
+			query = `UPDATE pages SET deleted=true, content=NULL, trash_root=NULL WHERE workspace_id=$1 AND id=ANY($2) AND trashed AND NOT deleted`
+		}
+	}
+	tag, err := tx.Exec(ctx, query, args...)
 	if err != nil {
 		problem(w, 500, "Delete failed")
 		return
@@ -64,5 +92,5 @@ func (s *Service) trashPage(w http.ResponseWriter, r *http.Request, u identity, 
 		return
 	}
 	s.recheckWorkspace(ctx, ws.ID)
-	jsonOut(w, 200, map[string]any{"id": pageID, "trashed": true, "affectedPages": tag.RowsAffected(), "revision": revision})
+	jsonOut(w, 200, map[string]any{"id": r.PathValue("id"), "trashed": action == "trash", "affectedPages": tag.RowsAffected(), "revision": revision})
 }

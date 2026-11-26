@@ -599,7 +599,7 @@ test.describe('row page cover', () => {
     await page.setViewportSize({ width: 1512, height: 717 });
   });
 
-  test('side peek: spans the whole peek under the bar, square, the row under it and a 36px icon under the row', async ({ page }) => {
+  test('side peek: spans the whole peek under the bar, square, the row under it and a 60px icon under the row', async ({ page }) => {
     await open(page, 'r1', 'side');
 
     const box = await boxOf(peek(page));
@@ -615,14 +615,14 @@ test.describe('row page cover', () => {
     await expect(cover(page)).toHaveCSS('border-radius', '0px');
     expect(customize.y).toBeCloseTo(coverBox.y + coverBox.height + 16, 1);
     expect(customize.x).toBeCloseTo(title.x - 1, 1);
-    expect(iconBox.width).toBe(36);
-    expect(iconBox.height).toBe(36);
+    expect(iconBox.width).toBe(60);
+    expect(iconBox.height).toBe(60);
     expect(iconBox.x).toBeCloseTo(title.x + 8, 1);
     expect(iconBox.y).toBeCloseTo(customize.y + 32, 1);
     expect(title.y).toBeCloseTo(iconBox.y + iconBox.height, 1);
   });
 
-  test('side peek: an icon with no cover sits under the row, 36px', async ({ page }) => {
+  test('side peek: an icon with no cover sits under the row, 60px', async ({ page }) => {
     await open(page, 'r2', 'side');
 
     const box = await boxOf(peek(page));
@@ -634,10 +634,12 @@ test.describe('row page cover', () => {
     expect(addCover.y).toBe(box.y + 48);
     expect(addCover.x).toBeCloseTo(title.x - 1, 1);
     expect(customize.x).toBeCloseTo(addCover.x + addCover.width, 1);
-    expect(iconBox.width).toBe(36);
+    expect(iconBox.width).toBe(60);
     expect(iconBox.x).toBeCloseTo(title.x + 8, 1);
     expect(iconBox.y).toBe(box.y + 80);
-    expect(title.y).toBe(box.y + 116);
+    // Relative to the icon rather than a constant: the title sits right under it,
+    // whatever size the icon is given.
+    expect(title.y).toBeCloseTo(iconBox.y + iconBox.height, 1);
   });
 
   for (const [height, side, full] of [[530, 106, 159], [900, 180, 270]] as const) {

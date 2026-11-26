@@ -33,3 +33,9 @@
 [data-navigation-move] [data-navigation-search-header] { padding-right: 16px; }
 [data-navigation-move-error] { margin: 8px 18px; color: var(--desktop-danger, #b42318); }
 [data-navigation-move] [aria-busy="true"], [data-navigation-move][aria-busy="true"] [data-navigation-result] { cursor: progress; }
+[data-trash-page] { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 10px; border-bottom:1px solid var(--desktop-border); }
+[data-trash-title] { flex:1 1 120px; overflow-wrap:anywhere; }
+[data-trash-page] button { color:inherit; background:transparent; border:1px solid var(--desktop-border); border-radius:5px; padding:5px 8px; font:inherit; cursor:pointer; }
+[data-trash-page] button:hover { background:var(--desktop-hover); }
+[data-trash-page] button:disabled { opacity:.5; cursor:default; }
+[data-trash-confirm] { flex-basis:100%; color:var(--desktop-danger); }

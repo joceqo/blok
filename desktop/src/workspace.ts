@@ -1,3 +1,7 @@
+import { canonicalJson } from '../../src/shared/agent/revision';
+import { createLocalCollab, localCollabEnabled } from './local-collab';
+import { createRowBodyRegistry } from './local-row-bodies';
+import { planRowBodyMigration } from './local-row-migration';
 import type { BlockAPI } from '../../types';
 import type { BlokConfig } from '../../types/configs';
 import type { DatabaseRowPages } from '../../types/tools/database';
@@ -12,7 +16,7 @@ import {profileDisplayName} from './profile-identity';
 import { readAccountIdentity } from './account-profile';
 import { watchLocalProfile } from './local-profile';
 import { readSidebarLayout, saveSidebarLayout, subscribeSidebarLayout, initializeSidebarPresets } from './sidebar-preferences';
-import { pageNavigationUrl, libraryUrl, libraryCategoryForHref, type LibraryCategory, pageDestination, pageIdForHref, publicPageUrl, legacyPageUrl, rememberPageLinks, rowPageDestination, rowPageUrl, rememberResolvedRowPage, type ResolvedPage } from './page-urls';
+import { pageNavigationUrl, libraryUrl, libraryCategoryForHref, type LibraryCategory, pageDestination, pageIdForHref, publicPageUrl, legacyPageUrl, rememberPageLinks, rowPageDestination, rowPageUrl, rememberResolvedRowPage, forgetResolvedPages, resolvedPageForId, type ResolvedPage } from './page-urls';
 import { createWorkspaceSaveStatus } from './workspace-save-status';
 import './workspace-save-status.css';
 import './row-page-navigation.css';
@@ -22,23 +26,25 @@ import { mountPageComments } from './page-comments';
 import { CommentInlineTool } from './inline-comments';
 import { createNotesDocument, readNotesCollection, rememberNotesCollection, addNote } from './notes-collection';
 import { openPageLibrary, pageTimestamp } from './page-library';
-import { openPageSearch, openPageCreation, openPageMove, type CreationDestination } from './navigation-dialogs';
+import { openPageTrash, openPageSearch, openPageCreation, openPageMove, openWorkspaceTransfer, type CreationDestination } from './navigation-dialogs';
 import { customEmojiStore } from './custom-emojis';
+import { focusNewPageTitle } from './focus-new-page-title';
 import { createEmptyWorkspaceState } from './workspace-empty';
 import { mountRemoteAssets } from './remote-assets';
 import { Blok, allTools, type OutputData } from '@bloklabs/core/full';
-import { Audio, Bookmark, File, Video, Callout, Code, Database, DatabaseComment, DatabaseRow, Divider, Image, Page, Quote, Table, TableOfContents, Toggle, type PageConfig } from '@bloklabs/core/tools';
+import { Audio, Bookmark, File, Video, Callout, Code, Database, DatabaseComment, DatabaseRow, Divider, Image, Page, PageLink, Quote, Table, TableOfContents, Toggle, type PageConfig } from '@bloklabs/core/tools';
 import { createPageFrame, type PageFrame, type ShellPage, type SidebarAction, type SidebarTeamspace, type SidebarMoveTarget } from '@blok/sidebar';
 import { type DesktopPage, type WorkspaceIndex } from './storage';
 import { workspaceRepository } from './workspace-repository';
 import { pageAccess } from './page-access';
 import { moveDestinations } from './page-move';
+import { inlineAsset, isServerAsset, planTransfer } from './page-transfer';
 import { openPageSharing } from './cloud/page-sharing';
 import { sidebarSectionOf } from './page-section';
 import { nextPageIcon } from './page-icon-sync';
 import { brandedTitle } from './tab-identity';
 import { describeAccessLoss } from './access-friction';
-import { activeWorkspace, workspaceKey, type WorkspaceRef } from './workspace-registry';
+import { activeWorkspace, listWorkspaces, workspaceKey, type WorkspaceRef } from './workspace-registry';
 import { createDesktopFooter, readAppearance } from './settings';
 import {
   buildWelcomeDocuments,
@@ -59,6 +65,27 @@ import { createPageToolbar, type PageBreadcrumbChoice, type PageBreadcrumbItem, 
 import { bindTitleDateMention, titleDateLabel, type TitleDateMentionBinding } from './title-date-mention';
 import { createFloatingToc, type FloatingToc } from './floating-toc';
 import type { DateDisplayChange } from '@blok/date-editor';
+
+/**
+ * Reads a picked file as a data URL, so the image block can hand it to the same
+ * upload the covers use. No type or size check here: the image tool already
+ * enforces its own, and rejecting earlier would only move the error message.
+ * @param file - the file the editor was given
+ */
+function readImageFile(file: globalThis.File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    // `readAsDataURL` always yields a string; the guard is what tells the type
+    // checker so, and turns the impossible case into the same failure as a read
+    // error rather than a silent "[object Object]" url.
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('Impossible de lire cette image.'));
+    };
+    reader.onerror = () => reject(new Error('Impossible de lire cette image.'));
+    reader.readAsDataURL(file);
+  });
+}
 
 const desktopTools = {
   ...allTools,
@@ -96,12 +123,12 @@ export interface Workspace {
 }
 
 
-function adoptRemoteFields(live: DesktopPage, remote: DesktopPage): void {
+function adoptIndexFields(live: DesktopPage, incoming: DesktopPage): void {
   const target = live as unknown as Record<string, unknown>;
   for (const key of Object.keys(target)) {
-    if (!(key in remote)) Reflect.deleteProperty(target, key);
+    if (!(key in incoming)) Reflect.deleteProperty(target, key);
   }
-  Object.assign(live, remote);
+  Object.assign(live, incoming);
 }
 
 export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (id: string, icon: string) => void, options: { ref?: WorkspaceRef } = {}): Workspace {
@@ -114,13 +141,15 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const repository = workspaceRepository(ref);
   const favorites = navigationFavorites(ref);
   const recentPages = navigationRecents(ref);
+  const initialHref = location.href;
+  const routeLoad = {pending:false};
   const library = { refreshQueued: false, dispose: null as ReturnType<typeof openPageLibrary> | null, category: null as LibraryCategory | null, recents: recentPages.ids, target: null as { pageId: string; blockId: string } | null };
-  const initialHref=location.href;
-  const routeLoad={pending:false};
   let routeRevision = 0;
+  let newPageToFocus: string | undefined;
+  let cancelTitleFocus: (() => void) | undefined;
   const pageUrl = (id:string):string => {
-    const page=ws.index?.pages.find(item=>item.id===id);
-    const publicId=ws.index?.access?.[id]?.publicId;
+    const page = pageForId(id);
+    const publicId = ws.index?.access?.[id]?.publicId ?? documentResolution(id)?.publicId;
     if(ref.kind==='remote' && publicId)return publicPageUrl(ref.server,page?.title || 'Page',publicId);
     const fallback=new URL(legacyPageUrl(ref.kind==='remote' ? ref.server : location.href,id));
     if(ref.kind==='local')fallback.searchParams.set('local','1');
@@ -183,6 +212,40 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     metadataAction: false,
     closeSearch: undefined,
   };
+  const rememberDocument = (page: ResolvedPage): void => rememberResolvedRowPage(location.origin, page, ref.kind === 'remote' ? ref.server : undefined);
+  const documents = new Map<string, DesktopPage>();
+  const documentResolution = (id: string): ResolvedPage | undefined => {
+    if (ref.kind === 'local') return rowBodies.resolvedPageFor(id, identity.name) ?? undefined;
+    const resolved = resolvedPageForId(location.origin, id);
+    return resolved?.workspace.id === ref.id && resolved.workspace.slug === ref.workspaceId ? resolved : undefined;
+  };
+  const pageForId = (id: string): DesktopPage | undefined => {
+    const indexed = ws.index?.pages.find(page => page.id === id);
+    if (indexed) return indexed;
+    if (ref.kind === 'local' && !ws.index?.pages.some(page => page.id === rowBodies.rootOf(id))) return undefined;
+    if (ref.kind === 'remote' && !ws.index?.access?.[id]) return undefined;
+    const resolved = documentResolution(id);
+    if (!resolved) return undefined;
+    const cached = documents.get(id);
+    if (cached) return cached;
+    const fullWidth = (() => {
+      try { return localStorage.getItem(`blok:document-width:${workspaceKey(ref)}:${id}`) === 'true'; }
+      catch { return false; }
+    })();
+    const page: DesktopPage = {id, title: resolved.title, parentId: resolved.rowBodyOf?.documentId ?? null, location: resolved.location, fullWidth};
+    documents.set(id, page);
+    return page;
+  };
+  const savePageMetadata = (page: DesktopPage): void => {
+    if (!documents.has(page.id)) { saveManifest(); return; }
+    const resolved = documentResolution(page.id);
+    if (resolved) rememberDocument({...resolved, title:page.title});
+    if (ref.kind === 'local') {
+      ws.saveOrder = ws.saveOrder.then(() => rowBodies.rename(page.id, page.title, page.icon));
+      void ws.saveOrder.catch(error => showError(error, 'document', page.id));
+    }
+    try { localStorage.setItem(`blok:document-width:${workspaceKey(ref)}:${page.id}`, String(page.fullWidth === true)); } catch { /* Session preference. */ }
+  };
   // Keep at most two recent pages warm. Editors stay subscribed to their own
   // collaborative document; only the current page owns host UI and shortcuts.
   interface PageSession {
@@ -210,13 +273,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const rowPermissionWatchers = new Set<() => void>();
   const adoptIndex = (value: WorkspaceIndex): WorkspaceIndex => {
     const livePages = new Map([...cachedPages.values(), ...(sessions.current ? [sessions.current] : [])].map(session => [session.id, session.page]));
-    const pages = ref.kind === 'remote' ? value.pages.map(incoming => {
+    const pages = value.pages.map(incoming => {
       const live = livePages.get(incoming.id);
       if (!live) return incoming;
       // Editor callbacks retain these objects, including on inactive pages.
-      adoptRemoteFields(live, incoming);
+      adoptIndexFields(live, incoming);
       return live;
-    }) : value.pages;
+    });
     if (ref.kind === 'local') for (const page of pages) localMetadata.set(page.id, metadataOf(page));
     const adopted = { ...value, pages };
     ws.index = adopted;
@@ -232,7 +295,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const withSections = (pages: DesktopPage[]): DesktopPage[] => {
     if(ref.kind==='remote')rememberPageLinks(location.origin,ref.server,pages.map(page=>({id:page.id,title:page.title,publicId:ws.index?.access?.[page.id]?.publicId})));
     const tagged = pages.map((page) => ({ ...page, favorite: favorites.has(page.id) }));
-    if (ref.kind !== 'remote') return tagged;
+    if (ref.kind !== 'remote') return tagged.map(page =>
+      !page.parentId && page.initialVisibility === 'private' ? {...page, section: 'Privé'} : page);
     if (!ws.index?.access) return tagged.map((page) => ({ ...page, section: page.parentId ? undefined : 'workspace' }));
     return tagged.map(page=>page.parentId ? page : {...page,section:sidebarSectionOf(ws.index?.access?.[page.id])});
   };
@@ -241,6 +305,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     parentId ? ws.access.canEdit(parentId) : !ws.access.readOnlyWorkspace;
   const pagePermission = (id: string): string => JSON.stringify([readOnly(id), ws.access.canShare(id), ws.index?.access?.[id] ?? null]);
   const clearPresentation = (): void => {
+    cancelTitleFocus?.(); cancelTitleFocus = undefined;
     ws.coverRowObserver?.disconnect(); ws.coverRowObserver = null;
     ws.floatingToc?.destroy(); ws.floatingToc = null;
     ws.titleDateMention?.destroy(); ws.titleDateMention = null;
@@ -289,6 +354,73 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   });
   const status = saveStatus.element;
   const sync = { localWrites: 0, remoteConnection: 'connecting' };
+  // Which local documents are row bodies. Kept out of the index on purpose: a
+  // body is a document, not a page of the workspace.
+  const rowBodies = createRowBodyRegistry(ref);
+  /**
+   * Rows whose bodies still live inside a page move out, once, while that page
+   * is being loaded — the only moment nothing holds it. Bodies are written
+   * first: a body no row names yet is unused, a row naming a missing document
+   * is broken. Takes the page id because the room loads pages this session
+   * never opened.
+   */
+  /**
+   * Deletes the documents of rows that are gone.
+   *
+   * A row can be deleted from anywhere — its menu, a table, an undo — and none
+   * of those paths knows that a file now belongs to it. Rather than a hook on
+   * every one of them, the page says who is still there each time it is read:
+   * a body whose row no longer names it has nobody left to open it.
+   */
+  const reapRowBodiesOf = async (pageId: string, data: OutputData): Promise<void> => {
+    const held = rowBodies.childrenOf(pageId);
+
+    // An empty read is not proof of deletion: it is what a truncated file looks
+    // like, and the bodies would be the only copy left.
+    if (held.length === 0 || !Array.isArray(data.blocks) || data.blocks.length === 0) return;
+
+    const named = new Set(data.blocks
+      .map(block => (block as {data?: {pageId?: unknown}}).data?.pageId)
+      .filter((value): value is string => typeof value === 'string'));
+
+    for (const body of held.filter(candidate => !named.has(candidate.bodyId))) {
+      await repository.clearLocalPage(body.bodyId).catch(() => undefined);
+      await rowBodies.remove(body.bodyId);
+    }
+  };
+  const migrateRowBodiesOf = async (pageId: string, data: OutputData): Promise<OutputData> => {
+    if (ref.kind !== 'local' || !Array.isArray(data.blocks)) return data;
+
+    await reapRowBodiesOf(pageId, data);
+
+    const plan = planRowBodyMigration(data, () => crypto.randomUUID());
+
+    console.info('[blok] migration', {page: pageId, moved: plan.writes.length, skipped: plan.skipped});
+    if (plan.writes.length === 0) return data;
+    for (const write of plan.writes) {
+      await repository.writePage(write.bodyId, JSON.stringify(write.body));
+      await rowBodies.add(write.bodyId, {
+        publicId: crypto.randomUUID(), documentId: pageId, rowId: write.rowId,
+        databaseId: write.databaseId, title: write.title, ...(write.icon ? {icon: write.icon} : {}),
+      });
+      const resolved = rowBodies.resolvedPageFor(write.bodyId, identity.name);
+
+      if (resolved) rememberDocument(resolved);
+    }
+    await repository.writePage(pageId, JSON.stringify(plan.source));
+
+    return plan.source;
+  };
+  // Opt-in while this path is proven: without the flag a local workspace keeps
+  // the file-rewriting persistence it has always used.
+  const localCollab = ref.kind === 'local' && localCollabEnabled()
+    ? createLocalCollab(workspaceKey(ref), {
+      read: (pageId: string) => repository.readPage(pageId),
+      write: (pageId: string, data: string) => repository.writePage(pageId, data),
+      title: (pageId: string) => ws.index?.pages.find(candidate => candidate.id === pageId)?.title,
+      migrate: (pageId: string, data: OutputData) => migrateRowBodiesOf(pageId, data),
+    })
+    : null;
   const updatePending = (): void => saveStatus.pending(ws.pendingManifests + sync.localWrites + teamspacesState.pending);
 
   const pageFromUrl = (): string | null => rowPageDestination(location.href)?.documentId ?? pageIdForHref(location.href);
@@ -321,14 +453,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const current = (): boolean => !sessions.disposed && request === rowCrumbNavigation.request && requestedRoute === routeRevision && location.href === requestedHref;
     void (async () => {
       const target = {href: '__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href, documentId) : pageUrl(documentId)};
-      // A body is not a sidebar document. Resolve its owner before following a
-      // row inside it, so routing can mount the whole chain of body editors.
+      // A body stays outside the sidebar. Resolve its own identity before
+      // following an inline row inside that document.
       if (ref.kind === 'remote' && !ws.index?.pages.some(page => page.id === documentId)) {
         const client = new CloudClient({origin:ref.server,...('__TAURI_INTERNALS__' in window ? {sessionAdapter:nativeSessionAdapter(ref.server)} : {})});
         const resolved = await client.request<ResolvedPage>(`/api/pages/resolve-id/${encodeURIComponent(documentId)}`);
         if (!current()) return;
-        if (resolved.pageId !== documentId || !resolved.rowBodyOf || resolved.workspace.id !== ref.id || resolved.workspace.slug !== ref.workspaceId) throw new Error('Page indisponible.');
-        rememberResolvedRowPage(location.origin, resolved);
+        if (resolved.pageId !== documentId || resolved.workspace.id !== ref.id || resolved.workspace.slug !== ref.workspaceId) throw new Error('Page indisponible.');
+        rememberDocument(resolved);
         target.href = '__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href, documentId) : publicPageUrl(ref.server, resolved.title, resolved.publicId);
       }
       if (!current()) return;
@@ -415,6 +547,23 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       if (!current()) return;
       rowPresentation.steps = resolved.steps;
       rowPresentation.session = session; rowPresentation.databaseId = database.id; rowPresentation.rowId = route.rowId;
+      // Temporary while the row page is being proven: says whether the drawer's
+      // own toolbar is in the DOM, whether it is inside the row-page scope the
+      // CSS keys off, and what it actually computes to.
+      requestAnimationFrame(() => {
+        const drawer = ws.pageCanvas.querySelector<HTMLElement>('[data-blok-database-drawer][data-peek-mode="full"]');
+        const bar = drawer?.querySelector<HTMLElement>('[data-blok-database-drawer-toolbar]') ?? null;
+
+        console.info('[blok] row toolbar', {
+          drawer: Boolean(drawer),
+          peekMode: drawer?.getAttribute('data-peek-mode') ?? null,
+          toolbar: Boolean(bar),
+          hidden: bar?.hasAttribute('hidden') ?? null,
+          display: bar ? getComputedStyle(bar).display : null,
+          inRowPage: Boolean(bar?.closest('[data-desktop-row-page]')),
+          rowPageAttr: ws.pageCanvas.hasAttribute('data-desktop-row-page'),
+        });
+      });
     } catch (error) {
       if (current()) { clearRowPresentation(); showUnavailablePage(); throw error; }
       return;
@@ -444,7 +593,28 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         const value = titleId ? properties?.[titleId] : undefined;
         return {id:step.row.id,title:typeof value === 'string' && value ? value : 'Sans titre',onOpen:()=>navigateRowAncestor(id,step)};
       });
-      ws.pageToolbar?.setBreadcrumbs([...parent, ...ancestors, {id:route.rowId,title}]);
+      // A row carries its own icon. Without reading it here the trail and the
+      // tab both fall back to the generic document glyph, next to a title that
+      // is the row's — naming one thing with another's face.
+      const shown: Array<{icon?: string}> = [];
+      const current = rowPresentation.steps.at(-1);
+
+      current?.row.call('readData', {receive:(value:{icon?:string})=>shown.push(value)});
+      const icon = (shown[0] ?? current?.row.preservedData as {icon?: string} | undefined)?.icon ?? '';
+
+      onPageIcon(route.rowId, icon);
+      // The registry keeps its own copy of what the row shows; left behind, the
+      // tab and the page title go stale after a reload while the row reads right.
+      const body = rowPageDestination(location.href)?.pageId;
+
+      if (body !== undefined && ref.kind === 'local') {
+        void rowBodies.rename(body, title, icon || undefined).then(() => {
+          const refreshed = rowBodies.resolvedPageFor(body, identity.name);
+
+          if (refreshed) rememberDocument(refreshed);
+        }).catch(() => undefined);
+      }
+      ws.pageToolbar?.setBreadcrumbs([...parent, ...ancestors, {id:route.rowId,title,...(icon ? {icon} : {})}]);
     };
     rowPresentation.observer?.disconnect(); rowPresentation.dispose();
     rowPresentation.observer = new MutationObserver(refresh);
@@ -491,10 +661,35 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       for (const id of new Set([...original.pages.map((page) => page.id), ...ws.index.pages.map((page) => page.id)])) notifyPage(id);
       ws.refreshPagePresentation?.();
       rowPresentation.refresh();
-      if (!ws.index.pages.some((page) => page.id === ws.currentId)) onRoute();
+      if (!pageForId(ws.currentId)) onRoute();
     } catch (error) { showError(error, 'refresh'); }
     finally { ws.refreshingManifest = false; }
   };
+  const refreshLocalManifest = async (): Promise<void> => {
+    // Local windows share one directory with no server to poll, so an index
+    // written by a second window or by an agent over MCP only reaches this one
+    // when it comes back to the front. Pending work owns the file until it lands.
+    if (sessions.disposed || ref.kind !== 'local' || !ws.index || ws.pendingManifests > 0 || ws.refreshingManifest || ws.metadataAction || sync.localWrites > 0) return;
+    ws.refreshingManifest = true;
+    const original = ws.index;
+    try {
+      const fresh = await repository.loadIndex();
+      if (sessions.disposed || ws.index !== original || ws.pendingManifests > 0 || sync.localWrites > 0) return;
+      fresh.activeId = fresh.pages.some((page) => page.id === ws.currentId) ? ws.currentId : fresh.activeId;
+      if (canonicalJson(fresh) === canonicalJson(original)) return;
+      adoptIndex(fresh);
+      invalidateCachedPages();
+      saveStatus.saved('refresh');
+      ws.frame.setPages(withSections(ws.index.pages), library.dispose ? '' : ws.index.activeId);
+      ws.pageToolbar?.setBreadcrumbs(breadcrumbs(ws.currentId));
+      for (const id of new Set([...original.pages.map((page) => page.id), ...ws.index.pages.map((page) => page.id)])) notifyPage(id);
+      ws.refreshPagePresentation?.();
+      rowPresentation.refresh();
+      if (!pageForId(ws.currentId)) onRoute();
+    } catch (error) { showError(error, 'refresh'); }
+    finally { ws.refreshingManifest = false; }
+  };
+  window.addEventListener('focus', () => { void refreshLocalManifest(); }, { signal: lifetime.signal });
   const refreshDateTitles = (): void => {
     if (sessions.disposed || !ws.index || ref.kind === 'remote') return;
     const dateState = { changed: false };
@@ -541,7 +736,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const breadcrumbs = (pageId: string): PageBreadcrumbItem[] => {
     if (!ws.index) return [];
     const pages = ws.index.pages;
-    const byId = new Map(pages.map((page) => [page.id, page]));
+    const visibleDocuments = [...documents.values()].filter(page => pageForId(page.id));
+    const byId = new Map([...visibleDocuments, ...pages].map(page => [page.id, page]));
     const seen = new Set<string>();
     const trail: DesktopPage[] = [];
     const trailState = { page: byId.get(pageId) };
@@ -563,20 +759,26 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           onOpen: () => navigate(candidate.id),
         };
       });
-    return trail.flatMap((item, position): PageBreadcrumbItem[] => [
-      ...(item.location?.rows ?? []).map(row => ({
+    return trail.flatMap((item): PageBreadcrumbItem[] => [
+      ...(documents.has(item.id) ? item.location?.rows.slice(0, -1) ?? [] : item.location?.rows ?? []).filter(row => ref.kind === 'local' || !!ws.index?.access?.[row.documentId]).map(row => ({
         id: row.rowId, title: row.title, icon: row.icon,
         onOpen: () => navigateRow(row.documentId, row.rowId, row.databaseId),
       })),
       {
         id: item.id, title: item.title, icon: item.icon,
-        ...(position < trail.length - 1 ? { onOpen: () => navigate(item.id) } : {}),
+        // Including the page already open: a crumb that names a page goes to
+        // that page. Its siblings stay one click away under the workspace chip,
+        // which is the control that lists them.
+        onOpen: () => navigate(item.id),
         menuHeading: breadcrumbMenuHeading(item.parentId, byId),
         menu: choicesFor(item.parentId, item.id),
       },
     ]);
   };
   const showError = (error: unknown, source = 'operation', pageId?: string): void => {
+    // The badge says a save failed and nothing more, which leaves no way to
+    // learn what actually threw. The console keeps the cause.
+    console.error(`[blok] ${source}`, error);
     // Un retrait d'accès ferme la session en moins de cinq secondes côté
     // serveur. Le présenter comme une panne d'enregistrement laisserait croire
     // à un incident, et pousserait à réessayer pour rien.
@@ -602,7 +804,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       ws.frame.setPages(withSections(ws.index.pages), library.dispose ? '' : ws.index.activeId);
       ws.pageToolbar?.setBreadcrumbs(breadcrumbs(ws.currentId));
       rowPresentation.refresh();
-      if (persist) saveManifest();
+      if (persist) savePageMetadata(target);
       notifyPage(target.id);
     }
     if (target.id === ws.currentId) onPageIcon(target.id, next ?? '');
@@ -619,7 +821,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           ...(page.icon ? { icon: pageIcon(page.icon) } : {}) }));
     },
     resolve: (id) => {
-      const page = ws.index?.pages.find((item) => item.id === id);
+      const page = pageForId(id);
       return page ? { title: page.title, ...(page.icon ? { icon: pageIcon(page.icon) } : {}) } : null;
     },
     subscribe: (id, listener) => {
@@ -628,16 +830,18 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       pageListeners.set(id, listeners);
       return () => { listeners.delete(listener); if (listeners.size === 0) pageListeners.delete(id); };
     },
-    href: (id) => ref.kind==='remote' && !('__TAURI_INTERNALS__' in window) ? pageUrl(id) : `?page=${encodeURIComponent(id)}`,
+    href: (id) => ref.kind==='remote' && !('__TAURI_INTERNALS__' in window) ? pageUrl(id) : `?page=${encodeURIComponent(id)}${ref.kind === 'local' ? '&local=1' : ''}`,
     pageIdFromHref: (href) => {
       const url = new URL(href);
       return url.origin === location.origin ? pageIdForHref(url.href) : null;
     },
-    open: (id) => { if (ws.index?.pages.some((page) => page.id === id)) navigate(id); },
+    open: (id) => { if (pageForId(id)) navigate(id); },
     create: async ({ pageId, title, parentId, document: initialDocument }) => {
       if (!ws.index || !canCreateUnder(parentId ?? ws.currentId ?? null)) throw new Error('Espace indisponible ou en lecture seule');
       if (ws.index.pages.some((page) => page.id === pageId)) throw new Error('Cette page existe déjà');
-      const page: DesktopPage = { ...(ref.kind === 'local' ? { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : {}), id: pageId, title: title?.trim() || 'Nouvelle page', parentId: parentId ?? ws.currentId };
+      const physicalParent = parentId ?? ws.currentId;
+      const indexedParent = ref.kind === 'local' && rowBodies.get(physicalParent) ? rowBodies.rootOf(physicalParent) : physicalParent;
+      const page: DesktopPage = { ...(ref.kind === 'local' ? { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : {}), id: pageId, title: title?.trim() || 'Nouvelle page', parentId: indexedParent };
       if (initialDocument && ref.kind === 'local') await repository.writePage(pageId, JSON.stringify(initialDocument));
       ws.index.pages.push(page);
       ws.frame.setPages(withSections(ws.index.pages), library.dispose ? '' : ws.index.activeId);
@@ -650,20 +854,24 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const select = async (id: string): Promise<void> => {
     if (sessions.disposed || !ws.index) return;
     refreshDateTitles();
-    const page = ws.index.pages.find((item) => item.id === id);
+    const page = pageForId(id);
     if (!page) return;
+    const standalone = documents.has(id);
     const selectedPage = page;
     const request = ++ws.selection;
     const previous = sessions.current;
     if (ws.currentId !== id && previous) {
       await previous.editor.isReady;
       if (sessions.disposed || ws.selection !== request) return;
-      await previous.flush();
+      // The outgoing page keeps its unsaved work in memory and the badge keeps
+      // reporting the failure. Trapping the reader on a page whose file is held
+      // by another writer would freeze navigation itself.
+      await previous.flush().catch(error => showError(error, 'document'));
     }
     if (sessions.disposed || ws.selection !== request) return;
     // A new page can be opened before the next manifest poll. The outgoing
     // document has now flushed its link; resolve ancestry without delaying paint.
-    if (ref.kind === 'remote' && page.parentId && !page.location) {
+    if (ref.kind === 'remote' && !standalone && page.parentId && !page.location) {
       const parentId = page.parentId;
       const client = new CloudClient({origin:ref.server,...('__TAURI_INTERNALS__' in window ? {sessionAdapter:nativeSessionAdapter(ref.server)} : {})});
       void client.request<ResolvedPage>(`/api/pages/resolve-id/${encodeURIComponent(id)}`).then(resolved => {
@@ -674,13 +882,23 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         if (ws.currentId === id) { ws.pageToolbar?.setBreadcrumbs(breadcrumbs(id)); rowPresentation.refresh(); }
       }).catch(() => undefined); // Optional navigation metadata; offline page editing remains available.
     }
-    ws.index.activeId = id;
-    if (ref.kind === 'local') saveManifest();
+    if (!standalone && ws.index.activeId !== id) {
+      ws.index.activeId = id;
+      if (ref.kind === 'local') saveManifest();
+    }
     ws.frame.setActiveShortcut(null);
     ws.frame.setPages(withSections(ws.index.pages), id);
     onPageIcon(id, page.icon ?? '');
+    // The desktop tab is named by whatever last wrote `document.title`, and a
+    // new tab writes "Nouvelle page" before the router resolves which page it
+    // lands on. Naming it at each point where the page actually reaches the
+    // screen covers every route in — and only then, or the tab would rename
+    // itself while the previous page is still being read.
+    const nameTab = (): void => { if (document.title !== selectedPage.title) document.title = selectedPage.title; };
+
     if (ws.currentId === id) {
       ws.pageToolbar?.setBreadcrumbs(breadcrumbs(id));
+      nameTab();
       return;
     }
     library.dispose?.(); library.dispose = null; library.category = null;
@@ -690,13 +908,16 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     if (sessions.disposed || ws.selection !== request) return;
     const warm = cachedPages.get(id);
     if (warm) cachedPages.delete(id);
-    leavePage(true);
+    // Two file-backed editors must never write the same local body. Closing
+    // the parent also releases its peek/prefetch editors before this one loads.
+    leavePage(!(ref.kind === 'local' && standalone));
     ws.currentId = id;
     ws.frame.element.toggleAttribute('data-desktop-read-only', readOnly(id));
     ++ws.generation;
     if (warm) {
       sessions.current = warm;
       warm.resume();
+      nameTab();
       return;
     }
     const life = { active: true, ready: false, destroyed: false };
@@ -738,7 +959,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       if (readOnly(id) || rowPageDestination(location.href)) return;
       page.fullWidth = enabled;
       applyFullWidth();
-      saveManifest();
+      savePageMetadata(page);
     }, '__TAURI_INTERNALS__' in window ? undefined : () => {
       ws.frame.toggleSidebar();
       onLayout(sidebar.getBoundingClientRect().width);
@@ -768,10 +989,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         title?.focus();
         if (title) { const range = document.createRange(); range.selectNodeContents(title); const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range); }
       },
-      onMove: ref.kind === 'local' || ws.access.canShare(id) ? () => { if (!rowPageDestination(location.href)) void action({ id, type: 'move' }).catch(error => showError(error, 'move', id)); } : undefined,
+      onMove: !standalone && (ref.kind === 'local' || ws.access.canShare(id)) ? () => { if (!rowPageDestination(location.href)) void action({ id, type: 'move' }).catch(error => showError(error, 'move', id)); } : undefined,
+      onCopyToWorkspace: !standalone ? () => { if (!rowPageDestination(location.href)) openTransfer(id); } : undefined,
       onHistory: ref.kind === 'remote' ? () => { if (!rowPageDestination(location.href)) void openHistory().catch(error => showError(error, 'history', id)); } : undefined,
       onDuplicate: () => { if (!rowPageDestination(location.href)) void action({ id, type: 'duplicate' }).catch(error => showError(error, 'duplicate', id)); },
-      onDelete: () => { if (!rowPageDestination(location.href)) void action({ id, type: 'delete' }).catch(error => showError(error, 'delete', id)); },
+      onDelete: !standalone ? () => { if (!rowPageDestination(location.href)) void action({ id, type: 'delete' }).catch(error => showError(error, 'delete', id)); } : undefined,
     });
     const pagePresence = ref.kind === 'remote' ? createPagePresence({
       self: () => ({ id: ref.accountId, ...readAccountIdentity(ref) }),
@@ -795,7 +1017,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       saveManifest();
     }
     const attachCoverAction = (): void => {
-      if (readOnly(id)) return;
+      if (readOnly(id) || standalone) return;
       if (isPageCover(page.cover)) return;
       const row = holder.querySelector<HTMLElement>('[data-blok-page-icon-row]');
       if (!row) return;
@@ -847,22 +1069,30 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const refreshPresentation = (): void => { applyFullWidth(); renderCover(); renderCreatedProperty(); ws.titleDateMention?.refresh(); };
     ws.refreshPagePresentation = refreshPresentation;
     ws.pageCanvas.replaceChildren(toolbar.element, article);
+    nameTab();
+    if (newPageToFocus === id) {
+      newPageToFocus = undefined;
+      cancelTitleFocus = focusNewPageTitle(holder);
+    }
     renderCover();
-    const persisted = { content: null as string | null };
-    const contentSignature = (data: OutputData): string => JSON.stringify({ ...data, time: undefined, version: undefined });
+    const persisted = { content: null as string | null, pending: 0 };
+    const contentSignature = (data: OutputData): string => canonicalJson({ ...data, time: undefined, version: undefined });
     const saveLocalData = async (data: OutputData): Promise<void> => {
+      const signature = contentSignature(data);
+      // Leaving an unchanged page must not compete with an external editor.
+      if (persisted.pending === 0 && persisted.content === signature) return;
+      persisted.pending++;
       sync.localWrites++;
       updatePending();
       try {
         await repository.writePage(id, JSON.stringify(data));
-        const signature = contentSignature(data);
         if (persisted.content !== signature) {
           page.updatedAt = new Date().toISOString();
-          saveManifest();
+          savePageMetadata(page);
         }
         persisted.content = signature;
         if (life.active) saveStatus.saved('document', id);
-      } finally { sync.localWrites--; updatePending(); }
+      } finally { persisted.pending--; sync.localWrites--; updatePending(); }
     };
     let rowNavigationRequest = 0;
     const hostedRowNavigation = (documentId: string): NonNullable<DatabaseRowPages['navigation']> => ({
@@ -885,13 +1115,60 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
      * page from the moment it exists, so opening one full page must give it one
      * too, or its address can only ever name the row inside its database.
      */
+    /**
+     * A row's body becomes a document of its own, here rather than on a server.
+     *
+     * The file is written BEFORE the row names it: a row pointing at a document
+     * that does not exist is a dead link, while a document no row names yet is
+     * merely unused.
+     */
+    const migrateLocalRowBodies = (data: OutputData): Promise<OutputData> => migrateRowBodiesOf(id, data);
+    const createLocalRowBody = async (
+      source: {blocks?: {getById(blockId: string): BlockAPI | null; getChildren?(blockId: string): BlockAPI[]} | null; saver: {flush(): Promise<unknown>}},
+      request: {documentId: string; rowId: string; body: OutputData},
+    ): Promise<{pageId: string; publicId: string; parentId: string; rowId: string; revision: number}> => {
+      const block = source.blocks?.getById(request.rowId);
+
+      if (!block) throw new Error('La ligne doit rester ouverte pendant cet enregistrement.');
+      // The server refuses the same case: a row that still holds its body gets
+      // a document by MOVING that body, which is the migration's job. Handing
+      // it an empty one here would read as the body having been lost.
+      const filled = (source.blocks?.getChildren?.(request.rowId) ?? []).filter(child => child.name !== 'database-comment');
+
+      if (filled.length > 0) throw new Error('Le corps de cette ligne est déplacé au prochain chargement de la page.');
+      const seen: Array<{title?: string; icon?: string}> = [];
+
+      block.call('readData', {receive: (value: {title?: string; icon?: string}) => seen.push(value)});
+      const row = seen[0] ?? {};
+      const bodyId = crypto.randomUUID();
+      const publicId = crypto.randomUUID();
+
+      await repository.writePage(bodyId, JSON.stringify(request.body ?? {blocks: []}));
+      await rowBodies.add(bodyId, {
+        publicId, documentId: request.documentId, rowId: request.rowId,
+        title: row.title?.trim() || 'Ligne',
+        ...(row.icon ? {icon: row.icon} : {}),
+        ...(block.parentId ? {databaseId: block.parentId} : {}),
+      });
+      block.call('updatePageId', {pageId: bodyId});
+      block.call('markBodyBlocks');
+      // Host-derived, not a user step: undo must not strip the link again.
+      block.dispatchChange({derived: true});
+      await source.saver.flush();
+
+      const resolved = rowBodies.resolvedPageFor(bodyId, identity.name);
+
+      if (resolved) rememberDocument(resolved);
+
+      return {pageId: bodyId, publicId, parentId: request.documentId, rowId: request.rowId, revision: 0};
+    };
     const createRowBody = async (request: {documentId: string; rowId: string; body: OutputData; operationId: string}): Promise<{pageId: string; publicId: string; parentId: string; rowId: string; revision: number}> => {
 
-        if (ref.kind !== 'remote') throw new Error('Les corps de lignes vivent sur un espace distant.');
         const source = request.documentId === id ? instance : rowPages?.mountedEditor(request.documentId);
         if (!source) throw new Error('La page source doit rester ouverte pendant cet enregistrement.');
         // The source row may itself be a just-created, unacknowledged block.
         await source.saver.flush();
+        if (ref.kind === 'local') return createLocalRowBody(source, request);
         const client = new CloudClient({origin:ref.server,...('__TAURI_INTERNALS__' in window ? {sessionAdapter:nativeSessionAdapter(ref.server)} : {})});
         const receipt = await client.request<{pageId:string;publicId:string;parentId:string;rowId:string;revision:number}>(
           `/api/workspaces/${encodeURIComponent(ref.workspaceId)}/pages/${encodeURIComponent(request.documentId)}/row-body`,
@@ -899,19 +1176,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         );
         await refreshRemoteManifest();
         if (readOnly(receipt.pageId)) throw new Error('Les droits de la nouvelle page ne sont pas encore disponibles. Réessayez.');
-        // A side peek leaves the main route alone. A full row may acquire its
-        // canonical URL without reopening the view or destroying its draft.
-        const route = rowPageDestination(location.href);
-        const physical = route?.steps?.at(-1)?.documentId ?? route?.documentId;
-        if (route?.rowId === request.rowId && physical === request.documentId) {
-          void client.request<ResolvedPage>(`/api/pages/resolve-id/${encodeURIComponent(receipt.pageId)}`).then(resolved => {
-            const current = rowPageDestination(location.href);
-            if (life.destroyed || current?.rowId !== request.rowId || (current.steps?.at(-1)?.documentId ?? current.documentId) !== request.documentId) return;
-            rememberResolvedRowPage(location.origin, resolved);
-            const href = '__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href,receipt.pageId) : publicPageUrl(ref.server,resolved.title,resolved.publicId);
-            history.replaceState(history.state, '', pageNavigationUrl(href));
-          }).catch(() => undefined);
-        }
+        // Keep the inline route while a draft becomes a document. A body URL
+        // is entered only by explicit navigation, which also switches sessions.
         return receipt;
     };
     const rowDrafts = ref.kind === 'remote' ? createRowBodyDrafts({
@@ -938,7 +1204,49 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const refreshRowDraftPermissions = (): void => rowDrafts?.refreshPermissions();
     rowPermissionWatchers.add(refreshRowDraftPermissions);
     // A task inside a sprint belongs to the sprint body, even when both are open over the root table.
-    const navigationFor = (documentId: string): Pick<DatabaseRowPages, 'href' | 'navigate' | 'navigation'> => ref.kind !== 'remote' ? {} : ({
+    const navigationFor = (documentId: string): Pick<DatabaseRowPages, 'href' | 'navigate' | 'navigation'> => ref.kind !== 'remote' ? ({
+      // A local row keeps its body as a block inside its page, so there is no
+      // row document to create or resolve — only an address to go to. The
+      // presentation that follows reads the blocks, which is why opening one
+      // full page works here without any of the server's machinery.
+      navigation: hostedRowNavigation(documentId),
+      // A row that owns a document is addressed by that document, exactly as on
+      // a server: the address survives the row moving, and names a page rather
+      // than a position inside one.
+      // pageUrl, not legacyPageUrl: the latter rebuilds the address from "/" and
+      // drops the query, `local=1` with it — the reload would then look for this
+      // page on a server.
+      href: (rowId, context) => (context.pageId === undefined
+        ? rowPageUrl(pageUrl(documentId), rowId, context.databaseId)
+        : pageUrl(context.pageId)),
+      navigate: (rowId, context) => {
+        const replace = location.hash === `#${encodeURIComponent(rowId)}?full`;
+        const pageId = context?.pageId;
+
+        if (pageId === undefined) {
+          // A row opened full page is a page, so it gets one here if it has
+          // none: without it the address can only name a position inside
+          // another page, and would not survive the row moving.
+          void createRowBody({documentId, rowId, body: {blocks: []}, operationId: crypto.randomUUID()})
+            .then(receipt => {
+              const made = rowBodies.resolvedPageFor(receipt.pageId, identity.name);
+
+              if (made) rememberDocument(made);
+              enterPageUrl(pageNavigationUrl(pageUrl(receipt.pageId)), replace);
+            })
+            // A row still holding its body keeps the address it already had.
+            .catch(() => navigateRow(documentId, rowId, context?.databaseId, replace));
+
+          return;
+        }
+        const resolved = rowBodies.resolvedPageFor(pageId, identity.name);
+
+        // Without this the address resolves to nothing: the resolver is what
+        // turns a body id back into "this page, this row".
+        if (resolved) rememberDocument(resolved);
+        enterPageUrl(pageNavigationUrl(pageUrl(pageId)), replace);
+      },
+    }) : ({
       navigation: hostedRowNavigation(documentId),
       href: (rowId, context) => context.pageId ? pageUrl(context.pageId) : rowPageUrl(pageUrl(documentId), rowId, context.databaseId),
       navigate: (rowId, context) => {
@@ -971,7 +1279,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
             const resolved = await client.request<ResolvedPage>(`/api/pages/resolve-id/${encodeURIComponent(pageId)}`);
             if (resolved.pageId !== pageId || resolved.rowBodyOf?.documentId !== documentId || resolved.rowBodyOf.rowId !== rowId || resolved.workspace.id !== ref.id || resolved.workspace.slug !== ref.workspaceId) throw new Error('Page indisponible.');
             if (!current()) return;
-            rememberResolvedRowPage(location.origin,resolved);
+            rememberDocument(resolved);
             href = '__TAURI_INTERNALS__' in window ? legacyPageUrl(location.href,resolved.pageId) : publicPageUrl(ref.server,resolved.title,resolved.publicId);
           } else if (documentId !== id) {
             navigateRow(documentId, rowId, databaseId, replace);
@@ -981,14 +1289,42 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         })().catch(error => { if (current()) showError(error, 'navigation', documentId); });
       },
     });
-    const rowPages: DesktopRowPages | undefined = ref.kind === 'remote' ? createDesktopRowPages({
+    const localBodyPersistence = (bodyId: string): NonNullable<BlokConfig['persistence']> => {
+      const saved = {content:null as string | null};
+      return {
+        async load() {
+          const raw = await repository.readPage(bodyId);
+          const data = raw === null ? null : JSON.parse(raw) as OutputData;
+          saved.content = data ? contentSignature(data) : null;
+          return data;
+        },
+        async save(data) {
+          const signature = contentSignature(data);
+          // Reading a peek must not overwrite a newer external version of an
+          // unchanged body. Actual edits still go through the native file guard.
+          if (saved.content === signature) return;
+          await repository.writePage(bodyId, JSON.stringify(data));
+          saved.content = signature;
+        },
+        onError: (error: unknown) => showError(error, 'document'),
+      };
+    };
+    const rowPages: DesktopRowPages = createDesktopRowPages({
       retainEditors: 2,
       ...(rowDrafts ? {
         mountEmpty: (rowId: string, target: HTMLElement) => rowDrafts.mount(id, rowId, target),
         hasDraft: (rowId: string) => rowDrafts.hasDraft(id, rowId),
       } : {}),
       ...navigationFor(id),
-      snapshot: async bodyId => { await rowPages?.flush(); return repository.readLivePage(bodyId); },
+      // Flush first either way: the file would otherwise be read before the
+      // last keystrokes reach it, and a duplicate would miss them.
+      snapshot: async bodyId => {
+        await rowPages.flush();
+        if (ref.kind === 'remote') return repository.readLivePage(bodyId);
+        const raw = await repository.readPage(bodyId);
+
+        return raw === null ? {blocks: []} : JSON.parse(raw) as OutputData;
+      },
       lookup: async () => null,
       copyFromLegacy: async () => { throw new Error('Row bodies are moved by offline maintenance'); },
       reconcileLegacy: async () => { throw new Error('Close older clients before migrating row bodies'); },
@@ -1008,7 +1344,12 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         // Every one of these is read lazily for the same reason: blocks, readOnly
         // and saver are all installed by exportAPI, so capturing them here hands
         // the host three undefineds.
-        return {isReady: ready, get blocks() { return body.blocks; }, readOnly: {set: (state: boolean) => body.readOnly.set(state)}, saver: {flush: () => body.saver.flush()}, destroy() {
+        return {isReady: ready, get blocks() { return body.blocks; }, readOnly: {set: (state: boolean) => body.readOnly.set(state)}, saver: {flush: async () => {
+          await body.saver.flush();
+          // Collaboration.flush does not write file-backed persistence. Capture
+          // the live body before navigation releases its peek editor.
+          if (ref.kind === 'local' && !localCollab && !body.readOnly.isEnabled) await config.persistence?.save(await body.save(), {version:null});
+        }}, destroy() {
           if (disposed) return;
           disposed = true; comments?.destroy(); body.destroy();
         }};
@@ -1023,7 +1364,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         loader: { delay: 0, minVisible: 0, skeleton: ['paragraph', 'paragraph', 'paragraph'] },
         tools: {
           ...pageTools,
-          page: {class: Page, config: {...pageConfig, create: async (input: Parameters<NonNullable<PageConfig['create']>>[0]) => pageConfig.create?.({...input, parentId: input.parentId ?? bodyId})}},
+          // A body is not a place in the sidebar, so a page created inside one
+          // belongs to the page that holds the row. Parenting it on the body
+          // would leave an entry whose parent is not in the index, which the
+          // merge refuses — permanently, since the refusal predates the write.
+          page: {class: Page, config: {...pageConfig, create: async (input: Parameters<NonNullable<PageConfig['create']>>[0]) => pageConfig.create?.({...input, parentId: input.parentId ?? (ref.kind === 'local' ? rowBodies.rootOf(bodyId) : bodyId)})}},
           database: {class: Database, config: {
             ...(pageTools.database as {config: Record<string, unknown>}).config,
             rowPages: {...rowPages, ...navigationFor(bodyId), ...(rowDrafts ? {
@@ -1033,19 +1378,33 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           }},
         },
         theme: readAppearance(),
-        documentId: `${workspaceKey(ref)}:${bodyId}`,
-        server: `${ref.server}/api/blok`,
-        ticket: ({ doc }) => repository.ticket(doc ?? bodyId),
-        user: { id: ref.accountId },
-        collaboration: {
-          doc: bodyId,
-          user: { get name() { return readAccountIdentity(ref).name; } },
-          offline: true,
-          offlineScope: workspaceKey(ref),
-        },
+        documentId: ref.kind === 'local' && ref.id === 'default' ? bodyId : `${workspaceKey(ref)}:${bodyId}`,
+        // A body is a document wherever it lives; only the way it reaches its
+        // storage differs — a sync service there, a file or the local room here.
+        ...(ref.kind === 'remote' ? {
+          server: `${ref.server}/api/blok`,
+          ticket: ({ doc }: { doc?: string }) => repository.ticket(doc ?? bodyId),
+          user: { id: ref.accountId },
+          collaboration: {
+            doc: bodyId,
+            user: { get name() { return readAccountIdentity(ref).name; } },
+            offline: true,
+            offlineScope: workspaceKey(ref),
+          },
+        } : localCollab ? {
+          collaboration: { doc: bodyId, socketFactory: localCollab.socketFactory } as BlokConfig['collaboration'],
+        } : { persistence: localBodyPersistence(bodyId) }),
       }),
-    }) : undefined;
-    const pageTools: NonNullable<BlokConfig['tools']> = { ...desktopTools, database: {class: Database, config: {...(rowPages ? {rowPages} : {}), people: { me: () => commentAuthor(ref).authorId, ...(memberProfiles ? { openProfile: (userId: string) => { void memberProfiles.open(userId); } } : {}), list: async () => { if(memberProfiles)return (await memberProfiles.list()).map(member=>({id:member.id,name:profileDisplayName(member.name,member.email),...(member.avatarUrl ? {avatarUrl:member.avatarUrl} : {})})); const author = commentAuthor(ref); return [{ id: author.authorId, get name() { return commentAuthor(ref).authorName; }, get avatarUrl() { return commentAuthor(ref).avatarUrl; } }]; } }, customEmojis: () => emojis.list(), coverGallery: COVER_GALLERY, uploadCover: (file: globalThis.File) => readCoverFile(file).then(repository.uploadImage)}}, page: { class: Page, config: { ...pageConfig } } };
+    });
+        // An image block with no uploader keeps the `URL.createObjectURL` handle the
+        // browser handed it and writes `blob:…` into the document: the picture is
+        // gone the next time the page is opened, with nothing on disk to restore.
+        // Routing the file through the upload the covers already use inlines it as
+        // a data URL locally — so it travels with the workspace folder — and stores
+        // it on the server for a remote one. Drafts and row pages derive their
+        // tools from this object, so they are covered by the same line.
+        const imageUploader = { uploadByFile: async (file: globalThis.File) => ({ url: await repository.uploadImage(await readImageFile(file)), fileName: file.name }) };
+        const pageTools: NonNullable<BlokConfig['tools']> = { ...desktopTools, image: { class: Image, config: { uploader: imageUploader } }, database: {class: Database, config: {rowPages, people: { me: () => commentAuthor(ref).authorId, ...(memberProfiles ? { openProfile: (userId: string) => { void memberProfiles.open(userId); } } : {}), list: async () => { if(memberProfiles)return (await memberProfiles.list()).map(member=>({id:member.id,name:profileDisplayName(member.name,member.email),...(member.avatarUrl ? {avatarUrl:member.avatarUrl} : {})})); const author = commentAuthor(ref); return [{ id: author.authorId, get name() { return commentAuthor(ref).authorName; }, get avatarUrl() { return commentAuthor(ref).avatarUrl; } }]; } }, customEmojis: () => emojis.list(), coverGallery: COVER_GALLERY, uploadCover: (file: globalThis.File) => readCoverFile(file).then(repository.uploadImage)}}, page: { class: Page, config: { ...pageConfig } }, 'page-link': { class: PageLink, config: { ...pageConfig } } };
     const instance = new Blok({
       holder,
       readOnly: readOnly(id),
@@ -1053,8 +1412,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       ...(memberProfiles ? {resolveUser: async (userId: string) => { const member=await memberProfiles.list().then(members=>members.find(person=>person.id===userId)).catch(()=>undefined); return member ? {name:profileDisplayName(member.name,member.email)} : null; }} : {}),
       theme: readAppearance(),
       pageTitle: {
+        ...(standalone ? {cover: true} : {}),
         customEmojis: () => emojis.list(),
-        placeholder: 'Nouvelle page',
+        placeholder: standalone ? page.title : 'Nouvelle page',
         onChange(title, change) {
           if (life.destroyed || !ws.index) return;
           const next = title.trim() || 'Nouvelle page';
@@ -1076,7 +1436,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           if (life.active) document.title = next;
           rowPresentation.refresh();
           ws.frame.setPages(withSections(ws.index.pages), ws.currentId);
-          if (ref.kind === 'local' || change.source !== 'remote') saveManifest();
+          if (ref.kind === 'local' || change.source !== 'remote') savePageMetadata(page);
         },
         onIconChange(icon, change) {
           if (life.destroyed || !ws.index) return;
@@ -1094,10 +1454,15 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           offline: true,
           offlineScope: workspaceKey(ref),
         },
+      } : localCollab ? {
+        // The published `collaboration` type carries no injection point; the
+        // transport is what replaces the sync service here.
+        collaboration: { doc: id, socketFactory: localCollab.socketFactory } as BlokConfig['collaboration'],
       } : { persistence: {
         async load() {
           const raw = await repository.readPage(id);
-          const data = raw ? JSON.parse(raw) as OutputData : null;
+          const stored = raw ? JSON.parse(raw) as OutputData : null;
+          const data = stored ? await migrateLocalRowBodies(stored) : null;
           persisted.content = data ? contentSignature(data) : null;
           return data;
         },
@@ -1118,10 +1483,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       const redactor = holder.querySelector<HTMLElement>('[data-blok-redactor]');
       if (redactor) ws.floatingToc = createFloatingToc(ws.pageCanvas, redactor);
       attachCoverAction();
-      if (ref.kind === 'local' && (!instance.title.get() || page.titleDate)) instance.title.set(page.title, { record: false });
+      if ((ref.kind === 'local' || (standalone && !readOnly(id))) && (!instance.title.get() || page.titleDate)) instance.title.set(page.title, { record: false });
       renderCreatedProperty();
       const title = holder.querySelector<HTMLElement>('[data-blok-page-title]');
-      if (title) {
+      if (title && !standalone) {
         const updateDateTitle = (): void => {
           const label = page.titleDate ? titleDateLabel(page.titleDate, new Date(), page.titleDateDisplay) : null;
           const next = label === null ? 'Nouvelle page' : `@${label}${page.titleDateSuffix ?? ''}`;
@@ -1222,10 +1587,16 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         await rowDrafts?.flush();
         await rowPages?.flush();
         await instance.saver.flush();
-        if (ref.kind === 'local' && !readOnly(id)) await saveLocalData(await instance.save());
+        // The room owns the document under local collaboration. Writing the file
+        // from the editor as well would make two writers of one file inside one
+        // window, each with its own idea of what the page contains.
+        if (localCollab) await localCollab.flush();
+        else if (ref.kind === 'local' && !readOnly(id)) await saveLocalData(await instance.save());
       },
       async sourceUnchanged() {
-        if (ref.kind === 'remote') return true;
+        // Under collaboration the file is the room's output, not the editor's
+        // input: a difference against it says nothing about this session.
+        if (ref.kind === 'remote' || localCollab) return true;
         const raw = await repository.readPage(id);
         return (raw ? contentSignature(JSON.parse(raw) as OutputData) : null) === persisted.content;
       },
@@ -1257,6 +1628,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     }).catch(error => { const active = life.active; session.destroy(); if (active) showError(error, 'navigation', id); });
   };
 
+  const standaloneParent = (page: DesktopPage): string | null => ref.kind === 'local' && documents.has(page.id) ? rowBodies.rootOf(page.id) : page.parentId;
   const duplicatePage = async (page: DesktopPage): Promise<'navigated' | 'pending'> => {
     if (ref.kind === 'remote') {
       const copy = {id: crypto.randomUUID(), title: `${page.title} (copie)`, parentId: page.parentId};
@@ -1270,7 +1642,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       return 'navigated';
     }
     if (!ws.index) return 'navigated';
-    const copy: DesktopPage = { ...page, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), id: crypto.randomUUID(), title: `${page.title} (copie)`, titleDate: undefined, titleDateDisplay: undefined, titleDateSuffix: undefined };
+    if (sessions.current) { await sessions.current.editor.isReady; await sessions.current.flush(); }
+    await ws.saveOrder;
+    const copy: DesktopPage = { ...page, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), id: crypto.randomUUID(), parentId: standaloneParent(page), location: documents.has(page.id) ? undefined : page.location, title: `${page.title} (copie)`, titleDate: undefined, titleDateDisplay: undefined, titleDateSuffix: undefined };
     ws.index.pages.push(copy);
     saveManifest();
     void repository.readPage(page.id).then(async (raw) => {
@@ -1284,34 +1658,59 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     return 'pending';
   };
 
-  /** A workspace with no page at all has no way back, so the last one stays. */
-  const lastPageRefusal = 'Cette page est la dernière de l’espace. Créez-en une autre avant de la supprimer.';
-  const deletePage = (page: DesktopPage): void => {
-    if (!ws.index) return;
-    if (ws.index.pages.length === 1) {
-      // Returning in silence looked like a broken button: the menu closed and
-      // the page stayed, with nothing said.
-      saveStatus.error(new Error(lastPageRefusal), lastPageRefusal, 'delete', page.id);
-
-      return;
+  const changePageTrash = async (id: string, operation: 'trash' | 'restore' | 'purge'): Promise<void> => {
+    if (!ws.index || ws.metadataAction || readOnly(id)) throw new Error('Cette action est indisponible pour cette page.');
+    const wasInert = ws.frame.element.inert;
+    ws.frame.element.inert = true;
+    ws.metadataAction = true;
+    try {
+      if (sessions.current) {
+        await sessions.current.editor.isReady;
+        await sessions.current.flush();
+      }
+      await ws.saveOrder;
+      const old = ws.index;
+      if (ref.kind === 'remote') {
+        await repository.changePageTrash(id, operation);
+        const fresh = await repository.loadIndex();
+        if (fresh.pages.some(p => p.id === ws.currentId)) fresh.activeId = ws.currentId;
+        adoptIndex(fresh);
+      } else {
+        const trash = old.trash ?? [];
+        const source = operation === 'trash' ? old.pages : trash;
+        const root = source.find(page => page.id === id);
+        if (!root) throw new Error('Cette page a déjà changé de place.');
+        if (operation === 'restore' && trash.some(page => page.id === root.parentId)) {
+          throw new Error('Restaurez d’abord la page parente.');
+        }
+        const ids = new Set([id]);
+        for (const parent of ids) {
+          for (const child of source) {
+            if (child.parentId === parent && (operation !== 'restore' || child.trashRoot === root.trashRoot)) ids.add(child.id);
+          }
+        }
+        const touched = source.filter(page => ids.has(page.id));
+        const pages = operation === 'trash' ? old.pages.filter(page => !ids.has(page.id)) : [...old.pages];
+        if (operation === 'restore') pages.push(...touched.map(({trashRoot: _, ...page}) => page));
+        const nextTrash = operation === 'trash' ? [...trash, ...touched.map(page => ({...page, trashRoot:id}))] : trash.filter(page => !ids.has(page.id));
+        const index = {...old, pages, trash:nextTrash, activeId:pages.some(p => p.id === old.activeId) ? old.activeId : pages[0]?.id ?? ''};
+        await repository.saveIndex(index);
+        adoptIndex(index);
+        if (operation === 'purge') for (const removed of ids) await repository.clearLocalPage(removed);
+      }
+      const updated = ws.index;
+      const live = new Set(updated.pages.map(page => page.id));
+      for (const page of old.pages) if (!live.has(page.id)) { dropCachedPage(page.id); notifyPage(page.id); }
+      ws.frame.setPages(withSections(updated.pages), library.dispose ? '' : updated.activeId);
+      refreshLibrary();
+      if (ws.currentId && !live.has(ws.currentId)) {
+        if (updated.activeId) navigate(updated.activeId, true);
+        else navigateLibrary('all');
+      }
+    } finally {
+      ws.metadataAction = false;
+      ws.frame.element.inert = wasInert;
     }
-    const removed = new Set([page.id]);
-    const removeState = { previous: -1 };
-    while (removeState.previous !== removed.size) {
-      removeState.previous = removed.size;
-      ws.index.pages.forEach((item) => { if (item.parentId && removed.has(item.parentId)) removed.add(item.id); });
-    }
-    if (removed.size === ws.index.pages.length) {
-      saveStatus.error(new Error(lastPageRefusal), lastPageRefusal, 'delete', page.id);
-
-      return;
-    }
-    ws.index.trash = [...(ws.index.trash ?? []), ...ws.index.pages.filter((item) => removed.has(item.id))];
-    ws.index.pages = ws.index.pages.filter((item) => !removed.has(item.id));
-    removed.forEach(dropCachedPage);
-    removed.forEach(notifyPage);
-    const fallback = ws.index.pages[0];
-    if (removed.has(ws.currentId) && fallback) navigate(fallback.id, true);
   };
 
   const openPageTab = (page: DesktopPage): void => {
@@ -1365,6 +1764,64 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       throw error;
     }
   };
+  /**
+   * Copies a page and its subtree into another workspace.
+   *
+   * The two stores are disjoint, so there is no transaction spanning them: the
+   * index entries are written first because the server's `seed` only fills a
+   * page it can already find, and the documents follow. The source is left
+   * untouched — a failure halfway leaves a partial copy there, never a hole here.
+   */
+  const transferPageTo = async (pageId: string, key: string): Promise<void> => {
+    const target = listWorkspaces().find(item => workspaceKey(item) === key);
+    if (!target || !ws.index) throw new Error('Espace introuvable.');
+    const destination = workspaceRepository(target);
+    const index = await destination.loadIndex();
+    const plan = await planTransfer({
+      pages: ws.index.pages,
+      sourceId: pageId,
+      parentId: null,
+      privateOnArrival: target.kind === 'remote',
+      mintId: () => crypto.randomUUID(),
+      readDocument: async (id: string) => {
+        if (ref.kind === 'remote') return await repository.readLivePage(id);
+        const raw = await repository.readPage(id);
+        return raw === null || raw === '' ? null : JSON.parse(raw) as unknown;
+      },
+      transferAsset: async (url: string) => {
+        if (url.startsWith('data:')) return await destination.uploadImage(url);
+        if (ref.kind !== 'remote' || !isServerAsset(url, ref.server)) return null;
+        // The bytes travel with the copy. Keeping the address instead would lose
+        // the image the moment access to this server does — and the destination
+        // may be a workspace whose readers never had that access at all.
+        const inlined = await inlineAsset(await repository.assetUrl(url), async (href: string) => {
+          const response = await fetch(href, { credentials: 'include' });
+          return response.ok ? await response.blob() : null;
+        });
+        return inlined === null ? null : await destination.uploadImage(inlined);
+      },
+    });
+    if (plan.pages.length === 0) throw new Error('Cette page est introuvable dans l’espace.');
+    index.pages.push(...plan.pages);
+    await destination.saveIndex(index);
+    for (const written of plan.documents) {
+      if (target.kind === 'remote') await destination.seedPage(written.id, written.document);
+      else await destination.writePage(written.id, JSON.stringify(written.document));
+    }
+  };
+  const openTransfer = (pageId: string): void => {
+    const page = ws.index?.pages.find(item => item.id === pageId);
+    if (!page) return;
+    openWorkspaceTransfer({
+      title: page.title,
+      workspaces: listWorkspaces().filter(item => workspaceKey(item) !== workspaceKey(ref)).map(item => ({
+        key: workspaceKey(item),
+        name: item.name,
+        detail: item.kind === 'local' ? 'Sur cet appareil' : new URL(item.server).host,
+      })),
+      onTransfer: (key: string) => transferPageTo(pageId, key),
+    });
+  };
   const movePage = async (id: string, {parentId, teamspaceId}: SidebarMoveTarget): Promise<void> => {
     if (!ws.index || ws.metadataAction || !destinationsFor(id).some(item => item.parentId === parentId && item.teamspaceId === teamspaceId)) throw new Error('Cette destination n’est plus autorisée.');
     const wasInert = ws.frame.element.inert;
@@ -1388,6 +1845,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     } finally { ws.frame.element.inert = wasInert; ws.metadataAction = false; }
   };
   const action = async (command: SidebarAction): Promise<void> => {
+    if (command.type === 'delete') { await changePageTrash(command.id, 'trash'); saveStatus.saved('delete', command.id); return; }
     if (command.type === 'move') {
       if (!ws.index || readOnly(command.id)) return;
       const page = ws.index.pages.find(item => item.id === command.id);
@@ -1404,11 +1862,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     try {
       await flushRemoteBeforeAction(command);
       if (!ws.index) return;
-      const page = ws.index.pages.find((item) => item.id === command.id);
+      const page = pageForId(command.id);
       if (!page) return;
       if (command.type === 'rename') renamePage(page, command.title);
       else if (command.type === 'duplicate') { await duplicatePage(page); return; }
-      else if (command.type === 'delete') deletePage(page);
       else if (command.type === 'open-tab') { openPageTab(page); return; }
       else return;
       ws.frame.setPages(withSections(ws.index.pages), library.dispose ? '' : ws.index.activeId);
@@ -1446,14 +1903,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     onLibrary: () => navigateLibrary('all'),
     pageMoves: { destinations: destinationsFor, move: (id, target) => { void movePage(id, target).catch(error => showError(error, 'move', id)); } },
     onOpen: (id) => navigate(id),
-    onCreate: (parentId) => chooseNewPage(parentId),
-    onCreatePrivate: ref.kind === 'remote' ? () => chooseNewPage(null, true) : undefined,
+    onCreate: (parentId) => createPage(parentId),
+    onCreatePrivate: () => createPage(),
     onSearch: (recentIds) => {
       ws.closeSearch?.();
       ws.closeSearch = openPageSearch({ workspaceName: identity.name, pages: () => ws.index?.pages ?? [], onOpen: navigate, recentIds });
     },
     onManageTeamspaces: ref.kind==='remote' ? ()=>ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-teamspace',{detail:{}})) : undefined,
-    onCreateTeamspacePage: (id)=>chooseNewPage(null,false,id),
+    onCreateTeamspacePage: (id) => createPage(null, false, false, id),
     onTeamspaceMenu: (_anchor,id)=>{if(id)ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-teamspace',{detail:{id}}));},
     onAction: (command) => { void action(command).catch(error => showError(error, command.type, command.id)); },
     pageUrl,
@@ -1473,7 +1930,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   ws.frame.element.append(status);
   const getAiSource = () => {
     const editor=ws.editor, id=ws.currentId;
-    return readAiPageSource(editor ? {id,editor} : null, () => ws.editor===editor && ws.currentId===id && !!ws.index?.pages.some(page=>page.id===id));
+    return readAiPageSource(editor ? {id,editor} : null, () => ws.editor===editor && ws.currentId===id && !!pageForId(id));
   };
   const workspaceAssistant = createWorkspaceAssistant(ref);
   ws.assistant = mountAgentAssistant({
@@ -1497,7 +1954,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   });
   ws.frame.canvas.append(assistantButton);
   if (panel) bindAssistantButton(assistantButton, panel);
-  ws.footer = createDesktopFooter((mode) => ws.editor?.theme.set(mode));
+  ws.footer = createDesktopFooter((mode) => ws.editor?.theme.set(mode), () => {
+    ws.closeSearch?.();
+    ws.closeSearch = openPageTrash({pages: () => ws.index?.trash ?? [], canEdit: id => !readOnly(id), change: changePageTrash});
+  });
   ws.footer.addEventListener('blok:desktop-open-page', (event) => {
     const detail = (event as CustomEvent<{ pageId: string; seedWelcome?: boolean }>).detail;
     if (!detail?.pageId) return;
@@ -1674,7 +2134,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       loadChildren: pageId => repository.readPageOutline(pageId),
       onOpenBlock: (pageId, blockId) => { library.target = { pageId, blockId }; navigate(pageId); },
       canCreate: canCreateUnder(null), onOpen: navigate,
-      onCreateNote: () => { void createNote().catch(error => showError(error, 'create')); }, onCreate: () => chooseNewPage(null),
+      onCreateNote: () => { void createNote().catch(error => showError(error, 'create')); }, onCreate: () => createPage(),
     });
     document.title = brandedTitle('Bibliothèque');
     ws.pageCanvas.scrollTop = 0;
@@ -1703,9 +2163,15 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
 
   function onRoute(): void {
     if (sessions.disposed || !ws.index) return;
+    if (newPageToFocus !== pageFromUrl()) newPageToFocus = undefined;
     rowPresentation.pending?.abort();
     routeRevision++;
-    ws.pageCanvas.toggleAttribute('data-desktop-row-page', rowPageDestination(location.href) !== null);
+    const rowRoute = rowPageDestination(location.href);
+
+    ws.pageCanvas.toggleAttribute('data-desktop-row-page', rowRoute !== null);
+    // Temporary while the local row-body path is being proven: says whether the
+    // address was understood as a row, and which document it resolved to.
+    console.info('[blok] route', {href: location.href, row: rowRoute?.rowId ?? null, body: rowRoute?.pageId ?? null, document: rowRoute?.documentId ?? null, steps: rowRoute?.steps?.length ?? 0});
     const category = libraryCategoryForHref(location.href);
     if (category !== null) {
       void showLibrary(category).catch(error => {
@@ -1717,14 +2183,41 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const requested=pageDestination(location.href);
     const id=pageFromUrl();
     const explicit=requested.kind!=='none';
-    const found=ws.index.pages.find(page=>page.id===id);
-    if(explicit && !found){
-      if(ref.kind==='remote' && location.href!==initialHref && !('__TAURI_INTERNALS__' in window)){
-        reloadRemoteRoute(); return;
+    const found = id ? pageForId(id) : undefined;
+    if (explicit && !found) {
+      if (ref.kind === 'remote' && (requested.kind === 'public' || requested.kind === 'legacy')) {
+        const requestedHref = location.href, revision = routeRevision;
+        const client = new CloudClient({origin:ref.server,...('__TAURI_INTERNALS__' in window ? {sessionAdapter:nativeSessionAdapter(ref.server)} : {})});
+        const kind = requested.kind === 'public' ? 'resolve' : 'resolve-id';
+        ws.pageCanvas.setAttribute('aria-busy', 'true');
+        void client.request<ResolvedPage>(`/api/pages/${kind}/${encodeURIComponent(requested.id)}`).then(resolved => {
+          if (sessions.disposed || revision !== routeRevision || location.href !== requestedHref) return;
+          if (resolved.workspace.id !== ref.id || resolved.workspace.slug !== ref.workspaceId) {
+            if (location.href !== initialHref && !('__TAURI_INTERNALS__' in window)) reloadRemoteRoute();
+            else showUnavailablePage();
+            return;
+          }
+          if (requested.kind === 'public' ? resolved.publicId.toLowerCase() !== requested.id : resolved.pageId !== requested.id) { showUnavailablePage(); return; }
+          if (!ws.index?.access?.[resolved.pageId]) {
+            // Ordinary pages can have been created since this index was read.
+            // Boot refreshes membership and the manifest for that existing path.
+            if (!resolved.rowBodyOf && !documents.has(resolved.pageId) && location.href !== initialHref && !('__TAURI_INTERNALS__' in window)) reloadRemoteRoute();
+            else showUnavailablePage();
+            return;
+          }
+          rememberDocument(resolved);
+          if (!pageForId(resolved.pageId)) { showUnavailablePage(); return; }
+          onRoute();
+        }).catch(() => {
+          if (!sessions.disposed && revision === routeRevision && location.href === requestedHref) showUnavailablePage();
+        }).finally(() => {
+          if (!sessions.disposed && location.href === requestedHref) ws.pageCanvas.removeAttribute('aria-busy');
+        });
+        return;
       }
       clearRowPresentation(); showUnavailablePage(); return;
     }
-    if(!ws.index.pages.length){void showEmptyWorkspace().catch(error => showError(error, 'library'));return;}
+    if(!found && !ws.index.pages.length){void showEmptyWorkspace().catch(error => showError(error, 'library'));return;}
     const target=found?.id ?? ws.index.activeId;
     if (id !== target) {
       navigate(target, true);
@@ -1777,21 +2270,20 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     } finally { notesAction.busy = false; }
   }
 
-  function chooseNewPage(parentId: string | null = null, privatePage = false, teamspaceId?:string): void {
-    if (!ws.index || !canCreateUnder(parentId)) return;
-    const destinations: CreationDestination[] = [];
-    if (canCreateUnder(null)) {
-      destinations.push({ value: 'workspace', label: 'Pages communes du Workspace', parentId: null });
-      if (ref.kind === 'remote') destinations.push({ value: 'private', label: 'Privé · Vous uniquement', parentId: null, privatePage: true });
-    }
+  function chooseNewPage(): void {
+    if (!ws.index || !canCreateUnder(null)) return;
+    const destinations: CreationDestination[] = [
+      { value: 'private', label: 'Privé · Vous uniquement', parentId: null, privatePage: true },
+    ];
+    if (ref.kind === 'remote') destinations.push({ value: 'workspace', label: 'Pages communes du Workspace', parentId: null });
     destinations.push(...sidebarTeamspaces.filter(team=>team.canCreate).map(team=>({value:`teamspace:${team.id}`,label:`${team.icon || ''} ${team.name}`,parentId:null,teamspaceId:team.id})));
     destinations.push(...ws.index.pages.filter((page) => canCreateUnder(page.id)).map((page) => ({ value: page.id, label: page.title, parentId: page.id })));
-    openPageCreation({ destinations, destination: teamspaceId ? `teamspace:${teamspaceId}` : parentId ?? (ref.kind==='remote' || privatePage ? 'private' : 'workspace'),
-      onCreate: (target, database) => createPage(target.parentId, target.privatePage, database, target.teamspaceId),
+    openPageCreation({ destinations, destination: 'private',
+      onCreate: (target, database) => createPage(target.parentId, target.privatePage === true, database, target.teamspaceId),
     });
   }
 
-  function createPage(parentId: string | null = null, privatePage = false, database = false, teamspaceId?:string): void {
+  function createPage(parentId: string | null = null, privatePage = parentId === null, database = false, teamspaceId?:string): void {
     if (!ws.index || ws.metadataAction || !canCreateUnder(parentId)) return;
     if(teamspaceId && teamspacesApi){
       if(!sidebarTeamspaces.some(team=>team.id===teamspaceId && team.canCreate))return;
@@ -1806,7 +2298,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           const created=await teamspacesApi.createPage(teamspaceId,database ? 'Nouvelle base de données' : 'Nouvelle page');
           if(database)await repository.seedPage(created.id,{title:created.title,blocks:[{type:'database',data:{initialView:'table',fullPage:true}}]});
           ws.metadataAction=false;
-          await refreshRemoteManifest();navigate(created.id);
+          await refreshRemoteManifest();
+          if (!database) newPageToFocus = created.id;
+          navigate(created.id);
         }catch(error){showError(error, 'create');}finally{ws.metadataAction=false;ws.frame.element.inert=wasInert;teamspacesState.pending--;updatePending();}
       })();return;
     }
@@ -1821,6 +2315,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         else await repository.writePage(page.id, JSON.stringify(document));
       }
       if (ref.kind==='remote') await refreshRemoteManifest();
+      if (sessions.disposed) return;
+      if (!database) newPageToFocus = page.id;
       navigate(page.id);
     }).catch(error => showError(error, 'create', page.id));
   }
@@ -1828,6 +2324,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   return {
     element: ws.frame.element,
     async start() {
+      // Which store this window is actually reading: the Tauri files, or the
+      // browser's localStorage — the same URL means a different workspace.
+      console.info('[blok] workspace', {
+        kind: ref.kind,
+        id: ref.id,
+        store: '__TAURI_INTERNALS__' in window ? 'fichiers (Tauri)' : 'localStorage (navigateur)',
+      });
       try {
         if (ref.kind === 'remote') {
           const client = new CloudClient({origin:ref.server, ...('__TAURI_INTERNALS__' in window ? {sessionAdapter:nativeSessionAdapter(ref.server)} : {})});
@@ -1835,6 +2338,17 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         }
         const loaded = adoptIndex(await repository.loadIndex());
         if (sessions.disposed) return;
+        if (ref.kind === 'local') {
+          // Before the first route: an address naming a body only resolves once
+          // the resolver has been told what that body belongs to.
+          await rowBodies.load();
+          if (sessions.disposed) return;
+          for (const { bodyId } of rowBodies.list()) {
+            const resolved = rowBodies.resolvedPageFor(bodyId, identity.name);
+
+            if (resolved) rememberDocument(resolved);
+          }
+        }
         await refreshTeamspaces();
         if (sessions.disposed) return;
         refreshDateTitles();
@@ -1876,6 +2390,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       if (sessions.reconnectTimer !== undefined) window.clearInterval(sessions.reconnectTimer);
       ws.closeSearch?.(); ws.assistant.destroy();
       sessions.disposed = true; ws.selection++; ws.generation++;
+      forgetResolvedPages(location.origin, ref.id);
+      void localCollab?.flush().finally(() => localCollab.close());
       leavePage(false);
       for (const id of cachedPages.keys()) dropCachedPage(id);
       library.dispose?.(); library.dispose = null;

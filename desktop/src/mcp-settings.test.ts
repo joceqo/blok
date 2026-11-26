@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mountMcpSettings } from './mcp-settings';
+import { mountLocalMcpSettings, mountMcpSettings } from './mcp-settings';
 import type { CloudClient } from './cloud/client';
 
 afterEach(() => { document.body.replaceChildren(); });
@@ -64,4 +64,29 @@ it('says a token never expires instead of printing a date a century away', async
 
   expect(listed).toContain('N’expire pas');
   expect(listed).not.toMatch(/21\d\d/);
+});
+
+it('copies stdio instructions for the selected native workspace and page', async () => {
+  const dir = "/tmp/Mes espaces/d'équipe";
+  const invoke = vi.fn().mockResolvedValue(dir);
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal('__TAURI_INTERNALS__', {invoke});
+  vi.stubGlobal('navigator', {clipboard: {writeText}});
+  const original = location.href;
+  try {
+    history.replaceState(null, '', '?local=1&page=note-2');
+    const content = document.createElement('div'); document.body.append(content);
+    await mountLocalMcpSettings(content, {kind: 'local', id: 'equipe', name: 'Équipe'});
+    expect(invoke).toHaveBeenCalledWith('workspace_data_directory', {workspace: 'equipe'});
+    content.querySelector('button')!.click();
+    const copied = writeText.mock.calls[0]?.[0] as string;
+    expect(copied).toBe(content.querySelector('code')?.textContent);
+    expect(copied).toContain('documentId = note-2');
+    const config = JSON.parse(copied.split('\n\n')[1]!);
+    expect(config.mcpServers['blok-local-equipe'].args.at(-1)).toBe(`files:${dir}`);
+    expect(content.querySelector('form')).toBeNull();
+  } finally {
+    history.replaceState(null, '', original);
+    vi.unstubAllGlobals();
+  }
 });

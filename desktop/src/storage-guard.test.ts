@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { StaleFileError, readFile, writeFile } from './storage';
+import { workspaceRepository } from './workspace-repository';
+import { initialWorkspace } from './workspace-registry';
 
 interface Bridge { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> }
 
@@ -43,6 +45,24 @@ describe('storage overwrite guard', () => {
 
     await readFile('doc');
     await expect(writeFile('doc', '{"blocks":[1]}')).rejects.toBeInstanceOf(StaleFileError);
+  });
+
+  it('keeps the editor fingerprint when the library reads an externally updated outline', async () => {
+    let disk = '{"blocks":[]}';
+    const expected: unknown[] = [];
+    installBridge(async (command, args) => {
+      if (command === 'load_workspace_file') return disk;
+      expected.push(args?.expected);
+      throw new Error('stale workspace file');
+    });
+    const repository = workspaceRepository(initialWorkspace);
+    await repository.readPage('outline-conflict');
+    await expect(repository.writePage('outline-conflict', '{}')).rejects.toBeInstanceOf(StaleFileError);
+    disk = '{"blocks":[], "title":"External"}';
+    await repository.readPageOutline('outline-conflict');
+    await expect(repository.writePage('outline-conflict', '{}')).rejects.toBeInstanceOf(StaleFileError);
+    expect(expected).toHaveLength(2);
+    expect(expected[1]).toEqual(expected[0]);
   });
 
   it('saves a file it never read without a fingerprint, so new documents still work', async () => {

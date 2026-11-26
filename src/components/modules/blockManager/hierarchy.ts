@@ -558,7 +558,10 @@ export class BlockHierarchy {
         throw new Error(message);
       }
 
-      logLabeled(message, 'error');
+      // A remote peer delivering a child before its parent is legal here, so it
+      // is a warning, not an error: logging it red taught readers to distrust
+      // the console during every ordinary conflict resolution.
+      logLabeled(message, isSyncingFromYjs ? 'warn' : 'error');
     }
 
     const sanitizedParentId = parentExists ? newParentId : null;

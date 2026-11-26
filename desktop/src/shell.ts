@@ -1,9 +1,10 @@
-import { libraryCategoryForHref, pageIdForHref, pageDestination } from './page-urls';
+import { libraryCategoryForHref, pageIdForHref, pageDestination, rowPageDestination } from './page-urls';
 import { renderPageIcon } from '../../src/shell/page-icon';
 import { activeWorkspace, workspaceKey, type WorkspaceRef } from './workspace-registry';
 import { createWorkspace, type Workspace } from './workspace';
 import { applyAppearance, readAppearance, watchSystemAppearance } from './settings';
 
+import { deepLinkFor } from './deep-link';
 import { buildTabMenuItems, pageLinkFor, type TabMenuAction } from './tab-menu';
 import { applyFavicon } from './tab-identity';
 
@@ -420,27 +421,32 @@ function syncTitle(): void {
   const tab = active();
   if (!tab) return;
   const title = readable(document.title);
-  if (tab.title === title) return;
-  box.session = withTab(box.session, tab.id, { ...tab, title });
+  // A tab showing a row is not showing its page. The title already follows the
+  // row, so keeping the page's icon beside it names the wrong thing; the generic
+  // document icon stands until the tab leaves the row.
+  const icon = rowPageDestination(location.href) ? '' : tab.icon;
+  if (tab.title === title && tab.icon === icon) return;
+  box.session = withTab(box.session, tab.id, { ...tab, title, icon });
   persist();
   paint();
 }
 
+/** What a tab is showing: the row when its URL names one, the page otherwise. */
+function subjectOf(href: string): string | null {
+  return rowPageDestination(href)?.rowId ?? pageIdForHref(href);
+}
+
 function syncPageIcon(pageId: string, icon: string): void {
   // The web has no tab strip, so the URL — not a tab — says what is on screen.
-  if (pageId === pageOf(location.href)) applyFavicon(icon);
+  if (subjectOf(location.href) === pageId) applyFavicon(icon);
   const tabs = box.session.tabs.map((tab) => {
-    if (pageIdForHref(tab.href) !== pageId || tab.icon === icon) return tab;
+    if (subjectOf(tab.href) !== pageId || tab.icon === icon) return tab;
     return { ...tab, icon };
   });
   if (tabs.every((tab, index) => tab === box.session.tabs[index])) return;
   box.session = { ...box.session, tabs };
   persist();
   paint();
-}
-
-function pageOf(href: string): string | null {
-  return pageIdForHref(href);
 }
 
 function onPop(): void {
@@ -554,6 +560,14 @@ function duplicateTab(id: string): void {
 function runTabMenuAction(action: TabMenuAction, id: string): void {
   const ids = tabIds();
   const index = ids.indexOf(id);
+  if (action === 'open-in-app') {
+    const tab = box.session.tabs.find((item) => item.id === id);
+    const link = tab ? deepLinkFor(tab.href) : null;
+    // Nothing visible happens when the app is not installed: the browser drops
+    // an unknown scheme silently, and the reader simply stays on this page.
+    if (link) location.href = link;
+    return;
+  }
   if (action === 'copy-link') {
     const tab = box.session.tabs.find((item) => item.id === id);
     const link = tab ? pageLinkFor(tab.href) : null;
@@ -581,7 +595,7 @@ function openTabMenu(id: string, x: number, y: number): void {
   menu.setAttribute('role', 'menu');
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
-  for (const item of buildTabMenuItems({ tabId: id, tabIds: tabIds(), href: tab.href })) {
+  for (const item of buildTabMenuItems({ tabId: id, tabIds: tabIds(), href: tab.href, native: isTauri() })) {
     const button = document.createElement('button');
     button.type = 'button';
     button.setAttribute('role', 'menuitem');

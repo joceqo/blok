@@ -1,5 +1,5 @@
 import {afterEach,describe,expect,it,vi} from 'vitest';
-import {pageNavigationUrl,libraryUrl,libraryCategoryForHref,pageDestination,publicPageUrl,resolvePageDestination,workspaceSwitchUrl,rememberPageLinks,pageIdForHref,copiedPageLink,rememberResolvedRowPage,rowPageDestination,rowPageUrl,restoredPageNavigationUrl} from './page-urls';
+import {pageNavigationUrl,libraryUrl,libraryCategoryForHref,pageDestination,publicPageUrl,resolvePageDestination,workspaceSwitchUrl,rememberPageLinks,pageIdForHref,copiedPageLink,rememberResolvedRowPage,forgetResolvedPages,rowPageDestination,rowPageUrl,restoredPageNavigationUrl} from './page-urls';
 import type {CloudSession} from './cloud/client';
 const uuid='2a7aee31-f541-41e8-9190-6eae552291b8';
 it('preserves diagnostic opt-in during navigation without copying stale destinations or login parameters', () => {
@@ -10,14 +10,27 @@ it('preserves diagnostic opt-in during navigation without copying stale destinat
 });
 const workspace={id:'ws',slug:'new-workspace',name:'New name',role:'member' as const};
 const session:CloudSession={user:{id:'user',email:'user@example.org'},workspaces:[workspace]};
-afterEach(()=>rememberPageLinks(location.origin,location.origin,[]));
+afterEach(() => { rememberPageLinks(location.origin,location.origin,[]); forgetResolvedPages(location.origin); });
 describe('stable public page URLs',()=>{
- it('keeps a migrated row at its own public URL while resolving its source outside the sidebar index',()=>{
+ it('opens a resolved body as its own document outside the sidebar index',()=>{
   const resolved={pageId:'body',publicId:uuid,title:'Task',workspace,teamspaceId:null,rowBodyOf:{documentId:'parent',rowId:'task'}};
   rememberResolvedRowPage(location.origin,resolved);
   rememberPageLinks(location.origin,location.origin,[{id:'parent',title:'Projects',publicId:'88888888-8888-8888-8888-888888888888'}]);
-  expect(rowPageDestination(`${location.origin}/p/task-${uuid}`)).toEqual({documentId:'parent',rowId:'task',pageId:'body'});
+  expect(rowPageDestination(`${location.origin}/p/task-${uuid}`)).toBeNull();
+  expect(rowPageDestination(`${location.origin}/?page=body`)).toBeNull();
+  expect(pageIdForHref(`${location.origin}/p/task-${uuid}`)).toBe('body');
   expect(rowPageDestination(`https://foreign.example/p/task-${uuid}`)).toBeNull();
+ });
+ it('copies a native body link using its server identity after sidebar links have been refreshed', () => {
+  rememberResolvedRowPage(location.origin, {pageId:'native-body',publicId:uuid,title:'Task',workspace,teamspaceId:null}, 'https://server.example');
+  rememberPageLinks(location.origin, 'https://server.example', []);
+  expect(copiedPageLink(`${location.origin}/?page=native-body`)).toBe(`https://server.example/p/task-${uuid}`);
+  forgetResolvedPages(location.origin, workspace.id);
+  expect(copiedPageLink(`${location.origin}/?page=native-body`)).toBe('blok://page/native-body');
+ });
+ it('keeps local body copies on the app deep link instead of inventing a public server page', () => {
+  rememberResolvedRowPage(location.origin, {pageId:'local-body',publicId:uuid,title:'Local row',workspace,teamspaceId:null});
+  expect(copiedPageLink(`${location.origin}/?page=local-body&local=1`)).toBe('blok://page/local-body');
  });
  it('gives rows without an independent body a reloadable parent route, and removes it on library/workspace navigation',()=>{
   const href=rowPageUrl('https://example.org/?page=parent&profile=1#old','task / 1','db');
@@ -78,16 +91,13 @@ describe('library routes', () => {
  });
 });
 
-it('routes a row inside a separated body through its visible ancestor on reload', () => {
+it('routes an inline row inside a separated body through that body document on reload', () => {
   const publicId = '88888888-8888-4888-8888-888888888888';
   const resolved = {pageId:'body-nested', publicId, title:'Sprint', workspace:{id:'w',slug:'w',name:'W',role:'admin' as const},teamspaceId:null,
     rowBodyOf:{documentId:'host',rowId:'sprint'},
     location:{documentId:'host',blockId:'sprint',rows:[{documentId:'host',rowId:'sprint',databaseId:'sprints',title:'Sprint'}]}};
   rememberResolvedRowPage(location.origin, resolved);
   expect(rowPageDestination(`${location.origin}/p/sprint-${publicId}?row=task&database=tasks`)).toEqual({
-    documentId:'host',rowId:'task',databaseId:'tasks',steps:[
-      {documentId:'host',rowId:'sprint',databaseId:'sprints'},
-      {documentId:'body-nested',rowId:'task',databaseId:'tasks'},
-    ],
+    documentId:'body-nested',rowId:'task',databaseId:'tasks',
   });
 });

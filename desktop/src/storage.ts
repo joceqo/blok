@@ -9,10 +9,10 @@ export interface PageLocation {
   documentId: string;
   blockId: string;
   blockDocumentId?: string;
-  rows: Array<{documentId: string; rowId: string; databaseId: string; title: string; icon?: string}>;
+  rows: Array<{documentId: string; rowId: string; databaseId?: string; title: string; icon?: string}>;
 }
 
-export type DesktopPage = ShellPage & { location?: PageLocation; createdAt?: string; updatedAt?: string; initialVisibility?: 'private'; cover?: PageCover; coverPosition?: number; fullWidth?: boolean; titleDate?: string; titleDateDisplay?: DateDisplay; titleDateSuffix?: string };
+export type DesktopPage = ShellPage & { trashRoot?: string; location?: PageLocation; createdAt?: string; updatedAt?: string; initialVisibility?: 'private'; cover?: PageCover; coverPosition?: number; fullWidth?: boolean; titleDate?: string; titleDateDisplay?: DateDisplay; titleDateSuffix?: string };
 
 export interface WorkspaceIndex {
   pages: DesktopPage[];
@@ -51,17 +51,21 @@ async function fingerprint(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export async function readFile(name: string, workspace: WorkspaceRef = activeWorkspace()): Promise<string | null> {
+/** Read-only discovery must not advance the overwrite guard of an open editor. */
+export async function readFileContents(name: string, workspace: WorkspaceRef): Promise<string | null> {
   if (workspace.kind !== 'local') throw new Error('Remote documents require collaboration; local storage is forbidden');
-  const scope = workspace.id === 'default' ? {} : { workspace: workspace.id };
-  const key = `${workspace.id}:${name}`;
   const bridge = native();
   if (bridge) {
-    const data = await bridge.invoke('load_workspace_file', { name, ...scope }) as string | null;
-    seen.set(key, await fingerprint(data ?? ''));
-    return data;
+    const scope = workspace.id === 'default' ? {} : { workspace: workspace.id };
+    return await bridge.invoke('load_workspace_file', { name, ...scope }) as string | null;
   }
   return localStorage.getItem(workspace.id === 'default' ? `blok:workspace:${name}` : `blok:workspace:${workspace.id}:${name}`);
+}
+
+export async function readFile(name: string, workspace: WorkspaceRef = activeWorkspace()): Promise<string | null> {
+  const data = await readFileContents(name, workspace);
+  if (native()) seen.set(`${workspace.id}:${name}`, await fingerprint(data ?? ''));
+  return data;
 }
 
 export async function writeFile(name: string, data: string, workspace: WorkspaceRef = activeWorkspace()): Promise<void> {
@@ -100,9 +104,9 @@ export async function loadIndex(workspace: WorkspaceRef = activeWorkspace()): Pr
         const pages = value.pages.filter((page): page is ShellPage =>
           !!page && typeof page.id === 'string' && typeof page.title === 'string' &&
           (page.parentId === null || typeof page.parentId === 'string'));
-        if (pages.length) {
+        if (pages.length || value.pages.length === 0) {
           const activeId = 'activeId' in value && typeof value.activeId === 'string' &&
-            pages.some((page) => page.id === value.activeId) ? value.activeId : pages[0]!.id;
+            pages.some((page) => page.id === value.activeId) ? value.activeId : pages[0]?.id ?? '';
           const trash = 'trash' in value && Array.isArray(value.trash)
             ? value.trash.filter((page): page is ShellPage => !!page && typeof page.id === 'string' && typeof page.title === 'string')
             : [];
