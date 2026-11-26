@@ -8,8 +8,10 @@ import type { RouteHandler } from '../route/router.ts';
 import { writePlain } from '../route/respond.ts';
 import type { HistoryRequest } from '../collab/room/history.ts';
 import type { EditCommand, EditOutcome } from '../collab/room/document-room.ts';
-import { buildEditUpdate } from '../collab/edit/apply.ts';
-import { canonicalEdit, operationIdForKey } from '../collab/edit/canonical.ts';
+import { buildEditUpdate, type ApplyEditOptions } from '../collab/edit/apply.ts';
+import { canonicalEdit, operationIdForKey, type EditCommand as EditOp } from '../collab/edit/canonical.ts';
+import { stampAuthority } from '../collab/edit/stamp.ts';
+import { verifyTicket } from '../auth/ticket.ts';
 import { MAX_APPEND_BYTES } from '../collab/journal/append.ts';
 import type { HostAppOptions } from './options.ts';
 
@@ -342,6 +344,54 @@ function presentedTicket(options: HostAppOptions, headers: Headers): string {
     return authorization.slice(7);
   }
   return headers.get('x-blok-ticket') ?? '';
+}
+
+/**
+ * Who an edit is credited to: the user the pass names, as Go takes its actor
+ * from `user.ID` under ticket mode. A host that reads no pass, or a pass that
+ * does not verify, names nobody — and a pass that does not verify is an edit
+ * the room is about to refuse anyway.
+ */
+function ticketUser(options: HostAppOptions, ticket: string): string {
+  if (ticket === '') {
+    return '';
+  }
+  const verified = verifyTicket(options.secret, ticket, Date.now());
+  return verified.ok ? verified.claims.user : '';
+}
+
+/**
+ * The ops the applier is given, and who it credits them to.
+ *
+ * Stamp authority runs AFTER the digest — the digest carries the request as
+ * sent, so a retry of that body still matches it — which is the order
+ * `packages/server/go/internal/collab/collabhttp/edit.go` takes.
+ *
+ * `stampAuthority` offers a second op, a `setMetadata`, behind every update:
+ * the Go applier credits nobody, so there the stamp has to. THIS applier
+ * credits an update itself, from `editor`/`coEditor`, writing the very three
+ * fields that op carries at the one instant it is handed. So the credit is
+ * left with the applier and the synthetic op is dropped — otherwise two
+ * writers sign the same block. The applier is the right one of the two: it
+ * alone knows an anonymous answer, whose author must stay unwritten, and a
+ * raw `setMetadata` would sign it.
+ */
+function toApply(
+  options: HostAppOptions,
+  ticket: string,
+  ops: readonly EditOp[],
+): { ops: EditOp[]; apply: ApplyEditOptions } {
+  if (options.collabStampAuthority !== true) {
+    return { ops: [...ops], apply: {} };
+  }
+  const by = ticketUser(options, ticket);
+  const nowMs = Date.now();
+  const stamped = stampAuthority(ops, { by }, nowMs);
+
+  return {
+    ops: stamped.filter((op): op is EditOp => op.op !== 'setMetadata'),
+    apply: { now: () => nowMs, editor: by === '' ? null : by },
+  };
 }
 
 export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | undefined, rooms?: EditRooms) {
@@ -723,17 +773,19 @@ export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | un
       await refuse(request, response, 422, `${parsed.error}\n`);
       return;
     }
+    const ticket = presentedTicket(options, request.headers());
+    const digest = createHash('sha256').update(parsed.canonical, 'utf8').digest();
+    const planned = toApply(options, ticket, parsed.ops);
     const command: EditCommand = {
       operationId,
-      digest: createHash('sha256').update(parsed.canonical, 'utf8').digest(),
+      digest,
       // An `insert ... after` resolves against the document as the room holds
       // it, so the ops become an update inside the room's queue, not here.
       update: new Uint8Array(),
-      build: (doc) => buildEditUpdate(doc, parsed.ops),
+      build: (doc) => buildEditUpdate(doc, planned.ops, planned.apply),
       expected: match.expected,
     };
     try {
-      const ticket = presentedTicket(options, request.headers());
       await wrote(request, response, await rooms.apply(values.doc ?? '', ticket, command));
     } catch (error) {
       const failure = roomFailure(error);

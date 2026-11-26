@@ -1,8 +1,9 @@
 import { publicPathFromUrl } from './args/public-url.ts';
-import { parseConformanceArguments } from './args/conformance.ts';
+import { parseConformanceArguments, type ParsedConformanceArgs } from './args/conformance.ts';
 import { parseHostArguments } from './args/parse.ts';
 import { validateHostStartup } from './args/validate-startup.ts';
 import { createHostApp } from './host/app.ts';
+import type { HostAppOptions } from './host/options.ts';
 import { collabLogger } from './collab/log.ts';
 import { LocalStore } from './blob/local.ts';
 import { PrivateS3Store, S3Store } from './blob/s3.ts';
@@ -52,6 +53,21 @@ function keepAliveMs(argv: string[]): number {
     }
   }
   return 0;
+}
+
+/**
+ * The four on/off seams a conformance run asks for, as `applyConformanceOptions`
+ * hands them to the Go host. They are written only by a conformance build: a
+ * product build leaves every one of them out, so none of them states anything
+ * about a host that was never asked.
+ */
+function conformanceSwitches(parsed: ParsedConformanceArgs): Partial<HostAppOptions> {
+  return {
+    collabStampAuthority: parsed.stampAuthority,
+    collabRecordNotes: parsed.recordNotes,
+    collabEnforceRestoreGuards: parsed.restoreGuards,
+    collabRestoreTrashesPages: parsed.restoreTrashesPages,
+  };
 }
 
 async function run(): Promise<number> {
@@ -156,6 +172,7 @@ async function run(): Promise<number> {
     loopbackHostCheck: true,
     allowedHostNames: hostNames(parsed.allowedOrigins, parsed.publicUrl),
     blobStore,
+    ...(conformanceBuild ? conformanceSwitches(conformance) : {}),
   });
   const http = new Server(app.handler, defaultConfig());
   const shuttingDown = shutdownSignal();

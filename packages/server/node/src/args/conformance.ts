@@ -4,7 +4,23 @@ const ORIGIN_PREFIX = 'http://127.0.0.1:';
 const ORIGIN_REQUIREMENT =
   'must be exactly http://127.0.0.1:PORT with a port from 1 to 65535 and no userinfo, path, query, or fragment';
 
-export interface ParsedConformanceArgs {
+/**
+ * The flags that are a plain on/off seam of the conformance host, each named
+ * by the one argument that turns it on — the same four `conformanceArguments`
+ * carries in Go (`cmd/blok-server/conformance.go`).
+ */
+export interface ConformanceSwitches {
+  /** Record notes are kept for the history routes to read an actor back off. */
+  recordNotes: boolean;
+  /** An /edit gets the server's stamps rather than the caller's. */
+  stampAuthority: boolean;
+  /** A restore is refused until the guards it trips are confirmed. */
+  restoreGuards: boolean;
+  /** A restore sends the pages it drops to the trash. */
+  restoreTrashesPages: boolean;
+}
+
+export interface ParsedConformanceArgs extends ConformanceSwitches {
   argv: string[];
   err: string;
   origin: string;
@@ -14,6 +30,17 @@ export interface ParsedConformanceArgs {
   filesCors: boolean;
   journal: boolean;
 }
+
+/** Only the long form turns one on, as Go reads them. */
+const SWITCH_FLAGS: Record<string, keyof ConformanceSwitches> = {
+  '--conformance-record-notes': 'recordNotes',
+  '--conformance-stamp-authority': 'stampAuthority',
+  '--conformance-restore-guards': 'restoreGuards',
+  '--conformance-restore-trashes-pages': 'restoreTrashesPages',
+};
+
+const noSwitches = (): ConformanceSwitches =>
+  ({ recordNotes: false, stampAuthority: false, restoreGuards: false, restoreTrashesPages: false });
 
 function isDigits(text: string): boolean {
   if (text === '') {
@@ -46,12 +73,18 @@ export function parseConformanceArguments(argv: string[]): ParsedConformanceArgs
   let fileBytesMaxBytes: number | undefined;
   let filesCors = false;
   let journal = false;
+  const switches = noSwitches();
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!;
     if (argument === '--') {
       filtered.push(...argv.slice(index));
       break;
+    }
+    const turnedOn = SWITCH_FLAGS[argument];
+    if (turnedOn !== undefined) {
+      switches[turnedOn] = true;
+      continue;
     }
     if (argument === '--conformance-journal' || argument === '-conformance-journal') {
       journal = true;
@@ -105,9 +138,12 @@ export function parseConformanceArguments(argv: string[]): ParsedConformanceArgs
     port = parsed.port;
   }
 
-  return { argv: filtered, err: '', origin, port, fileBytes, fileBytesMaxBytes, filesCors, journal };
+  return { argv: filtered, err: '', origin, port, fileBytes, fileBytesMaxBytes, filesCors, journal, ...switches };
 }
 
 function emptyErr(message: string): ParsedConformanceArgs {
-  return { argv: [], err: message, origin: '', port: 0, fileBytes: false, filesCors: false, journal: false };
+  return {
+    argv: [], err: message, origin: '', port: 0, fileBytes: false, filesCors: false, journal: false,
+    ...noSwitches(),
+  };
 }

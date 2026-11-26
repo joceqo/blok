@@ -21,6 +21,17 @@ export interface HostAppOptions {
    * the room's own heartbeat. Only a conformance build sets it.
    */
   collabKeepAliveMs?: number;
+  // The four conformance-only collaboration switches. Only a conformance
+  // build ever sets one: left out, each reads as "whatever this host does
+  // standing", which is how a product host runs.
+  /** POST /edit gives an insert the server's stamps and an update its credit. */
+  collabStampAuthority?: boolean;
+  /** Record notes are kept for the history routes to read an actor back off. */
+  collabRecordNotes?: boolean;
+  /** A restore is refused until the guards it trips are confirmed. */
+  collabEnforceRestoreGuards?: boolean;
+  /** A restore sends the pages it drops to the trash. */
+  collabRestoreTrashesPages?: boolean;
   collabS3Prefix: string;
   docEndpoint: string;
   docEndpointAuth: string;
