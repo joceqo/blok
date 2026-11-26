@@ -16,6 +16,11 @@ export interface HostAppOptions {
   collabEnabled: boolean;
   collabDirectory: string;
   collabJournal: boolean;
+  /**
+   * Keep-alive period on a sync socket, in milliseconds; 0 leaves the probe to
+   * the room's own heartbeat. Only a conformance build sets it.
+   */
+  collabKeepAliveMs?: number;
   collabS3Prefix: string;
   docEndpoint: string;
   docEndpointAuth: string;

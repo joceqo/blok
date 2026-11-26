@@ -76,7 +76,8 @@ describe('document state on the Node host', () => {
     bodies.set('/docs/stored', '{"blocks":[]}');
     const req = { method: 'GET', path: '/sync/stored/state' };
     const count = requests.length;
-    expect((await invokeHost({ ...options, collabJournal: true }, req)).status).toBe(501);
+    // A journalling host reads its state out of the room instead, which
+    // collab-http.fast.test.ts covers; the projection is no longer its answer.
     expect((await invokeHost({ ...options, collabS3Prefix: 'working-sets' }, req)).status).toBe(501);
     await writeFile(join(options.collabDirectory, createHash('sha256').update('stored').digest('hex')), 'working set');
     expect((await invokeHost(options, req)).status).toBe(501);

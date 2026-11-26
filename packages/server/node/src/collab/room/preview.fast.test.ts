@@ -50,15 +50,20 @@ describe.skipIf(!['linux','darwin'].includes(process.platform))('isolated v2 Web
   let dir: string;
   let room: Awaited<ReturnType<typeof startJournalRoom>>;
   let revoked: Set<string>;
+  let authorizeReads: number;
   const recheckSecret = 'room-api-test'.repeat(3);
   async function listen() {
     return startJournalRoom({ directory:dir, documentId:'preview-page',recheckSecret,allowedOrigins:new Set([origin]),
-      authorize: async token => ['editor','viewer'].includes(token) && !revoked.has(token) ? {id:token,write:token==='editor'} : null });
+      authorize: async token => {
+        authorizeReads += 1;
+        return ['editor','viewer'].includes(token) && !revoked.has(token) ? {id:token,write:token==='editor'} : null;
+      } });
   }
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(),'blok-ws-'));
     await cp(fixture,dir,{recursive:true});
     revoked = new Set();
+    authorizeReads = 0;
     room = await listen();
   });
   afterEach(async () => { vi.restoreAllMocks(); await room?.close(); await rm(dir,{recursive:true,force:true}); });
@@ -139,6 +144,32 @@ describe.skipIf(!['linux','darwin'].includes(process.platform))('isolated v2 Web
     revoked.add('viewer');
     const result = await fetch(url,{method:'POST', headers:{Authorization:'Bearer '+recheckSecret}});
     expect(result.status).toBe(204);
+    expect(await viewer.closed).toBe(4403);
+  });
+
+  it('reads authorization once for a burst of frames from one member', async () => {
+    const viewer = await client(room.url,'viewer');
+    // Admission already read once; count only what the frames themselves cost.
+    authorizeReads = 0;
+
+    // The room asks per inbound frame, so without a memo these are seven reads —
+    // and a committed update adds one more per broadcast recipient.
+    for (let i = 0; i < 6; i += 1) viewer.send({type:'queryAwareness'});
+    await viewer.sync();
+
+    expect(authorizeReads).toBe(1);
+  });
+
+  it('still revokes at once when the push arrives inside the memo window', async () => {
+    const viewer = await client(room.url,'viewer');
+    await viewer.sync();
+    const url = new URL('/internal/room/recheck-access', room.url);
+    url.protocol = 'http:';
+
+    // The answer is memoised and nowhere near expiry; only the invalidation can close this.
+    revoked.add('viewer');
+    expect((await fetch(url,{method:'POST', headers:{Authorization:'Bearer '+recheckSecret}})).status).toBe(204);
+
     expect(await viewer.closed).toBe(4403);
   });
 

@@ -3,12 +3,14 @@ import { open, readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 
 export const MANIFEST_FILE_NAME = 'manifest';
+export const MANIFEST_MAGIC = 'BKJM';
 export const BASELINE_MAGIC = 'BKJB';
 export const CHECKPOINT_MAGIC = 'BKJC';
 
 type SealedMagic = typeof BASELINE_MAGIC | typeof CHECKPOINT_MAGIC;
 
-const slotSize = 128;
+export const MANIFEST_SLOT_SIZE = 128;
+const slotSize = MANIFEST_SLOT_SIZE;
 const manifestSize = 2 * slotSize;
 const slotContentSize = 96;
 const manifestVersion = 2;
@@ -54,7 +56,7 @@ function validChecksum(bytes: Buffer, contentSize: number): boolean {
 }
 
 function decodeSlot(slot: Buffer): JournalManifest | number | undefined {
-  if (!slot.subarray(0, 4).equals(Buffer.from('BKJM')) || !validChecksum(slot, slotContentSize)) return undefined;
+  if (!slot.subarray(0, 4).equals(Buffer.from(MANIFEST_MAGIC)) || !validChecksum(slot, slotContentSize)) return undefined;
   // Only a checksummed version byte is evidence of a foreign format.
   const version = slot.readUInt8(4);
   if (version !== manifestVersion) return version;
@@ -70,6 +72,37 @@ function decodeSlot(slot: Buffer): JournalManifest | number | undefined {
     generationFence: slot.readBigUInt64LE(68),
     checkpointFence: slot.readBigUInt64LE(76),
   };
+}
+
+/** One 128-byte slot: 96 bytes of fields, then their SHA-256. Mirrors Go's EncodeManifestSlot. */
+export function encodeManifestSlot(manifest: JournalManifest): Buffer {
+  if (!/^[0-9a-f]{32}$/.test(manifest.lineage)) throw new RangeError(`collab: lineage ${manifest.lineage} is not hex`);
+  const slot = Buffer.alloc(slotSize);
+  slot.write(MANIFEST_MAGIC);
+  slot[4] = manifestVersion;
+  slot[5] = manifest.seeded ? 1 : 0;
+  slot.writeBigUInt64LE(manifest.writeCounter, 8);
+  slot.writeBigUInt64LE(manifest.fence, 16);
+  slot.writeBigUInt64LE(manifest.generation, 24);
+  slot.writeInt32LE(manifest.format, 32);
+  slot.writeBigInt64LE(manifest.epoch, 36);
+  slot.write(manifest.lineage, 44, 16, 'hex');
+  slot.writeBigUInt64LE(manifest.checkpointThrough, 60);
+  slot.writeBigUInt64LE(manifest.generationFence, 68);
+  slot.writeBigUInt64LE(manifest.checkpointFence, 76);
+  createHash('sha256').update(slot.subarray(0, slotContentSize)).digest().copy(slot, slotContentSize);
+  return slot;
+}
+
+/** Seal a baseline or checkpoint: magic, version, tag, length, content, then a SHA-256 over all of it. */
+export function sealBytes(magic: SealedMagic, tag: bigint, content: Uint8Array): Buffer {
+  const header = Buffer.alloc(sealedHeaderSize);
+  header.write(magic);
+  header[4] = 1;
+  header.writeBigUInt64LE(tag, 8);
+  header.writeBigUInt64LE(BigInt(content.length), 16);
+  const sealed = Buffer.concat([header, content]);
+  return Buffer.concat([sealed, createHash('sha256').update(sealed).digest()]);
 }
 
 /** Read a stopped journal or a consistent offline copy. Node does not acquire the live writer's flock. */

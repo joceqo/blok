@@ -8,10 +8,26 @@ import { writeRecordNote } from './record-notes.ts';
 import { RoomPresence } from './presence.ts';
 import { preparePageStorage, type PageStorage } from './page-storage.ts';
 import { acquireJournalWriter, MAX_APPEND_BYTES } from '../journal/append.ts';
+import { sweepHeartbeat, type HeartbeatMember } from './heartbeat.ts';
+import { createAccessCache } from './access-cache.ts';
 
 import type { RoomIdentity, RoomOptions } from './preview.ts';
 
-interface Peer { ws: WebSocket; ticket: string; admission: RoomIdentity; synced: boolean; badAwareness: number }
+interface Peer extends HeartbeatMember { ws: WebSocket; ticket: string; admission: RoomIdentity; synced: boolean;
+  badAwareness: number; reportedMalformed: boolean }
+
+/** Protocol section 6.1 and scenario S4 fix this text, not only the 4503 code. */
+const COMMIT_UNAVAILABLE_REASON = 'commit unavailable, retry';
+
+/** Probe period. A half-open socket is dropped between one and two of these. */
+const HEARTBEAT_MS = 30_000;
+
+/**
+ * Floor under an authorization answer. The push on `/internal/room/recheck-access`
+ * is the authority on a permission change and invalidates immediately; this only
+ * bounds a change that was never pushed.
+ */
+const ACCESS_TTL_MS = 2_000;
 type Operation = Extract<SyncWireFrame, { type:'operation' }>;
 
 function send(peer: Peer, frame: SyncWireFrame) {
@@ -43,6 +59,7 @@ export async function openDocumentRoom(options: RoomOptions) {
   const operations = new Map<string, { digest:Buffer; sequence:bigint }>();
   const peers = new Set<Peer>();
   const presence = new RoomPresence<Peer>();
+  const access = createAccessCache<Peer, RoomIdentity | null>({ ttlMs: ACCESS_TTL_MS });
   let queue = Promise.resolve();
   let stopping = false;
   let pendingBytes = 0;
@@ -50,10 +67,14 @@ export async function openDocumentRoom(options: RoomOptions) {
   let closing: Promise<void> | undefined;
   let sweeping = false;
   let timer: ReturnType<typeof setInterval> | undefined;
+  let keepalive: ReturnType<typeof setInterval> | undefined;
 
   async function principal(peer: Peer): Promise<RoomIdentity | null> {
     let identity: RoomIdentity | null;
-    try { identity = peer.admission.revalidate ? await peer.admission.revalidate() : await authorize(peer.ticket, documentId); }
+    try {
+      identity = await access.resolve(peer, () =>
+        peer.admission.revalidate ? peer.admission.revalidate() : authorize(peer.ticket, documentId));
+    }
     catch { identity = null; }
     if (identity?.id === peer.admission.id && identity.workspaceId === peer.admission.workspaceId &&
         peer.ws.readyState === WebSocket.OPEN) return identity;
@@ -64,6 +85,7 @@ export async function openDocumentRoom(options: RoomOptions) {
     if (closing) return closing;
     stopping = true;
     clearInterval(timer);
+    clearInterval(keepalive);
     for (const peer of peers) {
       if (reason) peer.ws.close(reason.code,reason.message); else peer.ws.terminate();
     }
@@ -126,8 +148,9 @@ export async function openDocumentRoom(options: RoomOptions) {
       } catch (error) {
         // Nothing in RAM can be used as evidence of a commit after storage failure.
         stopping = true;
-        for (const member of peers) member.ws.close(4503, 'commit unavailable');
+        for (const member of peers) member.ws.close(4503, COMMIT_UNAVAILABLE_REASON);
         clearInterval(timer);
+        clearInterval(keepalive);
         // Reopen from disk only after the old room releases its lease.
         setImmediate(() => { void stop().catch(() => {}); });
         throw error;
@@ -190,6 +213,22 @@ export async function openDocumentRoom(options: RoomOptions) {
           peer.synced = true;
           break;
         }
+        // Section 10: an outer type this version does not know is ACCEPTED AND
+        // IGNORED, never refused — a newer peer must not lose its session over it.
+        case 'unknown': break;
+        // Section 5 leaves the disposition of a malformed frame to the implementation:
+        // the only closes it fixes are the 1008 of section 7 and the 4503 of section 6.1,
+        // and the close table of section 2 names none for an undecodable frame. So the
+        // room never acts on it, keeps the socket — section 9 still owes a v1 or stock
+        // y-websocket reader its session — and says so once, since the reason can carry
+        // bytes the sender chose and a flood must not become a flood of logs.
+        case 'malformed': {
+          if (!peer.reportedMalformed) {
+            peer.reportedMalformed = true;
+            console.warn(`Ignored a malformed collaboration frame: ${frame.reason.slice(0,120)}`);
+          }
+          break;
+        }
         case 'syncStep2':
         case 'update': {
           if (peer.ws.protocol==='blok-sync.v2') { peer.ws.close(1008,'raw write on a v2 session'); break; }
@@ -204,7 +243,11 @@ export async function openDocumentRoom(options: RoomOptions) {
     }
 
     function enqueue(peer: Peer, data: RawData, binary: boolean) {
-      if (stopping || !binary) { peer.ws.close(1003,'binary frames required'); return; }
+      // Two different refusals shared one reason: a stopping room is not a protocol
+      // error, and 1003 told the peer its own frame was at fault. The transport
+      // contract fixes the wording for the real one.
+      if (stopping) { peer.ws.close(4503,'room unavailable'); return; }
+      if (!binary) { peer.ws.close(1003,'binary frames only'); return; }
       const bytes = Array.isArray(data) ? Buffer.concat(data) : data instanceof ArrayBuffer ? new Uint8Array(data) : data;
       if (pendingFrames >= 128 || pendingBytes + bytes.length > 8 * MAX_APPEND_BYTES) {
         peer.ws.close(1008,'room queue overflow'); return;
@@ -220,11 +263,14 @@ export async function openDocumentRoom(options: RoomOptions) {
 
     function connect(ws: WebSocket, ticket: string, identity: RoomIdentity) {
       if (stopping) { ws.close(4503, 'room unavailable'); return; }
-      const peer: Peer = {ws,ticket,admission:identity,synced:false,badAwareness:0};
+      const peer: Peer = {ws,ticket,admission:identity,synced:false,badAwareness:0,reportedMalformed:false,alive:true,
+        ping:() => ws.ping(), terminate:() => ws.terminate()};
       peers.add(peer);
+      ws.on('pong', () => { peer.alive = true; });
       ws.on('error', () => ws.terminate());
       ws.on('close', () => {
         peers.delete(peer);
+        access.invalidate(peer);
         queue = queue.then(async () => {
           const removed = presence.leave(peer);
           if (removed && !stopping) await broadcastPresence(removed,peer);
@@ -238,6 +284,7 @@ export async function openDocumentRoom(options: RoomOptions) {
     function recheck() {
       const checked = queue.then(async () => {
         if (stopping) throw new Error('Room is stopping');
+        access.invalidate();
         await Promise.all(Array.from(peers, principal));
       });
       queue = checked.catch(() => {});
@@ -250,6 +297,12 @@ export async function openDocumentRoom(options: RoomOptions) {
       try { await Promise.all(Array.from(peers, principal)); } finally { sweeping = false; }
     }, 1000);
     timer.unref();
+    keepalive = setInterval(() => {
+      if (stopping) return;
+      // A copy: terminate() closes the socket, and the close handler leaves `peers`.
+      sweepHeartbeat([...peers]);
+    }, HEARTBEAT_MS);
+    keepalive.unref();
     return { connect, history, recheck, close: stop, available: () => !stopping };
   } catch (error) {
     await stop();

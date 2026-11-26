@@ -11,6 +11,7 @@ import { methodNotAllowed, notFound, writePlain } from '../route/respond.ts';
 import { PrivateS3Store } from '../blob/s3.ts';
 import { LocalStore } from '../blob/local.ts';
 import { readableStore, type BlobStore } from '../blob/store.ts';
+import { createCollabHttp } from './collab-http.ts';
 import { deleteHandler } from './delete.ts';
 import { fileBytesHandler } from './file-bytes.ts';
 import { guardRequest } from './guard.ts';
@@ -20,11 +21,8 @@ import { frameCheckHandler } from './frame-check.ts';
 import { unfurlHandler } from './unfurl.ts';
 import { uploadByUrlHandler } from './upload-by-url.ts';
 import { uploadHandler } from './upload.ts';
-
-function isSingleSegment(doc: string): boolean {
-  const lower = doc.toLowerCase();
-  return doc !== '' && doc !== '.' && doc !== '..' && !/[\\/]/.test(doc) && !lower.includes('%2f') && !lower.includes('%5c');
-}
+import type { SyncRooms } from './sync-room.ts';
+import { isSingleSegment, UPGRADE_REQUIRED_BODY } from './sync-door.ts';
 
 function originAllowed(origin: string, allowedOrigins: string[]): boolean {
   if (origin === '' || !isFieldValue(origin)) {
@@ -129,6 +127,18 @@ async function unsupported(request: Request, response: ResponseWriter): Promise<
   await writePlain(request, response, 501, 'collaboration operation not implemented by the Node host\n');
 }
 
+function resetHandler(sync: SyncRooms): RouteHandler {
+  return async (request, response, values) => {
+    const status = await sync.reset(values.doc ?? '');
+    if (status !== 204) {
+      await writePlain(request, response, status, 'the document could not be reset\n');
+      return;
+    }
+    response.setStatus(204);
+    await response.start(204);
+  };
+}
+
 async function storedWorkingSet(directory: string, doc: string): Promise<boolean> {
   if (!directory) return false;
   const name = createHash('sha256').update(doc).digest('hex');
@@ -163,7 +173,7 @@ async function stateHandler(
   await response.write(new TextEncoder().encode(dataJson));
 }
 
-export function buildRouter(options: HostAppOptions): Router {
+export function buildRouter(options: HostAppOptions, sync?: SyncRooms): Router {
   const prefix = '';
   const router = new Router();
   const patternPrefix = prefix.replace(/\/+$/, '');
@@ -210,24 +220,46 @@ export function buildRouter(options: HostAppOptions): Router {
   }
 
   if (options.collabEnabled) {
-    router.handle(`${patternPrefix}/sync/{doc}`, ['GET'], async (request, response) => {
-      await writePlain(request, response, 400, 'websocket upgrade required\n');
+    router.handle(`${patternPrefix}/sync/{doc}`, ['GET'], async (request, response, values) => {
+      // Hand-written on node:net, so there is no node:http `upgrade` event: the
+      // room is reached by hijacking the connection out of an ordinary route.
+      // The door owns every rule from here, the document id included: a target
+      // that names two segments is told so on the socket, not withheld one.
+      if (sync === undefined) {
+        await writePlain(request, response, 426, UPGRADE_REQUIRED_BODY);
+        return;
+      }
+      await sync.upgrade(request, response, values.doc ?? '');
     });
     router.handle(`${patternPrefix}/sync/{doc}`, undefined, disallow('GET'));
 
     const endpoint = new DocEndpointClient({ endpoint: options.docEndpoint, authorization: options.docEndpointAuth });
-    shell(router, `${patternPrefix}/sync/{doc}/reset`, 'POST', unsupported, options);
+    // The journal is what the history and state routes read. Without one they
+    // answer exactly as they did before this host held rooms at all.
+    const journalled = options.collabJournal ? sync : undefined;
+    const collab = createCollabHttp(options, journalled);
+    shell(router, `${patternPrefix}/sync/{doc}/reset`, 'POST',
+      journalled === undefined ? unsupported : resetHandler(journalled), options);
     shell(router, `${patternPrefix}/sync/{doc}/edit`, 'POST', unsupported, options);
-    shell(router, `${patternPrefix}/sync/{doc}/state`, 'GET', (request, response, values) =>
-      stateHandler(options, endpoint, values.doc ?? '', request, response), options);
-    shell(router, `${patternPrefix}/sync/{doc}/history`, 'GET', unsupported, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}`, 'GET', unsupported, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}`, 'DELETE', unsupported, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}/restore`, 'POST', unsupported, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}/restore/preview`, 'POST', unsupported, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}/changes`, 'GET', unsupported, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/at`, 'GET', unsupported, options);
-    shell(router, `${patternPrefix}/sync/{doc}/history/changes`, 'GET', unsupported, options);
+    // Without a journal there is no head to read the state against: the
+    // projection the document endpoint holds is the whole of it.
+    shell(router, `${patternPrefix}/sync/{doc}/state`, 'GET', journalled === undefined
+      ? (request, response, values) => stateHandler(options, endpoint, values.doc ?? '', request, response)
+      : collab.state, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history`, 'GET', collab.list, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}`, 'GET', collab.version, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}`, 'DELETE', collab.remove, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}/restore`, 'POST', collab.restore, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}/restore/preview`, 'POST', collab.preview, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}/changes`, 'GET', collab.changes, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/at`, 'GET', collab.at, options);
+    shell(router, `${patternPrefix}/sync/{doc}/history/changes`, 'GET', collab.range, options);
+    // Both literals sit where a lineage would. A DELETE there names a lineage
+    // this journal never held, which is a 404, not a method the route refuses.
+    for (const literal of ['at', 'changes']) {
+      router.handle(`${patternPrefix}/sync/{doc}/history/${literal}`, ['DELETE'],
+        guarded(options, true, collab.notAVersion));
+    }
   }
 
   router.fallback = async (request, response) => {

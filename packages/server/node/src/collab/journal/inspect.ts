@@ -16,7 +16,9 @@ interface SequenceReport {
   verifiedBytes: bigint;
   firstSequence: bigint | null;
   durableThrough: bigint;
+  /** Records, and their bytes, past the published checkpoint: what a replay still has to apply. */
   tailRecords: bigint;
+  tailBytes: bigint;
 }
 export interface JournalInspection {
   directory: string;
@@ -70,6 +72,7 @@ async function scan(file: FileHandle, summary: SequenceReport, checkpoint: bigin
     summary.verifiedBytes += BigInt(decoded.bytesRead);
     if (sequence > checkpoint) {
       summary.tailRecords++;
+      summary.tailBytes += BigInt(decoded.bytesRead);
       emit({ source: 'journal', sequence, update });
     }
   }
@@ -115,15 +118,17 @@ export async function inspectJournal(directory: string, onUpdate?: (frame: Journ
       report.baseline.frames++;
       offset += length;
     }
-    if (manifest.checkpointThrough > 0n) {
+    // A replay from the baseline covers the checkpoint's own operations itself, so
+    // it neither needs nor verifies the checkpoint file.
+    if (!fromBaseline && manifest.checkpointThrough > 0n) {
       const name = checkpointName(manifest.generation, manifest.checkpointThrough, manifest.checkpointFence);
       const sealed = await readSealed(join(root, name), CHECKPOINT_MAGIC, doc);
       if (sealed.tag !== manifest.checkpointThrough) throw new InvalidDataError(`${name} carries sequence ${sealed.tag}, expected ${manifest.checkpointThrough}`);
       report.checkpoint = { file: name, through: sealed.tag };
-      if (!fromBaseline) emit({ source: 'checkpoint', sequence: sealed.tag, update: sealed.content });
+      emit({ source: 'checkpoint', sequence: sealed.tag, update: sealed.content });
     }
     const name = journalName(manifest.generation, manifest.generationFence);
-    report.journal = { file: name, verifiedBytes: 0n, firstSequence: null, durableThrough: 0n, tailRecords: 0n };
+    report.journal = { file: name, verifiedBytes: 0n, firstSequence: null, durableThrough: 0n, tailRecords: 0n, tailBytes: 0n };
     const file = await open(join(root, name), 'r');
     try { await scan(file, report.journal, fromBaseline ? 0n : manifest.checkpointThrough, emit, onRecord); }
     finally { await file.close(); }

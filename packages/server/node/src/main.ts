@@ -2,7 +2,7 @@ import { publicPathFromUrl } from './args/public-url.ts';
 import { parseConformanceArguments } from './args/conformance.ts';
 import { parseHostArguments } from './args/parse.ts';
 import { validateHostStartup } from './args/validate-startup.ts';
-import { createHostHandler } from './host/app.ts';
+import { createHostApp } from './host/app.ts';
 import { collabLogger } from './collab/log.ts';
 import { LocalStore } from './blob/local.ts';
 import { PrivateS3Store, S3Store } from './blob/s3.ts';
@@ -32,6 +32,26 @@ function print(text: string): void {
 
 function defaultFileBytesMax(fromFlag: number | undefined): number {
   return fromFlag ?? DEFAULT_FILE_BYTES_MAX;
+}
+
+/**
+ * The sync keep-alive period a conformance run asks for. The host parser never
+ * sees the flag — every `--conformance-` argument is stripped before it runs —
+ * so it is read straight off the command line, and only in a build that has
+ * the rest of the conformance seams.
+ */
+function keepAliveMs(argv: string[]): number {
+  const prefix = '--conformance-keep-alive-ms=';
+  for (const argument of argv) {
+    if (argument === '--') {
+      break;
+    }
+    if (argument.startsWith(prefix)) {
+      const parsed = Number.parseInt(argument.slice(prefix.length), 10);
+      return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+    }
+  }
+  return 0;
 }
 
 async function run(): Promise<number> {
@@ -108,7 +128,7 @@ async function run(): Promise<number> {
   } else if (parsed.storageDirectory !== '') {
     blobStore = new LocalStore(parsed.storageDirectory, parsed.publicUrl);
   }
-  const http = new Server(createHostHandler({
+  const app = createHostApp({
     version: VERSION,
     auth: parsed.auth,
     secret: parsed.secret,
@@ -121,6 +141,7 @@ async function run(): Promise<number> {
     collabEnabled: parsed.collabEnabled,
     collabDirectory: parsed.collabDirectory,
     collabJournal: parsed.collabJournal || (conformanceBuild && conformance.journal),
+    collabKeepAliveMs: conformanceBuild ? keepAliveMs(process.argv.slice(2)) : 0,
     collabS3Prefix: parsed.collabS3Prefix,
     docEndpoint: parsed.docEndpoint,
     docEndpointAuth: parsed.docEndpointAuth,
@@ -135,11 +156,16 @@ async function run(): Promise<number> {
     loopbackHostCheck: true,
     allowedHostNames: hostNames(parsed.allowedOrigins, parsed.publicUrl),
     blobStore,
-  }), defaultConfig());
+  });
+  const http = new Server(app.handler, defaultConfig());
   const shuttingDown = shutdownSignal();
   const serving = http.serveStd(servers);
   print(`blok-server ${VERSION} listening on ${parsed.listen} (--auth ${parsed.auth})`);
   await shuttingDown;
+  // Before the wait for idle: a collaboration member holds its connection open
+  // until the room closes it, so an undrained room is a connection that never
+  // goes idle.
+  await app.close();
   await http.shutdown(30_000);
   await serving;
   return 0;

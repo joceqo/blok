@@ -181,8 +181,8 @@ it('authorizes reset, reloads changed canonical content, retains the previous li
     } finally {
       await foreign.close();
     }
-    expect((await read(base, 'state')).status).toBe(403);
-    expect((await read(base, 'reset', 'POST', 'writer')).status).toBe(403);
+    // The refused purge erased nothing and wrote no tombstone: the record is still served.
+    expect((await read(base, 'state')).status).toBe(200);
     await writeFile(join(root, '.blok-collab-0123456789abcdef0123456789abcdef'), 'unknown document');
     expect((await fetch(control, { method: 'POST', headers: headers(secret) })).status).toBe(503);
     expect((await read(base, 'state')).status).toBe(403);
@@ -193,6 +193,60 @@ it('authorizes reset, reloads changed canonical content, retains the previous li
     await expect(readdir(staged)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readdir(historicStage)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readdir(neighbor)).toEqual(['node-projection.json']);
+  } finally {
+    await host.close();
+    await new Promise<void>((r) => backend.close(() => r()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('readmits a document after a purge that failed before writing any tombstone', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'blok-purge-retry-'));
+  const snapshot = { data: null as unknown, version: '0', lineage: null as string | null, sequence: null as string | null };
+  const backend = createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'GET') {
+      res.end(JSON.stringify(snapshot));
+      return;
+    }
+    req.resume();
+    snapshot.version = String(Number(snapshot.version) + 1);
+    snapshot.lineage = String(req.headers['blok-doc-lineage']);
+    snapshot.sequence = String(req.headers['blok-doc-sequence']);
+    res.end(JSON.stringify({ version: snapshot.version }));
+  });
+  backend.listen(0, '127.0.0.1');
+  await once(backend, 'listening');
+  const address = backend.address();
+  if (!address || typeof address === 'string') throw Error('TCP address required');
+  const host = await startAllRooms({
+    directory: root,
+    projection: { origin: 'http://127.0.0.1:' + address.port, secret },
+    authorize: auth,
+    allowedOrigins: new Set([origin]),
+    recheckSecret: secret,
+  });
+  try {
+    const base = host.url.replace('ws:', 'http:') + page;
+    expect((await read(base, 'state')).status).toBe(200);
+    // Take the lease the idle room has just dropped, so the purge is refused by a competing writer.
+    const dir = pageDirectory(root, page);
+    let foreign: Awaited<ReturnType<typeof acquireJournalWriter>> | undefined;
+    for (let attempt = 0; attempt < 200 && !foreign; attempt += 1) {
+      try {
+        foreign = await acquireJournalWriter(dir);
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    if (!foreign) throw new Error('The idle room never released its lease');
+    try {
+      await expect(host.purgeDocument(page, () => true)).rejects.toMatchObject({ code: 'JOURNAL_BUSY' });
+    } finally {
+      await foreign.close();
+    }
+    // Nothing was erased and no tombstone exists: the document must not stay unreachable.
+    expect((await read(base, 'state')).status).toBe(200);
   } finally {
     await host.close();
     await new Promise<void>((r) => backend.close(() => r()));

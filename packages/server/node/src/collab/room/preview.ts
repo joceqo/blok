@@ -9,6 +9,7 @@ import { seedUpdate } from './page-document.ts';
 import { resetGeneration } from './reset.ts';
 import { purgeDocument } from './purge.ts';
 import { openDocumentRoom } from './document-room.ts';
+import { createRoomRegistry, type Resident } from './room-registry.ts';
 
 export interface RoomIdentity {
   id: string;
@@ -43,11 +44,7 @@ export function signedRoomTickets(secret: string): RoomOptions['authorize'] {
 }
 
 type DocumentRoom = Awaited<ReturnType<typeof openDocumentRoom>>;
-interface Resident {
-  room: Promise<DocumentRoom>;
-  users: number;
-  closing?: Promise<void>;
-}
+type RoomResident = Resident<DocumentRoom>;
 
 interface WorkspaceOptions extends Omit<RoomOptions, 'documentId' | 'projection'> {
   workspaceId: string;
@@ -75,60 +72,51 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
   if (!options.allowedOrigins.size) throw new Error('Allowed origins are required');
   let stopping = false;
   let closing: Promise<void> | undefined;
-  const pages = new Map<string, Resident>();
+  const rooms = createRoomRegistry<DocumentRoom>({
+    open: id => openDocumentRoom({...options,documentId:id}),
+    // A single-document host holds its room for the process lifetime.
+    keepLoaded: Boolean(singlePage),
+  });
   const sockets = new WebSocketServer({noServer:true, perMessageDeflate:false, maxPayload:MAX_APPEND_BYTES+4096,
     handleProtocols: protocols => protocols.has('blok-sync.v2') ? 'blok-sync.v2' : protocols.has('blok-sync.v1') ? 'blok-sync.v1' : false});
   sockets.on('headers', headers => headers.push('X-Blok-Collaboration: node'));
-  function load(id: string): Resident {
-    const entry: Resident = {room:openDocumentRoom({...options,documentId:id}),users:0};
-    pages.set(id, entry);
-    void entry.room.catch(() => { if (pages.get(id) === entry) pages.delete(id); });
-    return entry;
-  }
-  function unload(id: string, entry: Resident) {
-    // Keep the entry registered while the writer drains its queue and releases flock.
-    entry.closing ??= entry.room.then(room => room.close()).finally(() => {
-      if (pages.get(id) === entry) pages.delete(id);
-    });
-    return entry.closing;
-  }
-
   const inScope = (identity:RoomIdentity|null):identity is RoomIdentity => !!identity?.id &&
     (!('all' in options) || !!identity.workspaceId) && (!workspaceId || identity.workspaceId === workspaceId);
   // A transition excludes new admissions until the old writer has drained
   // and released its lease. Other documents continue serving concurrently.
-  const transitions = new Map<string,Promise<void>>();
-  const unfinishedPurges = new Set<string>();
+  // Tracked here too: shutdown waits for the ones still running.
+  const transitions = new Set<Promise<void>>();
   function exclusive(id:string, work:()=>Promise<void>) {
-    const pending = (transitions.get(id) ?? Promise.resolve()).catch(()=>{}).then(work);
-    transitions.set(id,pending);
-    return pending.finally(()=>{ if (transitions.get(id)===pending) transitions.delete(id); });
+    const pending = rooms.exclusive(id,work);
+    transitions.add(pending);
+    void pending.catch(()=>{}).finally(()=>transitions.delete(pending));
+    return pending;
   }
   function directory(id:string) { return options.projection ? pageDirectory(options.directory,id) : options.directory; }
   async function retire(id:string, reason:{code:number;message:string}, recover:boolean) {
-    if (recover && !pages.has(id) && pages.size>=128) throw new Error('Room busy');
-    const entry=pages.get(id) ?? (recover ? load(id) : undefined);
-    if (!entry) return;
-    if (entry.closing) { await entry.closing; return; }
     try {
-      const room=await entry.room;
-      entry.closing=room.close(reason);
-      await entry.closing;
+      // Recovery closes a document the host has not opened: a replaced record still holds a lease.
+      await rooms.retire(id,reason,{load:recover});
     } catch(error) {
       // Explicit reset is how the host adopts an externally changed record.
       // Purge must also work when the old bytes are no longer readable.
       if(recover && !(error instanceof ProjectionDiverged) && !(error instanceof UnreadableJournalData)) throw error;
-    } finally { if (pages.get(id)===entry) pages.delete(id); }
+    }
   }
   async function purge(id:string, allowed:()=>boolean|Promise<boolean>) {
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(id) || (singlePage && id!==singlePage)) throw new Error('Invalid document ID');
     await exclusive(id,async()=>{
       if(stopping) throw new Error('Host stopping');
       if (!await allowed()) throw new Error('Document purge not authorized');
-      unfinishedPurges.add(id);
-      await retire(id,{code:4403,message:'forbidden'},false);
-      await purgeDocument(directory(id),Boolean(options.projection));
-      unfinishedPurges.delete(id); // The durable marker now protects future opens.
+      rooms.markPurging(id);
+      try {
+        await retire(id,{code:4403,message:'forbidden'},false);
+        await purgeDocument(directory(id),Boolean(options.projection));
+      } finally {
+        // On success the durable marker protects future opens; on failure nothing
+        // was erased, and an in-memory marker would strand the document for good.
+        rooms.clearPurging(id);
+      }
     });
   }
   async function reset(id:string, token:string, admitted:RoomIdentity) {
@@ -139,7 +127,6 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
       if (!inScope(who) || !who.write || who.id!==admitted.id || who.workspaceId!==admitted.workspaceId) {
         forbidden=true; return;
       }
-      if (unfinishedPurges.has(id)) throw new DocumentPurged('Document purge pending');
       await retire(id,{code:4409,message:'document reset'},true);
       const cfg=options.projection;
       const storage=cfg && await preparePageStorage(options.directory,id,cfg.origin,cfg.secret);
@@ -152,29 +139,11 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
     return forbidden ? 403 : 204;
   }
   let admissions = 0;
-  async function reserve(id: string) {
-    let entry:Resident|undefined;
-    for (;;) {
-      const transition=transitions.get(id);
-      if (transition) { await transition.catch(()=>{}); continue; }
-      if (unfinishedPurges.has(id)) throw new DocumentPurged('Document purge pending');
-      entry=pages.get(id);
-      if(!entry?.closing) break;
-      await entry.closing;
-    }
-    if (stopping || (!entry && pages.size >= 128) || (entry && entry.users >= 32)) throw new Error('Room busy');
-    entry ??= load(id);
-    entry.users++;
-    return entry;
-  }
-  function releaseUser(id:string,entry:Resident) {
-    if (--entry.users === 0 && !singlePage) void unload(id,entry).catch(() => {});
-  }
 
   const recheckKey = options.recheckSecret && createHash('sha256').update('Bearer '+options.recheckSecret).digest();
   const http = createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/healthz') {
-      const single = singlePage && pages.get(singlePage);
+      const single = singlePage && rooms.peek(singlePage);
       if (stopping || (single && !await single.room.then(room=>room.available(),()=>false))) { res.writeHead(503).end(); return; }
       const scope = singlePage ? {documentId:singlePage} : workspaceId ? {workspaceId} : {all:true};
       res.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({backend:'node',...scope}));
@@ -185,7 +154,7 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
       if (!timingSafeEqual(recheckKey,presented)) { res.writeHead(401).end(); return; }
       try {
         const id = new URL(req.url,'http://localhost').searchParams.get('documentId');
-        const entries = id === null ? [...pages.values()] : [pages.get(id)];
+        const entries = id === null ? rooms.residents() : [rooms.peek(id)];
         // An absent or draining room has no active clients and must not be reopened by this notification.
         await Promise.all(entries.map(async entry => {
           if (!entry || entry.closing) return;
@@ -229,7 +198,7 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
       if (!token) { res.writeHead(401).end(); return; }
       if (stopping || admissions >= 256) { res.writeHead(503).end(); return; }
       admissions++;
-      let resident:Resident|undefined;
+      let resident:RoomResident|undefined;
       try {
         const identity = await options.authorize(token,id);
         if (!inScope(identity) || (req.method !== 'GET' && !identity.write)) { res.writeHead(403).end(); return; }
@@ -243,7 +212,7 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
           if (!body) { res.writeHead(413).end(); return; }
           confirmed.push(...body);
         }
-        resident = await reserve(id);
+        resident = await rooms.reserve(id);
         const room = await resident.room;
         const result = await room.history({url,asJSON:req.headers.accept?.includes('application/json'),method:req.method ?? '',key:req.headers['blok-idempotency-key'] as string|undefined,
           match:req.headers['if-match'],confirmed}, identity, token);
@@ -251,7 +220,7 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
         res.writeHead(result.status,{'Content-Type':'application/json',...('headers' in result && result.headers)});
         res.end('body' in result ? JSON.stringify(result.body) : undefined);
       } catch (error) { res.writeHead(error instanceof DocumentPurged ? 403 : 503).end(); }
-      finally { if (resident) releaseUser(id,resident); admissions--; }
+      finally { if (resident) rooms.release(id,resident); admissions--; }
       return;
     }
     res.writeHead(404).end();
@@ -271,19 +240,19 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
     if ((!offers.includes('blok-sync.v2') && !offers.includes('blok-sync.v1')) || tickets.length !== 1 || !tickets[0]) { refuse('401 Unauthorized'); return; }
     if (stopping || admissions >= 256) { refuse('503 Service Unavailable'); return; }
     admissions++;
-    let reserved: Resident | undefined;
+    let reserved: RoomResident | undefined;
     function release() {
       if (!reserved) return;
       const entry = reserved;
       reserved = undefined;
-      releaseUser(id!,entry);
+      rooms.release(id!,entry);
     }
     try {
       const ticket = tickets[0];
       const identity = await options.authorize(ticket,id).catch(() => null);
       if (!inScope(identity)) { refuse('403 Forbidden'); return; }
       if (socket.destroyed) return;
-      const entry = await reserve(id);
+      const entry = await rooms.reserve(id);
       reserved = entry;
       const room = await entry.room;
       if (stopping || !room.available() || socket.destroyed) { refuse('503 Service Unavailable'); return; }
@@ -302,7 +271,7 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
     if (!closing) {
       stopping = true;
       const closed = new Promise<void>(resolve => http.close(() => resolve()));
-      closing = Promise.allSettled([...transitions.values(), ...[...pages].map(([id,entry]) => unload(id,entry))]).then(async results => {
+      closing = Promise.allSettled([...transitions, rooms.close()]).then(async results => {
         sockets.close();
         await closed;
         for (const result of results) if (result.status === 'rejected') throw result.reason;
@@ -311,7 +280,11 @@ async function startHost(options: RoomOptions | WorkspaceOptions | (Omit<Workspa
     return closing;
   }
   try {
-    if (singlePage) await load(singlePage).room.catch(error=>{ if(!(error instanceof DocumentPurged)) throw error; });
+    if (singlePage) {
+      const entry = await rooms.reserve(singlePage);
+      rooms.release(singlePage,entry);
+      await entry.room.catch(error=>{ if(!(error instanceof DocumentPurged)) throw error; });
+    }
     await new Promise<void>((resolve,reject) => {
       http.once('error', reject);
       http.listen(options.port ?? 0, options.listenHost ?? '127.0.0.1',() => { http.off('error',reject); resolve(); });

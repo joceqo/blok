@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, lstat, type FileHandle } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
-import { applyUpdate, Doc } from 'yjs';
+import { applyUpdate, Doc, encodeStateAsUpdate } from 'yjs';
+import { checkpointDue, checkpointPolicy, checkpointReadable, publishCheckpoint, type CheckpointPolicy } from './checkpoint.ts';
 import { MANIFEST_FILE_NAME, readManifest, type JournalManifest } from './files.ts';
 import { inspectJournal, type JournalFrame } from './inspect.ts';
 import { encodeRecord, type OperationSource, type OperationRecord } from './record.ts';
@@ -21,6 +22,10 @@ export interface AppendRequest {
 export interface AppendResult {
   outcome: 'committed' | 'duplicate' | 'conflict' | 'stale';
   sequence: bigint;
+}
+export interface JournalOptions {
+  /** Overrides the default checkpoint thresholds; see DEFAULT_CHECKPOINT_POLICY. */
+  checkpoint?: Partial<CheckpointPolicy>;
 }
 export const MAX_APPEND_BYTES = 1024 * 1024;
 
@@ -107,16 +112,45 @@ function validateRequest(request: AppendRequest): Buffer {
   return digest;
 }
 
-async function appendHeld(root: string, hold: FileHandle, request: AppendRequest, digest: Buffer): Promise<AppendResult> {
+/**
+ * The operation is already fsynced when this runs, so a checkpoint failure must
+ * never unmake it: the append is acknowledged either way (S4) and the next one
+ * retries the publication at a higher sequence.
+ */
+async function maybeCheckpoint(root: string, manifest: JournalManifest, tail: {records: bigint; bytes: bigint},
+                               through: bigint, doc: Doc, policy: CheckpointPolicy): Promise<void> {
+  if (!checkpointDue(policy, tail.records, tail.bytes)) return;
+  try {
+    await publishCheckpoint(root, manifest, through, encodeStateAsUpdate(doc));
+  } catch (cause) {
+    console.warn(`Could not publish a collaboration checkpoint at sequence ${through}: ${String(cause)}`);
+  }
+}
+
+async function appendHeld(root: string, hold: FileHandle, request: AppendRequest, digest: Buffer, policy: CheckpointPolicy): Promise<AppendResult> {
   const flags = constants.O_RDWR | constants.O_NOFOLLOW;
-  const doc = new Doc();
+  let doc = new Doc();
   try {
     let existing: AppendResult | undefined;
-    const report = await inspectJournal(root, frame => applyUpdate(doc, frame.update), record => {
-      if (record.operationId === request.operationId) {
-        existing = { outcome: digest.equals(record.digest) ? 'duplicate' : 'conflict', sequence: record.sequence };
-      }
-    });
+    const replay = (fromBaseline: boolean) => {
+      existing = undefined;
+      return inspectJournal(root, frame => applyUpdate(doc, frame.update), record => {
+        if (record.operationId === request.operationId) {
+          existing = { outcome: digest.equals(record.digest) ? 'duplicate' : 'conflict', sequence: record.sequence };
+        }
+      }, fromBaseline);
+    };
+    let report = await replay(false);
+    // A checkpoint is derived data. When it is the unreadable part -- torn, or
+    // gone with a superseded manifest slot -- the baseline and the whole journal
+    // still describe the document exactly; refusing it would cost the document
+    // for a cache, and the next publication heals it.
+    if (['corrupt', 'missing'].includes(report.integrity) && report.manifest &&
+        !(await checkpointReadable(root, report.manifest, basename(root)))) {
+      doc.destroy();
+      doc = new Doc();
+      report = await replay(true);
+    }
     const { manifest, journal } = report;
     if (report.state !== 'seeded' || !manifest || !journal || (report.integrity !== 'ok' && report.integrity !== 'incomplete')) {
       throw new Error(`Cannot append (state=${report.state}, integrity=${report.integrity}): ${report.issue ?? ''}`);
@@ -147,6 +181,9 @@ async function appendHeld(root: string, hold: FileHandle, request: AppendRequest
         await file.sync();
       }
       await writeAndSync(file, bytes, position, check);
+      // Past this point the record is durable and no further check may run: the
+      // publication below bumps the very write counter verifyFence compares.
+      await maybeCheckpoint(root, manifest, {records: journal.tailRecords + 1n, bytes: journal.tailBytes + BigInt(bytes.length)}, sequence, doc, policy);
       return { outcome:'committed', sequence };
     } finally { await file.close(); }
   } finally { doc.destroy(); }
@@ -175,9 +212,10 @@ export async function acquireJournalLock(root: string) {
 }
 
 /** Keep the Go-compatible lease until all scheduled commits settle and close() resolves. */
-export async function acquireJournalWriter(directory: string) {
+export async function acquireJournalWriter(directory: string, options?: JournalOptions) {
   if (process.platform !== 'darwin' && process.platform !== 'linux') throw new Error('Journal writing requires macOS or Linux flock');
   const root = resolve(directory);
+  const policy = checkpointPolicy(options?.checkpoint);
   const hold = await acquireJournalLock(root);
   try {
     await assertNotPurged(root);
@@ -197,7 +235,12 @@ export async function acquireJournalWriter(directory: string) {
   return {
     recover(onUpdate: (frame: JournalFrame) => void, onRecord: (record: OperationRecord) => void) {
       return schedule(async () => {
-        const report = await inspectJournal(root, onUpdate, onRecord);
+        // One preflight per room load, not per append: an unreadable checkpoint
+        // falls back to the baseline and the whole journal rather than refusing
+        // a document those two still describe.
+        const head = await readManifest(join(root, MANIFEST_FILE_NAME), basename(root));
+        const fromBaseline = !!head && !(await checkpointReadable(root, head, basename(root)));
+        const report = await inspectJournal(root, onUpdate, onRecord, fromBaseline);
         const { manifest, journal } = report;
         if (manifest?.seeded && ['corrupt','missing'].includes(report.integrity)) throw new UnreadableJournalData(report.issue ?? 'Unreadable journal records');
         if (!manifest || !journal || report.state !== 'seeded' || !['ok','incomplete'].includes(report.integrity)) {
@@ -226,7 +269,7 @@ export async function acquireJournalWriter(directory: string) {
       if (closing) return Promise.reject(new Error('Journal writer closed'));
       const digest = validateRequest(input);
       const request = { ...input, update: Uint8Array.from(input.update) };
-      return schedule(() => appendHeld(root, hold, request, digest));
+      return schedule(() => appendHeld(root, hold, request, digest, policy));
     },
     close(): Promise<void> {
       return closing ??= pending.then(() => hold.close());
@@ -235,8 +278,8 @@ export async function acquireJournalWriter(directory: string) {
 }
 
 /** Append to an already-seeded canonical directory on a local POSIX filesystem. */
-export async function appendJournal(directory: string, input: AppendRequest): Promise<AppendResult> {
-  const writer = await acquireJournalWriter(directory);
+export async function appendJournal(directory: string, input: AppendRequest, options?: JournalOptions): Promise<AppendResult> {
+  const writer = await acquireJournalWriter(directory, options);
   try { return await writer.append(input); }
   finally { await writer.close(); }
 }
