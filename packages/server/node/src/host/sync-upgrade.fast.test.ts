@@ -1,10 +1,13 @@
-import { createHash, createHmac } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { createServer, request as httpRequest, type Server as HttpServer } from 'node:http';
-import type { Server as NetServer } from 'node:net';
+import type { Server as NetServer, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Doc, encodeStateVector } from 'yjs';
+
+import { decode, encode } from '../../../../../src/components/modules/collaboration/sync-wire.ts';
 
 import { createHostApp } from './app.ts';
 import type { HostAppOptions } from './options.ts';
@@ -155,6 +158,65 @@ function controlLineage(frame: Uint8Array): string {
   return control.lineage;
 }
 
+/** One binary frame, masked the way a client must mask everything it sends. */
+function clientFrame(payload: Uint8Array): Buffer {
+  if (payload.length >= 126) {
+    throw new Error('This helper writes only the short frames the first exchange needs');
+  }
+  const mask = randomBytes(4);
+  const masked = Buffer.from(payload);
+  for (const [at, byte] of masked.entries()) {
+    masked[at] = byte ^ (mask[at % 4] ?? 0);
+  }
+  return Buffer.concat([Buffer.from([0x82, 0x80 | payload.length]), mask, masked]);
+}
+
+/**
+ * Pulls whole binary frames out of what the host has written, and hands back
+ * what is left over. The room's own frames are short, so only the one-byte
+ * length is read.
+ */
+function readFrames(buffer: Buffer, frames: Uint8Array[]): Buffer {
+  const length = (buffer[1] ?? 0) & 0x7f;
+  if (buffer.length < 2 + length) {
+    return buffer;
+  }
+  if (((buffer[0] ?? 0) & 0x0f) === 0x02) {
+    frames.push(new Uint8Array(buffer.subarray(2, 2 + length)));
+  }
+  return readFrames(buffer.subarray(2 + length), frames);
+}
+
+/**
+ * Upgrades by hand and hands the socket back in the turn the 101 is read, so a
+ * frame written on it reaches the host while it is still opening the room.
+ */
+function handshake(host: RunningHost, doc: string): Promise<{ frames: Uint8Array[]; socket: Socket }> {
+  return new Promise((resolve, reject) => {
+    const call = httpRequest(`${host.baseUrl}/sync/${encodeURIComponent(doc)}`, {
+      agent: false,
+      method: 'GET',
+      headers: {
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+        'Sec-WebSocket-Key': Buffer.alloc(16, 7).toString('base64'),
+        'Sec-WebSocket-Version': '13',
+        'Sec-WebSocket-Protocol': `${V2}, ${V1}`,
+      },
+    });
+    call.once('error', reject);
+    call.once('upgrade', (_message, socket, head) => {
+      const frames: Uint8Array[] = [];
+      const carry = { rest: readFrames(Buffer.from(head), frames) };
+      socket.on('data', (chunk: Buffer) => {
+        carry.rest = readFrames(Buffer.concat([carry.rest, chunk]), frames);
+      });
+      resolve({ frames, socket });
+    });
+    call.end();
+  });
+}
+
 function post(host: RunningHost, path: string): Promise<{ status: number; body: string; protocol: string | undefined }> {
   return new Promise((resolve, reject) => {
     const call = httpRequest(`${host.baseUrl}${path}`, { agent: false, method: 'POST' });
@@ -247,6 +309,26 @@ describe('@fast the sync route hosts the collaboration room', () => {
       const directory = join(collabDirectory, `${createHash('sha256').update('upgrade-doc').digest('hex')}.journal`);
       expect((await stat(directory)).isDirectory()).toBe(true);
     } finally {
+      await host.stop();
+    }
+  });
+
+  it('answers a syncStep1 written in the same turn as the handshake', async () => {
+    const host = await startHost(journalling());
+    // What the browser client does: it sends its syncStep1 from `onopen` and
+    // never sends it again. The host answers the handshake before it opens the
+    // room, so this frame lands in that gap and must survive it.
+    const opened = await handshake(host, 'eager-doc');
+    try {
+      opened.socket.write(clientFrame(encode({ type: 'syncStep1', stateVector: encodeStateVector(new Doc()) })));
+
+      await waitFor(
+        () => opened.frames.some((frame) => decode(frame).type === 'syncStep2'),
+        () => 'the room\'s answer to the first syncStep1',
+        3_000,
+      );
+    } finally {
+      opened.socket.destroy();
       await host.stop();
     }
   });

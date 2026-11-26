@@ -177,6 +177,21 @@ describe('the edit route on the Node host', () => {
   });
 
   /**
+   * A key already spent answers its own receipt, and must do so WITHOUT
+   * rebuilding: rebuilding refuses the very insert whose block it created, so
+   * every retry of an insert would come back 422 instead of its receipt.
+   */
+  it('answers a retried insert with the receipt it already earned', async () => {
+    const body = '{"ops":[{"op":"insert","id":"r1","block":{"type":"paragraph","data":{"text":"once"}}}]}';
+    const first = await post({ [KEY]: 'retry-1' }, body);
+
+    const again = await post({ [KEY]: 'retry-1' }, body);
+
+    expect(again.status).toBe(204);
+    expect(again.headers['blok-doc-sequence']?.[0]).toBe(first.headers['blok-doc-sequence']?.[0]);
+  });
+
+  /**
    * The validation pass is wired, not merely written: without it `addBlockAt`
    * overwrites whatever block already holds that id, and the loss is silent.
    */

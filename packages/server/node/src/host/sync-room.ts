@@ -1,11 +1,11 @@
 import type { IncomingMessage } from 'node:http';
 import type { Socket } from 'node:net';
-import { WebSocket, WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
 import { verifyTicket } from '../auth/ticket.ts';
 import { DocEndpointClient } from '../collab/doc-endpoint.ts';
 import { DocumentPurged, MAX_APPEND_BYTES, UnreadableJournalData } from '../collab/journal/append.ts';
-import { openDocumentRoom, type EditCommand, type EditOutcome } from '../collab/room/document-room.ts';
+import { openDocumentRoom, type EditCommand, type EditOutcome, type PendingFrame } from '../collab/room/document-room.ts';
 import { seedUpdate, type Snapshot } from '../collab/room/page-document.ts';
 import { existingDirectory, initializePage, newBaseline, pageDirectory } from '../collab/room/page-seed.ts';
 import { resetGeneration } from '../collab/room/reset.ts';
@@ -261,6 +261,28 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
     ws.once('close', () => clearInterval(probe));
   }
 
+  /**
+   * Holds what the client wrote between the handshake and the room's own
+   * listener. The 101 goes out before the room is open, `ws` emits a message
+   * whether or not anything is listening, and a client that sends its
+   * syncStep1 from `onopen` never sends it again — so without this the room
+   * loses the only request it had to answer. `release` detaches and hands over
+   * what it caught, with no await in between for a frame to slip through.
+   */
+  function captureEarly(ws: WebSocket): { release(): PendingFrame[] } {
+    const caught: PendingFrame[] = [];
+    const capture = (data: RawData, binary: boolean): void => {
+      caught.push({ data, binary });
+    };
+    ws.on('message', capture);
+    return {
+      release: () => {
+        ws.off('message', capture);
+        return caught;
+      },
+    };
+  }
+
   /** Joins the room on an established socket, and reports the lease to release. */
   async function admit(
     ws: WebSocket,
@@ -268,19 +290,22 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
     ticket: string,
     identity: RoomIdentity,
   ): Promise<Resident<DocumentRoom> | undefined> {
+    const early = captureEarly(ws);
     let entry: Resident<DocumentRoom> | undefined;
     try {
       entry = await rooms.reserve(doc);
       held.add(doc);
       const room = await entry.room;
       if (stopping || !room.available()) {
+        early.release();
         ws.close(UNAVAILABLE_CLOSE, 'room unavailable');
         return entry;
       }
-      room.connect(ws, ticket, identity);
+      room.connect(ws, ticket, identity, early.release());
     } catch (error) {
       // A document that cannot be served is refused ON the socket, never by
       // withholding the handshake: the client is owed the reason.
+      early.release();
       ws.close(error instanceof DocumentPurged ? FORBIDDEN_CLOSE : UNAVAILABLE_CLOSE, 'room unavailable');
     }
     return entry;

@@ -17,6 +17,13 @@ import type { RoomIdentity, RoomOptions } from './preview.ts';
 interface Peer extends HeartbeatMember { ws: WebSocket; ticket: string; admission: RoomIdentity; synced: boolean;
   badAwareness: number; reportedMalformed: boolean }
 
+/**
+ * A frame that reached the socket before the room attached its own listener.
+ * `ws` buffers nothing, so whoever answered the handshake has to hold what the
+ * client sent in the meantime and hand it over here.
+ */
+export interface PendingFrame { data: RawData; binary: boolean }
+
 /** Protocol section 6.1 and scenario S4 fix this text, not only the 4503 code. */
 const COMMIT_UNAVAILABLE_REASON = 'commit unavailable, retry';
 
@@ -166,6 +173,18 @@ export async function openDocumentRoom(options: RoomOptions) {
     }
 
     /**
+     * What a key already spent answers, or nothing when it is fresh. Read on
+     * its own because the HTTP door must consult it BEFORE building anything:
+     * rebuilding a retried insert would refuse the very block it created, and
+     * every retry would earn a refusal instead of its receipt.
+     */
+    function recorded(operationId:string, digest:Buffer): Verdict | undefined {
+      const previous = operations.get(operationId);
+      if (!previous) return undefined;
+      return digest.equals(previous.digest) ? {kind:'settled',sequence:previous.sequence} : {kind:'conflict'};
+    }
+
+    /**
      * Section 12: the rules an edit is admitted by, shared between the socket and
      * `POST /sync/{doc}/edit` so the two doors cannot drift. A key that already
      * committed answers its own receipt before any precondition is read (12.2).
@@ -175,8 +194,8 @@ export async function openDocumentRoom(options: RoomOptions) {
     function admit(operationId:string, digest:Buffer, update:Uint8Array,
         expected?:{lineage:string;sequence:bigint}): Verdict {
       if (update.length > MAX_APPEND_BYTES) return {kind:'too-large'};
-      const previous = operations.get(operationId);
-      if (previous) return digest.equals(previous.digest) ? {kind:'settled',sequence:previous.sequence} : {kind:'conflict'};
+      const spent = recorded(operationId,digest);
+      if (spent) return spent;
       if (expected && (expected.lineage !== tag.lineage || expected.sequence !== head)) return {kind:'precondition'};
       const candidate = classifyUpdate(doc,update,storage?.validate);
       if (candidate.kind === 'invalid') return {kind:'invalid'};
@@ -196,6 +215,9 @@ export async function openDocumentRoom(options: RoomOptions) {
         if (!who || who.id !== admission.id || who.workspaceId !== admission.workspaceId ||
             !who.write || !admission.write) return {ok:false,reason:'forbidden'};
         const digest = Buffer.from(command.digest);
+        const spent = recorded(command.operationId,digest);
+        if (spent?.kind === 'settled') return {ok:true,lineage:tag.lineage,sequence:spent.sequence};
+        if (spent) return {ok:false,reason:'conflict'};
         const built = updateFor(doc,command);
         if ('refusal' in built) return {ok:false,reason:'invalid',message:built.refusal || undefined};
         const update = built.update;
@@ -345,7 +367,7 @@ export async function openDocumentRoom(options: RoomOptions) {
       });
     }
 
-    function connect(ws: WebSocket, ticket: string, identity: RoomIdentity) {
+    function connect(ws: WebSocket, ticket: string, identity: RoomIdentity, pending: readonly PendingFrame[] = []) {
       if (stopping) { ws.close(4503, 'room unavailable'); return; }
       const peer: Peer = {ws,ticket,admission:identity,synced:false,badAwareness:0,reportedMalformed:false,alive:true,
         ping:() => ws.ping(), terminate:() => ws.terminate()};
@@ -361,6 +383,9 @@ export async function openDocumentRoom(options: RoomOptions) {
         }).catch(() => {});
       });
       ws.on('message', (data,binary) => enqueue(peer,data,binary));
+      // What arrived during the handshake gap, in the order the client wrote it
+      // and through the one path that keeps the queue and its counters honest.
+      for (const frame of pending) enqueue(peer,frame.data,frame.binary);
       send(peer,{type:'control',tag});
       send(peer,{type:'limits',maxMessageBytes:MAX_APPEND_BYTES});
     }
