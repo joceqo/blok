@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
+using System.Text.Json;
 using Blok.Server.Collab;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http.Timeouts;
@@ -317,6 +318,41 @@ public sealed class SyncEndpointTests
     Assert.Equal((4403, "forbidden"), await writer.ReceiveCloseAsync());
     Assert.Equal("seeded", await SyncedTextAsync(reader));
     Assert.Equal("seeded", await SyncedTextAsync(peer));
+  }
+
+  [Fact]
+  public async Task WriteGrantOnAnOpenSocketRespectsTheTicket()
+  {
+    var path = Path.Combine(OptionsValidateFixtureTests.RepositoryRoot(),
+        "test/unit/server-conformance/fixtures/collab/write-grant.json");
+    var cases = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(path))!;
+    foreach (var (name, outcome) in cases)
+    {
+      var authorization = new RecordingAuthorization();
+      authorization.DeniedWriteUsers.Add("u1");
+      var journal = new FakeCollabOperationStore();
+      await using var app = await SyncApp.StartAsync("ticket", services: services =>
+      {
+        services.AddSingleton<IBlokAuthorization>(authorization);
+        services.AddSingleton<ICollabOperationStore>(journal);
+      }, fakes: new SyncFakes(operationStore: journal));
+      var ticket = name == "compatible" ? fixture.Compatible : fixture.ReadOnly;
+      await using var client = await app.ConnectAsync(protocols: [SyncApp.ProtocolV2, ticket]);
+      var doc = YDocs.NewClient();
+      var lineage = await HandshakeV2Async(client, doc);
+      authorization.DeniedWriteUsers.Clear();
+      Assert.Equal(0, await app.Fakes.Manager.RecheckAccessAsync(SyncApp.Doc));
+      await client.SendAsync(new OperationFrame(lineage, OpOne, YDocs.UpdateAppending(doc, "!")));
+      if (outcome == "acknowledged")
+      {
+        await client.ReceiveAsync<SyncUpdateFrame>();
+        Assert.Equal(OpOne, (await client.ReceiveAsync<AcknowledgementFrame>()).OperationId);
+      }
+      else
+      {
+        Assert.Equal(outcome, (await client.ReceiveAsync<RejectionFrame>()).Code);
+      }
+    }
   }
 
   [Fact]

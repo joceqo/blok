@@ -3030,6 +3030,64 @@ describe('collaboration — sync-first load', () => {
       return { harness, seen };
     };
 
+    it.each([false, true])('replays a stored read-only refusal only on a writable v2 connection (write=%s)', async (write) => {
+      vi.stubGlobal('indexedDB', new IDBFactory());
+      const pass = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, write }));
+      vi.stubGlobal('fetch', vi.fn(async () => ({
+        ok: true, json: async () => ({ ticket: `header.${pass}.signature` }),
+      })));
+      const probe = createOperationStore(storeOptions());
+      await probe.open();
+      await probe.recordSession({ format: 2, epoch: 0, lineage: LINEAGE }, false, 'v2');
+      const draft = peerWith([{ id: 'mine', type: 'paragraph', data: { text: 'texte refusé' } }]);
+      const edit = await probe.appendLocal(draft.encodeStateAsUpdate());
+      draft.destroy();
+      await probe.quarantineLineage(LINEAGE, 'read-only', edit.bytes);
+      await probe.clearAdoptable();
+      await probe.close();
+
+      const { harness, seen } = await watched({ offline: true, ticket: '/tickets' });
+      await waitFor(() => harness.sockets.length === 1, 'ticket');
+      const socket = firstSync(harness, [], V2);
+      if (!write) {
+        await waitFor(() => states(seen).includes('quarantined'), 'read-only refusal retained');
+        expect(operationOn(socket)).toBeUndefined();
+        return;
+      }
+      await waitFor(() => operationOn(socket)?.operationId === edit.operationId, 'recovered operation');
+      expect(operationOn(socket)?.update).toEqual(edit.bytes);
+      socket.deliver({ type: 'acknowledgement', lineage: LINEAGE, operationId: edit.operationId, serverSequence: '1' });
+      await waitFor(() => seen.at(-1)?.save?.state === 'saved', 'durable acknowledgement');
+      expect(blockTexts(harness.core)).toEqual(['texte refusé']);
+      expect(await storeCounts()).toEqual({ pending: 0, quarantined: 0 });
+    }, 20_000);
+
+    it('refreshes the ticket once after a live refusal and keeps a repeated refusal reviewable', async () => {
+      vi.stubGlobal('indexedDB', new IDBFactory());
+      const pass = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, write: true }));
+      const mint = vi.fn(async () => ({ ok: true, json: async () => ({ ticket: `header.${pass}.signature` }) }));
+      vi.stubGlobal('fetch', mint);
+      const { harness, seen } = await watched({ offline: true, ticket: '/tickets' });
+      await waitFor(() => harness.sockets.length === 1, 'ticket');
+      const socket = firstSync(harness, [{ id: 'b1', type: 'paragraph', data: { text: 'server copy' } }], V2);
+      await waitFor(() => !harness.core.moduleInstances.ReadOnly.isEnabled, 'editable');
+      harness.core.moduleInstances.YjsManager.updateBlockData('b1', 'text', 'my edit');
+      await waitFor(() => !!operationOn(socket), 'first send');
+      const rejection = { type: 'rejection' as const, lineage: LINEAGE, code: 'read-only',
+        operationId: operationOn(socket)!.operationId };
+      socket.deliver(rejection);
+      await waitFor(() => harness.sockets.length === 2, 'fresh admission', 6000);
+      expect(mint).toHaveBeenCalledTimes(2);
+      const next = firstSync(harness, [{ id: 'b1', type: 'paragraph', data: { text: 'server copy' } }], V2);
+      await waitFor(() => operationOn(next)?.operationId === rejection.operationId, 'same operation retried');
+      next.deliver(rejection);
+      await waitFor(() => seen.at(-1)?.save?.state === 'quarantined', 'second denial');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      expect(harness.sockets).toHaveLength(2);
+      expect((await harness.core.moduleInstances.API.methods.saver.inspectQuarantine()).entries)
+        .toEqual([{ reason: 'read-only', count: 1 }]);
+    }, 20_000);
+
     it('connected may report pending', async () => {
       const { harness, seen } = await watched();
 

@@ -47,14 +47,16 @@ type MemberOptions struct {
 	ActorID        string
 	ProtocolSource collab.OperationSource
 	// Recheck nil always allows.
-	Recheck func(ctx context.Context) (bool, error)
+	Recheck      func(ctx context.Context) (bool, error)
+	RecheckWrite func(ctx context.Context) (bool, error)
 }
 
 // SocketMember is one WebSocket as the room sees it: SyncSocketMember. Send
 // and Close only enqueue; one pump goroutine owns every write, and the
 // receive loop never sends.
 type SocketMember struct {
-	options MemberOptions
+	options  MemberOptions
+	canWrite atomic.Bool
 
 	queuedBytes    atomic.Int64
 	requestedClose atomic.Pointer[CloseFrame]
@@ -76,19 +78,31 @@ func NewSocketMember(o MemberOptions) *SocketMember {
 	if o.CloseGrace == 0 {
 		o.CloseGrace = defaultCloseGrace
 	}
-	return &SocketMember{options: o, signal: make(chan struct{}, 1)}
+	m := &SocketMember{options: o, signal: make(chan struct{}, 1)}
+	m.canWrite.Store(o.CanWrite)
+	return m
 }
 
-func (m *SocketMember) CanWrite() bool                         { return m.options.CanWrite }
+func (m *SocketMember) CanWrite() bool                         { return m.canWrite.Load() }
 func (m *SocketMember) AcceptsControlFrames() bool             { return m.options.AcceptsControlFrames }
 func (m *SocketMember) ActorID() string                        { return m.options.ActorID }
 func (m *SocketMember) ProtocolSource() collab.OperationSource { return m.options.ProtocolSource }
 
 func (m *SocketMember) RecheckAccess(ctx context.Context) (bool, error) {
-	if m.options.Recheck == nil {
+	if m.options.Recheck != nil {
+		if ok, err := m.options.Recheck(ctx); err != nil || !ok {
+			return false, err
+		}
+	}
+	if m.options.RecheckWrite == nil {
 		return true, nil
 	}
-	return m.options.Recheck(ctx)
+	write, err := m.options.RecheckWrite(ctx)
+	if err != nil {
+		return false, err
+	}
+	wasWriter := m.canWrite.Swap(write)
+	return !wasWriter || write, nil
 }
 
 // RequestedClose is the close that won, nil before one was requested.

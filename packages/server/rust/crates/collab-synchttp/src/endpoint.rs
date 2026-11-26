@@ -176,26 +176,41 @@ impl Endpoint {
             }
         };
 
-        let recheck = config
-            .authorization
-            .as_ref()
-            .map(|hook| recheck(Arc::clone(hook), &accepted, doc, extensions));
-        let member = Arc::new(SocketMember::new(MemberOptions {
-            can_write: accepted.can_write,
-            accepts_control_frames: !accepted.sub_protocol.is_empty(),
-            max_queued_bytes: OUTBOUND_QUEUE_FACTOR * config.max_message_bytes as i64,
-            inbound: Some(InboundBudget::new(
-                config.budget,
-                config
-                    .budget_clock
-                    .clone()
-                    .unwrap_or_else(|| Arc::new(Instant::now)),
-            )),
-            close_grace: Duration::ZERO,
-            actor_id: accepted.actor.clone(),
-            protocol_source: accepted.source,
-            recheck,
-        }));
+        let check = |write| {
+            config.authorization.as_ref().map(|hook| {
+                recheck(
+                    Arc::clone(hook),
+                    &accepted,
+                    doc,
+                    Arc::clone(&extensions),
+                    write,
+                )
+            })
+        };
+        let write_check = if accepted.write_permitted {
+            check(true)
+        } else {
+            None
+        };
+        let member = Arc::new(
+            SocketMember::new(MemberOptions {
+                can_write: accepted.can_write,
+                accepts_control_frames: !accepted.sub_protocol.is_empty(),
+                max_queued_bytes: OUTBOUND_QUEUE_FACTOR * config.max_message_bytes as i64,
+                inbound: Some(InboundBudget::new(
+                    config.budget,
+                    config
+                        .budget_clock
+                        .clone()
+                        .unwrap_or_else(|| Arc::new(Instant::now)),
+                )),
+                close_grace: Duration::ZERO,
+                actor_id: accepted.actor.clone(),
+                protocol_source: accepted.source,
+                recheck: check(false),
+            })
+            .with_write_check(write_check),
+        );
         #[cfg(test)]
         self.inner.members.lock().unwrap().push(Arc::clone(&member));
 
@@ -276,27 +291,25 @@ impl Endpoint {
     }
 }
 
-/// Asks the hook for read, and for write only for a writer.
+/// Rechecks one permission with the principal and extensions used at admission.
 fn recheck(
     hook: Arc<dyn Authorization>,
     accepted: &Accepted,
     doc: &str,
     extensions: Arc<Extensions>,
+    write: bool,
 ) -> Recheck {
     let user = accepted.user.clone();
     let doc = doc.to_owned();
-    let can_write = accepted.can_write;
     Arc::new(move || {
         let (hook, user, doc) = (Arc::clone(&hook), user.clone(), doc.clone());
         let extensions = Arc::clone(&extensions);
         Box::pin(async move {
-            if !hook.can_read_document(&user, &doc, &extensions).await? {
-                return Ok(false);
+            if write {
+                hook.can_write_document(&user, &doc, &extensions).await
+            } else {
+                hook.can_read_document(&user, &doc, &extensions).await
             }
-            if !can_write {
-                return Ok(true);
-            }
-            hook.can_write_document(&user, &doc, &extensions).await
         }) as BoxFuture<'static, _>
     })
 }

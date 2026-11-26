@@ -1,9 +1,13 @@
 import type { CollaborationStatusChangedPayload } from '../../types/events/editor-events';
 
+import type { Saver } from '../../types/api/saver';
+
+type QuarantineActions = Pick<Saver, 'inspectQuarantine' | 'clearQuarantine'>;
 const BUSY_DELAY_MS = 1000;
 
 /** Presentation only: remote edits remain in the editor's in-memory queue. */
-export function createWorkspaceSaveStatus(remote: boolean, online = navigator.onLine) {
+export function createWorkspaceSaveStatus(remote: boolean, online = navigator.onLine,
+  recovery?: () => QuarantineActions | undefined) {
   const element = document.createElement('span');
   element.setAttribute('data-desktop-status', '');
   element.setAttribute('role', 'status');
@@ -29,6 +33,19 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
   statusLabel.setAttribute('data-desktop-status-label', '');
   element.append(icon, statusLabel);
 
+  const review = document.createElement('button');
+  review.type = 'button';
+  review.textContent = 'Voir';
+  review.setAttribute('aria-label', 'Voir les modifications refusées');
+  let dialog: HTMLDialogElement | undefined;
+  let revision = 0;
+  const closeReview = (): void => {
+    revision++;
+    dialog?.remove();
+    dialog = undefined;
+    review.disabled = false;
+  };
+
   const model: {
     connection: CollaborationStatusChangedPayload['status'];
     save?: CollaborationStatusChangedPayload['save'];
@@ -52,6 +69,11 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
     const failure = recordedFailures.find((item) => !item.network) ?? recordedFailures.at(-1);
     if (failure && !failure.network) {
       return { state: 'error', label: failure.label, detail: failure.detail };
+    }
+    if (remote && save?.state === 'quarantined' && save.quarantinedOperations > 0) {
+      const n = save.quarantinedOperations;
+      return { state: 'error', label: n === 1 ? '1 modification refusée' : `${n} modifications refusées`,
+        detail: 'Ces modifications sont conservées sur cet appareil.' };
     }
     if (remote && (save?.state === 'blocked' || save?.state === 'quarantined' || connection === 'error')) {
       return {
@@ -101,6 +123,12 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
     const live = alert ? 'polite' : 'off';
     if (element.getAttribute('aria-live') !== live) element.setAttribute('aria-live', live);
     if (statusLabel.textContent !== label) statusLabel.textContent = label;
+    if (recovery && model.save?.state === 'quarantined' && model.save.quarantinedOperations > 0) {
+      if (review.parentElement !== element) element.append(review);
+    } else {
+      review.remove();
+      if (dialog) closeReview();
+    }
     if (element.title !== detail) element.title = detail;
     const accessibleLabel = `${label}. ${detail}`;
     if (element.getAttribute('aria-label') !== accessibleLabel) element.setAttribute('aria-label', accessibleLabel);
@@ -116,6 +144,69 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
       }, BUSY_DELAY_MS);
     }
   };
+  review.onclick = async () => {
+    const actions = recovery?.();
+    if (!actions || review.disabled) return;
+    const page = revision;
+    review.disabled = true;
+    try {
+      const { through, entries, preview } = await actions.inspectQuarantine();
+      if (page !== revision || !review.parentElement || !entries.length) return;
+      const panel = document.createElement('dialog');
+      dialog = panel;
+      panel.setAttribute('data-quarantine-review', '');
+      panel.setAttribute('aria-label', 'Modifications refusées');
+      const heading = document.createElement('strong');
+      heading.textContent = 'Modifications refusées';
+      const reasons = document.createElement('ul');
+      for (const { reason, count } of entries) {
+        const item = document.createElement('li');
+        item.textContent = `${count} · ${reason === 'read-only' ? 'Page en lecture seule au moment de l’envoi' : reason}`;
+        reasons.append(item);
+      }
+      const explanation = document.createElement('p');
+      explanation.textContent = 'Abandonner supprime définitivement ces modifications de cet appareil.';
+      const keep = document.createElement('button');
+      keep.type = 'button';
+      keep.textContent = 'Conserver';
+      keep.autofocus = true;
+      keep.onclick = () => panel.close();
+      const discard = document.createElement('button');
+      discard.type = 'button';
+      discard.textContent = 'Abandonner';
+      discard.onclick = async () => {
+        discard.disabled = true;
+        try {
+          await actions.clearQuarantine(through);
+          if (page === revision) panel.close();
+        } catch {
+          explanation.textContent = 'Impossible de vider la quarantaine. Vous pouvez réessayer.';
+          discard.disabled = false;
+        }
+      };
+      panel.onclose = () => { if (dialog === panel) { closeReview(); review.focus(); } };
+      panel.append(heading, reasons);
+      if (preview !== undefined) {
+        const copy = document.createElement('details');
+        const label = document.createElement('summary');
+        label.textContent = 'Voir le contenu de la dernière copie locale';
+        const blocks = document.createElement('pre');
+        blocks.textContent = preview;
+        copy.append(label, blocks);
+        panel.append(copy);
+      }
+      panel.append(explanation, keep, discard);
+      document.body.append(panel);
+      panel.showModal();
+    } catch {
+      if (page === revision) {
+        closeReview();
+        statusLabel.textContent = 'Impossible de lire les modifications refusées';
+      }
+    } finally {
+      if (page === revision && !dialog) review.disabled = false;
+    }
+  };
   paint();
   return {
     element,
@@ -126,6 +217,7 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
       paint();
     },
     resetPage() {
+      closeReview();
       clearBusy();
       model.connection = 'connecting';
       model.save = undefined;
@@ -146,6 +238,6 @@ export function createWorkspaceSaveStatus(remote: boolean, online = navigator.on
       paint();
     },
     saved(source = 'operation') { failures.delete(source); paint(); },
-    dispose() { model.disposed = true; clearBusy(); },
+    dispose() { closeReview(); model.disposed = true; clearBusy(); },
   };
 }

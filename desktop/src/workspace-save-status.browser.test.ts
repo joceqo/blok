@@ -117,3 +117,44 @@ it.each(['chromium', 'webkit'] as const)('keeps the real page toolbar still duri
     await page.screenshot({path: '/tmp/blok-save-status-offline-' + engine + '.png', clip: {x: 0, y: 0, width: 390, height: 150}});
   } finally { await browser.close(); }
 }, 45000);
+
+it('lets someone review a refused edit, keep it, then explicitly abandon it', async () => {
+  const browser = await chromium.launch(
+    existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? {channel: 'chrome'} : {},
+  );
+  try {
+    const page = await browser.newPage();
+    await page.route(origin + '/', route => route.fulfill({contentType: 'text/html', body: '<!doctype html><body></body>'}));
+    await page.goto(origin + '/');
+    await page.addScriptTag({type: 'module', content: `
+      import {createWorkspaceSaveStatus} from '/src/workspace-save-status.ts';
+      const actions = {
+        inspectQuarantine: async () => ({ through: 17, entries: [{reason: 'read-only', count: 4}], preview: 'Mon paragraphe' }),
+        clearQuarantine: async through => {
+          if (through !== 17) throw Error('wrong review');
+          publish('saved', 0);
+          return 5;
+        },
+      };
+      const status = createWorkspaceSaveStatus(true, true, () => actions);
+      const publish = (state, count) => status.connection({status: 'connected', save: {
+        state, pendingOperations: 0, pendingBytes: 0, quarantinedOperations: count,
+      }});
+      document.body.append(status.element);
+      publish('quarantined', 4);
+    `});
+    const review = page.getByRole('button', {name: 'Voir les modifications refusées'});
+    await review.click();
+    const panel = page.getByRole('dialog');
+    await panel.getByText('Voir le contenu de la dernière copie locale').click();
+    expect(await panel.getByText('Mon paragraphe').isVisible()).toBe(true);
+    await panel.getByRole('button', {name: 'Conserver'}).click();
+    expect(await page.getByText('4 modifications refusées').isVisible()).toBe(true);
+    await review.click();
+    await panel.getByRole('button', {name: 'Abandonner'}).click();
+    await page.getByText('Enregistré', {exact: true}).waitFor();
+    expect(await panel.count()).toBe(0);
+  } finally {
+    await browser.close();
+  }
+});

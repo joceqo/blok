@@ -52,6 +52,8 @@ internal sealed class SyncSocketMember : ICollabMember
   private readonly TimeSpan closeGrace;
   private readonly SyncInboundBudget? inbound;
   private readonly Func<CancellationToken, ValueTask<bool>>? recheckAccess;
+  private readonly Func<CancellationToken, ValueTask<bool>>? recheckWrite;
+  private volatile bool canWrite;
   private long queuedBytes;
   private StrongBox<SyncCloseFrame>? requestedClose;
 
@@ -63,9 +65,11 @@ internal sealed class SyncSocketMember : ICollabMember
       TimeSpan? closeGrace = null,
       string? actorId = null,
       CollabOperationSource protocolSource = CollabOperationSource.ClientV1,
-      Func<CancellationToken, ValueTask<bool>>? recheckAccess = null)
+      Func<CancellationToken, ValueTask<bool>>? recheckAccess = null,
+      Func<CancellationToken, ValueTask<bool>>? recheckWrite = null)
   {
-    CanWrite = canWrite;
+    this.canWrite = canWrite;
+    this.recheckWrite = recheckWrite;
     AcceptsControlFrames = acceptsControlFrames;
     this.maxQueuedBytes = maxQueuedBytes;
     this.inbound = inbound;
@@ -75,7 +79,7 @@ internal sealed class SyncSocketMember : ICollabMember
     this.recheckAccess = recheckAccess;
   }
 
-  public bool CanWrite { get; }
+  public bool CanWrite => canWrite;
 
   public bool AcceptsControlFrames { get; }
 
@@ -83,9 +87,14 @@ internal sealed class SyncSocketMember : ICollabMember
 
   public CollabOperationSource ProtocolSource { get; }
 
-  public ValueTask<bool> RecheckAccessAsync(CancellationToken cancellationToken)
+  public async ValueTask<bool> RecheckAccessAsync(CancellationToken cancellationToken)
   {
-    return recheckAccess?.Invoke(cancellationToken) ?? ValueTask.FromResult(true);
+    if (recheckAccess is not null && !await recheckAccess(cancellationToken)) return false;
+    if (recheckWrite is null) return true;
+
+    var wasWriter = canWrite;
+    canWrite = await recheckWrite(cancellationToken);
+    return !wasWriter || canWrite;
   }
 
   /// <summary>The close that won, once one was requested.</summary>

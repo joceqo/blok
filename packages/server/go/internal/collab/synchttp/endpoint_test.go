@@ -6,11 +6,13 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -423,6 +425,32 @@ func TestRecheckAsksTheHookForReadAndForWriteOnlyForAWriter(t *testing.T) {
 	hook.set(func(a *fakeAuthorization) { a.err = errors.New("db down") })
 	if _, err := reader.RecheckAccess(context.Background()); err == nil {
 		t.Fatal("a hook error was swallowed")
+	}
+}
+
+func TestWriteGrantOnAnOpenSocketRespectsTheTicket(t *testing.T) {
+	fixture, err := os.ReadFile("../../../../../../test/unit/server-conformance/fixtures/collab/write-grant.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases map[string]string
+	if err := json.Unmarshal(fixture, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for name, outcome := range cases {
+		token := map[string]string{"compatible": writeTicket, "readOnly": readTicket}[name]
+		want := outcome == "acknowledged"
+		hook := &fakeAuthorization{read: true}
+		h := startEndpoint(t, func(c *Config) { c.Auth = "ticket"; c.Authorization = hook }, nil)
+		h.dial(t, "/sync/doc-42", ticketOffer("blok-sync.v1", token)...)
+		m := h.rooms.lastMember(t)
+		if m.CanWrite() {
+			t.Fatal("unexpected write at admission")
+		}
+		hook.set(func(a *fakeAuthorization) { a.write = true })
+		if ok, err := m.RecheckAccess(context.Background()); !ok || err != nil || m.CanWrite() != want {
+			t.Fatalf("recheck: allowed=%v, error=%v, write=%v want %v", ok, err, m.CanWrite(), want)
+		}
 	}
 }
 

@@ -9,7 +9,7 @@
  * session throws instead of being dropped; and the outbox is never merged,
  * swept or cleared by anything the cache does.
  */
-import { IDBDatabase, IDBFactory, IDBObjectStore } from 'fake-indexeddb';
+import { IDBDatabase, IDBFactory, IDBKeyRange, IDBObjectStore } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 
@@ -292,6 +292,7 @@ describe('collaboration — operation store', () => {
     vi.clearAllMocks();
     factory = new IDBFactory();
     vi.stubGlobal('indexedDB', factory);
+    vi.stubGlobal('IDBKeyRange', IDBKeyRange);
   });
 
   afterEach(async () => {
@@ -1676,6 +1677,53 @@ describe('collaboration — operation store', () => {
    * empty paragraph. Abandoning has to be possible; it just has to be asked for.
    */
   describe('abandoning quarantined work', () => {
+    it.each([SCOPE, null])('restores only read-only work for the synced lineage (%s)', async (offlineScope) => {
+      const store = storeWith({ offlineScope });
+      await store.open();
+      await store.recordSession(tagWith(LINEAGE_B), false, 'v2');
+      await store.appendLocal(updateWith('other', 'stay'));
+      await store.quarantineLineage(LINEAGE_B, 'read-only', new Uint8Array());
+      await store.recordSession(tagWith(LINEAGE_A), false, 'v2');
+      const edit = await store.appendLocal(updateWith('mine', 'recover'));
+      await store.quarantineLineage(LINEAGE_A, 'read-only', edit.bytes);
+      await store.recordSession(tagWith(LINEAGE_A), false, 'v2');
+      expect(await store.retryReadOnly(LINEAGE_A)).toEqual([edit.bytes]);
+      expect(await store.oldestPending()).toEqual(edit);
+      expect(await store.retryReadOnly(LINEAGE_A)).toEqual([]);
+      expect((await store.stats()).quarantinedOperations).toBe(1);
+    });
+
+    it('recovers a legacy refusal atomically and preserves a later batch during discard', async () => {
+      const store = storeWith({});
+      await store.open();
+      await store.recordSession(tagWith(LINEAGE_A), false, 'v2');
+      const db = await openDatabase();
+      const [quarantine] = idb.transact(db, ['quarantine']);
+      const bytes = updateWith('legacy', 'kept');
+      const legacy = { kind: 'operation', reason: 'read-only', operationId: 'ab'.repeat(16),
+        localOrder: 11, lineage: LINEAGE_A, bytes, quarantinedAt: 42 };
+      await idb.read(quarantine.add(legacy));
+      db.close();
+      const review = await store.inspectQuarantine();
+      failAddsTo('updates');
+      await expect(store.retryReadOnly(LINEAGE_A)).rejects.toThrow();
+      expect(await store.oldestPending()).toBeNull();
+      const preserved = await rowsIn('quarantine') as Array<typeof legacy>;
+      expect(preserved).toHaveLength(1);
+      expect(preserved[0].operationId).toBe(legacy.operationId);
+      expect(Array.from(preserved[0].bytes)).toEqual(Array.from(bytes));
+      vi.restoreAllMocks();
+      expect(await store.retryReadOnly(LINEAGE_A)).toEqual([bytes]);
+      expect(await store.oldestPending()).toMatchObject({ operationId: legacy.operationId, localOrder: 11, createdAt: 42 });
+      await store.quarantineLineage(LINEAGE_A, 'invalid-update', bytes);
+      expect(await store.clearQuarantine(review.through)).toBe(0);
+      expect(await store.inspectQuarantine()).toMatchObject({
+        entries: [{ reason: 'invalid-update', count: 1 }], snapshot: bytes,
+      });
+      await store.recordSession(tagWith(LINEAGE_A), false, 'v2');
+      expect(await store.retryReadOnly(LINEAGE_A)).toEqual([]);
+    });
+
     it('empties the quarantine on request and leaves the outbox alone', async () => {
       const store = storeWith({});
 

@@ -31,6 +31,28 @@ fn ticket(name: &str) -> String {
     member.value.text().unwrap().to_string()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_grant_on_an_open_socket_respects_the_ticket() {
+    let cases = include_bytes!(
+        "../../../../../../test/unit/server-conformance/fixtures/collab/write-grant.json"
+    );
+    let root = parse_node(cases, Options::default()).unwrap();
+    for case in root.members {
+        let hook = FakeAuthorization::new(true, false, false);
+        let h = start_endpoint(hooked(&hook), None).await;
+        let pass = ticket(&case.key().unwrap().to_string());
+        let _client = connect_with_ticket(&h, &pass).await;
+        let member = h.rooms.last_member();
+        assert!(!member.can_write());
+        hook.set(|a| a.write = true);
+        assert!(member.recheck_access().await.unwrap());
+        assert_eq!(
+            member.can_write(),
+            case.value.text().unwrap().to_string() == "acknowledged"
+        );
+    }
+}
+
 #[test]
 fn the_ticket_fixture_shares_the_test_secret() {
     assert_eq!(ticket("secret"), TEST_SECRET);
