@@ -207,7 +207,65 @@ function holdsNul(node: Node): boolean {
   return (node.children ?? []).some(holdsNul);
 }
 
-export type CanonicalEdit = { canonical: string } | { error: string };
+/** A JSON value as the applier needs it, with a number back to being a double. */
+export type EditValue = string | number | boolean | null | EditValue[] | { [key: string]: EditValue };
+
+/** Places the block after `after` (null = first) under `parent` (null = the root). */
+export interface InsertCommand {
+  op: 'insert';
+  id: string;
+  block: Record<string, EditValue>;
+  parent: string | null;
+  after: string | null;
+}
+
+/** Replaces the block's data map wholesale. */
+export interface UpdateCommand { op: 'update'; id: string; data: Record<string, EditValue> }
+
+/** Removes the block and everything under it. */
+export interface RemoveCommand { op: 'remove'; id: string }
+
+export type EditCommand = InsertCommand | UpdateCommand | RemoveCommand;
+
+/** The value a canonical node stands for. The digest keeps the number's text; nothing else needs it. */
+function valueOf(value: Canonical): EditValue {
+  switch (value.tag) {
+    case 'raw':
+      return JSON.parse(value.text) as EditValue;
+    case 'string':
+      return value.value;
+    case 'array':
+      return value.items.map(valueOf);
+    case 'object':
+      return Object.fromEntries(value.members.map(([name, member]) => [name, valueOf(member)]));
+  }
+}
+
+/** A member that passed `readOp`'s checks, read as the kind the op promised. */
+const objectOf = (value: Canonical | undefined): Record<string, EditValue> =>
+  value?.tag === 'object' ? (valueOf(value) as Record<string, EditValue>) : {};
+
+const textOf = (value: Canonical | undefined): string | null =>
+  value?.tag === 'string' ? value.value : null;
+
+/** The op as values, built from the same members the canonical form is written from. */
+function commandOf(kind: string, members: [string, Canonical][]): EditCommand {
+  const named = new Map(members);
+  const id = textOf(named.get('id')) ?? '';
+
+  if (kind === 'remove') return { op: 'remove', id };
+  if (kind === 'update') return { op: 'update', id, data: objectOf(named.get('data')) };
+
+  return {
+    op: 'insert',
+    id,
+    block: objectOf(named.get('block')),
+    parent: textOf(named.get('parent')),
+    after: textOf(named.get('after')),
+  };
+}
+
+export type CanonicalEdit = { canonical: string; ops: EditCommand[] } | { error: string };
 
 export function canonicalEdit(body: Uint8Array | string): CanonicalEdit {
   const { text, utf8 } = decodeBody(body);
@@ -223,6 +281,7 @@ export function canonicalEdit(body: Uint8Array | string): CanonicalEdit {
     return { error: NO_OPS };
   }
   const written: Canonical[] = [];
+  const commands: EditCommand[] = [];
   for (const [index, op] of (ops.children ?? []).entries()) {
     // Within one op, a name the decoder could not read is met before its NUL;
     // an op further along the array is not reached at all.
@@ -230,10 +289,14 @@ export function canonicalEdit(body: Uint8Array | string): CanonicalEdit {
     const one = readOp(op, index, text);
     if ('error' in one) return one;
     written.push(one.op);
+    commands.push(one.command);
   }
   // Nothing in the ops was wrong, so a bad byte is the only thing left.
   if (!utf8) return { error: NOT_UNICODE };
-  return { canonical: write({ tag: 'object', members: [['ops', { tag: 'array', items: written }]] }) };
+  return {
+    canonical: write({ tag: 'object', members: [['ops', { tag: 'array', items: written }]] }),
+    ops: commands,
+  };
 }
 
 /** The names a node carries, in the order they were written. */
@@ -272,7 +335,7 @@ function checkBlock(block: Node, id: Node | undefined, say: (what: string) => st
 }
 
 /** One op, rebuilt from the members its kind carries. */
-function readOp(op: Node, index: number, body: string): { op: Canonical } | { error: string } {
+function readOp(op: Node, index: number, body: string): { op: Canonical; command: EditCommand } | { error: string } {
   const say = (what: string): string => `collab: op ${index}: ${what}`;
   if (op.type !== 'object') return { error: say('an op must be a JSON object.') };
   // Read before anything else about the op: the reader meets it first in the
@@ -311,5 +374,5 @@ function readOp(op: Node, index: number, body: string): { op: Canonical } | { er
     if (member !== undefined) entries.push([name, read(member, body)]);
     else if (PLACE.includes(name)) entries.push([name, { tag: 'raw', text: 'null' }]);
   }
-  return { op: { tag: 'object', members: entries } };
+  return { op: { tag: 'object', members: entries }, command: commandOf(kind?.value as string, entries) };
 }
