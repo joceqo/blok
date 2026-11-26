@@ -56,10 +56,10 @@ const byCodeUnit = (a: [string, unknown], b: [string, unknown]): number =>
   a[0] < b[0] ? -1 : Number(a[0] > b[0]);
 
 /** A parsed value that still knows the text a number was written as. */
-type Canonical = { tag: 'raw'; text: string } | { tag: 'string'; value: string }
+export type Canonical = { tag: 'raw'; text: string } | { tag: 'string'; value: string }
   | { tag: 'array'; items: Canonical[] } | { tag: 'object'; members: [string, Canonical][] };
 
-function write(value: Canonical): string {
+export function write(value: Canonical): string {
   switch (value.tag) {
     case 'raw':
       return value.text;
