@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applyUpdate, Doc } from 'yjs';
+import { applyUpdate, Doc, encodeStateAsUpdate } from 'yjs';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { initializePage, newBaseline, pageDirectory } from './page-seed.ts';
 import { restorePage, seedUpdate } from './page-document.ts';
@@ -28,6 +28,23 @@ function edit(text: string) {
   const update = restorePage(replica, snapshot(text));
   applyUpdate(replica, update);
   return update;
+}
+
+/**
+ * The same, for an update the room is expected to refuse. It is crafted off a
+ * throwaway copy so the replica stays what it claims to be — a replica of the
+ * room's document. Advancing the replica by a refused edit would leave every
+ * later update referring to structs the room never saw, which is not the
+ * precondition this door is meant to be exercised under.
+ */
+function strayEdit(text: string) {
+  const aside = new Doc();
+  applyUpdate(aside, encodeStateAsUpdate(replica));
+  try {
+    return restorePage(aside, snapshot(text));
+  } finally {
+    aside.destroy();
+  }
 }
 
 beforeEach(async () => {
@@ -78,7 +95,7 @@ it('returns the original receipt for a replayed key and spends no sequence on it
 it('refuses a known key carrying a different body as a conflict and applies nothing', async () => {
   await room.apply({ operationId: 'a'.repeat(32), digest: digestOf('one'), update: edit('one') }, editor, 'editor');
 
-  const conflict = await room.apply({ operationId: 'a'.repeat(32), digest: digestOf('other'), update: edit('other') }, editor, 'editor');
+  const conflict = await room.apply({ operationId: 'a'.repeat(32), digest: digestOf('other'), update: strayEdit('other') }, editor, 'editor');
 
   expect(conflict).toEqual({ ok: false, reason: 'conflict' });
   const next = await room.apply({ operationId: 'b'.repeat(32), digest: digestOf('two'), update: edit('two') }, editor, 'editor');
@@ -138,7 +155,7 @@ it('answers an edit that changes nothing with the current head and records nothi
 });
 
 it('refuses a caller without write permission and applies nothing', async () => {
-  const refused = await room.apply({ operationId: 'a'.repeat(32), digest: digestOf('one'), update: edit('one') }, viewer, 'viewer');
+  const refused = await room.apply({ operationId: 'a'.repeat(32), digest: digestOf('one'), update: strayEdit('one') }, viewer, 'viewer');
 
   expect(refused).toEqual({ ok: false, reason: 'forbidden' });
   const next = await room.apply({ operationId: 'b'.repeat(32), digest: digestOf('two'), update: edit('two') }, editor, 'editor');

@@ -30,6 +30,25 @@ const HEARTBEAT_MS = 30_000;
 const ACCESS_TTL_MS = 2_000;
 type Operation = Extract<SyncWireFrame, { type:'operation' }>;
 
+/** What `POST /sync/{doc}/edit` carries. Its digest covers the command, not the update. */
+export interface EditCommand {
+  operationId: string;
+  digest: Uint8Array;
+  update: Uint8Array;
+  expected?: { lineage: string; sequence: bigint };
+}
+
+export type EditOutcome =
+  | { ok: true; lineage: string; sequence: bigint }
+  | { ok: false; reason: 'forbidden' | 'conflict' | 'invalid' | 'too-large' }
+  | { ok: false; reason: 'precondition'; lineage: string; sequence: bigint };
+
+/** What the admission rules decided, before a transport words it. */
+type Verdict =
+  | { kind: 'too-large' | 'conflict' | 'precondition' | 'invalid' }
+  | { kind: 'settled'; sequence: bigint }
+  | { kind: 'commit'; data?: Record<string, unknown> };
+
 function send(peer: Peer, frame: SyncWireFrame) {
   if (peer.ws.readyState !== WebSocket.OPEN) return;
   if (peer.ws.bufferedAmount > 4 * MAX_APPEND_BYTES) { peer.ws.close(1008, 'outbound queue overflow'); return; }
@@ -113,17 +132,58 @@ export async function openDocumentRoom(options: RoomOptions) {
       if (!identity.write) return reject('read-only');
       if (!peer.synced) return reject('not-synced');
       if (tag.lineage !== lineage) return reject('lineage-mismatch');
-      if (update.length > MAX_APPEND_BYTES) return reject('oversized-update');
       const digest = createHash('sha256').update(update).digest();
-      const previous = operations.get(operationId);
-      if (previous) return digest.equals(previous.digest) ? ack(previous.sequence) : reject('operation-id-conflict');
-      const candidate = classifyUpdate(doc,update,storage?.validate);
-      if (candidate.kind === 'invalid') return reject('invalid-update');
-      if (candidate.kind === 'unchanged' && head > 0n) return ack(head);
+      const verdict = admit(operationId,digest,update);
+      if (verdict.kind === 'settled') return ack(verdict.sequence);
+      if (verdict.kind === 'too-large') return reject('oversized-update');
+      if (verdict.kind === 'conflict') return reject('operation-id-conflict');
+      if (verdict.kind !== 'commit') return reject('invalid-update');
       try {
-        await commit(identity,operationId,digest,update,0,candidate.data);
+        await commit(identity,operationId,digest,update,0,verdict.data);
         if (await principal(peer)) ack(head);
       } catch { /* commit has already closed this room */ }
+    }
+
+    /**
+     * Section 12: the rules an edit is admitted by, shared between the socket and
+     * `POST /sync/{doc}/edit` so the two doors cannot drift. A key that already
+     * committed answers its own receipt before any precondition is read (12.2).
+     * Write permission is not among them: each door refuses in its own words,
+     * and at its own point in the order.
+     */
+    function admit(operationId:string, digest:Buffer, update:Uint8Array,
+        expected?:{lineage:string;sequence:bigint}): Verdict {
+      if (update.length > MAX_APPEND_BYTES) return {kind:'too-large'};
+      const previous = operations.get(operationId);
+      if (previous) return digest.equals(previous.digest) ? {kind:'settled',sequence:previous.sequence} : {kind:'conflict'};
+      if (expected && (expected.lineage !== tag.lineage || expected.sequence !== head)) return {kind:'precondition'};
+      const candidate = classifyUpdate(doc,update,storage?.validate);
+      if (candidate.kind === 'invalid') return {kind:'invalid'};
+      // An edit that changes nothing records nothing, so its key stays spendable.
+      if (candidate.kind === 'unchanged' && head > 0n) return {kind:'settled',sequence:head};
+      return {kind:'commit',data:candidate.data};
+    }
+
+    /**
+     * `POST /sync/{doc}/edit`. Serialised on the queue the socket uses, so no
+     * frame can move the head between the admission and the append.
+     */
+    function apply(command: EditCommand, admission: RoomIdentity, token: string): Promise<EditOutcome> {
+      const result = queue.then(async (): Promise<EditOutcome> => {
+        if (stopping) throw new Error('Closing room');
+        const who = admission.revalidate ? await admission.revalidate() : await authorize(token,documentId);
+        if (!who || who.id !== admission.id || who.workspaceId !== admission.workspaceId ||
+            !who.write || !admission.write) return {ok:false,reason:'forbidden'};
+        const digest = Buffer.from(command.digest);
+        const verdict = admit(command.operationId,digest,command.update,command.expected);
+        if (verdict.kind === 'settled') return {ok:true,lineage:tag.lineage,sequence:verdict.sequence};
+        if (verdict.kind === 'precondition') return {ok:false,reason:'precondition',lineage:tag.lineage,sequence:head};
+        if (verdict.kind !== 'commit') return {ok:false,reason:verdict.kind};
+        const sequence = await commit(who,command.operationId,digest,command.update,2,verdict.data);
+        return {ok:true,lineage:tag.lineage,sequence};
+      });
+      queue = result.then(()=>{},()=>{});
+      return result;
     }
 
     async function commit(identity: RoomIdentity, operationId:string, digest:Buffer, update:Uint8Array, source:0|1|2,
@@ -303,7 +363,7 @@ export async function openDocumentRoom(options: RoomOptions) {
       sweepHeartbeat([...peers]);
     }, HEARTBEAT_MS);
     keepalive.unref();
-    return { connect, history, recheck, close: stop, available: () => !stopping };
+    return { connect, apply, history, recheck, close: stop, available: () => !stopping };
   } catch (error) {
     await stop();
     throw error;
