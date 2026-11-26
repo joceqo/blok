@@ -1,0 +1,11 @@
+{
+  "productName": "Blok Apercu",
+  "identifier": "dev.notiooon.blok.preview",
+  "bundle": {
+    "macOS": { "minimumSystemVersion": "15.0" },
+    "resources": {
+      "bundled-runtime/": "bundled-runtime/",
+      "../dist/": "bundled-web/"
+    }
+  }
+}
