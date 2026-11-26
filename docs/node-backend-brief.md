@@ -46,38 +46,65 @@ Un backend Node propre et un shell propre, c'est-à-dire :
    (`permissions_law_test.go` parse l'AST de tous les fichiers) ; côté Node, rien n'empêche la dérive.
 4. **La conformance qui passe** contre le serveur Node.
 
-## État au 26 novembre 2026
+## État au 26 novembre 2026, en fin de journée
 
-Fait et testé (`packages/server/node` : 35 fichiers de test, 271 tests verts) :
+`packages/server/node` : 46 fichiers de test, **338 tests verts**.
+Conformance `--target node` : **439 verts sur 528** (83 %), contre 333 le matin même.
+Plus aucun test sauté : les 109 qui ne démarraient pas s'exécutent.
 
-- ping/pong 30 s — les sockets mortes libèrent leur slot et leur entrée de présence
-- memo d'autorisation — 32 destinataires coûtaient 32 appels HTTP par frappe, maintenant un seul ;
-  le push sur `/internal/room/recheck-access` reste l'autorité et invalide
-- registre de rooms extrait et partagé entre la salle et l'hôte
-- publication de checkpoints (64 opérations ou 1 MiB, les défauts du Go) — le replay ne rejoue plus
-  toute la lignée
-- upgrade WebSocket sur l'hôte : **`protocol-v2-contract` passe 14/14** (0/14 avant)
+Fait avant cette journée : ping/pong 30 s, memo d'autorisation, registre de rooms partagé,
+publication de checkpoints, upgrade WebSocket sur l'hôte (`protocol-v2-contract` 14/14).
+
+Fait ce jour :
+
+- **`POST /sync/{doc}/edit` répond.** La suite `collab-http-contract` passe de 0 test passant
+  à 95 sur 117. Par ricochet, `host-cli-contract` tombe de 11 à 5 échecs et
+  `page-transfer-sidecar` de 6 à 3 — elles amorçaient leurs documents par cette route.
+- **Le convertisseur canonique est conforme à 100 % de sa fixture** : 18 formes canoniques,
+  18 condensés, 13 clés, les 74 refus mot pour mot, et les 50 doubles .NET.
+- Deux bugs de production corrigés : le délai de requête qui détruisait toute session
+  collaborative à dix minutes, et la fenêtre du bureau qui devenait impossible à fermer.
+- **La CI garde enfin l'hôte Node**, avec un cliquet sur quatre suites (252 tests).
+
+Trois règles apprises de la fixture et qu'aucune lecture du Go ne donne :
+
+- un double atteint le condensé écrit à la .NET, pas à la JS — JS bascule en exponentiel à 1e21
+  et 1e-7, .NET dès 1e17 et 1e-5, et JS écrit « 0 » pour moins zéro. 23 des 50 cas en dépendent ;
+- les clés se trient par unité UTF-16, et l'échappement est celui de `JavaScriptEncoder.Default` ;
+- entre un NUL et un octet illisible, le départage se fait **op par op** : dans une même op, un
+  nom que le décodeur n'a pas su lire précède son NUL ; une op plus loin n'est jamais atteinte.
 
 ## Ce qu'il reste, par ordre
 
-1. **`src/http/conn.ts:190-199` — bug de production.** Chaque handler est enveloppé dans un
-   `Promise.race` avec `requestTimeoutMs` (600 s). Un handler WebSocket ne rend jamais la main :
-   **toute session collaborative meurt à dix minutes.** Invisible en conformance (tests de quelques
-   secondes). Le hook existe à moitié : `exchange.hijacked` est un `Notify` déclaré dans
-   `exchange.ts:65` que **personne ne notifie**. Il faut le déclencher dans `hijack()`
-   (`response.ts:118`) et désarmer le timer dans `conn.ts`.
-2. **`src/collab/room/document-room-apply.fast.test.ts` — 9 tests rouges, volontaires.** Ils
-   décrivent la porte d'écriture que `POST /sync/{doc}/edit` attend dans la salle, écrits avant le
-   code puis interrompus. Les faire passer débloque les 40 tests de `collab-http-contract` : les
-   11 suites du fichier amorcent toutes leur document par `/edit`, il n'existe aucun îlot contournable.
-3. **`sync-transport-contract`** (~31 rouges). Priorité au plafond de 8 sockets par document et au
-   rate limit partagé : ce sont de vraies défenses anti-déni-de-service. Les codes 426/405 et le
-   parsing des sous-protocoles sont cosmétiques. **C'est du portage, pas de l'invention** :
-   `preview.ts` implémente déjà origine, sous-protocoles, plafonds et admission.
-4. **Supprimer la pile « routes »** — mais d'abord repointer les 9 suites de
+1. **`sync-transport-contract`** (22 rouges sur 42). **Correction d'une erreur de ce brief :
+   ce n'est PAS du portage depuis `preview.ts`.** Vérification faite ligne par ligne,
+   `preview.ts` n'a aucun plafond de sockets par document — seulement un compteur global
+   d'admissions à 256 — ni analyse de sous-protocole conforme, ni 426, ni 405, ni limiteur.
+   À l'inverse, `src/host/sync-room.ts` a **déjà** le plafond de 8 sockets par membre et par
+   document, le limiteur partagé et les closes 4400/4401, et `src/host/sync-door.ts` a déjà le
+   426, le trim Unicode et la sélection v1/v2. Les deux « défenses prioritaires » que ce brief
+   désignait existent donc depuis longtemps.
+   La source d'autorité est l'hôte **.NET** : `packages/server/dotnet/Blok.Server.AspNetCore/Collab/`.
+   Ce qui manque réellement est le **budget entrant par connexion** (`SyncInboundBudget.cs`) :
+   réceptions par message, trames, amplificateurs, octets de présence — quatre compteurs qui
+   ferment en `1008 inbound rate exceeded`, chaîne absente du Node. Sans eux un seul client
+   sature une salle. Suspect pour les douze cas RFC 6455 : `document-room.ts` détruit la socket
+   sur `error`, or `ws` écrit la trame de fermeture **puis** émet l'erreur.
+2. **`sync-contract` (15/16) et `blok-client-contract` (12/12).** Deux suites quasi intégralement
+   rouges, ce qui sent la cause unique plutôt que vingt-sept défauts. Indice relevé : le client
+   négocie `protocol=v1` alors que le serveur annonce un tag format 2, et la poignée de main
+   réussit avant que plus rien ne vienne. Vérifier si `selectSubprotocol` dépend de
+   `collabJournal` et comment la conformance lance le serveur.
+3. **Les 22 rouges restants de `collab-http-contract`**, à regrouper par cause.
+4. **Brancher l'estampillage d'autorité** (`src/collab/edit/stamp.ts`, écrit et testé, inerte).
+   À trancher au branchement : l'applicateur crédite déjà les mises à jour, le crédit serait
+   écrit deux fois.
+5. **Supprimer la pile « routes »** — d'abord repointer les 9 suites de
    `test/unit/service-conformance/` vers `createShellApp`, sinon la migration perd son filet.
-5. **Vendoriser le schéma Go** dans `apps/service-node`.
-6. **Une loi d'architecture côté Node**, équivalente à `permissions_law_test.go`.
+6. **Vendoriser le schéma Go** dans `apps/service-node`.
+7. **Une loi d'architecture côté Node**, équivalente à `permissions_law_test.go`.
+8. **Sortir `inspectJournal` du chemin d'écriture** (`append.ts`) : chaque frappe relit et rejoue
+   encore une fenêtre de journal.
 
 ## Règles du dépôt, non négociables
 
@@ -93,7 +120,8 @@ Fait et testé (`packages/server/node` : 35 fichiers de test, 271 tests verts) :
 ## Pièges mesurés, qui font perdre des heures
 
 - **Les tests de conformance ne sont pas lents, les échecs le sont.** Chaque attente a un timeout
-  de 10 s (`raw-websocket.ts:300-302`). 103 échecs = 545 s de run ; la suite verte seule = 38 s.
+  de 10 s (`raw-websocket.ts:300-302`). 89 échecs = 244 s de run ; une suite verte seule = quelques
+  secondes. Le run complet se mesure donc en échecs, pas en tests.
   Toujours itérer avec `--suite <nom>` et `--test-name-pattern "<cas>"`. Le runner échoue
   volontairement si le pattern ne sélectionne rien : c'est une protection contre le faux vert.
 - **Un octet NUL écrit en brut rend un fichier invisible à grep** (`file` le classe en « data »).
