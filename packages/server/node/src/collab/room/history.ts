@@ -19,6 +19,8 @@ import { deleteArchivedLineage, historyLineages, type HistoryLineage } from './h
 import { inspectJournal } from '../journal/inspect.ts';
 import { MAX_APPEND_BYTES } from '../journal/append.ts';
 import { exportPage, restorePage } from './page-document.ts';
+import { operationIdForKey } from '../edit/canonical.ts';
+import { restoreDigest } from '../edit/restore-digest.ts';
 
 interface Version {
   lineage: string;
@@ -135,12 +137,12 @@ export async function historyRequest(input: {
   });
   const revision = tag.lineage + ':' + head;
   const key = request.key;
-  const operationId = key && createHash('sha256').update(key).digest('hex').slice(0, 32);
-  const digest = createHash('sha256')
-    .update('restore\n' + lineage + '\n' + through + (keep ? '\nkeep' : ''))
-    .digest();
+  const operationId = key === undefined ? null : operationIdForKey(key);
+  // The path segment and the manifest agree: `selected` was found by matching it.
+  const digest = restoreDigest(selected.manifest.lineage, through, keep);
   if (restore) {
-    if (!sub && (!key || !/^[\x20-\x7e]{1,128}$/.test(key))) return { status: 400 };
+    // No operation id means no usable key: either none was sent, or it is not one.
+    if (!sub && !operationId) return { status: 400 };
     if (!sub && operationId) {
       const prior = operations.get(operationId);
       if (prior)
