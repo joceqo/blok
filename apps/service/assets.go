@@ -59,6 +59,7 @@ func (s *Service) ticketIdentity(r *http.Request) (session, doc string, write bo
 	return claims.User, claims.Doc, claims.Write, true
 }
 func (s *Service) blokHandler(next http.Handler) http.Handler {
+<<<<<<< HEAD
 	nodeRoom := nodeRoomProxy()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.routeWorkspaceUpgrade(nodeRoom, w, r) {
@@ -122,6 +123,65 @@ func (s *Service) blokHandler(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+||||||| f8ef3c6b39
+=======
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Blok independently checks cryptographic ticket validity. Gate every service
+		// route too: upload/delete/unfurl do not call document Authorization hooks.
+		session, doc, write, ok := s.ticketIdentity(r)
+		if !ok {
+			problem(w, 401, "Valid document ticket required")
+			return
+		}
+		isWrite := r.Method != "GET" && r.Method != "HEAD"
+		can, e := s.authorizeDoc(r.Context(), session, doc, isWrite)
+		if e != nil {
+			problem(w, 503, "Database unavailable")
+			return
+		}
+		if !can || (isWrite && !write) {
+			problem(w, 403, "Document access refused")
+			return
+		}
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			forget := s.observeDocument(doc)
+			defer forget()
+		}
+		if strings.HasSuffix(r.URL.Path, "/delete") {
+			problem(w, 405, "Assets are retained for document history")
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/upload") || strings.HasSuffix(r.URL.Path, "/upload-by-url") {
+			rec := httptest.NewRecorder()
+			next.ServeHTTP(rec, r)
+			if rec.Code >= 200 && rec.Code < 300 {
+				var uploaded struct {
+					URL string `json:"url"`
+				}
+				if json.Unmarshal(rec.Body.Bytes(), &uploaded) == nil && uploaded.URL != "" {
+					parsed, e := url.Parse(uploaded.URL)
+					if e != nil {
+						problem(w, 500, "Invalid upload response")
+						return
+					}
+					name := path.Base(parsed.Path)
+					tag, e := s.DB.Exec(r.Context(), `INSERT INTO assets(name,workspace_id,document_id) SELECT $1,workspace_id,id FROM pages WHERE id=$2 AND NOT deleted`, name, doc)
+					if e != nil || tag.RowsAffected() != 1 {
+						problem(w, 500, "Could not register private upload")
+						return
+					}
+				}
+			}
+			for k, vs := range rec.Header() {
+				w.Header()[k] = vs
+			}
+			w.WriteHeader(rec.Code)
+			w.Write(rec.Body.Bytes())
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+>>>>>>> origin/fix/self-host-review
 }
 
 // Un fichier rattaché à une page suit les permissions de cette page : masquer une

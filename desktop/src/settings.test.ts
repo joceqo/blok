@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {must} from './test-helpers';
 import { WORKSPACE_ROLES } from './access-vocabulary';
@@ -349,3 +350,231 @@ describe('settings discovery', () => {
     expect(must(document.querySelector<HTMLElement>('[data-desktop-settings-no-results]')).hidden).toBe(true);
   });
 });
+||||||| f8ef3c6b39
+=======
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {must} from './test-helpers';
+import { WORKSPACE_ROLES } from './access-vocabulary';
+import { rememberWorkspace, workspaceKey, type RemoteWorkspace } from './workspace-registry';
+import { applyAppearance, createDesktopFooter, readAppearance } from './settings';
+
+const childUi = vi.hoisted(() => ({
+  destroy: vi.fn(), refresh: vi.fn(async () => undefined),
+  mount: vi.fn(), invite: vi.fn(),
+}));
+vi.mock('./cloud/workspace-settings', () => ({
+  mountWorkspaceMembers: childUi.mount, openWorkspaceInvitation: childUi.invite,
+}));
+beforeEach(() => {
+  vi.clearAllMocks();
+  childUi.mount.mockReturnValue({destroy: childUi.destroy, refresh: childUi.refresh});
+});
+afterEach(() => {
+  document.querySelector<HTMLButtonElement>('[data-desktop-settings-close]')?.click();
+  document.body.innerHTML = '';
+  document.body.removeAttribute('data-blok-theme');
+  document.documentElement.removeAttribute('data-blok-theme');
+  localStorage.clear();
+  Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+});
+
+describe('desktop sidebar footer', () => {
+  it('opens preferences and saves the selected appearance', () => {
+    const root = document.createElement('div');
+    root.setAttribute('data-desktop-shell', '');
+    document.body.append(root);
+    applyAppearance(root, readAppearance());
+    const onThemeChange = vi.fn();
+    const footer = createDesktopFooter(onThemeChange);
+    root.append(footer);
+
+    const switcher = footer.querySelector('[data-desktop-switcher]') as HTMLButtonElement;
+    switcher.click();
+    expect(switcher.getAttribute('aria-expanded')).toBe('true');
+    expect(footer.querySelector('[role="menu"]')?.hasAttribute('hidden')).toBe(false);
+
+    const preferences = must([...footer.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      .find((item) => item.textContent?.includes('Paramètres')));
+    preferences.click();
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement;
+    expect(dialog.parentElement?.hasAttribute('hidden')).toBe(false);
+    const theme = dialog.querySelector('[data-desktop-settings-theme]') as HTMLButtonElement;
+    theme.click();
+    must(document.querySelector<HTMLElement>('[data-blok-item-name=light]')).click();
+    expect(readAppearance()).toBe('light');
+    expect(root.getAttribute('data-blok-theme')).toBe('light');
+    expect(document.body.getAttribute('data-blok-theme')).toBe('light');
+    expect(onThemeChange).toHaveBeenCalledWith('light');
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(dialog.parentElement?.hasAttribute('hidden')).toBe(true);
+  });
+
+  it('shows a local profile and AI provider settings', async () => {
+    const root = document.createElement('div');
+    root.setAttribute('data-desktop-shell', '');
+    document.body.append(root);
+    const footer = createDesktopFooter(() => undefined);
+    root.append(footer);
+    must(footer.querySelector<HTMLButtonElement>('[data-desktop-switcher]')).click();
+    must(footer.querySelector<HTMLButtonElement>('[data-desktop-menu-account]')).click();
+    const dialog = must(document.querySelector<HTMLElement>('[data-desktop-settings-dialog]'));
+    expect(dialog.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Profil local');
+    const name = must(dialog.querySelector<HTMLInputElement>('[data-desktop-settings-name]'));
+    name.value = 'Mes notes';
+    name.dispatchEvent(new Event('change'));
+    expect(footer.querySelector('[data-desktop-switcher-name]')?.textContent).toBe('Mes notes');
+    must([...dialog.querySelectorAll<HTMLButtonElement>('[data-desktop-settings-nav-item]')]
+      .find((item) => item.textContent?.includes('Assistant IA'))).click();
+    expect(dialog.querySelectorAll('[data-desktop-settings-provider-status]')).toHaveLength(0);
+    expect(dialog.textContent).toContain('Configurez OpenAI');
+    expect(dialog.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Assistant IA');
+  });
+});
+
+const remoteRef: RemoteWorkspace = {kind:'remote',id:'team',name:'Acme',server:'http://localhost:1420',accountId:'user',userName:'member@example.org',workspaceId:'acme',role:'admin'};
+function remoteFooter(role: 'admin'|'member'|'viewer' = 'admin'): HTMLElement {
+  const ref = {...remoteRef,role}; rememberWorkspace(ref);
+  localStorage.setItem('blok:desktop:active-workspace:v1',workspaceKey(ref));
+  const footer=createDesktopFooter(()=>undefined);document.body.append(footer);
+  must(footer.querySelector<HTMLButtonElement>('[data-desktop-switcher]')).click();
+  return footer;
+}
+describe('workspace menu hierarchy',()=>{
+  it('shows three primary admin actions and account-grouped workspaces without browser local data controls',()=>{
+    const footer=remoteFooter();const menu=must(footer.querySelector('[data-desktop-footer-menu]'));
+    const primary=[...menu.children].filter((node)=>node.getAttribute('role')==='menuitem');
+    // The identity header is separately styled; command rows follow it.
+    expect(primary.map(node=>node.textContent)).toEqual(['Paramètres','Aide','Inviter des membres','Gérer mon compte']);
+    expect(menu.textContent).not.toContain('localhost');
+    expect(menu.textContent).not.toContain('Créer un espace local');
+    expect(menu.textContent).not.toContain('Copier le chemin');
+    expect(menu.querySelector('[aria-label="Sur cet appareil"]')).toBeNull();
+    expect(menu.querySelector('[role="menuitemradio"][aria-current="true"]')?.textContent).toContain('Acme');
+  });
+  it('opens settings, invitations and account management in place; only the explicit account chooser navigates',()=>{
+    const footer=remoteFooter();const events: unknown[]=[];const href=location.href;
+    footer.addEventListener('blok:desktop-connect-cloud',(event)=>events.push((event as CustomEvent).detail));
+    must([...footer.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(node=>node.textContent==='Paramètres')).click();
+    expect(document.querySelector('[data-desktop-settings-theme]')).not.toBeNull();
+    expect(footer.inert || footer.hasAttribute('inert')).toBe(true);
+    expect(location.href).toBe(href); expect(events).toEqual([]);
+    must(document.querySelector<HTMLButtonElement>('[data-desktop-settings-close]')).click();
+    must(footer.querySelector<HTMLButtonElement>('[data-desktop-menu-invite]')).click();
+    expect(childUi.invite).toHaveBeenCalledWith(expect.objectContaining({slug:'acme',workspaceName:'Acme'}));
+    must(footer.querySelector<HTMLButtonElement>('[data-desktop-menu-connect]')).click();
+    const dialog=must(document.querySelector<HTMLElement>('[data-desktop-settings-dialog]'));
+    expect(dialog.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Mon compte');
+    expect(dialog.querySelector('[data-desktop-settings-content]')?.textContent).toContain('member@example.org');
+    expect(dialog.querySelector('[data-desktop-settings-nav-item][aria-current="page"]')?.textContent).toBe('member@example.org');
+    expect(location.href).toBe(href); expect(events).toEqual([]);
+    must([...dialog.querySelectorAll<HTMLButtonElement>('button')].find(node=>node.textContent==='Comptes et espaces')).click();
+    expect(events).toEqual([{section:'account'}]);
+  });
+  it('reuses the members panel, nests invitations inside the settings modal, and tears down the panel on close',()=>{
+    const footer=remoteFooter();
+    must([...footer.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(node=>node.textContent==='Paramètres')).click();
+    const dialog=must(document.querySelector<HTMLElement>('[data-desktop-settings-dialog]'));
+    must([...dialog.querySelectorAll<HTMLButtonElement>('[data-desktop-settings-nav-item]')].find(node=>node.textContent==='Membres')).click();
+    expect(childUi.mount).toHaveBeenCalledWith(expect.any(HTMLElement),expect.objectContaining({slug:'acme'}));
+    const mounted = must(childUi.mount.mock.calls[0]) as unknown as [HTMLElement, { onInvite: () => void }];
+    mounted[1].onInvite();
+    expect(childUi.invite).toHaveBeenLastCalledWith(expect.objectContaining({container:dialog}));
+    must(dialog.querySelector<HTMLButtonElement>('[data-desktop-settings-close]')).click();
+    expect(childUi.destroy).toHaveBeenCalledOnce();
+    expect(footer.hasAttribute('inert')).toBe(false);
+  });
+  it('shows actual account identity and role without an editable workspace-name masquerading as a profile',()=>{
+    const footer=remoteFooter();
+    must([...footer.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(node=>node.textContent==='Paramètres')).click();
+    const dialog=must(document.querySelector<HTMLElement>('[data-desktop-settings-dialog]'));
+    must([...dialog.querySelectorAll<HTMLButtonElement>('[data-desktop-settings-nav-item]')].find(node=>node.textContent==='member@example.org')).click();
+    expect(dialog.querySelector('[data-desktop-settings-content]')?.textContent).toContain('member@example.org');
+    expect(dialog.querySelector('[data-desktop-settings-content]')?.textContent).toContain(WORKSPACE_ROLES.admin);
+    expect(dialog.querySelector('[data-desktop-settings-name]')).toBeNull();
+  });
+  it.each(['member','viewer'] as const)('keeps invitations out of the %s menu and opens appearance preferences',role=>{
+    const footer=remoteFooter(role);
+    expect(footer.querySelector('[data-desktop-menu-invite]')).toBeNull();
+    must([...footer.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(node=>node.textContent==='Paramètres')).click();
+    expect(document.querySelector('[data-desktop-settings-theme]')).not.toBeNull();
+    expect(document.querySelector('[data-desktop-settings-path]')).toBeNull();
+  });
+  it('keeps local workspaces in a separate native group and puts paths inside advanced preferences',()=>{
+    Reflect.set(window,'__TAURI_INTERNALS__',{invoke:vi.fn().mockResolvedValue('/test/workspace')});
+    const footer=createDesktopFooter(()=>undefined);document.body.append(footer);
+    must(footer.querySelector<HTMLButtonElement>('[data-desktop-switcher]')).click();
+    expect(footer.querySelector('[aria-label="Sur cet appareil"] [data-desktop-menu-new-workspace]')).not.toBeNull();
+    expect(footer.querySelector('[data-desktop-footer-menu]')?.textContent).not.toContain('Copier le chemin');
+    must([...footer.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(node=>node.textContent==='Paramètres')).click();
+    expect(document.querySelector('details [data-desktop-settings-path]')).not.toBeNull();
+  });
+});
+
+describe('help menu', () => {
+  it('offers an Aide entry next to Paramètres that opens the help popover', () => {
+    const footer = remoteFooter('member');
+    const help = [...footer.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      .find((node) => node.textContent === 'Aide');
+    expect(help).toBeTruthy();
+    expect(help?.previousElementSibling?.textContent).toContain('Paramètres');
+    must(help).click();
+    const popover = document.querySelector('[data-desktop-help-popover], [data-blok-popover]');
+    expect(popover?.textContent).toMatch(/Premiers pas/);
+    expect(popover?.textContent).toMatch(/Qui peut voir quoi/);
+    expect(popover?.textContent).toMatch(/Raccourcis/);
+    expect(popover?.textContent).toMatch(/Blok /);
+    // No address to write to, so no row: a permanently greyed entry reads as broken.
+    expect(popover?.textContent).not.toMatch(/Signaler un problème/);
+  });
+
+  it('offers the report row only once the instance names a support address, never the viewer', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ user: { id: 'u1', email: 'moi@example.test' }, workspaces: [], supportEmail: 'ops@example.test' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )));
+    const footer = remoteFooter('member');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const help = [...footer.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      .find((node) => node.textContent === 'Aide');
+    must(help).click();
+    const popover = document.querySelector('[data-desktop-help-popover], [data-blok-popover]');
+    expect(popover?.textContent).toMatch(/Signaler un problème/);
+    expect(popover?.textContent).not.toMatch(/moi@example\.test/);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('settings discovery', () => {
+  it('finds connections by MCP and opens account sign-in from a local workspace', () => {
+    const footer = createDesktopFooter(() => undefined); document.body.append(footer);
+    must(footer.querySelector<HTMLButtonElement>('[data-desktop-switcher]')).click();
+    must([...footer.querySelectorAll<HTMLButtonElement>('[role=menuitem]')].find(node => node.textContent === 'Paramètres')).click();
+    const search = must(document.querySelector<HTMLInputElement>('[data-desktop-settings-search]'));
+    search.value = 'MCP'; search.dispatchEvent(new Event('input'));
+    const visible = [...document.querySelectorAll<HTMLButtonElement>('[data-desktop-settings-nav-item]')].filter(node => !node.hidden);
+    expect(visible.map(node => node.textContent)).toEqual(['Connexions']);
+    search.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter'}));
+    expect(document.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Connexions');
+    const connect = vi.fn(); footer.addEventListener('blok:desktop-connect-cloud', connect);
+    must([...document.querySelectorAll<HTMLButtonElement>('[data-desktop-connections-accounts] button')].find(node => node.textContent === 'Se connecter')).click();
+    expect(connect).toHaveBeenCalledOnce();
+  });
+  it('clears a search with Escape without closing settings and resets it on reopen', () => {
+    const footer = createDesktopFooter(() => undefined); document.body.append(footer);
+    must(footer.querySelector<HTMLButtonElement>('[data-desktop-switcher]')).click();
+    const open = must([...footer.querySelectorAll<HTMLButtonElement>('[role=menuitem]')].find(node => node.textContent === 'Paramètres'));
+    open.click();
+    const search = must(document.querySelector<HTMLInputElement>('[data-desktop-settings-search]'));
+    search.value = 'introuvable'; search.dispatchEvent(new Event('input'));
+    expect(must(document.querySelector<HTMLElement>('[data-desktop-settings-no-results]')).hidden).toBe(false);
+    search.focus();
+    search.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true}));
+    expect(search.value).toBe('');
+    expect(must(document.querySelector<HTMLElement>('[data-desktop-settings-overlay]')).hidden).toBe(false);
+    must(document.querySelector<HTMLButtonElement>('[data-desktop-settings-close]')).click();
+    open.click();
+    expect(must(document.querySelector<HTMLElement>('[data-desktop-settings-no-results]')).hidden).toBe(true);
+  });
+});
+>>>>>>> origin/fix/self-host-review

@@ -858,10 +858,19 @@ export class DatabaseCardDrawer {
     const drawer = document.createElement('div');
 
     drawer.setAttribute('data-blok-database-drawer', '');
+<<<<<<< HEAD
     drawer.addEventListener('keydown', this.trapPeekTab);
     drawer.setAttribute('role', 'dialog');
     drawer.setAttribute('aria-label', this.hostedPage?.label || this.label('tools.database.cardDetails'));
     drawer.toggleAttribute('data-blok-database-hosted-page', !!this.hostedPage);
+||||||| f8ef3c6b39
+    drawer.setAttribute('role', 'complementary');
+    drawer.setAttribute('aria-label', this.i18n?.t('tools.database.cardDetails') ?? 'tools.database.cardDetails');
+=======
+    drawer.addEventListener('keydown', this.trapPeekTab);
+    drawer.setAttribute('role', 'complementary');
+    drawer.setAttribute('aria-label', this.i18n?.t('tools.database.cardDetails') ?? 'tools.database.cardDetails');
+>>>>>>> origin/fix/self-host-review
 
     // --- Top toolbar ---
     const toolbar = document.createElement('div');
@@ -1084,7 +1093,267 @@ export class DatabaseCardDrawer {
 
     content.appendChild(divider);
 
+<<<<<<< HEAD
     return titleInput;
+||||||| f8ef3c6b39
+    // --- Editor holder ---
+    const editorHolder = document.createElement('div');
+
+    editorHolder.setAttribute('data-blok-database-drawer-editor', '');
+    // The page body saves through onDescriptionChange. Its own DOM churn
+    // (a direction flip, toolbox rebuilds) is not a change to this block.
+    editorHolder.setAttribute('data-blok-mutation-free', 'true');
+    content.appendChild(editorHolder);
+
+    drawer.appendChild(content);
+    drawer.appendChild(this.buildPeekResizeHandle(drawer));
+    this.wrapper.appendChild(drawer);
+    this.drawer = drawer;
+    this.setPeekWidth(this.peekWidth);
+    this.renderRegions(row);
+    this.applyMode(mode);
+
+    requestAnimationFrame(() => {
+      drawer.setAttribute('data-open', '');
+      if (this.drawer === drawer && this.mode === 'side') {
+        this.narrowPeekHost();
+      }
+      afterSlide(drawer, () => {
+        this.autoResizeTitle(titleInput);
+
+        if (!title) {
+          titleInput.focus();
+        }
+      });
+    });
+
+    this.initNestedEditor(editorHolder, row);
+
+    this.escapeHandler = (e: KeyboardEvent): void => {
+      const step = stepOf(e);
+
+      if (step !== null) {
+        e.preventDefault();
+        this.step(step);
+
+        return;
+      }
+      // Escape cancels Reposition and then closes the page as usual: one press (notion-motion.md Round 61 §3).
+      // A page this press does not close still claims it; the database holder would make it a block selection.
+      if (e.key === 'Escape' && this.coverReposition !== null && !isEscapeConsumed(e)) {
+        e.preventDefault();
+        this.coverReposition.cancel();
+        if (this.mode === 'full' || this.draft !== null) {
+          markEscapeConsumed(e);
+
+          return;
+        }
+      }
+      // A full page is left with its back button, not Escape. Customize layout is left with Cancel or Apply (research/10 §2).
+      if (e.key !== 'Escape' || this.mode === 'full' || this.draft !== null) {
+        return;
+      }
+
+      // A popover closed on this press already. One Escape = one layer.
+      if (isEscapeConsumed(e)) {
+        return;
+      }
+
+      const target = e.target as Node | null;
+      const activeHolder = this.drawer?.querySelector('[data-blok-database-drawer-editor]');
+
+      if (target && activeHolder?.contains(target)) {
+        return;
+      }
+      const rowId = this.currentRowId;
+
+      markEscapeConsumed(e);
+      this.close();
+      if (rowId !== null) {
+        this.onEscapeClose?.(rowId);
+      }
+    };
+    document.addEventListener('keydown', this.escapeHandler);
+    // The peek sits inside the database's block holder, whose keydown turns an unclaimed Escape into a block selection.
+    drawer.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.escapeHandler?.(e);
+    });
+    this.resizeHandler = (): void => this.syncDetailsDock();
+    window.addEventListener('resize', this.resizeHandler);
+
+    this.outsideClickHandler = (e: MouseEvent): void => {
+      const target = e.target as Node | null;
+
+      // A side peek stays open for clicks in its database, so the view beside it stays usable; it closes for the page outside.
+      const keptBy = this.mode === 'side' ? this.wrapper : null;
+
+      if (
+        (target && drawer.contains(target))
+        || this.mode === 'full'
+        || (target !== null && keptBy?.contains(target) === true)
+        || (target !== null && this.builder?.contains(target) === true)
+      ) {
+        return;
+      }
+
+      /**
+       * Toolbox and other popovers are portaled to document.body,
+       * so they sit outside the drawer DOM tree. Without this check,
+       * clicking a popover item would be treated as an "outside click"
+       * and close the drawer. Database dialogs mark their backdrop with
+       * data-blok-popover too.
+       */
+      if (target instanceof Element && target.closest('[data-blok-popover], [data-blok-popover-opened], [data-blok-emoji-picker], [data-blok-emoji-picker-backdrop], [data-role="audio-cover-picker"]') !== null) {
+        return;
+      }
+
+      /**
+       * The tab bar lives outside the drawer DOM tree, so clicking a
+       * tab to switch views would be treated as an outside click and
+       * close the drawer before switchView() runs.
+       */
+      if (target instanceof Element && target.closest('[data-blok-database-tab-bar]') !== null) {
+        return;
+      }
+
+      // The tab bar's "N more…" list mounts on body too.
+      if (target !== null && this.tabsOverflow?.contains(target) === true) {
+        return;
+      }
+
+      this.close();
+    };
+    document.addEventListener('mousedown', this.outsideClickHandler);
+
+    titleInput.focus();
+=======
+    // --- Editor holder ---
+    const editorHolder = document.createElement('div');
+
+    editorHolder.setAttribute('data-blok-database-drawer-editor', '');
+    // The page body saves through onDescriptionChange. Its own DOM churn
+    // (a direction flip, toolbox rebuilds) is not a change to this block.
+    editorHolder.setAttribute('data-blok-mutation-free', 'true');
+    content.appendChild(editorHolder);
+
+    drawer.appendChild(content);
+    drawer.appendChild(this.buildPeekResizeHandle(drawer));
+    this.wrapper.appendChild(drawer);
+    this.drawer = drawer;
+    this.setPeekWidth(this.peekWidth);
+    this.renderRegions(row);
+    this.applyMode(mode);
+
+    requestAnimationFrame(() => {
+      drawer.setAttribute('data-open', '');
+      if (this.drawer === drawer && this.mode === 'side') {
+        this.narrowPeekHost();
+      }
+      afterSlide(drawer, () => {
+        this.autoResizeTitle(titleInput);
+
+        if (!title) {
+          titleInput.focus();
+        }
+      });
+    });
+
+    this.initNestedEditor(editorHolder, row);
+
+    this.escapeHandler = (e: KeyboardEvent): void => {
+      const step = stepOf(e);
+
+      if (step !== null) {
+        e.preventDefault();
+        this.step(step);
+
+        return;
+      }
+      // Escape cancels Reposition and then closes the page as usual: one press (notion-motion.md Round 61 §3).
+      // A page this press does not close still claims it; the database holder would make it a block selection.
+      if (e.key === 'Escape' && this.coverReposition !== null && !isEscapeConsumed(e)) {
+        e.preventDefault();
+        this.coverReposition.cancel();
+        if (this.mode === 'full' || this.draft !== null) {
+          markEscapeConsumed(e);
+
+          return;
+        }
+      }
+      // A full page is left with its back button, not Escape. Customize layout is left with Cancel or Apply (research/10 §2).
+      if (e.key !== 'Escape' || this.mode === 'full' || this.draft !== null) {
+        return;
+      }
+
+      // A popover closed on this press already. One Escape = one layer.
+      if (isEscapeConsumed(e)) {
+        return;
+      }
+
+      const target = e.target as Node | null;
+      const activeHolder = this.drawer?.querySelector('[data-blok-database-drawer-editor]');
+
+      if (target && activeHolder?.contains(target)) {
+        return;
+      }
+      const rowId = this.currentRowId;
+
+      markEscapeConsumed(e);
+      this.close();
+      if (rowId !== null) {
+        this.onEscapeClose?.(rowId);
+      }
+    };
+    document.addEventListener('keydown', this.escapeHandler);
+    // The peek sits inside the database's block holder, whose keydown turns an unclaimed Escape into a block selection.
+    drawer.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.escapeHandler?.(e);
+    });
+    this.resizeHandler = (): void => this.syncDetailsDock();
+    window.addEventListener('resize', this.resizeHandler);
+
+    this.outsideClickHandler = (e: MouseEvent): void => {
+      const target = e.target as Node | null;
+
+      if (
+        (target && drawer.contains(target))
+        || this.mode === 'full'
+        || (target !== null && this.builder?.contains(target) === true)
+      ) {
+        return;
+      }
+
+      /**
+       * Toolbox and other popovers are portaled to document.body,
+       * so they sit outside the drawer DOM tree. Without this check,
+       * clicking a popover item would be treated as an "outside click"
+       * and close the drawer. Database dialogs mark their backdrop with
+       * data-blok-popover too.
+       */
+      if (target instanceof Element && target.closest('[data-blok-popover], [data-blok-popover-opened], [data-blok-emoji-picker], [data-blok-emoji-picker-backdrop], [data-role="audio-cover-picker"]') !== null) {
+        return;
+      }
+
+      /**
+       * The tab bar lives outside the drawer DOM tree, so clicking a
+       * tab to switch views would be treated as an outside click and
+       * close the drawer before switchView() runs.
+       */
+      if (target instanceof Element && target.closest('[data-blok-database-tab-bar]') !== null) {
+        return;
+      }
+
+      // The tab bar's "N more…" list mounts on body too.
+      if (target !== null && this.tabsOverflow?.contains(target) === true) {
+        return;
+      }
+
+      this.close();
+    };
+    document.addEventListener('mousedown', this.outsideClickHandler);
+
+    titleInput.focus();
+>>>>>>> origin/fix/self-host-review
   }
 
   /**

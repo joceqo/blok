@@ -11,9 +11,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+<<<<<<< HEAD
 // expectedSchemaVersion is the highest version schema.sql inserts. Operate
 // refuses to open a database that has not been migrated that far.
 const expectedSchemaVersion = 7
+||||||| f8ef3c6b39
+=======
+// expectedSchemaVersion is the highest version schema.sql inserts. Operate
+// refuses to open a database that has not been migrated that far.
+const expectedSchemaVersion = 5
+>>>>>>> origin/fix/self-host-review
 
 // ErrSchemaStale is returned by Operate when schema_migrations is behind.
 var ErrSchemaStale = errors.New("database schema is behind this blokctl; start the server to migrate first")

@@ -71,6 +71,7 @@ func (s *Service) initMCP() error {
 	return nil
 }
 
+<<<<<<< HEAD
 // La porte des outils d'édition MCP. Elle est distincte de celle du temps réel
 // et de celle des routes HTTP, et doit répondre comme elles : un jeton MCP porte
 // l'identité de son propriétaire, jamais davantage.
@@ -95,6 +96,30 @@ func (s *Service) authorizeMCPDocument(ctx context.Context, principal, documentI
 	}
 	return granted >= levelView, nil
 }
+||||||| f8ef3c6b39
+=======
+// La porte des outils d'édition MCP. Elle est distincte de celle du temps réel
+// et de celle des routes HTTP, et doit répondre comme elles : un jeton MCP porte
+// l'identité de son propriétaire, jamais davantage.
+func (s *Service) authorizeMCPDocument(ctx context.Context, principal, documentID string, write bool) (bool, error) {
+	var trashed bool
+	e := s.DB.QueryRow(ctx, `SELECT trashed FROM pages WHERE id=$1 AND NOT deleted`, documentID).Scan(&trashed)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if e != nil || trashed {
+		return false, e
+	}
+	granted, e := s.effectiveLevel(ctx, s.DB, principal, documentID)
+	if e != nil {
+		return false, e
+	}
+	if write {
+		return granted >= levelEdit, nil
+	}
+	return granted >= levelView, nil
+}
+>>>>>>> origin/fix/self-host-review
 
 func (s *Service) mcpIdentity(r *http.Request) (identity, error) {
 	var u identity

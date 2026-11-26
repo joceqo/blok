@@ -264,6 +264,7 @@ export class Collaboration extends Module {
    */
   private store: OperationStore | null = null;
 
+<<<<<<< HEAD
   /** Flush deferred typing before a host changes page, then await durable receipt.
    * @param timeoutMs - maximum wait; a timeout leaves the current editor intact
    */
@@ -315,6 +316,55 @@ export class Collaboration extends Module {
     await waitForReceipt();
   }
 
+||||||| f8ef3c6b39
+=======
+  /** Flush deferred typing before a host changes page, then await durable receipt.
+   * @param timeoutMs - maximum wait; a timeout leaves the current editor intact
+   */
+  public async flush(timeoutMs = 10_000): Promise<void> {
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+      throw new Error('The flush timeout must be a finite non-negative number');
+    }
+    const deadline = Date.now() + timeoutMs;
+    // An asynchronous tool save may not have reached the write buffer yet.
+    await Promise.resolve();
+    await new Promise<void>((resolve, reject) => {
+      const subscription = { remove: (): void => {} };
+      const timer = setTimeout(() => {
+        subscription.remove();
+        reject(new Error('A block is still saving; keep this page open'));
+      }, Math.max(0, deadline - Date.now()));
+      subscription.remove = this.Blok.YjsManager.onPendingBlockWritesSettled(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    this.Blok.YjsManager.flushPendingBlockWrites();
+    if (this.settings === null) {
+      return;
+    }
+    const waitForReceipt = async (): Promise<void> => {
+      if (this.isDestroyed) {
+        throw new Error('The editor was destroyed before its changes were acknowledged');
+      }
+      const stats = await this.store?.stats();
+      const state = stats === undefined ? undefined : this.saveStateOf(stats).state;
+      if (state === 'saved') {
+        return;
+      }
+      if (state === 'blocked' || state === 'quarantined') {
+        throw new Error('Some changes could not be saved; keep this page open to recover them');
+      }
+      if (Date.now() >= deadline) {
+        throw new Error('Changes have not been acknowledged by the server yet');
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      return waitForReceipt();
+    };
+    await waitForReceipt();
+  }
+
+>>>>>>> origin/fix/self-host-review
   /**
    * Origins this module applied FROM the network. The unfiltered tap sees
    * local and remote updates alike and has no other way to tell them apart.
