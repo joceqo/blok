@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { BodyError } from '../http/body.ts';
 import type { Headers } from '../http/headers.ts';
 import type { Request } from '../http/request.ts';
@@ -5,6 +7,10 @@ import type { ResponseWriter } from '../http/response.ts';
 import type { RouteHandler } from '../route/router.ts';
 import { writePlain } from '../route/respond.ts';
 import type { HistoryRequest } from '../collab/room/history.ts';
+import type { EditCommand, EditOutcome } from '../collab/room/document-room.ts';
+import { buildEditUpdate } from '../collab/edit/apply.ts';
+import { canonicalEdit, operationIdForKey } from '../collab/edit/canonical.ts';
+import { MAX_APPEND_BYTES } from '../collab/journal/append.ts';
 import type { HostAppOptions } from './options.ts';
 
 /** What `historyRequest` answers, as the room hands it back. */
@@ -17,6 +23,15 @@ export interface HistoryAnswer {
 /** The room side of the history routes: one request, run inside the room's queue. */
 export interface CollabRooms {
   history(doc: string, ticket: string, request: HistoryRequest): Promise<HistoryAnswer>;
+}
+
+/**
+ * The room side of the edit route: one command, run inside the room's queue.
+ * It is held apart from `CollabRooms` because an edit is served whether or not
+ * this host keeps a journal, while every history route needs one.
+ */
+export interface EditRooms {
+  apply(doc: string, ticket: string, command: EditCommand): Promise<EditOutcome>;
 }
 
 export const IDEMPOTENCY_KEY = 'Blok-Idempotency-Key';
@@ -37,12 +52,25 @@ const BAD_KEY = `a valid ${IDEMPOTENCY_KEY} header is required\n`;
 const BAD_IF_MATCH = 'If-Match must be one quoted "<lineage>:<sequence>" tag\n';
 const KEY_REUSED = 'the idempotency key was already used for a different edit\n';
 const STALE_IF_MATCH = 'the document is no longer at the If-Match head\n';
+const NEEDS_JOURNAL = 'If-Match needs the operation journal, and this server keeps none\n';
+const EDIT_TOO_LARGE = `an edit request is at most ${MAX_APPEND_BYTES} bytes\n`;
+const EDIT_REFUSED = 'collab: the edit was refused.\n';
+/** The head headers a browser page may read back off an edit. */
+const EDIT_HEAD_HEADERS = 'Blok-Doc-Lineage, Blok-Doc-Sequence';
 const CURRENT_LINEAGE = 'the document is on this lineage; it cannot be deleted\n';
 const UNAVAILABLE = 'the document is unavailable, retry\n';
 const UNLOADABLE = 'the document could not be loaded\n';
 const UNREADABLE = 'a stored version could not be read\n';
 const RESTORE_TOO_LARGE = 'collab: the restore is larger than one update may be.\n';
 const FORBIDDEN = 'forbidden\n';
+
+/** Every refusal the room names, bar the one that carries the current head. */
+const EDIT_REFUSALS: Record<'forbidden' | 'conflict' | 'invalid' | 'too-large', { status: number; body: string }> = {
+  forbidden: { status: 403, body: FORBIDDEN },
+  conflict: { status: 409, body: KEY_REUSED },
+  invalid: { status: 422, body: EDIT_REFUSED },
+  'too-large': { status: 413, body: EDIT_TOO_LARGE },
+};
 
 const LINEAGE = /^[0-9a-f]{32}$/;
 const DIGITS = /^[0-9]+$/;
@@ -99,17 +127,63 @@ function idempotencyKey(headers: Headers): string | undefined {
   return /^[\x20-\x7e]{1,128}$/.test(key) ? key : undefined;
 }
 
-/** Section 12.2: one strong `"<lineage>:<sequence>"` tag, or none at all. */
-function ifMatch(headers: Headers): { tag?: string } | undefined {
+/**
+ * Section 12.2: one strong `"<lineage>:<sequence>"` tag, or none at all. The
+ * sequence is a uint64 on both other servers, so a longer run of digits names
+ * no version any of them could be at — it is malformed, not merely stale.
+ */
+function ifMatch(headers: Headers): { tag?: string; expected?: EditPoint } | undefined {
   const values = headerValues(headers, 'If-Match');
   if (values.length === 0) {
     return {};
   }
   const [tag] = values;
-  if (values.length !== 1 || tag === undefined || !/^"[0-9a-f]{32}:(?:0|[1-9][0-9]*)"$/.test(tag)) {
+  const parts = values.length === 1 && tag !== undefined
+    ? /^"([0-9a-f]{32}):(0|[1-9][0-9]*)"$/.exec(tag)
+    : null;
+  if (parts === null) {
     return undefined;
   }
-  return { tag };
+  const [, lineage = '', digits = ''] = parts;
+  const sequence = BigInt(digits);
+  if (sequence > UINT64_MAX) {
+    return undefined;
+  }
+  return { tag, expected: { lineage, sequence } };
+}
+
+/** A point one lineage reached, as the head headers and an If-Match spell it. */
+interface EditPoint {
+  lineage: string;
+  sequence: bigint;
+}
+
+/**
+ * The edit body, read under a ceiling the body layer counts as it goes: a
+ * lying Content-Length and a chunked body are both stopped at the same byte.
+ * `undefined` is the refusal; anything else the read fails on leaves no bytes,
+ * which the canonical reader names for itself.
+ */
+async function editBytes(request: Request): Promise<Uint8Array | undefined> {
+  request.setBodyLimit(MAX_APPEND_BYTES);
+  const body = request.takeBody();
+  if (!body) {
+    return new Uint8Array();
+  }
+  const chunks: Uint8Array[] = [];
+  try {
+    await body.readToEnd(chunks);
+  } catch (error) {
+    // The ceiling arrives as the enum value itself, not as an Error.
+    return error === BodyError.TooLarge ? undefined : new Uint8Array();
+  }
+  const total = chunks.reduce((sum, part) => sum + part.length, 0);
+  const bytes = new Uint8Array(total);
+  chunks.reduce((at, part) => {
+    bytes.set(part, at);
+    return at + part.length;
+  }, 0);
+  return bytes;
 }
 
 function acceptsJson(headers: Headers): boolean {
@@ -270,7 +344,7 @@ function presentedTicket(options: HostAppOptions, headers: Headers): string {
   return headers.get('x-blok-ticket') ?? '';
 }
 
-export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | undefined) {
+export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | undefined, rooms?: EditRooms) {
   /** Runs one prepared request against the room and writes what it answered. */
   async function run(
     request: Request,
@@ -586,6 +660,87 @@ export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | un
     await refuse(request, response, 501, NO_HISTORY);
   };
 
+  /** The head headers, which only a host that keeps a journal can name. */
+  function headOf(at: EditPoint): Record<string, string> {
+    if (!options.collabJournal) {
+      return {};
+    }
+    return { 'Blok-Doc-Lineage': at.lineage, 'Blok-Doc-Sequence': String(at.sequence) };
+  }
+
+  /** What the room decided about one edit, as the wire words it. */
+  async function wrote(request: Request, response: ResponseWriter, outcome: EditOutcome): Promise<void> {
+    if (outcome.ok) {
+      expose(response, EDIT_HEAD_HEADERS);
+      await writeEmpty(request, response, 204, headOf(outcome));
+      return;
+    }
+    if (outcome.reason === 'precondition') {
+      // The caller asked for a head it is no longer at; the one it is at comes
+      // back with the refusal, so the next attempt needs no extra read.
+      expose(response, EDIT_HEAD_HEADERS);
+      for (const [name, value] of Object.entries(headOf(outcome))) {
+        response.headersMut().set(name, value);
+      }
+      await refuse(request, response, 412, STALE_IF_MATCH);
+      return;
+    }
+    const refusal = EDIT_REFUSALS[outcome.reason];
+    // A refused op names which one and why; the generic wording is the fallback
+    // for a refusal that carries no words of its own.
+    const body = outcome.message === undefined ? refusal.body : `${outcome.message}\n`;
+    await refuse(request, response, refusal.status, body);
+  }
+
+  /** POST {prefix}/sync/{doc}/edit */
+  const edit: RouteHandler = async (request, response, values) => {
+    if (rooms === undefined) {
+      await refuse(request, response, 501, NO_HISTORY);
+      return;
+    }
+    const key = idempotencyKey(request.headers());
+    const operationId = key === undefined ? null : operationIdForKey(key);
+    if (operationId === null) {
+      await refuse(request, response, 400, BAD_KEY);
+      return;
+    }
+    const match = ifMatch(request.headers());
+    if (match === undefined) {
+      await refuse(request, response, 400, BAD_IF_MATCH);
+      return;
+    }
+    if (match.expected !== undefined && !options.collabJournal) {
+      await refuse(request, response, 428, NEEDS_JOURNAL);
+      return;
+    }
+    const octets = await editBytes(request);
+    if (octets === undefined) {
+      await refuse(request, response, 413, EDIT_TOO_LARGE);
+      return;
+    }
+    const parsed = canonicalEdit(octets);
+    if ('error' in parsed) {
+      await refuse(request, response, 422, `${parsed.error}\n`);
+      return;
+    }
+    const command: EditCommand = {
+      operationId,
+      digest: createHash('sha256').update(parsed.canonical, 'utf8').digest(),
+      // An `insert ... after` resolves against the document as the room holds
+      // it, so the ops become an update inside the room's queue, not here.
+      update: new Uint8Array(),
+      build: (doc) => buildEditUpdate(doc, parsed.ops),
+      expected: match.expected,
+    };
+    try {
+      const ticket = presentedTicket(options, request.headers());
+      await wrote(request, response, await rooms.apply(values.doc ?? '', ticket, command));
+    } catch (error) {
+      const failure = roomFailure(error);
+      await refuse(request, response, failure.status, failure.body);
+    }
+  };
+
   /**
    * A host that keeps no journal knows nothing about lineages, sequences or
    * keys, so it has nothing to refuse them for: section 12.4's 501 comes
@@ -612,6 +767,7 @@ export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | un
     at: served(at),
     range: served(range),
     notAVersion: served(notAVersion),
+    edit,
     unimplemented,
     STALE_IF_MATCH,
   };

@@ -5,7 +5,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { verifyTicket } from '../auth/ticket.ts';
 import { DocEndpointClient } from '../collab/doc-endpoint.ts';
 import { DocumentPurged, MAX_APPEND_BYTES, UnreadableJournalData } from '../collab/journal/append.ts';
-import { openDocumentRoom } from '../collab/room/document-room.ts';
+import { openDocumentRoom, type EditCommand, type EditOutcome } from '../collab/room/document-room.ts';
 import { seedUpdate, type Snapshot } from '../collab/room/page-document.ts';
 import { existingDirectory, initializePage, newBaseline, pageDirectory } from '../collab/room/page-seed.ts';
 import { resetGeneration } from '../collab/room/reset.ts';
@@ -68,6 +68,8 @@ export interface SyncRooms {
   upgrade(request: Request, response: ResponseWriter, doc: string): Promise<void>;
   /** Runs one state, history or restore request inside the document's room queue. */
   history(doc: string, ticket: string, request: HistoryRequest): Promise<HistoryAnswer>;
+  /** Runs one `POST /sync/{doc}/edit` command inside the document's room queue. */
+  apply(doc: string, ticket: string, command: EditCommand): Promise<EditOutcome>;
   /** Publishes a fresh generation for one document; answers an HTTP status. */
   reset(doc: string): Promise<number>;
   /** Closes every member with 1001 and releases every journal lease. */
@@ -458,6 +460,37 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
   }
 
   /**
+   * Reaches the room for one edit command. It takes the same shared lease a
+   * reader takes, never the exclusive one a reset takes: an edit is ordinary
+   * traffic, and the room's own queue is what orders it against the sockets.
+   */
+  async function apply(doc: string, ticket: string, command: EditCommand): Promise<EditOutcome> {
+    if (stopping) {
+      throw new Error('Host draining');
+    }
+    const identity = await authorize(ticket, doc).catch(() => null);
+    if (identity === null) {
+      return { ok: false, reason: 'forbidden' };
+    }
+    const entry = await rooms.reserve(doc);
+    held.add(doc);
+    try {
+      const room = await entry.room;
+      if (stopping || !room.available()) {
+        throw new Error('Room unavailable');
+      }
+      return await room.apply(command, identity, ticket);
+    } finally {
+      rooms.release(doc, entry);
+      void rooms.settled().then(() => {
+        if (rooms.peek(doc) === undefined) {
+          held.delete(doc);
+        }
+      });
+    }
+  }
+
+  /**
    * Retires the live room and publishes a new lineage over it. The writer must
    * have released its lease before resetGeneration can take one of its own,
    * and `load` covers a document this host has never opened.
@@ -507,5 +540,5 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
     sockets.close();
   }
 
-  return { upgrade, history, reset, close };
+  return { upgrade, history, apply, reset, close };
 }

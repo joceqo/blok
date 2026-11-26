@@ -86,7 +86,9 @@ describe('document state on the Node host', () => {
 
   it('does not acknowledge unimplemented mutations or rewrite the loaded document', async () => {
     const count = requests.length;
-    for (const [method, route] of [['POST', 'edit'], ['POST', 'reset'], ['POST', 'history/l/1/restore'], ['GET', 'history']]) {
+    // `edit` left this list the day the Node host started serving it; it is
+    // covered by collab-edit.fast.test.ts instead.
+    for (const [method, route] of [['POST', 'reset'], ['POST', 'history/l/1/restore'], ['GET', 'history']]) {
       expect((await invokeHost(options, { method: method!, path: '/sync/doc/' + route })).status).toBe(501);
     }
     expect(requests.length).toBe(count);

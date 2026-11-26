@@ -237,10 +237,12 @@ export function buildRouter(options: HostAppOptions, sync?: SyncRooms): Router {
     // The journal is what the history and state routes read. Without one they
     // answer exactly as they did before this host held rooms at all.
     const journalled = options.collabJournal ? sync : undefined;
-    const collab = createCollabHttp(options, journalled);
+    // An edit is served whether or not this host keeps a journal, so it is the
+    // real rooms it reaches, never the journal-only view the history routes take.
+    const collab = createCollabHttp(options, journalled, sync);
     shell(router, `${patternPrefix}/sync/{doc}/reset`, 'POST',
       journalled === undefined ? unsupported : resetHandler(journalled), options);
-    shell(router, `${patternPrefix}/sync/{doc}/edit`, 'POST', unsupported, options);
+    shell(router, `${patternPrefix}/sync/{doc}/edit`, 'POST', sync === undefined ? unsupported : collab.edit, options);
     // Without a journal there is no head to read the state against: the
     // projection the document endpoint holds is the whole of it.
     shell(router, `${patternPrefix}/sync/{doc}/state`, 'GET', journalled === undefined

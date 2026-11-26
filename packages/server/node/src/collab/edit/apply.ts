@@ -15,6 +15,7 @@
  * alone, because writing `null` there would erase them.
  */
 
+import { validateEditOps } from './validate.ts';
 import { Doc, encodeStateAsUpdate, encodeStateVector } from 'yjs';
 import { DocumentStore } from '../../../../../../src/components/modules/yjs/document-store.ts';
 import { YBlockSerializer } from '../../../../../../src/components/modules/yjs/serializer.ts';
@@ -164,6 +165,9 @@ const serverStore = (): DocumentStore =>
  * @param options - who the request is credited to, and the clock it reads once
  * @returns the update to journal and apply
  */
+/** A refusal names the op that cannot be applied, in the words the fixture captured. */
+export class EditRefused extends Error {}
+
 export function buildEditUpdate(
   doc: Doc,
   ops: readonly EditCommand[],
@@ -173,6 +177,10 @@ export function buildEditUpdate(
 
   try {
     store.applyRemoteUpdate(encodeStateAsUpdate(doc));
+    // Checked against the live document before a single write: an insert naming
+    // an id already taken would otherwise overwrite the block that holds it.
+    const refusal = validateEditOps(store, ops);
+    if (refusal !== undefined) throw new EditRefused(refusal);
     applyEditOps(store, ops, options);
 
     return store.encodeStateAsUpdate(encodeStateVector(doc));

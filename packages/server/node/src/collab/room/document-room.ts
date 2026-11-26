@@ -10,6 +10,7 @@ import { preparePageStorage, type PageStorage } from './page-storage.ts';
 import { acquireJournalWriter, MAX_APPEND_BYTES } from '../journal/append.ts';
 import { sweepHeartbeat, type HeartbeatMember } from './heartbeat.ts';
 import { createAccessCache } from './access-cache.ts';
+import { EditRefused } from '../edit/apply.ts';
 
 import type { RoomIdentity, RoomOptions } from './preview.ts';
 
@@ -35,12 +36,19 @@ export interface EditCommand {
   operationId: string;
   digest: Uint8Array;
   update: Uint8Array;
+  /**
+   * Turns operations into an update against the LIVE document, for a door that
+   * carries operations rather than a prebuilt update: an insert placed after a
+   * block resolves against the state the room holds at admission time, not
+   * against whatever the caller last saw. When present it replaces `update`.
+   */
+  build?: (doc: Doc) => Uint8Array;
   expected?: { lineage: string; sequence: bigint };
 }
 
 export type EditOutcome =
   | { ok: true; lineage: string; sequence: bigint }
-  | { ok: false; reason: 'forbidden' | 'conflict' | 'invalid' | 'too-large' }
+  | { ok: false; reason: 'forbidden' | 'conflict' | 'invalid' | 'too-large'; message?: string }
   | { ok: false; reason: 'precondition'; lineage: string; sequence: bigint };
 
 /** What the admission rules decided, before a transport words it. */
@@ -66,6 +74,19 @@ function classifyUpdate(doc: Doc, update: Uint8Array, project?: PageStorage['val
     return {kind:changed ? 'changed' : 'unchanged', data:project?.(probe)} as const;
   } catch { return {kind:'invalid'} as const; }
   finally { probe.destroy(); }
+}
+
+/**
+ * The update an edit command carries, built against the live document when it
+ * brought a builder. A builder that throws names no edit, so it is invalid —
+ * never a reason to take the room down.
+ */
+function updateFor(doc: Doc, command: EditCommand): { update: Uint8Array } | { refusal: string } {
+  if (!command.build) return { update: command.update };
+  try { return { update: command.build(doc) }; }
+  // Only a refusal names its reason; anything else is a fault, and a fault
+  // explains nothing a caller could act on.
+  catch (error) { return { refusal: error instanceof EditRefused ? error.message : '' }; }
 }
 
 /** Own the journal lease while this document is loaded. */
@@ -175,11 +196,14 @@ export async function openDocumentRoom(options: RoomOptions) {
         if (!who || who.id !== admission.id || who.workspaceId !== admission.workspaceId ||
             !who.write || !admission.write) return {ok:false,reason:'forbidden'};
         const digest = Buffer.from(command.digest);
-        const verdict = admit(command.operationId,digest,command.update,command.expected);
+        const built = updateFor(doc,command);
+        if ('refusal' in built) return {ok:false,reason:'invalid',message:built.refusal || undefined};
+        const update = built.update;
+        const verdict = admit(command.operationId,digest,update,command.expected);
         if (verdict.kind === 'settled') return {ok:true,lineage:tag.lineage,sequence:verdict.sequence};
         if (verdict.kind === 'precondition') return {ok:false,reason:'precondition',lineage:tag.lineage,sequence:head};
         if (verdict.kind !== 'commit') return {ok:false,reason:verdict.kind};
-        const sequence = await commit(who,command.operationId,digest,command.update,2,verdict.data);
+        const sequence = await commit(who,command.operationId,digest,update,2,verdict.data);
         return {ok:true,lineage:tag.lineage,sequence};
       });
       queue = result.then(()=>{},()=>{});
