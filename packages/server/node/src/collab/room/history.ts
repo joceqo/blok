@@ -58,8 +58,10 @@ function changeSet(before: Page, after: Page, properties = false) {
 }
 
 // Early releases recorded a session digest as an actor. Never expose an internal session handle.
+// A record written without an actor reads as null, never as the empty string.
 function publicActor(id: string | null) {
-  return id && /^(?:mcp:)?[a-f0-9]{64}$/.test(id)
+  if (!id) return null;
+  return /^(?:mcp:)?[a-f0-9]{64}$/.test(id)
     ? 'actor-' + createHash('sha256').update(id).digest('hex').slice(0, 16)
     : id;
 }
@@ -73,8 +75,15 @@ export async function historyRequest(input: {
   project?: (doc: Doc) => Record<string, unknown>;
   operations: Map<string, { sequence: bigint; digest: Buffer }>;
   commit: (operationId: string, digest: Buffer, update: Uint8Array) => Promise<bigint>;
+  /**
+   * A record-notes store answers for this document: every changes row then
+   * carries `actors`, empty when that record has no note. A host running
+   * without such a store passes false, and no row names actors at all.
+   */
+  recordNotes?: boolean;
 }): Promise<Result> {
   const { directory, doc, tag, head, request, operations } = input;
+  const recordNotes = input.recordNotes ?? true;
   const { url, method } = request;
   const project = (d: Doc) => (input.project?.(d) ?? exportPage(d, {})) as Page;
   if (url.pathname.split('/').length === 6 && url.pathname.endsWith('/state')) {
@@ -130,6 +139,8 @@ export async function historyRequest(input: {
   const rows = new HistoryChangeWindow();
   let oldestRead: ChangePoint | undefined;
   const replay = new Doc();
+  // The point's own time: the record the path names, not the newest one read.
+  const pointTime = { at: null as number | null };
   const publicHead = (sequence: bigint) => ({
     'Blok-Doc-Lineage': tag.lineage,
     'Blok-Doc-Sequence': String(sequence),
@@ -183,11 +194,19 @@ export async function historyRequest(input: {
               change.page = [];
               if (!change.blocks.length) return;
             }
-            rows.add(point, { sequence: point.sequence, committedAt: time, actor, actors: noted ? [noted] : [], ...change });
+            rows.add(point, {
+              sequence: point.sequence,
+              committedAt: time,
+              actor,
+              ...(recordNotes && { actors: noted ? [noted] : [] }),
+              blocks: change.blocks,
+              ...(change.page.length > 0 && { page: change.page }),
+            });
           }
         },
         (record) => {
           time = Number((record.committedAtTicks - 621355968000000000n) / 10000n);
+          if (record.sequence === through) pointTime.at = time;
           actor = publicActor(record.actorId);
           noted = recordActor(notes,record,actor);
           if (!list) return;
@@ -270,7 +289,9 @@ export async function historyRequest(input: {
       const page = Object.fromEntries(
         ['title', 'icon', 'cover'].filter((k) => k in target).map((k) => [k, target[k]]),
       );
-      return { status: 200, headers, body: { blocks: target.blocks, page } };
+      // Sequence 0 is the lineage's birth; it has no record of its own.
+      const at = through === 0n ? selected.createdAt : pointTime.at;
+      return { status: 200, headers, body: { blocks: target.blocks, page, ...(at !== null && { time: at }) } };
     }
     const now = project(doc);
     const kept = keep ? keepDatabases(now, target) : undefined;

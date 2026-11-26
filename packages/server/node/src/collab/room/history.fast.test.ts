@@ -8,6 +8,7 @@ import { restorePage, seedUpdate } from './page-document.ts';
 import { appendJournal } from '../journal/append.ts';
 import { notesFilename, writeRecordNote } from './record-notes.ts';
 import { startJournalRoom } from './preview.ts';
+import { historyRequest } from './history.ts';
 
 it('serves guarded version reads and recoverable restores from the actual journal over HTTP', async () => {
   const root = await mkdtemp(join(tmpdir(), 'blok-history-'));
@@ -147,6 +148,75 @@ it('resolves an old Go ledger generation and tombstones only the requested archi
     expect((await req('/' + live + '/0')).status).toBe(200);
   } finally {
     await host.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('shapes a changes row and a version point the way the collab HTTP contract reads them', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'blok-history-shape-'));
+  const page = 'shape-1',
+    directory = pageDirectory(root, page);
+  const snapshot = (text: string, title?: string) => ({
+    blocks: [{ id: 'a', type: 'paragraph', data: { text } }],
+    ...(title === undefined ? {} : { title }),
+  });
+  const seed = seedUpdate(snapshot('one'));
+  const baseline = newBaseline(seed);
+  const lineage = Buffer.from(baseline.lineage).toString('hex');
+  const doc = new Doc();
+  applyUpdate(doc, seed);
+  await initializePage(root, page, baseline, '{}', async () => {});
+  // Record 1 carries no actor and touches no page field; record 2 is a noted
+  // person renaming the page.
+  const anonymous = restorePage(doc, snapshot('two'));
+  await appendJournal(directory, { expectedLineage: lineage, expectedThrough: 0n,
+    operationId: '1'.repeat(32), source: 0, actorId: '', update: anonymous });
+  applyUpdate(doc, anonymous);
+  await new Promise((done) => setTimeout(done, 2));
+  const renamed = restorePage(doc, snapshot('two', 'Titled'));
+  await appendJournal(directory, { expectedLineage: lineage, expectedThrough: 1n,
+    operationId: '2'.repeat(32), source: 0, actorId: 'u1', update: renamed });
+  applyUpdate(doc, renamed);
+  await writeRecordNote(directory, lineage, 2n, '2'.repeat(32), { kind: 'person' });
+  const ask = (suffix: string, notes?: boolean) =>
+    historyRequest({
+      directory,
+      doc,
+      head: 2n,
+      tag: { lineage, epoch: 1, format: 2 },
+      request: { url: new URL('http://host/api/blok/sync/' + page + '/history' + suffix), method: 'GET', confirmed: [] },
+      operations: new Map(),
+      commit: async () => 0n,
+      ...(notes === undefined ? {} : { recordNotes: notes }),
+    });
+  type Row = { sequence: number; committedAt: number; actor: string | null; actors?: unknown[]; page?: string[] };
+  try {
+    const window = await ask('/' + lineage + '/2/changes?since=0');
+    const rows = (window.body as { changes: Row[] }).changes;
+
+    // `page` only when a page field moved; `actors` only with record notes on.
+    expect(rows.map((row) => Object.keys(row))).toEqual([
+      ['sequence', 'committedAt', 'actor', 'actors', 'blocks'],
+      ['sequence', 'committedAt', 'actor', 'actors', 'blocks', 'page'],
+    ]);
+    // A record written without an actor reads as null, never as the empty string.
+    expect(rows.map((row) => row.actor)).toEqual([null, 'u1']);
+    expect([rows[1]?.page, rows[1]?.actors]).toEqual([['title'], [{ id: 'u1', kind: 'person' }]]);
+
+    const bare = await ask('/' + lineage + '/2/changes?since=0', false);
+
+    expect((bare.body as { changes: Row[] }).changes.map((row) => Object.keys(row))).toEqual([
+      ['sequence', 'committedAt', 'actor', 'blocks'],
+      ['sequence', 'committedAt', 'actor', 'blocks', 'page'],
+    ]);
+
+    // The point carries its own time, not the time of the newest record read.
+    const point = await ask('/' + lineage + '/1');
+
+    expect((point.body as { time: number }).time).toBe(rows[0]?.committedAt);
+    expect((point.body as { time: number }).time).not.toBe(rows[1]?.committedAt);
+  } finally {
+    doc.destroy();
     await rm(root, { recursive: true, force: true });
   }
 });
