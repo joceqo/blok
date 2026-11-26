@@ -1,6 +1,6 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer as createHttpServer } from 'node:http';
-import { connect, createServer as createTcpServer } from 'node:net';
+import { connect, createServer as createTcpServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -153,6 +153,51 @@ describe('the edit route on the Node host', () => {
 
     expect([answer.status, answer.body]).toEqual([413, 'an edit request is at most 1048576 bytes\n']);
   });
+
+  it('ends the connection it refused an oversized edit on, instead of leaving the rest on the wire', async () => {
+    const shared = new Shared(createHostHandler(options), defaultConfig());
+    const served = new Set<Socket>();
+    const server = createTcpServer((socket) => {
+      served.add(socket);
+      void serve(shared, socket, () => {});
+    });
+    let client: Socket | undefined;
+
+    try {
+      await new Promise<void>((ready) => server.listen(0, '127.0.0.1', () => ready()));
+      const { port } = server.address() as { port: number };
+      const parts: Buffer[] = [];
+
+      client = connect({ host: '127.0.0.1', port });
+      await new Promise<void>((ready, failed) => {
+        client?.once('connect', () => ready());
+        client?.once('error', failed);
+      });
+      client.on('data', (chunk: Buffer) => parts.push(chunk));
+      // No `Connection: close` of its own: this is the keep-alive connection
+      // a client goes on using. The refusal stops reading at the cap, so the
+      // bytes past it are still on the wire, and the next request written
+      // down this connection would be read out of the middle of them.
+      const body = ' '.repeat(MAX_APPEND_BYTES + 1);
+
+      client.write([...REQUEST, `${KEY}: e9`, `Content-Length: ${body.length}`, '', ''].join('\r\n') + body);
+
+      const ended = await Promise.race([
+        new Promise<boolean>((done) => client?.once('end', () => done(true))),
+        new Promise<boolean>((done) => setTimeout(() => done(false), 2_000)),
+      ]);
+      const answer = parseHttpResponse(Buffer.concat(parts));
+
+      expect([answer.status, answer.body]).toEqual([413, 'an edit request is at most 1048576 bytes\n']);
+      expect([answer.headers.connection, ended]).toEqual([['close'], true]);
+    } finally {
+      client?.destroy();
+      // The host answered mid-upload, so its own end is still draining what
+      // the client never stopped writing: close() alone would wait on it.
+      served.forEach((socket) => socket.destroy());
+      await new Promise<void>((done) => server.close(() => done()));
+    }
+  }, 20_000);
 
   it('names what is wrong with a body that is not an edit', async () => {
     const broken = await post({ [KEY]: 'e5' }, '{"ops":');

@@ -24,6 +24,8 @@ export async function timeHistory<T>(
   project: (d: Doc) => T,
   changes: (before: T, after: T, properties: boolean) => { blocks: { id?: string }[]; page: string[] },
   actorName: (id: string | null) => string | null,
+  /** With no record-notes store behind the host, a row names no actors at all. */
+  recordNotes: boolean,
 ) {
   const q = url.searchParams;
   const atTime = url.pathname.endsWith('/at');
@@ -125,7 +127,13 @@ export async function timeHistory<T>(
               diff.page = [];
               if (!diff.blocks.length) return;
             }
-            rows.add(point, { ...point, actor, actors: noted ? [noted] : [], ...diff });
+            rows.add(point, {
+              ...point,
+              actor,
+              ...(recordNotes && { actors: noted ? [noted] : [] }),
+              blocks: diff.blocks,
+              ...(diff.page.length > 0 && { page: diff.page }),
+            });
           }
         },
         (r) => {

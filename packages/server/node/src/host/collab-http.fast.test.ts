@@ -1,9 +1,10 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { pageDirectory } from '../collab/room/page-seed.ts';
 import { defaultTestHostOptions, invokeHost } from '../test-kit/invoke-host.ts';
 import type { HostAppOptions } from './options.ts';
 
@@ -164,6 +165,23 @@ describe('collaboration HTTP routes on the Node host', () => {
       .toEqual([404, 'application/json', '{"reason":"not_found"}']);
   });
 
+  it('redirects to the same point whether or not the at route is asked with a trailing slash', async () => {
+    const current = await lineage();
+    const reached: string[] = [];
+
+    for (const path of ['/sync/d/history/at', '/sync/d/history/at/']) {
+      const answer = await get(`${path}?time=2999-01-01T00:00:00Z`);
+
+      expect([path, answer.status]).toEqual([path, 302]);
+      // The Location is relative, so it keeps the mount prefix and the doc as
+      // sent. A trailing slash puts the base one level deeper, under .../at/,
+      // and the Location has to climb back out of it.
+      reached.push(new URL(answer.headers.location?.[0] ?? '', new URL(path, 'http://host')).pathname);
+    }
+
+    expect(reached).toEqual([`/sync/d/history/${current}/0`, `/sync/d/history/${current}/0`]);
+  });
+
   it('takes the at and changes literals as versions a DELETE never finds', async () => {
     for (const path of ['/sync/d/history/at', '/sync/d/history/changes']) {
       const answer = await invokeHost(options, { method: 'DELETE', path });
@@ -220,6 +238,71 @@ describe('collaboration HTTP routes on the Node host', () => {
 
     expect([stale.status, stale.headers['blok-doc-sequence']?.[0]]).toEqual([412, '0']);
   });
+
+  it('serves the room\'s state with no head at all when the host keeps no journal', async () => {
+    const plain = { ...options, collabJournal: false, collabDirectory: await mkdtemp(join(tmpdir(), 'blok-collab-plain-')) };
+
+    try {
+      const edit = await invokeHost(plain, {
+        method: 'POST',
+        path: '/sync/d/edit',
+        headers: { 'Blok-Idempotency-Key': 'k1' },
+        body: '{"ops":[{"op":"insert","id":"b1","block":{"type":"paragraph","data":{"text":"hello"}}}]}',
+      });
+
+      expect(edit.status).toBe(204);
+
+      const answer = await invokeHost(plain, { method: 'GET', path: '/sync/d/state' });
+      const page = JSON.parse(answer.body) as { blocks: { id: string }[] };
+
+      expect([answer.status, answer.headers['content-type']?.[0], answer.headers['cache-control']?.[0]])
+        .toEqual([200, 'application/json', 'no-store']);
+      // No journal, so there is no point to name: the three head headers a
+      // caller would read one off are all withheld, as they are off an edit.
+      expect([answer.headers.etag, answer.headers['blok-doc-lineage'], answer.headers['blok-doc-sequence']])
+        .toEqual([undefined, undefined, undefined]);
+      expect(page.blocks.map((block) => block.id)).toEqual(['b1']);
+    } finally {
+      await rm(plain.collabDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a corrupt journal as a document that would not load on state, and names it only on history', async () => {
+    const corrupt = { ...options, collabDirectory: await mkdtemp(join(tmpdir(), 'blok-collab-corrupt-')) };
+
+    try {
+      const edit = await invokeHost(corrupt, {
+        method: 'POST',
+        path: '/sync/d/edit',
+        headers: { 'Blok-Idempotency-Key': 'c1' },
+        body: '{"ops":[{"op":"insert","id":"b1","block":{"type":"paragraph","data":{"text":"one"}}}]}',
+      });
+
+      expect(edit.status).toBe(204);
+
+      const page = pageDirectory(corrupt.collabDirectory, 'd');
+      const name = (await readdir(page)).find((entry) => entry.startsWith('journal.')) ?? '';
+      const bytes = await readFile(join(page, name));
+
+      expect(bytes.length).toBeGreaterThan(0);
+      await writeFile(join(page, name), Buffer.concat([
+        bytes.subarray(0, bytes.length - 1),
+        Buffer.of((bytes.at(-1) ?? 0) ^ 0xff),
+      ]));
+
+      const history = await invokeHost(corrupt, { method: 'GET', path: '/sync/d/history' });
+
+      expect([history.status, history.body]).toEqual([500, 'a stored version could not be read\n']);
+
+      // Only a history route may name a stored version. The state door answers
+      // for the document, which is one that would not load.
+      const state = await invokeHost(corrupt, { method: 'GET', path: '/sync/d/state' });
+
+      expect([state.status, state.body]).toEqual([503, 'the document could not be loaded\n']);
+    } finally {
+      await rm(corrupt.collabDirectory, { recursive: true, force: true });
+    }
+  }, 20_000);
 
   it('answers every history route 501 when the host keeps no journal', async () => {
     const plain = { ...options, collabJournal: false };

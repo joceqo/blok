@@ -1,7 +1,3 @@
-import { createHash } from 'node:crypto';
-import { stat } from 'node:fs/promises';
-import { join } from 'node:path';
-import { DocEndpointClient } from '../collab/doc-endpoint.ts';
 import { equalsOrdinalIgnoreCase } from '../dotnet/ordinal.ts';
 import { isFieldValue, trimChars, type Headers } from '../http/headers.ts';
 import type { Request } from '../http/request.ts';
@@ -131,46 +127,16 @@ function resetHandler(sync: SyncRooms): RouteHandler {
   return async (request, response, values) => {
     const status = await sync.reset(values.doc ?? '');
     if (status !== 204) {
-      await writePlain(request, response, status, 'the document could not be reset\n');
+      // Go separates a document held elsewhere from one that would not load;
+      // this host answers 503 for both, and says the retryable thing, which is
+      // the only 503 a caller can act on.
+      const refusal = status === 403 ? 'forbidden\n' : 'the document is unavailable, retry\n';
+      await writePlain(request, response, status, refusal);
       return;
     }
     response.setStatus(204);
     await response.start(204);
   };
-}
-
-async function storedWorkingSet(directory: string, doc: string): Promise<boolean> {
-  if (!directory) return false;
-  const name = createHash('sha256').update(doc).digest('hex');
-  try {
-    await stat(join(directory, name));
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
-  }
-}
-
-async function stateHandler(
-  options: HostAppOptions, endpoint: DocEndpointClient, doc: string, request: Request, response: ResponseWriter,
-): Promise<void> {
-  // A journal or an existing working set can be ahead of the document projection.
-  // Serving that projection as current state in those modes would lose acknowledged edits.
-  if (options.collabJournal || options.collabS3Prefix) return unsupported(request, response);
-  let dataJson: string;
-  try {
-    if (await storedWorkingSet(options.collabDirectory, doc)) return unsupported(request, response);
-    const loaded = await endpoint.loadJson(doc);
-    dataJson = loaded.dataJson ?? '{"blocks":[]}';
-  } catch (error) {
-    options.collabLog(`collab: room "${doc}" could not load: ${error instanceof Error ? error.message : String(error)}`, 'warning');
-    await writePlain(request, response, 503, 'the document could not be loaded\n');
-    return;
-  }
-  response.headersMut().set('Cache-Control', 'no-store');
-  response.headersMut().set('Content-Type', 'application/json');
-  await response.start(200);
-  await response.write(new TextEncoder().encode(dataJson));
 }
 
 export function buildRouter(options: HostAppOptions, sync?: SyncRooms): Router {
@@ -233,7 +199,6 @@ export function buildRouter(options: HostAppOptions, sync?: SyncRooms): Router {
     });
     router.handle(`${patternPrefix}/sync/{doc}`, undefined, disallow('GET'));
 
-    const endpoint = new DocEndpointClient({ endpoint: options.docEndpoint, authorization: options.docEndpointAuth });
     // The journal is what the history and state routes read. Without one they
     // answer exactly as they did before this host held rooms at all.
     const journalled = options.collabJournal ? sync : undefined;
@@ -241,13 +206,9 @@ export function buildRouter(options: HostAppOptions, sync?: SyncRooms): Router {
     // real rooms it reaches, never the journal-only view the history routes take.
     const collab = createCollabHttp(options, journalled, sync);
     shell(router, `${patternPrefix}/sync/{doc}/reset`, 'POST',
-      journalled === undefined ? unsupported : resetHandler(journalled), options);
+      sync === undefined ? unsupported : resetHandler(sync), options);
     shell(router, `${patternPrefix}/sync/{doc}/edit`, 'POST', sync === undefined ? unsupported : collab.edit, options);
-    // Without a journal there is no head to read the state against: the
-    // projection the document endpoint holds is the whole of it.
-    shell(router, `${patternPrefix}/sync/{doc}/state`, 'GET', journalled === undefined
-      ? (request, response, values) => stateHandler(options, endpoint, values.doc ?? '', request, response)
-      : collab.state, options);
+    shell(router, `${patternPrefix}/sync/{doc}/state`, 'GET', collab.state, options);
     shell(router, `${patternPrefix}/sync/{doc}/history`, 'GET', collab.list, options);
     shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}/{sequence}`, 'GET', collab.version, options);
     shell(router, `${patternPrefix}/sync/{doc}/history/{lineage}`, 'DELETE', collab.remove, options);

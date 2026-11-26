@@ -8,6 +8,7 @@ import { initializePage, newBaseline, pageDirectory } from './page-seed.ts';
 import { restorePage, seedUpdate } from './page-document.ts';
 import { MAX_APPEND_BYTES } from '../journal/append.ts';
 import { openDocumentRoom } from './document-room.ts';
+import { EditRefused, EditTooLarge } from '../edit/apply.ts';
 import type { RoomIdentity } from './preview.ts';
 
 const origin = 'http://localhost';
@@ -160,4 +161,60 @@ it('refuses a caller without write permission and applies nothing', async () => 
   expect(refused).toEqual({ ok: false, reason: 'forbidden' });
   const next = await room.apply({ operationId: 'b'.repeat(32), digest: digestOf('two'), update: edit('two') }, editor, 'editor');
   expect(next).toEqual({ ok: true, lineage, sequence: 1n });
+});
+
+it('answers a builder\'s refusal in its own words, and keeps the HTML cap apart from the rest', async () => {
+  const words = 'collab: rich text field "paragraph.text" holds 32769 HTML characters; an edit may send at most 32768.';
+  const oversized = await room.apply({ operationId: 'a'.repeat(32), digest: digestOf('big'), update: new Uint8Array(),
+    build: () => { throw new EditTooLarge(words); } }, editor, 'editor');
+
+  expect(oversized).toEqual({ ok: false, reason: 'too-large', message: words });
+
+  const refused = await room.apply({ operationId: 'b'.repeat(32), digest: digestOf('no'), update: new Uint8Array(),
+    build: () => { throw new EditRefused('collab: op 0: there is no block "a" to update.'); } }, editor, 'editor');
+
+  expect(refused).toEqual({ ok: false, reason: 'invalid', message: 'collab: op 0: there is no block "a" to update.' });
+});
+
+/** A room of this test's own, so it can choose the options it opens with. */
+async function roomWith(page: string, extra: { recordNotes?: boolean }) {
+  const baseline = newBaseline(seedUpdate(snapshot('seed')));
+
+  await initializePage(root, page, baseline, '{}', async () => {});
+
+  const opened = await openDocumentRoom({
+    directory: pageDirectory(root, page),
+    documentId: page,
+    allowedOrigins: new Set([origin]),
+    authorize: async (token) => (token === 'editor' ? editor : null),
+    ...extra,
+  });
+
+  return { room: opened, lineage: Buffer.from(baseline.lineage).toString('hex') };
+}
+
+it('hands its record-notes setting down to the history routes', async () => {
+  const quiet = await roomWith('page-quiet', { recordNotes: false });
+
+  try {
+    const wrote = await quiet.room.apply({ operationId: 'a'.repeat(32), digest: digestOf('one'),
+      update: new Uint8Array(), build: (live) => restorePage(live, snapshot('one')) }, editor, 'editor');
+
+    expect(wrote).toEqual({ ok: true, lineage: quiet.lineage, sequence: 1n });
+
+    const answer = await quiet.room.history({
+      url: new URL(`http://host/api/blok/sync/page-quiet/history/${quiet.lineage}/1/changes`),
+      method: 'GET',
+      confirmed: [],
+    }, editor, 'editor');
+    const rows = (answer.body as { changes: Record<string, unknown>[] }).changes;
+
+    expect(answer.status).toBe(200);
+    expect(rows.length).toBeGreaterThan(0);
+    // A host keeping no record-notes store must not answer an empty actor
+    // list for every record: the key is absent, not empty.
+    expect(rows.filter((row) => Object.hasOwn(row, 'actors'))).toEqual([]);
+  } finally {
+    await quiet.room.close();
+  }
 });

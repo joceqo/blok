@@ -25,15 +25,24 @@ async function client(url: string, token: string, v1=false) {
   const closed = new Promise<number>(ok => ws.once('close',code => ok(code)));
   await new Promise<void>((ok,fail) => { ws.once('open',ok); ws.once('error',fail); });
   async function next() {
-    if (!inbox.length) await new Promise<void>((ok,fail) => {
-      const timer = setTimeout(() => fail(new Error('Missing preview frame')),2500);
-      wake = () => { clearTimeout(timer); wake = undefined; ok(); };
-    });
-    return inbox.shift()!;
+    for (;;) {
+      if (!inbox.length) await new Promise<void>((ok,fail) => {
+        const timer = setTimeout(() => fail(new Error('Missing preview frame')),2500);
+        wake = () => { clearTimeout(timer); wake = undefined; ok(); };
+      });
+      const frame = inbox.shift();
+
+      // A queryAwareness is the room prompting every member the moment
+      // another one joins, not an answer to anything this client asked.
+      if (frame !== undefined && frame.type !== 'queryAwareness') return frame;
+    }
   }
   const send = (frame: SyncWireFrame) => ws.send(encode(frame));
   expect(await next()).toEqual({type:'control',tag:{lineage,format:2,epoch:7}});
   expect(await next()).toMatchObject({type:'limits'});
+  // Sent on every join, empty or not, so a reconnect overwrites the map the
+  // client still holds from its last session.
+  expect(await next()).toMatchObject({type:'identities'});
   const doc = new Doc();
   ws.once('close',() => doc.destroy());
   async function sync() {

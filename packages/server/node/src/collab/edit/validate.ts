@@ -23,10 +23,14 @@
 
 import { Array as YArray, Map as YMap } from 'yjs';
 import { DocumentStore } from '../../../../../../src/components/modules/yjs/document-store.ts';
+import { CURRENT_RICH_TEXT_FIELDS } from '../../../../../../src/shared/rich-text/fields.ts';
 import type { EditCommand, EditValue, InsertCommand, RemoveCommand, UpdateCommand } from './canonical.ts';
 
 /** The deepest a data value may nest, as `MaxValueDepth` in the Go converter. */
 const DEPTH_MAX = 256;
+
+/** The most HTML characters one edit may send in one rich field, as `MaxEditHTMLChars`. */
+const HTML_MAX = 32768;
 
 /** The planner's own guards speak about a document; the caller learns which op. */
 type Say = (what: string) => string;
@@ -269,6 +273,71 @@ export function validateEditOps(store: DocumentStore, ops: readonly EditCommand[
 
   for (const [index, op] of ops.entries()) {
     const refusal = checkOne(picture, op, index);
+
+    if (refusal !== undefined) return refusal;
+  }
+
+  return undefined;
+}
+
+/** The block's rich fields, from the table the server-side serializer reads. */
+const richFieldsOf = (type: string): readonly string[] =>
+  Object.hasOwn(CURRENT_RICH_TEXT_FIELDS, type) ? CURRENT_RICH_TEXT_FIELDS[type] ?? [] : [];
+
+/**
+ * The first rich field of one block whose HTML is past the cap. A value that
+ * is already segments carries no HTML, so only a string is counted, and it is
+ * counted in UTF-16 units — what `len` reads off the Go converter's string.
+ */
+function oversizedField(type: string, data: Record<string, EditValue>): string | undefined {
+  for (const field of richFieldsOf(type)) {
+    const html = data[field];
+
+    if (typeof html !== 'string' || html.length <= HTML_MAX) continue;
+
+    return `collab: rich text field "${type}.${field}" holds ${html.length} ` +
+      `HTML characters; an edit may send at most ${HTML_MAX}.`;
+  }
+
+  return undefined;
+}
+
+/** The type each block will be once the request's own inserts are counted. */
+function typesOf(store: DocumentStore, ops: readonly EditCommand[]): Map<string, string> {
+  const types = new Map<string, string>();
+
+  for (const id of store.blocksMap.keys()) {
+    const entry: unknown = store.blocksMap.get(id);
+    const type: unknown = entry instanceof YMap ? entry.get('type') : undefined;
+
+    if (typeof type === 'string') types.set(id, type);
+  }
+  for (const op of ops) {
+    if (op.op !== 'insert') continue;
+    if (typeof op.block.type === 'string') types.set(op.id, op.block.type);
+  }
+
+  return types;
+}
+
+/**
+ * Judges the HTML a whole request sends, AFTER `validateEditOps` has passed
+ * it: the Go converter plans the request first and only then measures what the
+ * plan collected, so a structural refusal on any op beats an oversized field
+ * on any other. The door answers this one refusal with 413, never 422.
+ * @param store - the document the ops would be applied to
+ * @param ops - the canonical ops, in the order the request sent them
+ * @returns the message of the first field past the cap, or `undefined`
+ */
+export function richTextCapRefusal(store: DocumentStore, ops: readonly EditCommand[]): string | undefined {
+  const types = typesOf(store, ops);
+
+  for (const op of ops) {
+    if (op.op === 'remove') continue;
+    const type = types.get(op.id);
+
+    if (type === undefined) continue;
+    const refusal = oversizedField(type, op.op === 'insert' ? asObject(op.block.data) : op.data);
 
     if (refusal !== undefined) return refusal;
   }

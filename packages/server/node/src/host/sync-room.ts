@@ -6,6 +6,8 @@ import { verifyTicket } from '../auth/ticket.ts';
 import { DocEndpointClient } from '../collab/doc-endpoint.ts';
 import { DocumentPurged, MAX_APPEND_BYTES, UnreadableJournalData } from '../collab/journal/append.ts';
 import { openDocumentRoom, type EditCommand, type EditOutcome, type PendingFrame } from '../collab/room/document-room.ts';
+import { serveSocket } from '../collab/sync/served-socket.ts';
+import { SocketBridge } from '../collab/sync/socket-bridge.ts';
 import { seedUpdate, type Snapshot } from '../collab/room/page-document.ts';
 import { existingDirectory, initializePage, newBaseline, pageDirectory } from '../collab/room/page-seed.ts';
 import { resetGeneration } from '../collab/room/reset.ts';
@@ -17,6 +19,7 @@ import { writePlain } from '../route/respond.ts';
 import type { HistoryRequest } from '../collab/room/history.ts';
 import type { HistoryAnswer } from './collab-http.ts';
 import { addressKey, classifyPass, hostRefused, inspectOrigin, type PassFailure } from './guard.ts';
+import { InboundBudget } from './inbound-budget.ts';
 import type { HostAppOptions } from './options.ts';
 import {
   isSingleSegment,
@@ -146,19 +149,37 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
   }
 
   async function openRoom(documentId: string): Promise<DocumentRoom> {
-    const directory = pageDirectory(options.collabDirectory, documentId);
-    if (!(await existingDirectory(directory))) {
-      // The anchor belongs to canonical projection, which this host does not
-      // run. An empty one refuses a later projection rather than lying to it.
-      await initializePage(
-        options.collabDirectory,
+    try {
+      const directory = pageDirectory(options.collabDirectory, documentId);
+      if (!(await existingDirectory(directory))) {
+        // The anchor belongs to canonical projection, which this host does not
+        // run. An empty one refuses a later projection rather than lying to it.
+        await initializePage(
+          options.collabDirectory,
+          documentId,
+          newBaseline(seedUpdate(await seed(documentId))),
+          '{}',
+          async () => {},
+        );
+      }
+      return openDocumentRoom({
+        directory,
         documentId,
-        newBaseline(seedUpdate(await seed(documentId))),
-        '{}',
-        async () => {},
+        allowedOrigins,
+        authorize,
+        recordNotes: options.collabRecordNotes,
+        enforceRestoreGuards: options.collabEnforceRestoreGuards === true,
+        restoreTrashesPages: options.collabRestoreTrashesPages === true,
+      });
+    } catch (error) {
+      // The room alone knows why it could not load, and a join refused on the
+      // socket tells the host nothing. Go logs it from the same place.
+      options.collabLog(
+        `collab: room "${documentId}" could not load: ${error instanceof Error ? error.message : String(error)}`,
+        'warning',
       );
+      throw error;
     }
-    return openDocumentRoom({ directory, documentId, allowedOrigins, authorize });
   }
 
   const rooms = createRoomRegistry<DocumentRoom>({ open: openRoom });
@@ -341,18 +362,30 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
         }
         socket.once('close', () => resolve());
       });
-      // `ws` answers the handshake on the socket itself; an upgrade it refuses
-      // destroys the socket instead of calling back, which `closed` settles.
+      // `ws` is handed a stream of its own rather than the connection: this
+      // host reads the peer's frames itself, because the transport contract
+      // fixes close codes, reasons and budgets `ws` has no option for.
+      const bridge = new SocketBridge(socket);
+      // `ws` answers the handshake on the stream it was given; an upgrade it
+      // refuses destroys it instead of calling back, which `closed` settles.
       const connected = await new Promise<WebSocket | undefined>((resolve) => {
         socket.once('close', () => resolve(undefined));
         sockets.handleUpgrade(
           toUpgradeMessage(request, protocol) as unknown as IncomingMessage,
-          socket,
-          Buffer.from(buffered),
+          bridge,
+          Buffer.alloc(0),
           (ws) => resolve(ws),
         );
       });
       if (connected !== undefined) {
+        serveSocket({
+          ws: connected,
+          bridge,
+          wire: socket,
+          buffered,
+          budget: new InboundBudget(),
+          maxMessageBytes: MAX_APPEND_BYTES,
+        });
         await serve(connected);
       }
       await closed;
@@ -540,7 +573,7 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
       }
       await resetGeneration(
         pageDirectory(options.collabDirectory, doc),
-        async () => seedUpdate(null),
+        async () => seedUpdate(await seed(doc)),
         async () => {},
       );
     });

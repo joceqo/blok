@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import * as decoding from 'lib0/decoding';
 import { WebSocket, type RawData } from 'ws';
 import { applyUpdate, Doc, encodeStateAsUpdate, encodeStateVector } from 'yjs';
 import { decode, encode } from '../../../../../../src/components/modules/collaboration/sync-wire.ts';
@@ -10,7 +11,7 @@ import { preparePageStorage, type PageStorage } from './page-storage.ts';
 import { acquireJournalWriter, MAX_APPEND_BYTES } from '../journal/append.ts';
 import { sweepHeartbeat, type HeartbeatMember } from './heartbeat.ts';
 import { createAccessCache } from './access-cache.ts';
-import { EditRefused } from '../edit/apply.ts';
+import { EditRefused, EditTooLarge } from '../edit/apply.ts';
 
 import type { RoomIdentity, RoomOptions } from './preview.ts';
 
@@ -29,6 +30,37 @@ const COMMIT_UNAVAILABLE_REASON = 'commit unavailable, retry';
 
 /** Probe period. A half-open socket is dropped between one and two of these. */
 const HEARTBEAT_MS = 30_000;
+
+/**
+ * The most clients one awareness frame may claim. Go keeps the cap as a room
+ * option and reads it in the ROOM rather than in its validator, because only
+ * the room can act on the difference: a frame past the cap is dropped and
+ * forgotten, while a frame that will not parse is held against its sender.
+ * It must not exceed the presence reader's own ceiling — the member tests
+ * pin it to that ceiling from both sides.
+ */
+const MAX_AWARENESS_CLIENTS = 128;
+
+/** Malformed awareness frames from one member before the room expels it. */
+const MALFORMED_AWARENESS_LIMIT = 3;
+
+/** How many clients an awareness update claims, before any of it is read. */
+function claimedClients(update: Uint8Array): number {
+  try { return decoding.readVarUint(decoding.createDecoder(update)); }
+  catch { return 0; }
+}
+
+/**
+ * What an awareness frame the presence reader refused costs its sender. Past
+ * the cap the frame is dropped and nothing is held against the member — too
+ * many clients is not nonsense — and anything else is its own fault, the
+ * third one being its last.
+ */
+function refuseAwareness(peer: Peer, update: Uint8Array): void {
+  if (claimedClients(update) > MAX_AWARENESS_CLIENTS) return;
+  peer.badAwareness += 1;
+  if (peer.badAwareness >= MALFORMED_AWARENESS_LIMIT) peer.ws.close(1008,'malformed awareness');
+}
 
 /**
  * Floor under an authorization answer. The push on `/internal/room/recheck-access`
@@ -85,15 +117,20 @@ function classifyUpdate(doc: Doc, update: Uint8Array, project?: PageStorage['val
 
 /**
  * The update an edit command carries, built against the live document when it
- * brought a builder. A builder that throws names no edit, so it is invalid —
- * never a reason to take the room down.
+ * brought a builder. A builder that throws names no edit, so it is refused —
+ * never a reason to take the room down. A field past the HTML cap is the one
+ * refusal that is about size rather than sense, and the door words it as one.
  */
-function updateFor(doc: Doc, command: EditCommand): { update: Uint8Array } | { refusal: string } {
+function updateFor(doc: Doc, command: EditCommand):
+    { update: Uint8Array } | { refusal: string; reason: 'invalid' | 'too-large' } {
   if (!command.build) return { update: command.update };
   try { return { update: command.build(doc) }; }
   // Only a refusal names its reason; anything else is a fault, and a fault
   // explains nothing a caller could act on.
-  catch (error) { return { refusal: error instanceof EditRefused ? error.message : '' }; }
+  catch (error) {
+    if (!(error instanceof EditRefused)) return { refusal: '', reason: 'invalid' };
+    return { refusal: error.message, reason: error instanceof EditTooLarge ? 'too-large' : 'invalid' };
+  }
 }
 
 /** Own the journal lease while this document is loaded. */
@@ -219,7 +256,7 @@ export async function openDocumentRoom(options: RoomOptions) {
         if (spent?.kind === 'settled') return {ok:true,lineage:tag.lineage,sequence:spent.sequence};
         if (spent) return {ok:false,reason:'conflict'};
         const built = updateFor(doc,command);
-        if ('refusal' in built) return {ok:false,reason:'invalid',message:built.refusal || undefined};
+        if ('refusal' in built) return {ok:false,reason:built.reason,message:built.refusal || undefined};
         const update = built.update;
         const verdict = admit(command.operationId,digest,update,command.expected);
         if (verdict.kind === 'settled') return {ok:true,lineage:tag.lineage,sequence:verdict.sequence};
@@ -247,8 +284,11 @@ export async function openDocumentRoom(options: RoomOptions) {
         if (storage && data) await storage.publish(head,data);
         applyUpdate(doc,update);
         operations.set(operationId,{digest,sequence:head});
+        // Relayed to every other member, synced or not: Go's broadcast puts no
+        // such condition on it, and a member that stopped reading never syncs
+        // — so a sync condition is also what hides a stalled consumer.
         await Promise.all([...peers].map(async member => {
-          if (member!==except && member.synced && await principal(member)) send(member,{type:'update',update});
+          if (member!==except && await principal(member)) send(member,{type:'update',update});
         }));
         return head;
       } catch (error) {
@@ -270,6 +310,12 @@ export async function openDocumentRoom(options: RoomOptions) {
         if (!who || who.id !== admission.id || who.workspaceId !== admission.workspaceId ||
             (request.method !== 'GET' && (!who.write || !admission.write))) return {status:403};
         return historyRequest({directory:storage?.directory ?? options.directory,doc,tag,head,request,
+          recordNotes:options.recordNotes,
+          enforceRestoreGuards:options.enforceRestoreGuards,
+          restoreTrashesPages:options.restoreTrashesPages,
+          // What a trashed page is stamped as trashed BY. The contract spells
+          // nobody as null, never as the empty string a missing id reads as.
+          actorId:(who.actorId ?? who.id) || null,
           project:storage?.validate,operations,commit:async (id,digest,update) => {
             const candidate = classifyUpdate(doc,update,storage?.validate);
             if (candidate.kind === 'invalid') throw new Error('Invalid restore');
@@ -294,14 +340,13 @@ export async function openDocumentRoom(options: RoomOptions) {
       if (!identity || stopping) return;
       const frame = decode(payload);
       switch (frame.type) {
+        // Relayed whether or not this member has synced: Go routes an
+        // awareness frame with no such condition, and a frame dropped before
+        // it is read is a frame its sender is never answerable for.
         case 'awareness': {
-          if (!peer.synced) return;
           let update;
           try { update = presence.receive(peer,identity.actorId,frame.update); }
-          catch {
-            if (++peer.badAwareness >= 3) peer.ws.close(1008,'invalid awareness');
-            break;
-          }
+          catch { refuseAwareness(peer,frame.update); break; }
           if (update) await broadcastPresence(update,peer);
           break;
         }
@@ -338,7 +383,9 @@ export async function openDocumentRoom(options: RoomOptions) {
         case 'syncStep2':
         case 'update': {
           if (peer.ws.protocol==='blok-sync.v2') { peer.ws.close(1008,'raw write on a v2 session'); break; }
-          if (!identity.write || !peer.synced || frame.update.length>MAX_APPEND_BYTES) break;
+          // Write permission and the message cap, and nothing else: Go gates a
+          // v1 write on CanWrite alone, never on whether the sender has synced.
+          if (!identity.write || frame.update.length>MAX_APPEND_BYTES) break;
           const update=frame.update;
           const candidate=classifyUpdate(doc,update,storage?.validate);
           if (candidate.kind==='changed') await commit(identity,randomBytes(16).toString('hex'),
@@ -386,8 +433,19 @@ export async function openDocumentRoom(options: RoomOptions) {
       // What arrived during the handshake gap, in the order the client wrote it
       // and through the one path that keeps the queue and its counters honest.
       for (const frame of pending) enqueue(peer,frame.data,frame.binary);
-      send(peer,{type:'control',tag});
-      send(peer,{type:'limits',maxMessageBytes:MAX_APPEND_BYTES});
+      // Section 10: a peer that negotiated no sub-protocol speaks plain
+      // y-websocket and has no reader for either frame.
+      if (ws.protocol !== '') {
+        send(peer,{type:'control',tag});
+        send(peer,{type:'limits',maxMessageBytes:MAX_APPEND_BYTES});
+      }
+      // Sent even when empty, so a reconnect overwrites the stale map the
+      // client still holds. The members already here are then asked to
+      // announce themselves again: no y-websocket client sends
+      // queryAwareness of its own, so without this a late joiner never
+      // learns that the peers before it exist.
+      send(peer,presence.identities());
+      for (const member of peers) if (member !== peer) send(member,{type:'queryAwareness'});
     }
 
     function recheck() {

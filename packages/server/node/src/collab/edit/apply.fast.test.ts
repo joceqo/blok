@@ -12,7 +12,7 @@ import { Buffer } from 'node:buffer';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import { applyUpdate, Doc, encodeStateAsUpdate } from 'yjs';
+import { applyUpdate, Doc, encodeStateAsUpdate, encodeStateVector } from 'yjs';
 import { expect, it } from 'vitest';
 import { DocumentStore } from '../../../../../../src/components/modules/yjs/document-store.ts';
 import { YBlockSerializer } from '../../../../../../src/components/modules/yjs/serializer.ts';
@@ -332,5 +332,24 @@ it('hands a live document the update its edit comes to, without writing to it', 
 
   applyUpdate(doc, update);
   expect(blocksOf(projected(doc))).toEqual(asHtmlFields(entry?.export));
+  doc.destroy();
+});
+
+it('writes nothing for an update that sends the values the block already holds', () => {
+  const doc = new Doc();
+
+  applyUpdate(doc, buildEditUpdate(doc, opsOf(
+    '{"ops":[{"op":"insert","id":"a","block":{"type":"paragraph","data":{"text":"same"}}}]}')));
+
+  const before = encodeStateVector(doc);
+
+  // What the room journals as the edit. An update that moves no struct is the
+  // one the room answers with the head it is already at, leaving the key
+  // spendable — so a `type` written over the type already there, which is a
+  // new map entry like any other, would spend a key on nothing.
+  applyUpdate(doc, buildEditUpdate(doc, opsOf('{"ops":[{"op":"update","id":"a","data":{"text":"same"}}]}')));
+
+  expect(encodeStateVector(doc)).toEqual(before);
+  expect(blocksOf(projected(doc))).toEqual([{ id: 'a', type: 'paragraph', data: { text: 'same' } }]);
   doc.destroy();
 });

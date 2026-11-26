@@ -20,7 +20,7 @@ const auth = async (token: string, id: string) =>
     ? { id: token, write: token === 'writer', workspaceId: 'team' }
     : null;
 const headers = (token: string) => ({ Origin: origin, Authorization: 'Bearer ' + token });
-const doc = (text: string) => ({ blocks: [{ id: 'a', type: 'paragraph', data: { text } }] });
+const doc = (text: string) => ({ blocks: [{ id: 'a', type: 'paragraph', data: { text: [{ text }] } }] });
 const read = (base: string, action: string, method = 'GET', token = 'reader') =>
   fetch(base + '/' + action, { method, headers: headers(token) });
 
@@ -161,7 +161,7 @@ it('authorizes reset, reloads changed canonical content, retains the previous li
     expect(await (await read(base, 'history/' + previous + '/0')).json()).toMatchObject(doc('original'));
     expect((await read(base, 'reset', 'POST', 'writer')).status).toBe(204);
     const dir = pageDirectory(root, page);
-    expect((await inspectJournal(dir)).manifest?.epoch).toBe(3n);
+    expect((await inspectJournal(dir)).manifest?.epoch).toBe(2n);
     const key = dir.slice(0, -'.journal'.length);
     await writeFile(key + '.unreadable-old', 'old sensitive data');
     await writeFile(key, 'working copy');

@@ -8,7 +8,7 @@ import { exportPage, restorePage, seedUpdate } from './page-document.ts';
 // Storage contract for a page-bound board. Both editors start on an ordinary page
 // that predates the board, then place their first object independently offline.
 it('merges board edits and restores the source note, shape and attached arrow on the original page', () => {
-  const paragraph = { id: 'brief', type: 'paragraph', data: { text: 'Brief' } };
+  const paragraph = { id: 'brief', type: 'paragraph', data: { text: [{ text: 'Brief' }] } };
   const original = { blocks: [paragraph] };
   const seed = seedUpdate(original);
   const alice = new DocumentStore(new YBlockSerializer({ htmlToSegments: htmlToSegmentsNode }));
@@ -48,7 +48,7 @@ it('merges board edits and restores the source note, shape and attached arrow on
     const snapshot = exportPage(room, {});
     expect(snapshot.blocks).toHaveLength(4);
     expect(snapshot.blocks).toEqual(expect.arrayContaining([
-      { ...paragraph, data: { text: 'Brief révisé' } }, source,
+      { ...paragraph, data: { text: [{ text: 'Brief révisé' }] } }, source,
       { ...shape, data: { ...shape.data, x: 860, y: 104 } }, arrow,
     ]));
 
@@ -67,7 +67,7 @@ it('merges board edits and restores the source note, shape and attached arrow on
 });
 
 it('merges card placement with an independent paragraph edit using the shell format', () => {
-  const original = { blocks: [{ id: 'brief', type: 'paragraph', data: { text: 'Brief' } }] };
+  const original = { blocks: [{ id: 'brief', type: 'paragraph', data: { text: [{ text: 'Brief' }] } }] };
   const seed = seedUpdate(original);
   const board = new DocumentStore(new YBlockSerializer({ htmlToSegments: htmlToSegmentsNode }));
   const editor = new DocumentStore(new YBlockSerializer({ htmlToSegments: htmlToSegmentsNode }));
@@ -80,7 +80,7 @@ it('merges card placement with an independent paragraph edit using the shell for
     applyUpdate(room, editor.encodeStateAsUpdate());
     applyUpdate(room, board.encodeStateAsUpdate());
     expect(exportPage(room, {}).blocks).toEqual([{
-      id: 'brief', type: 'paragraph', data: { text: 'Brief révisé' }, tunes: { whiteboardPlacement: true },
+      id: 'brief', type: 'paragraph', data: { text: [{ text: 'Brief révisé' }] }, tunes: { whiteboardPlacement: true },
     }]);
     applyUpdate(room, restorePage(room, original));
     expect(exportPage(room, {})).toEqual(original);

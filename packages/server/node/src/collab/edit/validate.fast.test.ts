@@ -16,7 +16,7 @@ import { DocumentStore } from '../../../../../../src/components/modules/yjs/docu
 import { YBlockSerializer } from '../../../../../../src/components/modules/yjs/serializer.ts';
 import { htmlToSegmentsNode } from '../../../../../../src/view/rich-text-node.ts';
 import { canonicalEdit, type EditCommand } from './canonical.ts';
-import { validateEditOps } from './validate.ts';
+import { richTextCapRefusal, validateEditOps } from './validate.ts';
 
 interface EditCase {
   name: string;
@@ -101,7 +101,25 @@ function answerOn(blocks: unknown[], body: string): string | undefined {
   }
 }
 
+/** What the HTML cap pass answers for ops against a document holding `blocks`. */
+function capOn(blocks: unknown[], body: string): string | undefined {
+  const store = newStore();
+
+  try {
+    store.fromJSON(blocks as never);
+
+    return richTextCapRefusal(store, opsOf(body));
+  } finally {
+    store.destroy();
+  }
+}
+
 const paragraph = (id: string): unknown => ({ id, type: 'paragraph', data: { text: id } });
+
+/** A body inserting one paragraph whose text is `length` characters of HTML. */
+const inserting = (length: number): string => JSON.stringify({
+  ops: [{ op: 'insert', id: 'big', block: { type: 'paragraph', data: { text: 'x'.repeat(length) } } }],
+});
 
 it('answers every captured refusal with the message the other servers send', () => {
   const expected = Object.fromEntries(REFUSED.map((entry) => [entry.name, entry.refused?.message]));
@@ -172,4 +190,35 @@ it('refuses an insert placed after a block that is not a child of the named pare
     '"block":{"type":"paragraph","data":{}}}]}';
 
   expect(answerOn(blocks, body)).toBe('collab: op 0: block "root" is not a child of "tg".');
+});
+
+it('refuses a rich text field past the HTML cap, naming the field and both counts', () => {
+  expect(capOn([paragraph('root')], inserting(32769)))
+    .toBe('collab: rich text field "paragraph.text" holds 32769 HTML characters; an edit may send at most 32768.');
+});
+
+it('takes a rich text field at the HTML cap', () => {
+  expect(capOn([paragraph('root')], inserting(32768))).toBeUndefined();
+});
+
+it('reads an updated block\'s type from the document, and leaves a field that is not rich alone', () => {
+  const blocks = [{ id: 'pic', type: 'image', data: { caption: 'c' } }, paragraph('p')];
+  const oversized = JSON.stringify({ ops: [{ op: 'update', id: 'p', data: { text: 'x'.repeat(32769) } }] });
+
+  expect(capOn(blocks, oversized))
+    .toBe('collab: rich text field "paragraph.text" holds 32769 HTML characters; an edit may send at most 32768.');
+  expect(capOn(blocks, JSON.stringify({ ops: [{ op: 'update', id: 'pic', data: { caption: 'x'.repeat(32769) } }] })))
+    .toBeUndefined();
+});
+
+it('reads the type an earlier op of the same request gave the block', () => {
+  const body = JSON.stringify({
+    ops: [
+      { op: 'insert', id: 'h', block: { type: 'header', data: {} } },
+      { op: 'update', id: 'h', data: { text: 'x'.repeat(32769) } },
+    ],
+  });
+
+  expect(capOn([paragraph('root')], body))
+    .toBe('collab: rich text field "header.text" holds 32769 HTML characters; an edit may send at most 32768.');
 });

@@ -1,10 +1,11 @@
 import { isDeepStrictEqual } from 'node:util';
-import { Doc, encodeStateVector, encodeStateAsUpdate } from 'yjs';
+import { Doc, XmlText, encodeStateVector, encodeStateAsUpdate } from 'yjs';
 import { DocumentStore } from '../../../../../../src/components/modules/yjs/document-store.ts';
 import { YBlockSerializer } from '../../../../../../src/components/modules/yjs/serializer.ts';
 import { readPageFields } from '../../../../../../src/components/modules/yjs/page-fields.ts';
 import { isElementNode, NS, parseFragment, serialize } from '../../../../../../src/html/index.ts';
 import { CURRENT_RICH_TEXT_FIELDS } from '../../../../../../src/shared/rich-text/fields.ts';
+import { segmentsToHtml } from '../../../../../../src/shared/rich-text/segments-to-html.ts';
 import { htmlToSegmentsNode } from '../../../../../../src/view/rich-text-node.ts';
 
 export type Snapshot = Record<string, unknown> | null;
@@ -12,8 +13,18 @@ const core = new Set(['blocks', 'title', 'icon', 'cover']);
 export function envelope(data: Snapshot): Record<string, unknown> {
   return Object.fromEntries(Object.entries(data ?? {}).filter(([key]) => !core.has(key)));
 }
+// The editor renders a formatted text as HTML, because its tools read HTML.
+// A page projection answers the segments themselves, as the Go and C# hosts do.
+class ProjectionSerializer extends YBlockSerializer {
+  public override yValueToPlain(value: unknown, depth = 0): unknown {
+    const plain = super.yValueToPlain(value, depth);
+    // Past the depth cap the base reader answers null, and that still stands.
+    return value instanceof XmlText && typeof plain === 'string' ? this.readRichText(value) : plain;
+  }
+}
+const richText = new ProjectionSerializer({ htmlToSegments: htmlToSegmentsNode });
 function store() {
-  return new DocumentStore(new YBlockSerializer({ htmlToSegments: htmlToSegmentsNode }));
+  return new DocumentStore(new ProjectionSerializer({ htmlToSegments: htmlToSegmentsNode }));
 }
 function requireJson(value: unknown): void {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
@@ -72,6 +83,17 @@ function canonicalMarkAliases(html: string): string {
   return serialize(fragment);
 }
 
+/**
+ * A rich field a legacy source still holds as HTML, in the shape the
+ * projection answers it. Segments only when rendering them back yields the
+ * same markup, so a field the format-2 schema would normalize away stays the
+ * string it was and fails the comparison it is handed to.
+ */
+function asProjected(html: string): unknown {
+  const segments = richText.toRichSegments(html);
+  return segments !== null && segmentsToHtml(segments) === canonicalMarkAliases(html) ? segments : html;
+}
+
 /** A legacy HTML mark may have a different spelling in the Yjs projection. */
 export function matchesProjection(projected: Snapshot, source: Snapshot): boolean {
   if (isDeepStrictEqual(projected, source)) return true;
@@ -82,11 +104,25 @@ export function matchesProjection(projected: Snapshot, source: Snapshot): boolea
         !block.data || typeof block.data !== 'object' || Array.isArray(block.data)) return block;
     const data = { ...block.data };
     for (const field of CURRENT_RICH_TEXT_FIELDS[block.type]!) {
-      if (typeof data[field] === 'string') data[field] = canonicalMarkAliases(data[field]);
+      if (typeof data[field] === 'string') data[field] = asProjected(data[field]);
     }
     return { ...block, data };
   });
   return isDeepStrictEqual(projected, { ...source, blocks });
+}
+
+/**
+ * Refuse a block whose `data` the serializer would read with `Object.entries`,
+ * which throws a TypeError a room can only report as a 503. Go refuses the
+ * same two shapes with one message, absent and null alike.
+ */
+function requireBlockData(blocks: readonly unknown[]): void {
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object' || Array.isArray(block)) continue;
+    const { id, data } = block as { id?: unknown; data?: unknown };
+    if (data === undefined || data === null)
+      throw new Error(`Page block "${typeof id === 'string' ? id : ''}" data is null`);
+  }
 }
 
 // Use the editor's format-2 serializer in both directions. Refuse to seed
@@ -96,6 +132,7 @@ export function seedUpdate(data: Snapshot): Uint8Array {
   try {
     if (data !== null) {
       if (!Array.isArray(data.blocks)) throw new Error('Page must contain a blocks array');
+      requireBlockData(data.blocks);
       s.fromJSON(data.blocks);
       s.pageFromJSON(data);
       if (!matchesProjection(output(s, envelope(data)), data))
@@ -141,6 +178,7 @@ export function restorePage(doc: Doc, data: Record<string,unknown>): Uint8Array 
   const s = store();
   try {
     if (!Array.isArray(data.blocks)) throw new Error('Invalid historical blocks');
+    requireBlockData(data.blocks);
     s.applyRemoteUpdate(encodeStateAsUpdate(doc));
     s.fromJSON(data.blocks);
     s.pageFromJSON(data);

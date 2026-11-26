@@ -31,9 +31,33 @@ export interface CollabRooms {
  * The room side of the edit route: one command, run inside the room's queue.
  * It is held apart from `CollabRooms` because an edit is served whether or not
  * this host keeps a journal, while every history route needs one.
+ *
+ * `history` is how the state route reaches the live document, which is served
+ * without a journal too. A caller holding rooms that only take edits leaves it
+ * out, and then there is no state to read off them either.
  */
-export interface EditRooms {
+export interface EditRooms extends Partial<CollabRooms> {
   apply(doc: string, ticket: string, command: EditCommand): Promise<EditOutcome>;
+}
+
+/** What one route asks of `run`, beyond the request it has prepared. */
+interface RunOptions {
+  /** The header names a CORS page may read back off a 200 answer. */
+  exposed?: string;
+  /**
+   * The state door. It reaches the rooms themselves, because the live
+   * document is served whether or not this host keeps a journal, and it
+   * answers for the DOCUMENT: a journal it cannot read is a document that
+   * would not load. Naming a stored version with 500 is the history routes'.
+   */
+  state?: boolean;
+  /**
+   * What a relative `Location` has to climb before it names the point. The
+   * room writes `{lineage}/{sequence}`, which resolves against the directory
+   * of the request — one level deeper when the route was asked with a
+   * trailing slash.
+   */
+  relocateFrom?: string;
 }
 
 export const IDEMPOTENCY_KEY = 'Blok-Idempotency-Key';
@@ -59,6 +83,12 @@ const EDIT_TOO_LARGE = `an edit request is at most ${MAX_APPEND_BYTES} bytes\n`;
 const EDIT_REFUSED = 'collab: the edit was refused.\n';
 /** The head headers a browser page may read back off an edit. */
 const EDIT_HEAD_HEADERS = 'Blok-Doc-Lineage, Blok-Doc-Sequence';
+/** The three the room names a point with, which only a journal has one of. */
+const HEAD_HEADERS = ['Blok-Doc-Lineage', 'Blok-Doc-Sequence', 'ETag'];
+/** What a browser page may read them back under. */
+const STATE_HEAD_HEADERS = HEAD_HEADERS.join(', ');
+/** The pair a history answer names its own point with. */
+const HISTORY_HEAD_HEADERS = 'Blok-History-Lineage, Blok-History-Sequence';
 const CURRENT_LINEAGE = 'the document is on this lineage; it cannot be deleted\n';
 const UNAVAILABLE = 'the document is unavailable, retry\n';
 const UNLOADABLE = 'the document could not be loaded\n';
@@ -221,6 +251,18 @@ function untruncated(body: unknown): unknown {
     return rest;
   }
   return body;
+}
+
+/**
+ * The `Location` the room wrote, climbed back out of a deeper base. It stays
+ * relative either way, so the mount prefix and the document id reach the
+ * caller exactly as the caller sent them.
+ */
+function relocated(headers: Record<string, string>, from: string | undefined): Record<string, string> {
+  if (from === undefined || headers.Location === undefined) {
+    return headers;
+  }
+  return { ...headers, Location: from + headers.Location };
 }
 
 async function refuse(request: Request, response: ResponseWriter, status: number, body: string): Promise<void> {
@@ -395,24 +437,29 @@ function toApply(
 }
 
 export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | undefined, rooms?: EditRooms) {
+  /** The rooms the state door reaches: the real ones, journal or no journal. */
+  const live = rooms?.history !== undefined ? { history: rooms.history.bind(rooms) } : undefined;
+
   /** Runs one prepared request against the room and writes what it answered. */
   async function run(
     request: Request,
     response: ResponseWriter,
     doc: string,
     prepared: HistoryRequest,
-    exposed?: string,
+    extra: RunOptions = {},
   ): Promise<void> {
-    if (sync === undefined) {
+    const against = extra.state === true ? live : sync;
+    if (against === undefined) {
       await refuse(request, response, 501, NO_HISTORY);
       return;
     }
     try {
-      const answer = await sync.history(doc, presentedTicket(options, request.headers()), prepared);
-      await write(request, response, answer, prepared, exposed);
+      const answer = await against.history(doc, presentedTicket(options, request.headers()), prepared);
+      await write(request, response, answer, prepared, extra);
     } catch (error) {
       const failure = roomFailure(error);
-      await refuse(request, response, failure.status, failure.body);
+      const forDocument = extra.state === true && failure.status === 500;
+      await refuse(request, response, forDocument ? 503 : failure.status, forDocument ? UNLOADABLE : failure.body);
     }
   }
 
@@ -421,14 +468,16 @@ export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | un
     response: ResponseWriter,
     answer: HistoryAnswer,
     prepared: HistoryRequest,
-    exposed?: string,
+    extra: RunOptions,
   ): Promise<void> {
-    const headers = answer.headers ?? {};
+    const headers = named(answer.headers ?? {});
     const restore = prepared.url.pathname.includes('/restore');
     switch (answer.status) {
       case 200:
-        if (exposed !== undefined) {
-          expose(response, exposed);
+        // Exposed only where it is there to read: the room names a head on
+        // every state answer, and a host with no journal serves none of it.
+        if (extra.exposed !== undefined && (extra.state !== true || options.collabJournal)) {
+          expose(response, extra.exposed);
         }
         await writeJson(request, response, 200, untruncated(answer.body), headers);
         return;
@@ -436,7 +485,7 @@ export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | un
         await writeEmpty(request, response, 204, headers);
         return;
       case 302:
-        await writeEmpty(request, response, 302, headers);
+        await writeEmpty(request, response, 302, relocated(headers, extra.relocateFrom));
         return;
       case 403:
         await refuse(request, response, 403, FORBIDDEN);
@@ -484,13 +533,29 @@ export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | un
     }
   }
 
-  /** GET {prefix}/sync/{doc}/state */
+  /**
+   * The head a journal names. A host keeping none is at no point it could
+   * name, so it serves the document with neither the headers nor the ETag —
+   * the same silence `headOf` keeps on an edit.
+   */
+  function named(headers: Record<string, string>): Record<string, string> {
+    if (options.collabJournal) {
+      return headers;
+    }
+    return Object.fromEntries(Object.entries(headers).filter(([name]) => !HEAD_HEADERS.includes(name)));
+  }
+
+  /**
+   * GET {prefix}/sync/{doc}/state: the live document, served whether or not
+   * this host keeps a journal — so it runs against the rooms themselves, never
+   * the journal-only view every history route takes.
+   */
   const state: RouteHandler = async (request, response, values) => {
     await run(request, response, values.doc ?? '', {
       url: roomUrl(values.doc ?? '', ['state'], {}),
       method: 'GET',
       confirmed: [],
-    }, 'Blok-Doc-Lineage, Blok-Doc-Sequence, ETag');
+    }, { exposed: STATE_HEAD_HEADERS, state: true });
   };
 
   /** GET {prefix}/sync/{doc}/history */
@@ -551,7 +616,7 @@ export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | un
       url: roomUrl(values.doc ?? '', ['history', place.lineage, place.sequence], {}),
       method: 'GET',
       confirmed: [],
-    }, 'Blok-History-Lineage, Blok-History-Sequence');
+    }, { exposed: HISTORY_HEAD_HEADERS });
   };
 
   /** GET {prefix}/sync/{doc}/history/{lineage}/{sequence}/changes */
@@ -579,7 +644,7 @@ export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | un
       }),
       method: 'GET',
       confirmed: [],
-    }, 'Blok-History-Lineage, Blok-History-Sequence');
+    }, { exposed: HISTORY_HEAD_HEADERS });
   };
 
   /** DELETE {prefix}/sync/{doc}/history/{lineage} */
@@ -651,7 +716,9 @@ export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | un
       method: 'GET',
       asJSON: acceptsJson(request.headers()),
       confirmed: [],
-    }, 'Blok-History-Lineage, Blok-History-Sequence');
+      // Asked with a trailing slash, the base is .../at/ — one level deeper
+      // than the route's own place, so the point has to climb back out of it.
+    }, { exposed: HISTORY_HEAD_HEADERS, relocateFrom: request.path().endsWith('/') ? '../' : undefined });
   };
 
   /** GET {prefix}/sync/{doc}/history/changes */
@@ -765,6 +832,11 @@ export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | un
     }
     const octets = await editBytes(request);
     if (octets === undefined) {
+      // The read stopped at the cap, so the rest of the body is still on the
+      // wire and nothing can be read off this connection after the refusal.
+      // Said out loud, or a client pools a socket the host is about to end
+      // and spends its next request on one that hangs up.
+      response.headersMut().set('Connection', 'close');
       await refuse(request, response, 413, EDIT_TOO_LARGE);
       return;
     }

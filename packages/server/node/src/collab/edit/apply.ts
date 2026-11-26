@@ -15,8 +15,8 @@
  * alone, because writing `null` there would erase them.
  */
 
-import { validateEditOps } from './validate.ts';
-import { Doc, encodeStateAsUpdate, encodeStateVector } from 'yjs';
+import { richTextCapRefusal, validateEditOps } from './validate.ts';
+import { encodeStateAsUpdate, encodeStateVector, Map as YMap, type Doc } from 'yjs';
 import { DocumentStore } from '../../../../../../src/components/modules/yjs/document-store.ts';
 import { YBlockSerializer } from '../../../../../../src/components/modules/yjs/serializer.ts';
 import { htmlToSegmentsNode } from '../../../../../../src/view/rich-text-node.ts';
@@ -38,6 +38,12 @@ export interface ApplyEditOptions {
    */
   now?: () => number;
 }
+
+/** The serializer every server-side projection reads HTML with, DOM or not. */
+const newSerializer = (): YBlockSerializer => new YBlockSerializer({ htmlToSegments: htmlToSegmentsNode });
+
+/** `normalizeBlockData` is a pure rule; this one exists only to read it. */
+const normalizer = newSerializer();
 
 /** The six fields an op's block carries, which this applier is never the author of. */
 const ATTRIBUTION = [
@@ -82,6 +88,31 @@ function insert(store: DocumentStore, op: InsertCommand): void {
   }, { parentId: op.parent, afterId: op.after });
 }
 
+/**
+ * The data map an `update` replaces, as the `ReplaceData` step of the Go and
+ * C# planners writes it: the keys the op sends, and nothing else kept.
+ *
+ * Deliberately not `replaceBlockContent` for the ordinary case, because that
+ * one also sets `type`. An update never retypes a block, and a map-set of the
+ * very string already under the key is a fresh entry like any other — so going
+ * through it made EVERY update move the document, and the room then spent a
+ * sequence and the request's idempotency key on an edit that wrote nothing.
+ *
+ * It is still what answers a `data` that is not a map: there is no map to
+ * write per key into, so one has to be minted, and minting it is its branch.
+ */
+function replaceData(store: DocumentStore, id: string, type: string, data: Record<string, EditValue>): void {
+  const normalized = normalizer.normalizeBlockData(type, data);
+
+  if (!(store.getBlockById(id)?.get('data') instanceof YMap)) {
+    store.replaceBlockContent(id, type, normalized);
+
+    return;
+  }
+  Object.entries(normalized).forEach(([key, value]) => store.updateBlockData(id, key, value));
+  store.pruneBlockData(id, new Set(Object.keys(normalized)));
+}
+
 function update(store: DocumentStore, op: UpdateCommand, at: number, options: ApplyEditOptions): void {
   const type: unknown = store.getBlockById(op.id)?.get('type');
 
@@ -89,7 +120,7 @@ function update(store: DocumentStore, op: UpdateCommand, at: number, options: Ap
   // applier is not the refusing layer, so there is simply nothing to write.
   if (typeof type !== 'string') return;
 
-  store.replaceBlockContent(op.id, type, op.data);
+  replaceData(store, op.id, type, op.data);
 
   const editor = options.editor ?? null;
 
@@ -149,8 +180,7 @@ export function applyEditOps(
 }
 
 /** A store that reads HTML without a DOM, as every server-side projection does. */
-const serverStore = (): DocumentStore =>
-  new DocumentStore(new YBlockSerializer({ htmlToSegments: htmlToSegmentsNode }));
+const serverStore = (): DocumentStore => new DocumentStore(newSerializer());
 
 /**
  * The update that takes a live document through an edit, for a caller holding
@@ -168,6 +198,12 @@ const serverStore = (): DocumentStore =>
 /** A refusal names the op that cannot be applied, in the words the fixture captured. */
 export class EditRefused extends Error {}
 
+/**
+ * The one refusal the door answers 413 for: a rich text field carrying more
+ * HTML than an edit may send. Everything else it refuses is a 422.
+ */
+export class EditTooLarge extends EditRefused {}
+
 export function buildEditUpdate(
   doc: Doc,
   ops: readonly EditCommand[],
@@ -181,6 +217,10 @@ export function buildEditUpdate(
     // an id already taken would otherwise overwrite the block that holds it.
     const refusal = validateEditOps(store, ops);
     if (refusal !== undefined) throw new EditRefused(refusal);
+    // After the structural pass and over the whole request, the order the Go
+    // converter measures its collected HTML in.
+    const oversized = richTextCapRefusal(store, ops);
+    if (oversized !== undefined) throw new EditTooLarge(oversized);
     applyEditOps(store, ops, options);
 
     return store.encodeStateAsUpdate(encodeStateVector(doc));

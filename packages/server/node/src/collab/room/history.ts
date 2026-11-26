@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { applyUpdate, Doc } from 'yjs';
 import type { OutputData } from '../../../../../../types/data-formats/output-data.ts';
 import { keepDatabases } from './keep-databases.ts';
+import { trashPages } from './trash-pages.ts';
 import { diffOutput } from '../../../../../../src/shared/output-diff.ts';
 import { htmlToSegmentsNode } from '../../../../../../src/view/rich-text-node.ts';
 import {
@@ -44,14 +45,23 @@ type Result = { status: number; body?: unknown; headers?: Record<string, string>
 
 function changeSet(before: Page, after: Page, properties = false) {
   const diff = diffOutput(before, after, { htmlToSegments: htmlToSegmentsNode });
+  const place = new Map(after.blocks.flatMap((block, at) =>
+    typeof block.id === 'string' ? [[block.id, at] as [string, number]] : []));
+  // A block every one of these carries; anything the after document does not
+  // name sorts last rather than silently leading.
+  const at = (id: string | undefined) => (id === undefined ? after.blocks.length : place.get(id) ?? after.blocks.length);
+  // Added, changed and moved interleaved in the order the after document holds
+  // them, then what it dropped, in the order the before document held it.
   const blocks = [
-    ...diff.added.map((after) => ({ kind: 'added', id: after.id, type: after.type, after })),
+    ...[
+      ...diff.added.map((after) => ({ kind: 'added', id: after.id, type: after.type, after })),
+      ...diff.changed.map(({ before, after, id }) => ({
+        kind: 'changed', id, type: after.type, before, after,
+        ...(properties && databaseChangeDetails(after.type, before, after)),
+      })),
+      ...diff.moved.map(({ before, after, id }) => ({ kind: 'moved', id, type: after.type, before, after })),
+    ].sort((one, other) => at(one.id) - at(other.id)),
     ...diff.removed.map((before) => ({ kind: 'removed', id: before.id, type: before.type, before })),
-    ...diff.changed.map(({ before, after, id }) => ({
-      kind: 'changed', id, type: after.type, before, after,
-      ...(properties && databaseChangeDetails(after.type, before, after)),
-    })),
-    ...diff.moved.map(({ before, after, id }) => ({ kind: 'moved', id, type: after.type, before, after })),
   ];
   const page = ['title', 'icon', 'cover'].filter((key) => !isDeepStrictEqual(before[key], after[key]));
   return { blocks, page };
@@ -81,6 +91,17 @@ export async function historyRequest(input: {
    * without such a store passes false, and no row names actors at all.
    */
   recordNotes?: boolean;
+  /** `CollabEnforceRestoreGuards`: off, a restore never asks before it commits. */
+  enforceRestoreGuards?: boolean;
+  /** `CollabRestoreTrashesPages`: on, a later page pointer is trashed in place, not removed. */
+  restoreTrashesPages?: boolean;
+  /** The restorer a trash stamp names; null when the pass carries no actor. */
+  actorId?: string | null;
+  /**
+   * No room holds this document's lease, so there is no room head the journal
+   * has to agree with: another server may be appending to it as this reads.
+   */
+  detached?: boolean;
 }): Promise<Result> {
   const { directory, doc, tag, head, request, operations } = input;
   const recordNotes = input.recordNotes ?? true;
@@ -104,7 +125,7 @@ export async function historyRequest(input: {
   const list = path.length === 0;
   if (path.length === 1 && (lineage === 'at' || lineage === 'changes')) {
     if (method !== 'GET') return { status: 405 };
-    return timeHistory(directory, lineages, url, !!request.asJSON, project, changeSet, publicActor);
+    return timeHistory(directory, lineages, url, !!request.asJSON, project, changeSet, publicActor, recordNotes);
   }
   const active = lineages.find((entry) => entry.current);
   const selected = list ? active : lineages.find((entry) => entry.manifest.lineage === lineage);
@@ -237,7 +258,8 @@ export async function historyRequest(input: {
         true,
         entry.manifest,
       );
-      if (info.integrity !== 'ok' || !info.journal || (entry.current && info.journal.durableThrough !== head))
+      if (info.integrity !== 'ok' || !info.journal ||
+          (!input.detached && entry.current && info.journal.durableThrough !== head))
         throw new Error('Inconsistent history');
       if (list) {
         const createdAt = entry.createdAt ?? grouped[0]?.startedAt ?? null;
@@ -265,10 +287,18 @@ export async function historyRequest(input: {
             lineage: manifest.lineage,
             epoch: Number(manifest.epoch),
             format: manifest.format,
-            current,
             createdAt,
+            current,
           })),
-          versions,
+          // A host with no record-notes store names no actor kinds at all.
+          versions: versions.map(({ lineage, sequence, startedAt, savedAt, actors, actorKinds }) => ({
+            lineage,
+            sequence,
+            startedAt,
+            savedAt,
+            actors,
+            ...(recordNotes && { actorKinds }),
+          })),
         },
       };
     }
@@ -296,15 +326,22 @@ export async function historyRequest(input: {
     const now = project(doc);
     const kept = keep ? keepDatabases(now, target) : undefined;
     if (kept) target = { ...target, blocks: kept.blocks };
+    if (input.restoreTrashesPages) {
+      target = { ...target, blocks: trashPages(now, target, { by: input.actorId ?? null, at: Date.now() }) };
+    }
     const update = restorePage(doc, target);
     const before = DocSnapshot.fromOutput(now);
     const lockedTarget = new Set(lockedDatabases(DocSnapshot.fromOutput(target)));
     const lockedNow = new Set(lockedDatabases(before));
+    // A database the target no longer holds is reshaped away, never unlocked.
+    const databasesInTarget = new Set(target.blocks.flatMap((block) =>
+      typeof block.id === 'string' && block.type === 'database' ? [block.id] : []));
     const guards = [
       ...restoreTouchesLocked(before, target)
         .filter((id) => !kept?.pinned.has(id))
         .map((blockId) => ({
-          kind: lockedNow.has(blockId) && !lockedTarget.has(blockId) ? 'unlock' : 'lockedReshape',
+          kind: lockedNow.has(blockId) && databasesInTarget.has(blockId) && !lockedTarget.has(blockId)
+            ? 'unlock' : 'lockedReshape',
           blockId,
         })),
       ...restoreShares(before, target)
@@ -326,12 +363,59 @@ export async function historyRequest(input: {
         },
       };
     }
-    if (guards.some((g) => g.kind === 'orphanedDatabase' || !request.confirmed.includes(g.kind)))
+    // An orphaned database is never confirmable: keeping it would leave it
+    // pointing at a parent the restore does not write, so it refuses whether or
+    // not this host asks before it commits.
+    // A caller that names no policy gets the careful one: a server asks before
+    // it overwrites. Every host that has an answer sends it either way.
+    if (guards.some((g) => g.kind === 'orphanedDatabase'
+      || ((input.enforceRestoreGuards ?? true) && !request.confirmed.includes(g.kind))))
       return { status: 409, headers: { 'X-Blok-Restore-Refusal': 'guards' }, body: { guards } };
     if (update.length > MAX_APPEND_BYTES) return { status: 413 };
     const sequence = await input.commit(operationId!, digest, update);
     return { status: 204, headers: publicHead(sequence) };
   } finally {
     replay.destroy();
+  }
+}
+
+/**
+ * The history routes against the journal alone, with no room loaded: a server
+ * that does not hold the document's lease still answers them. The state door
+ * and a restore are refused, because both read the live document, which only
+ * the holder of the lease has.
+ */
+export async function historyRead(input: {
+  directory: string;
+  request: Request;
+  project?: (doc: Doc) => Record<string, unknown>;
+  recordNotes?: boolean;
+}): Promise<Result> {
+  const { directory, request } = input;
+  const segments = request.url.pathname.split('/');
+  if ((segments.length === 6 && request.url.pathname.endsWith('/state')) || segments.includes('restore'))
+    return { status: 405 };
+  const live = (await historyLineages(directory)).find((entry) => entry.current);
+  if (!live) return { status: 404 };
+  const { manifest } = live;
+  // The journal on disk is the only head there is. Reading it takes no lease,
+  // and replays nothing: the routes below do their own.
+  const report = await inspectJournal(directory, undefined, undefined, true, manifest);
+  const doc = new Doc();
+  try {
+    return await historyRequest({
+      directory,
+      doc,
+      tag: { lineage: manifest.lineage, epoch: Number(manifest.epoch), format: manifest.format },
+      head: report.journal?.durableThrough ?? 0n,
+      request,
+      project: input.project,
+      operations: new Map(),
+      commit: () => { throw new Error('A history read cannot commit'); },
+      recordNotes: input.recordNotes,
+      detached: true,
+    });
+  } finally {
+    doc.destroy();
   }
 }

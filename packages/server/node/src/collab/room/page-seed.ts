@@ -1,6 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, open, rename, rm, lstat } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
+// Cycle: history-lineages.ts imports `syncDirectory` from this file. It holds
+// only because both sides are `export async function` declarations, hoisted
+// before either module body runs, and neither is called at import time.
+// Converting either one to `const … = async () =>` breaks this at runtime,
+// with a TDZ error at the first call, not at build time.
+import { recordHistoryLineage } from './history-lineages.ts';
 import type { Baseline } from './legacy-working-set.ts';
 
 // Publish all bootstrap files together. A crash before rename leaves only a
@@ -40,7 +46,8 @@ export function newBaseline(update: Uint8Array): Baseline {
   const frames = Buffer.alloc(4 + update.length);
   frames.writeInt32LE(update.length);
   frames.set(update, 4);
-  return { frames, epoch: 1n, lineage: randomBytes(16) };
+  // A seed is epoch 0, as in Go; only a reset raises it.
+  return { frames, epoch: 0n, lineage: randomBytes(16) };
 }
 
 export async function initializePage(
@@ -78,6 +85,20 @@ export async function initializePage(
     slot.set(createHash('sha256').update(slot.subarray(0, 96)).digest(), 96);
     await writeSynced(join(temp, 'manifest'), slots);
     await writeSynced(join(temp, 'node-projection.json'), Buffer.from(anchor));
+    // In the staging directory, so the ledger entry lands with the rename: a
+    // baseline with no entry has no creation time, and time history skips it.
+    await recordHistoryLineage(temp, {
+      writeCounter: 1n,
+      fence: 1n,
+      generation: 1n,
+      generationFence: 1n,
+      seeded: true,
+      format: 2,
+      epoch: baseline.epoch,
+      lineage: Buffer.from(baseline.lineage).toString('hex'),
+      checkpointThrough: 0n,
+      checkpointFence: 0n,
+    }, Date.now());
     await syncDirectory(temp);
     await verifyWorkingSet();
     try {

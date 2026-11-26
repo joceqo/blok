@@ -29,6 +29,12 @@ export interface RoomOptions {
   projection?: { origin: string; secret: string };
   recheckSecret?: string;
   allowedOrigins: ReadonlySet<string>;
+  /** Record notes are kept for the history routes to read an actor back off. */
+  recordNotes?: boolean;
+  /** `CollabEnforceRestoreGuards`: off, a restore never asks before it changes a locked or shared database. */
+  enforceRestoreGuards?: boolean;
+  /** `CollabRestoreTrashesPages`: on, a restore trashes a later page pointer in place instead of removing it. */
+  restoreTrashesPages?: boolean;
   /** Verify ticket expiry, document scope and current read/write permissions. */
   authorize(ticket: string, documentId: string): Promise<RoomIdentity | null>;
 }
