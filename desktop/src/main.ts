@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 import { diskPageWorkspace } from './disk-page-link';
 import { libraryView } from './library-route';
 import { isCalendarUrl } from './calendar-route';
@@ -423,3 +424,15 @@ function showError(error: unknown): void {
 }
 if (root instanceof HTMLElement) void boot(root).catch(showError);
 >>>>>>> origin/fix/self-host-review
+||||||| f8ef3c6b39
+=======
+import './editor.css';
+import '../../src/shell/sidebar.css';
+import './shell.css';
+import { mountDesktop } from './shell';
+
+if (import.meta.env.DEV) void import('react-grab');
+
+const root = document.querySelector('#app');
+if (root instanceof HTMLElement) mountDesktop(root);
+>>>>>>> origin/feat/desktop-title-date-mentions

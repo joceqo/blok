@@ -110,6 +110,7 @@ override-extension/payload/
 !packages/server/rust/rust-toolchain.toml
 !packages/server/rust/.config/nextest.toml
 <<<<<<< HEAD
+<<<<<<< HEAD
 # The desktop shell's manifests
 !desktop/**/*.toml
 
@@ -133,6 +134,18 @@ desktop/src-tauri/target/
 desktop/src-tauri/gen/
 !desktop/.npmrc
 >>>>>>> origin/fix/self-host-review
+||||||| f8ef3c6b39
+=======
+# The desktop shell's manifests
+!desktop/**/*.toml
+
+# Desktop shell build output
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+!desktop/.npmrc
+>>>>>>> origin/feat/desktop-title-date-mentions
 
 # Stryker's sandboxes: one full copy of the repo per concurrent runner, left
 # behind when a run is killed rather than finishing.

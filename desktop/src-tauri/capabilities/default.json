@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
@@ -70,3 +71,22 @@
 }
 
 >>>>>>> origin/fix/self-host-review
+||||||| f8ef3c6b39
+=======
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "allow-close-editor-window",
+    "allow-load-workspace-file",
+    "allow-save-workspace-file",
+    "allow-workspace-data-directory",
+    "allow-agent-provider-status",
+    "allow-agent-ask"
+  ]
+}
+>>>>>>> origin/feat/desktop-title-date-mentions

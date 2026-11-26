@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rerun-if-changed=src/macos_quit.m");
@@ -31,3 +32,16 @@ fn main() {
     .expect("failed to run tauri build script");
 }
 >>>>>>> origin/fix/self-host-review
+||||||| f8ef3c6b39
+=======
+fn main() {
+    tauri_build::try_build(
+        tauri_build::Attributes::new()
+            .app_manifest(tauri_build::AppManifest::new().commands(&[
+                "close_editor_window", "load_workspace_file", "save_workspace_file", "workspace_data_directory",
+                "agent_provider_status", "agent_ask",
+            ])),
+    )
+    .expect("failed to run tauri build script");
+}
+>>>>>>> origin/feat/desktop-title-date-mentions

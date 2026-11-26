@@ -859,11 +859,16 @@ export class DatabaseCardDrawer {
 
     drawer.setAttribute('data-blok-database-drawer', '');
 <<<<<<< HEAD
+<<<<<<< HEAD
     drawer.addEventListener('keydown', this.trapPeekTab);
     drawer.setAttribute('role', 'dialog');
     drawer.setAttribute('aria-label', this.hostedPage?.label || this.label('tools.database.cardDetails'));
     drawer.toggleAttribute('data-blok-database-hosted-page', !!this.hostedPage);
 ||||||| f8ef3c6b39
+||||||| f8ef3c6b39
+=======
+    drawer.addEventListener('keydown', this.trapPeekTab);
+>>>>>>> origin/feat/desktop-title-date-mentions
     drawer.setAttribute('role', 'complementary');
     drawer.setAttribute('aria-label', this.i18n?.t('tools.database.cardDetails') ?? 'tools.database.cardDetails');
 =======
@@ -1184,13 +1189,9 @@ export class DatabaseCardDrawer {
     this.outsideClickHandler = (e: MouseEvent): void => {
       const target = e.target as Node | null;
 
-      // A side peek stays open for clicks in its database, so the view beside it stays usable; it closes for the page outside.
-      const keptBy = this.mode === 'side' ? this.wrapper : null;
-
       if (
         (target && drawer.contains(target))
         || this.mode === 'full'
-        || (target !== null && keptBy?.contains(target) === true)
         || (target !== null && this.builder?.contains(target) === true)
       ) {
         return;
