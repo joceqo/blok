@@ -5,7 +5,7 @@
 [data-blok-notifications] [data-notification-header] > h2 { padding-inline: 6px; font-weight: 500; }
 [data-blok-notifications] [data-notification-header] > button { width: 28px; padding: 0; }
 [data-blok-notifications] [data-notification-header] button svg { width: 20px; height: 20px; }
-[data-notification-header] [data-filter-active] { color: var(--blok-focus-ring, #2383e2); }
+[data-notification-header] [data-filter-active] { color: #2383e2; }
 [data-inbox-menu] {
   position: absolute; z-index: 2; inset-block-start: calc(100% - 5px); inset-inline-end: 10px;
   min-width: 176px; padding: 4px; border-radius: 8px; border: 1px solid var(--desktop-border);

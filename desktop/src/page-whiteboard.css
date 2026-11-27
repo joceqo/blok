@@ -26,7 +26,7 @@
   background: color-mix(in srgb, var(--desktop-hover, ButtonFace), var(--desktop-ink, ButtonText) 12%);
   color: var(--desktop-ink, ButtonText);
 }
-.blok-page-view-switch button:focus-visible { outline: 2px solid var(--blok-focus-ring, #3988df); }
+.blok-page-view-switch button:focus-visible { outline: 2px solid var(--desktop-focus-ring); }
 @media (max-width: 540px) {
   [data-desktop-page-toolbar]:has(.blok-page-views) {
     flex-wrap: wrap;

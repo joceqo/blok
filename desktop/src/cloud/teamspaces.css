@@ -19,7 +19,7 @@
 .teamspaces-layout li { display:flex; justify-content:space-between; gap:8px; align-items:center; padding:7px 0; border-bottom:1px solid var(--desktop-border); overflow-wrap:anywhere; }
 .teamspaces-actions { display:flex; flex-wrap:wrap; gap:8px; }
 .teamspaces-layout label { display:grid; gap:4px; }
-[data-teamspaces] :is(button,input):focus-visible { outline:2px solid var(--blok-focus-ring); outline-offset:2px; }
+[data-teamspaces] :is(button,input):focus-visible { outline:2px solid var(--desktop-focus-ring); outline-offset:2px; }
 @media(max-width:560px) {
   .teamspaces-layout { grid-template-columns:minmax(0,1fr); }
   .teamspaces-layout nav { max-height:160px; overflow:auto; border-right:0; border-bottom:1px solid var(--desktop-border); }

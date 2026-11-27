@@ -56,7 +56,7 @@
 [data-inbox-resize]:is(:hover, [data-resizing]) {
   box-shadow: inset -2px 0 color-mix(in srgb, var(--desktop-ink) 28%, transparent);
 }
-[data-inbox-resize]:focus-visible { outline: none; box-shadow: inset -2px 0 var(--blok-focus-ring, #2383e2); }
+[data-inbox-resize]:focus-visible { outline: none; box-shadow: inset -2px 0 var(--desktop-focus-ring); }
 [data-blok-notifications] {
   display: flex; flex-direction: column; height: 100%; min-height: 0; box-sizing: border-box;
   color: var(--desktop-ink); font: 14px/1.45 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -94,7 +94,7 @@
 [data-inbox-avatar] svg, [data-blok-notifications] button svg { display: block; width: 17px; height: 17px; }
 [data-unread] [data-inbox-avatar]::after {
   content: ''; position: absolute; inset-inline-end: -1px; bottom: -1px; width: 7px; height: 7px;
-  border: 2px solid var(--desktop-canvas); border-radius: 50%; background: var(--blok-focus-ring, #2383e2);
+  border: 2px solid var(--desktop-canvas); border-radius: 50%; background: #2383e2;
 }
 [data-inbox-description], [data-inbox-decision], [data-inbox-message] {
   margin: 0; min-width: 0; overflow-wrap: anywhere; font-size: 16px; line-height: 24px;
@@ -138,7 +138,7 @@
 [data-inbox-read-label] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 [data-blok-notifications] button:is(:hover, [aria-pressed=true]):not(:disabled) { color: var(--desktop-ink); background: var(--desktop-hover); }
 [data-blok-notifications] button:disabled { opacity: .55; cursor: default; }
-[data-blok-notifications] button:focus-visible, [data-inbox-trigger]:focus-visible { outline: 2px solid var(--blok-focus-ring, #2383e2); outline-offset: 1px; }
+[data-blok-notifications] button:focus-visible, [data-inbox-trigger]:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: 1px; }
 @media (pointer: coarse) {
   [data-blok-notifications] button { min-height: 36px; }
   [data-blok-notifications] :is([data-inbox-read], [data-inbox-pin], [data-inbox-close]) { width: 36px; }

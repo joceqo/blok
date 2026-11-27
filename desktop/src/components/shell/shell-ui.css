@@ -19,7 +19,7 @@
     background: var(--desktop-hover, var(--blok-item-hover-bg, ButtonFace));
   }
   [data-blok-button]:focus-visible {
-    outline: 2px solid var(--blok-focus-ring, Highlight);
+    outline: 2px solid var(--desktop-focus-ring);
     outline-offset: 2px;
   }
   [data-blok-button]:disabled { opacity: .5; cursor: default; }

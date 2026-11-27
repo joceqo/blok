@@ -9,7 +9,7 @@
   --blok-item-hover-bg: var(--desktop-hover);
   --blok-icon-active-bg: var(--desktop-hover);
   --blok-search-input-placeholder: var(--desktop-muted);
-  --blok-focus-ring: #2383e2;
+  --blok-focus-ring: var(--desktop-focus-ring);
 }
 [data-desktop-choice] {
   display: inline-flex; align-items: center; justify-content: space-between; gap: var(--blok-space-2,8px);
@@ -18,7 +18,7 @@
   font: inherit; font-size: 13px; line-height: 22px; cursor: pointer;
 }
 [data-desktop-choice]:hover, [data-desktop-choice][aria-expanded=true] { background:var(--blok-item-hover-bg); }
-[data-desktop-choice]:focus-visible { outline:2px solid var(--blok-focus-ring); outline-offset:2px; }
+[data-desktop-choice]:focus-visible { outline:2px solid var(--desktop-focus-ring); outline-offset:2px; }
 [data-desktop-choice]:disabled { opacity:.45; cursor:default; }
 [data-desktop-choice] svg { display:block; width:16px; height:16px; flex:none; }
 [data-desktop-choice-label] { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

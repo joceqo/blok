@@ -5,6 +5,8 @@
   --desktop-muted: #a2a2a2;
   --desktop-hover: #2a2a2a;
   --desktop-border: #292929;
+  /* Anneau de focus : visible au clavier, pas un trait bleu vif par-dessus la rangée. */
+  --desktop-focus-ring: var(--desktop-muted);
   color: var(--desktop-ink);
   background: var(--desktop-canvas);
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -23,6 +25,7 @@ html, body, #app, [data-desktop-shell] { height: 100%; margin: 0; }
   --desktop-muted: #717171;
   --desktop-hover: #ebebea;
   --desktop-border: #e8e8e6;
+  --desktop-focus-ring: var(--desktop-muted);
 }
 body[data-blok-theme="light"] [data-desktop-settings-overlay] {
   --desktop-canvas: #ffffff;
@@ -31,6 +34,7 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
   --desktop-muted: #717171;
   --desktop-hover: #ebebea;
   --desktop-border: #e8e8e6;
+  --desktop-focus-ring: var(--desktop-muted);
 }
 [data-desktop-tabstrip] {
   position: sticky; top: 0; z-index: 10;
@@ -109,7 +113,7 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 [data-desktop-page-breadcrumb-item] button { cursor: pointer; }
 [data-desktop-page-breadcrumb-item] button:hover,
 [data-desktop-page-breadcrumb-item] button[aria-expanded="true"] { background: var(--desktop-hover); }
-[data-desktop-page-breadcrumb-item] button:focus-visible { outline: 2px solid #2e8cff; outline-offset: -2px; }
+[data-desktop-page-breadcrumb-item] button:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: -2px; }
 [data-desktop-page-breadcrumb-separator] { flex: none; width: 10px; color: var(--desktop-muted); text-align: center; }
 [data-desktop-page-toolbar-icon] { display: grid; flex: none; place-items: center; width: 18px; height: 18px; font-size: 17px; line-height: 1; }
 [data-desktop-page-toolbar-icon] svg { color: var(--desktop-muted); }
@@ -134,7 +138,7 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 [data-desktop-breadcrumb-menu-row]:is(:hover, :focus-within, [data-current]) { background: #2d3848; }
 [data-desktop-shell][data-blok-theme="light"] [data-desktop-breadcrumb-menu-row]:is(:hover, :focus-within, [data-current]) { background: #e7eef9; }
 [data-desktop-breadcrumb-menu-item]:focus-visible, [data-desktop-breadcrumb-menu-children]:focus-visible,
-[data-desktop-breadcrumb-menu-back]:focus-visible { outline: 2px solid #2e8cff; outline-offset: -2px; }
+[data-desktop-breadcrumb-menu-back]:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: -2px; }
 [data-desktop-breadcrumb-menu-icon] { display: grid; flex: none; place-items: center; width: 19px; height: 19px; font-size: 18px; }
 [data-desktop-breadcrumb-menu-icon] svg { color: var(--desktop-muted); }
 [data-desktop-breadcrumb-menu-item] > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -219,7 +223,7 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 }
 [data-desktop-floating-toc]:is(:hover, :focus-within) a[aria-current] { color: #2e8cff; }
 [data-desktop-floating-toc]:is(:hover, :focus-within) a:hover { background: var(--desktop-hover); color: var(--desktop-ink); }
-[data-desktop-floating-toc] a:focus-visible { outline: 2px solid #2e8cff; outline-offset: 1px; }
+[data-desktop-floating-toc] a:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: 1px; }
 @media (max-width: 1160px) { [data-desktop-floating-toc] { display: none; } }
 [data-desktop-title-date-menu] {
   position: fixed; z-index: 100; padding: 8px;
@@ -463,8 +467,8 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
   --blok-item-hover-bg: var(--desktop-hover);
   --blok-bg-light: var(--desktop-hover);
   --blok-icon-active-bg: var(--desktop-hover);
-  --blok-focus-ring: #2e8cff;
-  --blok-chat-focus-ring: #2e8cff;
+  --blok-focus-ring: var(--desktop-focus-ring);
+  --blok-chat-focus-ring: var(--desktop-focus-ring);
   height: 100%; min-height: 0;
 }
 [data-desktop-workspace] [data-blok-agent-bar] { display: none; }
@@ -479,7 +483,7 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 }
 [data-desktop-switcher]:focus-visible, [data-desktop-menu-item]:focus-visible,
 [data-desktop-settings-dialog] button:focus-visible {
-  outline: 2px solid #2e8cff; outline-offset: 2px;
+  outline: 2px solid var(--desktop-focus-ring); outline-offset: 2px;
 }
 @media (max-width: 680px) {
   [data-desktop-settings-nav] { flex-basis: 180px; }
@@ -611,7 +615,7 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 [data-desktop-settings-grab]:hover { color:var(--desktop-ink); background:var(--desktop-hover); }
 [data-desktop-settings-grab-hint] { display:none; padding:4px 8px 0; color:var(--desktop-muted); font-size:10px; line-height:1.5; }
 [data-desktop-settings-feedback]:focus-within [data-desktop-settings-grab-hint] { display:block; }
-[data-desktop-settings-nav-item]:focus-visible, [data-desktop-settings-grab]:focus-visible { outline:2px solid var(--blok-focus-ring,#2383e2); outline-offset:-2px; }
+[data-desktop-settings-nav-item]:focus-visible, [data-desktop-settings-grab]:focus-visible { outline:2px solid var(--desktop-focus-ring); outline-offset:-2px; }
 [data-desktop-connections-accounts] { display:flex; align-items:center; justify-content:space-between; gap:24px; padding:0 0 28px; margin-bottom:30px; border-bottom:1px solid var(--desktop-border); }
 [data-desktop-connections-accounts] [data-desktop-settings-copy] { margin-top:0; }
 [data-desktop-connections-accounts] [data-desktop-settings-row-help] { line-height:1.5; }
@@ -646,7 +650,7 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
   background: transparent; color: var(--desktop-ink); font: inherit; font-size: 13px; cursor: pointer;
 }
 [data-desktop-page-actions] > button:is(:hover, [aria-expanded="true"]) { background: var(--desktop-hover); }
-[data-desktop-page-actions] > button:focus-visible { outline: 2px solid var(--blok-focus-ring, #2383e2); outline-offset: 2px; }
+[data-desktop-page-actions] > button:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: 2px; }
 [data-desktop-page-actions] > [data-desktop-page-share] { padding-inline: 9px; }
 [data-desktop-page-favorite][aria-pressed="true"] { color: #dba84d; }
 [data-desktop-page-favorite][aria-pressed="true"] path { fill: currentColor; }
@@ -671,7 +675,7 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 [data-blok-shell]:has([data-blok-sidebar]:not([data-collapsed])) [data-desktop-sidebar-toggle] { display: none; }
 button[data-desktop-page-workspace] { border: 0; border-radius: 4px; padding: 4px 6px; background: transparent; color: inherit; font-family: inherit; cursor: pointer; }
 button[data-desktop-page-workspace]:is(:hover, [aria-expanded="true"]) { background: var(--desktop-hover); }
-button[data-desktop-page-workspace]:focus-visible { outline: 2px solid var(--blok-focus-ring); outline-offset: -2px; }
+button[data-desktop-page-workspace]:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: -2px; }
 
 [data-desktop-empty] {
   display: flex; flex-direction: column; align-items: stretch; gap: 20px;

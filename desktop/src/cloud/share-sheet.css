@@ -20,7 +20,7 @@
   border-radius: 5px; padding: 4px 9px; background: var(--desktop-canvas); color: var(--desktop-ink); font-size: 14px;
 }
 [data-cloud-share-person-picker] input::placeholder { color: var(--share-muted); }
-[data-cloud-share-dialog] :is(button,select,input,summary):focus-visible { outline: 2px solid var(--blok-focus-ring, #2383e2); outline-offset: 1px; }
+[data-cloud-share-dialog] :is(button,select,input,summary):focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: 1px; }
 [data-cloud-share-add], [data-cloud-share-apply] { flex: none; min-height: 32px; border: 0; border-radius: 5px; padding: 4px 11px; background: #216ab3; color: white; cursor: pointer; }
 [data-cloud-share-dialog] :is(button,select,input):disabled { opacity: .55; cursor: default; }
 [data-cloud-share-matches] { margin: 5px 0 2px; padding: 4px; border: 1px solid var(--desktop-border); border-radius: 6px; background: var(--desktop-canvas); }

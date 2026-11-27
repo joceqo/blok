@@ -25,7 +25,7 @@
   cursor: pointer;
   touch-action: manipulation;
 }
-[data-whiteboard-dock] button:focus-visible { outline: 2px solid #93cfff; outline-offset: -3px; }
+[data-whiteboard-dock] button:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: -3px; }
 [data-whiteboard-dock] .board-dock-tray,
 [data-whiteboard-dock] .board-dock-zoom,
 [data-whiteboard-dock] .board-dock-palette {

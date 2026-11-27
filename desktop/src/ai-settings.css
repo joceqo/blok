@@ -13,4 +13,4 @@
 [data-ai-settings] [role=status] { color:var(--desktop-muted); font-size:13px; }
 
 [data-ai-settings] .blok-button:hover { background:var(--desktop-hover); }
-[data-ai-settings] .blok-button:focus-visible { outline:2px solid var(--blok-focus-ring); outline-offset:2px; }
+[data-ai-settings] .blok-button:focus-visible { outline:2px solid var(--desktop-focus-ring); outline-offset:2px; }

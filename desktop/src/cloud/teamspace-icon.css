@@ -10,7 +10,7 @@ button.team-icon-trigger { display:inline-grid; place-items:center; flex:none; w
 }
 .team-icon-popover button { border:0; color:inherit; background:transparent; font:inherit; cursor:pointer; }
 .team-icon-popover button:disabled { opacity:.45; cursor:default; }
-.team-icon-popover :is(button,input,select):focus-visible { outline:2px solid var(--blok-focus-ring,#2383e2); outline-offset:-2px; }
+.team-icon-popover :is(button,input,select):focus-visible { outline:2px solid var(--desktop-focus-ring); outline-offset:-2px; }
 .team-icon-tabs { display:flex; gap:8px; align-items:center; padding:0 12px; border-bottom:1px solid var(--desktop-border); }
 .team-icon-tabs button { height:40px; padding:4px; font-weight:500; color:var(--desktop-muted); }
 .team-icon-tabs button[aria-pressed="true"] { color:var(--desktop-ink); box-shadow:inset 0 -2px currentColor; }
