@@ -66,8 +66,12 @@ export const WorkspaceSection = ({ name, children }: WorkspaceSectionProps) => {
     <Section
       name="workspace"
       label={navigationLabels.workspace}
-      libraryView="teamspaces"
+      // La vue de la bibliothèque et la création vivent sous le nom des équipes.
+      // Tant qu'il n'en existe aucune, elles n'ont rien à faire sur une section
+      // qui ne porte que des pages : les réglages gardent la création.
+      libraryView={options.hasTeamspaces ? 'teamspaces' : undefined}
       action={
+        options.hasTeamspaces &&
         options.canCreateTeamspace &&
         options.onCreateTeamspace && (
           <SectionAction
