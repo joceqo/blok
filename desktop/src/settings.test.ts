@@ -460,3 +460,32 @@ describe('general settings on a local workspace', () => {
     expect(footer.querySelector('[data-desktop-switcher-name]')?.textContent).toBe('Atelier');
   });
 });
+
+describe('settings deep link', () => {
+  afterEach(() => history.replaceState(null, '', '/'));
+
+  it('opens the named panel from the URL, then takes it back out', async () => {
+    history.replaceState(null, '', '/?settings=sidebar&page=p1');
+    const footer = createDesktopFooter(() => undefined);
+    document.body.append(footer);
+    await vi.waitFor(() => expect(document.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Barre latérale'));
+    // Le réglage sort de l'URL : sinon un rechargement rouvrirait la modale,
+    // et le lien partagé emmènerait son destinataire dans les réglages.
+    expect(new URL(location.href).searchParams.has('settings')).toBe(false);
+    expect(new URL(location.href).searchParams.get('page')).toBe('p1');
+  });
+
+  it('falls back to Général on a panel this workspace does not have', async () => {
+    history.replaceState(null, '', '/?settings=members');
+    const footer = createDesktopFooter(() => undefined);
+    document.body.append(footer);
+    await vi.waitFor(() => expect(document.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Général'));
+  });
+
+  it('leaves the app alone without the parameter', () => {
+    const footer = createDesktopFooter(() => undefined);
+    document.body.append(footer);
+    // La modale est montée mais repliée : c'est l'overlay qui dit si elle est ouverte.
+    expect(document.querySelector<HTMLElement>('[data-desktop-settings-overlay]')?.hidden).toBe(true);
+  });
+});

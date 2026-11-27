@@ -929,6 +929,9 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     else if (section === 'calendar' || section === 'import') openSettings(section);
     else if (section === 'members' && admin) openSettings('members');
     else if ((section === 'teams' || section === 'teams-create') && panelTabs.has('teams')) openSettings('teams', section === 'teams-create' ? 'create' : undefined);
+    // Un panneau que cet espace n'a pas — Membres en local, par exemple — ne
+    // doit pas ouvrir une modale vide : Général est la page d'accueil.
+    else if (panelTabs.has(section as SettingsPanel)) openSettings(section as SettingsPanel);
     else openSettings('general');
   });
   let displayName = localProfileName || currentWorkspace.name;
@@ -966,7 +969,16 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
   legacy?.preferences.addEventListener('click', () => openSettings('preferences'));
   legacy?.account.addEventListener('click', () => openSettings('account'));
   if (currentWorkspace.kind === 'remote') legacy?.switcher.setAttribute('aria-label',shellText("Espaces et réglages"));
-  const pendingSettings = sessionStorage.getItem('blok:desktop:pending-settings');
+  // `?settings=<panneau>` ouvre la modale sur ce panneau. Le paramètre sort
+  // aussitôt de l'URL : sinon un rechargement la rouvrirait, et un lien
+  // partagé emmènerait son destinataire dans les réglages.
+  const linked = new URL(location.href).searchParams.get('settings');
+  if (linked) {
+    const url = new URL(location.href);
+    url.searchParams.delete('settings');
+    history.replaceState(history.state, '', url);
+  }
+  const pendingSettings = sessionStorage.getItem('blok:desktop:pending-settings') ?? linked;
   if (pendingSettings) {
     sessionStorage.removeItem('blok:desktop:pending-settings');
     queueMicrotask(() => {
