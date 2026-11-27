@@ -32,6 +32,16 @@ export interface WorkingSet {
 
 export type Decoded = { ok: true; set: WorkingSet } | { ok: false; message: string };
 
+/**
+ * What a room needs of a working-set store: read what the last room left, and
+ * publish what this one holds. `S3WorkingSetStore` is the one implementation;
+ * the narrower type is what lets a room be opened over a fake bucket.
+ */
+export interface WorkingSetStore {
+  read(docId: string): Promise<WorkingSet | undefined>;
+  write(docId: string, updates: Buffer, tag: Tag): Promise<void>;
+}
+
 /** Names every object and every file: the lower-hex SHA-256 of the UTF-8 doc id. */
 export function docKey(docId: string): string {
   if (docId === '') throw new Error('collab: an empty doc id has no key');
@@ -150,17 +160,22 @@ export function ensureResetRaisesEpoch(docId: string, stored: WorkingSet | undef
  * never had.
  */
 export function replayWorkingSet(updates: Buffer): Doc {
-  const frames = decodeFrames(updates);
-  if (frames === undefined) throw new Error('collab: an update frame is empty or truncated');
   const doc = new Doc();
   try {
-    for (const frame of frames) applyUpdate(doc, frame);
-    if (doc.store.pendingStructs !== null || doc.store.pendingDs !== null) {
-      throw new Error('collab: the working set is incomplete');
-    }
+    applyWorkingSet(doc, updates);
   } catch (error) {
     doc.destroy();
     throw error;
   }
   return doc;
+}
+
+/** The same replay into a document the caller owns, for a room loading itself. */
+export function applyWorkingSet(doc: Doc, updates: Buffer): void {
+  const frames = decodeFrames(updates);
+  if (frames === undefined) throw new Error('collab: an update frame is empty or truncated');
+  for (const frame of frames) applyUpdate(doc, frame);
+  if (doc.store.pendingStructs !== null || doc.store.pendingDs !== null) {
+    throw new Error('collab: the working set is incomplete');
+  }
 }

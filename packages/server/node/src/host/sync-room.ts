@@ -11,6 +11,7 @@ import { SocketBridge } from '../collab/sync/socket-bridge.ts';
 import { envelope, seedUpdate, type Snapshot } from '../collab/room/page-document.ts';
 import { existingDirectory, initializePage, newBaseline, pageDirectory } from '../collab/room/page-seed.ts';
 import { resetGeneration } from '../collab/room/reset.ts';
+import { s3WorkingSets } from '../collab/room/s3-working-set.ts';
 import { createRoomRegistry, type Resident } from '../collab/room/room-registry.ts';
 import type { RoomIdentity, RoomOptions } from '../collab/room/preview.ts';
 import type { Request } from '../http/request.ts';
@@ -149,6 +150,13 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
   // openDocumentRoom refuses an empty set but never consults it: the room is
   // reached through the host's own guard, which is the one origin policy here.
   const allowedOrigins = new Set(options.allowedOrigins.length > 0 ? options.allowedOrigins : ['*']);
+  // Built once for the host: a prefix without a bucket throws here, at startup,
+  // rather than letting every room accept edits it would never persist.
+  const workingSets = s3WorkingSets(
+    options.blobStore,
+    options.collabS3Prefix,
+    (message) => options.collabLog(message, 'warning'),
+  );
 
   /**
    * What the consumer's record carries that the document itself does not: the
@@ -238,6 +246,7 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
         recordNotes: options.collabRecordNotes,
         enforceRestoreGuards: options.collabEnforceRestoreGuards === true,
         restoreTrashesPages: options.collabRestoreTrashesPages === true,
+        workingSets,
         ...exportTo(documentId),
       });
     } catch (error) {

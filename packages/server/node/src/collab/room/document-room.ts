@@ -7,11 +7,12 @@ import type { SyncWireFrame } from '../../../../../../src/components/modules/col
 import { historyRequest, type HistoryRequest } from './history.ts';
 import { writeRecordNote } from './record-notes.ts';
 import { RoomPresence } from './presence.ts';
-import { exportPage } from './page-document.ts';
+import { exportPage, seedUpdate } from './page-document.ts';
 import { preparePageStorage, type PageStorage } from './page-storage.ts';
 import { acquireJournalWriter, MAX_APPEND_BYTES } from '../journal/append.ts';
 import { sweepHeartbeat, type HeartbeatMember } from './heartbeat.ts';
 import { createAccessCache } from './access-cache.ts';
+import { applyWorkingSet, CURRENT_FORMAT, encodeFrames, newLineage } from './working-set.ts';
 import { EditRefused, EditTooLarge } from '../edit/apply.ts';
 
 import type { RoomIdentity, RoomOptions } from './preview.ts';
@@ -160,7 +161,15 @@ export async function openDocumentRoom(options: RoomOptions) {
   const { documentId, allowedOrigins, authorize } = options;
   if (!documentId || !allowedOrigins.size) throw new Error('A document ID and allowed origins are required');
   const storage = options.projection && await preparePageStorage(options.directory, documentId, options.projection.origin, options.projection.secret);
-  const writer = await acquireJournalWriter(storage?.directory ?? options.directory);
+  /**
+   * Where this room's commits live. A host that named a working set gets a
+   * room with NO journal: Go's law is that the two are never the same room
+   * (`TestOperationStoreRoomNeverWritesTheWorkingSetStore`), and a journal
+   * beside the store would be a second authority on the same document.
+   */
+  const record = options.workingSets === undefined
+    ? { kind: 'journal' as const, writer: await acquireJournalWriter(storage?.directory ?? options.directory) }
+    : { kind: 'working-set' as const, store: options.workingSets };
   const doc = new Doc();
   const operations = new Map<string, { digest:Buffer; sequence:bigint }>();
   const peers = new Set<Peer>();
@@ -208,19 +217,44 @@ export async function openDocumentRoom(options: RoomOptions) {
       // The last edit of a closing room has nowhere else to go: the next open
       // reads the journal back, and the consumer's record never would.
       await flushExport();
-      await writer.close();
+      if (record.kind === 'journal') await record.writer.close();
       doc.destroy();
     })();
     return closing;
   }
   try {
-    const { manifest, journal } = await writer.recover(frame => applyUpdate(doc,frame.update), r => {
-      operations.set(r.operationId, {digest:Buffer.from(r.digest),sequence:r.sequence});
-    });
-    if (manifest.format !== 2 || manifest.epoch < 0n || manifest.epoch > BigInt(Number.MAX_SAFE_INTEGER) ||
-        doc.store.pendingStructs !== null || doc.store.pendingDs !== null) throw new Error('Room needs an intact seeded format-2 journal');
-    const tag = { format:manifest.format, epoch:Number(manifest.epoch), lineage:manifest.lineage };
-    let head = journal.durableThrough;
+    let tag: { format: number; epoch: number; lineage: string };
+    /**
+     * The sequence this room has committed through. A working-set room counts
+     * from zero on every open: the store keeps the document and the lineage,
+     * never a per-edit history, so there is no earlier sequence to resume —
+     * which is why Go's working-set room reports no sequence to the endpoint
+     * at all.
+     */
+    let head: bigint;
+    if (record.kind === 'journal') {
+      const { manifest, journal } = await record.writer.recover(frame => applyUpdate(doc,frame.update), r => {
+        operations.set(r.operationId, {digest:Buffer.from(r.digest),sequence:r.sequence});
+      });
+      if (manifest.format !== 2 || manifest.epoch < 0n || manifest.epoch > BigInt(Number.MAX_SAFE_INTEGER) ||
+          doc.store.pendingStructs !== null || doc.store.pendingDs !== null) throw new Error('Room needs an intact seeded format-2 journal');
+      tag = { format:manifest.format, epoch:Number(manifest.epoch), lineage:manifest.lineage };
+      head = journal.durableThrough;
+    } else {
+      // What the last room published IS this room's past: its tag is the one
+      // the clients have to keep seeing, so a restart does not read as a reset.
+      const stored = await record.store.read(documentId);
+      if (stored === undefined) {
+        applyUpdate(doc, await (options.workingSetSeed?.() ?? Promise.resolve(seedUpdate(null))));
+        tag = { format:CURRENT_FORMAT, epoch:0, lineage:newLineage() };
+      } else {
+        if (stored.tag.epoch > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Room needs a readable working-set epoch');
+        applyWorkingSet(doc, stored.updates);
+        tag = { format:stored.tag.format, epoch:Number(stored.tag.epoch), lineage:stored.tag.lineage };
+      }
+      if (tag.format !== CURRENT_FORMAT) throw new Error('Room needs an intact format-2 working set');
+      head = 0n;
+    }
     await storage?.attach(doc,tag.lineage,head);
 
     const debounceMs = options.exportDebounceMs ?? EXPORT_DEBOUNCE_MS;
@@ -401,17 +435,31 @@ export async function openDocumentRoom(options: RoomOptions) {
     async function commit(identity: RoomIdentity, operationId:string, digest:Buffer, update:Uint8Array, source:0|1|2,
         data?:Record<string,unknown>, except?:Peer) {
       try {
-        const receipt = await writer.append({ expectedLineage:tag.lineage, expectedThrough:head, operationId,
-          update, actorId:identity.actorId ?? identity.id, source, digest });
-        if (receipt.outcome !== 'committed') throw new Error('Held journal changed');
-        head = receipt.sequence;
-        // A note is auxiliary metadata. Its failure must never discard or reject a durable edit.
-        if (identity.actorId || identity.id) {
-          await writeRecordNote(storage?.directory ?? options.directory, tag.lineage, head, operationId,
-            identity.recordNote ?? {kind:'person'}).catch(() => console.warn('Could not persist collaboration record note'));
+        if (record.kind === 'journal') {
+          const receipt = await record.writer.append({ expectedLineage:tag.lineage, expectedThrough:head, operationId,
+            update, actorId:identity.actorId ?? identity.id, source, digest });
+          if (receipt.outcome !== 'committed') throw new Error('Held journal changed');
+          head = receipt.sequence;
+          // A note is auxiliary metadata. Its failure must never discard or reject a durable edit.
+          if (identity.actorId || identity.id) {
+            await writeRecordNote(storage?.directory ?? options.directory, tag.lineage, head, operationId,
+              identity.recordNote ?? {kind:'person'}).catch(() => console.warn('Could not persist collaboration record note'));
+          }
+          if (storage && data) await storage.publish(head,data);
+          applyUpdate(doc,update);
+        } else {
+          // Applied first, and published as the WHOLE document rather than as
+          // this update: the room that reads it back has no journal behind it
+          // to complete a delta from. The write is awaited before the member
+          // is acknowledged, because here the store is the only durability
+          // there is — an ack the bucket never took would be an edit lost on
+          // the next open, with nothing said.
+          applyUpdate(doc,update);
+          head += 1n;
+          await record.store.write(documentId, encodeFrames([encodeStateAsUpdate(doc)]),
+            { format:tag.format, epoch:BigInt(tag.epoch), lineage:tag.lineage });
+          if (storage && data) await storage.publish(head,data);
         }
-        if (storage && data) await storage.publish(head,data);
-        applyUpdate(doc,update);
         operations.set(operationId,{digest,sequence:head});
         // Relayed to every other member, synced or not: Go's broadcast puts no
         // such condition on it, and a member that stopped reading never syncs

@@ -10,6 +10,7 @@ import { resetGeneration } from './reset.ts';
 import { purgeDocument } from './purge.ts';
 import { openDocumentRoom } from './document-room.ts';
 import { createRoomRegistry, type Resident } from './room-registry.ts';
+import type { WorkingSetStore } from './working-set.ts';
 
 export interface RoomIdentity {
   id: string;
@@ -53,6 +54,20 @@ export interface RoomOptions {
   exportExtra?: Record<string, unknown>;
   /** How long a commit waits for the next one before the write-back goes out. */
   exportDebounceMs?: number;
+  /**
+   * The working set `--collab-s3-prefix` names. A room that has one keeps NO
+   * journal: the store is the whole of its durability, as Go's room is —
+   * `TestOperationStoreRoomNeverWritesTheWorkingSetStore` is the law that a
+   * journal room and a working-set store are never the same room.
+   */
+  workingSets?: WorkingSetStore;
+  /**
+   * The first update a working-set room starts from when the store holds
+   * nothing — the consumer's record, seeded. The endpoint belongs to the host,
+   * not to the room, so the host hands the seed down already encoded; this is
+   * the working-set counterpart of the baseline `initializePage` writes.
+   */
+  workingSetSeed?(): Promise<Uint8Array>;
   /** Verify ticket expiry, document scope and current read/write permissions. */
   authorize(ticket: string, documentId: string): Promise<RoomIdentity | null>;
 }
