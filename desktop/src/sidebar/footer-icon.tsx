@@ -32,6 +32,7 @@ export const FooterIcon = ({ name }: { name: keyof typeof footerIconPaths | 'che
         fill="none"
         stroke="currentColor"
         strokeWidth={1.4}
+        strokeLinecap="round"
         strokeLinejoin="round"
       />
     </svg>

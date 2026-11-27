@@ -159,6 +159,7 @@ function menuIcon(kind: MenuIcon): SVGSVGElement {
   path.setAttribute('fill', 'none');
   path.setAttribute('stroke', 'currentColor');
   path.setAttribute('stroke-width', '1.4');
+  path.setAttribute('stroke-linecap', 'round');
   path.setAttribute('stroke-linejoin', 'round');
   svg.append(path);
   return svg;

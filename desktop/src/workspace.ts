@@ -943,16 +943,18 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: initialView === 'create' ? 'teams-create' : 'teams'}));
   }
 
-  const teamspacePermission = { allowed: false, pending: undefined as AbortController | undefined };
+  const teamspacePermission = { allowed: false, count: 0, pending: undefined as AbortController | undefined };
   const createTeamspace = () => manageTeamspaces('create');
   async function refreshTeamspacePermission() {
     if (!ws.frame.element.isConnected) return;
     teamspacePermission.pending?.abort();
     const request = new AbortController();
     teamspacePermission.pending = request;
-    const allowed = await repository.canCreateTeamspace(request.signal).catch(() => false);
-    if (request.signal.aborted || !ws.frame.element.isConnected || allowed === teamspacePermission.allowed) return;
-    teamspacePermission.allowed = allowed;
+    const directory = await repository.teamspaceDirectory(request.signal).catch(() => ({canCreate: false, count: 0}));
+    if (request.signal.aborted || !ws.frame.element.isConnected) return;
+    if (directory.canCreate === teamspacePermission.allowed && directory.count === teamspacePermission.count) return;
+    teamspacePermission.allowed = directory.canCreate;
+    teamspacePermission.count = directory.count;
     if (ws.index) ws.frame.setPages(withSections(ws.index.pages), currentLibrary() ? '' : ws.index.activeId);
     library?.refresh();
   }
@@ -991,6 +993,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     onDownloadDesktop: !('__TAURI_INTERNALS__' in window) && typeof desktopDownloadUrl === 'string' && desktopDownloadUrl.trim()
       ? () => window.location.assign(desktopDownloadUrl) : undefined,
     get canCreateTeamspace() { return teamspacePermission.allowed; },
+    get hasTeamspaces() { return teamspacePermission.count > 0; },
     onCreateTeamspace: createTeamspace,
     onConnectCalendar: () => ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: ref.kind === 'remote' ? 'calendar' : 'import'})),
     upcomingEvents: async (signal) => {
@@ -1273,7 +1276,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
           recentIds: () => libraryHistory?.ids ?? recentPages.ids,
           visitedAt: page => libraryHistory ? libraryHistory.visits.get(page) : recentPages.visitedAt(page),
           view: () => currentLibrary() ?? 'recents', onViewChange: openLibrary,
-          hasTeamspaces: ref.kind === 'remote',
+          get hasTeamspaces() { return teamspacePermission.count > 0; },
           selectedPageId: () => libraryPageId(new URL(location.href)) ?? undefined,
           onVisiblePagesChange: () => queueMicrotask(updatePeekNeighbors),
           onClosePeek: () => routeLibraryPage(null),

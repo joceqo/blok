@@ -12,7 +12,7 @@ export const navigationLabels = {
   events: shellText("Événements à venir"),
   recents: shellText("Récents"),
   favorites: shellText("Favoris"),
-  workspace: shellText("Espaces d’équipe"),
+  workspace: shellText("Pages de l’espace"),
   Partagé: shellText("Partagé"),
   Privé: shellText("Privé"),
 };
