@@ -49,7 +49,7 @@ export interface CloudSessionAdapter {
   setToken(token: string | null): Promise<void>;
   setAccountToken?(account: string, token: string | null): Promise<void>;
 }
-export interface CloudWorkspaceStatus { id: string; slug: string; name: string; role: CloudRole | null; joinStatus: 'pending' | 'approved' | 'rejected' | null }
+export interface CloudWorkspaceStatus { id: string; slug: string; name: string; role: CloudRole | null; joinStatus: 'pending' | 'approved' | 'rejected' | null; allowNotificationMail?: boolean }
 export class CloudApiError extends Error {
   constructor(public status: number, message: string) { super(message); this.name = 'CloudApiError'; }
 }

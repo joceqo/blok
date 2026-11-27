@@ -852,6 +852,12 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
           await client.request(`/api/workspaces/${encodeURIComponent(slug)}`, {method: 'PATCH', body: JSON.stringify({name})});
           renameWorkspace(remote, name);
         } : undefined,
+        mail: remote && client && admin && slug ? {
+          read: async () => (await client.workspace(slug)).allowNotificationMail !== false,
+          write: async (allowed) => {
+            await client.request(`/api/workspaces/${encodeURIComponent(slug)}`, {method: 'PATCH', body: JSON.stringify({allowNotificationMail: allowed})});
+          },
+        } : undefined,
         version: `Blok ${CORE_VERSION} · App ${APP_VERSION}`,
       }));
     }

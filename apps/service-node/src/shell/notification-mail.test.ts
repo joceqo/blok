@@ -77,3 +77,15 @@ describe('which preference governs which notification', () => {
     expect(pool.query).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('le commutateur d’espace', () => {
+  it('ne laisse sortir aucun mail quand l’espace les a coupés', async () => {
+    // Le drapeau est dans la requête : un espace qui a coupé les e-mails ne
+    // rend aucune ligne, donc personne n'est servi, quelles que soient les
+    // préférences individuelles.
+    const pool = db([]);
+    await deliverNotificationMails(pool, 'acme', notices, vi.fn());
+    const [sql] = pool.query.mock.calls[0]!;
+    expect(sql).toContain('w.allow_notification_mail');
+  });
+});

@@ -90,3 +90,46 @@ it('keeps the typed name and explains itself when the server refuses', async () 
     expect(button(host, 'Enregistrer').disabled).toBe(false);
   } finally { panel.destroy(); }
 });
+
+const mailSwitch = (host: HTMLElement): HTMLButtonElement =>
+  must(host.querySelector<HTMLButtonElement>('[data-setting="workspace-mail"] [role=switch]'));
+
+it('offers no workspace e-mail switch where there is no server to send them', () => {
+  const {host, panel} = mount({...base});
+  try {
+    expect(host.querySelector('[data-setting="workspace-mail"]')).toBeNull();
+    expect(host.textContent).not.toContain('E-mails');
+  } finally { panel.destroy(); }
+});
+
+it('waits for the workspace answer before letting an administrator flip it', async () => {
+  const read = vi.fn().mockResolvedValue(false);
+  const write = vi.fn().mockResolvedValue(undefined);
+  const {host, panel} = mount({...base, remoteServer: 'https://blok.test', workspaceId: 'w1', mail: {read, write}});
+  try {
+    // Tant que la réponse n'est pas là, le commutateur ne ment pas sur l'état.
+    expect(mailSwitch(host).disabled).toBe(true);
+    await vi.waitFor(() => expect(mailSwitch(host).disabled).toBe(false));
+    expect(mailSwitch(host).getAttribute('aria-checked')).toBe('false');
+    mailSwitch(host).click();
+    expect(write).toHaveBeenCalledWith(true);
+    await vi.waitFor(() => expect(mailSwitch(host).getAttribute('aria-checked')).toBe('true'));
+  } finally { panel.destroy(); }
+});
+
+it('puts the workspace e-mail switch back when the server refuses it', async () => {
+  const read = vi.fn().mockResolvedValue(true);
+  // L'écriture ne se décide qu'au moment choisi : sans ça, le retour arrière
+  // arrive si vite que le test ne verrait jamais la position optimiste.
+  let refuse = (_reason: Error): void => {};
+  const write = vi.fn().mockReturnValue(new Promise<void>((_resolve, reject) => { refuse = reject; }));
+  const {host, panel} = mount({...base, remoteServer: 'https://blok.test', workspaceId: 'w1', mail: {read, write}});
+  try {
+    await vi.waitFor(() => expect(mailSwitch(host).getAttribute('aria-checked')).toBe('true'));
+    mailSwitch(host).click();
+    await vi.waitFor(() => expect(mailSwitch(host).getAttribute('aria-checked')).toBe('false'));
+    refuse(new Error('Administrator required'));
+    await vi.waitFor(() => expect(mailSwitch(host).getAttribute('aria-checked')).toBe('true'));
+    expect(host.textContent).toContain('Le réglage n’a pas pu être enregistré.');
+  } finally { panel.destroy(); }
+});

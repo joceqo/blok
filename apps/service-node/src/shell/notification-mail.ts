@@ -37,6 +37,10 @@ const wording: Record<string, { headline: string; detail: string }> = {
  * this workspace. Absence of a preference row means no: the query returns
  * only members who asked, so a quiet workspace stays quiet.
  *
+ * An administrator can close the workspace to e-mail entirely, and that
+ * answer belongs in the same query rather than in a check beside it: a
+ * second round trip would be a second chance to forget it.
+ *
  * One failed delivery never costs the others theirs, and never the caller's
  * transaction: a mail that cannot leave is not a reason to lose the
  * notification that is already recorded.
@@ -63,7 +67,8 @@ export async function deliverNotificationMails(
       `SELECT p.user_id, u.email, w.name AS workspace FROM email_notification_preferences p
        JOIN users u ON u.id=p.user_id
        JOIN workspaces w ON w.id=p.workspace_id
-       WHERE p.workspace_id=$1 AND p.${column} AND p.user_id = ANY($2::text[])`,
+       WHERE p.workspace_id=$1 AND w.allow_notification_mail AND p.${column}
+         AND p.user_id = ANY($2::text[])`,
       [workspaceId, governed.map((notice) => notice.recipient_id)],
     );
     for (const row of rows) wanted.set(row.user_id, row);

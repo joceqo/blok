@@ -145,6 +145,29 @@ func TestWorkspaceRename(t *testing.T) {
 	request("PATCH", path, admin, map[string]any{"name": ""}, 400)
 	request("PATCH", path, admin, map[string]any{"name": strings.Repeat("a", 121)}, 400)
 
+	// Le commutateur d'e-mails de l'espace vit sur la meme route : le client
+	// le lit sur le GET et l'ecrit sur le PATCH, sans toucher au nom.
+	if got := request("GET", path, admin, nil, 200); got["allowNotificationMail"] != true {
+		t.Fatalf("GET: allowNotificationMail=%v want true", got["allowNotificationMail"])
+	}
+	switched := request("PATCH", path, admin, map[string]any{"allowNotificationMail": false}, 200)
+	if switched["allowNotificationMail"] != false || switched["name"] != "Jocehome" {
+		t.Fatalf("PATCH du commutateur: %v", switched)
+	}
+	if got := request("GET", path, admin, nil, 200); got["allowNotificationMail"] != false {
+		t.Fatalf("GET apres coupure: allowNotificationMail=%v want false", got["allowNotificationMail"])
+	}
+	request("PATCH", path, member, map[string]any{"allowNotificationMail": true}, 403)
+	request("PATCH", path, admin, map[string]any{"allowNotificationMail": "oui"}, 400)
+	request("PATCH", path, admin, map[string]any{}, 400)
+	// Un corps refuse n'a rien rouvert.
+	if got := request("GET", path, admin, nil, 200); got["allowNotificationMail"] != false {
+		t.Fatalf("commutateur altere par une requete refusee: %v", got["allowNotificationMail"])
+	}
+	if _, e = s.DB.Exec(ctx, "UPDATE workspaces SET allow_notification_mail=true WHERE id=$1", wsID); e != nil {
+		t.Fatal(e)
+	}
+
 	// Aucun refus n'a altere le nom.
 	if e = s.DB.QueryRow(ctx, "SELECT name FROM workspaces WHERE id=$1", wsID).Scan(&stored); e != nil {
 		t.Fatal(e)

@@ -26,6 +26,8 @@ type General = {
   workspaceId?: string;
   /** Absent hors d'un espace distant administré : il n'y a rien à renommer. */
   rename?(name: string): Promise<void>;
+  /** Absent sans serveur : pas d'e-mail à autoriser, donc pas de réglage. */
+  mail?: {read(): Promise<boolean>; write(allowed: boolean): Promise<void>};
 };
 
 type Account =
@@ -273,7 +275,45 @@ function WorkspaceIdentifier({id}: {id: string}) {
   </div>;
 }
 
-function GeneralPanel({workspace, version, remoteServer, workspaceId, rename}: General) {
+/**
+ * Le commutateur d'espace : un administrateur coupe tous les e-mails de
+ * notification d'un coup. Il s'affiche avant de connaître la réponse du
+ * serveur, mais fermé — montrer une position avant de la savoir serait
+ * annoncer un réglage au hasard.
+ */
+function WorkspaceMail({read, write}: NonNullable<General['mail']>) {
+  const [allowed, setAllowed] = useState<boolean | null>(null);
+  const [notice, setNotice] = useState('');
+  useEffect(() => {
+    const open = new AbortController();
+    read().then(
+      value => { if (!open.signal.aborted) setAllowed(value); },
+      // Une lecture qui échoue ne doit pas annoncer « autorisé » : refusée par
+      // défaut, le commutateur dira la vérité dès la prochaine ouverture.
+      () => { if (!open.signal.aborted) setAllowed(false); });
+    return () => open.abort();
+  }, [read]);
+
+  function toggle(next: boolean) {
+    const previous = allowed;
+    setAllowed(next);
+    setNotice('');
+    write(next).catch(() => {
+      setAllowed(previous);
+      setNotice(shellText("Le réglage n’a pas pu être enregistré."));
+    });
+  }
+
+  return <>
+    <SwitchRow settingId="workspace-mail" checked={allowed === true} disabled={allowed === null}
+      label={shellText("Autoriser les notifications par e-mail dans l’espace")}
+      help={shellText("Les membres peuvent toujours les désactiver individuellement.")}
+      onChange={toggle}/>
+    {notice && <p className="settings-notification-status" role="status">{notice}</p>}
+  </>;
+}
+
+function GeneralPanel({workspace, version, remoteServer, workspaceId, rename, mail}: General) {
   return <>
     <h1 data-desktop-settings-title="">{shellText("Général")}</h1>
     <p data-desktop-settings-intro="">{shellText("Gérez le nom de votre espace de travail et retrouvez ses informations.")}</p>
@@ -291,6 +331,9 @@ function GeneralPanel({workspace, version, remoteServer, workspaceId, rename}: G
         <code>{remoteServer}</code>
       </details>}
     </Section>
+    {mail && <Section title={shellText("E-mails")}>
+      <WorkspaceMail {...mail}/>
+    </Section>}
     {workspaceId && <Section title={shellText("Identifiant")}>
       <WorkspaceIdentifier id={workspaceId}/>
     </Section>}

@@ -67,6 +67,9 @@ type Workspace struct {
 	Slug string `json:"slug"`
 	Name string `json:"name"`
 	Role string `json:"role"`
+	// Le commutateur d'espace : un administrateur coupe d'un coup tous les
+	// e-mails de notification, sans toucher aux preferences des membres.
+	AllowNotificationMail bool `json:"allowNotificationMail"`
 }
 
 func opaque() string {

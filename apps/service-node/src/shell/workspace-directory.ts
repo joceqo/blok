@@ -43,7 +43,7 @@ async function lookup(db: Pick<PoolClient, 'query'>, slug: string, digest?: stri
   const {
     rows: [ws],
   } = await db.query(
-    `SELECT w.id,w.slug,w.name,m.role,j.status AS "joinStatus"
+    `SELECT w.id,w.slug,w.name,w.allow_notification_mail AS "allowNotificationMail",m.role,j.status AS "joinStatus"
     FROM workspaces w LEFT JOIN sessions s ON s.id=$2 AND s.expires_at>now()
     LEFT JOIN memberships m ON m.workspace_id=w.id AND m.user_id=s.user_id
     LEFT JOIN join_requests j ON j.workspace_id=w.id AND j.user_id=s.user_id
@@ -89,16 +89,25 @@ export function workspaceDirectory(pool: PgPool) {
     c.json(await lookup(pool, c.req.param('slug'), sessionDigest(c))),
   );
   router.patch('/api/workspaces/:slug', bodyLimit({ maxSize: 8192 }), async (c) => {
-    const { name } = await readBody(c);
-    if (typeof name !== 'string' || !name.trim() || Buffer.byteLength(name) > 120)
+    const { name, allowNotificationMail } = await readBody(c);
+    // Chaque champ est facultatif, mais un corps qui ne demande rien est une
+    // erreur d'appel : l'écrire quand même reviendrait à deviner l'intention.
+    const renaming = name !== undefined;
+    const switching = allowNotificationMail !== undefined;
+    if (renaming && (typeof name !== 'string' || !name.trim() || Buffer.byteLength(name) > 120))
       throw new HTTPException(400, { message: 'Invalid workspace name' });
+    if (switching && typeof allowNotificationMail !== 'boolean')
+      throw new HTTPException(400, { message: 'Invalid e-mail setting' });
+    if (!renaming && !switching) throw new HTTPException(400, { message: 'Nothing to change' });
     const result = await inTransaction(pool, async (db) => {
       const scope = await readWorkspaceScope(db, sessionDigest(c) ?? '', c.req.param('slug'), true);
       if (scope.role !== 'admin') throw new HTTPException(403, { message: 'Administrator required' });
       return (
         await db.query(
-          "UPDATE workspaces SET name=$1 WHERE id=$2 RETURNING id,slug,name,'admin'::text AS role",
-          [name, scope.workspace_id],
+          `UPDATE workspaces SET name=COALESCE($1,name), allow_notification_mail=COALESCE($2,allow_notification_mail)
+           WHERE id=$3
+           RETURNING id,slug,name,allow_notification_mail AS "allowNotificationMail",'admin'::text AS role`,
+          [renaming ? name : null, switching ? allowNotificationMail : null, scope.workspace_id],
         )
       ).rows[0];
     });
