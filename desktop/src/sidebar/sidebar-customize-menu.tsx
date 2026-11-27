@@ -56,7 +56,7 @@ export const SidebarPreferenceItems = ({
     if (opts.canCreate?.(null) !== false) items.push('newPage');
     if (opts.onNewChat) items.push('newChat');
     if (opts.onLibrary) items.push('library');
-    if (opts.onTeamspaces && !(opts.onHome && opts.teamspace)) items.push('teamsLink');
+    if (opts.onTeamspaces) items.push('teamsLink');
     if (!opts.onLibrary) items.push('recents');
     if (opts.teamspace) items.push('workspace');
     if (opts.teamspace || pages.some((p) => p.section === 'Partagé')) items.push('Partagé');

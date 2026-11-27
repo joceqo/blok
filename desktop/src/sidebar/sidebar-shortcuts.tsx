@@ -75,8 +75,7 @@ export const SidebarShortcuts = ({
   if (options.canCreate?.(null) !== false) add('newPage', 'compose', () => options.onCreate(null));
   if (options.onNewChat) add('newChat', 'newChat', options.onNewChat);
   if (options.onLibrary) add('library', 'library', () => options.onLibrary?.([...recents]));
-  if (options.onTeamspaces && !(options.onHome && options.teamspace))
-    add('teamsLink', 'teams', options.onTeamspaces);
+  if (options.onTeamspaces) add('teamsLink', 'teams', options.onTeamspaces);
   return (
     <div data-blok-sidebar-shortcuts="">
       {options.onHome && (

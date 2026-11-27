@@ -5,6 +5,7 @@ import { Button, DropdownMenuItem, SectionHeader, SectionAction } from '../compo
 import { SidebarIcon } from './sidebar-icon';
 import { SidebarMenu } from './sidebar-menu';
 import { NavigationItemMenu } from './navigation-item-menu';
+import { navigationLabels } from './navigation-layout';
 import { useTree } from './tree-context';
 
 interface SectionProps {
@@ -64,7 +65,7 @@ export const WorkspaceSection = ({ name, children }: WorkspaceSectionProps) => {
   return (
     <Section
       name="workspace"
-      label={options.onTeamspaces && !options.onHome ? shellText("Pages de l’espace") : shellText("Espaces d’équipe")}
+      label={navigationLabels.workspace}
       libraryView="teamspaces"
       action={
         options.canCreateTeamspace &&

@@ -99,3 +99,28 @@ it('keeps navigation available until the page index settles and distinguishes a 
   expect(tree?.hasAttribute('aria-busy')).toBe(false);
   frame.destroy();
 });
+
+it('names the workspace section after its pages and keeps the teamspaces shortcut', () => {
+  const frame = createReactPageFrame({
+    pages: [{ id: 'root', parentId: null, section: 'workspace', title: 'Spec' }],
+    activeId: '',
+    teamspace: { name: 'Mon espace' },
+    onOpen: vi.fn(),
+    onCreate: vi.fn(),
+    onHome: vi.fn(),
+    onTeamspaces: vi.fn(),
+  });
+  const header = frame.element.querySelector(
+    '[data-blok-sidebar-section="workspace"] [data-blok-sidebar-section-header] button',
+  );
+  // La section ne contient que les pages de l'espace : une ligne nommée d'après
+  // l'espace de travail, jamais la liste des espaces d'équipe.
+  expect(header?.textContent).toBe('Pages de l’espace');
+  expect(frame.element.querySelector('[data-blok-sidebar-teamspace] button')?.textContent).toBe(
+    'Mon espace',
+  );
+  // Plus rien d'autre ne nomme les espaces d'équipe : le raccourci doit rester.
+  expect(
+    frame.element.querySelector('[data-blok-sidebar-shortcuts]')?.textContent,
+  ).toContain('Espaces d’équipe');
+});
