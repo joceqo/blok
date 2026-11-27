@@ -149,18 +149,39 @@ document ; le trafic transite par Redis depuis le serveur d'origine.
 
 **Il achète le routage, pas le stockage.** C'est la distinction qui décide.
 
-### Les gains
+### D'abord, ce qui n'est PAS un problème
 
-1. **La limite « un document, un hôte » disparaît côté client.** Aujourd'hui l'hôte A
-   tient le verrou, l'hôte B répond 503. Avec un relais, B accepte la socket et fait
-   transiter les trames vers A. Le propriétaire reste unique mais devient invisible de
-   l'extérieur.
+La collaboration à plusieurs sur un même document fonctionne, dans les quatre
+implémentations. C'est ce qu'est une salle : tous les participants partagent le même
+document en mémoire, les modifications se diffusent, la présence suit. **Aucune limite de
+membres par salle** dans le code ; le plafond de 128 entrées de présence
+(`document-room.ts:65`) est un garde-fou contre une trame malveillante, pas une limite de
+participants.
+
+Le refus 503 ne concerne pas les personnes, il concerne les **serveurs** : un seul hôte
+tient un document donné.
+
+### Et la solution la plus simple ne passe pas par Redis
+
+Un répartiteur de charge qui route **par identifiant de document** — toujours D vers
+l'hôte A — suffit à échelonner aujourd'hui, sans toucher au code. C'est du hachage
+cohérent, tous les répartiteurs sérieux le font. Dix hôtes, chacun propriétaire d'une part
+des documents, chaque document servant tous ses participants.
+
+**C'est la réponse par défaut, et elle doit être écartée explicitement avant d'envisager
+Redis.**
+
+### Les gains réels d'un relais
+
+1. **Un répartiteur bête suffit.** Plus besoin de routage affin au document : n'importe
+   quel nœud accepte n'importe quelle connexion et relaie vers le propriétaire. C'est du
+   confort opérationnel — pas de la capacité.
 2. **Un registre explicite du propriétaire.** Aujourd'hui un hôte découvre que le verrou
    est pris en **échouant** à le prendre. Avec Redis on le sait avant d'essayer, et on
    route au lieu de refuser.
-3. **La présence entre nœuds.** Deux clients du même document sur deux hôtes ne se voient
-   pas aujourd'hui. Avec le relais ils sont dans la même salle : le problème disparaît
-   au lieu d'être résolu.
+3. **La présence survit à un mauvais routage.** Si deux clients du même document
+   atterrissent sur deux hôtes — ce qu'un routage affin empêcherait — le relais les
+   remet dans la même salle au lieu d'en refuser un.
 
 ### Les réserves
 
