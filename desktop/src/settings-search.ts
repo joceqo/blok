@@ -46,10 +46,13 @@ export function settingsCatalog(workspace: WorkspaceRef, sidebar: SidebarPrefere
       ...(native && disk ? [setting(shellText("Dossier des données"), shellText("Consulter et copier le chemin du dossier local."), '.settings-panel-directory', 'avancé stockage')] : []),
     ],
     general: [
-      setting(shellText("Nom de l’espace"), shellText("Consulter le nom de cet espace de travail."), '[data-setting="workspace-name"]'),
+      setting(shellText("Nom de l’espace"), online ? shellText("Renommer cet espace de travail.") : shellText("Consulter le nom de cet espace de travail."), '[data-setting="workspace-name"]', 'renommer titre'),
       setting(shellText("Hébergement"), shellText("Voir où cet espace est stocké."), '[data-setting="hosting"]', 'stockage'),
       setting(shellText("Version de Blok"), shellText("Consulter les versions de Blok et de l’application."), '[data-desktop-settings-version]', 'à propos'),
-      ...(online ? [setting(shellText("Adresse du serveur"), shellText("Consulter l’adresse de cet espace distant."), '.settings-panel-directory', 'url')] : []),
+      ...(online ? [
+        setting(shellText("Adresse du serveur"), shellText("Consulter l’adresse de cet espace distant."), '.settings-panel-directory', 'url'),
+        setting(shellText("Identifiant de l’espace de travail"), shellText("Copier l’identifiant que demandent l’API et le support."), '[data-setting="workspace-id"]', 'id uuid api support'),
+      ] : []),
     ],
     sidebar: [
       setting(shellText("Favoris"), shellText("Afficher les pages favorites dans la barre latérale."), '[data-setting="favorites"]'),

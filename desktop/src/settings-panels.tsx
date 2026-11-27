@@ -22,6 +22,10 @@ type General = {
   workspace: string;
   version: string;
   remoteServer?: string;
+  /** Les espaces locaux n'ont pas d'identifiant à montrer : ils n'en ont pas. */
+  workspaceId?: string;
+  /** Absent hors d'un espace distant administré : il n'y a rien à renommer. */
+  rename?(name: string): Promise<void>;
 };
 
 type Account =
@@ -202,13 +206,84 @@ function AccountPanel({account}: {account: Account}) {
   </>;
 }
 
-function GeneralPanel({workspace, version, remoteServer}: General) {
+/** Le nom de l'espace, modifiable seulement là où un serveur peut l'écrire. */
+function WorkspaceName({initial, rename}: {initial: string; rename(name: string): Promise<void>}) {
+  const [saved, setSaved] = useState(initial);
+  const [value, setValue] = useState(initial);
+  const [notice, setNotice] = useState('');
+  const [saving, setSaving] = useState(false);
+  const trimmed = value.trim();
+  const changed = trimmed.length > 0 && trimmed !== saved;
+
+  async function save() {
+    setSaving(true);
+    setNotice('');
+    try {
+      await rename(trimmed);
+      // Le champ repart du nom retenu : sinon les espaces tapés autour
+      // rouvriraient le bouton sur un enregistrement qui n'a rien à écrire.
+      setSaved(trimmed);
+      setValue(trimmed);
+      setNotice(shellText("Nom enregistré."));
+    } catch {
+      setNotice(shellText("Le nom n’a pas pu être enregistré."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <div className="settings-panel-row" data-setting="workspace-name">
+    <div className="settings-panel-label">
+      <strong>{shellText("Nom de l’espace de travail")}</strong>
+      <small>{shellText("Jusqu’à 120 caractères. Tout le monde le voit dans la barre latérale.")}</small>
+      {notice && <small role="status">{notice}</small>}
+    </div>
+    <TextField maxLength={120} value={value} data-desktop-settings-workspace-name=""
+      aria-label={shellText("Nom de l’espace de travail")}
+      onChange={event => setValue(event.currentTarget.value)}
+      onKeyDown={event => {
+        if (event.key !== 'Enter' || event.nativeEvent.isComposing || !changed) return;
+        event.preventDefault();
+        void save();
+      }}/>
+    <button type="button" data-desktop-settings-copy="" disabled={!changed || saving} onClick={() => void save()}>
+      {shellText("Enregistrer")}
+    </button>
+  </div>;
+}
+
+/** L'identifiant que le support et l'API demandent, avec de quoi le copier. */
+function WorkspaceIdentifier({id}: {id: string}) {
+  const [notice, setNotice] = useState('');
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(id);
+      setNotice(shellText("Identifiant copié"));
+    } catch {
+      setNotice(shellText("Copie impossible. Vous pouvez sélectionner l’identifiant."));
+    }
+  }
+  return <div className="settings-panel-row" data-setting="workspace-id">
+    <div className="settings-panel-label">
+      <strong>{shellText("Identifiant de l’espace de travail")}</strong>
+      <small><code>{id}</code></small>
+      {notice && <small role="status">{notice}</small>}
+    </div>
+    <button type="button" data-desktop-settings-copy="" onClick={() => void copy()}>{shellText("Copier")}</button>
+  </div>;
+}
+
+function GeneralPanel({workspace, version, remoteServer, workspaceId, rename}: General) {
   return <>
     <h1 data-desktop-settings-title="">{shellText("Général")}</h1>
-    <p data-desktop-settings-intro="">{shellText("Informations sur votre espace de travail.")}</p>
+    <p data-desktop-settings-intro="">{shellText("Gérez le nom de votre espace de travail et retrouvez ses informations.")}</p>
     <Section title={shellText("Espace de travail")}>
+      {rename
+        ? <WorkspaceName initial={workspace} rename={rename}/>
+        : <dl className="settings-panel-values">
+            <div data-setting="workspace-name"><dt>{shellText("Nom de l’espace")}</dt><dd>{workspace}</dd></div>
+          </dl>}
       <dl className="settings-panel-values">
-        <div data-setting="workspace-name"><dt>{shellText("Nom de l’espace")}</dt><dd>{workspace}</dd></div>
         <div data-setting="hosting"><dt>{shellText("Hébergement")}</dt><dd>{remoteServer ? shellText("Serveur distant") : shellText("Sur cet appareil")}</dd></div>
       </dl>
       {remoteServer && <details className="settings-panel-directory">
@@ -216,6 +291,9 @@ function GeneralPanel({workspace, version, remoteServer}: General) {
         <code>{remoteServer}</code>
       </details>}
     </Section>
+    {workspaceId && <Section title={shellText("Identifiant")}>
+      <WorkspaceIdentifier id={workspaceId}/>
+    </Section>}
     <Section title={shellText("À propos")}>
       <p data-desktop-settings-version="">{version}</p>
     </Section>

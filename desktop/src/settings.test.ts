@@ -213,12 +213,15 @@ describe('workspace menu hierarchy',()=>{
     const panel = must(document.querySelector<HTMLElement>('[data-desktop-settings-content]'));
     expect(panel.dataset.settingsSource).toBe('desktop/src/settings-panels.tsx');
     expect(panel.querySelector('h1')?.textContent).toBe('Général');
-    expect(panel.textContent).toContain(workspace.name);
     expect(panel.querySelector('[data-desktop-settings-version]')?.textContent).toMatch(/Blok .+ · App .+/);
     if (embedded) {
+      // Sur l'appareil, rien à renommer : le nom est affiché, pas offert.
+      expect(panel.textContent).toContain(workspace.name);
+      expect(panel.querySelector('[data-desktop-settings-workspace-name]')).toBeNull();
       expect(panel.textContent).toContain('Sur cet appareil');
       expect(panel.textContent).not.toContain(workspace.server);
     } else {
+      expect(panel.querySelector<HTMLInputElement>('[data-desktop-settings-workspace-name]')?.value).toBe(workspace.name);
       expect(panel.querySelector('details')?.textContent).toContain(workspace.server);
     }
   });

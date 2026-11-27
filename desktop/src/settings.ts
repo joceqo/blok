@@ -21,7 +21,7 @@ import { nativeSessionAdapter } from './native-session';
 import { createNotificationTrigger } from './cloud/notification-trigger';
 import { mountWorkspaceMembers, openWorkspaceInvitation } from './cloud/workspace-settings';
 import {canCreateWorkspace, hasWebAccount, type WebAccountAction} from './cloud/web-account-actions';
-import { activeWorkspace, listWorkspaces, createLocalWorkspace, workspaceKey, rememberWorkspace, LOCAL_SERVER_ORIGIN } from './workspace-registry';
+import { activeWorkspace, listWorkspaces, createLocalWorkspace, workspaceKey, rememberWorkspace, LOCAL_SERVER_ORIGIN, type RemoteWorkspace } from './workspace-registry';
 import { dataDirectory } from './storage';
 import corePackage from '../../package.json';
 import appPackage from '../package.json';
@@ -193,6 +193,8 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     panelGeneration: 0,
     footerPopup: null as PopoverDesktop | null,
     supportEmail: null as string | null,
+    /** Le nom courant de l'espace : renommer le change sans recharger la page. */
+    workspaceName: currentWorkspace.name,
   };
   const openInvitation = (container?: HTMLElement): {close(): void} | undefined => {
     if (!admin || !client || currentWorkspace.kind !== 'remote') return;
@@ -839,9 +841,17 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     } else if (panel === 'ai') {
       ui.choices.push(mountAiSettings(content, currentWorkspace));
     } else if (panel === 'general') {
+      const remote = currentWorkspace.kind === 'remote' && !onDevice ? currentWorkspace : undefined;
+      // Le ref porte le slug ; l'identifiant que le support demande vit dans la session.
+      const slug = remote?.workspaceId;
       ui.choices.push(mountSettingsPanel(content, {
-        kind: 'general', workspace: currentWorkspace.name,
-        remoteServer: currentWorkspace.kind === 'remote' && !onDevice ? currentWorkspace.server || location.origin : undefined,
+        kind: 'general', workspace: ui.workspaceName,
+        remoteServer: remote ? remote.server || location.origin : undefined,
+        workspaceId: client?.currentSession?.workspaces.find((space) => space.slug === slug)?.id,
+        rename: remote && client && admin && slug ? async (name) => {
+          await client.request(`/api/workspaces/${encodeURIComponent(slug)}`, {method: 'PATCH', body: JSON.stringify({name})});
+          renameWorkspace(remote, name);
+        } : undefined,
         version: `Blok ${CORE_VERSION} · App ${APP_VERSION}`,
       }));
     }
@@ -889,6 +899,18 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     else openSettings('general');
   });
   let displayName = localProfileName || currentWorkspace.name;
+  /**
+   * Le serveur a accepté le nom : il faut le reposer partout où l'ancien était
+   * recopié, sinon la barre latérale et le sélecteur de compte continuent
+   * d'annoncer un espace qui ne s'appelle plus comme ça.
+   */
+  function renameWorkspace(remote: RemoteWorkspace, name: string) {
+    rememberWorkspace({...remote, name});
+    const cached = client?.currentSession?.workspaces.find((space) => space.slug === remote.workspaceId);
+    if (cached) cached.name = name;
+    ui.workspaceName = name;
+    setProfileName(localProfileName || name);
+  }
   function setProfileName(name: string) {
     displayName = name;
     if (reactSurface) reactSurface.rename(name);
