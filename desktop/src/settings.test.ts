@@ -333,6 +333,24 @@ describe('settings discovery', () => {
     document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
     expect(document.activeElement).toBe(opener);
   });
+  it('offers no e-mail notification settings without a server to send them', () => {
+    // A local workspace has no service behind it: an "Activité dans mon espace
+    // de travail" switch would promise mail nobody can send.
+    const footer = createDesktopFooter(vi.fn());
+    document.body.append(footer);
+    footer.dispatchEvent(new Event('blok:desktop-open-preferences'));
+    const tabs = [...document.querySelectorAll('[data-desktop-settings-nav] button')]
+      .map(node => node.textContent?.trim());
+    expect(tabs).not.toContain('Notifications');
+    const search = must(document.querySelector<HTMLInputElement>('[data-desktop-settings-search]'));
+    search.value = 'e-mail';
+    search.dispatchEvent(new Event('input'));
+    const results = [...document.querySelectorAll('[data-settings-results] button')]
+      .map(node => node.querySelector('strong')?.textContent);
+    expect(results).not.toContain('Modifications de pages');
+    expect(results).not.toContain('Activité dans mon espace de travail');
+  });
+
   it('reveals the matched control in another panel without activating it', () => {
     const footer = createDesktopFooter(vi.fn());
     document.body.append(footer);
