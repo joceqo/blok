@@ -8,7 +8,6 @@ import type {PageBreadcrumbItem, PageToolbarOptions} from './types';
 
 const SIDEBAR = ['M2 2.5h12v11H2z', 'M6 2.5v11'];
 const LINK = ['M6.5 9.5 9.5 6.5', 'M6 10l-1 1a2.5 2.5 0 0 1-3.5-3.5L4 5', 'M10 6l1-1a2.5 2.5 0 0 1 3.5 3.5L12 11'];
-const CHECK = ['M3.5 8.5 6.5 11.5 12.5 4.5'];
 const STAR = ['M8 1.8 9.7 6.1l4.6.4-3.5 2.9 1.1 4.5L8 11.5 4.1 13.9l1.1-4.5L1.7 6.5l4.6-.4Z'];
 const DOTS = ['M3 8h.2', 'M7.9 8h.2', 'M12.8 8h.2'];
 const DEVICE = ['M2.5 3.5h11v8h-11z', 'M5.5 13.5h5'];
@@ -42,12 +41,13 @@ const CopyLink = ({href}: {href?: string}) => {
       setNotice(shellText("Copie impossible"));
     }
   }
-  const copied = notice === shellText("Lien copié");
+  // Le dessin ne change pas : le bouton reste reconnaissable, c'est son
+  // intitulé et le compte rendu à côté qui disent ce qui vient de se passer.
   return <>
     <button type="button" data-desktop-page-copy="" onClick={() => void copy()}
       aria-label={notice || shellText("Copier le lien de la page")}
       title={notice || shellText("Copier le lien de la page")}>
-      <Glyph paths={copied ? CHECK : LINK}/>
+      <Glyph paths={LINK}/>
     </button>
     <span data-desktop-page-feedback="" role="status" hidden={!notice}>{notice}</span>
   </>;

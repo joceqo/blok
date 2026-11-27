@@ -653,10 +653,6 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 [data-desktop-sidebar-toggle]:focus-visible { outline: 2px solid var(--desktop-ink); outline-offset: 2px; }
 
 /* Compact page navigation shares the same hover and focus tokens as the rail. */
-[data-desktop-page-workspace] { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 180px; flex: 0 1 auto; font-size: 13px; }
-[data-desktop-page-workspace] svg { flex: none; width: 16px; height: 16px; color: var(--desktop-muted); }
-[data-desktop-page-workspace] span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-[data-desktop-page-breadcrumbs] { flex: 1; }
 [data-desktop-page-breadcrumb-item]:last-child { flex-shrink: 0.5; max-width: 340px; }
 [data-desktop-page-breadcrumb-item] { font-size: 13px; }
 [data-desktop-page-readonly] { margin-inline: 8px; flex: none; color: var(--desktop-muted); font-size: 12px; }
@@ -679,9 +675,6 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 [data-desktop-page-full-width]:disabled { opacity: .5; cursor: default; }
 [data-desktop-page-menu]:is([popover], [data-blok-top-layer]) { position: fixed; inset: auto; margin: 0; }
 [data-desktop-page-menu] { box-sizing: border-box; }
-@media (max-width: 800px) {
-  [data-desktop-page-workspace], [data-desktop-page-workspace] + [data-desktop-page-breadcrumb-separator] { display: none; }
-}
 @media (max-width: 540px) {
   [data-desktop-page-toolbar] { padding-inline: 6px; gap: 4px; }
   [data-desktop-page-actions] { gap: 0; }
@@ -689,9 +682,6 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 }
 
 [data-blok-shell]:has([data-blok-sidebar]:not([data-collapsed])) [data-desktop-sidebar-toggle] { display: none; }
-button[data-desktop-page-workspace] { border: 0; border-radius: 4px; padding: 4px 6px; background: transparent; color: inherit; font-family: inherit; cursor: pointer; }
-button[data-desktop-page-workspace]:is(:hover, [aria-expanded="true"]) { background: var(--desktop-hover); }
-button[data-desktop-page-workspace]:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: -2px; }
 
 [data-desktop-empty] {
   display: flex; flex-direction: column; align-items: stretch; gap: 20px;

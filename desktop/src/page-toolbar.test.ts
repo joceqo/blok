@@ -1,3 +1,5 @@
+import {readFileSync} from 'node:fs';
+import {join} from 'node:path';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {createPageToolbar} from './page-toolbar';
 import {must} from './test-helpers';
@@ -223,5 +225,29 @@ it('range les bascules de vue avec les actions, pas contre le titre', () => {
   const toolbar = mount([{id: 'p', title: 'Page'}], {viewControls: views});
   expect(must(inBar(toolbar, '[data-desktop-page-identity]')).contains(views)).toBe(false);
   expect(must(inBar(toolbar, '[data-desktop-page-actions]')).contains(views)).toBe(true);
+  toolbar.destroy();
+});
+
+it('garde le même dessin sur le bouton de copie, et le dit à côté', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, 'clipboard', {configurable: true, value: {writeText}});
+  const toolbar = mount([{id: 'p', title: 'Page'}], {pageUrl: () => 'https://blok.example.com/'});
+  const copy = must(inBar<HTMLButtonElement>(toolbar, '[data-desktop-page-copy]'));
+  const drawing = copy.innerHTML;
+  copy.click();
+  await vi.waitFor(() => expect(inBar(toolbar, '[role="status"]')?.textContent).toBe('Lien copié'));
+  // Un bouton qui change de dessin se fait oublier : c'est l'intitulé et le
+  // compte rendu qui racontent, pas l'icône.
+  expect(must(inBar<HTMLButtonElement>(toolbar, '[data-desktop-page-copy]')).innerHTML).toBe(drawing);
+  toolbar.destroy();
+});
+
+it('laisse le fil à la largeur de ses miettes, pas à celle de la barre', () => {
+  const toolbar = mount([{id: 'p', title: 'Page'}]);
+  // Le `flex: 1` du fil servait à remplir l'espace à côté de la pastille
+  // d'espace, qui n'existe plus : il étirait la liste sur toute la barre.
+  const css = readFileSync(join(process.cwd(), 'src/shell.css'), 'utf8');
+  expect(css).not.toMatch(/\[data-desktop-page-breadcrumbs\]\s*\{\s*flex:\s*1\s*;?\s*\}/);
+  expect(css).toMatch(/\[data-desktop-page-breadcrumbs\]\s*\{[^}]*flex:\s*0 1 auto/);
   toolbar.destroy();
 });
