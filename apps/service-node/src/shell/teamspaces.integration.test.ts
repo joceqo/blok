@@ -137,6 +137,25 @@ describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema
     expect(await list()).toEqual([]);
   });
 
+  it('searches rich text saved as segments, the shape every editor block really has', async () => {
+    // Blok saves rich text as segments, never as a bare string: types/rich-text.d.ts.
+    // A page whose text is a segment array must be as findable as one holding a plain string.
+    await db.query(`INSERT INTO pages(id,workspace_id,metadata,content,visibility) VALUES
+      ('s1','w','{"title":"Segments"}','{"blocks":[{"data":{"text":[{"text":"Le héron cendré niche près de l’étang"}]}}]}','workspace'),
+      ('s2','w','{"title":"Marques"}','{"blocks":[{"data":{"text":[{"text":"Le héron "},{"text":"blanc","marks":["bold"]},{"text":" pêche au matin"}]}}]}','workspace')`);
+    const find = async (query: string) => {
+      const response = await app.request('/api/workspaces/demo/search', {
+        method:'POST', headers:{Authorization:'Bearer reader'}, body:JSON.stringify({ query, mode:'palette' }) });
+      expect(response.status).toBe(200);
+      return ((await response.json()).sources as {id:string}[]).map(source => source.id).sort();
+    };
+
+    expect(await find('héron')).toEqual(['s1','s2']);
+    // A word split across marks still belongs to the page that holds it.
+    expect(await find('blanc')).toEqual(['s2']);
+    expect(await find('étang')).toEqual(['s1']);
+  });
+
   it('persists metadata and enforces team ownership and the workspace creation policy', async () => {
     const id = await create('Catalogue');
     const path = '/' + id;
