@@ -28,7 +28,7 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 			failed(w, 500, "Read failed", e)
 			return
 		}
-		standings, parents, e := s.workspaceStandings(r.Context(), tx, u.ID, ws.ID)
+		standings, parents, e := s.workspaceStandings(r.Context(), tx, u.ID, ws.ID, r.PathValue("resource") == "export")
 		if e != nil {
 			failed(w, 500, "Read failed", e)
 			return

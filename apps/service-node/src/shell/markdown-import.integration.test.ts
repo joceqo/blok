@@ -42,6 +42,61 @@ describe.skipIf(!databaseUrl)('Markdown page import', () => {
     expect(page.content.blocks[2].parent).toBe(page.content.blocks[1].id);
     expect((await db.query('SELECT user_id,level FROM page_shares WHERE page_id=$1',[ids[0]])).rows).toEqual([{user_id:'m',level:'full'}]);
   });
+  it('imports CSV rows into one private database page and preserves quoted values', async () => {
+    const csv = {...input, name:'Budget.csv', source:'Item,Amount\r\n"Coffee, beans",14'};
+    const post = () => app.request('/api/workspaces/demo/import/csv', {
+      method:'POST', headers:{Authorization:'Bearer m'}, body:JSON.stringify(csv),
+    });
+    const response = await post();
+    expect(response.status).toBe(200);
+    const {id} = await response.json();
+    expect(await (await post()).json()).toEqual({id});
+    const {rows:[page]} = await db.query('SELECT content,visibility FROM pages WHERE id=$1',[id]);
+    expect(page.visibility).toBe('private');
+    const [database,row] = page.content.blocks;
+    expect(database).toMatchObject({type:'database', content:[row.id]});
+    expect(row).toMatchObject({type:'database-row',parent:database.id,data:{title:'Coffee, beans'}});
+    expect(Object.values(row.data.properties)).toContain(14);
+  });
+  it('rechecks private overrides and trash at export time', async () => {
+    const headers = {Authorization:'Bearer m'};
+    const pagePath = '/api/workspaces/demo/export/pages/child';
+    await db.query(`INSERT INTO pages(id,workspace_id,metadata,content,visibility)
+      VALUES('parent','w','{"id":"parent","parentId":null}','{"blocks":[]}','workspace'),
+            ('child','w','{"id":"child","parentId":"parent"}','{"blocks":[]}','private')`);
+    await db.query("INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES('child','m','full','m')");
+    const index = await app.request('/api/workspaces/demo/export/index',{headers});
+    expect((await index.json()).access.child.visibility).toBe('private');
+    expect((await app.request(pagePath,{headers})).status).toBe(404);
+    expect((await app.request(pagePath+'?private=1',{headers})).status).toBe(200);
+    expect((await app.request(pagePath+'?private=1',{headers:{Authorization:'Bearer v'}})).status).toBe(404);
+    await db.query("UPDATE pages SET trashed=true WHERE id='child'");
+    expect((await app.request(pagePath+'?private=1',{headers})).status).toBe(404);
+  });
+  it('imports a Notion-shaped ZIP atomically, preserving its pages, database, links and image', async () => {
+    const bytes = await readFile(new URL('../../../../test/fixtures/workspace-import/notion-md-csv.zip',import.meta.url));
+    const path = '/api/workspaces/demo/import/zip?name=Migration.zip&attempt='+randomUUID();
+    const post = (actor:string, data=bytes) => app.request(path,{method:'POST',
+      headers:{Authorization:'Bearer '+actor,'Content-Type':'application/zip'},body:new Uint8Array(data)});
+    expect((await post('v')).status).toBe(403);
+    const before = Number((await db.query('SELECT count(*) AS n FROM pages')).rows[0].n);
+    expect((await post('m',Buffer.from('bad zip'))).status).toBe(422);
+    const response = await post('m');
+    const result = await response.json();
+    expect(response.status, JSON.stringify(result)).toBe(200);
+    expect(await (await post('m')).json()).toEqual(result);
+    const {rows} = await db.query('SELECT id,metadata,content,visibility FROM pages');
+    expect(rows.length).toBe(before+4);
+    const root = rows.find(row=>row.id===result.id);
+    const team = rows.find(row=>row.metadata.title==='Equipe');
+    const budget = rows.find(row=>row.metadata.parentId===team.id && row.metadata.title==='Budget');
+    const coffee = rows.find(row=>row.metadata.parentId===budget.id && row.metadata.title==='Café');
+    expect(root.visibility).toBe('private');
+    expect(team.metadata.parentId).toBe(root.id);
+    expect(team.content.blocks.some((b:{data:{url?:string}})=>b.data.url?.startsWith('data:image/png;base64,'))).toBe(true);
+    expect(team.content.blocks[0].data.text).toContain('data-blok-page-id="'+budget.id+'"');
+    expect(budget.content.blocks.find((b:{type:string})=>b.type==='database-row').data.pageId).toBe(coffee.id);
+  });
   it('rejects viewer, expired session and unknown extension before creating a page', async () => {
     const before = await db.query('SELECT count(*) FROM pages');
     expect((await send('v')).status).toBe(403);

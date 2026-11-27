@@ -7,7 +7,9 @@ import {inTransaction} from './bootstrap.ts';
 import {sessionDigest} from './session.ts';
 import {readWorkspaceScope} from './workspace-scope.ts';
 
+type Imported = {id:string; parentId:string | null; document:{title:string; icon?:{type:string;value?:string}; blocks:unknown[]}};
 type MarkdownRuntime = {
+  prepareArchive(bytes: Uint8Array, name: string, rootId: string): Promise<Imported[]>;
   prepareDocument(name: string, source: string): Promise<{title: string; icon?: {type: string; value?: string}; blocks: unknown[]}>;
 };
 
@@ -22,11 +24,11 @@ function importPageId(identity: string): string {
 
 export function markdownImportRoutes(pool: PgPool) {
   const router = new Hono();
-  router.post('/api/workspaces/:slug/import/markdown', bodyLimit({maxSize: 8 << 20}), async c => {
+  router.post('/api/workspaces/:slug/import/:format{markdown|csv}', bodyLimit({maxSize: 8 << 20}), async c => {
     const body = await c.req.json().catch(() => null);
     if (!body || typeof body.attempt !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.attempt) ||
-        typeof body.name !== 'string' || body.name.length > 1024 || !/\.(md|markdown)$/i.test(body.name) ||
-        typeof body.source !== 'string') throw new HTTPException(400, {message:'Invalid Markdown file'});
+        typeof body.name !== 'string' || body.name.length > 1024 || !(c.req.param('format') === 'csv' ? /\.csv$/i : /\.(md|markdown)$/i).test(body.name) ||
+        typeof body.source !== 'string') throw new HTTPException(400, {message:'Invalid import file'});
     const key = sessionDigest(c) ?? '';
     const slug = c.req.param('slug');
     const {id} = await inTransaction(pool, async db => {
@@ -44,7 +46,7 @@ export function markdownImportRoutes(pool: PgPool) {
       const runtime: MarkdownRuntime = await import(url.href);
       let document;
       try { document = await runtime.prepareDocument(body.name, body.source); }
-      catch { throw new HTTPException(422, {message:'Markdown could not be converted to a Blok page'}); }
+      catch { throw new HTTPException(422, {message:'File could not be converted to a Blok page'}); }
       if (Buffer.byteLength(document.title) > 4096) throw new HTTPException(400, {message:'Page title too long'});
       const metadata = {id, title: document.title, parentId: null, ...(document.icon?.type === 'emoji' ? {icon: document.icon.value} : {})};
       const added = await db.query(
@@ -55,6 +57,46 @@ export function markdownImportRoutes(pool: PgPool) {
       await db.query("INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES($1,$2,'full',$2)", [id, scope.user_id]);
       await db.query('UPDATE workspaces SET revision=revision+1 WHERE id=$1', [scope.workspace_id]);
       return {id};
+    });
+    return c.json({id});
+  });
+  router.post('/api/workspaces/:slug/import/zip', bodyLimit({maxSize:64 << 20}), async c => {
+    const key = sessionDigest(c) ?? '';
+    const slug = c.req.param('slug');
+    const attempt = c.req.query('attempt') ?? '';
+    const name = c.req.query('name') ?? '';
+    if (!/^[0-9a-f-]{36}$/i.test(attempt) || name.length > 1024 || !/\.zip$/i.test(name))
+      throw new HTTPException(400,{message:'Invalid archive'});
+    const scope = await inTransaction(pool, async db => readWorkspaceScope(db,key,slug,false));
+    if (scope.role === 'viewer') throw new HTTPException(403,{message:'Write access required'});
+    const bytes = new Uint8Array(await c.req.arrayBuffer());
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const id = importPageId(JSON.stringify([scope.workspace_id,scope.user_id,attempt,name,hash]));
+    const runtime: MarkdownRuntime = await import(new URL('../../dist/shell/markdown-runtime.mjs', import.meta.url).href);
+    let pages: Imported[];
+    try { pages = await runtime.prepareArchive(bytes,name,id); }
+    catch (error) { throw new HTTPException(422,{message:error instanceof Error ? error.message : 'Invalid ZIP'}); }
+
+    await inTransaction(pool,async db => {
+      const current = await readWorkspaceScope(db,key,slug,true);
+      if (current.role === 'viewer' || current.workspace_id !== scope.workspace_id || current.user_id !== scope.user_id)
+        throw new HTTPException(403,{message:'Write access required'});
+      const existing = await db.query(`SELECT p.id FROM pages p JOIN page_shares s ON s.page_id=p.id
+        WHERE p.id=$1 AND p.workspace_id=$2 AND s.user_id=$3 AND s.level='full' AND NOT p.trashed AND NOT p.deleted`,
+        [id,scope.workspace_id,scope.user_id]);
+      if (existing.rowCount) return;
+      const rows = pages.map(({id,parentId,document},position) => ({
+        id, parent_id:parentId, position, document,
+        metadata:{id,parentId,title:document.title,...(document.icon?.type === 'emoji' ? {icon:document.icon.value} : {})},
+      }));
+      const added = await db.query(`INSERT INTO pages(id,workspace_id,metadata,content,visibility)
+        SELECT r.id,$1,r.metadata || jsonb_build_object('position',r.position+(SELECT count(*) FROM pages WHERE workspace_id=$1)),
+          r.document,CASE WHEN r.parent_id IS NULL THEN 'private' ELSE 'inherit' END
+        FROM jsonb_to_recordset($2) AS r(id text,parent_id text,position integer,metadata jsonb,document jsonb)
+        ON CONFLICT(id) DO NOTHING`,[scope.workspace_id,JSON.stringify(rows)]);
+      if (added.rowCount !== pages.length) throw new HTTPException(409,{message:'Archive already imported or moved to trash'});
+      await db.query("INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES($1,$2,'full',$2)",[id,scope.user_id]);
+      await db.query('UPDATE workspaces SET revision=revision+1 WHERE id=$1',[scope.workspace_id]);
     });
     return c.json({id});
   });

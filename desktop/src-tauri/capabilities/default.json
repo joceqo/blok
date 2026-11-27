@@ -23,6 +23,7 @@
     "allow-finish-editor-close",
     "allow-load-workspace-file",
     "allow-save-workspace-file",
+    "allow-save-workspace-export",
     "allow-workspace-data-directory",
     "allow-agent-provider-status",
     "allow-agent-ask",

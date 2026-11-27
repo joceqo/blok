@@ -1080,6 +1080,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   if (panel) bindAssistantButton(assistantButton, panel);
   ws.footer = createDesktopFooter((mode) => ws.editor?.theme.set(mode), ref, ws.frame.headerActions, {
     flushForBackup: flushDocument,
+    exportWorkspace: ref.kind === 'local' || ref.role === 'admin' ? async (options, signal) => {
+      await flushDocument();
+      const {exportWorkspace} = await import('./workspace-export');
+      return exportWorkspace(workspaceRepository(ref), options, signal);
+    } : undefined,
     async onLanguageChange(locale) {
       await flushDocument();
       rememberShellLanguage(locale);
@@ -1091,15 +1096,19 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     importMarkdown: canCreateUnder(null) ? async (file: globalThis.File) => {
       if (!ws.index || !canCreateUnder(null)) throw new Error('Vous ne pouvez pas créer de page dans cet espace.');
       if (ws.metadataAction) throw new Error('Une modification est en cours dans cet espace. Réessayez dans un instant.');
-      if (!/\.(md|markdown)$/i.test(file.name)) throw new Error('Choisissez un fichier Markdown (.md ou .markdown).');
-      if (file.size > (8 << 20)) throw new Error('Le fichier Markdown doit peser au maximum 8 Mio.');
+      const archive = /\.zip$/i.test(file.name);
+      if (!archive && !/\.(md|markdown|csv)$/i.test(file.name)) throw new Error('Choisissez un fichier Markdown, CSV ou ZIP.');
+      if (archive && file.size > (64 << 20)) throw new Error('La taille maximale d’une archive ZIP est de 64 Mio.');
+      if (!archive && file.size > (8 << 20)) throw new Error('Le fichier doit peser au maximum 8 Mio.');
       ws.metadataAction = true;
       try {
         if (ws.editor) { await ws.editor.isReady; await ws.editor.saver.flush(); }
         await ws.saveOrder;
-        const source = await file.text();
+        const source = archive ? await file.arrayBuffer() : await file.text();
         const attempt = await markdownImportAttempt(workspaceKey(ref), file.name, source);
-        const id = await repository.importMarkdown(attempt.id, file.name, source);
+        const id = typeof source === 'string'
+          ? await repository.importMarkdown(attempt.id, file.name, source)
+          : await repository.importArchive(attempt.id, file.name, source);
         const index = adoptIndex(await repository.loadIndex());
         if (!index.pages.some(page => page.id === id)) throw new Error('La page importée est inaccessible.');
         ws.frame.setPages(withSections(index.pages), index.activeId);

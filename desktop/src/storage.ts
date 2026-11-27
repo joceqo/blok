@@ -88,6 +88,15 @@ export async function dataDirectory(workspace: WorkspaceRef = activeWorkspace())
 
 export async function loadIndex(workspace: WorkspaceRef = activeWorkspace()): Promise<WorkspaceIndex> {
   const raw = await readFile('index', workspace);
+  const parsed = parseWorkspaceIndex(raw);
+  if (parsed) return parsed;
+  const id = crypto.randomUUID();
+  const index = { pages: [{ id, title: shellText("Nouvelle page"), parentId: null }], activeId: id, trash: [] };
+  await saveIndex(index, workspace);
+  return index;
+}
+
+export function parseWorkspaceIndex(raw: string | null): WorkspaceIndex | null {
   if (raw) {
     try {
       const value: unknown = JSON.parse(raw);
@@ -106,10 +115,7 @@ export async function loadIndex(workspace: WorkspaceRef = activeWorkspace()): Pr
       }
     } catch { /* Recover from a damaged index with a new empty page. */ }
   }
-  const id = crypto.randomUUID();
-  const index = { pages: [{ id, title: shellText("Nouvelle page"), parentId: null }], activeId: id, trash: [] };
-  await saveIndex(index, workspace);
-  return index;
+  return null;
 }
 
 export async function saveIndex(index: WorkspaceIndex, workspace: WorkspaceRef = activeWorkspace()): Promise<void> {

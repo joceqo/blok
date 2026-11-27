@@ -72,6 +72,13 @@ Alongside Blok's document editing tools, the host serves `blok_list_workspaces`,
 
 `GET /api/blok-ticket?doc=:pageID` is the shared ticket endpoint. Blok services are `/api/blok`, including `/sync/:pageID/state`; HTTP services use ticket as Bearer plus allowed Origin, WebSockets use ticket in Sec-WebSocket-Protocol.
 
+## Workspace import and export
+
+- POST `/api/workspaces/:slug/import/markdown` or `/api/workspaces/:slug/import/csv` with JSON `{name,source,attempt}`. The UTF-8 request body may be up to 8 MiB. Use a UUIDv4 for each new attempt.
+- POST `/api/workspaces/:slug/import/zip?name=filename.zip&attempt=UUID` with the archive bytes. Limits are 64 MiB compressed, 5000 entries, 32 MiB per entry and 128 MiB expanded. Supports Blok archives and Notion Markdown/CSV exports, including a single ZIP wrapped in another ZIP.
+- Both imports require a writer and return `{id}`. The root is private to the importer. The hierarchy, documents, and author grant are committed together. Retrying the same file with the same attempt returns the existing root when the importer still has full access.
+- GET `/api/workspaces/:slug/export/index` returns the readable page index with effective visibility. GET `/api/workspaces/:slug/export/pages/:id` returns the saved document (or JSON `null` for an empty page). Private pages require `?private=1` and current read access. The client packages the selected documents and assets into a ZIP.
+
 ## OpenAI assistant
 
 All AI routes require current workspace membership. Personal credentials belong to the signed-in **account across this server**, shared credentials to the current workspace. Personal credentials always take precedence. An invalid, rejected or unreadable personal key returns an error and never falls back to the shared key. Deleting the personal credential explicitly restores shared-key selection.

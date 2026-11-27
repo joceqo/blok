@@ -95,6 +95,15 @@ type pageNode struct {
 // pour terminer.
 const maxPageDepth = 64
 
+func inheritedVisibility(chain []pageNode) string {
+	for _, node := range chain {
+		if node.Visibility != visInherit {
+			return node.Visibility
+		}
+	}
+	return visPrivate
+}
+
 // resolve applique le modèle : min(plafond, max(base héritée, partages de la chaîne)).
 // chain va de la page vers la racine.
 func resolve(role string, chain []pageNode) level {
@@ -102,12 +111,8 @@ func resolve(role string, chain []pageNode) level {
 	if ceiling == levelNone || len(chain) == 0 {
 		return levelNone
 	}
-	visibility := ""
 	granted := levelNone
 	for _, node := range chain {
-		if visibility == "" && node.Visibility != visInherit {
-			visibility = node.Visibility
-		}
 		if node.Share > granted {
 			granted = node.Share
 		}
@@ -115,7 +120,7 @@ func resolve(role string, chain []pageNode) level {
 	// Une chaîne sans visibilité explicite est une chaîne incomplète — tronquée,
 	// cyclique, ou coupée par un ancêtre supprimé. On se referme.
 	best := granted
-	if base := baseOf(role); visibility == visWorkspace && base > best {
+	if base := baseOf(role); inheritedVisibility(chain) == visWorkspace && base > best {
 		best = base
 	}
 	if best > ceiling {
@@ -131,11 +136,11 @@ type querier interface {
 }
 
 const chainQuery = `WITH RECURSIVE chain AS (
-  SELECT p.id, p.visibility, nullif(p.metadata->>'parentId','') AS parent, 0 AS depth
+  SELECT p.id, p.workspace_id, p.visibility, nullif(p.metadata->>'parentId','') AS parent, 0 AS depth
     FROM pages p WHERE p.id=$1 AND NOT p.deleted
   UNION ALL
-  SELECT p.id, p.visibility, nullif(p.metadata->>'parentId',''), c.depth+1
-    FROM pages p JOIN chain c ON p.id=c.parent
+  SELECT p.id, p.workspace_id, p.visibility, nullif(p.metadata->>'parentId',''), c.depth+1
+    FROM pages p JOIN chain c ON p.id=c.parent AND p.workspace_id=c.workspace_id
    WHERE c.depth+1 < $3 AND NOT p.deleted)
 SELECT c.id, c.visibility, coalesce(sh.level,'')
   FROM chain c LEFT JOIN page_shares sh ON sh.page_id=c.id AND sh.user_id=$2
@@ -218,7 +223,7 @@ type pageStanding struct {
 // la hiérarchie telle que la base la décrit. Interroger la base page par page
 // ferait deux requêtes par page : un espace de mille pages en paierait deux mille
 // à chaque affichage de la barre latérale.
-func (s *Service) workspaceStandings(ctx context.Context, q querier, userID, workspaceID string) (map[string]pageStanding, map[string]string, error) {
+func (s *Service) workspaceStandings(ctx context.Context, q querier, userID, workspaceID string, forExport bool) (map[string]pageStanding, map[string]string, error) {
 	levels, parents, nodes, e := s.workspaceChains(ctx, q, userID, workspaceID)
 	if e != nil || len(nodes) == 0 {
 		return map[string]pageStanding{}, parents, e
@@ -246,6 +251,7 @@ func (s *Service) workspaceStandings(ctx context.Context, q querier, userID, wor
 	standings := make(map[string]pageStanding, len(nodes))
 	for id := range nodes {
 		standing := pageStanding{Level: levels[id], Visibility: visPrivate}
+		visibilityResolved := false
 		for current, depth := id, 0; current != "" && depth < maxPageDepth; current, depth = parents[current], depth+1 {
 			node, known := nodes[current]
 			if !known {
@@ -254,8 +260,11 @@ func (s *Service) workspaceStandings(ctx context.Context, q querier, userID, wor
 			if sharedDirectly[current] {
 				standing.Shared = true
 			}
-			if standing.Visibility == visPrivate && node.Visibility != visInherit {
+			if !visibilityResolved && node.Visibility != visInherit {
 				standing.Visibility = node.Visibility
+				// Export uses the nearest explicit setting. The sidebar groups
+				// by workspace when any ancestor is open to the workspace.
+				visibilityResolved = forExport || node.Visibility == visWorkspace
 			}
 		}
 		standings[id] = standing

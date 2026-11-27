@@ -42,7 +42,7 @@ export async function loadSession(pool: Pick<PgPool, 'query'>, digest: string) {
 
 // Match Go's nearest explicit visibility plus any named share on the first 64
 // ancestors. Membership, session expiry, ACL and payload are read in one snapshot.
-export async function loadVisiblePage(pool: PgPool, digest: string, slug: string, id: string, preview = false) {
+export async function loadVisiblePage(pool: PgPool, digest: string, slug: string, id: string, preview = false, exportScope?: 'workspace' | 'all') {
   const { rows } = await pool.query<{ authenticated: boolean; workspace: boolean; member: boolean; content: string | null }>(
     `WITH RECURSIVE account AS (SELECT user_id FROM sessions WHERE id=$1 AND expires_at>now()),
      workspace AS (SELECT id FROM workspaces WHERE slug=$2 OR id=$2 ORDER BY (slug=$2) DESC LIMIT 1),
@@ -59,14 +59,14 @@ export async function loadVisiblePage(pool: PgPool, digest: string, slug: string
      visible AS (
        SELECT coalesce((SELECT visibility='workspace' FROM chain WHERE visibility<>'inherit'
                         ORDER BY depth LIMIT 1),false)
-              OR EXISTS(SELECT 1 FROM chain c JOIN page_shares sh ON sh.page_id=c.id
+              OR (NOT $5 AND EXISTS(SELECT 1 FROM chain c JOIN page_shares sh ON sh.page_id=c.id
                         JOIN account a ON a.user_id=sh.user_id
-                        WHERE sh.level IN ('view','edit','full')) AS allowed
+                        WHERE sh.level IN ('view','edit','full'))) AS allowed
      )
      SELECT EXISTS(SELECT FROM account) AS authenticated, EXISTS(SELECT FROM workspace) AS workspace,
             EXISTS(SELECT FROM member) AS member,
             (SELECT ${preview ? `json_build_object('excerpt',left(${pageSearchText},1600))::text` : "coalesce(p.content::text,'null')"} FROM pages p JOIN chain c ON c.id=p.id AND c.depth=0
-             WHERE (SELECT allowed FROM visible) AND (NOT $4 OR NOT p.trashed)) AS content`, [digest, slug, id, preview],
+             WHERE (SELECT allowed FROM visible) AND (NOT $4 OR NOT p.trashed)) AS content`, [digest, slug, id, preview || !!exportScope, exportScope === 'workspace'],
   );
   return rows[0]!;
 }

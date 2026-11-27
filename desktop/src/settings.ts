@@ -174,6 +174,7 @@ function actionButton(attribute: string, label: string, kind: MenuIcon): HTMLBut
 }
 
 interface FooterOptions {
+  exportWorkspace?: import('./workspace-export').ExportWorkspace;
   flushForBackup?: () => Promise<void>;
   onLanguageChange?: (language: SupportedLocale) => Promise<void>;
   footerHost?: HTMLElement;
@@ -518,7 +519,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
   noResults.hidden = true; noResults.setAttribute('role', 'status');
   nav.append(searchBox, navList, resultList, noResults);
   const sidebar = options.sidebarPreferences ?? createSidebarPreferences(workspaceKey(currentWorkspace), true);
-  const catalog = settingsCatalog(currentWorkspace, sidebar, native, Boolean(options.importMarkdown));
+  const catalog = settingsCatalog(currentWorkspace, sidebar, native, Boolean(options.importMarkdown), Boolean(options.exportWorkspace));
   const navEntries: SettingsTab[] = [];
   let groupName = '';
   let resultsView: ReturnType<typeof mountSettingsSearchResults> | undefined;
@@ -560,7 +561,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     tab('backups',shellText("Sauvegardes"),'storage','git github gitlab lfs dépôt dossier nas s3 backup restauration');
   if (admin && !onDevice) tab('members',shellText("Membres"),'people','personnes invitations accès rôles');
   tab('sidebar',shellText("Barre latérale"),'storage','navigation personnaliser favoris sections',IconSidebarRight);
-  tab('import',shellText("Importer"),'storage',options.importMarkdown ? 'fichiers markdown agenda calendrier ics' : 'fichiers agenda calendrier ics',IconDownload);
+  tab('import',shellText("Importer"),'storage',options.importMarkdown ? 'fichiers notion archive zip markdown csv agenda calendrier ics' : 'fichiers agenda calendrier ics',IconDownload);
   group(shellText("Fonctionnalités"));
   tab('ai',shellText("Assistant IA"),'ai','assistant openai modèle clé api');
   tab('connections',shellText("Connexions"),'apps',client ? 'comptes serveur distant espace' : 'comptes serveur distant espace mcp');
@@ -886,7 +887,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
         return undefined;
       }
       ui.choices.push(mountSettingsPanel(content, {
-        kind: 'general', workspace: ui.workspaceName,
+        kind: 'general', workspace: ui.workspaceName, exportWorkspace: options.exportWorkspace,
         remoteServer: remote ? remote.server || location.origin : undefined,
         workspaceId: client?.currentSession?.workspaces.find((space) => space.slug === slug)?.id,
         rename: workspaceRename(),

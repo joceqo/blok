@@ -22,7 +22,7 @@ interface Standing {
 
 // These are the same chains, role ceiling and sidebar labels used by Go's
 // workspaceStandings. Build them from metadata alone, never document bodies.
-export function pageStandings(rows: IndexPage[], role: Role) {
+export function pageStandings(rows: IndexPage[], role: Role, forExport = false) {
   const byId = new Map(rows.map((row) => [row.id, row]));
   const access: Record<string, Standing> = Object.create(null);
   for (const page of rows) {
@@ -42,13 +42,13 @@ export function pageStandings(rows: IndexPage[], role: Role) {
       node = node.metadata.parentId ? byId.get(node.metadata.parentId) : undefined;
     }
     const level = resolvePageLevel(role, first ?? 'private', granted);
-    if (level) access[page.id] = { level, visibility, shared };
+    if (level) access[page.id] = { level, visibility: forExport ? first ?? 'private' : visibility, shared };
   }
   return access;
 }
 
-export function workspaceIndex(rows: IndexPage[], role: Role, revision: number) {
-  const access = pageStandings(rows, role);
+export function workspaceIndex(rows: IndexPage[], role: Role, revision: number, forExport = false) {
+  const access = pageStandings(rows, role, forExport);
   const pages: IndexPage['metadata'][] = [];
   const trash: IndexPage['metadata'][] = [];
   for (const page of rows) {
@@ -74,7 +74,7 @@ export async function loadIndexPages(client: Pick<PgPool, 'query'>, workspaceId:
   )).rows;
 }
 
-export async function loadWorkspaceIndex(pool: PgPool, digest: string, slug: string) {
+export async function loadWorkspaceIndex(pool: PgPool, digest: string, slug: string, forExport = false) {
   const client = await pool.connect();
   try {
     // The revision and page tree must belong to the same snapshot. Otherwise
@@ -98,7 +98,7 @@ export async function loadWorkspaceIndex(pool: PgPool, digest: string, slug: str
     await client.query('COMMIT');
     const revision = Number(scope.revision);
     if (!Number.isSafeInteger(revision)) throw new Error('Workspace revision cannot be represented in the shell');
-    return { status: 200, data: workspaceIndex(rows, scope.role, revision) } as const;
+    return { status: 200, data: workspaceIndex(rows, scope.role, revision, forExport) } as const;
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;

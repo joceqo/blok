@@ -28,9 +28,13 @@ var permissionExemptions = map[string]string{
 
 	// Pas de contenu : des identifiants, ou un drapeau posé après autorisation.
 	"recheckWorkspace": "ne lit que des identifiants pour relancer une revérification",
+	"nodeOwnsRoom":     "vérifie uniquement l’appartenance de l’identifiant à l’espace pour choisir le serveur ; l’admission y vérifie les droits",
 	"currentIndex":     "ne lit que des identifiants et leur ordre ; l'appelant résout les niveaux",
 	"ancestry":         "remonte la chaîne des parents ; c'est une brique du résolveur, pas un accès au contenu",
 	"mintTicket":       "marque l'admission d'un document déjà autorisé par l'appelant",
+
+	// Création uniquement. Aucun accès au contenu d’une page préexistante.
+	"importWorkspace": "vérifie la session et le rôle en transaction, insère des pages neuves sans écrasement et donne l’accès à leur auteur",
 
 	// Authentification propre, hors du modèle de permissions par page.
 	"document":            "point interne, authentifié par INTERNAL_SECRET et bloqué au proxy public",

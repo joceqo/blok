@@ -50,3 +50,22 @@ html[data-desktop-high-contrast] .settings-panel-switch:focus-visible { outline-
 .settings-panel-stack { display: grid; justify-items: start; gap: 10px; padding-block: 16px; }
 .settings-panel-stack input[data-blok-field] { width: 100%; max-width: 580px; box-sizing: border-box; }
 .settings-panel-icon { font-size: 34px; }
+
+.workspace-export-dialog {
+  box-sizing: border-box; width: min(430px, calc(100% - 32px)); max-height: calc(100% - 32px);
+  padding: 22px; margin: auto; border: 1px solid var(--desktop-border); border-radius: 12px;
+  background: var(--desktop-canvas); color: var(--desktop-ink); box-shadow: 0 16px 60px #0004;
+}
+.workspace-export-dialog::backdrop { background: #0007; }
+.workspace-export-dialog h3 { margin: 0 0 15px; font-size: 16px; font-weight: 600; }
+.workspace-export-dialog fieldset { padding: 0; margin: 0; border: 0; min-width: 0; }
+.workspace-export-row, .workspace-export-dialog .settings-panel-row {
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: nowrap;
+  gap: 10px; min-height: 36px; padding: 3px 0; font-size: 14px;
+}
+.workspace-export-row > span, .workspace-export-dialog .settings-panel-label strong { color: var(--desktop-muted); font-weight: 400; }
+.workspace-export-row button { display: inline-flex; align-items: center; gap: 6px; }
+.workspace-export-dialog .settings-panel-label small:empty { display: none; }
+.workspace-export-dialog footer { display: flex; justify-content: end; gap: 8px; margin-top: 20px; }
+.workspace-export-dialog .workspace-export-primary { background: #246fca; color: white; border-color: transparent; }
+.workspace-export-dialog [role="alert"] { font-size: 13px; }

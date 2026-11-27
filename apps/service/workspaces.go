@@ -224,6 +224,27 @@ func (s *Service) workspaceResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch resource {
+	case "import":
+		if action != "" {
+			http.NotFound(w, r)
+			return
+		}
+		s.importWorkspace(w, r, u, ws, id)
+		return
+	case "export":
+		if r.Method != http.MethodGet {
+			problem(w, 405, "Method not allowed")
+			return
+		}
+		switch {
+		case id == "index" && action == "":
+			s.index(w, r, u, ws)
+		case id == "pages" && action != "" && r.PathValue("target") == "":
+			s.exportPage(w, r, u, ws, action)
+		default:
+			problem(w, 404, "Not found")
+		}
+		return
 	case "emojis":
 		s.emojis(w, r, u, ws, id)
 		return

@@ -3,7 +3,7 @@ import { DATA_ATTR } from '../../components/constants/data-attributes';
 import type { FileData } from '../../../types/tools/file';
 import { resolveFileIcon, showsFileSize } from './file-icon';
 import { humanFileSize } from './format';
-import { safeHttpHref } from './url';
+import { safeFileDownloadHref } from './url';
 
 export interface CaptionRowOptions {
   value: string;
@@ -93,7 +93,7 @@ export function renderFileCard(
   // and the browser handles the download click itself.
   wrapper.setAttribute(DATA_ATTR.linkOwner, '');
 
-  const href = safeHttpHref(data.url);
+  const href = safeFileDownloadHref(data.url);
   const downloadName = data.fileName ?? '';
   const displayName = data.fileName ?? data.url;
 

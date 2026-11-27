@@ -122,17 +122,19 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   app.route('/',pagePurgeRoutes(pool,roomPurger(secret)));
   registerIndexWrite(app, pool, recheckAccess);
   registerTrashRestore(app, pool);
-  app.get('/api/workspaces/:slug/index', async (c) => {
+  app.on('GET', ['/api/workspaces/:slug/index', '/api/workspaces/:slug/export/index'], async (c) => {
     const key = sessionDigest(c);
     if (!key) return c.json({ error: 'Sign in required' }, 401);
-    const result = await loadWorkspaceIndex(pool, key, c.req.param('slug'));
+    const result = await loadWorkspaceIndex(pool, key, c.req.param('slug'), c.req.routePath.endsWith('/export/index'));
     if (result.status !== 200) return c.json({ error: result.error }, result.status);
     return c.json(result.data);
   });
-  app.get('/api/workspaces/:slug/pages/:id', async (c) => {
+  app.on('GET', ['/api/workspaces/:slug/pages/:id', '/api/workspaces/:slug/export/pages/:id'], async (c) => {
     const key = sessionDigest(c);
     if (!key) return c.json({ error: 'Sign in required' }, 401);
-    const page = await loadVisiblePage(pool, key, c.req.param('slug'), c.req.param('id'), c.req.query('preview') === '1');
+    const exporting = c.req.routePath.endsWith('/export/pages/:id');
+    const page = await loadVisiblePage(pool, key, c.req.param('slug'), c.req.param('id'),
+      c.req.query('preview') === '1', exporting ? (c.req.query('private') === '1' ? 'all' : 'workspace') : undefined);
     if (!page.authenticated) return c.json({ error: 'Sign in required' }, 401);
     if (!page.workspace) return c.json({ error: 'Workspace not found' }, 404);
     if (!page.member) return c.json({ error: 'Workspace membership required' }, 403);

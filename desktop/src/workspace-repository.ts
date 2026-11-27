@@ -1,10 +1,10 @@
 import { pageAccess } from './page-access';
 import { moveDestinations, PageMoveConflict } from './page-move';
 import { mergeWorkspaceIndex } from './workspace-merge';
-import { loadIndex, peekFile, readFile, saveIndex, writeFile, type WorkspaceIndex } from './storage';
+import { loadIndex, parseWorkspaceIndex, peekFile, readFile, saveIndex, writeFile, type WorkspaceIndex } from './storage';
 import { nativeSessionAdapter } from './native-session';
 import type { WorkspaceRef } from './workspace-registry';
-export class RepositoryHttpError extends Error { constructor(public status: number) { super(`Serveur indisponible (${status})`); } }
+export class RepositoryHttpError extends Error { constructor(public status: number, message = `Serveur indisponible (${status})`) { super(message); } }
 const snapshot = (index: WorkspaceIndex): WorkspaceIndex => JSON.parse(JSON.stringify(index)) as WorkspaceIndex;
 /** A repository owns one immutable identity, including all queued writes. */
 export function workspaceRepository(workspace: WorkspaceRef) {
@@ -14,10 +14,13 @@ export function workspaceRepository(workspace: WorkspaceRef) {
   let acknowledged: WorkspaceIndex | null = null;
   const pageWrites = new Map<string, Promise<void>>();
   const base = ref.kind === 'remote' ? `${ref.server}/api/workspaces/${encodeURIComponent(ref.workspaceId)}` : '';
-  async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  async function request<T>(url: string, init?: RequestInit, importErrors = false): Promise<T> {
     const token = ref.kind === 'remote' && '__TAURI_INTERNALS__' in window ? await nativeSessionAdapter(ref.server).getToken() : null;
     const response = await fetch(url, { ...init, credentials: 'include', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...init?.headers } });
-    if (!response.ok) throw new RepositoryHttpError(response.status);
+    if (!response.ok) {
+      const detail = importErrors && response.status === 422 ? await response.json().catch(() => null) : null;
+      throw new RepositoryHttpError(response.status,typeof detail?.error === 'string' ? detail.error : undefined);
+    }
     return await response.json() as T;
   }
   async function searchSources(query: string, signal: AbortSignal, palette = false) {
@@ -156,6 +159,18 @@ export function workspaceRepository(workspace: WorkspaceRef) {
         throw error;
       }
     },
+    async loadExportIndex(signal: AbortSignal): Promise<WorkspaceIndex> {
+      if (ref.kind === 'remote') return request<WorkspaceIndex>(base + '/export/index', {signal});
+      const index = parseWorkspaceIndex(await peekFile('index', ref));
+      if (!index) throw new Error('Impossible de lire les pages de cet espace.');
+      return index;
+    },
+    async readExportPage(id: string, privatePages: boolean, signal: AbortSignal) {
+      type Document = import('../../types/data-formats/output-data').LooseOutputData;
+      if (ref.kind === 'remote') return request<Document | null>(`${base}/export/pages/${encodeURIComponent(id)}?private=${privatePages ? '1' : '0'}`, {signal});
+      const raw = await peekFile(id, ref);
+      return raw ? JSON.parse(raw) as Document : null;
+    },
     readPage(id: string) {
       if (ref.kind !== 'local') throw new Error('Remote documents require collaboration');
       return (pageWrites.get(id) ?? Promise.resolve()).then(() => readFile(id, ref));
@@ -166,15 +181,39 @@ export function workspaceRepository(workspace: WorkspaceRef) {
       pageWrites.set(id, pending);
       return pending;
     },
+    async importArchive(attempt: string, name: string, bytes: ArrayBuffer): Promise<string> {
+      if (ref.kind === 'remote') {
+        const query = new URLSearchParams({attempt,name});
+        return (await request<{id:string}>(base + '/import/zip?' + query,{
+          method:'POST',headers:{'Content-Type':'application/zip'},body:bytes,
+        },true)).id;
+      }
+      const {prepareWorkspaceArchive} = await import('../../src/markdown/import-workspace-archive');
+      const pages = await prepareWorkspaceArchive(new Uint8Array(bytes),name,attempt);
+      const index = await loadIndex(ref);
+      if (index.pages.some(p => p.id === attempt)) return attempt;
+      const occupied = new Set([...index.pages,...index.trash ?? []].map(p => p.id));
+      if (pages.some(p => occupied.has(p.id))) throw new Error('Une page de cette archive existe déjà dans cet espace.');
+      for (const page of pages) {
+        if (await readFile(page.id,ref) === null) await writeFile(page.id,JSON.stringify(page.document),ref);
+      }
+      // Publish the entire tree only after the documents exist, preserving other index edits.
+      const fresh = await loadIndex(ref);
+      if (fresh.pages.some(p => p.id === attempt)) return attempt;
+      const metadata = pages.map(({id,parentId,document}) => ({id,parentId,title:document.title,
+        ...(document.icon?.type === 'emoji' ? {icon:document.icon.value} : {})}));
+      await saveIndex({...fresh,pages:[...fresh.pages,...metadata]},ref);
+      return attempt;
+    },
     async importMarkdown(attempt: string, name: string, source: string): Promise<string> {
       if (ref.kind === 'remote') {
         const body = JSON.stringify({attempt, name, source});
         if (new Blob([body]).size > (8 << 20)) throw new Error('Ce fichier dépasse la taille acceptée par le serveur (8 Mio).');
         try {
-          return (await request<{id: string}>(`${base}/import/markdown`, {method: 'POST', body})).id;
+          return (await request<{id: string}>(`${base}/import/${/\.csv$/i.test(name) ? 'csv' : 'markdown'}`, {method: 'POST', body})).id;
         } catch (error) {
           if (error instanceof RepositoryHttpError && error.status === 403) throw new Error('Vous ne pouvez pas créer de page dans cet espace.');
-          if (error instanceof RepositoryHttpError && error.status === 422) throw new Error('Ce document Markdown contient des blocs impossibles à importer.');
+          if (error instanceof RepositoryHttpError && error.status === 422) throw new Error('Ce fichier ne peut pas être importé.');
           throw error;
         }
       }
@@ -182,8 +221,8 @@ export function workspaceRepository(workspace: WorkspaceRef) {
       const index = await loadIndex(ref);
       if (index.pages.some(page => page.id === id)) return id;
       if (index.trash?.some(page => page.id === id)) throw new Error('La page importée se trouve dans la corbeille.');
-      const {markdownPage} = await import('../../src/markdown/import-page');
-      const document = await markdownPage(name, source);
+      const {importWorkspaceFile} = await import('../../src/markdown/import-workspace-file');
+      const document = await importWorkspaceFile(name, source);
       if (await readFile(id, ref) === null) await writeFile(id, JSON.stringify(document), ref);
       const page = {id, title: document.title, parentId: null, ...(document.icon?.type === 'emoji' ? {icon: document.icon.value} : {})};
       // Publish the index only once the document exists. A failed index write can be retried with the same id.
