@@ -94,9 +94,9 @@ func (s *Service) insertWorkspace(w http.ResponseWriter, r *http.Request, u iden
 }
 func (s *Service) lookupWorkspace(ctx context.Context, slug, user string) (Workspace, error) {
 	var out Workspace
-	e := s.DB.QueryRow(ctx, `SELECT w.id,w.slug,w.name,w.allow_notification_mail,coalesce(m.role,'') FROM workspaces w
+	e := s.DB.QueryRow(ctx, `SELECT w.id,w.slug,w.name,w.icon,w.allow_notification_mail,coalesce(m.role,'') FROM workspaces w
 		LEFT JOIN memberships m ON m.workspace_id=w.id AND m.user_id=$2
-		WHERE w.slug=$1 OR w.id=$1 ORDER BY (w.slug=$1) DESC LIMIT 1`, slug, user).Scan(&out.ID, &out.Slug, &out.Name, &out.AllowNotificationMail, &out.Role)
+		WHERE w.slug=$1 OR w.id=$1 ORDER BY (w.slug=$1) DESC LIMIT 1`, slug, user).Scan(&out.ID, &out.Slug, &out.Name, &out.Icon, &out.AllowNotificationMail, &out.Role)
 	return out, e
 }
 func (s *Service) workspace(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +125,7 @@ func (s *Service) workspace(w http.ResponseWriter, r *http.Request) {
 	if ws.Role != "" {
 		role = &ws.Role
 	}
-	jsonOut(w, 200, map[string]any{"id": ws.ID, "slug": ws.Slug, "name": ws.Name, "role": role, "joinStatus": status, "allowNotificationMail": ws.AllowNotificationMail})
+	jsonOut(w, 200, map[string]any{"id": ws.ID, "slug": ws.Slug, "name": ws.Name, "role": role, "joinStatus": status, "icon": ws.Icon, "allowNotificationMail": ws.AllowNotificationMail})
 }
 func (s *Service) renameWorkspace(w http.ResponseWriter, r *http.Request) {
 	u, ok := s.require(w, r)
@@ -143,6 +143,7 @@ func (s *Service) renameWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		Name                  *string `json:"name"`
+		Icon                  *string `json:"icon"`
 		AllowNotificationMail *bool   `json:"allowNotificationMail"`
 	}
 	if !body(w, r, &in) {
@@ -150,7 +151,7 @@ func (s *Service) renameWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	// Chaque champ est facultatif, mais un corps qui ne demande rien est une
 	// erreur d'appel : l'ecrire quand meme reviendrait a deviner l'intention.
-	if in.Name == nil && in.AllowNotificationMail == nil {
+	if in.Name == nil && in.Icon == nil && in.AllowNotificationMail == nil {
 		problem(w, 400, "Nothing to change")
 		return
 	}
@@ -162,18 +163,25 @@ func (s *Service) renameWorkspace(w http.ResponseWriter, r *http.Request) {
 	// Le slug n'est pas touche : il porte l'URL de l'espace, et le bootstrap
 	// recreerait un espace vide si le sien disparaissait. La revision non plus,
 	// elle arbitre les ecritures concurrentes de l'index des pages.
-	name, allowed := ws.Name, ws.AllowNotificationMail
+	if in.Icon != nil && !validWorkspaceIcon(*in.Icon) {
+		problem(w, 400, "Invalid workspace icon")
+		return
+	}
+	name, icon, allowed := ws.Name, ws.Icon, ws.AllowNotificationMail
 	if in.Name != nil {
 		name = *in.Name
+	}
+	if in.Icon != nil {
+		icon = *in.Icon
 	}
 	if in.AllowNotificationMail != nil {
 		allowed = *in.AllowNotificationMail
 	}
-	if _, e = s.DB.Exec(r.Context(), "UPDATE workspaces SET name=$1,allow_notification_mail=$2 WHERE id=$3", name, allowed, ws.ID); e != nil {
+	if _, e = s.DB.Exec(r.Context(), "UPDATE workspaces SET name=$1,icon=$2,allow_notification_mail=$3 WHERE id=$4", name, icon, allowed, ws.ID); e != nil {
 		failed(w, 503, "Database unavailable", e)
 		return
 	}
-	jsonOut(w, 200, map[string]any{"id": ws.ID, "slug": ws.Slug, "name": name, "role": ws.Role, "allowNotificationMail": allowed})
+	jsonOut(w, 200, map[string]any{"id": ws.ID, "slug": ws.Slug, "name": name, "role": ws.Role, "icon": icon, "allowNotificationMail": allowed})
 }
 func (s *Service) workspaceResource(w http.ResponseWriter, r *http.Request) {
 	u, ok := s.require(w, r)

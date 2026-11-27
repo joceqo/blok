@@ -168,6 +168,26 @@ func TestWorkspaceRename(t *testing.T) {
 		t.Fatal(e)
 	}
 
+	// L'icone de l'espace vit sur la meme route, aux memes bornes que celle
+	// d'un espace d'equipe.
+	if got := request("GET", path, admin, nil, 200); got["icon"] != "" {
+		t.Fatalf("GET: icon=%v want vide", got["icon"])
+	}
+	if dressed := request("PATCH", path, admin, map[string]any{"icon": "🌱"}, 200); dressed["icon"] != "🌱" {
+		t.Fatalf("PATCH de l'icone: %v", dressed)
+	}
+	request("PATCH", path, admin, map[string]any{"icon": "icon:leaf:green"}, 200)
+	// Une URL distante ferait sortir une requete du client a chaque affichage.
+	request("PATCH", path, admin, map[string]any{"icon": "https://ailleurs.test/logo.png"}, 400)
+	request("PATCH", path, member, map[string]any{"icon": "💀"}, 403)
+	if got := request("GET", path, admin, nil, 200); got["icon"] != "icon:leaf:green" {
+		t.Fatalf("icone alteree par une requete refusee: %v", got["icon"])
+	}
+	// Renommer ne deshabille pas l'espace.
+	if renamedAgain := request("PATCH", path, admin, map[string]any{"name": "Jocehome"}, 200); renamedAgain["icon"] != "icon:leaf:green" {
+		t.Fatalf("renommage ayant efface l'icone: %v", renamedAgain)
+	}
+
 	// Aucun refus n'a altere le nom.
 	if e = s.DB.QueryRow(ctx, "SELECT name FROM workspaces WHERE id=$1", wsID).Scan(&stored); e != nil {
 		t.Fatal(e)

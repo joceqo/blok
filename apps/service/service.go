@@ -67,6 +67,10 @@ type Workspace struct {
 	Slug string `json:"slug"`
 	Name string `json:"name"`
 	Role string `json:"role"`
+	// L'icone de l'espace : un emoji, "icon:<nom>:<couleur>", ou un PNG encode
+	// sur place. Jamais une URL distante, qui ferait sortir une requete du
+	// client a chaque affichage.
+	Icon string `json:"icon"`
 	// Le commutateur d'espace : un administrateur coupe d'un coup tous les
 	// e-mails de notification, sans toucher aux preferences des membres.
 	AllowNotificationMail bool `json:"allowNotificationMail"`

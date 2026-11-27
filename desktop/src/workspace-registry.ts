@@ -1,7 +1,7 @@
 import { clearPageRoute, pageUrlForView, type PageView } from './page-link';
 /** Non-secret workspace references. Session credentials live in the OS keychain. */
-export type LocalWorkspace = { kind: 'local'; id: string; name: string };
-export type RemoteWorkspace = { kind: 'remote'; embedded?: boolean; device?: boolean; importedDefaultDisk?: boolean; id: string; name: string; server: string; accountId: string; workspaceId: string; userName?: string; role?: 'admin' | 'member' | 'viewer' };
+export type LocalWorkspace = { kind: 'local'; id: string; name: string; icon?: string };
+export type RemoteWorkspace = { kind: 'remote'; icon?: string; embedded?: boolean; device?: boolean; importedDefaultDisk?: boolean; id: string; name: string; server: string; accountId: string; workspaceId: string; userName?: string; role?: 'admin' | 'member' | 'viewer' };
 export type WorkspaceRef = LocalWorkspace | RemoteWorkspace;
 const KEY = 'blok:desktop:workspaces:v1';
 const ACTIVE = 'blok:desktop:active-workspace:v1';

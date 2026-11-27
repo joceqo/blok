@@ -7,7 +7,7 @@ function record(input: unknown): input is Record<string, unknown> {
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
-function validIcon(icon: unknown): icon is string {
+export function validIcon(icon: unknown): icon is string {
   if (typeof icon !== 'string' || icon.length > 65_536) return false;
   if (icon === '' || /^icon:[a-zA-Z0-9_-]{1,96}(:[a-zA-Z0-9_-]{1,32})?$/.test(icon)) return true;
   if (icon.startsWith('data:image/png;base64,')) {

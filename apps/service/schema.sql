@@ -447,3 +447,14 @@ BEGIN
     INSERT INTO schema_migrations(version) VALUES(25);
   END IF;
 END $$;
+
+-- L'icône de l'espace, aux mêmes bornes que celle des espaces d'équipe : un
+-- émoji, une icône nommée, ou un PNG de 96 px au plus encodé sur place. Jamais
+-- une URL distante, qui ferait sortir une requête du client à chaque affichage.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM schema_migrations WHERE version=26) THEN
+    ALTER TABLE workspaces ADD COLUMN icon text NOT NULL DEFAULT '';
+    INSERT INTO schema_migrations(version) VALUES(26);
+  END IF;
+END $$;

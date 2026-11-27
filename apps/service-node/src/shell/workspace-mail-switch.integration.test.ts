@@ -39,7 +39,7 @@ describe.skipIf(!databaseUrl)('le commutateur d’e-mails de l’espace', () => 
         [createHash('sha256').update(user).digest('hex'), user]);
     }
   });
-  beforeEach(() => db.query('UPDATE workspaces SET allow_notification_mail=true, name=$1', ['Alpha']));
+  beforeEach(() => db.query('UPDATE workspaces SET allow_notification_mail=true, icon=$2, name=$1', ['Alpha', '']));
   afterAll(async () => {
     await db.end();
     try { await admin.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE'); } finally { await admin.end(); }
@@ -70,6 +70,29 @@ describe.skipIf(!databaseUrl)('le commutateur d’e-mails de l’espace', () => 
     expect((await call('boss', 'PATCH', {})).status).toBe(400);
     expect((await call('boss', 'PATCH', { name: '   ' })).status).toBe(400);
     expect((await call('boss', 'PATCH', { allowNotificationMail: 'oui' })).status).toBe(400);
+  });
+
+  it('garde l’espace sans icône tant que personne n’en pose une', async () => {
+    expect(await (await call('hand')).json()).toMatchObject({ icon: '' });
+  });
+
+  it('accepte un émoji, une icône nommée et un PNG, et refuse le reste', async () => {
+    expect((await call('boss', 'PATCH', { icon: '🌱' })).status).toBe(200);
+    expect(await (await call('hand')).json()).toMatchObject({ icon: '🌱' });
+    expect((await call('boss', 'PATCH', { icon: 'icon:leaf:green' })).status).toBe(200);
+    // Les bornes sont celles des espaces d'équipe : un seul grapheme, un PNG
+    // de 96 px au plus. Une URL distante ferait sortir une requête du client.
+    expect((await call('boss', 'PATCH', { icon: 'https://ailleurs.test/logo.png' })).status).toBe(400);
+    expect((await call('boss', 'PATCH', { icon: 'deux 🌱🌿' })).status).toBe(400);
+    expect((await call('boss', 'PATCH', { icon: 42 })).status).toBe(400);
+    expect(await (await call('hand')).json()).toMatchObject({ icon: 'icon:leaf:green' });
+  });
+
+  it('refuse l’icône à un membre, et la garde à travers un renommage', async () => {
+    await call('boss', 'PATCH', { icon: '🌱' });
+    expect((await call('hand', 'PATCH', { icon: '💀' })).status).toBe(403);
+    expect((await call('boss', 'PATCH', { name: 'Oméga' })).status).toBe(200);
+    expect(await (await call('boss')).json()).toMatchObject({ name: 'Oméga', icon: '🌱' });
   });
 
   it('coupe réellement l’envoi, préférence individuelle ou pas', async () => {

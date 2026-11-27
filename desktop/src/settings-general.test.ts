@@ -133,3 +133,49 @@ it('puts the workspace e-mail switch back when the server refuses it', async () 
     expect(host.textContent).toContain('Le réglage n’a pas pu être enregistré.');
   } finally { panel.destroy(); }
 });
+
+const iconTrigger = (host: HTMLElement): HTMLButtonElement =>
+  must(host.querySelector<HTMLButtonElement>('[data-setting="workspace-icon"] .team-icon-trigger'));
+
+it('shows no icon control where nothing can store one', () => {
+  const {host, panel} = mount({...base});
+  try {
+    expect(host.querySelector('[data-setting="workspace-icon"]')).toBeNull();
+  } finally { panel.destroy(); }
+});
+
+it('falls back to the workspace initial until an icon is chosen', () => {
+  const {host, panel} = mount({...base, icon: {value: '', write: vi.fn()}});
+  try {
+    expect(iconTrigger(host).textContent).toBe('N');
+  } finally { panel.destroy(); }
+});
+
+it('shows the chosen icon and hands a new one to the server', async () => {
+  const write = vi.fn().mockResolvedValue(undefined);
+  const {host, panel} = mount({...base, icon: {value: '🌱', write}});
+  try {
+    expect(iconTrigger(host).textContent).toBe('🌱');
+    iconTrigger(host).click();
+    // L'onglet Icônes s'ouvre en premier et ne demande aucun chargement.
+    const choice = await vi.waitFor(() => must(document.querySelector<HTMLButtonElement>('.team-icon-grid button')));
+    const picked = must(choice.getAttribute('aria-label'));
+    choice.click();
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+    expect(String(write.mock.calls[0]?.[0])).toMatch(/^icon:/);
+    expect(picked).toBeTruthy();
+  } finally { panel.destroy(); }
+});
+
+it('puts the former icon back when the server refuses the new one', async () => {
+  const write = vi.fn().mockRejectedValue(new Error('Administrator required'));
+  const {host, panel} = mount({...base, icon: {value: '🌱', write}});
+  try {
+    iconTrigger(host).click();
+    (await vi.waitFor(() => must(document.querySelector<HTMLButtonElement>('.team-icon-grid button')))).click();
+    // L'avertissement d'abord : l'icône optimiste et celle d'avant se
+    // ressemblent trop pour prouver quoi que ce soit toutes seules.
+    await vi.waitFor(() => expect(host.textContent).toContain('L’icône n’a pas pu être enregistrée.'));
+    expect(iconTrigger(host).textContent).toBe('🌱');
+  } finally { panel.destroy(); }
+});

@@ -7,6 +7,7 @@ import type {Appearance} from './settings';
 import { Avatar, Choice, Feedback, SwitchRow, TextField } from './components';
 import {getTimeFormatter, readAutoTimeZone, readChatNewline, readChosenTimeZone, readContrast, readTimeFormat, readTimeZone, setAutoTimeZone, setChatNewline, setContrast, setTimeFormat, setTimeZone, subscribeDisplayPreferences, type Contrast, type TimeFormat} from './display-preferences';
 import {getTimeZoneOptions} from './calendarcn/lib/time-zones';
+import {TeamspaceIconPicker} from './cloud/teamspace-icon';
 import './settings-panels.css';
 
 type Preferences = {
@@ -28,6 +29,8 @@ type General = {
   rename?(name: string): Promise<void>;
   /** Absent sans serveur : pas d'e-mail à autoriser, donc pas de réglage. */
   mail?: {read(): Promise<boolean>; write(allowed: boolean): Promise<void>};
+  /** Absent là où rien ne peut la retenir : un espace sans registre ni base. */
+  icon?: {value: string; write(icon: string): Promise<void>};
 };
 
 type Account =
@@ -254,6 +257,36 @@ function WorkspaceName({initial, rename}: {initial: string; rename(name: string)
   </div>;
 }
 
+/**
+ * L'icône de l'espace. Le sélecteur est celui des espaces d'équipe : même
+ * jeu d'icônes, mêmes émojis, même import — et donc une seule chaîne stockée,
+ * que les deux serveurs valident avec les mêmes bornes.
+ */
+function WorkspaceIcon({value, write, name}: NonNullable<General['icon']> & {name: string}) {
+  const [icon, setIcon] = useState(value);
+  const [notice, setNotice] = useState('');
+
+  function choose(next: string) {
+    const previous = icon;
+    setIcon(next);
+    setNotice('');
+    write(next).catch(() => {
+      setIcon(previous);
+      setNotice(shellText("L’icône n’a pas pu être enregistrée."));
+    });
+  }
+
+  return <div className="settings-panel-row" data-setting="workspace-icon">
+    <div className="settings-panel-label">
+      <strong>{shellText("Icône")}</strong>
+      <small>{shellText("Choisissez une icône ou un émoji, ou chargez une image. Elle apparaît dans la barre latérale.")}</small>
+      {notice && <small role="status">{notice}</small>}
+    </div>
+    <TeamspaceIconPicker value={icon} name={name} onChange={choose}
+      label={shellText("Modifier l’icône de l’espace")}/>
+  </div>;
+}
+
 /** L'identifiant que le support et l'API demandent, avec de quoi le copier. */
 function WorkspaceIdentifier({id}: {id: string}) {
   const [notice, setNotice] = useState('');
@@ -313,11 +346,12 @@ function WorkspaceMail({read, write}: NonNullable<General['mail']>) {
   </>;
 }
 
-function GeneralPanel({workspace, version, remoteServer, workspaceId, rename, mail}: General) {
+function GeneralPanel({workspace, version, remoteServer, workspaceId, rename, mail, icon}: General) {
   return <>
     <h1 data-desktop-settings-title="">{shellText("Général")}</h1>
     <p data-desktop-settings-intro="">{shellText("Gérez le nom de votre espace de travail et retrouvez ses informations.")}</p>
     <Section title={shellText("Espace de travail")}>
+      {icon && <WorkspaceIcon {...icon} name={workspace}/>}
       {rename
         ? <WorkspaceName initial={workspace} rename={rename}/>
         : <dl className="settings-panel-values">
