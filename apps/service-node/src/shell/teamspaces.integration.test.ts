@@ -156,6 +156,30 @@ describe.skipIf(!databaseUrl)('teamspace directory on the canonical shell schema
     expect(await find('étang')).toEqual(['s1']);
   });
 
+  it('cites the block a match came from, and still finds a page that has none', async () => {
+    await db.query(`INSERT INTO pages(id,workspace_id,metadata,content,visibility) VALUES
+      ('c1','w','{"title":"Chantier"}','{"blocks":[
+        {"id":"b-intro","data":{"text":[{"text":"Introduction sans rapport"}]}},
+        {"id":"b-cible","data":{"text":[{"text":"La marmotte dort tout l’hiver"}]}}]}','workspace'),
+      ('c2','w','{"title":"Page sans blocs"}','{"blocks":[]}','workspace'),
+      ('c3','w','{"title":"Bloc anonyme"}','{"blocks":[{"data":{"text":[{"text":"Une marmotte anonyme"}]}}]}','workspace')`);
+    const find = async (query: string) => {
+      const response = await app.request('/api/workspaces/demo/search', {
+        method:'POST', headers:{Authorization:'Bearer reader'}, body:JSON.stringify({ query, mode:'palette' }) });
+      expect(response.status).toBe(200);
+      return (await response.json()).sources as { id: string; blockId?: string }[];
+    };
+
+    // The citation points at the block holding the words, not at the first block of the page.
+    expect(await find('marmotte hiver')).toContainEqual(expect.objectContaining({ id:'c1', blockId:'b-cible' }));
+    // A page whose title alone matches stays findable even with no block to cite.
+    expect((await find('Page sans blocs')).map(source => source.id)).toContain('c2');
+    // A block saved without an id still makes its page findable; there is simply nothing to cite.
+    const anonymous = (await find('anonyme')).find(source => source.id === 'c3');
+    expect(anonymous).toBeDefined();
+    expect(anonymous?.blockId).toBeUndefined();
+  });
+
   it('persists metadata and enforces team ownership and the workspace creation policy', async () => {
     const id = await create('Catalogue');
     const path = '/' + id;
