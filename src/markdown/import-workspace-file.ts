@@ -4,6 +4,7 @@ import { markdownPage } from './import-page';
 export async function importWorkspaceFile(
   name: string,
   source: string,
+  newId: () => string = () => crypto.randomUUID(),
 ): Promise<LooseOutputData & { title: string }> {
   if (/\.html?$/i.test(name)) {
     const { htmlToBlocksWithReport } = await import('../view/html-to-blocks');
@@ -22,7 +23,7 @@ export async function importWorkspaceFile(
   if (!table.length || !table[0].length) throw new Error('Le fichier CSV est vide.');
   const title = name.slice(0, -4).trim() || 'Table';
   const database = csvDatabaseBlocks(table, {
-    newId: () => crypto.randomUUID(),
+    newId,
     untitled: 'Column',
     viewName: 'Table',
     title,

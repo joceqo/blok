@@ -4,6 +4,8 @@ import type { AgentActor, AgentApprovalRequest, AgentApprover, AgentBatch, Agent
 // Imported by file rather than through `src/components/utils`: the barrel
 // reaches the DOM, this module does not.
 import { getBlokVersion } from '../components/utils/version';
+import { importWorkspaceFile } from '../markdown/import-workspace-file';
+import { importWorkspaceEntries } from '../markdown/import-workspace-entries';
 import { markdownToBlocksWithReport } from '../markdown';
 import { pagesInsert } from '../agent/guidance';
 import { approvalKey } from '../shared/agent/approval';
@@ -1071,6 +1073,26 @@ const agentPlanHostResult = async (inputJson: string): Promise<string> => {
 
 export const invoke = async (operation: string, inputJson: string): Promise<string> => {
   switch (operation) {
+    case 'workspaceImport': {
+      const { name, rootId, source, entries } = parseRecord(inputJson);
+      if (typeof name !== 'string' || typeof rootId !== 'string' || !rootId) {
+        throw new TypeError('Workspace imports require a filename and root page ID.');
+      }
+      let sequence = 0;
+      const newId = (): string => rootId + '-' + (++sequence).toString(36);
+      if (typeof source === 'string') {
+        const document = await importWorkspaceFile(name, source, newId);
+        return JSON.stringify([{ id: rootId, parentId: null, document }]);
+      }
+      if (!Array.isArray(entries)) throw new TypeError('Workspace archive entries are required.');
+      const files = entries.map((entry: unknown) => {
+        if (!isRecord(entry) || typeof entry.name !== 'string' || typeof entry.size !== 'number' ||
+            typeof entry.value !== 'string') throw new TypeError('Invalid workspace archive entry.');
+        const { name, size, value } = entry;
+        return { name, size, text: () => value, base64: () => value };
+      });
+      return JSON.stringify(await importWorkspaceEntries(files, name, rootId, newId, newId));
+    }
     case 'markdownToBlocks':
       return JSON.stringify(await markdownToBlocksWithReport(parseMarkdown(inputJson)));
     /**
