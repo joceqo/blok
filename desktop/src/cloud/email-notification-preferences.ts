@@ -1,6 +1,6 @@
 // Réglages d’envoi d’e-mails. Ils appartiennent à l’espace de travail, pas à
 // l’appareil : c’est le serveur qui envoie, donc c’est lui qui doit savoir.
-export type EmailNotification = 'activity' | 'always' | 'pageUpdates' | 'digest';
+export type EmailNotification = 'activity' | 'always' | 'pageUpdates' | 'digest' | 'calendarInvites' | 'calendarResponses';
 
 interface PreferenceClient {
   request<T>(path: string, options?: {method?: string; body?: string; signal?: AbortSignal}): Promise<T>;
@@ -9,7 +9,7 @@ export interface EmailNotificationScope { client: PreferenceClient; slug: string
 
 // Rien n’est vrai tant que l’espace ne l’a pas dit : personne ne reçoit un
 // e-mail qu’il n’a pas demandé, pas même le temps d’un chargement.
-const state: Record<EmailNotification, boolean> = {activity: false, always: false, pageUpdates: false, digest: false};
+const state: Record<EmailNotification, boolean> = {activity: false, always: false, pageUpdates: false, digest: false, calendarInvites: false, calendarResponses: false};
 const changes = new EventTarget();
 let scope: EmailNotificationScope | null = null;
 

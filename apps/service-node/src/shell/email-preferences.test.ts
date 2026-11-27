@@ -6,12 +6,18 @@ describe('e-mail preference rows', () => {
     // No row means nobody asked: the reader must not invent a yes.
     expect(emailPreferenceRows(undefined)).toEqual({
       activity: false, always: false, pageUpdates: false, digest: false,
+      calendarInvites: false, calendarResponses: false,
     });
   });
 
   it('maps the stored columns onto the setting names', () => {
-    expect(emailPreferenceRows({ activity: true, always: false, page_updates: true, digest: false }))
-      .toEqual({ activity: true, always: false, pageUpdates: true, digest: false });
+    expect(emailPreferenceRows({
+      activity: true, always: false, page_updates: true, digest: false,
+      calendar_invites: true, calendar_responses: false,
+    })).toEqual({
+      activity: true, always: false, pageUpdates: true, digest: false,
+      calendarInvites: true, calendarResponses: false,
+    });
   });
 
   it('keeps an unknown setting out of a write', () => {

@@ -10,6 +10,8 @@ export interface EmailPreferences {
   always: boolean;
   pageUpdates: boolean;
   digest: boolean;
+  calendarInvites: boolean;
+  calendarResponses: boolean;
 }
 
 /** Setting name to its column; the only names a request may touch. */
@@ -18,9 +20,11 @@ const columnOf = {
   always: 'always',
   pageUpdates: 'page_updates',
   digest: 'digest',
+  calendarInvites: 'calendar_invites',
+  calendarResponses: 'calendar_responses',
 } as const;
 
-interface StoredRow { activity: boolean; always: boolean; page_updates: boolean; digest: boolean }
+interface StoredRow { activity: boolean; always: boolean; page_updates: boolean; digest: boolean; calendar_invites: boolean; calendar_responses: boolean }
 
 /** No row means nobody asked: every setting reads as off. */
 export function emailPreferenceRows(row: StoredRow | undefined): EmailPreferences {
@@ -29,6 +33,8 @@ export function emailPreferenceRows(row: StoredRow | undefined): EmailPreference
     always: row?.always === true,
     pageUpdates: row?.page_updates === true,
     digest: row?.digest === true,
+    calendarInvites: row?.calendar_invites === true,
+    calendarResponses: row?.calendar_responses === true,
   };
 }
 
@@ -55,7 +61,7 @@ export function emailPreferences(pool: PgPool) {
     const result = await inTransaction(pool, async (db) => {
       const { workspace_id, user_id } = await readWorkspaceSession(db, sessionDigest(c) ?? '', c.req.param('slug')!, false);
       const { rows: [row] } = await db.query<StoredRow>(
-        'SELECT activity,always,page_updates,digest FROM email_notification_preferences WHERE workspace_id=$1 AND user_id=$2',
+        'SELECT activity,always,page_updates,digest,calendar_invites,calendar_responses FROM email_notification_preferences WHERE workspace_id=$1 AND user_id=$2',
         [workspace_id, user_id],
       );
       return emailPreferenceRows(row);
@@ -76,7 +82,7 @@ export function emailPreferences(pool: PgPool) {
         `INSERT INTO email_notification_preferences(workspace_id,user_id,${columns.join(',')})
          VALUES($1,$2,${placeholders.join(',')})
          ON CONFLICT (workspace_id,user_id) DO UPDATE SET ${assignments.join(',')}
-         RETURNING activity,always,page_updates,digest`,
+         RETURNING activity,always,page_updates,digest,calendar_invites,calendar_responses`,
         [workspace_id, user_id, ...values],
       );
       return emailPreferenceRows(row);

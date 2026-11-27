@@ -35,6 +35,8 @@ function EmailNotifications() {
   const always = useSyncExternalStore(subscribeEmailNotifications, () => readEmailNotification('always'));
   const pageUpdates = useSyncExternalStore(subscribeEmailNotifications, () => readEmailNotification('pageUpdates'));
   const digest = useSyncExternalStore(subscribeEmailNotifications, () => readEmailNotification('digest'));
+  const calendarInvites = useSyncExternalStore(subscribeEmailNotifications, () => readEmailNotification('calendarInvites'));
+  const calendarResponses = useSyncExternalStore(subscribeEmailNotifications, () => readEmailNotification('calendarResponses'));
   return <section className="settings-panel-section">
     <h2>{shellText("Notifications par e-mail")}</h2>
     <SettingsSwitchRow settingId="email-activity" label={shellText("Activité dans mon espace de travail")}
@@ -46,6 +48,12 @@ function EmailNotifications() {
     <SettingsSwitchRow settingId="email-page-updates" label={shellText("Modifications de pages")}
       help={shellText("Recevez des e-mails récapitulatifs sur les pages pour lesquelles vous avez activé les notifications et celles que vous avez créées")}
       checked={pageUpdates} onChange={value => setEmailNotification('pageUpdates', value)}/>
+    <SettingsSwitchRow settingId="email-calendar-invites" label={shellText("Invitations à des événements")}
+      help={shellText("Recevez un e-mail quand quelqu’un vous invite à un événement du calendrier")}
+      checked={calendarInvites} onChange={value => setEmailNotification('calendarInvites', value)}/>
+    <SettingsSwitchRow settingId="email-calendar-responses" label={shellText("Réponses à vos invitations")}
+      help={shellText("Recevez un e-mail quand un invité accepte ou refuse un événement que vous organisez")}
+      checked={calendarResponses} onChange={value => setEmailNotification('calendarResponses', value)}/>
     <SettingsSwitchRow settingId="email-digest" label={shellText("Récapitulatif des activités de l’espace de travail")}
       help={shellText("Recevez des résumés par e-mail de ce qui se passe dans votre espace de travail")}
       checked={digest} onChange={value => setEmailNotification('digest', value)}/>

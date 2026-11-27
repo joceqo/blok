@@ -409,3 +409,14 @@ BEGIN
     INSERT INTO schema_migrations(version) VALUES(22);
   END IF;
 END $$;
+
+-- Les événements méritent leur propre choix : quelqu'un peut vouloir savoir
+-- qu'on l'invite sans vouloir chaque mention dans un commentaire.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM schema_migrations WHERE version=23) THEN
+    ALTER TABLE email_notification_preferences ADD COLUMN calendar_invites boolean NOT NULL DEFAULT false;
+    ALTER TABLE email_notification_preferences ADD COLUMN calendar_responses boolean NOT NULL DEFAULT false;
+    INSERT INTO schema_migrations(version) VALUES(23);
+  END IF;
+END $$;

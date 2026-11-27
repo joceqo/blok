@@ -50,3 +50,30 @@ describe('notification e-mails', () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('which preference governs which notification', () => {
+  it('asks for the calendar column on a calendar invitation', async () => {
+    const pool = db([]);
+    await deliverNotificationMails(pool, 'acme', [{recipient_id: 'u1', type: 'calendar_invitation'}], vi.fn());
+    const [sql] = pool.query.mock.calls[0]!;
+    // A member who wants event invitations should not have to accept every
+    // comment mention to get them.
+    expect(sql).toContain('calendar_invites');
+    expect(sql).not.toContain('p.activity');
+  });
+
+  it('still asks for activity on a comment mention', async () => {
+    const pool = db([]);
+    await deliverNotificationMails(pool, 'acme', [{recipient_id: 'u1', type: 'comment_mention'}], vi.fn());
+    expect(pool.query.mock.calls[0]![0]).toContain('activity');
+  });
+
+  it('groups recipients by the column each type needs', async () => {
+    const pool = db([]);
+    await deliverNotificationMails(pool, 'acme', [
+      {recipient_id: 'u1', type: 'comment_mention'},
+      {recipient_id: 'u2', type: 'calendar_invitation'},
+    ], vi.fn());
+    expect(pool.query).toHaveBeenCalledTimes(2);
+  });
+});
