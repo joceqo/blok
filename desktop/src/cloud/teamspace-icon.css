@@ -28,3 +28,11 @@ button.team-icon-trigger { display:inline-grid; place-items:center; flex:none; w
 .team-icon-upload small,.team-icon-scroll p { color:var(--desktop-muted); }
 .team-icon-popover p { margin:10px; font-size:13px; }
 .team-icon-more { width:100%; padding:6px; margin-top:10px; border-radius:5px; }
+
+/* La couleur de l'icone : une palette de pastilles, marquee par un anneau
+   neutre. Jamais un bleu de selection — c'est la loi des etats selectionnes. */
+.team-icon-colors { display:flex; gap:8px; align-items:center; padding:0 8px 8px; }
+.team-icon-colors button { width:20px; height:20px; padding:0; border:0; border-radius:50%; background:currentColor; cursor:pointer; }
+.team-icon-colors button[aria-pressed=true] { box-shadow:0 0 0 2px var(--desktop-canvas), 0 0 0 4px var(--desktop-ink); }
+.team-icon-colors button:hover { box-shadow:0 0 0 2px var(--desktop-canvas), 0 0 0 4px var(--desktop-border); }
+.team-icon-colors button[aria-pressed=true]:hover { box-shadow:0 0 0 2px var(--desktop-canvas), 0 0 0 4px var(--desktop-ink); }

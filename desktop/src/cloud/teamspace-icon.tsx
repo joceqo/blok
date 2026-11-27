@@ -102,9 +102,14 @@ function IconPopover({id, anchor, value, close, select}: {id:string; anchor:HTML
           }}/>
         <button type="button" aria-label={shellText("Choisir au hasard")} title={shellText("Choisir au hasard")} disabled={!options.length}
           onClick={()=>choose(options[Math.floor(Math.random()*options.length)].value)}>⤨</button>
-        {tab==='Icônes' && <select aria-label={shellText("Couleur de l’icône")} title={shellText("Couleur de l’icône")} value={color} onChange={e=>setColor(e.target.value)}
-          style={{color:teamspaceColors[color]?.css}}>{Object.entries(teamspaceColors).map(([key,c])=><option key={key} value={key}>● {c.label}</option>)}</select>}
       </div>
+      {/* Une palette plutot qu'un menu natif : celui-ci s'ouvrait au theme du
+          systeme, rangee bleue comprise, qu'aucune feuille de l'application
+          n'atteint, et ses pastilles sortaient toutes noires. */}
+      {tab==='Icônes' && <div className="team-icon-colors" role="group" aria-label={shellText("Couleur de l’icône")}>
+        {Object.entries(teamspaceColors).map(([key,c])=><button key={key} type="button" title={c.label}
+          aria-label={c.label} aria-pressed={color===key} style={{color:c.css}} onClick={()=>setColor(key)}/>)}
+      </div>}
       <div className="team-icon-scroll">
         <div className="team-icon-grid">{options.slice(0,limit).map(o=><button key={o.value} type="button" title={o.title}
           aria-label={o.title} aria-pressed={value===o.value} onClick={()=>choose(o.value)}><TeamspaceIcon name={o.title} value={o.value}/></button>)}</div>

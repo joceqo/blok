@@ -190,3 +190,25 @@ it('puts the name before the icon, the way Notion reads top to bottom', () => {
     expect(order.slice(0, 2)).toEqual(['workspace-name', 'workspace-icon']);
   } finally { panel.destroy(); }
 });
+
+it('picks the icon colour from a palette, not from a system dropdown', async () => {
+  const write = vi.fn().mockResolvedValue(undefined);
+  const {host, panel} = mount({...base, icon: {value: '', write}});
+  try {
+    iconTrigger(host).click();
+    await vi.waitFor(() => must(document.querySelector('.team-icon-grid button')));
+    // Le menu natif ouvrait une liste au thème du système, rangée bleue
+    // comprise, qu'aucune feuille de style de l'application n'atteint.
+    expect(document.querySelector('select')).toBeNull();
+    const swatches = [...document.querySelectorAll<HTMLButtonElement>('.team-icon-colors button')];
+    expect(swatches.map(node => node.getAttribute('aria-label'))).toEqual(['Gris', 'Bleu', 'Vert', 'Orange', 'Rouge', 'Violet']);
+    expect(swatches.filter(node => node.getAttribute('aria-pressed') === 'true')).toHaveLength(1);
+    must(swatches.find(node => node.getAttribute('aria-label') === 'Vert')).click();
+    // La grille se redessine aux couleurs choisies avant qu'on y pioche.
+    await vi.waitFor(() => expect(must([...document.querySelectorAll<HTMLButtonElement>('.team-icon-colors button')]
+      .find(node => node.getAttribute('aria-label') === 'Vert')).getAttribute('aria-pressed')).toBe('true'));
+    must(document.querySelector<HTMLButtonElement>('.team-icon-grid button')).click();
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+    expect(String(write.mock.calls[0]?.[0])).toMatch(/^icon:[a-z]+:green$/);
+  } finally { panel.destroy(); }
+});
