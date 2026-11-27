@@ -3,14 +3,11 @@ import {shellText} from '../shell-i18n';
 import {WORKSPACE_ROLES} from '../access-vocabulary';
 import {DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger} from '../components';
 import {Breadcrumbs} from './breadcrumbs';
-import {Glyph} from './page-mark';
+import {DeviceGlyph, Glyph} from './page-mark';
+import {IconDotsHorizontal, IconLink, IconSidebarRight, IconStarFilled} from '../../../src/components/icons';
 import type {PageBreadcrumbItem, PageToolbarOptions} from './types';
 
-const SIDEBAR = ['M2 2.5h12v11H2z', 'M6 2.5v11'];
-const LINK = ['M6.5 9.5 9.5 6.5', 'M6 10l-1 1a2.5 2.5 0 0 1-3.5-3.5L4 5', 'M10 6l1-1a2.5 2.5 0 0 1 3.5 3.5L12 11'];
-const STAR = ['M8 1.8 9.7 6.1l4.6.4-3.5 2.9 1.1 4.5L8 11.5 4.1 13.9l1.1-4.5L1.7 6.5l4.6-.4Z'];
-const DOTS = ['M3 8h.2', 'M7.9 8h.2', 'M12.8 8h.2'];
-const DEVICE = ['M2.5 3.5h11v8h-11z', 'M5.5 13.5h5'];
+// Les dessins viennent de la famille Blok Line, pas d'une copie locale.
 
 /** Un élément construit ailleurs — les bascules de vue — prêté à la barre. */
 const Adopted = ({node}: {node: HTMLElement}) => {
@@ -47,7 +44,7 @@ const CopyLink = ({href}: {href?: string}) => {
     <button type="button" data-desktop-page-copy="" onClick={() => void copy()}
       aria-label={notice || shellText("Copier le lien de la page")}
       title={notice || shellText("Copier le lien de la page")}>
-      <Glyph paths={LINK}/>
+      <Glyph svg={IconLink}/>
     </button>
     <span data-desktop-page-feedback="" role="status" hidden={!notice}>{notice}</span>
   </>;
@@ -57,7 +54,7 @@ const Favorite = ({value, onChange}: {value: boolean; onChange(next: boolean): v
   const label = value ? shellText("Retirer des favoris") : shellText("Ajouter aux favoris");
   return <button type="button" data-desktop-page-favorite="" aria-pressed={value}
     aria-label={label} title={label} onClick={() => onChange(!value)}>
-    <Glyph paths={STAR}/>
+    <Glyph svg={IconStarFilled}/>
   </button>;
 };
 
@@ -81,7 +78,7 @@ const PageMenu = ({container, fullWidth, onFullWidthChange, onHistoryOpen, ...op
   return <DropdownMenu modal={false}>
     <DropdownMenuTrigger render={<button type="button"/>} data-desktop-page-more="" aria-label={shellText("Actions de la page")}
       title={shellText("Actions de la page")}>
-      <Glyph paths={DOTS}/>
+      <Glyph svg={IconDotsHorizontal}/>
     </DropdownMenuTrigger>
     <DropdownMenuContent data-desktop-page-menu="" container={container} align="end"
       aria-label={shellText("Apparence et mise en page")}>
@@ -105,7 +102,7 @@ const PageMenu = ({container, fullWidth, onFullWidthChange, onHistoryOpen, ...op
           Où la page dort se consulte, ça ne s'impose pas dans la barre. */}
       {options.storedOnDevice && <span data-desktop-page-local=""
         title={shellText("Cette page est enregistrée sur cet appareil")}>
-        <Glyph paths={DEVICE}/>{shellText("Sur cet appareil")}
+        <DeviceGlyph/>{shellText("Sur cet appareil")}
       </span>}
     </DropdownMenuContent>
   </DropdownMenu>;
@@ -143,7 +140,7 @@ export const TopBar = ({items, container, fullWidth, favorite, peers, onFullWidt
     {onToggleSidebar && <button type="button" data-desktop-sidebar-toggle=""
       aria-label={shellText("Afficher ou masquer la barre latérale")}
       title={shellText("Afficher ou masquer la barre latérale")} onClick={onToggleSidebar}>
-      <Glyph paths={SIDEBAR}/>
+      <Glyph svg={IconSidebarRight}/>
     </button>}
     <div data-desktop-page-identity="">
       <Breadcrumbs items={items} container={surface}/>

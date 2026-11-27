@@ -96,7 +96,7 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 [data-desktop-workspace] [data-blok-sidebar-canvas] { height: 100%; }
 [data-desktop-page-toolbar] {
   position: sticky; top: 0; z-index: 12;
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  display: flex; align-items: center; gap: 8px;
   height: 44px; min-width: 0; padding: 0 12px;
   border-bottom: 1px solid var(--desktop-border);
   background: var(--desktop-canvas); color: var(--desktop-ink);
@@ -106,7 +106,7 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
    comptait comme un troisième enfant et décalait les actions de 8 px à
    chaque ouverture de menu. */
 [data-base-ui-portal] { display: contents; }
-[data-desktop-page-identity] { display: flex; flex: 1; align-items: center; min-width: 0; font-size: 14px; }
+[data-desktop-page-identity] { display: flex; flex: 0 1 auto; align-items: center; min-width: 0; font-size: 14px; }
 [data-desktop-page-breadcrumbs] { flex: 0 1 auto; min-width: 0; overflow: hidden; }
 [data-desktop-page-breadcrumbs] ol { display: flex; align-items: center; min-width: 0; margin: 0; padding: 0; list-style: none; }
 [data-desktop-page-breadcrumb-item] { flex: 0 1 auto; min-width: 0; max-width: 240px; }
@@ -120,6 +120,10 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 [data-desktop-page-breadcrumb-item] button[aria-expanded="true"] { background: var(--desktop-hover); }
 [data-desktop-page-breadcrumb-item] button:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: -2px; }
 [data-desktop-page-breadcrumb-separator] { flex: none; width: 10px; color: var(--desktop-muted); text-align: center; }
+/* Les icônes partagées sont dessinées en 20×20 ; la barre les ramène à sa
+   taille sans toucher au tracé. */
+.top-bar-glyph { display: grid; place-items: center; }
+.top-bar-glyph svg { width: 16px; height: 16px; }
 [data-desktop-page-toolbar-icon] { display: grid; flex: none; place-items: center; width: 18px; height: 18px; font-size: 17px; line-height: 1; }
 [data-desktop-page-toolbar-icon] svg { color: var(--desktop-muted); }
 [data-desktop-page-toolbar-title] { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
@@ -155,7 +159,8 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 [data-desktop-breadcrumb-menu-more] { color: var(--desktop-muted); }
 [data-desktop-breadcrumb-menu-more]:hover { background: var(--desktop-hover); color: var(--desktop-ink); }
 [data-desktop-page-local] { display: inline-flex; align-items: center; gap: 5px; flex: none; margin-left: 8px; color: var(--desktop-muted); font-size: 12px; }
-[data-desktop-page-actions] { position: relative; display: flex; align-items: center; gap: 4px; flex: none; }
+/* Les actions filent à droite ; l'identité garde la largeur de son contenu. */
+[data-desktop-page-actions] { position: relative; display: flex; align-items: center; gap: 4px; flex: none; margin-inline-start: auto; }
 [data-desktop-page-more] {
   display: grid; place-items: center;
   width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px;

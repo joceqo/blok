@@ -1,12 +1,23 @@
 import {useLayoutEffect, useRef} from 'react';
 import {renderPageIcon} from '../../../src/shell/page-icon';
+import {IconPage} from '../../../src/components/icons';
 
-const PAGE_GLYPH = ['M4 2.5h5.2L12.5 6v7.5H4z', 'M9.2 2.5V6h3.3'];
+/**
+ * Une icône de la famille Blok Line, telle qu'elle est dessinée une seule
+ * fois dans `src/components/icons`. La barre du haut en redessinait ses
+ * propres copies en 16×16 : mêmes sujets, tracés différents.
+ */
+export const Glyph = ({svg}: {svg: string}) => (
+  <span className="top-bar-glyph" aria-hidden="true" dangerouslySetInnerHTML={{__html: svg}}/>
+);
 
-/** Les tracés du shell : même épaisseur, mêmes jointures, un seul endroit. */
-export const Glyph = ({paths, size = 16}: {paths: string[]; size?: number}) => (
-  <svg viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
-    {paths.map(d => (
+/**
+ * « Sur cet appareil » n'a pas d'équivalent dans la famille : c'est le seul
+ * tracé que la barre dessine encore elle-même, aux mêmes conventions.
+ */
+export const DeviceGlyph = () => (
+  <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false">
+    {['M3.5 4.5h13v9h-13z', 'M7.5 16.5h5'].map(d => (
       <path key={d} d={d} fill="none" stroke="currentColor" strokeWidth="1.5"
         strokeLinecap="round" strokeLinejoin="round"/>
     ))}
@@ -28,6 +39,6 @@ export const PageMark = ({icon, attribute}: {icon?: string; attribute: string}) 
   }, [icon]);
 
   return <span ref={host} {...{[attribute]: ''}} aria-hidden="true">
-    {icon ? null : <Glyph paths={PAGE_GLYPH}/>}
+    {icon ? null : <Glyph svg={IconPage}/>}
   </span>;
 };

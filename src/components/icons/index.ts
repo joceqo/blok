@@ -39,7 +39,8 @@ export const IconItalic = `
 // Link icon
 export const IconLink = `
 <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
-  <path d="M8.75 6.25 9.5 5.5a3.18 3.18 0 0 1 4.5 4.5l-.75.75M6.75 9.25 6 10a3.18 3.18 0 0 0 4.5 4.5l.75-.75M8 12l4-4" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8.25 10.75a4 4 0 0 0 6.25 .5l2.5-2.5a4 4 0 0 0-5.75-5.75l-1.5 1.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M11.75 9.25a4 4 0 0 0-6.25-.5l-2.5 2.5a4 4 0 0 0 5.75 5.75l1.5-1.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 `;
 
