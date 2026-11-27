@@ -298,6 +298,24 @@ export class PrivateS3Store extends S3Store implements ReadableBlobStore {
     super(options);
   }
 
+  /** Stream a verified file to the local S3 endpoint without buffering the video in Node. */
+  async putStream(key: string, bytes: Readable, size: number, digest: string, mime = '') {
+    const target = resolveTarget(this.options, key);
+    const contentType = sanitizeS3MediaType(mime);
+    const headers = sign('PUT', target.path, target.host, this.options.region, this.options.accessKey,
+      this.options.secretKey, contentType, digest, new Date());
+    headers['Content-Length'] = String(size);
+    headers['Content-Disposition'] = 'attachment';
+    const options: RequestInit & {duplex:'half'} = {
+      method:'PUT', headers, body:Readable.toWeb(bytes) as unknown as RequestInit['body'], duplex:'half', redirect:'error',
+    };
+    try {
+      const response = await fetch(target.url, options);
+      await response.body?.cancel();
+      if (!response.ok) throw new Error('Écriture du média impossible (' + response.status + ').');
+    } finally { bytes.destroy(); }
+  }
+
   private async legacyFile(key: string) {
     try {
       return await this.legacy?.fileStat(key);

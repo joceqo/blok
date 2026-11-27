@@ -5,7 +5,7 @@ import type {WorkspaceRef} from './workspace-registry';
 
 export type SettingsPanel =
   | 'account' | 'preferences' | 'notifications' | 'calendar' | 'general' | 'members' | 'sidebar' | 'import'
-  | 'ai' | 'emojis' | 'connections' | 'mcp' | 'teams' | 'developer'
+  | 'backups' | 'ai' | 'emojis' | 'connections' | 'mcp' | 'teams' | 'developer'
   | 'instance-general' | 'instance-access' | 'instance-accounts' | 'instance-workspaces' | 'instance-health';
 
 export interface SettingsTab {
@@ -45,6 +45,7 @@ export function settingsCatalog(workspace: WorkspaceRef, sidebar: SidebarPrefere
       setting(shellText("Format de l’heure"), shellText("Afficher les heures du calendrier sur 12 ou 24 heures."), '[data-desktop-settings-time-format]', 'langue et heure système'),
       ...(native && disk ? [setting(shellText("Dossier des données"), shellText("Consulter et copier le chemin du dossier local."), '.settings-panel-directory', 'avancé stockage')] : []),
     ],
+    backups: [setting(shellText("Destination"), shellText("Sauvegarder cet espace"), '[data-backup-destination]', 'git github gitlab s3 nas dossier restauration backup')],
     general: [
       setting(shellText("Nom de l’espace"), online ? shellText("Renommer cet espace de travail.") : shellText("Consulter le nom de cet espace de travail."), '[data-setting="workspace-name"]', 'renommer titre'),
       setting(shellText("Hébergement"), shellText("Voir où cet espace est stocké."), '[data-setting="hosting"]', 'stockage'),

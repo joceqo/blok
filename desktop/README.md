@@ -116,3 +116,29 @@ To preselect a server when building the native app, set `VITE_BLOK_SERVER_URL` f
 cd desktop
 VITE_BLOK_SERVER_URL=http://localhost:8088 npm run tauri -- build --bundles app
 ```
+
+## Sauvegarde d’un espace personnel du DMG
+
+Dans le menu de l’espace du compte appareil, ouvrir **Sauvegarde de l’espace**.
+Choisir **Sauvegarder cet espace** ou **Restaurer dans un nouvel espace**. Une
+restauration crée une copie indépendante dans le sélecteur. L’export comprend
+les pages et leurs corps, la corbeille, les espaces d’équipe, les événements
+locaux, les emojis et les fichiers. Les comptes externes doivent être reconnectés.
+
+- **Dossier, disque externe ou NAS** ouvre le sélecteur natif sur macOS. Pour
+  restaurer, sélectionner le dossier daté qui contient `workspace.json`.
+- **Git** accepte un dépôt HTTPS vide ou une sauvegarde du même espace. La
+  branche `blok-backup` contient les instantanés. Git et Git LFS sont fournis
+  dans le DMG. Les vidéos et les médias de 32 Mio ou plus passent par LFS.
+  Utiliser un dépôt privé et des identifiants avec accès en écriture, puis en
+  lecture pour la restauration. Les quotas sont ceux du compte chez l’hébergeur.
+- **S3 compatible** utilise un bucket existant. Indiquer le point de terminaison,
+  la région, les identifiants et un préfixe propre à l’espace. Pour restaurer la
+  copie la plus récente, saisir le même préfixe. Pour choisir une génération
+  précise, reprendre le chemin affiché à la fin de la sauvegarde.
+
+Le transfert démarre à la demande. La dernière version publiée reste accessible
+si un nouvel envoi échoue. Le formulaire garde les identifiants saisis en mémoire
+pendant son utilisation. Les pièces jointes sont restaurées avec de nouvelles
+clés sur le Mac de destination. L’import de fichiers depuis l’app embarquée accepte
+jusqu’à 1 Gio par fichier. L’import par URL conserve sa limite propre.

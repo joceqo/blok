@@ -145,7 +145,7 @@ async function startStorage() {
   await checkPrivatePorts(ports, 'storage');
   start('Media', binary('node'), [join(resources, 'room', 'media.mjs'), '--listen', loopback + ':' + ports.media, '--auth', 'ticket',
     '--public-url', publicOrigin + '/files', '--allow-origin', publicOrigin, '--storage-dir', join(data, 'uploads'), '--rate-limit', '600'],
-    { ...storage, BLOK_SECRET: secrets.ticket }, storageFailure);
+    { ...storage, BLOK_SECRET: secrets.ticket, BLOK_DESKTOP_FILE_UPLOADS: '1' }, storageFailure);
   const objects = join(data, 'objects');
   await mkdir(objects, { recursive: true });
   const admin = await choosePorts(['http', 'grpc'] as const, Object.values(ports));

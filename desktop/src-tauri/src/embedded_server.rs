@@ -422,6 +422,50 @@ pub(crate) async fn embedded_device_session(
     ready_server(app).await?.device_session().await
 }
 
+#[tauri::command]
+pub(crate) async fn embedded_workspace_backup(
+    webview: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    options: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use std::io::Write;
+    if !trusted_webview(webview.label(), &webview.url().map_err(|e| e.to_string())?) {
+        return Err("Commande réservée à Blok Desktop.".into());
+    }
+    ready_server(app.clone()).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime =
+            Resources::in_bundle(&app.path().resource_dir().map_err(|e| e.to_string())?).runtime;
+        let data = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("embedded-server");
+        let mut child = Command::new(runtime.join("bin").join(executable("node")))
+            .arg(runtime.join("app/backup.mjs"))
+            .arg(data)
+            .arg(&runtime)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        child
+            .stdin
+            .take()
+            .ok_or("Canal local indisponible")?
+            .write_all(&serde_json::to_vec(&options).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let result = child.wait_with_output().map_err(|e| e.to_string())?;
+        if !result.status.success() {
+            return Err("Le processus de sauvegarde a été interrompu.".into());
+        }
+        serde_json::from_slice(&result.stdout).map_err(|_| "Réponse de sauvegarde invalide.".into())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

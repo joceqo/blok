@@ -13,6 +13,7 @@ export interface HostAppOptions {
   publicPath: string;
   publicUrl: string;
   maxUploadBytes: number;
+  embeddedFileUploads?: boolean;
   collabEnabled: boolean;
   collabDirectory: string;
   collabJournal: boolean;

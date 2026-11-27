@@ -16,6 +16,7 @@ import type { HostAppOptions } from './options.ts';
 import { frameCheckHandler } from './frame-check.ts';
 import { unfurlHandler } from './unfurl.ts';
 import { uploadByUrlHandler } from './upload-by-url.ts';
+import { embeddedFileUpload } from './embedded-file-upload.ts';
 import { uploadHandler } from './upload.ts';
 import type { SyncRooms } from './sync-room.ts';
 import { isSingleSegment, UPGRADE_REQUIRED_BODY } from './sync-door.ts';
@@ -167,7 +168,9 @@ export function buildRouter(options: HostAppOptions, sync?: SyncRooms): Router {
 
   if (hasStorage && store) {
     shell(router, `${patternPrefix}/upload`, 'POST', (request, response) =>
-      uploadHandler(store, options.maxUploadBytes, request, response), options);
+      options.embeddedFileUploads && store instanceof PrivateS3Store
+        ? embeddedFileUpload(store, request, response)
+        : uploadHandler(store, options.maxUploadBytes, request, response), options);
     shell(router, `${patternPrefix}/delete`, 'POST', (request, response) =>
       deleteHandler(store, request, response), options);
     if (options.unfurlEnabled && store) {

@@ -158,6 +158,7 @@ async function run(): Promise<number> {
     storageDirectory: parsed.storageDirectory,
     publicPath: publicPathFromUrl(parsed.publicUrl),
     publicUrl: parsed.publicUrl,
+    embeddedFileUploads: !!privateBucket && process.env.BLOK_DESKTOP_FILE_UPLOADS === '1',
     maxUploadBytes: defaultMaxUpload(parsed.maxUploadBytes),
     collabEnabled: parsed.collabEnabled,
     collabDirectory: parsed.collabDirectory,

@@ -963,9 +963,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     closeTrash = openRemoteTrash(ref, () => ws.saveOrder, refreshRemoteManifest);
   }
 
-  const openWorkspaceSettings = (panel: 'invites' | 'general') =>
+  const openWorkspaceSettings = (panel: 'invites' | 'general' | 'backups') =>
     ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: panel}));
   const teamspaceActions = [
+    ...(ref.kind === 'remote' && ref.embedded && ref.device && ref.role === 'admin'
+      ? [{name:'backup', title:shellText("Sauvegarde de l’espace"), run:() => openWorkspaceSettings('backups')}] : []),
     ...(ref.kind === 'remote' && ref.role === 'admin'
       ? [{name: 'invite', title: shellText("Inviter des membres"), run: () => openWorkspaceSettings('invites')}] : []),
     ...(ref.kind === 'remote' ? [
@@ -1072,6 +1074,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   ws.frame.canvas.append(assistantButton);
   if (panel) bindAssistantButton(assistantButton, panel);
   ws.footer = createDesktopFooter((mode) => ws.editor?.theme.set(mode), ref, ws.frame.headerActions, {
+    flushForBackup: flushDocument,
     async onLanguageChange(locale) {
       await flushDocument();
       rememberShellLanguage(locale);

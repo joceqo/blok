@@ -53,6 +53,7 @@ export async function bundleServices(destination) {
     ...shared, entryPoints: [entry], outfile: join(destination, out), ...extra,
   });
   const results = await Promise.all([
+    bundle('desktop/runtime/backup/run.ts', 'app/backup.mjs'),
     bundle('desktop/runtime/import-disk.ts', 'app/import-disk.mjs'),
     bundle('apps/service-node/markdown/runtime.ts', 'app/dist/shell/markdown-runtime.mjs'),
     bundle('apps/service-node/src/shell/main.ts', 'app/dist/shell/main.mjs'),
