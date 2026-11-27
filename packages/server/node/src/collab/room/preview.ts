@@ -35,6 +35,24 @@ export interface RoomOptions {
   enforceRestoreGuards?: boolean;
   /** `CollabRestoreTrashesPages`: on, a restore trashes a later page pointer in place instead of removing it. */
   restoreTrashesPages?: boolean;
+  /**
+   * The consumer's record, told after every committed change. The journal is
+   * the room's own record; this is the one every OTHER reader of the document
+   * reads, and nothing else in the room writes to it. The room builds the
+   * projection on its queue — so it is the document as of one committed state,
+   * never a half-applied one — and calls this off the queue, so a slow endpoint
+   * delays the next write-back and never the next edit. Called once more as the
+   * room closes: the last edit of a closing room has nowhere else to go.
+   */
+  onExport?(projection: Record<string, unknown>, at: { lineage: string; sequence: bigint }): Promise<void>;
+  /**
+   * What the consumer's record carries beside the blocks and the page fields —
+   * `time`, and anything else of its own. Handed back verbatim in every
+   * projection, because a write-back that dropped them would erase them.
+   */
+  exportExtra?: Record<string, unknown>;
+  /** How long a commit waits for the next one before the write-back goes out. */
+  exportDebounceMs?: number;
   /** Verify ticket expiry, document scope and current read/write permissions. */
   authorize(ticket: string, documentId: string): Promise<RoomIdentity | null>;
 }

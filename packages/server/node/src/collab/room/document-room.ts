@@ -7,6 +7,7 @@ import type { SyncWireFrame } from '../../../../../../src/components/modules/col
 import { historyRequest, type HistoryRequest } from './history.ts';
 import { writeRecordNote } from './record-notes.ts';
 import { RoomPresence } from './presence.ts';
+import { exportPage } from './page-document.ts';
 import { preparePageStorage, type PageStorage } from './page-storage.ts';
 import { acquireJournalWriter, MAX_APPEND_BYTES } from '../journal/append.ts';
 import { sweepHeartbeat, type HeartbeatMember } from './heartbeat.ts';
@@ -30,6 +31,27 @@ const COMMIT_UNAVAILABLE_REASON = 'commit unavailable, retry';
 
 /** Probe period. A half-open socket is dropped between one and two of these. */
 const HEARTBEAT_MS = 30_000;
+
+/**
+ * How long a commit waits for the next one before the consumer's record is
+ * written back. Typing is many commits and one record, so the pause is what
+ * keeps a page of typing from becoming a page of PUTs.
+ */
+const EXPORT_DEBOUNCE_MS = 2_000;
+
+/**
+ * And the other half of it: a room edited without pause never reaches the
+ * quiet the debounce waits for, so the record is written back at least this
+ * often while it is behind.
+ */
+const EXPORT_MAX_DELAY_MS = 10_000;
+
+/** Longest a refused write-back waits before it is tried again. */
+const EXPORT_MAX_BACKOFF_MS = 30_000;
+
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /**
  * The most clients one awareness frame may claim. Go keeps the cap as a room
@@ -152,6 +174,13 @@ export async function openDocumentRoom(options: RoomOptions) {
   let sweeping = false;
   let timer: ReturnType<typeof setInterval> | undefined;
   let keepalive: ReturnType<typeof setInterval> | undefined;
+  /**
+   * The write-back a closing room still owes, and the timer it was waiting on.
+   * Both are assigned once the room is open: before that there is no committed
+   * document to project, so nothing can be owed.
+   */
+  let flushExport: () => Promise<void> = async () => {};
+  let exportTimer: ReturnType<typeof setTimeout> | undefined;
 
   async function principal(peer: Peer): Promise<RoomIdentity | null> {
     let identity: RoomIdentity | null;
@@ -170,11 +199,15 @@ export async function openDocumentRoom(options: RoomOptions) {
     stopping = true;
     clearInterval(timer);
     clearInterval(keepalive);
+    clearTimeout(exportTimer);
     for (const peer of peers) {
       if (reason) peer.ws.close(reason.code,reason.message); else peer.ws.terminate();
     }
     closing = (async () => {
       await queue;
+      // The last edit of a closing room has nowhere else to go: the next open
+      // reads the journal back, and the consumer's record never would.
+      await flushExport();
       await writer.close();
       doc.destroy();
     })();
@@ -189,6 +222,102 @@ export async function openDocumentRoom(options: RoomOptions) {
     const tag = { format:manifest.format, epoch:Number(manifest.epoch), lineage:manifest.lineage };
     let head = journal.durableThrough;
     await storage?.attach(doc,tag.lineage,head);
+
+    const debounceMs = options.exportDebounceMs ?? EXPORT_DEBOUNCE_MS;
+    /** The consumer's record is behind the document, and by how long it has been. */
+    let exportDirty = false;
+    let dirtySince = 0;
+    let exportFailures = 0;
+    /** Earliest the next write-back may go out, after one was refused. */
+    let exportRetryAt = 0;
+    /** The write-back in flight. Single flight: edits meanwhile ride the next one. */
+    let exporting: Promise<void> | undefined;
+    /** A document the projection cannot represent, said once rather than per edit. */
+    let unprojectable = false;
+
+    function oweExport() {
+      exportDirty = true;
+      if (dirtySince === 0) dirtySince = Date.now();
+    }
+
+    function markExportDirty() {
+      if (!options.onExport || stopping) return;
+      oweExport();
+      scheduleExport();
+    }
+
+    function scheduleExport() {
+      if (!exportDirty || stopping || exportTimer !== undefined || exporting !== undefined) return;
+      const now = Date.now();
+      const due = Math.max(Math.min(now + debounceMs, dirtySince + EXPORT_MAX_DELAY_MS), exportRetryAt);
+      exportTimer = setTimeout(() => { exportTimer = undefined; void runExport(); }, Math.max(0, due - now));
+      exportTimer.unref();
+    }
+
+    /** The document as of one committed state, with the generation it was taken from. */
+    function projectNow() {
+      return { projection: exportPage(doc,options.exportExtra ?? {}), at: {lineage:tag.lineage, sequence:head} };
+    }
+
+    /**
+     * One write-back. The projection is taken ON the queue, so it is never a
+     * half-applied document; the write itself runs off it, so an endpoint that
+     * takes a second delays the next write-back and not the next edit.
+     */
+    async function runExport(): Promise<void> {
+      const save = options.onExport;
+      if (!save || stopping || exporting || !exportDirty) return;
+      const taken = queue.then(() => {
+        if (stopping || !exportDirty) return undefined;
+        // Spent here, not after the write: an edit arriving while the write is
+        // in flight is owed a write-back of its own, not folded into this one.
+        exportDirty = false;
+        dirtySince = 0;
+        return projectNow();
+      });
+      queue = taken.then(()=>{},()=>{});
+      let retry = false;
+      exporting = (async () => {
+        let state: Awaited<typeof taken>;
+        try { state = await taken; }
+        catch (error) {
+          // The document cannot be projected at all, and no amount of retrying
+          // changes that. It stays owed, and the next commit is what tries again.
+          oweExport();
+          if (!unprojectable) {
+            unprojectable = true;
+            console.warn(`Could not project document "${documentId}" for its record: ${reasonOf(error)}`);
+          }
+          return;
+        }
+        if (!state) return;
+        try {
+          await save(state.projection,state.at);
+          exportFailures = 0;
+          exportRetryAt = 0;
+          unprojectable = false;
+        } catch (error) {
+          oweExport();
+          exportFailures += 1;
+          exportRetryAt = Date.now() + Math.min(EXPORT_MAX_BACKOFF_MS, 1_000 * 2 ** (exportFailures - 1));
+          retry = true;
+          console.warn(`Could not write document "${documentId}" back to its record, retrying: ${reasonOf(error)}`);
+        }
+      })();
+      try { await exporting; } finally { exporting = undefined; }
+      if (retry || exportDirty) scheduleExport();
+    }
+
+    flushExport = async () => {
+      // The write already in flight carries an older state and lands first; a
+      // failure of its own is what leaves this one still owed.
+      await exporting?.catch(()=>{});
+      const save = options.onExport;
+      if (!save || !exportDirty) return;
+      exportDirty = false;
+      try { const state = projectNow(); await save(state.projection,state.at); }
+      catch (error) { console.warn(`Could not write closing document "${documentId}" back to its record: ${reasonOf(error)}`); }
+    };
 
     async function operation(peer: Peer, identity: RoomIdentity, op: Operation) {
       const { lineage, operationId, update } = op;
@@ -290,6 +419,7 @@ export async function openDocumentRoom(options: RoomOptions) {
         await Promise.all([...peers].map(async member => {
           if (member!==except && await principal(member)) send(member,{type:'update',update});
         }));
+        markExportDirty();
         return head;
       } catch (error) {
         // Nothing in RAM can be used as evidence of a commit after storage failure.
@@ -326,10 +456,16 @@ export async function openDocumentRoom(options: RoomOptions) {
       return result;
     }
 
+    /**
+     * Go relays presence through `broadcastLocked`, which puts no sync
+     * condition on the receiver: a member still reading the document can
+     * already paint carets, and a sync condition is also what would hide a
+     * member whose outbound queue has stalled.
+     */
     async function broadcastPresence(frame: SyncWireFrame, except: Peer) {
       const identities = presence.identities();
       await Promise.all([...peers].map(async member => {
-        if (!member.synced || !await principal(member)) return;
+        if (!await principal(member)) return;
         send(member,identities);
         if (member !== except) send(member,frame);
       }));
@@ -345,7 +481,11 @@ export async function openDocumentRoom(options: RoomOptions) {
         // it is read is a frame its sender is never answerable for.
         case 'awareness': {
           let update;
-          try { update = presence.receive(peer,identity.actorId,frame.update); }
+          // The same actor the journal records: an admission naming no
+          // separate actor is acting as the account it signed in with. Reading
+          // `actorId` alone leaves every member of a ticket host anonymous, and
+          // frame 107 then names nobody at all.
+          try { update = presence.receive(peer,identity.actorId ?? identity.id,frame.update); }
           catch { refuseAwareness(peer,frame.update); break; }
           if (update) await broadcastPresence(update,peer);
           break;

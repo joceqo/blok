@@ -25,3 +25,19 @@ it('relays cursors, keeps their verified actor and removes them when the connect
   expect(room.identities()).toEqual({ type: 'identities', identities: [] });
   expect(() => room.receive('first', 'account-1', Uint8Array.of(255))).toThrow();
 });
+
+/**
+ * No y-websocket client sends queryAwareness of its own, so a late joiner is
+ * served by the room ASKING the members already here to announce themselves
+ * again. A member that has not touched its state since answers with the same
+ * clock it published before — and Go relays that frame verbatim. Dropping it
+ * as "nothing new" is dropping the one frame the late joiner was waiting for.
+ */
+it('relays a re-published state at the clock it already holds, which is what answers a join', () => {
+  const room = new RoomPresence<string>();
+  const own = publish(17, 1, { user: { name: 'Alice' } });
+
+  expect(room.receive('first', 'account-1', own)).toEqual({ type: 'awareness', update: own });
+  expect(room.receive('first', 'account-1', own)).toEqual({ type: 'awareness', update: own });
+  expect(room.snapshot()).toEqual({ type: 'awareness', update: own });
+});

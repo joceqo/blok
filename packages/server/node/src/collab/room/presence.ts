@@ -71,8 +71,12 @@ export class RoomPresence<Peer> {
         this.clients.delete(entry.clientId);
       } else {
         if (!current && (entries.length !== 1 || this.clients.size >= maxClients)) continue;
-        if (current && entry.clock === current.clock) continue;
-        this.clients.set(entry.clientId, { ...entry, peer, actor });
+        // A re-publish at the clock already held changes nothing here, and is
+        // still relayed: it is how a member answers the room's join-time
+        // queryAwareness, and the only frame a late joiner has to learn from.
+        // A receiver that already holds that clock ignores it, so no peer can
+        // overwrite a state by re-sending one at a clock it does not own.
+        if (!current || entry.clock > current.clock) this.clients.set(entry.clientId, { ...entry, peer, actor });
       }
       accepted.push(entry);
     }

@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as encoding from 'lib0/encoding';
 import type { WebSocket } from 'ws';
 import { Doc, encodeStateAsUpdate, encodeStateVector } from 'yjs';
 import { afterEach, beforeEach, expect, it } from 'vitest';
@@ -221,4 +222,63 @@ it('relays a write between members that have not synced, which is how a stalled 
   // reading never syncs, so a sync condition would mean its outbound queue
   // never fills and a stalled consumer is never found at all.
   expect(kinds(reader)).toContain('update');
+});
+
+/** One member's own presence, in the shape `RoomPresence` reads. */
+function presenceUpdate(clientId: number, clock: number, state: unknown): Uint8Array {
+  const encoder = encoding.createEncoder();
+
+  encoding.writeVarUint(encoder, 1);
+  encoding.writeVarUint(encoder, clientId);
+  encoding.writeVarUint(encoder, clock);
+  encoding.writeVarString(encoder, JSON.stringify(state));
+
+  return encoding.toUint8Array(encoder);
+}
+
+function identitiesOf(socket: Socket): Array<{ clientId: number; actorId: string }> {
+  const frame = socket.sent.filter((sent) => sent.type === 'identities').at(-1);
+
+  return frame?.type === 'identities' ? [...frame.identities] : [];
+}
+
+/**
+ * The journal already spells a member's actor as `actorId ?? id`: an admission
+ * that names no separate actor is acting as the account it signed in with.
+ * Frame 107 owes the same answer — reading `actorId` alone left every member
+ * of a ticket host anonymous, so the map a client composes names from was
+ * always empty.
+ */
+it('names a member by its account when the admission carries no separate actor', async () => {
+  const speaker = fakeSocket('blok-sync.v2');
+  const watcher = fakeSocket('blok-sync.v2');
+
+  room.connect(asWebSocket(speaker), 'editor', editor);
+  room.connect(asWebSocket(watcher), 'editor', editor);
+  await readThrough(watcher);
+  watcher.sent.length = 0;
+  speak(speaker, { type: 'awareness', update: presenceUpdate(17, 1, { user: { name: 'Alice' } }) });
+  await waitFor(() => identitiesOf(watcher).length > 0, 'the identities frame the presence earns');
+
+  expect(identitiesOf(watcher)).toEqual([{ clientId: 17, actorId: 'editor' }]);
+});
+
+/**
+ * Go relays an awareness frame through `broadcastLocked`, which puts no sync
+ * condition on the receiver. A member that has not read the document yet can
+ * still paint carets, and a sync condition on the relay is also what hides a
+ * member whose outbound queue has stalled.
+ */
+it('relays presence to a member that has not synced', async () => {
+  const speaker = fakeSocket('blok-sync.v2');
+  const unsynced = fakeSocket('blok-sync.v2');
+
+  room.connect(asWebSocket(speaker), 'editor', editor);
+  room.connect(asWebSocket(unsynced), 'editor', editor);
+  unsynced.sent.length = 0;
+  speak(speaker, { type: 'awareness', update: presenceUpdate(21, 1, { user: { name: 'Bob' } }) });
+  await readThrough(speaker);
+  await waitFor(() => kinds(unsynced).includes('awareness'), 'the presence to reach an unsynced member');
+
+  expect(kinds(unsynced)).toContain('awareness');
 });

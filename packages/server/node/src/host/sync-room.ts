@@ -8,7 +8,7 @@ import { DocumentPurged, MAX_APPEND_BYTES, UnreadableJournalData } from '../coll
 import { openDocumentRoom, type EditCommand, type EditOutcome, type PendingFrame } from '../collab/room/document-room.ts';
 import { serveSocket } from '../collab/sync/served-socket.ts';
 import { SocketBridge } from '../collab/sync/socket-bridge.ts';
-import { seedUpdate, type Snapshot } from '../collab/room/page-document.ts';
+import { envelope, seedUpdate, type Snapshot } from '../collab/room/page-document.ts';
 import { existingDirectory, initializePage, newBaseline, pageDirectory } from '../collab/room/page-seed.ts';
 import { resetGeneration } from '../collab/room/reset.ts';
 import { createRoomRegistry, type Resident } from '../collab/room/room-registry.ts';
@@ -141,11 +141,51 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
   // reached through the host's own guard, which is the one origin policy here.
   const allowedOrigins = new Set(options.allowedOrigins.length > 0 ? options.allowedOrigins : ['*']);
 
+  /**
+   * What the consumer's record carries that the document itself does not: the
+   * version handle its next write-back must quote, and the keys it keeps
+   * beside the blocks. Both are the record's, not the journal's, so a room
+   * reopened off an existing journal has to ask for them again.
+   */
+  interface HostRecord {
+    extra: Record<string, unknown>;
+    version: string | undefined;
+  }
+  const records = new Map<string, HostRecord>();
+
   async function seed(documentId: string): Promise<Snapshot> {
     if (endpoint === undefined) {
       return null;
     }
-    return (await endpoint.load(documentId)).data as Snapshot;
+    const loaded = await endpoint.load(documentId);
+    const data = loaded.data as Snapshot;
+
+    records.set(documentId, { extra: envelope(data), version: loaded.version });
+
+    return data;
+  }
+
+  /**
+   * The room's half of the write-back: build the projection, PUT it, and keep
+   * whatever handle the endpoint hands back — an endpoint that versions its
+   * records issues a new one on every write, and a room still quoting the one
+   * it loaded with would be refused from its second write-back on.
+   */
+  function exportTo(documentId: string): Pick<RoomOptions, 'onExport' | 'exportExtra'> {
+    if (endpoint === undefined) {
+      return {};
+    }
+    return {
+      exportExtra: records.get(documentId)?.extra ?? {},
+      onExport: async (projection, at) => {
+        const record = records.get(documentId);
+        const answered = await endpoint.save(documentId, projection, record?.version, at);
+
+        if (answered !== undefined) {
+          records.set(documentId, { extra: record?.extra ?? {}, version: answered });
+        }
+      },
+    };
   }
 
   async function openRoom(documentId: string): Promise<DocumentRoom> {
@@ -161,6 +201,15 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
           '{}',
           async () => {},
         );
+      } else if (endpoint !== undefined) {
+        // The journal already holds the document, but not the consumer's handle
+        // on it. Best effort: a record that cannot be read costs the write-back
+        // its version header, never the room its open.
+        await seed(documentId).catch((error: unknown) => options.collabLog(
+          `collab: room "${documentId}" could not read the document version, so its write-back will carry none: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+          'warning',
+        ));
       }
       return openDocumentRoom({
         directory,
@@ -170,6 +219,7 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
         recordNotes: options.collabRecordNotes,
         enforceRestoreGuards: options.collabEnforceRestoreGuards === true,
         restoreTrashesPages: options.collabRestoreTrashesPages === true,
+        ...exportTo(documentId),
       });
     } catch (error) {
       // The room alone knows why it could not load, and a join refused on the

@@ -5,6 +5,9 @@ import https from 'node:https';
 import { trimChars } from '../http/headers.ts';
 
 export const VERSION_HEADER = 'Blok-Doc-Version';
+/** Which generation of which history the projection was taken from. */
+export const LINEAGE_HEADER = 'Blok-Doc-Lineage';
+export const SEQUENCE_HEADER = 'Blok-Doc-Sequence';
 
 const DEFAULT_MAX_RESPONSE_BYTES = 64 << 20;
 const ERROR_BODY_PREFIX_BYTES = 512;
@@ -201,6 +204,30 @@ function readEnvelope(body: Buffer): { dataJson: string | null; version: string 
   return { dataJson: data.type === 'null' ? null : source.slice(data.offset, data.offset + data.length), version };
 }
 
+/**
+ * The handle a PUT answered with. Anything this cannot read — an empty body,
+ * a body that is not a JSON object, a version that is neither string nor
+ * number — leaves the room on the handle it already holds, because a write
+ * that landed must never be turned into a failure by its receipt.
+ */
+function savedVersion(body: Buffer): string | undefined {
+  if (body.length === 0) {
+    return undefined;
+  }
+  try {
+    const source = new TextDecoder('utf-8', { fatal: true }).decode(body);
+    const errors: ParseError[] = [];
+    const root = parseTree(source, errors, { disallowComments: true, allowTrailingComma: false });
+    if (!root || errors.length > 0 || root.type !== 'object') {
+      return undefined;
+    }
+    const value = findNodeAtLocation(root, ['version']);
+    return value?.type === 'string' || value?.type === 'number' ? String(value.value) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class DocEndpointClient {
   constructor(readonly options: DocEndpointOptions) {}
 
@@ -215,7 +242,18 @@ export class DocEndpointClient {
     return readEnvelope(body);
   }
 
-  async save(docId: string, outputData: unknown, version: string | undefined): Promise<void> {
+  /**
+   * PUTs the projection and answers the version the endpoint handed back, or
+   * nothing when it handed none. An endpoint that versions its records issues
+   * a new handle on every write, so a room that kept the one it loaded with
+   * would be refused from its second write-back on.
+   */
+  async save(
+    docId: string,
+    outputData: unknown,
+    version: string | undefined,
+    projection?: { lineage: string; sequence: bigint },
+  ): Promise<string | undefined> {
     const url = urlFor(this.options.endpoint, docId);
     let payload: Buffer;
     try {
@@ -227,6 +265,11 @@ export class DocEndpointClient {
     if (version !== undefined) {
       headers.push([VERSION_HEADER, version]);
     }
-    await request(this.options, 'PUT', url, headers, payload);
+    if (projection !== undefined) {
+      headers.push([LINEAGE_HEADER, projection.lineage]);
+      headers.push([SEQUENCE_HEADER, String(projection.sequence)]);
+    }
+    const { body } = await request(this.options, 'PUT', url, headers, payload);
+    return savedVersion(body);
   }
 }
