@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/JackUait/blok/packages/server/go/v2/blokmcp"
 	"github.com/JackUait/blok/packages/server/go/v2/blokserver"
@@ -225,7 +226,14 @@ func (s *Service) require(w http.ResponseWriter, r *http.Request) (identity, boo
 	}
 	return u, true
 }
+
+// Handler is the whole surface, watched: observe wraps everything so a refusal
+// written here — draining, origin, cross-site — is recorded with its reason,
+// not only counted by whatever proxy sits in front.
 func (s *Service) Handler() http.Handler {
+	return observe(s.routed(), slog.Default(), time.Now)
+}
+func (s *Service) routed() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.RemoteAddr = net.JoinHostPort(s.clientIP(r), "0")
 		if s.draining.Load() && !strings.HasPrefix(r.URL.Path, "/internal/documents/") {
