@@ -1,16 +1,19 @@
-import {useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode} from 'react';
+import type {SupportedLocale} from '../../types/configs/i18n-config';
+import {languageOptions, shellLocale, initializeShellLanguage, shellText} from './shell-i18n';
+import {useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode} from 'react';
 import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
 import type {Appearance} from './settings';
-import {createChoice, type ChoiceOptions} from './ui/controls';
-import {getTimeFormatter, readChatNewline, readContrast, readTimeFormat, setChatNewline, setContrast, setTimeFormat, subscribeDisplayPreferences, type Contrast, type TimeFormat} from './display-preferences';
-import {SettingsSwitchRow} from './settings-switch-row';
+import { Avatar, Choice, Feedback, SwitchRow, TextField } from './components';
+import {getTimeFormatter, readAutoTimeZone, readChatNewline, readChosenTimeZone, readContrast, readTimeFormat, readTimeZone, setAutoTimeZone, setChatNewline, setContrast, setTimeFormat, setTimeZone, subscribeDisplayPreferences, type Contrast, type TimeFormat} from './display-preferences';
+import {getTimeZoneOptions} from './calendarcn/lib/time-zones';
 import './settings-panels.css';
 
 type Preferences = {
   kind: 'preferences';
   appearance: Appearance;
   onAppearanceChange(mode: Appearance): void;
+  onLanguageChange?: (locale: SupportedLocale) => Promise<void>;
   readDirectory?: () => Promise<string>;
 };
 
@@ -46,67 +49,108 @@ function Directory({read}: {read: () => Promise<string>}) {
     if (!path) return;
     try {
       await navigator.clipboard.writeText(path);
-      setNotice('Chemin copié');
+      setNotice(shellText("Chemin copié"));
     } catch {
-      setNotice('Copie impossible. Vous pouvez sélectionner le chemin.');
+      setNotice(shellText("Copie impossible. Vous pouvez sélectionner le chemin."));
     }
   }
   return <details className="settings-panel-directory">
-    <summary>Avancé</summary>
-    <div>Dossier des données</div>
-    <code data-desktop-settings-path="">{path ?? 'Chargement…'}{path === '' && 'Indisponible'}</code>
-    <button type="button" data-desktop-settings-copy="" disabled={!path} onClick={copyPath}>Copier le chemin des données</button>
-    <span role="status">{notice}</span>
+    <summary>{shellText("Avancé")}</summary>
+    <div>{shellText("Dossier des données")}</div>
+    <code data-desktop-settings-path="">{path ?? shellText("Chargement…")}{path === '' && 'Indisponible'}</code>
+    <button type="button" data-desktop-settings-copy="" disabled={!path} onClick={copyPath}>{shellText("Copier le chemin des données")}</button>
+    <Feedback>{notice}</Feedback>
   </details>;
 }
 
-const themes = [{value: 'dark', label: 'Sombre'}, {value: 'light', label: 'Clair'}, {value: 'auto', label: 'Système'}] as const;
-const contrasts = [{value: 'system', label: 'Utiliser le réglage système'}, {value: 'more', label: 'Activé'}, {value: 'standard', label: 'Désactivé'}] as const;
-const timeFormats = [{value: 'system', label: 'Utiliser le réglage système'}, {value: '24h', label: '24 heures'}, {value: '12h', label: '12 heures'}] as const;
+const themes = [{value: 'dark', label: shellText("Sombre")}, {value: 'light', label: shellText("Clair")}, {value: 'auto', label: shellText("Système")}] as const;
+const contrasts = [{value: 'system', label: shellText("Utiliser le réglage système")}, {value: 'more', label: shellText("Activé")}, {value: 'standard', label: shellText("Désactivé")}] as const;
+const timeFormats = [{value: 'system', label: shellText("Utiliser le réglage système")}, {value: '24h', label: shellText("24 heures")}, {value: '12h', label: shellText("12 heures")}] as const;
 
-function SettingChoice<T extends string>({attribute, label, value, options, onChange}: ChoiceOptions<T> & {attribute: string}) {
-  const host = useRef<HTMLDivElement>(null);
-  const control = useRef<ReturnType<typeof createChoice<T>> | null>(null);
-  const initialValue = useRef(value);
-  useLayoutEffect(() => {
-    const choice = createChoice({label, value: initialValue.current, options, onChange});
-    choice.element.setAttribute(attribute, '');
-    host.current?.append(choice.element);
-    control.current = choice;
-    return () => { choice.destroy(); choice.element.remove(); };
-  }, [attribute, label, options, onChange]);
-  useLayoutEffect(() => { control.current?.setValue(value); }, [value]);
-  return <div ref={host}/>;
-}
+const LanguagePreference = ({onChange}: {onChange?: Preferences['onLanguageChange']}) => {
+  const [locale, setLocale] = useState(shellLocale);
+  const [error, setError] = useState('');
+  const options = useMemo(() => languageOptions(locale), [locale]);
 
-function PreferencesPanel({appearance, onAppearanceChange, readDirectory}: Preferences) {
+  async function choose(next: SupportedLocale) {
+    if (next === locale) return;
+    try {
+      if (onChange) await onChange(next);
+      else await initializeShellLanguage(next);
+      setLocale(next);
+      setError('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  return <div className="settings-panel-row">
+    <div className="settings-panel-label">
+      <strong>{shellText('Langue')}</strong>
+      <small>{shellText('Choisissez la langue de Blok sur cet appareil.')}</small>
+    </div>
+    <Choice attribute="data-desktop-settings-language" label={shellText('Langue')}
+      value={locale} options={options} searchable onChange={next => { void choose(next); }}/>
+    {error && <Feedback>{error}</Feedback>}
+  </div>;
+};
+
+const TimeZonePreference = () => {
+  const automatic = useSyncExternalStore(subscribeDisplayPreferences, readAutoTimeZone);
+  const chosen = useSyncExternalStore(subscribeDisplayPreferences, readChosenTimeZone);
+  const active = useSyncExternalStore(subscribeDisplayPreferences, readTimeZone);
+  // Offsets move with the date, so they are read once per mount rather than per render.
+  const options = useMemo(() => {
+    const now = new Date();
+    return getTimeZoneOptions(now).map(zone => ({value: zone.id, label: shellText("({v0}) {v1}", {v0: zone.offsetLabel, v1: zone.city}), description: zone.name}));
+  }, []);
+
+  return <>
+    <SwitchRow settingId="auto-time-zone"
+      label={shellText('Définir automatiquement votre fuseau horaire à partir de votre emplacement')}
+      help={shellText('Les heures affichées dans Blok suivent alors le fuseau horaire de cet appareil.')}
+      checked={automatic} onChange={setAutoTimeZone}/>
+    <div className="settings-panel-row" data-setting="time-zone">
+      <div className="settings-panel-label">
+        <strong>{shellText('Fuseau horaire')}</strong>
+        <small>{shellText('Choisissez votre fuseau horaire.')}</small>
+      </div>
+      <Choice attribute="data-desktop-settings-time-zone" label={shellText('Fuseau horaire')}
+        value={automatic ? active : chosen} options={options} searchable disabled={automatic} onChange={setTimeZone}/>
+    </div>
+  </>;
+};
+
+function PreferencesPanel({appearance, onAppearanceChange, readDirectory, onLanguageChange}: Preferences) {
   const contrast = useSyncExternalStore(subscribeDisplayPreferences, readContrast);
   const newline = useSyncExternalStore(subscribeDisplayPreferences, readChatNewline);
   const timeFormat = useSyncExternalStore(subscribeDisplayPreferences, readTimeFormat);
 
   return <>
-    <h1 data-desktop-settings-title="">Préférences</h1>
-    <p data-desktop-settings-intro="">Choisissez l’apparence et le comportement de Blok.</p>
-    <Section title="Apparence">
+    <h1 data-desktop-settings-title="">{shellText("Préférences")}</h1>
+    <p data-desktop-settings-intro="">{shellText("Choisissez l’apparence et le comportement de Blok.")}</p>
+    <Section title={shellText("Apparence")}>
       <div className="settings-panel-row">
-        <div className="settings-panel-label"><strong>Thème</strong><small>Choisissez un thème pour Blok sur cet appareil.</small></div>
-        <SettingChoice<Appearance> attribute="data-desktop-settings-theme" label="Thème" value={appearance} options={themes} onChange={onAppearanceChange}/>
+        <div className="settings-panel-label"><strong>{shellText("Thème")}</strong><small>{shellText("Choisissez un thème pour Blok sur cet appareil.")}</small></div>
+        <Choice<Appearance> attribute="data-desktop-settings-theme" label={shellText("Thème")} value={appearance} options={themes} onChange={onAppearanceChange}/>
       </div>
       <div className="settings-panel-row">
-        <div className="settings-panel-label"><strong>Contraste élevé</strong><small>Renforcez le contraste du texte et des contours.</small></div>
-        <SettingChoice<Contrast> attribute="data-desktop-settings-contrast" label="Contraste élevé" value={contrast} options={contrasts} onChange={setContrast}/>
+        <div className="settings-panel-label"><strong>{shellText("Contraste élevé")}</strong><small>{shellText("Renforcez le contraste du texte et des contours.")}</small></div>
+        <Choice<Contrast> attribute="data-desktop-settings-contrast" label={shellText("Contraste élevé")} value={contrast} options={contrasts} onChange={setContrast}/>
       </div>
     </Section>
-    <Section title="Options de saisie">
-      <SettingsSwitchRow label="Utiliser Entrée pour insérer un saut de ligne"
-        help="Dans les conversations avec l’assistant, utilisez Cmd ou Ctrl + Entrée pour envoyer le message."
+    <Section title={shellText("Options de saisie")}>
+      <SwitchRow settingId="newline" label={shellText("Utiliser Entrée pour insérer un saut de ligne")}
+        help={shellText("Dans les conversations avec l’assistant, utilisez Cmd ou Ctrl + Entrée pour envoyer le message.")}
         checked={newline} onChange={setChatNewline}/>
     </Section>
-    <Section title="Langue et heure">
+    <Section title={shellText("Langue et heure")}>
+      <LanguagePreference onChange={onLanguageChange}/>
       <div className="settings-panel-row">
-        <div className="settings-panel-label"><strong>Format de l’heure</strong><small>Dans le calendrier, un événement à 16 h 30 s’affiche « {getTimeFormatter().format(new Date(2000, 0, 15, 16, 30))} ».</small></div>
-        <SettingChoice<TimeFormat> attribute="data-desktop-settings-time-format" label="Format de l’heure" value={timeFormat} options={timeFormats} onChange={setTimeFormat}/>
+        <div className="settings-panel-label"><strong>{shellText("Format de l’heure")}</strong><small>{shellText('Dans le calendrier, un événement à 16 h 30 s’affiche « {time} ».', {time: getTimeFormatter().format(new Date(2000, 0, 15, 16, 30))})}</small></div>
+        <Choice<TimeFormat> attribute="data-desktop-settings-time-format" label={shellText("Format de l’heure")} value={timeFormat} options={timeFormats} onChange={setTimeFormat}/>
       </div>
+      <TimeZonePreference/>
     </Section>
     {readDirectory && <Directory read={readDirectory}/>}
   </>;
@@ -131,28 +175,28 @@ function AccountPanel({account}: {account: Account}) {
   }, [account]);
 
   return <>
-    <h1 data-desktop-settings-title="">{account.kind === 'remote' ? 'Mon compte' : 'Profil local'}</h1>
-    <p data-desktop-settings-intro="">{account.kind === 'remote' ? 'Votre identité et votre accès à cet espace.' : 'Votre profil et vos documents sont enregistrés sur cet appareil.'}</p>
-    <Section title="Identité">
+    <h1 data-desktop-settings-title="">{account.kind === 'remote' ? shellText("Mon compte") : shellText("Profil local")}</h1>
+    <p data-desktop-settings-intro="">{account.kind === 'remote' ? shellText("Votre identité et votre accès à cet espace.") : shellText("Votre profil et vos documents sont enregistrés sur cet appareil.")}</p>
+    <Section title={shellText("Identité")}>
       <div className="settings-panel-identity">
-        <span className="settings-panel-avatar" aria-hidden="true">{Array.from(name)[0]?.toLocaleUpperCase() || 'B'}</span>
+        <Avatar className="settings-panel-avatar" name={name}/>
         {account.kind === 'local' ?
-          <label className="settings-panel-label"><small>Nom du profil local</small>
-            <input ref={input} type="text" maxLength={48} defaultValue={initialName} data-desktop-settings-name="" data-blok-field="text"
+          <label className="settings-panel-label"><small>{shellText("Nom du profil local")}</small>
+            <TextField ref={input} maxLength={48} defaultValue={initialName} data-desktop-settings-name=""
               onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) event.currentTarget.blur(); }}/>
           </label> :
-          <div className="settings-panel-label"><small>{account.kind === 'remote' && account.email ? 'Adresse e-mail' : 'Nom du profil'}</small><strong>{name}</strong></div>}
+          <div className="settings-panel-label"><small>{account.kind === 'remote' && account.email ? shellText("Adresse e-mail") : shellText("Nom du profil")}</small><strong>{name}</strong></div>}
       </div>
     </Section>
-    {account.kind !== 'local' && <Section title="Espace de travail">
+    {account.kind !== 'local' && <Section title={shellText("Espace de travail")}>
       <dl className="settings-panel-values">
-        <div><dt>Nom</dt><dd>{account.workspace}</dd></div>
-        {account.kind === 'remote' && <div><dt>Rôle</dt><dd>{account.role}</dd></div>}
+        <div><dt>{shellText("Nom")}</dt><dd>{account.workspace}</dd></div>
+        {account.kind === 'remote' && <div data-setting="role"><dt>{shellText("Rôle")}</dt><dd>{account.role}</dd></div>}
       </dl>
     </Section>}
-    {account.kind === 'remote' && <Section title="Comptes et espaces">
-      <div className="settings-panel-row"><div className="settings-panel-label"><strong>Changer de compte</strong><small>Accédez à vos autres espaces ou connectez un compte.</small></div>
-        <button type="button" data-desktop-settings-copy="" onClick={account.openAccounts}>Comptes et espaces</button>
+    {account.kind === 'remote' && <Section title={shellText("Comptes et espaces")}>
+      <div className="settings-panel-row" data-setting="accounts"><div className="settings-panel-label"><strong>{shellText("Changer de compte")}</strong><small>{shellText("Accédez à vos autres espaces ou connectez un compte.")}</small></div>
+        <button type="button" data-desktop-settings-copy="" onClick={account.openAccounts}>{shellText("Comptes et espaces")}</button>
       </div>
     </Section>}
   </>;
@@ -160,19 +204,19 @@ function AccountPanel({account}: {account: Account}) {
 
 function GeneralPanel({workspace, version, remoteServer}: General) {
   return <>
-    <h1 data-desktop-settings-title="">Général</h1>
-    <p data-desktop-settings-intro="">Informations sur votre espace de travail.</p>
-    <Section title="Espace de travail">
+    <h1 data-desktop-settings-title="">{shellText("Général")}</h1>
+    <p data-desktop-settings-intro="">{shellText("Informations sur votre espace de travail.")}</p>
+    <Section title={shellText("Espace de travail")}>
       <dl className="settings-panel-values">
-        <div><dt>Nom de l’espace</dt><dd>{workspace}</dd></div>
-        <div><dt>Hébergement</dt><dd>{remoteServer ? 'Serveur distant' : 'Sur cet appareil'}</dd></div>
+        <div data-setting="workspace-name"><dt>{shellText("Nom de l’espace")}</dt><dd>{workspace}</dd></div>
+        <div data-setting="hosting"><dt>{shellText("Hébergement")}</dt><dd>{remoteServer ? shellText("Serveur distant") : shellText("Sur cet appareil")}</dd></div>
       </dl>
       {remoteServer && <details className="settings-panel-directory">
-        <summary>Adresse du serveur</summary>
+        <summary>{shellText("Adresse du serveur")}</summary>
         <code>{remoteServer}</code>
       </details>}
     </Section>
-    <Section title="À propos">
+    <Section title={shellText("À propos")}>
       <p data-desktop-settings-version="">{version}</p>
     </Section>
   </>;

@@ -1,11 +1,14 @@
+import {shellLocale} from './shell-i18n';
 export type Contrast = 'system' | 'more' | 'standard';
 export type TimeFormat = 'system' | '12h' | '24h';
 
 const contrastKey = 'blok:desktop:contrast';
 const newlineKey = 'blok:desktop:chat-enter-newline';
 const timeFormatKey = 'blok:desktop:time-format';
+const timeZoneKey = 'blok:desktop:time-zone';
+const autoTimeZoneKey = 'blok:desktop:time-zone-auto';
 const changed = 'blok:display-preferences';
-const clocks = new Map<TimeFormat, Intl.DateTimeFormat>();
+const clocks = new Map<string, Intl.DateTimeFormat>();
 
 function stored(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -54,13 +57,54 @@ export function setTimeFormat(value: TimeFormat): void {
   window.dispatchEvent(new Event(changed));
 }
 
+/** The zone the device reports, which is what the automatic setting follows. */
+export function readDeviceTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+function usableTimeZone(zone: string | null | undefined): string | null {
+  if (!zone) return null;
+  // An unknown name makes every later formatter throw: keep it out.
+  try { new Intl.DateTimeFormat(undefined, {timeZone: zone}); return zone; } catch { return null; }
+}
+
+export function readAutoTimeZone(): boolean {
+  const value = document.documentElement.dataset.desktopAutoTimeZone ?? stored(autoTimeZoneKey);
+  return value !== 'false';
+}
+
+export function setAutoTimeZone(enabled: boolean): void {
+  save(autoTimeZoneKey, String(enabled));
+  document.documentElement.dataset.desktopAutoTimeZone = String(enabled);
+  window.dispatchEvent(new Event(changed));
+}
+
+/** The zone chosen by hand, whether or not the automatic setting is using it. */
+export function readChosenTimeZone(): string {
+  const value = document.documentElement.dataset.desktopTimeZone || stored(timeZoneKey);
+  return usableTimeZone(value) ?? readDeviceTimeZone();
+}
+
+/** The zone everything shows times in: the device's while the automatic setting is on. */
+export function readTimeZone(): string {
+  return readAutoTimeZone() ? readDeviceTimeZone() : readChosenTimeZone();
+}
+
+export function setTimeZone(zone: string): void {
+  save(timeZoneKey, zone);
+  document.documentElement.dataset.desktopTimeZone = zone;
+  window.dispatchEvent(new Event(changed));
+}
+
 export function getTimeFormatter(): Intl.DateTimeFormat {
   const format = readTimeFormat();
-  let clock = clocks.get(format);
+  const locale = shellLocale();
+  const key = locale + '/' + format;
+  let clock = clocks.get(key);
   if (!clock) {
-    const hourCycle = format === '12h' ? 'h12' : format === '24h' ? 'h23' : undefined;
-    clock = new Intl.DateTimeFormat(undefined, {hour: format === '12h' ? 'numeric' : '2-digit', minute: '2-digit', hourCycle});
-    clocks.set(format, clock);
+    const hourCycle = format === '12h' ? 'h12' : format === '24h' ? 'h23' : new Intl.DateTimeFormat(undefined, {hour: 'numeric'}).resolvedOptions().hourCycle;
+    clock = new Intl.DateTimeFormat(locale, {hour: format === '12h' ? 'numeric' : '2-digit', minute: '2-digit', hourCycle});
+    clocks.set(key, clock);
   }
   return clock;
 }
@@ -76,13 +120,15 @@ export function initializeDisplayPreferences(): () => void {
     applyContrast(value === 'more' || value === 'standard' ? value : 'system');
     document.documentElement.toggleAttribute('data-blok-chat-enter-newline', stored(newlineKey) === 'true');
     document.documentElement.dataset.desktopTimeFormat = stored(timeFormatKey) ?? 'system';
+    document.documentElement.dataset.desktopTimeZone = stored(timeZoneKey) ?? '';
+    document.documentElement.dataset.desktopAutoTimeZone = stored(autoTimeZoneKey) === 'false' ? 'false' : 'true';
     window.dispatchEvent(new Event(changed));
   }
   restore();
   const query = window.matchMedia?.('(prefers-contrast: more)');
   const systemChanged = () => applyContrast(readContrast());
   const storageChanged = (event: StorageEvent) => {
-    if (event.key === null || event.key === contrastKey || event.key === newlineKey || event.key === timeFormatKey) restore();
+    if (event.key === null || event.key === contrastKey || event.key === newlineKey || event.key === timeFormatKey || event.key === timeZoneKey || event.key === autoTimeZoneKey) restore();
   };
   query?.addEventListener('change', systemChanged);
   window.addEventListener('storage', storageChanged);

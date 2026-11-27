@@ -1,6 +1,7 @@
-import {useEffect, useMemo, useRef, useState, type ReactNode} from 'react';
+import {shellText, shellLocale} from './shell-i18n';
+import {useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode} from 'react';
 import {startOfDay, startOfWeek} from 'date-fns';
-import {fr} from 'date-fns/locale/fr';
+import {initialCalendarLocale, loadCalendarLocale} from './calendar-locale';
 import {CalendarCommands} from './calendar-commands-cn';
 import {CalendarHeader} from './calendarcn/components/calendar-header';
 import {CalendarProvider, useCalendar, useCalendarEventDraft} from './calendarcn/components/calendar-provider';
@@ -13,6 +14,7 @@ import {TooltipProvider} from './calendarcn/components/ui/tooltip';
 import {fromCalendarCN, toCalendarCN} from './calendar-cn-event';
 import type {CalendarEvent} from './calendar-store';
 import type {CalendarWorkspaceEntry} from './calendar-workspaces';
+import {readTimeZone, subscribeDisplayPreferences} from './display-preferences';
 
 export interface CalendarGridProps {
   date: Date;
@@ -78,7 +80,16 @@ function SelectionBridge({selectedId, onOpen, onDeselect, preview, originals}: S
 
 export function CalendarGrid(props: CalendarGridProps) {
   const {events, keyOf, ownerOf, date, view, canEdit, canCreate, preview, selectedId} = props;
+  const timeZone = useSyncExternalStore(subscribeDisplayPreferences, readTimeZone);
   const [numberOfDays, setNumberOfDays] = useState(7);
+  const language = shellLocale();
+  const [locale, setLocale] = useState(() => initialCalendarLocale(language));
+  useEffect(() => {
+    let current = true;
+    setLocale(initialCalendarLocale(language));
+    loadCalendarLocale(language)?.then(value => { if (current) setLocale(value); }).catch(() => {});
+    return () => { current = false; };
+  }, [language]);
   const day = date.getTime();
   const periodStart = useMemo(() => view === 'week' && numberOfDays === 7 ? startOfWeek(day, {weekStartsOn: 1}) : startOfDay(day), [view, day, numberOfDays]);
   const originals = useMemo(() => new Map(events.map(event => [keyOf(event), event])), [events, keyOf]);
@@ -107,7 +118,8 @@ export function CalendarGrid(props: CalendarGridProps) {
   }
   function writable(event: CalendarEvent) { return !event.source && canEdit(event); }
   return <TooltipProvider>
-    <CalendarProvider<DetailedCalendarEvent> date={periodStart} view={view} events={display} locale={fr} weekStartsOn={1}
+    <CalendarProvider<DetailedCalendarEvent> date={periodStart} view={view} events={display} locale={locale} weekStartsOn={1}
+      timeZone={timeZone}
       numberOfDays={numberOfDays} onNumberOfDaysChange={setNumberOfDays}
       defaultViewSettings={{showWeekNumbers:true}} hourCycle={props.hour12 ? 12 : 24} loading={props.loading}
       onDateChange={value => navigate(value, navigation.current.view)}
@@ -128,7 +140,7 @@ export function CalendarGrid(props: CalendarGridProps) {
       }}>
       <SelectionBridge selectedId={selectedId} preview={preview} originals={originals} onOpen={props.onOpen} onDeselect={props.onDeselect}/>
       <div data-calendar-grid="" className="relative flex h-full min-h-0 min-w-0 flex-1">
-        <section aria-label="Calendrier" className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
+        <section aria-label={shellText("Calendrier")} className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
           <CalendarHeader sidebarOpen={props.panelOpen} onToggleSidebar={props.onTogglePanel} sidebarSide="right">
             <CalendarCommands/>{props.headerActions}
           </CalendarHeader>

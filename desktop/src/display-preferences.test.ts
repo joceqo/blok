@@ -1,5 +1,5 @@
 import {afterEach, expect, it, vi} from 'vitest';
-import {getTimeFormatter, initializeDisplayPreferences, readChatNewline, readContrast, readTimeFormat, setChatNewline, setContrast, setTimeFormat} from './display-preferences';
+import {getTimeFormatter, initializeDisplayPreferences, readAutoTimeZone, readChatNewline, readContrast, readTimeFormat, readTimeZone, setAutoTimeZone, setChatNewline, setContrast, setTimeFormat, setTimeZone} from './display-preferences';
 
 afterEach(() => {
   localStorage.clear();
@@ -7,6 +7,8 @@ afterEach(() => {
   document.documentElement.removeAttribute('data-desktop-high-contrast');
   document.documentElement.removeAttribute('data-blok-chat-enter-newline');
   document.documentElement.removeAttribute('data-desktop-time-format');
+  document.documentElement.removeAttribute('data-desktop-time-zone');
+  document.documentElement.removeAttribute('data-desktop-auto-time-zone');
   vi.unstubAllGlobals();
 });
 
@@ -56,4 +58,37 @@ it('follows system contrast unless overridden, and restores stored choices on st
     expect(readChatNewline()).toBe(true);
     expect(document.documentElement.hasAttribute('data-desktop-high-contrast')).toBe(false);
   } finally { stopAfterReload(); }
+});
+
+const systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const elsewhere = systemTimeZone === 'Asia/Tokyo' ? 'Europe/Paris' : 'Asia/Tokyo';
+
+it('follows the device unless the automatic zone is turned off, and ignores a zone the runtime cannot use', () => {
+  expect(readAutoTimeZone()).toBe(true);
+  expect(readTimeZone()).toBe(systemTimeZone);
+  setTimeZone(elsewhere);
+  expect(readTimeZone()).toBe(systemTimeZone);
+  setAutoTimeZone(false);
+  expect(readTimeZone()).toBe(elsewhere);
+  setTimeZone('Mars/Olympus');
+  expect(readTimeZone()).toBe(systemTimeZone);
+  setTimeZone(elsewhere);
+  setAutoTimeZone(true);
+  expect(readTimeZone()).toBe(systemTimeZone);
+});
+
+it('restores the chosen zone on startup and follows changes from another window', () => {
+  setAutoTimeZone(false);
+  setTimeZone(elsewhere);
+  document.documentElement.removeAttribute('data-desktop-time-zone');
+  document.documentElement.removeAttribute('data-desktop-auto-time-zone');
+  const stop = initializeDisplayPreferences();
+  try {
+    expect(readAutoTimeZone()).toBe(false);
+    expect(readTimeZone()).toBe(elsewhere);
+    const key = 'blok:desktop:time-zone';
+    localStorage.setItem(key, 'Pacific/Auckland');
+    window.dispatchEvent(new StorageEvent('storage', {key, newValue: 'Pacific/Auckland'}));
+    expect(readTimeZone()).toBe('Pacific/Auckland');
+  } finally { stop(); }
 });
