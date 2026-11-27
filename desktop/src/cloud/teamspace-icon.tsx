@@ -40,6 +40,7 @@ function IconPopover({id, anchor, value, close, select}: {id:string; anchor:HTML
   const [tab,setTab] = useState<Tab>('Icônes');
   const [query,setQuery] = useState('');
   const [color,setColor] = useState(value.startsWith('icon:') ? value.split(':')[2] || 'gray' : 'gray');
+  const [palette,setPalette] = useState(false);
   const [emojis,setEmojis] = useState<ProcessedEmoji[]>([]);
   const [locale,setLocale] = useState<EmojiLocaleData|null>(null);
   const [error,setError] = useState('');
@@ -77,6 +78,8 @@ function IconPopover({id, anchor, value, close, select}: {id:string; anchor:HTML
     anchor.focus();
   }
   function switchTab(next:Tab) {
+    // La palette n'existe que sur les icones : changer d'onglet la referme.
+    setPalette(false);
     setTab(next); setQuery(''); setLimit(120); setError('');
   }
   const fold = (s:string)=>s.normalize('NFD').replace(/\p{M}/gu,'').toLocaleLowerCase();
@@ -102,14 +105,22 @@ function IconPopover({id, anchor, value, close, select}: {id:string; anchor:HTML
           }}/>
         <button type="button" aria-label={shellText("Choisir au hasard")} title={shellText("Choisir au hasard")} disabled={!options.length}
           onClick={()=>choose(options[Math.floor(Math.random()*options.length)].value)}>⤨</button>
+        {/* Une palette plutot qu'un menu natif : celui-ci s'ouvrait au theme
+            du systeme, rangee bleue comprise, qu'aucune feuille de
+            l'application n'atteint, et ses pastilles sortaient toutes
+            noires. Elle tient dans un panneau pour ne pas pousser le champ
+            de filtre hors de la rangee. */}
+        {tab==='Icônes' && <div className="team-icon-color-picker">
+          <button type="button" className="team-icon-color-trigger" aria-haspopup="true" aria-expanded={palette}
+            aria-label={shellText("Couleur de l’icône")} title={teamspaceColors[color]?.label}
+            style={{color:teamspaceColors[color]?.css}} onClick={()=>setPalette(!palette)}/>
+          {palette && <div className="team-icon-colors" role="group" aria-label={shellText("Couleur de l’icône")}>
+            {Object.entries(teamspaceColors).map(([key,c])=><button key={key} type="button" title={c.label}
+              aria-label={c.label} aria-pressed={color===key} style={{color:c.css}}
+              onClick={()=>{setColor(key); setPalette(false);}}/>)}
+          </div>}
+        </div>}
       </div>
-      {/* Une palette plutot qu'un menu natif : celui-ci s'ouvrait au theme du
-          systeme, rangee bleue comprise, qu'aucune feuille de l'application
-          n'atteint, et ses pastilles sortaient toutes noires. */}
-      {tab==='Icônes' && <div className="team-icon-colors" role="group" aria-label={shellText("Couleur de l’icône")}>
-        {Object.entries(teamspaceColors).map(([key,c])=><button key={key} type="button" title={c.label}
-          aria-label={c.label} aria-pressed={color===key} style={{color:c.css}} onClick={()=>setColor(key)}/>)}
-      </div>}
       <div className="team-icon-scroll">
         <div className="team-icon-grid">{options.slice(0,limit).map(o=><button key={o.value} type="button" title={o.title}
           aria-label={o.title} aria-pressed={value===o.value} onClick={()=>choose(o.value)}><TeamspaceIcon name={o.title} value={o.value}/></button>)}</div>
