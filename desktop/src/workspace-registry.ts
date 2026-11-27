@@ -28,12 +28,19 @@ export function listWorkspaces(): WorkspaceRef[] {
       try { return item.kind === 'remote' && typeof item.accountId === 'string' && typeof item.workspaceId === 'string' && serverOrigin(item.server) === item.server; } catch { return false; }
     });
     const saved = refs.filter(item => workspaceKey(item) !== workspaceKey(initialWorkspace));
+    // L'espace de l'appareil garde sa place et son identité, mais pas sa
+    // constante : ce qu'on a retenu de lui — son icône, son nom — doit
+    // survivre au rechargement, sinon l'écrire ne servait à rien.
+    const stored = refs.find(item => workspaceKey(item) === workspaceKey(initialWorkspace));
     const imported = saved.some(item => item.kind === 'remote' && item.device && item.embedded && item.importedDefaultDisk);
-    return imported && !prefersDefaultDisk() ? saved : [initialWorkspace, ...saved];
+    return imported && !prefersDefaultDisk() ? saved : [{...initialWorkspace, ...stored}, ...saved];
   } catch { return [initialWorkspace]; }
 }
 export function activeWorkspace(): WorkspaceRef {
-  return listWorkspaces().find((item) => workspaceKey(item) === localStorage.getItem(ACTIVE)) ?? initialWorkspace;
+  // À défaut de choix mémorisé, le premier de la liste — et non la constante,
+  // qui ignorerait ce qu'on a retenu de l'espace de l'appareil.
+  const all = listWorkspaces();
+  return all.find((item) => workspaceKey(item) === localStorage.getItem(ACTIVE)) ?? all[0] ?? initialWorkspace;
 }
 export function rememberWorkspace(ref: WorkspaceRef): void {
   const all = listWorkspaces().filter((item) => workspaceKey(item) !== workspaceKey(ref));

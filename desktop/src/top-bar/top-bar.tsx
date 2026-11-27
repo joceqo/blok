@@ -137,10 +137,12 @@ export const TopBar = ({items, container, fullWidth, favorite, peers, onFullWidt
     </button>}
     <div data-desktop-page-identity="">
       <Breadcrumbs items={items} container={container}/>
-      {options.viewControls && <Adopted node={options.viewControls}/>}
       {options.readOnly && <span data-desktop-page-readonly="">{WORKSPACE_ROLES.viewer}</span>}
     </div>
     <div data-desktop-page-actions="">
+      {/* Les bascules de vue sont des actions, pas une partie du nom de la
+          page : elles collaient au titre au lieu de tenir avec le reste. */}
+      {options.viewControls && <Adopted node={options.viewControls}/>}
       {options.onHistory && <span data-desktop-page-peers="" hidden={!peers.length}
         title={label} aria-label={label}>{shown}</span>}
       {onShare && <button type="button" ref={share} data-desktop-page-share=""

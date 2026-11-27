@@ -216,3 +216,12 @@ describe('présences et partage', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 });
+
+it('range les bascules de vue avec les actions, pas contre le titre', () => {
+  const views = document.createElement('div');
+  views.className = 'blok-page-view-switch';
+  const toolbar = mount([{id: 'p', title: 'Page'}], {viewControls: views});
+  expect(must(inBar(toolbar, '[data-desktop-page-identity]')).contains(views)).toBe(false);
+  expect(must(inBar(toolbar, '[data-desktop-page-actions]')).contains(views)).toBe(true);
+  toolbar.destroy();
+});
