@@ -196,6 +196,41 @@ describe('assistant bar: action buttons and Insert', () => {
     expect(insert().hidden).toBe(false);
   });
 
+  it('names Insert after where it puts the answer: a summary heads the page', () => {
+    bar.setActions([{ label: 'Summarize', prompt: 'Summarize it.', destination: 'answer', insert: 'calloutAtTop' }]);
+    press('Summarize');
+    answered();
+
+    const atTop = [...bar.element.querySelectorAll<HTMLElement>('button')]
+      .find((button) => button.textContent === 'assistant.insertAtTop') ?? fail('no Insert at top button');
+
+    expect(atTop.hidden).toBe(false);
+    fireEvent.click(atTop);
+    expect(callbacks.onInsert).toHaveBeenCalledWith('calloutAtTop');
+  });
+
+  it('keeps the plain Insert when only the block changes, and tells the body which one', () => {
+    bar.setActions([{ label: 'Find action items', prompt: 'List them.', destination: 'answer', insert: 'checklist' }]);
+    press('Find action items');
+    answered();
+
+    expect(insert().hidden).toBe(false);
+    fireEvent.click(insert());
+    expect(callbacks.onInsert).toHaveBeenCalledWith('checklist');
+  });
+
+  it('goes back to the plain Insert for a typed prompt after a summary', () => {
+    bar.setActions([{ label: 'Summarize', prompt: 'Summarize it.', destination: 'answer', insert: 'calloutAtTop' }]);
+    press('Summarize');
+    type('What is this page about?');
+    fireEvent.click(send());
+    answered();
+
+    expect(insert().hidden).toBe(false);
+    fireEvent.click(insert());
+    expect(callbacks.onInsert).toHaveBeenCalledWith(undefined);
+  });
+
   it('offers no Insert for an empty answer, an error or while working', () => {
     bar.render({ kind: 'answered', reply: '  ', changed: false, edited: false });
     expect(insert().hidden).toBe(true);

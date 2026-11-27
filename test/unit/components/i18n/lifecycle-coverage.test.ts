@@ -302,7 +302,7 @@ const getLifecycle = (): ReturnType<typeof deriveLifecycle> => {
 };
 
 describe('current English catalog lifecycle coverage', () => {
-  it('rebuilds a disjoint 2264 + 146 + 611 + 12 closure for all 3033 keys', () => {
+  it('rebuilds a disjoint 2269 + 148 + 609 + 12 closure for all 3038 keys', () => {
     const { lifecycle } = getLifecycle();
     const counts = Object.fromEntries(
       ([
@@ -316,7 +316,7 @@ describe('current English catalog lifecycle coverage', () => {
       ])
     );
 
-    expect(lifecycle.size).toBe(3033);
+    expect(lifecycle.size).toBe(3038);
     expect(counts).toEqual({
       // tools.callout.editIcon moved finite-dynamic -> executable-literal when
       // the callout emoji button stopped being named by the emoji glyph and
@@ -593,7 +593,7 @@ describe('current English catalog lifecycle coverage', () => {
       // +3: the link field calls its three refusal reasons (tools.link.invalidSpaces, invalidUnsafe, invalidKind) by literal.
       // -1: tools.database.groupWeekOf, now that a week group reads Intl's day range; still shipped.
       // +2: Card preview's Page properties group and Page content hint call their tools.database.galleryCardPreview* keys by literal.
-      'executable-literal': 2264,
+      'executable-literal': 2269,
       // +10: the tabs block calls its 9 tools.tabs.* keys and toolbox.preview.tabs by literal.
       // toolNames.page moved here from finite-dynamic when the page-reference picker called it directly.
       // -5: tools.video.back/on/off/speedDecrease/speedIncrease left i18nLabel
@@ -603,14 +603,15 @@ describe('current English catalog lifecycle coverage', () => {
       // +1: toolNames.askAi, the Ask AI inline tool's titleKey.
       // +6: the thinking menu's assistant.thinking.<level> labels.
       // +1: the Table view toolbox entry's toolNames.tableView (toolNames.mapView is a literal: the seeded map view's name).
-      // +9: the Ask AI action labels, assistant.action.<skill id>.
+      // +11: the Ask AI action labels, assistant.action.<skill id>.
       // +1: toolNames.databaseFullPage (f6d462a0).
       // +2: the picker's tools.page.moreResults_one/_other, a plural of one literal call.
       // +2: a11y.blocksConvertedTo_one/_other, a plural of the multi-block Turn into call.
       // +2: a11y.blocksDeleted_one/_other, a plural of the selected-block delete call.
       // +1: the audio seek slider's tools.audio.seek, built by i18nLabel like play and volume.
       // +4: the video speed submenu's back, speedDecrease, speedIncrease and the new speedNormal, built by i18nLabel.
-      'finite-dynamic': 146,
+      // +2: assistant.action.diagram and assistant.action.asciiDiagram, the two drawing skills.
+      'finite-dynamic': 148,
       // 12 of the 20 image darkroom keys are called by literal. The 8 filter
       // names stay here: filter-strip.ts builds them from the preset name.
       // +9: the markup tool names; markup-panel.ts builds them from a short key.
@@ -717,7 +718,7 @@ describe('current English catalog lifecycle coverage', () => {
       // +1: tools.database.subGroupBy, the Sub-group page's "Sub-group by", via the panel's prefix.
       // +1: tools.database.groupWeekOf, above.
       // +1: tools.database.settingsHint, the toolbar Settings hint, via the view controls' prefix.
-      'registered-namespace-compatible': 611,
+      'registered-namespace-compatible': 609,
       // +1: Settings › Group's pin button names itself with groupPin through the panel's tools.database. prefix.
       // +1: tools.database.galleryFitImage, above. +1: tools.database.timelineEndBy, above.
       // +2: tools.database.rowLastEditedBy and rowWordCount, above.

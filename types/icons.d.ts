@@ -9,6 +9,8 @@
  * `test/unit/architecture/published-types-no-src-refs.test.ts`.
  */
 
+export declare const IconBuilding: string;
+export declare const IconBell: string;
 export declare const IconCheck: string;
 export declare const IconWand: string;
 export declare const IconCross: string;
@@ -82,7 +84,12 @@ export declare const IconToggleH4: string;
 export declare const IconToggleH5: string;
 export declare const IconToggleH6: string;
 export declare const IconGlobe: string;
+export declare const libraryIconPath: string;
+export declare const IconLibrary: string;
 export declare const IconBookmark: string;
+export declare const inboxIconPath: string;
+export declare const IconInbox: string;
+export declare const IconRefresh: string;
 export declare const IconMail: string;
 export declare const IconHash: string;
 export declare const IconReturn: string;
@@ -104,6 +111,8 @@ export declare const IconAskAiShorter: string;
 export declare const IconAskAiLonger: string;
 export declare const IconAskAiSimplify: string;
 export declare const IconAskAiExplain: string;
+export declare const IconAskAiDiagram: string;
+export declare const IconAskAiAsciiDiagram: string;
 export declare const IconEmojiSparkles: string;
 export declare const IconEmojiWink: string;
 export declare const IconEmojiBowl: string;

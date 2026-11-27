@@ -42,6 +42,8 @@ The server also offers the built-in Ask AI buttons as MCP prompts. A client list
 | `summarize` | Summarize |
 | `actionItems` | Find action items |
 | `continue` | Continue writing |
+| `diagram` | Diagram |
+| `asciiDiagram` | ASCII diagram |
 
 The arguments:
 

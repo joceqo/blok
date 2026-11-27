@@ -1,6 +1,8 @@
 import {
   IconAskAiActionItems,
+  IconAskAiAsciiDiagram,
   IconAskAiContinue,
+  IconAskAiDiagram,
   IconAskAiExplain,
   IconAskAiImprove,
   IconAskAiLonger,
@@ -66,6 +68,9 @@ const SKILLS = new Map<string, Skill>([
     parts: [['explain-bubble'], ['explain-q'], ['explain-q']],
     extras: [line('M6.5 7.25H13.5', ['explain-answer', 'in']), line('M6.5 10.25H11', ['explain-answer2', 'in'])],
   }],
+  // The nodes stand still and the links draw themselves in: the diagram assembles.
+  [IconAskAiDiagram, { act: 'diagram', parts: [[''], [''], [''], ['diagram-trunk', 'in'], ['diagram-rail', 'in']] }],
+  [IconAskAiAsciiDiagram, { act: 'asciiDiagram', parts: [[''], [''], [''], ['asciiDiagram-arrow', 'in']] }],
 ]);
 
 const SVG_NS = 'http://www.w3.org/2000/svg';

@@ -16,6 +16,8 @@ const SKILLS = {
   longer: icons.IconAskAiLonger,
   simplify: icons.IconAskAiSimplify,
   explain: icons.IconAskAiExplain,
+  diagram: icons.IconAskAiDiagram,
+  asciiDiagram: icons.IconAskAiAsciiDiagram,
 };
 
 /** The ink copy and the coloured copy, as the glyph holds them. */
@@ -106,6 +108,8 @@ describe('Ask AI skill icons', () => {
     ['longer', ['longer-top', 'longer-bottom', 'longer-top', 'longer-bottom', 'longer-mid']],
     ['simplify', ['simplify-tangle', 'simplify-line']],
     ['explain', ['explain-bubble', 'explain-q', 'explain-q', 'explain-answer', 'explain-answer2']],
+    ['diagram', ['', '', '', 'diagram-trunk', 'diagram-rail']],
+    ['asciiDiagram', ['', '', '', 'asciiDiagram-arrow']],
   ] as const)('names the parts the %s act moves', (act, parts) => {
     const { hue } = dress(SKILLS[act]);
     const shapes = [...hue.querySelectorAll('path, circle')];

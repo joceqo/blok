@@ -17,7 +17,7 @@ import { getUserOS } from '../../utils/browser';
 import { syncPortalDirection } from '../../utils/portal-direction';
 import { prefersReducedMotion } from '../../utils/reduced-motion';
 
-import { assistantActions, type ActionContext } from './actions';
+import { assistantActions, INSERT_TOOL, type ActionContext, type AssistantInsert } from './actions';
 import { dressSkillIcon } from './skill-icons';
 import { AssistantBar, type AssistantBarColumn } from './assistant-bar';
 import { onGapChange } from './gap';
@@ -25,6 +25,32 @@ import { createLivePreview, type LivePreview } from './live-preview';
 import { parsePartialJson } from '../../../agent/partial-json';
 import { clearSelectionTint, paintSelectionTint } from './selection-tint';
 import { stepStatusKey, streamStatusKey } from './step-status';
+
+/**
+ * The same list with a box on each item: action items are made to be ticked off.
+ * A fenced block is drawing, not a list, so its lines are left alone.
+ */
+const asChecklist = (markdown: string): string => {
+  let fenced = false;
+
+  return markdown.split('\n').map((line) => {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      fenced = !fenced;
+
+      return line;
+    }
+
+    return fenced ? line : line.replace(/^(\s*)(?:[-*+]|\d+[.)])[ \t]+(?!\[[ xX]\][ \t])/, '$1- [ ] ');
+  }).join('\n');
+};
+
+/**
+ * The same text inside a callout, written as the alert Blok's Markdown reads as one. An inserted
+ * callout with no body of its own seeds an empty paragraph on its first render, so the body has to
+ * arrive with it, in the one command that converts the whole thing.
+ */
+const asCallout = (markdown: string): string => ['> [!CALLOUT]', '>', ...markdown.split('\n')
+  .map((line) => (line === '' ? '>' : `> ${line}`))].join('\n');
 
 /** The user's place in the document when the bar opened. */
 interface ReturnPoint {
@@ -251,7 +277,12 @@ export class AssistantBody extends Module {
       this.created.clear();
       // Here, before the field takes focus and the selection collapses.
       bar.setActions(assistantActions(this.actionContext(), (key) => this.Blok.I18n.t(key), this.config.agent?.assistant?.actions)
-        .map((action) => ({ ...action, icon: action.icon === undefined ? undefined : dressSkillIcon(action.icon) })));
+        .map((action) => ({
+          ...action,
+          icon: action.icon === undefined ? undefined : dressSkillIcon(action.icon),
+          // The bar names Insert after the block it makes, so a shape the host has no tool for is dropped here.
+          insert: action.insert === undefined || this.Blok.Tools.blockTools.has(INSERT_TOOL[action.insert]) ? action.insert : undefined,
+        })));
       if (this.selectionEndBlockId() !== undefined) {
         paintSelectionTint(this, window.getSelection()?.getRangeAt(0) ?? document.createRange());
       }
@@ -353,7 +384,7 @@ export class AssistantBody extends Module {
       onKeep: () => this.close(),
       onDiscard: () => void this.discard(),
       onContinue: () => this.submit(CONTINUE_PROMPT),
-      onInsert: () => void this.insertAnswer(),
+      onInsert: (insert) => void this.insertAnswer(insert),
       onEscape: () => this.escape(),
       onThinking: (level) => {
         this.level = level;
@@ -655,8 +686,8 @@ export class AssistantBody extends Module {
     this.bar?.focusField();
   }
 
-  /** Put the shown answer under the bar's block, as Markdown, in the run's turn so Undo covers it. */
-  private async insertAnswer(): Promise<void> {
+  /** Put the shown answer in the page, as Markdown, in the run's turn so Undo covers it. */
+  private async insertAnswer(insert?: AssistantInsert): Promise<void> {
     const reply = this.shownReply;
     // Under what this run wrote, else under the bar's block.
     const after = this.generatedPart()?.last ?? this.anchorBlock();
@@ -669,9 +700,13 @@ export class AssistantBody extends Module {
 
     // Taken before the await: a second press while the batch runs finds nothing to insert.
     this.shownReply = null;
-    const result = await this.Blok.AgentAPI.executeInRun({
-      commands: [{ name: 'markdown.insert', args: { markdown: reply, parentId: after.parentId, position: { after: after.id } } }],
-    });
+    const result = await this.Blok.AgentAPI.executeInRun({ commands: [{
+      name: 'markdown.insert',
+      // A summary is about the whole page, so it heads it, in a panel of its own.
+      args: insert === 'calloutAtTop'
+        ? { markdown: asCallout(reply), parentId: null, position: 'start' }
+        : { markdown: insert === 'checklist' ? asChecklist(reply) : reply, parentId: after.parentId, position: { after: after.id } },
+    }] });
 
     if (id !== this.answerId) {
       return;

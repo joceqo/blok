@@ -800,6 +800,27 @@ export const IconAskAiExplain = `
 </svg>
 `;
 
+/** Diagram: one node branching into two, the drawing a rendered diagram makes. */
+export const IconAskAiDiagram = `
+<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+  <path d="M8.5 3h3a1 1 0 0 1 1 1v1.5a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M4 13.5h3a1 1 0 0 1 1 1V16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-1.5a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M13 13.5h3a1 1 0 0 1 1 1V16a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1v-1.5a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M10 6.5V10" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M5.5 13.5V10h9v3.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+`;
+
+/** ASCII diagram: the same drawing typed out, two square cells and an arrow inside a block. */
+export const IconAskAiAsciiDiagram = `
+<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+  <path d="M5.5 4.5h9A2.5 2.5 0 0 1 17 7v6a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 3 13V7a2.5 2.5 0 0 1 2.5-2.5Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M5.5 8.75h2.5v2.5H5.5Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M12 8.75h2.5v2.5H12Z" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8 10h4m-1.25-1.25L12 10l-1.25 1.25" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+`;
+
 // Emoji Picker Category Icons
 
 export const IconEmojiSparkles = `
