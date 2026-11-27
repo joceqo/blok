@@ -12,7 +12,11 @@ export default defineConfig({
     root: dirname,
     environment: 'node',
     pool: 'threads',
-    isolate: false,
+    // Each file gets its own module graph. Shared, the suite was not
+    // reproducible: files that run a real room or server failed under load, a
+    // different set every pass, all green on their own. A test whose verdict
+    // depends on what ran beside it proves nothing. Measured at no cost here.
+    isolate: true,
     fileParallelism: true,
     include: ['src/**/*.fast.test.ts', 'src/**/*.test.ts'],
     exclude: ['dist/**'],
