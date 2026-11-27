@@ -19,6 +19,7 @@ export type SidebarOptions = Parameters<typeof createPageFrame>[0] & {
   onDownloadDesktop?(): void;
   onConnectCalendar?(): void;
   canCreateTeamspace?: boolean;
+  hasTeamspaces?: boolean;
   onCreateTeamspace?(): void;
   onOpenLibrarySection?(view: LibraryView): void;
   upcomingEvents?: (signal: AbortSignal) => Promise<UpcomingCalendar>;

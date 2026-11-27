@@ -100,16 +100,21 @@ it('keeps navigation available until the page index settles and distinguishes a 
   frame.destroy();
 });
 
-it('names the workspace section after its pages and keeps the teamspaces shortcut', () => {
-  const frame = createReactPageFrame({
+function teamFrame(hasTeamspaces: boolean) {
+  return createReactPageFrame({
     pages: [{ id: 'root', parentId: null, section: 'workspace', title: 'Spec' }],
     activeId: '',
     teamspace: { name: 'Mon espace' },
+    hasTeamspaces,
     onOpen: vi.fn(),
     onCreate: vi.fn(),
     onHome: vi.fn(),
     onTeamspaces: vi.fn(),
   });
+}
+
+it('names the workspace section after its pages, whatever the teamspaces', () => {
+  const frame = teamFrame(false);
   const header = frame.element.querySelector(
     '[data-blok-sidebar-section="workspace"] [data-blok-sidebar-section-header] button',
   );
@@ -119,8 +124,14 @@ it('names the workspace section after its pages and keeps the teamspaces shortcu
   expect(frame.element.querySelector('[data-blok-sidebar-teamspace] button')?.textContent).toBe(
     'Mon espace',
   );
-  // Plus rien d'autre ne nomme les espaces d'équipe : le raccourci doit rester.
+});
+
+it('offers the teamspaces shortcut only once a teamspace exists', () => {
+  // Un espace sans aucune équipe n'a pas de raccourci vers une bibliothèque vide.
   expect(
-    frame.element.querySelector('[data-blok-sidebar-shortcuts]')?.textContent,
+    teamFrame(false).element.querySelector('[data-blok-sidebar-shortcuts]')?.textContent,
+  ).not.toContain('Espaces d’équipe');
+  expect(
+    teamFrame(true).element.querySelector('[data-blok-sidebar-shortcuts]')?.textContent,
   ).toContain('Espaces d’équipe');
 });

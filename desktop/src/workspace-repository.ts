@@ -28,10 +28,12 @@ export function workspaceRepository(workspace: WorkspaceRef) {
   return {
     ref,
     searchSources,
-    async canCreateTeamspace(signal: AbortSignal) {
-      if (ref.kind !== 'remote' || ref.role === 'viewer') return false;
-      const directory = await request<{canCreate: boolean}>(base + '/teamspaces', {signal});
-      return directory.canCreate === true;
+    /** Le droit d'en créer ET combien il en existe : une seule réponse les porte tous deux. */
+    async teamspaceDirectory(signal: AbortSignal) {
+      if (ref.kind !== 'remote') return {canCreate: false, count: 0};
+      const directory = await request<{canCreate: boolean; teamspaces?: unknown[]}>(base + '/teamspaces', {signal});
+      // Un lecteur ne crée rien, mais il appartient peut-être à une équipe.
+      return {canCreate: ref.role !== 'viewer' && directory.canCreate === true, count: directory.teamspaces?.length ?? 0};
     },
     async listPeople() {
       if (ref.kind !== 'remote') return [];

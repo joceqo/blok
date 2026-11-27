@@ -28,6 +28,8 @@ export function createPageFrame(options: {
   activeId: string;
   /** L'espace courant, rendu comme une ligne sous « Espaces » plutôt qu'un titre. */
   teamspace?: { name: string };
+  /** Vrai quand au moins un espace d'équipe existe, pas quand l'espace est distant. */
+  hasTeamspaces?: boolean;
   onOpen(id: string): void;
   onCreate(parentId: string | null): void;
   onAction?(action: SidebarAction): void;
