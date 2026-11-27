@@ -49,6 +49,7 @@ import { bindAssistantButton, createAssistantButton, createWorkspaceAssistant } 
 import { createPageToolbar, type PageBreadcrumbChoice, type PageBreadcrumbItem, type PageToolbar } from './page-toolbar';
 import { bindTitleDateMention, titleDateLabel, type TitleDateMentionBinding } from './title-date-mention';
 import { createFloatingToc, type FloatingToc } from './floating-toc';
+import { createCitedBlockNavigator } from './cited-block';
 import type { DateDisplayChange } from '@blok/date-editor';
 
 const desktopTools = {
@@ -238,6 +239,12 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     // et la position par onglet, restaurée par shell.ts, n'est pas concernée.
     if (from !== id) window.scrollTo(0, 0);
   };
+  /** Une source citée par l'assistant ouvre sa page, puis y rejoint le bloc cité. */
+  const citations = createCitedBlockNavigator({
+    navigate: (pageId) => navigate(pageId),
+    mountedEditor: (pageId) => ws.currentId === pageId ? ws.editor : null,
+    generation: () => ws.generation,
+  });
   const renderDocumentStatus = (): void => {
     if (ref.kind !== 'remote' || !ws.currentId || ws.manifestFailed) return;
     const notice = documentSyncStatus(ws.documentStatus, ws.pendingManifests > 0);
@@ -746,6 +753,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       toolbar.setBreadcrumbs(breadcrumbs(id));
       document.title = currentLibrary() ? brandedTitle('Bibliothèque') : page.title;
       if (ref.kind === 'local' && !ws.manifestFailed) status.textContent = '';
+      citations.pageMounted(id, instance);
     }).catch((error: unknown) => {
       if (ws.generation === turn) showError(error);
     });
@@ -1048,9 +1056,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   ws.frame.element.append(status);
   ws.assistant = mountAgentAssistant({
     onOpenChange: open => ws.frame.setChatActive(open),
-    // navigate() takes `replace` second: never hand it a blockId. Citing a block in
-    // the page is not wired yet, so a source opens its page.
-    workspaceSearch: ref.kind === 'remote' ? { find: repository.searchSources, open: (id: string) => navigate(id) } : undefined,
+    workspaceSearch: ref.kind === 'remote'
+      ? { find: repository.searchSources, open: (id: string, blockId?: string) => citations.open(id, blockId) }
+      : undefined,
     getPageText: () => ws.pageCanvas.querySelector('[data-desktop-document]')?.textContent?.slice(0, 100_000) ?? '',
     openSettings: () => ws.footer.dispatchEvent(new Event('blok:desktop-open-ai-settings')),
     editPage: {
