@@ -481,8 +481,13 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
   height: min(720px, calc(100vh - 144px));
   max-height: calc(100dvh - 144px);
 }
-[data-desktop-switcher]:focus-visible, [data-desktop-menu-item]:focus-visible,
-[data-desktop-settings-dialog] button:focus-visible {
+/* Les rangees prennent leur surface de survol au focus clavier, sans trait
+   pose par-dessus. Les autres boutons de la modale gardent un anneau : eux
+   n'ont pas de surface pour marquer le focus. */
+[data-desktop-switcher]:focus-visible, [data-desktop-menu-item]:focus-visible {
+  outline: none; color: var(--desktop-ink); background: var(--desktop-hover);
+}
+[data-desktop-settings-dialog] button:not([data-desktop-settings-nav-item], [data-desktop-settings-grab]):focus-visible {
   outline: 2px solid var(--desktop-focus-ring); outline-offset: 2px;
 }
 @media (max-width: 680px) {
@@ -536,7 +541,7 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 [data-desktop-menu-workspace-name] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-desktop-workspace-avatar] { flex: none; display: grid; place-items: center; width: 20px; height: 20px; background: var(--desktop-hover); border-radius: 4px; color: var(--desktop-muted); font-size: 12px; font-weight: 600; }
 [data-desktop-menu-check] { margin-left: auto; color: var(--desktop-muted); font-size: 15px; }
-[data-desktop-menu-item]:focus-visible { outline: 2px solid var(--desktop-muted); outline-offset: -2px; }
+[data-desktop-menu-item]:focus-visible { outline: none; color: var(--desktop-ink); background: var(--desktop-hover); }
 [data-desktop-settings-content] details { margin-top: 30px; color: var(--desktop-muted); font-size: 13px; }
 [data-desktop-settings-content] details summary { cursor: pointer; margin-bottom: 12px; }
 
@@ -615,7 +620,7 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 [data-desktop-settings-grab]:hover { color:var(--desktop-ink); background:var(--desktop-hover); }
 [data-desktop-settings-grab-hint] { display:none; padding:4px 8px 0; color:var(--desktop-muted); font-size:10px; line-height:1.5; }
 [data-desktop-settings-feedback]:focus-within [data-desktop-settings-grab-hint] { display:block; }
-[data-desktop-settings-nav-item]:focus-visible, [data-desktop-settings-grab]:focus-visible { outline:2px solid var(--desktop-focus-ring); outline-offset:-2px; }
+[data-desktop-settings-nav-item]:focus-visible, [data-desktop-settings-grab]:focus-visible { outline:none; color:var(--desktop-ink); background:var(--desktop-hover); }
 [data-desktop-connections-accounts] { display:flex; align-items:center; justify-content:space-between; gap:24px; padding:0 0 28px; margin-bottom:30px; border-bottom:1px solid var(--desktop-border); }
 [data-desktop-connections-accounts] [data-desktop-settings-copy] { margin-top:0; }
 [data-desktop-connections-accounts] [data-desktop-settings-row-help] { line-height:1.5; }

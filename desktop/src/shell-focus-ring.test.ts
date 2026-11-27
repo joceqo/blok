@@ -66,6 +66,25 @@ describe('anneau de focus du shell', () => {
     expect(blues, `focus peint en bleu : ${blues.join(', ')}`).toEqual([]);
   });
 
+  /**
+   * Les rangées du shell — menus, réglages, sélecteur d'espace — ne portent
+   * aucun trait au focus (USER, 2026-11-27 : « ya toujours le ring »). Elles
+   * ont déjà une surface de survol : le focus clavier la reprend, ce que fait
+   * Notion. L'anneau reste ailleurs, là où il n'y a pas de surface.
+   */
+  it('ne pose aucun trait de focus sur les rangées de menu et de réglages', () => {
+    const rows = /data-desktop-(settings-nav-item|settings-grab|menu-item|switcher)/;
+    // Une rangée nommée dans un `:not()` est justement celle qu'on exclut.
+    const targeted = (selector: string): boolean => rows.test(selector.replace(/:not\([^)]*\)/g, ''));
+    const lines = sheets.flatMap(({ path, css }) =>
+      [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .filter((rule) => targeted(rule[1]) && /:focus(-visible|-within)?\b/.test(rule[1]))
+        .filter((rule) => /\boutline\s*:(?!\s*none)/.test(rule[2]))
+        .map((rule) => `${path}: ${rule[1].trim()}`));
+
+    expect(lines, `trait de focus sur une rangée : ${lines.join(' | ')}`).toEqual([]);
+  });
+
   it('définit un anneau de focus discret dérivé des gris du shell', () => {
     const shell = sheets.find((sheet) => sheet.path === 'shell.css')?.css ?? '';
 

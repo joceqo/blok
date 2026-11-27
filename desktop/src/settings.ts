@@ -851,6 +851,14 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
         rename: remote && client && admin && slug ? async (name) => {
           await client.request(`/api/workspaces/${encodeURIComponent(slug)}`, {method: 'PATCH', body: JSON.stringify({name})});
           renameWorkspace(remote, name);
+        // Un espace local a un nom lui aussi : il vit dans le registre de
+        // l'appareil, et le renommer ne demande aucun serveur.
+        } : currentWorkspace.kind === 'local' ? async (name) => {
+          if (currentWorkspace.id === 'default') localStorage.setItem('blok:desktop:profile-name', name);
+          else rememberWorkspace({...currentWorkspace, name});
+          ui.workspaceName = name;
+          setProfileName(name);
+          updateAccountName(name);
         } : undefined,
         mail: remote && client && admin && slug ? {
           read: async () => (await client.workspace(slug)).allowNotificationMail !== false,

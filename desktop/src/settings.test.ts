@@ -444,3 +444,19 @@ describe('settings discovery', () => {
     expect(must(document.querySelector<HTMLElement>('[data-desktop-settings-no-results]')).hidden).toBe(true);
   });
 });
+
+describe('general settings on a local workspace', () => {
+  it('renames the local workspace and carries the new name to the switcher', async () => {
+    const footer = createDesktopFooter(() => undefined);
+    document.body.append(footer);
+    footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: 'general'}));
+    const panel = must(document.querySelector<HTMLElement>('[data-desktop-settings-content]'));
+    const field = must(panel.querySelector<HTMLInputElement>('[data-desktop-settings-workspace-name]'));
+    // Un espace local a bien un nom : il vit dans le registre, pas sur un serveur.
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(field, 'Atelier');
+    field.dispatchEvent(new Event('input', {bubbles: true}));
+    must([...panel.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === 'Enregistrer')).click();
+    await vi.waitFor(() => expect(panel.textContent).toContain('Nom enregistré'));
+    expect(footer.querySelector('[data-desktop-switcher-name]')?.textContent).toBe('Atelier');
+  });
+});
