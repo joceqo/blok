@@ -219,12 +219,14 @@ describe('présences et partage', () => {
   });
 });
 
-it('range les bascules de vue avec les actions, pas contre le titre', () => {
+it('tient les bascules de vue contre le nom de la page', () => {
   const views = document.createElement('div');
   views.className = 'blok-page-view-switch';
   const toolbar = mount([{id: 'p', title: 'Page'}], {viewControls: views});
-  expect(must(inBar(toolbar, '[data-desktop-page-identity]')).contains(views)).toBe(false);
-  expect(must(inBar(toolbar, '[data-desktop-page-actions]')).contains(views)).toBe(true);
+  const identity = must(inBar(toolbar, '[data-desktop-page-identity]'));
+  expect(identity.contains(views)).toBe(true);
+  // Juste après le fil, sans rien entre les deux.
+  expect(must(inBar(toolbar, '[data-desktop-page-breadcrumbs]')).nextElementSibling).toBe(views.parentElement);
   toolbar.destroy();
 });
 
