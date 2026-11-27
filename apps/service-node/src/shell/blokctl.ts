@@ -6,6 +6,7 @@ import { createPool, type PgPool } from '../db/pool.ts';
 import { inTransaction } from './bootstrap.ts';
 import { seedDemo } from './demo-seed.ts';
 import { hashPassword, validPassword } from './password.ts';
+import { mailTemplate } from './mail-template.ts';
 import { readInstanceSettings, updateInstanceSettings } from './instance-settings.ts';
 import { mailBackend, passwordAuthAvailable, sendMail, validateAddress } from './mail.ts';
 
@@ -97,11 +98,10 @@ export async function runBlokctl(pool: PgPool, args: string[], input = process.s
   const email = validateAddress(rest[0]!);
   if (!email) throw new Error('Invalid email');
   if (group === 'email') {
-    await sendMail(
-      email,
-      'Test de livraison Blok',
-      `Ceci est un e-mail de test depuis ${process.env.PUBLIC_URL ?? ''}.\nSi vous le recevez, la livraison fonctionne.`,
-    );
+    const { text, html } = await mailTemplate('delivery-test', {
+      publicURL: process.env.PUBLIC_URL ?? '',
+    });
+    await sendMail(email, 'Test de livraison Blok', text, html);
     return 'ok backend=' + mailBackend();
   }
   return inTransaction(pool, async (db) => {

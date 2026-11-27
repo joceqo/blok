@@ -40,7 +40,7 @@ export function passwordAuthAvailable() {
   return backend === '' || backend === 'development';
 }
 
-async function sendSMTP(to: string, subject: string, text: string) {
+async function sendSMTP(to: string, subject: string, text: string, html?: string) {
   const host = smtpSetting('HOST', 'HOST');
   const port = Number(smtpSetting('PORT', 'PORT', '587'));
   const user = smtpSetting('USER', 'USERNAME');
@@ -88,13 +88,15 @@ async function sendSMTP(to: string, subject: string, text: string) {
       to,
       subject,
       text,
+      ...(html ? { html } : {}),
     });
   } finally {
     transport.close();
   }
 }
 
-export async function sendMail(to: string, subject: string, text: string) {
+/** `html` rides beside `text`: a reader without HTML still gets the text part. */
+export async function sendMail(to: string, subject: string, text: string, html?: string) {
   const address = validateAddress(to);
   if (!address || controls.test(to) || controls.test(subject)) throw new Error('Invalid mail headers');
   switch (mailBackend()) {
@@ -104,7 +106,7 @@ export async function sendMail(to: string, subject: string, text: string) {
       const file = join(directory, hashSecret(address) + '.json');
       const tmp = join(directory, '.' + randomUUID() + '.tmp');
       try {
-        await writeFile(tmp, JSON.stringify({ to: address, subject, text }), { flag: 'wx', mode: 0o600 });
+        await writeFile(tmp, JSON.stringify({ to: address, subject, text, ...(html ? { html } : {}) }), { flag: 'wx', mode: 0o600 });
         await rename(tmp, file);
       } finally {
         await rm(tmp, { force: true });
@@ -112,7 +114,7 @@ export async function sendMail(to: string, subject: string, text: string) {
       return;
     }
     case 'smtp':
-      return sendSMTP(address, subject, text);
+      return sendSMTP(address, subject, text, html);
     case 'resend': {
       const response = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -122,7 +124,7 @@ export async function sendMail(to: string, subject: string, text: string) {
           Authorization: 'Bearer ' + process.env.RESEND_API_KEY,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ from: process.env.MAIL_FROM, to: [address], subject, text }),
+        body: JSON.stringify({ from: process.env.MAIL_FROM, to: [address], subject, text, ...(html ? { html } : {}) }),
       });
       await response.body?.cancel();
       if (!response.ok) throw new Error('Resend delivery failed');

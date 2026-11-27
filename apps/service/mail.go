@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
 	"net/http"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -92,7 +94,9 @@ func (c Config) mailBackend() string {
 	return ""
 }
 
-func (s *Service) send(to, subject, text string) error {
+// send delivers one message. A non-empty html rides beside text, so a reader
+// without HTML still gets the text part.
+func (s *Service) send(to, subject, text, html string) error {
 	if invalidMailHeader(subject) || invalidMailHeader(to) {
 		return errors.New("invalid mail header")
 	}
@@ -102,13 +106,17 @@ func (s *Service) send(to, subject, text string) error {
 	}
 	c := s.Config
 	if c.Deliver != nil {
-		return c.Deliver(to, subject, text)
+		return c.Deliver(to, subject, text, html)
 	}
 	if c.Development && c.DevelopmentMailDirectory != "" {
 		if e := os.MkdirAll(c.DevelopmentMailDirectory, 0700); e != nil {
 			return e
 		}
-		encoded, _ := json.Marshal(map[string]string{"to": to, "subject": subject, "text": text})
+		mailbox := map[string]string{"to": to, "subject": subject, "text": text}
+		if html != "" {
+			mailbox["html"] = html
+		}
+		encoded, _ := json.Marshal(mailbox)
 		return os.WriteFile(filepath.Join(c.DevelopmentMailDirectory, hash(to)+".json"), encoded, 0600)
 	}
 	// SMTP is the selected backend whenever configured, including if a legacy
@@ -117,10 +125,14 @@ func (s *Service) send(to, subject, text string) error {
 		if e := c.validateSMTP(); e != nil {
 			return e
 		}
-		return sendSMTP(c, recipient, subject, text)
+		return sendSMTP(c, recipient, subject, text, html)
 	}
 	if c.ResendAPIKey != "" {
-		payload, _ := json.Marshal(map[string]any{"from": c.MailFrom, "to": []string{recipient.Address}, "subject": subject, "text": text})
+		fields := map[string]any{"from": c.MailFrom, "to": []string{recipient.Address}, "subject": subject, "text": text}
+		if html != "" {
+			fields["html"] = html
+		}
+		payload, _ := json.Marshal(fields)
 		req, e := http.NewRequest("POST", "https://api.resend.com/emails", bytes.NewReader(payload))
 		if e != nil {
 			return e
@@ -140,7 +152,7 @@ func (s *Service) send(to, subject, text string) error {
 	}
 	return errors.New("mail delivery not configured")
 }
-func sendSMTP(c Config, recipient *mail.Address, subject, text string) error {
+func sendSMTP(c Config, recipient *mail.Address, subject, text, html string) error {
 	sender, e := smtpSender(c)
 	if e != nil {
 		return e
@@ -199,13 +211,8 @@ func sendSMTP(c Config, recipient *mail.Address, subject, text string) error {
 		return errors.New("SMTP DATA refused")
 	}
 	var message bytes.Buffer
-	fmt.Fprintf(&message, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n", sender.String(), recipient.String(), mime.QEncoding.Encode("UTF-8", subject), time.Now().Format(time.RFC1123Z))
-	encoded := quotedprintable.NewWriter(&message)
-	if _, e = encoded.Write([]byte(text)); e != nil {
-		data.Close()
-		return errors.New("SMTP message encoding failed")
-	}
-	if e = encoded.Close(); e != nil {
+	fmt.Fprintf(&message, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMIME-Version: 1.0\r\n", sender.String(), recipient.String(), mime.QEncoding.Encode("UTF-8", subject), time.Now().Format(time.RFC1123Z))
+	if e = writeMailBody(&message, text, html); e != nil {
 		data.Close()
 		return errors.New("SMTP message encoding failed")
 	}
@@ -220,4 +227,42 @@ func sendSMTP(c Config, recipient *mail.Address, subject, text string) error {
 		return errors.New("SMTP session did not finish cleanly")
 	}
 	return nil
+}
+
+// writeMailBody writes the content headers and the body. Text alone stays a
+// single quoted-printable part; with html it becomes multipart/alternative,
+// the html last because RFC 2046 has readers show the final alternative they
+// understand.
+func writeMailBody(message *bytes.Buffer, text, html string) error {
+	writeQuoted := func(w io.Writer, content string) error {
+		encoded := quotedprintable.NewWriter(w)
+		if _, e := encoded.Write([]byte(content)); e != nil {
+			return e
+		}
+		return encoded.Close()
+	}
+	if html == "" {
+		message.WriteString("Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n")
+		return writeQuoted(message, text)
+	}
+	var body bytes.Buffer
+	parts := multipart.NewWriter(&body)
+	fmt.Fprintf(message, "Content-Type: multipart/alternative; boundary=%q\r\n\r\n", parts.Boundary())
+	for _, part := range []struct{ mediaType, content string }{{"text/plain", text}, {"text/html", html}} {
+		writer, e := parts.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {part.mediaType + "; charset=UTF-8"},
+			"Content-Transfer-Encoding": {"quoted-printable"},
+		})
+		if e != nil {
+			return e
+		}
+		if e = writeQuoted(writer, part.content); e != nil {
+			return e
+		}
+	}
+	if e := parts.Close(); e != nil {
+		return e
+	}
+	_, e := message.Write(body.Bytes())
+	return e
 }

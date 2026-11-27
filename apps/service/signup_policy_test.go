@@ -27,7 +27,7 @@ func signupWorld(t *testing.T) (
 	codes = map[string]string{}
 	delivered = map[string]string{}
 	s = open()
-	s.Config.Deliver = func(to, subject, text string) error {
+	s.Config.Deliver = func(to, subject, text, html string) error {
 		lock.Lock()
 		defer lock.Unlock()
 		delivered[to] = text

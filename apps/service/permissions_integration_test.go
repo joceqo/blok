@@ -46,7 +46,7 @@ func permissionsFixture(t *testing.T) (context.Context, string, func() *Service)
 			InternalURL: "http://localhost:8080", DataDirectory: t.TempDir(),
 			Development: true, TicketSecret: strings.Repeat("t", 40),
 			InternalSecret: strings.Repeat("i", 40),
-			Deliver:        func(string, string, string) error { return nil },
+			Deliver:        func(string, string, string, string) error { return nil },
 		}
 		s, e := New(ctx, cfg)
 		if e != nil {

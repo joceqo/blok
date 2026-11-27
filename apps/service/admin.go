@@ -3,7 +3,6 @@ package cloud
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -359,7 +358,7 @@ func (s *Service) adminEmailTest(w http.ResponseWriter, r *http.Request) {
 		problem(w, 429, "Too many attempts; try again later")
 		return
 	}
-	if e = s.send(email, "Test de livraison Blok", fmt.Sprintf("Ceci est un e-mail de test depuis %s.\nSi vous le recevez, la livraison fonctionne.", s.Config.PublicURL)); e != nil {
+	if e = s.sendDeliveryTest(email); e != nil {
 		jsonOut(w, 503, map[string]any{"error": e.Error(), "backend": backend})
 		return
 	}

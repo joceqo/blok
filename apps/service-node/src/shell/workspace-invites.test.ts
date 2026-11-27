@@ -21,7 +21,7 @@ describe('workspace invitation delivery', () => {
     expect(await mail.normalize(' A@EXAMPLE.TEST ')).toBe('a@example.test');
     await mail.deliver('id/1','note');
     expect(query.mock.calls[0]?.[1]).toEqual(['id/1']);
-    expect(send).toHaveBeenCalledWith('a@example.test','Invitation Blok — Équipe',expect.stringContaining('note'));
+    expect(send).toHaveBeenCalledWith('a@example.test','Invitation Blok — Équipe',expect.stringContaining('note'),expect.stringContaining('note'));
     query.mockResolvedValue({rows:[]});
     await expect(mail.deliver('revoked','note')).rejects.toThrow();
     expect(send).toHaveBeenCalledTimes(1);

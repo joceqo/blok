@@ -58,9 +58,11 @@ COPY --from=shell-build /app/dist /app/dist
 COPY --from=room-build /build/apps/service-node/dist/shell/mcp-runtime.mjs /app/dist/shell/mcp-runtime.mjs
 COPY --from=room-build /build/apps/service-node/dist/shell/markdown-runtime.mjs /app/dist/shell/markdown-runtime.mjs
 COPY apps/service/schema.sql /app/schema.sql
+COPY apps/service/templates /app/templates
 RUN mkdir -p /data && chown 65532:65532 /data \
  && chmod +x /app/dist/shell/blokctl.js && ln -s /app/dist/shell/blokctl.js /usr/local/bin/blokctl
 ENV BLOK_SCHEMA_PATH=/app/schema.sql
+ENV BLOK_MAIL_TEMPLATES_PATH=/app/templates
 USER 65532:65532
 ENTRYPOINT ["node"]
 CMD ["/app/dist/shell/main.js"]

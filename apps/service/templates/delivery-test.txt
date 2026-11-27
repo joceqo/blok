@@ -1,0 +1,3 @@
+LA LIVRAISON FONCTIONNE
+
+Ceci est un e-mail de test envoyé depuis {{publicURL}}. Si vous le recevez, votre configuration d’envoi est correcte.

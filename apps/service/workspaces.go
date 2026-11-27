@@ -490,9 +490,9 @@ func (s *Service) invites(w http.ResponseWriter, r *http.Request, u identity, ws
 }
 
 func (s *Service) sendWorkspaceInvitation(email, workspaceName, message string) error {
-	invitationText := "Vous êtes invité à rejoindre " + workspaceName + ".\nConnectez-vous avec cette adresse email sur " + s.Config.PublicURL + " pour accepter cette invitation.\nCette invitation expire dans 7 jours."
-	if message != "" {
-		invitationText += "\n\nMessage de l’administrateur :\n" + message
+	text, markup, e := mailTemplate("invitation", map[string]string{"workspace": workspaceName, "publicURL": s.Config.PublicURL, "message": message})
+	if e != nil {
+		return e
 	}
-	return s.send(email, "Invitation Blok — "+workspaceName, invitationText)
+	return s.send(email, "Invitation Blok — "+workspaceName, text, markup)
 }

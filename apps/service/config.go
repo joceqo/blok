@@ -31,7 +31,7 @@ type Config struct {
 	// AITransport is an injected transport for tests. Endpoints remain fixed to api.openai.com.
 	AITransport http.RoundTripper
 	// Deliver overrides SMTP for integration tests. Production must configure SMTP.
-	Deliver func(to, subject, body string) error
+	Deliver func(to, subject, text, html string) error
 }
 
 func ConfigFromEnv() Config {

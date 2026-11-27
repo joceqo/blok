@@ -65,7 +65,7 @@ func TestBootstrapWorkspaceCoupleCreatesWorkspace(t *testing.T) {
 		AdminEmail:             "admin@example.test",
 		BootstrapWorkspaceSlug: "acme",
 		BootstrapWorkspaceName: "Acme",
-		Deliver:                func(string, string, string) error { return nil },
+		Deliver:                func(string, string, string, string) error { return nil },
 	}
 	s, e := New(ctx, cfg)
 	if e != nil {

@@ -280,7 +280,7 @@ func TestAdminEmailTestReturnsBackend(t *testing.T) {
 	}
 
 	// Force a delivery failure path and still get backend in the 503 body.
-	s.Config.Deliver = func(string, string, string) error {
+	s.Config.Deliver = func(string, string, string, string) error {
 		return context.DeadlineExceeded
 	}
 	out = request("POST", "/api/admin/email-test", adminTok, map[string]any{
@@ -301,7 +301,7 @@ func TestMailBackendMatchesSendSelection(t *testing.T) {
 		want string
 	}{
 		{"injected wins over everything", Config{
-			Deliver:     func(string, string, string) error { return nil },
+			Deliver:     func(string, string, string, string) error { return nil },
 			Development: true, DevelopmentMailDirectory: "/tmp",
 			SMTPHost: "smtp.test", ResendAPIKey: "re_x",
 		}, "injected"},

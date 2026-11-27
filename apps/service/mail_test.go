@@ -15,11 +15,13 @@ import (
 	"io"
 	"math/big"
 	"mime"
+	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/textproto"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -74,10 +76,10 @@ func TestSMTPConfigRejectsInvalidCredentialsHeadersAndPorts(t *testing.T) {
 		})
 	}
 	service := &Service{Config: valid}
-	if e := service.send("member@example.test", "Hello\r\nBcc: attacker@example.test", "text"); e == nil {
+	if e := service.send("member@example.test", "Hello\r\nBcc: attacker@example.test", "text", ""); e == nil {
 		t.Fatal("subject injection accepted")
 	}
-	if e := service.send("member@example.test\r\nBcc: attacker@example.test", "Hello", "text"); e == nil {
+	if e := service.send("member@example.test\r\nBcc: attacker@example.test", "Hello", "text", ""); e == nil {
 		t.Fatal("recipient injection accepted")
 	}
 }
@@ -240,11 +242,53 @@ func readCapture(t *testing.T, done <-chan smtpCapture) smtpCapture {
 		return smtpCapture{}
 	}
 }
+func TestSMTPSendsHTMLAndTextAsMultipartAlternative(t *testing.T) {
+	address, roots, done := mockSMTP(t, true, false)
+	c := smtpTestConfig(t, address, "465", roots)
+	if e := (&Service{Config: c}).send("member@example.test", "Invitation Blok", "Texte de repli", "<p>Corps riche</p>"); e != nil {
+		t.Fatal(e)
+	}
+	capture := readCapture(t, done)
+	if capture.Err != nil {
+		t.Fatal(capture.Err)
+	}
+	// ReadDotBytes gives the message back with CRLF folded to LF; MIME parsing
+	// needs the wire form.
+	message := strings.ReplaceAll(string(capture.Message), "\n", "\r\n")
+	header, body, found := strings.Cut(message, "\r\n\r\n")
+	if !found || !strings.Contains(header, "multipart/alternative") {
+		t.Fatalf("message is not multipart/alternative: %q", header)
+	}
+	boundary := regexp.MustCompile(`boundary="([^"]+)"`).FindStringSubmatch(header)
+	if boundary == nil {
+		t.Fatalf("no boundary in %q", header)
+	}
+	reader := multipart.NewReader(strings.NewReader(body), boundary[1])
+	var types []string
+	var bodies []string
+	for {
+		part, e := reader.NextPart()
+		if e != nil {
+			break
+		}
+		content, _ := io.ReadAll(quotedprintable.NewReader(part))
+		types = append(types, part.Header.Get("Content-Type"))
+		bodies = append(bodies, string(content))
+	}
+	// RFC 2046: the richest alternative comes last, else readers show the text.
+	if len(types) != 2 || !strings.Contains(types[0], "text/plain") || !strings.Contains(types[1], "text/html") {
+		t.Fatalf("parts = %v, want text/plain then text/html", types)
+	}
+	if bodies[0] != "Texte de repli" || bodies[1] != "<p>Corps riche</p>" {
+		t.Fatalf("bodies = %q", bodies)
+	}
+}
+
 func TestSMTP465ImplicitTLSWithoutAuthentication(t *testing.T) {
 	address, roots, done := mockSMTP(t, true, false)
 	c := smtpTestConfig(t, address, "465", roots)
 	c.ResendAPIKey = "unused-legacy-key"
-	if e := (&Service{Config: c}).send("member@example.test", "Invitation Blok — équipe", "Bienvenue é\n.\nfin"); e != nil {
+	if e := (&Service{Config: c}).send("member@example.test", "Invitation Blok — équipe", "Bienvenue é\n.\nfin", ""); e != nil {
 		t.Fatal(e)
 	}
 	capture := readCapture(t, done)
@@ -279,7 +323,7 @@ func TestSMTP587RequiresSTARTTLSAndAuthenticatesAfterUpgrade(t *testing.T) {
 	c := smtpTestConfig(t, address, "587", roots)
 	c.SMTPUsername = "mock-user"
 	c.SMTPPassword = "mock-password"
-	if e := (&Service{Config: c}).send("member@example.test", "Test", "Message"); e != nil {
+	if e := (&Service{Config: c}).send("member@example.test", "Test", "Message", ""); e != nil {
 		t.Fatal(e)
 	}
 	capture := readCapture(t, done)
@@ -302,7 +346,7 @@ func TestSMTP587RequiresSTARTTLSAndAuthenticatesAfterUpgrade(t *testing.T) {
 func TestSMTPRefusesUnencryptedProductionEvenWithoutAuthentication(t *testing.T) {
 	address, roots, done := mockSMTP(t, false, false)
 	c := smtpTestConfig(t, address, "587", roots)
-	if e := (&Service{Config: c}).send("member@example.test", "Test", "Message"); e == nil {
+	if e := (&Service{Config: c}).send("member@example.test", "Test", "Message", ""); e == nil {
 		t.Fatal("production plaintext SMTP accepted")
 	}
 	capture := readCapture(t, done)
@@ -315,7 +359,7 @@ func TestSMTPPlaintextRequiresExplicitDevelopmentOption(t *testing.T) {
 	c := smtpTestConfig(t, address, "1025", roots)
 	c.Development = true
 	c.SMTPAllowInsecureDevelopment = true
-	if e := (&Service{Config: c}).send("member@example.test", "Test", "Message"); e != nil {
+	if e := (&Service{Config: c}).send("member@example.test", "Test", "Message", ""); e != nil {
 		t.Fatal(e)
 	}
 	capture := readCapture(t, done)
@@ -336,7 +380,7 @@ func TestSMTPCertificateVerificationCannotBeBypassed(t *testing.T) {
 					return (&net.Dialer{}).DialContext(ctx, network, address)
 				}
 			}
-			if e := (&Service{Config: c}).send("member@example.test", "Test", "Message"); e == nil {
+			if e := (&Service{Config: c}).send("member@example.test", "Test", "Message", ""); e == nil {
 				t.Fatal("unverified TLS certificate accepted")
 			}
 			capture := readCapture(t, done)
@@ -367,7 +411,7 @@ func TestSMTPSessionHasTwentySecondDeadline(t *testing.T) {
 		}
 		return smtpDeadlineConn{Conn: left, set: &deadline}, nil
 	}}
-	if e := (&Service{Config: c}).send("member@example.test", "Test", "Message"); e == nil {
+	if e := (&Service{Config: c}).send("member@example.test", "Test", "Message", ""); e == nil {
 		t.Fatal("deadline failure not propagated")
 	}
 	if time.Until(deadline) < 19*time.Second || time.Until(deadline) > 21*time.Second {

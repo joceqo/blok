@@ -50,7 +50,7 @@ func isolatedConfig(t *testing.T, prefix string) Config {
 		InternalURL: "http://localhost:8080", DataDirectory: t.TempDir(),
 		Development: true, TicketSecret: strings.Repeat("t", 40),
 		InternalSecret: strings.Repeat("i", 40),
-		Deliver:        func(string, string, string) error { return nil },
+		Deliver:        func(string, string, string, string) error { return nil },
 	}
 }
 
@@ -177,7 +177,7 @@ func TestAdminCannotDeleteTheirOwnAccount(t *testing.T) {
 func TestClaimSetupRollsBackWhenDeliveryFails(t *testing.T) {
 	ctx := context.Background()
 	cfg := isolatedConfig(t, "claim_mail")
-	cfg.Deliver = func(string, string, string) error { return errors.New("relay refused") }
+	cfg.Deliver = func(string, string, string, string) error { return errors.New("relay refused") }
 
 	s, e := New(ctx, cfg)
 	if e != nil {

@@ -127,7 +127,7 @@ func (s *Service) EmailTest(ctx context.Context, email string) (string, error) {
 		return "", e
 	}
 	backend := s.Config.mailBackend()
-	if e = s.send(email, "Test de livraison Blok", fmt.Sprintf("Ceci est un e-mail de test depuis %s.\nSi vous le recevez, la livraison fonctionne.", s.Config.PublicURL)); e != nil {
+	if e = s.sendDeliveryTest(email); e != nil {
 		return backend, e
 	}
 	return backend, nil
@@ -359,7 +359,11 @@ func (s *Service) deliverLoginCode(ctx context.Context, email string) error {
 }
 
 func (s *Service) sendLoginCode(email, code string) error {
-	return s.send(email, "Votre code de connexion Blok", fmt.Sprintf("Votre code de connexion : %s\n\nIl expire dans 10 minutes. Si vous n’avez pas demandé ce code, ignorez cet email.\n%s", code, s.Config.PublicURL))
+	text, markup, e := mailTemplate("login-code", map[string]string{"code": code, "publicURL": s.Config.PublicURL})
+	if e != nil {
+		return e
+	}
+	return s.send(email, "Votre code de connexion Blok", text, markup)
 }
 
 // The Node auth service owns the challenge. The mail process only delivers an
@@ -438,7 +442,7 @@ func (s *Service) setupEmailTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if e = s.send(email, "Test de livraison Blok", fmt.Sprintf("Ceci est un e-mail de test depuis %s.\nSi vous le recevez, la livraison fonctionne.", s.Config.PublicURL)); e != nil {
+	if e = s.sendDeliveryTest(email); e != nil {
 		jsonOut(w, 503, map[string]any{"error": e.Error(), "backend": backend})
 		return
 	}

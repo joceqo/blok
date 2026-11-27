@@ -48,6 +48,38 @@ describe('native mail transports', () => {
       body: JSON.stringify({ from: 'test@example.test', to: ['a@test'], subject: 'Subject', text: 'body' }),
     });
   });
+  it('carries an HTML body beside the text through the mailbox and Resend', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'blok-mail-'));
+    vi.stubEnv('APP_ENV', 'development');
+    vi.stubEnv('DEV_MAIL_DIRECTORY', directory);
+    try {
+      await sendMail('a@test', 'Sujet', 'Texte de repli', '<p>Corps riche</p>');
+      const file = join(directory, hashSecret('a@test') + '.json');
+      expect(JSON.parse(await readFile(file, 'utf8'))).toEqual({
+        to: 'a@test',
+        subject: 'Sujet',
+        text: 'Texte de repli',
+        html: '<p>Corps riche</p>',
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+    vi.stubEnv('APP_ENV', 'production');
+    vi.stubEnv('DEV_MAIL_DIRECTORY', '');
+    vi.stubEnv('MAILER_HOST', '');
+    vi.stubEnv('RESEND_API_KEY', 'test');
+    vi.stubEnv('MAIL_FROM', 'test@example.test');
+    const transport = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', transport);
+    await sendMail('a@test', 'Sujet', 'Texte de repli', '<p>Corps riche</p>');
+    expect(JSON.parse(String(transport.mock.calls[0]?.[1]?.body))).toEqual({
+      from: 'test@example.test',
+      to: ['a@test'],
+      subject: 'Sujet',
+      text: 'Texte de repli',
+      html: '<p>Corps riche</p>',
+    });
+  });
   it('requires production STARTTLS and delivers through a local development SMTP relay', async () => {
     const messages: string[] = [];
     const smtp = createServer((socket) => {

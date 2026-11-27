@@ -61,7 +61,7 @@ func TestCloudIntegration(t *testing.T) {
 	var lock sync.Mutex
 	codes := map[string]string{}
 	deliveredMessages := map[string]string{}
-	deliver := func(to, subject, text string) error {
+	deliver := func(to, subject, text, html string) error {
 		lock.Lock()
 		deliveredMessages[to] = text
 		lock.Unlock()

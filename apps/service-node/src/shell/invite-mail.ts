@@ -1,4 +1,5 @@
 import type { PgPool } from '../db/pool.ts';
+import { mailTemplate } from './mail-template.ts';
 import { sendMail, validateAddress } from './mail.ts';
 import { WorkspaceError } from './workspace-scope.ts';
 
@@ -23,9 +24,12 @@ export function createInviteMail(pool: Pick<PgPool, 'query'>, send = sendMail): 
         [inviteId],
       );
       if (!invite) throw new Error('Deliverable invitation not found');
-      let text = `Vous êtes invité à rejoindre ${invite.name}.\nConnectez-vous avec cette adresse email sur ${process.env.PUBLIC_URL ?? ''} pour accepter cette invitation.\nCette invitation expire dans 7 jours.`;
-      if (message) text += '\n\nMessage de l’administrateur :\n' + message;
-      await send(invite.email, 'Invitation Blok — ' + invite.name, text);
+      const { text, html } = await mailTemplate('invitation', {
+        workspace: invite.name,
+        publicURL: process.env.PUBLIC_URL ?? '',
+        message: message ?? '',
+      });
+      await send(invite.email, 'Invitation Blok — ' + invite.name, text, html);
     },
   };
 }

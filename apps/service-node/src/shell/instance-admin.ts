@@ -6,6 +6,7 @@ import { getConnInfo } from '@hono/node-server/conninfo';
 import { bodyLimit } from 'hono/body-limit';
 import type { PoolClient } from 'pg';
 import type { PgPool } from '../db/pool.ts';
+import { mailTemplate } from './mail-template.ts';
 import { inTransaction } from './bootstrap.ts';
 import { readBody, requireAccount, validWorkspace } from './workspace-directory.ts';
 import { consumeRate, createLoginMail, trustedClientIP } from './request-code.ts';
@@ -105,7 +106,10 @@ export function instanceAdmin(pool: PgPool, secret: string, recheck: ()=>Promise
     if(!await consumeRate(pool,key,10)) throw new HTTPException(429,{message:'Too many attempts'});
     if(setup && !(await pool.query('SELECT 1 FROM instance_settings WHERE id AND setup_completed_at IS NULL')).rowCount) throw new HTTPException(403,{message:'Setup already completed'});
     const backend=mailBackend();
-    try { await sendMail(email,'Test de livraison Blok','Ceci est un e-mail de test depuis '+process.env.PUBLIC_URL); }
+    try {
+      const { text, html } = await mailTemplate('delivery-test', { publicURL: process.env.PUBLIC_URL ?? '' });
+      await sendMail(email, 'Test de livraison Blok', text, html);
+    }
     catch { return c.json({error:'Email delivery unavailable',backend},503); }
     return c.json({ok:true,backend});
   });

@@ -5,6 +5,7 @@ import { bodyLimit } from 'hono/body-limit';
 import type { PgPool } from '../db/pool.ts';
 import { generateLoginCode, hashSecret } from '../auth/codes.ts';
 
+import { mailTemplate } from './mail-template.ts';
 import { sendMail, validateAddress } from './mail.ts';
 
 export interface LoginMail {
@@ -16,8 +17,11 @@ export function createLoginMail(): LoginMail {
   return {
     async normalize(email) { return validateAddress(email); },
     async deliver(email, code) {
-      await sendMail(email, 'Votre code de connexion Blok',
-        `Votre code de connexion : ${code}\n\nIl expire dans 10 minutes. Si vous n’avez pas demandé ce code, ignorez cet email.\n${process.env.PUBLIC_URL ?? ''}`);
+      const { text, html } = await mailTemplate('login-code', {
+        code,
+        publicURL: process.env.PUBLIC_URL ?? '',
+      });
+      await sendMail(email, 'Votre code de connexion Blok', text, html);
     },
   };
 }
