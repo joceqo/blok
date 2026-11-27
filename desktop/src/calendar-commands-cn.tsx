@@ -1,3 +1,4 @@
+import {shellText, shellLocale} from './shell-i18n';
 import {useEffect, useRef, useState} from 'react';
 import {CalendarDays, CalendarRange, ChevronLeft, ChevronRight, List, Search} from 'lucide-react';
 import {useCalendar} from './calendarcn/components/calendar-provider';
@@ -6,16 +7,16 @@ import {Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger} fr
 import {Button} from './calendarcn/components/ui/button';
 import type {DetailedCalendarEvent, ViewType} from './calendarcn/components/calendar-types';
 
-const dayFormat = new Intl.DateTimeFormat('fr', {weekday:'short', day:'numeric', month:'short'});
+const dayFormat = new Intl.DateTimeFormat(shellLocale(), {weekday:'short', day:'numeric', month:'short'});
 const viewKeys: Partial<Record<string, ViewType>> = {
   '1':'day', d:'day', '0':'week', w:'week', m:'month', y:'year', a:'agenda',
 };
 const viewCommands = [
-  {view:'day', label:'Vue jour', icon:CalendarDays},
-  {view:'week', label:'Vue semaine', icon:CalendarRange},
-  {view:'month', label:'Vue mois', icon:CalendarDays},
-  {view:'year', label:'Vue année', icon:CalendarRange},
-  {view:'agenda', label:'Vue agenda', icon:List},
+  {view:'day', label:shellText("Vue jour"), icon:CalendarDays},
+  {view:'week', label:shellText("Vue semaine"), icon:CalendarRange},
+  {view:'month', label:shellText("Vue mois"), icon:CalendarDays},
+  {view:'year', label:shellText("Vue année"), icon:CalendarRange},
+  {view:'agenda', label:shellText("Vue agenda"), icon:List},
 ] as const;
 
 export function CalendarCommands() {
@@ -67,30 +68,30 @@ export function CalendarCommands() {
 
   function run(action: () => void) { toggle(false); action(); }
   return <Dialog open={open} onOpenChange={toggle}>
-    <DialogTrigger render={<Button ref={trigger} variant="ghost" size="icon-sm" title="Rechercher dans le calendrier" aria-label="Rechercher dans le calendrier" aria-keyshortcuts="Meta+K Control+K"/>}>
+    <DialogTrigger render={<Button ref={trigger} variant="ghost" size="icon-sm" title={shellText("Rechercher dans le calendrier")} aria-label={shellText("Rechercher dans le calendrier")} aria-keyshortcuts="Meta+K Control+K"/>}>
       <Search/>
     </DialogTrigger>
     <DialogContent className="overflow-hidden p-0 sm:max-w-lg" initialFocus={search} showCloseButton={false}>
-      <DialogTitle className="sr-only">Commandes du calendrier</DialogTitle>
-      <DialogDescription className="sr-only">Recherchez une commande ou un événement de la période affichée.</DialogDescription>
-      <Command loop label="Commandes du calendrier">
-        <CommandInput ref={search} placeholder="Rechercher une commande ou un événement…" value={query} onValueChange={setQuery}/>
+      <DialogTitle className="sr-only">{shellText("Commandes du calendrier")}</DialogTitle>
+      <DialogDescription className="sr-only">{shellText("Recherchez une commande ou un événement de la période affichée.")}</DialogDescription>
+      <Command loop label={shellText("Commandes du calendrier")}>
+        <CommandInput ref={search} placeholder={shellText("Rechercher une commande ou un événement…")} value={query} onValueChange={setQuery}/>
         <CommandList>
-          <CommandEmpty>Aucun résultat</CommandEmpty>
-          <CommandGroup heading="Navigation">
-            <CommandItem onSelect={() => run(goToToday)}><CalendarDays/>Aujourd’hui</CommandItem>
-            <CommandItem onSelect={() => run(goToPrev)}><ChevronLeft/>Période précédente</CommandItem>
-            <CommandItem onSelect={() => run(goToNext)}><ChevronRight/>Période suivante</CommandItem>
+          <CommandEmpty>{shellText("Aucun résultat")}</CommandEmpty>
+          <CommandGroup heading={shellText("Navigation")}>
+            <CommandItem onSelect={() => run(goToToday)}><CalendarDays/>{shellText("Aujourd’hui")}</CommandItem>
+            <CommandItem onSelect={() => run(goToPrev)}><ChevronLeft/>{shellText("Période précédente")}</CommandItem>
+            <CommandItem onSelect={() => run(goToNext)}><ChevronRight/>{shellText("Période suivante")}</CommandItem>
           </CommandGroup>
-          <CommandGroup heading="Affichage">
+          <CommandGroup heading={shellText("Affichage")}>
             {viewCommands.map(({view, label, icon:Icon}) => <CommandItem key={view} onSelect={() => run(() => switchView(view))}><Icon/>{label}</CommandItem>)}
           </CommandGroup>
-          {events.length > 0 && <CommandGroup heading="Événements de la période">
+          {events.length > 0 && <CommandGroup heading={shellText("Événements de la période")}>
             {events.map(event => {
               const date = dayFormat.format(event.start);
               return <CommandItem key={event.id} value={'event:'+event.id} keywords={[event.title, date]}
                 onSelect={() => run(() => selectEvent(event.id))}>
-                <CalendarDays/><span className="truncate">{event.title || 'Sans titre'}</span><span className="ml-auto shrink-0 text-xs text-muted-foreground">{date}</span>
+                <CalendarDays/><span className="truncate">{event.title || shellText("Sans titre")}</span><span className="ml-auto shrink-0 text-xs text-muted-foreground">{date}</span>
               </CommandItem>;
             })}
           </CommandGroup>}

@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 interface Actor {
   id: string;
   kind: 'agent' | 'person';
@@ -78,7 +79,7 @@ export function historyChangeDetails(request: Request, lineage: string, sequence
   const details = document.createElement('details');
   details.setAttribute('data-history-details', '');
   const summary = document.createElement('summary');
-  summary.textContent = 'Modifications de cette version';
+  summary.textContent = shellText("Modifications de cette version");
   const rows = document.createElement('ol');
   const status = document.createElement('p');
   status.setAttribute('role', 'status');
@@ -94,7 +95,7 @@ export function historyChangeDetails(request: Request, lineage: string, sequence
     busy = true;
     started = true;
     more.hidden = true;
-    status.textContent = 'Chargement…';
+    status.textContent = shellText("Chargement…");
     try {
       const page: ChangePage = await request(
         '/' + encodeURIComponent(lineage) + '/' + next + '/changes?since=' + since + '&detail=properties',
@@ -110,13 +111,13 @@ export function historyChangeDetails(request: Request, lineage: string, sequence
           ? older.sequence - 1
           : undefined;
       more.hidden = next === undefined;
-      more.textContent = 'Afficher les modifications précédentes';
-      status.textContent = rows.childElementCount ? '' : 'Aucune modification enregistrée.';
+      more.textContent = shellText("Afficher les modifications précédentes");
+      status.textContent = rows.childElementCount ? '' : shellText("Aucune modification enregistrée.");
     } catch {
       if (!details.isConnected) return;
-      status.textContent = 'Les modifications n’ont pas pu être chargées.';
+      status.textContent = shellText("Les modifications n’ont pas pu être chargées.");
       more.hidden = false;
-      more.textContent = 'Réessayer';
+      more.textContent = shellText("Réessayer");
     } finally {
       busy = false;
     }

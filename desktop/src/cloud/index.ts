@@ -1,7 +1,8 @@
+import {shellText} from '../shell-i18n';
 import './cloud.css';
 import {WORKSPACE_ROLES} from '../access-vocabulary';
 import {BLOK_MARK_HREF, brandedTitle} from '../tab-identity';
-import {styleTextField} from '../ui/controls';
+import {styleTextField} from '../components/dom';
 import {CloudApiError, CloudClient, type CloudInstance, type CloudSession, type CloudSessionAdapter, type CloudWorkspace, type CloudWorkspaceStatus} from './client';
 import {mountCreateWorkspace} from './create-workspace';
 import {canCreateWorkspace} from './web-account-actions';
@@ -123,9 +124,9 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     const mark = node('img', undefined, 'data-cloud-mark');
     mark.src = BLOK_MARK_HREF; mark.alt = '';
     brand.append(mark, node('span', brandName));
-    const nav = node('nav'); nav.setAttribute('aria-label', 'Compte');
+    const nav = node('nav'); nav.setAttribute('aria-label', shellText("Compte"));
     if (state.session) {
-      nav.append(node('span', state.session.user.email, 'data-cloud-muted'), button('Changer de compte', () => run(async () => {await client.logout(); state.session = null; state.email = ''; login();})), button('Se déconnecter', () => run(async () => {await client.logout(); state.session = null; login();})));
+      nav.append(node('span', state.session.user.email, 'data-cloud-muted'), button(shellText("Changer de compte"), () => run(async () => {await client.logout(); state.session = null; state.email = ''; login();})), button(shellText("Se déconnecter"), () => run(async () => {await client.logout(); state.session = null; login();})));
     }
     header.append(brand);
     if (nav.childElementCount) header.append(nav);
@@ -137,7 +138,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
   function error(error: unknown): void {
     if (!state.alive) return;
     view.querySelector('[data-cloud-error]')?.remove();
-    const message = node('p', error instanceof Error ? error.message : 'Une erreur est survenue.', 'data-cloud-error');
+    const message = node('p', error instanceof Error ? error.message : shellText("Une erreur est survenue."), 'data-cloud-error');
     message.setAttribute('role', 'alert'); state.currentMain.append(message);
   }
 
@@ -176,7 +177,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
           session = await client.loginWithPassword(claimedEmail, password);
         } catch (reason) {
           login();
-          const note = node('p', 'Votre espace a été créé. Connectez-vous pour l’ouvrir.', 'data-cloud-note');
+          const note = node('p', shellText("Votre espace a été créé. Connectez-vous pour l’ouvrir."), 'data-cloud-note');
           note.setAttribute('role', 'status');
           state.currentMain.querySelector('h1')?.after(note);
           throw reason;
@@ -196,7 +197,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       onRetry: () => boot(),
       onServerChange: options.onServerChange,
     });
-    appendLocalOpen(state.currentMain, 'Ouvrir un espace local');
+    appendLocalOpen(state.currentMain, shellText("Ouvrir un espace local"));
   }
 
   function invite(): void {
@@ -205,9 +206,9 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
       const main = frame('invite');
       main.setAttribute('data-cloud-narrow', '');
       main.append(
-        node('span', 'Invitation', 'data-cloud-eyebrow'),
-        node('h1', 'Invitation'),
-        node('p', 'Ouvrez le lien d’invitation reçu par e-mail.', 'data-cloud-muted'),
+        node('span', shellText("Invitation"), 'data-cloud-eyebrow'),
+        node('h1', shellText("Invitation")),
+        node('p', shellText("Ouvrez le lien d’invitation reçu par e-mail."), 'data-cloud-muted'),
       );
       return;
     }
@@ -276,7 +277,7 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
   /** Router table — every named route reachable from one place. */
   const routers: Record<CloudGatewayRoute, () => void> = {
     boot: () => {
-      const status = node('p', 'Connexion au serveur…', 'data-cloud-muted');
+      const status = node('p', shellText("Connexion au serveur…"), 'data-cloud-muted');
       status.setAttribute('role','status');
       frame('boot').append(status);
     },
@@ -301,15 +302,15 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     if (!state.alive) return;
     const codeStep = route === 'login-code';
     const main = frame(route); main.setAttribute('data-cloud-narrow', '');
-    main.append(node('h1', codeStep ? 'Vérifiez votre e-mail' : 'Se connecter'));
-    if (codeStep) main.append(node('p', `Saisissez le code envoyé à ${state.email}. Il est valable 10 minutes.`, 'data-cloud-muted'));
+    main.append(node('h1', codeStep ? shellText("Vérifiez votre e-mail") : shellText("Se connecter")));
+    if (codeStep) main.append(node('p', shellText("Saisissez le code envoyé à {v0}. Il est valable 10 minutes.", {v0: state.email}), 'data-cloud-muted'));
     const form = node('form', undefined, 'data-cloud-stack');
-    const input = field(form, codeStep ? 'Code de connexion' : 'Adresse e-mail', codeStep ? 'text' : 'email', codeStep ? 'code' : 'email', codeStep ? '' : state.email);
+    const input = field(form, codeStep ? shellText("Code de connexion") : shellText("Adresse e-mail"), codeStep ? 'text' : 'email', codeStep ? 'code' : 'email', codeStep ? '' : state.email);
     input.autocomplete = codeStep ? 'one-time-code' : route === 'login-password' ? 'username' : 'email';
     if (codeStep) { input.inputMode = 'numeric'; input.pattern = '[0-9]{6}'; input.maxLength = 6; }
-    const password = route === 'login-password' ? field(form, 'Mot de passe', 'password', 'password') : null;
+    const password = route === 'login-password' ? field(form, shellText("Mot de passe"), 'password', 'password') : null;
     if (password) password.autocomplete = 'current-password';
-    const submit = button(route === 'login-email' ? 'Continuer par e-mail' : 'Se connecter', () => {}, true); submit.type = 'submit'; submit.setAttribute('data-cloud-block', ''); form.append(submit);
+    const submit = button(route === 'login-email' ? shellText("Continuer par e-mail") : shellText("Se connecter"), () => {}, true); submit.type = 'submit'; submit.setAttribute('data-cloud-block', ''); form.append(submit);
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (submit.disabled || !form.reportValidity()) return;
@@ -330,23 +331,23 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     });
     main.append(form);
     if (codeStep) {
-      main.append(node('p', 'Le message peut se trouver dans vos courriers indésirables.', 'data-cloud-note'));
-      main.append(button('Renvoyer un code', () => run(async () => {
+      main.append(node('p', shellText("Le message peut se trouver dans vos courriers indésirables."), 'data-cloud-note'));
+      main.append(button(shellText("Renvoyer un code"), () => run(async () => {
         await client.request('/api/auth/request-code', {method:'POST', body:JSON.stringify({email: state.email})});
         login('login-code');
-        const status = node('p', 'Un nouveau code a été envoyé.', 'data-cloud-note');
+        const status = node('p', shellText("Un nouveau code a été envoyé."), 'data-cloud-note');
         status.setAttribute('role', 'status');
         state.currentMain.append(status);
-      })), document.createTextNode(' '), button('Modifier l’adresse e-mail', () => login('login-email')));
+      })), document.createTextNode(' '), button(shellText("Modifier l’adresse e-mail"), () => login('login-email')));
     } else if (state.instance?.passwordAuthAvailable && state.instance.emailCodeAvailable !== false) {
-      const alternate = button(password ? 'Utiliser un code par e-mail' : 'Utiliser un mot de passe', () => {
+      const alternate = button(password ? shellText("Utiliser un code par e-mail") : shellText("Utiliser un mot de passe"), () => {
         state.email = input.value.trim();
         login(password ? 'login-email' : 'login-password');
       });
       alternate.setAttribute('data-cloud-link', '');
       main.append(alternate);
     }
-    appendLocalOpen(main, 'Continuer avec un espace local');
+    appendLocalOpen(main, shellText("Continuer avec un espace local"));
     serverSection(main);
   }
 
@@ -354,12 +355,12 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     const onServerChange = options.onServerChange;
     if (!onServerChange) return;
     const details = node('details', undefined, 'data-cloud-section');
-    details.append(node('summary', 'Changer de serveur'));
+    details.append(node('summary', shellText("Changer de serveur")));
     const serverForm = node('form');
     const initialOrigin = client.origin || (window.location.protocol.startsWith('http') ? window.location.origin : '');
-    const server = field(serverForm, 'Adresse du serveur', 'url', 'server', initialOrigin);
+    const server = field(serverForm, shellText("Adresse du serveur"), 'url', 'server', initialOrigin);
     server.placeholder = 'https://votre-serveur.fr'; server.setAttribute('autocomplete', 'url'); server.spellcheck = false;
-    const submitServer = button('Utiliser ce serveur', () => {}, true); submitServer.type = 'submit'; serverForm.append(submitServer);
+    const submitServer = button(shellText("Utiliser ce serveur"), () => {}, true); submitServer.type = 'submit'; serverForm.append(submitServer);
     serverForm.addEventListener('submit', event => {
       event.preventDefault();
       void run(async () => {
@@ -375,32 +376,32 @@ export async function mountCloudGateway(root: HTMLElement, options: CloudGateway
     if (!state.alive) return;
     state.session = active; client.currentSession = active;
     const main = frame('spaces');
-    main.append(node('h1', 'Où souhaitez-vous travailler ?'));
-    if (active.workspaces.length) main.append(node('p', 'Choisissez un espace pour retrouver ses pages et son équipe.', 'data-cloud-muted'));
+    main.append(node('h1', shellText("Où souhaitez-vous travailler ?")));
+    if (active.workspaces.length) main.append(node('p', shellText("Choisissez un espace pour retrouver ses pages et son équipe."), 'data-cloud-muted'));
     for (const workspace of active.workspaces) {
       const row = node('div', undefined, 'data-cloud-row'); const text = node('div'); text.append(node('strong', workspace.name), node('p', roleName[workspace.role]));
       const actions = node('div', undefined, 'data-cloud-actions');
-      actions.append(button('Ouvrir l’espace', () => run(async () => {await options.onOpenWorkspace(workspace, client);}), true)); row.append(text, actions); main.append(row);
+      actions.append(button(shellText("Ouvrir l’espace"), () => run(async () => {await options.onOpenWorkspace(workspace, client);}), true)); row.append(text, actions); main.append(row);
     }
     if (status && !status.role) joinSection(main, status);
     const actions = node('div', undefined, 'data-cloud-actions');
     const canCreate = canCreateWorkspace(state.instance, active);
-    if (canCreate) actions.append(button('Créer un espace de travail', () => routers['create-workspace'](), true));
-    actions.append(button('Rejoindre un espace', () => routers.join(), !canCreate));
+    if (canCreate) actions.append(button(shellText("Créer un espace de travail"), () => routers['create-workspace'](), true));
+    actions.append(button(shellText("Rejoindre un espace"), () => routers.join(), !canCreate));
     main.append(actions);
-    appendLocalOpen(main, 'Ouvrir un espace local');
+    appendLocalOpen(main, shellText("Ouvrir un espace local"));
     serverSection(main);
   }
 
   function joinSection(main: HTMLElement, workspace: CloudWorkspaceStatus): void {
     const section = node('section', undefined, 'data-cloud-section'); section.append(node('h2', workspace.name));
     if (workspace.joinStatus === 'pending') {
-      const status = node('div', undefined, 'data-cloud-status'); status.setAttribute('role', 'status'); status.append(node('strong', 'Votre demande est en attente'), node('p', 'Un administrateur doit valider votre accès. Vous pourrez ensuite ouvrir cet espace.')); section.append(status, button('Actualiser le statut', () => run(() => list(workspace.slug))));
+      const status = node('div', undefined, 'data-cloud-status'); status.setAttribute('role', 'status'); status.append(node('strong', shellText("Votre demande est en attente")), node('p', shellText("Un administrateur doit valider votre accès. Vous pourrez ensuite ouvrir cet espace."))); section.append(status, button(shellText("Actualiser le statut"), () => run(() => list(workspace.slug))));
     } else if (workspace.joinStatus === 'rejected') {
-      const status = node('div', undefined, 'data-cloud-status'); status.append(node('strong', 'Votre demande n’a pas été acceptée'), node('p', 'Contactez un administrateur de cet espace pour en savoir plus.')); section.append(status);
+      const status = node('div', undefined, 'data-cloud-status'); status.append(node('strong', shellText("Votre demande n’a pas été acceptée")), node('p', shellText("Contactez un administrateur de cet espace pour en savoir plus."))); section.append(status);
     } else {
-      section.append(node('p', `Rejoignez ${workspace.name}. Votre accès sera validé par un administrateur.`, 'data-cloud-muted'));
-      section.append(button('Demander à rejoindre', () => {
+      section.append(node('p', shellText("Rejoignez {v0}. Votre accès sera validé par un administrateur.", {v0: workspace.name}), 'data-cloud-muted'));
+      section.append(button(shellText("Demander à rejoindre"), () => {
         state.pendingInvite = null;
         routers.join();
       }, true));

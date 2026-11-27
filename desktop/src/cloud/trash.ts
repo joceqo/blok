@@ -1,3 +1,4 @@
+import {shellText} from '../shell-i18n';
 import { createNavigationDialog } from '../navigation-dialogs';
 import { nativeSessionAdapter } from '../native-session';
 import type { WorkspaceIndex } from '../storage';
@@ -20,7 +21,7 @@ export function openRemoteTrash(
   modal.surface.setAttribute('data-workspace-trash', '');
   const title = document.createElement('h2');
   title.setAttribute('data-navigation-heading', '');
-  title.textContent = 'Corbeille';
+  title.textContent = shellText("Corbeille");
   const list = document.createElement('ul');
   const status = document.createElement('p');
   status.setAttribute('role', 'status');
@@ -51,26 +52,26 @@ export function openRemoteTrash(
       list.append(row);
       if ((ref.role !== 'admin' && ref.role !== 'member') || index.access?.[page.id]?.level !== 'full')
         continue;
-      const restore = button('Restaurer', () => void restorePage(page.id, name, index.revision, restore));
+      const restore = button(shellText("Restaurer"), () => void restorePage(page.id, name, index.revision, restore));
       restore.setAttribute('aria-label', 'Restaurer « ' + name + ' »');
       const unavailable = index.access[page.id].sharedRoot ? 'Emplacement d’origine inaccessible.' :
         page.parentId && inTrash.has(page.parentId) ? 'Restaurez d’abord la page parente.' : '';
       restore.disabled = Boolean(unavailable) || !Number.isSafeInteger(index.revision);
-      restore.title = unavailable || 'Restaurer uniquement cette page à son emplacement d’origine';
+      restore.title = unavailable || shellText("Restaurer uniquement cette page à son emplacement d’origine");
       if (unavailable) {
         const detail = document.createElement('small');
         detail.textContent = unavailable;
         caption.append(document.createElement('br'), detail);
       }
-      const remove = button('Supprimer…', () => {
+      const remove = button(shellText("Supprimer…"), () => {
         if (busy) return;
         const question = document.createElement('p');
         question.textContent = 'Supprimer définitivement « ' + name + ' » et son historique ?';
-        const cancel = button('Annuler', () => {
+        const cancel = button(shellText("Annuler"), () => {
           row.replaceChildren(caption, restore, remove);
           remove.focus();
         });
-        const confirm = button('Supprimer définitivement', () => {
+        const confirm = button(shellText("Supprimer définitivement"), () => {
           void purge(page.id, name, confirm, cancel);
         });
         row.replaceChildren(question, cancel, confirm);
@@ -87,18 +88,18 @@ export function openRemoteTrash(
   function failure(error: unknown, restoring = false) {
     if (controller.signal.aborted) return;
     if (error instanceof CloudApiError && error.status === 403) {
-      status.textContent = 'Vous n’avez plus les droits nécessaires.';
+      status.textContent = shellText("Vous n’avez plus les droits nécessaires.");
     } else if (error instanceof CloudApiError && error.status === 404) {
-      status.textContent = 'La page est introuvable ou inaccessible.';
+      status.textContent = shellText("La page est introuvable ou inaccessible.");
     } else if (error instanceof CloudApiError && error.status === 409) {
-      status.textContent = restoring ? 'La page ou son emplacement a changé. Actualisez la corbeille.' :
-        'Vérifiez que la page est dans la corbeille. Supprimez ou déplacez d’abord ses sous-pages.';
+      status.textContent = restoring ? shellText("La page ou son emplacement a changé. Actualisez la corbeille.") :
+        shellText("Vérifiez que la page est dans la corbeille. Supprimez ou déplacez d’abord ses sous-pages.");
     } else {
-      status.textContent = 'La demande a échoué. Actualisez la corbeille puis réessayez.';
+      status.textContent = shellText("La demande a échoué. Actualisez la corbeille puis réessayez.");
     }
     status.append(
       ' ',
-      button('Actualiser', () => {
+      button(shellText("Actualiser"), () => {
         void refresh().catch(failure);
       }),
     );
@@ -154,7 +155,7 @@ export function openRemoteTrash(
     }
   }
 
-  status.textContent = 'Chargement…';
+  status.textContent = shellText("Chargement…");
   modal.open(modal.surface, () => controller.abort());
   void refresh().catch(failure);
   return modal.close;

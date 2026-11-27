@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import {
   addDays,
@@ -1324,7 +1325,7 @@ function CalendarStateProvider({
       // The toaster isn't a live region: the provider's reads every notice
       announce(
         content.title
-          ? `${content.message}, ${content.title}`
+          ? shellText("{v0}, {v1}", {v0: content.message, v1: content.title})
           : content.message,
       );
     },
@@ -1700,7 +1701,7 @@ function CalendarStateProvider({
         locale,
       );
       if (message) announce(message);
-      openNotice({ message: "Event updated" }, null);
+      openNotice({ message: shellText("Event updated") }, null);
     },
     [commitChanges, hourCycle, locale, announce, openNotice, displayTimeZone],
   );
@@ -1724,7 +1725,7 @@ function CalendarStateProvider({
       announce(describeEventAction("delete", event));
       openNotice(
         {
-          message: scope === "all" ? "All events deleted" : "Event deleted",
+          message: scope === "all" ? shellText("All events deleted") : shellText("Event deleted"),
           title: getSpokenTitle(event),
         },
         step,
@@ -2325,7 +2326,7 @@ function CalendarStateProvider({
       recordHistory(action, changes);
       selectEvent(copy.id);
       announce(
-        `${describeEventAction(action, copy)}, ${describeEventTime(toDisplayEvent(copy, displayTimeZone), hourCycle, locale)}`,
+        shellText("{v0}, {v1}", {v0: describeEventAction(action, copy), v1: describeEventTime(toDisplayEvent(copy, displayTimeZone), hourCycle, locale)}),
       );
     },
     [

@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { diskPageWorkspace } from './disk-page-link';
 import { libraryView } from './library-route';
 import { isCalendarUrl } from './calendar-route';
@@ -248,16 +249,16 @@ function showStartupFailure(host: HTMLElement, reason: unknown, openFallback?: (
   const panel = host.querySelector<HTMLElement>('[data-blok-startup]');
   const status = panel?.querySelector<HTMLElement>('.startup-status');
   if (!panel || !status) {
-    startupErrorNode(host).textContent = reason instanceof Error ? reason.message : 'Impossible d’ouvrir cet espace.';
+    startupErrorNode(host).textContent = reason instanceof Error ? reason.message : shellText("Impossible d’ouvrir cet espace.");
     return;
   }
   panel.setAttribute('aria-busy', 'false');
   status.setAttribute('role', 'alert');
-  status.textContent = reason instanceof Error ? reason.message : 'Impossible d’ouvrir cet espace.';
+  status.textContent = reason instanceof Error ? reason.message : shellText("Impossible d’ouvrir cet espace.");
   const actions = document.createElement('div');
   actions.className = 'startup-actions';
   const retry = document.createElement('button');
-  retry.textContent = 'Réessayer';
+  retry.textContent = shellText("Réessayer");
   retry.onclick = () => location.reload();
   actions.append(retry);
   if (openFallback) {
@@ -273,6 +274,6 @@ function showError(error: unknown): void {
   if (!(root instanceof HTMLElement)) return;
   if (root.querySelector('[data-blok-startup]')) { showStartupFailure(root, error); return; }
   const message = startupErrorNode(root);
-  message.textContent = error instanceof Error ? error.message : 'Impossible d’ouvrir cet espace. Rechargez pour réessayer.';
+  message.textContent = error instanceof Error ? error.message : shellText("Impossible d’ouvrir cet espace. Rechargez pour réessayer.");
 }
 if (root instanceof HTMLElement) void listenForPageLinks(showError).then(() => boot(root)).catch(showError);

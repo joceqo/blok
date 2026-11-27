@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { Check, ChevronDown } from "lucide-react";
 
@@ -254,7 +255,7 @@ export function EventDetailCalendar<
       <EventDetailSection name="calendar" className="px-2">
         <div className={cn("flex items-center", EVENT_DETAIL_ROW_HEIGHT_CLASS)}>
           <div className={cn(ROW_BOX_CLASS, "border border-transparent")}>
-            <span className="sr-only">Calendar: </span>
+            <span className="sr-only">{shellText("Calendar:")} </span>
             {swatchAndName}
           </div>
         </div>
@@ -266,7 +267,7 @@ export function EventDetailCalendar<
     <EventDetailSection ref={sectionRef} name="calendar" className="px-2">
       <DropdownMenu open={open} onOpenChange={handleOpenChange}>
         <div className={cn("flex items-center", EVENT_DETAIL_ROW_HEIGHT_CLASS)}>
-          <DropdownMenuTrigger render={<button ref={triggerRef} type="button" aria-label={`Calendar: ${name}`} onKeyDown={open ? stopEscapePropagation : undefined} className={cn(
+          <DropdownMenuTrigger render={<button ref={triggerRef} type="button" aria-label={shellText("Calendar: {v0}", {v0: name})} onKeyDown={open ? stopEscapePropagation : undefined} className={cn(
                                   ROW_BOX_CLASS,
                                   "group/trigger w-full text-left outline-none",
                                   EVENT_DETAIL_HOVER_BORDER_CLASS,
@@ -283,7 +284,7 @@ export function EventDetailCalendar<
           side="left"
           align="start"
           sideOffset={sideOffset}
-          aria-label="Calendar"
+          aria-label={shellText("Calendar")}
           className={cn(EVENT_DETAIL_MENU_CLASS, PANEL_MENU_SURFACE_CLASS)}
           onKeyDown={stopEscapePropagation}
         >
@@ -335,10 +336,10 @@ export function EventDetailCalendar<
           {groups.length > 0 && (
             <DropdownMenuSeparator className="mx-1 my-1.5 bg-calendar-menu-border" />
           )}
-          <div className={PANEL_MENU_LABEL_CLASS}>Event color</div>
+          <div className={PANEL_MENU_LABEL_CLASS}>{shellText("Event color")}</div>
           <div
             role="group"
-            aria-label="Event color"
+            aria-label={shellText("Event color")}
             className="flex items-center gap-2 pt-1.5 pr-2.5 pb-2.5 pl-[31px]"
           >
             {eventColors.map((color) => (

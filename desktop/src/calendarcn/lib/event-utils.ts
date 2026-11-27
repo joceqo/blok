@@ -1,3 +1,4 @@
+import {shellText} from '../../shell-i18n';
 import {
   addMinutes,
   isSameDay,
@@ -2323,7 +2324,7 @@ export function getEventChangeSummary(
   if (timeChanged) {
     const withDate = !isSameDay(after.start, before.start);
     rows.push({
-      label: "Time",
+      label: shellText("Time"),
       after: formatSummaryTime(after, withDate, options),
       before: formatSummaryTime(before, withDate, options),
     });

@@ -1,9 +1,10 @@
+import {shellText, shellLocale} from './shell-i18n';
 import type {CSSProperties} from 'react';
 import {createRoot} from 'react-dom/client';
 import type {CalendarEvent} from './calendar-store';
 import type {CalendarWorkspaceEntry} from './calendar-workspaces';
 
-const dayName = new Intl.DateTimeFormat('fr-FR', {weekday:'long',day:'numeric',month:'long'});
+const dayName = new Intl.DateTimeFormat(shellLocale(), {weekday:'long',day:'numeric',month:'long'});
 
 interface PlanningProps {
   days: Date[];
@@ -23,7 +24,7 @@ function Planning({days, events, hour, ownerOf, keyOf, open, create, loading}: P
     end: new Date(event.end + (event.allDay ? 'T00:00' : '')),
   })).sort((a,b) => Number(b.event.allDay) - Number(a.event.allDay) || +a.start - +b.start || a.event.title.localeCompare(b.event.title));
   const today = new Date().toDateString();
-  return <section className="cal-planning" aria-label="Planning de la semaine">
+  return <section className="cal-planning" aria-label={shellText("Planning de la semaine")}>
     {days.map(day => {
       const tomorrow = new Date(day.getFullYear(),day.getMonth(),day.getDate()+1);
       const entries = sorted.filter(({start,end}) => start < tomorrow && end > day);
@@ -34,7 +35,7 @@ function Planning({days, events, hour, ownerOf, keyOf, open, create, loading}: P
           const owner = ownerOf(event);
           const source = event.source?.label ?? owner?.name;
           const color = event.source?.color ?? owner?.color ?? '#54836b';
-          const hours = event.allDay ? 'Toute la journée' :
+          const hours = event.allDay ? shellText('Toute la journée') :
             hour.format(start < day ? day : start) + ' – ' +
             (end >= tomorrow && !hour.resolvedOptions().hour12 ? '24:00' : hour.format(end >= tomorrow ? tomorrow : end));
           return <li key={keyOf(event)}>
@@ -47,8 +48,8 @@ function Planning({days, events, hour, ownerOf, keyOf, open, create, loading}: P
         })}</ul>
       </section>;
     })}
-    {!loading && !sorted.length && <div className="cal-planning-empty"><p>Aucun événement cette semaine.</p>
-      {create && <button type="button" onClick={create}>Créer un événement</button>}
+    {!loading && !sorted.length && <div className="cal-planning-empty"><p>{shellText("Aucun événement cette semaine.")}</p>
+      {create && <button type="button" onClick={create}>{shellText("Créer un événement")}</button>}
     </div>}
   </section>;
 }

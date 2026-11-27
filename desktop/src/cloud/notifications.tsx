@@ -1,3 +1,4 @@
+import {shellText, shellLocale} from '../shell-i18n';
 import {Fragment, createRef, useId, useCallback, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref} from 'react';
 import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
@@ -8,15 +9,15 @@ import './notifications.css';
 
 export {fetchNotifications, type NotificationListOptions, type WorkspaceNotification} from './notifications-api';
 
-const dates = new Intl.DateTimeFormat('fr-FR', {dateStyle:'medium', timeStyle:'short'});
+const dates = new Intl.DateTimeFormat(shellLocale(), {dateStyle:'medium', timeStyle:'short'});
 
 function Icon({svg}: {svg: string}) {
   return <span aria-hidden="true" dangerouslySetInnerHTML={{__html:svg.trim().replace(/>\s+</g, '><')}}/>;
 }
 
-const shortDay = new Intl.DateTimeFormat('fr-FR', {day:'numeric', month:'short'});
-const shortDate = new Intl.DateTimeFormat('fr-FR', {dateStyle:'short'});
-const clockTime = new Intl.DateTimeFormat('fr-FR', {hour:'2-digit', minute:'2-digit'});
+const shortDay = new Intl.DateTimeFormat(shellLocale(), {day:'numeric', month:'short'});
+const shortDate = new Intl.DateTimeFormat(shellLocale(), {dateStyle:'short'});
+const clockTime = new Intl.DateTimeFormat(shellLocale(), {hour:'2-digit', minute:'2-digit'});
 
 function dayNumber(date: Date) {
   // Local calendar days have unequal duration at daylight-saving transitions.
@@ -24,10 +25,10 @@ function dayNumber(date: Date) {
 }
 
 function dateGroup(age: number) {
-  if (age <= 0) return 'Aujourd’hui';
-  if (age === 1) return 'Hier';
-  if (age < 7) return 'Ces 7 derniers jours';
-  return 'Plus ancien';
+  if (age <= 0) return shellText("Aujourd’hui");
+  if (age === 1) return shellText("Hier");
+  if (age < 7) return shellText("Ces 7 derniers jours");
+  return shellText("Plus ancien");
 }
 
 function WorkspaceTarget({name}: {name: string}) {
@@ -36,16 +37,16 @@ function WorkspaceTarget({name}: {name: string}) {
 
 function Description({item}: {item: WorkspaceNotification}) {
   if (item.type === 'calendar_invitation') {
-    return <><strong>{item.actorName || 'Un membre'}</strong> vous invite à <strong>{item.eventTitle}</strong>.</>;
+    return <><strong>{item.actorName || shellText("Un membre")}</strong> {shellText("vous invite à")} <strong>{item.eventTitle}</strong>.</>;
   }
   if (item.type === 'comment_mention' || item.type === 'comment_reply') {
-    return <>{item.type === 'comment_mention' ? 'Vous avez été mentionné·e dans un commentaire' : 'Votre commentaire a reçu une réponse'} sur <strong>{item.pageTitle || 'une page'}</strong>.</>;
+    return <>{item.type === 'comment_mention' ? shellText("Vous avez été mentionné·e dans un commentaire") : shellText("Votre commentaire a reçu une réponse")} {shellText("sur")} <strong>{item.pageTitle || shellText("une page")}</strong>.</>;
   }
   const target = item.workspaceName && <WorkspaceTarget name={item.workspaceName}/>;
   if (item.type === 'join_requested') {
-    return <><strong>{item.actorName || 'Un utilisateur'}</strong> demande à rejoindre {target || 'cet espace'}.</>;
+    return <><strong>{item.actorName || shellText("Un utilisateur")}</strong> {shellText("demande à rejoindre")} {target || shellText('cet espace')}.</>;
   }
-  return <>Votre demande d’accès{target && <> à {target}</>}</>;
+  return <>{shellText("Votre demande d’accès")}{target && <> {shellText("à")} {target}</>}</>;
 }
 
 function Decision({item}: {item: WorkspaceNotification}) {
@@ -53,17 +54,17 @@ function Decision({item}: {item: WorkspaceNotification}) {
     if (!item.eventStart) return null;
     const date = new Date(item.eventStart);
     return <p data-inbox-decision=""><time dateTime={item.eventStart}>{item.eventAllDay
-      ? date.toLocaleDateString('fr-FR', {dateStyle:'long', timeZone:'UTC'}) : dates.format(date)}</time></p>;
+      ? date.toLocaleDateString(shellLocale(), {dateStyle:'long', timeZone:'UTC'}) : dates.format(date)}</time></p>;
   }
   if (item.pageId) return null;
   const decision = item.decision;
   if (item.type === 'join_requested' && !decision) {
-    return item.requestPending ? <p data-inbox-decision="">En attente de décision</p> : null;
+    return item.requestPending ? <p data-inbox-decision="">{shellText("En attente de décision")}</p> : null;
   }
   const approved = decision ? decision.status === 'approved' : item.type === 'join_approved';
-  const actor = decision ? (decision.isMe ? 'vous' : decision.actorName) : item.actorName;
+  const actor = decision ? (decision.isMe ? shellText('vous') : decision.actorName) : item.actorName;
   const at = decision?.at ?? item.createdAt;
-  return <p data-inbox-decision="">{approved ? 'Approuvée' : 'Refusée'}{actor && <> par {actor}</>} le <time dateTime={at}>{dates.format(new Date(at))}</time></p>;
+  return <p data-inbox-decision="">{approved ? shellText("Approuvée") : shellText("Refusée")}{actor && <> {shellText("par")} {actor}</>} {shellText("le")} <time dateTime={at}>{dates.format(new Date(at))}</time></p>;
 }
 
 type RowAction = 'read' | 'archive';
@@ -88,19 +89,19 @@ function NotificationRow({item, today, onAction, onManage, onOpenPage}: RowActio
   const created = new Date(item.createdAt);
   const format = dayNumber(created) === dayNumber(today) ? clockTime :
     created.getFullYear() === today.getFullYear() ? shortDay : shortDate;
-  const initial = Array.from(item.actorName.trim())[0]?.toLocaleUpperCase('fr-FR');
+  const initial = Array.from(item.actorName.trim())[0]?.toLocaleUpperCase(shellLocale());
   const canManage = item.type === 'join_requested' && !item.decision && item.requestPending !== false && onManage;
-  const readLabel = item.readAt ? 'Marquer comme non lue' : 'Marquer comme lue';
-  const archiveLabel = item.archivedAt ? 'Restaurer la notification' : 'Archiver la notification';
+  const readLabel = item.readAt ? shellText("Marquer comme non lue") : shellText("Marquer comme lue");
+  const archiveLabel = item.archivedAt ? shellText("Restaurer la notification") : shellText("Archiver la notification");
   return <li ref={row} data-inbox-row="" data-unread={item.readAt ? undefined : ''}>
     <span data-inbox-avatar="" aria-hidden="true">{initial || <Icon svg={IconPeople}/>}</span>
     <p id={titleId} data-inbox-description=""><Description item={item}/></p>
     <time data-inbox-date="" dateTime={item.createdAt} title={dates.format(created)} aria-label={dates.format(created)}>{format.format(created)}</time>
     {item.requestMessage && <blockquote data-inbox-message="">{item.requestMessage}</blockquote>}
     <Decision item={item}/>
-    {item.pageId && onOpenPage && <button type="button" data-inbox-open-request="" aria-describedby={titleId} onClick={() => onOpenPage(item.pageId!)}>Ouvrir la page</button>}
-    {canManage && <button type="button" data-inbox-open-request="" onClick={onManage} aria-describedby={titleId}><span data-inbox-read-label="">Voir les demandes</span></button>}
-    <div data-inbox-row-actions="" role="group" aria-describedby={titleId} aria-label="Actions de la notification">
+    {item.pageId && onOpenPage && <button type="button" data-inbox-open-request="" aria-describedby={titleId} onClick={() => onOpenPage(item.pageId!)}>{shellText("Ouvrir la page")}</button>}
+    {canManage && <button type="button" data-inbox-open-request="" onClick={onManage} aria-describedby={titleId}><span data-inbox-read-label="">{shellText("Voir les demandes")}</span></button>}
+    <div data-inbox-row-actions="" role="group" aria-describedby={titleId} aria-label={shellText("Actions de la notification")}>
       <button type="button" data-inbox-read="" aria-disabled={saving} title={readLabel} onClick={() => void apply('read')}>
         <Icon svg={item.readAt ? IconMail : IconCheck}/><span data-inbox-read-label="">{readLabel}</span>
       </button>
@@ -122,7 +123,7 @@ function NotificationFeed({items, onAction, onManage, onOpenPage}: RowActions & 
     if (group) group.push(item);
     else groups.set(label, [item]);
   }
-  return <section data-inbox-feed="" aria-label="Notifications de l’espace">
+  return <section data-inbox-feed="" aria-label={shellText("Notifications de l’espace")}>
     {Array.from(groups, ([label, entries]) => <Fragment key={label}>
       <h3 data-inbox-period="">{label}</h3>
       <ul aria-label={label}>
@@ -169,7 +170,7 @@ function NotificationList({options, handle, attachActions}: {
     } catch {
       if (!quiet && !signal.aborted && current === revision.current) {
         setItems(null);
-        setError('Impossible de charger les notifications. Réessayez.');
+        setError(shellText("Impossible de charger les notifications. Réessayez."));
       }
     } finally {
       if (!signal.aborted && current === revision.current) { fetching.current = false; setLoading(false); }
@@ -208,7 +209,7 @@ function NotificationList({options, handle, attachActions}: {
       }
       await load();
     } catch {
-      if (!signal.aborted) setError(action === 'archive' ? 'Impossible de modifier l’archivage. Réessayez.' : 'Impossible de marquer la notification. Réessayez.');
+      if (!signal.aborted) setError(action === 'archive' ? shellText("Impossible de modifier l’archivage. Réessayez.") : shellText("Impossible de marquer la notification. Réessayez."));
     }
   }
   async function markAllRead() {
@@ -223,7 +224,7 @@ function NotificationList({options, handle, attachActions}: {
       setUnreadCount(0);
       await load();
     } catch {
-      if (!signal.aborted) setError('Impossible de marquer toutes les notifications comme lues. Réessayez.');
+      if (!signal.aborted) setError(shellText("Impossible de marquer toutes les notifications comme lues. Réessayez."));
     } finally {
       if (!signal.aborted) setMarkingAll(false);
     }
@@ -233,16 +234,16 @@ function NotificationList({options, handle, attachActions}: {
       filterButton={filterButton} loading={loading} onRefresh={() => void load()}
       hasItems={Boolean(visibleItems?.length)} canMarkAll={!archived && unreadCount>0 && !loading && !markingAll}
       onMarkAll={() => void markAllRead()}/>
-    <p role="status">{loading ? 'Chargement des notifications…' : visibleItems?.length === 0 ? <>
+    <p role="status">{loading ? shellText("Chargement des notifications…") : visibleItems?.length === 0 ? <>
       <span data-inbox-empty-icon="" aria-hidden="true"><Icon svg={IconCheck}/></span>
-      {filter === 'archived' ? 'Aucune notification archivée.' : filter === 'unread' ? 'Aucune notification non lue.' : 'Vous êtes à jour.'}
+      {filter === 'archived' ? shellText("Aucune notification archivée.") : filter === 'unread' ? shellText("Aucune notification non lue.") : shellText("Vous êtes à jour.")}
     </> : null}</p>
-    <p role="alert">{error}{error && !items && <button type="button" onClick={() => void load()}>Actualiser</button>}</p>
+    <p role="alert">{error}{error && !items && <button type="button" onClick={() => void load()}>{shellText("Actualiser")}</button>}</p>
     <NotificationFeed items={visibleItems ?? []} onAction={onAction} onManage={options.onManageRequests} onOpenPage={options.onOpenPage}/>
   </>;
 }
 
-export function mountNotificationList(container: HTMLElement, options: NotificationListOptions) {
+export function mountNotificationList(container: HTMLElement, options?: NotificationListOptions) {
   const panel = document.createElement('section');
   panel.setAttribute('data-blok-notifications', '');
   container.append(panel);
@@ -256,7 +257,10 @@ export function mountNotificationList(container: HTMLElement, options: Notificat
   };
   const handle = createRef<ListHandle>();
   // The shell mounts its pin and close controls and focuses the sheet synchronously.
-  flushSync(()=>root.render(<NotificationList options={options} handle={handle} attachActions={attachActions}/>));
+  flushSync(() => root.render(options
+    ? <NotificationList options={options} handle={handle} attachActions={attachActions}/>
+    : <><header data-notification-header=""><h2>{shellText("Notifications")}</h2><span data-inbox-actions="" ref={attachActions}/></header>
+        <p role="status"><span data-inbox-empty-icon="" aria-hidden="true"><Icon svg={IconCheck}/></span>{shellText("Aucune notification dans cet espace local.")}</p></>));
   return {
     actions, ready,
     refresh: async () => { await handle.current?.refresh(); },

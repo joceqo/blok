@@ -6,6 +6,7 @@ import { verifyTicket } from '../auth/ticket.ts';
 import { DocEndpointClient, DocEndpointError } from '../collab/doc-endpoint.ts';
 import { DocumentPurged, MAX_APPEND_BYTES, UnreadableJournalData } from '../collab/journal/append.ts';
 import { openDocumentRoom, type EditCommand, type EditOutcome, type PendingFrame } from '../collab/room/document-room.ts';
+import { logSocketClose } from '../collab/observe.ts';
 import { serveSocket } from '../collab/sync/served-socket.ts';
 import { SocketBridge } from '../collab/sync/socket-bridge.ts';
 import { envelope, seedUpdate, type Snapshot } from '../collab/room/page-document.ts';
@@ -424,6 +425,7 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
     request: Request,
     response: ResponseWriter,
     protocol: string | undefined,
+    session: { doc: string; actor?: string },
     serve: (ws: WebSocket) => Promise<void> | void,
   ): Promise<void> {
     admissions += 1;
@@ -467,6 +469,10 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
           buffered,
           budget: new InboundBudget(),
           maxMessageBytes: MAX_APPEND_BYTES,
+          // The one place every close is visible: the transport's own, the
+          // room's eleven, and this door's. A close reaches the client and
+          // nowhere else, so this is where it stops being the only copy.
+          onClose: (code, reason) => logSocketClose(options.collabLog, { ...session, code, reason }),
         });
         await serve(connected);
       }
@@ -504,7 +510,7 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
     // Before the pass: a target that names no document cannot be the scope a
     // pass would be checked against.
     if (!isSingleSegment(doc)) {
-      await accept(request, response, protocol, (ws) =>
+      await accept(request, response, protocol, { doc }, (ws) =>
         refuse(ws, BAD_DOCUMENT_CLOSE, 'document ids must be a single path segment'));
       return;
     }
@@ -523,7 +529,7 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
     }
     const identity = admission.identity;
     if (identity === undefined) {
-      await accept(request, response, protocol, (ws) => refuse(ws, UNAUTHORIZED_CLOSE, admission.failure!));
+      await accept(request, response, protocol, { doc }, (ws) => refuse(ws, UNAUTHORIZED_CLOSE, admission.failure!));
       return;
     }
     // A host without authentication has no member to count against, so the
@@ -544,7 +550,7 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
 
     let entry: Resident<DocumentRoom> | undefined;
     try {
-      await accept(request, response, protocol, async (ws) => {
+      await accept(request, response, protocol, { doc, actor: identity.actorId ?? identity.id }, async (ws) => {
         if (slot !== undefined) {
           slot.ws = ws;
         }

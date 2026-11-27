@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import { useId, useRef } from "react";
 import {
   isSameMonth,
@@ -399,12 +400,11 @@ export function MonthViewDayCell({
               <button
                 key={`more-${index}`}
                 type="button"
-                aria-label={`Show ${slot.count} more ${slot.count === 1 ? "event" : "events"} on ${fullDate}`}
+                aria-label={shellText("Show {v0} more {v1} on {v2}", {v0: slot.count, v1: slot.count === 1 ? "event" : "events", v2: fullDate})}
                 onClick={() => onMoreClick?.(date)}
                 className="px-1 py-0.5 text-xs font-bold text-foreground rounded-sm text-left cursor-default select-none"
               >
-                {slot.count} more
-              </button>
+                {slot.count} {shellText("more")} </button>
             );
           }
 

@@ -5,6 +5,7 @@ import { validateHostStartup } from './args/validate-startup.ts';
 import { createHostApp } from './host/app.ts';
 import type { HostAppOptions } from './host/options.ts';
 import { collabLogger } from './collab/log.ts';
+import { logOutboundWait } from './collab/observe.ts';
 import { LocalStore } from './blob/local.ts';
 import { PrivateS3Store, S3Store } from './blob/s3.ts';
 import type { BlobStore } from './blob/store.ts';
@@ -13,6 +14,7 @@ import { hostNames } from './host/host-check.ts';
 import { RateLimiter } from './host/rate-limit.ts';
 import { defaultConfig, listen, parseIp, Server, shutdownSignal } from './http/index.ts';
 import { DefaultBlockedPolicy, ExactOriginPolicy, OutboundFetcher } from './outbound/fetcher.ts';
+import { sharedOutboundPermits } from './outbound/permits.ts';
 // Bundled as a string by esbuild (--loader:.txt=text); must not be read from disk
 // after the binary is copied into the conformance temp directory.
 import USAGE from './args/usage.txt';
@@ -128,6 +130,9 @@ async function run(): Promise<number> {
       ? new ExactOriginPolicy(conformance.origin, conformance.port)
       : new DefaultBlockedPolicy(),
   );
+  const collabLog = collabLogger(process.stderr);
+  // The pool is one per process, so its observer is set here, once, beside it.
+  sharedOutboundPermits.onWait = (event) => logOutboundWait(collabLog, event);
   let blobStore: BlobStore | undefined;
   if (parsed.s3Bucket !== '') {
     const config = {
@@ -161,7 +166,7 @@ async function run(): Promise<number> {
     collabS3Prefix: parsed.collabS3Prefix,
     docEndpoint: parsed.docEndpoint,
     docEndpointAuth: parsed.docEndpointAuth,
-    collabLog: collabLogger(process.stderr),
+    collabLog,
     allowedOrigins: parsed.allowedOrigins,
     fileBytesEnabled,
     fileBytesMaxBytes,

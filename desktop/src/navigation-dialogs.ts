@@ -1,8 +1,9 @@
+import {shellText} from './shell-i18n';
 import { createNavigationDialog } from './navigation-modal';
 import type { ShellPage } from '@blok/sidebar';
 import { IconFile, IconTable } from '../../src/components/icons';
 import { renderPageIcon } from '../../src/shell/page-icon';
-import { createChoice, wrapSearchField } from './ui/controls';
+import { createChoice, wrapSearchField } from './components/dom';
 import './navigation-dialogs.css';
 
 const node = <K extends keyof HTMLElementTagNameMap>(tag: K, attribute: string, text?: string): HTMLElementTagNameMap[K] => {
@@ -33,8 +34,8 @@ export function openMovePicker(options: {
   const label = `Déplacer « ${options.sourceTitle} »`;
   return openPagePicker({
     ...options, label, caption: label, searchLabel: 'Rechercher une destination',
-    placeholder: 'Rechercher une destination…', verb: 'déplacer',
-    notice: options.remote ? 'Les droits hérités de la page et de ses sous-pages peuvent changer selon la destination.' : undefined,
+    placeholder: shellText("Rechercher une destination…"), verb: 'déplacer',
+    notice: options.remote ? shellText("Les droits hérités de la page et de ses sous-pages peuvent changer selon la destination.") : undefined,
   });
 }
 
@@ -104,7 +105,7 @@ function openPagePicker(options: {
       row.addEventListener('click', () => choose(page)); results.append(row);
     }
     empty.hidden = matches.length > 0;
-    empty.textContent = query ? `Aucune page pour « ${input.value.trim()} »` : (options.destinations ? 'Aucune destination disponible.' : 'Aucune page à afficher.');
+    empty.textContent = query ? shellText("Aucune page pour « {v0} »", {v0: input.value.trim()}) : (options.destinations ? shellText("Aucune destination disponible.") : shellText("Aucune page à afficher."));
     highlight();
   }
   input.addEventListener('input', render);
@@ -131,7 +132,7 @@ export function openPageCreation(options: {
   const modal = createNavigationDialog('Créer une page');
   modal.surface.setAttribute('data-navigation-create', '');
   modal.surface.append(node('h2', 'data-navigation-heading', 'Créer une page'));
-  const destination = createChoice({ label: 'Ajouter dans', value: options.destination, options: options.destinations, searchable: true, onChange() {} });
+  const destination = createChoice({ label: shellText("Ajouter dans"), value: options.destination, options: options.destinations, searchable: true, onChange() {} });
   const row = node('div', 'data-navigation-destination');
   row.append(node('span', 'data-navigation-caption', 'Ajouter dans'), destination.element);
   modal.surface.append(row);

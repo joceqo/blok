@@ -1,3 +1,4 @@
+import {attachGrabToDialogs} from './react-grab-dialogs';
 import type {ReactGrabAPI} from 'react-grab';
 
 export const reactGrabAvailable = import.meta.env.DEV || import.meta.env.VITE_REACT_GRAB === 'true' ||
@@ -35,25 +36,9 @@ export function loadReactGrab(): Promise<ReactGrabAPI> {
       }).join('\n\n'),
     });
     window.__REACT_GRAB__ = api;
-    attachGrabToDialogs();
+    const detach = attachGrabToDialogs();
+    import.meta.hot?.dispose(detach);
     return api;
   }).catch((error: unknown) => { pending = undefined; throw error; });
   return pending;
-}
-
-/** Keep the inspector above Blok's top-layer dialogs, inside their focus boundary. */
-function attachGrabToDialogs(): void {
-  const host = document.querySelector<HTMLElement>('[data-react-grab]');
-  if (!host) return;
-  const sync = (): void => {
-    const surface = document.querySelector<HTMLElement>('[data-custom-emoji-dialog][aria-modal="true"]')
-      ?? document.querySelector<HTMLElement>('[data-desktop-settings-dialog][aria-modal="true"]');
-    const parent = surface ?? document.body;
-    if (host.parentElement !== parent) parent.append(host);
-    if (surface && host.inert) host.inert = false;
-    if (surface && host.hasAttribute('aria-hidden')) host.removeAttribute('aria-hidden');
-  };
-  sync();
-  const observer = new MutationObserver(sync);
-  observer.observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ['aria-modal']});
 }

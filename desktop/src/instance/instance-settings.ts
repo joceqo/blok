@@ -1,3 +1,4 @@
+import {shellText, shellLocale} from '../shell-i18n';
 import { openModalDialog, type ModalDialogHandle } from '@blok/modal-dialog';
 import { PopoverDesktop } from '@blok/popover';
 import { IconDotsHorizontal, IconTrash } from '../../../src/components/icons';
@@ -15,9 +16,9 @@ import type {
   CloudSignupPolicy,
   CloudWorkspaceCreation,
 } from '../cloud/client';
-import { createChoice, styleTextField, type ChoiceControl } from '../ui/controls';
+import { createChoice, styleTextField, type ChoiceControl } from '../components/dom';
 import { button, el } from '../ui/dom';
-import { createFeedback } from '../ui/feedback';
+import { createFeedback } from '../components/dom';
 import './instance-settings.css';
 
 export type InstancePanel = 'general' | 'access' | 'accounts' | 'workspaces' | 'health';
@@ -39,11 +40,11 @@ function formatDate(value: string | undefined): string {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString('fr-FR', { year: 'numeric', month: 'short', day: 'numeric' });
+  return date.toLocaleDateString(shellLocale(), { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 function errorMessage(reason: unknown): string {
-  return reason instanceof Error ? reason.message : 'La demande n’a pas pu aboutir. Réessayez.';
+  return reason instanceof Error ? reason.message : shellText("La demande n’a pas pu aboutir. Réessayez.");
 }
 
 function applyEmailTestOutcome(
@@ -57,15 +58,15 @@ function applyEmailTestOutcome(
   const details = detailsEl;
   const backendLabel = outcome.backend || 'inconnu';
   if (outcome.ok) {
-    result.textContent = `E-mail de test envoyé (${backendLabel}).`;
+    result.textContent = shellText("E-mail de test envoyé ({v0}).", {v0: backendLabel});
     result.setAttribute('data-kind', 'ok');
     setPill(mail, 'ok', `Backend ${backendLabel}`);
   } else {
-    result.textContent = `Échec de l’envoi (${backendLabel}).`;
+    result.textContent = shellText("Échec de l’envoi ({v0}).", {v0: backendLabel});
     result.setAttribute('data-kind', 'error');
     setPill(mail, 'bad', `Backend ${backendLabel}`);
     const pre = details.querySelector('pre');
-    if (pre) pre.textContent = outcome.error ?? 'Erreur inconnue';
+    if (pre) pre.textContent = outcome.error ?? shellText("Erreur inconnue");
     details.hidden = false;
   }
   result.hidden = false;
@@ -112,7 +113,7 @@ function openConfirm(options: {
   const actions = el('div', { attribute: 'data-desktop-instance-confirm-actions' });
   const confirmState: { handle: ModalDialogHandle | null; busy: boolean } = { handle: null, busy: false };
   const close = (): void => { if (!confirmState.busy) confirmState.handle?.close(); };
-  const cancel = button({ label: 'Annuler', onClick: close });
+  const cancel = button({ label: shellText("Annuler"), onClick: close });
   const confirm = button({
     label: options.confirmLabel,
     primary: true,
@@ -158,18 +159,18 @@ export function mountInstanceSettings(
   const life = { alive: true };
 
   const titles: Record<InstancePanel, string> = {
-    general: 'Général',
-    access: 'Accès',
-    accounts: 'Comptes',
-    workspaces: 'Espaces',
-    health: 'Santé et e-mail',
+    general: shellText("Général"),
+    access: shellText("Accès"),
+    accounts: shellText("Comptes"),
+    workspaces: shellText("Espaces"),
+    health: shellText("Santé et e-mail"),
   };
   const intros: Record<InstancePanel, string> = {
-    general: 'Nom et identité de cette instance.',
-    access: 'Qui peut créer un compte et un espace sur ce serveur.',
-    accounts: 'Comptes de l’instance. Métadonnées seules — aucun contenu de page.',
-    workspaces: 'Espaces hébergés sur cette instance. Métadonnées seules — aucun accès au contenu.',
-    health: 'État du serveur et délivrabilité des e-mails.',
+    general: shellText("Nom et identité de cette instance."),
+    access: shellText("Qui peut créer un compte et un espace sur ce serveur."),
+    accounts: shellText("Comptes de l’instance. Métadonnées seules — aucun contenu de page."),
+    workspaces: shellText("Espaces hébergés sur cette instance. Métadonnées seules — aucun accès au contenu."),
+    health: shellText("État du serveur et délivrabilité des e-mails."),
   };
   root.append(
     el('h1', { text: titles[panel], attribute: 'data-desktop-settings-title' }),
@@ -183,7 +184,7 @@ export function mountInstanceSettings(
   else mountHealth();
 
   function mountGeneral(): void {
-    const status = el('p', { text: 'Chargement…', attribute: 'data-cloud-settings-muted' });
+    const status = el('p', { text: shellText("Chargement…"), attribute: 'data-cloud-settings-muted' });
     root.append(status);
     void options.client.adminSettings().then(async (payload) => {
       if (!life.alive) return;
@@ -192,15 +193,15 @@ export function mountInstanceSettings(
       const nameRow = el('div', { attribute: 'data-desktop-settings-row' });
       const labels = el('div', { attribute: 'data-desktop-settings-row-labels' });
       labels.append(
-        el('strong', { text: 'Nom de l’instance', attribute: 'data-desktop-settings-row-title' }),
-        el('span', { text: 'Affiché sur l’écran de connexion et dans les e-mails.', attribute: 'data-desktop-settings-row-help' }),
+        el('strong', { text: shellText("Nom de l’instance"), attribute: 'data-desktop-settings-row-title' }),
+        el('span', { text: shellText("Affiché sur l’écran de connexion et dans les e-mails."), attribute: 'data-desktop-settings-row-help' }),
       );
       const name = el('input', { attribute: 'data-desktop-instance-name' });
       name.type = 'text';
       styleTextField(name);
       name.maxLength = 120;
       name.value = settings.name;
-      name.setAttribute('aria-label', 'Nom de l’instance');
+      name.setAttribute('aria-label', shellText("Nom de l’instance"));
       const feedback = createFeedback({ attribute: 'data-desktop-instance-feedback' });
       disposers.push(() => feedback.destroy());
       name.addEventListener('change', () => {
@@ -213,7 +214,7 @@ export function mountInstanceSettings(
           if (!life.alive) return;
           settings.name = updated.name;
           name.value = updated.name;
-          feedback.show('Nom enregistré');
+          feedback.show(shellText("Nom enregistré"));
         }).catch((reason) => {
           if (!life.alive) return;
           name.value = settings.name;
@@ -223,14 +224,14 @@ export function mountInstanceSettings(
       nameRow.append(labels, name);
       const urlRow = el('div', { attribute: 'data-desktop-settings-row' });
       urlRow.append(
-        el('strong', { text: 'Adresse publique', attribute: 'data-desktop-settings-row-title' }),
+        el('strong', { text: shellText("Adresse publique"), attribute: 'data-desktop-settings-row-title' }),
         el('span', { text: options.publicUrl || '—', attribute: 'data-desktop-settings-row-value' }),
       );
       const versionRow = el('div', { attribute: 'data-desktop-settings-row' });
       versionRow.append(
-        el('strong', { text: 'Versions', attribute: 'data-desktop-settings-row-title' }),
+        el('strong', { text: shellText("Versions"), attribute: 'data-desktop-settings-row-title' }),
         el('span', {
-          text: `Blok ${options.coreVersion} · App ${options.appVersion}`,
+          text: shellText("Blok {v0} · App {v1}", {v0: options.coreVersion, v1: options.appVersion}),
           attribute: 'data-desktop-settings-row-value',
         }),
       );
@@ -241,11 +242,11 @@ export function mountInstanceSettings(
         const admins = listed.users.filter((user) => user.instanceAdmin);
         const names = admins.map((user) => user.name?.trim() || user.email).join(', ');
         root.append(el('p', {
-          text: names ? `Administrée par ${names}.` : 'Administrée par —.',
+          text: names ? shellText("Administrée par {v0}.", {v0: names}) : shellText("Administrée par —."),
           attribute: 'data-desktop-instance-admins',
         }));
       } catch {
-        if (life.alive) root.append(el('p', { text: 'Administrée par —.', attribute: 'data-desktop-instance-admins' }));
+        if (life.alive) root.append(el('p', { text: shellText("Administrée par —."), attribute: 'data-desktop-instance-admins' }));
       }
     }).catch((reason) => {
       if (life.alive) status.textContent = errorMessage(reason);
@@ -253,7 +254,7 @@ export function mountInstanceSettings(
   }
 
   function mountAccess(): void {
-    const status = el('p', { text: 'Chargement…', attribute: 'data-cloud-settings-muted' });
+    const status = el('p', { text: shellText("Chargement…"), attribute: 'data-cloud-settings-muted' });
     root.append(status);
     const choices: ChoiceControl<string>[] = [];
     disposers.push(() => { for (const choice of choices) choice.destroy(); });
@@ -274,7 +275,7 @@ export function mountInstanceSettings(
           if (!life.alive) return;
           settings[key] = updated[key];
           control.setValue(updated[key]);
-          feedback.show('Enregistré');
+          feedback.show(shellText("Enregistré"));
         }).catch((reason) => {
           if (!life.alive) return;
           control.setValue(previous);
@@ -289,11 +290,11 @@ export function mountInstanceSettings(
         attribute: 'data-desktop-settings-row-help',
       });
       signupLabels.append(
-        el('strong', { text: 'Inscription', attribute: 'data-desktop-settings-row-title' }),
+        el('strong', { text: shellText("Inscription"), attribute: 'data-desktop-settings-row-title' }),
         signupHelp,
       );
       const signup = createChoice<CloudSignupPolicy>({
-        label: 'Inscription',
+        label: shellText("Inscription"),
         value: settings.signupPolicy,
         options: signupPolicyOptions(),
         onChange(value) {
@@ -314,11 +315,11 @@ export function mountInstanceSettings(
         attribute: 'data-desktop-settings-row-help',
       });
       creationLabels.append(
-        el('strong', { text: 'Création d’espaces', attribute: 'data-desktop-settings-row-title' }),
+        el('strong', { text: shellText("Création d’espaces"), attribute: 'data-desktop-settings-row-title' }),
         creationHelp,
       );
       const creation = createChoice<CloudWorkspaceCreation>({
-        label: 'Création d’espaces',
+        label: shellText("Création d’espaces"),
         value: settings.workspaceCreation,
         options: workspaceCreationOptions(),
         onChange(value) {
@@ -339,7 +340,7 @@ export function mountInstanceSettings(
   }
 
   function mountAccounts(): void {
-    const status = el('p', { text: 'Chargement…', attribute: 'data-cloud-settings-muted' });
+    const status = el('p', { text: shellText("Chargement…"), attribute: 'data-cloud-settings-muted' });
     const error = el('p', { attribute: 'data-cloud-settings-error' });
     error.setAttribute('role', 'alert');
     error.hidden = true;
@@ -354,10 +355,10 @@ export function mountInstanceSettings(
       menus.splice(0).forEach((menu) => menu.destroy());
       list.replaceChildren();
       if (!users.length) {
-        list.append(el('p', { text: 'Aucun compte.', attribute: 'data-cloud-settings-muted' }));
+        list.append(el('p', { text: shellText("Aucun compte."), attribute: 'data-cloud-settings-muted' }));
         return;
       }
-      list.append(metadataTable(['Adresse', 'Nom', 'Date', 'Espaces', 'Actions'], users.map(user => [
+      list.append(metadataTable([shellText("Adresse"), shellText("Nom"), shellText("Date"), shellText("Espaces"), shellText("Actions")], users.map(user => [
         user.email, user.name || '—', formatDate(user.createdAt), String(user.workspaceCount),
         accountMenu(user, () => { void refresh(); }),
       ])));
@@ -366,7 +367,7 @@ export function mountInstanceSettings(
     function accountMenu(user: CloudAdminUser, onChanged: () => void): HTMLButtonElement {
       const trigger = button({ label: '', onClick: () => open(), attribute: 'data-desktop-instance-account-menu' });
       trigger.innerHTML = IconDotsHorizontal;
-      trigger.setAttribute('aria-label', `Actions pour ${user.email}`);
+      trigger.setAttribute('aria-label', shellText("Actions pour {v0}", {v0: user.email}));
       trigger.setAttribute('aria-haspopup', 'menu');
       trigger.setAttribute('aria-expanded', 'false');
       const menuState: { popup: PopoverDesktop | null; destroyed: boolean } = { popup: null, destroyed: false };
@@ -376,7 +377,7 @@ export function mountInstanceSettings(
         const items = [
           {
             name: 'promote',
-            title: user.instanceAdmin ? 'Déjà administrateur' : 'Promouvoir',
+            title: user.instanceAdmin ? shellText("Déjà administrateur") : shellText("Promouvoir"),
             isDisabled: user.instanceAdmin,
             closeOnActivate: true,
             onActivate: () => {
@@ -390,15 +391,15 @@ export function mountInstanceSettings(
           },
           {
             name: 'delete',
-            title: 'Supprimer',
+            title: shellText("Supprimer"),
             icon: IconTrash,
             isDestructive: true,
             closeOnActivate: true,
             onActivate: () => {
               if (confirmation || !life.alive) return;
               confirmation = openConfirm({
-                title: 'Supprimer ce compte ?',
-                message: `${user.email} sera retiré de l’instance. Sessions, jetons et accès seront effacés. Cette action est définitive.`,
+                title: shellText("Supprimer ce compte ?"),
+                message: shellText("{v0} sera retiré de l’instance. Sessions, jetons et accès seront effacés. Cette action est définitive.", {v0: user.email}),
                 confirmLabel: 'Supprimer',
                 container: options.dialog,
                 onClose: () => {
@@ -458,7 +459,7 @@ export function mountInstanceSettings(
   }
 
   function mountWorkspaces(): void {
-    const status = el('p', { text: 'Chargement…', attribute: 'data-cloud-settings-muted' });
+    const status = el('p', { text: shellText("Chargement…"), attribute: 'data-cloud-settings-muted' });
     const list = el('div', { attribute: 'data-desktop-instance-workspaces' });
     root.append(status, list);
     void options.client.adminWorkspaces().then((payload) => {
@@ -466,10 +467,10 @@ export function mountInstanceSettings(
       status.remove();
       const workspaces: CloudAdminWorkspace[] = payload.workspaces;
       if (!workspaces.length) {
-        list.append(el('p', { text: 'Aucun espace.', attribute: 'data-cloud-settings-muted' }));
+        list.append(el('p', { text: shellText("Aucun espace."), attribute: 'data-cloud-settings-muted' }));
         return;
       }
-      list.append(metadataTable(['Nom', 'Identifiant', 'Membres', 'Date'], workspaces.map(workspace => [
+      list.append(metadataTable([shellText("Nom"), shellText("Identifiant"), shellText("Membres"), shellText("Date")], workspaces.map(workspace => [
         workspace.name, workspace.slug || workspace.id, String(workspace.memberCount), formatDate(workspace.createdAt),
       ])));
     }).catch((reason) => {
@@ -493,13 +494,13 @@ export function mountInstanceSettings(
       row.append(dot, el('strong', { text: label }), el('span', { text: detail, attribute: 'data-cloud-settings-muted' }));
       return row;
     };
-    const base = makePill('Base de données', 'unknown', 'Vérification…');
-    const files = makePill('Fichiers', 'unknown', 'Vérification…');
-    const mail = makePill('Envoi d’e-mails', 'unknown', 'Non vérifié');
+    const base = makePill(shellText("Base de données"), 'unknown', shellText("Vérification…"));
+    const files = makePill(shellText("Fichiers"), 'unknown', shellText("Vérification…"));
+    const mail = makePill(shellText("Envoi d’e-mails"), 'unknown', shellText("Non vérifié"));
     pills.append(base, files, mail);
     root.append(pills);
     root.append(el('p', {
-      text: 'L’expéditeur est défini dans la configuration du serveur (variables SMTP / Resend).',
+      text: shellText("L’expéditeur est défini dans la configuration du serveur (variables SMTP / Resend)."),
       attribute: 'data-desktop-settings-row-help',
     }));
 
@@ -519,9 +520,9 @@ export function mountInstanceSettings(
         setPill(mail, health.mail.ok ? 'ok' : 'bad', health.mail.detail ?? '');
       } catch {
         if (!life.alive) return;
-        setPill(base, 'bad', 'Injoignable');
-        setPill(files, 'unknown', 'État inconnu');
-        setPill(mail, 'unknown', 'État inconnu');
+        setPill(base, 'bad', shellText("Injoignable"));
+        setPill(files, 'unknown', shellText("État inconnu"));
+        setPill(mail, 'unknown', shellText("État inconnu"));
       }
     })();
 
@@ -530,7 +531,7 @@ export function mountInstanceSettings(
     email.type = 'email';
     styleTextField(email);
     email.placeholder = 'adresse@exemple.fr';
-    email.setAttribute('aria-label', 'Adresse pour l’e-mail de test');
+    email.setAttribute('aria-label', shellText("Adresse pour l’e-mail de test"));
     const sessionEmail = options.client.currentSession?.user.email;
     if (sessionEmail) email.value = sessionEmail;
     const result = el('p', { attribute: 'data-desktop-instance-email-result' });
@@ -538,9 +539,9 @@ export function mountInstanceSettings(
     result.hidden = true;
     const details = el('details', { attribute: 'data-desktop-instance-smtp-error' });
     details.hidden = true;
-    details.append(el('summary', { text: 'Détail de l’erreur SMTP' }), el('pre', { text: '' }));
+    details.append(el('summary', { text: shellText("Détail de l’erreur SMTP") }), el('pre', { text: '' }));
     const send = button({
-      label: 'Envoyer un e-mail de test',
+      label: shellText("Envoyer un e-mail de test"),
       primary: true,
       attribute: 'data-desktop-instance-email-test',
       onClick: async () => {
@@ -548,7 +549,7 @@ export function mountInstanceSettings(
         result.hidden = true;
         details.hidden = true;
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
-          result.textContent = 'Saisissez une adresse e-mail valide.';
+          result.textContent = shellText("Saisissez une adresse e-mail valide.");
           result.hidden = false;
           result.setAttribute('data-kind', 'error');
           return;

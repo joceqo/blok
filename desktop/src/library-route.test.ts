@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {calendarUrl, editorUrl} from './calendar-route';
-import {isTeamspaceLibrary, libraryPageId, libraryPageUrl, libraryUrl, libraryView} from './library-route';
+import {libraryPageId, libraryPageUrl, libraryUrl, libraryView} from './library-route';
 
 describe('workspace library links', () => {
   it('preserves the workspace and clears the previous page and its block anchor', () => {
@@ -14,8 +14,7 @@ describe('workspace library links', () => {
   });
   it('keeps the teamspace table under an open page and removes peek parameters on exit', () => {
     const link = new URL('https://blok.test/library/teamspaces?workspace=atelier&p=a&pm=s&pvs=140');
-    expect(isTeamspaceLibrary(link)).toBe(true);
-    expect(libraryView(link)).toBe('recents');
+    expect(libraryView(link)).toBe('teamspaces');
     expect(libraryPageId(link)).toBe('a');
     expect(libraryPageUrl(link, null).href).toBe('https://blok.test/library/teamspaces?workspace=atelier');
     expect(libraryPageId(libraryPageUrl(link, 'b'))).toBe('b');

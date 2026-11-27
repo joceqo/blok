@@ -1,3 +1,4 @@
+import {shellText} from '../shell-i18n';
 import {invoke} from '@tauri-apps/api/core';
 import {getCurrentWindow} from '@tauri-apps/api/window';
 import {readInboxPreference} from './inbox-preferences';
@@ -43,7 +44,7 @@ export function discussionAlerts() {
       if (await systemPermission() !== 'granted') return;
       for (const item of fresh) {
         if (signal.aborted || !readInboxPreference('comments')) return;
-        const message = item.type === 'comment_mention' ? 'Vous avez été mentionné·e dans un commentaire.' : 'Votre commentaire a reçu une réponse.';
+        const message = item.type === 'comment_mention' ? shellText('Vous avez été mentionné·e dans un commentaire.') : shellText('Votre commentaire a reçu une réponse.');
         await sendSystemNotice('discussion-' + item.id, message);
       }
     })().catch(() => { /* Permission may change between the poll and delivery. */ });

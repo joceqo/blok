@@ -478,4 +478,65 @@ describe('@fast the sync route hosts the collaboration room', () => {
     await waitFor(() => socket.closed !== null, () => 'the drain\'s close');
     expect(socket.closed?.code).toBe(DRAINING_CLOSE);
   });
+
+  /**
+   * A dropped socket is what a person experiences as "it disconnected on its
+   * own", and the close code is the only thing that says why. It reaches the
+   * client and nowhere else, so until it is written down the host has no
+   * answer to the one question it will be asked.
+   */
+  it('keeps the code and reason of a socket it refused, and the document', async () => {
+    const logged: string[] = [];
+    const host = await startHost({
+      ...journalling(),
+      auth: 'ticket',
+      secret: SECRET,
+      allowedOrigins: [ORIGIN],
+      collabLog: (message) => logged.push(message),
+    });
+    try {
+      const refused = await openSocket(host, 'logged-doc', ticketFor('other', 'u1', true));
+
+      await waitFor(() => refused.closed !== null, () => 'the refusal close');
+      expect(logged).toContain(
+        'collab: socket closed code=4401 reason="pass is for another document" doc="logged-doc"',
+      );
+    } finally {
+      await host.stop();
+    }
+  });
+
+  it('names the member whose socket it dropped, once the pass said who that was', async () => {
+    const logged: string[] = [];
+    const host = await startHost({
+      ...journalling(),
+      auth: 'ticket',
+      secret: SECRET,
+      allowedOrigins: [ORIGIN],
+      collabLog: (message) => logged.push(message),
+    });
+    const socket = await openSocket(host, 'drain-log-doc', ticketFor('drain-log-doc', 'u-42', true));
+
+    await waitFor(() => socket.frames.length > 0, () => 'the room\'s first frame');
+    await host.stop();
+    await waitFor(() => socket.closed !== null, () => 'the drain\'s close');
+    expect(logged).toContain(
+      'collab: socket closed code=1001 reason="host draining" doc="drain-log-doc" actor="u-42"',
+    );
+  });
+
+  it('says nothing when a member closes its own socket', async () => {
+    const logged: string[] = [];
+    const host = await startHost({ ...journalling(), collabLog: (message) => logged.push(message) });
+    try {
+      const socket = await openSocket(host, 'quiet-doc');
+
+      await waitFor(() => socket.frames.length > 0, () => 'the room\'s first frame');
+      socket.socket.close();
+      await waitFor(() => socket.closed !== null, () => 'the socket to settle');
+      expect(logged).toEqual([]);
+    } finally {
+      await host.stop();
+    }
+  });
 });

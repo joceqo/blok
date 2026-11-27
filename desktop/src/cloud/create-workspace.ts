@@ -1,3 +1,4 @@
+import {shellText} from '../shell-i18n';
 import { WORKSPACE_CREATION_POLICIES } from '../access-vocabulary';
 import { button, el, field } from '../ui/dom';
 import type { CloudClient, CloudInstance, CloudWorkspaceCreation } from './client';
@@ -20,10 +21,10 @@ export function mountCreateWorkspace(options: CreateWorkspaceOptions): void {
   const main = options.frame();
   main.setAttribute('data-cloud-narrow', '');
   main.append(
-    el('span', { text: 'Nouvel espace', attribute: 'data-cloud-eyebrow' }),
-    el('h1', { text: 'Créer un espace de travail' }),
+    el('span', { text: shellText("Nouvel espace"), attribute: 'data-cloud-eyebrow' }),
+    el('h1', { text: shellText("Créer un espace de travail") }),
     el('p', {
-      text: 'Chaque espace a ses propres pages, membres et réglages.',
+      text: shellText("Chaque espace a ses propres pages, membres et réglages."),
       attribute: 'data-cloud-muted',
     }),
   );
@@ -33,11 +34,11 @@ export function mountCreateWorkspace(options: CreateWorkspaceOptions): void {
     main.append(el('div', {
       attribute: 'data-cloud-status',
       children: [
-        el('strong', { text: 'La création d’espaces est désactivée' }),
+        el('strong', { text: shellText("La création d’espaces est désactivée") }),
         el('p', { text: WORKSPACE_CREATION_POLICIES.disabled.consequence }),
       ],
     }));
-    main.append(button({ label: 'Retour aux espaces', onClick: options.onCancel }));
+    main.append(button({ label: shellText("Retour aux espaces"), onClick: options.onCancel }));
     return;
   }
   if (policy === 'admins_only') {
@@ -48,9 +49,9 @@ export function mountCreateWorkspace(options: CreateWorkspaceOptions): void {
   }
 
   const form = el('form', { attribute: 'data-cloud-stack' });
-  const name = field({ form, label: 'Nom de l’espace', type: 'text', name: 'workspace-name' });
+  const name = field({ form, label: shellText("Nom de l’espace"), type: 'text', name: 'workspace-name' });
   name.maxLength = 120;
-  const slug = field({ form, label: 'Identifiant de l’espace', type: 'text', name: 'workspace-slug' });
+  const slug = field({ form, label: shellText("Identifiant de l’espace"), type: 'text', name: 'workspace-slug' });
   slug.pattern = '[a-z0-9][a-z0-9-]{1,62}';
   slug.minLength = 2;
   slug.maxLength = 63;
@@ -62,7 +63,7 @@ export function mountCreateWorkspace(options: CreateWorkspaceOptions): void {
   });
   slug.addEventListener('input', () => { slugState.touched = true; });
 
-  const submit = button({ label: 'Créer l’espace', primary: true, block: true, type: 'submit', onClick: () => {} });
+  const submit = button({ label: shellText("Créer l’espace"), primary: true, block: true, type: 'submit', onClick: () => {} });
   form.append(submit);
   form.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -80,5 +81,5 @@ export function mountCreateWorkspace(options: CreateWorkspaceOptions): void {
     });
   });
   main.append(form);
-  main.append(button({ label: 'Retour', onClick: options.onCancel }));
+  main.append(button({ label: shellText("Retour"), onClick: options.onCancel }));
 }

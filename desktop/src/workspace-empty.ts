@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 /** Empty remote spaces stay empty until a member explicitly creates a page — unless welcome seed runs first. */
 
 export interface EmptyWorkspaceExtras {
@@ -18,8 +19,8 @@ export function createEmptyWorkspaceState(
   const message = document.createElement('p');
   message.setAttribute('role', 'status');
   message.textContent = viewer
-    ? 'Aucune page n’est partagée avec vous pour le moment'
-    : 'Cet espace est vide. Créez votre première page.';
+    ? shellText("Aucune page n’est partagée avec vous pour le moment")
+    : shellText("Cet espace est vide. Créez votre première page.");
   element.append(message);
   if (viewer) return element;
 

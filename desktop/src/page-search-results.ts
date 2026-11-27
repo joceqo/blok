@@ -22,7 +22,7 @@ export interface SearchOptions {
 
 export function normalize(text: string): string {
   return text
-    .normalize('NFD')
+    .normalize("NFD")
     .replace(/\p{Diacritic}/gu, '')
     .toLocaleLowerCase()
     .trim();

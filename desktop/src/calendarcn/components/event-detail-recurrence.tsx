@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { format, isSameYear, isValid, parse, startOfDay } from "date-fns";
 import type { Locale } from "date-fns";
@@ -308,7 +309,7 @@ function NumberField({ label, value, onChange, disabled }: NumberFieldProps) {
         <button
           type="button"
           tabIndex={-1}
-          aria-label={`Increase ${label}`}
+          aria-label={shellText("Increase {v0}", {v0: label})}
           disabled={disabled}
           onClick={() => onChange(clampCount(value + 1, value))}
           className={cn(
@@ -321,7 +322,7 @@ function NumberField({ label, value, onChange, disabled }: NumberFieldProps) {
         <button
           type="button"
           tabIndex={-1}
-          aria-label={`Decrease ${label}`}
+          aria-label={shellText("Decrease {v0}", {v0: label})}
           disabled={disabled}
           onClick={() => onChange(clampCount(value - 1, value))}
           className={cn(
@@ -458,9 +459,9 @@ function CustomRecurrenceDialog({
     locale,
   ).detail.replace(/^on /, "");
   const ends: { type: RecurrenceEnd["type"]; label: string }[] = [
-    { type: "never", label: "Never" },
-    { type: "on", label: "On" },
-    { type: "after", label: "After" },
+    { type: "never", label: shellText("Never") },
+    { type: "on", label: shellText("On") },
+    { type: "after", label: shellText("After") },
   ];
 
   return (
@@ -473,21 +474,21 @@ function CustomRecurrenceDialog({
         )}
         onKeyDown={stopEscapePropagation}
       >
-        <DialogTitle className="text-base font-medium">Repeat</DialogTitle>
+        <DialogTitle className="text-base font-medium">{shellText("Repeat")}</DialogTitle>
         <DialogDescription className="sr-only">
-          How often the event repeats and when it stops
+          {shellText("How often the event repeats and when it stops")}
         </DialogDescription>
 
         <div className="flex flex-col gap-4">
           <div className="flex items-center gap-2">
-            <span className="w-12 shrink-0 text-foreground">Every</span>
+            <span className="w-12 shrink-0 text-foreground">{shellText("Every")}</span>
             <NumberField
-              label="Interval"
+              label={shellText("Interval")}
               value={interval}
               onChange={setRepeatInterval}
             />
             <DropdownMenu>
-              <DropdownMenuTrigger render={<button type="button" aria-label={`Unit: ${unit}`} className={cn(
+              <DropdownMenuTrigger render={<button type="button" aria-label={shellText("Unit: {v0}", {v0: unit})} className={cn(
                                               "flex h-8 w-[87px] items-center justify-between px-2.5 data-[state=open]:bg-calendar-detail-focus data-popup-open:bg-calendar-detail-focus dark:data-[state=open]:bg-calendar-menu-accent dark:data-popup-open:bg-calendar-menu-accent",
                                               DIALOG_FIELD_CLASS,
                                             )} />}>{unitLabel(frequency)}<ChevronDown
@@ -519,8 +520,8 @@ function CustomRecurrenceDialog({
 
           {frequency === "weekly" && (
             <div className="flex items-center gap-2">
-              <span className="w-12 shrink-0 text-foreground">On</span>
-              <div className="flex gap-[9px]" role="group" aria-label="Days">
+              <span className="w-12 shrink-0 text-foreground">{shellText("On")}</span>
+              <div className="flex gap-[9px]" role="group" aria-label={shellText("Days")}>
                 {DIALOG_WEEKDAYS.map((day) => {
                   const selected = weekdays.includes(day);
                   const date = new Date(start);
@@ -549,10 +550,10 @@ function CustomRecurrenceDialog({
 
           {frequency === "monthly" && (
             <div className="flex items-center gap-2">
-              <span className="w-12 shrink-0 text-foreground">On</span>
+              <span className="w-12 shrink-0 text-foreground">{shellText("On")}</span>
               <div
                 role="radiogroup"
-                aria-label="Day of the month"
+                aria-label={shellText("Day of the month")}
                 className={cn(
                   "flex rounded-md p-0.5",
                   EVENT_DETAIL_DIALOG_FILL_CLASS,
@@ -584,10 +585,10 @@ function CustomRecurrenceDialog({
           )}
 
           <div className="flex flex-col gap-3">
-            <span className="text-foreground">Ends</span>
+            <span className="text-foreground">{shellText("Ends")}</span>
             <div
               role="radiogroup"
-              aria-label="Ends"
+              aria-label={shellText("Ends")}
               className="flex flex-col gap-2"
             >
               {ends.map(({ type, label }) => (
@@ -612,7 +613,7 @@ function CustomRecurrenceDialog({
                       <input
                         ref={endDateRef}
                         type="text"
-                        aria-label="End date"
+                        aria-label={shellText("End date")}
                         value={endDateText}
                         disabled={endType !== "on"}
                         onChange={(e) => setEndDateText(e.target.value)}
@@ -630,7 +631,7 @@ function CustomRecurrenceDialog({
                       className="flex items-center gap-2.5"
                     >
                       <NumberField
-                        label="Occurrences"
+                        label={shellText("Occurrences")}
                         value={endCount}
                         onChange={setEndCount}
                         disabled={endType !== "after"}
@@ -642,7 +643,7 @@ function CustomRecurrenceDialog({
                             : EVENT_DETAIL_MUTED_CLASS
                         }
                       >
-                        times
+                        {shellText("times")}
                       </span>
                     </div>
                   )}
@@ -661,7 +662,7 @@ function CustomRecurrenceDialog({
               EVENT_DETAIL_DIALOG_BUTTON_CLASS,
             )}
           >
-            Cancel
+            {shellText("Cancel")}
           </button>
           <button
             type="button"
@@ -671,7 +672,7 @@ function CustomRecurrenceDialog({
               ACCENT_BG_CLASS,
             )}
           >
-            Done
+            {shellText("Done")}
           </button>
         </DialogFooter>
       </DialogContent>
@@ -745,7 +746,7 @@ export function EventDetailRecurrence<
       >
         <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
           <HoverTooltip label={fullText} when={isTruncated}>
-            <DropdownMenuTrigger render={<button ref={triggerRef} type="button" aria-label={`Repeat: ${repeats ? fullText : "does not repeat"}`} disabled={!onEventChange} className={cn(
+            <DropdownMenuTrigger render={<button ref={triggerRef} type="button" aria-label={shellText("Repeat: {v0}", {v0: repeats ? fullText : "does not repeat"})} disabled={!onEventChange} className={cn(
                                         EVENT_DETAIL_HOVER_BORDER_CLASS,
                                         "group/repeat -ml-[13px] flex h-[31px] min-w-0 flex-1 items-center gap-[11px] rounded-sm pr-2 pl-3 text-left outline-none disabled:cursor-default disabled:hover:border-transparent",
                                         // Without the series buttons the box ends 10px before the panel's edge
@@ -760,7 +761,7 @@ export function EventDetailRecurrence<
                                           />
                                         ) : (
                                           <span className={EVENT_DETAIL_PLACEHOLDER_CLASS}>
-                                            Repeat
+                                            {shellText("Repeat")}
                                           </span>
                                         )}
                                       </span>{onEventChange && (
@@ -791,7 +792,7 @@ export function EventDetailRecurrence<
                   onClick={() => applyRule(null)}
                 >
                   <RefreshCwOff className="absolute left-2.5 size-3.5 text-calendar-menu-foreground opacity-80" />
-                  Does not repeat
+                  {shellText("Does not repeat")}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator className="bg-calendar-menu-border" />
               </>
@@ -835,7 +836,7 @@ export function EventDetailRecurrence<
                 setCustomOpen(true);
               }}
             >
-              Custom…
+              {shellText("Custom…")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -843,13 +844,13 @@ export function EventDetailRecurrence<
         {repeats && (
           <div className="ml-[9px] flex shrink-0 items-center">
             <SeriesButton
-              label="Go to previous event in this series"
+              label={shellText("Go to previous event in this series")}
               onClick={onPrevious}
             >
               <ChevronLeft className="size-4" />
             </SeriesButton>
             <SeriesButton
-              label="Go to next event in this series"
+              label={shellText("Go to next event in this series")}
               onClick={onNext}
             >
               <ChevronRight className="size-4" />

@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 
 import { cn } from "../lib/utils";
@@ -58,7 +59,7 @@ function SummaryRow({ row }: { row: EventChangeSummaryRow }) {
       </span>
       <div className="flex min-w-0 flex-col">
         <span className="truncate">
-          {row.after ?? "Changed"}
+          {row.after ?? shellText("Changed")}
           <span aria-hidden className="ml-1.5 text-[8px] align-middle">
             {"●"}
           </span>
@@ -151,14 +152,14 @@ export function EventSeriesScopeDialog() {
         }}
       >
         <DialogTitle className="text-base font-medium">
-          {shown ? `${SERIES_SCOPE_TITLES[shown.action]} “${shown.title}”` : ""}
+          {shown ? shellText("{v0} “{v1}”", {v0: SERIES_SCOPE_TITLES[shown.action], v1: shown.title}) : ""}
         </DialogTitle>
         <DialogDescription className="sr-only">
-          Choose which events of the series the change applies to
+          {shellText("Choose which events of the series the change applies to")}
         </DialogDescription>
         <div
           role="radiogroup"
-          aria-label="Apply to"
+          aria-label={shellText("Apply to")}
           className="flex flex-col gap-1"
         >
           {shown?.scopes.map((option) => (
@@ -189,7 +190,7 @@ export function EventSeriesScopeDialog() {
               onClick={() => answer({ action: "cancel" })}
               className={NEUTRAL_BUTTON_CLASS}
             >
-              Cancel
+              {shellText("Cancel")}
             </button>
             <button
               type="button"
@@ -199,7 +200,7 @@ export function EventSeriesScopeDialog() {
                 "bg-calendar-danger text-calendar-danger-foreground",
               )}
             >
-              Delete event
+              {shellText("Delete event")}
             </button>
           </div>
         ) : (
@@ -213,21 +214,21 @@ export function EventSeriesScopeDialog() {
                 DESTRUCTIVE_TEXT_CLASS,
               )}
             >
-              Discard change
+              {shellText("Discard change")}
             </button>
             <button
               type="button"
               onClick={() => answer({ action: "continue" })}
               className={NEUTRAL_BUTTON_CLASS}
             >
-              Continue editing
+              {shellText("Continue editing")}
             </button>
             <button
               type="button"
               onClick={() => answer({ action: "save", scope })}
               className={cn(FILLED_BUTTON_CLASS, EVENT_DETAIL_ACCENT_BG_CLASS)}
             >
-              Save event
+              {shellText("Save event")}
             </button>
           </div>
         )}

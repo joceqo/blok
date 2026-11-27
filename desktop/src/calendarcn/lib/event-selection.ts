@@ -1,3 +1,4 @@
+import {shellText} from '../../shell-i18n';
 import { addDays, differenceInCalendarDays } from "date-fns";
 
 import { getChangedEventId, getPastedEventTimes } from "./event-history";
@@ -196,7 +197,7 @@ export function describeGroupNotice(
   action: "delete" | "cut" | "copy",
   count: number,
 ): CalendarNoticeInput {
-  return { message: `${count} ${GROUP_NOTICES[action]}` };
+  return { message: shellText("{v0} {v1}", {v0: count, v1: GROUP_NOTICES[action]}) };
 }
 
 /** What to announce after an action on several events: "Deleted 3 events" */

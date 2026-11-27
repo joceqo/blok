@@ -1,10 +1,11 @@
+import {shellText} from '../shell-i18n';
 import { openModalDialog, type ModalDialogHandle } from '@blok/modal-dialog';
 import { PopoverDesktop } from '@blok/popover';
 import { IconPeople, IconDotsHorizontal, IconTrash } from '../../../src/components/icons';
 import { MEMBERS_ROLES_INTRO, roleOptions, WORKSPACE_ROLES } from '../access-vocabulary';
 import type { CloudClient, CloudRole } from './client';
 import './workspace-settings.css';
-import { createChoice, styleTextField, wrapSearchField, type ChoiceControl } from '../ui/controls';
+import { createChoice, styleTextField, wrapSearchField, type ChoiceControl } from '../components/dom';
 
 export interface WorkspaceMembersOptions { client: CloudClient; slug: string; initialTab?: Tab; onInvite?: () => { close(): void } | void }
 export interface WorkspaceMembersHandle { destroy(): void; refresh(): Promise<void> }
@@ -104,7 +105,7 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
     rowMenus.length = 0;
   }
 
-  const invite = action('Inviter des membres', () => {
+  const invite = action(shellText("Inviter des membres"), () => {
     invitation = options.onInvite ? options.onInvite() : openWorkspaceInvitation({
       client: options.client,
       slug: options.slug,
@@ -116,7 +117,7 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
 
   const tabs = el('div', undefined, 'data-cloud-members-tabs');
   tabs.setAttribute('role', 'tablist');
-  tabs.setAttribute('aria-label', 'Accès à l’espace');
+  tabs.setAttribute('aria-label', shellText("Accès à l’espace"));
   const buttons = new Map<Tab, HTMLButtonElement>();
   const labels: Record<Tab, string> = { members: 'Membres', requests: 'Demandes', invites: 'Invitations' };
   const list = el('div', undefined, 'data-cloud-members-list');
@@ -142,8 +143,8 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
   const search = el('input', undefined, 'data-cloud-members-search');
   styleTextField(search);
   search.type = 'search';
-  search.placeholder = 'Rechercher une personne…';
-  search.setAttribute('aria-label', 'Rechercher parmi les accès');
+  search.placeholder = shellText("Rechercher une personne…");
+  search.setAttribute('aria-label', shellText("Rechercher parmi les accès"));
   search.addEventListener('input', render);
   const error = el('p', undefined, 'data-cloud-settings-error');
   error.setAttribute('role', 'alert');
@@ -180,7 +181,7 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
     const trigger = action('', () => open());
     trigger.innerHTML = IconDotsHorizontal;
     trigger.setAttribute('data-cloud-member-menu', '');
-    trigger.setAttribute('aria-label', `Actions pour ${member.email}`);
+    trigger.setAttribute('aria-label', shellText("Actions pour {v0}", {v0: member.email}));
     trigger.setAttribute('aria-haspopup', 'menu');
     trigger.setAttribute('aria-expanded', 'false');
     const menuState = { popup: null as PopoverDesktop | null, destroyed: false };
@@ -193,7 +194,7 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
         minWidth: '220px',
         items: [{
           name: 'remove',
-          title: 'Retirer de l’espace',
+          title: shellText("Retirer de l’espace"),
           icon: IconTrash,
           isDestructive: true,
           closeOnActivate: true,
@@ -259,7 +260,7 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
   }
 
   function appendMemberControls(controls: HTMLElement, member: Member): void {
-    const role = rolePicker(member.role, `Rôle de ${member.email}`, true, (value) => {
+    const role = rolePicker(member.role, shellText("Rôle de {v0}", {v0: member.email}), true, (value) => {
       role.setValue(member.role);
       void mutate(`/members/${encodeURIComponent(member.id)}`, 'PATCH', { role: value });
     });
@@ -268,19 +269,19 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
   }
 
   function appendRequestControls(controls: HTMLElement, item: JoinRequest): void {
-    const role = rolePicker('member', `Accès pour ${item.email}`);
+    const role = rolePicker('member', shellText("Accès pour {v0}", {v0: item.email}));
     choices.push(role);
     controls.append(
       role.element,
-      action('Refuser', () => { void mutate(`/join-requests/${encodeURIComponent(item.id)}/reject`, 'POST', {}); }),
-      action('Accepter', () => { void mutate(`/join-requests/${encodeURIComponent(item.id)}/approve`, 'POST', { role: role.value }); }, true),
+      action(shellText("Refuser"), () => { void mutate(`/join-requests/${encodeURIComponent(item.id)}/reject`, 'POST', {}); }),
+      action(shellText("Accepter"), () => { void mutate(`/join-requests/${encodeURIComponent(item.id)}/approve`, 'POST', { role: role.value }); }, true),
     );
   }
 
   function appendInviteControls(controls: HTMLElement, item: Invite): void {
     controls.append(
-      el('span', 'En attente', 'data-cloud-settings-muted'),
-      action('Révoquer', () => { void mutate(`/invites/${encodeURIComponent(item.id)}`, 'DELETE'); }),
+      el('span', shellText("En attente"), 'data-cloud-settings-muted'),
+      action(shellText("Révoquer"), () => { void mutate(`/invites/${encodeURIComponent(item.id)}`, 'DELETE'); }),
     );
   }
 
@@ -310,7 +311,7 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
     list.replaceChildren();
     if (!state.loaded) {
       if (!error.hidden) showLoadFailure();
-      else list.append(el('p', 'Chargement des accès…', 'data-cloud-settings-muted'));
+      else list.append(el('p', shellText("Chargement des accès…"), 'data-cloud-settings-muted'));
       return;
     }
     const normalize = (text: string) => text.normalize('NFD').replace(/\p{M}/gu, '').toLocaleLowerCase();
@@ -324,7 +325,7 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
     const table = el('table', undefined, 'data-cloud-members-table');
     const head = el('thead');
     const heading = el('tr');
-    heading.append(el('th', 'Utilisateur'), el('th', tabColumnHeading(state.tab)));
+    heading.append(el('th', shellText("Utilisateur")), el('th', tabColumnHeading(state.tab)));
     head.append(heading);
     const body = el('tbody');
     table.append(head, body);
@@ -341,8 +342,8 @@ export function mountWorkspaceMembers(container: HTMLElement, options: Workspace
 
   function showLoadFailure(): void {
     list.replaceChildren(
-      el('p', 'Les accès ne sont pas disponibles pour le moment.', 'data-cloud-members-empty'),
-      action('Réessayer', () => { void refresh(); }),
+      el('p', shellText("Les accès ne sont pas disponibles pour le moment."), 'data-cloud-members-empty'),
+      action(shellText("Réessayer"), () => { void refresh(); }),
     );
   }
 
@@ -394,14 +395,14 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
   const surface = el('section', undefined, 'data-cloud-invite-dialog');
   const icon = el('div', undefined, 'data-cloud-invite-icon');
   icon.innerHTML = IconPeople;
-  const title = el('h2', 'Ajouter des membres');
+  const title = el('h2', shellText("Ajouter des membres"));
   const intro = el(
     'p',
-    options.workspaceName ? `Invitez des personnes dans ${options.workspaceName}.` : 'Invitez des personnes à rejoindre votre espace.',
+    options.workspaceName ? shellText("Invitez des personnes dans {v0}.", {v0: options.workspaceName}) : shellText("Invitez des personnes à rejoindre votre espace."),
     'data-cloud-settings-muted',
   );
   const form = el('form');
-  const emailLabel = el('label', 'Adresses e-mail');
+  const emailLabel = el('label', shellText("Adresses e-mail"));
   const email = el('input');
   styleTextField(email);
   email.type = 'text';
@@ -409,18 +410,18 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
   email.autocomplete = 'email';
   email.placeholder = 'nom@entreprise.fr, autre@entreprise.fr';
   emailLabel.append(email);
-  const hint = el('p', 'Séparez les adresses par une virgule.', 'data-cloud-invite-hint');
+  const hint = el('p', shellText("Séparez les adresses par une virgule."), 'data-cloud-invite-hint');
   hint.id = `cloud-invite-hint-${crypto.randomUUID()}`;
   email.setAttribute('aria-describedby', hint.id);
-  const roleLabel = el('label', 'Accès à l’espace');
-  const role = rolePicker('member', 'Accès à l’espace');
+  const roleLabel = el('label', shellText("Accès à l’espace"));
+  const role = rolePicker('member', shellText("Accès à l’espace"));
   roleLabel.append(role.element);
-  const messageLabel = el('label', 'Message (facultatif)');
+  const messageLabel = el('label', shellText("Message (facultatif)"));
   const note = el('textarea');
   styleTextField(note);
   note.rows = 3;
   note.maxLength = 2000;
-  note.placeholder = 'Ajoutez un mot à votre invitation…';
+  note.placeholder = shellText("Ajoutez un mot à votre invitation…");
   messageLabel.append(note);
   const error = el('p', undefined, 'data-cloud-settings-error');
   error.setAttribute('role', 'alert');
@@ -435,8 +436,8 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
     life.handle?.close();
   };
   const actions = el('div', undefined, 'data-cloud-invite-actions');
-  const cancel = action('Annuler', () => close());
-  const submit = action('Envoyer l’invitation', () => {}, true);
+  const cancel = action(shellText("Annuler"), () => close());
+  const submit = action(shellText("Envoyer l’invitation"), () => {}, true);
   submit.type = 'submit';
   actions.append(cancel, submit);
   form.append(emailLabel, hint, roleLabel, messageLabel, error, status, actions);
@@ -453,14 +454,14 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
     error.hidden = true;
     email.removeAttribute('aria-invalid');
     if (!addresses.length || addresses.some((value) => !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(value))) {
-      error.textContent = 'Saisissez une ou plusieurs adresses e-mail valides.';
+      error.textContent = shellText("Saisissez une ou plusieurs adresses e-mail valides.");
       error.hidden = false;
       email.setAttribute('aria-invalid', 'true');
       email.focus();
       return;
     }
     if (addresses.length > 25) {
-      error.textContent = 'Invitez au maximum 25 personnes à la fois.';
+      error.textContent = shellText("Invitez au maximum 25 personnes à la fois.");
       error.hidden = false;
       email.setAttribute('aria-invalid', 'true');
       email.focus();
@@ -474,7 +475,7 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
     status.hidden = false;
     for (const address of addresses) {
       if (!life.alive) break;
-      status.textContent = `Envoi des invitations… ${progress.sent + failed.length + 1}/${addresses.length}`;
+      status.textContent = shellText("Envoi des invitations… {v0}/{v1}", {v0: progress.sent + failed.length + 1, v1: addresses.length});
       try {
         await options.client.request(`/api/workspaces/${encodeURIComponent(options.slug)}/invites`, {
           method: 'POST',
@@ -500,7 +501,7 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
     role.disabled = false;
     email.value = failed.map((item) => item.email).join(', ');
     const sent = progress.sent;
-    status.textContent = sent ? `${sent} invitation${sent > 1 ? 's' : ''} envoyée${sent > 1 ? 's' : ''}.` : '';
+    status.textContent = sent ? shellText("{v0} invitation{v1} envoyée{v2}.", {v0: sent, v1: sent > 1 ? 's' : '', v2: sent > 1 ? 's' : ''}) : '';
     status.hidden = !sent;
     error.textContent = failed.map((item) => `${item.email} : ${item.reason}`).join('\n');
     error.hidden = false;
@@ -510,7 +511,7 @@ export function openWorkspaceInvitation(options: WorkspaceInvitationOptions): { 
   life.handle = openModalDialog({
     content: overlay,
     surface,
-    label: 'Ajouter des membres',
+    label: shellText("Ajouter des membres"),
     initialFocus: () => email,
     container: options.container,
     onDismiss: () => { if (!life.busy) close(); },

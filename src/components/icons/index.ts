@@ -608,9 +608,10 @@ export const IconBookmark = `
 `;
 
 // Mail icon (email link type)
+export const inboxIconPath = 'm2.25 10.5 2.5-6a1.5 1.5 0 0 1 1.4-.9h7.7a1.5 1.5 0 0 1 1.4.9l2.5 6v4a1.8 1.8 0 0 1-1.8 1.8H4.05a1.8 1.8 0 0 1-1.8-1.8v-4Zm0 0h5l1.1 2.2h3.3l1.1-2.2h5';
 export const IconInbox = `
 <svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
-  <path d="m2.25 10.5 2.5-6a1.5 1.5 0 0 1 1.4-.9h7.7a1.5 1.5 0 0 1 1.4.9l2.5 6v4a1.8 1.8 0 0 1-1.8 1.8H4.05a1.8 1.8 0 0 1-1.8-1.8v-4Zm0 0h5l1.1 2.2h3.3l1.1-2.2h5" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+  <path d="${inboxIconPath}" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
 </svg>
 `;
 

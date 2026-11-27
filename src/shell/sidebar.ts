@@ -1,3 +1,4 @@
+import { sidebarIconPaths as ICONS } from './sidebar-icon-paths';
 import { renderPageIcon } from './page-icon';
 import { createSidebarPreferences, type SidebarPreferences, type SidebarSection } from './sidebar-preferences';
 /**
@@ -5,13 +6,14 @@ import { createSidebarPreferences, type SidebarPreferences, type SidebarSection 
  * document, and the plus button asks the host to create one.
  */
 
-import { IconCheck, libraryIconPath } from '../components/icons';
+import { IconCheck } from '../components/icons';
 import { PopoverDesktop } from '../components/utils/popover';
 import { PopoverEvent } from '../../types/utils/popover/popover-event';
 import { onHover } from '../components/utils/tooltip';
 import { isPromotedToTopLayer, promoteToTopLayer, removeFromTopLayer } from '../components/utils/top-layer';
 
 export interface ShellPage {
+  updatedAt?: number;
   id: string;
   title: string;
   icon?: string;
@@ -100,21 +102,7 @@ function svg(paths: readonly string[], filled = false): SVGSVGElement {
   return node;
 }
 
-const ICONS = {
-  page: ['M4 2.5h5l3 3v8H4z', 'M9 2.5v3h3'],
-  star: ['M8 1.8 9.7 6.1l4.6.4-3.5 2.9 1.1 4.5L8 11.5 4.1 13.9l1.1-4.5L1.7 6.5l4.6-.4Z'],
-  cloud: ['M4 11.2h8a2 2 0 0 0 .2-4 3.2 3.2 0 0 0-6.2-.8A2 2 0 0 0 4 11.2Z'],
-  link: ['M6.8 9.2 5.4 10.6a1.9 1.9 0 0 1-2.7-2.7L4.1 6.5', 'M9.2 6.8 10.6 5.4a1.9 1.9 0 0 1 2.7 2.7L11.9 9.5', 'M6.5 9.5l3-3'],
-  copy: ['M5.8 5.8h6.6v6.6H5.8Z', 'M3.6 9.2V3.6h5.6'],
-  compose: ['M8.5 2.2h-4a2.3 2.3 0 0 0-2.3 2.3v7a2.3 2.3 0 0 0 2.3 2.3h7a2.3 2.3 0 0 0 2.3-2.3v-4', 'm7 9.2.45-2.05 5.2-5.2 1.55 1.55-5.2 5.2z'],
-  pencil: ['M2.8 11.4 11.2 3l1.8 1.8-8.4 8.4H2.8Z'],
-  move: ['M4 12 12 4', 'M7 4h5v5'],
-  trash: ['M3.5 4.5h9', 'M6 4.5V3h4v1.5', 'M5 4.5l.7 8.5h4.6L11 4.5'],
-  wiki: ['M3 3.5h4c.6.9 1.4.9 2 0h4V12.5H9c-.6.9-1.4.9-2 0H3Z', 'M8 3.5v9'],
-  tab: ['M5.5 5H3.5v7.5h7.5V10', 'M8 3.5h4.5V8', 'M12.2 3.8 7.2 8.8'],
-  window: ['M3 4h10v8.5H3Z', 'M3 6.5h10'],
-  peek: ['M3 3.5h10v9H3Z', 'M8.2 3.5v9'],
-} as const;
+
 
 const ADD_HINT = 'Ajouter une sous-page';
 const MORE_HINT = 'Actions de la page';
@@ -155,9 +143,9 @@ function copyLink(id: string, pageUrl?: (id: string) => string): void {
   void Promise.resolve(clipboard.writeText(pageUrl?.(id) ?? url.href)).catch(() => undefined);
 }
 
-const chevron = () => svg(['M6 4.5 10 8 6 11.5']);
-const plus = () => svg(['M8 3.5v9', 'M3.5 8h9']);
-const search = () => svg(['M7 11.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Z', 'M10.5 10.5 13 13']);
+const chevron = () => svg(ICONS.chevron);
+const plus = () => svg(ICONS.plus);
+const search = () => svg(ICONS.search);
 
 function dots(): SVGSVGElement {
   const node = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -221,7 +209,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
   collapse.setAttribute('data-blok-sidebar-icon', '');
   collapse.setAttribute('aria-label', 'Masquer la barre latérale');
   collapse.title = 'Masquer la barre latérale';
-  collapse.append(svg(['M3 2.5h10A1.5 1.5 0 0 1 14.5 4v8a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 12V4A1.5 1.5 0 0 1 3 2.5Z', 'M5.3 2.5v11']));
+  collapse.append(svg(ICONS.collapse));
   collapse.addEventListener('click', () => setCollapsed(true));
   const create = document.createElement('button');
   create.type = 'button';
@@ -249,8 +237,8 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     button.addEventListener('click', activate);
     return button;
   }
-  const home = navButton('Accueil', ['m1.6 7 6.4-5.3L14.4 7l-1.5.2V14H9.5V9H6.6v5H3.1V7.2z'], () => options.onHome?.(), true);
-  const chat = navButton('Discussions', ['M14 7.2c0 3.3-2.6 5.6-6 5.6-.7 0-1.4-.1-2.1-.3L2 14l.9-3.4A5.3 5.3 0 0 1 2 7.2c0-3 2.6-5.4 6-5.4s6 2.4 6 5.4z'], () => options.onChat?.(), true);
+  const home = navButton('Accueil', ICONS.home, () => options.onHome?.(), true);
+  const chat = navButton('Discussions', ICONS.chat, () => options.onChat?.(), true);
   if (options.onHome) {
     home.setAttribute('aria-current', 'page');
     modes.append(home);
@@ -265,7 +253,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     calendar.setAttribute('data-blok-sidebar-calendar', '');
     const label = document.createElement('span');
     label.textContent = 'Calendrier';
-    calendar.append(svg(['M2.5 4h11v9.5h-11z', 'M5 2.5v3M11 2.5v3M2.5 7h11']), label);
+    calendar.append(svg(ICONS.calendar), label);
     calendar.addEventListener('click', event => {
       if (calendar instanceof HTMLAnchorElement && event instanceof MouseEvent &&
           (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
@@ -281,7 +269,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
   }
   let newPage: HTMLButtonElement | undefined;
   if (options.onNewChat) {
-    const createChat = navButton('Nouvelle discussion', ['M13.8 7.5a5.9 5.9 0 0 1-6 5.8c-.8 0-1.5-.1-2.1-.3L2 14l.8-3.2a5.9 5.9 0 1 1 11-3.3Z', 'M5.6 7.5H10M7.8 5.3v4.4'], options.onNewChat);
+    const createChat = navButton('Nouvelle discussion', ICONS.newChat, options.onNewChat);
     createChat.setAttribute('data-blok-sidebar-shortcut', '');
     shortcuts.append(createChat);
   } else if (!options.onHome) {
@@ -294,7 +282,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     shortcuts.append(calendar);
   }
   if (options.onLibrary) {
-    const library = navButton('Bibliothèque', [libraryIconPath], () => options.onLibrary?.([...recents]));
+    const library = navButton('Bibliothèque', ICONS.library, () => options.onLibrary?.([...recents]));
     library.setAttribute('data-blok-sidebar-shortcut', '');
     library.setAttribute('data-blok-sidebar-library', '');
     shortcuts.append(library);
@@ -305,7 +293,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     teams.type = 'button';
     teams.setAttribute('data-blok-sidebar-shortcut', '');
     teams.setAttribute('aria-haspopup', 'dialog');
-    teams.append(svg(['M2.5 4h4l1.5 2h5.5v6H2.5z']), document.createTextNode('Espaces d’équipe'));
+    teams.append(svg(ICONS.teams), document.createTextNode('Espaces d’équipe'));
     teams.addEventListener('click', options.onTeamspaces);
     shortcuts.append(teams);
   }
@@ -452,9 +440,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
   sidebarPreferences.subscribe(paint);
   if (options.preferenceKey) {
     let popup: PopoverDesktop | undefined;
-    const customize = navButton('Personnaliser la barre latérale', [
-      'M1.5 5h8m3 0h2M1.5 11H4m3 0h7.5', 'M12.5 5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 1 1 3 0ZM7 11a1.5 1.5 0 1 1-3 0 1.5 1.5 0 1 1 3 0Z',
-    ], () => {
+    const customize = navButton('Personnaliser la barre latérale', ICONS.customize, () => {
       if (popup?.isShown) { popup.hide(); return; }
       const rows: Array<[SidebarSection, string]> = [['favorites', 'Favoris']];
       if (sidebarPreferences.hasEvents) rows.unshift(['events', 'Événements à venir']);
@@ -521,7 +507,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     if (!needle && options.onHome && options.onCalendar && visibility.events) {
       const events = appendSection('Événements à venir', 'events');
       if (!collapsed.has('events')) {
-        const open = navButton('Voir le calendrier', ['M2.5 4h11v9.5h-11z', 'M5 2.5v3M11 2.5v3M2.5 7h11'], options.onCalendar);
+        const open = navButton('Voir le calendrier', ICONS.calendar, options.onCalendar);
         open.setAttribute('data-blok-sidebar-shortcut', '');
         events.append(open);
       }
@@ -586,7 +572,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
   function appendSharedAction(): void {
     const group = appendSection('Partagé', 'Partagé');
     if (collapsed.has('Partagé') || !options.onInviteMembers) return;
-    const invite = navButton('Inviter des membres', ['M8 2.5v11M2.5 8h11'], options.onInviteMembers);
+    const invite = navButton('Inviter des membres', ICONS.invite, options.onInviteMembers);
     invite.setAttribute('data-blok-sidebar-shortcut', '');
     group.append(invite);
   }
@@ -604,7 +590,7 @@ export function createPageFrame(options: PageFrameOptions): PageFrame {
     const mark = document.createElement('span');
     mark.setAttribute('data-blok-sidebar-teamspace-mark', '');
     mark.setAttribute('aria-hidden', 'true');
-    mark.append(svg(['M2 7 8 2l6 5', 'M4 6v7h3V9h2v4h3V6']));
+    mark.append(svg(ICONS.teamspace));
     const label = document.createElement('span');
     label.textContent = teamspace.name;
     const arrow = chevron();

@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import { NotepadText, X } from "lucide-react";
 
 import { cn } from "../lib/utils";
@@ -39,13 +40,13 @@ export function EventDetailAiNotes<
           <div className={cn("group/ai-notes", ROW_BOX_CLASS)}>
             <NotepadText className={EVENT_DETAIL_ICON_CLASS} />
             <span className={cn("flex-1 truncate", EVENT_DETAIL_TEXT_CLASS)}>
-              AI meeting notes
+              {shellText("AI meeting notes")}
             </span>
             {onEventChange && (
               <button
                 type="button"
-                aria-label="Turn off AI meeting notes"
-                title="Turn off AI meeting notes"
+                aria-label={shellText("Turn off AI meeting notes")}
+                title={shellText("Turn off AI meeting notes")}
                 className={cn(
                   "flex size-5 shrink-0 items-center justify-center opacity-0 group-hover/ai-notes:opacity-100 focus-visible:opacity-100",
                   EVENT_DETAIL_SECONDARY_CLASS,
@@ -77,7 +78,7 @@ export function EventDetailAiNotes<
           >
             <span className="flex flex-1 items-center justify-center gap-1.5">
               <NotepadText className="size-4" />
-              Add meeting note
+              {shellText("Add meeting note")}
             </span>
           </button>
         </div>
@@ -103,7 +104,7 @@ export function EventDetailAiNotes<
             className={cn("size-4 shrink-0", EVENT_DETAIL_MUTED_CLASS)}
           />
           <span className={cn("truncate", EVENT_DETAIL_PLACEHOLDER_CLASS)}>
-            Add AI meeting notes
+            {shellText("Add AI meeting notes")}
           </span>
         </button>
       </div>

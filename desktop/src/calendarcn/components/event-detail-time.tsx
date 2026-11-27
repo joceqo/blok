@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { addDays, differenceInCalendarDays } from "date-fns";
 import { Clock9 } from "lucide-react";
@@ -175,7 +176,7 @@ export function EventDetailTime<
             getMatches={getStartMatches}
             onCommit={commitStart}
             formatValue={formatTimeValue}
-            label={locale?.code.startsWith("fr") ? "Heure de début" : "Start time"}
+            label={locale?.code.startsWith("fr") ? shellText("Heure de début") : shellText("Start time")}
             testId="event-start-time"
             panelRef={sectionRef}
             disabled={allDay}
@@ -196,7 +197,7 @@ export function EventDetailTime<
             getMatches={getEndMatches}
             onCommit={commitEnd}
             formatValue={formatTimeValue}
-            label={locale?.code.startsWith("fr") ? "Heure de fin" : "End time"}
+            label={locale?.code.startsWith("fr") ? shellText("Heure de fin") : shellText("End time")}
             testId="event-end-time"
             panelRef={sectionRef}
             disabled={allDay}
@@ -226,7 +227,7 @@ export function EventDetailTime<
         <EventDetailDateField
           value={event.start}
           onCommit={commitStartDate}
-          label={locale?.code.startsWith("fr") ? "Date de début" : "Start date"}
+          label={locale?.code.startsWith("fr") ? shellText("Date de début") : shellText("Start date")}
           testId="event-start-date"
           panelRef={sectionRef}
           readOnly={readOnly}
@@ -238,7 +239,7 @@ export function EventDetailTime<
             value={event.end}
             onCommit={commitEndDate}
             minDate={event.start}
-            label={locale?.code.startsWith("fr") ? "Date de fin" : "End date"}
+            label={locale?.code.startsWith("fr") ? shellText("Date de fin") : shellText("End date")}
             testId="event-end-date"
             panelRef={sectionRef}
             readOnly={readOnly}
@@ -256,7 +257,7 @@ export function EventDetailTime<
  */
 export function EventDetailAllDay<
   TEvent extends DetailedCalendarEvent = DetailedCalendarEvent,
->({ event, onEventChange, label = "All-day" }: EventDetailSectionProps<TEvent> & { label?: string }) {
+>({ event, onEventChange, label = shellText("Toute la journée") }: EventDetailSectionProps<TEvent> & { label?: string }) {
   const allDay = event.isAllDay ?? false;
 
   const handleAllDayToggle = (checked: boolean) => {

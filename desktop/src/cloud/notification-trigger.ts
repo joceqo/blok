@@ -1,3 +1,4 @@
+import {shellText} from '../shell-i18n';
 import { IconChevronDoubleRight, IconCross, IconInbox, IconPin, IconPinFilled } from '../../../src/components/icons';
 import { button, el } from '../ui/dom';
 import { readInboxPreference, setInboxPreference, subscribeInboxPreferences } from './inbox-preferences';
@@ -24,8 +25,8 @@ function readPreferredWidth(fallback: number): number {
 function attachSheetResize(surface: HTMLElement, slide: HTMLElement, space: HTMLElement, width: {preferred: number; persistent: boolean}, onClose: () => void, signal: AbortSignal) {
   const edge = el('div', {attrs: {
     'data-inbox-resize':'', role:'separator', tabindex:'0', 'aria-orientation':'vertical',
-    'aria-controls':surface.id, 'aria-label':'Largeur du volet Notifications',
-    title:'Glisser pour redimensionner, cliquer pour fermer',
+    'aria-controls':surface.id, 'aria-label':shellText("Largeur du volet Notifications"),
+    title:shellText("Glisser pour redimensionner, cliquer pour fermer"),
   }});
   slide.append(edge);
   let min = minSheetWidth;
@@ -96,13 +97,18 @@ function attachSheetResize(surface: HTMLElement, slide: HTMLElement, space: HTML
   };
 }
 
-export function createNotificationTrigger(options: NotificationListOptions) {
+function createInboxButton() {
   const trigger = el('button', { attrs: { type:'button', 'data-inbox-trigger':'', 'aria-expanded':'false' } });
   const icon = el('span', { attrs: { 'aria-hidden':'true' } });
   icon.innerHTML = IconInbox;
   const count = el('span', { attribute: 'data-inbox-count' });
   count.hidden = true;
-  trigger.append(icon, el('span', {text: 'Notifications', attribute:'data-inbox-label'}), count);
+  trigger.append(icon, el('span', {text: shellText("Notifications"), attribute:'data-inbox-label'}), count);
+  return {trigger, count};
+}
+
+export function createNotificationTrigger(options?: NotificationListOptions, sidebarView?: {trigger: HTMLButtonElement; count: HTMLElement; destroy(): void}) {
+  const {trigger, count} = sidebarView ?? createInboxButton();
   const life = new AbortController();
   const notify = discussionAlerts();
   let timer: number | undefined;
@@ -144,7 +150,7 @@ export function createNotificationTrigger(options: NotificationListOptions) {
   life.signal.addEventListener('abort', stopWatching, {once:true});
   paintCount();
   async function poll(): Promise<void> {
-    if (life.signal.aborted) return;
+    if (!options || life.signal.aborted) return;
     if (!trigger.isConnected) { stopWatching(); return; }
     watchPreferences();
     if (!document.hidden || readInboxPreference('comments')) {
@@ -163,14 +169,14 @@ export function createNotificationTrigger(options: NotificationListOptions) {
     }
     if (!life.signal.aborted) timer = window.setTimeout(() => { void poll(); }, 60_000);
   }
-  timer = window.setTimeout(() => { void poll(); }, 0);
+  if (options) timer = window.setTimeout(() => { void poll(); }, 0);
 
   trigger.addEventListener('click', () => {
     watchPreferences();
     if (pane) { pane.toggle(); return; }
     ++revision;
     const sidebar = trigger.closest<HTMLElement>('[data-blok-sidebar]');
-    const surface = el('aside', {attrs:{'data-inbox-pane':'', 'aria-label':'Notifications'}});
+    const surface = el('aside', {attrs:{'data-inbox-pane':'', 'aria-label':shellText("Notifications")}});
     surface.toggleAttribute('data-inbox-sheet', Boolean(sidebar));
     surface.id = 'inbox-' + crypto.randomUUID();
     const slide = sidebar ? el('div', {attribute:'data-inbox-slide'}) : null;
@@ -186,17 +192,17 @@ export function createNotificationTrigger(options: NotificationListOptions) {
     }
     const space = sidebar ? el('div', {attrs:{'data-inbox-space':'', 'aria-hidden':'true'}}) : null;
     if (space) surface.after(space);
-    const notifications = mountNotificationList(slide ?? surface, {
+    const notifications = mountNotificationList(slide ?? surface, options && {
       ...options, onInboxItems: items => { if (!signal.aborted) notify(items, life.signal); },
       onOpenPage: options.onOpenPage ? id => { close(true); options.onOpenPage?.(id); } : undefined,
       onUnreadCount: value => { if (!signal.aborted) updateCount(value); },
       onManageRequests: options.onManageRequests ? () => { close(true); options.onManageRequests?.(); } : undefined,
     });
-    const closeButton = button({label:'Fermer les notifications', attribute:'data-inbox-close', onClick:() => close(true)});
-    closeButton.title = 'Fermer les notifications';
+    const closeButton = button({label:shellText("Fermer les notifications"), attribute:'data-inbox-close', onClick:() => close(true)});
+    closeButton.title = shellText("Fermer les notifications");
     closeButton.setAttribute('aria-label', closeButton.title);
     closeButton.innerHTML = sidebar ? IconChevronDoubleRight : IconCross;
-    const pin = button({label:'Épingler le panneau', attribute:'data-inbox-pin', onClick:() => {
+    const pin = button({label:shellText("Épingler le panneau"), attribute:'data-inbox-pin', onClick:() => {
       pin.focus({preventScroll:true});
       preferPinned = !pinned;
       if (sheetWidth.persistent) setInboxPreference('pinned', preferPinned);
@@ -209,7 +215,7 @@ export function createNotificationTrigger(options: NotificationListOptions) {
       surface.toggleAttribute('data-pinned', value);
       if (backdrop) backdrop.hidden = value;
       pin.setAttribute('aria-pressed', String(value));
-      pin.title = value ? 'Désépingler le panneau' : 'Épingler le panneau';
+      pin.title = value ? shellText("Désépingler le panneau") : shellText("Épingler le panneau");
       pin.setAttribute('aria-label', pin.title);
       pin.innerHTML = value ? IconPinFilled : IconPin;
     }
@@ -299,5 +305,5 @@ export function createNotificationTrigger(options: NotificationListOptions) {
       });
     }
   });
-  return { element: trigger, destroy() { life.abort(); paintSystemBadge(0); window.clearTimeout(timer); pane?.destroy(); trigger.remove(); } };
+  return { element: trigger, destroy() { life.abort(); paintSystemBadge(0); window.clearTimeout(timer); pane?.destroy(); sidebarView?.destroy(); trigger.remove(); } };
 }

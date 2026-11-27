@@ -1,0 +1,81 @@
+.shell-section-header {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding-inline-end: 8px;
+  border-radius: 6px;
+  color: var(--blok-sidebar-heading, var(--desktop-muted));
+}
+.shell-section-header:is(:hover, :focus-within) {
+  background: var(--blok-item-hover-bg, var(--desktop-hover));
+}
+.shell-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  align-self: stretch;
+  flex: 1;
+  min-width: 0;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  text-align: start;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.shell-section-toggle svg {
+  opacity: 0;
+  flex: none;
+}
+.shell-section-toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+.shell-section-toggle[aria-expanded="false"] svg {
+  opacity: 1;
+}
+.shell-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+}
+.shell-section-header:is(
+    :hover,
+    :focus-within,
+    :has(.shell-section-actions [aria-expanded="true"])
+  )
+  :is(.shell-section-actions, .shell-section-toggle svg) {
+  opacity: 1;
+}
+.shell-section-actions > button {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.shell-section-actions
+  > button:is(:hover, :focus-visible, [aria-expanded="true"]) {
+  background: var(--blok-item-hover-bg, var(--desktop-hover));
+  color: var(--blok-sidebar-label, var(--desktop-ink));
+}
+.shell-section-header button:focus-visible {
+  outline: 2px solid var(--blok-focus-ring, Highlight);
+  outline-offset: -2px;
+}
+@media (hover: none) {
+  .shell-section-header :is(.shell-section-actions, .shell-section-toggle svg) {
+    opacity: 1;
+  }
+}

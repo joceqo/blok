@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/html-vite';
 import { expect, userEvent, within } from 'storybook/test';
-import { createPageFrame, type ShellPage } from '../shell/sidebar';
+import type { ShellPage } from '../shell/sidebar';
+import { createReactPageFrame } from '../../desktop/src/sidebar/sidebar-frame';
 import { mountAgentAssistant } from '../shell/agent-assistant';
 import { openPageSearch } from '../../desktop/src/page-search';
 import { createPageToolbar } from '../../desktop/src/page-toolbar';
@@ -24,7 +25,7 @@ function inbox(theme: ShellTheme, feed: Feed, signal: AbortSignal): HTMLElement 
   const pages: ShellPage[] = [{ id: 'roadmap', title: 'Feuille de route', parentId: null, section: 'Privé' }];
   let current = pages[0];
   let closeSearch: (() => void) | undefined;
-  const frame = createPageFrame({
+  const frame = createReactPageFrame({
     pages, activeId: current.id, collapsedByDefault: true, availableActions: [],
     onOpen: selectPage,
     onCreate(parentId) {
@@ -127,14 +128,15 @@ function inbox(theme: ShellTheme, feed: Feed, signal: AbortSignal): HTMLElement 
     }
     throw new Error(`Route hors de cet aperçu : ${path}`);
   });
-  const footer = createDesktopFooter(() => {}, workspace, frame.headerActions, {sidebarPreferences: frame.sidebarPreferences, client, signal});
-  const sidebar = frame.element.querySelector<HTMLElement>('[data-blok-sidebar]')!;
-  sidebar.insertBefore(footer, sidebar.querySelector('[data-blok-sidebar-edge]'));
+  const footerHost = frame.element.querySelector<HTMLElement>('[data-desktop-footer]');
+  if (!footerHost) throw new Error('Emplacement du sélecteur d’espace introuvable.');
+  const footer = createDesktopFooter(() => {}, workspace, frame.headerActions, {footerHost, sidebarPreferences: frame.sidebarPreferences, client, signal});
   queueMicrotask(() => { if (!signal.aborted) frame.headerActions.querySelector<HTMLButtonElement>('[data-inbox-trigger]')?.click(); });
   signal.addEventListener('abort', () => {
     closeSearch?.();
     pageShell.destroy();
     toolbar.destroy();
+    frame.destroy();
   }, { once: true });
   return host;
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { createCalendarPortal as createPortal } from "../portal";
 import {
@@ -549,7 +550,7 @@ export function EventDetailTimezone<
               ref={inputRef}
               type="text"
               role="combobox"
-              aria-label="Time zone"
+              aria-label={shellText("Time zone")}
               aria-expanded={listOpen}
               aria-controls={listOpen ? listId : undefined}
               aria-activedescendant={activeOptionId}
@@ -565,7 +566,7 @@ export function EventDetailTimezone<
           <button
             ref={setRowElement}
             type="button"
-            aria-label={`Time zone: ${label.offset} ${label.city}`}
+            aria-label={shellText("Time zone: {v0} {v1}", {v0: label.offset, v1: label.city})}
             disabled={!onEventChange}
             onClick={open}
             className={cn(
@@ -610,7 +611,7 @@ export function EventDetailTimezone<
               <CommandList
                 ref={listRef}
                 // cmdk names the listbox from `label`, and ids it itself
-                label="Time zones"
+                label={shellText("Time zones")}
                 className="max-h-none min-h-0 flex-1 overflow-y-auto"
               >
                 {/* Keeps the list, and so Escape's restore, while nothing matches */}
@@ -620,7 +621,7 @@ export function EventDetailTimezone<
                     LIST_MUTED_TEXT_CLASS,
                   )}
                 >
-                  No results
+                  {shellText("No results")}
                 </CommandEmpty>
                 {sections.map((section, index) => (
                   <React.Fragment key={section.key}>
@@ -658,7 +659,7 @@ export function EventDetailTimezone<
                           </span>
                           {section.key === "recent" && (
                             <History
-                              aria-label="Recent"
+                              aria-label={shellText("Recent")}
                               className={cn(
                                 "size-3.5 shrink-0",
                                 LIST_MUTED_TEXT_CLASS,

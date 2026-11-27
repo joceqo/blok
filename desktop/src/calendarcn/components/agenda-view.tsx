@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import {
   Fragment,
   useCallback,
@@ -392,7 +393,7 @@ export function AgendaView({
                     <Fragment key={day.date.toISOString()}>
                       {showWeekNumbers && startsWeek && (
                         <div className="px-3 pt-2 text-xxs font-medium text-muted-foreground @xl/agenda:px-6">
-                          {locale?.code.startsWith("fr") ? "Semaine" : "Week"} {weekNumber}
+                          {locale?.code.startsWith("fr") ? shellText("Semaine") : shellText("Week")} {weekNumber}
                         </div>
                       )}
                       <AgendaDayGroup
@@ -440,7 +441,7 @@ function AgendaDayGroup({ day, isToday, renderRow }: AgendaDayGroupProps) {
   return (
     <div
       role="group"
-      aria-label={isToday ? `${fullDate}, today` : fullDate}
+      aria-label={isToday ? shellText("{v0}, today", {v0: fullDate}) : fullDate}
       data-date={format(day.date, "yyyy-MM-dd")}
       className="flex gap-3 border-b border-border px-3 py-2.5 @xl/agenda:gap-5 @xl/agenda:px-6"
     >
@@ -492,7 +493,7 @@ function AgendaTodayRows({ day, renderRow }: AgendaTodayRowsProps) {
   if (day.entries.length === 0) {
     return (
       <p className="flex min-h-9 items-center text-sm text-muted-foreground">
-        {locale?.code.startsWith("fr") ? "Aucun événement aujourd’hui" : "No events today"}
+        {locale?.code.startsWith("fr") ? shellText("Aucun événement aujourd’hui") : shellText("No events today")}
       </p>
     );
   }
@@ -593,7 +594,7 @@ function AgendaEventRow({
         ref={rowRef}
         role="button"
         tabIndex={0}
-        aria-label={dayOfSpan ? `${label}, ${dayOfSpan.toLowerCase()}` : label}
+        aria-label={dayOfSpan ? shellText("{v0}, {v1}", {v0: label, v1: dayOfSpan.toLowerCase()}) : label}
         aria-pressed={isSelected}
         {...getEventDetailsTriggerProps({
           showEventPopover,
@@ -708,11 +709,11 @@ function AgendaEmptyState({ from, to }: AgendaEmptyStateProps) {
       <div className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground">
         <CalendarCheckIcon aria-hidden className="size-5" />
       </div>
-      <p className="text-sm font-medium text-foreground">{locale?.code.startsWith("fr") ? "Rien de prévu" : "Nothing planned"}</p>
+      <p className="text-sm font-medium text-foreground">{locale?.code.startsWith("fr") ? shellText("Rien de prévu") : shellText("Nothing planned")}</p>
       <p className="max-w-64 text-sm text-muted-foreground">
         {locale?.code.startsWith("fr")
-          ? `Aucun événement du ${format(from, "d MMM", {locale})} au ${format(to, "d MMM", {locale})}.`
-          : `No events from ${format(from, "MMM d", {locale})} to ${format(to, "MMM d", {locale})}.`}
+          ? shellText("Aucun événement du {v0} au {v1}.", {v0: format(from, "d MMM", {locale}), v1: format(to, "d MMM", {locale})})
+          : shellText("No events from {v0} to {v1}.", {v0: format(from, "MMM d", {locale}), v1: format(to, "MMM d", {locale})})}
       </p>
     </div>
   );

@@ -1,3 +1,5 @@
+import {shellText} from './shell-i18n';
+import {shellLocale} from './shell-i18n';
 import { localDateIso } from '../../src/shared/date-mention';
 import { parseDateValue } from '../../src/shared/database/date-value';
 import { formatDateDisplay } from '../../src/tools/database/cells/date-format';
@@ -49,7 +51,7 @@ export function bindTitleDateMention(
         token.setAttribute('data-blok-title-mention-token', '');
         token.setAttribute('contenteditable', 'false');
         token.setAttribute('role', 'button');
-        token.setAttribute('aria-label', `Modifier la date : ${label}`);
+        token.setAttribute('aria-label', shellText("Modifier la date : {v0}", {v0: label}));
         token.tabIndex = 0;
         at.setAttribute('data-desktop-title-date-at', '');
         at.textContent = '@';
@@ -86,15 +88,15 @@ export function bindTitleDateMention(
     list.id = listId;
     list.setAttribute('data-desktop-title-date-menu', '');
     list.setAttribute('role', 'listbox');
-    list.setAttribute('aria-label', 'Date');
+    list.setAttribute('aria-label', shellText("Date"));
     heading.setAttribute('data-desktop-title-date-heading', '');
-    heading.textContent = 'Date';
+    heading.textContent = shellText("Date");
     today.type = 'button';
     today.id = `${listId}-today`;
     today.setAttribute('role', 'option');
     today.setAttribute('aria-selected', 'true');
     today.setAttribute('data-desktop-title-date-today', '');
-    today.textContent = '◷  Aujourd’hui';
+    today.textContent = shellText("◷  Aujourd’hui");
     // Keep the title focused until the click commits the mention.
     today.addEventListener('pointerdown', (event) => event.preventDefault());
     today.addEventListener('click', choose);
@@ -173,7 +175,7 @@ export function bindTitleDateMention(
       title,
       {
         i18n: options.i18n,
-        locale: 'fr',
+        locale: shellLocale(),
         readOnly: false,
         onCommit: (next) => { options.setDate(typeof next === 'string' ? next : null); refresh(); },
         onDateDisplayChange: (change) => { options.setDisplay(change); refresh(); },

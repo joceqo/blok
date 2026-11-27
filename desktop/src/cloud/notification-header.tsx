@@ -1,3 +1,4 @@
+import {shellText} from '../shell-i18n';
 import {useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject} from 'react';
 import {IconCheck, IconDotsHorizontal, IconFilter, IconRefresh} from '../../../src/components/icons';
 import './notification-header.css';
@@ -18,9 +19,9 @@ interface HeaderProps {
 }
 
 const filters = [
-  {value: 'all', label: 'Toutes les notifications'},
-  {value: 'unread', label: 'Non lues'},
-  {value: 'archived', label: 'Archivées'},
+  {value: 'all', label: shellText("Toutes les notifications")},
+  {value: 'unread', label: shellText("Non lues")},
+  {value: 'archived', label: shellText("Archivées")},
 ] as const;
 
 function Glyph({source}: {source: string}) {
@@ -73,20 +74,20 @@ export function NotificationHeader({attachActions, filter, onFilter, onRefresh, 
       close();
     }
   }}>
-    <h2>Notifications</h2>
+    <h2>{shellText("Notifications")}</h2>
     <span data-inbox-actions="" ref={attachActions}/>
-    <button type="button" ref={filterButton} title="Filtrer les notifications" aria-label="Filtrer les notifications"
+    <button type="button" ref={filterButton} title={shellText("Filtrer les notifications")} aria-label={shellText("Filtrer les notifications")}
       aria-haspopup="dialog" aria-expanded={menu === 'filter'} aria-controls={menu === 'filter' ? popupId : undefined}
       data-filter-active={filter !== 'all' ? '' : undefined} onClick={() => setMenu(menu === 'filter' ? null : 'filter')}>
       <Glyph source={IconFilter}/>
     </button>
-    {(hasItems || menu === 'actions') && <button type="button" ref={actionsButton} title="Plus d’actions" aria-label="Plus d’actions"
+    {(hasItems || menu === 'actions') && <button type="button" ref={actionsButton} title={shellText("Plus d’actions")} aria-label={shellText("Plus d’actions")}
       aria-haspopup="dialog" aria-expanded={menu === 'actions'} aria-controls={menu === 'actions' ? popupId : undefined}
       onClick={() => setMenu(menu === 'actions' ? null : 'actions')}>
       <Glyph source={IconDotsHorizontal}/>
     </button>}
     {menu && <div data-inbox-menu="" role="dialog" ref={popup} id={popupId} tabIndex={-1}
-      aria-label={menu === 'filter' ? 'Filtrer les notifications' : 'Plus d’actions'} onKeyDown={navigate}
+      aria-label={menu === 'filter' ? shellText("Filtrer les notifications") : shellText("Plus d’actions")} onKeyDown={navigate}
       onBlur={event => {
         if (event.relatedTarget !== opener.current && !event.currentTarget.contains(event.relatedTarget)) setMenu(null);
       }}>
@@ -100,11 +101,9 @@ export function NotificationHeader({attachActions, filter, onFilter, onRefresh, 
         if (filter === 'unread') filterButton.current?.focus();
         onMarkAll();
       }}>
-        <Glyph source={IconCheck}/>Tout marquer comme lu
-      </button>}
+        <Glyph source={IconCheck}/>{shellText("Tout marquer comme lu")} </button>}
       {(menu === 'actions' || !hasItems) && <button type="button" disabled={loading} onClick={() => { close(); onRefresh(); }}>
-        <Glyph source={IconRefresh}/>Actualiser
-      </button>}
+        <Glyph source={IconRefresh}/>{shellText("Actualiser")} </button>}
     </div>}
   </header>;
 }

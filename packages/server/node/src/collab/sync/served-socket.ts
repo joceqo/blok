@@ -26,6 +26,14 @@ export interface ServedSocketOptions {
   budget: InboundBudget;
   maxMessageBytes: number;
   closeGraceMs?: number;
+  /**
+   * Told of the close this host sends, once, with the code and reason it sent.
+   * Every close goes through one override below — the room's as much as the
+   * transport's — so this is the only place that can see all of them. It
+   * reports a clean 1000 too: whether a code is worth keeping is the caller's
+   * judgement, not the transport's.
+   */
+  onClose?(code: number | undefined, reason: string): void;
 }
 
 /**
@@ -57,6 +65,7 @@ export function serveSocket(options: ServedSocketOptions): void {
       return;
     }
     closing = true;
+    options.onClose?.(code, typeof data === 'string' ? data : (data?.toString('utf8') ?? ''));
     parts = [];
     const grace = setTimeout(() => wire.destroy(), graceMs);
     grace.unref();

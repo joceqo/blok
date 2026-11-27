@@ -1,3 +1,4 @@
+import {createTeamspacePreviewClient} from './teamspace-story-fixtures';
 import type { Meta, StoryObj } from '@storybook/html-vite';
 import {expect,userEvent,within} from 'storybook/test';
 import {openTeamspaces} from '../../desktop/src/cloud/teamspaces';
@@ -43,35 +44,7 @@ export const Parametres: Story = {
   name: 'Paramètres · tableau et création',
   render: ({theme}, {abortSignal}) => {
     const host = shellPreview(theme);
-    const teams = [{id:'design', name:'Design', description:'Revues et maquettes', icon:'icon:paint:purple',
-      isDefault:false, memberCount:1, joined:true, owners:[{userId:'lou',name:'Lou',email:''}], updatedAt:'2026-11-20', canManage:true}];
-    let restrictCreation = false;
-    const client = new PreviewClient((path,init) => {
-      const body = init?.body ? JSON.parse(String(init.body)) : {};
-      if (path.endsWith('/teamspaces/settings')) {
-        if (typeof body.restrictCreation === 'boolean') restrictCreation = body.restrictCreation;
-        if (Array.isArray(body.defaultTeamspaceIds)) for (const team of teams) team.isDefault = body.defaultTeamspaceIds.includes(team.id);
-        return {ok:true};
-      }
-      if (path.endsWith('/teamspaces')) {
-        if (init?.method === 'POST') {
-          const team = {...teams[0], id:crypto.randomUUID(), ...body, updatedAt:new Date().toISOString(), isDefault:false};
-          teams.push(team);
-          return {teamspace:team};
-        }
-        return {teamspaces:teams, settings:{restrictCreation}, canCreate:true};
-      }
-      if (path.endsWith('/members')) return {members:[{id:'lou',userId:'lou',name:'Lou',email:'',role:path.includes('/teamspaces/')?'owner':'admin',workspaceRole:'admin'}]};
-      if (path.endsWith('/pages')) return {pages:[]};
-      if (init?.method === 'PATCH') {
-        const team = teams.find(item=>path.endsWith('/'+item.id));
-        if (team) { Object.assign(team, body); return {teamspace:team}; }
-      }
-      if (init?.method === 'DELETE') {
-        const index=teams.findIndex(item=>path.endsWith('/'+item.id)); if(index>=0){teams.splice(index,1);return {ok:true};}
-      }
-      throw Error('Opération indisponible dans cet exemple.');
-    });
+    const client = createTeamspacePreviewClient();
     const panel=document.createElement('main');panel.style.cssText='box-sizing:border-box;max-width:864px;width:100%;padding:36px 32px;margin:0 auto;';host.append(panel);
     const dispose=openTeamspaces({kind:'remote',id:'atelier',server:'https://example.test',workspaceId:'atelier',name:'Atelier',accountId:'lou',role:'admin'},
       {pages:()=>[],canEdit:()=>false,open:async()=>{}},client,panel);

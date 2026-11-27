@@ -47,3 +47,28 @@ export function navigationFavorites(ref: WorkspaceRef): { has(id: string): boole
     },
   };
 }
+
+/** Date des modifications observées sur cet appareil, isolée par espace et par page. */
+export function navigationEdits(ref: WorkspaceRef) {
+  const prefix = `blok:navigation:edited:${workspaceKey(ref)}:`;
+  const times = new Map<string, number>();
+  const last = { id: '', at: 0 };
+  function at(id: string) {
+    if (!times.has(id)) {
+      try {
+        const value = Number(localStorage.getItem(prefix + id));
+        times.set(id, Number.isFinite(value) ? value : 0);
+      } catch { times.set(id, 0); }
+    }
+    return times.get(id) ?? 0;
+  }
+  function mark(id: string) {
+    const now = Date.now();
+    if (id === last.id && now - last.at < 1000) return;
+    last.id = id;
+    last.at = now;
+    times.set(id, now);
+    try { localStorage.setItem(prefix + id, String(now)); } catch { /* Session uniquement. */ }
+  }
+  return { at, mark };
+}

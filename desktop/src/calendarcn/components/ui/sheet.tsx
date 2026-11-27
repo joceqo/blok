@@ -1,3 +1,4 @@
+import {shellText} from '../../../shell-i18n';
 import { useCalendarPortalHost } from "../../portal"
 import * as React from "react"
 import { Dialog as SheetPrimitive } from "@base-ui/react/dialog"
@@ -71,7 +72,7 @@ function SheetContent({
           >
             <XIcon
             />
-            <span className="sr-only">Close</span>
+            <span className="sr-only">{shellText("Close")}</span>
           </SheetPrimitive.Close>
         )}
       </SheetPrimitive.Popup>

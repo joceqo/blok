@@ -1,3 +1,4 @@
+import {shellText} from '../shell-i18n';
 import { button, el, field } from '../ui/dom';
 import type { CloudClient } from './client';
 
@@ -28,16 +29,16 @@ export function mountSetupAssistant(options: SetupAssistantOptions): void {
   const main = options.frame();
   main.setAttribute('data-cloud-narrow', '');
   const form = el('form', { attribute: 'data-cloud-stack' });
-  const workspace = field({ form, label: 'Nom de l’espace', type: 'text', name: 'workspace-name' });
+  const workspace = field({ form, label: shellText("Nom de l’espace"), type: 'text', name: 'workspace-name' });
   workspace.maxLength = 120;
   workspace.autocomplete = 'organization';
-  const admin = field({ form, label: 'Votre nom', type: 'text', name: 'admin-name' });
+  const admin = field({ form, label: shellText("Votre nom"), type: 'text', name: 'admin-name' });
   admin.maxLength = 120;
   admin.autocomplete = 'name';
-  const email = field({ form, label: 'Adresse e-mail', type: 'email', name: 'admin-email' });
+  const email = field({ form, label: shellText("Adresse e-mail"), type: 'email', name: 'admin-email' });
   email.autocomplete = options.passwordAuthAvailable ? 'username' : 'email';
   const password = options.passwordAuthAvailable
-    ? field({ form, label: 'Mot de passe', type: 'password', name: 'admin-password' })
+    ? field({ form, label: shellText("Mot de passe"), type: 'password', name: 'admin-password' })
     : null;
   if (password) {
     password.autocomplete = 'new-password';
@@ -47,11 +48,11 @@ export function mountSetupAssistant(options: SetupAssistantOptions): void {
   }
 
   const hint = el('small', {
-    text: password ? '12 caractères minimum.' : 'Vous recevrez un code de connexion à cette adresse.',
+    text: password ? shellText("12 caractères minimum.") : shellText("Vous recevrez un code de connexion à cette adresse."),
     attrs: { id: 'setup-credential-hint' },
   });
   (password ?? email).setAttribute('aria-describedby', hint.id);
-  const submit = button({ label: 'Créer l’espace', primary: true, block: true, type: 'submit', onClick: () => {} });
+  const submit = button({ label: shellText("Créer l’espace"), primary: true, block: true, type: 'submit', onClick: () => {} });
   form.append(hint, submit);
   for (const input of [workspace, admin]) {
     input.addEventListener('input', () => input.setCustomValidity(''));
@@ -79,21 +80,21 @@ export function mountSetupAssistant(options: SetupAssistantOptions): void {
       await options.onClaimed(address, secret);
     });
   });
-  main.append(el('h1', { text: 'Créer votre espace' }), form);
+  main.append(el('h1', { text: shellText("Créer votre espace") }), form);
   if (password) return;
 
   const mailTest = el('details', { attribute: 'data-cloud-section' });
   const status = el('p', { attribute: 'data-cloud-note', attrs: { role: 'status' } });
   status.hidden = true;
-  mailTest.append(el('summary', { text: 'Tester l’envoi d’e-mails' }), button({
-    label: 'Envoyer un e-mail de test',
+  mailTest.append(el('summary', { text: shellText("Tester l’envoi d’e-mails") }), button({
+    label: shellText("Envoyer un e-mail de test"),
     onClick: () => {
       if (!email.reportValidity()) return;
       const address = email.value.trim();
       void options.run(async () => {
         status.hidden = true;
         await options.client.request('/api/setup/email-test', { method: 'POST', body: JSON.stringify({ email: address }) });
-        status.textContent = `E-mail de test envoyé à ${address}.`;
+        status.textContent = shellText("E-mail de test envoyé à {v0}.", {v0: address});
         status.hidden = false;
       });
     },

@@ -1072,6 +1072,17 @@ const internalDomPlugin = {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const restrictedSyntax = [
+  {
+    selector: 'VariableDeclaration[kind="let"]',
+    message: 'Use const instead of let. If reassignment is needed, refactor to avoid mutation.',
+  },
+  {
+    selector: 'Decorator',
+    message: 'Decorators are not allowed.',
+  },
+];
+
 export default defineConfig(
   {
     ignores: [
@@ -1147,17 +1158,7 @@ export default defineConfig(
       },
     },
     rules: {
-      'no-restricted-syntax': [
-        'error',
-        {
-          selector: 'VariableDeclaration[kind="let"]',
-          message: 'Use const instead of let. If reassignment is needed, refactor to avoid mutation.',
-        },
-        {
-          selector: 'Decorator',
-          message: 'Decorators are not allowed.',
-        },
-      ],
+      'no-restricted-syntax': ['error', ...restrictedSyntax],
       'jsdoc/require-returns-type': 'off',
       '@typescript-eslint/strict-boolean-expressions': 'off',
       '@typescript-eslint/member-ordering': 'off',
@@ -1254,6 +1255,19 @@ export default defineConfig(
         project: ['./desktop/tsconfig.json'],
         tsconfigRootDir: __dirname,
       },
+    },
+  },
+  {
+    files: ['desktop/src/sidebar/*.tsx', 'desktop/src/sidebar-*.tsx'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...restrictedSyntax,
+        {
+          selector: 'FunctionDeclaration[id.name=/^[A-Z]/]',
+          message: 'Declare sidebar components as const arrow functions. See desktop/STYLEGUIDE.md.',
+        },
+      ],
     },
   },
   {

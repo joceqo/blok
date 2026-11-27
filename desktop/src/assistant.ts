@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { createAiClient, nativeBridge, selectionKey } from './ai-client';
 import type { WorkspaceRef } from './workspace-registry';
 import type { AgentModel, AgentModelContentBlock } from '../../types/api';
@@ -92,8 +93,8 @@ export function createAssistantButton(onClick: () => void): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
   button.setAttribute('data-desktop-ai-button', '');
-  button.setAttribute('aria-label', 'Ouvrir l’assistant IA');
-  button.setAttribute('title', 'Assistant IA');
+  button.setAttribute('aria-label', shellText("Ouvrir l’assistant IA"));
+  button.setAttribute('title', shellText("Assistant IA"));
   const mascot = document.createElement('img');
   mascot.src = blokMascot;
   mascot.alt = '';
@@ -107,8 +108,8 @@ export function bindAssistantButton(button: HTMLButtonElement, panel: HTMLElemen
     const expanded = !panel.hidden;
     button.toggleAttribute('hidden', expanded && panel.getAttribute('data-blok-agent-mode') !== 'floating');
     button.setAttribute('aria-expanded', String(expanded));
-    button.setAttribute('aria-label', expanded ? 'Fermer l’assistant IA' : 'Ouvrir l’assistant IA');
-    button.setAttribute('title', expanded ? 'Fermer l’assistant IA' : 'Assistant IA');
+    button.setAttribute('aria-label', expanded ? shellText("Fermer l’assistant IA") : shellText("Ouvrir l’assistant IA"));
+    button.setAttribute('title', expanded ? shellText("Fermer l’assistant IA") : shellText("Assistant IA"));
   };
   const observer = new MutationObserver(sync);
   observer.observe(panel, { attributes: true, attributeFilter: ['hidden', 'data-blok-agent-mode'] });
@@ -137,14 +138,14 @@ export function createWorkspaceAssistant(ref: WorkspaceRef) {
             catch(error) { if(signal.aborted) throw error; }
             const modelIds=[...new Set([config.effective.model,...cachedModels].filter(Boolean))];
             const scope=config.effective.source === 'personal' ? 'clé personnelle' : 'clé du workspace';
-            result.push(...modelIds.map(model=>({id:`openai:${model}`,label:`OpenAI · ${model} · ${scope}`})));
+            result.push(...modelIds.map(model=>({id:`openai:${model}`,label:shellText("OpenAI · {v0} · {v1}", {v0: model, v1: scope})})));
             fallback=config.effective.model ? `openai:${config.effective.model}` : result[0]?.id ?? null;
           } else {fallback=null;cachedModels=[];catalogFor='';}
         } catch(error) { configFailure=error; }
       }
       if(nativeBridge()) {
         const statuses=await Promise.all((['codex','claude'] as const).map(provider=>inspectNativeProvider(provider,signal)));
-        for(const status of statuses) if(status.connected) result.push({id:status.command,label:status.command === 'codex' ? 'Codex · sur ce Mac' : 'Claude Code · sur ce Mac'});
+        for(const status of statuses) if(status.connected) result.push({id:status.command,label:status.command === 'codex' ? shellText("Codex · sur ce Mac") : shellText("Claude Code · sur ce Mac")});
       }
       signal.throwIfAborted();
       if(configFailure && result.length === 0) throw configFailure;

@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { createCalendarPortal } from "../portal";
 
@@ -101,7 +102,7 @@ export const EVENT_ACTION_KEYS = {
   cut: { label: "⌘X", aria: "Meta+X Control+X" },
   copy: { label: "⌘C", aria: "Meta+C Control+C" },
   duplicate: { label: "⌘D", aria: "Meta+D Control+D" },
-  delete: { label: "delete", aria: "Delete Backspace" },
+  delete: { label: shellText("delete"), aria: "Delete Backspace" },
 } as const;
 
 /** Main text of a menu item: the menu's foreground, a little softer */

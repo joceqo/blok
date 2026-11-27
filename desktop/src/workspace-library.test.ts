@@ -6,7 +6,6 @@ let host: HTMLDivElement;
 let library: ReturnType<typeof mountWorkspaceLibrary>;
 let view: LibraryView;
 let pages: DesktopPage[];
-let inTeamspaces = false;
 let peekPage: string | undefined;
 const createTeamspace = vi.fn();
 const onOpen = vi.fn();
@@ -28,7 +27,7 @@ const onClosePeek = vi.fn();
 beforeEach(() => {
   host = document.createElement('div');
   document.body.append(host);
-  view = 'recents'; inTeamspaces = false; peekPage = undefined;
+  view = 'recents'; peekPage = undefined;
   pages = [
     {id: 'a', title: 'Projet', parentId: null, section: 'Partagé', favorite: true},
     {id: 'b', title: 'Brouillon', parentId: null, section: 'Privé'},
@@ -38,7 +37,7 @@ beforeEach(() => {
   library = mountWorkspaceLibrary(host, {
     workspaceName: 'Atelier', pages: () => pages, view: () => view, onViewChange: show,
     recentIds: () => ['deleted', 'a', 'b'], visitedAt: id => id === 'c' ? 123 : undefined,
-    onOpen, onClosePeek, isTeamspaces: () => inTeamspaces, selectedPageId: () => peekPage, onCreateTeamspace: createTeamspace,
+    onOpen, onClosePeek, hasTeamspaces: true, canCreateTeamspace: true, selectedPageId: () => peekPage, onCreateTeamspace: createTeamspace,
   });
 });
 afterEach(() => {
@@ -109,8 +108,9 @@ it.each(['recents','favorites','private','shared'] as const)('uses the same read
 });
 
 it('creates a teamspace using the contextual library action', () => {
-  inTeamspaces = true;
-  library.refresh();
+  show('teamspaces');
+  expect(titles()).toEqual(['Autre']);
+  expect(host.querySelector('nav [aria-current]')?.textContent).toBe('Espaces d’équipe');
   host.querySelector<HTMLButtonElement>('.library-create')!.click();
   expect(createTeamspace).toHaveBeenCalledOnce();
 });

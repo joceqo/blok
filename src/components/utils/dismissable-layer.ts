@@ -1,3 +1,5 @@
+import { isInspectorPointer } from './inspector-interaction';
+
 /**
  * Shared dismissal-layer stack, adapted from Radix UI's DismissableLayer.
  *
@@ -176,7 +178,7 @@ const handleKeyDown = (event: KeyboardEvent): void => {
 const handlePointerDown = (event: PointerEvent): void => {
   const target = event.target;
 
-  if (!(target instanceof Node)) {
+  if (!(target instanceof Node) || isInspectorPointer(target)) {
     return;
   }
   pruneDetached();

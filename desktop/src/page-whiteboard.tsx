@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { createRoot } from 'react-dom/client';
 import { openBoardSurface } from './whiteboard-scene';
 import './page-whiteboard.css';
@@ -35,7 +36,7 @@ export function mountPageWhiteboard({
       board = undefined;
     }
     root.render(
-      <div role="group" aria-label="Vue de la page" className="blok-page-view-switch">
+      <div role="group" aria-label={shellText("Vue de la page")} className="blok-page-view-switch">
         {(['document', 'whiteboard'] as const).map((mode) => {
           const label = mode === 'document' ? 'Document' : 'Tableau blanc';
           return (

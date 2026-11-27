@@ -1,9 +1,11 @@
-import { isTeamspaceLibrary, libraryPageId, libraryPageUrl, libraryUrl, libraryView, type LibraryView } from './library-route';
+import {shellText} from './shell-i18n';
+import {rememberShellLanguage, shellLocale} from './shell-i18n';
+import { libraryPageId, libraryPageUrl, libraryUrl, libraryView, type LibraryView } from './library-route';
 import { calendarUrl, editorUrl, isCalendarUrl } from './calendar-route';
 import { whiteboardElementTool } from './whiteboard-element';
 import { mountPageWhiteboard, whiteboardPlacementTune } from './page-whiteboard';
 import { clearPageRoute, pageIdForWorkspaceLink, pageUrlForView, pageView, resolveWorkspacePageLink, webPageLink, workspacePageLink, type PageView } from './page-link';
-import { navigationFavorites, navigationRecents } from './navigation-preferences';
+import { navigationEdits, navigationFavorites, navigationRecents } from './navigation-preferences';
 import { moveDestinations, PageMoveConflict } from './page-move';
 import { openPageHistory } from './page-history';
 import { openMovePicker, openPageSearch, openPageCreation, type CreationDestination } from './navigation-dialogs';
@@ -13,6 +15,7 @@ import { createEmptyWorkspaceState } from './workspace-empty';
 import { mountRemoteAssets } from './remote-assets';
 import { Blok, defaultTools, type OutputData, type CollaborationStatusChangedPayload } from '@bloklabs/core/full';
 import { Audio, Bookmark, File, Video, Callout, Code, Database, DatabaseComment, DatabaseRow, Divider, Image, Page, Quote, Table, TableOfContents, Toggle, type PageConfig } from '@bloklabs/core/tools';
+import { createReactPageFrame } from './sidebar/sidebar-frame';
 import { createPageFrame, type PageFrame, type ShellPage, type SidebarAction } from '@blok/sidebar';
 import { type DesktopPage, type WorkspaceIndex } from './storage';
 import { RepositoryHttpError, workspaceRepository } from './workspace-repository';
@@ -99,6 +102,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const repository = workspaceRepository(ref);
   const favorites = navigationFavorites(ref);
   const recentPages = navigationRecents(ref);
+  const edits = navigationEdits(ref);
   const pageUrl = (id: string, view?: PageView): string => workspacePageLink(ref, id, view);
   const emojis = customEmojiStore(ref);
   const pageIcon = (value: string) => /^(https?:|data:image\/|\/files\/)/i.test(value) ? {type: 'image' as const, url: value} : {type: 'emoji' as const, value};
@@ -112,7 +116,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     editor: Blok | null;
     documentStatus?: CollaborationStatusChangedPayload;
     selection: number;
-    frame: PageFrame;
+    frame: PageFrame & { setPagesError?(): void };
     coverRowObserver: MutationObserver | null;
     assistant: AgentAssistantHandle;
     pageCanvas: HTMLElement;
@@ -196,8 +200,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
    * basculer la page tout seul, au prochain index reçu.
    */
   const withSections = (pages: DesktopPage[]): DesktopPage[] => {
-    const tagged = pages.filter((page) => !page.databaseRowBody || !page.parentId).map((page) => ({ ...page, favorite: favorites.has(page.id) }));
-    if (ref.kind !== 'remote') return tagged;
+    const tagged = pages.filter((page) => !page.databaseRowBody || !page.parentId).map((page) => ({ ...page, updatedAt: Math.max(page.updatedAt ?? 0, edits.at(page.id)), favorite: favorites.has(page.id) }));
+    if (ref.kind !== 'remote') return tagged.map(page=>page.parentId ? page : {...page,section:'Privé'});
     if (!ws.index?.access) return tagged.map((page) => ({ ...page, section: page.parentId ? undefined : 'workspace' }));
     const roots = tagged.filter((page) => !page.parentId);
     const labelled = new Map(groupPagesBySection(roots, ws.index.access)
@@ -214,7 +218,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const status = document.createElement('div');
   status.setAttribute('data-desktop-status', '');
   status.setAttribute('role', 'status');
-  status.textContent = 'Ouverture des pages…';
+  status.textContent = shellText("Ouverture des pages…");
 
   let closeTrash: (() => void) | undefined;
   const pageFromUrl = (): string | null => {
@@ -373,15 +377,15 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       : describeAccessLoss(error);
     const conflict = error instanceof WorkspaceConflictError || error instanceof PageMoveConflict;
     status.textContent = refusal ?? (error instanceof PageMoveConflict ? error.message : conflict
-      ? 'Conflit sur les pages de l’espace. Copiez vos changements avant de recharger pour comparer les versions.'
-      : `Enregistrement impossible : ${String(error)}`);
+      ? shellText("Conflit sur les pages de l’espace. Copiez vos changements avant de recharger pour comparer les versions.")
+      : shellText("Enregistrement impossible : {v0}", {v0: String(error)}));
     status.setAttribute('data-error', '');
     status.setAttribute('data-sync-state', refusal ? 'denied' : conflict ? 'conflict' : 'error');
     if (ref.kind === 'remote' && ws.manifestFailed && ws.manifestError === error &&
         (error instanceof TypeError || (error instanceof RepositoryHttpError && (error.status >= 500 || error.status === 429)))) {
       const retry = document.createElement('button');
       retry.type = 'button';
-      retry.textContent = 'Réessayer';
+      retry.textContent = shellText("Réessayer");
       retry.addEventListener('click', () => {
         retry.disabled = true;
         saveManifest();
@@ -405,6 +409,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const next = nextPageIcon(target.icon, iconValue(icon), { adoptOnly });
     if (target.icon !== next) {
       target.icon = next;
+      if (persist && !adoptOnly) edits.mark(target.id);
       ws.frame.setPages(withSections(ws.index.pages), currentLibrary() ? '' : ws.index.activeId);
       ws.pageToolbar?.setBreadcrumbs(breadcrumbs(ws.currentId));
       if (persist) saveManifest();
@@ -414,7 +419,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   };
   const pageConfig: PageConfig = {
     createFromMention: true,
-    todayMention: { label: 'Aujourd’hui', heading: 'Date', locale: 'fr' },
+    todayMention: { label: shellText("Aujourd’hui"), heading: shellText("Date"), locale: shellLocale() },
     databasePages: true,
     search: async (query) => {
       if (!ws.index) return [];
@@ -444,7 +449,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     create: async ({ pageId, title, parentId, document: initialDocument }) => {
       if (!ws.index || !canCreateUnder(parentId ?? ws.currentId ?? null)) throw new Error('Espace indisponible ou en lecture seule');
       if (ws.index.pages.some((page) => page.id === pageId)) throw new Error('Cette page existe déjà');
-      const page: DesktopPage = { id: pageId, title: title?.trim() || 'Nouvelle page', parentId: parentId ?? ws.currentId };
+      const page: DesktopPage = { id: pageId, title: title?.trim() || shellText("Nouvelle page"), parentId: parentId ?? ws.currentId };
       if (initialDocument && ref.kind === 'local') await repository.writePage(pageId, JSON.stringify(initialDocument));
       ws.index.pages.push(page);
       ws.frame.setPages(withSections(ws.index.pages), currentLibrary() ? '' : ws.index.activeId);
@@ -509,7 +514,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.editor = null;
     ws.documentStatus = undefined;
     if (!ws.manifestFailed) {
-      status.textContent = 'Ouverture de la page…';
+      status.textContent = shellText("Ouverture de la page…");
       status.removeAttribute('data-sync-state');
       status.removeAttribute('data-error');
     }
@@ -639,9 +644,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       readOnly: readOnly(id),
       tools: { ...desktopTools, database: {class: Database, config: {...(ref.kind === 'remote' && {people: {me: () => ref.accountId, list: repository.listPeople}}), customEmojis: () => emojis.list(), coverGallery: COVER_GALLERY, uploadCover: (file: globalThis.File) => readCoverFile(file).then(repository.uploadImage)}}, page: { class: Page, config: { ...pageConfig } } },
       theme: readAppearance(),
+      i18n: {locale: shellLocale()},
+      onChange: () => { if (ws.generation === turn) edits.mark(id); },
       pageTitle: {
         customEmojis: () => emojis.list(),
-        placeholder: 'Nouvelle page',
+        placeholder: shellText("Nouvelle page"),
         onChange(title, change) {
           if (ws.generation !== turn || !ws.index) return;
           const next = title.trim() || 'Nouvelle page';
@@ -656,6 +663,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
               page.titleDateSuffix = undefined;
             }
           }
+          if (page.title !== next && change.source === 'user') edits.mark(id);
           page.title = next;
           holder.querySelector<HTMLElement>('[data-blok-page-title]')?.toggleAttribute('data-desktop-title-date', !!page.titleDate);
           toolbar.setBreadcrumbs(breadcrumbs(id));
@@ -752,7 +760,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
 
   const duplicatePage = async (page: DesktopPage): Promise<'navigated' | 'pending'> => {
     if (ref.kind === 'remote') {
-      const copy = {id: crypto.randomUUID(), title: `${page.title} (copie)`, parentId: page.parentId};
+      const copy = {id: crypto.randomUUID(), title: shellText("{v0} (copie)", {v0: page.title}), parentId: page.parentId};
       if (ws.editor) { await ws.editor.isReady; await ws.editor.saver.flush(); }
       await ws.saveOrder;
       await repository.duplicatePage(page.id, copy);
@@ -762,7 +770,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       return 'navigated';
     }
     if (!ws.index) return 'navigated';
-    const copy: DesktopPage = { ...page, id: crypto.randomUUID(), title: `${page.title} (copie)`, titleDate: undefined, titleDateDisplay: undefined, titleDateSuffix: undefined };
+    const copy: DesktopPage = { ...page, id: crypto.randomUUID(), title: shellText("{v0} (copie)", {v0: page.title}), titleDate: undefined, titleDateDisplay: undefined, titleDateSuffix: undefined };
+    edits.mark(copy.id);
     ws.index.pages.push(copy);
     saveManifest();
     void repository.readPage(page.id).then(async (raw) => {
@@ -828,6 +837,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
 
   const renamePage = (page: DesktopPage, title: string): void => {
     const target = page;
+    edits.mark(page.id);
     target.title = title;
     target.titleDate = undefined;
     target.titleDateDisplay = undefined;
@@ -908,7 +918,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     } finally { ws.frame.element.inert = wasInert; ws.metadataAction = false; }
   };
 
-  function openLibrary(view: LibraryView | 'teamspaces' = 'recents'): void {
+  function openLibrary(view: LibraryView = 'recents'): void {
     const next = libraryUrl(new URL(location.href), view);
     if (location.href !== next.href) history.pushState(null, '', next);
     onRoute();
@@ -942,13 +952,41 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: initialView === 'create' ? 'teams-create' : 'teams'}));
   }
 
+  const teamspacePermission = { allowed: false, pending: undefined as AbortController | undefined };
+  const createTeamspace = () => manageTeamspaces('create');
+  async function refreshTeamspacePermission() {
+    if (!ws.frame.element.isConnected) return;
+    teamspacePermission.pending?.abort();
+    const request = new AbortController();
+    teamspacePermission.pending = request;
+    const allowed = await repository.canCreateTeamspace(request.signal).catch(() => false);
+    if (request.signal.aborted || !ws.frame.element.isConnected || allowed === teamspacePermission.allowed) return;
+    teamspacePermission.allowed = allowed;
+    if (ws.index) ws.frame.setPages(withSections(ws.index.pages), currentLibrary() ? '' : ws.index.activeId);
+    library?.refresh();
+  }
+
   function openTrash(): void {
     if (ref.kind !== 'remote') return;
     closeTrash?.();
     closeTrash = openRemoteTrash(ref, () => ws.saveOrder, refreshRemoteManifest);
   }
 
-  ws.frame = createPageFrame({
+  const openWorkspaceSettings = (panel: 'invites' | 'general') =>
+    ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: panel}));
+  const teamspaceActions = [
+    ...(ref.kind === 'remote' && ref.role === 'admin'
+      ? [{name: 'invite', title: shellText("Inviter des membres"), run: () => openWorkspaceSettings('invites')}] : []),
+    ...(ref.kind === 'remote' ? [
+      {name: 'teams', title: shellText("Gérer les espaces d’équipe"), run: () => manageTeamspaces()},
+      {name: 'trash', title: shellText("Corbeille"), run: openTrash},
+    ] : []),
+    {name: 'settings', title: shellText("Paramètres de l’espace"), run: () => openWorkspaceSettings('general')},
+  ];
+  const desktopDownloadUrl: unknown = import.meta.env.VITE_BLOK_DESKTOP_DOWNLOAD_URL;
+  const createFrame = import.meta.env.VITE_SIDEBAR_TSX === '0' ? createPageFrame : createReactPageFrame;
+  ws.frame = createFrame({
+    loadingPages: true,
     teamspace: ref.kind === 'remote' ? { name: ref.name } : undefined,
     pages: [], activeId: '', collapsedByDefault: true, preferenceKey: workspaceKey(ref),
     recentIds: recentPages.ids,
@@ -956,8 +994,19 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     onOpen: (id) => navigate(id),
     onCreate: (parentId) => chooseNewPage(parentId),
     calendarHref: '__TAURI_INTERNALS__' in window ? undefined : calendarUrl(new URL(location.href)).href,
+    onOpenLibrarySection: openLibrary,
+    onDownloadDesktop: !('__TAURI_INTERNALS__' in window) && typeof desktopDownloadUrl === 'string' && desktopDownloadUrl.trim()
+      ? () => window.location.assign(desktopDownloadUrl) : undefined,
+    get canCreateTeamspace() { return teamspacePermission.allowed; },
+    onCreateTeamspace: createTeamspace,
+    onConnectCalendar: () => ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: ref.kind === 'remote' ? 'calendar' : 'import'})),
+    upcomingEvents: async (signal) => {
+      const [{upcomingCalendarEvents}, {createCalendarStore}] = await Promise.all([import('./calendar-sources'), import('./calendar-store')]);
+      signal.throwIfAborted();
+      return upcomingCalendarEvents(createCalendarStore(ref), signal);
+    },
     onCalendar: () => ws.footer.dispatchEvent(new Event('blok:desktop-open-agenda')),
-    onCreatePrivate: ref.kind === 'remote' ? () => chooseNewPage(null, true) : undefined,
+    onCreatePrivate: () => chooseNewPage(null, ref.kind === 'remote'),
     onSearch: showPageSearch,
     onHome: openHome,
     onChat: () => ws.assistant.open(),
@@ -966,19 +1015,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     onInviteMembers: ref.kind === 'remote' && !ref.embedded && ref.role === 'admin'
       ? () => ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: 'invites'})) : undefined,
     onTeamspaces: ref.kind === 'remote' ? () => openLibrary('teamspaces') : undefined,
+    teamspaceActions,
     onTeamspaceMenu: (anchor) => {
-      const menuState = { requestedPanel: undefined as 'invites' | 'general' | 'trash' | 'teams' | undefined, settled: false };
+      const menuState = { action: undefined as (() => void) | undefined, settled: false };
       const menu = new PopoverDesktop({ trigger: anchor, autoFocusFirstItem: true,
-        items: [
-          ...(ref.kind === 'remote' && ref.role === 'admin' ? [{ name: 'invite', title: 'Inviter des membres', closeOnActivate: true,
-            onActivate: () => { menuState.requestedPanel = 'invites'; } }] : []),
-          ...(ref.kind === 'remote' ? [{name: 'teams', title: 'Gérer les espaces d’équipe', closeOnActivate: true,
-            onActivate: () => { menuState.requestedPanel = 'teams'; }}] : []),
-          ...(ref.kind === 'remote' ? [{ name: 'trash', title: 'Corbeille', closeOnActivate: true,
-            onActivate: () => { menuState.requestedPanel = 'trash'; } }] : []),
-          { name: 'settings', title: 'Paramètres de l’espace', closeOnActivate: true,
-            onActivate: () => { menuState.requestedPanel = 'general'; } },
-        ],
+        items: teamspaceActions.map(({name, title, run}) => ({
+          name, title, closeOnActivate: true, onActivate: () => { menuState.action = run; },
+        })),
       });
       anchor.setAttribute('aria-expanded', 'true');
       menu.on('closed', () => {
@@ -988,10 +1031,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         // Release the menu's focus manager before handing focus to a modal.
         queueMicrotask(() => {
           menu.destroy();
-          if (menuState.requestedPanel === 'trash' && ref.kind === 'remote') {
-            openTrash();
-          } else if (menuState.requestedPanel === 'teams') manageTeamspaces();
-          else if (menuState.requestedPanel) ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', { detail: menuState.requestedPanel }));
+          menuState.action?.();
         });
       });
       menu.show();
@@ -1041,6 +1081,13 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   ws.frame.canvas.append(assistantButton);
   if (panel) bindAssistantButton(assistantButton, panel);
   ws.footer = createDesktopFooter((mode) => ws.editor?.theme.set(mode), ref, ws.frame.headerActions, {
+    async onLanguageChange(locale) {
+      await flushDocument();
+      rememberShellLanguage(locale);
+      sessionStorage.setItem('blok:desktop:pending-settings', 'preferences');
+      location.reload();
+    },
+    footerHost: sidebar.querySelector<HTMLElement>('[data-desktop-footer]') ?? undefined,
     sidebarPreferences: ws.frame.sidebarPreferences, teamPages: teamPageNavigation(),
     importMarkdown: canCreateUnder(null) ? async (file: globalThis.File) => {
       if (!ws.index || !canCreateUnder(null)) throw new Error('Vous ne pouvez pas créer de page dans cet espace.');
@@ -1086,7 +1133,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     };
     void open().catch(() => undefined);
   });
-  sidebar.insertBefore(ws.footer, sidebar.querySelector('[data-blok-sidebar-edge]'));
+  if (!ws.footer.parentElement) sidebar.insertBefore(ws.footer, sidebar.querySelector('[data-blok-sidebar-edge]'));
   const observer = new ResizeObserver(() => onLayout(sidebar.getBoundingClientRect().width));
   observer.observe(sidebar);
   ws.frame.element.setAttribute('data-desktop-workspace', '');
@@ -1228,11 +1275,11 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         libraryHost.hidden = false;
         library = mountWorkspaceLibrary(libraryContent, {
           workspaceName: ref.name,
-          pages: () => withSections(ws.index?.pages ?? []).map(page => ref.kind === 'local' && !page.parentId ? {...page, section: 'Privé'} : page),
+          pages: () => withSections(ws.index?.pages ?? []),
           recentIds: () => libraryHistory?.ids ?? recentPages.ids,
           visitedAt: page => libraryHistory ? libraryHistory.visits.get(page) : recentPages.visitedAt(page),
           view: () => currentLibrary() ?? 'recents', onViewChange: openLibrary,
-          isTeamspaces: () => isTeamspaceLibrary(new URL(location.href)),
+          hasTeamspaces: ref.kind === 'remote',
           selectedPageId: () => libraryPageId(new URL(location.href)) ?? undefined,
           onVisiblePagesChange: () => queueMicrotask(updatePeekNeighbors),
           onClosePeek: () => routeLibraryPage(null),
@@ -1241,7 +1288,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
             routeLibraryPage(page);
           },
           onToggleSidebar: toggleWorkspaceSidebar, onCreate: ws.access.readOnlyWorkspace ? undefined : () => chooseNewPage(),
-          onCreateTeamspace: ref.kind === 'remote' && !ws.access.readOnlyWorkspace ? () => manageTeamspaces('create') : undefined,
+          get canCreateTeamspace() { return teamspacePermission.allowed; },
+          onCreateTeamspace: createTeamspace,
         });
       }
       pageSheet?.destroy(); pageSheet = undefined;
@@ -1450,7 +1498,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
     const destinations: CreationDestination[] = [];
     if (canCreateUnder(null)) {
       destinations.push({ value: 'workspace', label: ref.name, parentId: null });
-      if (ref.kind === 'remote') destinations.push({ value: 'private', label: 'Privé · Vous uniquement', parentId: null, privatePage: true });
+      if (ref.kind === 'remote') destinations.push({ value: 'private', label: shellText("Privé · Vous uniquement"), parentId: null, privatePage: true });
     }
     destinations.push(...ws.index.pages.filter((page) => canCreateUnder(page.id)).map((page) => ({ value: page.id, label: page.title, parentId: page.id })));
     openPageCreation({ destinations, destination: parentId ?? (privatePage ? 'private' : 'workspace'),
@@ -1460,7 +1508,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
 
   function createPage(parentId: string | null = null, privatePage = false, database = false): void {
     if (!ws.index || ws.metadataAction || !canCreateUnder(parentId)) return;
-    const page: DesktopPage = { id: crypto.randomUUID(), title: database ? 'Nouvelle base de données' : 'Nouvelle page', parentId, ...(privatePage ? { initialVisibility: 'private' as const } : {}) };
+    const page: DesktopPage = { id: crypto.randomUUID(), title: database ? shellText("Nouvelle base de données") : shellText("Nouvelle page"), parentId, ...(privatePage ? { initialVisibility: 'private' as const } : {}) };
+    edits.mark(page.id);
     ws.index.pages.push(page);
     saveManifest();
     void ws.saveOrder.then(async () => {
@@ -1491,6 +1540,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
         scheduleDateRefresh();
         window.addEventListener('focus', refreshDateTitles);
         if (ref.kind === 'remote') {
+          void refreshTeamspacePermission();
+          window.addEventListener('focus', refreshTeamspacePermission);
           window.addEventListener('focus', () => { void refreshRemoteManifest(); });
           window.setInterval(() => { void refreshRemoteManifest(); }, 15_000);
           window.addEventListener('beforeunload', (event) => {
@@ -1500,7 +1551,10 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
             }
           });
         }
-      } catch (error) { showError(error); }
+      } catch (error) {
+        if (!ws.index) ws.frame.setPagesError?.();
+        showError(error);
+      }
     },
     async flush() {
       const wasInert = ws.frame.element.inert;

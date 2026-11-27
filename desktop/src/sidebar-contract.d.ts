@@ -1,4 +1,5 @@
 export interface ShellPage {
+  updatedAt?: number;
   id: string;
   title: string;
   icon?: string;

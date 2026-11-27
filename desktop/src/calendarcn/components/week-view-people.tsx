@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { addDays, startOfDay } from "date-fns";
 
@@ -159,7 +160,7 @@ export function FreeTimeBlock({ span, hourHeight }: FreeTimeBlockProps) {
     <div
       data-free-time=""
       role="note"
-      aria-label={`Everyone free, ${label}`}
+      aria-label={shellText("Everyone free, {v0}", {v0: label})}
       className="pointer-events-none absolute inset-x-0 overflow-hidden rounded-sm border border-dashed border-event-green-border/60 bg-event-green-bg/40 dark:bg-event-green-bg/30"
       style={{ top: (top / 60) * hourHeight, height: heightPx }}
     >
@@ -168,7 +169,7 @@ export function FreeTimeBlock({ span, hourHeight }: FreeTimeBlockProps) {
           aria-hidden
           className="text-event-green block truncate px-1 pt-0.5 text-[10px] leading-tight font-medium"
         >
-          Free
+          {shellText("Free")}
         </span>
       )}
     </div>
@@ -205,7 +206,7 @@ export function PersonEventItem({
   return (
     <div
       data-person-event=""
-      title={`${name}: ${event.title}, ${time}`}
+      title={shellText("{v0}: {v1}, {v2}", {v0: name, v1: event.title, v2: time})}
       className={cn(
         "pointer-events-none absolute flex overflow-hidden rounded-sm border",
         styles.borderLine,

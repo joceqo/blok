@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import ICAL from 'ical.js';
 import type { CalendarEvent } from './calendar-store';
 
@@ -27,7 +28,7 @@ export function feedEvents(text: string, from: string, to: string): CalendarEven
     const value = (d: Time) => d.isDate ? d.toString() : d.toJSDate().toISOString();
     const start = value(a), end = value(b);
     if (end <= start) return;
-    events.set(key, {id: key, title: event.summary || 'Occupé', start, end, allDay: a.isDate, pageId: null, revision: 0});
+    events.set(key, {id: key, title: event.summary || shellText("Occupé"), start, end, allDay: a.isDate, pageId: null, revision: 0});
     if (events.size > 3000) throw new Error('Trop d’événements sur cette période.');
   }
   let steps = 0;

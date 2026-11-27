@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { createCalendarPortal as createPortal } from "../portal";
 import {
@@ -432,7 +433,7 @@ function LinkTooltip({
       <span className="truncate">{url}</span>
       <button
         type="button"
-        aria-label={isCopied ? "Link copied" : "Copy link"}
+        aria-label={isCopied ? shellText("Link copied") : shellText("Copy link")}
         onClick={copyUrl}
         onKeyDown={handleCopyKeyDown}
         onBlur={handleCopyBlur}
@@ -575,14 +576,14 @@ function LinkRow({ url, label, onRemove, isFromDescription }: LinkRowProps) {
       >
         {isFromDescription && (
           <HelpTooltipIcon
-            label="Linked in event description"
+            label={shellText("Linked in event description")}
             onHoverChange={setIsHelpHovered}
           />
         )}
         {!isFromDescription && onRemove && (
           <button
             type="button"
-            aria-label={`Remove ${label}`}
+            aria-label={shellText("Remove {v0}", {v0: label})}
             onClick={onRemove}
             className={cn(
               "-mr-1.5 flex size-6 items-center justify-center",
@@ -655,7 +656,7 @@ function AttachmentRow({ attachment, onRemove }: AttachmentRowProps) {
       {onRemove && (
         <button
           type="button"
-          aria-label={`Remove ${attachment.name}`}
+          aria-label={shellText("Remove {v0}", {v0: attachment.name})}
           onClick={onRemove}
           className={cn(
             "-mr-1.5 ml-auto flex size-6 shrink-0 items-center justify-center",
@@ -751,7 +752,7 @@ function AddLinkMenu({
         isLinkMenu ? "w-[260px]" : "w-60",
       )}
     >
-      <div id={id} role="listbox" aria-label="Add links and attachments">
+      <div id={id} role="listbox" aria-label={shellText("Add links and attachments")}>
         {options.map((option, index) => (
           <div
             key={option.kind}
@@ -775,9 +776,9 @@ function AddLinkMenu({
               <>
                 <Paperclip className="mt-px size-4 shrink-0" />
                 <span className="flex flex-col gap-[3px]">
-                  <span>Attach file</span>
+                  <span>{shellText("Attach file")}</span>
                   <span className="text-calendar-menu-muted-foreground">
-                    Upload from your computer
+                    {shellText("Upload from your computer")}
                   </span>
                 </span>
               </>
@@ -963,8 +964,8 @@ function AddLinkRow({ hasIcon, onAddLink, onAttachFiles }: AddLinkRowProps) {
           <input
             ref={inputRef}
             value={text}
-            placeholder="Paste link..."
-            aria-label="Paste link"
+            placeholder={shellText("Paste link...")}
+            aria-label={shellText("Paste link")}
             role="combobox"
             aria-autocomplete="list"
             aria-expanded={isMenuShown}
@@ -993,7 +994,7 @@ function AddLinkRow({ hasIcon, onAddLink, onAttachFiles }: AddLinkRowProps) {
         >
           {icon}
           <span className={EVENT_DETAIL_PLACEHOLDER_CLASS}>
-            {hasJustAdded ? "Paste link..." : "Add links and attachments"}
+            {hasJustAdded ? shellText("Paste link...") : shellText("Add links and attachments")}
           </span>
         </button>
       )}
@@ -1012,7 +1013,7 @@ function AddLinkRow({ hasIcon, onAddLink, onAttachFiles }: AddLinkRowProps) {
         type="file"
         multiple
         hidden
-        aria-label="Attach file"
+        aria-label={shellText("Attach file")}
         onChange={handleFilesPicked}
       />
     </>
@@ -1090,7 +1091,7 @@ export function EventDetailLinks<
       <EventDetailSection name="links">
         <EventDetailPlaceholderRow
           icon={Link}
-          label="Add links and attachments"
+          label={shellText("Add links and attachments")}
         />
       </EventDetailSection>
     );

@@ -1,3 +1,4 @@
+import {shellText} from '../shell-i18n';
 import { createAvatar } from './avatar';
 import { el } from './dom';
 
@@ -20,7 +21,7 @@ export function createPeopleTable(options: PeopleTableOptions): HTMLTableElement
   const table = el('table', { attribute: options.attribute ?? 'data-desktop-people-table' });
   const head = el('thead');
   const heading = el('tr');
-  heading.append(el('th', { text: options.userHeader ?? 'Utilisateur' }), el('th', { text: options.actionHeader }));
+  heading.append(el('th', { text: options.userHeader ?? shellText("Utilisateur") }), el('th', { text: options.actionHeader }));
   head.append(heading);
   const body = el('tbody');
   for (const row of options.rows) {

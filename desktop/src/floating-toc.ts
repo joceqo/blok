@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { outlineDepths } from '../../src/shared/outline-depths';
 
 interface Heading {
@@ -43,7 +44,7 @@ export function createFloatingToc(scroller: HTMLElement, redactor: HTMLElement):
   const nav = document.createElement('nav');
   const list = document.createElement('ol');
   nav.setAttribute('data-desktop-floating-toc', '');
-  nav.setAttribute('aria-label', 'Sommaire de la page');
+  nav.setAttribute('aria-label', shellText("Sommaire de la page"));
   list.setAttribute('role', 'list');
   nav.append(list);
   scroller.append(nav);

@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import {
   addDays,
@@ -64,7 +65,7 @@ function DatePickerCaption({ calendarMonth }: MonthCaptionProps) {
       </span>
       <button
         type="button"
-        aria-label="Previous month"
+        aria-label={shellText("Previous month")}
         disabled={!previousMonth}
         onClick={() => previousMonth && goToMonth(previousMonth)}
         className={PICKER_CHEVRON_CLASS}
@@ -73,7 +74,7 @@ function DatePickerCaption({ calendarMonth }: MonthCaptionProps) {
       </button>
       <button
         type="button"
-        aria-label="Next month"
+        aria-label={shellText("Next month")}
         disabled={!nextMonth}
         onClick={() => nextMonth && goToMonth(nextMonth)}
         className={PICKER_CHEVRON_CLASS}

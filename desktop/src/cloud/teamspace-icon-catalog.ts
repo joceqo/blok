@@ -1,3 +1,4 @@
+import {shellText} from '../shell-i18n';
 import * as glyphs from '../../../src/components/icons';
 
 const home = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="m1.6 7 6.4-5.3L14.4 7l-1.5.2V14H9.5V9H6.6v5H3.1V7.2z"/></svg>';
@@ -23,8 +24,8 @@ export const teamspaceSymbols = [
 ] as const;
 
 export const teamspaceColors: Record<string, {label:string; css:string}> = {
-  gray: {label:'Gris', css:'currentColor'}, blue:{label:'Bleu', css:'#448fdb'}, green:{label:'Vert',css:'#44977e'},
-  orange:{label:'Orange',css:'#d08444'}, red:{label:'Rouge',css:'#d66660'}, purple:{label:'Violet',css:'#a07bd0'},
+  gray: {label:shellText("Gris"), css:'currentColor'}, blue:{label:shellText("Bleu"), css:'#448fdb'}, green:{label:shellText("Vert"),css:'#44977e'},
+  orange:{label:shellText("Orange"),css:'#d08444'}, red:{label:shellText("Rouge"),css:'#d66660'}, purple:{label:shellText("Violet"),css:'#a07bd0'},
 };
 
 export async function teamspaceImage(file: File): Promise<string> {

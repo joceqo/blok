@@ -28,6 +28,13 @@ function localDate(iso: string): string {
   return [String(date.getFullYear()).padStart(4, '0'), String(date.getMonth() + 1).padStart(2, '0'), String(date.getDate()).padStart(2, '0')].join('-');
 }
 
+const refresh = { timer: undefined as number | undefined };
+// Regroupe les écritures d’un import iCalendar en un seul rafraîchissement de la sidebar.
+export function notifyCalendarChanged(): void {
+  window.clearTimeout(refresh.timer);
+  refresh.timer = window.setTimeout(() => window.dispatchEvent(new Event('blok:calendar-changed')), 150);
+}
+
 const queues = new Map<string, Promise<void>>();
 async function withFileLock<T>(workspace: string, action: () => Promise<T>): Promise<T> {
   const key = 'blok:calendar:' + workspace;
@@ -51,9 +58,11 @@ export function createCalendarStore(ref: WorkspaceRef, providedClient?: CloudCli
       },
       async save(event) {
         await client.request(base + '/' + encodeURIComponent(event.id), {method: 'PUT', body: JSON.stringify(event)});
+        notifyCalendarChanged();
       },
       async remove(event) {
         await client.request(base + '/' + encodeURIComponent(event.id) + '?revision=' + encodeURIComponent(event.revision), {method: 'DELETE'});
+        notifyCalendarChanged();
       },
     };
   }
@@ -76,6 +85,7 @@ export function createCalendarStore(ref: WorkspaceRef, providedClient?: CloudCli
       const next = events.filter(entry => entry.id !== event.id);
       if (!remove) next.push({...event, revision: event.revision + 1});
       await writeFile(file, JSON.stringify(next), ref);
+      notifyCalendarChanged();
     });
   }
   return {

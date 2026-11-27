@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import {
   ArrowLeft,
@@ -103,17 +104,17 @@ export interface DetailsSidebarShortcut {
  * nothing handles yet are marked `soon`
  */
 export const USEFUL_SHORTCUTS: DetailsSidebarShortcut[] = [
-  { label: "Command menu", keys: ["⌘", "K"] },
-  { label: "Toggle sidebar", keys: ["⌘", "/"] },
+  { label: shellText("Command menu"), keys: ["⌘", "K"] },
+  { label: shellText("Toggle sidebar"), keys: ["⌘", "/"] },
   SHORTCUTS.showTeammateCalendar,
   SHORTCUTS.goToDate,
-  { label: "All keyboard shortcuts", keys: SHORTCUTS.showShortcuts.keys },
+  { label: shellText("All keyboard shortcuts"), keys: SHORTCUTS.showShortcuts.keys },
 ];
 
 /** "Soon" badge of a listed shortcut that isn't built yet, as in the command menu */
 const SOON_BADGE = (
   <span className="bg-muted text-muted-foreground rounded px-1.5 py-0.5 text-[10px] leading-none font-medium">
-    Soon
+    {shellText("Soon")}
   </span>
 );
 
@@ -168,10 +169,10 @@ function formatDateHeader(
   isTodayGroup: boolean;
 } {
   if (isSameDay(date, now)) {
-    return { label: "Today", isTodayGroup: true };
+    return { label: shellText("Today"), isTodayGroup: true };
   }
   if (isSameDay(date, addDays(now, 1))) {
-    return { label: "Tomorrow", isTodayGroup: false };
+    return { label: shellText("Tomorrow"), isTodayGroup: false };
   }
   if (isSameYear(date, now)) {
     return { label: format(date, "EEE MMM d"), isTodayGroup: false };
@@ -436,7 +437,7 @@ export function DetailsSidebar({
                 onClick={() => setSearchSelectedEvent(null)}
               >
                 <ArrowLeft className="size-4" />
-                Search
+                {shellText("Search")}
               </Button>
               <div className="flex-1" />
             </>
@@ -449,8 +450,8 @@ export function DetailsSidebar({
               <input
                 ref={shortcutInputRef}
                 type="text"
-                placeholder="Find keyboard shortcuts"
-                aria-label="Find keyboard shortcuts"
+                placeholder={shellText("Find keyboard shortcuts")}
+                aria-label={shellText("Find keyboard shortcuts")}
                 value={shortcutQuery}
                 onChange={(e) => setShortcutQuery(e.target.value)}
                 onKeyDown={(e) => {
@@ -465,7 +466,7 @@ export function DetailsSidebar({
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label="Close keyboard shortcuts"
+                aria-label={shellText("Close keyboard shortcuts")}
                 className="size-7 shrink-0"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -484,7 +485,7 @@ export function DetailsSidebar({
               <input
                 ref={inputRef}
                 type="text"
-                placeholder="Search events"
+                placeholder={shellText("Search events")}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="text-foreground placeholder:text-muted-foreground h-7 w-full border-none bg-transparent p-0 text-xs outline-none"
@@ -508,7 +509,7 @@ export function DetailsSidebar({
           <Tooltip>
             <TooltipTrigger render={<Button variant="ghost" size="icon" className="size-7 shrink-0" onClick={toggleSidebar} />}><PanelRightIcon className="size-4" /></TooltipTrigger>
             <TooltipContent side="bottom">
-              Close context panel <Kbd className="ml-1">/</Kbd>
+              {shellText("Close context panel")} <Kbd className="ml-1">/</Kbd>
             </TooltipContent>
           </Tooltip>
         </div>
@@ -542,8 +543,7 @@ export function DetailsSidebar({
         ) : isLoadingResults ? (
           <div className="px-4 pl-8 pt-8">
             <p className={cn(PANEL_CAPTION_CLASS, "text-xs")}>
-              Searching
-              <AnimatedDots />
+              {shellText("Searching")} <AnimatedDots />
             </p>
           </div>
         ) : isSearching ? (
@@ -558,7 +558,7 @@ export function DetailsSidebar({
             ))}
             <div className="px-4 pt-5">
               <p className="-ml-1 text-primary text-xs font-semibold pb-3">
-                Today
+                {shellText("Today")}
               </p>
               {todayGroup && (
                 <div className="flex flex-col">
@@ -573,7 +573,7 @@ export function DetailsSidebar({
               )}
               {!hasUpcomingResults && (
                 <p className={cn(PANEL_CAPTION_CLASS, "pl-4 pt-1 text-xs")}>
-                  No upcoming results
+                  {shellText("No upcoming results")}
                 </p>
               )}
             </div>
@@ -588,7 +588,7 @@ export function DetailsSidebar({
         ) : (
           <SidebarGroup className="px-3 pt-6">
             <SidebarGroupLabel className="text-foreground text-xs font-semibold px-0">
-              Useful shortcuts
+              {shellText("Useful shortcuts")}
             </SidebarGroupLabel>
             <SidebarGroupContent>
               <div className="flex flex-col">
@@ -617,8 +617,8 @@ export function DetailsSidebar({
         open={panelOpen}
         onOpenChange={setPanelOpen}
         side="right"
-        title="Context panel"
-        description="Event details, event search and useful shortcuts."
+        title={shellText("Context panel")}
+        description={shellText("Event details, event search and useful shortcuts.")}
         className="!bg-calendar-context-panel"
         style={
           {
@@ -828,7 +828,7 @@ function ShortcutKeys({ shortcut }: { shortcut: KeyboardShortcut }) {
       <KeyCaps keys={shortcut.keys} />
       {shortcut.alternativeKeys?.map((keys) => (
         <React.Fragment key={keys.join("+")}>
-          <span>or</span>
+          <span>{shellText("or")}</span>
           <KeyCaps keys={keys} />
         </React.Fragment>
       ))}
@@ -853,7 +853,7 @@ function AllShortcutsList({ groups }: { groups: KeyboardShortcutGroup[] }) {
   if (groups.length === 0) {
     return (
       <p className={cn(PANEL_CAPTION_CLASS, "px-4 pt-6 text-xs")}>
-        No keyboard shortcut found
+        {shellText("No keyboard shortcut found")}
       </p>
     );
   }

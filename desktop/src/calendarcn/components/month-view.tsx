@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import {
   useRef,
   useMemo,
@@ -450,7 +451,7 @@ export function MonthView({
         >
           {showWeekNumbers && (
             <div className="py-2 text-center text-[11px] text-muted-foreground">
-              w
+              {shellText("w")}
             </div>
           )}
           {dayNames.map((name) => (

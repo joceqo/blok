@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { IconBoard } from '../../src/components/icons';
 import type { BlockAPI, MenuConfig } from '../../types';
 
@@ -16,7 +17,7 @@ class WhiteboardPlacement {
     return {
       name: 'whiteboard-placement',
       icon: IconBoard,
-      title: 'Ouvrir dans le tableau blanc',
+      title: shellText("Ouvrir dans le tableau blanc"),
       onActivate: () => this.block.holder.dispatchEvent(new CustomEvent('blok:whiteboard-place', { bubbles: true })),
       closeOnActivate: true,
     };

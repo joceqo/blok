@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import type { CalendarEvent } from './calendar-store';
 import { getTimeFormatter } from './display-preferences';
 
@@ -73,7 +74,7 @@ export function rangeDraft(a: CalendarSlot, b: CalendarSlot, allDay: boolean): C
   const [start, end] = x < y ? [x, y] : [y, x];
   if (allDay) end.setDate(end.getDate() + 1);
   else if (+start === +end) end.setMinutes(end.getMinutes() + 15);
-  return {id:'', title:'Nouvel événement', start:allDay ? dayKey(start) : start.toISOString(),
+  return {id:'', title:shellText("Nouvel événement"), start:allDay ? dayKey(start) : start.toISOString(),
     end:allDay ? dayKey(end) : end.toISOString(), allDay, pageId:null, revision:0};
 }
 

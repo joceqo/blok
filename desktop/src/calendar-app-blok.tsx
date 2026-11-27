@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import {
   useCallback,
   useEffect,
@@ -254,7 +255,7 @@ export function BlokCalendar({ options, container }: { options: CalendarOptions;
           variant="ghost"
           size="icon-sm"
           data-desktop-sidebar-toggle=""
-          aria-label="Afficher la barre latérale"
+          aria-label={shellText("Afficher la barre latérale")}
           onClick={options.onToggleSidebar}
         >
           <PanelLeftOpen />
@@ -264,8 +265,8 @@ export function BlokCalendar({ options, container }: { options: CalendarOptions;
         <Button
           variant="ghost"
           size="icon-sm"
-          aria-label="Nouvel événement"
-          title="Nouvel événement"
+          aria-label={shellText("Nouvel événement")}
+          title={shellText("Nouvel événement")}
           onClick={create}
         >
           <Plus />
@@ -315,7 +316,7 @@ export function BlokCalendar({ options, container }: { options: CalendarOptions;
     if (!status.connected) await connectGoogleCalendar(remote);
     else if (entry) sources.current?.openSources(entry.id);
   }
-  const googleLabel = <><img width="18" height="18" alt="" src={googleCalendarIcon} />Connecter Google Agenda</>;
+  const googleLabel = <><img width="18" height="18" alt="" src={googleCalendarIcon} />{shellText("Connecter Google Agenda")}</>;
   const defaultPanel = (
     <>
       <CalendarDatePicker
@@ -332,7 +333,7 @@ export function BlokCalendar({ options, container }: { options: CalendarOptions;
                 id: entry.id,
                 name: entry.name,
                 color: entry.color as `#${string}`,
-                email: entry.ref.kind === 'local' || entry.ref.embedded ? 'Sur cet appareil' : entry.ref.userName || new URL(entry.ref.server).host,
+                email: entry.ref.kind === 'local' || entry.ref.embedded ? shellText('Sur cet appareil') : entry.ref.userName || new URL(entry.ref.server).host,
               })),
               // A Google account's calendars group under its own address, the
               // shared ones included, each with its own eye.
@@ -364,14 +365,13 @@ export function BlokCalendar({ options, container }: { options: CalendarOptions;
         {spaces.some(entry => !entry.visible) && (
           <Button variant="ghost" size="sm" disabled={updatingSource} onClick={() => void updateSources(async () => {
             for (const entry of spaces) if (!entry.visible) await showSpace(entry);
-          })}>Afficher tous mes espaces</Button>
+          })}>{shellText("Afficher tous mes espaces")}</Button>
         )}
         {options.workspaces?.unavailable?.().map(ref => (
           <Button key={JSON.stringify([ref.kind, ref.id, ref.kind === 'remote' && ref.accountId, ref.kind === 'remote' && ref.server])}
             variant="ghost" size="sm" title={'Ouvrir ' + ref.name}
             onClick={() => container.dispatchEvent(new CustomEvent('blok:desktop-select-workspace', {bubbles:true, detail:ref}))}>
-            {ref.name} · Compte indisponible
-          </Button>
+            {ref.name} {shellText("· Compte indisponible")} </Button>
         ))}
         {googleTargets.length > 1 ? (
           <DropdownMenu>
@@ -387,7 +387,7 @@ export function BlokCalendar({ options, container }: { options: CalendarOptions;
         {sourceMessage && <small role="status">{sourceMessage}</small>}
       </div>
       <details className="blok-calendar-sources" open={!options.workspaces || undefined}>
-        <summary>Sources et espaces</summary>
+        <summary>{shellText("Sources et espaces")}</summary>
         <div ref={slot(sourcesHost)} />
       </details>
       <div className="blok-calendar-panel-actions">
@@ -399,13 +399,13 @@ export function BlokCalendar({ options, container }: { options: CalendarOptions;
               onClick={() => importCalendarFile(container, writable[0]?.store ?? options.store, changed)}
             >
               <Upload />
-              Importer un .ics
+              {shellText("Importer un .ics")}
             </Button>
           ) : (
             <DropdownMenu>
               <DropdownMenuTrigger render={<Button variant="ghost" size="sm" />}>
                 <Upload />
-                Importer un .ics
+                {shellText("Importer un .ics")}
               </DropdownMenuTrigger>
               <DropdownMenuContent>
                 {writable.map((entry) => (
@@ -421,7 +421,7 @@ export function BlokCalendar({ options, container }: { options: CalendarOptions;
           ))}
         <Button variant="ghost" size="sm" onClick={options.onClose}>
           <ArrowLeft />
-          Retour à la page
+          {shellText("Retour à la page")}
         </Button>
       </div>
     </>
@@ -487,7 +487,7 @@ export function BlokCalendar({ options, container }: { options: CalendarOptions;
               changed();
             }}
           >
-            Actualiser
+            {shellText("Actualiser")}
           </button>
         </div>
       )}
@@ -526,15 +526,15 @@ export function BlokCalendar({ options, container }: { options: CalendarOptions;
               else setSheetOpen(open);
             }}
             side="right"
-            title={selection ? 'Événement' : 'Agendas'}
-            description="Détails du calendrier"
+            title={selection ? shellText("Événement") : shellText("Agendas")}
+            description={shellText("Détails du calendrier")}
             style={{ '--sidebar-width': '310px' } as CSSProperties}
           >
             {!selection && (
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label="Fermer les agendas"
+                aria-label={shellText("Fermer les agendas")}
                 onClick={() => setSheetOpen(false)}
               >
                 <X />
@@ -546,7 +546,7 @@ export function BlokCalendar({ options, container }: { options: CalendarOptions;
           panelOpen && (
             <aside
               className="blok-calendar-panel"
-              aria-label={selection ? 'Événement' : 'Agendas'}
+              aria-label={selection ? shellText("Événement") : shellText("Agendas")}
               ref={slot(panelHost)}
             />
           )

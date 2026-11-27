@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/html-vite';
-import { expect, within } from 'storybook/test';
+import { expect, userEvent, within } from 'storybook/test';
 import { createPageFrame } from '../shell/sidebar';
 import { createDesktopFooter } from '../../desktop/src/settings';
 import { shellPreview, type ShellTheme } from './shell-story-fixtures';
@@ -50,5 +50,20 @@ export const ProfilLocal: StoryObj<Args> = {
     await expect(dialog.getByRole('heading', {name:'Profil local'})).toBeVisible();
     await expect(dialog.getByRole('textbox', {name:'Nom du profil local'})).toBeEnabled();
     await expect(dialog.queryByLabelText('Adresse e-mail')).toBeNull();
+  },
+};
+
+export const RechercheDetaillee: StoryObj<Args> = {
+  name: 'Recherche d’un réglage',
+  render: ({theme}, {abortSignal}) => settings(theme, abortSignal),
+  play: async ({canvasElement}) => {
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = within(await page.findByRole('dialog', {name: 'Paramètres'}));
+    if (!dialog.queryByRole('searchbox')) {
+      await userEvent.click(dialog.getByRole('button', {name: 'Rubriques'}));
+    }
+    const search = dialog.getByRole('searchbox', {name: 'Rechercher dans les réglages'});
+    await userEvent.type(search, 'favoris');
+    await expect(dialog.getByRole('button', {name: /^Favoris/})).toBeVisible();
   },
 };

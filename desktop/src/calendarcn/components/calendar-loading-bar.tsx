@@ -1,3 +1,4 @@
+import {shellText} from '../../shell-i18n';
 import { cn } from "../lib/utils";
 
 /** Props for CalendarLoadingBar */
@@ -16,7 +17,7 @@ export function CalendarLoadingBar({ className }: CalendarLoadingBarProps) {
   return (
     <div
       role="progressbar"
-      aria-label="Loading events"
+      aria-label={shellText("Loading events")}
       data-slot="calendar-loading-bar"
       className={cn(
         "pointer-events-none absolute inset-x-0 bottom-0 h-0.5 overflow-hidden",

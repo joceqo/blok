@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { openModalDialog, type ModalDialogHandle } from '@blok/modal-dialog';
 import { IconCross } from '../../src/components/icons';
 
@@ -13,7 +14,7 @@ export function createNavigationDialog(label: string): {
   surface.setAttribute('data-navigation-dialog', '');
   closeButton.setAttribute('data-navigation-close', '');
   closeButton.type = 'button';
-  closeButton.setAttribute('aria-label', 'Fermer');
+  closeButton.setAttribute('aria-label', shellText("Fermer"));
   closeButton.innerHTML = IconCross;
   surface.tabIndex = -1;
   surface.append(closeButton);

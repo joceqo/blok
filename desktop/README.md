@@ -6,6 +6,12 @@ controls occupy the sidebar width, followed by navigation, tabs, and an adjacent
 new-tab button. The macOS window uses an overlay title bar with traffic lights at
 16, 21 and starts at 1440×900.
 
+## TSX component style
+
+See the [desktop TSX style guide](./STYLEGUIDE.md) for component conventions and sidebar formatting commands.
+
+For web builds, set `VITE_BLOK_DESKTOP_DOWNLOAD_URL` to the published installer or download page to enable the desktop download card in the sidebar. The web Docker build accepts the same build argument.
+
 ## Standalone app with the embedded Node server
 
 The Apple Silicon build runs on macOS 15 or newer. Open Blok to start in your local account and workspace. Your operating-system profile owns this account. Email authentication applies when you choose to connect to a remote Blok server. The app starts its own Node backend, PostgreSQL and SeaweedFS on loopback. It works offline, including the editor and attachments. External AI providers require an internet connection.
@@ -63,7 +69,7 @@ The tab strip separately keeps its per-tab history in the webview's
 storage. When running only the Vite preview in a browser, pages use that
 browser's `localStorage` instead of native files.
 
-The shared sidebar is imported from `src/shell/sidebar.ts` and editor code from
+Web and Tauri use the React sidebar in `desktop/src/sidebar/`. Build with `VITE_SIDEBAR_TSX=0` to compare the original frame from `src/shell/sidebar.ts`. The editor code comes from
 `src/full.ts`. Install the repository dependencies before building the desktop
 package; Vite resolves those sources and their dependencies from the repository.
 The desktop currently bundles the repository's Blok 2.1.0 source; its own Tauri

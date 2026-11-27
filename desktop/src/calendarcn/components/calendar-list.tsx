@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { ChevronRight, Eye, EyeOff, Rss } from "lucide-react";
 
@@ -100,7 +101,7 @@ export function CalendarList({
                           className="group/calendar-item"
                         >
                           <SidebarMenuButton className="rounded-sm pr-1" aria-pressed={isVisible}
-                            aria-label={`${isVisible ? "Masquer" : "Afficher"} ${calendar.name}`}
+                            aria-label={shellText("{v0} {v1}", {v0: isVisible ? "Masquer" : "Afficher", v1: calendar.name})}
                             onClick={() => toggleVisibility(calendar.id)}>
                             <div
                               className={cn(

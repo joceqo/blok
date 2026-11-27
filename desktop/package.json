@@ -9,9 +9,13 @@
     "build:embedded": "node scripts/prepare-bundled-runtime.mjs && tauri build --config src-tauri/tauri.embedded.conf.json",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "vitest run"
+    "test": "vitest run",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint:fast": "biome lint --error-on-warnings ."
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.9",
     "@tailwindcss/vite": "^4.3.5",
     "@tauri-apps/cli": "^2",
     "@types/node": "26.6.6",
@@ -31,6 +35,7 @@
     "cmdk": "^1.1.1",
     "cn": "^0.5.2",
     "date-fns": "^4.4.0",
+    "i18next": "26.5.11",
     "ical.js": "2.2.1",
     "lucide-react": "^1.80.0",
     "react": "19.3.1",

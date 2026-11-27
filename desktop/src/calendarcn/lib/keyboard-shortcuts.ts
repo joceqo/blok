@@ -1,3 +1,4 @@
+import {shellText} from '../../shell-i18n';
 import type {
   KeyboardShortcut,
   KeyboardShortcutGroup,
@@ -11,140 +12,140 @@ import type {
  */
 export const SHORTCUTS = {
   commandMenu: {
-    label: "Command menu",
+    label: shellText("Command menu"),
     keys: ["⌘", "K"],
     keywords: ["palette", "commands"],
   },
   toggleSidebar: {
-    label: "Toggle sidebar",
+    label: shellText("Toggle sidebar"),
     keys: ["⌘", "/"],
     keywords: ["left", "panel", "collapse"],
   },
   toggleContextPanel: {
-    label: "Toggle context panel",
+    label: shellText("Toggle context panel"),
     keys: ["/"],
     keywords: ["right", "panel", "details"],
   },
   cycleTheme: {
-    label: "Set theme to light / dark",
+    label: shellText("Set theme to light / dark"),
     keys: ["⇧", "M"],
     keywords: ["dark mode", "appearance", "system"],
   },
   dismiss: {
-    label: "Dismiss or go back",
+    label: shellText("Dismiss or go back"),
     keys: ["esc"],
     keywords: ["deselect", "close", "escape"],
   },
-  undo: { label: "Undo", keys: ["⌘", "Z"] },
-  redo: { label: "Redo", keys: ["⇧", "⌘", "Z"] },
+  undo: { label: shellText("Undo"), keys: ["⌘", "Z"] },
+  redo: { label: shellText("Redo"), keys: ["⇧", "⌘", "Z"] },
   deleteEvent: {
-    label: "Delete",
+    label: shellText("Delete"),
     keys: ["delete"],
     alternativeKeys: [["⌫"]],
     keywords: ["remove", "backspace"],
   },
-  cutEvent: { label: "Cut", keys: ["⌘", "X"] },
-  copyEvent: { label: "Copy", keys: ["⌘", "C"] },
-  duplicateEvent: { label: "Duplicate", keys: ["⌘", "D"] },
-  pasteEvent: { label: "Paste", keys: ["⌘", "V"] },
+  cutEvent: { label: shellText("Cut"), keys: ["⌘", "X"] },
+  copyEvent: { label: shellText("Copy"), keys: ["⌘", "C"] },
+  duplicateEvent: { label: shellText("Duplicate"), keys: ["⌘", "D"] },
+  pasteEvent: { label: shellText("Paste"), keys: ["⌘", "V"] },
   createEvent: {
-    label: "Create event",
+    label: shellText("Create event"),
     keys: ["C"],
     keywords: ["new", "add", "compose"],
   },
   meetWith: {
-    label: "Meet with...",
+    label: shellText("Meet with..."),
     keys: ["F"],
     keywords: ["people", "free time", "availability", "schedule"],
   },
   showTeammateCalendar: {
-    label: "Show teammate calendar",
+    label: shellText("Show teammate calendar"),
     keys: ["P"],
     keywords: ["people", "team", "colleague"],
   },
   moveEventDay: {
-    label: "Move a day earlier / later",
+    label: shellText("Move a day earlier / later"),
     keys: ["alt", "←"],
     alternativeKeys: [["alt", "→"]],
   },
   moveEventTime: {
-    label: "Move earlier / later",
+    label: shellText("Move earlier / later"),
     keys: ["alt", "↑"],
     alternativeKeys: [["alt", "↓"]],
   },
   resizeEvent: {
-    label: "End earlier / later",
+    label: shellText("End earlier / later"),
     keys: ["alt", "⇧", "↑"],
     alternativeKeys: [["alt", "⇧", "↓"]],
     keywords: ["resize", "duration"],
   },
   dayView: {
-    label: "Display day view",
+    label: shellText("Display day view"),
     keys: ["1"],
     alternativeKeys: [["D"]],
   },
   numberOfDays: {
-    label: "Display 2–9 days",
+    label: shellText("Display 2–9 days"),
     keys: ["2–9"],
     keywords: ["number of days"],
   },
   weekView: {
-    label: "Display week view",
+    label: shellText("Display week view"),
     keys: ["0"],
     alternativeKeys: [["W"]],
   },
-  monthView: { label: "Display month view", keys: ["M"] },
-  yearView: { label: "Display year view", keys: ["Y"] },
-  agendaView: { label: "Display agenda view", keys: ["A"], keywords: ["list"] },
+  monthView: { label: shellText("Display month view"), keys: ["M"] },
+  yearView: { label: shellText("Display year view"), keys: ["Y"] },
+  agendaView: { label: shellText("Display agenda view"), keys: ["A"], keywords: ["list"] },
   selectAllVisible: {
-    label: "Select all visible",
+    label: shellText("Select all visible"),
     keys: ["⌘", "A"],
     keywords: ["several", "multiple", "events"],
   },
   toggleWeekends: {
-    label: "Show / hide weekends",
+    label: shellText("Show / hide weekends"),
     keys: ["⇧", "⌘", "E"],
   },
   defaultHourSize: {
-    label: "Default hour size",
+    label: shellText("Default hour size"),
     keys: ["⇧", "⌘", "0"],
     keywords: ["zoom", "reset"],
   },
   zoomHoursIn: {
-    label: "Zoom hours in",
+    label: shellText("Zoom hours in"),
     keys: ["⇧", "⌘", "."],
     keywords: ["hour size", "taller"],
   },
   zoomHoursOut: {
-    label: "Zoom hours out",
+    label: shellText("Zoom hours out"),
     keys: ["⇧", "⌘", ","],
     keywords: ["hour size", "shorter"],
   },
   goToDate: {
-    label: "Go to date",
+    label: shellText("Go to date"),
     keys: ["."],
     keywords: ["jump", "navigate"],
   },
-  goToToday: { label: "Go to today", keys: ["T"], keywords: ["now"] },
+  goToToday: { label: shellText("Go to today"), keys: ["T"], keywords: ["now"] },
   goToNext: {
-    label: "Go to next period",
+    label: shellText("Go to next period"),
     keys: ["K"],
     alternativeKeys: [["→"]],
     keywords: ["week", "month", "forward"],
   },
   goToPrevious: {
-    label: "Go to previous period",
+    label: shellText("Go to previous period"),
     keys: ["J"],
     alternativeKeys: [["←"]],
     keywords: ["week", "month", "back"],
   },
   showShortcuts: {
-    label: "Show this view",
+    label: shellText("Show this view"),
     keys: ["?"],
     keywords: ["keyboard shortcuts", "help", "cheat sheet"],
   },
   openSettings: {
-    label: "Go to settings",
+    label: shellText("Go to settings"),
     keys: ["⌘", ","],
     keywords: ["preferences"],
   },
@@ -160,7 +161,7 @@ export const SHORTCUTS = {
  */
 export const KEYBOARD_SHORTCUT_GROUPS: KeyboardShortcutGroup[] = [
   {
-    heading: "General",
+    heading: shellText("General"),
     shortcuts: [
       SHORTCUTS.commandMenu,
       SHORTCUTS.toggleSidebar,
@@ -172,7 +173,7 @@ export const KEYBOARD_SHORTCUT_GROUPS: KeyboardShortcutGroup[] = [
     ],
     sections: [
       {
-        heading: "With a selected event…",
+        heading: shellText("With a selected event…"),
         shortcuts: [
           SHORTCUTS.deleteEvent,
           SHORTCUTS.cutEvent,
@@ -181,13 +182,13 @@ export const KEYBOARD_SHORTCUT_GROUPS: KeyboardShortcutGroup[] = [
         ],
       },
       {
-        heading: "With a cut / copied event…",
+        heading: shellText("With a cut / copied event…"),
         shortcuts: [SHORTCUTS.pasteEvent],
       },
     ],
   },
   {
-    heading: "Workflows",
+    heading: shellText("Workflows"),
     shortcuts: [
       SHORTCUTS.createEvent,
       SHORTCUTS.meetWith,
@@ -195,11 +196,11 @@ export const KEYBOARD_SHORTCUT_GROUPS: KeyboardShortcutGroup[] = [
     ],
   },
   {
-    heading: "Editing",
+    heading: shellText("Editing"),
     shortcuts: [],
     sections: [
       {
-        heading: "With a focused event…",
+        heading: shellText("With a focused event…"),
         shortcuts: [
           SHORTCUTS.moveEventDay,
           SHORTCUTS.moveEventTime,
@@ -209,7 +210,7 @@ export const KEYBOARD_SHORTCUT_GROUPS: KeyboardShortcutGroup[] = [
     ],
   },
   {
-    heading: "Calendar view",
+    heading: shellText("Calendar view"),
     shortcuts: [
       SHORTCUTS.dayView,
       SHORTCUTS.numberOfDays,
@@ -225,7 +226,7 @@ export const KEYBOARD_SHORTCUT_GROUPS: KeyboardShortcutGroup[] = [
     ],
   },
   {
-    heading: "Calendar navigation",
+    heading: shellText("Calendar navigation"),
     shortcuts: [
       SHORTCUTS.goToDate,
       SHORTCUTS.goToToday,
@@ -234,7 +235,7 @@ export const KEYBOARD_SHORTCUT_GROUPS: KeyboardShortcutGroup[] = [
     ],
   },
   {
-    heading: "App navigation",
+    heading: shellText("App navigation"),
     shortcuts: [SHORTCUTS.showShortcuts, SHORTCUTS.openSettings],
   },
 ];

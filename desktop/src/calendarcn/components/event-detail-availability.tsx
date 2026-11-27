@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import {
   Check,
@@ -57,13 +58,13 @@ type EventVisibility = NonNullable<DetailedCalendarEvent["visibility"]>;
 const AVAILABILITY_OPTIONS: PanelSelectOption<EventStatus>[] = [
   {
     value: "busy",
-    label: "Busy",
-    help: "Show me as busy to other people during this event",
+    label: shellText("Busy"),
+    help: shellText("Show me as busy to other people during this event"),
   },
   {
     value: "free",
-    label: "Free",
-    help: "Show me as free to other people during this event",
+    label: shellText("Free"),
+    help: shellText("Show me as free to other people during this event"),
   },
 ];
 
@@ -71,21 +72,21 @@ const AVAILABILITY_OPTIONS: PanelSelectOption<EventStatus>[] = [
 const VISIBILITY_OPTIONS: PanelSelectOption<EventVisibility>[] = [
   {
     value: "default",
-    label: "Default visibility",
-    help: "The visibility of this event follows the sharing settings of this calendar. Anyone who can see this calendar can see the details of this event.",
+    label: shellText("Default visibility"),
+    help: shellText("The visibility of this event follows the sharing settings of this calendar. Anyone who can see this calendar can see the details of this event."),
     helpLink: true,
     separatorAfter: true,
   },
   {
     value: "public",
-    label: "Public",
-    help: "Anyone can see the details of this event.",
+    label: shellText("Public"),
+    help: shellText("Anyone can see the details of this event."),
     helpLink: true,
   },
   {
     value: "private",
-    label: "Private",
-    help: "Nobody can see the details of this event unless they have permission to make changes to this calendar.",
+    label: shellText("Private"),
+    help: shellText("Nobody can see the details of this event unless they have permission to make changes to this calendar."),
     helpLink: true,
   },
 ];
@@ -231,7 +232,7 @@ function PanelSelect<TValue extends string>({
 
   return (
     <DropdownMenu open={open} onOpenChange={handleOpenChange}>
-      <DropdownMenuTrigger render={<button ref={triggerRef} type="button" aria-label={`${name}: ${current?.label ?? value}`} onKeyDown={open ? stopEscapePropagation : undefined} className={cn(
+      <DropdownMenuTrigger render={<button ref={triggerRef} type="button" aria-label={shellText("{v0}: {v1}", {v0: name, v1: current?.label ?? value})} onKeyDown={open ? stopEscapePropagation : undefined} className={cn(
                       "group/trigger flex h-8 min-w-0 items-center justify-between gap-2 px-2 text-left outline-none",
                       EVENT_DETAIL_HOVER_BORDER_CLASS,
                       open && PANEL_TRIGGER_OPEN_CLASS,

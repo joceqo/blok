@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { activeWorkspace, type WorkspaceRef } from './workspace-registry';
 import type { ShellPage } from '@blok/sidebar';
 import type { PageCover } from './cover';
@@ -106,7 +107,7 @@ export async function loadIndex(workspace: WorkspaceRef = activeWorkspace()): Pr
     } catch { /* Recover from a damaged index with a new empty page. */ }
   }
   const id = crypto.randomUUID();
-  const index = { pages: [{ id, title: 'Nouvelle page', parentId: null }], activeId: id, trash: [] };
+  const index = { pages: [{ id, title: shellText("Nouvelle page"), parentId: null }], activeId: id, trash: [] };
   await saveIndex(index, workspace);
   return index;
 }

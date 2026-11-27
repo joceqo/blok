@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import type { BoardElement } from './whiteboard-element';
 
 export const frameSizes = {
@@ -14,7 +15,7 @@ export function boardTemplate(template: Template, cx: number, cy: number) {
     return id;
   }
   if (template === 'mindmap') {
-    const root = place({ kind: 'note', x: -225, y: -44, w: 166, h: 88, text: 'Idée centrale', color: '#fcd34d' });
+    const root = place({ kind: 'note', x: -225, y: -44, w: 166, h: 88, text: shellText("Idée centrale"), color: '#fcd34d' });
     for (const [i, y] of [-112, 24].entries()) {
       const to = place({ kind: 'note', x: 58, y, w: 166, h: 88, text: 'Idée ' + (i + 1), color: '#badbd6' });
       place({ kind: 'arrow', x: -59, y: Math.min(0, y + 44), w: 117, h: Math.abs(y + 44), from: root, to });

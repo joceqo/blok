@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { createCalendarPortal as createPortal } from "../portal";
 import {
@@ -269,8 +270,7 @@ export function EventContextMenu({
             trigger={
               <>
                 <Monitor className="size-3.5" />
-                Block on calendar
-              </>
+                {shellText("Block on calendar")} </>
             }
           >
             {calendarGroups.map((group) => (
@@ -316,8 +316,7 @@ export function EventContextMenu({
         }
       >
         <SquareDashed className="size-3.5" />
-        Cut
-        <Shortcut>{EVENT_ACTION_KEYS.cut.label}</Shortcut>
+        {shellText("Cut")} <Shortcut>{EVENT_ACTION_KEYS.cut.label}</Shortcut>
       </MenuItem>
       <MenuItem
         disabled={!eventActions}
@@ -327,8 +326,7 @@ export function EventContextMenu({
         }
       >
         <TabletSmartphone className="size-3.5" />
-        Copy
-        <Shortcut>{EVENT_ACTION_KEYS.copy.label}</Shortcut>
+        {shellText("Copy")} <Shortcut>{EVENT_ACTION_KEYS.copy.label}</Shortcut>
       </MenuItem>
       <MenuItem
         disabled={!eventActions}
@@ -340,8 +338,7 @@ export function EventContextMenu({
         }
       >
         <Copy className="size-3.5" />
-        Duplicate
-        <Shortcut>{EVENT_ACTION_KEYS.duplicate.label}</Shortcut>
+        {shellText("Duplicate")} <Shortcut>{EVENT_ACTION_KEYS.duplicate.label}</Shortcut>
       </MenuItem>
 
       <Separator />
@@ -355,8 +352,7 @@ export function EventContextMenu({
         className="text-calendar-danger hover:!bg-calendar-danger hover:!text-calendar-danger-foreground focus:!bg-calendar-danger focus:!text-calendar-danger-foreground [&:hover>svg]:!text-calendar-danger-foreground [&:focus>svg]:!text-calendar-danger-foreground [&:hover>.ml-auto]:!text-calendar-danger-foreground [&:focus>.ml-auto]:!text-calendar-danger-foreground"
       >
         <Trash2 className="size-3.5 text-calendar-danger" />
-        Delete
-        <Shortcut>{EVENT_ACTION_KEYS.delete.label}</Shortcut>
+        {shellText("Delete")} <Shortcut>{EVENT_ACTION_KEYS.delete.label}</Shortcut>
       </MenuItem>
     </div>,
     document.body,

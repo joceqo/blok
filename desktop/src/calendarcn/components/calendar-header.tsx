@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { addDays, format } from "date-fns";
 import {
@@ -69,7 +70,7 @@ export function CalendarHeader({
   const {locale} = useCalendarConfig();
   const french = locale.code.startsWith("fr");
   const SideIcon = sidebarSide === "right" ? PanelRightIcon : PanelLeftIcon;
-  const toggleLabel = french ? "Agendas" : "Toggle Calendar Sidebar";
+  const toggleLabel = shellText("Agendas");
 
   return (
     // Tooltips need a provider with Radix; a closer one (yours) still wins
@@ -87,8 +88,8 @@ export function CalendarHeader({
                 <TooltipTrigger render={<Button variant="ghost" size="icon" className="size-7 text-muted-foreground" onClick={onToggleSidebar} aria-expanded={sidebarOpen} aria-label={toggleLabel} />}><SideIcon /></TooltipTrigger>
                 <TooltipContent side="bottom">
                   {french
-                    ? (sidebarOpen ? "Masquer les agendas" : "Afficher les agendas")
-                    : (sidebarOpen ? "Close sidebar" : "Open sidebar")}
+                    ? (sidebarOpen ? shellText("Masquer les agendas") : shellText("Afficher les agendas"))
+                    : (sidebarOpen ? shellText("Close sidebar") : shellText("Open sidebar"))}
                 </TooltipContent>
               </Tooltip>
               <Separator
@@ -119,9 +120,9 @@ export function CalendarHeader({
           <CalendarNavigation buttonClassName="size-7 @2xs/header:size-8" />
           {onToggleContextPanel && !contextPanelOpen && (
             <Tooltip>
-              <TooltipTrigger render={<Button variant="ghost" size="icon" className="size-7 text-muted-foreground" onClick={onToggleContextPanel} />}><PanelRightIcon /><span className="sr-only">Toggle Navigation Sidebar</span></TooltipTrigger>
+              <TooltipTrigger render={<Button variant="ghost" size="icon" className="size-7 text-muted-foreground" onClick={onToggleContextPanel} />}><PanelRightIcon /><span className="sr-only">{shellText("Toggle Navigation Sidebar")}</span></TooltipTrigger>
               <TooltipContent side="bottom">
-                Open context panel <Kbd className="ml-1">/</Kbd>
+                {shellText("Open context panel")} <Kbd className="ml-1">/</Kbd>
               </TooltipContent>
             </Tooltip>
           )}
@@ -154,7 +155,7 @@ export function CalendarPeriodLabel({ className }: CalendarPeriodLabelProps) {
       {view === "day" && format(day, "EEEE, MMM d", { locale })}
       {view === "day" && showWeekNumber && " "}
       {showWeekNumber && (
-        <span className={cn(view === "day" && "ml-1")}>{locale.code.startsWith("fr") ? "Semaine" : "Week"} {weekNumber}</span>
+        <span className={cn(view === "day" && "ml-1")}>{locale.code.startsWith("fr") ? shellText("Semaine") : shellText("Week")} {weekNumber}</span>
       )}
       {view === "agenda" &&
         `${format(currentDate, "MMM d", { locale })} – ${format(addDays(currentDate, AGENDA_DAYS - 1), "MMM d", { locale })}`}
@@ -204,7 +205,10 @@ export function CalendarNavigation({
 }: CalendarNavigationProps) {
   const { view, goToToday, goToPrev, goToNext } = useCalendar();
   const periodLabel = PERIOD_LABELS[view];
-  const french = useCalendarConfig().locale.code.startsWith("fr");
+  const {locale} = useCalendarConfig();
+  const english = locale.code.startsWith("en");
+  const previous = english ? shellText("Previous {v0}", {v0: periodLabel}) : shellText("Période précédente");
+  const next = english ? shellText("Next {v0}", {v0: periodLabel}) : shellText("Période suivante");
 
   return (
     <>
@@ -214,28 +218,28 @@ export function CalendarNavigation({
         className="px-2 @md/header:px-3"
         onClick={goToToday}
       >
-        {french ? "Aujourd’hui" : "Today"}
+        {shellText("Aujourd’hui")}
       </Button>
       <div className="flex items-center">
         <Button
           variant="ghost"
           size="icon"
           className={cn("text-muted-foreground", buttonClassName)}
-          aria-label={french ? "Période précédente" : `Previous ${periodLabel}`}
+          aria-label={previous}
           onClick={goToPrev}
         >
           <ChevronLeftIcon className="size-4" />
-          <span className="sr-only">{french ? "Période précédente" : `Previous ${periodLabel}`}</span>
+          <span className="sr-only">{previous}</span>
         </Button>
         <Button
           variant="ghost"
           size="icon"
           className={cn("text-muted-foreground", buttonClassName)}
-          aria-label={french ? "Période suivante" : `Next ${periodLabel}`}
+          aria-label={next}
           onClick={goToNext}
         >
           <ChevronRightIcon className="size-4" />
-          <span className="sr-only">{french ? "Période suivante" : `Next ${periodLabel}`}</span>
+          <span className="sr-only">{next}</span>
         </Button>
       </div>
     </>

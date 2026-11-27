@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { IconChevronRight } from '../../src/components/icons';
 import { mountCalendarSources } from './calendar-sources';
 import type { CalendarStore, CalendarEvent } from './calendar-store';
@@ -23,7 +24,7 @@ export function mountWorkspaceRail(host: HTMLElement, store: CalendarStore, spac
     try {
       await operation(); status.textContent = '';
     } catch (err) {
-      status.textContent = err instanceof Error ? err.message : 'Modification des agendas impossible.';
+      status.textContent = err instanceof Error ? err.message : shellText("Modification des agendas impossible.");
     } finally {
       changing = false; host.inert = false;
       if (!destroyed) { render(); changed(); }
@@ -44,15 +45,15 @@ export function mountWorkspaceRail(host: HTMLElement, store: CalendarStore, spac
       section.dataset.workspaceId = entry.id;
       const details = el('div', {className:'cal-space-sources'});
       const controls = el('div', {className:'cal-space-head'});
-      const button = el('button', {attrs:{type:'button','aria-label':'Sources de ' + entry.name, 'aria-expanded':'false'}});
-      button.innerHTML = IconChevronRight; button.append(document.createTextNode(entry.name)); button.title = 'Sources de ' + entry.name;
+      const button = el('button', {attrs:{type:'button','aria-label':shellText('Sources de {name}', {name: entry.name}), 'aria-expanded':'false'}});
+      button.innerHTML = IconChevronRight; button.append(document.createTextNode(entry.name)); button.title = shellText('Sources de {name}', {name: entry.name});
       controls.append(button);
       details.hidden = true;
       button.onclick = () => { details.hidden = !details.hidden; button.setAttribute('aria-expanded', String(!details.hidden)); };
       const external = el('div', {className:'cal-sources'});
       details.append(external);
       if (entry.id !== spaces.activeId) {
-        const remove = el('button', {text:'Retirer cet espace', attrs:{type:'button','aria-label':'Retirer ' + entry.name}});
+        const remove = el('button', {text:shellText("Retirer cet espace"), attrs:{type:'button','aria-label':shellText('Retirer {name}', {name: entry.name})}});
         remove.onclick = () => { void change(() => spaces.disconnect(entry.id)); };
         details.append(remove);
       }
@@ -69,9 +70,9 @@ export function mountWorkspaceRail(host: HTMLElement, store: CalendarStore, spac
       status.textContent = '';
     } catch {
       if (!destroyed) {
-        const retry = el('button', {text:'Réessayer', attrs:{type:'button'}});
+        const retry = el('button', {text:shellText("Réessayer"), attrs:{type:'button'}});
         retry.onclick = () => { void refresh(); };
-        status.replaceChildren('Espaces indisponibles. ', retry);
+        status.replaceChildren(shellText("Espaces indisponibles. "), retry);
       }
     } finally {
       refreshing = false;

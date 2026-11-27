@@ -1,0 +1,11 @@
+.settings-panel-switch {
+  width: 30px; height: 18px; padding: 2px; flex: none; display: flex; align-items: center;
+  border: 0; border-radius: 12px; cursor: pointer;
+  background: color-mix(in srgb, var(--desktop-ink) 28%, var(--desktop-canvas));
+}
+.settings-panel-switch::before {
+  content: ''; width: 14px; height: 14px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 3px #0003;
+}
+.settings-panel-switch[aria-checked="true"] { background: var(--blok-focus-ring, #2383e2); justify-content: flex-end; }
+.settings-panel-switch:focus-visible { outline: 2px solid var(--blok-focus-ring, #2383e2); outline-offset: 3px; }

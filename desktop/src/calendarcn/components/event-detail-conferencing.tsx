@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import {
   Check,
@@ -165,7 +166,7 @@ function ConferencingMenuContent({
           >
             <span className="w-4 shrink-0" />
             <VideoOff className="size-4 text-current" />
-            No conferencing
+            {shellText("No conferencing")}
           </DropdownMenuItem>
           {providers.length > 0 && (
             <DropdownMenuSeparator className="bg-calendar-menu-border" />
@@ -350,7 +351,7 @@ export function EventDetailConferencing<
                 href={shownCall.url}
                 target="_blank"
                 rel="noreferrer"
-                aria-label={`Join ${callLabel}`}
+                aria-label={shellText("Join {v0}", {v0: callLabel})}
                 data-testid="event-conference-join"
                 className="flex shrink-0 items-center gap-[11px] outline-none"
               >
@@ -371,8 +372,8 @@ export function EventDetailConferencing<
               )}
               <button
                 type="button"
-                aria-label={copied ? "Link copied" : "Copy link"}
-                title={copied ? "Copied" : "Copy link"}
+                aria-label={copied ? shellText("Link copied") : shellText("Copy link")}
+                title={copied ? shellText("Copied") : shellText("Copy link")}
                 className={cn(
                   "hidden size-5 shrink-0 items-center justify-center rounded-sm group-focus-within/conferencing:flex group-hover/conferencing:flex",
                   (menuOpen || copied) && "flex",
@@ -388,7 +389,7 @@ export function EventDetailConferencing<
               </button>
               <span className="flex-1" />
               {onEventChange && (
-                <DropdownMenuTrigger render={<button type="button" aria-label="Change conferencing" className={cn(
+                <DropdownMenuTrigger render={<button type="button" aria-label={shellText("Change conferencing")} className={cn(
                                                     "hidden size-5 shrink-0 items-center justify-center group-focus-within/conferencing:flex group-hover/conferencing:flex",
                                                     menuOpen && "flex",
                                                     EVENT_DETAIL_MUTED_CLASS,
@@ -398,7 +399,7 @@ export function EventDetailConferencing<
           ) : (
             <DropdownMenuTrigger render={<button type="button" disabled={!onEventChange} aria-busy={pendingOption ? true : undefined} aria-label={
                                             pendingOption
-                                              ? `Creating ${pendingOption.label} call`
+                                              ? shellText("Creating {v0} call", {v0: pendingOption.label})
                                               : undefined
                                           } data-testid="event-conferencing-trigger" className={cn(
                                             "group/conferencing text-left",
@@ -413,7 +414,7 @@ export function EventDetailConferencing<
                                                 : EVENT_DETAIL_PLACEHOLDER_CLASS,
                                             )}
                                           >
-                                            {shown ? shown.label : "Conferencing"}
+                                            {shown ? shown.label : shellText("Conferencing")}
                                           </span>{pendingOption ? (
                                             <LoaderCircle
                                               className={cn(

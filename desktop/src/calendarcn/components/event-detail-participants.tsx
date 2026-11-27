@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import {
   ArrowLeft,
@@ -103,17 +104,17 @@ const RESPONSE_BADGES: Record<
 > = {
   accepted: {
     className: "bg-event-green-border text-event-foreground",
-    label: "Accepted",
+    label: shellText("Accepted"),
     icon: <Check className="size-[7px]" strokeWidth={4} />,
   },
   declined: {
     className: "bg-calendar-danger text-calendar-danger-foreground",
-    label: "Declined",
+    label: shellText("Declined"),
     icon: <X className="size-[7px]" strokeWidth={4} />,
   },
   tentative: {
     className: "bg-event-gray-border text-event-foreground",
-    label: "Maybe",
+    label: shellText("Maybe"),
     icon: <span className="text-[7px] leading-none font-bold">?</span>,
   },
 };
@@ -239,8 +240,8 @@ function ParticipantActions({
     >
       <button
         type="button"
-        aria-label={`Copy ${participant.email}`}
-        title="Copy email"
+        aria-label={shellText("Copy {v0}", {v0: participant.email})}
+        title={shellText("Copy email")}
         className={ACTION_BUTTON_CLASS}
         onClick={() => void navigator.clipboard?.writeText(participant.email)}
       >
@@ -248,15 +249,14 @@ function ParticipantActions({
       </button>
       {onToggleOptional && (
         <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-          <DropdownMenuTrigger render={<button type="button" aria-label={`More actions for ${label}`} className={ACTION_BUTTON_CLASS} />}><MoreHorizontal className="size-4" /></DropdownMenuTrigger>
+          <DropdownMenuTrigger render={<button type="button" aria-label={shellText("More actions for {v0}", {v0: label})} className={ACTION_BUTTON_CLASS} />}><MoreHorizontal className="size-4" /></DropdownMenuTrigger>
           <DropdownMenuContent
             align="start"
             side="left"
             className={cn("min-w-[180px] text-sm", EVENT_DETAIL_MENU_CLASS)}
             onKeyDown={closeMenuOnEscape(() => setMenuOpen(false))}
           >
-            <DropdownMenuItem className={cn(EVENT_DETAIL_MENU_ITEM_CLASS, "text-sm")} render={<a href={getMailtoHref(participant.email)} />}><Mail className="size-4" />Send email
-                                    </DropdownMenuItem>
+            <DropdownMenuItem className={cn(EVENT_DETAIL_MENU_ITEM_CLASS, "text-sm")} render={<a href={getMailtoHref(participant.email)} />}><Mail className="size-4" />{shellText("Send email")} </DropdownMenuItem>
             {!participant.organizer && (
               <>
                 <DropdownMenuSeparator className="bg-calendar-menu-border" />
@@ -265,7 +265,7 @@ function ParticipantActions({
                   onClick={onToggleOptional}
                 >
                   <User className="size-4" />
-                  {participant.optional ? "Mark required" : "Mark optional"}
+                  {participant.optional ? shellText("Mark required") : shellText("Mark optional")}
                 </DropdownMenuItem>
               </>
             )}
@@ -275,7 +275,7 @@ function ParticipantActions({
                 onClick={onRemove}
               >
                 <X className="size-4 text-calendar-danger" />
-                Remove
+                {shellText("Remove")}
               </DropdownMenuItem>
             )}
           </DropdownMenuContent>
@@ -369,8 +369,8 @@ function RoomRow({ room, onRemove }: RoomRowProps) {
       {onRemove && (
         <button
           type="button"
-          aria-label={`Remove ${room.name}`}
-          title="Remove"
+          aria-label={shellText("Remove {v0}", {v0: room.name})}
+          title={shellText("Remove")}
           className={cn(
             "opacity-0 group-hover/participant:opacity-100 focus-visible:opacity-100",
             ACTION_BUTTON_CLASS,
@@ -657,7 +657,7 @@ export function EventDetailParticipants<
       {listOpen && (
         <EventDetailSuggestions
           id={listId}
-          label={showRooms ? "Rooms and resources" : "Suggested participants"}
+          label={showRooms ? shellText("Rooms and resources") : shellText("Suggested participants")}
           anchorRef={boxRef}
           width={SUGGESTIONS_WIDTH}
           footer={
@@ -711,14 +711,13 @@ function RoomsToggleContent({ showRooms }: RoomsToggleContentProps) {
     return (
       <span className="flex items-center gap-2">
         <ArrowLeft className={iconClass} />
-        Back to people
+        {shellText("Back to people")}
       </span>
     );
   }
   return (
     <>
-      View rooms and resources
-      <ArrowRight className={iconClass} />
+      {shellText("View rooms and resources")} <ArrowRight className={iconClass} />
     </>
   );
 }
@@ -779,7 +778,7 @@ function ParticipantOptionContent({
       </span>
       {contact.recent && (
         <History
-          aria-label="Recent"
+          aria-label={shellText("Recent")}
           className={cn("size-4 shrink-0", EVENT_DETAIL_MENU_SECONDARY_CLASS)}
         />
       )}

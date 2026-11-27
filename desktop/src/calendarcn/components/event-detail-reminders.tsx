@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { createCalendarPortal } from "../portal";
 import {
@@ -190,7 +191,7 @@ function ReminderLabel({ reminder, beforeClassName }: ReminderLabelProps) {
 
   return (
     <>
-      {amount} <span className={beforeClassName}>before</span>
+      {amount} <span className={beforeClassName}>{shellText("before")}</span>
       {formatReminderTimeOfDay(reminder, hourCycle, locale)}
     </>
   );
@@ -248,7 +249,7 @@ function ReminderSuggestions({
       ref={setFloating}
       id={id}
       role="listbox"
-      aria-label="Reminders"
+      aria-label={shellText("Reminders")}
       data-calendar-popover=""
       style={floatingStyles}
       className={cn(
@@ -439,7 +440,7 @@ export function EventDetailReminders<
           // Read-only details: the heading without the input
           <div className={cn(ROW_BOX_CLASS, "border border-transparent")}>
             {bell}
-            <span className={EVENT_DETAIL_PLACEHOLDER_CLASS}>Reminders</span>
+            <span className={EVENT_DETAIL_PLACEHOLDER_CLASS}>{shellText("Reminders")}</span>
           </div>
         ) : (
           <div
@@ -455,7 +456,7 @@ export function EventDetailReminders<
               ref={inputRef}
               type="text"
               role="combobox"
-              aria-label="Add reminder"
+              aria-label={shellText("Add reminder")}
               aria-expanded={open}
               aria-controls={open ? listId : undefined}
               aria-autocomplete="list"
@@ -464,7 +465,7 @@ export function EventDetailReminders<
                   ? `${listId}-${highlightedIndex}`
                   : undefined
               }
-              placeholder="Reminders"
+              placeholder={shellText("Reminders")}
               value={shownText}
               onChange={handleChange}
               onFocus={handleFocus}
@@ -515,7 +516,7 @@ export function EventDetailReminders<
             {!readOnly && (
               <button
                 type="button"
-                aria-label={`Remove reminder: ${formatReminderLabel(reminder, hourCycle, locale).replace("\u200A", " ")}`}
+                aria-label={shellText("Remove reminder: {v0}", {v0: formatReminderLabel(reminder, hourCycle, locale).replace("\u200A", " ")})}
                 className={cn(
                   "flex size-5 shrink-0 items-center justify-center rounded-sm opacity-0 group-hover/reminder:opacity-100 focus-visible:opacity-100",
                   EVENT_DETAIL_ACTION_CLASS,

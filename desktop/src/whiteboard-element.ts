@@ -1,8 +1,9 @@
+import {shellText} from './shell-i18n';
 import type { BlockTool } from '../../types';
 import './whiteboard-element.css';
 
 const labels = {
-  document: 'Document', note: 'Note', text: 'Texte', rectangle: 'Rectangle', ellipse: 'Ellipse',
+  document: 'Document', note: 'Note', text: shellText("Texte"), rectangle: 'Rectangle', ellipse: 'Ellipse',
   diamond: 'Losange', frame: 'Cadre', pen: 'Trait', arrow: 'Flèche', link: 'Lien', image: 'Image',
 };
 
@@ -165,7 +166,7 @@ export function renderBoardElement(item: BoardElement, resolveAsset?: (url: stri
     drawStroke(root, item);
   } else if (item.kind === 'image') {
     const image = document.createElement('img');
-    image.alt = item.text || 'Image';
+    image.alt = item.text || shellText("Image");
     image.draggable = false;
     root.append(image);
     const url = item.url ?? '';

@@ -1,3 +1,4 @@
+import {shellLocale, shellText} from '../shell-i18n';
 import {useId, useLayoutEffect, useEffect, useRef, useState} from 'react';
 import {registerLayer} from '../../../src/components/utils/dismissable-layer';
 import {createPositionTracker, positionFixedAnchored} from '../../../src/components/utils/popover/anchored-position';
@@ -20,7 +21,7 @@ type PickerProps = {value:string; onChange:(next:string)=>void; disabled?:boolea
 const tabs = ['Icônes', 'Émojis', 'Importer'] as const;
 type Tab = typeof tabs[number];
 
-export function TeamspaceIconPicker({value, onChange, disabled, label = 'Modifier l’icône', name = ''}: PickerProps) {
+export function TeamspaceIconPicker({value, onChange, disabled, label = shellText('Modifier l’icône'), name = ''}: PickerProps) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const [open,setOpen] = useState(false);
@@ -64,9 +65,9 @@ function IconPopover({id, anchor, value, close, select}: {id:string; anchor:HTML
   useEffect(()=>{
     if(tab !== 'Émojis') return;
     let cancelled = false;
-    Promise.all([loadEmojiData(),loadEmojiLocale('fr')]).then(([data,fr])=>{
-      if (!cancelled) {setEmojis(data); setLocale(fr);}
-    }).catch(()=>{if(!cancelled)setError('Impossible de charger les émojis.');});
+    Promise.all([loadEmojiData(),loadEmojiLocale(shellLocale())]).then(([data,translations])=>{
+      if (!cancelled) {setEmojis(data); setLocale(translations);}
+    }).catch(()=>{if(!cancelled)setError(shellText("Impossible de charger les émojis."));});
     return ()=>{cancelled=true;};
   },[tab]);
 
@@ -82,34 +83,33 @@ function IconPopover({id, anchor, value, close, select}: {id:string; anchor:HTML
   const options = tab === 'Icônes' ? teamspaceSymbols.filter(([key,title])=>fold(key+' '+title).includes(fold(query)))
     .map(([key,title])=>({value:'icon:'+key+(color==='gray' ? '' : ':'+color),title}))
     : searchEmojis(emojis,query,locale).map(emoji=>({value:emoji.native,title:locale?.[emoji.native]?.n ?? emoji.name}));
-  return <div className="team-icon-popover" ref={surface} id={id} popover="manual" role="dialog" aria-label="Choisir une icône">
+  return <div className="team-icon-popover" ref={surface} id={id} popover="manual" role="dialog" aria-label={shellText("Choisir une icône")}>
     <div className="team-icon-tabs">
-      {tabs.map(t=><button type="button" key={t} aria-pressed={tab === t} onClick={()=>switchTab(t)}>{t}</button>)}
-      <button type="button" disabled={!value || busy} onClick={()=>choose('')}>Retirer</button>
+      {tabs.map(t=><button type="button" key={t} aria-pressed={tab === t} onClick={()=>switchTab(t)}>{shellText(t)}</button>)}
+      <button type="button" disabled={!value || busy} onClick={()=>choose('')}>{shellText("Retirer")}</button>
     </div>
-    {tab === 'Importer' ? <label className="team-icon-upload">Choisir une image
-      <input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={async e=>{
+    {tab === 'Importer' ? <label className="team-icon-upload">{shellText("Choisir une image")} <input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={async e=>{
         const file=e.currentTarget.files?.[0]; if(!file)return;
         e.currentTarget.value=''; setBusy(true); setError('');
         try {const data=await teamspaceImage(file); if(active.current)choose(data);}
-        catch(err){if(active.current)setError(err instanceof Error ? err.message : 'Image illisible.');}
+        catch(err){if(active.current)setError(err instanceof Error ? err.message : shellText("Image illisible."));}
         finally {if(active.current)setBusy(false);}
-      }}/><small>PNG, JPEG ou WebP · 5 Mo maximum</small></label> : <>
+      }}/><small>{shellText("PNG, JPEG ou WebP · 5 Mo maximum")}</small></label> : <>
       <div className="team-icon-tools">
-        <input type="search" aria-label="Filtrer les icônes ou les émojis" placeholder="Filtrer…" ref={field} value={query}
+        <input type="search" aria-label={shellText("Filtrer les icônes ou les émojis")} placeholder={shellText("Filtrer…")} ref={field} value={query}
           onChange={e=>{setQuery(e.target.value); setLimit(120);}} onKeyDown={e=>{
             if (e.key==='Enter' && !e.nativeEvent.isComposing && options.length) {e.preventDefault(); choose(options[0].value);}
           }}/>
-        <button type="button" aria-label="Choisir au hasard" title="Choisir au hasard" disabled={!options.length}
+        <button type="button" aria-label={shellText("Choisir au hasard")} title={shellText("Choisir au hasard")} disabled={!options.length}
           onClick={()=>choose(options[Math.floor(Math.random()*options.length)].value)}>⤨</button>
-        {tab==='Icônes' && <select aria-label="Couleur de l’icône" title="Couleur de l’icône" value={color} onChange={e=>setColor(e.target.value)}
+        {tab==='Icônes' && <select aria-label={shellText("Couleur de l’icône")} title={shellText("Couleur de l’icône")} value={color} onChange={e=>setColor(e.target.value)}
           style={{color:teamspaceColors[color]?.css}}>{Object.entries(teamspaceColors).map(([key,c])=><option key={key} value={key}>● {c.label}</option>)}</select>}
       </div>
       <div className="team-icon-scroll">
         <div className="team-icon-grid">{options.slice(0,limit).map(o=><button key={o.value} type="button" title={o.title}
           aria-label={o.title} aria-pressed={value===o.value} onClick={()=>choose(o.value)}><TeamspaceIcon name={o.title} value={o.value}/></button>)}</div>
-        {options.length>limit && <button type="button" className="team-icon-more" onClick={()=>setLimit(limit+120)}>Afficher plus d’émojis</button>}
-        {!options.length && !error && <p role="status">{tab==='Émojis'&&!emojis.length?'Chargement…':'Aucun résultat'}</p>}
+        {options.length>limit && <button type="button" className="team-icon-more" onClick={()=>setLimit(limit+120)}>{shellText("Afficher plus d’émojis")}</button>}
+        {!options.length && !error && <p role="status">{tab==='Émojis'&&!emojis.length?shellText("Chargement…"):shellText("Aucun résultat")}</p>}
       </div>
     </>}
     {error && <p role="alert">{error}</p>}

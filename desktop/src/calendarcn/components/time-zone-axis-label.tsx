@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { ArrowLeft, ArrowRight, Globe, Plus, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -86,15 +87,15 @@ function TimeZoneMenuList({
   return (
     <Command
       shouldFilter={false}
-      label="Time zones"
+      label={shellText("Time zones")}
       className="bg-transparent text-inherit"
     >
       {/* A plain input: the list filters itself, and arrow keys still
           reach the list's own handler */}
       <input
         autoFocus
-        aria-label="Time zone"
-        placeholder="Time zone"
+        aria-label={shellText("Time zone")}
+        placeholder={shellText("Time zone")}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         className={SEARCH_INPUT_CLASS}
@@ -117,7 +118,7 @@ export function AddTimeZoneButton() {
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger render={<button type="button" aria-label="Add time zone" title="Add time zone" className={cn(
+      <PopoverTrigger render={<button type="button" aria-label={shellText("Add time zone")} title={shellText("Add time zone")} className={cn(
                       "absolute top-[7px] left-1.5 z-10 flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground",
                       open && "bg-accent text-foreground",
                     )} />}><Plus className="size-3" /></PopoverTrigger>
@@ -179,7 +180,7 @@ export function TimeZoneAxisLabel({
   const items: LabelMenuItem[] = isTravel
     ? [
         {
-          label: "Add as primary time zone",
+          label: shellText("Add as primary time zone"),
           icon: Plus,
           onSelect: run(() => {
             changeTimeZones((zones) => makeTimeZonePrimary(zones, timeZone));
@@ -187,7 +188,7 @@ export function TimeZoneAxisLabel({
           }),
         },
         {
-          label: "Add as secondary time zone",
+          label: shellText("Add as secondary time zone"),
           icon: Plus,
           onSelect: run(() => {
             changeTimeZones((zones) => addTimeZone(zones, timeZone));
@@ -195,7 +196,7 @@ export function TimeZoneAxisLabel({
           }),
         },
         {
-          label: "Travel back home",
+          label: shellText("Travel back home"),
           icon: X,
           shortcut: "esc",
           destructive: true,
@@ -204,7 +205,7 @@ export function TimeZoneAxisLabel({
       ]
     : [
         {
-          label: "Change time zone",
+          label: shellText("Change time zone"),
           icon: Globe,
           detail: city,
           onSelect: () => setIsChanging(true),
@@ -213,7 +214,7 @@ export function TimeZoneAxisLabel({
           ? hasOtherZones
             ? [
                 {
-                  label: "Make time zone secondary",
+                  label: shellText("Make time zone secondary"),
                   icon: ArrowLeft,
                   onSelect: run(() => changeTimeZones(makeTimeZoneSecondary)),
                 },
@@ -221,7 +222,7 @@ export function TimeZoneAxisLabel({
             : []
           : [
               {
-                label: "Make time zone primary",
+                label: shellText("Make time zone primary"),
                 icon: ArrowRight,
                 onSelect: run(() =>
                   changeTimeZones((zones) =>
@@ -235,7 +236,7 @@ export function TimeZoneAxisLabel({
           ? []
           : [
               {
-                label: "Remove time zone from list",
+                label: shellText("Remove time zone from list"),
                 icon: X,
                 destructive: true,
                 onSelect: run(() =>
@@ -288,7 +289,7 @@ export function TimeZoneAxisLabel({
       {/* Empty on the server and during hydration, where zones are unknown */}
       {label && (
         <Popover open={open} onOpenChange={handleOpenChange}>
-          <PopoverTrigger render={<button type="button" aria-label={`${label} ${city} time zone`} onContextMenu={(e) => {
+          <PopoverTrigger render={<button type="button" aria-label={shellText("{v0} {v1} time zone", {v0: label, v1: city})} onContextMenu={(e) => {
                                   e.preventDefault();
                                   handleOpenChange(true);
                                 }} className={cn(
@@ -323,7 +324,7 @@ export function TimeZoneAxisLabel({
               />
             ) : (
               <Command
-                label={`${label} time zone`}
+                label={shellText("{v0} time zone", {v0: label})}
                 // Takes the focus when the menu opens, so the arrow keys
                 // and Enter reach the items
                 tabIndex={0}
@@ -349,9 +350,9 @@ export function TimeZoneAxisLabel({
         // Tooltips need a provider with Radix; a closer one (yours) still wins
         <TooltipProvider>
           <Tooltip>
-            <TooltipTrigger render={<button type="button" aria-label="Travel back home" onClick={() => travelToTimeZone(null)} className="absolute top-0.5 right-0.5 flex size-3 items-center justify-center rounded-full bg-primary text-primary-foreground ring-1 ring-primary-foreground/80" />}><X className="size-2" strokeWidth={3} /></TooltipTrigger>
+            <TooltipTrigger render={<button type="button" aria-label={shellText("Travel back home")} onClick={() => travelToTimeZone(null)} className="absolute top-0.5 right-0.5 flex size-3 items-center justify-center rounded-full bg-primary text-primary-foreground ring-1 ring-primary-foreground/80" />}><X className="size-2" strokeWidth={3} /></TooltipTrigger>
             <TooltipContent side="bottom">
-              Travel back home <Kbd className="ml-1">esc</Kbd>
+              {shellText("Travel back home")} <Kbd className="ml-1">{shellText("esc")}</Kbd>
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>

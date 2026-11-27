@@ -1,19 +1,21 @@
+import {shellText} from './shell-i18n';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { IconClock, IconEmojiStar, IconFilter, IconLock, IconPeople, IconSearch, IconSidebarRight, IconSliders, IconTable, IconChevronDown } from '../../src/components/icons';
+import { IconBuilding, IconClock, IconEmojiStar, IconFilter, IconLock, IconPeople, IconSearch, IconSidebarRight, IconSliders, IconTable, IconChevronDown } from '../../src/components/icons';
 import { libraryTable } from './library-table';
 import { normalize } from './page-search-results';
 import { sectionNames } from './page-section';
-import type { LibraryView } from './library-route';
+import { libraryViews, type LibraryView } from './library-route';
 import type { DesktopPage } from './storage';
 import './workspace-library.css';
 
 const views = {
-  recents: {label: 'Récents', icon: IconClock, empty: 'Les pages que vous consultez apparaîtront ici.'},
-  favorites: {label: 'Favoris', icon: IconEmojiStar, empty: 'Les pages ajoutées à vos favoris apparaîtront ici.'},
-  private: {label: 'Privé', icon: IconLock, empty: 'Aucune page privée.'},
-  shared: {label: 'Partagé', icon: IconPeople, empty: 'Aucune page partagée.'},
+  teamspaces: {label: shellText("Espaces d’équipe"), icon: IconBuilding, empty: shellText("Aucune page dans les espaces d’équipe.")},
+  recents: {label: shellText("Récents"), icon: IconClock, empty: shellText("Les pages que vous consultez apparaîtront ici.")},
+  favorites: {label: shellText("Favoris"), icon: IconEmojiStar, empty: shellText("Les pages ajoutées à vos favoris apparaîtront ici.")},
+  private: {label: shellText("Privé"), icon: IconLock, empty: shellText("Aucune page privée.")},
+  shared: {label: shellText("Partagé"), icon: IconPeople, empty: shellText("Aucune page partagée.")},
 } satisfies Record<LibraryView, {label: string; icon: string; empty: string}>;
 
 export type {LibraryView} from './library-route';
@@ -27,7 +29,8 @@ interface LibraryOptions {
   onOpen(id: string): void;
   onCreate?(): void;
   onClosePeek?(): void;
-  isTeamspaces?(): boolean;
+  hasTeamspaces?: boolean;
+  canCreateTeamspace?: boolean;
   onCreateTeamspace?(): void;
   onVisiblePagesChange?(ids: readonly string[]): void;
   selectedPageId?(): string | undefined;
@@ -51,8 +54,9 @@ function sectionOf(page: DesktopPage, index: Map<string, DesktopPage>): string |
 
 function Library({options, publishRows}: {options: LibraryOptions; publishRows(ids: string[]): void}) {
   const view = options.view();
-  const teamspaces = options.isTeamspaces?.() ?? false;
-  const create = teamspaces ? options.onCreateTeamspace : options.onCreate;
+  const teamspaces = view === 'teamspaces';
+  const tabs = libraryViews.filter(id => id !== 'teamspaces' || options.hasTeamspaces || teamspaces);
+  const create = teamspaces ? options.canCreateTeamspace && options.onCreateTeamspace : options.onCreate;
   const peekId = options.selectedPageId?.();
   const tableHost = useRef<HTMLDivElement>(null);
   const grid = useRef<ReturnType<typeof libraryTable> | null>(null);
@@ -101,7 +105,7 @@ function Library({options, publishRows}: {options: LibraryOptions; publishRows(i
     if (!normalize(page.title || 'Nouvelle page').includes(needle)) return false;
     if (view === 'recents') return recent.has(page.id) || options.visitedAt(page.id) !== undefined;
     if (view === 'favorites') return page.favorite;
-    return sectionOf(page, index) === sectionNames[view];
+    return sectionOf(page, index) === sectionNames[view === 'teamspaces' ? 'workspace' : view];
   });
   const title = (page: DesktopPage) => page.title || 'Nouvelle page';
   if (sort !== 'default') {
@@ -117,48 +121,48 @@ function Library({options, publishRows}: {options: LibraryOptions; publishRows(i
       ? page => index.get(page.parentId ?? '')?.title || options.workspaceName
       : undefined, peekId);
   });
-  return <section className="workspace-library" aria-label="Bibliothèque">
+  return <section className="workspace-library" aria-label={shellText("Bibliothèque")}>
     <header className="library-titlebar">
-      {options.onToggleSidebar && <button type="button" data-desktop-sidebar-toggle="" aria-label="Afficher ou masquer la barre latérale"
-        title="Afficher ou masquer la barre latérale" onClick={options.onToggleSidebar}><Glyph icon={IconSidebarRight}/></button>}
-      <h1 ref={heading} tabIndex={-1}>Bibliothèque</h1>
-      {create && <button type="button" className="library-create" onClick={create}>{teamspaces ? 'Nouvel espace d’équipe' : 'Nouvelle page'}</button>}
+      {options.onToggleSidebar && <button type="button" data-desktop-sidebar-toggle="" aria-label={shellText("Afficher ou masquer la barre latérale")}
+        title={shellText("Afficher ou masquer la barre latérale")} onClick={options.onToggleSidebar}><Glyph icon={IconSidebarRight}/></button>}
+      <h1 ref={heading} tabIndex={-1}>{shellText("Bibliothèque")}</h1>
+      {create && <button type="button" className="library-create" onClick={create}>{teamspaces ? shellText("Nouvel espace d’équipe") : shellText("Nouvelle page")}</button>}
     </header>
     <h2>{views[view].label}</h2>
     <div className="library-toolbar">
-      <nav aria-label="Vues de la bibliothèque">
-        {(Object.keys(views) as LibraryView[]).map(id => <button key={id} type="button" aria-current={id === view ? 'page' : undefined}
+      <nav aria-label={shellText("Vues de la bibliothèque")}>
+        {tabs.map(id => <button key={id} type="button" aria-current={id === view ? 'page' : undefined}
           onClick={() => { setTool(null); options.onViewChange(id); }}><Glyph icon={views[id].icon}/>{views[id].label}</button>)}
       </nav>
       <label className="library-view-picker"><Glyph icon={IconTable}/>
         <span>{views[view].label}</span><Glyph icon={IconChevronDown}/>
-        <select aria-label="Vue de la bibliothèque" value={view} onChange={event => options.onViewChange(event.currentTarget.value as LibraryView)}>
-          {(Object.keys(views) as LibraryView[]).map(id => <option value={id} key={id}>{views[id].label}</option>)}
+        <select aria-label={shellText("Vue de la bibliothèque")} value={view} onChange={event => options.onViewChange(event.currentTarget.value as LibraryView)}>
+          {tabs.map(id => <option value={id} key={id}>{views[id].label}</option>)}
         </select>
       </label>
       <div className="library-tools" ref={tools} onBlur={event => {
         if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setTool(null);
       }}>
-        <button type="button" aria-label="Filtrer" title="Filtrer" aria-expanded={tool === 'filter'} aria-controls={tool === 'filter' ? toolId : undefined}
+        <button type="button" aria-label={shellText("Filtrer")} title={shellText("Filtrer")} aria-expanded={tool === 'filter'} aria-controls={tool === 'filter' ? toolId : undefined}
           data-applied={rootsOnly || undefined} onClick={e => {trigger.current = e.currentTarget; setTool(tool === 'filter' ? null : 'filter');}}><Glyph icon={IconFilter}/></button>
-        <button type="button" aria-label="Rechercher une page dans cette vue" title="Rechercher" aria-expanded={searchOpen}
+        <button type="button" aria-label={shellText("Rechercher une page dans cette vue")} title={shellText("Rechercher")} aria-expanded={searchOpen}
           onClick={() => {setTool(null); setSearchOpen(!searchOpen); setQuery('');}}><Glyph icon={IconSearch}/></button>
-        <button type="button" aria-label="Options d’affichage" title="Options d’affichage" aria-expanded={tool === 'display'} aria-controls={tool === 'display' ? toolId : undefined}
+        <button type="button" aria-label={shellText("Options d’affichage")} title={shellText("Options d’affichage")} aria-expanded={tool === 'display'} aria-controls={tool === 'display' ? toolId : undefined}
           onClick={e => {trigger.current = e.currentTarget; setTool(tool === 'display' ? null : 'display');}}><Glyph icon={IconSliders}/></button>
         {tool && <div className="library-menu" id={toolId}>
-          {tool === 'filter' ? <label><input ref={checkbox} type="checkbox" checked={rootsOnly} onChange={e => setRootsOnly(e.target.checked)}/>Pages de premier niveau</label>
-            : <><label><input ref={checkbox} type="checkbox" checked={locationVisible} onChange={e => setLocationVisible(e.target.checked)}/>Afficher l’emplacement</label>
-                <label>Tri <select value={sort} onChange={event => setSort(event.currentTarget.value as typeof sort)}>
-                  <option value="default">Ordre de la vue</option><option value="asc">Nom de A à Z</option><option value="desc">Nom de Z à A</option>
+          {tool === 'filter' ? <label><input ref={checkbox} type="checkbox" checked={rootsOnly} onChange={e => setRootsOnly(e.target.checked)}/>{shellText("Pages de premier niveau")}</label>
+            : <><label><input ref={checkbox} type="checkbox" checked={locationVisible} onChange={e => setLocationVisible(e.target.checked)}/>{shellText("Afficher l’emplacement")}</label>
+                <label>{shellText("Tri")} <select value={sort} onChange={event => setSort(event.currentTarget.value as typeof sort)}>
+                  <option value="default">{shellText("Ordre de la vue")}</option><option value="asc">{shellText("Nom de A à Z")}</option><option value="desc">{shellText("Nom de Z à A")}</option>
                 </select></label></>}
         </div>}
       </div>
     </div>
-    {searchOpen && <div className="library-search"><Glyph icon={IconSearch}/><input ref={search} type="search" placeholder="Rechercher dans cette vue…"
-      aria-label="Rechercher dans cette vue" value={query} onChange={e => setQuery(e.target.value)}
+    {searchOpen && <div className="library-search"><Glyph icon={IconSearch}/><input ref={search} type="search" placeholder={shellText("Rechercher dans cette vue…")}
+      aria-label={shellText("Rechercher dans cette vue")} value={query} onChange={e => setQuery(e.target.value)}
       onKeyDown={e => { if (e.key === 'Escape') {e.preventDefault(); setSearchOpen(false); setQuery(''); tools.current?.querySelector<HTMLButtonElement>('[title="Rechercher"]')?.focus();} }}/></div>}
     <div ref={tableHost} data-library-grid="" data-blok-interface=""/>
-    {rows.length === 0 && <p role="status" className="library-empty">{query || rootsOnly ? 'Aucune page ne correspond à ce filtre.' : views[view].empty}</p>}
+    {rows.length === 0 && <p role="status" className="library-empty">{query || rootsOnly ? shellText("Aucune page ne correspond à ce filtre.") : views[view].empty}</p>}
   </section>;
 }
 

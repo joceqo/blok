@@ -1,3 +1,4 @@
+import {shellText} from '../../../shell-i18n';
 import { useCalendarPortalHost } from "../../portal"
 "use client"
 
@@ -73,7 +74,7 @@ function DialogContent({
           >
             <XIcon
             />
-            <span className="sr-only">Close</span>
+            <span className="sr-only">{shellText("Close")}</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Popup>
@@ -111,7 +112,7 @@ function DialogFooter({
       {children}
       {showCloseButton && (
         <DialogPrimitive.Close render={<Button variant="outline" />}>
-          Close
+          {shellText("Close")}
         </DialogPrimitive.Close>
       )}
     </div>

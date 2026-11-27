@@ -1,5 +1,10 @@
 import type { Preview } from "@storybook/html-vite";
 
+import {attachGrabToDialogs} from "../desktop/src/react-grab-dialogs";
+
+const detachInspector = attachGrabToDialogs();
+import.meta.hot?.dispose(detachInspector);
+
 // Import global editor styles
 import editorStyles from "../src/styles/main.css?inline";
 

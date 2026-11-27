@@ -1,14 +1,9 @@
-const views = ['recents', 'favorites', 'private', 'shared'] as const;
-export type LibraryView = typeof views[number];
-
-export function isTeamspaceLibrary(url: URL): boolean {
-  return url.pathname.replace(/\/$/, '') === '/library/teamspaces';
-}
+export const libraryViews = ['teamspaces', 'recents', 'favorites', 'shared', 'private'] as const;
+export type LibraryView = typeof libraryViews[number];
 
 export function libraryView(url: URL): LibraryView | undefined {
-  if (isTeamspaceLibrary(url)) return 'recents';
   const path = url.pathname.replace(/\/$/, '');
-  return views.find(view => path === '/library/' + view);
+  return libraryViews.find(view => path === '/library/' + view);
 }
 
 export function libraryPageId(url: URL): string | null {
@@ -28,7 +23,7 @@ export function libraryPageUrl(from: URL, pageId: string | null): URL {
   return url;
 }
 
-export function libraryUrl(from: URL, view: LibraryView | 'teamspaces'): URL {
+export function libraryUrl(from: URL, view: LibraryView): URL {
   const url = libraryPageUrl(from, null);
   url.pathname = '/library/' + view;
   url.searchParams.delete('page');

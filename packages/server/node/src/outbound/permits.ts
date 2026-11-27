@@ -1,7 +1,18 @@
+import type { OutboundWait } from '../collab/observe.ts';
 import { Mutex, lock } from '../http/sync.ts';
 
 export const POOL_SIZE = 4;
 const PER_CALLER = 2;
+
+/**
+ * A slot, and whether its holder had to queue for it. Only the semaphore can
+ * tell the two apart: by the time the caller is awake, a slot it waited on and
+ * a slot that was free look exactly the same.
+ */
+interface Permit {
+  release: () => void;
+  queued: boolean;
+}
 
 class Semaphore {
   private slots: number;
@@ -12,14 +23,14 @@ class Semaphore {
     this.slots = capacity;
   }
 
-  async acquire(deadlineMs: number): Promise<() => void> {
-    const release = await new Promise<() => void>((resolve, reject) => {
+  async acquire(deadlineMs: number): Promise<Permit> {
+    const permit = await new Promise<Permit>((resolve, reject) => {
       const tryAcquire = (): void => {
         const guard = lock(this.mutex);
         if (this.slots > 0) {
           this.slots -= 1;
           guard.get();
-          resolve(() => this.signal());
+          resolve({ release: () => this.signal(), queued: false });
           return;
         }
         guard.get();
@@ -35,13 +46,13 @@ class Semaphore {
         }, delay);
         const wakeFn = (releaseSlot: () => void): void => {
           clearTimeout(timer);
-          resolve(releaseSlot);
+          resolve({ release: releaseSlot, queued: true });
         };
         this.queue.push(wakeFn);
       };
       tryAcquire();
     });
-    return release;
+    return permit;
   }
 
   private signal(): void {
@@ -60,9 +71,9 @@ class Semaphore {
 class CallerLanes {
   private readonly lanes = new Map<string, Semaphore>();
 
-  async enter(caller: string, deadlineMs: number): Promise<() => void> {
+  async enter(caller: string, deadlineMs: number): Promise<Permit> {
     if (caller === '') {
-      return () => {};
+      return { release: () => {}, queued: false };
     }
     let lane = this.lanes.get(caller);
     if (!lane) {
@@ -79,25 +90,48 @@ export class OutboundPermits {
   private readonly checkCallers = new CallerLanes();
   private readonly uploadCallers = new CallerLanes();
 
+  /**
+   * Told of a caller that had to queue, once the wait is over, so the line it
+   * writes can say how long it lasted. Nothing is reported for an acquire that
+   * found a free slot: four pools times every outbound call is not an event.
+   */
+  onWait?: (event: OutboundWait) => void;
+
   async acquire(upload: boolean, caller: string, deadlineMs: number): Promise<() => void> {
     const callers = upload ? this.uploadCallers : this.checkCallers;
     const pool = upload ? this.uploads : this.checks;
-    const leaveCaller = await callers.enter(caller, deadlineMs);
+    const started = Date.now();
+    let lane: Permit;
     try {
-      const releasePool = await pool.acquire(deadlineMs);
+      lane = await callers.enter(caller, deadlineMs);
+    } catch (error) {
+      // Only a wait can time out, so the deadline passing IS the report.
+      this.report(upload, caller, started, false);
+      throw error;
+    }
+    try {
+      const slot = await pool.acquire(deadlineMs);
+      if (lane.queued || slot.queued) {
+        this.report(upload, caller, started, true);
+      }
       let done = false;
       return () => {
         if (done) {
           return;
         }
         done = true;
-        releasePool();
-        leaveCaller();
+        slot.release();
+        lane.release();
       };
     } catch (error) {
-      leaveCaller();
+      lane.release();
+      this.report(upload, caller, started, false);
       throw error;
     }
+  }
+
+  private report(upload: boolean, caller: string, started: number, granted: boolean): void {
+    this.onWait?.({ upload, caller, waitedMs: Date.now() - started, granted });
   }
 }
 

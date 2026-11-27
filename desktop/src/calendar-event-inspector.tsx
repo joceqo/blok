@@ -1,3 +1,5 @@
+import {shellText} from './shell-i18n';
+import {WORKSPACE_ROLES} from './access-vocabulary';
 import {useEffect, useRef, useState} from 'react';
 import {CalendarDays, Check, ChevronDown, Download, ExternalLink, FileText, Users, Trash2, X} from 'lucide-react';
 import {EventDetailPanel} from './calendarcn/components/event-detail-panel';
@@ -99,8 +101,8 @@ export function CalendarEventInspector({options, event, existing, owner, onClose
   const localPages = !spaces || target === spaces.activeId;
   const pages = localPages ? options.pages : extraPages?.id === target ? extraPages.pages : [];
   const knownPage = draft.pageId && pages.some(item => item.id === draft.pageId);
-  const pageItems = [{id:'',title:'Aucune page'}, ...pages.map(item => ({id:item.id, title:item.title || 'Sans titre'}))];
-  if (draft.pageId && !knownPage) pageItems.push({id:draft.pageId,title:'Page liée'});
+  const pageItems = [{id:'',title:shellText("Aucune page")}, ...pages.map(item => ({id:item.id, title:item.title || shellText("Sans titre")}))];
+  if (draft.pageId && !knownPage) pageItems.push({id:draft.pageId,title:shellText("Page liée")});
 
   function edit(next: typeof current, nextPage = pageId) {
     if (!editable || inFlight.current) return;
@@ -112,11 +114,11 @@ export function CalendarEventInspector({options, event, existing, owner, onClose
   async function persist(remove: boolean) {
     if (!editable || inFlight.current) return;
     const workspace = spaces?.entries().find(item => item.id === target && item.connected && item.canEdit);
-    if (spaces && !workspace) { setError('Cet agenda n’est plus accessible en écriture.'); return; }
+    if (spaces && !workspace) { setError(shellText("Cet agenda n’est plus accessible en écriture.")); return; }
     const title = draft.title.trim();
-    if (!remove && !title) { setError('Saisissez un titre.'); return; }
-    if (!remove && title.length > 200) { setError('Le titre est limité à 200 caractères.'); return; }
-    if (!remove && !(Date.parse(draft.end) > Date.parse(draft.start))) { setError('La fin doit être après le début.'); return; }
+    if (!remove && !title) { setError(shellText("Saisissez un titre.")); return; }
+    if (!remove && title.length > 200) { setError(shellText("Le titre est limité à 200 caractères.")); return; }
+    if (!remove && !(Date.parse(draft.end) > Date.parse(draft.start))) { setError(shellText("La fin doit être après le début.")); return; }
     inFlight.current = true;
     setPending(true);
     setError('');
@@ -127,7 +129,7 @@ export function CalendarEventInspector({options, event, existing, owner, onClose
       if (alive.current) onClose();
       onChanged();
     } catch (reason) {
-      if (alive.current) setError(reason instanceof Error ? reason.message : 'Impossible d’enregistrer cette modification.');
+      if (alive.current) setError(reason instanceof Error ? reason.message : shellText("Impossible d’enregistrer cette modification."));
     } finally {
       inFlight.current = false;
       if (alive.current) setPending(false);
@@ -149,13 +151,13 @@ export function CalendarEventInspector({options, event, existing, owner, onClose
       }
     }}>
     <EventDetailPanel event={current} onEventChange={update} onTitlePreview={update}
-      autoFocusTitle={autoFocusTitle && !existing && editable} basicFields={{heading, titleLabel:'Titre de l’événement', allDayLabel:'Toute la journée'}}
+      autoFocusTitle={autoFocusTitle && !existing && editable} basicFields={{heading, titleLabel:shellText('Titre de l’événement'), allDayLabel:shellText('Toute la journée')}}
       headerActions={<Button type="button" size="icon" variant="ghost" className="size-7"
-        disabled={pending} aria-label="Fermer la fiche" onClick={onClose}><X className="size-4"/></Button>}/>
+        disabled={pending} aria-label={shellText("Fermer la fiche")} onClick={onClose}><X className="size-4"/></Button>}/>
     <div className="space-y-1 border-b border-calendar-sidebar-border px-3 py-2">
       {roomLabel && <div className="flex min-h-8 items-center gap-2">
         <CalendarDays className="size-4 shrink-0 text-calendar-detail-muted"/>
-        <FieldMenu label="Agenda" value={target ?? ''} items={canChooseSpace
+        <FieldMenu label={shellText("Agenda")} value={target ?? ''} items={canChooseSpace
           ? writable.map(item => ({id:item.id, title:item.name})) : [{id:target ?? '',title:roomLabel}]}
           onChange={canChooseSpace ? id => { setTarget(id); setParticipantIds(undefined); edit({...current, calendarId:id}, null); } : undefined}/>
       </div>}
@@ -164,28 +166,28 @@ export function CalendarEventInspector({options, event, existing, owner, onClose
         <div className="min-w-0">
           {editable && <DropdownMenu>
             <DropdownMenuTrigger render={<Button type="button" size="sm" variant="ghost" disabled={pending || !members?.length}/>}>
-              Ajouter des participants
+              {shellText("Ajouter des participants")}
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" aria-label="Membres de l’espace" className="max-h-64 overflow-auto">
+            <DropdownMenuContent align="start" aria-label={shellText("Membres de l’espace")} className="max-h-64 overflow-auto">
               {members?.map(member => <DropdownMenuCheckboxItem key={member.id} checked={participantIds?.includes(member.id) ?? false}
                 onCheckedChange={checked => setParticipantIds(ids => checked ? [...(ids ?? []),member.id] : ids?.filter(id => id !== member.id))}>
                 {member.title}
               </DropdownMenuCheckboxItem>)}
             </DropdownMenuContent>
           </DropdownMenu>}
-          {directory?.key === remote.preferenceKey && directory.failed && <p role="status">Liste des membres indisponible.</p>}
-          {!!participantIds?.length && <p className="px-2 text-sm" aria-label="Participants">
-            {participantIds.map(id => members?.find(member => member.id === id)?.title ?? 'Membre').join(', ')}
+          {directory?.key === remote.preferenceKey && directory.failed && <p role="status">{shellText("Liste des membres indisponible.")}</p>}
+          {!!participantIds?.length && <p className="px-2 text-sm" aria-label={shellText("Participants")}>
+            {participantIds.map(id => members?.find(member => member.id === id)?.title ?? WORKSPACE_ROLES.member).join(', ')}
           </p>}
         </div>
       </div>}
       {(editable || draft.pageId) && <div className="flex min-h-8 items-center gap-2">
         <FileText className="size-4 shrink-0 text-calendar-detail-muted"/>
-        <FieldMenu label="Page Blok associée" value={draft.pageId ?? ''} items={pageItems}
+        <FieldMenu label={shellText("Page Blok associée")} value={draft.pageId ?? ''} items={pageItems}
           onChange={editable && !pending && (localPages || (extraPages?.id === target && !extraPages.failed))
             ? id => edit(current, id || null) : undefined}/>
         {knownPage && <Button type="button" size="icon" variant="ghost" className="size-7"
-          aria-label="Ouvrir la page" disabled={pending} onClick={() => {
+          aria-label={shellText("Ouvrir la page")} disabled={pending} onClick={() => {
             const id = draft.pageId;
             if (!id) return;
             onClose();
@@ -193,21 +195,21 @@ export function CalendarEventInspector({options, event, existing, owner, onClose
             else options.openPage(id);
           }}><ExternalLink className="size-4"/></Button>}
       </div>}
-      {!localPages && extraPages?.id === target && extraPages?.failed && <p role="status">Pages indisponibles.</p>}
+      {!localPages && extraPages?.id === target && extraPages?.failed && <p role="status">{shellText("Pages indisponibles.")}</p>}
     </div>
     {error && <p role="alert" className="px-3 pt-2 text-sm text-calendar-danger">{error}</p>}
     <div className="flex flex-wrap items-center gap-1 px-3 pt-3">
       {existing && <Button size="icon" type="button" variant="ghost" className="size-7"
-        aria-label="Exporter en .ics" title="Exporter en .ics" onClick={() => exportCalendarEvent(event)}><Download className="size-4"/></Button>}
+        aria-label={shellText("Exporter en .ics")} title={shellText("Exporter en .ics")} onClick={() => exportCalendarEvent(event)}><Download className="size-4"/></Button>}
       {existing && editable && <Button size={confirmDelete ? 'sm' : 'icon'} type="button" variant="ghost" disabled={pending}
-        className="h-7 text-calendar-danger" aria-label={confirmDelete ? 'Confirmer la suppression' : 'Supprimer'}
+        className="h-7 text-calendar-danger" aria-label={confirmDelete ? shellText("Confirmer la suppression") : shellText("Supprimer")}
         onClick={() => confirmDelete ? void persist(true) : setConfirmDelete(true)}>
         <Trash2 className="size-4"/>{confirmDelete && 'Confirmer la suppression'}
       </Button>}
       {editable && <div className="ml-auto flex gap-1">
-        <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={onClose}>Annuler</Button>
+        <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={onClose}>{shellText("Annuler")}</Button>
         <Button type="button" size="sm" disabled={pending} onClick={() => void persist(false)}>
-          <Check className="size-3.5"/>{inviting ? 'Enregistrer et inviter' : 'Enregistrer'}
+          <Check className="size-3.5"/>{inviting ? shellText("Enregistrer et inviter") : shellText("Enregistrer")}
         </Button>
       </div>}
     </div>

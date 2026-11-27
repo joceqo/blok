@@ -1,3 +1,4 @@
+import {shellText} from '../shell-i18n';
 import {useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent} from 'react';
 import {createRoot} from 'react-dom/client';
 import {flushSync} from 'react-dom';
@@ -70,10 +71,10 @@ function MemberPicker({members,granted,disabled,grant}:{members:Member[]|null;gr
   }
   return <form data-cloud-share-invitation="" onSubmit={e=>void submit(e)}>
     <div data-cloud-share-person-picker="">
-      <input ref={input} type="text" role="combobox" aria-label="Ajouter une personne" aria-autocomplete="list"
+      <input ref={input} type="text" role="combobox" aria-label={shellText("Ajouter une personne")} aria-autocomplete="list"
         aria-expanded={shown} aria-controls={shown ? listId : undefined}
         aria-activedescendant={shown && current ? listId+'-'+current.id : undefined}
-        placeholder={members===null ? 'Chargement des membres…' : 'Nom ou e-mail d’un membre…'}
+        placeholder={members===null ? shellText("Chargement des membres…") : shellText("Nom ou e-mail d’un membre…")}
         autoComplete="off" value={query} disabled={disabled || members===null || !candidates.length}
         onClick={()=>{if(!selected)setExpanded(true);}} onBlur={()=>setExpanded(false)}
         onChange={e=>{setQuery(e.target.value);setSelected(null);setLevel('view');setActive(0);setExpanded(true);}}
@@ -87,22 +88,22 @@ function MemberPicker({members,granted,disabled,grant}:{members:Member[]|null;gr
           }
           if(e.key==='Enter' && shown){e.preventDefault();if(current)choose(current);}
         }}/>
-      <button type="submit" data-cloud-share-add="" disabled={disabled || !selected || granted.has(selected.id)}>Partager</button>
+      <button type="submit" data-cloud-share-add="" disabled={disabled || !selected || granted.has(selected.id)}>{shellText("Partager")}</button>
     </div>
     {shown && <div data-cloud-share-matches="">
-      <div ref={list} id={listId} role="listbox" aria-label="Membres de l’espace">
+      <div ref={list} id={listId} role="listbox" aria-label={shellText("Membres de l’espace")}>
         {matches.map((member,index)=><div key={member.id} id={listId+'-'+member.id} role="option" aria-selected={member===current}
           onPointerMove={e=>{if(e.pointerType!=='touch')setActive(index);}} onMouseDown={e=>e.preventDefault()} onClick={()=>choose(member)}>
           <Avatar label={member.name || member.email}/><span><strong>{member.name || member.email}</strong>{member.name && <small>{member.email}</small>}</span>
         </div>)}
       </div>
-      {!matches.length && <p role="status">Aucun membre ne correspond à cette recherche.</p>}
+      {!matches.length && <p role="status">{shellText("Aucun membre ne correspond à cette recherche.")}</p>}
     </div>}
     {selected && <div data-cloud-share-invite-level=""><span>{selected.email}</span>
       {selected.role==='viewer' ? <span>{PAGE_LEVELS.view}</span> :
-        <AccessLevel label="Accès à accorder" value={level} disabled={disabled} onChange={setLevel}/>}
+        <AccessLevel label={shellText("Accès à accorder")} value={level} disabled={disabled} onChange={setLevel}/>}
     </div>}
-    {members && !candidates.length && <p data-cloud-share-invite-note="">Tous les membres ont déjà un accès individuel.</p>}
+    {members && !candidates.length && <p data-cloud-share-invite-note="">{shellText("Tous les membres ont déjà un accès individuel.")}</p>}
   </form>;
 }
 
@@ -110,19 +111,19 @@ function GeneralAccess({sheet,busy,save}:{sheet:PageAccessSheet;busy:boolean;sav
   const [value,setValue]=useState(sheet.visibility);
   const editable=sheet.myLevel==='full';
   return <>
-    <h3 data-cloud-share-heading="">Accès général</h3>
+    <h3 data-cloud-share-heading="">{shellText("Accès général")}</h3>
     <div data-cloud-share-visibility="">
       <span aria-hidden="true" data-cloud-share-visibility-icon="" dangerouslySetInnerHTML={{__html:sheet.effectiveVisibility==='workspace'?IconPeople:IconLock}}/>
       <div>
-        {editable ? <select aria-label="Accès général" data-cloud-share-select="" value={value} disabled={busy}
+        {editable ? <select aria-label={shellText("Accès général")} data-cloud-share-select="" value={value} disabled={busy}
           onChange={e=>setValue(e.currentTarget.value as Visibility)}>
           {Object.entries(visibilityNames).map(([key,label])=><option key={key} value={key}>{label}</option>)}
         </select> : <strong>{visibilityNames[sheet.effectiveVisibility]}</strong>}
-        {sheet.visibility==='inherit' && <small>Accès hérité · {visibilityNames[sheet.effectiveVisibility]}</small>}
+        {sheet.visibility==='inherit' && <small>{shellText("Accès hérité ·")} {visibilityNames[sheet.effectiveVisibility]}</small>}
       </div>
-      {editable && value!==sheet.visibility && <button type="button" data-cloud-share-apply="" disabled={busy} onClick={()=>void save(value).then(ok=>{if(!ok)setValue(sheet.visibility);})}>Appliquer</button>}
+      {editable && value!==sheet.visibility && <button type="button" data-cloud-share-apply="" disabled={busy} onClick={()=>void save(value).then(ok=>{if(!ok)setValue(sheet.visibility);})}>{shellText("Appliquer")}</button>}
     </div>
-    <details data-cloud-share-rights=""><summary>Détail des droits</summary><p data-cloud-share-cumulative="">{PAGE_RIGHTS_CUMULATIVE}</p></details>
+    <details data-cloud-share-rights=""><summary>{shellText("Détail des droits")}</summary><p data-cloud-share-cumulative="">{PAGE_RIGHTS_CUMULATIVE}</p></details>
   </>;
 }
 
@@ -180,10 +181,10 @@ export function mountShareSheet(container:HTMLElement, options:ShareSheetOptions
     const manager=access?.myLevel==='full';
     const entries=access ? [...access.shares,...access.inherited] : [];
     flushSync(()=>root.render(<>
-      {loading && <p role="status">Chargement des accès…</p>}
+      {loading && <p role="status">{shellText("Chargement des accès…")}</p>}
       {access && <>
         {manager && <MemberPicker members={members} granted={new Set(entries.map(entry=>entry.userId))} disabled={busy} grant={grant}/>}
-        {memberError && <p role="alert" data-cloud-share-error="">{memberError} <button type="button" onClick={retry}>Réessayer</button></p>}
+        {memberError && <p role="alert" data-cloud-share-error="">{memberError} <button type="button" onClick={retry}>{shellText("Réessayer")}</button></p>}
         <div data-cloud-share-list="">
           {entries.map(entry=>{
             const member=members?.find(person=>person.id===entry.userId), mine=entry.userId===options.accountId;
@@ -192,22 +193,22 @@ export function mountShareSheet(container:HTMLElement, options:ShareSheetOptions
               <Avatar label={primary}/>
               <div data-cloud-share-identity=""><span data-cloud-share-email="" title={primary}>{primary}{mine && ' (vous)'}</span>
                 {member?.name && <small>{entry.email}</small>}
-                {entry.from!==undefined && <span data-cloud-share-origin="" title={entry.from}>Hérité de la page {entry.from}</span>}
+                {entry.from!==undefined && <span data-cloud-share-origin="" title={entry.from}>{shellText("Hérité de la page")} {entry.from}</span>}
               </div>
               {manager && !entry.from ? <>
                 <AccessLevel label={'Niveau d’accès de '+entry.email} value={entry.level} disabled={busy || (member?.role==='viewer' && entry.level==='view')} viewer={member?.role==='viewer'}
                   onChange={level=>void grant(entry.userId,level)}/>
                 <button type="button" data-cloud-share-remove="" disabled={busy} aria-label={'Retirer l’accès de '+entry.email}
-                  onClick={()=>void mutate('/shares/'+encodeURIComponent(entry.userId),'DELETE')}>Retirer</button>
+                  onClick={()=>void mutate('/shares/'+encodeURIComponent(entry.userId),'DELETE')}>{shellText("Retirer")}</button>
               </> : <span data-cloud-share-level="">{PAGE_LEVELS[entry.level]}</span>}
             </div>;
           })}
-          {!entries.length && <p data-cloud-share-empty="">Aucun accès individuel ajouté à cette page.</p>}
+          {!entries.length && <p data-cloud-share-empty="">{shellText("Aucun accès individuel ajouté à cette page.")}</p>}
         </div>
         <GeneralAccess key={access.visibility+'-'+access.myLevel} sheet={access} busy={busy}
           save={visibility=>mutate('/access','PUT',{visibility})}/>
       </>}
-      {error && <p role="alert" data-cloud-share-error="">{error} {!sheet && <button type="button" onClick={retry}>Réessayer</button>}</p>}
+      {error && <p role="alert" data-cloud-share-error="">{error} {!sheet && <button type="button" onClick={retry}>{shellText("Réessayer")}</button>}</p>}
     </>));
   }
   paint();void refresh();

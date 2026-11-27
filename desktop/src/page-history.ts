@@ -1,3 +1,4 @@
+import {shellText, shellLocale} from './shell-i18n';
 import { openModalDialog } from '@blok/modal-dialog';
 import { historyChangeDetails } from './history-change-details';
 import { IconCross } from '../../src/components/icons';
@@ -37,15 +38,15 @@ export function openPageHistory(options: HistoryOptions): () => void {
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
   closeButton.setAttribute('data-navigation-close', '');
-  closeButton.setAttribute('aria-label', 'Fermer');
+  closeButton.setAttribute('aria-label', shellText("Fermer"));
   closeButton.innerHTML = IconCross;
   const heading = document.createElement('h2');
   heading.setAttribute('data-navigation-heading', '');
   heading.textContent = 'Historique de ' + options.title;
   const versions = document.createElement('select');
-  versions.setAttribute('aria-label', 'Version à consulter');
+  versions.setAttribute('aria-label', shellText("Version à consulter"));
   const preview = document.createElement('article');
-  preview.setAttribute('aria-label', 'Aperçu de la version');
+  preview.setAttribute('aria-label', shellText("Aperçu de la version"));
   preview.setAttribute('data-history-preview', '');
   const notice = document.createElement('p');
   notice.setAttribute('role', 'status');
@@ -92,14 +93,14 @@ export function openPageHistory(options: HistoryOptions): () => void {
   }
   function error(problem: unknown, id: number) {
     if (!abort.signal.aborted && turn === id)
-      notice.textContent = problem instanceof Error ? problem.message : 'Impossible de charger cette version.';
+      notice.textContent = problem instanceof Error ? problem.message : shellText("Impossible de charger cette version.");
   }
   async function selectVersion() {
     const id = ++turn;
     preview.replaceChildren();
     changes.replaceChildren();
     actions.replaceChildren();
-    notice.textContent = 'Chargement…';
+    notice.textContent = shellText("Chargement…");
     const path = '/' + versions.value;
     try {
       const content = await request<Parameters<typeof blocksToHtml>[0]>(path);
@@ -117,7 +118,7 @@ export function openPageHistory(options: HistoryOptions): () => void {
       const planned = await request<Preview>(path + '/restore/preview', { method: 'POST' });
       if (turn !== id || abort.signal.aborted || !options.editable()) return;
       if (!planned.fits) {
-        notice.textContent = 'Cette version est trop volumineuse pour être restaurée.';
+        notice.textContent = shellText("Cette version est trop volumineuse pour être restaurée.");
         return;
       }
       const approvals = new Map<string, HTMLInputElement>();
@@ -131,13 +132,13 @@ export function openPageHistory(options: HistoryOptions): () => void {
       }
       const restore = document.createElement('button');
       restore.type = 'button';
-      restore.textContent = 'Restaurer cette version';
+      restore.textContent = shellText("Restaurer cette version");
       actions.append(restore);
       const key = crypto.randomUUID();
       restore.onclick = async () => {
         if (!options.editable() || turn !== id) return;
         if ([...approvals.values()].some((check) => !check.checked)) {
-          notice.textContent = 'Confirmez les changements indiqués.';
+          notice.textContent = shellText("Confirmez les changements indiqués.");
           return;
         }
         restore.disabled = true;
@@ -165,7 +166,7 @@ export function openPageHistory(options: HistoryOptions): () => void {
   versions.onchange = () => {
     void selectVersion();
   };
-  notice.textContent = 'Chargement…';
+  notice.textContent = shellText("Chargement…");
   void (async () => {
     try {
       await options.flush();
@@ -179,7 +180,7 @@ export function openPageHistory(options: HistoryOptions): () => void {
           version.savedAt === null
             ? ''
             : ' · ' +
-              new Intl.DateTimeFormat('fr', { dateStyle: 'short', timeStyle: 'short' }).format(version.savedAt);
+              new Intl.DateTimeFormat(shellLocale(), { dateStyle: 'short', timeStyle: 'short' }).format(version.savedAt);
         option.textContent =
           (index === 0
             ? 'Version actuelle'
@@ -189,7 +190,7 @@ export function openPageHistory(options: HistoryOptions): () => void {
         versions.append(option);
       }
       if (versions.options.length) await selectVersion();
-      else notice.textContent = 'Aucune version enregistrée.';
+      else notice.textContent = shellText("Aucune version enregistrée.");
     } catch (problem) {
       error(problem, turn);
     }

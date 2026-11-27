@@ -1,3 +1,4 @@
+import {shellText, shellLocale} from '../shell-i18n';
 import {TEAM_ROLES} from '../access-vocabulary';
 import {useEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
@@ -22,20 +23,20 @@ function Defaults({client, base, teams, reload}: {client: TeamClient; base: stri
   const {busy, error, write} = useTeamWrite(client);
   const changed = selected.length !== defaults.length || selected.some(id => !defaults.includes(id));
   return <section className="teamspace-policy">
-    <h2>Espaces d’équipe par défaut</h2>
-    <p>Choisissez les équipes que les membres actuels et à venir rejoignent automatiquement.</p>
+    <h2>{shellText("Espaces d’équipe par défaut")}</h2>
+    <p>{shellText("Choisissez les équipes que les membres actuels et à venir rejoignent automatiquement.")}</p>
     <div className="teamspace-default-form"><div className="teamspace-default-field">
       {teams.filter(team => selected.includes(team.id)).map(team => <button key={team.id} type="button" disabled={busy}
         aria-label={'Retirer ' + team.name + ' des espaces par défaut'} onClick={() => setDraft(selected.filter(id => id !== team.id))}>
         <TeamspaceIcon value={team.icon || ''} name={team.name}/>{team.name}<span aria-hidden="true">×</span></button>)}
-      {teams.some(team => !selected.includes(team.id)) && <select value="" aria-label="Ajouter un espace par défaut" disabled={busy}
+      {teams.some(team => !selected.includes(team.id)) && <select value="" aria-label={shellText("Ajouter un espace par défaut")} disabled={busy}
         onChange={event => {if (event.target.value) setDraft([...selected, event.target.value]);}}>
-        <option value="">{selected.length ? 'Ajouter…' : 'Choisir des espaces…'}</option>
+        <option value="">{selected.length ? shellText("Ajouter…") : shellText("Choisir des espaces…")}</option>
         {teams.filter(team => !selected.includes(team.id)).map(team => <option key={team.id} value={team.id}>{team.name}</option>)}
       </select>}
     </div><button className="teamspace-primary" disabled={!changed || busy} onClick={() => {
       void write(base + '/settings', 'PATCH', {defaultTeamspaceIds: selected}, reload);
-    }}>Mettre à jour</button></div><Alert message={error}/>
+    }}>{shellText("Mettre à jour")}</button></div><Alert message={error}/>
   </section>;
 }
 
@@ -89,46 +90,46 @@ function Panel({client, workspace, navigation}: {client: TeamClient; workspace: 
   function see(team: Team, tab: 'Général' | 'Membres' | 'Sécurité' = 'Membres') {setScene({kind: 'detail', team, tab});}
   const refresh = directory.reload;
 
-  return <div className="teamspace-settings"><h1 data-desktop-settings-title="">Espaces d’équipe</h1>
-    <p data-desktop-settings-intro="">Gérez les espaces d’équipe de votre espace de travail.</p>
+  return <div className="teamspace-settings"><h1 data-desktop-settings-title="">{shellText("Espaces d’équipe")}</h1>
+    <p data-desktop-settings-intro="">{shellText("Gérez les espaces d’équipe de votre espace de travail.")}</p>
     <Alert message={directory.error} retry={refresh}/>
-    {!data && !directory.error && <p role="status">Chargement des espaces d’équipe…</p>}
+    {!data && !directory.error && <p role="status">{shellText("Chargement des espaces d’équipe…")}</p>}
     {data && <>
       {admin && teams.length > 0 && data.settings && <Defaults client={client} base={base} teams={teams} reload={refresh}
         key={teams.filter(team => team.isDefault).map(team => team.id).sort().join('|')}/>}
       {admin && data.settings && <div className="teamspace-policy teamspace-setting-row">
-        <div><h2 id="teamspace-creation-policy">Réserver la création aux administrateurs</h2>
-          <p>Seuls les administrateurs de cet espace de travail pourront créer des espaces d’équipe.</p></div>
+        <div><h2 id="teamspace-creation-policy">{shellText("Réserver la création aux administrateurs")}</h2>
+          <p>{shellText("Seuls les administrateurs de cet espace de travail pourront créer des espaces d’équipe.")}</p></div>
         <button type="button" className="settings-panel-switch" role="switch" aria-checked={data.settings.restrictCreation}
           aria-labelledby="teamspace-creation-policy" disabled={mutation.busy} onClick={() => {
             void mutation.write(base + '/settings', 'PATCH', {restrictCreation: !data.settings.restrictCreation}, refresh);
           }}/></div>}
       <Alert message={mutation.error}/>
-      <section className="teamspace-directory"><h2>Espaces d’équipe</h2><p>Retrouvez ici les équipes auxquelles vous avez accès.</p>
+      <section className="teamspace-directory"><h2>{shellText("Espaces d’équipe")}</h2><p>{shellText("Retrouvez ici les équipes auxquelles vous avez accès.")}</p>
         <div className="teamspace-toolbar">
-          <Filter label="Filtrer par adhésion" icon={IconCheck} value={membership} onChange={setMembership} options={[['','Adhésion'],['joined','Mes équipes'],['other','Autres équipes']]}/>
-          <Filter label="Filtrer par propriétaire" icon={IconPeople} value={owner} onChange={setOwner} options={[['','Propriétaire'], ...Array.from(owners)]}/>
-          <Filter label="Filtrer par accès" icon={IconLock} value={access} onChange={setAccess} options={[['','Accès'],['default','Par défaut'],['invite','Sur invitation']]}/>
-          <Filter label="Filtrer par droits de gestion" icon={IconSliders} value={management} onChange={setManagement} options={[['','Droits'],['edit','Gestion autorisée'],['read','Consultation']]}/>
+          <Filter label={shellText("Filtrer par adhésion")} icon={IconCheck} value={membership} onChange={setMembership} options={[['','Adhésion'],['joined','Mes équipes'],['other','Autres équipes']]}/>
+          <Filter label={shellText("Filtrer par propriétaire")} icon={IconPeople} value={owner} onChange={setOwner} options={[['','Propriétaire'], ...Array.from(owners)]}/>
+          <Filter label={shellText("Filtrer par accès")} icon={IconLock} value={access} onChange={setAccess} options={[['','Accès'],['default','Par défaut'],['invite','Sur invitation']]}/>
+          <Filter label={shellText("Filtrer par droits de gestion")} icon={IconSliders} value={management} onChange={setManagement} options={[['','Droits'],['edit','Gestion autorisée'],['read','Consultation']]}/>
           <span className="teamspace-toolbar-spacer"/>
-          <button type="button" className="teamspace-icon-button" title="Rechercher" aria-label="Rechercher un espace d’équipe" aria-expanded={searching}
+          <button type="button" className="teamspace-icon-button" title={shellText("Rechercher")} aria-label={shellText("Rechercher un espace d’équipe")} aria-expanded={searching}
             onClick={() => {setSearching(!searching); setQuery('');}} dangerouslySetInnerHTML={{__html: IconSearch}}/>
-          {data.canCreate && <button className="teamspace-primary" onClick={event => {returnFocus.current = event.currentTarget; setScene({kind:'create'});}}>Nouvel espace d’équipe</button>}
+          {data.canCreate && <button className="teamspace-primary" onClick={event => {returnFocus.current = event.currentTarget; setScene({kind:'create'});}}>{shellText("Nouvel espace d’équipe")}</button>}
         </div>
-        {searching && <input className="teamspace-search" type="search" aria-label="Nom de l’espace d’équipe" autoFocus placeholder="Rechercher un espace d’équipe…" value={query} onChange={e => setQuery(e.target.value)}/>}
+        {searching && <input className="teamspace-search" type="search" aria-label={shellText("Nom de l’espace d’équipe")} autoFocus placeholder={shellText("Rechercher un espace d’équipe…")} value={query} onChange={e => setQuery(e.target.value)}/>}
         <div className="teamspace-scroll-table"><table className="teamspace-table"><thead><tr>
-          <th>Espace d’équipe</th><th>Propriétaires</th><th>Accès</th>
-          <th aria-sort={ascending ? 'ascending' : 'descending'}><button onClick={() => setAscending(!ascending)}>Mis à jour {ascending ? '↑' : '↓'}</button></th><th aria-label="Actions"/>
+          <th>{shellText("Espace d’équipe")}</th><th>{shellText("Propriétaires")}</th><th>{shellText("Accès")}</th>
+          <th aria-sort={ascending ? 'ascending' : 'descending'}><button onClick={() => setAscending(!ascending)}>{shellText("Mis à jour")} {ascending ? '↑' : '↓'}</button></th><th aria-label={shellText("Actions")}/>
         </tr></thead><tbody>{filtered.map(team => <tr key={team.id} onClick={event => {returnFocus.current = event.currentTarget.querySelector('button'); see(team);}}>
           <td><button className="teamspace-row-button" onClick={event => {event.stopPropagation(); returnFocus.current = event.currentTarget; see(team);}}>
             <span className="teamspace-row-icon"><TeamspaceIcon value={team.icon || ''} name={team.name}/></span>
-            <span>{team.name}<small>{typeof team.memberCount === 'number' && <>{team.memberCount} membre{team.memberCount > 1 ? 's' : ''}</>}{team.joined && ' · ' + TEAM_ROLES.member}</small></span>
+            <span>{team.name}<small>{typeof team.memberCount === 'number' && <>{team.memberCount} {shellText("membre")}{team.memberCount > 1 ? 's' : ''}</>}{team.joined && ' · ' + TEAM_ROLES.member}</small></span>
           </button></td>
           <td>{team.owners?.length ? <div className="teamspace-person"><span className="teamspace-avatar">{(team.owners[0].name || team.owners[0].email || '?').slice(0,1).toUpperCase()}</span><span>{team.owners.map(p => p.name || p.email || 'Profil local').join(', ')}</span></div> : '—'}</td>
-          <td>{team.isDefault ? 'Par défaut' : 'Sur invitation'}</td><td>{team.updatedAt && <time dateTime={team.updatedAt}>{new Date(team.updatedAt).toLocaleDateString('fr-FR')}</time>}</td>
+          <td>{team.isDefault ? shellText("Par défaut") : shellText("Sur invitation")}</td><td>{team.updatedAt && <time dateTime={team.updatedAt}>{new Date(team.updatedAt).toLocaleDateString(shellLocale())}</time>}</td>
           <td><button className="teamspace-more" aria-label={'Paramètres de ' + team.name} onClick={event => {event.stopPropagation(); returnFocus.current = event.currentTarget; see(team, 'Général');}}>•••</button></td>
         </tr>)}
-        {!filtered.length && <tr><td colSpan={5} className="teamspace-empty">{teams.length ? 'Aucun espace d’équipe ne correspond aux filtres.' : 'Aucun espace d’équipe.'}</td></tr>}
+        {!filtered.length && <tr><td colSpan={5} className="teamspace-empty">{teams.length ? shellText("Aucun espace d’équipe ne correspond aux filtres.") : shellText("Aucun espace d’équipe.")}</td></tr>}
         </tbody></table></div>
       </section>
     </>}

@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { ArrowUpRight, Circle, Diamond, Frame, Hand, Link2, Maximize, Minus, MousePointer2, Plus } from 'lucide-react';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 
@@ -21,7 +22,7 @@ interface BoardDockProps {
 }
 
 const labels: Record<BoardTool, string> = {
-  select: 'Sélection', hand: 'Main', note: 'Note', text: 'Texte', rectangle: 'Rectangle',
+  select: 'Sélection', hand: 'Main', note: 'Note', text: shellText("Texte"), rectangle: 'Rectangle',
   ellipse: 'Ellipse', diamond: 'Losange', frame: 'Cadre', pen: 'Crayon', arrow: 'Flèche',
   link: 'Lien', eraser: 'Gomme',
 };
@@ -100,16 +101,16 @@ export function BoardDock({ tool, onTool, zoom, onZoom, readOnly, onFormat, onTe
   function template(value: Template) { setOpen(null); onTemplate(value); }
   return <div data-whiteboard-dock="" onPointerDown={event => event.stopPropagation()}
     onClick={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()} onWheel={event => event.stopPropagation()}>
-    <div className="board-dock-zoom" role="group" aria-label="Zoom du tableau">
-      <button type="button" data-board-zoom="fit" aria-label="Ajuster au contenu" title="Ajuster au contenu"
+    <div className="board-dock-zoom" role="group" aria-label={shellText("Zoom du tableau")}>
+      <button type="button" data-board-zoom="fit" aria-label={shellText("Ajuster au contenu")} title={shellText("Ajuster au contenu")}
         onClick={() => onZoom('fit')}><Maximize size={17} aria-hidden="true" /></button>
-      <button type="button" data-board-zoom="out" aria-label="Zoom arrière" title="Zoom arrière"
+      <button type="button" data-board-zoom="out" aria-label={shellText("Zoom arrière")} title={shellText("Zoom arrière")}
         onClick={() => onZoom('out')}><Minus size={16} aria-hidden="true" /></button>
-      <output aria-label="Niveau de zoom">{Math.round(zoom * 100)} %</output>
-      <button type="button" data-board-zoom="in" aria-label="Zoom avant" title="Zoom avant"
+      <output aria-label={shellText("Niveau de zoom")}>{Math.round(zoom * 100)} %</output>
+      <button type="button" data-board-zoom="in" aria-label={shellText("Zoom avant")} title={shellText("Zoom avant")}
         onClick={() => onZoom('in')}><Plus size={16} aria-hidden="true" /></button>
     </div>
-    <div ref={tray} className="board-dock-tray" role="toolbar" aria-label="Outils du tableau" onKeyDown={e => {
+    <div ref={tray} className="board-dock-tray" role="toolbar" aria-label={shellText("Outils du tableau")} onKeyDown={e => {
       if (e.key === 'Escape' && panel) {
         e.stopPropagation();
         setOpen(null);
@@ -123,20 +124,20 @@ export function BoardDock({ tool, onTool, zoom, onZoom, readOnly, onFormat, onTe
       {!readOnly && <div className="board-dock-studio">
         {button('text')}{button('pen')}{button('eraser')}
         {button(shapes.includes(tool) ? tool : 'rectangle', 'rectangle')}{button('note')}
-        <button type="button" aria-label="Insérer une carte mentale" title="Insérer une carte mentale"
+        <button type="button" aria-label={shellText("Insérer une carte mentale")} title={shellText("Insérer une carte mentale")}
           onClick={() => template('mindmap')}><span aria-hidden="true" className="board-dock-art board-dock-map" /></button>
-        <button type="button" aria-expanded={panel === 'templates'} aria-label="Modèles" title="Modèles"
+        <button type="button" aria-expanded={panel === 'templates'} aria-label={shellText("Modèles")} title={shellText("Modèles")}
           onClick={e => { trigger.current = e.currentTarget; setOpen(panel === 'templates' ? null : 'templates'); }}>
           <span aria-hidden="true" className="board-dock-art board-dock-templates" />
         </button>
       </div>}
-      {panel && <div role="group" aria-label="Options de l’outil" className="board-dock-options" data-options={panel}>
+      {panel && <div role="group" aria-label={shellText("Options de l’outil")} className="board-dock-options" data-options={panel}>
         {panel === 'frame' && (Object.keys(frameSizes) as FrameFormat[]).map(format =>
           <button type="button" key={format} aria-pressed={format === 'Libre'}
             onClick={() => { setOpen(null); onFormat(format); }}>{format}</button>)}
         {panel === 'templates' && <>
-          <button type="button" onClick={() => template('kanban')}>Tableau de tâches</button>
-          <button type="button" onClick={() => template('retro')}>Rétrospective</button>
+          <button type="button" onClick={() => template('kanban')}>{shellText("Tableau de tâches")}</button>
+          <button type="button" onClick={() => template('retro')}>{shellText("Rétrospective")}</button>
         </>}
         {panel === 'shapes' && shapes.map(value =>
           <button key={value} type="button" aria-pressed={tool === value} aria-label={labels[value]} title={labels[value]}

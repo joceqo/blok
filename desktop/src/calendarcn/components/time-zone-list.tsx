@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 
 import { cn } from "../lib/utils";
@@ -86,14 +87,14 @@ export function TimeZoneList({
     }
     return [
       { key: "popular", options: pick(POPULAR_TIME_ZONES) },
-      { key: "all", heading: "All time zones", options: allOptions },
+      { key: "all", heading: shellText("All time zones"), options: allOptions },
     ];
   }, [allOptions, now, timeZones, query]);
 
   return (
     <>
       <CommandEmpty className={cn("py-6 text-center text-sm", classes.muted)}>
-        No time zones found.
+        {shellText("No time zones found.")}
       </CommandEmpty>
       {sections.map((section, index) => (
         <React.Fragment key={section.key}>

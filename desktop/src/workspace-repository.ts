@@ -28,6 +28,11 @@ export function workspaceRepository(workspace: WorkspaceRef) {
   return {
     ref,
     searchSources,
+    async canCreateTeamspace(signal: AbortSignal) {
+      if (ref.kind !== 'remote' || ref.role === 'viewer') return false;
+      const directory = await request<{canCreate: boolean}>(base + '/teamspaces', {signal});
+      return directory.canCreate === true;
+    },
     async listPeople() {
       if (ref.kind !== 'remote') return [];
       const result = await request<{members: {id: string; name: string; email: string}[]}>(base + '/members');

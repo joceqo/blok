@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {must} from './test-helpers';
+import {revealSetting} from './settings-search';
 import { WORKSPACE_ROLES } from './access-vocabulary';
 import { rememberWorkspace, workspaceKey, type RemoteWorkspace } from './workspace-registry';
 import { applyAppearance, createDesktopFooter, readAppearance } from './settings';
@@ -235,7 +236,7 @@ describe('workspace menu hierarchy',()=>{
 describe('help menu', () => {
   it('opens help from its own footer button', () => {
     const footer = remoteFooter('member');
-    const help = footer.querySelector<HTMLButtonElement>('[data-desktop-footer-help]');
+    const help = footer.querySelector<HTMLButtonElement>('[data-desktop-footer-action="help"]');
     expect(help).toBeTruthy();
     must(help).click();
     const popover = document.querySelector('[data-desktop-help-popover], [data-blok-popover]');
@@ -268,7 +269,7 @@ describe('help menu', () => {
     const library = vi.fn(); const trash = vi.fn();
     footer.addEventListener('blok:desktop-open-library', library);
     footer.addEventListener('blok:desktop-open-trash', trash);
-    const open = must(footer.querySelector<HTMLButtonElement>('[data-desktop-footer-destinations]'));
+    const open = must(footer.querySelector<HTMLButtonElement>('[data-desktop-footer-action="destinations"]'));
     open.click();
     must(document.querySelector<HTMLElement>('[data-blok-item-name=library]')).click();
     expect(library).toHaveBeenCalledOnce();
@@ -277,7 +278,7 @@ describe('help menu', () => {
     expect(trash).toHaveBeenCalledOnce();
     const local = createDesktopFooter(vi.fn(), {kind:'local', id:'local', name:'Local'});
     document.body.append(local);
-    must(local.querySelector<HTMLButtonElement>('[data-desktop-footer-destinations]')).click();
+    must(local.querySelector<HTMLButtonElement>('[data-desktop-footer-action="destinations"]')).click();
     expect([...document.querySelectorAll('[data-desktop-destinations-popover]')].at(-1)?.querySelector('[data-blok-item-name=trash]')).toBeNull();
   });
   it('offers the report row only once the instance names a support address, never the viewer', async () => {
@@ -287,7 +288,7 @@ describe('help menu', () => {
     )));
     const footer = remoteFooter('member');
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const help = footer.querySelector<HTMLButtonElement>('[data-desktop-footer-help]');
+    const help = footer.querySelector<HTMLButtonElement>('[data-desktop-footer-action="help"]');
     must(help).click();
     const popover = document.querySelector('[data-desktop-help-popover], [data-blok-popover]');
     expect(popover?.textContent).toMatch(/Signaler un problème/);
@@ -303,8 +304,8 @@ describe('settings discovery', () => {
     must([...footer.querySelectorAll<HTMLButtonElement>('[role=menuitem]')].find(node => node.textContent === 'Paramètres')).click();
     const search = must(document.querySelector<HTMLInputElement>('[data-desktop-settings-search]'));
     search.value = 'MCP'; search.dispatchEvent(new Event('input'));
-    const visible = [...document.querySelectorAll<HTMLButtonElement>('[data-desktop-settings-nav-item]')].filter(node => !node.hidden);
-    expect(visible.map(node => node.textContent)).toEqual(['Connexions']);
+    const visible = [...document.querySelectorAll<HTMLButtonElement>('[data-settings-results] button')];
+    expect(visible.map(node => node.querySelector('strong')?.textContent)).toEqual(['Connexions']);
     search.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter'}));
     expect(document.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Connexions');
     const connect = vi.fn(); footer.addEventListener('blok:desktop-connect-cloud', connect);
@@ -321,7 +322,7 @@ describe('settings discovery', () => {
     search.focus();
     search.value = 'sombre   THEME'; search.dispatchEvent(new Event('input'));
     search.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowDown', bubbles: true}));
-    expect(document.activeElement?.textContent).toEqual('Préférences');
+    expect(document.activeElement?.querySelector('strong')?.textContent).toBe('Thème');
     document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
     expect(search.value).toBe('');
     expect(document.activeElement).toBe(search);
@@ -332,6 +333,79 @@ describe('settings discovery', () => {
     document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
     expect(document.activeElement).toBe(opener);
   });
+  it('reveals the matched control in another panel without activating it', () => {
+    const footer = createDesktopFooter(vi.fn());
+    document.body.append(footer);
+    footer.dispatchEvent(new Event('blok:desktop-open-preferences'));
+    const search = must(document.querySelector<HTMLInputElement>('[data-desktop-settings-search]'));
+    search.value = 'favoris';
+    search.dispatchEvent(new Event('input'));
+    expect(document.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Préférences');
+    expect(document.querySelector('[data-settings-results] section')?.getAttribute('aria-label')).toBe('Espace de travail / Barre latérale');
+    search.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
+    expect(search.value).toBe('');
+    expect(document.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Barre latérale');
+    const row = must(document.querySelector('[data-setting="favorites"][data-settings-highlight]'));
+    expect(document.activeElement).toBe(row.querySelector('[role="switch"]'));
+    expect(document.activeElement?.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('finds an e-mail notification switch from the search and reveals it in the notifications panel', () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({notifications: [], unreadCount: 0})));
+    try {
+    const footer = createDesktopFooter(() => undefined, remoteRef);
+    document.body.append(footer);
+    footer.dispatchEvent(new Event('blok:desktop-open-preferences'));
+    const search = must(document.querySelector<HTMLInputElement>('[data-desktop-settings-search]'));
+    search.value = 'modifications de pages';
+    search.dispatchEvent(new Event('input'));
+    const visible = [...document.querySelectorAll<HTMLButtonElement>('[data-settings-results] button')];
+    expect(visible.map(node => node.querySelector('strong')?.textContent)).toEqual(['Modifications de pages']);
+    search.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}));
+    expect(document.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Notifications');
+    const row = must(document.querySelector('[data-setting="email-page-updates"][data-settings-highlight]'));
+    expect(row.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
+    } finally { fetch.mockRestore(); }
+  });
+
+  it('excludes unavailable settings without fetching other panels while typing', () => {
+    const footer = createDesktopFooter(vi.fn(), {kind: 'local', id: 'local', name: 'Local'});
+    document.body.append(footer);
+    footer.dispatchEvent(new Event('blok:desktop-open-preferences'));
+    const fetch = vi.spyOn(window, 'fetch');
+    try {
+      const search = must(document.querySelector<HTMLInputElement>('[data-desktop-settings-search]'));
+      for (const query of ['inscription', 'notification test', 'markdown']) {
+        search.value = query;
+        search.dispatchEvent(new Event('input'));
+        expect(document.querySelector('[data-settings-results] button')).toBeNull();
+      }
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
+  it('focuses a delayed result and cancels the jump when the user moves on', async () => {
+    const main = document.createElement('main');
+    const input = document.createElement('input');
+    document.body.append(main);
+    const first = new AbortController();
+    revealSetting(main, 'input', first.signal);
+    main.append(input);
+    await Promise.resolve();
+    expect(document.activeElement).toBe(input);
+    first.abort();
+
+    const second = new AbortController();
+    revealSetting(main, 'button', second.signal);
+    second.abort();
+    input.focus();
+    main.append(document.createElement('button'));
+    await Promise.resolve();
+    expect(document.activeElement).toBe(input);
+  });
+
   it('clears a search with Escape without closing settings and resets it on reopen', () => {
     const footer = createDesktopFooter(() => undefined); document.body.append(footer);
     must(footer.querySelector<HTMLButtonElement>('[data-desktop-switcher]')).click();

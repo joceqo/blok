@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 /** Les moments où l'accès change sous les pieds de quelqu'un. */
 
 export type MoveSection = 'workspace' | 'private';
@@ -16,7 +17,7 @@ export function describeMoveImpact(move: {
 }): MoveImpact {
   if (move.from === move.to) return { confirm: false, message: '' };
   if (move.to === 'workspace') {
-    return { confirm: true, message: 'Cette page deviendra visible par tous les membres de l’espace.' };
+    return { confirm: true, message: shellText("Cette page deviendra visible par tous les membres de l’espace.") };
   }
   const parts = ['Cette page ne sera plus visible que par les personnes invitées.'];
   if (move.losing.length > 0) {

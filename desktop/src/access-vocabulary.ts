@@ -1,35 +1,36 @@
+import {shellText} from './shell-i18n';
 import type { CloudRole, CloudSignupPolicy, CloudWorkspaceCreation } from './cloud/client';
 import type { PageLevel } from './page-access';
-import type { ChoiceOption } from './ui/controls';
+import type { ChoiceOption } from './components/dom';
 
 /** Libellés d’espace affichés aujourd’hui dans gateway, réglages et invitation. */
 export const WORKSPACE_ROLES: Record<CloudRole, string> = {
-  admin: 'Administrateur',
-  member: 'Membre',
-  viewer: 'Lecture seule',
+  admin: shellText("Administrateur"),
+  member: shellText("Membre"),
+  viewer: shellText("Lecture seule"),
 };
 
-export const TEAM_ROLES = { member: WORKSPACE_ROLES.member, owner: 'Propriétaire' } as const;
+export const TEAM_ROLES = { member: WORKSPACE_ROLES.member, owner: shellText("Propriétaire") } as const;
 
 /** Conséquences affichées en seconde ligne des sélecteurs de rôle. */
 export const WORKSPACE_ROLE_DESCRIPTIONS: Record<CloudRole, string> = {
-  admin: 'Gère les membres, les réglages et toutes les pages de l’espace.',
-  member: 'Peut créer et modifier les pages de l’espace.',
-  viewer: 'Consulte les pages ouvertes à l’espace, sans les modifier.',
+  admin: shellText("Gère les membres, les réglages et toutes les pages de l’espace."),
+  member: shellText("Peut créer et modifier les pages de l’espace."),
+  viewer: shellText("Consulte les pages ouvertes à l’espace, sans les modifier."),
 };
 
 /** Libellés de niveau de page affichés dans la feuille de partage. */
 export const PAGE_LEVELS: Record<PageLevel, string> = {
-  view: 'Peut voir',
-  edit: 'Peut modifier',
-  full: 'Accès complet',
+  view: shellText("Peut voir"),
+  edit: shellText("Peut modifier"),
+  full: shellText("Accès complet"),
 };
 
 /** Conséquences affichées en seconde ligne des sélecteurs de niveau. */
 export const PAGE_LEVEL_DESCRIPTIONS: Record<PageLevel, string> = {
-  view: 'Peut ouvrir et lire cette page.',
-  edit: 'Peut modifier le contenu de cette page.',
-  full: 'Peut partager et gérer les accès de cette page.',
+  view: shellText("Peut ouvrir et lire cette page."),
+  edit: shellText("Peut modifier le contenu de cette page."),
+  full: shellText("Peut partager et gérer les accès de cette page."),
 };
 
 /**
@@ -46,32 +47,32 @@ export const MEMBERS_ROLES_INTRO =
 /** Politique d’inscription — libellé + conséquence (plan §9.2 / §9.3). */
 export const SIGNUP_POLICIES: Record<CloudSignupPolicy, {label: string; consequence: string}> = {
   invite: {
-    label: 'Sur invitation',
-    consequence: 'Invitation seule — personne ne crée de compte sans y être invité.',
+    label: shellText("Sur invitation"),
+    consequence: shellText("Invitation seule — personne ne crée de compte sans y être invité."),
   },
   domain: {
-    label: 'Domaines autorisés',
-    consequence: 'Seules les adresses des domaines listés peuvent créer un compte.',
+    label: shellText("Domaines autorisés"),
+    consequence: shellText("Seules les adresses des domaines listés peuvent créer un compte."),
   },
   open: {
-    label: 'Ouverte',
-    consequence: 'Toute adresse e-mail peut créer un compte sur cette instance.',
+    label: shellText("Ouverte"),
+    consequence: shellText("Toute adresse e-mail peut créer un compte sur cette instance."),
   },
 };
 
 /** Qui peut créer un espace — libellé + conséquence. */
 export const WORKSPACE_CREATION_POLICIES: Record<CloudWorkspaceCreation, {label: string; consequence: string}> = {
   anyone: {
-    label: 'Tout le monde',
-    consequence: 'Chaque personne connectée peut créer un espace de travail.',
+    label: shellText("Tout le monde"),
+    consequence: shellText("Chaque personne connectée peut créer un espace de travail."),
   },
   admins_only: {
-    label: 'Administrateurs d’instance',
-    consequence: 'Seuls les administrateurs d’instance peuvent créer un espace.',
+    label: shellText("Administrateurs d’instance"),
+    consequence: shellText("Seuls les administrateurs d’instance peuvent créer un espace."),
   },
   disabled: {
-    label: 'Désactivée',
-    consequence: 'Personne ne crée d’espace depuis le client ; les administrateurs passent par l’API d’administration.',
+    label: shellText("Désactivée"),
+    consequence: shellText("Personne ne crée d’espace depuis le client ; les administrateurs passent par l’API d’administration."),
   },
 };
 

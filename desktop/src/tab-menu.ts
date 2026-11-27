@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { nativePageLink, pageView } from './page-link';
 
 /**
@@ -54,12 +55,12 @@ export function buildTabMenuItems(context: TabMenuContext): TabMenuItem[] {
   const index = context.tabIds.indexOf(context.tabId);
   const alone = context.tabIds.length <= 1;
   return [
-    { action: 'copy-link', label: 'Copier le lien', disabled: pageLinkFor(context.href) === null },
-    { action: 'reload', label: 'Recharger l’onglet', disabled: false },
-    { action: 'duplicate', label: 'Dupliquer l’onglet', disabled: false, separated: true },
-    { action: 'close', label: 'Fermer l’onglet', disabled: alone, separated: true },
-    { action: 'close-others', label: 'Fermer les autres onglets', disabled: alone },
-    { action: 'close-left', label: 'Fermer les onglets à gauche', disabled: index <= 0 },
-    { action: 'close-right', label: 'Fermer les onglets à droite', disabled: index < 0 || index >= context.tabIds.length - 1 },
+    { action: 'copy-link', label: shellText("Copier le lien"), disabled: pageLinkFor(context.href) === null },
+    { action: 'reload', label: shellText("Recharger l’onglet"), disabled: false },
+    { action: 'duplicate', label: shellText("Dupliquer l’onglet"), disabled: false, separated: true },
+    { action: 'close', label: shellText("Fermer l’onglet"), disabled: alone, separated: true },
+    { action: 'close-others', label: shellText("Fermer les autres onglets"), disabled: alone },
+    { action: 'close-left', label: shellText("Fermer les onglets à gauche"), disabled: index <= 0 },
+    { action: 'close-right', label: shellText("Fermer les onglets à droite"), disabled: index < 0 || index >= context.tabIds.length - 1 },
   ];
 }

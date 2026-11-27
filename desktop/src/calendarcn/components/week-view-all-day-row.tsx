@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import type React from "react";
 import { createCalendarPortal as createPortal } from "../portal";
 import { cn } from "../lib/utils";
@@ -10,7 +11,6 @@ import {
   calculateAllDayEventRows,
   getAllDayEventRange,
 } from "../lib/event-utils";
-import { useCalendarConfig } from "./calendar-provider";
 import { AllDayEventItem } from "./calendar-event-item";
 import { useCalendarPopoverBoundary } from "./calendar-popover-context";
 import { AllDayEventDraft } from "./event-draft";
@@ -56,7 +56,6 @@ export function WeekViewAllDayRow({
   timeAxisWidth,
   className,
 }: WeekViewAllDayRowProps) {
-  const { locale } = useCalendarConfig();
   const allEventRows = calculateAllDayEventRows(allDayEvents, days);
 
   // Filter out events entirely within buffer columns so they don't peek
@@ -126,7 +125,7 @@ export function WeekViewAllDayRow({
           timeAxisWidth === undefined ? undefined : { width: timeAxisWidth }
         }
       >
-        {locale?.code.startsWith("fr") ? "Journée" : "All-day"}
+        {shellText("Journée")}
       </div>
 
       {/* Day columns for all-day events - wrapped for scroll sync */}

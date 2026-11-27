@@ -1,3 +1,4 @@
+import {shellText} from '../shell-i18n';
 import {useLayoutEffect, useRef, useState, type ReactNode} from 'react';
 import {createPortal} from 'react-dom';
 import {openModalDialog} from '@blok/modal-dialog';
@@ -28,11 +29,11 @@ export function TeamspaceDialog({title, variant, children, onClose, busy = false
   }, [surface, variant]);
   useLayoutEffect(() => {surface.setAttribute('aria-label', title);}, [surface, title]);
   return <><span ref={anchor} hidden/>{createPortal(<>
-    <button type="button" className="teamspace-close" aria-label="Fermer la fenêtre" disabled={busy} onClick={onClose} dangerouslySetInnerHTML={{__html: IconCross}}/>
+    <button type="button" className="teamspace-close" aria-label={shellText("Fermer la fenêtre")} disabled={busy} onClick={onClose} dangerouslySetInnerHTML={{__html: IconCross}}/>
     {children}
   </>, surface)}</>;
 }
 
 export function Alert({message, retry}: {message?: string; retry?: () => void}) {
-  return message ? <p className="teamspace-error" role="alert">{message} {retry && <button onClick={retry}>Réessayer</button>}</p> : null;
+  return message ? <p className="teamspace-error" role="alert">{message} {retry && <button onClick={retry}>{shellText("Réessayer")}</button>}</p> : null;
 }

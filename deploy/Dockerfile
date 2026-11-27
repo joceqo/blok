@@ -16,6 +16,7 @@ COPY desktop/package.json desktop/package-lock.json desktop/.npmrc desktop/
 RUN npm ci --prefix desktop
 COPY . .
 ARG VITE_REACT_GRAB=false
+ARG VITE_BLOK_DESKTOP_DOWNLOAD_URL
 RUN VITE_REACT_GRAB=$VITE_REACT_GRAB npm run build --prefix desktop
 
 FROM nginx:stable-alpine AS web

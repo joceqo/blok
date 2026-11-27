@@ -24,7 +24,12 @@ const PLUGINS_TO_REMOVE = new Set([
 ]);
 
 const config: StorybookConfig = {
-  stories: ['../src/**/*.stories.@(js|jsx|mjs|ts|tsx)'],
+  stories: [
+    '../src/**/*.stories.@(js|jsx|mjs|ts|tsx)',
+    '../desktop/src/sidebar/stories/*.stories.tsx',
+    '../desktop/src/components/shell/stories/*.stories.tsx',
+    '../desktop/src/calendarcn/components/ui/*.stories.tsx',
+  ],
   staticDirs: [{ from: './fonts', to: '/fonts' }],
   addons: [
     '@storybook/addon-a11y',
@@ -50,6 +55,7 @@ const config: StorybookConfig = {
           ...viteConfig.resolve?.alias,
           '@calendarcn-local': path.resolve(__dirname, '../desktop/src/calendarcn'),
           '@/types': path.resolve(__dirname, '../types'),
+          '@blok/sidebar': path.resolve(__dirname, '../src/shell/sidebar.ts'),
           '@blok/page-table': path.resolve(__dirname, '../src/tools/database/page-table.ts'),
           '@blok/page-sheet': path.resolve(__dirname, '../src/tools/database/host-page-sheet.ts'),
           '@blok/modal-dialog': path.resolve(__dirname, '../src/components/utils/modal-dialog.ts'),

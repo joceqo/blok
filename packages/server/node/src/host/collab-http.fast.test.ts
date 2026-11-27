@@ -323,4 +323,36 @@ describe('collaboration HTTP routes on the Node host', () => {
         .toEqual({ path, status: 501, text: 'history needs a journal that keeps it\n', cache: 'no-store' });
     }
   });
+
+  /**
+   * A refusal carries its reason in a body the caller may never read, and
+   * carries it nowhere else. `apps/service/observe.go` keeps one line per
+   * refused request and nothing for the rest; this door keeps the same.
+   */
+  it('keeps one line for a refused request, naming the status, reason and route', async () => {
+    const logged: [string, string][] = [];
+    const watched = { ...options, collabLog: (message: string, level: string) => logged.push([level, message]) };
+
+    const answer = await invokeHost(watched, {
+      method: 'POST',
+      path: '/sync/d/edit',
+      headers: { 'Blok-Idempotency-Key': 'observed-1' },
+      body: '{"ops":"not a list"}',
+    });
+
+    expect(answer.status).toBe(422);
+    expect(logged).toEqual([[
+      'warning',
+      `collab: request refused status=422 reason=${JSON.stringify(answer.body.trim())} `
+        + 'method="POST" path="/sync/d/edit"',
+    ]]);
+  });
+
+  it('keeps nothing for a request it answered', async () => {
+    const logged: string[] = [];
+    const watched = { ...options, collabLog: (message: string) => logged.push(message) };
+
+    expect((await invokeHost(watched, { method: 'GET', path: '/sync/d/state' })).status).toBe(200);
+    expect(logged).toEqual([]);
+  });
 });

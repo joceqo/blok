@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { memo, useLayoutEffect, useState, type KeyboardEvent as ReactKeyEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
@@ -57,17 +58,17 @@ function Preview({item, query, options, onRevoked, onOpen, onCopy}: PreviewProps
     return () => request.abort();
   }, [item.id, Boolean(item.page), item.excerpt, options, onRevoked]);
   const preset = COVER_PRESETS.find(c => c.id === item.page?.cover);
-  return <aside className="palette-preview" aria-label="Aperçu">
+  return <aside className="palette-preview" aria-label={shellText("Aperçu")}>
     <div className="palette-cover" style={preset ? {backgroundImage:preset.background} : undefined}>
       <div className="palette-card-tools">
-        {item.page && options.pageUrl && <button type="button" className="palette-icon-button" title="Copier le lien" aria-label="Copier le lien" onClick={onCopy}><Glyph svg={IconLink}/></button>}
-        <button type="button" className="palette-icon-button" title="Ouvrir" aria-label="Ouvrir" onClick={onOpen}><Glyph svg={IconLinkExternal}/></button>
+        {item.page && options.pageUrl && <button type="button" className="palette-icon-button" title={shellText("Copier le lien")} aria-label={shellText("Copier le lien")} onClick={onCopy}><Glyph svg={IconLink}/></button>}
+        <button type="button" className="palette-icon-button" title={shellText("Ouvrir")} aria-label={shellText("Ouvrir")} onClick={onOpen}><Glyph svg={IconLinkExternal}/></button>
       </div>
     </div>
     <div className="palette-card-content">
       <div className="palette-card-path">{item.path}</div>
       <h3 className="palette-card-title">{item.title}</h3>
-      <p className="palette-excerpt">{failed ? 'Aperçu indisponible.' : <Highlight text={item.excerpt || text} query={query}/>}</p>
+      <p className="palette-excerpt">{failed ? shellText("Aperçu indisponible.") : <Highlight text={item.excerpt || text} query={query}/>}</p>
     </div>
   </aside>;
 }
@@ -193,35 +194,35 @@ export function openPageSearch(options: SearchOptions): () => void {
           aria-controls={listId} aria-activedescendant={!cardOnly && item ? resultId(item.id) : undefined}
           aria-label={label} placeholder={label + '…'} spellCheck={false} autoComplete="off" value={query}
           onInput={e => { query = e.currentTarget.value; if (narrow) narrowPreview = false; refresh(); }} onKeyDown={keyboard}/>
-        <button type="button" className="palette-icon-button palette-preview-toggle" title={cardOnly ? 'Afficher les résultats' : 'Aperçu'}
-          aria-label="Aperçu" aria-pressed={previewVisible} disabled={!item && !cardOnly} onClick={togglePreview}><Glyph svg={IconSidebarRight}/></button>
-        <button type="button" data-navigation-close="" aria-label="Fermer" onClick={modal.close}><Glyph svg={IconCross}/></button>
+        <button type="button" className="palette-icon-button palette-preview-toggle" title={cardOnly ? shellText("Afficher les résultats") : shellText("Aperçu")}
+          aria-label={shellText("Aperçu")} aria-pressed={previewVisible} disabled={!item && !cardOnly} onClick={togglePreview}><Glyph svg={IconSidebarRight}/></button>
+        <button type="button" data-navigation-close="" aria-label={shellText("Fermer")} onClick={modal.close}><Glyph svg={IconCross}/></button>
       </div>
       <div className="palette-filters">
-        <button type="button" className="palette-tab" aria-pressed={isPages} onClick={() => changeMode('pages')}>Pages</button>
-        {options.chats && options.onOpenChat && <button type="button" className="palette-tab" aria-pressed={!isPages} onClick={() => changeMode('chats')}>Chats</button>}
+        <button type="button" className="palette-tab" aria-pressed={isPages} onClick={() => changeMode('pages')}>{shellText("Pages")}</button>
+        {options.chats && options.onOpenChat && <button type="button" className="palette-tab" aria-pressed={!isPages} onClick={() => changeMode('chats')}>{shellText("Chats")}</button>}
         {isPages && options.searchContent && <><span className="palette-divider"/><button type="button" className="palette-filter" aria-pressed={titleOnly}
-          onClick={() => { titleOnly = !titleOnly; refresh(); focusField(); }}>Titre uniquement</button></>}
+          onClick={() => { titleOnly = !titleOnly; refresh(); focusField(); }}>{shellText("Titre uniquement")}</button></>}
         {isPages && scopes.length > 0 && <label className="palette-scope">
-          <span className="palette-filter-label">{scope ? 'Dans ' + scopes.find(page => page.id === scope)?.title : 'Dans'}</span>
+          <span className="palette-filter-label">{scope ? 'Dans ' + scopes.find(page => page.id === scope)?.title : shellText("Dans")}</span>
           <span className="palette-caret"><Glyph svg={IconChevronDown}/></span>
-          <select className="palette-select" aria-label="Limiter à une page et ses sous-pages" value={scope}
+          <select className="palette-select" aria-label={shellText("Limiter à une page et ses sous-pages")} value={scope}
             onChange={e => { scope = e.currentTarget.value; selected = undefined; reload(); focusField(); }}>
-            <option value="">Tout l’espace</option>
-            {scopes.map(page => <option key={page.id} value={page.id}>{page.title || 'Nouvelle page'}</option>)}
+            <option value="">{shellText("Tout l’espace")}</option>
+            {scopes.map(page => <option key={page.id} value={page.id}>{page.title || shellText("Nouvelle page")}</option>)}
           </select>
         </label>}
       </div>
       {cardOnly && <div className="palette-mobile-pager">
-        <button type="button" className="palette-icon-button" aria-label="Résultat précédent" disabled={activeIndex === 0}
+        <button type="button" className="palette-icon-button" aria-label={shellText("Résultat précédent")} disabled={activeIndex === 0}
           onClick={() => choose(matches[activeIndex - 1].id)}><Glyph svg={IconChevronLeft}/></button>
-        <span aria-live="polite">Résultat {activeIndex + 1} sur {matches.length}</span>
-        <button type="button" className="palette-icon-button" aria-label="Résultat suivant" disabled={activeIndex === matches.length - 1}
+        <span aria-live="polite">{shellText("Résultat")} {activeIndex + 1} {shellText("sur")} {matches.length}</span>
+        <button type="button" className="palette-icon-button" aria-label={shellText("Résultat suivant")} disabled={activeIndex === matches.length - 1}
           onClick={() => choose(matches[activeIndex + 1].id)}><Glyph svg={IconChevronRight}/></button>
       </div>}
       <div className="palette-body">
         <div className="palette-scroll" hidden={cardOnly}>
-          <div className="palette-list" role="listbox" id={listId} aria-label="Résultats" aria-busy={pending}>
+          <div className="palette-list" role="listbox" id={listId} aria-label={shellText("Résultats")} aria-busy={pending}>
             {Array.from(groups, ([name, items]) => <div key={name} className="palette-group" role="group" aria-label={name}>
               <div className="palette-group-heading" aria-hidden="true">{name}</div>
               {items.map(result => <div key={result.id} id={resultId(result.id)} className="palette-result" role="option" data-navigation-result=""
@@ -243,9 +244,9 @@ export function openPageSearch(options: SearchOptions): () => void {
           onCopy={() => void copy()} onOpen={() => open(item.id)}/>}
       </div>
       <div className="palette-footer">
-        <FooterAction label="Ouvrir" keys="↵" disabled={!item} run={() => open(selected)}/>
-        {isPages && options.onOpenTab && <FooterAction label="Nouvel onglet" keys={mod + ' ↵'} disabled={!item} run={() => open(selected, true)}/>}
-        {isPages && options.pageUrl && <FooterAction label="Copier le lien" keys={mod + ' L'} disabled={!item} run={() => void copy()}/>}
+        <FooterAction label={shellText("Ouvrir")} keys="↵" disabled={!item} run={() => open(selected)}/>
+        {isPages && options.onOpenTab && <FooterAction label={shellText("Nouvel onglet")} keys={mod + ' ↵'} disabled={!item} run={() => open(selected, true)}/>}
+        {isPages && options.pageUrl && <FooterAction label={shellText("Copier le lien")} keys={mod + ' L'} disabled={!item} run={() => void copy()}/>}
         <span className="palette-feedback" role="status">{feedback}</span>
       </div>
     </>));

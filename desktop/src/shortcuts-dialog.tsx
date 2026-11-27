@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import {createRoot} from 'react-dom/client';
 import {flushSync} from 'react-dom';
 import {openModalDialog} from '@blok/modal-dialog';
@@ -31,15 +32,15 @@ export function showShortcutsDialog(): void {
   overlay.append(surface);
   const root = createRoot(surface);
   flushSync(() => root.render(<>
-    <header><h2>Raccourcis Blok</h2><button type="button" aria-label="Fermer les raccourcis" onClick={() => dialog.close()}>×</button></header>
-    <ShortcutGroup title="Navigation" shortcuts={navigation}/>
-    {'__TAURI_INTERNALS__' in window && <ShortcutGroup title="Onglets" shortcuts={[
+    <header><h2>{shellText("Raccourcis Blok")}</h2><button type="button" aria-label={shellText("Fermer les raccourcis")} onClick={() => dialog.close()}>×</button></header>
+    <ShortcutGroup title={shellText("Navigation")} shortcuts={navigation}/>
+    {'__TAURI_INTERNALS__' in window && <ShortcutGroup title={shellText("Onglets")} shortcuts={[
       ['Nouvel onglet', [mod, 'T']], ['Recharger l’onglet', [mod, 'R']], ['Fermer l’onglet', [mod, 'W']],
     ]}/>}
-    <ShortcutGroup title="Éditeur" shortcuts={editing}/>
+    <ShortcutGroup title={shellText("Éditeur")} shortcuts={editing}/>
   </>));
   const dialog = openModalDialog({
-    content:overlay, surface, label:'Raccourcis Blok',
+    content:overlay, surface, label:shellText("Raccourcis Blok"),
     initialFocus: () => surface.querySelector('button'),
     onDismiss: () => dialog.close(),
     onClose: () => root.unmount(),

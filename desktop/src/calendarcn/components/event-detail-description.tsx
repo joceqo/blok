@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 
 import { cn } from "../lib/utils";
@@ -98,7 +99,7 @@ function fitToText(textarea: HTMLTextAreaElement) {
  */
 function DescriptionText({ description }: { description: string }) {
   if (!description) {
-    return <span className={EVENT_DETAIL_PLACEHOLDER_CLASS}>Description</span>;
+    return <span className={EVENT_DETAIL_PLACEHOLDER_CLASS}>{shellText("Description")}</span>;
   }
 
   return (
@@ -255,8 +256,8 @@ export function EventDetailDescription<
           ref={textareaRef}
           rows={DESCRIPTION_MIN_LINES}
           value={text}
-          placeholder="Description"
-          aria-label="Description"
+          placeholder={shellText("Description")}
+          aria-label={shellText("Description")}
           onChange={handleChange}
           onBlur={handleBlur}
           onKeyDown={handleKeyDown}
@@ -286,7 +287,7 @@ export function EventDetailDescription<
       <div
         role="textbox"
         aria-multiline
-        aria-label="Description"
+        aria-label={shellText("Description")}
         tabIndex={0}
         onPointerDown={handleBoxPointerDown}
         onFocus={handleBoxFocus}

@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 type CloseBridge = {invoke(command: string, args?: Record<string, unknown>): Promise<unknown>};
 
 /** Arm only once a renderer can save. The gateway and startup screen can close directly. */
@@ -18,7 +19,7 @@ export async function guardNativeClose(host: HTMLElement, bridge: CloseBridge, f
     const previous = host.inert;
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     host.inert = true;
-    const timer = setTimeout(() => message('Enregistrement des dernières modifications…', false), 250);
+    const timer = setTimeout(() => message(shellText("Enregistrement des dernières modifications…"), false), 250);
     try {
       await flush();
       await bridge.invoke('finish_editor_close', {saved: true});

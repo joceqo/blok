@@ -1,0 +1,55 @@
+@layer components {
+  [data-blok-button] {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--blok-space-2, 8px);
+    min-height: 32px;
+    padding: 4px 10px;
+    border: 1px solid var(--desktop-border, var(--blok-popover-border, ButtonBorder));
+    border-radius: var(--blok-radius-field, 8px);
+    background: transparent;
+    color: var(--desktop-ink, var(--blok-text-primary, ButtonText));
+    font: inherit;
+    cursor: pointer;
+  }
+
+  [data-blok-button="ghost"] { border-color: transparent; }
+  [data-blok-button]:is(:hover, [aria-expanded="true"]) {
+    background: var(--desktop-hover, var(--blok-item-hover-bg, ButtonFace));
+  }
+  [data-blok-button]:focus-visible {
+    outline: 2px solid var(--blok-focus-ring, Highlight);
+    outline-offset: 2px;
+  }
+  [data-blok-button]:disabled { opacity: .5; cursor: default; }
+
+  .blok-shell-menu-positioner { isolation: isolate; z-index: 50; outline: none; }
+  [data-blok-dropdown-menu] {
+    box-sizing: border-box;
+    max-height: var(--available-height);
+    max-width: var(--available-width);
+    overflow: auto;
+    min-width: min(10rem, var(--available-width));
+    padding: 4px;
+    background: var(--desktop-strip, var(--blok-popover-bg, Canvas));
+    color: var(--desktop-ink, var(--blok-text-primary, CanvasText));
+    border: 1px solid var(--desktop-border, var(--blok-popover-border, ButtonBorder));
+    border-radius: var(--blok-radius-field, 8px);
+    box-shadow: var(--blok-popover-box-shadow, 0 4px 16px rgb(0 0 0 / .15));
+    outline: none;
+  }
+  [data-blok-dropdown-menu] [role="menuitem"] {
+    display: flex;
+    align-items: center;
+    gap: var(--blok-space-2, 8px);
+    padding: 5px 8px;
+    border-radius: var(--blok-radius-control-sm, 4px);
+    cursor: default;
+    outline: none;
+  }
+  [data-blok-dropdown-menu] [role="menuitem"][data-highlighted] {
+    background: var(--desktop-hover, var(--blok-item-hover-bg, ButtonFace));
+  }
+  [data-blok-dropdown-menu] [role="menuitem"][aria-disabled="true"] { opacity: .5; }
+}

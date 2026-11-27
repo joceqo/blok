@@ -1,3 +1,4 @@
+import {shellText} from '../shell-i18n';
 import { pageView, workspacePageLink } from '../page-link';
 import { openModalDialog } from '@blok/modal-dialog';
 import { promoteToTopLayer, removeFromTopLayer } from '../../../src/components/utils/top-layer';
@@ -26,7 +27,7 @@ export function openPageSharing(ref: RemoteWorkspace, pageId: string, pageTitle:
   surface.tabIndex = -1;
   const heading = document.createElement('h2');
   heading.id = `share-${crypto.randomUUID()}`;
-  heading.textContent = 'Partager';
+  heading.textContent = shellText("Partager");
   surface.setAttribute('aria-label', 'Partager ' + pageTitle);
   const title = document.createElement('p');
   title.setAttribute('data-cloud-share-title', '');
@@ -35,7 +36,7 @@ export function openPageSharing(ref: RemoteWorkspace, pageId: string, pageTitle:
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
   closeButton.setAttribute('data-cloud-share-close', '');
-  closeButton.setAttribute('aria-label', 'Fermer le partage');
+  closeButton.setAttribute('aria-label', shellText("Fermer le partage"));
   closeButton.innerHTML = IconCross;
   heading.append(closeButton);
   surface.append(heading, title);
@@ -46,15 +47,15 @@ export function openPageSharing(ref: RemoteWorkspace, pageId: string, pageTitle:
   });
   const footer = document.createElement('footer');
   const hint = document.createElement('span');
-  hint.textContent = 'Seules les personnes autorisées ont accès.';
+  hint.textContent = shellText("Seules les personnes autorisées ont accès.");
   const copy = document.createElement('button');
   copy.type = 'button';
   const linkIcon = document.createElement('span'); linkIcon.setAttribute('aria-hidden', 'true'); linkIcon.innerHTML = IconLink;
-  copy.append(linkIcon, 'Copier le lien');
+  copy.append(linkIcon, shellText("Copier le lien"));
   copy.addEventListener('click', () => {
     void (async () => {
-      try { await navigator.clipboard.writeText(workspacePageLink(ref, pageId, view)); hint.textContent = 'Lien copié'; }
-      catch { hint.textContent = 'La copie du lien a échoué.'; }
+      try { await navigator.clipboard.writeText(workspacePageLink(ref, pageId, view)); hint.textContent = shellText("Lien copié"); }
+      catch { hint.textContent = shellText("La copie du lien a échoué."); }
     })();
   });
   hint.setAttribute('role', 'status');

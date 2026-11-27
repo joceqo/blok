@@ -1,3 +1,4 @@
+import { isInspectorPointer } from '../inspector-interaction';
 import { isEscapeConsumed, markEscapeConsumed } from '../consumed-escape';
 import { hasEscapeLayer } from '../dismissable-layer';
 import { isKeyboardModality, recordActionKey } from '../input-modality';
@@ -393,7 +394,7 @@ export class PopoverRegistry {
 
     const target = event.target;
 
-    if (!(target instanceof Node)) {
+    if (!(target instanceof Node) || isInspectorPointer(target)) {
       return;
     }
 
@@ -431,7 +432,7 @@ export class PopoverRegistry {
   private handleBackdropPointerDown(event: PointerEvent): void {
     const target = event.target;
 
-    if (event.button > 2 || !(target instanceof Node)) {
+    if (event.button > 2 || !(target instanceof Node) || isInspectorPointer(target)) {
       return;
     }
 

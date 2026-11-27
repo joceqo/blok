@@ -1,6 +1,7 @@
 import {afterEach, expect, it, vi} from 'vitest';
 import {createSidebarPreferences} from '../../src/shell/sidebar-preferences';
 import {createNotificationTrigger} from './cloud/notification-trigger';
+import {readEmailNotification, setEmailNotification} from './cloud/email-notification-preferences';
 import {mountShellNavigationSettings} from './shell-navigation-settings';
 import {must} from './test-helpers';
 
@@ -16,7 +17,7 @@ function switchNamed(host: HTMLElement, text: string): HTMLButtonElement {
 
 it('edits the sidebar model shared with the workspace and remembers the choices for that workspace', async () => {
   localStorage.setItem('blok:sidebar:sections:atelier', JSON.stringify({events: false, favorites: true}));
-  const sidebar = createSidebarPreferences('atelier', true);
+  const sidebar = createSidebarPreferences('atelier', true, ['customize', 'invite']);
   const host = document.createElement('div');
   document.body.append(host);
   const panel = mountShellNavigationSettings(host, {kind: 'sidebar', sidebar});
@@ -26,7 +27,9 @@ it('edits the sidebar model shared with the workspace and remembers the choices 
     expect(sidebar.getSnapshot().favorites).toBe(false);
     sidebar.set('events', true);
     await vi.waitFor(() => expect(switchNamed(host, 'Événements à venir').getAttribute('aria-checked')).toBe('true'));
-    expect(createSidebarPreferences('atelier', true).getSnapshot()).toEqual({events: true, favorites: false});
+    switchNamed(host, 'Personnaliser la barre latérale').click();
+    expect(createSidebarPreferences('atelier', true).getSnapshot()).toMatchObject({events: true, favorites: false, customize: false, invite:true});
+    expect(createSidebarPreferences('autre', true).getSnapshot().customize).toBe(true);
     expect(createSidebarPreferences('autre', true).getSnapshot().favorites).toBe(true);
   } finally { panel.destroy(); }
 });
@@ -58,4 +61,21 @@ it('applies unread badge and pin switches to the mounted inbox, and reflects cha
     inbox.destroy();
     panel.destroy();
   }
+});
+
+it('offers the four e-mail notification switches, keeps the always-send one off, and follows a choice made elsewhere', async () => {
+  const host = document.createElement('div');
+  document.body.append(host);
+  const panel = mountShellNavigationSettings(host, {kind: 'notifications'});
+  try {
+    expect(switchNamed(host, 'Toujours envoyer des notifications par e-mail').getAttribute('aria-checked')).toBe('false');
+    expect(switchNamed(host, 'Activité dans mon espace de travail').getAttribute('aria-checked')).toBe('true');
+    expect(switchNamed(host, 'Modifications de pages').getAttribute('aria-checked')).toBe('true');
+    expect(switchNamed(host, 'Récapitulatif des activités de l’espace de travail').getAttribute('aria-checked')).toBe('true');
+    switchNamed(host, 'Modifications de pages').click();
+    expect(readEmailNotification('pageUpdates')).toBe(false);
+    await vi.waitFor(() => expect(switchNamed(host, 'Modifications de pages').getAttribute('aria-checked')).toBe('false'));
+    setEmailNotification('digest', false);
+    await vi.waitFor(() => expect(switchNamed(host, 'Récapitulatif des activités de l’espace de travail').getAttribute('aria-checked')).toBe('false'));
+  } finally { panel.destroy(); }
 });

@@ -11,6 +11,7 @@ import type { EditCommand, EditOutcome } from '../collab/room/document-room.ts';
 import { buildEditUpdate, type ApplyEditOptions } from '../collab/edit/apply.ts';
 import { canonicalEdit, operationIdForKey, type EditCommand as EditOp } from '../collab/edit/canonical.ts';
 import { stampAuthority } from '../collab/edit/stamp.ts';
+import { logHttpRefusal } from '../collab/observe.ts';
 import { verifyTicket } from '../auth/ticket.ts';
 import { MAX_APPEND_BYTES } from '../collab/journal/append.ts';
 import type { HostAppOptions } from './options.ts';
@@ -293,7 +294,12 @@ function relocated(headers: Record<string, string>, from: string | undefined): R
   return { ...headers, Location: from + headers.Location };
 }
 
-async function refuse(request: Request, response: ResponseWriter, status: number, body: string): Promise<void> {
+async function writeRefusal(
+  request: Request,
+  response: ResponseWriter,
+  status: number,
+  body: string,
+): Promise<void> {
   response.headersMut().set('Cache-Control', 'no-store');
   await writePlain(request, response, status, body);
 }
@@ -467,6 +473,26 @@ function toApply(
 export function createCollabHttp(options: HostAppOptions, sync: CollabRooms | undefined, rooms?: EditRooms) {
   /** The rooms the state door reaches: the real ones, journal or no journal. */
   const live = rooms?.history !== undefined ? { history: rooms.history.bind(rooms) } : undefined;
+
+  /**
+   * Every refusal this door writes goes through here, which is what makes it
+   * the one place they are recorded. The status reaches the caller; the reason
+   * is in a body a browser page often never reads, and nowhere else at all.
+   */
+  async function refuse(
+    request: Request,
+    response: ResponseWriter,
+    status: number,
+    body: string,
+  ): Promise<void> {
+    logHttpRefusal(options.collabLog, {
+      method: request.method(),
+      path: request.path(),
+      status,
+      reason: body,
+    });
+    await writeRefusal(request, response, status, body);
+  }
 
   /** Runs one prepared request against the room and writes what it answered. */
   async function run(

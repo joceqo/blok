@@ -1,3 +1,4 @@
+import {shellText, shellLocale} from './shell-i18n';
 import ICAL from 'ical.js';
 import type { CalendarEvent, CalendarStore } from './calendar-store';
 import { CloudApiError } from './cloud/client';
@@ -81,21 +82,21 @@ export function exportCalendarEvent(event: CalendarEvent): void {
 export function importCalendarFile(host: HTMLElement, store: CalendarStore, refresh: () => void | Promise<void>): void {
   const dialog = document.createElement('dialog');
   dialog.className = 'blok-calendar-import';
-  dialog.setAttribute('aria-label', 'Importer un calendrier');
+  dialog.setAttribute('aria-label', shellText("Importer un calendrier"));
   const title = document.createElement('h2');
-  title.textContent = 'Importer un calendrier';
+  title.textContent = shellText("Importer un calendrier");
   const description = document.createElement('p');
-  description.textContent = 'Les événements importés seront visibles dans cet espace. Seuls les titres et les horaires seront ajoutés.';
+  description.textContent = shellText("Les événements importés seront visibles dans cet espace. Seuls les titres et les horaires seront ajoutés.");
   const file = document.createElement('input');
-  file.type = 'file'; file.accept = '.ics,text/calendar'; file.setAttribute('aria-label', 'Fichier iCalendar');
+  file.type = 'file'; file.accept = '.ics,text/calendar'; file.setAttribute('aria-label', shellText("Fichier iCalendar"));
   const status = document.createElement('p');
   status.setAttribute('role', 'status');
   const list = document.createElement('ul');
   const actions = document.createElement('footer');
   const close = document.createElement('button');
-  close.textContent = 'Fermer'; close.onclick = () => dialog.close();
+  close.textContent = shellText("Fermer"); close.onclick = () => dialog.close();
   const confirm = document.createElement('button');
-  confirm.textContent = 'Importer'; confirm.disabled = true;
+  confirm.textContent = shellText("Importer"); confirm.disabled = true;
   actions.append(close, confirm);
   dialog.append(title, description, file, status, list, actions);
   host.append(dialog);
@@ -118,12 +119,12 @@ export function importCalendarFile(host: HTMLElement, store: CalendarStore, refr
       for (const item of events) {
         const row = document.createElement('li');
         const date = new Date(item.start);
-        row.textContent = item.title + ' · ' + (item.allDay ? item.start : date.toLocaleDateString('fr-FR') + ' ' + getTimeFormatter().format(date));
+        row.textContent = item.title + ' · ' + (item.allDay ? item.start : date.toLocaleDateString(shellLocale()) + ' ' + getTimeFormatter().format(date));
         list.append(row);
       }
       status.textContent = events.length + ' à importer.' + (omitted ? ' Éléments ignorés (' + omitted + ') : ' + skipped.join(', ') + '.' : '');
       confirm.disabled = !events.length;
-    } catch (error) { if (version === selection) status.textContent = error instanceof Error ? error.message : 'Fichier illisible.'; }
+    } catch (error) { if (version === selection) status.textContent = error instanceof Error ? error.message : shellText("Fichier illisible."); }
   };
   confirm.onclick = async () => {
     if (busy || !pending.length) return;

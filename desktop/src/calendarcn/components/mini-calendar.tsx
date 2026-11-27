@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { isSameDay, isSameMonth } from "date-fns";
 import { ChevronDownIcon, ChevronUpIcon, Undo2Icon } from "lucide-react";
@@ -248,9 +249,9 @@ export function MiniCalendar({
               {monthLabel ? (
                 <div className="flex-1 flex justify-center">
                   <Tooltip>
-                    <TooltipTrigger render={<button type="button" className={NAV_BUTTON_CLASS} aria-label="Revenir à aujourd’hui" onClick={goBackToToday} />}><Undo2Icon className="size-4" /></TooltipTrigger>
+                    <TooltipTrigger render={<button type="button" className={NAV_BUTTON_CLASS} aria-label={shellText("Revenir à aujourd’hui")} onClick={goBackToToday} />}><Undo2Icon className="size-4" /></TooltipTrigger>
                     <TooltipContent side="bottom">
-                      Revenir à aujourd’hui
+                      {shellText("Revenir à aujourd’hui")}
                     </TooltipContent>
                   </Tooltip>
                 </div>
@@ -261,9 +262,9 @@ export function MiniCalendar({
               {/* Fr column - Up chevron */}
               <div className="flex-1 flex justify-center">
                 <Tooltip>
-                  <TooltipTrigger render={<button type="button" className={NAV_BUTTON_CLASS} aria-label="Mois précédent" onClick={onPreviousClick} />}><ChevronUpIcon className="size-4" /></TooltipTrigger>
+                  <TooltipTrigger render={<button type="button" className={NAV_BUTTON_CLASS} aria-label={shellText("Mois précédent")} onClick={onPreviousClick} />}><ChevronUpIcon className="size-4" /></TooltipTrigger>
                   <TooltipContent side="bottom">
-                    Mois précédent
+                    {shellText("Mois précédent")}
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -271,9 +272,9 @@ export function MiniCalendar({
               {/* Sa column - Down chevron */}
               <div className="flex-1 flex justify-center">
                 <Tooltip>
-                  <TooltipTrigger render={<button type="button" className={NAV_BUTTON_CLASS} aria-label="Mois suivant" onClick={onNextClick} />}><ChevronDownIcon className="size-4" /></TooltipTrigger>
+                  <TooltipTrigger render={<button type="button" className={NAV_BUTTON_CLASS} aria-label={shellText("Mois suivant")} onClick={onNextClick} />}><ChevronDownIcon className="size-4" /></TooltipTrigger>
                   <TooltipContent side="bottom">
-                    Mois suivant
+                    {shellText("Mois suivant")}
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -283,7 +284,7 @@ export function MiniCalendar({
         DayButton: MiniCalendarDayButton,
         WeekNumber: ({ children, week, ...props }) => {
           return (
-            <th {...props} scope="row" aria-label={`Semaine ${week.weekNumber}`}>
+            <th {...props} scope="row" aria-label={shellText("Semaine {v0}", {v0: week.weekNumber})}>
               <div className="flex h-(--cell-size) w-5 items-center justify-center text-center text-xxs">
                 {children}
               </div>

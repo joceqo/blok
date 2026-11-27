@@ -1,3 +1,4 @@
+import {shellText} from '../shell-i18n';
 import { button, el, field } from '../ui/dom';
 import type { CloudClient } from './client';
 
@@ -19,16 +20,16 @@ export function mountJoinWorkspace(options: JoinWorkspaceOptions): void {
   const main = options.frame();
   main.setAttribute('data-cloud-narrow', '');
   main.append(
-    el('h1', { text: 'Rejoindre un espace' }),
+    el('h1', { text: shellText("Rejoindre un espace") }),
     el('p', {
-      text: 'Un administrateur validera votre demande avant que vous puissiez ouvrir l’espace.',
+      text: shellText("Un administrateur validera votre demande avant que vous puissiez ouvrir l’espace."),
       attribute: 'data-cloud-muted',
     }),
   );
 
   if (options.defaultName) {
     main.append(el('p', {
-      text: `Espace proposé · ${options.defaultName}`,
+      text: shellText("Espace proposé · {v0}", {v0: options.defaultName}),
       attribute: 'data-cloud-note',
     }));
   }
@@ -36,7 +37,7 @@ export function mountJoinWorkspace(options: JoinWorkspaceOptions): void {
   const form = el('form', { attribute: 'data-cloud-stack' });
   const slug = field({
     form,
-    label: 'Identifiant de l’espace',
+    label: shellText("Identifiant de l’espace"),
     type: 'text',
     name: 'join-slug',
     value: options.defaultSlug ?? '',
@@ -49,14 +50,14 @@ export function mountJoinWorkspace(options: JoinWorkspaceOptions): void {
   slug.spellcheck = false;
   const message = field({
     form,
-    label: 'Un mot pour l’équipe (facultatif)',
+    label: shellText("Un mot pour l’équipe (facultatif)"),
     type: 'text',
     name: 'join-message',
     required: false,
   });
   message.maxLength = 1000;
 
-  const submit = button({ label: 'Demander à rejoindre', primary: true, block: true, type: 'submit', onClick: () => {} });
+  const submit = button({ label: shellText("Demander à rejoindre"), primary: true, block: true, type: 'submit', onClick: () => {} });
   form.append(submit);
   form.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -82,6 +83,6 @@ export function mountJoinWorkspace(options: JoinWorkspaceOptions): void {
   });
 
   main.append(form);
-  main.append(button({ label: 'Retour', onClick: options.onCancel }));
+  main.append(button({ label: shellText("Retour"), onClick: options.onCancel }));
   slug.focus();
 }

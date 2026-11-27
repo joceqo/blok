@@ -21,17 +21,7 @@
 .settings-panel [data-desktop-settings-version] { margin: 12px 0 0; font-size: 13px; }
 
 .settings-panel [data-desktop-choice] { border-radius: 6px; font-size: 14px; font-weight: 500; }
-.settings-panel-switch {
-  width: 30px; height: 18px; padding: 2px; flex: none; display: flex; align-items: center;
-  border: 0; border-radius: 12px; cursor: pointer;
-  background: color-mix(in srgb, var(--desktop-ink) 28%, var(--desktop-canvas));
-}
-.settings-panel-switch::before {
-  content: ''; width: 14px; height: 14px; border-radius: 50%; background: #fff;
-  box-shadow: 0 1px 3px #0003;
-}
-.settings-panel-switch[aria-checked="true"] { background: var(--blok-focus-ring, #2383e2); justify-content: flex-end; }
-.settings-panel-switch:focus-visible { outline: 2px solid var(--blok-focus-ring, #2383e2); outline-offset: 3px; }
+
 
 html[data-desktop-high-contrast] body :is([data-desktop-shell], [data-desktop-settings-overlay], [data-cloud-gateway], [data-blok-interface], [data-blok-popover], [data-blok-top-layer]) {
   --desktop-muted: color-mix(in srgb, var(--desktop-ink) 88%, var(--desktop-canvas));

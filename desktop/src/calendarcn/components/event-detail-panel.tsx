@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { createCalendarPortal } from "../portal";
 import {
@@ -251,9 +252,9 @@ function EventDetailOptionsRow({ onExpand }: { onExpand: () => void }) {
         className="group/options flex h-[31px] cursor-default items-center gap-[18px] rounded-md px-[9px] hover:bg-calendar-detail-focus"
         onClick={onExpand}
       >
-        <span className={labelClass}>All-day</span>
-        <span className={labelClass}>Time zone</span>
-        <span className={labelClass}>Repeat</span>
+        <span className={labelClass}>{shellText("Toute la journée")}</span>
+        <span className={labelClass}>{shellText("Time zone")}</span>
+        <span className={labelClass}>{shellText("Repeat")}</span>
       </div>
     </div>
   );
@@ -484,7 +485,7 @@ export function EventDetailPanel<
           {/* A draft isn't stored: nothing to cut, copy, duplicate or delete */}
           {!basicFields && !onTitlePreview && (
             <DropdownMenu>
-              <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label="More actions" className={cn(
+              <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label={shellText("More actions")} className={cn(
                                               "size-7",
                                               EVENT_DETAIL_ICON_BUTTON_CLASS,
                                               EVENT_DETAIL_SECONDARY_CLASS,
@@ -502,8 +503,7 @@ export function EventDetailPanel<
                   onClick={onCut}
                 >
                   <SquareDashed className="size-3.5" />
-                  Cut
-                  <DropdownMenuShortcut
+                  {shellText("Cut")} <DropdownMenuShortcut
                     aria-hidden
                     className={EVENT_DETAIL_MENU_SHORTCUT_CLASS}
                   >
@@ -517,8 +517,7 @@ export function EventDetailPanel<
                   onClick={onCopy}
                 >
                   <TabletSmartphone className="size-3.5" />
-                  Copy
-                  <DropdownMenuShortcut
+                  {shellText("Copy")} <DropdownMenuShortcut
                     aria-hidden
                     className={EVENT_DETAIL_MENU_SHORTCUT_CLASS}
                   >
@@ -532,8 +531,7 @@ export function EventDetailPanel<
                   onClick={onDuplicate}
                 >
                   <Copy className="size-3.5" />
-                  Duplicate
-                  <DropdownMenuShortcut
+                  {shellText("Duplicate")} <DropdownMenuShortcut
                     aria-hidden
                     className={EVENT_DETAIL_MENU_SHORTCUT_CLASS}
                   >
@@ -551,8 +549,7 @@ export function EventDetailPanel<
                   onClick={onDelete}
                 >
                   <Trash2 className="size-3.5 text-calendar-danger" />
-                  Delete
-                  <DropdownMenuShortcut
+                  {shellText("Delete")} <DropdownMenuShortcut
                     aria-hidden
                     className={cn(
                       EVENT_DETAIL_MENU_SHORTCUT_CLASS,
@@ -575,7 +572,7 @@ export function EventDetailPanel<
           ref={titleRef}
           {...title.inputProps}
           type="text"
-          placeholder={basicFields?.titleLabel ?? "Title"}
+          placeholder={basicFields?.titleLabel ?? shellText("Title")}
           aria-label={basicFields?.titleLabel}
           maxLength={basicFields ? 200 : undefined}
           // The details popover finds the title by this: a draft's title

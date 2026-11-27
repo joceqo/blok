@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { MapPin, Pencil } from "lucide-react";
 
@@ -202,8 +203,8 @@ export function EventDetailLocation<
                 {/* Shown on hover, and once the location has focus */}
                 <button
                   type="button"
-                  aria-label="Edit location"
-                  title="Edit location"
+                  aria-label={shellText("Edit location")}
+                  title={shellText("Edit location")}
                   className={cn(
                     "hidden size-5 shrink-0 items-center justify-center group-focus-within/location:flex group-hover/location:flex",
                     EVENT_DETAIL_MUTED_CLASS,
@@ -233,7 +234,7 @@ export function EventDetailLocation<
             ref={inputRef}
             type="text"
             role="combobox"
-            aria-label="Location"
+            aria-label={shellText("Location")}
             aria-autocomplete="list"
             aria-expanded={listOpen}
             aria-controls={listOpen ? listId : undefined}
@@ -242,7 +243,7 @@ export function EventDetailLocation<
             }
             data-testid="event-location-input"
             value={text}
-            placeholder="Location"
+            placeholder={shellText("Location")}
             readOnly={!onEventChange}
             onChange={(e) => {
               setText(e.target.value);
@@ -263,7 +264,7 @@ export function EventDetailLocation<
       {listOpen && (
         <EventDetailSuggestions
           id={listId}
-          label="Suggested places"
+          label={shellText("Suggested places")}
           anchorRef={boxRef}
           width={SUGGESTIONS_WIDTH}
         >

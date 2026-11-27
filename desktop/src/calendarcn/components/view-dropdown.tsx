@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
 
 import { useCalendarConfig } from "./calendar-provider";
@@ -23,11 +24,11 @@ import type { ViewSettings, ViewType } from "./week-view-types";
 
 /** Display labels for each view type */
 const VIEW_LABELS: Record<ViewType, string> = {
-  day: "Day",
-  week: "Week",
-  month: "Month",
-  year: "Year",
-  agenda: "Agenda",
+  day: shellText("Day"),
+  week: shellText("Week"),
+  month: shellText("Month"),
+  year: shellText("Year"),
+  agenda: shellText("Agenda"),
 };
 
 /** View mode options with their shortcut labels */
@@ -68,10 +69,10 @@ export function ViewDropdown({
   onToggleWeekNumbers,
 }: ViewDropdownProps) {
   const french = useCalendarConfig().locale.code.startsWith("fr");
-  const labels = french ? {day:"Jour", week:"Semaine", month:"Mois", year:"Année", agenda:"Agenda"} : VIEW_LABELS;
+  const labels = french ? {day:shellText("Jour"), week:shellText("Semaine"), month:shellText("Mois"), year:shellText("Année"), agenda:shellText("Agenda")} : VIEW_LABELS;
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger render={<Button variant="secondary" size="sm" className="gap-1 px-3" aria-label={french ? "Vue du calendrier" : "Calendar view"} />}>{labels[view]}<ChevronDownIcon className="size-4 text-muted-foreground" /></DropdownMenuTrigger>
+      <DropdownMenuTrigger render={<Button variant="secondary" size="sm" className="gap-1 px-3" aria-label={french ? shellText("Vue du calendrier") : shellText("Calendar view")} />}>{labels[view]}<ChevronDownIcon className="size-4 text-muted-foreground" /></DropdownMenuTrigger>
       <DropdownMenuContent align="start" sideOffset={8} className="w-56">
         {VIEW_OPTIONS.map((option) => (
           <DropdownMenuItem
@@ -92,7 +93,7 @@ export function ViewDropdown({
               {option.shortcuts.map((s) =>
                 s === "or" ? (
                   <span key={s} className="text-muted-foreground text-xs">
-                    {french ? "ou" : "or"}
+                    {french ? shellText("ou") : shellText("or")}
                   </span>
                 ) : (
                   <Kbd key={s} className={PLAIN_KBD_CLASS}>
@@ -109,7 +110,7 @@ export function ViewDropdown({
         {/* Number of days submenu */}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger className="pl-8">
-            {french ? "Nombre de jours" : "Number of days"}
+            {french ? shellText("Nombre de jours") : shellText("Number of days")}
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent>
             {NUMBER_OF_DAYS_OPTIONS.map((n) => (
@@ -120,7 +121,7 @@ export function ViewDropdown({
                     numberOfDays !== n && "invisible",
                   )}
                 />
-                {n} {french ? "jours" : "days"}
+                {n} {french ? shellText("jours") : shellText("days")}
                 <Kbd className={cn(PLAIN_KBD_CLASS, "ml-auto")}>{n}</Kbd>
               </DropdownMenuItem>
             ))}
@@ -132,18 +133,18 @@ export function ViewDropdown({
         {/* View settings submenu */}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger className="pl-8">
-            {french ? "Options d’affichage" : "View settings"}
+            {french ? shellText("Options d’affichage") : shellText("View settings")}
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="w-56">
             <DropdownMenuCheckboxItem
               checked={viewSettings.showWeekends}
               onCheckedChange={() => onToggleWeekends()}
             >
-              {french ? "Week-ends" : "Weekends"}
+              {french ? "Week-ends" : shellText("Weekends")}
               <KbdGroup className="ml-auto">
-                <Kbd className={PLAIN_KBD_CLASS}>shift</Kbd>
+                <Kbd className={PLAIN_KBD_CLASS}>{shellText("shift")}</Kbd>
                 <Kbd className={PLAIN_KBD_CLASS}>&#8984;</Kbd>
-                <Kbd className={PLAIN_KBD_CLASS}>E</Kbd>
+                <Kbd className={PLAIN_KBD_CLASS}>{shellText("E")}</Kbd>
               </KbdGroup>
             </DropdownMenuCheckboxItem>
 
@@ -151,7 +152,7 @@ export function ViewDropdown({
               checked={viewSettings.showWeekNumbers}
               onCheckedChange={() => onToggleWeekNumbers()}
             >
-              {french ? "Numéros de semaine" : "Week numbers"}
+              {french ? shellText("Numéros de semaine") : shellText("Week numbers")}
             </DropdownMenuCheckboxItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>

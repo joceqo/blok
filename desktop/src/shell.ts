@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { libraryView } from './library-route';
 import { calendarUrl, editorUrl, isCalendarUrl } from './calendar-route';
 import { pageUrlForView, pageView, workspacePageLink, type PageView } from './page-link';
@@ -193,7 +194,7 @@ function installMenu(): void {
     const existing = box.session.tabs.find(tab => isCalendarUrl(new URL(tab.href)));
     const href = calendarUrl(new URL(location.href)).href;
     if (existing) moveTo(existing.id, false);
-    else if (box.session.tabs.length < MAX_TABS) addTab(href, 'Calendrier');
+    else if (box.session.tabs.length < MAX_TABS) addTab(href, shellText("Calendrier"));
     else history.pushState(null, '', href);
   });
   window.addEventListener('blok:return-from-library-peek', event => {
@@ -238,7 +239,7 @@ function boot(): Session {
     existing.entries[existing.index] = requested.href;
     restored.activeId = existing.id;
   } else {
-    const opened = freshTab(requested.href, calendar ? 'Calendrier' : library ? 'Bibliothèque' : 'Nouvelle page');
+    const opened = freshTab(requested.href, calendar ? shellText("Calendrier") : library ? shellText("Bibliothèque") : shellText("Nouvelle page"));
     restored.tabs.push(opened);
     restored.tabs = restored.tabs.slice(-MAX_TABS);
     restored.activeId = opened.id;
@@ -417,7 +418,7 @@ function createTab(page?: {id: string; title: string; icon?: string; view?: Page
   if (box.session.tabs.length >= MAX_TABS) return;
   const home = new URL(homeHref());
   const url = page ? pageUrlForView(home, page.id, page.view) : home;
-  addTab(url.href, page?.title || 'Nouvelle page', page?.icon);
+  addTab(url.href, page?.title || shellText("Nouvelle page"), page?.icon);
 }
 
 function addTab(href: string, title: string, icon = ''): void {
@@ -550,7 +551,7 @@ function activateNumber(digit: number): void {
 }
 
 function onKey(event: KeyboardEvent): void {
-  if (!isTauri()) return;
+  if (event.defaultPrevented || !isTauri()) return;
   if (event.altKey && !isMod(event) && event.key === 'ArrowLeft') {
     event.preventDefault();
     step(-1);
@@ -795,14 +796,14 @@ function forwardButton(): HTMLButtonElement {
 
 function newTabButton(): HTMLButtonElement {
   const button = iconButton('new-tab', 'Nouvel onglet', plusIcon());
-  button.title = 'Nouvel onglet (⌘T)';
+  button.title = shellText("Nouvel onglet (⌘T)");
   return button;
 }
 
 function tablist(): HTMLElement {
   const list = document.createElement('div');
   list.setAttribute('role', 'tablist');
-  list.setAttribute('aria-label', "Onglets de l'application");
+  list.setAttribute('aria-label', shellText("Onglets de l'application"));
   const showClose = box.session.tabs.length > 1;
   box.session.tabs.forEach((tab) => {
     list.append(tabView(tab, tab.id === box.session.activeId, showClose));
@@ -847,7 +848,7 @@ function closeButton(tab: Tab): HTMLButtonElement {
   button.setAttribute('data-desktop-close', '');
   button.dataset.desktopAction = 'close';
   button.dataset.desktopTab = tab.id;
-  button.setAttribute('aria-label', `Fermer ${tab.title}`);
+  button.setAttribute('aria-label', shellText("Fermer {v0}", {v0: tab.title}));
   button.append(crossIcon());
   return button;
 }

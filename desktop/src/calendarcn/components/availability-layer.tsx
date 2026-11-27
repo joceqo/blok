@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { isSameDay } from "date-fns";
 import { X } from "lucide-react";
@@ -447,7 +448,7 @@ export function AvailabilityLayer({
           <div
             key={day.date.toISOString()}
             role="group"
-            aria-label={`Mark available times on ${dayLabel}`}
+            aria-label={shellText("Mark available times on {v0}", {v0: dayLabel})}
             inert={!isOnScreen}
             className="relative h-full cursor-cell"
             onPointerDown={(e) => handleColumnPointerDown(e, dayIndex)}
@@ -474,7 +475,7 @@ export function AvailabilityLayer({
                 <div
                   key={range.id}
                   role="group"
-                  aria-label={`Available ${dayLabel}, ${timeLabel}`}
+                  aria-label={shellText("Available {v0}, {v1}", {v0: dayLabel, v1: timeLabel})}
                   data-selected={isSelected || undefined}
                   className={cn(
                     "group/range absolute inset-x-0 cursor-grab rounded-sm border border-transparent",
@@ -497,7 +498,7 @@ export function AvailabilityLayer({
                   </p>
                   <button
                     type="button"
-                    aria-label={`Remove ${timeLabel}`}
+                    aria-label={shellText("Remove {v0}", {v0: timeLabel})}
                     className={cn(
                       "text-muted-foreground hover:bg-foreground/10 hover:text-foreground absolute top-0.5 right-0.5 flex size-5 items-center justify-center rounded-sm opacity-0 transition-opacity group-hover/range:opacity-100 focus-visible:opacity-100",
                       isSelected && "opacity-100",

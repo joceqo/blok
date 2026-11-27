@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import * as React from "react";
 import { createCalendarPortal as createPortal } from "../portal";
 import {
@@ -278,7 +279,7 @@ export function EventDetailPopover({
             e.stopPropagation();
             onExpand();
           }}
-          title="Dock to sidebar"
+          title={shellText("Dock to sidebar")}
         >
           <PanelRightIcon className="size-4" />
         </Button>
@@ -291,7 +292,7 @@ export function EventDetailPopover({
           e.stopPropagation();
           onClose();
         }}
-        title="Close"
+        title={shellText("Close")}
       >
         <X className="size-4" />
       </Button>
@@ -318,7 +319,7 @@ export function EventDetailPopover({
       ref={setPanel}
       id={id}
       role="dialog"
-      aria-label="Event details"
+      aria-label={shellText("Event details")}
       data-calendar-popover=""
       data-side={placedAt.split("-")[0]}
       tabIndex={-1}

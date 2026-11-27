@@ -11,6 +11,7 @@
 }
 
 [data-blok-sidebar] {
+  --blok-focus-ring: var(--blok-sidebar-label);
   --blok-sidebar-edge-color: #d9d9d9;
   --blok-sidebar-edge-hover-color: #a3a3a3;
   position: relative;
@@ -97,7 +98,6 @@
 [data-blok-sidebar-add]:focus-visible,
 [data-blok-sidebar-more]:focus-visible,
 [data-blok-sidebar-toggle]:focus-visible,
-[data-blok-sidebar-link]:focus-visible,
 [data-blok-sidebar-search] input:focus-visible,
 [data-blok-sidebar-rename]:focus-visible {
   outline: 2px solid var(--blok-focus-ring);
@@ -598,7 +598,7 @@
   text-decoration: none; font: inherit; font-size: 14px; cursor: pointer;
 }
 [data-blok-sidebar-modes] svg { flex: none; width: 16px; height: 16px; }
-[data-blok-sidebar-modes] > :not([aria-current="page"]) span { display: none; }
+[data-blok-sidebar-modes=""] > :not([aria-current="page"]) span { display: none; }
 [data-blok-sidebar-modes] > :is(button,a):hover { background: var(--blok-item-hover-bg); color: var(--blok-sidebar-label); }
 [data-blok-sidebar-modes] > [aria-current="page"] {
   padding-inline: 8px; background: var(--blok-item-hover-bg); color: var(--blok-sidebar-selected); font-weight: 600;
@@ -737,7 +737,14 @@ button[data-blok-sidebar-search]:focus-visible { outline: 2px solid var(--blok-f
 [data-blok-sidebar-teamspace] > button:first-child > span:not([data-blok-sidebar-teamspace-mark]) { font-weight: 600; }
 [data-blok-sidebar-section-header] [data-blok-sidebar-create-private] { opacity: 0; }
 [data-blok-sidebar-section-header]:is(:hover, :focus-within) [data-blok-sidebar-create-private] { opacity: 1; }
-[data-blok-sidebar-row]:has(> button:focus-visible) { outline: 2px solid var(--blok-focus-ring); outline-offset: -2px; }
+[data-blok-sidebar-row]:has(> [data-blok-sidebar-link]:focus-visible) {
+  background: var(--blok-icon-active-bg);
+}
+[data-blok-sidebar-link]:focus-visible { outline: none; }
+[data-blok-sidebar-link]:focus-visible [data-blok-sidebar-label] {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 @media (hover: none) { [data-blok-sidebar-section-header] [data-blok-sidebar-create-private] { opacity: 1; } }
 
 [data-blok-theme="light"] [data-blok-sidebar] {

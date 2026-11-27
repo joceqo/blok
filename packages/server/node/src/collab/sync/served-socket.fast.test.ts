@@ -101,6 +101,8 @@ interface Served {
   wire: FakeWire;
   messages: Buffer[];
   pongs: Buffer[];
+  /** Every close the host reported, in the order it reported them. */
+  closes: Array<{ code: number | undefined; reason: string }>;
 }
 
 /** One upgraded socket, served the way the host serves it. */
@@ -124,6 +126,7 @@ async function serve(buffered: Uint8Array = new Uint8Array()): Promise<Served> {
   });
   const messages: Buffer[] = [];
   const pongs: Buffer[] = [];
+  const closes: Array<{ code: number | undefined; reason: string }> = [];
 
   ws.on('message', (data) => messages.push(data as Buffer));
   ws.on('pong', (data: Buffer) => pongs.push(data));
@@ -137,9 +140,10 @@ async function serve(buffered: Uint8Array = new Uint8Array()): Promise<Served> {
     budget: new InboundBudget(DEFAULT_INBOUND_BUDGET),
     maxMessageBytes: CAP,
     closeGraceMs: GRACE_MS,
+    onClose: (code, reason) => closes.push({ code, reason }),
   });
 
-  return { ws, wire, messages, pongs };
+  return { ws, wire, messages, pongs, closes };
 }
 
 function settled(): Promise<void> {
@@ -322,5 +326,50 @@ describe('serveSocket', () => {
     await settled();
 
     expect(closeFrame(wire.sent)).toEqual({ code: 1008, reason: 'inbound rate exceeded' });
+  });
+});
+
+/**
+ * Every close this host sends already funnels through one override, which is
+ * why it is also the one place that can report them. The room decides most of
+ * them — a queue overflow, a malformed awareness frame, a forbidden recheck —
+ * and before this nothing anywhere kept the code it chose.
+ */
+describe('@fast reporting a close', () => {
+  it('reports the code and reason the host chose', async () => {
+    const { ws, closes } = await serve();
+
+    ws.close(1008, 'room queue overflow');
+    await settled();
+
+    expect(closes).toEqual([{ code: 1008, reason: 'room queue overflow' }]);
+  });
+
+  it('reports the close the transport itself decided', async () => {
+    const { wire, closes } = await serve();
+
+    wire.feed(client(FIN | OP_TEXT, Buffer.from('hello')));
+    await settled();
+
+    expect(closes).toEqual([{ code: 1003, reason: 'binary frames only' }]);
+  });
+
+  it('reports a close once, however many times it is asked for', async () => {
+    const { ws, closes } = await serve();
+
+    ws.close(1009, 'message too big');
+    ws.close(1011, 'room error');
+    await settled();
+
+    expect(closes).toEqual([{ code: 1009, reason: 'message too big' }]);
+  });
+
+  it('reports the answer a peer close earns, so the caller may judge it', async () => {
+    const { wire, closes } = await serve();
+
+    wire.feed(client(FIN | OP_CLOSE, closePayload(1000)));
+    await settled();
+
+    expect(closes).toEqual([{ code: 1000, reason: '' }]);
   });
 });

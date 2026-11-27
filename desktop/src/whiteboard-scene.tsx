@@ -1,3 +1,4 @@
+import {shellText} from './shell-i18n';
 import { createRoot } from 'react-dom/client';
 import type { API } from '../../types';
 import { BoardDock, type BoardTool } from './whiteboard-dock';
@@ -40,7 +41,7 @@ export function openBoardSurface(holder: HTMLElement, editor: () => Editor | nul
   const viewport = div('blok-board-viewport');
   viewport.tabIndex = 0;
   viewport.setAttribute('role', 'region');
-  viewport.setAttribute('aria-label', 'Surface du tableau blanc');
+  viewport.setAttribute('aria-label', shellText("Surface du tableau blanc"));
   const world = div('blok-board-world');
   const dock = div('blok-board-overlay');
   const message = div('blok-board-message');
@@ -49,7 +50,7 @@ export function openBoardSurface(holder: HTMLElement, editor: () => Editor | nul
   source.dataset.boardSourceId = sourceId;
   source.tabIndex = 0;
   source.setAttribute('role', 'group');
-  source.setAttribute('aria-label', 'Note du document');
+  source.setAttribute('aria-label', shellText("Note du document"));
   const wasInert = holder.inert;
   holder.before(stage);
   source.append(holder);
@@ -84,7 +85,7 @@ export function openBoardSurface(holder: HTMLElement, editor: () => Editor | nul
     return !!api && !api.readOnly.isEnabled && !holder.closest('[data-desktop-read-only]');
   }
   function warn() {
-    if (active) message.textContent = 'La modification du tableau n’a pas pu être enregistrée.';
+    if (active) message.textContent = shellText("La modification du tableau n’a pas pu être enregistrée.");
   }
   function select(id: string | null) {
     selectMany(id ? [id] : []);
@@ -327,8 +328,8 @@ export function openBoardSurface(holder: HTMLElement, editor: () => Editor | nul
     closeField?.();
     const input = document.createElement('textarea');
     input.className = 'blok-board-field';
-    input.setAttribute('aria-label', item.kind === 'link' ? 'Adresse du lien' : 'Texte de l’élément');
-    input.placeholder = item.kind === 'link' ? 'https://…' : 'Écrire…';
+    input.setAttribute('aria-label', item.kind === 'link' ? shellText("Adresse du lien") : shellText("Texte de l’élément"));
+    input.placeholder = item.kind === 'link' ? 'https://…' : shellText("Écrire…");
     input.value = (item.kind === 'link' ? item.url : item.text) ?? '';
     const inline = item.kind !== 'link';
     const field = inline ? div('blok-board-inline-editor') : input;
@@ -388,7 +389,7 @@ export function openBoardSurface(holder: HTMLElement, editor: () => Editor | nul
     } catch {
       /* An incomplete address stays off the board. */
     }
-    if (value) message.textContent = 'Utilisez une adresse http ou https.';
+    if (value) message.textContent = shellText("Utilisez une adresse http ou https.");
   }
   function edit(id: string) {
     if (!editable()) return;

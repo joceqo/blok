@@ -1,5 +1,6 @@
 "use client";
 
+import {shellText} from '../../shell-i18n';
 import { format } from "date-fns";
 import {
   ArrowRight,
@@ -89,12 +90,12 @@ function AvailabilityDurationRow() {
   return (
     <EventDetailRow icon={Contrast}>
       <DropdownMenu>
-        <DropdownMenuTrigger render={<button type="button" aria-label={`Duration: ${formatMeetingDuration(durationMinutes)}`} className={cn(
+        <DropdownMenuTrigger render={<button type="button" aria-label={shellText("Duration: {v0}", {v0: formatMeetingDuration(durationMinutes)})} className={cn(
                             "-mx-2 flex items-center gap-1 px-2 py-1 text-sm font-medium",
                             EVENT_DETAIL_HOVER_BORDER_CLASS,
                             EVENT_DETAIL_TEXT_CLASS,
                           )} />}>{formatMeetingDuration(durationMinutes)}<span className={cn("font-normal", EVENT_DETAIL_SECONDARY_CLASS)}>
-                            duration
+                            {shellText("duration")}
                           </span></DropdownMenuTrigger>
         <DropdownMenuContent
           align="start"
@@ -156,10 +157,9 @@ function AvailabilityRangeCard({
       onClick={onSelect}
     >
       <div className={cn(SECTION_HEADING_CLASS, "h-7")}>
-        Range
-        <button
+        {shellText("Range")} <button
           type="button"
-          aria-label={`Remove ${start} to ${end}`}
+          aria-label={shellText("Remove {v0} to {v1}", {v0: start, v1: end})}
           className={cn(
             "flex size-6 items-center justify-center rounded-sm opacity-0 transition-opacity group-hover/card:opacity-100 focus-visible:opacity-100",
             EVENT_DETAIL_ICON_BUTTON_CLASS,
@@ -234,14 +234,14 @@ export function AvailabilityPanel() {
               EVENT_DETAIL_TEXT_CLASS,
             )}
           >
-            {isLink ? "One-off link" : "Share availability"}
+            {isLink ? shellText("One-off link") : shellText("Share availability")}
           </h2>
           <Button
             variant="ghost"
             className={CANCEL_BUTTON_CLASS}
             onClick={cancelPicking}
           >
-            Cancel
+            {shellText("Cancel")}
           </Button>
           {hasRanges && (
             <Button
@@ -250,7 +250,7 @@ export function AvailabilityPanel() {
                 isLink ? finishSchedulingLink : () => void copyAndFinish()
               }
             >
-              {isLink ? "Create" : "Copy"}
+              {isLink ? shellText("Create") : shellText("Copy")}
             </Button>
           )}
         </div>
@@ -265,10 +265,10 @@ export function AvailabilityPanel() {
           className="py-2"
         >
           <div className={SECTION_HEADING_CLASS}>
-            <h3 id="availability-snippet-heading">Snippet</h3>
+            <h3 id="availability-snippet-heading">{shellText("Snippet")}</h3>
             <button
               type="button"
-              aria-label="Copy snippet"
+              aria-label={shellText("Copy snippet")}
               disabled={!hasRanges}
               className={cn(
                 "flex size-6 items-center justify-center rounded-sm disabled:opacity-40",
@@ -289,7 +289,7 @@ export function AvailabilityPanel() {
                 : EVENT_DETAIL_PLACEHOLDER_CLASS,
             )}
           >
-            {hasRanges ? text : "No times marked"}
+            {hasRanges ? text : shellText("No times marked")}
           </p>
           <EventDetailRow icon={Globe}>
             <span className={EVENT_DETAIL_SECONDARY_CLASS}>
@@ -300,10 +300,10 @@ export function AvailabilityPanel() {
         <EventDetailDivider />
         <section aria-labelledby="availability-times-heading" className="py-2">
           <div className={SECTION_HEADING_CLASS}>
-            <h3 id="availability-times-heading">Times</h3>
+            <h3 id="availability-times-heading">{shellText("Times")}</h3>
           </div>
           {hasRanges ? (
-            <ul aria-label="Marked times" className="flex flex-col">
+            <ul aria-label={shellText("Marked times")} className="flex flex-col">
               {ranges.map((range) => (
                 <AvailabilityRangeCard
                   key={range.id}
@@ -316,7 +316,7 @@ export function AvailabilityPanel() {
             </ul>
           ) : (
             <p className={cn("px-4 py-1", EVENT_DETAIL_PLACEHOLDER_CLASS)}>
-              Drag on the calendar to mark when you&apos;re free
+              {shellText("Drag on the calendar to mark when you&apos;re free")}
             </p>
           )}
         </section>
@@ -373,7 +373,7 @@ export function AvailabilityHint({
               )}
               onClick={cancelPicking}
             >
-              Cancel
+              {shellText("Cancel")}
             </button>
             <button
               type="button"
@@ -386,7 +386,7 @@ export function AvailabilityHint({
                 isLink ? finishSchedulingLink : () => void copyAndFinish()
               }
             >
-              {isLink ? "Create" : "Copy"}
+              {isLink ? shellText("Create") : shellText("Copy")}
             </button>
           </>
         )}
