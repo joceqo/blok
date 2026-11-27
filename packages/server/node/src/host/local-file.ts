@@ -2,7 +2,7 @@ import type { Readable } from 'node:stream';
 import { randomBytes } from 'node:crypto';
 
 import { eqIgnoreAsciiCase, isFieldValue } from '../http/headers.ts';
-import { parseHttpDate } from '../http/http-date.ts';
+import { parseHttpDate } from '../dotnet/http-date.ts';
 import type { Request } from '../http/request.ts';
 import { ResponseWriter } from '../http/response.ts';
 import { isGenerated } from '../blob/key.ts';
