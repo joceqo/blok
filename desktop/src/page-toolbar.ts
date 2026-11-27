@@ -74,6 +74,8 @@ export function createPageToolbar(
   onShare?: (anchor: HTMLButtonElement) => (() => void) | void,
   options: {
     viewControls?: HTMLElement;
+    /** La page vit sur le disque de cet appareil, pas sur un serveur. */
+    storedOnDevice?: boolean;
     pageUrl?: (id: string) => string;
     favorite?: boolean;
     onFavorite?: (favorite: boolean) => void;
@@ -103,11 +105,7 @@ export function createPageToolbar(
   const trail = document.createElement('nav');
   trail.setAttribute('data-desktop-page-breadcrumbs', '');
   trail.setAttribute('aria-label', shellText("Fil d’Ariane"));
-  const local = document.createElement('span');
-  local.setAttribute('data-desktop-page-local', '');
-  local.title = shellText("Cette page est enregistrée sur cet appareil");
-  local.append(glyph(['M2.5 3.5h11v8h-11z', 'M5.5 13.5h5']), document.createTextNode(shellText("Sur cet appareil")));
-  identity.append(trail, local);
+  identity.append(trail);
   if (options.viewControls) trail.after(options.viewControls);
   if (options.readOnly) {
     const badge = document.createElement('span');
@@ -220,6 +218,15 @@ export function createPageToolbar(
   fullWidthButton.append(label, track);
   fullWidthButton.disabled = options.readOnly === true;
   menu.append(heading, fullWidthButton);
+  // Où la page dort est une information de second plan : elle se consulte,
+  // elle ne s'impose pas en permanence dans la barre du haut.
+  if (options.storedOnDevice) {
+    const local = document.createElement('span');
+    local.setAttribute('data-desktop-page-local', '');
+    local.title = shellText("Cette page est enregistrée sur cet appareil");
+    local.append(glyph(['M2.5 3.5h11v8h-11z', 'M5.5 13.5h5']), document.createTextNode(shellText("Sur cet appareil")));
+    menu.append(local);
+  }
   const peers = document.createElement('span');
   peers.setAttribute('data-desktop-page-peers','');
   peers.hidden = true;

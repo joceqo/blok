@@ -537,6 +537,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       onLayout(sidebar.getBoundingClientRect().width);
     }, ref.kind === 'remote' ? (anchor) => openPageSharing(ref, id, page.title, anchor, refreshRemoteManifest) : undefined, {
       viewControls,
+      storedOnDevice: ref.kind === 'local',
       pageUrl: pageId => workspacePageLink(ref, pageId, pageView(new URL(location.href))),
       favorite: favorites.has(id),
       onFavorite: (value) => {

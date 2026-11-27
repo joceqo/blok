@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPageToolbar } from './page-toolbar';
+import { must } from './test-helpers';
 
 afterEach(() => { document.body.innerHTML = ''; vi.restoreAllMocks(); });
 
@@ -175,6 +176,29 @@ describe('fil de la page', () => {
     expect(toolbar.element.querySelector('[data-desktop-page-workspace]')).toBeNull();
     expect(toolbar.element.querySelector('nav')?.textContent).toContain('Parent');
     expect(toolbar.element.querySelector('[data-desktop-page-breadcrumb-separator]')?.textContent).toBe('/');
+    toolbar.destroy();
+  });
+});
+
+describe('où la page est enregistrée', () => {
+  it('le dit dans le menu plutôt que dans la barre', () => {
+    const toolbar = createPageToolbar([{id: 'p', title: 'Page'}], false, vi.fn(), undefined, undefined, {storedOnDevice: true});
+    document.body.append(toolbar.element);
+    // La barre du haut nomme la page ; où elle dort est une information de
+    // second plan, qui n'a pas à occuper cette ligne en permanence.
+    const identity = must(toolbar.element.querySelector('[data-desktop-page-identity]'));
+    expect(identity.querySelector('[data-desktop-page-local]')).toBeNull();
+    must(toolbar.element.querySelector<HTMLButtonElement>('[data-desktop-page-more]')).click();
+    const badge = must(toolbar.element.querySelector('[data-desktop-page-menu] [data-desktop-page-local]'));
+    expect(badge.textContent).toContain('Sur cet appareil');
+    toolbar.destroy();
+  });
+
+  it('se tait pour une page qui vit sur un serveur', () => {
+    const toolbar = createPageToolbar([{id: 'p', title: 'Page'}], false, vi.fn());
+    document.body.append(toolbar.element);
+    must(toolbar.element.querySelector<HTMLButtonElement>('[data-desktop-page-more]')).click();
+    expect(toolbar.element.querySelector('[data-desktop-page-local]')).toBeNull();
     toolbar.destroy();
   });
 });
