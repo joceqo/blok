@@ -11,13 +11,15 @@ export interface CalendarEvent {
   allDay: boolean;
   pageId: string | null;
   participantIds?: string[];
+  /** La réponse de chaque invité, servie par l'espace distant. */
+  participantResponses?: Record<string, string>;
   readOnly?: boolean;
   revision: number;
   source?: {id: string; label: string; color: string};
 }
 
 export interface CalendarStore {
-  remote?: {client: CloudClient; base: string; preferenceKey: string};
+  remote?: {client: CloudClient; base: string; preferenceKey: string; accountId: string};
   list(from: string, to: string): Promise<CalendarEvent[]>;
   save(event: CalendarEvent): Promise<void>;
   remove(event: CalendarEvent): Promise<void>;
@@ -54,7 +56,7 @@ export function createCalendarStore(ref: WorkspaceRef, providedClient?: CloudCli
     const client = providedClient ?? new CloudClient({origin: ref.server, sessionAdapter: '__TAURI_INTERNALS__' in window ? nativeSessionAdapter(ref.server) : undefined});
     const base = '/api/workspaces/' + encodeURIComponent(ref.workspaceId) + '/calendar';
     return {
-      remote: {client, base, preferenceKey: JSON.stringify([ref.server, ref.workspaceId, ref.accountId])},
+      remote: {client, base, preferenceKey: JSON.stringify([ref.server, ref.workspaceId, ref.accountId]), accountId: ref.accountId},
       async list(from, to) {
         const query = new URLSearchParams({from, to, fromDate: localDate(from), toDate: localDate(to)});
         return (await client.request<{events: CalendarEvent[]}>(base + '?' + query)).events;

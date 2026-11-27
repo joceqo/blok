@@ -63,6 +63,18 @@ export function CalendarEventInspector({options, event, existing, owner, onClose
   const [pageId, setPageId] = useState(event.pageId);
   const [participantIds, setParticipantIds] = useState(event.participantIds);
   const remote = (destination?.store ?? options.store).remote;
+  // Répondre n'existe qu'avec un espace distant : en local il n'y a ni
+  // organisateur à prévenir ni service pour l'écrire.
+  const answering = (destination?.store ?? options.store).respond;
+  const me = remote?.accountId;
+  const respondable = !!answering && !!existing && !!me && !!event.participantIds?.includes(me);
+  const [myResponse, setMyResponse] = useState(() => event.participantResponses?.[me ?? ''] ?? 'needs-action');
+  async function answer(value: 'accepted' | 'declined' | 'tentative') {
+    const previous = myResponse;
+    setMyResponse(value);
+    try { await answering?.(event.id, value); onChanged?.(); }
+    catch { setMyResponse(previous); }
+  }
   const [directory, setDirectory] = useState<{key:string; members:Choice[]; failed?:boolean}>();
   useEffect(() => {
     if (!remote || event.source) return;
@@ -179,6 +191,13 @@ export function CalendarEventInspector({options, event, existing, owner, onClose
           {!!participantIds?.length && <p className="px-2 text-sm" aria-label={shellText("Participants")}>
             {participantIds.map(id => members?.find(member => member.id === id)?.title ?? WORKSPACE_ROLES.member).join(', ')}
           </p>}
+          {respondable && <div className="flex flex-wrap gap-1 px-2 pt-1" aria-label={shellText("Votre réponse")}>
+            {([['accepted', "Accepter"], ['tentative', "Peut-être"], ['declined', "Refuser"]] as const).map(([value, label]) =>
+              <Button key={value} type="button" size="sm"
+                variant={myResponse === value ? 'secondary' : 'ghost'}
+                aria-pressed={myResponse === value}
+                onClick={() => { void answer(value); }}>{shellText(label)}</Button>)}
+          </div>}
         </div>
       </div>}
       {(editable || draft.pageId) && <div className="flex min-h-8 items-center gap-2">
