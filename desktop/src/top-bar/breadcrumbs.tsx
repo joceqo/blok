@@ -70,7 +70,8 @@ const Crumb = ({item, current, container}: {item: PageBreadcrumbItem; current: b
   // n'a nulle part où aller : c'est à elle que revient le menu.
   if (item.onOpen) return <button type="button" {...marks} onClick={item.onOpen}>{mark}</button>;
   if (!item.menu) return <span {...marks}>{mark}</span>;
-  return <DropdownMenu open={open} onOpenChange={setOpen}>
+  // Non modal, pour la même raison que le menu de la page.
+  return <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
     <DropdownMenuTrigger render={<button type="button"/>} {...marks}>{mark}</DropdownMenuTrigger>
     <DropdownMenuContent data-desktop-breadcrumb-menu="" container={container}
       aria-label={shellText("Naviguer entre les pages")}>

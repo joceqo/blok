@@ -75,7 +75,10 @@ const PageMenu = ({container, fullWidth, onFullWidthChange, onHistoryOpen, ...op
     [shellText("Mettre à la corbeille"), options.onDelete, true],
   ] as const;
 
-  return <DropdownMenu>
+  // Non modal : un menu de barre d'outils n'a pas à bloquer la page, et le
+  // verrou de défilement escamotait la barre de défilement — toute la barre
+  // du haut sautait de quelques pixels à l'ouverture.
+  return <DropdownMenu modal={false}>
     <DropdownMenuTrigger render={<button type="button"/>} data-desktop-page-more="" aria-label={shellText("Actions de la page")}
       title={shellText("Actions de la page")}>
       <Glyph paths={DOTS}/>
@@ -90,12 +93,6 @@ const PageMenu = ({container, fullWidth, onFullWidthChange, onHistoryOpen, ...op
         <span>{shellText("Pleine largeur")}</span>
         <span data-desktop-page-switch-track=""/>
       </DropdownMenuCheckboxItem>
-      {/* Où la page dort est une information de second plan : elle se
-          consulte, elle ne s'impose pas dans la barre du haut. */}
-      {options.storedOnDevice && <span data-desktop-page-local=""
-        title={shellText("Cette page est enregistrée sur cet appareil")}>
-        <Glyph paths={DEVICE}/>{shellText("Sur cet appareil")}
-      </span>}
       {options.onHistory && <DropdownMenuItem render={<button type="button"/>} data-desktop-page-command=""
         onClick={() => { const close = options.onHistory?.(); if (close) onHistoryOpen(close); }}>
         {shellText("Historique des versions")}
@@ -104,6 +101,12 @@ const PageMenu = ({container, fullWidth, onFullWidthChange, onHistoryOpen, ...op
         ? <DropdownMenuItem render={<button type="button"/>} key={title} data-desktop-page-command="" {...(danger && {'data-danger': ''})}
             onClick={run}>{title}</DropdownMenuItem>
         : null)}
+      {/* En bas, derrière un trait : ce n'est pas une action, c'est un état.
+          Où la page dort se consulte, ça ne s'impose pas dans la barre. */}
+      {options.storedOnDevice && <span data-desktop-page-local=""
+        title={shellText("Cette page est enregistrée sur cet appareil")}>
+        <Glyph paths={DEVICE}/>{shellText("Sur cet appareil")}
+      </span>}
     </DropdownMenuContent>
   </DropdownMenu>;
 };
@@ -123,6 +126,13 @@ export interface TopBarProps {
 
 export const TopBar = ({items, container, fullWidth, favorite, peers, onFullWidthChange, onToggleSidebar, onShare, onHistoryOpen, options}: TopBarProps) => {
   const share = useRef<HTMLButtonElement>(null);
+  // Les surfaces sortent au niveau de la coquille : la barre est « sticky »
+  // avec son propre z-index, donc un menu posé dedans ne peut pas passer
+  // au-dessus de ce qui la suit. La coquille porte aussi le thème, que le
+  // corps de la page ne donnerait pas.
+  const [host, setHost] = useState<HTMLElement | null>(null);
+  useEffect(() => setHost(container.closest<HTMLElement>('[data-desktop-shell]') ?? container), [container]);
+  const surface = host ?? container;
   const [starred, setStarred] = useState(favorite);
   useEffect(() => setStarred(favorite), [favorite]);
   const current = items.at(-1);
@@ -136,7 +146,7 @@ export const TopBar = ({items, container, fullWidth, favorite, peers, onFullWidt
       <Glyph paths={SIDEBAR}/>
     </button>}
     <div data-desktop-page-identity="">
-      <Breadcrumbs items={items} container={container}/>
+      <Breadcrumbs items={items} container={surface}/>
       {options.readOnly && <span data-desktop-page-readonly="">{WORKSPACE_ROLES.viewer}</span>}
     </div>
     <div data-desktop-page-actions="">
@@ -151,7 +161,7 @@ export const TopBar = ({items, container, fullWidth, favorite, peers, onFullWidt
       <CopyLink href={current && options.pageUrl ? options.pageUrl(current.id) : undefined}/>
       {options.onFavorite && <Favorite value={starred}
         onChange={next => { setStarred(next); options.onFavorite?.(next); }}/>}
-      <PageMenu container={container} fullWidth={fullWidth} onFullWidthChange={onFullWidthChange}
+      <PageMenu container={surface} fullWidth={fullWidth} onFullWidthChange={onFullWidthChange}
         onHistoryOpen={onHistoryOpen} readOnly={options.readOnly} storedOnDevice={options.storedOnDevice}
         onRename={options.onRename} onDuplicate={options.onDuplicate} onDelete={options.onDelete}
         onHistory={options.onHistory}/>

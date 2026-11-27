@@ -166,6 +166,13 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
   box-shadow: 0 14px 36px rgba(0, 0, 0, .28);
 }
 [data-desktop-page-menu-heading] { padding: 6px 8px 10px; color: var(--desktop-muted); font-size: 12px; font-weight: 600; }
+/* L'état de la page ferme le menu, séparé des actions par un trait. */
+[data-desktop-page-local] {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 6px; padding: 10px 8px 4px; border-top: 1px solid var(--desktop-border);
+  color: var(--desktop-muted); font-size: 12px;
+}
+[data-desktop-page-local] svg { flex: none; width: 14px; height: 14px; }
 [data-desktop-page-full-width] {
   display: flex; align-items: center; justify-content: space-between; width: 100%;
   min-height: 36px; padding: 4px 8px; border: 0; border-radius: 6px;
