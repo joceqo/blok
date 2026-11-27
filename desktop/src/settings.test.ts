@@ -489,3 +489,42 @@ describe('settings deep link', () => {
     expect(document.querySelector<HTMLElement>('[data-desktop-settings-overlay]')?.hidden).toBe(true);
   });
 });
+
+describe('workspace mark in the sidebar', () => {
+  afterEach(() => history.replaceState(null, '', '/'));
+
+  function footerWithHost(icon?: string) {
+    const host = document.createElement('div');
+    host.setAttribute('data-desktop-footer', '');
+    document.body.append(host);
+    const ref = {kind: 'local' as const, id: 'atelier', name: 'Atelier', ...(icon !== undefined && {icon})};
+    rememberWorkspace(ref);
+    localStorage.setItem('blok:desktop:active-workspace:v1', workspaceKey(ref));
+    const footer = createDesktopFooter(() => undefined, ref, undefined, {footerHost: host});
+    document.body.append(footer);
+    return {host, footer};
+  }
+
+  it('shows the initial while the workspace has no icon', async () => {
+    const {host} = footerWithHost();
+    await vi.waitFor(() => expect(host.querySelector('[data-desktop-avatar]')?.textContent).toBe('A'));
+  });
+
+  it('wears the chosen icon instead of the initial', async () => {
+    const {host} = footerWithHost('🌱');
+    // La promesse de l'aide — « elle apparaît dans la barre latérale » —
+    // n'était tenue nulle part : l'icône était écrite puis jamais lue.
+    await vi.waitFor(() => expect(host.querySelector('[data-desktop-avatar]')?.textContent).toBe('🌱'));
+  });
+
+  it('follows a change made in the settings, without a reload', async () => {
+    const {host, footer} = footerWithHost('🌱');
+    await vi.waitFor(() => expect(host.querySelector('[data-desktop-avatar]')?.textContent).toBe('🌱'));
+    footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: 'general'}));
+    const panel = must(document.querySelector<HTMLElement>('[data-desktop-settings-content]'));
+    must(panel.querySelector<HTMLButtonElement>('.team-icon-trigger')).click();
+    const pick = await vi.waitFor(() => must(document.querySelector<HTMLButtonElement>('.team-icon-grid button')));
+    pick.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-desktop-avatar]')?.textContent).not.toBe('🌱'));
+  });
+});

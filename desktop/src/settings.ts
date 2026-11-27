@@ -21,7 +21,7 @@ import { nativeSessionAdapter } from './native-session';
 import { createNotificationTrigger } from './cloud/notification-trigger';
 import { mountWorkspaceMembers, openWorkspaceInvitation } from './cloud/workspace-settings';
 import {canCreateWorkspace, hasWebAccount, type WebAccountAction} from './cloud/web-account-actions';
-import { activeWorkspace, listWorkspaces, createLocalWorkspace, workspaceKey, rememberWorkspace, LOCAL_SERVER_ORIGIN, type RemoteWorkspace } from './workspace-registry';
+import { activeWorkspace, listWorkspaces, createLocalWorkspace, workspaceKey, rememberWorkspace, LOCAL_SERVER_ORIGIN, type LocalWorkspace, type RemoteWorkspace } from './workspace-registry';
 import { dataDirectory } from './storage';
 import corePackage from '../../package.json';
 import appPackage from '../package.json';
@@ -397,7 +397,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
       },
     };
     reactSurface = mountFooterSurface(options.footerHost, {
-      name: currentWorkspace.name, context, choices, helpItems, destinations: destinationsItems,
+      name: currentWorkspace.name, icon: currentWorkspace.icon, context, choices, helpItems, destinations: destinationsItems,
       onSettings: panel => openSettings(panel),
       async canCreate() {
         if (!webAccount || !client) return false;
@@ -871,7 +871,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
         };
         if (onDisk) return {
           value: onDisk.icon ?? '',
-          write: async (icon) => { rememberWorkspace({...onDisk, icon}); },
+          write: async (icon) => { dressWorkspace(onDisk, icon); },
         };
         return undefined;
       }
@@ -940,10 +940,15 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
    * recopié, sinon la barre latérale et le sélecteur de compte continuent
    * d'annoncer un espace qui ne s'appelle plus comme ça.
    */
-  function dressWorkspace(remote: RemoteWorkspace, icon: string) {
-    rememberWorkspace({...remote, icon});
-    const cached = client?.currentSession?.workspaces.find((space) => space.slug === remote.workspaceId);
-    if (cached) cached.icon = icon;
+  function dressWorkspace(ref: RemoteWorkspace | LocalWorkspace, icon: string) {
+    rememberWorkspace({...ref, icon});
+    if (ref.kind === 'remote') {
+      const cached = client?.currentSession?.workspaces.find((space) => space.slug === ref.workspaceId);
+      if (cached) cached.icon = icon;
+    }
+    // L'aide promet que l'icône apparaît dans la barre latérale : c'est ici
+    // qu'elle y arrive, sans attendre un rechargement.
+    reactSurface?.dress(icon);
   }
   function renameWorkspace(remote: RemoteWorkspace, name: string) {
     rememberWorkspace({...remote, name});
