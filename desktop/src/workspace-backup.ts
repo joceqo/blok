@@ -1,4 +1,5 @@
 import './workspace-backup.css';
+import { createChoice } from './components/dom';
 import { nativeBridge, deviceWorkspaces } from './native-runtime';
 import { selectWorkspace, type RemoteWorkspace } from './workspace-registry';
 import { shellText } from './shell-i18n';
@@ -14,7 +15,7 @@ export function mountWorkspaceBackup(container: HTMLElement, ref: RemoteWorkspac
   } catch { /* A missing or unreadable preference starts with the folder picker. */ }
   const form = document.createElement('form');
   form.className = 'workspace-backup-form';
-  function field(label: string, control: HTMLInputElement | HTMLSelectElement) {
+  function field(label: string, control: HTMLInputElement) {
     const element = document.createElement('label');
     const caption = document.createElement('span');
     caption.textContent = shellText(label);
@@ -22,23 +23,31 @@ export function mountWorkspaceBackup(container: HTMLElement, ref: RemoteWorkspac
     form.append(element);
     return element;
   }
-  function select(label: string, items: string[][]) {
-    const control = document.createElement('select');
-    for (const [value, text] of items) control.add(new Option(shellText(text), value));
-    field(label, control);
+  function choice(label: string, value: string, options: [string, string][], onChange: () => void) {
+    const caption = document.createElement('span');
+    caption.textContent = shellText(label);
+    const control = createChoice({
+      label: caption.textContent,
+      value,
+      options: options.map(([value, text]) => ({ value, label: shellText(text) })),
+      onChange,
+    });
+    const row = document.createElement('div');
+    row.className = 'workspace-backup-choice';
+    row.append(caption, control.element);
+    form.append(row);
     return control;
   }
-  const action = select('Action', [
+  const action = choice('Action', 'save', [
     ['save', 'Sauvegarder cet espace'],
     ['restore', 'Restaurer dans un nouvel espace'],
-  ]);
-  const kind = select('Destination', [
+  ], () => { kind.setValue(saved.kind); loadDestination(); update(); });
+  const kind = choice('Destination', saved.kind, [
     ['folder', 'Dossier, disque externe ou NAS'],
     ['git', 'Dépôt Git (HTTPS)'],
     ['s3', 'Bucket S3 compatible'],
-  ]);
-  kind.dataset.backupDestination = '';
-  kind.value = saved.kind;
+  ], () => { loadDestination(); update(); });
+  kind.element.dataset.backupDestination = '';
   const controls = [
     ['url', 'URL du dépôt ou du service S3', 'url'],
     ['user', 'Utilisateur Git ou clé d’accès S3', 'text'],
@@ -108,8 +117,6 @@ export function mountWorkspaceBackup(container: HTMLElement, ref: RemoteWorkspac
     status.textContent =
       action.value === 'restore' ? shellText('La restauration crée une copie sur ce Mac.') : '';
   };
-  action.onchange = () => { kind.value = saved.kind; loadDestination(); update(); };
-  kind.onchange = () => { loadDestination(); update(); };
   loadDestination();
   update();
   const actions = document.createElement('div');
@@ -155,4 +162,5 @@ export function mountWorkspaceBackup(container: HTMLElement, ref: RemoteWorkspac
       kind.disabled = false;
     }
   };
+  return { destroy() { action.destroy(); kind.destroy(); } };
 }

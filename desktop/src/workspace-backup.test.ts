@@ -40,18 +40,22 @@ it('flushes the active space, offers three destinations and reports a completed 
   } as RemoteWorkspace;
   const flush = vi.fn().mockResolvedValue(undefined);
   bridge.invoke.mockResolvedValue({ location: '/Volumes/Backup/Atelier' });
-  mountWorkspaceBackup(document.body, ref, flush);
+  const panel = mountWorkspaceBackup(document.body, ref, flush);
   const form = document.querySelector<HTMLFormElement>('.workspace-backup-form')!;
-  expect([...form.querySelectorAll('select')[1].options].map((o) => o.value)).toEqual([
+  const destination = form.querySelector<HTMLButtonElement>('[data-backup-destination]')!;
+  destination.click();
+  expect([...document.querySelectorAll<HTMLElement>('[data-desktop-choice-popover] [role=menuitemradio]')].map(o => o.dataset.blokItemName)).toEqual([
     'folder',
     'git',
     's3',
   ]);
+  document.querySelector<HTMLElement>('[data-blok-item-name=folder]')!.click();
   form.requestSubmit();
   await vi.waitFor(() => expect(form.textContent).toContain('/Volumes/Backup/Atelier'));
   expect(flush).toHaveBeenCalledOnce();
   expect(bridge.invoke).toHaveBeenCalledWith('embedded_workspace_backup', {
     options: expect.objectContaining({ kind: 'folder', action: 'save', workspace: 'space' }),
   });
+  panel.destroy();
   form.remove();
 });

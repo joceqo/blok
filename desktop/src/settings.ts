@@ -772,7 +772,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     } else if (panel === 'backups' && currentWorkspace.kind === 'remote' && options.flushForBackup) {
       content.classList.add('settings-panel');
       content.append(el('h1', 'data-desktop-settings-title', shellText("Sauvegardes")));
-      mountWorkspaceBackup(content, currentWorkspace, options.flushForBackup);
+      ui.choices.push(mountWorkspaceBackup(content, currentWorkspace, options.flushForBackup));
     } else if (panel === 'mcp' && client) {
       mountMcpSettings(content, client);
     } else if (panel === 'connections') {
