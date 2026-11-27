@@ -20,7 +20,7 @@ describe('floating table of contents', () => {
     }
   });
 
-  it('tracks the document below the cover and keeps the rail beside the text on scroll', async () => {
+  it('tracks the document below the cover and anchors the rail to the right edge of the document viewport on scroll', async () => {
     vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
     const scroller = document.createElement('main');
     const article = document.createElement('article');
@@ -29,6 +29,7 @@ describe('floating table of contents', () => {
     redactor.innerHTML = '<div data-blok-element data-blok-id="intro"><h2 data-blok-tool="header">Intro</h2></div>';
     const heading = redactor.querySelector('h2')!;
     heading.getClientRects = () => ({length: 1}) as DOMRectList;
+    vi.stubGlobal('innerWidth', 1440);
     let articleTop = 280;
     scroller.getBoundingClientRect = () => new DOMRect(20, 40, 1200, 760);
     redactor.getBoundingClientRect = () => new DOMRect(140, articleTop + 60, 860, 1500);
@@ -40,7 +41,7 @@ describe('floating table of contents', () => {
     try {
       expect(toc.element.hidden).toBe(false);
       expect(toc.element.style.top).toBe('304px');
-      expect(window.innerWidth - parseFloat(toc.element.style.right)).toBe(1048);
+      expect(window.innerWidth - parseFloat(toc.element.style.right)).toBe(1220);
       articleTop = 190;
       scroller.dispatchEvent(new Event('scroll'));
       await vi.waitFor(() => expect(toc.element.style.top).toBe('214px'));

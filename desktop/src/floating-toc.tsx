@@ -94,7 +94,6 @@ export function createFloatingToc(scroller: HTMLElement, redactor: HTMLElement):
     // The article starts immediately below the cover, including when a cover is added mid-edit.
     const top = Math.max(article.getBoundingClientRect().top + 24, viewport.top + (toolbar?.offsetHeight ?? 0) + 24);
     const height = viewport.bottom - top - 16;
-    const railRight = Math.min(viewport.right - 12, redactor.getBoundingClientRect().right + 48);
     const dirty = outlineChanged;
     if (dirty) {
       headings = collectFloatingHeadings(redactor);
@@ -102,9 +101,8 @@ export function createFloatingToc(scroller: HTMLElement, redactor: HTMLElement):
     }
     nav.hidden = !headings.length || viewport.width < 900 || height < 64;
     nav.style.top = `${top}px`;
-    nav.style.right = `${window.innerWidth - railRight}px`;
+    nav.style.right = `${window.innerWidth - viewport.right}px`;
     nav.style.maxHeight = `${Math.max(0, height)}px`;
-    nav.style.setProperty('--toc-room-right', `${viewport.right - 12 - railRight}px`);
     const next = nav.hidden ? null : closestTocHeading(headings.map(({id, element}) => {
       const {top, height} = element.getBoundingClientRect();
       return {id, top, height};
