@@ -40,5 +40,5 @@
 [data-custom-emoji-upload] > [role=alert] { margin:12px 24px 0; }
 [data-custom-emoji-upload] > footer { display:flex; align-items:center; justify-content:flex-end; gap:8px; padding:16px 24px; margin-top:24px; border-top:1px solid var(--desktop-border); }
 [data-custom-emoji-dialog] :disabled { opacity:.5; cursor:default; }
-[data-custom-emoji-dialog] button:focus-visible { outline:2px solid var(--blok-focus-ring); outline-offset:2px; }
+[data-custom-emoji-dialog] button:focus-visible { outline:2px solid var(--desktop-focus-ring); outline-offset:2px; }
 @media(max-width:600px) { [data-custom-emoji-tools] { align-items:flex-start; gap:12px; } [data-custom-emoji-toolbar-actions] { flex-wrap:wrap; justify-content:flex-end; } [data-custom-emoji-toolbar-actions] [data-blok-field=search] { width:140px; } }

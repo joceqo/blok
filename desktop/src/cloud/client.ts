@@ -1,5 +1,5 @@
 export type CloudRole = 'admin' | 'member' | 'viewer';
-export interface CloudWorkspace { id: string; slug: string; name: string; role: CloudRole }
+export interface CloudWorkspace { id: string; slug: string; name: string; role: CloudRole; icon?: string }
 export interface CloudUser { id: string; email: string; name?: string; instanceAdmin?: boolean }
 export interface CloudSession { user: CloudUser; workspaces: CloudWorkspace[]; calendarWorkspaces?: {id:string; connected:boolean; visible:boolean}[]; supportEmail?: string | null }
 export type CloudSignupPolicy = 'invite' | 'domain' | 'open';
@@ -49,7 +49,7 @@ export interface CloudSessionAdapter {
   setToken(token: string | null): Promise<void>;
   setAccountToken?(account: string, token: string | null): Promise<void>;
 }
-export interface CloudWorkspaceStatus { id: string; slug: string; name: string; role: CloudRole | null; joinStatus: 'pending' | 'approved' | 'rejected' | null }
+export interface CloudWorkspaceStatus { id: string; slug: string; name: string; role: CloudRole | null; joinStatus: 'pending' | 'approved' | 'rejected' | null; allowNotificationMail?: boolean }
 export class CloudApiError extends Error {
   constructor(public status: number, message: string) { super(message); this.name = 'CloudApiError'; }
 }

@@ -236,12 +236,15 @@ describe('workspace menu hierarchy',()=>{
     const panel = must(document.querySelector<HTMLElement>('[data-desktop-settings-content]'));
     expect(panel.dataset.settingsSource).toBe('desktop/src/settings-panels.tsx');
     expect(panel.querySelector('h1')?.textContent).toBe('Général');
-    expect(panel.textContent).toContain(workspace.name);
     expect(panel.querySelector('[data-desktop-settings-version]')?.textContent).toMatch(/Blok .+ · App .+/);
     if (embedded) {
+      // Sur l'appareil, rien à renommer : le nom est affiché, pas offert.
+      expect(panel.textContent).toContain(workspace.name);
+      expect(panel.querySelector('[data-desktop-settings-workspace-name]')).toBeNull();
       expect(panel.textContent).toContain('Sur cet appareil');
       expect(panel.textContent).not.toContain(workspace.server);
     } else {
+      expect(panel.querySelector<HTMLInputElement>('[data-desktop-settings-workspace-name]')?.value).toBe(workspace.name);
       expect(panel.querySelector('details')?.textContent).toContain(workspace.server);
     }
   });
@@ -462,5 +465,89 @@ describe('settings discovery', () => {
     must(document.querySelector<HTMLButtonElement>('[data-desktop-settings-close]')).click();
     open.click();
     expect(must(document.querySelector<HTMLElement>('[data-desktop-settings-no-results]')).hidden).toBe(true);
+  });
+});
+
+describe('general settings on a local workspace', () => {
+  it('renames the local workspace and carries the new name to the switcher', async () => {
+    const footer = createDesktopFooter(() => undefined);
+    document.body.append(footer);
+    footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: 'general'}));
+    const panel = must(document.querySelector<HTMLElement>('[data-desktop-settings-content]'));
+    const field = must(panel.querySelector<HTMLInputElement>('[data-desktop-settings-workspace-name]'));
+    // Un espace local a bien un nom : il vit dans le registre, pas sur un serveur.
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(field, 'Atelier');
+    field.dispatchEvent(new Event('input', {bubbles: true}));
+    must([...panel.querySelectorAll<HTMLButtonElement>('button')].find(node => node.textContent === 'Enregistrer')).click();
+    await vi.waitFor(() => expect(panel.textContent).toContain('Nom enregistré'));
+    expect(footer.querySelector('[data-desktop-switcher-name]')?.textContent).toBe('Atelier');
+  });
+});
+
+describe('settings deep link', () => {
+  afterEach(() => history.replaceState(null, '', '/'));
+
+  it('opens the named panel from the URL, then takes it back out', async () => {
+    history.replaceState(null, '', '/?settings=sidebar&page=p1');
+    const footer = createDesktopFooter(() => undefined);
+    document.body.append(footer);
+    await vi.waitFor(() => expect(document.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Barre latérale'));
+    // Le réglage sort de l'URL : sinon un rechargement rouvrirait la modale,
+    // et le lien partagé emmènerait son destinataire dans les réglages.
+    expect(new URL(location.href).searchParams.has('settings')).toBe(false);
+    expect(new URL(location.href).searchParams.get('page')).toBe('p1');
+  });
+
+  it('falls back to Général on a panel this workspace does not have', async () => {
+    history.replaceState(null, '', '/?settings=members');
+    const footer = createDesktopFooter(() => undefined);
+    document.body.append(footer);
+    await vi.waitFor(() => expect(document.querySelector('[data-desktop-settings-title]')?.textContent).toBe('Général'));
+  });
+
+  it('leaves the app alone without the parameter', () => {
+    const footer = createDesktopFooter(() => undefined);
+    document.body.append(footer);
+    // La modale est montée mais repliée : c'est l'overlay qui dit si elle est ouverte.
+    expect(document.querySelector<HTMLElement>('[data-desktop-settings-overlay]')?.hidden).toBe(true);
+  });
+});
+
+describe('workspace mark in the sidebar', () => {
+  afterEach(() => history.replaceState(null, '', '/'));
+
+  function footerWithHost(icon?: string) {
+    const host = document.createElement('div');
+    host.setAttribute('data-desktop-footer', '');
+    document.body.append(host);
+    const ref = {kind: 'local' as const, id: 'atelier', name: 'Atelier', ...(icon !== undefined && {icon})};
+    rememberWorkspace(ref);
+    localStorage.setItem('blok:desktop:active-workspace:v1', workspaceKey(ref));
+    const footer = createDesktopFooter(() => undefined, ref, undefined, {footerHost: host});
+    document.body.append(footer);
+    return {host, footer};
+  }
+
+  it('shows the initial while the workspace has no icon', async () => {
+    const {host} = footerWithHost();
+    await vi.waitFor(() => expect(host.querySelector('[data-desktop-avatar]')?.textContent).toBe('A'));
+  });
+
+  it('wears the chosen icon instead of the initial', async () => {
+    const {host} = footerWithHost('🌱');
+    // La promesse de l'aide — « elle apparaît dans la barre latérale » —
+    // n'était tenue nulle part : l'icône était écrite puis jamais lue.
+    await vi.waitFor(() => expect(host.querySelector('[data-desktop-avatar]')?.textContent).toBe('🌱'));
+  });
+
+  it('follows a change made in the settings, without a reload', async () => {
+    const {host, footer} = footerWithHost('🌱');
+    await vi.waitFor(() => expect(host.querySelector('[data-desktop-avatar]')?.textContent).toBe('🌱'));
+    footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: 'general'}));
+    const panel = must(document.querySelector<HTMLElement>('[data-desktop-settings-content]'));
+    must(panel.querySelector<HTMLButtonElement>('.team-icon-trigger')).click();
+    const pick = await vi.waitFor(() => must(document.querySelector<HTMLButtonElement>('.team-icon-grid button')));
+    pick.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-desktop-avatar]')?.textContent).not.toBe('🌱'));
   });
 });

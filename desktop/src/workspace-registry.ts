@@ -1,7 +1,7 @@
 import { clearPageRoute, pageUrlForView, type PageView } from './page-link';
 /** Non-secret workspace references. Session credentials live in the OS keychain. */
-export type LocalWorkspace = { kind: 'local'; id: string; name: string };
-export type RemoteWorkspace = { kind: 'remote'; embedded?: boolean; device?: boolean; importedDefaultDisk?: boolean; id: string; name: string; server: string; accountId: string; workspaceId: string; userName?: string; role?: 'admin' | 'member' | 'viewer' };
+export type LocalWorkspace = { kind: 'local'; id: string; name: string; icon?: string };
+export type RemoteWorkspace = { kind: 'remote'; icon?: string; embedded?: boolean; device?: boolean; importedDefaultDisk?: boolean; id: string; name: string; server: string; accountId: string; workspaceId: string; userName?: string; role?: 'admin' | 'member' | 'viewer' };
 export type WorkspaceRef = LocalWorkspace | RemoteWorkspace;
 const KEY = 'blok:desktop:workspaces:v1';
 const ACTIVE = 'blok:desktop:active-workspace:v1';
@@ -28,12 +28,19 @@ export function listWorkspaces(): WorkspaceRef[] {
       try { return item.kind === 'remote' && typeof item.accountId === 'string' && typeof item.workspaceId === 'string' && serverOrigin(item.server) === item.server; } catch { return false; }
     });
     const saved = refs.filter(item => workspaceKey(item) !== workspaceKey(initialWorkspace));
+    // L'espace de l'appareil garde sa place et son identité, mais pas sa
+    // constante : ce qu'on a retenu de lui — son icône, son nom — doit
+    // survivre au rechargement, sinon l'écrire ne servait à rien.
+    const stored = refs.find(item => workspaceKey(item) === workspaceKey(initialWorkspace));
     const imported = saved.some(item => item.kind === 'remote' && item.device && item.embedded && item.importedDefaultDisk);
-    return imported && !prefersDefaultDisk() ? saved : [initialWorkspace, ...saved];
+    return imported && !prefersDefaultDisk() ? saved : [{...initialWorkspace, ...stored}, ...saved];
   } catch { return [initialWorkspace]; }
 }
 export function activeWorkspace(): WorkspaceRef {
-  return listWorkspaces().find((item) => workspaceKey(item) === localStorage.getItem(ACTIVE)) ?? initialWorkspace;
+  // À défaut de choix mémorisé, le premier de la liste — et non la constante,
+  // qui ignorerait ce qu'on a retenu de l'espace de l'appareil.
+  const all = listWorkspaces();
+  return all.find((item) => workspaceKey(item) === localStorage.getItem(ACTIVE)) ?? all[0] ?? initialWorkspace;
 }
 export function rememberWorkspace(ref: WorkspaceRef): void {
   const all = listWorkspaces().filter((item) => workspaceKey(item) !== workspaceKey(ref));

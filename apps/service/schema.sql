@@ -436,3 +436,25 @@ BEGIN
     INSERT INTO schema_migrations(version) VALUES(24);
   END IF;
 END $$;
+
+-- Le commutateur d'espace : un administrateur peut couper tous les e-mails de
+-- notification d'un coup, sans toucher aux préférences de chaque membre, qui
+-- retrouvent la main dès qu'il le rouvre.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM schema_migrations WHERE version=25) THEN
+    ALTER TABLE workspaces ADD COLUMN allow_notification_mail boolean NOT NULL DEFAULT true;
+    INSERT INTO schema_migrations(version) VALUES(25);
+  END IF;
+END $$;
+
+-- L'icône de l'espace, aux mêmes bornes que celle des espaces d'équipe : un
+-- émoji, une icône nommée, ou un PNG de 96 px au plus encodé sur place. Jamais
+-- une URL distante, qui ferait sortir une requête du client à chaque affichage.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM schema_migrations WHERE version=26) THEN
+    ALTER TABLE workspaces ADD COLUMN icon text NOT NULL DEFAULT '';
+    INSERT INTO schema_migrations(version) VALUES(26);
+  END IF;
+END $$;

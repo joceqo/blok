@@ -17,7 +17,7 @@
   animation: settings-search-highlight 2s ease-out;
 }
 @keyframes settings-search-highlight {
-  0%, 55% { background-color: color-mix(in srgb, var(--blok-focus-ring, #2383e2) 16%, transparent); }
+  0%, 55% { background-color: color-mix(in srgb, #2383e2 16%, transparent); }
   100% { background-color: transparent; }
 }
 @media (prefers-reduced-motion: reduce) {

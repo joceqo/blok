@@ -5,6 +5,8 @@
   --desktop-muted: #a2a2a2;
   --desktop-hover: #2a2a2a;
   --desktop-border: #292929;
+  /* Anneau de focus : visible au clavier, pas un trait bleu vif par-dessus la rangée. */
+  --desktop-focus-ring: var(--desktop-muted);
   color: var(--desktop-ink);
   background: var(--desktop-canvas);
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -23,6 +25,7 @@ html, body, #app, [data-desktop-shell] { height: 100%; margin: 0; }
   --desktop-muted: #717171;
   --desktop-hover: #ebebea;
   --desktop-border: #e8e8e6;
+  --desktop-focus-ring: var(--desktop-muted);
 }
 body[data-blok-theme="light"] [data-desktop-settings-overlay] {
   --desktop-canvas: #ffffff;
@@ -31,6 +34,7 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
   --desktop-muted: #717171;
   --desktop-hover: #ebebea;
   --desktop-border: #e8e8e6;
+  --desktop-focus-ring: var(--desktop-muted);
 }
 [data-desktop-tabstrip] {
   position: sticky; top: 0; z-index: 10;
@@ -92,12 +96,17 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 [data-desktop-workspace] [data-blok-sidebar-canvas] { height: 100%; }
 [data-desktop-page-toolbar] {
   position: sticky; top: 0; z-index: 12;
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  display: flex; align-items: center; gap: 8px;
   height: 44px; min-width: 0; padding: 0 12px;
   border-bottom: 1px solid var(--desktop-border);
   background: var(--desktop-canvas); color: var(--desktop-ink);
 }
-[data-desktop-page-identity] { display: flex; flex: 1; align-items: center; min-width: 0; font-size: 14px; }
+/* La racine d'un portail n'est pas une boîte : elle ne doit rien occuper.
+   Posée dans la barre du haut, qui est une rangée flex avec un `gap`, elle
+   comptait comme un troisième enfant et décalait les actions de 8 px à
+   chaque ouverture de menu. */
+[data-base-ui-portal] { display: contents; }
+[data-desktop-page-identity] { display: flex; flex: 0 1 auto; align-items: center; min-width: 0; font-size: 14px; }
 [data-desktop-page-breadcrumbs] { flex: 0 1 auto; min-width: 0; overflow: hidden; }
 [data-desktop-page-breadcrumbs] ol { display: flex; align-items: center; min-width: 0; margin: 0; padding: 0; list-style: none; }
 [data-desktop-page-breadcrumb-item] { flex: 0 1 auto; min-width: 0; max-width: 240px; }
@@ -109,19 +118,23 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 [data-desktop-page-breadcrumb-item] button { cursor: pointer; }
 [data-desktop-page-breadcrumb-item] button:hover,
 [data-desktop-page-breadcrumb-item] button[aria-expanded="true"] { background: var(--desktop-hover); }
-[data-desktop-page-breadcrumb-item] button:focus-visible { outline: 2px solid #2e8cff; outline-offset: -2px; }
+[data-desktop-page-breadcrumb-item] button:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: -2px; }
 [data-desktop-page-breadcrumb-separator] { flex: none; width: 10px; color: var(--desktop-muted); text-align: center; }
+/* Les icônes partagées sont dessinées en 20×20 ; la barre les ramène à sa
+   taille sans toucher au tracé. */
+.top-bar-glyph { display: grid; place-items: center; }
+.top-bar-glyph svg { width: 16px; height: 16px; }
 [data-desktop-page-toolbar-icon] { display: grid; flex: none; place-items: center; width: 18px; height: 18px; font-size: 17px; line-height: 1; }
 [data-desktop-page-toolbar-icon] svg { color: var(--desktop-muted); }
 [data-desktop-page-toolbar-title] { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+/* Position et empilement appartiennent au positionneur Base UI. */
 [data-desktop-breadcrumb-menu] {
-  position: fixed; inset: auto; margin: 0; z-index: 14;
+  margin: 0;
   width: min(320px, calc(100vw - 24px)); max-height: min(380px, calc(100vh - 100px));
   overflow-y: auto; padding: 8px; border: 1px solid var(--desktop-border); border-radius: 12px;
   background: var(--desktop-strip); color: var(--desktop-ink);
   box-shadow: 0 14px 36px rgba(0, 0, 0, .28);
 }
-[data-desktop-breadcrumb-menu][hidden] { display: none; }
 [data-desktop-breadcrumb-menu-heading] { padding: 8px 10px; color: var(--desktop-muted); font-size: 12px; font-weight: 600; }
 [data-desktop-breadcrumb-menu-row] { display: flex; align-items: center; min-height: 34px; border-radius: 7px; }
 [data-desktop-breadcrumb-menu-item], [data-desktop-breadcrumb-menu-more], [data-desktop-breadcrumb-menu-back] {
@@ -134,7 +147,7 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 [data-desktop-breadcrumb-menu-row]:is(:hover, :focus-within, [data-current]) { background: #2d3848; }
 [data-desktop-shell][data-blok-theme="light"] [data-desktop-breadcrumb-menu-row]:is(:hover, :focus-within, [data-current]) { background: #e7eef9; }
 [data-desktop-breadcrumb-menu-item]:focus-visible, [data-desktop-breadcrumb-menu-children]:focus-visible,
-[data-desktop-breadcrumb-menu-back]:focus-visible { outline: 2px solid #2e8cff; outline-offset: -2px; }
+[data-desktop-breadcrumb-menu-back]:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: -2px; }
 [data-desktop-breadcrumb-menu-icon] { display: grid; flex: none; place-items: center; width: 19px; height: 19px; font-size: 18px; }
 [data-desktop-breadcrumb-menu-icon] svg { color: var(--desktop-muted); }
 [data-desktop-breadcrumb-menu-item] > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -146,7 +159,8 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 [data-desktop-breadcrumb-menu-more] { color: var(--desktop-muted); }
 [data-desktop-breadcrumb-menu-more]:hover { background: var(--desktop-hover); color: var(--desktop-ink); }
 [data-desktop-page-local] { display: inline-flex; align-items: center; gap: 5px; flex: none; margin-left: 8px; color: var(--desktop-muted); font-size: 12px; }
-[data-desktop-page-actions] { position: relative; display: flex; align-items: center; gap: 4px; flex: none; }
+/* Les actions filent à droite ; l'identité garde la largeur de son contenu. */
+[data-desktop-page-actions] { position: relative; display: flex; align-items: center; gap: 4px; flex: none; margin-inline-start: auto; }
 [data-desktop-page-more] {
   display: grid; place-items: center;
   width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px;
@@ -156,13 +170,19 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 [data-desktop-page-more]:hover, [data-desktop-page-more][aria-expanded="true"] { background: var(--desktop-hover); color: var(--desktop-ink); }
 [data-desktop-page-more]:focus-visible, [data-desktop-page-full-width]:focus-visible { outline: 2px solid var(--desktop-ink); outline-offset: 2px; }
 [data-desktop-page-menu] {
-  position: fixed; inset: auto; margin: 0; z-index: 13;
+  margin: 0;
   width: 280px; max-width: calc(100vw - 16px); padding: 8px; border: 1px solid var(--desktop-border); border-radius: 10px;
   background: var(--desktop-strip); color: var(--desktop-ink);
   box-shadow: 0 14px 36px rgba(0, 0, 0, .28);
 }
-[data-desktop-page-menu][hidden] { display: none; }
 [data-desktop-page-menu-heading] { padding: 6px 8px 10px; color: var(--desktop-muted); font-size: 12px; font-weight: 600; }
+/* L'état de la page ferme le menu, séparé des actions par un trait. */
+[data-desktop-page-local] {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 6px; padding: 10px 8px 4px; border-top: 1px solid var(--desktop-border);
+  color: var(--desktop-muted); font-size: 12px;
+}
+[data-desktop-page-local] svg { flex: none; width: 14px; height: 14px; }
 [data-desktop-page-full-width] {
   display: flex; align-items: center; justify-content: space-between; width: 100%;
   min-height: 36px; padding: 4px 8px; border: 0; border-radius: 6px;
@@ -219,7 +239,7 @@ body[data-blok-theme="light"] [data-desktop-settings-overlay] {
 }
 [data-desktop-floating-toc]:is(:hover, :focus-within) a[aria-current] { color: #2e8cff; }
 [data-desktop-floating-toc]:is(:hover, :focus-within) a:hover { background: var(--desktop-hover); color: var(--desktop-ink); }
-[data-desktop-floating-toc] a:focus-visible { outline: 2px solid #2e8cff; outline-offset: 1px; }
+[data-desktop-floating-toc] a:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: 1px; }
 @media (max-width: 1160px) { [data-desktop-floating-toc] { display: none; } }
 [data-desktop-title-date-menu] {
   position: fixed; z-index: 100; padding: 8px;
@@ -463,8 +483,8 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
   --blok-item-hover-bg: var(--desktop-hover);
   --blok-bg-light: var(--desktop-hover);
   --blok-icon-active-bg: var(--desktop-hover);
-  --blok-focus-ring: #2e8cff;
-  --blok-chat-focus-ring: #2e8cff;
+  --blok-focus-ring: var(--desktop-focus-ring);
+  --blok-chat-focus-ring: var(--desktop-focus-ring);
   height: 100%; min-height: 0;
 }
 [data-desktop-workspace] [data-blok-agent-bar] { display: none; }
@@ -477,9 +497,14 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
   height: min(720px, calc(100vh - 144px));
   max-height: calc(100dvh - 144px);
 }
-[data-desktop-switcher]:focus-visible, [data-desktop-menu-item]:focus-visible,
-[data-desktop-settings-dialog] button:focus-visible {
-  outline: 2px solid #2e8cff; outline-offset: 2px;
+/* Les rangees prennent leur surface de survol au focus clavier, sans trait
+   pose par-dessus. Les autres boutons de la modale gardent un anneau : eux
+   n'ont pas de surface pour marquer le focus. */
+[data-desktop-switcher]:focus-visible, [data-desktop-menu-item]:focus-visible {
+  outline: none; color: var(--desktop-ink); background: var(--desktop-hover);
+}
+[data-desktop-settings-dialog] button:not([data-desktop-settings-nav-item], [data-desktop-settings-grab]):focus-visible {
+  outline: 2px solid var(--desktop-focus-ring); outline-offset: 2px;
 }
 @media (max-width: 680px) {
   [data-desktop-settings-nav] { flex-basis: 180px; }
@@ -532,7 +557,7 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 [data-desktop-menu-workspace-name] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [data-desktop-workspace-avatar] { flex: none; display: grid; place-items: center; width: 20px; height: 20px; background: var(--desktop-hover); border-radius: 4px; color: var(--desktop-muted); font-size: 12px; font-weight: 600; }
 [data-desktop-menu-check] { margin-left: auto; color: var(--desktop-muted); font-size: 15px; }
-[data-desktop-menu-item]:focus-visible { outline: 2px solid var(--desktop-muted); outline-offset: -2px; }
+[data-desktop-menu-item]:focus-visible { outline: none; color: var(--desktop-ink); background: var(--desktop-hover); }
 [data-desktop-settings-content] details { margin-top: 30px; color: var(--desktop-muted); font-size: 13px; }
 [data-desktop-settings-content] details summary { cursor: pointer; margin-bottom: 12px; }
 
@@ -611,7 +636,7 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 [data-desktop-settings-grab]:hover { color:var(--desktop-ink); background:var(--desktop-hover); }
 [data-desktop-settings-grab-hint] { display:none; padding:4px 8px 0; color:var(--desktop-muted); font-size:10px; line-height:1.5; }
 [data-desktop-settings-feedback]:focus-within [data-desktop-settings-grab-hint] { display:block; }
-[data-desktop-settings-nav-item]:focus-visible, [data-desktop-settings-grab]:focus-visible { outline:2px solid var(--blok-focus-ring,#2383e2); outline-offset:-2px; }
+[data-desktop-settings-nav-item]:focus-visible, [data-desktop-settings-grab]:focus-visible { outline:none; color:var(--desktop-ink); background:var(--desktop-hover); }
 [data-desktop-connections-accounts] { display:flex; align-items:center; justify-content:space-between; gap:24px; padding:0 0 28px; margin-bottom:30px; border-bottom:1px solid var(--desktop-border); }
 [data-desktop-connections-accounts] [data-desktop-settings-copy] { margin-top:0; }
 [data-desktop-connections-accounts] [data-desktop-settings-row-help] { line-height:1.5; }
@@ -633,10 +658,6 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 [data-desktop-sidebar-toggle]:focus-visible { outline: 2px solid var(--desktop-ink); outline-offset: 2px; }
 
 /* Compact page navigation shares the same hover and focus tokens as the rail. */
-[data-desktop-page-workspace] { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 180px; flex: 0 1 auto; font-size: 13px; }
-[data-desktop-page-workspace] svg { flex: none; width: 16px; height: 16px; color: var(--desktop-muted); }
-[data-desktop-page-workspace] span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-[data-desktop-page-breadcrumbs] { flex: 1; }
 [data-desktop-page-breadcrumb-item]:last-child { flex-shrink: 0.5; max-width: 340px; }
 [data-desktop-page-breadcrumb-item] { font-size: 13px; }
 [data-desktop-page-readonly] { margin-inline: 8px; flex: none; color: var(--desktop-muted); font-size: 12px; }
@@ -646,7 +667,7 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
   background: transparent; color: var(--desktop-ink); font: inherit; font-size: 13px; cursor: pointer;
 }
 [data-desktop-page-actions] > button:is(:hover, [aria-expanded="true"]) { background: var(--desktop-hover); }
-[data-desktop-page-actions] > button:focus-visible { outline: 2px solid var(--blok-focus-ring, #2383e2); outline-offset: 2px; }
+[data-desktop-page-actions] > button:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: 2px; }
 [data-desktop-page-actions] > [data-desktop-page-share] { padding-inline: 9px; }
 [data-desktop-page-favorite][aria-pressed="true"] { color: #dba84d; }
 [data-desktop-page-favorite][aria-pressed="true"] path { fill: currentColor; }
@@ -659,9 +680,6 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 [data-desktop-page-full-width]:disabled { opacity: .5; cursor: default; }
 [data-desktop-page-menu]:is([popover], [data-blok-top-layer]) { position: fixed; inset: auto; margin: 0; }
 [data-desktop-page-menu] { box-sizing: border-box; }
-@media (max-width: 800px) {
-  [data-desktop-page-workspace], [data-desktop-page-workspace] + [data-desktop-page-breadcrumb-separator] { display: none; }
-}
 @media (max-width: 540px) {
   [data-desktop-page-toolbar] { padding-inline: 6px; gap: 4px; }
   [data-desktop-page-actions] { gap: 0; }
@@ -669,9 +687,6 @@ html:not([data-desktop-high-contrast]) body[data-blok-theme="dark"] [data-deskto
 }
 
 [data-blok-shell]:has([data-blok-sidebar]:not([data-collapsed])) [data-desktop-sidebar-toggle] { display: none; }
-button[data-desktop-page-workspace] { border: 0; border-radius: 4px; padding: 4px 6px; background: transparent; color: inherit; font-family: inherit; cursor: pointer; }
-button[data-desktop-page-workspace]:is(:hover, [aria-expanded="true"]) { background: var(--desktop-hover); }
-button[data-desktop-page-workspace]:focus-visible { outline: 2px solid var(--blok-focus-ring); outline-offset: -2px; }
 
 [data-desktop-empty] {
   display: flex; flex-direction: column; align-items: stretch; gap: 20px;

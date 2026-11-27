@@ -20,7 +20,7 @@ body[data-blok-theme="light"] [data-cloud-gateway] { --desktop-canvas:#fff; --de
 [data-cloud-link] { border:0; padding:3px 0; color:var(--desktop-muted,#73736e); background:transparent; }
 [data-cloud-link]:not(:disabled):hover { background:transparent; color:var(--blok-text-primary); }
 [data-cloud-gateway] button:disabled { opacity:.45; cursor:not-allowed; }
-[data-cloud-gateway] button:not([aria-haspopup]):focus-visible { outline:2px solid var(--blok-focus-ring); outline-offset:2px; }
+[data-cloud-gateway] button:not([aria-haspopup]):focus-visible { outline:2px solid var(--desktop-focus-ring); outline-offset:2px; }
 [data-cloud-gateway] label { display:block; font-size:12px; font-weight:550; margin:17px 0 6px; }
 [data-cloud-gateway] hr { border:0; border-top:1px solid var(--desktop-border,#eee); margin:28px 0; }
 [data-cloud-status] { padding:15px 17px; border:1px solid var(--desktop-border,#ddd); border-radius:7px; background:var(--desktop-strip,#f7f7f5); margin:22px 0; }

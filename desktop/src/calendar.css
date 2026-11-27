@@ -46,7 +46,7 @@ button.cal-day-label {
   color: inherit; font: inherit; cursor: pointer;
 }
 button.cal-day-label:hover { background: var(--desktop-hover); }
-button.cal-day-label:focus-visible { outline: 2px solid var(--blok-focus-ring, #2383e2); outline-offset: -2px; }
+button.cal-day-label:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: -2px; }
 .cal-day-label span { font-size: 10px; font-weight: 550; color: var(--desktop-muted); letter-spacing: .035em; text-transform: uppercase; }
 .cal-day-label strong { display: grid; place-items: center; min-width: 26px; height: 26px; margin-left: -4px; font-size: 21px; font-weight: 550; line-height: 1; letter-spacing: -.055em; }
 .cal-day-label[aria-current] strong { color: white; background: var(--cal-accent); border-radius: 50%; font-size: 16px; }
@@ -124,7 +124,7 @@ button.cal-day-label:focus-visible { outline: 2px solid var(--blok-focus-ring, #
   text-align: start; font: inherit; cursor: pointer;
 }
 .cal-planning-event:hover, .cal-planning-empty button:hover { background: var(--desktop-hover); }
-.cal-planning-event:focus-visible, .cal-planning-empty button:focus-visible { outline: 2px solid var(--blok-focus-ring, #2383e2); outline-offset: -2px; }
+.cal-planning-event:focus-visible, .cal-planning-empty button:focus-visible { outline: 2px solid var(--desktop-focus-ring); outline-offset: -2px; }
 .cal-planning-time, .cal-planning-name small { color: var(--desktop-muted); font-size: 12px; }
 .cal-planning-time { font-variant-numeric: tabular-nums; }
 .cal-planning-name { min-width: 0; display: grid; gap: 2px; padding-inline-start: 9px; border-inline-start: 3px solid var(--event-color); }

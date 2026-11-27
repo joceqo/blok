@@ -5,7 +5,7 @@
 }
 .workspace-library :where(.library-titlebar, .library-toolbar) button { font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer; }
 .workspace-library :where(.library-titlebar, .library-toolbar) button:focus-visible, .workspace-library input:focus-visible {
-  outline: 2px solid var(--blok-focus-ring, #2383e2); outline-offset: -2px;
+  outline: 2px solid var(--desktop-focus-ring); outline-offset: -2px;
 }
 .library-titlebar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .library-titlebar [data-desktop-sidebar-toggle] .library-glyph { transform: scaleX(-1); }
@@ -49,7 +49,7 @@
     border-radius: 20px; font-weight: 500; background: var(--desktop-hover); color: var(--desktop-ink);
   }
   .library-view-picker select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
-  .library-view-picker:focus-within { outline: 2px solid var(--blok-focus-ring, #2383e2); }
+  .library-view-picker:focus-within { outline: 2px solid var(--desktop-focus-ring); }
   .library-titlebar { flex-wrap: wrap; }
 }
 

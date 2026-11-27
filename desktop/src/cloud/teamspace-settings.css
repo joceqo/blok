@@ -14,7 +14,7 @@
 .teamspace-settings :is(button,select), .teamspace-dialog :is(button,select) { font: inherit; cursor: pointer; }
 .teamspace-settings button:disabled, .teamspace-dialog button:disabled { opacity: .45; cursor: default; }
 .teamspace-settings :is(button,select,input):focus-visible, .teamspace-dialog :is(button,select,input,textarea):focus-visible {
-  outline: 2px solid var(--blok-focus-ring, #2383e2); outline-offset: 2px;
+  outline: 2px solid var(--desktop-focus-ring); outline-offset: 2px;
 }
 .teamspace-setting-row, .teamspace-roster-toolbar, .teamspace-default-form, .teamspace-invite-input,
 .teamspace-detail-sub, .teamspace-name-field, .teamspace-page-form, .teamspace-person {
@@ -40,8 +40,8 @@
 .teamspace-toolbar-spacer { flex: 1; }
 .teamspace-filter, .teamspace-icon-button, .teamspace-more { display: inline-flex; gap: 5px; align-items: center; justify-content: center; border: 0; border-radius: 5px; background: transparent; color: var(--desktop-muted); padding: 3px 7px; height: 28px; line-height: 20px; }
 .teamspace-filter { position: relative; }
-.teamspace-filter:focus-within { outline: 2px solid var(--blok-focus-ring, #2383e2); }
-.teamspace-filter[data-active=true] { background: color-mix(in srgb, var(--team-blue) 15%, transparent); color: var(--blok-focus-ring, #2383e2); }
+.teamspace-filter:focus-within { outline: 2px solid var(--desktop-focus-ring); }
+.teamspace-filter[data-active=true] { background: color-mix(in srgb, var(--team-blue) 15%, transparent); color: #2383e2; }
 .teamspace-filter select { position: absolute; inset: 0; width: 100%; opacity: 0; }
 .teamspace-filter > span { display: inline-flex; align-items: center; }
 .teamspace-filter svg, .teamspace-icon-button svg { width: 16px; height: 16px; }
@@ -89,7 +89,7 @@
 .teamspace-dialog-invite h2 { padding-inline-end: 12px; font-size: 16px; margin-bottom: 14px; }
 .teamspace-title-icon { display: inline-flex; font-size: .9em; padding: 3px; vertical-align: -2px; }
 .teamspace-invite-input { border: 1px solid var(--team-line); background: var(--desktop-hover); border-radius: 5px; padding-right: 6px; }
-.teamspace-invite-input:focus-within { outline: 2px solid var(--blok-focus-ring, #2383e2); }
+.teamspace-invite-input:focus-within { outline: 2px solid var(--desktop-focus-ring); }
 .teamspace-invite-input input { background: none !important; border: 0 !important; outline: 0 !important; }
 .teamspace-candidates { max-height: 190px; overflow: auto; margin-top: 10px; }
 .teamspace-candidates > button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: start; background: transparent; border: 0; color: inherit; border-radius: 5px; padding: 6px; }

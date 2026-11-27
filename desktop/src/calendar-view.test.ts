@@ -246,7 +246,7 @@ it('keeps participants in the draft until the organizer confirms the invitation'
     if (url.endsWith('/invitees')) return {members:[{id:'lou',title:'Lou'}]};
     return {members:[],feeds:[],connected:false};
   });
-  const store = {...createStore(async()=>[event]),remote:{base:'/calendar',preferenceKey:'test',accountId:'host',
+  const store = {...createStore(async()=>[event]),remote:{base:'/calendar',preferenceKey:'test',accountId:'moi',
     client:{request} as unknown as NonNullable<CalendarStore['remote']>['client']}};
   setup(store.list, {store});
   (await chip(event.id)).click();

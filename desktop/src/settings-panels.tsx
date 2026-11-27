@@ -7,6 +7,7 @@ import type {Appearance} from './settings';
 import { Avatar, Choice, Feedback, SwitchRow, TextField } from './components';
 import {getTimeFormatter, readAutoTimeZone, readChatNewline, readChosenTimeZone, readContrast, readTimeFormat, readTimeZone, setAutoTimeZone, setChatNewline, setContrast, setTimeFormat, setTimeZone, subscribeDisplayPreferences, type Contrast, type TimeFormat} from './display-preferences';
 import {getTimeZoneOptions} from './calendarcn/lib/time-zones';
+import {TeamspaceIconPicker} from './cloud/teamspace-icon';
 import './settings-panels.css';
 
 type Preferences = {
@@ -22,6 +23,14 @@ type General = {
   workspace: string;
   version: string;
   remoteServer?: string;
+  /** Les espaces locaux n'ont pas d'identifiant à montrer : ils n'en ont pas. */
+  workspaceId?: string;
+  /** Absent hors d'un espace distant administré : il n'y a rien à renommer. */
+  rename?(name: string): Promise<void>;
+  /** Absent sans serveur : pas d'e-mail à autoriser, donc pas de réglage. */
+  mail?: {read(): Promise<boolean>; write(allowed: boolean): Promise<void>};
+  /** Absent là où rien ne peut la retenir : un espace sans registre ni base. */
+  icon?: {value: string; write(icon: string): Promise<void>};
 };
 
 type Account =
@@ -202,13 +211,157 @@ function AccountPanel({account}: {account: Account}) {
   </>;
 }
 
-function GeneralPanel({workspace, version, remoteServer}: General) {
+/** Le nom de l'espace, modifiable seulement là où un serveur peut l'écrire. */
+function WorkspaceName({initial, rename}: {initial: string; rename(name: string): Promise<void>}) {
+  const [saved, setSaved] = useState(initial);
+  const [value, setValue] = useState(initial);
+  const [notice, setNotice] = useState('');
+  const [saving, setSaving] = useState(false);
+  const trimmed = value.trim();
+  const changed = trimmed.length > 0 && trimmed !== saved;
+
+  async function save() {
+    setSaving(true);
+    setNotice('');
+    try {
+      await rename(trimmed);
+      // Le champ repart du nom retenu : sinon les espaces tapés autour
+      // rouvriraient le bouton sur un enregistrement qui n'a rien à écrire.
+      setSaved(trimmed);
+      setValue(trimmed);
+      setNotice(shellText("Nom enregistré."));
+    } catch {
+      setNotice(shellText("Le nom n’a pas pu être enregistré."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <div className="settings-panel-stack" data-setting="workspace-name">
+    <div className="settings-panel-label">
+      <strong>{shellText("Nom de l’espace de travail")}</strong>
+      <small>{shellText("Jusqu’à 120 caractères. Tout le monde le voit dans la barre latérale.")}</small>
+      {notice && <small role="status">{notice}</small>}
+    </div>
+    <TextField maxLength={120} value={value} data-desktop-settings-workspace-name=""
+      aria-label={shellText("Nom de l’espace de travail")}
+      onChange={event => setValue(event.currentTarget.value)}
+      onKeyDown={event => {
+        if (event.key !== 'Enter' || event.nativeEvent.isComposing || !changed) return;
+        event.preventDefault();
+        void save();
+      }}/>
+    {/* Le bouton n'apparaît qu'avec quelque chose à enregistrer : un bouton
+        éteint en permanence sous un champ ne dit rien à personne. */}
+    {changed && <button type="button" data-desktop-settings-copy="" disabled={saving} onClick={() => void save()}>
+      {shellText("Enregistrer")}
+    </button>}
+  </div>;
+}
+
+/**
+ * L'icône de l'espace. Le sélecteur est celui des espaces d'équipe : même
+ * jeu d'icônes, mêmes émojis, même import — et donc une seule chaîne stockée,
+ * que les deux serveurs valident avec les mêmes bornes.
+ */
+function WorkspaceIcon({value, write, name}: NonNullable<General['icon']> & {name: string}) {
+  const [icon, setIcon] = useState(value);
+  const [notice, setNotice] = useState('');
+
+  function choose(next: string) {
+    const previous = icon;
+    setIcon(next);
+    setNotice('');
+    write(next).catch(() => {
+      setIcon(previous);
+      setNotice(shellText("L’icône n’a pas pu être enregistrée."));
+    });
+  }
+
+  return <div className="settings-panel-stack" data-setting="workspace-icon">
+    <div className="settings-panel-label">
+      <strong>{shellText("Icône")}</strong>
+      <small>{shellText("Choisissez une icône ou un émoji, ou chargez une image. Elle apparaît dans la barre latérale.")}</small>
+      {notice && <small role="status">{notice}</small>}
+    </div>
+    <div className="settings-panel-icon">
+      <TeamspaceIconPicker value={icon} name={name} onChange={choose}
+        label={shellText("Modifier l’icône de l’espace")}/>
+    </div>
+  </div>;
+}
+
+/** L'identifiant que le support et l'API demandent, avec de quoi le copier. */
+function WorkspaceIdentifier({id}: {id: string}) {
+  const [notice, setNotice] = useState('');
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(id);
+      setNotice(shellText("Identifiant copié"));
+    } catch {
+      setNotice(shellText("Copie impossible. Vous pouvez sélectionner l’identifiant."));
+    }
+  }
+  return <div className="settings-panel-row" data-setting="workspace-id">
+    <div className="settings-panel-label">
+      <strong>{shellText("Identifiant de l’espace de travail")}</strong>
+      <small><code>{id}</code></small>
+      {notice && <small role="status">{notice}</small>}
+    </div>
+    <button type="button" data-desktop-settings-copy="" onClick={() => void copy()}>{shellText("Copier")}</button>
+  </div>;
+}
+
+/**
+ * Le commutateur d'espace : un administrateur coupe tous les e-mails de
+ * notification d'un coup. Il s'affiche avant de connaître la réponse du
+ * serveur, mais fermé — montrer une position avant de la savoir serait
+ * annoncer un réglage au hasard.
+ */
+function WorkspaceMail({read, write}: NonNullable<General['mail']>) {
+  const [allowed, setAllowed] = useState<boolean | null>(null);
+  const [notice, setNotice] = useState('');
+  useEffect(() => {
+    const open = new AbortController();
+    read().then(
+      value => { if (!open.signal.aborted) setAllowed(value); },
+      // Une lecture qui échoue ne doit pas annoncer « autorisé » : refusée par
+      // défaut, le commutateur dira la vérité dès la prochaine ouverture.
+      () => { if (!open.signal.aborted) setAllowed(false); });
+    return () => open.abort();
+  }, [read]);
+
+  function toggle(next: boolean) {
+    const previous = allowed;
+    setAllowed(next);
+    setNotice('');
+    write(next).catch(() => {
+      setAllowed(previous);
+      setNotice(shellText("Le réglage n’a pas pu être enregistré."));
+    });
+  }
+
+  return <>
+    <SwitchRow settingId="workspace-mail" checked={allowed === true} disabled={allowed === null}
+      label={shellText("Autoriser les notifications par e-mail dans l’espace")}
+      help={shellText("Les membres peuvent toujours les désactiver individuellement.")}
+      onChange={toggle}/>
+    {notice && <p className="settings-notification-status" role="status">{notice}</p>}
+  </>;
+}
+
+function GeneralPanel({workspace, version, remoteServer, workspaceId, rename, mail, icon}: General) {
   return <>
     <h1 data-desktop-settings-title="">{shellText("Général")}</h1>
-    <p data-desktop-settings-intro="">{shellText("Informations sur votre espace de travail.")}</p>
+    <p data-desktop-settings-intro="">{shellText("Gérez le nom de votre espace de travail et retrouvez ses informations.")}</p>
     <Section title={shellText("Espace de travail")}>
+      {rename
+        ? <WorkspaceName initial={workspace} rename={rename}/>
+        : <dl className="settings-panel-values">
+            <div data-setting="workspace-name"><dt>{shellText("Nom de l’espace")}</dt><dd>{workspace}</dd></div>
+          </dl>}
+      {icon && <WorkspaceIcon {...icon} name={workspace}/>}
       <dl className="settings-panel-values">
-        <div data-setting="workspace-name"><dt>{shellText("Nom de l’espace")}</dt><dd>{workspace}</dd></div>
         <div data-setting="hosting"><dt>{shellText("Hébergement")}</dt><dd>{remoteServer ? shellText("Serveur distant") : shellText("Sur cet appareil")}</dd></div>
       </dl>
       {remoteServer && <details className="settings-panel-directory">
@@ -216,6 +369,12 @@ function GeneralPanel({workspace, version, remoteServer}: General) {
         <code>{remoteServer}</code>
       </details>}
     </Section>
+    {mail && <Section title={shellText("E-mails")}>
+      <WorkspaceMail {...mail}/>
+    </Section>}
+    {workspaceId && <Section title={shellText("Identifiant")}>
+      <WorkspaceIdentifier id={workspaceId}/>
+    </Section>}
     <Section title={shellText("À propos")}>
       <p data-desktop-settings-version="">{version}</p>
     </Section>

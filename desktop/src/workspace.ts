@@ -537,16 +537,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
       onLayout(sidebar.getBoundingClientRect().width);
     }, ref.kind === 'remote' ? (anchor) => openPageSharing(ref, id, page.title, anchor, refreshRemoteManifest) : undefined, {
       viewControls,
-      workspaceName: ref.name,
-      workspacePages: () => {
-        const pages = withSections(ws.index?.pages ?? []);
-        const choice = (page: DesktopPage): PageBreadcrumbChoice => ({
-          id: page.id, title: page.title, icon: page.icon, current: page.id === ws.currentId,
-          onOpen: () => navigate(page.id),
-          children: pages.filter((child) => child.parentId === page.id).map(choice),
-        });
-        return pages.filter((page) => !page.parentId && (ref.kind === 'local' || page.section === 'workspace')).map(choice);
-      },
+      storedOnDevice: ref.kind === 'local',
       pageUrl: pageId => workspacePageLink(ref, pageId, pageView(new URL(location.href))),
       favorite: favorites.has(id),
       onFavorite: (value) => {

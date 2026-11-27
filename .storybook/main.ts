@@ -27,6 +27,7 @@ const config: StorybookConfig = {
   stories: [
     '../src/**/*.stories.@(js|jsx|mjs|ts|tsx)',
     '../desktop/src/sidebar/stories/*.stories.tsx',
+    '../desktop/src/top-bar/stories/*.stories.tsx',
     '../desktop/src/components/shell/stories/*.stories.tsx',
     '../desktop/src/calendarcn/components/ui/*.stories.tsx',
   ],

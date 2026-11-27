@@ -21,7 +21,7 @@ import { nativeSessionAdapter } from './native-session';
 import { createNotificationTrigger } from './cloud/notification-trigger';
 import { mountWorkspaceMembers, openWorkspaceInvitation } from './cloud/workspace-settings';
 import {canCreateWorkspace, hasWebAccount, type WebAccountAction} from './cloud/web-account-actions';
-import { activeWorkspace, listWorkspaces, createLocalWorkspace, workspaceKey, rememberWorkspace, LOCAL_SERVER_ORIGIN } from './workspace-registry';
+import { activeWorkspace, listWorkspaces, createLocalWorkspace, workspaceKey, rememberWorkspace, LOCAL_SERVER_ORIGIN, type LocalWorkspace, type RemoteWorkspace } from './workspace-registry';
 import { dataDirectory } from './storage';
 import corePackage from '../../package.json';
 import appPackage from '../package.json';
@@ -196,6 +196,8 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     panelGeneration: 0,
     footerPopup: null as PopoverDesktop | null,
     supportEmail: null as string | null,
+    /** Le nom courant de l'espace : renommer le change sans recharger la page. */
+    workspaceName: currentWorkspace.name,
   };
   const openInvitation = (container?: HTMLElement): {close(): void} | undefined => {
     if (!admin || !client || currentWorkspace.kind !== 'remote') return;
@@ -398,7 +400,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
       },
     };
     reactSurface = mountFooterSurface(options.footerHost, {
-      name: currentWorkspace.name, context, choices, helpItems, destinations: destinationsItems,
+      name: currentWorkspace.name, icon: currentWorkspace.icon, context, choices, helpItems, destinations: destinationsItems,
       onSettings: panel => openSettings(panel),
       async canCreate() {
         if (!webAccount || !client) return false;
@@ -848,9 +850,50 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     } else if (panel === 'ai') {
       ui.choices.push(mountAiSettings(content, currentWorkspace));
     } else if (panel === 'general') {
+      const remote = currentWorkspace.kind === 'remote' && !onDevice ? currentWorkspace : undefined;
+      // Le ref porte le slug ; l'identifiant que le support demande vit dans la session.
+      const slug = remote?.workspaceId;
+      // Trois mondes à distinguer : un espace distant qu'on administre, un
+      // espace sur le disque, et tout le reste — où il n'y a rien à écrire.
+      const managed = remote && client && admin && slug ? {remote, client, slug} : undefined;
+      const onDisk = currentWorkspace.kind === 'local' ? currentWorkspace : undefined;
+      const patch = (body: Record<string, unknown>) => managed
+        ? managed.client.request(`/api/workspaces/${encodeURIComponent(managed.slug)}`, {method: 'PATCH', body: JSON.stringify(body)})
+        : Promise.reject(new Error('Espace non administré'));
+      function workspaceRename(): ((name: string) => Promise<void>) | undefined {
+        if (managed) return async (name) => { await patch({name}); renameWorkspace(managed.remote, name); };
+        // Un espace local a un nom lui aussi : il vit dans le registre de
+        // l'appareil, et le renommer ne demande aucun serveur.
+        if (onDisk) return async (name) => {
+          if (onDisk.id === 'default') localStorage.setItem('blok:desktop:profile-name', name);
+          else rememberWorkspace({...onDisk, name});
+          ui.workspaceName = name;
+          setProfileName(name);
+          updateAccountName(name);
+        };
+        return undefined;
+      }
+      function workspaceIcon(): {value: string; write(icon: string): Promise<void>} | undefined {
+        if (managed) return {
+          value: managed.client.currentSession?.workspaces.find((space) => space.slug === managed.slug)?.icon ?? '',
+          write: async (icon) => { await patch({icon}); dressWorkspace(managed.remote, icon); },
+        };
+        if (onDisk) return {
+          value: onDisk.icon ?? '',
+          write: async (icon) => { dressWorkspace(onDisk, icon); },
+        };
+        return undefined;
+      }
       ui.choices.push(mountSettingsPanel(content, {
-        kind: 'general', workspace: currentWorkspace.name,
-        remoteServer: currentWorkspace.kind === 'remote' && !onDevice ? currentWorkspace.server || location.origin : undefined,
+        kind: 'general', workspace: ui.workspaceName,
+        remoteServer: remote ? remote.server || location.origin : undefined,
+        workspaceId: client?.currentSession?.workspaces.find((space) => space.slug === slug)?.id,
+        rename: workspaceRename(),
+        icon: workspaceIcon(),
+        mail: managed ? {
+          read: async () => (await managed.client.workspace(managed.slug)).allowNotificationMail !== false,
+          write: async (allowed) => { await patch({allowNotificationMail: allowed}); },
+        } : undefined,
         version: `Blok ${CORE_VERSION} · App ${APP_VERSION}`,
       }));
     }
@@ -896,9 +939,34 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     else if (section === 'backups' && panelTabs.has('backups')) openSettings('backups');
     else if (section === 'members' && admin) openSettings('members');
     else if ((section === 'teams' || section === 'teams-create') && panelTabs.has('teams')) openSettings('teams', section === 'teams-create' ? 'create' : undefined);
+    // Un panneau que cet espace n'a pas — Membres en local, par exemple — ne
+    // doit pas ouvrir une modale vide : Général est la page d'accueil.
+    else if (panelTabs.has(section as SettingsPanel)) openSettings(section as SettingsPanel);
     else openSettings('general');
   });
   let displayName = localProfileName || currentWorkspace.name;
+  /**
+   * Le serveur a accepté le nom : il faut le reposer partout où l'ancien était
+   * recopié, sinon la barre latérale et le sélecteur de compte continuent
+   * d'annoncer un espace qui ne s'appelle plus comme ça.
+   */
+  function dressWorkspace(ref: RemoteWorkspace | LocalWorkspace, icon: string) {
+    rememberWorkspace({...ref, icon});
+    if (ref.kind === 'remote') {
+      const cached = client?.currentSession?.workspaces.find((space) => space.slug === ref.workspaceId);
+      if (cached) cached.icon = icon;
+    }
+    // L'aide promet que l'icône apparaît dans la barre latérale : c'est ici
+    // qu'elle y arrive, sans attendre un rechargement.
+    reactSurface?.dress(icon);
+  }
+  function renameWorkspace(remote: RemoteWorkspace, name: string) {
+    rememberWorkspace({...remote, name});
+    const cached = client?.currentSession?.workspaces.find((space) => space.slug === remote.workspaceId);
+    if (cached) cached.name = name;
+    ui.workspaceName = name;
+    setProfileName(localProfileName || name);
+  }
   function setProfileName(name: string) {
     displayName = name;
     if (reactSurface) reactSurface.rename(name);
@@ -916,7 +984,16 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
   legacy?.preferences.addEventListener('click', () => openSettings('preferences'));
   legacy?.account.addEventListener('click', () => openSettings('account'));
   if (currentWorkspace.kind === 'remote') legacy?.switcher.setAttribute('aria-label',shellText("Espaces et réglages"));
-  const pendingSettings = sessionStorage.getItem('blok:desktop:pending-settings');
+  // `?settings=<panneau>` ouvre la modale sur ce panneau. Le paramètre sort
+  // aussitôt de l'URL : sinon un rechargement la rouvrirait, et un lien
+  // partagé emmènerait son destinataire dans les réglages.
+  const linked = new URL(location.href).searchParams.get('settings');
+  if (linked) {
+    const url = new URL(location.href);
+    url.searchParams.delete('settings');
+    history.replaceState(history.state, '', url);
+  }
+  const pendingSettings = sessionStorage.getItem('blok:desktop:pending-settings') ?? linked;
   if (pendingSettings) {
     sessionStorage.removeItem('blok:desktop:pending-settings');
     queueMicrotask(() => {

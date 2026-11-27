@@ -4,7 +4,7 @@
 [data-cloud-settings-button]:hover { background:var(--blok-item-hover-bg); }
 [data-cloud-settings-button][data-cloud-settings-primary] { --cloud-button-fill:color-mix(in srgb,var(--blok-color-accent,#2383e2),#000 32%); color:#fff; background:var(--cloud-button-fill); border-color:var(--cloud-button-fill); }
 [data-cloud-settings-button][data-cloud-settings-primary]:hover { --cloud-button-fill:color-mix(in srgb,var(--blok-color-accent,#2383e2),#000 40%); }
-[data-cloud-members-panel] [data-cloud-settings-button]:focus-visible, [data-cloud-invite-dialog] [data-cloud-settings-button]:focus-visible { outline:2px solid var(--blok-focus-ring); outline-offset:2px; }
+[data-cloud-members-panel] [data-cloud-settings-button]:focus-visible, [data-cloud-invite-dialog] [data-cloud-settings-button]:focus-visible { outline:2px solid var(--desktop-focus-ring); outline-offset:2px; }
 [data-cloud-members-panel] :disabled, [data-cloud-invite-dialog] :disabled { opacity:.5; cursor:wait; }
 [data-cloud-members-panel] { container-type:inline-size; }
 [data-cloud-members-toolbar] { display:flex; gap:16px; align-items:center; justify-content:space-between; margin:0 0 24px; }

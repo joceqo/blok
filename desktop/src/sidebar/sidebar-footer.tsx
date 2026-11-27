@@ -9,6 +9,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../components';
+import { TeamspaceIcon } from '../cloud/teamspace-icon';
 import { WorkspaceChoices, type FooterChoices } from './workspace-choices';
 
 export type { FooterChoices } from './workspace-choices';
@@ -23,6 +24,8 @@ interface FooterAction {
 interface FooterProps {
   choices: FooterChoices;
   name: string;
+  /** La marque de l'espace : absente, c'est l'initiale du nom qui sert. */
+  icon?: string;
   context: string;
   host: HTMLElement;
   onSettings(panel: 'account' | 'preferences'): void;
@@ -64,7 +67,7 @@ const FooterActions = ({ items, withIcons }: { items: FooterAction[]; withIcons:
   </>
 );
 
-const WorkspaceMenu = ({ choices, name, context, onSettings, canCreate }: FooterProps) => {
+const WorkspaceMenu = ({ choices, name, icon, context, onSettings, canCreate }: FooterProps) => {
   const [allowCreation, setAllowCreation] = useState(false);
   useEffect(() => {
     const lifetime = new AbortController();
@@ -86,6 +89,7 @@ const WorkspaceMenu = ({ choices, name, context, onSettings, canCreate }: Footer
         <Avatar
           data-desktop-menu-avatar=""
           name={name}
+          mark={icon ? <TeamspaceIcon value={icon} name={name}/> : undefined}
         />
         <span data-desktop-menu-account-text="">
           <strong data-desktop-menu-title="">{name}</strong>
@@ -138,6 +142,7 @@ export const SidebarFooter = ({ ref, ...props }: FooterProps & { ref?: Ref<Foote
           <Avatar
             data-desktop-avatar=""
             name={props.name}
+            mark={props.icon ? <TeamspaceIcon value={props.icon} name={props.name}/> : undefined}
           />
           <span data-desktop-switcher-name="">{props.name}</span>
           <FooterIcon name="chevron" />
@@ -198,19 +203,25 @@ export const SidebarFooter = ({ ref, ...props }: FooterProps & { ref?: Ref<Foote
 export function mountFooterSurface(host: HTMLElement, props: Omit<FooterProps, 'host'>) {
   const root = createRoot(host);
   const ref = createRef<FooterHandle>();
-  function render(name: string) {
+  // Le nom et l'icône voyagent ensemble : redessiner pour l'un sans l'autre
+  // rendrait la barre latérale à moitié à jour.
+  const shown = {name: props.name, icon: props.icon};
+  function render(next: {name?: string; icon?: string}) {
+    Object.assign(shown, next);
     root.render(
       <SidebarFooter
         {...props}
         ref={ref}
-        name={name}
+        name={shown.name}
+        icon={shown.icon}
         host={host}
       />,
     );
   }
-  render(props.name);
+  render({});
   return {
-    rename: render,
+    rename: (name: string) => render({name}),
+    dress: (icon: string) => render({icon}),
     focus: () => ref.current?.focus(),
     close: () => ref.current?.close(),
     destroy: () => root.unmount(),
