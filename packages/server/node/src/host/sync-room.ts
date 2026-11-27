@@ -3,7 +3,7 @@ import type { Socket } from 'node:net';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
 import { verifyTicket } from '../auth/ticket.ts';
-import { DocEndpointClient } from '../collab/doc-endpoint.ts';
+import { DocEndpointClient, DocEndpointError } from '../collab/doc-endpoint.ts';
 import { DocumentPurged, MAX_APPEND_BYTES, UnreadableJournalData } from '../collab/journal/append.ts';
 import { openDocumentRoom, type EditCommand, type EditOutcome, type PendingFrame } from '../collab/room/document-room.ts';
 import { serveSocket } from '../collab/sync/served-socket.ts';
@@ -616,14 +616,33 @@ export function createSyncRooms(options: HostAppOptions): SyncRooms {
         await rooms.retire(doc, { code: RESET_CLOSE, message: 'document reset' }, { load: true });
       } catch (error) {
         // An explicit reset is how a host adopts a record replaced underneath
-        // it: the superseded bytes need not still be readable.
-        if (!(error instanceof UnreadableJournalData)) {
+        // it: the superseded bytes need not still be readable. Nor need the
+        // endpoint answer — Go's journal-less reset never asks it at all, so a
+        // document that cannot be loaded is still a document that can be reset.
+        if (!(error instanceof UnreadableJournalData) && !(error instanceof DocEndpointError)) {
           throw error;
+        }
+        // The retire stopped before the page existed, and resetGeneration needs
+        // a lineage to raise. An empty one is what the next open re-seeds over.
+        if (!(await existingDirectory(pageDirectory(options.collabDirectory, doc)))) {
+          await initializePage(options.collabDirectory, doc,
+            newBaseline(seedUpdate(null)), '{}', async () => {});
         }
       }
       await resetGeneration(
         pageDirectory(options.collabDirectory, doc),
-        async () => seedUpdate(await seed(doc)),
+        // Go only reads the endpoint when it keeps a journal; without one it
+        // raises the epoch and lets the next open re-seed. This host has one
+        // path, so it seeds when it can and still resets when it cannot —
+        // an endpoint that is down must not make a reset fail.
+        async () => seedUpdate(await seed(doc).catch((error: unknown) => {
+          options.collabLog(
+            `collab: room "${doc}" reset without its endpoint: ${error instanceof Error ? error.message : String(error)}`,
+            'warning',
+          );
+
+          return null;
+        })),
         async () => {},
       );
     });
