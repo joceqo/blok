@@ -1048,7 +1048,9 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   ws.frame.element.append(status);
   ws.assistant = mountAgentAssistant({
     onOpenChange: open => ws.frame.setChatActive(open),
-    workspaceSearch: ref.kind === 'remote' ? { find: repository.searchSources, open: navigate } : undefined,
+    // navigate() takes `replace` second: never hand it a blockId. Citing a block in
+    // the page is not wired yet, so a source opens its page.
+    workspaceSearch: ref.kind === 'remote' ? { find: repository.searchSources, open: (id: string) => navigate(id) } : undefined,
     getPageText: () => ws.pageCanvas.querySelector('[data-desktop-document]')?.textContent?.slice(0, 100_000) ?? '',
     openSettings: () => ws.footer.dispatchEvent(new Event('blok:desktop-open-ai-settings')),
     editPage: {

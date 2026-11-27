@@ -92,6 +92,28 @@ it('sends only fresh search results, links the source page and omits sourced tur
   expect(JSON.stringify(model.mock.calls[1]![0].messages)).not.toContain('Trente');
 });
 
+it('opens a cited source at the block the match came from', async () => {
+  const find = vi.fn().mockResolvedValue([
+    { id:'p1', title:'Compte rendu', excerpt:'La marmotte dort', blockId:'b-cible' },
+    { id:'p2', title:'Page sans bloc', excerpt:'Trouvée par son titre' },
+  ]);
+  const open = vi.fn();
+  const model = vi.fn<AgentModel>().mockResolvedValue({content:[{type:'text',text:'Oui [1][2]'}],stop_reason:'end_turn'});
+  const handle = mount({ getPageText:()=>'', openSettings:()=>{}, workspaceSearch:{find,open},
+    listProviders:async()=>[{id:'model',label:'Modèle'}], modelFor:()=>model });
+  handle.element.querySelector<HTMLInputElement>('[data-blok-workspace-search] input')!.checked = true;
+  await handle.refreshProviders();
+  ask(handle, 'Où dort la marmotte ?');
+  await vi.waitFor(() => expect(handle.element.querySelectorAll('[data-blok-answer-sources] button')).toHaveLength(2));
+  const links = handle.element.querySelectorAll<HTMLButtonElement>('[data-blok-answer-sources] button');
+
+  links[0]!.click();
+  expect(open).toHaveBeenCalledWith('p1', 'b-cible');
+  // Nothing to cite: the page opens as before, with no second argument to ignore.
+  links[1]!.click();
+  expect(open).toHaveBeenLastCalledWith('p2');
+});
+
 it('finds conversations in this session and reopens the selected one', async () => {
   const handle = mount({ getPageText: () => 'Contexte du document', openSettings: () => undefined });
   await handle.refreshProviders();

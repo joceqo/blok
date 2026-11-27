@@ -21,7 +21,7 @@ export function workspaceRepository(workspace: WorkspaceRef) {
     return await response.json() as T;
   }
   async function searchSources(query: string, signal: AbortSignal, palette = false) {
-    return (await request<{sources: {id: string; title: string; excerpt: string}[]}>(`${base}/search`, {
+    return (await request<{sources: {id: string; title: string; excerpt: string; blockId?: string}[]}>(`${base}/search`, {
       method: 'POST', body: JSON.stringify(palette ? {query, mode:'palette'} : {query}), signal,
     })).sources;
   }

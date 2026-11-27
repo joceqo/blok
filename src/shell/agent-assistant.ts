@@ -19,8 +19,9 @@ export interface AgentAssistantProvider { id: string; label: string }
 export interface AgentAssistantOptions {
   onOpenChange?(open: boolean): void;
   workspaceSearch?: {
-    find(query: string, signal: AbortSignal): Promise<{id: string; title: string; excerpt: string}[]>;
-    open(id: string): void;
+    find(query: string, signal: AbortSignal): Promise<{id: string; title: string; excerpt: string; blockId?: string}[]>;
+    /** `blockId` names the block the match came from, when the search could cite one. */
+    open(id: string, blockId?: string): void;
   };
   editPage?: { available(): boolean; open(): void };
   /** Visible text of the open page, included when "Cette page" is checked. */
@@ -56,7 +57,7 @@ type PanelMode = 'side' | 'floating' | 'full';
 
 interface Turn {
   question: string;
-  sources?: {id: string; title: string}[];
+  sources?: {id: string; title: string; blockId?: string}[];
   sent: string;
   command: string;
   label: string;
@@ -505,7 +506,9 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
           turn.sources.forEach((source, index) => {
             const link = makeButton(`[${index + 1}] ${source.title || 'Page sans titre'}`);
             link.textContent = link.getAttribute('aria-label') ?? source.title;
-            link.addEventListener('click', () => options.workspaceSearch?.open(source.id));
+            link.addEventListener('click', () => (source.blockId === undefined
+              ? options.workspaceSearch?.open(source.id)
+              : options.workspaceSearch?.open(source.id, source.blockId)));
             sources.append(link);
           });
           article.append(sources);
@@ -605,7 +608,7 @@ export const mountAgentAssistant = (options: AgentAssistantOptions): AgentAssist
       if (search) {
         const sources = await search.find(text, controller.signal);
         controller.signal.throwIfAborted();
-        turn.sources = sources.map(({id, title}) => ({id, title}));
+        turn.sources = sources.map(({id, title, blockId}) => ({id, title, blockId}));
         context = JSON.stringify({ question: text, currentPage: sent.slice(text.length).slice(0, 5000),
           sources: sources.map(({title, excerpt}, index) => ({number:index + 1, title, excerpt})) });
       }

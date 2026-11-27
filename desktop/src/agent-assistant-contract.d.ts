@@ -3,8 +3,8 @@ import type {CliCommand,CliStatus} from '../../src/shell/agent-model';
 export interface AgentAssistantOptions {
   onOpenChange?(open: boolean): void;
   workspaceSearch?: {
-    find(query: string, signal: AbortSignal): Promise<{id: string; title: string; excerpt: string}[]>;
-    open(id: string): void;
+    find(query: string, signal: AbortSignal): Promise<{id: string; title: string; excerpt: string; blockId?: string}[]>;
+    open(id: string, blockId?: string): void;
   };
   editPage?: { available(): boolean; open(): void };
   getPageText(): string;
