@@ -48,14 +48,13 @@ export class Inbound {
       if (state.ended() || state.stop) {
         return;
       }
-      if (state.buf.length >= CAP) {
-        return;
-      }
-      const take = Math.min(chunk.length, CAP - state.buf.length);
-      const merged = new Uint8Array(state.buf.length + take);
+      // A data event has already consumed the entire chunk from the socket.
+      // Retain it, then apply backpressure before Node delivers another one.
+      const merged = new Uint8Array(state.buf.length + chunk.length);
       merged.set(state.buf);
-      merged.set(chunk.subarray(0, take), state.buf.length);
+      merged.set(chunk, state.buf.length);
       state.buf = merged;
+      if (merged.length >= CAP) socket.pause();
       this.data.notifyWaiters();
       this.room.notifyOne();
     };

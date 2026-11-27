@@ -12,11 +12,13 @@ import { bundleServices, bundleSupervisor } from './bundle-runtime-services.mjs'
 
 const targets = {
   'darwin-arm64': {
+    git: 'macOS-arm64', gitDigest: 'a882ec6882416b57d212a22bac845ae27944f96cf73453a864f6a12c17863a79',
     node: 'darwin-arm64', nodeDigest: 'ff6e17d4874b76d272212b908cc020d6e815fba5a6c7eaaa06add725840307fd',
     pg: 'aarch64-apple-darwin', pgDigest: '2f752033b208f9a6a12ef64a9ee23bf19149cff160841980db1e221bf7d24809',
     weed: 'darwin_arm64', weedDigest: 'f2cc8368d4dc50265390803efd70e6ba77c242962902bd81a5e9520f0d262eca',
   },
   'linux-x64': {
+    git: 'ubuntu-x64', gitDigest: 'e5bc3e8e80b57a5bcd8da18d59b23f5b39533d19019ac1d50b0bd34f051d111d',
     node: 'linux-x64', nodeDigest: '061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2',
     pg: 'x86_64-unknown-linux-gnu', pgDigest: 'af316b6e42266ec0a153bdc9194e0b1b5f12c9ce4f0b13d9a96dfca77d9aaecc',
     weed: 'linux_amd64', weedDigest: 'f156c609eeaf9e5fcfeea33fd70411222005f83760aa95893c9d58eff006b45c',
@@ -37,11 +39,13 @@ const pgVersion = '17.12.0';
 const weedVersion = '4.55';
 const nodeName = 'node-v' + nodeVersion + '-' + target.node;
 const pgName = 'postgresql-' + pgVersion + '-' + target.pg;
+const gitName = 'dugite-native-v2.56.1-238326e-' + target.git + '.tar.gz';
 const artifacts = [
   { name: nodeName + '.tar.gz', url: 'https://nodejs.org/dist/v' + nodeVersion + '/' + nodeName + '.tar.gz', sha256: target.nodeDigest },
   { name: pgName + '.tar.gz', url: 'https://github.com/theseus-rs/postgresql-binaries/releases/download/' + pgVersion + '/' + pgName + '.tar.gz', sha256: target.pgDigest },
   { name: 'seaweedfs-' + weedVersion + '-' + target.weed + '.tar.gz', url: 'https://github.com/seaweedfs/seaweedfs/releases/download/' + weedVersion + '/' + target.weed + '.tar.gz', sha256: target.weedDigest },
   { name: 'seaweedfs-' + weedVersion + '-LICENSE', url: 'https://raw.githubusercontent.com/seaweedfs/seaweedfs/' + weedVersion + '/LICENSE', sha256: 'd789d433cc11da163273d1e39be2e8fa67642f9a58ef220d3f258fa9c14ef613' },
+  { name:gitName, url:'https://github.com/desktop/dugite-native/releases/download/v2.56.1/'+gitName, sha256:target.gitDigest },
 ];
 
 function run(command, args, options = {}) {
@@ -88,6 +92,9 @@ try {
   for (const part of ['bin', 'lib', 'share']) await rename(join(work, pgName, part), join(pg, part));
   for (const part of ['COPYRIGHT', 'LICENSE', 'dependency-notices']) await rename(join(work, pgName, part), join(licenses, 'PostgreSQL-' + part));
   for (const part of ['LICENSE', 'NOTICE']) await copyFile(join(root, part), join(licenses, 'Blok-' + part));
+  const gitDir=join(ready,'git');
+  await mkdir(gitDir);
+  run('tar',['-xzf',join(cache,gitName),'-C',gitDir]);
   await chmod(join(bin, 'node'), 0o755);
   run(process.env.CC || 'cc', ['-Os', ...(platform() === 'darwin' ? ['-arch', 'arm64', '-mmacosx-version-min=15.0'] : []), join(root, 'desktop/runtime/flock.c'), '-o', join(bin, 'blok-flock')]);
   await Promise.all([bundleServices(ready), bundleSupervisor(ready)]);

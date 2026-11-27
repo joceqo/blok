@@ -96,3 +96,9 @@ Le journal local conserve la phase, les identifiants de génération et de desti
 4. **Synchronisation bidirectionnelle ultérieure.** La sauvegarde publie des instantanés restaurables. Une future synchronisation devra définir la résolution des modifications concurrentes de deux appareils, y compris pour les corps collaboratifs. Elle aura ses propres tests de convergence avant d’être proposée dans l’interface.
 
 Le premier jalon livrable est la restauration complète d’un seul espace sur un Mac neuf. Les transports suivants devront restaurer la même fixture avec le même résultat.
+
+## Version de prévisualisation
+
+Le menu **Sauvegarde de l’espace** du DMG embarqué implémente les trois transports. Le format livré utilise `workspace.json` pour les documents et leur inventaire, `attachments/` pour les originaux et `complete.sha256` pour l’empreinte du manifeste. La copie restaure l’état éditable courant sous de nouveaux identifiants. Lors de la capture, une transaction PostgreSQL lit un instantané cohérent et le journal local de chaque room est comparé à sa projection. Une projection en retard demande une nouvelle tentative.
+
+La publication est manuelle. Git utilise la branche dédiée `blok-backup`, accepte un dépôt vide ou la sauvegarde du même espace et publie les objets LFS avant la branche. S3 publie une génération immuable puis `latest.json`. La reprise automatique après redémarrage et la synchronisation bidirectionnelle restent des évolutions. La gestion des médias et le contrôle du dépôt distant s’inspirent des décisions du desktop Tolaria. [Pièces jointes portables](https://github.com/refactoringhq/tolaria/blob/2b77b4b1d3614a8abd4b9efa6d89a3f0fa8aad52/docs/adr/0113-shared-renderer-attachment-path-normalization.md) · [Connexion d’un dépôt](https://github.com/refactoringhq/tolaria/blob/2b77b4b1d3614a8abd4b9efa6d89a3f0fa8aad52/src-tauri/src/git/connect.rs)

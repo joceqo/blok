@@ -975,6 +975,8 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const openWorkspaceSettings = (panel: 'invites' | 'general') =>
     ws.footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: panel}));
   const teamspaceActions = [
+    ...(ref.kind === 'remote' && ref.embedded && ref.device && ref.role === 'admin'
+      ? [{name:'backup', title:shellText("Sauvegarde de l’espace"), run:() => { void import('./workspace-backup').then(m => m.openWorkspaceBackup(ref,flushDocument)).catch(showError); }}] : []),
     ...(ref.kind === 'remote' && ref.role === 'admin'
       ? [{name: 'invite', title: shellText("Inviter des membres"), run: () => openWorkspaceSettings('invites')}] : []),
     ...(ref.kind === 'remote' ? [

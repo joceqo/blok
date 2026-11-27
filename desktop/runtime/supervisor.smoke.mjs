@@ -2,9 +2,10 @@
 // node --test desktop/runtime/supervisor.smoke.mjs
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import {openAsBlob} from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -121,6 +122,70 @@ test('the local device account keeps its workspace and private object across a c
     assert.equal(signed.status, 200);
     assert.deepEqual(Buffer.from(await (await fetch((await signed.json()).url)).arrayBuffer()), image);
     assert.equal(await connectRoom(origin, page.id, ticket), 'blok-sync.v2');
+    const videoBytes=process.env.BLOK_TEST_BACKUP_VIDEO ? 600*1024*1024 : 4096;
+    {
+      const video=join(data,'capture.mp4');
+      const source=await open(video,'wx');
+      try {await source.truncate(videoBytes);}finally{await source.close();}
+      const form=new FormData();
+      form.append('file',await openAsBlob(video,{type:'video/mp4'}),'capture.mp4');
+      const uploaded=await fetch(origin+'/api/blok/upload',{method:'POST',headers:{origin:'tauri://localhost',authorization:'Bearer '+ticket},body:form});
+      if(!uploaded.ok) console.error((await readFile(join(data,'runtime.log'),'utf8')).slice(-3000));
+      assert.equal(uploaded.status,200,await uploaded.clone().text());
+      assert.equal((await uploaded.json()).size,videoBytes);
+    }
+    const authored=await call(base+'/import/markdown','POST',{attempt:crypto.randomUUID(),name:'Carnet.md',source:'Phrase conservée après restauration.'});
+    assert.equal(authored.status,200,await authored.clone().text());
+    const {runWorkspaceBackup} = await import(pathToFileURL(join(resources, 'app/backup.mjs')));
+    const settings = {workspace:workspace.id,kind:'folder',action:'save'};
+    const copy = await runWorkspaceBackup(data, resources, settings, async () => data);
+    const snapshot = JSON.parse(await readFile(join(copy.location,'workspace.json'),'utf8'));
+    assert.equal(snapshot.workspace.id, workspace.id);
+    assert.ok(snapshot.pages.some(p=>p.id===page.id));
+    assert.equal(snapshot.assets.length,3);
+    const recovered=await runWorkspaceBackup(data, resources, {...settings,action:'restore'}, async()=>copy.location);
+    const restored=(await deviceSession(ready)).workspaces.find(w=>w.id===recovered.workspace);
+    assert.ok(restored);
+    const restoredIndex=await call('/api/workspaces/'+restored.slug+'/index').then(r=>r.json());
+    assert.ok(restoredIndex.pages.some(p=>p.title===page.title && p.id!==page.id));
+    const otherData=await mkdtemp(join(tmpdir(),'blok-backup-restore-'));
+    const fresh=launch(otherData);
+    try {
+      const otherReady=await fresh.ready;
+      await deviceSession(otherReady);
+      const destination=await runWorkspaceBackup(otherData,resources,{...settings,action:'restore'},async()=>copy.location);
+      const access=await deviceSession(otherReady);
+      assert.ok(access.workspaces.some(w=>w.id===destination.workspace));
+      const verify=await runWorkspaceBackup(otherData,resources,{...settings,workspace:destination.workspace},async()=>otherData);
+      const readback=JSON.parse(await readFile(join(verify.location,'workspace.json'),'utf8'));
+      assert.deepEqual(readback.assets.map(a=>a.digest).sort(),snapshot.assets.map(a=>a.digest).sort());
+      assert.ok(readback.pages.some(p=>p.metadata.title===page.title));
+      const note=readback.pages.find(p=>JSON.stringify(p.content).includes('Phrase conservée'));
+      assert.ok(note);
+      const recoveredSpace=access.workspaces.find(w=>w.id===destination.workspace);
+      const body=await fetch(otherReady.origin+'/api/workspaces/'+recoveredSpace.slug+'/pages/'+note.id,{headers:{authorization:'Bearer '+access.token}});
+      assert.equal(body.status,200);
+      assert.match(await body.text(),/Phrase conservée/);
+    }finally{await fresh.stop();await rm(otherData,{recursive:true,force:true});}
+    if(!process.env.BLOK_TEST_BACKUP_VIDEO) {
+      const conf=JSON.parse(await readFile(join(data,'instance.json'),'utf8'));
+      const bucket={...settings,kind:'s3',url:'http://127.0.0.1:'+conf.ports.s3,bucket:'blok-assets',region:'us-east-1',
+        prefix:'smoke-backups',user:conf.secrets.accessKey,token:conf.secrets.secretKey};
+      const published=await runWorkspaceBackup(data,resources,bucket);
+      assert.match(published.location,/^smoke-backups\//);
+      const cloned=await runWorkspaceBackup(data,resources,{...bucket,action:'restore'});
+      assert.ok((await deviceSession(ready)).workspaces.some(w=>w.id===cloned.workspace));
+    }
+    if(process.env.BLOK_TEST_GIT_REMOTE) {
+      const remote={...settings,kind:'git',url:process.env.BLOK_TEST_GIT_REMOTE};
+      await runWorkspaceBackup(data,resources,remote);
+      await runWorkspaceBackup(data,resources,remote);
+      const cloned=await runWorkspaceBackup(data,resources,{...remote,action:'restore'});
+      assert.ok((await deviceSession(ready)).workspaces.some(w=>w.id===cloned.workspace));
+    }
+    const asset=snapshot.assets[0];
+    await writeFile(join(copy.location,'attachments',asset.name),'corrupt');
+    await assert.rejects(runWorkspaceBackup(data,resources,{...settings,action:'restore'},async()=>copy.location),/incomplète/);
     const config = JSON.parse(await readFile(join(data, 'instance.json'), 'utf8'));
     assert.equal((await fetch('http://127.0.0.1:' + config.ports.s3 + '/blok-assets/' + url.slice(7))).status, 403);
     assert.equal((await local.stop()).code, 0);
