@@ -20,6 +20,18 @@ describe('sidebar sections', () => {
     for (const [access, expected] of cases) expect(sectionOf(access)).toBe(expected);
   });
 
+  // Dans un espace que personne d'autre ne peut rejoindre — l'espace local de
+  // l'appareil — « visible par l'espace » et « privé » désignent le même unique
+  // lecteur. La section de l'espace n'a alors rien à distinguer.
+  it('folds the workspace section into Private when nobody else can join', () => {
+    expect(sectionOf(entry({ visibility: 'workspace' }), false)).toBe('private');
+    expect(sectionOf(undefined, false)).toBe('private');
+    // Un partage réel reste un partage : on ne le cache pas.
+    expect(sectionOf(entry({ visibility: 'workspace', sharedRoot: true }), false)).toBe('shared');
+    // Et l'espace partageable garde ses trois sections.
+    expect(sectionOf(entry({ visibility: 'workspace' }), true)).toBe('workspace');
+  });
+
   // Inviter quelqu'un sur une page privée la fait passer sous « Partagé » sans
   // que personne n'ait choisi de section.
   it('moves a page out of Private the moment someone else is invited', () => {

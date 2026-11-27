@@ -106,12 +106,16 @@ function teamFrame(hasTeamspaces: boolean) {
     activeId: '',
     teamspace: { name: 'Mon espace' },
     hasTeamspaces,
+    canCreateTeamspace: true,
+    onCreateTeamspace: vi.fn(),
+    onOpenLibrarySection: vi.fn(),
     onOpen: vi.fn(),
     onCreate: vi.fn(),
     onHome: vi.fn(),
     onTeamspaces: vi.fn(),
   });
 }
+
 
 it('names the workspace section after its pages, whatever the teamspaces', () => {
   const frame = teamFrame(false);

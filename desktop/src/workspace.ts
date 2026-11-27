@@ -199,12 +199,14 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
    * l'état de partage, jamais rangée dans la page : inviter quelqu'un fait
    * basculer la page tout seul, au prochain index reçu.
    */
+  /** Personne ne peut rejoindre l'espace local de l'appareil : il ne propose pas d'invitation. */
+  const shareable = ref.kind === 'remote' && !ref.embedded;
   const withSections = (pages: DesktopPage[]): DesktopPage[] => {
     const tagged = pages.filter((page) => !page.databaseRowBody || !page.parentId).map((page) => ({ ...page, updatedAt: Math.max(page.updatedAt ?? 0, edits.at(page.id)), favorite: favorites.has(page.id) }));
     if (ref.kind !== 'remote') return tagged.map(page=>page.parentId ? page : {...page,section:'Privé'});
-    if (!ws.index?.access) return tagged.map((page) => ({ ...page, section: page.parentId ? undefined : 'workspace' }));
+    if (!ws.index?.access) return tagged.map((page) => ({ ...page, section: page.parentId ? undefined : (shareable ? 'workspace' : 'Privé') }));
     const roots = tagged.filter((page) => !page.parentId);
-    const labelled = new Map(groupPagesBySection(roots, ws.index.access)
+    const labelled = new Map(groupPagesBySection(roots, ws.index.access, shareable)
       .flatMap((group) => group.pages.map((page) => [page.id, sectionNames[group.section]] as const)));
     return tagged.map((page) => labelled.has(page.id) ? { ...page, section: labelled.get(page.id) } : page);
   };
@@ -982,7 +984,7 @@ export function createWorkspace(onLayout: (width: number) => void, onPageIcon: (
   const createFrame = import.meta.env.VITE_SIDEBAR_TSX === '0' ? createPageFrame : createReactPageFrame;
   ws.frame = createFrame({
     loadingPages: true,
-    teamspace: ref.kind === 'remote' ? { name: ref.name } : undefined,
+    teamspace: shareable ? { name: ref.name } : undefined,
     pages: [], activeId: '', collapsedByDefault: true, preferenceKey: workspaceKey(ref),
     recentIds: recentPages.ids,
     onRecentsChange: recentPages.save,

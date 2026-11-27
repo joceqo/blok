@@ -33,24 +33,31 @@ export const sectionNames: Record<PageSection, string> = {
  * part. Un champ stocké aurait à être rattrapé à chaque changement d'accès, sur
  * la page et sur toute sa descendance.
  */
-export function sectionOf(access: PageAccessEntry | undefined): PageSection {
+/**
+ * `shareable` dit si quelqu'un d'autre peut rejoindre cet espace. L'espace local
+ * de l'appareil ne propose pas d'invitation : son unique membre est le seul
+ * lecteur possible, donc « visible par l'espace » y désigne exactement les mêmes
+ * yeux que « privé ». La section de l'espace n'a alors rien à distinguer et ses
+ * pages rejoignent « Privé ». Un partage réel, lui, reste affiché comme tel.
+ */
+export function sectionOf(access: PageAccessEntry | undefined, shareable = true): PageSection {
   // Sans information du serveur, une page appartient à l'espace : c'est le
   // comportement d'avant les permissions par page.
-  if (!access) return 'workspace';
+  if (!access) return shareable ? 'workspace' : 'private';
   // Une page dont l'ancêtre est hors d'atteinte ne peut s'afficher nulle part
   // ailleurs : quelqu'un me l'a ouverte, donc elle est partagée.
   if (access.sharedRoot === true) return 'shared';
-  if (access.visibility === 'workspace') return 'workspace';
+  if (access.visibility === 'workspace') return shareable ? 'workspace' : 'private';
   return access.shared === true ? 'shared' : 'private';
 }
 
 export interface SectionGroup<T> { section: PageSection; pages: T[] }
 
 /** Range les pages par section en conservant leur ordre, sans section vide. */
-export function groupPagesBySection<T extends { id: string }>(pages: T[], access: PageAccessMap | undefined): SectionGroup<T>[] {
+export function groupPagesBySection<T extends { id: string }>(pages: T[], access: PageAccessMap | undefined, shareable = true): SectionGroup<T>[] {
   const buckets = new Map<PageSection, T[]>();
   for (const page of pages) {
-    const section = sectionOf(access?.[page.id]);
+    const section = sectionOf(access?.[page.id], shareable);
     const bucket = buckets.get(section);
     if (bucket) bucket.push(page);
     else buckets.set(section, [page]);
