@@ -205,6 +205,29 @@ describe('workspace menu hierarchy',()=>{
     expect(document.querySelector('[data-desktop-settings-theme]')).not.toBeNull();
     expect(document.querySelector('[data-desktop-settings-path]')).toBeNull();
   });
+  it('keeps the Git destination across visits to the local workspace settings', () => {
+    const ref = {...remoteRef, embedded: true, device: true};
+    const footer = createDesktopFooter(() => undefined, ref, undefined, {flushForBackup: async () => {}});
+    document.body.append(footer);
+    footer.dispatchEvent(new CustomEvent('blok:desktop-open-settings', {detail: 'general'}));
+    const tab = must(document.querySelector<HTMLButtonElement>('[data-settings-tab="backups"]'));
+    tab.click();
+    const form = must(document.querySelector<HTMLFormElement>('.workspace-backup-form'));
+    const destination = must(form.querySelector<HTMLSelectElement>('[data-backup-destination]'));
+    destination.value = 'git';
+    destination.dispatchEvent(new Event('change'));
+    const url = 'https://github.com/example/notes.git';
+    must(form.querySelector<HTMLInputElement>('[name="url"]')).value = url;
+    must(form.querySelector<HTMLInputElement>('[name="token"]')).value = 'temporary-test-token';
+    must(form.querySelector<HTMLButtonElement>('button[type="button"]')).click();
+    expect(form.textContent).toContain('Destination enregistrée');
+    expect(JSON.stringify(localStorage)).not.toContain('temporary-test-token');
+    must(document.querySelector<HTMLButtonElement>('[data-settings-tab="general"]')).click();
+    tab.click();
+    expect(document.querySelector<HTMLSelectElement>('[data-backup-destination]')?.value).toBe('git');
+    expect(document.querySelector<HTMLInputElement>('[name="url"]')?.value).toBe(url);
+    expect(document.querySelector<HTMLInputElement>('[name="token"]')?.value).toBe('');
+  });
   it.each([true, false])('reports the actual hosting location in general settings (embedded=%s)', embedded => {
     const workspace = {...remoteRef, embedded};
     const footer = createDesktopFooter(() => undefined, workspace);

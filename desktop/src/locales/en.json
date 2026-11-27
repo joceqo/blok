@@ -1333,5 +1333,15 @@
   "Opération en cours…": "Working…",
   "Destination": "Destination",
   "Action": "Action",
-  "Sauvegarder": "Back up"
+  "Sauvegarder": "Back up",
+  "Sauvegardes": "Backups",
+  "Enregistrer la destination": "Save destination",
+  "Indiquez une URL de service sans identifiants.": "Enter a service URL without credentials.",
+  "Destination enregistrée pour cet espace.": "Destination saved for this workspace.",
+  "URL HTTPS du dépôt Git": "Git repository HTTPS URL",
+  "URL du service S3": "S3 service URL",
+  "Utilisateur Git": "Git username",
+  "Clé d’accès S3": "S3 access key",
+  "Jeton Git": "Git token",
+  "Secret S3": "S3 secret"
 }

@@ -1333,5 +1333,15 @@
   "Opération en cours…": "Opération en cours…",
   "Destination": "Destination",
   "Action": "Action",
-  "Sauvegarder": "Sauvegarder"
+  "Sauvegarder": "Sauvegarder",
+  "Sauvegardes": "Sauvegardes",
+  "Enregistrer la destination": "Enregistrer la destination",
+  "Indiquez une URL de service sans identifiants.": "Indiquez une URL de service sans identifiants.",
+  "Destination enregistrée pour cet espace.": "Destination enregistrée pour cet espace.",
+  "URL HTTPS du dépôt Git": "URL HTTPS du dépôt Git",
+  "URL du service S3": "URL du service S3",
+  "Utilisateur Git": "Utilisateur Git",
+  "Clé d’accès S3": "Clé d’accès S3",
+  "Jeton Git": "Jeton Git",
+  "Secret S3": "Secret S3"
 }

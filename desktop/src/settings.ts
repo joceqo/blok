@@ -28,6 +28,7 @@ import appPackage from '../package.json';
 import { mountSettingsPanel } from './settings-panels';
 import { mountAiSettings } from './ai-settings';
 import { mountCustomEmojiSettings } from './custom-emoji-settings';
+import { mountWorkspaceBackup } from './workspace-backup';
 import { mountMcpSettings } from './mcp-settings';
 import {loadReactGrab, reactGrabAvailable} from './react-grab';
 import { mountInstanceSettings, type InstancePanel } from './instance/instance-settings';
@@ -56,6 +57,7 @@ function resolved(mode: Appearance): 'dark' | 'light' {
 function settingsPanelSource(panel: string): string {
   if (panel === 'account' || panel === 'preferences' || panel === 'general') return 'settings-panels.tsx';
   if (panel === 'emojis') return 'custom-emoji-settings.ts';
+  if (panel === 'backups') return 'workspace-backup.ts';
   if (panel === 'mcp') return 'mcp-settings.ts';
   if (panel === 'calendar' || panel === 'import') return 'settings-calendar-import.tsx';
   if (panel === 'sidebar' || panel === 'notifications') return 'shell-navigation-settings.tsx';
@@ -171,6 +173,7 @@ function actionButton(attribute: string, label: string, kind: MenuIcon): HTMLBut
 }
 
 interface FooterOptions {
+  flushForBackup?: () => Promise<void>;
   onLanguageChange?: (language: SupportedLocale) => Promise<void>;
   footerHost?: HTMLElement;
   client?: CloudClient;
@@ -550,6 +553,8 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
   tab('calendar',shellText("Calendrier"),'connections','agenda google abonnements disponibilités mail ical',IconCalendar);
   group(shellText("Espace de travail"));
   tab('general',shellText("Général"),'settings','espace nom stockage');
+  if (admin && onDevice && currentWorkspace.device && options.flushForBackup)
+    tab('backups',shellText("Sauvegardes"),'storage','git github gitlab lfs dépôt dossier nas s3 backup restauration');
   if (admin && !onDevice) tab('members',shellText("Membres"),'people','personnes invitations accès rôles');
   tab('sidebar',shellText("Barre latérale"),'storage','navigation personnaliser favoris sections',IconSidebarRight);
   tab('import',shellText("Importer"),'storage',options.importMarkdown ? 'fichiers markdown agenda calendrier ics' : 'fichiers agenda calendrier ics',IconDownload);
@@ -764,6 +769,10 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
         if (!signal.aborted) closeSettings();
       }}, client, content);
       ui.choices.push({destroy});
+    } else if (panel === 'backups' && currentWorkspace.kind === 'remote' && options.flushForBackup) {
+      content.classList.add('settings-panel');
+      content.append(el('h1', 'data-desktop-settings-title', shellText("Sauvegardes")));
+      mountWorkspaceBackup(content, currentWorkspace, options.flushForBackup);
     } else if (panel === 'mcp' && client) {
       mountMcpSettings(content, client);
     } else if (panel === 'connections') {
@@ -884,6 +893,7 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
     if (section === 'invites' && admin) { closeMenu(); openInvitation(); }
     else if (section === 'preferences') openSettings('preferences');
     else if (section === 'calendar' || section === 'import') openSettings(section);
+    else if (section === 'backups' && panelTabs.has('backups')) openSettings('backups');
     else if (section === 'members' && admin) openSettings('members');
     else if ((section === 'teams' || section === 'teams-create') && panelTabs.has('teams')) openSettings('teams', section === 'teams-create' ? 'create' : undefined);
     else openSettings('general');

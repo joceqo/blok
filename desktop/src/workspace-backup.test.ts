@@ -26,7 +26,7 @@ describe('portable workspace references', () => {
 });
 
 import { vi } from 'vitest';
-import { openWorkspaceBackup } from './workspace-backup';
+import { mountWorkspaceBackup } from './workspace-backup';
 import type { RemoteWorkspace } from './workspace-registry';
 const bridge = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('./native-runtime', () => ({ nativeBridge: () => bridge, deviceWorkspaces: vi.fn() }));
@@ -40,7 +40,7 @@ it('flushes the active space, offers three destinations and reports a completed 
   } as RemoteWorkspace;
   const flush = vi.fn().mockResolvedValue(undefined);
   bridge.invoke.mockResolvedValue({ location: '/Volumes/Backup/Atelier' });
-  openWorkspaceBackup(ref, flush);
+  mountWorkspaceBackup(document.body, ref, flush);
   const form = document.querySelector<HTMLFormElement>('.workspace-backup-form')!;
   expect([...form.querySelectorAll('select')[1].options].map((o) => o.value)).toEqual([
     'folder',
@@ -53,5 +53,5 @@ it('flushes the active space, offers three destinations and reports a completed 
   expect(bridge.invoke).toHaveBeenCalledWith('embedded_workspace_backup', {
     options: expect.objectContaining({ kind: 'folder', action: 'save', workspace: 'space' }),
   });
-  document.querySelector<HTMLButtonElement>('[data-navigation-close]')?.click();
+  form.remove();
 });
