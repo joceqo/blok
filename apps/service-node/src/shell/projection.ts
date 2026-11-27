@@ -1,4 +1,5 @@
-import {recordCommentNotifications} from './comment-notifications.ts';
+import {recordCommentNotifications, type RecordedNotice} from './comment-notifications.ts';
+import {deliverNotificationMails} from './notification-mail.ts';
 import type { PgPool } from '../db/pool.ts';
 
 export interface ProjectionHead {
@@ -88,15 +89,18 @@ export async function saveProjection(pool: PgPool, id: string, json: string, hea
       return undefined;
     }
     let version = row.version;
+    let notices: RecordedNotice[] = [];
     if (decision === 'write') {
       const updated = await client.query<{ version: string }>(
         `UPDATE pages SET content=CASE WHEN $5 THEN content ELSE $2::jsonb END, version=version+1, lineage=$3, sequence=$4
          WHERE id=$1 RETURNING version::text`, [id, json, head.lineage, head.sequence, head.reset ?? false],
       );
       version = updated.rows[0]!.version;
-      if (hasComments && !row.same) await recordCommentNotifications(client,row.workspaceId,id,row.previous,JSON.parse(json));
+      if (hasComments && !row.same) notices = await recordCommentNotifications(client,row.workspaceId,id,row.previous,JSON.parse(json));
     }
     await client.query('COMMIT');
+    // After the commit only: a mail must never announce a write that rolled back.
+    if (notices.length) await deliverNotificationMails(pool, row.workspaceId, notices);
     return version;
   } catch (error) {
     await client.query('ROLLBACK');

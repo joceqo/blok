@@ -389,3 +389,23 @@ BEGIN
 END $$;
 CREATE OR REPLACE TRIGGER detach_invited_calendar_events BEFORE DELETE ON pages
   FOR EACH ROW EXECUTE FUNCTION detach_invited_calendar_events();
+
+-- Who wants which e-mails, per member of a workspace. Absent means no: mail
+-- leaves only on a row that says so, so a member who never opened the setting
+-- receives nothing.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM schema_migrations WHERE version=22) THEN
+    CREATE TABLE email_notification_preferences (
+      workspace_id text NOT NULL,
+      user_id text NOT NULL,
+      activity boolean NOT NULL DEFAULT false,
+      always boolean NOT NULL DEFAULT false,
+      page_updates boolean NOT NULL DEFAULT false,
+      digest boolean NOT NULL DEFAULT false,
+      PRIMARY KEY (workspace_id,user_id),
+      FOREIGN KEY (workspace_id,user_id) REFERENCES memberships(workspace_id,user_id) ON DELETE CASCADE
+    );
+    INSERT INTO schema_migrations(version) VALUES(22);
+  END IF;
+END $$;

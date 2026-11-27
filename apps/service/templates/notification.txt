@@ -1,0 +1,12 @@
+{{workspace}}
+
+
+{{HEADLINE}}
+
+{{detail}}
+
+Ouvrir dans Blok {{link}}
+
+----------------------------------------
+
+Vous recevez cet e-mail parce que vous avez activé les notifications par e-mail pour cet espace de travail.

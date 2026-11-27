@@ -32,7 +32,9 @@ function recipients(comment: Comment, blocks: Map<string, Comment>) {
   return users;
 }
 
-export async function recordCommentNotifications(db: PoolClient, workspace: string, page: string, before: unknown, after: unknown) {
+export interface RecordedNotice { recipient_id: string; type: string; page_id: string }
+
+export async function recordCommentNotifications(db: PoolClient, workspace: string, page: string, before: unknown, after: unknown): Promise<RecordedNotice[]> {
   const previous = comments(before), current = comments(after);
   const notices: {recipient: string; type: string; comment: string}[] = [];
   for (const [id, comment] of current) {
@@ -42,10 +44,10 @@ export async function recordCommentNotifications(db: PoolClient, workspace: stri
       if (!existing?.has(recipient)) notices.push({recipient,type,comment:id});
     }
   }
-  if (!notices.length) return;
+  if (!notices.length) return [];
   // An editor controls document text and its recorded author. Notify with no
   // attributed actor. Restrict recipients to current readers under inherited ACLs.
-  await db.query(`WITH RECURSIVE ancestors AS (
+  const created = await db.query<RecordedNotice>(`WITH RECURSIVE ancestors AS (
     SELECT p.id,p.visibility,p.metadata->>'parentId' AS parent,0 AS depth FROM pages p
     WHERE p.id=$2 AND p.workspace_id=$1 AND NOT p.deleted AND NOT p.trashed
     UNION ALL SELECT p.id,p.visibility,p.metadata->>'parentId',a.depth+1 FROM pages p JOIN ancestors a ON p.id=a.parent
@@ -56,5 +58,7 @@ export async function recordCommentNotifications(db: PoolClient, workspace: stri
     WHERE EXISTS (SELECT FROM ancestors) AND (
       (SELECT visibility FROM ancestors WHERE visibility<>'inherit' ORDER BY depth LIMIT 1)='workspace'
       OR EXISTS (SELECT FROM page_shares s JOIN ancestors a ON a.id=s.page_id WHERE s.user_id=m.user_id))
-    ON CONFLICT DO NOTHING`,[workspace,page,JSON.stringify(notices)]);
+    ON CONFLICT DO NOTHING
+    RETURNING recipient_id,type,page_id`,[workspace,page,JSON.stringify(notices)]);
+  return created.rows;
 }
