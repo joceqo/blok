@@ -1,46 +1,52 @@
 import {afterEach, expect, it, vi} from 'vitest';
-import {readEmailNotification, setEmailNotification, subscribeEmailNotifications} from './email-notification-preferences';
+import {loadEmailNotifications, readEmailNotification, resetEmailNotifications, setEmailNotification, subscribeEmailNotifications} from './email-notification-preferences';
 
 afterEach(() => {
-  localStorage.clear();
+  resetEmailNotifications();
   vi.restoreAllMocks();
 });
 
-it('sends nothing until someone asks for it', () => {
-  // Mail leaves only on an explicit choice: nobody receives what they never
-  // turned on, and a fresh workspace stays quiet.
+const clientWith = (response: unknown) => ({request: vi.fn().mockResolvedValue(response)});
+
+it('sends nothing until the workspace says someone asked', () => {
+  // Nothing loaded yet: the reader must not invent a yes.
   for (const name of ['always', 'activity', 'pageUpdates', 'digest'] as const) {
     expect(readEmailNotification(name), name).toBe(false);
   }
 });
 
-it('remembers a choice for the next launch and tells its readers at once', () => {
+it('takes its answer from the workspace, not from this device', async () => {
+  const client = clientWith({activity: true, always: false, pageUpdates: true, digest: false});
   const notified = vi.fn();
   const stop = subscribeEmailNotifications(notified);
   try {
-    setEmailNotification('activity', false);
-    expect(readEmailNotification('activity')).toBe(false);
-    expect(notified).toHaveBeenCalledTimes(1);
-    setEmailNotification('always', true);
-    expect(readEmailNotification('always')).toBe(true);
-    expect(localStorage.getItem('blok:desktop:email-activity:v1')).toBe('false');
-  } finally { stop(); }
-});
-
-it('follows a change made in another window', () => {
-  const notified = vi.fn();
-  const stop = subscribeEmailNotifications(notified);
-  try {
-    const key = 'blok:desktop:email-digest:v1';
-    localStorage.setItem(key, 'false');
-    window.dispatchEvent(new StorageEvent('storage', {key, newValue: 'false'}));
-    expect(notified).toHaveBeenCalled();
+    await loadEmailNotifications({client, slug: 'acme'});
+    expect(client.request).toHaveBeenCalledWith('/api/workspaces/acme/email-preferences', expect.anything());
+    expect(readEmailNotification('activity')).toBe(true);
+    expect(readEmailNotification('pageUpdates')).toBe(true);
     expect(readEmailNotification('digest')).toBe(false);
+    expect(notified).toHaveBeenCalled();
   } finally { stop(); }
 });
 
-it('keeps the choice for this session when the device refuses to store it', () => {
-  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
-  setEmailNotification('pageUpdates', false);
-  expect(readEmailNotification('pageUpdates')).toBe(false);
+it('shows the choice at once and writes it to the workspace', async () => {
+  const client = clientWith({activity: true, always: false, pageUpdates: false, digest: false});
+  await loadEmailNotifications({client, slug: 'acme'});
+  client.request.mockClear();
+  setEmailNotification('digest', true);
+  expect(readEmailNotification('digest')).toBe(true);
+  await vi.waitFor(() => expect(client.request).toHaveBeenCalledWith(
+    '/api/workspaces/acme/email-preferences',
+    expect.objectContaining({method: 'PUT', body: JSON.stringify({digest: true})}),
+  ));
+});
+
+it('puts the switch back when the workspace refuses the change', async () => {
+  const client = clientWith({activity: false, always: false, pageUpdates: false, digest: false});
+  await loadEmailNotifications({client, slug: 'acme'});
+  client.request.mockRejectedValue(new Error('offline'));
+  setEmailNotification('activity', true);
+  expect(readEmailNotification('activity')).toBe(true);
+  // A switch that stays on after a failed write promises mail nobody will send.
+  await vi.waitFor(() => expect(readEmailNotification('activity')).toBe(false));
 });

@@ -13,6 +13,7 @@ import { googleCalendarRoutes } from './google-calendar.ts';
 import { calendarFeedRoutes } from './calendar-feeds.ts';
 import { calendarSharing } from './calendar-sharing.ts';
 import { workspaceCalendar } from './calendar.ts';
+import { emailPreferences } from './email-preferences.ts';
 import { workspaceNotifications } from './notifications.ts';
 import { markdownImportRoutes } from './markdown-import.ts';
 import { workspaceDirectory } from './workspace-directory.ts';
@@ -95,6 +96,7 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   app.route('/', calendarFeedRoutes(pool, secret));
   app.route('/api/workspaces/:slug/calendar', calendarSharing(pool, (workspace, user, from, to) => googleCalendar.freeBusy(pool, workspace, user, from, to)));
   app.route('/api/workspaces/:slug/calendar', workspaceCalendar(pool));
+  app.route('/api/workspaces/:slug/email-preferences', emailPreferences(pool));
   app.route('/api/workspaces/:slug/notifications', workspaceNotifications(pool));
   app.route('/api/workspaces/:slug/search', createWorkspaceSearch(pool));
   app.route('/api/workspaces/:slug/teamspaces', createShellTeamspaces(pool));

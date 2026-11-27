@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { PoolClient } from 'pg';
 import type { PgPool } from '../db/pool.ts';
+import { deliverNotificationMails, type Notice } from './notification-mail.ts';
 import { inTransaction } from './bootstrap.ts';
 import { sessionDigest } from './session.ts';
 import { loadIndexPages, pageStandings } from './workspace-index.ts';
@@ -135,6 +136,7 @@ export function workspaceCalendar(pool: PgPool) {
     const write = c.req.method === 'PUT';
     const id = c.req.param('id')!;
     const raw = write ? await c.req.json().catch(() => null) : null;
+    let invited: {workspace: string; notices: Notice[]} | null = null;
     const result = await inTransaction(pool, async db => {
       const scope = await readWorkspaceScope(db, sessionDigest(c) ?? '', c.req.param('slug')!, true);
       if (scope.role === 'viewer') throw new WorkspaceError(403, 'Ce calendrier est en lecture seule.');
@@ -172,16 +174,20 @@ export function workspaceCalendar(pool: PgPool) {
         if (members.rowCount !== input.participantIds.length) throw new WorkspaceError(400, 'Choisissez des membres de cet espace.');
         const params = [...key, input.participantIds];
         await db.query('DELETE FROM calendar_participants WHERE workspace_id=$1 AND event_id=$2 AND NOT(user_id=ANY($3::text[]))', params);
-        await db.query(`WITH added AS (
+        const created = await db.query<Notice>(`WITH added AS (
             INSERT INTO calendar_participants(workspace_id,event_id,user_id)
             SELECT $1,$2,u FROM unnest($3::text[]) u ON CONFLICT DO NOTHING RETURNING user_id)
           INSERT INTO workspace_notifications(workspace_id,event_id,recipient_id,actor_id,type)
-          SELECT $1,$2,user_id,$4,'calendar_invitation' FROM added WHERE user_id<>$4`, [...params, scope.user_id]);
+          SELECT $1,$2,user_id,$4,'calendar_invitation' FROM added WHERE user_id<>$4
+          RETURNING recipient_id,type`, [...params, scope.user_id]);
+        invited = {workspace: scope.workspace_id, notices: created.rows};
       }
       const participants = await db.query<{user_id:string}>(
         'SELECT user_id FROM calendar_participants WHERE workspace_id=$1 AND event_id=$2 ORDER BY user_id', key);
       return { event: eventData({...saved!, participant_ids:participants.rows.map(p => p.user_id)}) };
     });
+    // Après le commit seulement : un e-mail ne doit pas annoncer une écriture annulée.
+    if (invited?.notices.length) await deliverNotificationMails(pool, invited.workspace, invited.notices);
     return c.json(result);
   });
   return router;

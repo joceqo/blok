@@ -4,6 +4,7 @@ import { HTTPException } from 'hono/http-exception';
 import { bodyLimit } from 'hono/body-limit';
 import type { PoolClient } from 'pg';
 import type { PgPool } from '../db/pool.ts';
+import { deliverNotificationMails, type Notice } from './notification-mail.ts';
 import { inTransaction } from './bootstrap.ts';
 import { loadSession, sessionDigest } from './session.ts';
 import { readWorkspaceScope, readWorkspaceSession } from './workspace-scope.ts';
@@ -108,6 +109,7 @@ export function workspaceDirectory(pool: PgPool) {
     const { message = '' } = await readBody(c);
     if (typeof message !== 'string' || Buffer.byteLength(message) > 2000)
       throw new HTTPException(400, { message: 'Invalid message' });
+    let mailed: {workspace: string; notices: Notice[]} | null = null;
     const status = await inTransaction(pool, async (db) => {
       const {workspace_id, user_id} = await readWorkspaceSession(db, sessionDigest(c) ?? '', c.req.param('slug'), true);
       const {rows: [prior]} = await db.query(
@@ -124,14 +126,18 @@ export function workspaceDirectory(pool: PgPool) {
         [randomUUID(), workspace_id, user_id, message],
       );
       if (prior.status !== 'pending') {
-        await db.query(
+        const created = await db.query<Notice>(
           `INSERT INTO workspace_notifications(workspace_id,recipient_id,actor_id,type,request_cycle)
-           SELECT workspace_id,user_id,$2,'join_requested',$3 FROM memberships WHERE workspace_id=$1 AND role='admin'`,
+           SELECT workspace_id,user_id,$2,'join_requested',$3 FROM memberships WHERE workspace_id=$1 AND role='admin'
+           RETURNING recipient_id,type`,
           [workspace_id, user_id, submission.notification_cycle],
         );
+        mailed = {workspace: workspace_id, notices: created.rows};
       }
       return 'pending';
     });
+    // Après le commit seulement : un e-mail ne doit pas annoncer une écriture annulée.
+    if (mailed?.notices.length) await deliverNotificationMails(pool, mailed.workspace, mailed.notices);
     return c.json({ ok: true, status });
   });
   router.get('/api/workspaces/:slug/join-requests', async (c) => {
@@ -153,6 +159,7 @@ export function workspaceDirectory(pool: PgPool) {
     const { slug, id, action } = c.req.param();
     if (!['approve', 'reject'].includes(action) || !['member', 'viewer'].includes(role))
       throw new HTTPException(400, { message: 'Invalid decision' });
+    let mailed: {workspace: string; notices: Notice[]} | null = null;
     await inTransaction(pool, async (db) => {
       const scope = await readWorkspaceScope(db, sessionDigest(c) ?? '', slug, true);
       if (scope.role !== 'admin') throw new HTTPException(403, { message: 'Administrator required' });
@@ -169,11 +176,14 @@ export function workspaceDirectory(pool: PgPool) {
           request.user_id,
           role,
         ]);
-      await db.query(
-        'INSERT INTO workspace_notifications(workspace_id,recipient_id,actor_id,type,request_cycle) VALUES($1,$2,$3,$4,$5)',
+      const created = await db.query<Notice>(
+        `INSERT INTO workspace_notifications(workspace_id,recipient_id,actor_id,type,request_cycle) VALUES($1,$2,$3,$4,$5)
+         RETURNING recipient_id,type`,
         [scope.workspace_id, request.user_id, scope.user_id, action === 'approve' ? 'join_approved' : 'join_rejected',request.notification_cycle],
       );
+      mailed = {workspace: scope.workspace_id, notices: created.rows};
     });
+    if (mailed?.notices.length) await deliverNotificationMails(pool, mailed.workspace, mailed.notices);
     return c.json({ ok: true });
   });
   router.post('/api/workspaces/:slug/pages/:id/seed', bodyLimit({ maxSize: 8 << 20 }), async (c) => {

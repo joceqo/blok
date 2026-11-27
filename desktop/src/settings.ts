@@ -745,7 +745,8 @@ export function createDesktopFooter(onThemeChange: (mode: Appearance) => void, c
       });
       feedback.append(grab, hint); content.append(feedback);
     } else if (panel === 'notifications' || panel === 'sidebar') {
-      ui.choices.push(mountShellNavigationSettings(content,panel === 'notifications' ? {kind:panel}
+      ui.choices.push(mountShellNavigationSettings(content,panel === 'notifications'
+        ? {kind:panel, scope: client && currentWorkspace.kind === 'remote' ? {client, slug: currentWorkspace.workspaceId} : undefined}
         : {kind:panel, sidebar}));
     } else if (panel === 'calendar' || panel === 'import') {
       content.classList.add('settings-panel');

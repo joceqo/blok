@@ -4,7 +4,7 @@ import {flushSync} from 'react-dom';
 import {createRoot} from 'react-dom/client';
 import {sidebarPromptLabels, type SidebarPreferences} from '../../src/shell/sidebar-preferences';
 import {readInboxPreference, setInboxPreference, subscribeInboxPreferences} from './cloud/inbox-preferences';
-import {readEmailNotification, setEmailNotification, subscribeEmailNotifications} from './cloud/email-notification-preferences';
+import {loadEmailNotifications, readEmailNotification, setEmailNotification, subscribeEmailNotifications, type EmailNotificationScope} from './cloud/email-notification-preferences';
 import {nativeMacNotifications, openSystemNotificationSettings, sendSystemNotice, systemPermission, type SystemPermission} from './cloud/system-notifications';
 import {SettingsSwitchRow} from './settings-switch-row';
 import './settings-panels.css';
@@ -131,9 +131,12 @@ function NotificationsPanel() {
   </>;
 }
 
-export function mountShellNavigationSettings(host: HTMLElement, panel: {kind: 'notifications'} | {kind: 'sidebar'; sidebar: SidebarPreferences}): {destroy(): void} {
+export function mountShellNavigationSettings(host: HTMLElement, panel: {kind: 'notifications'; scope?: EmailNotificationScope} | {kind: 'sidebar'; sidebar: SidebarPreferences}): {destroy(): void} {
   const root = createRoot(host);
   host.classList.add('settings-panel');
   flushSync(() => root.render(panel.kind === 'sidebar' ? <SidebarPanel sidebar={panel.sidebar}/> : <NotificationsPanel/>));
-  return {destroy: () => root.unmount()};
+  // Les réglages appartiennent à l'espace : les lire est ce qui remplit le panneau.
+  const loading = panel.kind === 'notifications' && panel.scope ? new AbortController() : null;
+  if (panel.kind === 'notifications' && panel.scope && loading) void loadEmailNotifications(panel.scope, loading.signal);
+  return {destroy: () => { loading?.abort(); root.unmount(); }};
 }
