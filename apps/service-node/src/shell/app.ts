@@ -35,6 +35,7 @@ import { createWorkspaceSearch } from './workspace-search.ts';
 import { createShellTeamspaces } from './teamspaces.ts';
 import { loadWorkspaceIndex } from './workspace-index.ts';
 import { loadSession, loadVisiblePage, sessionDigest } from './session.ts';
+import { observeMiddleware, requestIdOf } from '../middleware/observe.ts';
 
 const digest = (input: string) => createHash('sha256').update(input).digest();
 
@@ -48,9 +49,12 @@ export function createShellApp(pool: PgPool, secret: string, allowedOrigins: Rea
   app.onError((error, context) => {
     if (error instanceof HTTPException || error instanceof WorkspaceError) return context.json({error:error.message},error.status);
     if ('code' in error && error.code === '23505') return context.json({error:'Already exists'},409);
-    console.error('[shell-backend]', error.name);
+    // Carries the identifier observeMiddleware gave the request, so this line
+    // and the request line it produced can be read as one event.
+    console.error(JSON.stringify({level:'error',message:'request failed',method:context.req.method,path:context.req.path,request:requestIdOf(context),cause:error.name,stack:error.stack ?? ''}));
     return context.json({ error: 'Database unavailable' }, 503);
   });
+  app.use('*', observeMiddleware());
   app.use('*', async (c, next) => {
     c.header('Cache-Control', 'no-store');
     c.header('X-Content-Type-Options', 'nosniff');

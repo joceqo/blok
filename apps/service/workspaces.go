@@ -17,7 +17,7 @@ func (s *Service) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	}
 	list, e := s.workspaces(r.Context(), u.ID)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	jsonOut(w, 200, map[string]any{"workspaces": list})
@@ -68,7 +68,7 @@ func (s *Service) insertWorkspace(w http.ResponseWriter, r *http.Request, u iden
 	}
 	tx, e := s.DB.Begin(r.Context())
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -78,11 +78,11 @@ func (s *Service) insertWorkspace(w http.ResponseWriter, r *http.Request, u iden
 		return
 	}
 	if _, e = tx.Exec(r.Context(), "INSERT INTO memberships VALUES($1,$2,'admin')", out.ID, u.ID); e != nil {
-		problem(w, 500, "Creation failed")
+		failed(w, 500, "Creation failed", e)
 		return
 	}
 	if e = tx.Commit(r.Context()); e != nil {
-		problem(w, 500, "Creation failed")
+		failed(w, 500, "Creation failed", e)
 		return
 	}
 	var n int
@@ -156,7 +156,7 @@ func (s *Service) renameWorkspace(w http.ResponseWriter, r *http.Request) {
 	// recreerait un espace vide si le sien disparaissait. La revision non plus,
 	// elle arbitre les ecritures concurrentes de l'index des pages.
 	if _, e = s.DB.Exec(r.Context(), "UPDATE workspaces SET name=$1 WHERE id=$2", in.Name, ws.ID); e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	jsonOut(w, 200, map[string]any{"id": ws.ID, "slug": ws.Slug, "name": in.Name, "role": ws.Role})
@@ -191,7 +191,7 @@ func (s *Service) workspaceResource(w http.ResponseWriter, r *http.Request) {
 		}
 		_, e = s.DB.Exec(r.Context(), `INSERT INTO join_requests(id,workspace_id,user_id,message) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,user_id) DO UPDATE SET message=$4,status='pending',created_at=now()`, opaque(), ws.ID, u.ID, in.Message)
 		if e != nil {
-			problem(w, 500, "Request failed")
+			failed(w, 500, "Request failed", e)
 			return
 		}
 		jsonOut(w, 200, map[string]any{"ok": true, "status": "pending"})
@@ -244,7 +244,7 @@ func (s *Service) workspaceResource(w http.ResponseWriter, r *http.Request) {
 func (s *Service) members(w http.ResponseWriter, r *http.Request, ws Workspace) {
 	rows, e := s.DB.Query(r.Context(), "SELECT u.id,u.email,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 ORDER BY u.email", ws.ID)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer rows.Close()
@@ -252,13 +252,13 @@ func (s *Service) members(w http.ResponseWriter, r *http.Request, ws Workspace) 
 	for rows.Next() {
 		var id, email, role string
 		if e = rows.Scan(&id, &email, &role); e != nil {
-			problem(w, 500, "Read failed")
+			failed(w, 500, "Read failed", e)
 			return
 		}
 		out = append(out, map[string]any{"id": id, "email": email, "role": role})
 	}
 	if rows.Err() != nil {
-		problem(w, 500, "Read failed")
+		failed(w, 500, "Read failed", rows.Err())
 		return
 	}
 	jsonOut(w, 200, map[string]any{"members": out})
@@ -282,12 +282,12 @@ func (s *Service) mutateMember(w http.ResponseWriter, r *http.Request, u identit
 	}
 	tx, e := s.DB.Begin(r.Context())
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	if _, e = tx.Exec(r.Context(), "SELECT id FROM workspaces WHERE id=$1 FOR UPDATE", ws.ID); e != nil {
-		problem(w, 500, "Update failed")
+		failed(w, 500, "Update failed", e)
 		return
 	}
 	var caller string
@@ -303,7 +303,7 @@ func (s *Service) mutateMember(w http.ResponseWriter, r *http.Request, u identit
 	if old == "admin" && in.Role != "admin" {
 		var count int
 		if e = tx.QueryRow(r.Context(), "SELECT count(*) FROM memberships WHERE workspace_id=$1 AND role='admin'", ws.ID).Scan(&count); e != nil {
-			problem(w, 500, "Update failed")
+			failed(w, 500, "Update failed", e)
 			return
 		}
 		if count <= 1 {
@@ -315,7 +315,7 @@ func (s *Service) mutateMember(w http.ResponseWriter, r *http.Request, u identit
 		// « Qui a accès » doit dire la vérité : un partage laissé derrière
 		// quelqu'un qui a quitté l'espace ressusciterait à son retour.
 		if _, e = tx.Exec(r.Context(), "DELETE FROM page_shares sh USING pages p WHERE sh.page_id=p.id AND p.workspace_id=$1 AND sh.user_id=$2", ws.ID, id); e != nil {
-			problem(w, 500, "Update failed")
+			failed(w, 500, "Update failed", e)
 			return
 		}
 		_, e = tx.Exec(r.Context(), "DELETE FROM memberships WHERE workspace_id=$1 AND user_id=$2", ws.ID, id)
@@ -323,11 +323,11 @@ func (s *Service) mutateMember(w http.ResponseWriter, r *http.Request, u identit
 		_, e = tx.Exec(r.Context(), "UPDATE memberships SET role=$3 WHERE workspace_id=$1 AND user_id=$2", ws.ID, id, in.Role)
 	}
 	if e != nil {
-		problem(w, 500, "Update failed")
+		failed(w, 500, "Update failed", e)
 		return
 	}
 	if e = tx.Commit(r.Context()); e != nil {
-		problem(w, 500, "Update failed")
+		failed(w, 500, "Update failed", e)
 		return
 	}
 	s.recheckWorkspace(r.Context(), ws.ID)
@@ -337,7 +337,7 @@ func (s *Service) joinRequests(w http.ResponseWriter, r *http.Request, ws Worksp
 	if r.Method == "GET" && id == "" {
 		rows, e := s.DB.Query(r.Context(), "SELECT j.id,j.user_id,u.email,j.message,j.status,j.created_at FROM join_requests j JOIN users u ON u.id=j.user_id WHERE j.workspace_id=$1 ORDER BY j.created_at DESC", ws.ID)
 		if e != nil {
-			problem(w, 503, "Database unavailable")
+			failed(w, 503, "Database unavailable", e)
 			return
 		}
 		defer rows.Close()
@@ -346,13 +346,13 @@ func (s *Service) joinRequests(w http.ResponseWriter, r *http.Request, ws Worksp
 			var id, uid, email, msg, status string
 			var created time.Time
 			if e = rows.Scan(&id, &uid, &email, &msg, &status, &created); e != nil {
-				problem(w, 500, "Read failed")
+				failed(w, 500, "Read failed", e)
 				return
 			}
 			out = append(out, map[string]any{"id": id, "userId": uid, "email": email, "message": msg, "status": status, "createdAt": created})
 		}
 		if rows.Err() != nil {
-			problem(w, 500, "Read failed")
+			failed(w, 500, "Read failed", rows.Err())
 			return
 		}
 		jsonOut(w, 200, map[string]any{"requests": out})
@@ -377,7 +377,7 @@ func (s *Service) joinRequests(w http.ResponseWriter, r *http.Request, ws Worksp
 	}
 	tx, e := s.DB.Begin(r.Context())
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -391,16 +391,16 @@ func (s *Service) joinRequests(w http.ResponseWriter, r *http.Request, ws Worksp
 	if action == "approve" {
 		status = "approved"
 		if _, e = tx.Exec(r.Context(), "INSERT INTO memberships VALUES($1,$2,$3) ON CONFLICT(workspace_id,user_id) DO NOTHING", ws.ID, uid, in.Role); e != nil {
-			problem(w, 500, "Approval failed")
+			failed(w, 500, "Approval failed", e)
 			return
 		}
 	}
 	if _, e = tx.Exec(r.Context(), "UPDATE join_requests SET status=$2 WHERE id=$1", id, status); e != nil {
-		problem(w, 500, "Update failed")
+		failed(w, 500, "Update failed", e)
 		return
 	}
 	if e = tx.Commit(r.Context()); e != nil {
-		problem(w, 500, "Update failed")
+		failed(w, 500, "Update failed", e)
 		return
 	}
 	jsonOut(w, 200, map[string]bool{"ok": true})
@@ -409,7 +409,7 @@ func (s *Service) invites(w http.ResponseWriter, r *http.Request, u identity, ws
 	if r.Method == "GET" && id == "" {
 		rows, e := s.DB.Query(r.Context(), "SELECT id,email,role,status,expires_at FROM invites WHERE workspace_id=$1 ORDER BY created_at DESC", ws.ID)
 		if e != nil {
-			problem(w, 503, "Database unavailable")
+			failed(w, 503, "Database unavailable", e)
 			return
 		}
 		defer rows.Close()
@@ -417,14 +417,14 @@ func (s *Service) invites(w http.ResponseWriter, r *http.Request, u identity, ws
 		for rows.Next() {
 			var id, email, role, status string
 			var expiry time.Time
-			if rows.Scan(&id, &email, &role, &status, &expiry) != nil {
-				problem(w, 500, "Read failed")
+			if e := rows.Scan(&id, &email, &role, &status, &expiry); e != nil {
+				failed(w, 500, "Read failed", e)
 				return
 			}
 			out = append(out, map[string]any{"id": id, "email": email, "role": role, "status": status, "expiresAt": expiry})
 		}
 		if rows.Err() != nil {
-			problem(w, 500, "Read failed")
+			failed(w, 500, "Read failed", rows.Err())
 			return
 		}
 		jsonOut(w, 200, map[string]any{"invites": out})
@@ -433,7 +433,7 @@ func (s *Service) invites(w http.ResponseWriter, r *http.Request, u identity, ws
 	if r.Method == "DELETE" && id != "" {
 		tag, e := s.DB.Exec(r.Context(), "UPDATE invites SET status='revoked' WHERE id=$1 AND workspace_id=$2 AND status='pending'", id, ws.ID)
 		if e != nil {
-			problem(w, 500, "Revocation failed")
+			failed(w, 500, "Revocation failed", e)
 			return
 		}
 		if tag.RowsAffected() == 0 {
@@ -478,12 +478,12 @@ func (s *Service) invites(w http.ResponseWriter, r *http.Request, u identity, ws
 	inviteID := opaque()
 	_, e = s.DB.Exec(r.Context(), "INSERT INTO invites(id,workspace_id,email,role,expires_at) VALUES($1,$2,$3,$4,now()+interval '7 days')", inviteID, ws.ID, email, in.Role)
 	if e != nil {
-		problem(w, 500, "Invitation failed")
+		failed(w, 500, "Invitation failed", e)
 		return
 	}
 	if e = s.sendWorkspaceInvitation(email, ws.Name, in.Message); e != nil {
 		s.DB.Exec(r.Context(), "UPDATE invites SET status='delivery-failed' WHERE id=$1", inviteID)
-		problem(w, 503, "Invitation email delivery failed")
+		failed(w, 503, "Invitation email delivery failed", e)
 		return
 	}
 	jsonOut(w, 201, map[string]bool{"ok": true})

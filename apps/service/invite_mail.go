@@ -50,11 +50,11 @@ func (s *Service) deliverStagedInvitation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", err)
 		return
 	}
 	if err = s.sendWorkspaceInvitation(email, name, in.Message); err != nil {
-		problem(w, 503, "Invitation email delivery failed")
+		failed(w, 503, "Invitation email delivery failed", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

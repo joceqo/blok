@@ -275,7 +275,7 @@ func (s *Service) routed() http.Handler {
 func (s *Service) routes() {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		if e := s.DB.Ping(r.Context()); e != nil {
-			problem(w, 503, "Database unavailable")
+			failed(w, 503, "Database unavailable", e)
 			return
 		}
 		jsonOut(w, 200, map[string]bool{"ok": true})

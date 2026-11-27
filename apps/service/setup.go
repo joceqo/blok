@@ -239,7 +239,7 @@ func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
 
 	tx, e := s.DB.Begin(r.Context())
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -247,7 +247,7 @@ func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
 	var completed pgtype.Timestamptz
 	e = tx.QueryRow(r.Context(), `SELECT setup_completed_at FROM instance_settings WHERE id FOR UPDATE`).Scan(&completed)
 	if e != nil {
-		problem(w, 500, "Setup unavailable")
+		failed(w, 500, "Setup unavailable", e)
 		return
 	}
 	if completed.Valid {
@@ -260,11 +260,11 @@ func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
 		ON CONFLICT(email) DO UPDATE SET name=EXCLUDED.name
 		RETURNING id`, userID, email, name).Scan(&userID)
 	if e != nil {
-		problem(w, 500, "Could not create administrator")
+		failed(w, 500, "Could not create administrator", e)
 		return
 	}
 	if _, e = tx.Exec(r.Context(), `INSERT INTO instance_admins(user_id) VALUES($1) ON CONFLICT DO NOTHING`, userID); e != nil {
-		problem(w, 500, "Could not create administrator")
+		failed(w, 500, "Could not create administrator", e)
 		return
 	}
 
@@ -283,7 +283,7 @@ func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, e = tx.Exec(r.Context(), `INSERT INTO memberships(workspace_id,user_id,role) VALUES($1,$2,'admin')`, id, userID); e != nil {
-			problem(w, 500, "Could not create workspace")
+			failed(w, 500, "Could not create workspace", e)
 			return
 		}
 		workspaceID = &id
@@ -305,7 +305,7 @@ func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
 		  updated_at=now(),
 		  updated_by=$5
 		WHERE id`, instanceName, signupPolicy, workspaceCreation, workspaceID, userID); e != nil {
-		problem(w, 500, "Could not complete setup")
+		failed(w, 500, "Could not complete setup", e)
 		return
 	}
 
@@ -318,11 +318,11 @@ func (s *Service) claimSetup(w http.ResponseWriter, r *http.Request) {
 			problem(w, 429, "Too many attempts; try again later")
 			return
 		}
-		problem(w, 503, "Email delivery unavailable")
+		failed(w, 503, "Email delivery unavailable", e)
 		return
 	}
 	if e = tx.Commit(r.Context()); e != nil {
-		problem(w, 500, "Could not complete setup")
+		failed(w, 500, "Could not complete setup", e)
 		return
 	}
 	_ = s.refreshSettings(r.Context())
@@ -388,7 +388,7 @@ func (s *Service) deliverStoredLoginCode(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err = s.sendLoginCode(email, in.Code); err != nil {
-		problem(w, 503, "Email delivery unavailable")
+		failed(w, 503, "Email delivery unavailable", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -418,7 +418,7 @@ func (s *Service) setupEmailTest(w http.ResponseWriter, r *http.Request) {
 
 	tx, e := s.DB.Begin(r.Context())
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -426,7 +426,7 @@ func (s *Service) setupEmailTest(w http.ResponseWriter, r *http.Request) {
 	var completed pgtype.Timestamptz
 	e = tx.QueryRow(r.Context(), `SELECT setup_completed_at FROM instance_settings WHERE id FOR UPDATE`).Scan(&completed)
 	if e != nil {
-		problem(w, 500, "Setup unavailable")
+		failed(w, 500, "Setup unavailable", e)
 		return
 	}
 	if completed.Valid {
@@ -434,7 +434,7 @@ func (s *Service) setupEmailTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if e = tx.Commit(r.Context()); e != nil {
-		problem(w, 500, "Setup unavailable")
+		failed(w, 500, "Setup unavailable", e)
 		return
 	}
 

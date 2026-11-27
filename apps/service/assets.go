@@ -74,7 +74,7 @@ func (s *Service) blokHandler(next http.Handler) http.Handler {
 		isWrite := r.Method != "GET" && r.Method != "HEAD"
 		can, e := s.authorizeDoc(r.Context(), session, doc, isWrite)
 		if e != nil {
-			problem(w, 503, "Database unavailable")
+			failed(w, 503, "Database unavailable", e)
 			return
 		}
 		if !can || (isWrite && !write) {
@@ -102,13 +102,13 @@ func (s *Service) blokHandler(next http.Handler) http.Handler {
 				if json.Unmarshal(rec.Body.Bytes(), &uploaded) == nil && uploaded.URL != "" {
 					parsed, e := url.Parse(uploaded.URL)
 					if e != nil {
-						problem(w, 500, "Invalid upload response")
+						failed(w, 500, "Invalid upload response", e)
 						return
 					}
 					name := path.Base(parsed.Path)
 					tag, e := s.DB.Exec(r.Context(), `INSERT INTO assets(name,workspace_id,document_id) SELECT $1,workspace_id,id FROM pages WHERE id=$2 AND NOT deleted`, name, doc)
 					if e != nil || tag.RowsAffected() != 1 {
-						problem(w, 500, "Could not register private upload")
+						failed(w, 500, "Could not register private upload", e)
 						return
 					}
 				}

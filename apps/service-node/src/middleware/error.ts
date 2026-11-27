@@ -3,6 +3,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
 import { WorkspaceNotFoundError } from '../errors.ts';
 import { PermissionDeniedError } from '../permissions.ts';
+import { requestIdOf } from './observe.ts';
 
 export function onError(error: Error, context: Context): Response {
   if (error instanceof WorkspaceNotFoundError) {
@@ -16,6 +17,18 @@ export function onError(error: Error, context: Context): Response {
   }
 
   const message = error instanceof Error ? error.message : 'internal_error';
-  console.error('[service-node]', error);
+  // Carries the identifier observeMiddleware gave the request, so this line and
+  // the request line it produced can be read as one event.
+  console.error(
+    JSON.stringify({
+      level: 'error',
+      message: 'request failed',
+      method: context.req.method,
+      path: context.req.path,
+      request: requestIdOf(context),
+      cause: message,
+      stack: error.stack ?? '',
+    }),
+  );
   return context.json({ error: message }, 500 as ContentfulStatusCode);
 }

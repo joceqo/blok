@@ -104,7 +104,7 @@ func (s *Service) workspaceImage(w http.ResponseWriter, r *http.Request, ws Work
 	}
 	imageURL, err := s.storeWorkspaceImage(r.Context(), ws, in.DataURL, maxWorkspaceImage)
 	if err != nil {
-		problem(w, 500, "Could not save image")
+		failed(w, 500, "Could not save image", err)
 		return
 	}
 	jsonOut(w, 201, map[string]string{"url": imageURL})
@@ -114,21 +114,21 @@ func (s *Service) emojis(w http.ResponseWriter, r *http.Request, u identity, ws 
 	if r.Method == "GET" && id == "" {
 		rows, err := s.DB.Query(r.Context(), "SELECT id,name,url,created_by,created_at FROM workspace_emojis WHERE workspace_id=$1 ORDER BY name", ws.ID)
 		if err != nil {
-			problem(w, 503, "Database unavailable")
+			failed(w, 503, "Database unavailable", err)
 			return
 		}
 		defer rows.Close()
 		out := []workspaceEmoji{}
 		for rows.Next() {
 			var emoji workspaceEmoji
-			if rows.Scan(&emoji.ID, &emoji.Name, &emoji.URL, &emoji.CreatedBy, &emoji.CreatedAt) != nil {
-				problem(w, 500, "Read failed")
+			if e := rows.Scan(&emoji.ID, &emoji.Name, &emoji.URL, &emoji.CreatedBy, &emoji.CreatedAt); e != nil {
+				failed(w, 500, "Read failed", e)
 				return
 			}
 			out = append(out, emoji)
 		}
 		if rows.Err() != nil {
-			problem(w, 500, "Read failed")
+			failed(w, 500, "Read failed", rows.Err())
 			return
 		}
 		jsonOut(w, 200, map[string]any{"emojis": out})
@@ -141,7 +141,7 @@ func (s *Service) emojis(w http.ResponseWriter, r *http.Request, u identity, ws 
 	if r.Method == "DELETE" && id != "" {
 		tag, err := s.DB.Exec(r.Context(), "DELETE FROM workspace_emojis WHERE workspace_id=$1 AND id=$2 AND (created_by=$3 OR $4='admin')", ws.ID, id, u.ID, ws.Role)
 		if err != nil {
-			problem(w, 500, "Could not delete emoji")
+			failed(w, 500, "Could not delete emoji", err)
 			return
 		}
 		if tag.RowsAffected() == 0 {
@@ -185,7 +185,7 @@ func (s *Service) emojis(w http.ResponseWriter, r *http.Request, u identity, ws 
 		var err error
 		in.URL, err = s.storeWorkspaceImage(r.Context(), ws, in.DataURL, maxEmojiImage)
 		if err != nil {
-			problem(w, 500, "Could not save emoji image")
+			failed(w, 500, "Could not save emoji image", err)
 			return
 		}
 	}
@@ -197,7 +197,7 @@ func (s *Service) emojis(w http.ResponseWriter, r *http.Request, u identity, ws 
 			problem(w, 409, "An emoji with this name already exists")
 			return
 		}
-		problem(w, 500, "Could not create emoji")
+		failed(w, 500, "Could not create emoji", err)
 		return
 	}
 	jsonOut(w, 201, emoji)

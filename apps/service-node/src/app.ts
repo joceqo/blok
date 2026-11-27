@@ -1,10 +1,10 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { logger } from 'hono/logger';
 
 import type { Database } from './db/index.ts';
 import { onError } from './middleware/error.ts';
 import { dbMiddleware } from './middleware/db.ts';
+import { observeMiddleware } from './middleware/observe.ts';
 import { securityHeadersMiddleware } from './middleware/security-headers.ts';
 import { sessionMiddleware } from './middleware/session.ts';
 import { assetRoutes } from './routes/assets.ts';
@@ -33,7 +33,7 @@ export function createApp(options: AppOptions): Hono {
   const app = new Hono();
 
   app.onError(onError);
-  app.use('*', logger());
+  app.use('*', observeMiddleware());
   app.use('*', cors({ credentials: true }));
   app.use('*', securityHeadersMiddleware);
 

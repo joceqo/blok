@@ -60,7 +60,7 @@ func (s *Service) pageAccess(w http.ResponseWriter, r *http.Request, u identity,
 	page := r.PathValue("id")
 	granted, e := s.effectiveLevel(r.Context(), s.DB, u.ID, page)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	if granted < levelView {
@@ -77,14 +77,14 @@ func (s *Service) pageAccess(w http.ResponseWriter, r *http.Request, u identity,
 	}
 	chain, visibility, e := ancestry(r.Context(), s.DB, page)
 	if e != nil || len(chain) == 0 {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	rows, e := s.DB.Query(r.Context(), `SELECT sh.page_id,u.id,u.email,sh.level
 	  FROM page_shares sh JOIN users u ON u.id=sh.user_id
 	 WHERE sh.page_id=ANY($1) ORDER BY u.email`, chain)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer rows.Close()
@@ -96,7 +96,7 @@ func (s *Service) pageAccess(w http.ResponseWriter, r *http.Request, u identity,
 		var from string
 		var entry sharedWith
 		if e = rows.Scan(&from, &entry.UserID, &entry.Email, &entry.Level); e != nil {
-			problem(w, 500, "Read failed")
+			failed(w, 500, "Read failed", e)
 			return
 		}
 		if from == page {
@@ -107,12 +107,12 @@ func (s *Service) pageAccess(w http.ResponseWriter, r *http.Request, u identity,
 		inherited = append(inherited, entry)
 	}
 	if rows.Err() != nil {
-		problem(w, 500, "Read failed")
+		failed(w, 500, "Read failed", rows.Err())
 		return
 	}
 	var ownVisibility string
 	if e = s.DB.QueryRow(r.Context(), "SELECT visibility FROM pages WHERE id=$1", page).Scan(&ownVisibility); e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	jsonOut(w, 200, map[string]any{
@@ -129,7 +129,7 @@ func (s *Service) pageAccess(w http.ResponseWriter, r *http.Request, u identity,
 func (s *Service) setPageVisibility(w http.ResponseWriter, r *http.Request, u identity, ws Workspace, page string) {
 	granted, e := s.effectiveLevel(r.Context(), s.DB, u.ID, page)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	if granted < levelFull {
@@ -147,7 +147,7 @@ func (s *Service) setPageVisibility(w http.ResponseWriter, r *http.Request, u id
 		return
 	}
 	if _, e = s.DB.Exec(r.Context(), "UPDATE pages SET visibility=$2 WHERE id=$1 AND workspace_id=$3", page, in.Visibility, ws.ID); e != nil {
-		problem(w, 500, "Update failed")
+		failed(w, 500, "Update failed", e)
 		return
 	}
 	s.recheckWorkspace(r.Context(), ws.ID)
@@ -164,7 +164,7 @@ func (s *Service) pageShare(w http.ResponseWriter, r *http.Request, u identity, 
 	target := r.PathValue("target")
 	granted, e := s.effectiveLevel(r.Context(), s.DB, u.ID, page)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	if granted < levelView {
@@ -178,7 +178,7 @@ func (s *Service) pageShare(w http.ResponseWriter, r *http.Request, u identity, 
 	}
 	tx, e := s.DB.Begin(r.Context())
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -188,7 +188,7 @@ func (s *Service) pageShare(w http.ResponseWriter, r *http.Request, u identity, 
 			return
 		}
 		if _, e = tx.Exec(r.Context(), "DELETE FROM page_shares WHERE page_id=$1 AND user_id=$2", page, target); e != nil {
-			problem(w, 500, "Update failed")
+			failed(w, 500, "Update failed", e)
 			return
 		}
 	} else {
@@ -206,7 +206,7 @@ func (s *Service) pageShare(w http.ResponseWriter, r *http.Request, u identity, 
 		// sans effet : son plafond est nul, donc son accès aussi.
 		var member bool
 		if e = tx.QueryRow(r.Context(), "SELECT EXISTS(SELECT 1 FROM memberships WHERE workspace_id=$1 AND user_id=$2)", ws.ID, target).Scan(&member); e != nil {
-			problem(w, 503, "Database unavailable")
+			failed(w, 503, "Database unavailable", e)
 			return
 		}
 		if !member {
@@ -215,12 +215,12 @@ func (s *Service) pageShare(w http.ResponseWriter, r *http.Request, u identity, 
 		}
 		if _, e = tx.Exec(r.Context(), `INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES($1,$2,$3,$4)
 		  ON CONFLICT(page_id,user_id) DO UPDATE SET level=$3,granted_by=$4`, page, target, in.Level, u.ID); e != nil {
-			problem(w, 500, "Update failed")
+			failed(w, 500, "Update failed", e)
 			return
 		}
 	}
 	if e = tx.Commit(r.Context()); e != nil {
-		problem(w, 500, "Update failed")
+		failed(w, 500, "Update failed", e)
 		return
 	}
 	// Une session déjà ouverte sur la page doit se refermer, pas attendre un

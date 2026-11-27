@@ -80,7 +80,7 @@ func (s *Service) ai(w http.ResponseWriter, r *http.Request, u identity, ws Work
 		}
 		personal, shared, e := s.aiCredentials(r.Context(), u, ws)
 		if e != nil {
-			problem(w, 503, "La configuration IA est indisponible")
+			failed(w, 503, "La configuration IA est indisponible", e)
 			return
 		}
 		effective := effectiveAI(personal, shared)
@@ -120,7 +120,7 @@ func (s *Service) aiManage(w http.ResponseWriter, r *http.Request, u identity, w
 			return
 		}
 		if _, e := s.DB.Exec(r.Context(), "DELETE FROM ai_credentials WHERE scope=$1 AND owner_id=$2", scope, owner); e != nil {
-			problem(w, 503, "Impossible de supprimer les identifiants IA")
+			failed(w, 503, "Impossible de supprimer les identifiants IA", e)
 			return
 		}
 		jsonOut(w, 200, map[string]bool{"ok": true})
@@ -157,7 +157,7 @@ func (s *Service) aiManage(w http.ResponseWriter, r *http.Request, u identity, w
 		}
 		encrypted, e = s.encryptAI(key, in.Scope+":"+owner)
 		if e != nil {
-			problem(w, 500, "Impossible de chiffrer les identifiants IA")
+			failed(w, 500, "Impossible de chiffrer les identifiants IA", e)
 			return
 		}
 	}
@@ -168,7 +168,7 @@ func (s *Service) aiManage(w http.ResponseWriter, r *http.Request, u identity, w
 	// Database-side preservation makes simultaneous key/model-only updates atomic.
 	_, e = s.DB.Exec(r.Context(), `INSERT INTO ai_credentials(scope,owner_id,encrypted_key,model) VALUES($1,$2,$3,coalesce($4,'')) ON CONFLICT(scope,owner_id) DO UPDATE SET encrypted_key=CASE WHEN $5 THEN excluded.encrypted_key ELSE ai_credentials.encrypted_key END,model=CASE WHEN $6 THEN excluded.model ELSE ai_credentials.model END,updated_at=now()`, in.Scope, owner, encrypted, in.Model, in.APIKey != nil, in.Model != nil)
 	if e != nil {
-		problem(w, 503, "Impossible d’enregistrer les identifiants IA")
+		failed(w, 503, "Impossible d’enregistrer les identifiants IA", e)
 		return
 	}
 	jsonOut(w, 200, map[string]bool{"ok": true})
@@ -176,7 +176,7 @@ func (s *Service) aiManage(w http.ResponseWriter, r *http.Request, u identity, w
 func (s *Service) aiSelected(w http.ResponseWriter, r *http.Request, u identity, ws Workspace, scope string) (aiCredential, bool) {
 	personal, shared, e := s.aiCredentials(r.Context(), u, ws)
 	if e != nil {
-		problem(w, 503, "La configuration IA est indisponible")
+		failed(w, 503, "La configuration IA est indisponible", e)
 		return aiCredential{}, false
 	}
 	credential := effectiveAI(personal, shared)

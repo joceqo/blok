@@ -44,7 +44,7 @@ func (s *Service) routeWorkspaceUpgrade(proxy http.Handler, w http.ResponseWrite
 	}
 	owned, err := s.nodeOwnsRoom(r.Context(), doc)
 	if err != nil {
-		problem(w, 503, "Room ownership unavailable")
+		failed(w, 503, "Room ownership unavailable", err)
 		return true
 	}
 	if !owned {
@@ -107,7 +107,7 @@ func (s *Service) routeNodeRoom(proxy http.Handler, w http.ResponseWriter, r *ht
 		}
 		owned, err := s.nodeOwnsRoom(r.Context(), ticketDoc)
 		if err != nil {
-			problem(w, 503, "Room ownership unavailable")
+			failed(w, 503, "Room ownership unavailable", err)
 			return true
 		}
 		if owned {

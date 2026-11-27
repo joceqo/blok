@@ -115,7 +115,7 @@ func (s *Service) mcpTokens(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		rows, err := s.DB.Query(r.Context(), `SELECT id,label,created_at,expires_at,last_used_at FROM mcp_tokens WHERE user_id=$1 AND expires_at>now() ORDER BY created_at DESC`, u.ID)
 		if err != nil {
-			problem(w, 503, "Tokens unavailable")
+			failed(w, 503, "Tokens unavailable", err)
 			return
 		}
 		defer rows.Close()
@@ -124,14 +124,14 @@ func (s *Service) mcpTokens(w http.ResponseWriter, r *http.Request) {
 			var id, label string
 			var created, expires time.Time
 			var lastUsed *time.Time
-			if rows.Scan(&id, &label, &created, &expires, &lastUsed) != nil {
-				problem(w, 503, "Tokens unavailable")
+			if e := rows.Scan(&id, &label, &created, &expires, &lastUsed); e != nil {
+				failed(w, 503, "Tokens unavailable", e)
 				return
 			}
 			out = append(out, map[string]any{"id": id, "label": label, "createdAt": created, "expiresAt": expires, "lastUsedAt": lastUsed})
 		}
 		if rows.Err() != nil {
-			problem(w, 503, "Tokens unavailable")
+			failed(w, 503, "Tokens unavailable", rows.Err())
 			return
 		}
 		jsonOut(w, 200, map[string]any{"tokens": out})
@@ -157,8 +157,8 @@ func (s *Service) mcpTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var count int
-	if s.DB.QueryRow(r.Context(), `SELECT count(*) FROM mcp_tokens WHERE user_id=$1 AND expires_at>now()`, u.ID).Scan(&count) != nil {
-		problem(w, 503, "Tokens unavailable")
+	if e := s.DB.QueryRow(r.Context(), `SELECT count(*) FROM mcp_tokens WHERE user_id=$1 AND expires_at>now()`, u.ID).Scan(&count); e != nil {
+		failed(w, 503, "Tokens unavailable", e)
 		return
 	}
 	if count >= 10 {
@@ -169,7 +169,7 @@ func (s *Service) mcpTokens(w http.ResponseWriter, r *http.Request) {
 	var created, expires time.Time
 	err := s.DB.QueryRow(r.Context(), `INSERT INTO mcp_tokens(id,user_id,label,expires_at) VALUES($1,$2,$3,now()+interval '90 days') RETURNING created_at,expires_at`, hash(token), u.ID, in.Label).Scan(&created, &expires)
 	if err != nil {
-		problem(w, 503, "Could not create token")
+		failed(w, 503, "Could not create token", err)
 		return
 	}
 	jsonOut(w, 201, map[string]any{"id": hash(token), "label": in.Label, "token": token, "createdAt": created, "expiresAt": expires})
@@ -182,7 +182,7 @@ func (s *Service) revokeMCPToken(w http.ResponseWriter, r *http.Request) {
 	}
 	tag, err := s.DB.Exec(r.Context(), `DELETE FROM mcp_tokens WHERE id=$1 AND user_id=$2`, r.PathValue("id"), u.ID)
 	if err != nil {
-		problem(w, 503, "Could not revoke token")
+		failed(w, 503, "Could not revoke token", err)
 		return
 	}
 	if tag.RowsAffected() == 0 {
@@ -209,7 +209,7 @@ func (s *Service) rotateMCPToken(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, pgx.ErrNoRows) {
 			problem(w, 404, "Token not found")
 		} else {
-			problem(w, 503, "Could not rotate token")
+			failed(w, 503, "Could not rotate token", err)
 		}
 		return
 	}

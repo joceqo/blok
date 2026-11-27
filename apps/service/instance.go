@@ -202,7 +202,7 @@ func (s *Service) getInstance(w http.ResponseWriter, r *http.Request) {
 		if e == nil {
 			out["defaultWorkspace"] = map[string]string{"slug": slug, "name": name}
 		} else if !errors.Is(e, pgx.ErrNoRows) {
-			problem(w, 500, "Instance unavailable")
+			failed(w, 500, "Instance unavailable", e)
 			return
 		}
 	}
@@ -277,7 +277,7 @@ func (s *Service) patchAdminSettings(w http.ResponseWriter, r *http.Request) {
 			var exists bool
 			if e := s.DB.QueryRow(r.Context(),
 				`SELECT EXISTS(SELECT 1 FROM workspaces WHERE id=$1)`, id).Scan(&exists); e != nil {
-				problem(w, 503, "Database unavailable")
+				failed(w, 503, "Database unavailable", e)
 				return
 			}
 			if !exists {
@@ -317,7 +317,7 @@ func (s *Service) patchAdminSettings(w http.ResponseWriter, r *http.Request) {
 		ClearDefaultWorkspace: clearDefault, UpdatedBy: &u.ID,
 	})
 	if e != nil {
-		problem(w, 500, "Could not update settings")
+		failed(w, 500, "Could not update settings", e)
 		return
 	}
 	jsonOut(w, 200, settingsJSON(updated))

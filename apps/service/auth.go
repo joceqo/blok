@@ -76,7 +76,7 @@ func (s *Service) requestCode(w http.ResponseWriter, r *http.Request) {
 	}
 	allowed, e := s.signupAllowed(r.Context(), s.DB, email)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	if !allowed {
@@ -88,7 +88,7 @@ func (s *Service) requestCode(w http.ResponseWriter, r *http.Request) {
 			problem(w, 429, "Too many attempts; try again later")
 			return
 		}
-		problem(w, 503, "Email delivery unavailable")
+		failed(w, 503, "Email delivery unavailable", e)
 		return
 	}
 	jsonOut(w, 200, map[string]bool{"ok": true})
@@ -110,7 +110,7 @@ func (s *Service) verifyCode(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, e := s.DB.Begin(r.Context())
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -129,12 +129,12 @@ func (s *Service) verifyCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, e = tx.Exec(r.Context(), "DELETE FROM login_codes WHERE email=$1", email); e != nil {
-		problem(w, 500, "Sign in failed")
+		failed(w, 500, "Sign in failed", e)
 		return
 	}
 	allowed, e := s.signupAllowed(r.Context(), tx, email)
 	if e != nil {
-		problem(w, 500, "Sign in failed")
+		failed(w, 500, "Sign in failed", e)
 		return
 	}
 	if !allowed {
@@ -144,30 +144,30 @@ func (s *Service) verifyCode(w http.ResponseWriter, r *http.Request) {
 	var u User
 	e = tx.QueryRow(r.Context(), "INSERT INTO users(id,email) VALUES($1,$2) ON CONFLICT(email) DO UPDATE SET email=excluded.email RETURNING id,email,name", opaque(), email).Scan(&u.ID, &u.Email, &u.Name)
 	if e != nil {
-		problem(w, 500, "Sign in failed")
+		failed(w, 500, "Sign in failed", e)
 		return
 	}
 	if _, e = tx.Exec(r.Context(), `INSERT INTO memberships(workspace_id,user_id,role) SELECT workspace_id,$1,role FROM (SELECT DISTINCT ON (workspace_id) workspace_id,role FROM invites WHERE email=$2 AND status='pending' AND expires_at>now() ORDER BY workspace_id,created_at DESC,id DESC) pending ON CONFLICT(workspace_id,user_id) DO NOTHING`, u.ID, email); e != nil {
-		problem(w, 500, "Invitation acceptance failed")
+		failed(w, 500, "Invitation acceptance failed", e)
 		return
 	}
 	if _, e = tx.Exec(r.Context(), "UPDATE invites SET status='accepted' WHERE email=$1 AND status='pending' AND expires_at>now()", email); e != nil {
-		problem(w, 500, "Invitation acceptance failed")
+		failed(w, 500, "Invitation acceptance failed", e)
 		return
 	}
 	token := opaque()
 	if _, e = tx.Exec(r.Context(), "INSERT INTO sessions(id,user_id,expires_at) VALUES($1,$2,now()+interval '30 days')", hash(token), u.ID); e != nil {
-		problem(w, 500, "Sign in failed")
+		failed(w, 500, "Sign in failed", e)
 		return
 	}
 	if e = tx.Commit(r.Context()); e != nil {
-		problem(w, 500, "Sign in failed")
+		failed(w, 500, "Sign in failed", e)
 		return
 	}
 	_ = s.DB.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM instance_admins WHERE user_id=$1)`, u.ID).Scan(&u.InstanceAdmin)
 	workspaces, e := s.workspaces(r.Context(), u.ID)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	out := map[string]any{"user": u, "workspaces": workspaces}
@@ -186,7 +186,7 @@ func (s *Service) getSession(w http.ResponseWriter, r *http.Request) {
 	}
 	list, e := s.workspaces(r.Context(), u.ID)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	jsonOut(w, 200, map[string]any{"user": u.User, "workspaces": list, "supportEmail": s.supportEmail(r.Context())})
@@ -196,7 +196,7 @@ func (s *Service) logout(w http.ResponseWriter, r *http.Request) {
 	u, e := s.session(r)
 	if e == nil {
 		if _, e = s.DB.Exec(r.Context(), "DELETE FROM sessions WHERE id=$1", u.Session); e != nil {
-			problem(w, 503, "Database unavailable")
+			failed(w, 503, "Database unavailable", e)
 			return
 		}
 	}

@@ -42,7 +42,7 @@ func (s *Service) listAdminUsers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var total int
 	if e := s.DB.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&total); e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	rows, e := s.DB.Query(ctx, `
@@ -53,7 +53,7 @@ func (s *Service) listAdminUsers(w http.ResponseWriter, r *http.Request) {
 		 ORDER BY u.created_at ASC, u.email ASC
 		 LIMIT $1 OFFSET $2`, limit, offset)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer rows.Close()
@@ -61,13 +61,13 @@ func (s *Service) listAdminUsers(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var u adminUser
 		if e = rows.Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt, &u.WorkspaceCount, &u.InstanceAdmin); e != nil {
-			problem(w, 500, "Could not list users")
+			failed(w, 500, "Could not list users", e)
 			return
 		}
 		users = append(users, u)
 	}
 	if e = rows.Err(); e != nil {
-		problem(w, 500, "Could not list users")
+		failed(w, 500, "Could not list users", e)
 		return
 	}
 	jsonOut(w, 200, map[string]any{"users": users, "total": total, "limit": limit, "offset": offset})
@@ -108,7 +108,7 @@ func (s *Service) createAdminUser(w http.ResponseWriter, r *http.Request) {
 			problem(w, 409, "Email already used")
 			return
 		}
-		problem(w, 500, "Could not create user")
+		failed(w, 500, "Could not create user", e)
 		return
 	}
 	created.WorkspaceCount = 0
@@ -136,7 +136,7 @@ func (s *Service) patchAdminUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tx, e := s.DB.Begin(ctx)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer tx.Rollback(ctx)
@@ -153,7 +153,7 @@ func (s *Service) patchAdminUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if e != nil {
-		problem(w, 500, "Could not update user")
+		failed(w, 500, "Could not update user", e)
 		return
 	}
 
@@ -164,7 +164,7 @@ func (s *Service) patchAdminUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, e = tx.Exec(ctx, `UPDATE users SET name=$2 WHERE id=$1`, id, name); e != nil {
-			problem(w, 500, "Could not update user")
+			failed(w, 500, "Could not update user", e)
 			return
 		}
 		u.Name = name
@@ -173,14 +173,14 @@ func (s *Service) patchAdminUser(w http.ResponseWriter, r *http.Request) {
 	if in.InstanceAdmin != nil {
 		if *in.InstanceAdmin && !u.InstanceAdmin {
 			if _, e = tx.Exec(ctx, `INSERT INTO instance_admins(user_id,granted_by) VALUES($1,$2) ON CONFLICT DO NOTHING`, id, actor.ID); e != nil {
-				problem(w, 500, "Could not update user")
+				failed(w, 500, "Could not update user", e)
 				return
 			}
 			u.InstanceAdmin = true
 		} else if !*in.InstanceAdmin && u.InstanceAdmin {
 			var count int
 			if e = tx.QueryRow(ctx, `SELECT count(*) FROM instance_admins`).Scan(&count); e != nil {
-				problem(w, 500, "Could not update user")
+				failed(w, 500, "Could not update user", e)
 				return
 			}
 			if count <= 1 {
@@ -188,7 +188,7 @@ func (s *Service) patchAdminUser(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if _, e = tx.Exec(ctx, `DELETE FROM instance_admins WHERE user_id=$1`, id); e != nil {
-				problem(w, 500, "Could not update user")
+				failed(w, 500, "Could not update user", e)
 				return
 			}
 			u.InstanceAdmin = false
@@ -196,7 +196,7 @@ func (s *Service) patchAdminUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if e = tx.Commit(ctx); e != nil {
-		problem(w, 500, "Could not update user")
+		failed(w, 500, "Could not update user", e)
 		return
 	}
 	jsonOut(w, 200, u)
@@ -215,7 +215,7 @@ func (s *Service) deleteAdminUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tx, e := s.DB.Begin(ctx)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer tx.Rollback(ctx)
@@ -231,13 +231,13 @@ func (s *Service) deleteAdminUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if e != nil {
-		problem(w, 500, "Could not delete user")
+		failed(w, 500, "Could not delete user", e)
 		return
 	}
 	if isAdmin {
 		var count int
 		if e = tx.QueryRow(ctx, `SELECT count(*) FROM instance_admins`).Scan(&count); e != nil {
-			problem(w, 500, "Could not delete user")
+			failed(w, 500, "Could not delete user", e)
 			return
 		}
 		if count <= 1 {
@@ -256,11 +256,11 @@ func (s *Service) deleteAdminUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if e = s.deleteUserTx(ctx, tx, id, email, actor.ID); e != nil {
-		problem(w, 500, "Could not delete user")
+		failed(w, 500, "Could not delete user", e)
 		return
 	}
 	if e = tx.Commit(ctx); e != nil {
-		problem(w, 500, "Could not delete user")
+		failed(w, 500, "Could not delete user", e)
 		return
 	}
 	jsonOut(w, 200, map[string]bool{"ok": true})
@@ -313,7 +313,7 @@ func (s *Service) listAdminWorkspaces(w http.ResponseWriter, r *http.Request) {
 		  FROM workspaces w
 		 ORDER BY w.name ASC, w.slug ASC`)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer rows.Close()
@@ -322,7 +322,7 @@ func (s *Service) listAdminWorkspaces(w http.ResponseWriter, r *http.Request) {
 		var ws adminWorkspace
 		var created pgtype.Timestamptz
 		if e = rows.Scan(&ws.ID, &ws.Slug, &ws.Name, &ws.MemberCount, &created); e != nil {
-			problem(w, 500, "Could not list workspaces")
+			failed(w, 500, "Could not list workspaces", e)
 			return
 		}
 		if created.Valid {
@@ -332,7 +332,7 @@ func (s *Service) listAdminWorkspaces(w http.ResponseWriter, r *http.Request) {
 		list = append(list, ws)
 	}
 	if e = rows.Err(); e != nil {
-		problem(w, 500, "Could not list workspaces")
+		failed(w, 500, "Could not list workspaces", e)
 		return
 	}
 	jsonOut(w, 200, map[string]any{"workspaces": list})

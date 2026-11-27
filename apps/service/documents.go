@@ -19,23 +19,23 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 	if r.Method == "GET" {
 		tx, e := s.DB.Begin(r.Context())
 		if e != nil {
-			problem(w, 503, "Database unavailable")
+			failed(w, 503, "Database unavailable", e)
 			return
 		}
 		defer tx.Rollback(r.Context())
 		var revision int64
 		if e = tx.QueryRow(r.Context(), "SELECT revision FROM workspaces WHERE id=$1 FOR SHARE", ws.ID).Scan(&revision); e != nil {
-			problem(w, 500, "Read failed")
+			failed(w, 500, "Read failed", e)
 			return
 		}
 		standings, parents, e := s.workspaceStandings(r.Context(), tx, u.ID, ws.ID)
 		if e != nil {
-			problem(w, 500, "Read failed")
+			failed(w, 500, "Read failed", e)
 			return
 		}
 		rows, e := tx.Query(r.Context(), "SELECT id,metadata,trashed FROM pages WHERE workspace_id=$1 AND NOT deleted ORDER BY (metadata->>'position')::numeric NULLS LAST,id", ws.ID)
 		if e != nil {
-			problem(w, 500, "Read failed")
+			failed(w, 500, "Read failed", e)
 			return
 		}
 		pages := []json.RawMessage{}
@@ -47,7 +47,7 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 			var tr bool
 			if e = rows.Scan(&id, &meta, &tr); e != nil {
 				rows.Close()
-				problem(w, 500, "Read failed")
+				failed(w, 500, "Read failed", e)
 				return
 			}
 			standing := standings[id]
@@ -65,7 +65,7 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 				detached, failure := detachParent(meta)
 				if failure != nil {
 					rows.Close()
-					problem(w, 500, "Read failed")
+					failed(w, 500, "Read failed", failure)
 					return
 				}
 				meta = detached
@@ -81,7 +81,7 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 		e = rows.Err()
 		rows.Close()
 		if e != nil {
-			problem(w, 500, "Read failed")
+			failed(w, 500, "Read failed", e)
 			return
 		}
 		jsonOut(w, 200, map[string]any{"pages": pages, "trash": trash, "revision": revision, "access": access})
@@ -133,13 +133,13 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 	}
 	tx, e := s.DB.Begin(r.Context())
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	var rev int64
 	if e = tx.QueryRow(r.Context(), "SELECT revision FROM workspaces WHERE id=$1 FOR UPDATE", ws.ID).Scan(&rev); e != nil {
-		problem(w, 500, "Save failed")
+		failed(w, 500, "Save failed", e)
 		return
 	}
 	var role string
@@ -153,12 +153,12 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 	}
 	levels, realParents, e := s.workspaceLevels(r.Context(), tx, u.ID, ws.ID)
 	if e != nil {
-		problem(w, 500, "Save failed")
+		failed(w, 500, "Save failed", e)
 		return
 	}
 	known, order, e := currentIndex(r.Context(), tx, ws.ID)
 	if e != nil {
-		problem(w, 500, "Save failed")
+		failed(w, 500, "Save failed", e)
 		return
 	}
 	// Nommer une page qu'on ne voit pas n'est pas un enregistrement : c'est une
@@ -188,7 +188,7 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 		}
 	}
 	if _, e = tx.Exec(r.Context(), "UPDATE pages SET deleted=true WHERE workspace_id=$1 AND id=ANY($2)", ws.ID, removable); e != nil {
-		problem(w, 500, "Save failed")
+		failed(w, 500, "Save failed", e)
 		return
 	}
 	for position, slot := range mergeIndexOrder(order, all, levels, known) {
@@ -197,7 +197,7 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 			// place relative. Seul son rang bouge, parce qu'un ordre global ne
 			// peut pas se renuméroter à moitié.
 			if _, e = tx.Exec(r.Context(), `UPDATE pages SET metadata=jsonb_set(metadata,'{position}',to_jsonb($2::int)) WHERE id=$1 AND NOT deleted`, slot.id, position); e != nil {
-				problem(w, 500, "Save failed")
+				failed(w, 500, "Save failed", e)
 				return
 			}
 			continue
@@ -240,7 +240,7 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 		encoded, _ := json.Marshal(p)
 		tag, e := tx.Exec(r.Context(), `INSERT INTO pages(id,workspace_id,metadata,trashed,visibility) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET metadata=$3,trashed=$4,deleted=false WHERE pages.workspace_id=$2`, slot.id, ws.ID, encoded, slot.trashed, visibility)
 		if e != nil {
-			problem(w, 500, "Save failed")
+			failed(w, 500, "Save failed", e)
 			return
 		}
 		if tag.RowsAffected() != 1 {
@@ -252,17 +252,17 @@ func (s *Service) index(w http.ResponseWriter, r *http.Request, u identity, ws W
 		// page reste ouverte à l'espace si elle est à la racine.
 		if !known[slot.id] {
 			if _, e = tx.Exec(r.Context(), "INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES($1,$2,'full',$2) ON CONFLICT DO NOTHING", slot.id, u.ID); e != nil {
-				problem(w, 500, "Save failed")
+				failed(w, 500, "Save failed", e)
 				return
 			}
 		}
 	}
 	if _, e = tx.Exec(r.Context(), "UPDATE workspaces SET revision=revision+1 WHERE id=$1", ws.ID); e != nil {
-		problem(w, 500, "Save failed")
+		failed(w, 500, "Save failed", e)
 		return
 	}
 	if e = tx.Commit(r.Context()); e != nil {
-		problem(w, 500, "Save failed")
+		failed(w, 500, "Save failed", e)
 		return
 	}
 	s.recheckWorkspace(r.Context(), ws.ID)
@@ -293,7 +293,7 @@ func (s *Service) page(w http.ResponseWriter, r *http.Request, u identity, ws Wo
 	// déjà une fuite quand elle est privée.
 	granted, e := s.effectiveLevel(r.Context(), s.DB, u.ID, r.PathValue("id"))
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	if granted < levelView {
@@ -325,7 +325,7 @@ func (s *Service) ticket(w http.ResponseWriter, r *http.Request, u identity, ws 
 	}
 	granted, e := s.effectiveLevel(r.Context(), s.DB, u.ID, doc)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	if granted < levelView {
@@ -342,7 +342,7 @@ func (s *Service) getTicket(w http.ResponseWriter, r *http.Request) {
 	doc := r.URL.Query().Get("doc")
 	can, e := s.authorizeDoc(r.Context(), u.Session, doc, false)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	if !can {
@@ -351,20 +351,20 @@ func (s *Service) getTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	write, e := s.authorizeDoc(r.Context(), u.Session, doc, true)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	s.mintTicket(w, r, u, doc, write)
 }
 func (s *Service) mintTicket(w http.ResponseWriter, r *http.Request, u identity, doc string, write bool) {
 	if _, e := s.DB.Exec(r.Context(), "UPDATE pages SET admission_started=true WHERE id=$1", doc); e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	ttl := int64(60)
 	t, e := ticket.Mint(s.Config.TicketSecret, ticket.Claims{User: u.Session, Doc: &doc, Write: write, TTLSeconds: &ttl}, time.Now())
 	if e != nil {
-		problem(w, 500, "Ticket creation failed")
+		failed(w, 500, "Ticket creation failed", e)
 		return
 	}
 	jsonOut(w, 200, map[string]any{"ticket": t})
@@ -445,7 +445,7 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 	// la page existe.
 	granted, e := s.effectiveLevel(r.Context(), s.DB, u.ID, source)
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	if granted < levelView {
@@ -455,7 +455,7 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 	if in.ParentID != nil && *in.ParentID != "" {
 		target, e := s.effectiveLevel(r.Context(), s.DB, u.ID, *in.ParentID)
 		if e != nil {
-			problem(w, 503, "Database unavailable")
+			failed(w, 503, "Database unavailable", e)
 			return
 		}
 		if target < levelEdit {
@@ -465,7 +465,7 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 	}
 	owned, err := s.nodeOwnsRoom(r.Context(), source)
 	if err != nil {
-		problem(w, 503, "Room ownership unavailable")
+		failed(w, 503, "Room ownership unavailable", err)
 		return
 	}
 	if owned {
@@ -473,13 +473,13 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 		return
 	}
 	if _, e := s.DB.Exec(r.Context(), "UPDATE pages SET admission_started=true WHERE id=$1", source); e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	ttl := int64(60)
 	pass, e := ticket.Mint(s.Config.TicketSecret, ticket.Claims{User: u.Session, Doc: &source, Write: true, TTLSeconds: &ttl}, time.Now())
 	if e != nil {
-		problem(w, 500, "Ticket creation failed")
+		failed(w, 500, "Ticket creation failed", e)
 		return
 	}
 	req := httptest.NewRequest("GET", "/api/blok/sync/"+url.PathEscape(source)+"/state?ticket="+url.QueryEscape(pass), nil).WithContext(r.Context())
@@ -492,21 +492,21 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 		return
 	}
 	var content map[string]any
-	if json.Unmarshal(rec.Body.Bytes(), &content) != nil {
-		problem(w, 500, "Invalid source state")
+	if e := json.Unmarshal(rec.Body.Bytes(), &content); e != nil {
+		failed(w, 500, "Invalid source state", e)
 		return
 	}
 	content["title"] = in.Title
 	encoded, _ := json.Marshal(content)
 	tx, e := s.DB.Begin(r.Context())
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	var revision int64
 	if e = tx.QueryRow(r.Context(), "SELECT revision FROM workspaces WHERE id=$1 FOR UPDATE", ws.ID).Scan(&revision); e != nil {
-		problem(w, 500, "Duplicate failed")
+		failed(w, 500, "Duplicate failed", e)
 		return
 	}
 	var role string
@@ -534,7 +534,7 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 	metadata["parentId"] = in.ParentID
 	var position int
 	if e = tx.QueryRow(r.Context(), "SELECT count(*) FROM pages WHERE workspace_id=$1", ws.ID).Scan(&position); e != nil {
-		problem(w, 500, "Duplicate failed")
+		failed(w, 500, "Duplicate failed", e)
 		return
 	}
 	metadata["position"] = position
@@ -547,15 +547,15 @@ func (s *Service) duplicate(w http.ResponseWriter, r *http.Request, u identity, 
 		return
 	}
 	if _, e = tx.Exec(r.Context(), "INSERT INTO page_shares(page_id,user_id,level,granted_by) VALUES($1,$2,'full',$2) ON CONFLICT DO NOTHING", in.ID, u.ID); e != nil {
-		problem(w, 500, "Duplicate failed")
+		failed(w, 500, "Duplicate failed", e)
 		return
 	}
 	if _, e = tx.Exec(r.Context(), "UPDATE workspaces SET revision=revision+1 WHERE id=$1", ws.ID); e != nil {
-		problem(w, 500, "Duplicate failed")
+		failed(w, 500, "Duplicate failed", e)
 		return
 	}
 	if e = tx.Commit(r.Context()); e != nil {
-		problem(w, 500, "Duplicate failed")
+		failed(w, 500, "Duplicate failed", e)
 		return
 	}
 	jsonOut(w, 201, map[string]any{"id": in.ID, "revision": revision + 1})
@@ -574,7 +574,7 @@ func (s *Service) seed(w http.ResponseWriter, r *http.Request, u identity, ws Wo
 	}
 	granted, e := s.effectiveLevel(r.Context(), s.DB, u.ID, r.PathValue("id"))
 	if e != nil {
-		problem(w, 503, "Database unavailable")
+		failed(w, 503, "Database unavailable", e)
 		return
 	}
 	if granted < levelView {
@@ -600,7 +600,7 @@ func (s *Service) seed(w http.ResponseWriter, r *http.Request, u identity, ws Wo
 	}
 	tag, e := s.DB.Exec(r.Context(), `UPDATE pages p SET content=$1 WHERE p.id=$2 AND p.workspace_id=$3 AND NOT p.deleted AND NOT p.trashed AND p.content IS NULL AND NOT p.admission_started AND p.version=0 AND EXISTS(SELECT 1 FROM memberships m WHERE m.workspace_id=p.workspace_id AND m.user_id=$4 AND m.role IN ('admin','member'))`, []byte(in.Document), r.PathValue("id"), ws.ID, u.ID)
 	if e != nil {
-		problem(w, 500, "Seeding failed")
+		failed(w, 500, "Seeding failed", e)
 		return
 	}
 	if tag.RowsAffected() != 1 {
