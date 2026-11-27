@@ -29,7 +29,7 @@ import { FileToolError } from './errors';
 import { uploadErrorMessage } from '../../components/utils/upload-error-message';
 import { uploadErrorLines, type UploadErrorLineKeys, type UploadErrorLines } from '../../components/utils/upload-error-lines';
 import { resolveUploadError } from '../../components/utils/media-upload-error';
-import { safeHttpHref, safePreviewSrc } from './url';
+import { safeHttpHref, safePreviewSrc, safeFileDownloadHref } from './url';
 import { isPreviewable } from './preview';
 import { openFilePreview } from './preview-modal';
 import { deliverToRebuiltBlock, putBackOnRebuiltBlock, writeDerived } from '../image/detached-upload';
@@ -511,7 +511,7 @@ export class FileTool implements BlockTool {
     if (this.data.url.trim() === '') {
       return;
     }
-    const href = safeHttpHref(this.data.url) ?? safePreviewSrc(this.data.url);
+    const href = safeFileDownloadHref(this.data.url) ?? safePreviewSrc(this.data.url);
     if (href === null) {
       return;
     }
@@ -685,7 +685,7 @@ export class FileTool implements BlockTool {
   private buildRendered(): HTMLElement {
     const wrap = document.createElement('div');
     wrap.className = 'blok-file-rendered';
-    const onPreview = isPreviewable(this.data) ? (): void => this.openPreview() : undefined;
+    const onPreview = !this.data.url.startsWith('data:application/octet-stream;base64,') && isPreviewable(this.data) ? (): void => this.openPreview() : undefined;
     const onRename = this.readOnly ? undefined : (next: string): void => this.renameFile(next);
     const card = renderFileCard(this.data, onPreview, this.api.i18n.t('tools.file.download'), onRename);
     wrap.appendChild(card);

@@ -30,3 +30,11 @@ export function safePreviewSrc(raw: string): string | null {
     return null;
   }
 }
+
+/** Imported offline files can be downloaded as opaque bytes. Never use this URL for previews. */
+export function safeFileDownloadHref(raw: string): string | null {
+  if (raw.startsWith('data:application/octet-stream;base64,')) {
+    return /^data:application\/octet-stream;base64,[A-Za-z0-9+/]*={0,2}$/.test(raw) ? raw : null;
+  }
+  return safeHttpHref(raw);
+}

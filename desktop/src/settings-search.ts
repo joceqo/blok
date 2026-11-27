@@ -26,7 +26,7 @@ function setting(label: string, description: string, selector: string, keywords 
   return {label, description, selector, keywords};
 }
 
-export function settingsCatalog(workspace: WorkspaceRef, sidebar: SidebarPreferences, native: boolean, markdown: boolean) {
+export function settingsCatalog(workspace: WorkspaceRef, sidebar: SidebarPreferences, native: boolean, markdown: boolean, canExport = false) {
   const disk = workspace.kind === 'local';
   const online = workspace.kind === 'remote' && !workspace.embedded;
   const catalog: Partial<Record<SettingsPanel, Setting[]>> = {
@@ -47,6 +47,7 @@ export function settingsCatalog(workspace: WorkspaceRef, sidebar: SidebarPrefere
     ],
     backups: [setting(shellText("Destination"), shellText("Sauvegarder cet espace"), '[data-backup-destination]', 'git github gitlab s3 nas dossier restauration backup')],
     general: [
+      ...(canExport ? [setting(shellText("Exporter"), shellText("Contenu de l’espace de travail"), '[data-setting="workspace-export"]', 'zip markdown csv html')] : []),
       setting(shellText("Nom de l’espace"), online ? shellText("Renommer cet espace de travail.") : shellText("Consulter le nom de cet espace de travail."), '[data-setting="workspace-name"]', 'renommer titre'),
       setting(shellText("Hébergement"), shellText("Voir où cet espace est stocké."), '[data-setting="hosting"]', 'stockage'),
       setting(shellText("Version de Blok"), shellText("Consulter les versions de Blok et de l’application."), '[data-desktop-settings-version]', 'à propos'),
@@ -72,8 +73,9 @@ export function settingsCatalog(workspace: WorkspaceRef, sidebar: SidebarPrefere
       setting(shellText("Récapitulatif des activités de l’espace de travail"), shellText("Recevoir un résumé par e-mail de l’activité de l’espace."), '[data-setting="email-digest"]', 'e-mail email'),
     ],
     import: [
+      ...(markdown ? [setting(shellText("Notion et dossiers ZIP"), shellText("Importer une archive avec ses sous-pages."), '[data-setting="archive-import"]', 'migration html zip')] : []),
       setting('iCalendar', shellText("Importer les événements d’un fichier .ics."), '[data-setting="ical"]', 'agenda calendrier'),
-      ...(markdown ? [setting('Markdown', shellText("Créer une page à partir d’un fichier .md."), '[data-setting="markdown"]')] : []),
+      ...(markdown ? [setting(shellText('Markdown et CSV'), shellText("Créer une page à partir d’un fichier Markdown ou CSV."), '[data-setting="markdown"]')] : []),
     ],
     calendar: [
       setting(shellText("Agendas"), shellText("Afficher le calendrier de l’espace de travail."), '[data-calendar-group="workspace"]'),

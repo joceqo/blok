@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { safeHttpHref, safePreviewSrc } from '../../../../src/tools/file/url';
+import { safeHttpHref, safePreviewSrc, safeFileDownloadHref } from '../../../../src/tools/file/url';
 
 describe('safeHttpHref', () => {
   it.each([
@@ -36,4 +36,12 @@ describe('safePreviewSrc', () => {
   ])('returns null for the unsafe or invalid src %s', (url) => {
     expect(safePreviewSrc(url)).toBeNull();
   });
+});
+
+it('only offers inert imported bytes as downloads', () => {
+  const data = 'data:application/octet-stream;base64,SGVsbG8=';
+  expect(safeFileDownloadHref(data)).toBe(data);
+  expect(safePreviewSrc(data)).toBeNull();
+  expect(safeFileDownloadHref('data:application/octet-stream;base64,invalid!')).toBeNull();
+  expect(safeFileDownloadHref('data:text/html;base64,SGVsbG8=')).toBeNull();
 });

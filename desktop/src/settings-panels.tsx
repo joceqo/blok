@@ -8,6 +8,8 @@ import { Avatar, Choice, Feedback, SwitchRow, TextField } from './components';
 import {getTimeFormatter, readAutoTimeZone, readChatNewline, readChosenTimeZone, readContrast, readTimeFormat, readTimeZone, setAutoTimeZone, setChatNewline, setContrast, setTimeFormat, setTimeZone, subscribeDisplayPreferences, type Contrast, type TimeFormat} from './display-preferences';
 import {getTimeZoneOptions} from './calendarcn/lib/time-zones';
 import {TeamspaceIconPicker} from './cloud/teamspace-icon';
+import {WorkspaceExportSettings} from './workspace-export-settings';
+import type {ExportWorkspace} from './workspace-export';
 import './settings-panels.css';
 
 type Preferences = {
@@ -20,6 +22,7 @@ type Preferences = {
 
 type General = {
   kind: 'general';
+  exportWorkspace?: ExportWorkspace;
   workspace: string;
   version: string;
   remoteServer?: string;
@@ -350,7 +353,7 @@ function WorkspaceMail({read, write}: NonNullable<General['mail']>) {
   </>;
 }
 
-function GeneralPanel({workspace, version, remoteServer, workspaceId, rename, mail, icon}: General) {
+function GeneralPanel({workspace, version, remoteServer, workspaceId, rename, mail, icon, exportWorkspace}: General) {
   return <>
     <h1 data-desktop-settings-title="">{shellText("Général")}</h1>
     <p data-desktop-settings-intro="">{shellText("Gérez le nom de votre espace de travail et retrouvez ses informations.")}</p>
@@ -369,6 +372,9 @@ function GeneralPanel({workspace, version, remoteServer, workspaceId, rename, ma
         <code>{remoteServer}</code>
       </details>}
     </Section>
+    {exportWorkspace && <Section title={shellText("Exporter")}>
+      <WorkspaceExportSettings workspace={workspace} run={exportWorkspace}/>
+    </Section>}
     {mail && <Section title={shellText("E-mails")}>
       <WorkspaceMail {...mail}/>
     </Section>}

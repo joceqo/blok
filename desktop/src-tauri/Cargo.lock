@@ -328,6 +328,7 @@ dependencies = [
  "cc",
  "keyring",
  "libc",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",
